@@ -1337,6 +1337,61 @@ describe("remaining leak and over-redaction cases (#5142)", () => {
 
 /** Budget for spawning a Bun child process to verify JSC Yarr parity on MB-scale inputs. */
 const BUN_SUBPROCESS_TIMEOUT_MS = 60_000;
+/** Scale factor k between baseline and scaled inputs for load-independent linearity checks (O(n) ~ k, O(n^2) ~ k^2). */
+const LINEARITY_SCALE_FACTOR = 5;
+/** Interleaved paired samples per input family; median filters isolated GC or scheduler pauses. */
+const LINEARITY_SAMPLES = 5;
+/** Floor on the baseline median so sub-millisecond fast paths do not amplify timer quantization noise. */
+const LINEARITY_BASELINE_FLOOR_MS = 1;
+/** Ratio ceiling between linear k (5x) and quadratic k^2 (25x): 3x headroom above linear, well below quadratic. */
+const LINEARITY_RATIO_HEADROOM = 3;
+const MAX_LINEAR_SCALING_RATIO = LINEARITY_SCALE_FACTOR * LINEARITY_RATIO_HEADROOM;
+
+function medianDurationMs(samples: readonly number[]): number {
+	const sorted = [...samples].sort((a, b) => a - b);
+	return sorted[Math.floor(sorted.length / 2)]!;
+}
+
+/**
+ * Load-independent O(n) scaling check: times `build(baseSize)` and `build(baseSize * k)` interleaved in the
+ * same process so host CPU load slows both proportionally, then bounds `median(k*N) / max(median(N), floor)`.
+ */
+function assertLinearScaling(
+	label: string,
+	baseSize: number,
+	build: (size: number) => string,
+	run: (input: string) => void,
+): void {
+	const small = build(baseSize);
+	const large = build(baseSize * LINEARITY_SCALE_FACTOR);
+	run(small);
+	const smallTimes: number[] = [];
+	const largeTimes: number[] = [];
+	for (let sample = 0; sample < LINEARITY_SAMPLES; sample++) {
+		if (sample % 2 === 0) {
+			let started = performance.now();
+			run(small);
+			smallTimes.push(performance.now() - started);
+			started = performance.now();
+			run(large);
+			largeTimes.push(performance.now() - started);
+		} else {
+			let started = performance.now();
+			run(large);
+			largeTimes.push(performance.now() - started);
+			started = performance.now();
+			run(small);
+			smallTimes.push(performance.now() - started);
+		}
+	}
+	const smallMedian = medianDurationMs(smallTimes);
+	const largeMedian = medianDurationMs(largeTimes);
+	const ratio = largeMedian / Math.max(smallMedian, LINEARITY_BASELINE_FLOOR_MS);
+	assert.ok(
+		ratio <= MAX_LINEAR_SCALING_RATIO,
+		`${label} scaled super-linearly: median(${baseSize * LINEARITY_SCALE_FACTOR})=${largeMedian.toFixed(1)}ms / median(${baseSize})=${smallMedian.toFixed(1)}ms (${ratio.toFixed(2)}x > ${MAX_LINEAR_SCALING_RATIO}x)`,
+	);
+}
 
 describe("OAuth credential shapes and linear-time scanning across Node and Bun", () => {
 	test("redacts auth=Bearer, Authorization=Basic, and other assigned auth schemes without dropping the token", () => {
@@ -1517,17 +1572,27 @@ describe("OAuth credential shapes and linear-time scanning across Node and Bun",
 			["netrc_1mb", `machine h ${"login a ".repeat(150_000)}password myNetrcSec99`, "myNetrcSec99"],
 		];
 		for (const [label, input, needle] of cases) {
-			const started = performance.now();
 			const out = redactCredentialShapes(input);
-			const elapsed = performance.now() - started;
 			assert.equal(out.includes(needle), false, `${label} leaked ${needle}`);
-			assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `${label} took ${Math.round(elapsed)} ms`);
 		}
 		for (const ansi of ["\x1b]".repeat(100_000), "\x1b[0".repeat(100_000)]) {
-			const started = performance.now();
 			assert.equal(redactCredentialShapes(ansi), ansi);
-			const elapsed = performance.now() - started;
-			assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `unterminated ANSI took ${Math.round(elapsed)} ms`);
+		}
+		const scalingFamilies: readonly (readonly [string, number, (size: number) => string])[] = [
+			["pwd_env", 20_000, (n) => `password=myEnvSecret9988 ${"z ".repeat(n)}`],
+			["pwd_semi", 10_000, (n) => `password=mySemiSecret9988${";x".repeat(n)}`],
+			["pwd_bare", 20_000, (n) => `password: myBareSecret9988 ${"z ".repeat(n)}`],
+			["quoted_esc", 20_000, (n) => `"password":"${"\\a".repeat(n)}myQuotedSec99"`],
+			["esc_json", 20_000, (n) => `\\"password\\":\\"${"\\\\a".repeat(n)}myEscSec99\\"`],
+			["provider_key", 20_000, (n) => `openaiKey="${"\\a".repeat(n)}myProvSec99"`],
+			["cookie_bs", 20_000, (n) => `Cookie: sid=${"\\x".repeat(n)}myCookSec99`],
+			["cookie_brace", 20_000, (n) => `Cookie: sid=${"}x".repeat(n)}myCookSec99`],
+			["netrc_match", 20_000, (n) => `machine h ${"login a ".repeat(n)}password myNetrcSec99`],
+			["unterm_osc", 20_000, (n) => "\x1b]".repeat(n)],
+			["unterm_csi", 20_000, (n) => "\x1b[0".repeat(n)],
+		];
+		for (const [label, baseSize, build] of scalingFamilies) {
+			assertLinearScaling(label, baseSize, build, redactCredentialShapes);
 		}
 	});
 
@@ -1538,6 +1603,48 @@ describe("OAuth credential shapes and linear-time scanning across Node and Bun",
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { redactCredentialShapes } from "./packages/coding-agent/src/utils/credential-redaction.ts";
+
+const SCALE = ${LINEARITY_SCALE_FACTOR};
+const SAMPLES = ${LINEARITY_SAMPLES};
+const BASELINE_FLOOR_MS = ${LINEARITY_BASELINE_FLOOR_MS};
+const MAX_RATIO = ${MAX_LINEAR_SCALING_RATIO};
+
+function median(values) {
+	const sorted = [...values].sort((a, b) => a - b);
+	return sorted[Math.floor(sorted.length / 2)];
+}
+
+function assertLinearOnBun(label, baseSize, build) {
+	const small = build(baseSize);
+	const large = build(baseSize * SCALE);
+	redactCredentialShapes(small);
+	const smallTimes = [];
+	const largeTimes = [];
+	for (let sample = 0; sample < SAMPLES; sample++) {
+		if (sample % 2 === 0) {
+			let started = performance.now();
+			redactCredentialShapes(small);
+			smallTimes.push(performance.now() - started);
+			started = performance.now();
+			redactCredentialShapes(large);
+			largeTimes.push(performance.now() - started);
+		} else {
+			let started = performance.now();
+			redactCredentialShapes(large);
+			largeTimes.push(performance.now() - started);
+			started = performance.now();
+			redactCredentialShapes(small);
+			smallTimes.push(performance.now() - started);
+		}
+	}
+	const smallMedian = median(smallTimes);
+	const largeMedian = median(largeTimes);
+	const ratio = largeMedian / Math.max(smallMedian, BASELINE_FLOOR_MS);
+	assert.ok(
+		ratio <= MAX_RATIO,
+		label + " scaled super-linearly on Bun: median(" + (baseSize * SCALE) + ")=" + largeMedian.toFixed(1) + "ms / median(" + baseSize + ")=" + smallMedian.toFixed(1) + "ms (" + ratio.toFixed(2) + "x > " + MAX_RATIO + "x)",
+	);
+}
 
 const cases = [
 	["auth_eq_bearer", "auth=Bearer opaqueAuthEqTok9988", "opaqueAuthEqTok9988"],
@@ -1566,18 +1673,24 @@ const cases = [
 	["cred_opt_4mb_prefix", "--" + "a-".repeat(1_000_000) + "password myCredOpt4m99", "myCredOpt4m99"],
 ];
 for (const [label, input, needle] of cases) {
-	const started = performance.now();
 	const out = redactCredentialShapes(input);
-	const elapsed = performance.now() - started;
 	assert.equal(out.includes(needle), false, label + " leaked on Bun");
-	assert.ok(elapsed < 2000, label + " took " + Math.round(elapsed) + " ms on Bun");
 }
 const huge = "x\\nPASSWORD=" + "a ".repeat(4 * 1024 * 1024) + "\\ny";
 assert.equal(redactCredentialShapes(huge), "x\\nPASSWORD= [redacted]\\ny");
 for (const ansi of ["\\x1b]".repeat(100_000), "\\x1b[0".repeat(100_000)]) {
-	const started = performance.now();
 	assert.equal(redactCredentialShapes(ansi), ansi);
-	assert.ok(performance.now() - started < 2000);
+}
+const scalingFamilies = [
+	["pwd_env", 4_000, (n) => "password=myEnvSecret9988 " + "z ".repeat(n)],
+	["pwd_semi", 4_000, (n) => "password=mySemiSecret9988" + ";x".repeat(n)],
+	["quoted_esc", 4_000, (n) => '"password":"' + "\\\\a".repeat(n) + 'myQuotedSec99"'],
+	["esc_json", 4_000, (n) => '\\\\"password\\\\":\\\\"' + "\\\\\\\\a".repeat(n) + 'myEscSec99\\\\"'],
+	["unterm_osc", 15_000, (n) => "\\x1b]".repeat(n)],
+	["unterm_csi", 15_000, (n) => "\\x1b[0".repeat(n)],
+];
+for (const [label, baseSize, build] of scalingFamilies) {
+	assertLinearOnBun(label, baseSize, build);
 }
 for (const kept of [
 	"connect ECONNREFUSED (code=ECONNREFUSED)",

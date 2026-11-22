@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { redactUrlCredentials } from "../../../../core/error-contract.ts";
 import {
+	type ApplyRedactionRangesOptions,
 	applyRedactionRanges,
+	type BasicAuthPayloadOptions,
 	REDACTED_PLACEHOLDER,
 	type RedactionRange,
 	redactCredentialShapes,
@@ -19,6 +21,8 @@ import {
 } from "../../../../utils/linear-text.js";
 
 const REDACTED = REDACTED_PLACEHOLDER;
+const MCP_BASIC_AUTH_OPTIONS: BasicAuthPayloadOptions = Object.freeze({ includeOpaqueTokens: true });
+const MCP_APPLY_RANGE_OPTIONS: ApplyRedactionRangesOptions = Object.freeze({ preserveAnsi: false });
 /** Minimum length for unlabelled literal secret scrubbing so 1-3 character strings (e.g. HTTP status codes) are never over-redacted. */
 const MIN_LITERAL_SECRET_LENGTH = 4;
 
@@ -1486,7 +1490,8 @@ function redactOAuthStructuredCredentials(text: string): string {
 	};
 
 	while (i < plain.length) {
-		if (plain.charCodeAt(i) === 91 && plain.startsWith(REDACTED, i)) {
+		const ch = plain.charCodeAt(i);
+		if (ch === 91 && plain.startsWith(REDACTED, i)) {
 			i += REDACTED.length;
 			continue;
 		}
@@ -1494,7 +1499,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 		const prevWord = i > 0 && isAsciiWordCode(plain.charCodeAt(i - 1));
 
 		// 1. `Bearer[ \t]+<token>` (preserves prose like "Invalid bearer token format" & WWW-Authenticate challenge params)
-		if (!prevWord && matchesAsciiCaseInsensitiveAt(plain, "bearer", i)) {
+		if (!prevWord && (ch === 0x42 || ch === 0x62) && matchesAsciiCaseInsensitiveAt(plain, "bearer", i)) {
 			const afterKw = i + 6;
 			const valStart = skipHorizontalWs(plain, afterKw);
 			if (valStart > afterKw && valStart < plain.length && !isWwwAuthenticateChallengeParam(plain, valStart)) {
@@ -1525,8 +1530,8 @@ function redactOAuthStructuredCredentials(text: string): string {
 		}
 
 		// 2. `Basic[ \t]+<base64>` (reuses shared `scanBasicAuthEndAt` with MCP opaque-token superset)
-		if (!prevWord) {
-			const basicEnd = scanBasicAuthEndAt(plain, i, { includeOpaqueTokens: true });
+		if (!prevWord && (ch === 0x42 || ch === 0x62)) {
+			const basicEnd = scanBasicAuthEndAt(plain, i, MCP_BASIC_AUTH_OPTIONS);
 			if (basicEnd !== -1) {
 				addRange(i, basicEnd);
 				i = basicEnd;
@@ -1535,7 +1540,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 		}
 
 		// 3. `code_verifier` / `code-verifier` / `codeVerifier` (including escaped JSON `\"code_verifier\":\"...\"`)
-		if (!prevWord) {
+		if (!prevWord && (ch === 0x43 || ch === 0x63)) {
 			let kvLen = 0;
 			if (
 				matchesAsciiCaseInsensitiveAt(plain, "code_verifier", i) ||
@@ -1567,6 +1572,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 		// 4. `code=<secret>` (skipping integers, POSIX/Node error codes like ENOENT/ECONNREFUSED, and OAuth error codes)
 		if (
 			!prevWord &&
+			(ch === 0x43 || ch === 0x63) &&
 			!(i > 0 && plain.charCodeAt(i - 1) === 45) &&
 			matchesAsciiCaseInsensitiveAt(plain, "code", i) &&
 			i + 4 < plain.length &&
@@ -1590,7 +1596,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 		}
 
 		// 5. Sensitive URL query parameters (`?name=value` or `&name=value`)
-		if (plain.charCodeAt(i) === 63 || plain.charCodeAt(i) === 38) {
+		if (ch === 63 || ch === 38) {
 			let nameEnd = i + 1;
 			while (
 				nameEnd < plain.length &&
@@ -1632,7 +1638,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 		}
 
 		// 6. Long-input linear fallback for `password=<val>` / `passwd=<val>` / `pwd=<val>` (preserves >2KB multi-line & `&` boundaries)
-		if (longInput && !prevWord) {
+		if (longInput && !prevWord && (ch === 0x50 || ch === 0x70)) {
 			let pwdLen = 0;
 			if (matchesAsciiCaseInsensitiveAt(plain, "password", i)) pwdLen = 8;
 			else if (matchesAsciiCaseInsensitiveAt(plain, "passwd", i)) pwdLen = 6;
@@ -1653,7 +1659,7 @@ function redactOAuthStructuredCredentials(text: string): string {
 		i++;
 	}
 
-	return applyRedactionRanges(text, ranges, { preserveAnsi: false });
+	return applyRedactionRanges(text, ranges, MCP_APPLY_RANGE_OPTIONS);
 }
 
 function chooseFreshPlaceholderPrefix(text: string): string {

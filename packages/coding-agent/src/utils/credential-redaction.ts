@@ -814,6 +814,8 @@ export interface BasicAuthPayloadOptions {
 	readonly includeOpaqueTokens?: boolean;
 }
 
+const DEFAULT_BASIC_AUTH_OPTIONS: BasicAuthPayloadOptions = Object.freeze({});
+
 function looksLikeBase64Credential(value: string): boolean {
 	if (value.length < 4) return false;
 	let hasUpper = false;
@@ -843,8 +845,11 @@ function looksLikeBase64Credential(value: string): boolean {
  * mixed-case, or symbol-bearing credentials), leaving unpadded short payloads to core `redactCredentialShapes`
  * so `Authorization: Basic <prefix>@rest` values are redacted whole rather than truncated at `@`.
  */
-export function isBasicAuthPayload(value: string, options?: BasicAuthPayloadOptions): boolean {
-	const includeOpaqueTokens = options?.includeOpaqueTokens === true;
+export function isBasicAuthPayload(
+	value: string,
+	options: BasicAuthPayloadOptions = DEFAULT_BASIC_AUTH_OPTIONS,
+): boolean {
+	const includeOpaqueTokens = options.includeOpaqueTokens === true;
 	if (value.length < 4) return false;
 	const mod4Len = value.length % 4;
 	let isStdBase64 = includeOpaqueTokens ? mod4Len === 0 : mod4Len !== 1;
@@ -1000,6 +1005,8 @@ export interface ApplyRedactionRangesOptions {
 	readonly preserveAnsi?: boolean;
 }
 
+const DEFAULT_APPLY_RANGE_OPTIONS: ApplyRedactionRangesOptions = Object.freeze({});
+
 function collectProtectedSpans(buffer: string, preserveAnsi: boolean): [number, number][] {
 	const markers: [number, number][] = [];
 	for (let pos = buffer.indexOf(REDACTED); pos !== -1; pos = buffer.indexOf(REDACTED, pos + REDACTED.length)) {
@@ -1054,7 +1061,7 @@ function isAllWhitespaceRange(text: string, start: number, end: number): boolean
 export function applyRedactionRanges(
 	buffer: string,
 	ranges: readonly RedactionRange[],
-	options?: ApplyRedactionRangesOptions,
+	options: ApplyRedactionRangesOptions = DEFAULT_APPLY_RANGE_OPTIONS,
 ): string {
 	if (ranges.length === 0) return buffer;
 	const clamped: RedactionRange[] = [];
@@ -1076,7 +1083,7 @@ export function applyRedactionRanges(
 		}
 	}
 
-	const preserveAnsi = options?.preserveAnsi ?? true;
+	const preserveAnsi = options.preserveAnsi ?? true;
 	const prot = collectProtectedSpans(buffer, preserveAnsi);
 	const parts: string[] = [];
 	let copied = 0;
@@ -1272,7 +1279,11 @@ function isBasicBoundaryAt(text: string, pos: number): boolean {
  * Scan a `Basic <credential>` token starting at `index` in ANSI-stripped `plain`, returning its exclusive
  * end index or `-1` if `index` does not begin a matching `Basic` credential.
  */
-export function scanBasicAuthEndAt(plain: string, index: number, options?: BasicAuthPayloadOptions): number {
+export function scanBasicAuthEndAt(
+	plain: string,
+	index: number,
+	options: BasicAuthPayloadOptions = DEFAULT_BASIC_AUTH_OPTIONS,
+): number {
 	if (index < 0 || index >= plain.length) return -1;
 	const c = plain.charCodeAt(index);
 	if (c !== 0x42 && c !== 0x62) return -1;
@@ -1282,7 +1293,7 @@ export function scanBasicAuthEndAt(plain: string, index: number, options?: Basic
 	const valStart = skipHorizontalWs(plain, afterKw);
 	if (valStart === afterKw || valStart >= plain.length || plain.startsWith(REDACTED, valStart)) return -1;
 
-	if (options?.includeOpaqueTokens) {
+	if (options.includeOpaqueTokens) {
 		let valEnd = valStart;
 		while (valEnd < plain.length && isBase64CredentialCharCode(plain.charCodeAt(valEnd))) valEnd++;
 		const nextOk = valEnd === plain.length || !isAsciiWordCode(plain.charCodeAt(valEnd));
@@ -1306,7 +1317,7 @@ export function scanBasicAuthEndAt(plain: string, index: number, options?: Basic
 		afterQuote !== -1 &&
 		afterQuote !== 0x3a &&
 		!isBasicBoundaryAt(plain, valEnd + 1);
-	if (!quotedAttrStart && isBasicBoundaryAt(plain, valEnd) && isBasicAuthPayload(candidate)) {
+	if (!quotedAttrStart && isBasicBoundaryAt(plain, valEnd) && isBasicAuthPayload(candidate, options)) {
 		return valEnd;
 	}
 	return -1;
@@ -1321,15 +1332,18 @@ function collectStandaloneBasicRanges(buffer: string): RedactionRange[] {
 	let i = 0;
 
 	while (i < plain.length) {
-		if (plain.charCodeAt(i) === 0x5b && plain.startsWith(REDACTED, i)) {
+		const c = plain.charCodeAt(i);
+		if (c === 0x5b && plain.startsWith(REDACTED, i)) {
 			i += REDACTED.length;
 			continue;
 		}
-		const valEnd = scanBasicAuthEndAt(plain, i);
-		if (valEnd !== -1) {
-			ranges.push({ start: at(i), end: at(valEnd - 1) + 1 });
-			i = valEnd;
-			continue;
+		if (c === 0x42 || c === 0x62) {
+			const valEnd = scanBasicAuthEndAt(plain, i, DEFAULT_BASIC_AUTH_OPTIONS);
+			if (valEnd !== -1) {
+				ranges.push({ start: at(i), end: at(valEnd - 1) + 1 });
+				i = valEnd;
+				continue;
+			}
 		}
 		i++;
 	}
