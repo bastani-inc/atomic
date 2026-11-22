@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "vitest";
 import { createCustomMessage } from "../src/core/messages.js";
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import type { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import type { InteractiveEngineCommand, InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.js";
 import {
+	REMOTE_FRAME_CACHE_LIMIT,
 	RemoteCustomMessageComponent,
 	RemoteToolExecutionComponent,
 } from "../src/modes/interactive-engine/remote-renderer.js";
@@ -175,4 +177,188 @@ test("a row collapsed while its expanded frame is in flight is not repainted exp
 		!repainted.some((line) => line.includes("with full output")),
 		`the collapsed row was repainted with its expanded frame: ${JSON.stringify(repainted)}`,
 	);
+});
+
+class InspectableCustomMessageComponent extends RemoteCustomMessageComponent {
+	readFrameIdentity(): string {
+		return this.frameIdentity();
+	}
+}
+
+test("custom message frame identity hashes content and details with SHA-256, distinguishes details, evicts on renderer change, and keeps the engine wire protocol digest-free", () => {
+	const engine = slowEngine();
+	const chat = new StartupChatContainer();
+	chat.releaseStartupOutput();
+
+	const firstMessage = createCustomMessage(
+		"google-account",
+		"Account notice",
+		true,
+		{ available: false, cookieAccessAllowed: false },
+		"2026-11-02T00:00:00.000Z",
+	);
+	const expectedDigest = createHash("sha256")
+		.update(JSON.stringify([firstMessage.content, firstMessage.details]))
+		.digest("base64");
+
+	const firstRow = new InspectableCustomMessageComponent(firstMessage, engine.runtime, () => {});
+	assert.equal(firstRow.readFrameIdentity(), JSON.stringify(["message", "google-account", expectedDigest, false]));
+
+	chat.addChild(firstRow);
+	chat.render(80);
+
+	// The wire command carries no content digest or frame identity, so an older engine talking to a newer host
+	// receives the exact protocol shape it expects.
+	assert.equal(engine.commands.length, 1);
+	const wireCommand = engine.commands[0];
+	assert.equal(wireCommand?.type, "engine_message_render");
+	assert.ok(!("contentDigest" in wireCommand));
+	assert.ok(!("frameIdentity" in wireCommand));
+	assert.ok(!JSON.stringify(wireCommand).includes(expectedDigest));
+
+	engine.answer();
+	assert.deepEqual(chat.render(80), ["notice google-account"]);
+
+	// Same content and details with a different timestamp reuses the cached frame on rebuild.
+	chat.clear();
+	const restoredSame = new RemoteCustomMessageComponent(
+		createCustomMessage(
+			"google-account",
+			"Account notice",
+			true,
+			{ available: false, cookieAccessAllowed: false },
+			"2026-11-02T01:00:00.000Z",
+		),
+		engine.runtime,
+		() => {},
+	);
+	chat.addChild(restoredSame);
+	assert.deepEqual(chat.render(80), ["notice google-account"]);
+
+	// Same content with different details must miss the cache and not paint the earlier message's frame.
+	chat.clear();
+	const differentDetails = new RemoteCustomMessageComponent(
+		createCustomMessage(
+			"google-account",
+			"Account notice",
+			true,
+			{ available: true, cookieAccessAllowed: true },
+			"2026-11-02T00:00:00.000Z",
+		),
+		engine.runtime,
+		() => {},
+	);
+	chat.addChild(differentDetails);
+	assert.deepEqual(chat.render(80), []);
+
+	// Ordinary engine_custom_invalidate (without evictCache, as older engines emit) preserves the cached frame,
+	// whereas evictCache: true clears it so a subsequent rebuild does not paint the stale frame.
+	chat.clear();
+	const active = new RemoteCustomMessageComponent(firstMessage, engine.runtime, () => {});
+	chat.addChild(active);
+	assert.deepEqual(chat.render(80), ["notice google-account"]);
+	const activeCommand = engine.commands.find((c) => c.type === "engine_message_render");
+	assert.ok(activeCommand?.type === "engine_message_render");
+	for (const listener of [...engine.listeners]) {
+		listener({ type: "engine_custom_invalidate", componentId: activeCommand.componentId });
+	}
+	chat.clear();
+	chat.addChild(new RemoteCustomMessageComponent(firstMessage, engine.runtime, () => {}));
+	assert.deepEqual(chat.render(80), ["notice google-account"]);
+
+	const activeAfterKeep = engine.commands.findLast((c) => c.type === "engine_message_render");
+	assert.ok(activeAfterKeep?.type === "engine_message_render");
+	for (const listener of [...engine.listeners]) {
+		listener({ type: "engine_custom_invalidate", componentId: activeAfterKeep.componentId, evictCache: true });
+	}
+	chat.clear();
+	chat.addChild(new RemoteCustomMessageComponent(firstMessage, engine.runtime, () => {}));
+	assert.deepEqual(chat.render(80), []);
+});
+
+test("an older engine without expansionChangesRows still completes click-to-expand with a SHA-256 host", () => {
+	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
+	const commands: InteractiveEngineCommand[] = [];
+	const runtime = {
+		onEngineMessage(listener: (message: InteractiveEngineMessage) => void) {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		sendEngineCommand(command: InteractiveEngineCommand) {
+			commands.push(command);
+		},
+	} as unknown as IsolatedInteractiveRuntime;
+
+	const row = new RemoteCustomMessageComponent(
+		createCustomMessage("wake-notice", "summary", true, { id: "w-1" }, "2026-11-02T00:00:00.000Z"),
+		runtime,
+		() => {},
+	);
+	row.render(80);
+	const initial = commands.shift();
+	assert.ok(initial?.type === "engine_message_render");
+	for (const listener of [...listeners]) {
+		listener({
+			type: "engine_custom_frame",
+			componentId: initial.componentId,
+			requestId: initial.requestId,
+			lines: ["collapsed line"],
+		});
+	}
+
+	let changedCount = 0;
+	row.expandByClick(true, () => {
+		changedCount++;
+	});
+	const checkCollapsed = commands.shift();
+	assert.ok(checkCollapsed?.type === "engine_message_render" && checkCollapsed.compareExpansion === true);
+	// Older engine replies without expansionChangesRows, prompting host to request the opposite expansion.
+	for (const listener of [...listeners]) {
+		listener({
+			type: "engine_custom_frame",
+			componentId: checkCollapsed.componentId,
+			requestId: checkCollapsed.requestId,
+			lines: ["collapsed line"],
+		});
+	}
+	const checkExpanded = commands.shift();
+	assert.ok(checkExpanded?.type === "engine_message_render" && checkExpanded.expanded === true);
+	for (const listener of [...listeners]) {
+		listener({
+			type: "engine_custom_frame",
+			componentId: checkExpanded.componentId,
+			requestId: checkExpanded.requestId,
+			lines: ["expanded line 1", "expanded line 2"],
+		});
+	}
+	assert.equal(row.isExpanded(), true);
+	assert.equal(changedCount, 1);
+});
+
+test("recentFrames enforces REMOTE_FRAME_CACHE_LIMIT LRU eviction with SHA-256 custom-message digests", () => {
+	const engine = slowEngine();
+	const chat = new StartupChatContainer();
+	chat.releaseStartupOutput();
+
+	const total = REMOTE_FRAME_CACHE_LIMIT + 1;
+	const messages = Array.from({ length: total }, (_, index) =>
+		createCustomMessage("lru-notice", `item ${index}`, true, { index }, "2026-11-02T00:00:00.000Z"),
+	);
+	for (const message of messages) {
+		chat.addChild(new RemoteCustomMessageComponent(message, engine.runtime, () => {}));
+	}
+	chat.render(80);
+	engine.answer();
+
+	// The oldest entry (index 0) was evicted once the 2,001st arrived, while entry 1 and the newest entry remain cached.
+	chat.clear();
+	const oldest = new RemoteCustomMessageComponent(messages[0]!, engine.runtime, () => {});
+	const second = new RemoteCustomMessageComponent(messages[1]!, engine.runtime, () => {});
+	const newest = new RemoteCustomMessageComponent(messages[total - 1]!, engine.runtime, () => {});
+	assert.deepEqual(oldest.render(80), []);
+	assert.deepEqual(second.render(80), ["notice lru-notice"]);
+	assert.deepEqual(newest.render(80), ["notice lru-notice"]);
+	oldest.dispose();
+	second.dispose();
+	newest.dispose();
 });

@@ -1,11 +1,11 @@
 //! When a process started, so a holder named by its process id is told apart from a later process given the same id
 //! (#5141), and ending a process only while its id still names the process created then. Windows reuses process ids
-//! quickly and has no `/proc` to read a start from.
+//! quickly and has no `/proc` to read a start from; macOS has none either.
 use napi_derive::napi;
 
 /// When running process `pid` was created, as the decimal count of 100-nanosecond intervals since 1601-01-01 UTC (the
-/// Windows process creation time), or `null` where that cannot be read: on other platforms, for a process that is gone
-/// or has exited, and for one this process may not query.
+/// Windows process creation time; on macOS its start, to the microsecond, in the same count), or `null` where that
+/// cannot be read: on other platforms, for a process that is gone or has exited, and for one this process may not query.
 #[napi(js_name = "processCreationTime")]
 pub fn process_creation_time(pid: u32) -> Option<String> {
 	creation_time(pid).map(|ticks| ticks.to_string())
@@ -40,7 +40,88 @@ fn creation_time(pid: u32) -> Option<u64> {
 	(read && running && ticks != 0).then_some(ticks)
 }
 
-#[cfg(not(windows))]
+/// A zombie on macOS: exited, not yet reaped by its parent.
+#[cfg(target_os = "macos")]
+const SZOMB: u32 = 5;
+
+#[cfg(target_os = "macos")]
+fn creation_time(pid: u32) -> Option<u64> {
+	/// Seconds between 1601-01-01 and 1970-01-01, both UTC.
+	const UNIX_EPOCH_SINCE_1601_SECS: u64 = 11_644_473_600;
+	// Process id 0 is the kernel; it never holds anything.
+	let pid = libc::c_int::try_from(pid).ok().filter(|&pid| pid > 0)?;
+	// A process another user owns is not read by proc_pidinfo, only by sysctl, as `ps` reads it.
+	let (seconds, microseconds) = bsd_info_start(pid).or_else(|| kern_proc_start(pid))?;
+	seconds
+		.checked_add(UNIX_EPOCH_SINCE_1601_SECS)?
+		.checked_mul(10_000_000)?
+		.checked_add(microseconds.checked_mul(10)?)
+}
+
+/// The start of running process `pid`, in seconds and microseconds since 1970, by proc_pidinfo: a process of this user.
+#[cfg(target_os = "macos")]
+fn bsd_info_start(pid: libc::c_int) -> Option<(u64, u64)> {
+	let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+	let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+	// SAFETY: the buffer is a zeroed `proc_bsdinfo` of `size` bytes, which proc_pidinfo fills for PROC_PIDTBSDINFO.
+	let written =
+		unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size) };
+	if written != size {
+		return None;
+	}
+	// SAFETY: proc_pidinfo wrote the whole structure.
+	let info = unsafe { info.assume_init() };
+	if i64::from(info.pbi_pid) != i64::from(pid)
+		|| info.pbi_status == SZOMB
+		|| info.pbi_start_tvsec == 0
+	{
+		return None;
+	}
+	Some((info.pbi_start_tvsec, info.pbi_start_tvusec))
+}
+
+/// The start of running process `pid`, in seconds and microseconds since 1970, by `sysctl(KERN_PROC_PID)`, which reads
+/// a process of any user. The answer is a `struct kinfo_proc` (648 bytes); only the head of its `extern_proc` is read:
+/// the start (`p_starttime`, a `timeval`) at byte 0, the state (`p_stat`) at 36 and the process id (`p_pid`) at 40.
+#[cfg(target_os = "macos")]
+fn kern_proc_start(pid: libc::c_int) -> Option<(u64, u64)> {
+	const KINFO_PROC_SIZE: usize = 648;
+	let mut buffer = [0u64; KINFO_PROC_SIZE / 8];
+	let mut size: libc::size_t = KINFO_PROC_SIZE;
+	let mut name = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+	// SAFETY: `buffer` holds `size` bytes, which sysctl fills with at most that many, and says how many in `size`.
+	let status = unsafe {
+		libc::sysctl(
+			name.as_mut_ptr(),
+			name.len() as libc::c_uint,
+			buffer.as_mut_ptr().cast(),
+			&mut size,
+			std::ptr::null_mut(),
+			0,
+		)
+	};
+	// No such process: sysctl answers with nothing.
+	if status != 0 || size != KINFO_PROC_SIZE {
+		return None;
+	}
+	// SAFETY: the buffer is KINFO_PROC_SIZE initialised bytes.
+	let bytes: &[u8] =
+		unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast(), KINFO_PROC_SIZE) };
+	let seconds = i64::from_ne_bytes(bytes[0..8].try_into().ok()?);
+	let microseconds = i32::from_ne_bytes(bytes[8..12].try_into().ok()?);
+	let state = bytes[36];
+	let named = i32::from_ne_bytes(bytes[40..44].try_into().ok()?);
+	if named != pid
+		|| u32::from(state) == SZOMB
+		|| seconds <= 0
+		|| !(0..1_000_000).contains(&microseconds)
+	{
+		return None;
+	}
+	Some((u64::try_from(seconds).ok()?, u64::try_from(microseconds).ok()?))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn creation_time(_pid: u32) -> Option<u64> {
 	None
 }
@@ -116,6 +197,8 @@ fn terminate(_pid: u32, _created: u64, _descendants: bool) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+	#[cfg(target_os = "macos")]
+	use super::{bsd_info_start, kern_proc_start};
 	use super::{process_creation_time, terminate_process_created_at};
 
 	#[cfg(windows)]
@@ -199,11 +282,43 @@ mod tests {
 		assert!(still_runs, "the process it started was ended without descendants asked for");
 	}
 
-	#[cfg(not(windows))]
+	#[cfg(not(any(windows, target_os = "macos")))]
 	#[test]
-	fn reads_nothing_off_windows() {
+	fn reads_nothing_off_windows_and_macos() {
 		assert_eq!(process_creation_time(std::process::id()), None);
 		assert_eq!(terminate_process_created_at(std::process::id(), "1".into(), false), None);
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn reads_this_process_and_a_child_as_they_started_and_nothing_once_gone() {
+		use std::{process::Command, time::SystemTime};
+		let own = process_creation_time(std::process::id()).expect("this process's creation time");
+		assert_eq!(process_creation_time(std::process::id()), Some(own.clone()));
+		let since_1601 = |ticks: &str| {
+			std::time::Duration::from_nanos(ticks.parse::<u64>().unwrap().checked_mul(100).unwrap())
+		};
+		let now_since_1601 = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap()
+			+ std::time::Duration::from_secs(11_644_473_600);
+		assert!(since_1601(&own) <= now_since_1601, "started before now");
+
+		let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+		let started = process_creation_time(child.id()).expect("the child's creation time");
+		let ticks = |text: &str| text.parse::<u64>().unwrap();
+		assert!(ticks(&started) >= ticks(&own), "the child started after this process");
+		// Both readers read the same start of a process of this user.
+		let pid = libc::c_int::try_from(child.id()).unwrap();
+		assert_eq!(kern_proc_start(pid), bsd_info_start(pid));
+		// launchd, which another user owns, is read too: it started at boot, long before.
+		let launchd = process_creation_time(1).expect("launchd's creation time");
+		assert!(ticks(&launchd) < ticks(&own));
+		child.kill().unwrap();
+		child.wait().unwrap();
+		assert_eq!(process_creation_time(child.id()), None, "a reaped child is gone");
+		assert_eq!(process_creation_time(0), None);
+		// No process has this id: macOS gives out ids up to 99,999.
+		assert_eq!(process_creation_time(4_000_000), None);
+		assert_eq!(terminate_process_created_at(std::process::id(), own, false), None);
 	}
 
 	#[cfg(windows)]

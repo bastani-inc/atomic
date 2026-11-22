@@ -3,10 +3,12 @@ import type { DetachedToolResult, ExtensionContext } from "@bastani/atomic";
 import { test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import {
+	bindSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
 	recordSubagentChildReply,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
+import { heldAsArrived } from "../helpers/held-tool-results.js";
 
 const result: DetachedToolResult = {
 	toolCallId: "call-1",
@@ -57,7 +59,10 @@ test("a released reply is acknowledged only after its result is saved once (#432
 	assert.equal(await recordSubagentChildReply(pi, ownerId, "run:0", "q-1", result, 50), false);
 	assert.equal(await recordSubagentChildReply(pi, ownerId, "run:0", "q-1", result, 101), false);
 	assert.equal(appends, after);
-	assert.deepEqual(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults, [result]);
+	assert.deepEqual(
+		heldAsArrived(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults),
+		[result],
+	);
 });
 
 test("a reply to a permanently ended child is refused without appending (#4326)", async () => {
@@ -101,4 +106,44 @@ test("a reply to a permanently ended child is refused without appending (#4326)"
 		);
 		assert.equal(appends, before);
 	}
+});
+
+test("a reply repeated after a wake bound the first to the call that asked is refused, as before it was bound (#3274)", async () => {
+	const sessionManager = SessionManager.inMemory("/repo");
+	const ctx = { sessionManager } as never as ExtensionContext;
+	const pi = {
+		async appendEntry<T>(type: string, data?: T) {
+			await sessionManager.appendCustomEntry(type, data);
+		},
+	};
+	const sink = createSubagentChildRecordSink(pi, ctx);
+	sink.record({
+		runId: "run",
+		index: 0,
+		agent: "worker",
+		cwd: "/repo",
+		state: "terminal",
+		terminalStatus: "released",
+		waitingOn: [
+			{
+				toolCallId: "call-1",
+				toolName: "intercom",
+				callEntryId: "ask-call-entry",
+				replyWait: { questionId: "q-1", deadline: 100, from: "peer" },
+			},
+		],
+	});
+	await sink.flushed?.();
+	const ownerId = sessionManager.getSessionId();
+	assert.equal(await recordSubagentChildReply(pi, ownerId, "run:0", "q-1", result, 50), true);
+	const seq = readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults?.[0]?.heldSeq;
+	assert.ok(seq !== undefined);
+	// A wake bound it to the call that asked, then failed or stopped before a run took it.
+	await bindSubagentChildHeldToolResults(pi, ownerId, "run:0", new Map([[seq, "ask-call-entry"]]));
+
+	assert.equal(await recordSubagentChildReply(pi, ownerId, "run:0", "q-1", result, 60), false);
+	assert.deepEqual(
+		heldAsArrived(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults),
+		[result],
+	);
 });
