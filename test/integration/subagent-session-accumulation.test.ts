@@ -47,7 +47,7 @@ const FILE_BYTES = 64 * 1024;
 /**
  * The heap each finished child may still hold, measured from 50 to 200 finished. A finished child keeps its task record
  * and launch metadata, the activity reports its owner keeps for the task, the commands its chat offers, and the
- * supervising session's own entries about it: 5 to 7 KiB here, on Linux and Windows alike. One that kept its whole
+ * supervising session's own entries about it: 5 to 9 KiB here, on Linux and Windows alike. One that kept its whole
  * history would hold about 55 KiB here; before the fix a child also kept the text of every skill file it loaded, about
  * 250 KiB here.
  */
