@@ -375,7 +375,11 @@ describe("released asker reply routes with no owner", () => {
 		const time = clock();
 		const routes = new ReleasedAskerReplies(time.now, Number.POSITIVE_INFINITY);
 		const removed: string[] = [];
-		routes.persistWith({ kept: () => {}, removed: (question) => removed.push(question.messageId) });
+		routes.persistWith({
+			kept: () => {},
+			removed: (question) => removed.push(question.messageId),
+			batch: (work) => work(),
+		});
 		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], OWNER);
 		time.advance(30 * WEEK_MS);
 		assert.equal(routes.hasOwnedRoute(question("q1")), true, "an owned route has no expiry");
@@ -396,6 +400,47 @@ describe("released asker reply routes with no owner", () => {
 		time.advance(WEEK_MS - 1);
 		assert.equal(routes.attach(CHILD, OWNER), 1);
 		time.advance(10 * WEEK_MS);
+		assert.equal(routes.take("q1", REPLIER, ASKER)?.ownerSessionId, OWNER);
+	});
+
+	test("a look that drops many routes forgets their kept records in one batch, not one write each", () => {
+		const time = clock();
+		const routes = new ReleasedAskerReplies(time.now, Number.POSITIVE_INFINITY);
+		const forgotten: string[] = [];
+		const outsideBatch: string[] = [];
+		let batches = 0;
+		let batching = false;
+		routes.persistWith({
+			kept: () => {},
+			removed: (question) => (batching ? forgotten : outsideBatch).push(question.messageId),
+			batch: (work) => {
+				batches += 1;
+				batching = true;
+				try {
+					return work();
+				} finally {
+					batching = false;
+				}
+			},
+		});
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1"), question("q2"), question("q3")], OWNER);
+		routes.dropOwner(OWNER);
+		time.advance(WEEK_MS);
+		assert.equal(routes.attach(CHILD, OWNER), 0);
+		assert.deepEqual(forgotten, ["q1", "q2", "q3"]);
+		assert.deepEqual(outsideBatch, []);
+		assert.equal(batches, 1);
+		assert.equal(routes.attach(CHILD, OWNER), 0);
+		assert.equal(batches, 1, "a look that drops nothing writes nothing");
+	});
+
+	test("a route kept again with an owner is no longer dropped after a week", () => {
+		const time = clock();
+		const routes = new ReleasedAskerReplies(time.now, Number.POSITIVE_INFINITY);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], undefined);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], OWNER);
+		time.advance(10 * WEEK_MS);
+		assert.equal(routes.hasOwnedRoute(question("q1")), true);
 		assert.equal(routes.take("q1", REPLIER, ASKER)?.ownerSessionId, OWNER);
 	});
 

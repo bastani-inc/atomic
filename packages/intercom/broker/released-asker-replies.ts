@@ -48,6 +48,8 @@ export interface RefusedReleasedAskerRoute {
 export interface ReleasedAskerReplyStore {
 	kept(question: PendingQuestion): void;
 	removed(question: PendingQuestion): void;
+	/** Makes what `work` writes one write, as when expiry drops many routes at once. */
+	batch<T>(work: () => T): T;
 }
 
 const questionOf = (entry: Entry): PendingQuestion => ({
@@ -334,14 +336,22 @@ export class ReleasedAskerReplies {
 
 	private expire(): void {
 		const now = this.now();
+		const due = new Set<Entry>();
 		for (const entry of this.entries) {
 			if (entry.expiresAt > now) break;
-			this.remove(entry);
+			due.add(entry);
 		}
 		for (const [entry, since] of this.unowned) {
 			if (since + this.unownedRetentionMs > now) break;
-			this.remove(entry);
+			due.add(entry);
 		}
+		if (due.size === 0) return;
+		// Every route due goes in one write: the routes whose owners left a week ago all fall due at the next look.
+		const drop = () => {
+			for (const entry of due) this.remove(entry);
+		};
+		if (this.durable === undefined) drop();
+		else this.durable.batch(drop);
 	}
 
 	private remove(entry: Entry): void {
