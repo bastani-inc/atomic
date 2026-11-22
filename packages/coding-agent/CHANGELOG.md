@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- In the standalone binary and under Bun, Amazon Bedrock requests whose proxy or HTTP/1.1 TLS connection closes before its handshake finishes — including plain-HTTP Bedrock endpoints through an `https://` proxy — now retry at the provider SDK level (`retry.provider.maxRetries`) and recover from transient closes as on Node.js instead of failing on the first attempt.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

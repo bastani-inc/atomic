@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Fixed
+
+- On Bun and in the standalone binary, Amazon Bedrock HTTP/1.1 requests whose TLS connection closes before its handshake finishes (`ERR_SOCKET_CLOSED`) — including plain-HTTP endpoints through an `https://` proxy, HTTPS endpoints whose `http://` proxy tunnel closes after `200 Connection Established`, and direct `AWS_BEDROCK_FORCE_HTTP1=1` connections — now normalize that pre-response transport failure to a fresh `ECONNRESET` wrapper below the AWS SDK's retry middleware so SDK-level retries (`maxRetries`) run as on Node.js. Post-response, mid-stream, aborted, hook, and certificate errors remain unretried and unmutated.
+
 ## [0.10.4] - 2026-11-22
 
 ### Added
