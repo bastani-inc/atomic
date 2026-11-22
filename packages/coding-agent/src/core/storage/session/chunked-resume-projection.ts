@@ -101,7 +101,7 @@ export function* stringValue(limit = Infinity): Reader<string> {
 }
 
 // Feed a suspended selector without ever packing all of a token's text. The same reader can consume JSON
-// embedded in a string: legacy SQL decodes those strings in tool blocks and in owner/tasks/groups fields.
+// embedded in a string: legacy SQL decodes those strings in tool blocks and in usage fields.
 function feed<T>(reader: Reader<T>) {
 	const parse = jsonParser({ packValues: false, packNumbers: true, streamNumbers: false, maxDepth: Infinity });
 	reader.next();
@@ -137,8 +137,22 @@ function* embedded(shape: Shape, tool = false): Reader<Json> {
 	return result ?? "not JSON";
 }
 
+/** The token Atomic's own owner object and lists start with; see `readValue`. */
+const OWN_CONTAINERS: Partial<Record<Shape & string, Token["name"]>> = {
+	owner: "startObject",
+	tasks: "startArray",
+	groups: "startArray",
+};
+
 export function* readValue(first: Token, shape: Shape | undefined): Reader<Json> {
 	if (typeof shape === "function") return yield* shape(first);
+	// Atomic writes its owner object and lists as JSON of that type. Any other value under these names, an extension's
+	// text that looks like JSON included, reads as an empty string and is never parsed, as the inline projection reads it.
+	const own = typeof shape === "string" ? OWN_CONTAINERS[shape] : undefined;
+	if (own !== undefined && first.name !== own && first.name !== "nullValue") {
+		yield* skip(first);
+		return "";
+	}
 	if (shape === "objectPresent") {
 		yield* skip(first);
 		return first.name === "startObject";
@@ -245,8 +259,7 @@ export function* readValue(first: Token, shape: Shape | undefined): Reader<Json>
 				yield* skip(first);
 				return null;
 			}
-			if (shape === "owner" || shape === "tasks" || shape === "groups" || shape === "usage")
-				return JSON.stringify(yield* embedded(shape));
+			if (shape === "usage") return JSON.stringify(yield* embedded(shape));
 			if (shape === "truth") return (yield* stringValue(1)) === "" ? "" : "x";
 			if (shape === "labelPreview") return yield* stringValue(128);
 			if (shape === "nonBlank" || shape === "treeContent") {
