@@ -1349,7 +1349,7 @@ test("a correlated reply still adopts its shared route when the local asker reco
 	assert.equal(outcomeOf(replier, reply.id)?.type, "delivered");
 });
 
-test("a locally routed reply and following plain send do not stall behind a hung remote reply to another target", async () => {
+test("a plain local send behind a local reply parked behind a hung remote reply still completes within LOCAL_RETRY_LOOKUP_BOUND_MS", async () => {
 	await withFakeClocks(async () => {
 		const { nodes } = await cluster(1);
 		const a = nodes[0]!;
@@ -1371,12 +1371,14 @@ test("a locally routed reply and following plain send do not stall behind a hung
 			},
 		});
 
-		// Remote reply r0 hangs in listLive; local reply r1 (routedHere) + plain m2 must still deliver immediately in order!
+		// Remote reply r0 hangs in listLive inside serial("reply:S"), parking local reply r1 behind it;
+		// plain local send m2 must still finish at exact LOCAL_RETRY_LOOKUP_BOUND_MS (never hang!).
 		a.send(sender, "remote-r", makeMessage("r0-remote-reply", { replyTo: "ask-remote-r0" }));
 		a.send(sender, localTarget.info.id, makeMessage("r1-local-reply", { replyTo: "ask-local-r1" }));
 		a.send(sender, localTarget.info.id, makeMessage("m2-plain-local"));
 
-		await waitImmediate(() => assert.deepEqual(receivedTexts(localTarget), ["r1-local-reply", "m2-plain-local"]));
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(localTarget), ["m2-plain-local"]));
 	});
 });
 

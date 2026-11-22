@@ -1042,8 +1042,6 @@ export class MultiNodeRouter {
 	/** Refcount of unsettled outbox waiters per `(senderKey, targetIdentity)` pair, maintained by `setWaiter`/`dropWaiter`. */
 	private readonly unsettledOutboxPairs = new Map<string, number>();
 	private readonly sendOrder = new SendOrderGate();
-	/** Locally routed in-flight replies per sender, awaited by `sessionLeft` (#4992) without stalling behind remote replies. */
-	private readonly localReplies = new Map<string, Set<Promise<void>>>();
 	private activeLocalCommit:
 		| { readonly clientMessage: SendClientMessage; reentrant?: RemoteSendRequest }
 		| undefined;
@@ -2958,8 +2956,6 @@ export class MultiNodeRouter {
 			// #4386: asks to a released subagent are parked instead; registering again on any node takes its presence over
 			// first, so its rebinding always finds them.
 			await this.serials.get(`reply:${sessionId}`);
-			const pendingLocalReplies = this.localReplies.get(sessionId);
-			if (pendingLocalReplies !== undefined) await Promise.all([...pendingLocalReplies]);
 			// #4997: its kept asks that move to the shared state get there first, so they end there, once.
 			if (!away && !terminal) await this.moveAsksTo(session).catch((error: Error) => this.report(error));
 			const ending = (async () => ({
@@ -3505,27 +3501,9 @@ export class MultiNodeRouter {
 		);
 		// #4386: one sender's replies are routed in the order it sent them, so they reach an owner in that order.
 		// #4992: a departing replier waits for this queue, so its asks fail only after the replies it sent are queued.
-		// A local reply already authorized by a local route on this broker can never be a released-child reply, so
-		// it runs outside the cross-node reply queue (still awaited by `sessionLeft`) and never stalls behind a hung
-		// remote reply to another target.
-		const isReply = isReleasedReplyCandidate(request);
-		const localRoutedReply =
-			isReply && request.localTarget !== undefined && this.routedHere(request, request.localTarget);
-		if (isReply && !localRoutedReply) {
+		if (isReleasedReplyCandidate(request)) {
 			if (request.localTarget !== undefined) this.sendOrder.markUnbounded(ticket);
 			this.serial(`reply:${request.from.info.id}`, () => this.routeSendSafely(request, ticket, true));
-		} else if (localRoutedReply) {
-			const senderId = request.from.info.id;
-			let pending = this.localReplies.get(senderId);
-			if (pending === undefined) {
-				pending = new Set();
-				this.localReplies.set(senderId, pending);
-			}
-			const task = this.routeSendSafely(request, ticket, true).finally(() => {
-				pending.delete(task);
-				if (pending.size === 0 && this.localReplies.get(senderId) === pending) this.localReplies.delete(senderId);
-			});
-			pending.add(task);
 		} else {
 			void this.routeSendSafely(request, ticket, true);
 		}
@@ -5700,7 +5678,6 @@ export class MultiNodeRouter {
 		if (this.closed) return;
 		this.closed = true;
 		this.sendOrder.close();
-		this.localReplies.clear();
 		for (const initial of this.initialScans.values()) initial.resolve();
 		this.initialScans.clear();
 		for (const timer of this.timers) clearInterval(timer);
