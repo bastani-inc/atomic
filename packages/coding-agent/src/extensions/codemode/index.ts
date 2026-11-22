@@ -1,7 +1,7 @@
 import type { ExtensionFactory } from "../../core/extensions/types.ts";
 import { SETTINGS_DEFAULTS } from "../../core/settings-defaults.ts";
 import type { CodemodeMode } from "../../core/settings-manager.ts";
-import { createCodemodeToolDefinition } from "./tool.js";
+import { CODEMODE_TOOL_NAME, createCodemodeToolDefinition, loadCodemodeRenderers } from "./tool.js";
 
 export interface CodemodeExtensionOptions {
 	mode?: CodemodeMode;
@@ -10,6 +10,22 @@ export interface CodemodeExtensionOptions {
 }
 export function createCodemodeExtension(options: CodemodeExtensionOptions = {}): ExtensionFactory {
 	return (pi) => {
+		pi.on("session_start", async (_event, ctx) => {
+			if (!ctx.hasUI) return;
+			try {
+				const hasCodemodeHistory = ctx.sessionManager
+					.getEntries()
+					.some(
+						(entry) =>
+							entry.type === "message" &&
+							entry.message.role === "toolResult" &&
+							entry.message.toolName === CODEMODE_TOOL_NAME,
+					);
+				if (hasCodemodeHistory) await loadCodemodeRenderers();
+			} catch {
+				// Partial context without sessionManager entries leaves renderer lazy.
+			}
+		});
 		pi.registerTool(
 			createCodemodeToolDefinition({
 				models: options.models ?? true,
