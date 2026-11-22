@@ -74,6 +74,7 @@ import {
 	type SubagentChildPendingMessages,
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
+	type SubagentGivenToolResult,
 	subagentChildId,
 	subagentChildInheritance,
 	subagentChildLaunch,
@@ -582,12 +583,20 @@ function wakeForResultsHeldDuringRun(
 	childId: string,
 	taskId: string,
 	delivered: readonly string[],
+	/**
+	 * The held results the run was given, by number: one held under another number with their ids arrived since. Where
+	 * undefined, every result held for those ids was the run's.
+	 */
+	given: readonly SubagentGivenToolResult[] | undefined,
 ): void {
 	// Nothing awaits this: a record it cannot read wakes nothing, and a failure is reported, never left unhandled.
 	void subagentChildRecordsAppended(ownerSessionId)
 		.then(() => {
 			const arrived = (readableSubagentChildRecordOf(ownerSessionId, childId)?.heldToolResults ?? []).filter(
-				(held) => !delivered.includes(held.toolCallId),
+				(held) =>
+					!delivered.includes(held.toolCallId) ||
+					(given !== undefined &&
+						!given.some((item) => item.toolCallId === held.toolCallId && item.heldSeq === held.heldSeq)),
 			);
 			if (arrived.length > 0)
 				wakeReleasedChildWithHeldResults(dispatcher, subagentWakeKey(ownerSessionId, childId), taskId);
@@ -887,20 +896,25 @@ export async function runAgentTask(input: {
 					);
 				const childId = subagentChildId(runId, index);
 				const wokenWith = input.options.wakeToolResultIds ?? [];
-				// A result held for one of these ids is let go only when it is bound to the call the wake gave it for: one that
-				// arrived since is a later call's, which a provider gave the same id (#3274).
+				// The held results the wake gave this run with these ids: its late ones, its others, or all. Undefined where the
+				// caller named only their ids: every result held for them is the run's, as before.
+				const given = (toolCallIds: readonly string[], late?: boolean) =>
+					input.options.wakeHeldToolResults?.filter(
+						(held) => toolCallIds.includes(held.toolCallId) && (late === undefined || held.late === late),
+					);
+				// A result held for one of these ids is let go only when the wake gave it: one held since arrived for a later
+				// call a provider gave the same id (#3274), and a call the wake answered still running lets none go.
 				const clearDelivered = (toolCallIds: readonly string[], late?: boolean) => {
 					const delivered = toolCallIds.filter((toolCallId) => wokenWith.includes(toolCallId));
-					if (delivered.length === 0) return Promise.resolve();
-					const calls = new Map<string, string[]>();
-					const given = [
-						...(late === false ? [] : [input.options.resumeLateToolResultCalls]),
-						...(late === true ? [] : [input.options.wakeToolResultCalls]),
-					];
-					for (const map of given)
-						for (const [toolCallId, call] of map ?? [])
-							calls.set(toolCallId, [...(calls.get(toolCallId) ?? []), call]);
-					return input.recordChild?.clearHeldToolResults?.(childId, delivered, calls) ?? Promise.resolve();
+					const items = given(delivered, late);
+					if (delivered.length === 0 || items?.length === 0) return Promise.resolve();
+					return (
+						input.recordChild?.clearHeldToolResults?.(
+							childId,
+							items === undefined ? delivered : items.map((held) => held.toolCallId),
+							items,
+						) ?? Promise.resolve()
+					);
 				};
 				// From here until its first turn starts the child is starting, and says where (never merely "running").
 				const { dispatchedAt } = elapsedSpan;
@@ -1153,6 +1167,7 @@ export async function runAgentTask(input: {
 								childId,
 								context.ref.taskId,
 								wokenWith,
+								given(wokenWith),
 							);
 						const text = worktreeOutput ?? getSingleResultOutput(child);
 						if (!released) {

@@ -41,6 +41,7 @@ import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
 import { subagentStartHoldMs } from "../shared/start-progress.js";
+import { issuingCallEntries } from "./branch-read-back.js";
 import { savedNoticeIds, unreadNotices, withoutLegacyLateMessages } from "./late-tool-result-notice.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
@@ -50,7 +51,9 @@ import {
 	pendingToolCalls,
 	planReleasedChildWake,
 	type ReadBackToolResult,
+	type ReleasedChildWakePlan,
 	readHeldToolResultsBack,
+	releasedWakeResultKey,
 	SUBAGENT_OWNER_GENERATION,
 } from "./released-children.js";
 import type { SubagentResumeNote } from "./resume-note.js";
@@ -84,6 +87,7 @@ import {
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
 	type SubagentChildStillRunningCall,
+	type SubagentWakeHeldToolResult,
 	sameHeldResult,
 	subagentChildOwner,
 	subagentChildRecordsAppended,
@@ -617,23 +621,66 @@ async function continueChildWhereItWorked(
  * The calls a woken child is told are still running once its wake is delivered (#5014): those it was told so before
  * whose results it has not received, and each pending call this wake answers "still running".
  */
+/**
+ * The results held for the child that a wake gives its run, each by the number it is held under and whether it is read
+ * late. A result the wake reads for a call that another result of it already answers is let go with that one.
+ */
+function heldGiven(
+	toolResults: readonly DetachedToolResult[],
+	items: readonly { readonly held?: { readonly heldSeq?: number } }[],
+	plan: ReleasedChildWakePlan,
+	older: ReadonlyMap<DetachedToolResult, string>,
+): SubagentWakeHeldToolResult[] {
+	const late = new Map<string, boolean>();
+	for (const result of plan.resumeToolResults) late.set(releasedWakeResultKey(result, older), false);
+	for (const result of plan.lateResults) late.set(releasedWakeResultKey(result, older), true);
+	return toolResults.flatMap((result, index) => {
+		const held = items[index]?.held;
+		const readLate = late.get(releasedWakeResultKey(result, older));
+		if (held === undefined || readLate === undefined) return [];
+		return [
+			{
+				toolCallId: result.toolCallId,
+				...(held.heldSeq === undefined ? {} : { heldSeq: held.heldSeq }),
+				late: readLate,
+			},
+		];
+	});
+}
+
 function stillRunningAfterWake(
 	record: SubagentChildRecord,
 	delivered: readonly DetachedToolResult[],
 	answers: readonly DetachedToolResult[],
+	late: readonly DetachedToolResult[],
+	/** The entry of the call a result is for, where the wake knows it. */
+	callOf: (result: DetachedToolResult) => string | undefined,
 ): SubagentChildStillRunningCall[] {
-	const answered = (toolCallId: string) => delivered.some((result) => result.toolCallId === toolCallId);
-	const kept = (record.stillRunning ?? []).filter(
-		(call) => !answered(call.toolCallId) && !answers.some((answer) => answer.toolCallId === call.toolCallId),
-	);
+	// Each answer and each late result is one call's: it stops tracking that call, by its entry where both name it, else
+	// one call with its id, the earliest; never every call a provider gave that id (#3274).
+	const ending = [...answers, ...late].map((result) => ({ toolCallId: result.toolCallId, call: callOf(result) }));
+	const kept = (record.stillRunning ?? []).filter((tracked) => {
+		const index = ending.findIndex((end) =>
+			tracked.callEntryId !== undefined && end.call !== undefined
+				? end.call === tracked.callEntryId
+				: end.toolCallId === tracked.toolCallId,
+		);
+		if (index < 0) return true;
+		ending.splice(index, 1);
+		return false;
+	});
 	// A result read in the same wake for an older call with the same id does not answer the pending one (#3274).
 	const told = answers
 		.filter((answer) => !delivered.includes(answer) && !answer.isError)
-		.map((answer) => ({
-			toolCallId: answer.toolCallId,
-			toolName: answer.toolName,
-			ownerGeneration: SUBAGENT_OWNER_GENERATION,
-		}));
+		.map((answer) => {
+			const callEntryId = callOf(answer);
+			return {
+				toolCallId: answer.toolCallId,
+				toolName: answer.toolName,
+				ownerGeneration: SUBAGENT_OWNER_GENERATION,
+				...(callEntryId === undefined ? {} : { callEntryId }),
+			};
+		});
 	return [...kept, ...told];
 }
 
@@ -824,6 +871,21 @@ async function relaunchChild(
 		...arrivedItems,
 	];
 	const readBack = sessionManager && !fresh ? await readHeldToolResultsBack(sessionManager, readBackItems) : undefined;
+	// The calls its transcript ends on, and the entry that issued each: a call told it is still running is tracked by that
+	// entry, apart from another call a provider gave its id (#3274).
+	const transcriptPending =
+		sessionManager &&
+		!fresh &&
+		resume?.redispatch !== true &&
+		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
+			(record.waitingOn?.length ?? 0) > 0 ||
+			readBackItems.length > 0)
+			? pendingToolCalls(sessionManager)
+			: undefined;
+	const pendingCallEntries =
+		sessionManager && transcriptPending !== undefined && transcriptPending.size > 0
+			? await issuingCallEntries(sessionManager, [...transcriptPending.keys()])
+			: new Map<string, string>();
 	const readOf = (index: number) => readBack?.results[index];
 	const savedHeld = heldItems.filter((_, index) => readOf(index)?.saved === true);
 	await clearSubagentChildHeldToolResultsWhere(
@@ -833,16 +895,15 @@ async function relaunchChild(
 		(held, current) => savedHeld.some((saved) => sameHeldResult(current, saved, held)),
 		readBack?.saved ?? [],
 	);
-	// The others are bound to the calls the read-back found for them, before any run is given them: a run that saves one
-	// and stops before the owner lets it go leaves it found saved by the next read-back, also past a newer call a provider
-	// gave the same id; and a result for that newer call is held beside it (#3274).
+	// The others are bound to the calls the read-back found for them before a run is given them (below): a run that saves
+	// one and stops before the owner lets it go leaves it found saved by the next read-back, also past a newer call a
+	// provider gave the same id; and a result for that newer call is held beside it (#3274).
 	const bindings = new Map<number, string>();
 	heldItems.forEach((held, index) => {
 		const found = readOf(index);
 		if (held.heldSeq !== undefined && found?.saved === false && found.call !== undefined)
 			bindings.set(held.heldSeq, found.call);
 	});
-	await bindSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, bindings);
 	// So were the notices of finished background tasks held for it that its transcript already holds.
 	const heldNotices = latest.heldNotices ?? [];
 	const savedNotices = sessionManager && !fresh ? savedNoticeIds(sessionManager, heldNotices) : [];
@@ -869,7 +930,8 @@ async function relaunchChild(
 			heldSeq: _seq,
 			...result
 		} = item as ReadBackToolResult & SubagentChildHeldToolResult;
-		return readOf(index)?.saved === true ? [] : [{ result, read: readOf(index) }];
+		const seq = index < heldItems.length ? { heldSeq: (item as SubagentChildHeldToolResult).heldSeq } : undefined;
+		return readOf(index)?.saved === true ? [] : [{ result, read: readOf(index), held: seq }];
 	});
 	const heldResults: DetachedToolResult[] = unsavedItems.map(({ result }) => result);
 	const toolResults = sessionManager
@@ -877,14 +939,12 @@ async function relaunchChild(
 		: heldResults;
 	// Each as the read-back found it: a result bound to an older call than the newest with its id is never that call's.
 	const readOfResult = new Map(toolResults.map((result, index) => [result, unsavedItems[index]?.read]));
-	const older = new Set(toolResults.filter((result) => readOfResult.get(result)?.older === true));
-	const callsOf = (results: readonly DetachedToolResult[]) =>
-		new Map(
-			results.flatMap((result) => {
-				const call = readOfResult.get(result)?.call;
-				return call === undefined ? [] : [[result.toolCallId, call] as const];
-			}),
-		);
+	const older = new Map(
+		toolResults.flatMap((result) => {
+			const read = readOfResult.get(result);
+			return read?.older === true && read.call !== undefined ? [[result, read.call] as const] : [];
+		}),
+	);
 	// Session recovery of a child the user had paused: it comes back paused, prompted with nothing, as it was.
 	const restoredPaused =
 		resume === undefined &&
@@ -905,7 +965,7 @@ async function relaunchChild(
 		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
 			(record.waitingOn?.length ?? 0) > 0 ||
 			toolResults.length > 0)
-			? pendingToolCalls(sessionManager)
+			? transcriptPending
 			: undefined;
 	// A late result an earlier build held for the child as a message is read in its notice now, so that copy is not.
 	const heldRecord =
@@ -971,6 +1031,17 @@ async function relaunchChild(
 		await hold?.release();
 		return { kind: "terminal", record: latest };
 	}
+	// Bound only for a run given them, just before it is: a wake that relaunches nothing, or a paused child restored with
+	// nothing to read, writes no binding.
+	if (wakePlan !== undefined && bindings.size > 0) {
+		await bindSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, bindings);
+		// The last check again, with nothing awaited after it (#4845).
+		const stopped = refuseRelaunch?.();
+		if (stopped !== undefined) {
+			await hold?.release();
+			return { kind: "terminal", record: stopped };
+		}
+	}
 	// Redispatched calls start the child; their task is never prompted, so it is only a fallback.
 	const taskFallback = redispatch && wakeFallback;
 	// A fresh child its launch created in its owner's store starts there, while the owner's store is not files.
@@ -1012,13 +1083,27 @@ async function relaunchChild(
 						? {
 								resumeLateToolResults: wakePlan.lateResults,
 								// Where their calls are, as the read-back above found them: the run does not read back again.
-								...(readBack ? { resumeLateToolResultCalls: callsOf(wakePlan.lateResults) } : {}),
+								...(readBack
+									? {
+											resumeLateToolResultCalls: wakePlan.lateResults.map(
+												(result) => readOfResult.get(result)?.call,
+											),
+										}
+									: {}),
 							}
 						: {}),
 					wakeToolResultIds: toolResults.map((result) => result.toolCallId),
-					// The calls the results it answers are bound to: only those are let go once saved (#3274).
-					...(readBack ? { wakeToolResultCalls: callsOf(wakePlan.resumeToolResults) } : {}),
-					stillRunning: stillRunningAfterWake(latest, toolResults, wakePlan.resumeToolResults),
+					// The held results it gives the run, by number: only those are let go once saved (#3274).
+					wakeHeldToolResults: heldGiven(toolResults, unsavedItems, wakePlan, older),
+					stillRunning: stillRunningAfterWake(
+						latest,
+						toolResults,
+						wakePlan.resumeToolResults,
+						wakePlan.lateResults,
+						(result) =>
+							readOfResult.get(result)?.call ??
+							(wakePlan.lateResults.includes(result) ? undefined : pendingCallEntries.get(result.toolCallId)),
+					),
 				}
 			: {}),
 		...(notices.length > 0 ? { resumeNotices: notices } : {}),

@@ -38,6 +38,7 @@ import {
 } from "./subagent-child-card-state.js";
 import {
 	holdInterruptedStillRunningCalls,
+	holdsResultOf,
 	holdsToolResultFor,
 	observeChildRecordFailure,
 	recordSubagentChildHeldToolResults,
@@ -88,7 +89,7 @@ function isResumeWake(wake: AgentWake): wake is ReleasedChildResumeWake {
 }
 
 function waitsOnHeldResult(record: SubagentChildRecord): boolean {
-	return (record.waitingOn ?? []).some((call) => holdsToolResultFor(record, call.toolCallId));
+	return (record.waitingOn ?? []).some((call) => holdsResultOf(record, call));
 }
 
 function releasedByEarlierProcess(record: SubagentChildRecord): boolean {
@@ -181,7 +182,7 @@ export function wakeReleasedChildrenOfEarlierProcess(
 		scheduleReleasedReplyTimeouts(
 			dispatcher,
 			wakeKey,
-			(record.waitingOn ?? []).filter((call) => !holdsToolResultFor(record, call.toolCallId)),
+			(record.waitingOn ?? []).filter((call) => !holdsResultOf(record, call)),
 		);
 		if (!releasedByEarlierProcess(record)) continue;
 		if (needsRedispatch(record))
@@ -550,24 +551,36 @@ export interface ReleasedChildWakePlan {
 }
 
 /**
+ * The call a result a wake reads is for: the newest call with its id, or, for one bound to an older call (`older`), that
+ * call (#3274). A wake reads one result per call.
+ */
+export function releasedWakeResultKey(
+	result: DetachedToolResult,
+	older: ReadonlyMap<DetachedToolResult, string>,
+): string {
+	const call = older.get(result);
+	return call === undefined ? `newest\u0000${result.toolCallId}` : `older\u0000${call}\u0000${result.toolCallId}`;
+}
+
+/**
  * Plan a wake from the calls the transcript is waiting on and the results that arrived. When the results answer every
  * pending call and nothing else woke the child, the turn simply continues. Otherwise every pending call is answered
  * first, a call still running with {@link SUBAGENT_STILL_RUNNING_RESULT} and one that died with an earlier owner
  * process with {@link SUBAGENT_INTERRUPTED_BY_RESTART_RESULT}, so the transcript never ends on a call without a result
  * before a new message. A result whose call was answered already is late: it is read in a notice, never as a prompt.
- * So is one for an older call than the pending call with its id (`older`, a provider reusing ids, #3274), which is
- * read beside a result for that pending call.
+ * So is one for an older call than the pending call with its id (`older`, by the entry of its call: a provider reusing
+ * ids, #3274), which is read beside a result for that pending call. Each call's result is read once.
  */
 export function planReleasedChildWake(
 	pending: ReadonlyMap<string, string>,
 	results: readonly DetachedToolResult[],
 	hasOtherInput: boolean,
 	interrupted: (toolCallId: string) => boolean = () => false,
-	older: ReadonlySet<DetachedToolResult> = new Set(),
+	older: ReadonlyMap<DetachedToolResult, string> = new Map(),
 ): ReleasedChildWakePlan {
 	const seen = new Set<string>();
 	const unique = results.filter((result) => {
-		const key = `${older.has(result) ? "older" : "newest"}\u0000${result.toolCallId}`;
+		const key = releasedWakeResultKey(result, older);
 		return !seen.has(key) && seen.add(key);
 	});
 	// A result for an older call than the pending one with its id is never that call's: it is late.
@@ -696,6 +709,9 @@ export function handleReleasedChildWakes(
 			// this wake's relaunch decision instead of queuing behind the run it starts (#5485).
 			setReleasedChildWakeActive(wakeKey, true);
 			let record: SubagentChildRecord;
+			// The results this batch carries, once read, and the ones its action holds: the others repeat ones held already.
+			let carried: readonly DetachedToolResult[] | undefined;
+			let handed: readonly DetachedToolResult[] | undefined;
 			try {
 				record = await latest(childId);
 			} catch (error) {
@@ -714,6 +730,7 @@ export function handleReleasedChildWakes(
 						(wake) => !isRedispatchWake(wake) && (!isResumeWake(wake) || takeReleasedChildResume(wake.id)),
 					),
 				);
+				carried = others.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
 				if (others.length === 0) return;
 				const resumes = others.filter(isResumeWake);
 				if (resumes.length > 0 && actions.resume !== undefined) {
@@ -723,6 +740,7 @@ export function handleReleasedChildWakes(
 						.slice(1)
 						.flatMap((wake) => (wake.resume.message ? [wake.resume.message] : []));
 					const toolResults = others.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
+					handed = toolResults;
 					const outcome = await actions.resume(current, {
 						...first.resume,
 						toolResults,
@@ -732,12 +750,21 @@ export function handleReleasedChildWakes(
 					return;
 				}
 				const decision = decideReleasedChildWake(current, others);
+				if (decision.kind !== "ignore") handed = decision.toolResults;
 				if (decision.kind === "hold") await actions.hold(current, decision.toolResults);
 				else if (decision.kind === "wake") await actions.wake(current, decision, slot);
 			} catch (error) {
-				const results = withReleasedReplyTimeouts(record, wakes).flatMap((wake) =>
-					wake.toolResult === undefined ? [] : [wake.toolResult],
-				);
+				// What an action held already is held once: its record has it, and may have bound it to its call (#3274). Once
+				// it held all it was handed, the batch's other results repeated results held before.
+				const results =
+					handed?.every((result) => heldByWake.has(result)) === true
+						? []
+						: (
+								carried ??
+								withReleasedReplyTimeouts(record, wakes).flatMap((wake) =>
+									wake.toolResult === undefined ? [] : [wake.toolResult],
+								)
+							).filter((result) => !heldByWake.has(result));
 				await actions.fail?.(record, results, wakeFailureOf(error as Error, childId)).catch((secondary: Error) => {
 					observeChildRecordFailure(ownerSessionId, wakeFailureOf(secondary, childId));
 				});
@@ -748,6 +775,14 @@ export function handleReleasedChildWakes(
 		},
 		{ replace: true, ...(maxConcurrent === undefined ? {} : { maxConcurrent }) },
 	);
+}
+
+/** Results a wake's action held in its child's record: a wake that then fails does not hold them again. */
+const heldByWake = new WeakSet<DetachedToolResult>();
+
+/** Note that `results`, handed to a wake's action, are held in the child's record now. */
+export function heldForWake(results: readonly DetachedToolResult[]): void {
+	for (const result of results) heldByWake.add(result);
 }
 
 /** Keep new results for a child that cannot take them now, durably, beside those it holds, for its next wake or resume. */

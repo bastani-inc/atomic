@@ -57,6 +57,7 @@ import {
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import type { Details, RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
 import type { SubagentResultRenderState } from "../../packages/subagents/src/tui/render.js";
+import { waitedOnCalls } from "../helpers/held-tool-results.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { sleep } from "../helpers/runtime.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
@@ -422,7 +423,7 @@ test(
 		assert.equal(navigation.finishedWhileArmed, undefined, "a waiting child is never reported finished");
 
 		// The build finishes; nobody resumes the child.
-		assert.deepEqual(released.waitingOn, [{ toolCallId: "wait-1", toolName: shellTool }]);
+		assert.deepEqual(waitedOnCalls(released.waitingOn), [{ toolCallId: "wait-1", toolName: shellTool }]);
 		const shellTask = host.resolveTask(waitedOn as TaskId);
 		assert.ok(shellTask.ok);
 		const input = host.ownerBinding.supervisor.taskStdin(shellTask.value);
