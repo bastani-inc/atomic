@@ -5,19 +5,12 @@ import { resolve as resolvePath } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { Container, Text } from "@bastani/atomic-tui";
-import { spawn } from "child_process";
 import { APP_NAME } from "../../config.js";
 import { slashCommandHint } from "../../modes/interactive/components/nav-keys.ts";
 import { TASK_MARKS } from "../../modes/interactive/components/task-marks.ts";
 import { theme } from "../../modes/interactive/theme/theme.js";
 import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
-import {
-	getShellConfigAsync,
-	getShellEnvAsync,
-	killProcessTree,
-	trackDetachedChildPid,
-	untrackDetachedChildPid,
-} from "../../utils/shell.ts";
+import { getShellConfigAsync, getShellEnvAsync, spawnShellProcess } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { formatTimeoutSeconds, longerRunAdvice, MAX_COMMAND_TIMEOUT_SECONDS } from "../tasks/cancel-reason.js";
 import type { WaitPolicy } from "../tasks/contracts.js";
@@ -250,18 +243,20 @@ export function createLocalBashOperations(options?: {
 			const shellEnv = env ?? (await getShellEnvAsync());
 			if (signal?.aborted) throw new Error("aborted");
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
-			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
-				cwd,
-				detached: process.platform !== "win32",
-				env: createChildProcessEnvironment(undefined, shellEnv),
-				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
-				windowsHide: true,
-			});
+			const shellProcess = await spawnShellProcess(
+				shellConfig.shell,
+				commandFromStdin ? shellConfig.args : [...shellConfig.args, command],
+				{
+					cwd,
+					env: createChildProcessEnvironment(undefined, shellEnv),
+					stdin: commandFromStdin ? "pipe" : "ignore",
+				},
+			);
+			const { child } = shellProcess;
 			if (commandFromStdin) {
 				child.stdin?.on("error", () => {});
 				child.stdin?.end(command);
 			}
-			if (child.pid) trackDetachedChildPid(child.pid);
 			const startedAt = performance.now();
 			let shellExitedAfterMs: number | undefined;
 			child.once("exit", () => {
@@ -270,9 +265,7 @@ export function createLocalBashOperations(options?: {
 			// Set when the deadline fires, with the shell's exit time if it had already exited.
 			let deadline: { timeoutSeconds: number; elapsedMs: number; shellExitedAfterMs?: number } | undefined;
 			let timeoutHandle: NodeJS.Timeout | undefined;
-			const onAbort = () => {
-				if (child.pid) killProcessTree(child.pid);
-			};
+			const onAbort = () => shellProcess.stop();
 			try {
 				if (timeout !== undefined && timeout > 0) {
 					timeoutHandle = setTimeout(() => {
@@ -282,8 +275,9 @@ export function createLocalBashOperations(options?: {
 							shellExitedAfterMs,
 						};
 						// Also when the shell already exited: on Unix the group kill still reaches background
-						// processes holding the pipes. Windows cannot find them once the shell pid is gone.
-						if (child.pid) killProcessTree(child.pid);
+						// processes holding the pipes, and on Windows the shell's job does. Without the job, Windows
+						// cannot find them once the shell pid is gone.
+						shellProcess.stop();
 					}, timeout * 1000);
 				}
 				child.stdout?.on("data", (data: Buffer) => onData(data, "stdout"));
@@ -315,7 +309,7 @@ export function createLocalBashOperations(options?: {
 				}
 				return { exitCode: resolvedExitCode };
 			} finally {
-				if (child.pid) untrackDetachedChildPid(child.pid);
+				shellProcess.finish();
 				if (timeoutHandle) clearTimeout(timeoutHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
 			}
