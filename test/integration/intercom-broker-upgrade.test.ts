@@ -583,6 +583,84 @@ describe("replacing an older broker (#4538)", () => {
 	);
 
 	test(
+		"a session whose register_verified closes unanswered after a successor broker already replaced broker.pid retries onto the successor (#4538)",
+		async () => {
+			const { getBrokerPidPath, getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+			const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
+			const pidPath = getBrokerPidPath(agentDir);
+			writeFileSync(pidPath, String(process.pid));
+			const earlier = (Date.now() - 5_000) / 1_000;
+			utimesSync(pidPath, earlier, earlier);
+
+			let replaced = false;
+			let registerAttempts = 0;
+			const sockets = new Set<net.Socket>();
+			const server = net.createServer((socket) => {
+				sockets.add(socket);
+				socket.on("error", () => {});
+				socket.on("close", () => sockets.delete(socket));
+				socket.on(
+					"data",
+					createMessageReader(
+						(frame) => {
+							if (typeof frame !== "object" || frame === null || Array.isArray(frame)) return;
+							if (frame.type === "broker_status") {
+								writeMessage(socket, {
+									type: "broker_status",
+									requestId: frame.requestId,
+									report: {
+										pid: replaced ? process.pid + 1 : process.pid,
+										sessions: 0,
+										multiNode: { status: "off" },
+										protocol: { min: 1, max: 4 },
+									},
+								});
+							}
+							if (frame.type === "register_verified") {
+								registerAttempts += 1;
+								if (registerAttempts === 1) {
+									// Simulate broker 1 retiring and broker 2 already answering with a fresh broker.pid
+									// before the client's close handler classifies the dropped registration.
+									replaced = true;
+									writeFileSync(pidPath, String(process.pid));
+									const later = Date.now() / 1_000;
+									utimesSync(pidPath, later, later);
+									socket.destroy();
+									return;
+								}
+								writeMessage(socket, {
+									type: "registered",
+									sessionId: "successor-session-id",
+									multiNodeRouting: "off",
+									protocol: { min: 1, max: 4 },
+								});
+							}
+							if (frame.type === "list") {
+								writeMessage(socket, { type: "sessions", requestId: frame.requestId, sessions: [] });
+							}
+						},
+						() => {},
+					),
+				);
+			});
+			await new Promise<void>((listening) =>
+				server.listen(getBrokerSocketPath(process.platform, agentDir), listening),
+			);
+			cleanups.push(async () => {
+				for (const open of sockets) open.destroy();
+				if (server.listening) await new Promise<void>((closed) => server.close(() => closed()));
+			});
+
+			const current = await startCurrentSession("register-dropped-successor-up");
+			const status = await current.run({ action: "status" });
+			assert.equal(status.isError, false, status.content[0]?.text);
+			assert.equal(registerAttempts, 2);
+			assert.deepEqual(singleMachineWarnings(current.notices), []);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
 		"concurrent replacements stop the older broker once and start one successor, holding the spawn lock throughout",
 		async () => {
 			const legacy = await startFakeLegacyBroker();
