@@ -7,7 +7,6 @@ import type { SessionTrustDecisions, StartupExtensionCheck } from "../../core/pr
 import { ENGINE_SESSION_STORAGE_FLAG } from "../../core/session-storage.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { flushPersistentCompileCache } from "../../utils/compile-cache.ts";
-import { armDeferredHostCompileCacheFlush } from "../../utils/deferred-compile-cache-flush.ts";
 import {
 	INTERACTIVE_ENGINE_BOOTSTRAP_FLAG,
 	type InteractiveEngineBootstrapHandle,
@@ -17,6 +16,7 @@ import {
 import { scrubInteractiveEngineEnv } from "../../utils/interactive-engine-env.ts";
 import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
 import { sleep } from "../../utils/sleep.ts";
+import * as enginePrewarm from "../interactive-engine/engine-prewarm.ts";
 import { adoptPrewarmedEngine, engineLaunch, type PrewarmLaunchBasis } from "../interactive-engine/engine-prewarm.ts";
 
 export interface PreparedRpcClientBootstrap {
@@ -47,16 +47,21 @@ export async function prepareRpcClientBootstrap(
 	startupExtensionCheck?: StartupExtensionCheck,
 ): Promise<PreparedRpcClientBootstrap> {
 	const guardianFile = join(tmpdir(), `atomic-engine-guardian-${process.pid}-${crypto.randomUUID()}`);
-	const bootstrap = await writeInteractiveEngineBootstrapAsync({
-		hostPid: process.pid,
-		guardFile: guardianFile,
-		projectResourceWithdrawals: true,
-		queuedDeliveries: true,
-		...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
-		...(trustDecisions ? { trustDecisions } : {}),
-		...(startedSessionId !== undefined ? { startedSessionId } : {}),
-		...(startupExtensionCheck ? { startupExtensionCheck } : {}),
-	});
+	const waitForPrewarm = (enginePrewarm as { waitForPrewarmedEngineReady?: () => Promise<void> })
+		.waitForPrewarmedEngineReady;
+	const [bootstrap] = await Promise.all([
+		writeInteractiveEngineBootstrapAsync({
+			hostPid: process.pid,
+			guardFile: guardianFile,
+			projectResourceWithdrawals: true,
+			queuedDeliveries: true,
+			...(interactiveEngineApiKey ? { apiKey: interactiveEngineApiKey } : {}),
+			...(trustDecisions ? { trustDecisions } : {}),
+			...(startedSessionId !== undefined ? { startedSessionId } : {}),
+			...(startupExtensionCheck ? { startupExtensionCheck } : {}),
+		}),
+		typeof waitForPrewarm === "function" ? waitForPrewarm() : Promise.resolve(),
+	]);
 	return { guardianFile, bootstrap };
 }
 
@@ -94,13 +99,12 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
 					adoption.basis = adopted;
 				})
 			: undefined;
-		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache. When an
-		// engine prewarmed with derived startup environment is adopted, it has already compiled its own graph; defer the
-		// host's cache write off handover so it does not stall early typing, engine binding, or first-prompt dispatch.
-		if (options.interactiveEngine) {
-			if (!prewarmed) flushPersistentCompileCache();
-			else if (adoption.basis === "derived") armDeferredHostCompileCacheFlush();
-		}
+		// A fresh engine loads the same module graph as this host: let it start from this host's compile cache. So does
+		// a host running an engine prewarmed with environment its arguments or settings add: without that environment it
+		// would have written the cache here and started a fresh engine, and otherwise the write waits for its quit, where
+		// a cold cache takes seconds on Windows.
+		const writesCache = !prewarmed || adoption.basis === "derived";
+		if (options.interactiveEngine && writesCache) flushPersistentCompileCache();
 		child =
 			prewarmed ??
 			spawn(launch.command, [...launch.args, ...cliArgs], {

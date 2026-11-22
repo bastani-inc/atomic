@@ -6,7 +6,6 @@ import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { processCompileCacheDeferral } from "../../utils/compile-cache-deferral.ts";
-import { flushDeferredHostCompileCache } from "../../utils/deferred-compile-cache-flush.ts";
 import { setDeprecationWarningSink } from "../../utils/deprecation.js";
 import { findHelperExecutableAsync } from "../../utils/helper-command.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
@@ -612,14 +611,6 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 			void import("../../utils/compile-cache-warmup-host.ts")
 				.then(({ warmCompileCache }) => warmCompileCache(engineHeapRuntimeArgsForHost(true)))
 				.catch(() => {});
-		}
-		if (
-			!this.isShuttingDown &&
-			!this.deferredStartupPending &&
-			!this.deferredStartupPromise &&
-			!this.promptTurnWorkingLoaderActive
-		) {
-			flushDeferredHostCompileCache();
 		}
 		// Load non-core highlight.js language grammars off the first-prompt critical path.
 		void loadAllHighlightLanguages().then(() => {

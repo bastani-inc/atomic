@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import { prepareAgentDir, prepareInstalledPackage } from "../helpers/event-loop-guard-fixture.js";
 import { type PtyProgram, startPtyProgram } from "../helpers/pty-program.js";
-import { makeTempDirectory, moduleDir, readTextSync, sleep } from "../helpers/runtime.js";
-import { messageText, startScriptedChatServer } from "../helpers/scripted-chat-server.js";
+import { makeTempDirectory, moduleDir, readTextSync, sleep, spawnProcess } from "../helpers/runtime.js";
 
 const ROOT = join(moduleDir(import.meta.url), "../..");
 const PACKAGE = join(ROOT, "packages/coding-agent");
@@ -23,7 +22,6 @@ interface TraceLine {
 	readonly label: string;
 	readonly pid: number;
 	readonly ppid: number;
-	readonly epochMs: number;
 }
 
 /**
@@ -159,77 +157,29 @@ function filesBelow(directory: string): number {
 	return readdirSync(directory, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).length;
 }
 
-/** Preload that records each main-thread `module.flushCompileCache()` call with its wall-clock timestamp and role. */
-const RECORD_COMPILE_CACHE_FLUSH = `
-const { isMainThread } = require("node:worker_threads");
-const fs = require("node:fs");
-const m = require("node:module");
-if (isMainThread && process.env.ATOMIC_TEST_FLUSH_LOG && typeof m.flushCompileCache === "function") {
-	const original = m.flushCompileCache;
-	const role = process.argv.includes(${JSON.stringify("--internal-engine-prewarm")})
-		? "prewarm"
-		: process.argv.some((arg) => arg.startsWith(${JSON.stringify("--internal-engine-bootstrap")}))
-			? "fresh"
-			: "host";
-	m.flushCompileCache = function (...args) {
-		const at = performance.timeOrigin + performance.now();
-		const result = original.apply(this, args);
-		fs.appendFileSync(process.env.ATOMIC_TEST_FLUSH_LOG, JSON.stringify({ pid: process.pid, role, at }) + "\\n");
-		return result;
-	};
-	m.syncBuiltinESMExports();
-}
-`;
-
-interface FlushRecord {
-	readonly pid: number;
-	readonly role: "host" | "prewarm" | "fresh";
-	readonly at: number;
-}
-
 interface QuitRun {
 	readonly lines: TraceLine[];
-	readonly flushes: FlushRecord[];
-	/** The files in the session's compile cache once startup settled, before the quit. */
+	/** The files in the session's compile cache once its engine has loaded its resources, before the quit. */
 	readonly cacheFilesBeforeQuit: number;
 	readonly quitMs: number;
-	readonly requestAt?: number;
 }
 
 /**
  * Starts the real interactive CLI with `args` and `env` and a compile cache of its own that is still empty, as on its
- * first run, which the host and its engine both fill; waits until startup settles (optionally submitting an early
- * prompt first), then quits.
+ * first run, which the host and its engine both fill; waits until the engine has loaded its resources, then quits.
  */
-async function quitWithEmptyCompileCache(
-	args: readonly string[],
-	env: Record<string, string>,
-	options: { readonly recordFlushes?: boolean; readonly earlyPrompt?: string } = {},
-): Promise<QuitRun> {
+async function quitWithEmptyCompileCache(args: readonly string[], env: Record<string, string>): Promise<QuitRun> {
 	const root = makeTempDirectory("prewarmed-engine-quit-");
 	const agentDir = join(root, "agent");
 	const packageDir = join(root, "package");
 	const project = join(root, "project");
 	const trace = join(root, "startup.jsonl");
-	const flushLog = join(root, "flushes.jsonl");
-	const preload = join(root, "record-flush.cjs");
 	const cache = join(root, "compile-cache");
-	let requestAt: number | undefined;
-	const server = options.earlyPrompt
-		? await startScriptedChatServer((request) => {
-				if (!request.messages.some((m) => m.role === "user" && messageText(m).includes(options.earlyPrompt!))) {
-					throw new Error("unexpected prompt");
-				}
-				requestAt = performance.timeOrigin + performance.now();
-				return { label: "ok", text: "PREWARM_EARLY_REPLY", chunks: 1, chunkDelayMs: 0 };
-			})
-		: undefined;
 	let program: PtyProgram | undefined;
 	try {
 		mkdirSync(project, { recursive: true });
-		prepareAgentDir(agentDir, server?.baseUrl ?? "http://127.0.0.1:9");
+		prepareAgentDir(agentDir, "http://127.0.0.1:9");
 		prepareInstalledPackage(PACKAGE, packageDir);
-		if (options.recordFlushes) writeFileSync(preload, RECORD_COMPILE_CACHE_FLUSH);
 		for (const name of ["ATOMIC_OFFLINE", "PI_OFFLINE", "ATOMIC_DEBUG", "PI_DEBUG", "ATOMIC_DEBUG_SETTING"])
 			vi.stubEnv(name, undefined);
 		program = startPtyProgram({
@@ -242,12 +192,6 @@ async function quitWithEmptyCompileCache(
 				ATOMIC_TELEMETRY: "0",
 				ATOMIC_STARTUP_TRACE: trace,
 				NODE_COMPILE_CACHE: cache,
-				...(options.recordFlushes
-					? {
-							NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
-							ATOMIC_TEST_FLUSH_LOG: flushLog,
-						}
-					: {}),
 				...env,
 				TERM: "xterm-256color",
 				CI: "0",
@@ -257,47 +201,10 @@ async function quitWithEmptyCompileCache(
 			rows: 40,
 		});
 		await program.waitForScreen((screen) => screen.includes("❯"), REAL_STARTUP_TIMEOUT_MS, "the prompt");
-		if (options.earlyPrompt) {
-			program.write(options.earlyPrompt);
-			await program.waitForScreen(
-				(screen) => screen.includes(`❯ ${options.earlyPrompt}`),
-				REAL_STARTUP_TIMEOUT_MS,
-				"the early prompt echo",
-			);
-			program.write("\r");
-			await program.waitForScreen(
-				(screen) => screen.includes("PREWARM_EARLY_REPLY"),
-				REAL_STARTUP_TIMEOUT_MS,
-				"the early prompt reply",
-			);
-		}
 		const deadline = Date.now() + REAL_STARTUP_TIMEOUT_MS;
-		while (
-			!(
-				existsSync(trace) &&
-				readTrace(trace).some((line) => line.label === "engine-resources-ready") &&
-				readTrace(trace).some((line) => line.label === "startup-complete")
-			)
-		) {
-			assert.ok(Date.now() < deadline, "startup never completed");
+		while (!(existsSync(trace) && readTrace(trace).some((line) => line.label === "engine-resources-ready"))) {
+			assert.ok(Date.now() < deadline, "the engine never finished loading its resources");
 			await sleep(50);
-		}
-		if (options.recordFlushes) {
-			// Give the deferred flush callback a moment to run once startup or prompt dispatch completes.
-			const flushDeadline = Date.now() + 2_000;
-			while (
-				Date.now() < flushDeadline &&
-				!(
-					existsSync(flushLog) &&
-					readTextSync(flushLog, "utf8")
-						.split("\n")
-						.some((line) => line.includes('"role":"host"'))
-				)
-			) {
-				await sleep(25);
-			}
-		} else {
-			await sleep(150);
 		}
 		const cacheFilesBeforeQuit = filesBelow(cache);
 		program.write("/quit");
@@ -307,61 +214,24 @@ async function quitWithEmptyCompileCache(
 		const exited = await program.exited;
 		const quitMs = performance.now() - quitAt;
 		assert.equal(exited.exitCode, 0, program.screen());
-		const flushes: FlushRecord[] = existsSync(flushLog)
-			? readTextSync(flushLog, "utf8")
-					.trim()
-					.split("\n")
-					.filter(Boolean)
-					.map((line) => JSON.parse(line) as FlushRecord)
-			: [];
-		return { lines: readTrace(trace), flushes, cacheFilesBeforeQuit, quitMs, requestAt };
+		return { lines: readTrace(trace), cacheFilesBeforeQuit, quitMs };
 	} finally {
 		program?.kill();
 		vi.unstubAllEnvs();
-		await server?.close();
 		await removeTempRootReleasingBroker(root, agentDir);
 	}
 }
 
-// A host that adopts a prewarmed engine with derived startup environment (such as --offline) does not block engine
-// handover or first-prompt dispatch with a synchronous compile-cache flush; instead it flushes once startup settles (or
-// after the first prompt is handed to the engine), so quitting still avoids waiting on a cold cache.
+// A host that would have run its prewarmed engine before that engine carried what main() derives from the arguments and
+// settings keeps its cache as it was: written as it quits. One that runs the engine only because it now carries that
+// environment would have written its cache before starting a second engine; it still writes it then, so its quit does
+// not wait for a cold cache.
 test(
-	"a host running an engine prewarmed for --offline defers its cold compile cache off handover and quits at once",
+	"a host running an engine prewarmed for --offline writes a cold compile cache at the handover and quits at once",
 	async () => {
-		const run = await quitWithEmptyCompileCache(["--offline"], {}, { recordFlushes: true });
+		const run = await quitWithEmptyCompileCache(["--offline"], {});
 		assert.equal(engineChildren(run.lines).length, 1, "the host ran the engine it prewarmed");
-		const hostBound = run.lines.find((line) => line.label === "engine-bound");
-		assert.ok(hostBound, "the host bound its engine");
-		const hostFlushes = run.flushes.filter((flush) => flush.role === "host");
-		assert.equal(hostFlushes.length, 1, "the host flushed its compile cache once");
-		assert.ok(
-			hostFlushes[0]!.at > hostBound.epochMs,
-			`expected host compile-cache flush (${Math.round(hostFlushes[0]!.at)}) after engine-bound (${Math.round(hostBound.epochMs)}), not synchronously at handover`,
-		);
-		assert.ok(run.cacheFilesBeforeQuit > 0, "the host wrote its cache before quitting");
-		assert.ok(run.quitMs < QUIT_BOUND_MS, `quitting took ${Math.round(run.quitMs)} ms`);
-	},
-	REAL_STARTUP_TEST_TIMEOUT_MS,
-);
-
-test(
-	"a host running an engine prewarmed for --offline dispatches an early prompt before flushing its cold compile cache",
-	async () => {
-		const run = await quitWithEmptyCompileCache(
-			["--offline"],
-			{},
-			{ recordFlushes: true, earlyPrompt: "early-cache-check" },
-		);
-		assert.equal(engineChildren(run.lines).length, 1, "the host ran the engine it prewarmed");
-		assert.ok(run.requestAt !== undefined, "the engine sent the early prompt request");
-		const hostFlushes = run.flushes.filter((flush) => flush.role === "host");
-		assert.equal(hostFlushes.length, 1, "the host flushed its compile cache once");
-		assert.ok(
-			hostFlushes[0]!.at >= run.requestAt,
-			`expected host compile-cache flush (${Math.round(hostFlushes[0]!.at)}) after early prompt request (${Math.round(run.requestAt)})`,
-		);
-		assert.ok(run.cacheFilesBeforeQuit > 0, "the host wrote its cache before quitting");
+		assert.ok(run.cacheFilesBeforeQuit > 0, "the host wrote its cache at the handover");
 		assert.ok(run.quitMs < QUIT_BOUND_MS, `quitting took ${Math.round(run.quitMs)} ms`);
 	},
 	REAL_STARTUP_TEST_TIMEOUT_MS,
@@ -591,6 +461,241 @@ export default (pi) => pi.on("session_start", (_event, ctx) => {
 			program?.kill();
 			vi.unstubAllEnvs();
 			await removeTempRootReleasingBroker(root, agentDir);
+		}
+	},
+	REAL_STARTUP_TEST_TIMEOUT_MS,
+);
+
+// Simulates an older prewarmed child (ignoring the handoff flag and emitting no readiness line) or a different build
+// (emitting a different build stamp) so we verify the host discards it and starts a fresh engine instead of adopting.
+const INTERCEPT_PREWARM_SPAWN = `
+const childProcess = require("node:child_process");
+const fs = require("node:fs");
+const spawn = childProcess.spawn;
+let intercepted = false;
+childProcess.spawn = function (command, args, ...rest) {
+	if (!intercepted && Array.isArray(args) && args.includes(${JSON.stringify("--internal-engine-prewarm")})) {
+		intercepted = true;
+		let nextArgs = [...args];
+		if (process.env.ATOMIC_TEST_STRIP_HANDOFF === "1") {
+			nextArgs = nextArgs.filter((a) => !a.startsWith("--internal-engine-prewarm-handoff="));
+		}
+		if (process.env.ATOMIC_TEST_ALT_CLI) {
+			const idx = nextArgs.indexOf(${JSON.stringify("--internal-engine-prewarm")});
+			if (idx > 0) nextArgs[idx - 1] = process.env.ATOMIC_TEST_ALT_CLI;
+		}
+		if (process.env.ATOMIC_TEST_SETTINGS_FILE && process.env.ATOMIC_TEST_SETTINGS_EDIT) {
+			fs.writeFileSync(process.env.ATOMIC_TEST_SETTINGS_FILE, process.env.ATOMIC_TEST_SETTINGS_EDIT);
+		}
+		return spawn.call(this, command, nextArgs, ...rest);
+	}
+	return spawn.call(this, command, args, ...rest);
+};
+require("node:module").syncBuiltinESMExports();
+`;
+
+test(
+	"an older prewarmed child that does not advertise verified handoff is discarded even across an httpProxy edit",
+	async () => {
+		const root = makeTempDirectory("prewarmed-engine-oldchild-edit-");
+		const agentDir = join(root, "agent");
+		const packageDir = join(root, "package");
+		const project = join(root, "project");
+		const trace = join(root, "startup.jsonl");
+		const seen = join(root, "engine-proxy.json");
+		const extension = join(root, "proxy-probe.mjs");
+		const preload = join(root, "intercept-prewarm.cjs");
+		const directServer = createServer((_req, res) => res.end("DIRECT_OK"));
+		await new Promise<void>((resolve) => directServer.listen(0, "127.0.0.1", resolve));
+		const directPort = (directServer.address() as { port: number }).port;
+		let program: PtyProgram | undefined;
+		try {
+			mkdirSync(project, { recursive: true });
+			prepareAgentDir(agentDir, "http://127.0.0.1:9");
+			const settingsFile = join(agentDir, "settings.json");
+			const settings = readFileSync(settingsFile, "utf8");
+			writeFileSync(settingsFile, JSON.stringify({ ...JSON.parse(settings), httpProxy: "http://127.0.0.1:9" }));
+			writeFileSync(preload, INTERCEPT_PREWARM_SPAWN);
+			writeFileSync(
+				extension,
+				`import { writeFileSync } from "node:fs";
+export default (pi) => pi.on("session_start", async (_event, ctx) => {
+	if (ctx.isPresentationOnly) return;
+	const direct = await (await fetch(${JSON.stringify(`http://127.0.0.1:${directPort}`)})).text();
+	writeFileSync(${JSON.stringify(seen)}, JSON.stringify({
+		httpProxy: process.env.HTTP_PROXY ?? "unset",
+		httpsProxy: process.env.HTTPS_PROXY ?? "unset",
+		direct,
+	}));
+});
+`,
+			);
+			prepareInstalledPackage(PACKAGE, packageDir);
+			for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"])
+				vi.stubEnv(name, undefined);
+			program = startPtyProgram({
+				executable: process.execPath,
+				args: [CLI, "-e", extension, "--no-session", "--approve"],
+				cwd: project,
+				env: {
+					ATOMIC_CODING_AGENT_DIR: agentDir,
+					ATOMIC_PACKAGE_DIR: packageDir,
+					ATOMIC_OFFLINE: "1",
+					ATOMIC_SKIP_VERSION_CHECK: "1",
+					ATOMIC_TELEMETRY: "0",
+					ATOMIC_STARTUP_TRACE: trace,
+					NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
+					ATOMIC_TEST_STRIP_HANDOFF: "1",
+					ATOMIC_TEST_SETTINGS_FILE: settingsFile,
+					ATOMIC_TEST_SETTINGS_EDIT: settings,
+					TERM: "xterm-256color",
+					CI: "0",
+				},
+				timeoutMs: REAL_STARTUP_TIMEOUT_MS,
+				cols: 120,
+				rows: 40,
+			});
+			await program.waitForScreen((screen) => screen.includes("❯"), REAL_STARTUP_TIMEOUT_MS, "the prompt");
+			const deadline = Date.now() + REAL_STARTUP_TIMEOUT_MS;
+			while (!existsSync(seen)) {
+				assert.ok(Date.now() < deadline, "the engine never started its session");
+				await sleep(50);
+			}
+			assert.deepEqual(JSON.parse(readFileSync(seen, "utf8")), {
+				httpProxy: "unset",
+				httpsProxy: "unset",
+				direct: "DIRECT_OK",
+			});
+			const marked = () =>
+				readTextSync(trace, "utf8")
+					.split("\n")
+					.some((line) => line.includes('"engine-resources-ready"'));
+			while (!marked()) {
+				assert.ok(Date.now() < deadline, "the engine never finished loading its resources");
+				await sleep(50);
+			}
+			program.write("/quit");
+			await program.waitForScreen(
+				(screen) => screen.includes("❯ /quit"),
+				REAL_STARTUP_TIMEOUT_MS,
+				"the quit command",
+			);
+			program.write("\r");
+			assert.equal((await program.exited).exitCode, 0, program.screen());
+			assert.equal(engineChildren(readTrace(trace)).length, 2, "unverified prewarm child must be discarded");
+		} finally {
+			program?.kill();
+			vi.unstubAllEnvs();
+			await new Promise<void>((resolve) => directServer.close(() => resolve()));
+			await removeTempRootReleasingBroker(root, agentDir);
+		}
+	},
+	REAL_STARTUP_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a prewarmed child from another build is discarded even when the launch environment is identical",
+	async () => {
+		const root = makeTempDirectory("prewarmed-engine-diffbuild-");
+		const agentDir = join(root, "agent");
+		const packageDir = join(root, "package");
+		const altPackageDir = join(root, "alt-package");
+		const project = join(root, "project");
+		const trace = join(root, "startup.jsonl");
+		const preload = join(root, "intercept-prewarm.cjs");
+		let program: PtyProgram | undefined;
+		try {
+			mkdirSync(project, { recursive: true });
+			prepareAgentDir(agentDir, "http://127.0.0.1:9");
+			prepareInstalledPackage(PACKAGE, packageDir);
+			// Create a second install directory with a different stamped build digest (same package version).
+			cpSync(join(PACKAGE, "dist"), join(altPackageDir, "dist"), { recursive: true });
+			cpSync(join(PACKAGE, "package.json"), join(altPackageDir, "package.json"));
+			symlinkSync(join(ROOT, "node_modules"), join(altPackageDir, "node_modules"), "junction");
+			const sharedDir = join(altPackageDir, "dist", "_shared");
+			const prewarmChunk = readdirSync(sharedDir).find(
+				(name) => name.startsWith("p1a-prewarm-") && name.endsWith(".js"),
+			);
+			assert.ok(prewarmChunk, "found p1a-prewarm shared chunk");
+			const prewarmChunkPath = join(sharedDir, prewarmChunk);
+			const originalChunk = readFileSync(prewarmChunkPath, "utf8");
+			const modifiedChunk = originalChunk.replace(
+				/const PREWARM_BUILD_STAMP = "[0-9a-f]{30}";/,
+				'const PREWARM_BUILD_STAMP = "000000000000000000000000000000";',
+			);
+			assert.notEqual(modifiedChunk, originalChunk, "stamped build digest found and mutated");
+			writeFileSync(prewarmChunkPath, modifiedChunk);
+			writeFileSync(preload, INTERCEPT_PREWARM_SPAWN);
+			for (const name of ["ATOMIC_OFFLINE", "PI_OFFLINE", "ATOMIC_DEBUG", "PI_DEBUG", "ATOMIC_DEBUG_SETTING"])
+				vi.stubEnv(name, undefined);
+			program = startPtyProgram({
+				executable: process.execPath,
+				args: [CLI, "--no-session", "--approve"],
+				cwd: project,
+				env: {
+					ATOMIC_CODING_AGENT_DIR: agentDir,
+					ATOMIC_PACKAGE_DIR: packageDir,
+					ATOMIC_OFFLINE: "1",
+					ATOMIC_SKIP_VERSION_CHECK: "1",
+					ATOMIC_TELEMETRY: "0",
+					ATOMIC_STARTUP_TRACE: trace,
+					ATOMIC_STARTUP_BENCHMARK: "1",
+					NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
+					ATOMIC_TEST_ALT_CLI: join(altPackageDir, "dist", "cli.js"),
+					TERM: "xterm-256color",
+					CI: "0",
+				},
+				timeoutMs: REAL_STARTUP_TIMEOUT_MS,
+				cols: 120,
+				rows: 40,
+			});
+			const exited = await program.exited;
+			assert.equal(exited.timedOut, false, program.screen());
+			assert.equal(exited.exitCode, 0, program.screen());
+			assert.equal(engineChildren(readTrace(trace)).length, 2, "different-build prewarm child must be discarded");
+		} finally {
+			program?.kill();
+			vi.unstubAllEnvs();
+			await removeTempRootReleasingBroker(root, agentDir);
+		}
+	},
+	REAL_STARTUP_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a prewarmed child started by an older host without the handoff flag keeps stdout clean",
+	async () => {
+		const child = spawnProcess([process.execPath, CLI, "--internal-engine-prewarm", "--no-session"], {
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+			env: {
+				...process.env,
+				ATOMIC_OFFLINE: "1",
+				ATOMIC_SKIP_VERSION_CHECK: "1",
+				ATOMIC_TELEMETRY: "0",
+			},
+		});
+		let stdoutBytes = 0;
+		const reader = child.stdout!.getReader();
+		const reading = (async () => {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				stdoutBytes += value.length;
+			}
+		})();
+		try {
+			// Wait past the child's early p1a-prewarm load; without the opt-in flag it must write nothing to stdout.
+			await sleep(400);
+			assert.equal(stdoutBytes, 0, "new prewarmed child must not emit stdout frames to an older host");
+			child.stdin!.end();
+			const code = await child.exited;
+			assert.equal(code, 0);
+			await reading;
+			assert.equal(stdoutBytes, 0);
+		} finally {
+			child.kill();
 		}
 	},
 	REAL_STARTUP_TEST_TIMEOUT_MS,

@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionInternalSurface } from "../../core/agent-session-methods.ts";
 import { tryExecuteSessionSlashCommand } from "../../core/agent-session-prompt.ts";
-import {
-	flushDeferredHostCompileCache,
-	hasDeferredHostCompileCacheFlush,
-} from "../../utils/deferred-compile-cache-flush.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { takeSubmittedExtensionCommandHold } from "./extension-command-hold.ts";
@@ -35,14 +31,6 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		turn.dispatched = true;
 		if (this.compactionQueuedMessages.length > 0 && !this.compactionActive) {
 			void this.flushCompactionQueue({ afterPrompt: true });
-		}
-		// Fallback flush for any compile-cache write deferred off prewarm handover if the model turn takes longer than
-		// half a second; faster turns flush right after `agent_end` renders.
-		if (hasDeferredHostCompileCacheFlush()) {
-			const flushTimer = setTimeout(() => {
-				if (!this.isShuttingDown) flushDeferredHostCompileCache();
-			}, 500);
-			flushTimer.unref?.();
 		}
 	};
 	// Show the working spinner immediately on submit so there is no visible gap
