@@ -434,7 +434,7 @@ Agent definitions are loaded on demand through management actions:
 | `artifacts` | boolean | `true` | Write debug artifacts under artifact storage. |
 | `includeProgress` | boolean | `false` | Include runtime progress telemetry in waited tool results. Independent of file-based `progress`. |
 | `control` | object | config defaults | Attention-tracking thresholds and notification channels for the run. |
-| `sessionDir` | string | parent's store | Store child sessions as JSONL files in this directory instead of the parent's session store. |
+| `sessionDir` | string | parent's store | Store fresh (not forked) child sessions as JSONL files in this directory instead of the parent's session store. |
 
 `context: "fork"` fails fast if the parent session is not persisted, its leaf is missing, or the branch cannot be created. It never downgrades silently to `fresh`. If any agent in a launch declares `defaultContext: fork` and the call omits `context`, the whole launch uses forked context.
 
@@ -537,7 +537,7 @@ Startup timeout budget per child in milliseconds (default `300000`, 5 minutes).
 { "defaultSessionDir": "~/.atomic/agent/sessions/subagent/" }
 ```
 
-Stores child sessions as JSONL files in `params.sessionDir` if set, else `defaultSessionDir`. When neither is set, child sessions are stored in the parent's session store (SQLite by default, a configured database adapter, or memory for `--no-session` parents), or beside the parent's JSONL file when the parent uses JSONL storage.
+Stores fresh (not forked) child sessions as JSONL files in `params.sessionDir` if set, else `defaultSessionDir`; a `context: "fork"` child's session is always a fork kept in the parent's session store. When neither is set, child sessions are stored in the parent's session store (SQLite by default, a configured database adapter, or memory for `--no-session` parents), or beside the parent's JSONL file when the parent uses JSONL storage.
 
 ### `intercomBridge`
 
