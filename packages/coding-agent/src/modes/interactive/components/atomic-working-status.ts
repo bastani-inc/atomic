@@ -50,8 +50,67 @@ const IRREGULAR_WORKED_VERBS: Readonly<Record<string, string>> = {
 	writing: "wrote",
 };
 
+const UNICODE_LETTER = /^\p{L}$/u;
+const WORKED_WORD_CHAR = /^[\p{L}'-]$/u;
+
+function previousCodePoint(text: string, endIndex: number): { char: string; start: number } | undefined {
+	if (endIndex <= 0) return undefined;
+	const lo = text.charCodeAt(endIndex - 1);
+	if (lo >= 0xdc00 && lo <= 0xdfff && endIndex >= 2) {
+		const hi = text.charCodeAt(endIndex - 2);
+		if (hi >= 0xd800 && hi <= 0xdbff) {
+			return { char: text.slice(endIndex - 2, endIndex), start: endIndex - 2 };
+		}
+	}
+	return { char: text[endIndex - 1]!, start: endIndex - 1 };
+}
+
+function nextCodePoint(text: string, startIndex: number): string | undefined {
+	if (startIndex >= text.length) return undefined;
+	const cp = text.codePointAt(startIndex);
+	return cp === undefined ? undefined : String.fromCodePoint(cp);
+}
+
+function findIngWord(message: string): string | undefined {
+	let pos = 0;
+	while (pos < message.length) {
+		const cp = message.codePointAt(pos)!;
+		const charLen = cp > 0xffff ? 2 : 1;
+		if (!WORKED_WORD_CHAR.test(message.slice(pos, pos + charLen))) {
+			pos += charLen;
+			continue;
+		}
+		const runStart = pos;
+		let runEnd = pos + charLen;
+		while (runEnd < message.length) {
+			const nextCp = message.codePointAt(runEnd)!;
+			const nextLen = nextCp > 0xffff ? 2 : 1;
+			if (!WORKED_WORD_CHAR.test(message.slice(runEnd, runEnd + nextLen))) break;
+			runEnd += nextLen;
+		}
+		// Inside this maximal [\p{L}'-]+ run, greedy [\p{L}'-]* picks the rightmost valid \p{L}ing(?!\p{L}).
+		let searchEnd = runEnd - 3;
+		while (searchEnd >= runStart) {
+			const idx = message.lastIndexOf("ing", searchEnd);
+			if (idx < runStart) break;
+			const after = nextCodePoint(message, idx + 3);
+			const prev = idx > runStart ? previousCodePoint(message, idx) : undefined;
+			if (
+				(after === undefined || !UNICODE_LETTER.test(after)) &&
+				prev !== undefined &&
+				UNICODE_LETTER.test(prev.char)
+			) {
+				return message.slice(runStart, idx + 3);
+			}
+			searchEnd = idx - 1;
+		}
+		pos = runEnd;
+	}
+	return undefined;
+}
+
 export function workedVerb(message: string | undefined): string {
-	const word = /[\p{L}'-]*\p{L}ing(?!\p{L})/u.exec(message ?? "")?.[0];
+	const word = findIngWord(message ?? "");
 	if (word === undefined || word.toLowerCase() === "working") return "Worked";
 	const lower = word.toLowerCase();
 	const base = lower.slice(0, -3);

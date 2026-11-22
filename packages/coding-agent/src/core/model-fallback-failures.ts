@@ -406,27 +406,102 @@ const REQUEST_INCOMPATIBLE_FAILURE_PATTERNS: readonly RegExp[] = [
 	/\bbad[_\s-]?request\b/i,
 ];
 
+type MessageMatcher = RegExp | readonly RegExp[];
+
+interface StageCursor {
+	start: number;
+	end: number;
+	lineStart: number;
+	nlScan: number;
+	done: boolean;
+}
+
+function advanceStageCursor(text: string, regex: RegExp, cursor: StageCursor, minStart: number): boolean {
+	if (cursor.done) return false;
+	if (cursor.start >= minStart) return true;
+	regex.lastIndex = minStart;
+	const match = regex.exec(text);
+	if (!match) {
+		cursor.done = true;
+		return false;
+	}
+	const start = match.index;
+	let ls = cursor.lineStart;
+	let scan = cursor.nlScan;
+	while (scan < start) {
+		const nl = text.indexOf("\n", scan);
+		if (nl === -1 || nl >= start) break;
+		ls = nl + 1;
+		scan = nl + 1;
+	}
+	cursor.start = start;
+	cursor.end = regex.lastIndex;
+	cursor.lineStart = ls;
+	cursor.nlScan = start;
+	return true;
+}
+
+/**
+ * Linear-time equivalent of `stage[0][^\n]*stage[1](?:[^\n]*stage[2])?`.
+ * Each stage regex must carry the `g` flag (no `[^\n]*` inside a stage) and executes monotonically once across `text`.
+ */
+function matchesOrderedWithoutNewlineBetween(text: string, stages: readonly RegExp[]): boolean {
+	const first = stages[0]!;
+	const second = stages[1]!;
+	const third = stages[2];
+	first.lastIndex = 0;
+	const c1: StageCursor = { start: -1, end: -1, lineStart: 0, nlScan: 0, done: false };
+	const c2: StageCursor = { start: -1, end: -1, lineStart: 0, nlScan: 0, done: false };
+	for (;;) {
+		const m0 = first.exec(text);
+		if (!m0) return false;
+		const end0 = first.lastIndex;
+		if (!advanceStageCursor(text, second, c1, end0)) return false;
+		if (end0 < c1.lineStart) continue;
+		if (!third) return true;
+		if (!advanceStageCursor(text, third, c2, c1.end)) return false;
+		if (c1.end >= c2.lineStart) return true;
+	}
+}
+
+function matchesAnyMessageMatcher(text: string, matchers: readonly MessageMatcher[]): boolean {
+	for (const matcher of matchers) {
+		if (Array.isArray(matcher)) {
+			if (matchesOrderedWithoutNewlineBetween(text, matcher)) return true;
+		} else if ((matcher as RegExp).test(text)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /** A provider declined the request's content under its usage policy: the model will refuse it again. */
-const CONTENT_FILTER_FAILURE_PATTERNS: readonly RegExp[] = [
+const CONTENT_FILTER_FAILURE_PATTERNS: readonly MessageMatcher[] = [
 	/\bthe\s+model\s+refused\s+to\s+complete\s+the\s+request\b/i,
-	/\bfinish[_\s-]?reason\b[^\n]*\bcontent[_\s-]?filter\b/i,
+	[/\bfinish[_\s-]?reason\b/gi, /\bcontent[_\s-]?filter\b/gi],
 	/\bcontent[_\s-]?filter(?:ed|ing)?\b/i,
 	/\bcyber[_\s-]?policy\b/i,
 	// OpenAI's cyber safeguard: "This content was flagged for possible cybersecurity risk."
-	/\bflagged\s+for\s+(?:possible|potential(?:ly)?)\b[^\n]*\b(?:risk|harm(?:ful)?|safety|policy|cyber\w*)\b/i,
-	/\b(?:safety|policy)\b[^\n]*\b(?:refus(?:e|al|ed|es|ing)?|block(?:ed|ing)?|filter(?:ed|ing)?|violat(?:e|ion|ed|ing)?|disallow(?:ed|ing)?|reject(?:ed|ion|ing)?)\b/i,
-	/\b(?:refus(?:e|al|ed|es|ing)?|block(?:ed|ing)?|filter(?:ed|ing)?|violat(?:e|ion|ed|ing)?|disallow(?:ed|ing)?|reject(?:ed|ion|ing)?)\b[^\n]*\b(?:safety|policy)\b/i,
+	[/\bflagged\s+for\s+(?:possible|potential(?:ly)?)\b/gi, /\b(?:risk|harm(?:ful)?|safety|policy|cyber\w*)\b/gi],
+	[
+		/\b(?:safety|policy)\b/gi,
+		/\b(?:refus(?:e|al|ed|es|ing)?|block(?:ed|ing)?|filter(?:ed|ing)?|violat(?:e|ion|ed|ing)?|disallow(?:ed|ing)?|reject(?:ed|ion|ing)?)\b/gi,
+	],
+	[
+		/\b(?:refus(?:e|al|ed|es|ing)?|block(?:ed|ing)?|filter(?:ed|ing)?|violat(?:e|ion|ed|ing)?|disallow(?:ed|ing)?|reject(?:ed|ion|ing)?)\b/gi,
+		/\b(?:safety|policy)\b/gi,
+	],
 	/\bprovider[_\s-]?refus(?:e|al|ed|es|ing)?\b/i,
-	/\bprovider\b[^\n]*\brefus(?:e|al|ed|es|ing)?\b[^\n]*\b(?:prompt|request|content|policy|safety)\b/i,
+	[/\bprovider\b/gi, /\brefus(?:e|al|ed|es|ing)?\b/gi, /\b(?:prompt|request|content|policy|safety)\b/gi],
 ];
 
-const TOOL_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
+const TOOL_REFUSAL_FAILURE_PATTERNS: readonly MessageMatcher[] = [
 	/\btool[_\s-]?(?:call|use)?[_\s-]?refus(?:e|al|ed|es|ing)?\b/i,
-	/\btool(?:\s+call|\s+use)?\b[^\n]*\brefus(?:e|al|ed|es|ing)?\b/i,
-	/\brefus(?:e|al|ed|es|ing)?\b[^\n]*\btool(?:\s+call|\s+use)?\b/i,
+	[/\btool(?:\s+call|\s+use)?\b/gi, /\brefus(?:e|al|ed|es|ing)?\b/gi],
+	[/\brefus(?:e|al|ed|es|ing)?\b/gi, /\btool(?:\s+call|\s+use)?\b/gi],
 ];
 
-const PROVIDER_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
+const PROVIDER_REFUSAL_FAILURE_PATTERNS: readonly MessageMatcher[] = [
 	...CONTENT_FILTER_FAILURE_PATTERNS,
 	...TOOL_REFUSAL_FAILURE_PATTERNS,
 ];
@@ -485,8 +560,8 @@ function refusalKindFromMessage(message: string): ModelFallbackFailureKind | und
 	if (NON_RETRYABLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
 	// A refused tool call is about that call, whatever policy the provider names: another model is asked the same
 	// tool call. So it is checked before the content-filter grammar, which "refused ... safety policy" also matches.
-	if (TOOL_REFUSAL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
-	if (CONTENT_FILTER_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "content_filter";
+	if (matchesAnyMessageMatcher(message, TOOL_REFUSAL_FAILURE_PATTERNS)) return "task_failure";
+	if (matchesAnyMessageMatcher(message, CONTENT_FILTER_FAILURE_PATTERNS)) return "content_filter";
 	return undefined;
 }
 
@@ -984,7 +1059,7 @@ export function isSafetyRefusalFailure(error: unknown): boolean {
 	if (signal.kind === "content_filter") return true;
 	if (signal.kind !== "task_failure") return false;
 	const text = `${signal.message}\n${signal.code ?? ""}\n${signal.name ?? ""}`;
-	return PROVIDER_REFUSAL_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
+	return matchesAnyMessageMatcher(text, PROVIDER_REFUSAL_FAILURE_PATTERNS);
 }
 
 /** Whether a provider's content filter refused the request, as OpenAI's HTTP 422 `cyber_policy` does. */

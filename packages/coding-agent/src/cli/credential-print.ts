@@ -29,6 +29,7 @@ import { resolveCliModel, resolveModelReference } from "../core/model-resolver.t
 import type { ModelRuntime } from "../core/model-runtime.js";
 import { flushRawStdout, RawStdoutWriteError, writeRawStdoutOnce } from "../core/output-guard.ts";
 import { redactCredentialShapes } from "../utils/credential-redaction.js";
+import { extractBearerToken } from "../utils/linear-text.js";
 import type { Args } from "./args.ts";
 
 export type CredentialPrintKind = "api_key" | "bearer_token";
@@ -405,7 +406,7 @@ function candidateModels(args: Args, modelRuntime: ModelRuntime): Model<Api>[] {
 
 function bearerFromHeaders(headers: Record<string, unknown> | undefined): string | undefined {
 	const authorization = Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "authorization")?.[1];
-	return typeof authorization === "string" ? /^Bearer\s+(.+)$/iu.exec(authorization)?.[1] : undefined;
+	return typeof authorization === "string" ? extractBearerToken(authorization) : undefined;
 }
 
 /**
