@@ -28,15 +28,17 @@ const EAGER_LANGUAGE_SPECIFIERS: readonly (readonly [string, string])[] = [
 	["lua", "highlight.js/lib/languages/lua.js"],
 ];
 
-let hljsCore: HighlightCore | undefined;
+const BUNDLED_HIGHLIGHT_CORE_SYMBOL = Symbol.for("atomic.bundledHighlightCore");
 
-/** Used by standalone binary entry (`bun/cli.ts`) to supply the bundled highlight.js instance. */
-export function registerBundledHighlightCore(core: HighlightCore): void {
-	hljsCore = core;
-}
+let hljsCore: HighlightCore | undefined;
 
 function getHighlightCore(): HighlightCore {
 	if (hljsCore !== undefined) return hljsCore;
+	const bundled = (globalThis as Record<symbol, unknown>)[BUNDLED_HIGHLIGHT_CORE_SYMBOL] as HighlightCore | undefined;
+	if (bundled !== undefined) {
+		hljsCore = bundled;
+		return bundled;
+	}
 	const req = createModuleRequire(import.meta.url);
 	const loaded = req("highlight.js/lib/core.js") as HighlightCore & { default?: HighlightCore };
 	const core = loaded.default ?? loaded;

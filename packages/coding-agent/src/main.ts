@@ -145,6 +145,7 @@ import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engin
 import { IsolatedInteractiveRuntime } from "./modes/interactive-engine/isolated-runtime.js";
 import { ENGINE_SHUTDOWN_GRACE_MS } from "./modes/rpc/rpc-client-process.js";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
+import { handlePackageCommandParseOutcome, parsePackageCommand } from "./package-manager-cli-parser.ts";
 import { canonicalizePath, canonicalizePathAsync } from "./utils/canonical-path.ts";
 import { deferDeprecationWarnings, loadShownDeprecationNotices } from "./utils/deprecation.js";
 import {
@@ -253,6 +254,11 @@ export async function main(argv: string[], options?: MainOptions) {
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
 	if (args[0] !== undefined && PACKAGE_COMMAND_NAMES.has(args[0])) {
+		const parsedPackageCommand = parsePackageCommand(args);
+		if (parsedPackageCommand && handlePackageCommandParseOutcome(parsedPackageCommand)) {
+			await exitAfterCommand();
+			return;
+		}
 		const { handlePackageCommand } = await import("./package-manager-cli.js");
 		if (await handlePackageCommand(args, { extensionFactories })) {
 			await exitAfterCommand();

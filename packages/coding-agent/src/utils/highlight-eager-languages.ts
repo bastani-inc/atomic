@@ -20,7 +20,8 @@ import rust from "highlight.js/lib/languages/rust.js";
 import scala from "highlight.js/lib/languages/scala.js";
 import swift from "highlight.js/lib/languages/swift.js";
 import typescript from "highlight.js/lib/languages/typescript.js";
-import { registerBundledHighlightCore } from "./syntax-highlight.ts";
+
+const BUNDLED_HIGHLIGHT_CORE_SYMBOL = Symbol.for("atomic.bundledHighlightCore");
 
 const eagerLanguages = {
 	python,
@@ -51,4 +52,4 @@ for (const [name, language] of Object.entries(eagerLanguages)) {
 	}
 }
 
-registerBundledHighlightCore(hljs);
+(globalThis as Record<symbol, unknown>)[BUNDLED_HIGHLIGHT_CORE_SYMBOL] = hljs;

@@ -4,6 +4,7 @@ import { getProjectConfigPaths } from "../config.js";
 import type { ProjectTrustContext } from "../core/extensions/types.ts";
 import type { AppMode } from "../core/project-trust.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
+import { showStartupInput, showStartupSelector } from "./startup-ui.ts";
 
 /**
  * The warning for a run that ignores an untrusted project's settings files, or undefined when it ignores none. Print,
@@ -38,7 +39,6 @@ export function createProjectTrustContext(options: {
 		ui: {
 			select: async (title, selectOptions, dialogOptions) => {
 				if (!options.hasUI || options.mode !== "interactive") return undefined;
-				const { showStartupSelector } = await import("./startup-ui.ts");
 				return showStartupSelector(
 					options.settingsManager,
 					title,
@@ -48,7 +48,6 @@ export function createProjectTrustContext(options: {
 			},
 			confirm: async (title, message, dialogOptions) => {
 				if (!options.hasUI || options.mode !== "interactive") return false;
-				const { showStartupSelector } = await import("./startup-ui.ts");
 				return (
 					(await showStartupSelector(
 						options.settingsManager,
@@ -63,7 +62,6 @@ export function createProjectTrustContext(options: {
 			},
 			input: async (title, placeholder, dialogOptions) => {
 				if (!options.hasUI || options.mode !== "interactive") return undefined;
-				const { showStartupInput } = await import("./startup-ui.ts");
 				return showStartupInput(options.settingsManager, title, placeholder, dialogOptions);
 			},
 			notify: (message, type = "info") => {
