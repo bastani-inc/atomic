@@ -620,6 +620,10 @@ test("re-entrant local-to-remote fallback when target moves mid-lookup never dea
 		);
 
 		m1Gate.resolve();
+		await waitImmediate(async () => {
+			assert.equal((await origRead(m1.id)).status, "found");
+			assert.equal((await origRead(m2.id)).status, "found");
+		});
 		await waitWithFakeStep(() => assert.deepEqual(receivedTexts(targetOnB), ["moved-1", "moved-2"]));
 	});
 });
@@ -1594,13 +1598,14 @@ test("holdForRemoteReservation and routeReleasedReply (remote and local) are not
 		const rLocal = makeMessage("reply-local-released", { replyTo: localAskId });
 		a.send(sender, remoteChildId, rRemote, { requirePendingReply: true });
 		a.send(sender, wokenChild.info.id, rLocal, { requirePendingReply: true });
+		// Wait for Broker A to enqueue both replies at simulated t=0 before stepping Broker B's bus poll timer.
+		await waitImmediate(async () => {
+			assert.equal((await a.opened.state.outbox.read(rRemote.id)).status, "found");
+			assert.equal((await a.opened.state.outbox.read(rLocal.id)).status, "found");
+		});
 		await waitWithFakeStep(() => {
 			const handoffs = (ownerB.socket as FakeSocket).frames.filter((frame) => frame.type === "released_child_reply");
-			assert.equal(
-				handoffs.length,
-				2,
-				`expected 2 handoffs, got ${handoffs.length}; senderFrames=${JSON.stringify((sender.socket as FakeSocket).frames)}`,
-			);
+			assert.equal(handoffs.length, 2);
 		});
 
 		// sessionLeft(sender) must also finish promptly (serial("reply:sender") is not blocked on target-1)!
