@@ -603,12 +603,13 @@ function isTokenStopChar(code: number): boolean {
 		code <= 32 ||
 		code === 34 || // "
 		code === 39 || // '
+		code === 40 || // (
+		code === 41 || // )
 		code === 44 || // ,
 		code === 59 || // ;
 		code === 60 || // <
 		code === 62 || // >
 		code === 96 || // `
-		code === 41 || // )
 		code === 125 || // }
 		code === 93 // ]
 	);
@@ -686,18 +687,28 @@ function isSignedInteger(value: string): boolean {
 
 function isPosixOrSystemErrorCode(value: string): boolean {
 	if (value.length < 2) return false;
-	for (let i = 0; i < value.length; i++) {
-		const c = value.charCodeAt(i);
-		const ok = (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95;
-		if (!ok) return false;
-	}
-	return (
-		value.startsWith("E") ||
+	if (value === "E2BIG") return true;
+	if (
 		value.startsWith("ERR_") ||
 		value.startsWith("UND_ERR_") ||
 		value.startsWith("SQLITE_") ||
 		value.startsWith("HTTP_")
-	);
+	) {
+		for (let i = 0; i < value.length; i++) {
+			const c = value.charCodeAt(i);
+			if (!((c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95)) return false;
+		}
+		return true;
+	}
+	// POSIX errnos: `E` followed by 2..20 ASCII uppercase letters (no digits, so hex OAuth codes like `E7F9A3...` stay redacted).
+	if (value.charCodeAt(0) === 69 && value.length >= 3 && value.length <= 21) {
+		for (let i = 1; i < value.length; i++) {
+			const c = value.charCodeAt(i);
+			if (c < 65 || c > 90) return false;
+		}
+		return true;
+	}
+	return false;
 }
 
 const KNOWN_OAUTH_ERROR_CODES = new Set([
@@ -914,21 +925,26 @@ function stripAnsiWithOrigin(text: string): { readonly plain: string; readonly o
 					continue;
 				}
 			} else if (next === 0x5d) {
-				// OSC: ESC ] ... (BEL | ESC \)
+				// OSC: ESC ] [^\x07\x1b]* (BEL | ESC \) — break on any ESC so unterminated OSC stays O(n).
 				let j = i + 2;
+				let matched = false;
 				while (j < text.length) {
 					const c = text.charCodeAt(j);
 					if (c === 0x07) {
 						i = j + 1;
+						matched = true;
 						break;
 					}
-					if (c === 0x1b && j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) {
-						i = j + 2;
+					if (c === 0x1b) {
+						if (j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) {
+							i = j + 2;
+							matched = true;
+						}
 						break;
 					}
 					j++;
 				}
-				if (j < text.length) continue;
+				if (matched) continue;
 			}
 		}
 		origin.push(i);

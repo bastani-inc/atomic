@@ -1519,8 +1519,18 @@ rl.on("line", (line) => {
 		assert.equal(displayAuthUrl.includes("resPass99"), false);
 		assert.equal(displayAuthUrl.includes("tenant=acme"), false);
 
-		// 9. Long-line password= fallback (8KB line).
+		// 9. Long-line password= fallback (8KB line), uppercase hex `code=E...`, parenthesized Bearer prose, and unterminated OSC linearity.
 		const longPwd = redactOAuthErrorText(`password=myEnvSecret9988 ${"z ".repeat(4000)}`);
 		assert.equal(longPwd.includes("myEnvSecret9988"), false);
+		assert.equal(
+			redactOAuthErrorText("https://cb.example/?code=E7F9A3B2C1D0E4F8").includes("E7F9A3B2C1D0E4F8"),
+			false,
+		);
+		assert.equal(
+			redactOAuthErrorText("Unsupported token_type: Bearer (expected DPoP)"),
+			"Unsupported token_type: Bearer (expected DPoP)",
+		);
+		const oscInput = "\x1b]".repeat(16_000);
+		assert.equal(redactOAuthErrorText(oscInput), oscInput);
 	});
 });
