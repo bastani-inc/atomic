@@ -5,6 +5,7 @@
 ### Changed
 
 - In a subagent's chat on its page in a task list, a click on `/tasks to manage` under a command the subagent started opens the subagent's own task list, as typing `/tasks` there does. It works only while the chat takes what you type. Without colour the hint is text, as the main chat's hints are.
+- A turn that runs a file-writing tool waits less for its worktree snapshot, most of all on Windows, where each Git process takes 25 to 45 ms to start: a capture lists the checkout's files with one `git status` instead of three Git commands (a checkout with submodules still asks `git diff-files` about them, as before), and no longer reads `HEAD`'s tree again while `HEAD` stays the same. In a checkout of about 7,800 files on Windows, a turn that changed nothing waits about 115 ms instead of 280 ms (175 ms instead of 300 ms when the checkout has uncommitted changes), and one that changed files about 370 ms instead of 490 ms. Snapshots record exactly what they recorded before.
 
 ### Fixed
 
@@ -45,7 +46,6 @@
 - A worktree snapshot capture no longer runs Git to list the files staged in your index despite an ignore rule while the index and `HEAD` are as they were at an earlier capture in the same Atomic process, so each turn that changes files starts one Git process fewer. Where Git does not trust file modes, as on Windows by default, a capture that records a change also no longer asks Git whether the previous snapshot's tree exists once it has read that tree. On Windows each Git process takes about 30 ms to start.
 - An npm or Bun install of Atomic writes about 2,090 fewer files of its own: the package no longer includes the separate compiled copies of the code it bundles (about 3,880 files and 71 MB unpacked with them, 1,790 files and 43 MB now).
 - Installing Atomic writes about 1,600 fewer files and 9 MB less: Atomic's converter for PDF, Office and EPUB files (`markit-ai`) is now part of Atomic's own files, so an install no longer adds that package and the packages only it depends on. The converter now uses MuPDF 1.28.6 and mammoth 1.13, which read more of some PDF and Word documents, as a Bun install already did. A session that was running while Atomic was updated in place from an earlier version fails its first PDF, Office or EPUB read after the update until you restart it.
-- A turn that runs a file-writing tool waits less for its worktree snapshot, most of all on Windows, where each Git process takes 25 to 45 ms to start: a capture lists the checkout's files with one `git status` instead of three Git commands (a checkout with submodules still asks `git diff-files` about them, as before), and no longer reads `HEAD`'s tree again while `HEAD` stays the same. In a checkout of about 7,800 files on Windows, a turn that changed nothing waits about 115 ms instead of 280 ms (175 ms instead of 300 ms when the checkout has uncommitted changes), and one that changed files about 370 ms instead of 490 ms. Snapshots record exactly what they recorded before.
 
 ### Fixed
 
