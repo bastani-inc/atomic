@@ -13,6 +13,7 @@ import JSZip from "jszip";
 import { afterAll, test, vi } from "vitest";
 import { prepareAgentDir } from "../helpers/event-loop-guard-fixture.js";
 import { type PtyProgram, startPtyProgram } from "../helpers/pty-program.js";
+import { RENAME_RETRY_SYNC_MODULE_PATH, renameWithRetry } from "../helpers/rename-retry.js";
 import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
@@ -461,10 +462,12 @@ test(
 		// What an in-place update does to a running session: the session has loaded Atomic, then the package's files are
 		// replaced, the converter's file is not among them, and the package names a new version; or, without the update,
 		// only the file is gone.
-		const probe = (updated: boolean) => `import { renameSync, writeFileSync } from "node:fs";
+		const probe = (updated: boolean) => `import { writeFileSync } from "node:fs";
+			import { createRequire } from "node:module";
+			const { renameSyncWithRetry } = createRequire(import.meta.url)(${JSON.stringify(RENAME_RETRY_SYNC_MODULE_PATH)});
 			const { createReadToolDefinition } = await import(${JSON.stringify(pathToFileURL(join(atomic, "dist", "index.js")).href)});
 			const read = createReadToolDefinition(${JSON.stringify(documents)});
-			renameSync(${JSON.stringify(converterFile)}, ${JSON.stringify(`${converterFile}.gone`)});
+			renameSyncWithRetry(${JSON.stringify(converterFile)}, ${JSON.stringify(`${converterFile}.gone`)});
 			${updated ? `writeFileSync(${JSON.stringify(manifestFile)}, ${JSON.stringify(manifest.replace(/"version": "[^"]+"/, '"version": "0.0.1"'))});` : ""}
 			const text = [];
 			try {
@@ -473,7 +476,7 @@ test(
 					text.push(result.content.map((item) => item.text ?? "").join("\\n"));
 				}
 			} finally {
-				renameSync(${JSON.stringify(`${converterFile}.gone`)}, ${JSON.stringify(converterFile)});
+				renameSyncWithRetry(${JSON.stringify(`${converterFile}.gone`)}, ${JSON.stringify(converterFile)});
 				writeFileSync(${JSON.stringify(manifestFile)}, ${JSON.stringify(manifest)});
 			}
 			console.log(JSON.stringify(text));`;
@@ -994,7 +997,7 @@ test.each(RELEASES)(
 		const exited = new Promise<number | null>((resolveExit) => child.once("exit", resolveExit));
 		await vi.waitFor(() => assert.ok(stdout.includes("loaded"), stderr), { timeout: LAYOUT_TIMEOUT_MS / 2 });
 		// As npm replaces a package: the earlier files leave, the rebuild takes their place.
-		fs.renameSync(join(installed, "dist"), join(installed, "dist-replaced"));
+		await renameWithRetry(join(installed, "dist"), join(installed, "dist-replaced"));
 		copyTree(join(second, "dist"), join(installed, "dist"));
 		child.stdin.end("go\n");
 		assert.equal(await exited, 0, stderr);
@@ -1032,6 +1035,7 @@ test(
 				'const { pathToFileURL } = require("node:url");',
 				'const fs = require("node:fs");',
 				'const path = require("node:path");',
+				`const { renameSyncWithRetry } = require(${JSON.stringify(RENAME_RETRY_SYNC_MODULE_PATH)});`,
 				'if (process.argv[1]?.endsWith("cli.js") && !process.argv.includes("--internal-engine-prewarm")) {',
 				`	const dist = ${JSON.stringify(join(layout.atomic, "dist"))};`,
 				'	const sdk = pathToFileURL(path.join(dist, "index.js")).href;',
@@ -1041,8 +1045,8 @@ test(
 				"			const result = nextResolve(specifier, context);",
 				"			if (pending && result.url === sdk) {",
 				"				pending = false;",
-				'				fs.renameSync(dist, dist + "-replaced");',
-				`				fs.renameSync(${JSON.stringify(join(next, "dist"))}, dist);`,
+				'				renameSyncWithRetry(dist, dist + "-replaced");',
+				`				renameSyncWithRetry(${JSON.stringify(join(next, "dist"))}, dist);`,
 				`				fs.writeFileSync(${JSON.stringify(receipt)}, String(process.pid));`,
 				"			}",
 				"			return result;",
