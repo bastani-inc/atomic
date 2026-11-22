@@ -85,6 +85,31 @@ export function startCompileCacheHelper(launch: CompileCacheHelperLaunch): boole
 let warmupStarted = false;
 
 /**
+ * Helper runtimes to run in sequence: one when host and engine share a compile-cache tag (either identical flags, or
+ * an auto-sized `--max-old-space-size=<N>` which Node 22 engines align back to the host's tag and Node 24 shares
+ * natively), else engine first then host.
+ */
+export function compileCacheWarmupRuntimes(
+	own: CompileCacheHelperRuntime,
+	engineExecArgv: readonly string[],
+): readonly CompileCacheHelperRuntime[] {
+	const engine: CompileCacheHelperRuntime = { execArgv: engineExecArgv, nodeOptions: own.nodeOptions };
+	const same =
+		engine.execArgv.length === own.execArgv.length &&
+		engine.execArgv.every((arg, index) => arg === own.execArgv[index]);
+	if (same) return [own];
+	// An auto-sized engine only adds `--max-old-space-size=<N>` when the host had no heap flag; both processes share
+	// the host's tag (Node 22 via engine reset, Node 24 natively), so one host helper warms both (#6222).
+	const heapFlag = /^--max[-_]old[-_]space[-_]size=\d+$/;
+	const onlyAddedAutoHeap =
+		own.execArgv.length === 0 &&
+		!heapFlag.test(own.nodeOptions) &&
+		engine.execArgv.length === 1 &&
+		heapFlag.test(engine.execArgv[0]!);
+	return onlyAddedAutoHeap ? [own] : [engine, own];
+}
+
+/**
  * Warm the cache this session left cold: first for the engine's runtime flags (`engineExecArgv`), then for this
  * process's own. Called once the session is on screen, and when it exits before that, so even a session that ends at
  * once leaves the cache warm; only the first call starts the helpers. A helper that finds another one warming this
@@ -94,12 +119,7 @@ export function warmCompileCache(engineExecArgv: readonly string[]): void {
 	const deferral = processCompileCacheDeferral();
 	if (!deferral?.helper || warmupStarted) return;
 	warmupStarted = true;
-	const own = deferral.runtime;
-	const engine = { execArgv: engineExecArgv, nodeOptions: own.nodeOptions };
-	const same =
-		engine.execArgv.length === own.execArgv.length &&
-		engine.execArgv.every((arg, index) => arg === own.execArgv[index]);
-	const [first, ...next] = same ? [own] : [engine, own];
+	const [first, ...next] = compileCacheWarmupRuntimes(deferral.runtime, engineExecArgv);
 	startCompileCacheHelper(
 		compileCacheHelperLaunch(first!, deferral.buildId, undefined, undefined, { next, required: [] }),
 	);
