@@ -8,6 +8,7 @@ const hooks = vi.hoisted(() => ({
 	realpaths: new Map<string, string>(),
 	symlinks: new Set<string>(),
 	realpathThrows: new Set<string>(),
+	realpathHangs: new Set<string>(),
 	tmpdirValue: "C:\\Users\\tester\\AppData\\Local\\Temp",
 }));
 
@@ -51,13 +52,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		if (hooks.dirs.has(key)) return { isDirectory: () => true, isSymbolicLink: () => false } as Stats;
 		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
 	}) as typeof actual.lstat;
-	const realpath = (async (path: Parameters<typeof actual.realpath>[0]) => {
+	const realpath = ((path: Parameters<typeof actual.realpath>[0]) => {
 		const key = String(path);
-		if (hooks.realpathThrows.has(key)) throw Object.assign(new Error(`EACCES: ${key}`), { code: "EACCES" });
+		if (hooks.realpathHangs.has(key)) return new Promise<string>(() => {});
+		if (hooks.realpathThrows.has(key)) {
+			return Promise.reject(Object.assign(new Error(`EACCES: ${key}`), { code: "EACCES" }));
+		}
 		const mapped = hooks.realpaths.get(key);
-		if (mapped !== undefined) return mapped;
-		if (hooks.dirs.has(key)) return key;
-		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+		if (mapped !== undefined) return Promise.resolve(mapped);
+		if (hooks.dirs.has(key)) return Promise.resolve(key);
+		return Promise.reject(Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" }));
 	}) as typeof actual.realpath;
 	return { ...actual, stat, lstat, realpath, default: { ...actual, stat, lstat, realpath } };
 });
@@ -83,6 +87,7 @@ function setupWin(opts: {
 	realpaths?: Record<string, string>;
 	symlinks?: readonly string[];
 	realpathThrows?: readonly string[];
+	realpathHangs?: readonly string[];
 }) {
 	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
 	process.cwd = () => opts.cwd ?? "C:\\repo\\project";
@@ -101,6 +106,8 @@ function setupWin(opts: {
 	for (const s of opts.symlinks ?? []) hooks.symlinks.add(s);
 	hooks.realpathThrows.clear();
 	for (const t of opts.realpathThrows ?? []) hooks.realpathThrows.add(t);
+	hooks.realpathHangs.clear();
+	for (const h of opts.realpathHangs ?? []) hooks.realpathHangs.add(h);
 }
 
 afterEach(() => {
@@ -109,6 +116,7 @@ afterEach(() => {
 	hooks.realpaths.clear();
 	hooks.symlinks.clear();
 	hooks.realpathThrows.clear();
+	hooks.realpathHangs.clear();
 	Object.defineProperty(process, "platform", originalPlatform);
 	process.cwd = originalCwd;
 	if (savedSystemRoot === undefined) delete process.env.SystemRoot;
@@ -120,9 +128,8 @@ afterEach(() => {
 
 describe("windows-cwd helper", () => {
 	test("normalizes drive, UNC, extended-length, and volume GUID paths while rejecting invalid forms", async () => {
-		const { isDriveRootWindowsPath, normalizeWindowsPathForCompare, windowsDriveRoot } = await import(
-			"../src/utils/windows-cwd.js"
-		);
+		const { isDriveRootWindowsPath, normalizeWindowsPathForCompare, toSpawnWindowsPath, windowsDriveRoot } =
+			await import("../src/utils/windows-cwd.js");
 
 		assert.equal(normalizeWindowsPathForCompare("C:\\"), "C:\\");
 		assert.equal(normalizeWindowsPathForCompare("C:/Windows/"), "C:\\Windows");
@@ -136,6 +143,13 @@ describe("windows-cwd helper", () => {
 			normalizeWindowsPathForCompare("\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\sub\\"),
 			"\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\sub",
 		);
+
+		assert.equal(toSpawnWindowsPath("C:\\Windows"), "C:\\Windows");
+		const longTail = Array.from({ length: 12 }, (_, i) => `seg_${String(i).padStart(2, "0")}_1234567890123456`).join(
+			"\\",
+		);
+		assert.equal(toSpawnWindowsPath(`C:\\long\\${longTail}`), `\\\\?\\C:\\long\\${longTail}`);
+		assert.equal(toSpawnWindowsPath(`\\\\srv\\share\\${longTail}`), `\\\\?\\UNC\\srv\\share\\${longTail}`);
 
 		assert.equal(windowsDriveRoot("\\\\?\\C:\\repo\\project"), "C:\\");
 		assert.equal(windowsDriveRoot("\\\\?\\UNC\\server\\share\\dir"), "\\\\server\\share\\");
@@ -171,7 +185,7 @@ describe("windows-cwd helper", () => {
 		}
 	});
 
-	test("async and sync selectors agree on junctions, subst roots, drive-root cwd, and unverified symlinks", async () => {
+	test("async and sync selectors agree on junctions, subst roots, drive-root cwd, long \\\\?\\ paths, and unverified symlinks", async () => {
 		const { resolveSafeWindowsWorkingDirectoryAsync, resolveSafeWindowsWorkingDirectorySync } = await import(
 			"../src/utils/windows-cwd.js"
 		);
@@ -233,37 +247,113 @@ describe("windows-cwd helper", () => {
 		});
 		assert.equal(resolveSafeWindowsWorkingDirectorySync(), "C:\\Windows");
 		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync(), "C:\\Windows");
-	});
 
-	test("cached synchronous helper uses warmed realpath result and invalidates on env or cwd change", async () => {
-		const {
-			getCachedOrLexicalSafeWindowsWorkingDirectory,
-			resolveSafeWindowsWorkingDirectoryLexical,
-			warmSafeWindowsWorkingDirectoryAsync,
-		} = await import("../src/utils/windows-cwd.js");
+		// 5. Long >248-char outside paths keep \\?\ and \\?\UNC\ while long in-project paths are rejected
+		const longTail = Array.from({ length: 12 }, (_, i) => `seg_${String(i).padStart(2, "0")}_1234567890123456`).join(
+			"\\",
+		);
+		const longPlain = `C:\\longroot\\${longTail}`;
+		const longExt = `\\\\?\\${longPlain}`;
+		const longUncPlain = `\\\\srv\\share\\${longTail}`;
+		const longUncExt = `\\\\?\\UNC\\srv\\share\\${longTail}`;
+		const longInProj = `\\\\?\\C:\\repo\\project\\${longTail}`;
 
 		setupWin({
 			cwd: "C:\\repo\\project",
-			systemRoot: "C:\\temp\\junc-in",
-			windir: "C:\\temp\\junc-in",
-			dirs: ["C:\\repo\\project", "C:\\temp\\junc-in", "C:\\Windows"],
-			symlinks: ["C:\\temp\\junc-in"],
+			systemRoot: longExt,
+			windir: longExt,
+			dirs: ["C:\\repo\\project", longExt, "C:\\Windows"],
+			realpaths: { "C:\\repo\\project": "C:\\repo\\project", [longExt]: longPlain, "C:\\Windows": "C:\\Windows" },
+		});
+		assert.equal(resolveSafeWindowsWorkingDirectorySync(), longExt);
+		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync(), longExt);
+
+		setupWin({
+			cwd: "C:\\repo\\project",
+			systemRoot: longUncExt,
+			windir: longUncExt,
+			dirs: ["C:\\repo\\project", longUncExt, "C:\\Windows"],
 			realpaths: {
 				"C:\\repo\\project": "C:\\repo\\project",
-				"C:\\temp\\junc-in": "C:\\repo\\project\\win",
+				[longUncExt]: longUncPlain,
 				"C:\\Windows": "C:\\Windows",
 			},
 		});
-		await warmSafeWindowsWorkingDirectoryAsync();
-		assert.equal(getCachedOrLexicalSafeWindowsWorkingDirectory(), "C:\\Windows");
+		assert.equal(resolveSafeWindowsWorkingDirectorySync(), longUncExt);
+		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync(), longUncExt);
 
-		// Lexical-only fallback still rejects extended-prefix in-project alias and bare drive C: synchronously.
+		setupWin({
+			cwd: "C:\\repo\\project",
+			systemRoot: longInProj,
+			windir: longInProj,
+			dirs: ["C:\\repo\\project", longInProj, "C:\\Windows"],
+			realpaths: {
+				"C:\\repo\\project": "C:\\repo\\project",
+				[longInProj]: longInProj,
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		assert.equal(resolveSafeWindowsWorkingDirectorySync(), "C:\\Windows");
+		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync(), "C:\\Windows");
+	});
+
+	test("bounds hung UNC process.cwd() realpath and supports immediate AbortSignal cancellation", async () => {
+		const { resolveSafeWindowsWorkingDirectoryAsync } = await import("../src/utils/windows-cwd.js");
+
+		setupWin({
+			cwd: "\\\\hung-server\\share\\project",
+			systemRoot: "C:\\Windows",
+			dirs: ["\\\\hung-server\\share\\project", "C:\\Windows"],
+			realpathHangs: ["\\\\hung-server\\share\\project"],
+		});
+		const startedAt = Date.now();
+		const chosen = await resolveSafeWindowsWorkingDirectoryAsync({ timeoutMs: 80 });
+		assert.equal(chosen, "C:\\Windows");
+		assert.ok(Date.now() - startedAt < 1_000);
+
+		const abort = new AbortController();
+		const pending = resolveSafeWindowsWorkingDirectoryAsync({ timeoutMs: 5_000, signal: abort.signal });
+		abort.abort();
+		assert.equal(await pending, undefined);
+	});
+
+	test("synchronous kill lexical selector avoids unverified TMP, external junctions on C:, and non-C: hardcoded C:\\Windows", async () => {
+		const { resolveSafeWindowsKillCwdLexical } = await import("../src/utils/windows-cwd.js");
+
+		// cwd=C:\Windows + nonexistent TMP -> picks C:\ (never Z:\NoSuchTmp)
+		setupWin({
+			cwd: "C:\\Windows",
+			systemRoot: "C:\\Windows",
+			windir: "C:\\Windows",
+			tmpdir: "Z:\\NoSuchTmp",
+		});
+		assert.equal(resolveSafeWindowsKillCwdLexical({ commandPath: "C:\\Windows\\System32\\taskkill.exe" }), "C:\\");
+
+		// SystemRoot is an unverified path on C: (e.g. junction into project) -> prefers C:\Windows
+		setupWin({
+			cwd: "C:\\repo\\project",
+			systemRoot: "C:\\temp\\ext-junc-in",
+			windir: "C:\\temp\\ext-junc-in",
+		});
+		assert.equal(
+			resolveSafeWindowsKillCwdLexical({ commandPath: "C:\\temp\\ext-junc-in\\System32\\taskkill.exe" }),
+			"C:\\Windows",
+		);
+
+		// Non-C: Windows install (D:\Windows, cwd=D:\repo\project) -> picks D:\ ahead of hardcoded C:\Windows
+		setupWin({
+			cwd: "D:\\repo\\project",
+			systemRoot: "D:\\Windows",
+			windir: "D:\\Windows",
+		});
+		assert.equal(resolveSafeWindowsKillCwdLexical({ commandPath: "D:\\Windows\\System32\\taskkill.exe" }), "D:\\");
+
+		// Extended-prefix in-project alias and bare drive C: rejected
 		setupWin({
 			cwd: "C:\\repo\\project",
 			systemRoot: "\\\\?\\C:\\repo\\project\\win",
 			windir: "C:",
 		});
-		assert.equal(resolveSafeWindowsWorkingDirectoryLexical(), "C:\\Windows");
-		assert.equal(getCachedOrLexicalSafeWindowsWorkingDirectory(), "C:\\Windows");
+		assert.equal(resolveSafeWindowsKillCwdLexical(), "C:\\Windows");
 	});
 });

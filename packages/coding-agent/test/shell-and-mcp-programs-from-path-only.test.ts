@@ -486,4 +486,167 @@ describe.skipIf(!windows)("commands Atomic starts to end a process never run in 
 			assert.ok(!isInside(project, cwd), `${child.spawnfile} ran inside the project folder via junction (${cwd})`);
 		}
 	});
+
+	test("ending a process tree still succeeds under cwd=Windows with missing/long/deleted TMP or a retargeted/deleted SystemRoot junction", async () => {
+		const realSystemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+		const realSystem32 = join(realSystemRoot, "System32");
+		const cmdExe = join(realSystem32, "cmd.exe");
+		const { spawn } = await import("node:child_process");
+		const { killProcessTree } = await import("../src/utils/shell.ts");
+
+		const startLiveTarget = async (tag: string) => {
+			const readyFile = join(root, `ready-${tag}.pid`);
+			const child = spawn(
+				process.execPath,
+				[
+					"-e",
+					`require('fs').writeFileSync(${JSON.stringify(readyFile)}, String(process.pid)); setTimeout(() => {}, 15000)`,
+				],
+				{ stdio: "ignore", cwd: realSystemRoot, windowsHide: true },
+			);
+			assert.ok(child.pid !== undefined);
+			servers.push(await recordProcess(child.pid));
+			await vi.waitFor(() => assert.equal(existsSync(readyFile), true), { timeout: PROCESS_EXIT_BUDGET_MS });
+			return child;
+		};
+
+		// 1. cwd = C:\Windows with nonexistent TMP (cold call must not pick nonexistent Z:\NoSuchTmp)
+		process.chdir(realSystemRoot);
+		vi.stubEnv("TMP", "Z:\\NoSuchAtomicTmp");
+		vi.stubEnv("TEMP", "Z:\\NoSuchAtomicTmp");
+		const t1 = await startLiveTarget("missing-tmp");
+		killProcessTree(t1.pid!);
+		assert.equal(await exitedWithin(t1, PROCESS_EXIT_BUDGET_MS), true, "killed under cwd=Windows + nonexistent TMP");
+
+		// 2. cwd = C:\Windows with >260-char \\?\ TMP
+		let longDir = join(root, "lp");
+		for (let i = 0; i < 12; i++) longDir = join(longDir, `seg_${String(i).padStart(2, "0")}_1234567890123456`);
+		const longExt = `\\\\?\\${longDir}`;
+		mkdirSync(longExt, { recursive: true });
+		vi.stubEnv("TMP", longExt);
+		vi.stubEnv("TEMP", longExt);
+		const t2 = await startLiveTarget("long-tmp");
+		killProcessTree(t2.pid!);
+		assert.equal(await exitedWithin(t2, PROCESS_EXIT_BUDGET_MS), true, "killed under cwd=Windows + long \\\\?\\ TMP");
+
+		// 3. Ephemeral TMP deleted between two killProcessTree calls
+		const ephemeralTmp = join(root, "ephemeral-tmp");
+		mkdirSync(ephemeralTmp, { recursive: true });
+		vi.stubEnv("TMP", ephemeralTmp);
+		vi.stubEnv("TEMP", ephemeralTmp);
+		const t3a = await startLiveTarget("ephem-1");
+		killProcessTree(t3a.pid!);
+		assert.equal(await exitedWithin(t3a, PROCESS_EXIT_BUDGET_MS), true);
+		rmSync(ephemeralTmp, { recursive: true, force: true });
+		const t3b = await startLiveTarget("ephem-2");
+		killProcessTree(t3b.pid!);
+		assert.equal(await exitedWithin(t3b, PROCESS_EXIT_BUDGET_MS), true, "killed after cached TMP was deleted");
+
+		// 4. Retargeted SystemRoot junction + deleted old canonical target
+		process.chdir(project);
+		const win1 = join(root, "tk-win-1");
+		const win2 = join(root, "tk-win-2");
+		mkdirSync(win1, { recursive: true });
+		mkdirSync(win2, { recursive: true });
+		const w1s32 = join(win1, "System32");
+		const w2s32 = join(win2, "System32");
+		const juncWin = join(root, "tk-junc-win");
+		execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", w1s32, realSystem32], { windowsHide: true });
+		execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", w2s32, realSystem32], { windowsHide: true });
+		execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", juncWin, win1], { windowsHide: true });
+		try {
+			vi.stubEnv("SystemRoot", juncWin);
+			vi.stubEnv("windir", juncWin);
+			const t4a = await startLiveTarget("junc-1");
+			killProcessTree(t4a.pid!);
+			assert.equal(await exitedWithin(t4a, PROCESS_EXIT_BUDGET_MS), true);
+
+			execFileSync(cmdExe, ["/d", "/c", "rmdir", juncWin], { windowsHide: true });
+			execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", juncWin, win2], { windowsHide: true });
+			execFileSync(cmdExe, ["/d", "/c", "rmdir", w1s32], { windowsHide: true });
+			rmSync(win1, { recursive: true, force: true });
+
+			const t4b = await startLiveTarget("junc-2");
+			killProcessTree(t4b.pid!);
+			assert.equal(
+				await exitedWithin(t4b, PROCESS_EXIT_BUDGET_MS),
+				true,
+				"killed after SystemRoot junction retargeted and old target deleted",
+			);
+		} finally {
+			for (const j of [juncWin, w1s32, w2s32]) {
+				try {
+					execFileSync(cmdExe, ["/d", "/c", "rmdir", j], { windowsHide: true });
+				} catch {}
+			}
+		}
+	});
+
+	test("closing an MCP server still kills its whole tree after a SystemRoot junction is retargeted and its old target deleted", async () => {
+		const realSystemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+		const realSystem32 = join(realSystemRoot, "System32");
+		const cmdExe = join(realSystem32, "cmd.exe");
+		const win1 = join(root, "mcp-win-1");
+		const win2 = join(root, "mcp-win-2");
+		mkdirSync(win1, { recursive: true });
+		mkdirSync(win2, { recursive: true });
+		const w1s32 = join(win1, "System32");
+		const w2s32 = join(win2, "System32");
+		const juncWin = join(root, "mcp-junc-win");
+		execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", w1s32, realSystem32], { windowsHide: true });
+		execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", w2s32, realSystem32], { windowsHide: true });
+		execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", juncWin, win1], { windowsHide: true });
+
+		const grandPidFile = join(root, "mcp-grand.pid");
+		const grandScript = join(root, "mcp-grand.cjs");
+		writeFileSync(
+			grandScript,
+			`require("fs").writeFileSync(${JSON.stringify(grandPidFile)}, String(process.pid)); setTimeout(() => {}, 30000);`,
+		);
+		const parentScript = join(root, "mcp-parent.cjs");
+		writeFileSync(
+			parentScript,
+			`const { spawn } = require("child_process"); process.stdin.resume(); spawn(process.execPath, [${JSON.stringify(grandScript)}], { stdio: "ignore", windowsHide: true }); setTimeout(() => {}, 30000);`,
+		);
+
+		try {
+			vi.stubEnv("SystemRoot", juncWin);
+			vi.stubEnv("windir", juncWin);
+			const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+			const transport = new StdioTransport({
+				command: process.execPath,
+				args: [parentScript],
+				cwd: project,
+				projectCwd: project,
+				env: { SystemRoot: realSystemRoot, windir: realSystemRoot },
+				closeTimeoutMs: PROCESS_EXIT_BUDGET_MS,
+			});
+			await transport.start();
+			servers.push(await recordProcess(transport.pid!));
+			await vi.waitFor(() => assert.equal(existsSync(grandPidFile), true), { timeout: SERVER_START_BUDGET_MS });
+			const grandPid = Number(readFileSync(grandPidFile, "utf8").trim());
+			const grandRecorded = await recordProcess(grandPid);
+			servers.push(grandRecorded);
+
+			// Retarget junction from win1 to win2 and delete win1 while the server runs.
+			execFileSync(cmdExe, ["/d", "/c", "rmdir", juncWin], { windowsHide: true });
+			execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", juncWin, win2], { windowsHide: true });
+			execFileSync(cmdExe, ["/d", "/c", "rmdir", w1s32], { windowsHide: true });
+			rmSync(win1, { recursive: true, force: true });
+
+			await transport.close();
+
+			assert.equal(
+				await waitUntilGone(grandRecorded, PROCESS_EXIT_BUDGET_MS),
+				true,
+				"grandchild was killed by taskkill",
+			);
+		} finally {
+			for (const j of [juncWin, w1s32, w2s32]) {
+				try {
+					execFileSync(cmdExe, ["/d", "/c", "rmdir", j], { windowsHide: true });
+				} catch {}
+			}
+		}
+	});
 });

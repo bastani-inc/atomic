@@ -94,6 +94,52 @@ test.skipIf(process.platform !== "win32")(
 				realpathSync.native(realSystemRoot).toLowerCase(),
 				`drive-root candidate should prefer Windows directory, got ${fromDriveRootCandidate}`,
 			);
+
+			// Long (>260-char) \\?\ SystemRoot, long \\?\ TMP when cwd is Windows, and a short junction targeting a
+			// >260-char directory all succeed without ENOENT or uncaught ENOTCONN.
+			const uncaught: unknown[] = [];
+			const onUncaught = (err: unknown) => uncaught.push(err);
+			process.on("uncaughtException", onUncaught);
+			const origTmp = process.env.TMP;
+			const origTemp = process.env.TEMP;
+			try {
+				let longDir = join(root, "lp");
+				for (let i = 0; i < 12; i++) {
+					longDir = join(longDir, `seg_${String(i).padStart(2, "0")}_1234567890123456`);
+				}
+				const longExt = `\\\\?\\${longDir}`;
+				mkdirSync(longExt, { recursive: true });
+				const shortToLong = join(root, "j-long");
+				execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", shortToLong, longDir], { windowsHide: true });
+
+				process.chdir(project);
+				for (const [label, sr] of [
+					["long-ext-SystemRoot", longExt],
+					["short-junction-to-long", shortToLong],
+				] as const) {
+					process.env.SystemRoot = sr;
+					process.env.windir = sr;
+					const out = (await systemSources().run(cmdExe, ["/d", "/c", "cd"])).trim();
+					assert.ok(win32.isAbsolute(out), `${label}: expected absolute cwd, got ${JSON.stringify(out)}`);
+					assert.ok(!isInside(project, out), `${label}: ran inside project (${out})`);
+				}
+
+				process.chdir(realSystemRoot);
+				process.env.SystemRoot = realSystemRoot;
+				if (originalWindir === undefined) delete process.env.windir;
+				else process.env.windir = originalWindir;
+				process.env.TMP = longExt;
+				process.env.TEMP = longExt;
+				const fromLongTmp = (await systemSources().run(cmdExe, ["/d", "/c", "cd"])).trim();
+				assert.ok(win32.isAbsolute(fromLongTmp), `long-ext-TMP: got ${JSON.stringify(fromLongTmp)}`);
+				assert.deepEqual(uncaught, [], "no uncaught ENOTCONN exceptions on long \\\\?\\ paths");
+			} finally {
+				process.off("uncaughtException", onUncaught);
+				if (origTmp === undefined) delete process.env.TMP;
+				else process.env.TMP = origTmp;
+				if (origTemp === undefined) delete process.env.TEMP;
+				else process.env.TEMP = origTemp;
+			}
 		} finally {
 			process.chdir(originalCwd);
 			if (originalSystemRoot === undefined) delete process.env.SystemRoot;

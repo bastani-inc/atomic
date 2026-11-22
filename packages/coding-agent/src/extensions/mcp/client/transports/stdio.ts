@@ -11,8 +11,8 @@ import {
 	missingHelperOptions,
 } from "../../../../utils/helper-command.ts";
 import {
+	DEFAULT_WINDOWS_CWD_TIMEOUT_MS,
 	resolveSafeWindowsWorkingDirectoryAsync,
-	windowsWorkingDirectorySnapshotKey,
 } from "../../../../utils/windows-cwd.js";
 import { collectSecretsForMasking, redactOAuthErrorText, scrubUnknownErrorData } from "../oauth/redact.js";
 import { isJsonRpcResponse, type JsonRpcMessage, McpConnectionClosedError } from "../protocol/jsonrpc.js";
@@ -323,8 +323,6 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 	private closed = false;
 	/** Ends a lookup of the server's program that `close()` cuts short. */
 	private readonly lookup = new AbortController();
-	/** Cached `realpath`-verified Windows working directory for `taskkill.exe`, keyed by env and cwd snapshot. */
-	private preparedKillCwd: { readonly key: string; readonly cwd: string | undefined } | undefined;
 
 	private killCwdOptions(): { readonly protectedDirs: readonly (string | undefined)[] } {
 		return { protectedDirs: [this.options.projectCwd, this.options.cwd] };
@@ -416,13 +414,6 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 					this.lookup.signal,
 				);
 				if (interpreted !== undefined) ({ launch, args: leading } = interpreted);
-				const killCwdOpts = this.killCwdOptions();
-				const key = windowsWorkingDirectorySnapshotKey(killCwdOpts);
-				const safeKillCwd = await untilAborted(
-					resolveSafeWindowsWorkingDirectoryAsync(killCwdOpts),
-					this.lookup.signal,
-				);
-				this.preparedKillCwd = { key, cwd: safeKillCwd };
 			}
 		} catch (error) {
 			if (this.closed) throw new McpConnectionClosedError();
@@ -509,6 +500,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		const closeTimeoutMs = this.options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
 		/** The kill commands this close started that are still running, waited for once the server has closed. */
 		const kills = new Set<Promise<void>>();
+		const closeAbort = new AbortController();
 		const windowsKillCwd: {
 			done: boolean;
 			value: string | undefined;
@@ -518,22 +510,22 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 			value: undefined,
 			pending: undefined,
 		};
-		const ensureWindowsKillCwd = () => {
+		const startWindowsKillCwd = () => {
 			if (process.platform !== "win32") return;
-			const killCwdOpts = this.killCwdOptions();
-			const key = windowsWorkingDirectorySnapshotKey(killCwdOpts);
-			if (this.preparedKillCwd?.key === key) {
-				windowsKillCwd.done = true;
-				windowsKillCwd.value = this.preparedKillCwd.cwd;
-				windowsKillCwd.pending = undefined;
-				return;
-			}
+			const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+			const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
+			const budgetMs = Math.min(DEFAULT_WINDOWS_CWD_TIMEOUT_MS, Math.max(20, closeTimeoutMs));
 			windowsKillCwd.done = false;
-			windowsKillCwd.pending = resolveSafeWindowsWorkingDirectoryAsync(killCwdOpts).then(
+			windowsKillCwd.pending = resolveSafeWindowsWorkingDirectoryAsync({
+				...this.killCwdOptions(),
+				commandPath: taskkillPath,
+				preferCommandDir: true,
+				timeoutMs: budgetMs,
+				signal: closeAbort.signal,
+			}).then(
 				(safeCwd) => {
 					windowsKillCwd.done = true;
 					windowsKillCwd.value = safeCwd;
-					this.preparedKillCwd = { key, cwd: safeCwd };
 					return safeCwd;
 				},
 				() => {
@@ -562,6 +554,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 			let childClosed = false;
 			child.once("close", () => {
 				childClosed = true;
+				closeAbort.abort();
 				for (const timer of timers) clearTimeout(timer);
 				// Children of the server that ignored stdin closing would otherwise outlive it.
 				kill("SIGTERM");
@@ -592,7 +585,7 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 				),
 			);
 			child.stdin?.end();
-			if (!childClosed) ensureWindowsKillCwd();
+			if (!childClosed) startWindowsKillCwd();
 		});
 	}
 }

@@ -24,6 +24,7 @@ const hooks = vi.hoisted(() => ({
 	realpaths: new Map<string, string>(),
 	symlinks: new Set<string>(),
 	realpathThrows: new Set<string>(),
+	realpathHangs: new Set<string>(),
 	tmpdirValue: "C:\\Users\\tester\\AppData\\Local\\Temp",
 	processCreationTime: undefined as string | undefined,
 }));
@@ -118,13 +119,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		if (hooks.existingFiles.has(key)) return { isDirectory: () => false, isSymbolicLink: () => false } as Stats;
 		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
 	}) as typeof actual.lstat;
-	const realpath = (async (path: Parameters<typeof actual.realpath>[0]) => {
+	const realpath = ((path: Parameters<typeof actual.realpath>[0]) => {
 		const key = String(path);
-		if (hooks.realpathThrows.has(key)) throw Object.assign(new Error(`EACCES: ${key}`), { code: "EACCES" });
+		if (hooks.realpathHangs.has(key)) return new Promise<string>(() => {});
+		if (hooks.realpathThrows.has(key)) {
+			return Promise.reject(Object.assign(new Error(`EACCES: ${key}`), { code: "EACCES" }));
+		}
 		const mapped = hooks.realpaths.get(key);
-		if (mapped !== undefined) return mapped;
-		if (hooks.existingDirs.has(key) || hooks.existingFiles.has(key)) return key;
-		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+		if (mapped !== undefined) return Promise.resolve(mapped);
+		if (hooks.existingDirs.has(key) || hooks.existingFiles.has(key)) return Promise.resolve(key);
+		return Promise.reject(Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" }));
 	}) as typeof actual.realpath;
 	return { ...actual, stat, lstat, realpath, default: { ...actual, stat, lstat, realpath } };
 });
@@ -147,6 +151,7 @@ function setWindowsEnv(opts: {
 	realpaths?: Record<string, string>;
 	symlinks?: readonly string[];
 	realpathThrows?: readonly string[];
+	realpathHangs?: readonly string[];
 	tmpdir?: string;
 }) {
 	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
@@ -165,6 +170,8 @@ function setWindowsEnv(opts: {
 	for (const s of opts.symlinks ?? []) hooks.symlinks.add(s);
 	hooks.realpathThrows.clear();
 	for (const t of opts.realpathThrows ?? []) hooks.realpathThrows.add(t);
+	hooks.realpathHangs.clear();
+	for (const h of opts.realpathHangs ?? []) hooks.realpathHangs.add(h);
 	hooks.tmpdirValue = opts.tmpdir ?? "C:\\Users\\tester\\AppData\\Local\\Temp";
 }
 
@@ -179,6 +186,7 @@ afterEach(() => {
 	hooks.realpaths.clear();
 	hooks.symlinks.clear();
 	hooks.realpathThrows.clear();
+	hooks.realpathHangs.clear();
 	hooks.processCreationTime = undefined;
 	Object.defineProperty(process, "platform", originalPlatform);
 	process.cwd = originalCwd;
@@ -479,6 +487,103 @@ describe("intercom systemSources().run() Windows cwd selection", () => {
 		});
 		const call = await runHostCommand("C:\\Tools\\node.exe");
 		assert.equal(call.options.cwd, "C:\\Windows");
+	});
+
+	test("preserves \\\\?\\ and \\\\?\\UNC\\ extended prefixes for >248-char outside directories while still rejecting long in-project paths", async () => {
+		const longTail = Array.from({ length: 12 }, (_, i) => `seg_${String(i).padStart(2, "0")}_1234567890123456`).join(
+			"\\",
+		);
+		const longPlain = `C:\\longroot\\${longTail}`;
+		const longExt = `\\\\?\\${longPlain}`;
+		const longUncPlain = `\\\\fileserver\\share\\${longTail}`;
+		const longUncExt = `\\\\?\\UNC\\fileserver\\share\\${longTail}`;
+		const longInProjExt = `\\\\?\\C:\\repo\\project\\${longTail}`;
+
+		// 1. Raw \\?\ >248-char outside SystemRoot keeps \\?\ prefix for spawn.
+		setWindowsEnv({
+			cwd: "C:\\repo\\project",
+			systemRoot: longExt,
+			windir: longExt,
+			dirs: ["C:\\repo\\project", longExt, "C:\\Windows"],
+			realpaths: { "C:\\repo\\project": "C:\\repo\\project", [longExt]: longExt, "C:\\Windows": "C:\\Windows" },
+		});
+		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, longExt);
+
+		// 2. Plain >248-char outside SystemRoot gets \\?\ prefix for spawn.
+		hooks.execCalls.length = 0;
+		setWindowsEnv({
+			cwd: "C:\\repo\\project",
+			systemRoot: longPlain,
+			windir: longPlain,
+			dirs: ["C:\\repo\\project", longPlain, longExt, "C:\\Windows"],
+			realpaths: {
+				"C:\\repo\\project": "C:\\repo\\project",
+				[longPlain]: longPlain,
+				[longExt]: longExt,
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, longExt);
+
+		// 3. Short junction pointing to a >248-char target gets \\?\ prefix for spawn.
+		hooks.execCalls.length = 0;
+		setWindowsEnv({
+			cwd: "C:\\repo\\project",
+			systemRoot: "C:\\temp\\j",
+			windir: "C:\\temp\\j",
+			dirs: ["C:\\repo\\project", "C:\\temp\\j", longExt, "C:\\Windows"],
+			symlinks: ["C:\\temp\\j"],
+			realpaths: {
+				"C:\\repo\\project": "C:\\repo\\project",
+				"C:\\temp\\j": longPlain,
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, longExt);
+
+		// 4. Long UNC outside path uses \\?\UNC\server\share\..., never \\?\\\server\share.
+		hooks.execCalls.length = 0;
+		setWindowsEnv({
+			cwd: "C:\\repo\\project",
+			systemRoot: longUncExt,
+			windir: longUncExt,
+			dirs: ["C:\\repo\\project", longUncExt, "C:\\Windows"],
+			realpaths: {
+				"C:\\repo\\project": "C:\\repo\\project",
+				[longUncExt]: longUncPlain,
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, longUncExt);
+
+		// 5. Long \\?\ path INSIDE the project folder is still rejected in favor of C:\Windows.
+		hooks.execCalls.length = 0;
+		setWindowsEnv({
+			cwd: "C:\\repo\\project",
+			systemRoot: longInProjExt,
+			windir: longInProjExt,
+			dirs: ["C:\\repo\\project", longInProjExt, "C:\\Windows"],
+			realpaths: {
+				"C:\\repo\\project": "C:\\repo\\project",
+				[longInProjExt]: longInProjExt,
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		assert.equal((await runHostCommand("C:\\Tools\\node.exe")).options.cwd, "C:\\Windows");
+	});
+
+	test("bounds hung UNC process.cwd() realpath so local C:\\Windows is still selected promptly", async () => {
+		setWindowsEnv({
+			cwd: "\\\\hung-server\\share\\project",
+			systemRoot: "C:\\Windows",
+			dirs: ["\\\\hung-server\\share\\project", "C:\\Windows"],
+			realpathHangs: ["\\\\hung-server\\share\\project"],
+		});
+		const startedAt = Date.now();
+		const call = await runHostCommand("C:\\Tools\\node.exe");
+		const elapsedMs = Date.now() - startedAt;
+		assert.equal(call.options.cwd, "C:\\Windows");
+		assert.ok(elapsedMs < 1_000, `hung UNC realpath took ${elapsedMs}ms`);
 	});
 
 	test("leaves cwd unset on POSIX platforms", async () => {

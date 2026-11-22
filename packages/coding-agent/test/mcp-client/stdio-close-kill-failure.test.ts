@@ -24,10 +24,12 @@ interface VirtualWindowsFs {
 	readonly dirs: Set<string>;
 	readonly realpaths: Map<string, string>;
 	readonly symlinks: Set<string>;
+	readonly realpathHangs?: Set<string>;
 }
 
 const hooks = vi.hoisted(() => ({
 	spawnCalls: [] as SpawnCall[],
+	fsCalls: [] as string[],
 	spawnOverride: undefined as
 		| ((command: string, args: readonly string[], options: SpawnOptions) => ChildProcess)
 		| undefined,
@@ -44,6 +46,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		const vfs = hooks.virtualFs;
 		if (!vfs) return actual.stat(path);
 		const key = String(path);
+		hooks.fsCalls.push(`stat:${key}`);
 		if (vfs.dirs.has(key)) return { isDirectory: () => true } as Stats;
 		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
 	}) as typeof actual.stat;
@@ -51,18 +54,21 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		const vfs = hooks.virtualFs;
 		if (!vfs) return actual.lstat(path);
 		const key = String(path);
+		hooks.fsCalls.push(`lstat:${key}`);
 		if (vfs.symlinks.has(key)) return { isDirectory: () => false, isSymbolicLink: () => true } as Stats;
 		if (vfs.dirs.has(key)) return { isDirectory: () => true, isSymbolicLink: () => false } as Stats;
 		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
 	}) as typeof actual.lstat;
-	const realpath = (async (path: Parameters<typeof actual.realpath>[0]) => {
+	const realpath = ((path: Parameters<typeof actual.realpath>[0]) => {
 		const vfs = hooks.virtualFs;
 		if (!vfs) return actual.realpath(path);
 		const key = String(path);
+		hooks.fsCalls.push(`realpath:${key}`);
+		if (vfs.realpathHangs?.has(key)) return new Promise<string>(() => {});
 		const mapped = vfs.realpaths.get(key);
-		if (mapped !== undefined) return mapped;
-		if (vfs.dirs.has(key)) return key;
-		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+		if (mapped !== undefined) return Promise.resolve(mapped);
+		if (vfs.dirs.has(key)) return Promise.resolve(key);
+		return Promise.reject(Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" }));
 	}) as typeof actual.realpath;
 	return { ...actual, stat, lstat, realpath, default: { ...actual, stat, lstat, realpath } };
 });
@@ -143,6 +149,7 @@ async function importWindowsStdioTransport() {
 afterEach(async () => {
 	vi.useRealTimers();
 	hooks.spawnCalls.length = 0;
+	hooks.fsCalls.length = 0;
 	hooks.spawnOverride = undefined;
 	hooks.crossSpawnOverride = undefined;
 	hooks.virtualFs = undefined;
@@ -503,6 +510,99 @@ describe("StdioTransport Windows killProcessTree failure and bound handling", ()
 
 		assert.equal(hooks.spawnCalls.length, 1);
 		assert.equal(hooks.spawnCalls[0]!.options.cwd, "D:\\");
+	});
+
+	it("does not probe kill-command directories during start() and handles a retargeted/deleted SystemRoot junction at close()", async () => {
+		const fakeChild = createFakeChild();
+		hooks.crossSpawnOverride = () => {
+			process.nextTick(() => fakeChild.emit("spawn"));
+			return fakeChild as unknown as ChildProcess;
+		};
+		hooks.spawnOverride = () => {
+			const helper = new EventEmitter();
+			queueMicrotask(() => {
+				fakeChild.exitCode = 1;
+				fakeChild.emit("close", 1, null);
+				helper.emit("exit", 0, null);
+			});
+			return helper as unknown as ChildProcess;
+		};
+		const dirs = new Set(["C:\\repo\\project", "C:\\temp\\junc-win", "C:\\temp\\win-1", "C:\\temp\\win-2"]);
+		const realpaths = new Map([
+			["C:\\repo\\project", "C:\\repo\\project"],
+			["C:\\temp\\junc-win", "C:\\temp\\win-1"],
+			["C:\\temp\\win-1", "C:\\temp\\win-1"],
+			["C:\\temp\\win-2", "C:\\temp\\win-2"],
+		]);
+		hooks.virtualFs = { dirs, symlinks: new Set(["C:\\temp\\junc-win"]), realpaths };
+		hooks.tmpdirOverride = "C:\\Users\\tester\\AppData\\Local\\Temp";
+		process.cwd = () => "C:\\repo\\project";
+		process.env.SystemRoot = "C:\\temp\\junc-win";
+		process.env.windir = "C:\\temp\\junc-win";
+
+		const StdioTransport = await importWindowsStdioTransport();
+		const transport = new StdioTransport({
+			command: "C:\\Tools\\node.exe",
+			cwd: "C:\\repo\\project",
+			projectCwd: "C:\\repo\\project",
+			closeTimeoutMs: 50,
+		});
+		await transport.start();
+		assert.deepEqual(hooks.fsCalls, [], "start() performs no kill-cwd filesystem probes");
+
+		// Retarget junction from win-1 to win-2 and delete win-1 before close().
+		realpaths.set("C:\\temp\\junc-win", "C:\\temp\\win-2");
+		dirs.delete("C:\\temp\\win-1");
+		realpaths.delete("C:\\temp\\win-1");
+
+		await transport.close();
+
+		assert.equal(hooks.spawnCalls.length, 1);
+		assert.equal(hooks.spawnCalls[0]!.options.cwd, "C:\\temp\\win-2");
+	});
+
+	it("bounds hung UNC process.cwd() realpath during close() and still selects C:\\Windows without stalling", async () => {
+		const fakeChild = createFakeChild();
+		hooks.crossSpawnOverride = () => {
+			process.nextTick(() => fakeChild.emit("spawn"));
+			return fakeChild as unknown as ChildProcess;
+		};
+		hooks.spawnOverride = () => {
+			const helper = new EventEmitter();
+			queueMicrotask(() => {
+				fakeChild.exitCode = 1;
+				fakeChild.emit("close", 1, null);
+				helper.emit("exit", 0, null);
+			});
+			return helper as unknown as ChildProcess;
+		};
+		hooks.virtualFs = {
+			dirs: new Set(["\\\\hung-server\\share\\project", "C:\\Windows"]),
+			symlinks: new Set(),
+			realpaths: new Map([["C:\\Windows", "C:\\Windows"]]),
+			realpathHangs: new Set(["\\\\hung-server\\share\\project"]),
+		};
+		process.cwd = () => "\\\\hung-server\\share\\project";
+		process.env.SystemRoot = "C:\\Windows";
+		process.env.windir = "C:\\Windows";
+
+		const StdioTransport = await importWindowsStdioTransport();
+		const transport = new StdioTransport({
+			command: "C:\\Tools\\node.exe",
+			cwd: "\\\\hung-server\\share\\project",
+			projectCwd: "\\\\hung-server\\share\\project",
+			closeTimeoutMs: 120,
+		});
+		await transport.start();
+		assert.deepEqual(hooks.fsCalls, [], "start() does not hang on UNC realpath");
+
+		const startedAt = Date.now();
+		await transport.close();
+		const elapsedMs = Date.now() - startedAt;
+
+		assert.equal(hooks.spawnCalls.length, 1);
+		assert.equal(hooks.spawnCalls[0]!.options.cwd, "C:\\Windows");
+		assert.ok(elapsedMs < 1_000, `close() took ${elapsedMs}ms under hung UNC realpath`);
 	});
 
 	it.skipIf(process.platform !== "win32")(

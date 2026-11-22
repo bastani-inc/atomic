@@ -322,7 +322,12 @@ export async function stopWindowsProcess(
 	if (performance.now() - entered >= WINDOWS_STOP_START_MS) return;
 	const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
 	const powershellPath = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-	const cwd = await resolveSafeWindowsWorkingDirectoryAsync({ commandPath: powershellPath });
+	const cwdBudgetMs = Math.min(150, Math.max(0, Math.floor(WINDOWS_STOP_START_MS - (performance.now() - entered))));
+	const cwd = await resolveSafeWindowsWorkingDirectoryAsync({
+		commandPath: powershellPath,
+		preferCommandDir: true,
+		timeoutMs: cwdBudgetMs,
+	});
 	if (performance.now() - entered >= WINDOWS_STOP_START_MS) return;
 	await new Promise<void>((resolve) => {
 		let powershell: ReturnType<typeof spawn>;

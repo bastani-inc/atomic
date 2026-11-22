@@ -9,7 +9,7 @@ import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
 import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
 import { pathExists } from "../../utils/path-exists.ts";
-import { resolveSafeWindowsWorkingDirectoryAsync } from "../../utils/windows-cwd.js";
+import { DEFAULT_WINDOWS_CWD_TIMEOUT_MS, resolveSafeWindowsWorkingDirectoryAsync } from "../../utils/windows-cwd.js";
 import { asyncScope } from "../async-scope.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
 import { containProcessTree, type ProcessTreeContainment } from "../process-tree-containment.ts";
@@ -210,7 +210,12 @@ function treeRunning(tree: ProcessTreeContainment | undefined): boolean {
 async function taskkillTree(pid: number, deadline: number): Promise<number[]> {
 	const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
 	const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
-	const cwd = await resolveSafeWindowsWorkingDirectoryAsync({ commandPath: taskkillPath });
+	const budgetMs = Math.min(DEFAULT_WINDOWS_CWD_TIMEOUT_MS, Math.max(0, deadline - Date.now()));
+	const cwd = await resolveSafeWindowsWorkingDirectoryAsync({
+		commandPath: taskkillPath,
+		preferCommandDir: true,
+		timeoutMs: budgetMs,
+	});
 	return new Promise((resolve) => {
 		let output = "";
 		let taskkill: ChildProcess;
