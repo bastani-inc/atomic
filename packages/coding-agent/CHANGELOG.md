@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, MCP server shutdown and process-tree kill commands now validate their working directory through canonical path resolution and explicit drive-root handling, so `taskkill.exe` never runs inside the project folder even when `SystemRoot` or `windir` points to a junction, `subst` drive, extended-length alias, bare drive, or directory inside the project.
+
 ## [0.10.4] - 2026-11-22
 
 Atomic reaches your first prompt sooner, installs less, keeps subagent sessions in your store, and protects your workspace and credentials.

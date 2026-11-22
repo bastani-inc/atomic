@@ -9,6 +9,7 @@ import { findHelperExecutable, findHelperExecutableAsync } from "./helper-comman
 import { type HostChildProcess, spawnContainedProcess } from "./host-spawn.ts";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
+import { getCachedOrLexicalSafeWindowsWorkingDirectory, warmSafeWindowsWorkingDirectoryAsync } from "./windows-cwd.js";
 import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "./worker-threads.js";
 
 export interface ShellConfig {
@@ -360,14 +361,84 @@ const PARENT_GUARDIAN_SOURCE = `
 ${EVAL_WORKER_BUILTIN}
 const { parentPort, workerData } = builtin("node:worker_threads");
 const { spawn } = builtin("node:child_process");
-const { existsSync } = builtin("node:fs");
-const { join } = builtin("node:path");
+const { existsSync, lstatSync, realpathSync, statSync } = builtin("node:fs");
+const { tmpdir } = builtin("node:os");
+const { join, win32 } = builtin("node:path");
 const tracked = new Map();
 parentPort.on("message", ({ action, pid }) => {
   if (action === "track") tracked.set(pid, false);
   else if (action === "exited") { if (tracked.has(pid)) tracked.set(pid, true); }
   else tracked.delete(pid);
 });
+function normalizeWinPath(v) {
+  if (!v || v.includes("\\0")) return undefined;
+  const s = v.replaceAll("/", "\\\\");
+  const isDrive = (p) => p.length >= 3 && ((p.charCodeAt(0) >= 65 && p.charCodeAt(0) <= 90) || (p.charCodeAt(0) >= 97 && p.charCodeAt(0) <= 122)) && p[1] === ":" && p[2] === "\\\\";
+  if (s.startsWith("\\\\\\\\?\\\\") || s.startsWith("\\\\\\\\.\\\\")) {
+    const r = s.slice(4);
+    if (r.length >= 4 && r.slice(0, 4).toLowerCase() === "unc\\\\") return normalizeWinPath("\\\\\\\\" + r.slice(4));
+    return isDrive(r) ? win32.resolve(r) : undefined;
+  }
+  if (s.startsWith("\\\\\\\\")) {
+    const r = s.slice(2);
+    const i = r.indexOf("\\\\");
+    if (i <= 0) return undefined;
+    const srv = r.slice(0, i);
+    const rest = r.slice(i + 1);
+    const j = rest.indexOf("\\\\");
+    const shr = j === -1 ? rest : rest.slice(0, j);
+    if (srv === "." || srv === ".." || !shr || shr === "." || shr === "..") return undefined;
+    return win32.resolve(s);
+  }
+  return isDrive(s) ? win32.resolve(s) : undefined;
+}
+function winRoot(p) {
+  const n = normalizeWinPath(p);
+  if (!n) return undefined;
+  const r = win32.parse(n).root;
+  return r.length > 1 ? (r.endsWith("\\\\") ? r : r + "\\\\") : undefined;
+}
+function tryReal(p) {
+  try {
+    const fn = typeof realpathSync.native === "function" ? realpathSync.native : realpathSync;
+    return normalizeWinPath(fn(p));
+  } catch {
+    try { return normalizeWinPath(realpathSync(p)); } catch { return undefined; }
+  }
+}
+function isInsideDir(f, c) {
+  const rel = win32.relative(f.toLowerCase(), c.toLowerCase());
+  return rel !== ".." && !rel.startsWith("..\\\\") && !win32.isAbsolute(rel);
+}
+function safeKillCwd(commandPath) {
+  let cwdRaw;
+  try { cwdRaw = process.cwd(); } catch {}
+  const cwdLex = cwdRaw ? normalizeWinPath(cwdRaw) : undefined;
+  const cwdReal = cwdRaw ? tryReal(cwdRaw) : undefined;
+  const temp = tmpdir();
+  const cands = [process.env.SystemRoot, process.env.windir, "C:\\\\Windows", temp, winRoot(commandPath), winRoot(temp), winRoot(cwdReal), winRoot(cwdLex), "C:\\\\"];
+  let fallback;
+  for (const raw of cands) {
+    const lex = raw ? normalizeWinPath(raw) : undefined;
+    if (!lex) continue;
+    try { if (!statSync(raw).isDirectory()) continue; } catch { continue; }
+    const real = tryReal(raw);
+    let unverified = false;
+    if (!real) { try { unverified = lstatSync(raw).isSymbolicLink(); } catch {} }
+    const chosen = real && (real.length <= 248 || real.length <= lex.length) ? real : lex;
+    let blocked = unverified;
+    if (!blocked && cwdLex) {
+      const f = cwdReal || cwdLex;
+      const c = real || lex;
+      const fRoot = winRoot(f);
+      const isRealRoot = fRoot && f.toLowerCase() === fRoot.toLowerCase();
+      blocked = isRealRoot ? f.toLowerCase() === c.toLowerCase() : (isInsideDir(f, c) || (!winRoot(cwdLex) || cwdLex.toLowerCase() !== winRoot(cwdLex).toLowerCase()) && isInsideDir(cwdLex, lex));
+    }
+    if (!blocked) return chosen;
+    if (!fallback) fallback = chosen;
+  }
+  return fallback;
+}
 function killTree(pid, exited) {
   if (process.platform === "win32") {
     if (exited) return;
@@ -375,9 +446,11 @@ function killTree(pid, exited) {
     // unconsumed async "error" from a failed spawn would take the guardian thread
     // down and leak every detached child it exists to reap.
     try {
-      // In the system directory: a kill never keeps the folder Atomic ran in in use.
-      const systemRoot = process.env.SystemRoot || "C:\\\\Windows";
-      const child = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], { cwd: systemRoot, stdio: "ignore", detached: true, windowsHide: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } });
+      // In a verified directory outside the project: a kill never keeps the folder Atomic ran in in use.
+      const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\\\Windows";
+      const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
+      const cwd = safeKillCwd(taskkillPath);
+      const child = spawn(taskkillPath, ["/F", "/T", "/PID", String(pid)], { ...(cwd === undefined ? {} : { cwd }), stdio: "ignore", detached: true, windowsHide: true, env: { ...process.env, AI_AGENT: workerData.aiAgent } });
       child.once("error", () => {});
     } catch {}
     return;
@@ -464,6 +537,9 @@ export async function spawnShellProcess(
 	args: readonly string[],
 	options: { cwd: string; env: NodeJS.ProcessEnv; stdin: "pipe" | "ignore" },
 ): Promise<ShellProcess> {
+	if (process.platform === "win32") {
+		void warmSafeWindowsWorkingDirectoryAsync({ protectedDirs: [options.cwd] }).catch(() => {});
+	}
 	const stdio = [options.stdin, "pipe", "pipe"] as const;
 	const contained = await spawnContainedProcess(shell, args, { cwd: options.cwd, env: options.env, stdio });
 	if (contained !== undefined) {
@@ -557,11 +633,13 @@ export function killChildProcessTree(child: ChildProcess, exited: boolean): void
 
 function taskkillTree(pid: number, settled?: () => void): void {
 	// Use the trusted System32 executable so cleanup does not depend on PATH.
-	const systemRoot = process.env.SystemRoot || "C:\\Windows";
+	const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+	const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
+	const cwd = getCachedOrLexicalSafeWindowsWorkingDirectory({ commandPath: taskkillPath });
 	try {
-		const child = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], {
-			// In the system directory: a kill never keeps the folder Atomic runs in, the project's, in use.
-			cwd: systemRoot,
+		const child = spawn(taskkillPath, ["/F", "/T", "/PID", String(pid)], {
+			// In a verified safe directory outside the project: a kill never keeps the folder Atomic runs in in use.
+			...(cwd === undefined ? {} : { cwd }),
 			stdio: "ignore",
 			detached: true,
 			// `detached` gives the child its own console on Windows unless this is

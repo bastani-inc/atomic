@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { type ChildProcess, execFileSync, type SpawnOptions } from "node:child_process";
 import {
 	chmodSync,
 	copyFileSync,
@@ -8,6 +8,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -104,10 +105,25 @@ function exitedWithin(child: ChildProcess, timeoutMs: number): Promise<boolean> 
 	});
 }
 
-/** Whether `path` is `folder` or inside it; Windows compares paths in any letter case. */
+/** Whether `path` is `folder` or inside it; Windows compares real paths in any letter case. */
 function isInside(folder: string, path: string): boolean {
-	const fromFolder = relative(windows ? folder.toLowerCase() : folder, windows ? path.toLowerCase() : path);
-	return !fromFolder.startsWith("..") && !isAbsolute(fromFolder);
+	let targetFolder = folder;
+	let targetPath = path;
+	if (windows) {
+		try {
+			targetFolder = realpathSync.native(folder);
+		} catch {}
+		try {
+			targetPath = realpathSync.native(path);
+		} catch {}
+	}
+	const fromFolder = relative(
+		windows ? targetFolder.toLowerCase() : targetFolder,
+		windows ? targetPath.toLowerCase() : targetPath,
+	);
+	return (
+		fromFolder !== ".." && !fromFolder.startsWith("..\\") && !fromFolder.startsWith("../") && !isAbsolute(fromFolder)
+	);
 }
 
 let root: string;
@@ -423,5 +439,51 @@ describe.skipIf(!windows)("commands Atomic starts to end a process never run in 
 		assert.equal(commands.length, 1, "one command ends the tree");
 		assert.ok(!isInside(project, commands[0]!.cwd), `${commands[0]!.child.spawnfile} ran in the project folder`);
 		assert.equal(await exitedWithin(target, PROCESS_EXIT_BUDGET_MS), true, "the tree was ended");
+	});
+
+	test("closing an MCP server never runs taskkill inside a junction pointing into the project folder", async () => {
+		const realSystemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+		const realTaskkill = join(realSystemRoot, "System32", "taskkill.exe");
+		const cmdExe = join(realSystemRoot, "System32", "cmd.exe");
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		plantProgram(bin, "atomic-test-mcp-server");
+		vi.stubEnv("PATH", bin);
+
+		// Create a fake SystemRoot inside the project folder with a real taskkill.exe, then point an external
+		// junction at it via `mklink /J` so its lexical path looks outside the project while its target is inside.
+		const inProjectWin = join(project, "fake-win");
+		mkdirSync(join(inProjectWin, "System32"), { recursive: true });
+		copyFileSync(realTaskkill, join(inProjectWin, "System32", "taskkill.exe"));
+		const externalJunction = join(root, "junc-win");
+		execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", externalJunction, inProjectWin], { windowsHide: true });
+
+		const { StdioTransport } = await import("../src/extensions/mcp/client/transports/stdio.ts");
+		const transport = new StdioTransport({
+			command: "atomic-test-mcp-server",
+			args: ["-e", "setTimeout(() => {}, 5000)"],
+			cwd: project,
+			projectCwd: project,
+			closeTimeoutMs: PROCESS_EXIT_BUDGET_MS,
+		});
+		await transport.start();
+		servers.push(await recordProcess(transport.pid!));
+
+		// Point SystemRoot/windir at the junction after start() so close() must refresh and reject the junction.
+		vi.stubEnv("SystemRoot", externalJunction);
+		vi.stubEnv("windir", externalJunction);
+		const before = startedProcesses.length;
+
+		await transport.close();
+
+		const commands = startedProcesses.slice(before);
+		assert.ok(commands.length > 0, "the close started taskkill to end the server");
+		for (const { child, cwd } of commands) {
+			assert.ok(
+				child.exitCode !== null || child.signalCode !== null,
+				`${child.spawnfile} still runs after the close`,
+			);
+			assert.ok(!isInside(project, cwd), `${child.spawnfile} ran inside the project folder via junction (${cwd})`);
+		}
 	});
 });

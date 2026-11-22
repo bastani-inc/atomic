@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, Intercom's host-identity and broker-stop commands now resolve junctions, symlinks, short names, `subst` drives, and extended-length (`\\?\`, `\\.\`, `\\?\UNC\`) path aliases when checking whether a working directory is inside the project folder, reject raw volume devices and incomplete UNC roots, fall back to the working directory's drive root when needed, and prefer `SystemRoot` when running from a genuine drive root.
+
 ## [0.10.4] - 2026-11-22
 
 ### Added

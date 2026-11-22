@@ -9,6 +9,7 @@ import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
 import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
 import { pathExists } from "../../utils/path-exists.ts";
+import { resolveSafeWindowsWorkingDirectoryAsync } from "../../utils/windows-cwd.js";
 import { asyncScope } from "../async-scope.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
 import { containProcessTree, type ProcessTreeContainment } from "../process-tree-containment.ts";
@@ -206,15 +207,17 @@ function treeRunning(tree: ProcessTreeContainment | undefined): boolean {
 	}
 }
 
-function taskkillTree(pid: number, deadline: number): Promise<number[]> {
+async function taskkillTree(pid: number, deadline: number): Promise<number[]> {
+	const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+	const taskkillPath = join(systemRoot, "System32", "taskkill.exe");
+	const cwd = await resolveSafeWindowsWorkingDirectoryAsync({ commandPath: taskkillPath });
 	return new Promise((resolve) => {
 		let output = "";
 		let taskkill: ChildProcess;
-		const systemRoot = process.env.SystemRoot || "C:\\Windows";
 		try {
-			// In the system directory: a kill never keeps the folder Atomic runs in in use.
-			taskkill = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], {
-				cwd: systemRoot,
+			// In a verified safe directory outside the project: a kill never keeps the folder Atomic runs in in use.
+			taskkill = spawn(taskkillPath, ["/F", "/T", "/PID", String(pid)], {
+				...(cwd === undefined ? {} : { cwd }),
 				stdio: ["ignore", "pipe", "ignore"],
 				windowsHide: true,
 				env: createChildProcessEnvironment(),

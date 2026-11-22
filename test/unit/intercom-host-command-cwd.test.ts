@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import type { ExecFileOptions } from "node:child_process";
+import type { ExecFileOptions, SpawnOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
 import type { Stats } from "node:fs";
 import { afterEach, describe, test, vi } from "vitest";
 
@@ -9,11 +10,27 @@ interface ExecCall {
 	readonly options: ExecFileOptions;
 }
 
+interface SpawnCall {
+	readonly file: string;
+	readonly args: readonly string[];
+	readonly options: SpawnOptions;
+}
+
 const hooks = vi.hoisted(() => ({
 	execCalls: [] as ExecCall[],
+	spawnCalls: [] as SpawnCall[],
 	existingDirs: new Set<string>(),
 	existingFiles: new Set<string>(),
+	realpaths: new Map<string, string>(),
+	symlinks: new Set<string>(),
+	realpathThrows: new Set<string>(),
 	tmpdirValue: "C:\\Users\\tester\\AppData\\Local\\Temp",
+	processCreationTime: undefined as string | undefined,
+}));
+
+vi.mock("@bastani/atomic", () => ({
+	nativeTerminateProcess: undefined,
+	readProcessCreationTime: async () => hooks.processCreationTime,
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -28,7 +45,13 @@ vi.mock("node:child_process", async (importOriginal) => {
 		queueMicrotask(() => callback(null, "ok\n", ""));
 		return { stdin: { end() {} } };
 	}) as unknown as typeof actual.execFile;
-	return { ...actual, execFile, default: { ...actual, execFile } };
+	const spawn = ((file: string, args: readonly string[], options: SpawnOptions = {}) => {
+		hooks.spawnCalls.push({ file, args, options });
+		const child = Object.assign(new EventEmitter(), { unref() {} });
+		queueMicrotask(() => child.emit("exit", 0, null));
+		return child;
+	}) as unknown as typeof actual.spawn;
+	return { ...actual, execFile, spawn, default: { ...actual, execFile, spawn } };
 });
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -48,7 +71,62 @@ vi.mock("node:fs", async (importOriginal) => {
 		}
 		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
 	}) as typeof actual.statSync;
-	return { ...actual, statSync, default: { ...actual, statSync } };
+	const lstatSync = ((path: Parameters<typeof actual.lstatSync>[0]) => {
+		const key = String(path);
+		if (hooks.symlinks.has(key)) {
+			return { isDirectory: () => false, isSymbolicLink: () => true } as Stats;
+		}
+		if (hooks.existingDirs.has(key)) {
+			return { isDirectory: () => true, isSymbolicLink: () => false } as Stats;
+		}
+		if (hooks.existingFiles.has(key)) {
+			return { isDirectory: () => false, isSymbolicLink: () => false } as Stats;
+		}
+		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+	}) as typeof actual.lstatSync;
+	const resolveReal = (path: Parameters<typeof actual.realpathSync>[0]) => {
+		const key = String(path);
+		if (hooks.realpathThrows.has(key)) {
+			throw Object.assign(new Error(`EACCES: ${key}`), { code: "EACCES" });
+		}
+		const mapped = hooks.realpaths.get(key);
+		if (mapped !== undefined) return mapped;
+		if (hooks.existingDirs.has(key) || hooks.existingFiles.has(key)) return key;
+		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+	};
+	const realpathSync = Object.assign(resolveReal, { native: resolveReal }) as typeof actual.realpathSync;
+	return { ...actual, statSync, lstatSync, realpathSync, default: { ...actual, statSync, lstatSync, realpathSync } };
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	const stat = (async (path: Parameters<typeof actual.stat>[0]) => {
+		const key = String(path);
+		if (key.includes("\0")) {
+			throw Object.assign(new TypeError("The argument 'path' must be a string without null bytes"), {
+				code: "ERR_INVALID_ARG_VALUE",
+			});
+		}
+		if (hooks.existingDirs.has(key)) return { isDirectory: () => true } as Stats;
+		if (hooks.existingFiles.has(key)) return { isDirectory: () => false } as Stats;
+		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+	}) as typeof actual.stat;
+	const lstat = (async (path: Parameters<typeof actual.lstat>[0]) => {
+		const key = String(path);
+		if (hooks.symlinks.has(key)) return { isDirectory: () => false, isSymbolicLink: () => true } as Stats;
+		if (hooks.existingDirs.has(key)) return { isDirectory: () => true, isSymbolicLink: () => false } as Stats;
+		if (hooks.existingFiles.has(key)) return { isDirectory: () => false, isSymbolicLink: () => false } as Stats;
+		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+	}) as typeof actual.lstat;
+	const realpath = (async (path: Parameters<typeof actual.realpath>[0]) => {
+		const key = String(path);
+		if (hooks.realpathThrows.has(key)) throw Object.assign(new Error(`EACCES: ${key}`), { code: "EACCES" });
+		const mapped = hooks.realpaths.get(key);
+		if (mapped !== undefined) return mapped;
+		if (hooks.existingDirs.has(key) || hooks.existingFiles.has(key)) return key;
+		throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+	}) as typeof actual.realpath;
+	return { ...actual, stat, lstat, realpath, default: { ...actual, stat, lstat, realpath } };
 });
 
 vi.mock("node:os", async (importOriginal) => {
@@ -66,6 +144,9 @@ function setWindowsEnv(opts: {
 	windir?: string;
 	dirs?: readonly string[];
 	files?: readonly string[];
+	realpaths?: Record<string, string>;
+	symlinks?: readonly string[];
+	realpathThrows?: readonly string[];
 	tmpdir?: string;
 }) {
 	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
@@ -78,6 +159,12 @@ function setWindowsEnv(opts: {
 	for (const d of opts.dirs ?? []) hooks.existingDirs.add(d);
 	hooks.existingFiles.clear();
 	for (const f of opts.files ?? []) hooks.existingFiles.add(f);
+	hooks.realpaths.clear();
+	for (const [k, v] of Object.entries(opts.realpaths ?? {})) hooks.realpaths.set(k, v);
+	hooks.symlinks.clear();
+	for (const s of opts.symlinks ?? []) hooks.symlinks.add(s);
+	hooks.realpathThrows.clear();
+	for (const t of opts.realpathThrows ?? []) hooks.realpathThrows.add(t);
 	hooks.tmpdirValue = opts.tmpdir ?? "C:\\Users\\tester\\AppData\\Local\\Temp";
 }
 
@@ -86,8 +173,13 @@ const savedWindir = process.env.windir;
 
 afterEach(() => {
 	hooks.execCalls.length = 0;
+	hooks.spawnCalls.length = 0;
 	hooks.existingDirs.clear();
 	hooks.existingFiles.clear();
+	hooks.realpaths.clear();
+	hooks.symlinks.clear();
+	hooks.realpathThrows.clear();
+	hooks.processCreationTime = undefined;
 	Object.defineProperty(process, "platform", originalPlatform);
 	process.cwd = originalCwd;
 	if (savedSystemRoot === undefined) delete process.env.SystemRoot;
@@ -190,7 +282,200 @@ describe("intercom systemSources().run() Windows cwd selection", () => {
 		setWindowsEnv({
 			cwd: "C:\\",
 			systemRoot: "C:\\Windows",
-			dirs: ["C:\\Windows"],
+			dirs: ["C:\\", "C:\\Windows"],
+		});
+		const call = await runHostCommand("C:\\Tools\\node.exe");
+		assert.equal(call.options.cwd, "C:\\Windows");
+	});
+
+	test("rejects an external junction whose real target is inside the project folder", async () => {
+		setWindowsEnv({
+			cwd: "C:\\repo\\project",
+			systemRoot: "C:\\temp\\win-junc",
+			windir: "C:\\temp\\win-junc",
+			dirs: ["C:\\repo\\project", "C:\\temp\\win-junc", "C:\\Windows"],
+			symlinks: ["C:\\temp\\win-junc"],
+			realpaths: {
+				"C:\\repo\\project": "C:\\repo\\project",
+				"C:\\temp\\win-junc": "C:\\repo\\project\\fake-win",
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		const call = await runHostCommand("C:\\Tools\\node.exe");
+		assert.equal(call.options.cwd, "C:\\Windows");
+	});
+
+	test("rejects a candidate inside the project when process.cwd() is reached through a junction or 8.3 short name", async () => {
+		setWindowsEnv({
+			cwd: "E:\\junc-project",
+			systemRoot: "C:\\repo\\project\\fake-win",
+			windir: "C:\\repo\\project\\fake-win",
+			dirs: ["E:\\junc-project", "C:\\repo\\project\\fake-win", "C:\\Windows"],
+			symlinks: ["E:\\junc-project"],
+			realpaths: {
+				"E:\\junc-project": "C:\\repo\\project",
+				"C:\\repo\\project\\fake-win": "C:\\repo\\project\\fake-win",
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		const juncCall = await runHostCommand("C:\\Tools\\node.exe");
+		assert.equal(juncCall.options.cwd, "C:\\Windows");
+
+		hooks.execCalls.length = 0;
+		setWindowsEnv({
+			cwd: "C:\\Users\\RUNNER~1\\project",
+			systemRoot: "C:\\Users\\runneradmin\\project\\fake-win",
+			windir: "C:\\Users\\runneradmin\\project\\fake-win",
+			dirs: ["C:\\Users\\RUNNER~1\\project", "C:\\Users\\runneradmin\\project\\fake-win", "C:\\Windows"],
+			realpaths: {
+				"C:\\Users\\RUNNER~1\\project": "C:\\Users\\runneradmin\\project",
+				"C:\\Users\\runneradmin\\project\\fake-win": "C:\\Users\\runneradmin\\project\\fake-win",
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		const shortCall = await runHostCommand("C:\\Tools\\node.exe");
+		assert.equal(shortCall.options.cwd, "C:\\Windows");
+	});
+
+	test("rejects extended-length and device-prefixed aliases of the project folder even when realpath is unavailable", async () => {
+		for (const [cwd, alias] of [
+			["C:\\repo\\project", "\\\\?\\C:\\repo\\project\\fake-win"],
+			["C:\\repo\\project", "\\\\.\\C:\\repo\\project\\fake-win"],
+			["\\\\server\\share\\project", "\\\\?\\UNC\\server\\share\\project\\fake-win"],
+		] as const) {
+			hooks.execCalls.length = 0;
+			setWindowsEnv({
+				cwd,
+				systemRoot: alias,
+				windir: alias,
+				dirs: [cwd, alias, "C:\\Windows"],
+				realpathThrows: [cwd, alias, "C:\\Windows"],
+			});
+			const call = await runHostCommand("C:\\Tools\\node.exe");
+			assert.equal(call.options.cwd, "C:\\Windows", `rejected alias ${alias}`);
+		}
+	});
+
+	test("rejects raw volume device paths and incomplete UNC roots even if stat reports a directory", async () => {
+		for (const badPath of [
+			"\\\\?\\C:",
+			"\\\\.\\C:",
+			"\\\\?\\UNC\\",
+			"\\\\?\\UNC\\server",
+			"\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}",
+		]) {
+			hooks.execCalls.length = 0;
+			setWindowsEnv({
+				systemRoot: badPath,
+				windir: badPath,
+				dirs: [badPath, "C:\\Users\\tester\\AppData\\Local\\Temp"],
+			});
+			const call = await runHostCommand("C:\\Tools\\node.exe");
+			assert.equal(
+				call.options.cwd,
+				"C:\\Users\\tester\\AppData\\Local\\Temp",
+				`rejected ${JSON.stringify(badPath)}`,
+			);
+		}
+	});
+
+	test("falls back to process.cwd()'s drive root when SystemRoot/windir are inside the project and tmpdir/command are relative", async () => {
+		setWindowsEnv({
+			cwd: "D:\\repo\\project",
+			systemRoot: "D:\\repo\\project\\fake-win",
+			windir: "D:\\repo\\project\\fake-win",
+			tmpdir: "relative-tmp",
+			dirs: ["D:\\repo\\project", "D:\\repo\\project\\fake-win", "D:\\"],
+		});
+		const call = await runHostCommand("bin\\tool.exe");
+		assert.equal(call.options.cwd, "D:\\");
+	});
+
+	test("treats a subst drive mapped to a project folder as a removable project and escapes to the real drive root", async () => {
+		setWindowsEnv({
+			cwd: "S:\\",
+			systemRoot: "S:\\fake-win",
+			windir: "C:\\repo\\project\\fake-win",
+			tmpdir: "relative-tmp",
+			dirs: ["S:\\", "S:\\fake-win", "C:\\repo\\project\\fake-win", "C:\\"],
+			realpaths: {
+				"S:\\": "C:\\repo\\project",
+				"S:\\fake-win": "C:\\repo\\project\\fake-win",
+				"C:\\repo\\project\\fake-win": "C:\\repo\\project\\fake-win",
+				"C:\\": "C:\\",
+			},
+		});
+		const call = await runHostCommand("tool.exe");
+		assert.equal(call.options.cwd, "C:\\");
+	});
+
+	test("when process.cwd() is a genuine drive root, prefers SystemRoot on that drive over an explicit command on another drive", async () => {
+		setWindowsEnv({
+			cwd: "C:\\",
+			systemRoot: "C:\\Windows",
+			dirs: ["C:\\", "C:\\Windows", "D:\\Tools", "D:\\"],
+			realpaths: {
+				"C:\\": "C:\\",
+				"C:\\Windows": "C:\\Windows",
+				"D:\\Tools": "D:\\Tools",
+				"D:\\": "D:\\",
+			},
+		});
+		const call = await runHostCommand("D:\\Tools\\node.exe");
+		assert.equal(call.options.cwd, "C:\\Windows");
+	});
+
+	test("when process.cwd() is a genuine drive root and SystemRoot is that same drive root, prefers another directory and falls back to the root if none exists", async () => {
+		setWindowsEnv({
+			cwd: "C:\\",
+			systemRoot: "C:\\",
+			windir: "C:\\",
+			dirs: ["C:\\", "C:\\Windows"],
+			realpaths: {
+				"C:\\": "C:\\",
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		const withWindows = await runHostCommand("C:\\Tools\\node.exe");
+		assert.equal(withWindows.options.cwd, "C:\\Windows");
+
+		hooks.execCalls.length = 0;
+		setWindowsEnv({
+			cwd: "C:\\",
+			systemRoot: "C:\\",
+			windir: "C:\\",
+			tmpdir: "Z:\\NoSuchTemp",
+			dirs: ["C:\\"],
+			realpaths: { "C:\\": "C:\\" },
+		});
+		const onlyRoot = await runHostCommand("Z:\\NoSuch\\node.exe");
+		assert.equal(onlyRoot.options.cwd, "C:\\");
+	});
+
+	test("skips an unverified symlink/junction when realpath fails and a verified outside directory exists", async () => {
+		setWindowsEnv({
+			cwd: "C:\\repo\\project",
+			systemRoot: "C:\\temp\\unverified-junc",
+			windir: "C:\\temp\\unverified-junc",
+			dirs: ["C:\\repo\\project", "C:\\temp\\unverified-junc", "C:\\Windows"],
+			symlinks: ["C:\\temp\\unverified-junc"],
+			realpathThrows: ["C:\\temp\\unverified-junc"],
+		});
+		const call = await runHostCommand("C:\\Tools\\node.exe");
+		assert.equal(call.options.cwd, "C:\\Windows");
+	});
+
+	test("resolves an external junction pointing outside the project to its canonical target", async () => {
+		setWindowsEnv({
+			cwd: "C:\\repo\\project",
+			systemRoot: "C:\\temp\\alt-win",
+			dirs: ["C:\\repo\\project", "C:\\temp\\alt-win", "C:\\Windows"],
+			symlinks: ["C:\\temp\\alt-win"],
+			realpaths: {
+				"C:\\repo\\project": "C:\\repo\\project",
+				"C:\\temp\\alt-win": "C:\\Windows",
+				"C:\\Windows": "C:\\Windows",
+			},
 		});
 		const call = await runHostCommand("C:\\Tools\\node.exe");
 		assert.equal(call.options.cwd, "C:\\Windows");
@@ -200,5 +485,27 @@ describe("intercom systemSources().run() Windows cwd selection", () => {
 		Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
 		const call = await runHostCommand("/usr/bin/env");
 		assert.equal(call.options.cwd, undefined);
+	});
+});
+
+describe("intercom stopWindowsProcess() Windows cwd selection", () => {
+	test("never runs PowerShell in a junction pointing into the project folder or an invalid SystemRoot", async () => {
+		hooks.processCreationTime = "2026-11-22T00:00:00.0000000Z";
+		setWindowsEnv({
+			cwd: "C:\\repo\\project",
+			systemRoot: "C:\\temp\\win-junc",
+			windir: "C:\\temp\\win-junc",
+			dirs: ["C:\\repo\\project", "C:\\temp\\win-junc", "C:\\Windows"],
+			symlinks: ["C:\\temp\\win-junc"],
+			realpaths: {
+				"C:\\repo\\project": "C:\\repo\\project",
+				"C:\\temp\\win-junc": "C:\\repo\\project\\fake-win",
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		const { stopWindowsProcess } = await import("../../packages/intercom/broker/broker-process.js");
+		await stopWindowsProcess(12345, hooks.processCreationTime, { waitMs: 500, descendants: false });
+		assert.equal(hooks.spawnCalls.length, 1);
+		assert.equal(hooks.spawnCalls[0]!.options.cwd, "C:\\Windows");
 	});
 });
