@@ -55,8 +55,8 @@ if (process.argv[2] !== "--trace") {
 	});
 	const load = (path) => import(pathToFileURL(join(dist, path)).href);
 	// What `cli.js` imports for an interactive session, from the files it names (the split moves some of those modules
-	// into shared files), then what the session loads before its first frame: the host module map an extension sees,
-	// the extension loader and the bundled packages' extensions.
+	// into shared files), then the dynamically imported mode entries, the host API entry and extension loader, plus
+	// the prebundled builtin extensions (which load natively without jiti or virtualModules).
 	for (const entry of [
 		...cliImports(),
 		"modes/interactive/interactive-mode.js",
@@ -65,8 +65,6 @@ if (process.argv[2] !== "--trace") {
 		"core/extensions/loader-virtual-modules.js",
 	])
 		await load(entry);
-	await (await load("core/extensions/loader-host-modules.js")).getVirtualModules();
-	await import("jiti");
 	const builtin = join(dist, "builtin");
 	for (const bundle of [
 		"intercom/index.bundle.mjs",

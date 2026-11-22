@@ -76,14 +76,46 @@ export function lazyStream(
 export interface LazyApiCapabilities {
 	fetchDeferred?: boolean;
 	cancelDeferred?: boolean;
+	/** Loader result may be replaced between calls (e.g. Bedrock runtime override). */
+	dynamicLoader?: boolean;
 }
 
+/**
+ * Non-enumerable hook attached to lazy API wrappers so a runtime can warm the
+ * selected model's module before the user submits the first prompt.
+ */
+export const API_PROVIDER_PREWARM = Symbol.for("@bastani/atomic-ai/api-prewarm");
+
+export type PrewarmableProviderStreams = ProviderStreams & {
+	[API_PROVIDER_PREWARM]?: () => Promise<void>;
+};
+
 export function lazyApi(load: () => Promise<ProviderStreams>, capabilities?: LazyApiCapabilities): ProviderStreams {
+	let pending: Promise<ProviderStreams> | undefined;
+	const loadOnce = (): Promise<ProviderStreams> => {
+		if (!pending) {
+			const current = Promise.resolve()
+				.then(load)
+				.then(
+					(implementation) => {
+						if (capabilities?.dynamicLoader && pending === current) pending = undefined;
+						return implementation;
+					},
+					(error) => {
+						if (pending === current) pending = undefined;
+						throw error;
+					},
+				);
+			pending = current;
+		}
+		return pending;
+	};
+
 	const api: ProviderStreams = {
 		stream: (model, context, options) =>
-			lazyStream(model, async () => (await load()).stream(model, context, options), options?.signal),
+			lazyStream(model, async () => (await loadOnce()).stream(model, context, options), options?.signal),
 		streamSimple: (model, context, options) =>
-			lazyStream(model, async () => (await load()).streamSimple(model, context, options), options?.signal),
+			lazyStream(model, async () => (await loadOnce()).streamSimple(model, context, options), options?.signal),
 	};
 
 	if (capabilities?.fetchDeferred) {
@@ -91,7 +123,7 @@ export function lazyApi(load: () => Promise<ProviderStreams>, capabilities?: Laz
 			lazyStream(
 				model,
 				async () => {
-					const implementation = await load();
+					const implementation = await loadOnce();
 					if (!implementation.fetchDeferred) throw new Error("API does not support deferred responses");
 					return implementation.fetchDeferred(model, handle, options);
 				},
@@ -100,11 +132,21 @@ export function lazyApi(load: () => Promise<ProviderStreams>, capabilities?: Laz
 	}
 	if (capabilities?.cancelDeferred) {
 		api.cancelDeferred = async (model, handle, options) => {
-			const implementation = await load();
+			const implementation = await loadOnce();
 			if (!implementation.cancelDeferred) throw new Error("API cannot cancel deferred responses");
 			await implementation.cancelDeferred(model, handle, options);
 		};
 	}
+
+	Object.defineProperty(api, API_PROVIDER_PREWARM, {
+		value: (): Promise<void> =>
+			loadOnce().then(
+				() => undefined,
+				() => undefined,
+			),
+		enumerable: false,
+		configurable: true,
+	});
 
 	return api;
 }
