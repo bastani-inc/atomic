@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, win32 } from "node:path";
 import { hostCommandEnvironment } from "./host-command-environment.js";
 import { getIntercomDirPath } from "./paths.js";
+import { resolveSafeWindowsWorkingDirectoryAsync } from "./windows-cwd.js";
 
 /**
  * A machine-id or boot command that does not answer by then leaves the host without that fact. PowerShell can take
@@ -83,58 +83,13 @@ function hostCommandPath(command: string): string {
 	return process.platform === "darwin" ? `/usr/sbin/${command}` : command;
 }
 
-function isAbsoluteWindowsPath(value: string): boolean {
-	if (value === "" || value.includes("\0") || !win32.isAbsolute(value)) return false;
-	// Reject drive-relative rooted paths like `\Windows` whose root is a single separator.
-	return win32.parse(value).root.length > 1;
-}
-
-function isExistingAbsoluteWindowsDirectory(dir: string | undefined): dir is string {
-	if (dir === undefined || !isAbsoluteWindowsPath(dir)) return false;
-	try {
-		return statSync(dir).isDirectory();
-	} catch {
-		return false;
-	}
-}
-
-function isInsideWindowsDirectory(folder: string, candidate: string): boolean {
-	if (!isAbsoluteWindowsPath(folder) || !isAbsoluteWindowsPath(candidate)) return false;
-	const rel = win32.relative(win32.resolve(folder).toLowerCase(), win32.resolve(candidate).toLowerCase());
-	return rel !== ".." && !rel.startsWith("..\\") && !win32.isAbsolute(rel);
-}
-
 /**
  * A safe working directory for a Windows host command so it never keeps the folder Atomic runs in in use, and never
- * fails an explicit-path command when `SystemRoot` is missing, relative, or not a directory.
+ * fails an explicit-path command when `SystemRoot` is missing, relative, a junction into the project, or not a
+ * directory. Uses a bounded async check so a slow or offline UNC working directory cannot stall host commands.
  */
-function hostCommandWorkingDirectory(commandPath: string): string | undefined {
-	const tempDir = tmpdir();
-	const commandDir = isAbsoluteWindowsPath(commandPath) ? win32.dirname(commandPath) : undefined;
-	const commandRoot = isAbsoluteWindowsPath(commandPath) ? win32.parse(commandPath).root : undefined;
-	const tempRoot = isAbsoluteWindowsPath(tempDir) ? win32.parse(tempDir).root : undefined;
-	const candidates = [
-		process.env.SystemRoot,
-		process.env.windir,
-		"C:\\Windows",
-		tempDir,
-		commandDir,
-		commandRoot,
-		tempRoot,
-	];
-	let currentCwd: string | undefined;
-	try {
-		currentCwd = process.cwd();
-	} catch {
-		currentCwd = undefined;
-	}
-	let fallback: string | undefined;
-	for (const candidate of candidates) {
-		if (!isExistingAbsoluteWindowsDirectory(candidate)) continue;
-		if (currentCwd === undefined || !isInsideWindowsDirectory(currentCwd, candidate)) return candidate;
-		fallback ??= candidate;
-	}
-	return fallback;
+function hostCommandWorkingDirectory(commandPath: string): Promise<string | undefined> {
+	return resolveSafeWindowsWorkingDirectoryAsync({ commandPath, timeoutMs: 150 });
 }
 
 /**
@@ -148,11 +103,11 @@ export const systemSources = (
 	platform: process.platform,
 	readFile: (path) => readFileSync(path, "utf8"),
 	readLink: (path) => readlinkSync(path),
-	run: (command, args) =>
-		new Promise<string>((resolve, reject) => {
-			const file = hostCommandPath(command);
-			// On Windows, run outside the project folder so a host command never keeps the folder Atomic runs in in use.
-			const cwd = process.platform === "win32" ? hostCommandWorkingDirectory(file) : undefined;
+	run: async (command, args) => {
+		const file = hostCommandPath(command);
+		// On Windows, run outside the project folder so a host command never keeps the folder Atomic runs in in use.
+		const cwd = process.platform === "win32" ? await hostCommandWorkingDirectory(file) : undefined;
+		return await new Promise<string>((resolve, reject) => {
 			const child = execFile(
 				file,
 				[...args],
@@ -166,7 +121,8 @@ export const systemSources = (
 				(error, stdout) => (error ? reject(error) : resolve(stdout)),
 			);
 			child.stdin?.end();
-		}),
+		});
+	},
 	writeNewPrivateFile: (path, content) => {
 		if (directoryHeld === undefined) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 		else if (!directoryHeld()) throw new Error(`${dirname(path)} was removed`);

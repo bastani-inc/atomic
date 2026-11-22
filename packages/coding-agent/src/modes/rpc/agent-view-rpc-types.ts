@@ -29,8 +29,23 @@ export type AgentViewRpcCommand =
 	| { id?: string; type: "agent_view_last_message"; viewId: string }
 	/** The subagent's own delivered user messages, oldest first. */
 	| { id?: string; type: "get_task_prompts"; taskId: string }
-	/** What the host's screen shows, for the engine's agent panel and `/tasks`: a subagent, or main without `taskId`. */
-	| { id?: string; type: "set_viewed_agent"; taskId?: string };
+	/**
+	 * What the host's screen shows (or is speculatively previewing for `panelOnView`), for the engine's agent panel
+	 * and `/tasks`: a subagent, or main without `taskId`.
+	 */
+	| {
+			id?: string;
+			type: "set_viewed_agent";
+			taskId?: string;
+			/** Panel-only speculative preview while `openPort` is in flight; does not change committed view or settle `/tasks`. */
+			preview?: true;
+			/** Monotonic positive host sequence number for this view/preview transition. */
+			viewSeq?: number;
+			/** Engine `engine_view_agent.requestId` that initiated this speculative preview. */
+			requestId?: number;
+			/** Highest engine `engine_view_agent.requestId` whose outcome has settled on the host. */
+			settledRequestId?: number;
+	  };
 
 export type AgentViewRpcCommandType = AgentViewRpcCommand["type"];
 

@@ -17,6 +17,9 @@
 - Moving or copying a custom agent directory and its adopted parent store on filesystems that reuse freed inodes (such as ext4) no longer lets a sibling or recreated directory hijack parent or relative-target ownership when its new `.atomic-storage-home` file receives a deleted owner's inode. Owner resolution now resolves to the eligible directory carrying the recorded decision ID when an inode-matched candidate has a conflicting on-disk decision ID.
 - Deliberate `/quit` no longer exits with status `129` when the terminal closes after the session finishes shutting down; it skips terminal writes once stopped, prints the resume hint when standard output is still usable, treats dead-output writes as no-ops, and exits `0`.
 - MCP credential redaction now shares the core ANSI stripping, HTTP `Basic` credential detection, and `[redacted]` range-application helpers with `redactCredentialShapes` while keeping all MCP OAuth, URL, header, and stdio patterns. This also preserves `[redacted]` markers when a pre-masked secret appears inside a `Bearer` token or query parameter.
+- On Windows, MCP server shutdown and process-tree kill commands now validate their working directory through canonical path resolution and explicit drive-root handling, so `taskkill.exe` never runs inside the project folder even when `SystemRoot` or `windir` points to a junction, `subst` drive, extended-length alias, bare drive, or directory inside the project.
+- Fixed `/tasks` on the isolated host so cancelling or failing a subagent open with `Esc` never leaves a speculative agent-panel preview painted or lands the next `/tasks` on the cancelled subagent, while staying compatible with older hosts and engines across in-place updates.
+
 
 ## [0.10.4] - 2026-11-22
 
