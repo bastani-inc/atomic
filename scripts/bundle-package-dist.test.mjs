@@ -433,4 +433,12 @@ test("single-entry inlined packages coalesce their static modules into one chunk
 		process.stdout.write(JSON.stringify({ sameClass: m.FakeClient === b.FakeClient, out: new m.FakeClient().run() }));`,
 	);
 	assert.deepEqual(result, { sameClass: true, out: "y:string" });
+	// Modules that do not import fake-sdk must not load fake-sdk's chunk.
+	const unrelated = inChild(
+		join(pkg, "dist/deep/thing.js"),
+		`process.stdout.write(JSON.stringify(typeof m.thingUrl));`,
+	);
+	assert.equal(unrelated, "string");
+	const thingCode = readFileSync(join(pkg, "dist/deep/thing.js"), "utf8");
+	assert.equal(thingCode.includes(sdkChunks[0]), false, "unrelated entry must not import fake-sdk chunk");
 });

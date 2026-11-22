@@ -340,6 +340,34 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			],
 		};
 	};
+	/**
+	 * Grouping view of a module's imports: treats edges into an inlined package as carrying that package's name in the
+	 * external footprint too, so inlining a package (such as `openai` or `@anthropic-ai/sdk`) never merges its importers
+	 * into shared chunks loaded by modules that do not use that package, and preserves existing shared-chunk boundaries
+	 * across releases.
+	 * @type {(id: string) => ModuleImports}
+	 */
+	const groupingImportsOf = (id) => {
+		const base = importsOf(id);
+		const ownRoot = inlinedRootOf(id);
+		const staticInlined = [];
+		const dynamicInlined = [];
+		for (const dep of base.internal) {
+			const depRoot = inlinedRootOf(dep);
+			if (depRoot && depRoot !== ownRoot) staticInlined.push(depRoot.name);
+		}
+		for (const dep of base.dynamicInternal) {
+			const depRoot = inlinedRootOf(dep);
+			if (depRoot && depRoot !== ownRoot) dynamicInlined.push(depRoot.name);
+		}
+		if (staticInlined.length === 0 && dynamicInlined.length === 0) return base;
+		return {
+			internal: base.internal,
+			external: [...base.external, ...staticInlined],
+			dynamicInternal: base.dynamicInternal,
+			dynamicExternal: [...base.dynamicExternal, ...dynamicInlined],
+		};
+	};
 	const entries = namedEntries(packageDir, manifest);
 	/** @type {Map<string, string>} */
 	let groups = new Map();
@@ -417,7 +445,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 				buildEnd() {
 					// Every module of the package, its JSON files included; anything else it imports is another package.
 					const internal = [...this.getModuleIds()].map(normalizeId).filter(isBundled);
-					groups = assignGroups(internal, entries, importsOf);
+					groups = assignGroups(internal, entries, groupingImportsOf);
 					// An inlined package's modules share files only with each other. When all imports into an inlined
 					// package pass through a single entry module, every module in that package (and any inlined package
 					// reached solely through it) shares that entry's chunk, preserving exact per-entry external
@@ -470,8 +498,8 @@ export async function bundlePackageDist(packageDir, options = {}) {
 							coalescedEntry.set(root.name, soleEntry);
 						}
 					}
-					// If an inlined dependency is only imported statically by a single coalesced inlined package
-					// (e.g. standardwebhooks -> @anthropic-ai/sdk), merge its static closure into its owner's chunk.
+					// If an inlined dependency is only imported statically by a single coalesced inlined package,
+					// merge its static closure into its owner's chunk.
 					for (let changed = true; changed; ) {
 						changed = false;
 						for (const root of inlinedRoots) {
@@ -515,6 +543,9 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		format: "esm",
 		entryFileNames: "[name].js",
 		// Named by the group and its first module, never by content (see the file comment).
+		// Synthetic runtime helper chunks (no bundled source modules, e.g. rolldown:runtime) include their
+		// export list in the key so adding helpers such as __commonJSMin produces a new file name and never
+		// collides with a cached runtime chunk held by a process from an earlier release.
 		chunkFileNames: (chunk) => {
 			const own = chunk.moduleIds
 				.map(normalizeId)
@@ -525,7 +556,8 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			const group = own[0] === undefined ? undefined : groups.get(own[0][1]);
 			const label =
 				group === undefined ? chunk.name.replace(/[^a-zA-Z0-9.-]/g, "_") : group.slice(0, group.indexOf(":"));
-			return `_${label}-${stableName(`module:${first}`)}.js`;
+			const key = own.length === 0 ? `runtime:${first}\0${[...chunk.exports].sort().join(",")}` : `module:${first}`;
+			return `_${label}-${stableName(key)}.js`;
 		},
 		strictExecutionOrder: true,
 		minifyInternalExports: false,
@@ -559,9 +591,9 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		}
 	}
 
-	// Importing a module's file, statically or following dynamic imports too, reaches the same other modules as the
-	// module did.
-	const footprintOf = footprints(importsOf);
+	// Importing a module's file, statically or following dynamic imports too, reaches the same other modules (and
+	// inlined packages) as the module did.
+	const footprintOf = footprints(groupingImportsOf);
 	const byName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
 	const fileReach = (/** @type {string} */ start, /** @type {boolean} */ dynamic) => {
 		const seen = new Set();
@@ -573,6 +605,12 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			seen.add(name);
 			const chunk = byName.get(name);
 			if (!chunk) continue;
+			if (!chunk.isEntry) {
+				for (const moduleId of chunk.moduleIds) {
+					const root = inlinedRootOf(normalizeId(moduleId));
+					if (root) externals.add(root.name);
+				}
+			}
 			for (const imported of dynamic ? [...chunk.imports, ...chunk.dynamicImports] : chunk.imports) {
 				if (byName.has(imported)) stack.push(imported);
 				// A standalone module is named by its path below dist.

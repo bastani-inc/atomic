@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -63,7 +64,6 @@ builtTest(
 
 		const both = auditLoad(["api/openai-completions.js", "api/openai-responses.js"]);
 		assert.equal(both.byPackage.openai ?? 0, 0);
-		// openai-responses reuses the same shared openai chunk as openai-completions (only adds its own facade + thin adapter).
 		assert.ok(
 			both.totalFiles <= completions.totalFiles + 4,
 			`openai-responses should share openai chunk with openai-completions (${completions.totalFiles} -> ${both.totalFiles})`,
@@ -91,25 +91,57 @@ builtTest(
 );
 
 builtTest(
-	"startup entries index.js and compat.js never load openai or @anthropic-ai/sdk chunks and load 0 external partial-json files",
+	"startup entries, non-OpenAI adapters, and startup-files.json never load openai or @anthropic-ai/sdk chunks",
 	() => {
 		const startup = auditLoad(["index.js", "compat.js"]);
 		assert.equal(startup.byPackage.openai ?? 0, 0);
 		assert.equal(startup.byPackage["@anthropic-ai/sdk"] ?? 0, 0);
 		assert.equal(startup.byPackage["partial-json"] ?? 0, 0);
-		// Ensure none of the loaded chunks at startup contain the bundled OpenAI or Anthropic client classes.
-		const openaiLazyChunks = auditLoad(["api/openai-completions.js"]).urls.filter((u) => !startup.urls.includes(u));
-		const anthropicLazyChunks = auditLoad(["api/anthropic-messages.js"]).urls.filter(
-			(u) => !startup.urls.includes(u),
+		const isSdkChunk = (url: string): boolean =>
+			url.includes("/_lazy-") && readFileSync(fileURLToPath(url), "utf8").includes("class APIError");
+		const openaiLazyChunks = auditLoad(["api/openai-completions.js"]).urls.filter(isSdkChunk);
+		const anthropicLazyChunks = auditLoad(["api/anthropic-messages.js"]).urls.filter(isSdkChunk);
+		assert.equal(openaiLazyChunks.length, 1, `expected 1 openai SDK _lazy chunk, got ${openaiLazyChunks.join(", ")}`);
+		assert.equal(
+			anthropicLazyChunks.length,
+			1,
+			`expected 1 anthropic SDK _lazy chunk, got ${anthropicLazyChunks.join(", ")}`,
 		);
-		assert.ok(
-			openaiLazyChunks.some((u) => u.includes("/_lazy-")),
-			"openai must stay in a _lazy chunk",
-		);
-		assert.ok(
-			anthropicLazyChunks.some((u) => u.includes("/_lazy-")),
-			"anthropic must stay in a _lazy chunk",
-		);
+		for (const chunkUrl of [...openaiLazyChunks, ...anthropicLazyChunks]) {
+			assert.equal(startup.urls.includes(chunkUrl), false, `startup must not load SDK chunk ${chunkUrl}`);
+		}
+		// Non-OpenAI entries (including startup utils/typebox/compile and codex-responses) must never load openai chunks.
+		for (const nonOpenAi of [
+			"utils/typebox/compile.js",
+			"api/openai-codex-responses.js",
+			"api/mistral-conversations.js",
+			"api/pi-messages.js",
+			"api/anthropic-messages.js",
+		]) {
+			const loaded = new Set(auditLoad([nonOpenAi]).urls);
+			for (const chunkUrl of openaiLazyChunks) {
+				assert.equal(loaded.has(chunkUrl), false, `${nonOpenAi} must not load openai chunk ${chunkUrl}`);
+			}
+		}
+		// coding-agent's dist/startup-files.json must never prefetch lazy openai or anthropic SDK chunks.
+		const startupListPath = join(ROOT, "packages/coding-agent/dist/startup-files.json");
+		if (existsSync(startupListPath)) {
+			const list = JSON.parse(readFileSync(startupListPath, "utf8")) as {
+				packages: [string, number][];
+				files: [number, string][];
+			};
+			const startupAiFiles = new Set(
+				list.files.filter(([index]) => list.packages[index]?.[0] === "@bastani/atomic-ai").map(([, file]) => file),
+			);
+			for (const chunkUrl of [...openaiLazyChunks, ...anthropicLazyChunks]) {
+				const base = chunkUrl.split("/").at(-1)!;
+				assert.equal(
+					startupAiFiles.has(`dist/${base}`),
+					false,
+					`dist/startup-files.json must not include lazy SDK chunk ${base}`,
+				);
+			}
+		}
 	},
 	CHILD_TIMEOUT_MS,
 );
