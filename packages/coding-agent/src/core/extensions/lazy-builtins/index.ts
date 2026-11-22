@@ -1,5 +1,6 @@
-import { registerLazyBuiltin } from "../lazy-builtin.js";
+import { hasLazyBuiltinSpec, registerLazyBuiltin } from "../lazy-builtin.js";
 import { intercomLazyBuiltinSpec } from "./intercom.js";
+import { webAccessLazyBuiltinSpec } from "./web-access.js";
 
 let registered = false;
 
@@ -7,5 +8,6 @@ let registered = false;
 export function ensureDefaultLazyBuiltinsRegistered(): void {
 	if (registered) return;
 	registered = true;
-	registerLazyBuiltin("intercom", intercomLazyBuiltinSpec);
+	if (!hasLazyBuiltinSpec("intercom")) registerLazyBuiltin("intercom", intercomLazyBuiltinSpec);
+	if (!hasLazyBuiltinSpec("web-access")) registerLazyBuiltin("web-access", webAccessLazyBuiltinSpec);
 }

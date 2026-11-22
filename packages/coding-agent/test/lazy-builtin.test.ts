@@ -10,6 +10,7 @@ import { canonicalEventBusFor, createEventBus } from "../src/core/event-bus.js";
 import { sessionScopedExtensionState } from "../src/core/extension-session-state.ts";
 import {
 	createLazyBuiltinFactory,
+	getLazyBuiltinSpec,
 	type LazyBuiltinSpec,
 	registerLazyBuiltin,
 	unregisterLazyBuiltinForTest,
@@ -34,10 +35,16 @@ function deferred<T>() {
 }
 
 const tempDirs: string[] = [];
-const registeredLabels: Array<"subagents" | "mcp" | "web-access" | "intercom"> = [];
+const savedSpecs: Array<{
+	label: "subagents" | "mcp" | "web-access" | "intercom";
+	previous: LazyBuiltinSpec | undefined;
+}> = [];
 
 afterEach(() => {
-	for (const label of registeredLabels.splice(0)) unregisterLazyBuiltinForTest(label);
+	for (const { label, previous } of savedSpecs.splice(0).reverse()) {
+		if (previous) registerLazyBuiltin(label, previous);
+		else unregisterLazyBuiltinForTest(label);
+	}
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -630,6 +637,7 @@ describe("lazy builtin extension mechanism", () => {
 		const entryPath = join(webLocation.packageDir, "index.ts");
 		let executed = false;
 
+		savedSpecs.push({ label: "web-access", previous: getLazyBuiltinSpec("web-access") });
 		registerLazyBuiltin("web-access", {
 			label: "web-access",
 			register(pi, controller) {
@@ -654,7 +662,6 @@ describe("lazy builtin extension mechanism", () => {
 				});
 			},
 		});
-		registeredLabels.push("web-access");
 
 		const dir = mkdtempSync(join(tmpdir(), "atomic-lazy-loader-"));
 		tempDirs.push(dir);

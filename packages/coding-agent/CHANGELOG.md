@@ -19,6 +19,7 @@
 - Installed builtin extensions (`intercom`, `subagents`, `mcp`, `web-access`) now load natively under Node and Bun without loading `jiti`, resolving extension aliases, or eagerly importing unused host virtual modules (`@bastani/atomic-telemetry`, `@bastani/atomic-ai/oauth`, `@bastani/atomic-ai/models`), reducing startup module-loading overhead on both the interactive host and isolated engine.
 - Startup refreshes the model catalog once instead of three times and checks each provider's auth configuration once per availability pass instead of twice, cutting model-registry startup overhead on both the host and engine processes while preserving externally supplied runtimes, credential mutations, and missing-catalog recovery.
 - Built-in Intercom now registers its tool, command, and shortcut from a static description at startup and loads the Intercom extension bundle on first use or when the background startup join runs, reducing time to first prompt in both the host and engine processes.
+- Built-in Web Access now registers its tools, commands, and shortcuts from a static description at startup and loads the 4.9 MB Web Access bundle only on first tool, command, or shortcut use.
 
 ### Fixed
 
