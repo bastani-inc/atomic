@@ -851,6 +851,7 @@ export class MultiNodeRouter {
 		if (replyTo === undefined) return false;
 		const route = { replySenderSessionId: request.from.info.id, replyTargetSessionId: askerSessionId, replyTo };
 		if (await this.state.pendingAsks.isSettled(route)) return false;
+		if (await this.askedOfAliasItCannotTake(request, askerSessionId, replyTo)) return false;
 		const holderOf = async (targetIdentity: string) => {
 			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
 			return read.status === "found" ? read.lease.holderId : undefined;
@@ -861,6 +862,41 @@ export class MultiNodeRouter {
 		]);
 		if (askerHolder !== undefined && askerHolder !== this.brokerId && askerHolder === replierHolder) return true;
 		return this.routeHolderDown();
+	}
+
+	/**
+	 * #5607: whether the ask `replyTo` went to the id that its replier's session had before it moved back to its own, which
+	 * only the registration presenting that move's lapsed hand-over takes back (`lapsedHandoffs`), and this registration
+	 * cannot: it holds no such alias, has none pending, and does not await its id with that hand-over. The ask's route
+	 * is to that id, so no route a stopped broker may keep authorizes this registration's reply either.
+	 */
+	private async askedOfAliasItCannotTake(
+		request: RemoteSendRequest,
+		askerSessionId: string,
+		replyTo: string,
+	): Promise<boolean> {
+		const session = this.host.sessions.get(request.from.info.id);
+		if (session === undefined) return false;
+		const identity = deliveryTargetIdentity(session);
+		const lapsed = this.lapsedHandoffs.get(identity);
+		const alias = lapsed?.alias;
+		if (lapsed === undefined || alias === undefined || alias === session.info.id) return false;
+		const entry = this.presence.get(session);
+		if (
+			entry?.alias?.intercomSessionId === alias ||
+			entry?.pendingAlias?.alias === alias ||
+			entry?.awaits?.recovery === lapsed.recovery ||
+			entry?.handsOver === true ||
+			this.reservedIds.has(identity)
+		)
+			return false;
+		if (this.host.pendingQuestions.matchesReply(alias, askerSessionId, replyTo)) return true;
+		const asked = await this.state.pendingAsks.matchesReply({
+			replySenderSessionId: alias,
+			replyTargetSessionId: askerSessionId,
+			replyTo,
+		});
+		return asked.status === "match";
 	}
 
 	private async refuseUnauthorizedReply(
