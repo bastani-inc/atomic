@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { executeHerdr } from "../src/extensions/herdr/transport.js";
-import { fakeHerdr } from "./helpers/herdr.js";
+import { FAKE_HERDR_CHILD_TIMEOUT_MS, FAKE_HERDR_EXPLICIT_TIMEOUT_MS, fakeHerdr } from "./helpers/herdr.js";
 
 // #2913: exercise the Windows fixture launcher even on POSIX; this is not Windows OS validation.
 async function windowsFake(body: string) {
@@ -19,7 +19,7 @@ test("fake CLI preserves exact argv and socket through delayed completion", asyn
 	const fake = await windowsFake("setTimeout(finish, 40);");
 	try {
 		const args = ["pane", "report-agent", "", " space path ", 'quote"value', "a&b|c;$(echo no)", "C:\\pane\\"];
-		assert.equal(await executeHerdr(fake.environment, args), undefined);
+		assert.equal(await executeHerdr(fake.environment, args, FAKE_HERDR_CHILD_TIMEOUT_MS), undefined);
 		assert.deepEqual(await fake.calls(), [
 			{ phase: "start", args, socket: fake.environment.socketPath },
 			{ phase: "end", args, socket: fake.environment.socketPath },
@@ -37,7 +37,10 @@ test("fake CLI preserves exact argv and socket through delayed completion", asyn
 test("fake CLI keeps a literal hang alive until the transport kills it", async () => {
 	const fake = await windowsFake('if (args[0] === "hang") setInterval(() => {}, 1000); else finish(1);');
 	try {
-		assert.deepEqual(await executeHerdr(fake.environment, ["hang"], 1500), { kind: "timeout" });
+		const pending = executeHerdr(fake.environment, ["hang"], FAKE_HERDR_EXPLICIT_TIMEOUT_MS);
+		await fake.waitForStarted(1);
+		fake.expireInFlight(FAKE_HERDR_EXPLICIT_TIMEOUT_MS);
+		assert.deepEqual(await pending, { kind: "timeout" });
 		assert.deepEqual(await fake.calls(), [{ phase: "start", args: ["hang"], socket: fake.environment.socketPath }]);
 	} finally {
 		await fake.dispose();
@@ -49,10 +52,12 @@ test("fake CLI registrations are isolated and removed on disposal", async () => 
 	const first = await fakeHerdr();
 	const second = await fakeHerdr();
 	try {
-		assert.equal(await executeHerdr(first.environment, ["pane"]), undefined);
+		assert.equal(await executeHerdr(first.environment, ["pane"], FAKE_HERDR_CHILD_TIMEOUT_MS), undefined);
 		await first.dispose();
-		assert.deepEqual(await executeHerdr(first.environment, ["pane"]), { kind: "spawn_failed" });
-		assert.equal(await executeHerdr(second.environment, ["other"]), undefined);
+		assert.deepEqual(await executeHerdr(first.environment, ["pane"], FAKE_HERDR_CHILD_TIMEOUT_MS), {
+			kind: "spawn_failed",
+		});
+		assert.equal(await executeHerdr(second.environment, ["other"], FAKE_HERDR_CHILD_TIMEOUT_MS), undefined);
 		assert.deepEqual(
 			(await second.calls()).map((call) => call.args),
 			[["other"], ["other"]],
@@ -61,5 +66,7 @@ test("fake CLI registrations are isolated and removed on disposal", async () => 
 		await first.dispose();
 		await second.dispose();
 	}
-	assert.deepEqual(await executeHerdr(second.environment, ["other"]), { kind: "spawn_failed" });
+	assert.deepEqual(await executeHerdr(second.environment, ["other"], FAKE_HERDR_CHILD_TIMEOUT_MS), {
+		kind: "spawn_failed",
+	});
 });
