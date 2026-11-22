@@ -32,7 +32,7 @@ const agentDesktopSkill = join(subagentSkills, "agent-desktop");
 // hashes are those of Atomic's adapted copies.
 const liteparseTree: ReadonlyArray<readonly [path: string, sha256: string]> = [
 	["SKILL.md", "b29e84f059c9b8848feaf8963f8212d8ce4d8d4a54b0ce2be55561b4f8b5cb02"],
-	["scripts/search.py", "52b6867b495dbe02169752510e10df1481e85f031e9f006b22b8a760b216dbbe"],
+	["scripts/search.py", "1083ec9446aec0fe827c1d42d01364201d89eac6ca2b95b4a7aacb3c609865d4"],
 ];
 // Reversing Atomic's documented adaptations must reproduce each canonical upstream
 // file byte-for-byte, which proves no undocumented local drift exists.
@@ -88,7 +88,7 @@ const liteparseSearchAdaptations: ReadonlyArray<readonly [atomic: string, canoni
 		"            # read 64KB chunks\n            while chunk := await f.read(65536):\n                tasks.append(\n                    tg.create_task(process_chunk(chunk, query, top_k, expand_n or 5))\n                )\n    results = [task.result() for task in tasks]\n",
 	],
 	[
-		'if __name__ == "__main__":\n    # Atomic: matches are read from a pipe as UTF-8, but on Windows Python writes to a pipe in the ANSI code page,\n    # such as cp1252, which has no separator line and lacks most characters: write UTF-8 unless the stream already does.\n    for stream in (sys.stdout, sys.stderr):\n        if isinstance(stream, io.TextIOWrapper) and codecs.lookup(stream.encoding).name != "utf-8":\n            stream.reconfigure(encoding="utf-8", errors="backslashreplace")\n    main()\n',
+		'if __name__ == "__main__":\n    # Atomic: matches are read from a pipe as UTF-8, but on Windows Python before 3.15 writes to a pipe in the ANSI\n    # code page, such as cp1252, which has no separator line and lacks most characters: write UTF-8 unless the stream\n    # already does.\n    for stream in (sys.stdout, sys.stderr):\n        if isinstance(stream, io.TextIOWrapper) and codecs.lookup(stream.encoding).name != "utf-8":\n            stream.reconfigure(encoding="utf-8", errors="backslashreplace")\n    main()\n',
 		'if __name__ == "__main__":\n    main()\n',
 	],
 ];

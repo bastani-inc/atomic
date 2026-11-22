@@ -102,7 +102,8 @@ function runSearch(dir: string, args: readonly string[], encoding = "utf-8") {
 	}
 	const result = spawnSyncCollect([python ?? "python3", search, ...args], {
 		cwd: dir,
-		// Python writes to a pipe in the locale's encoding, which on Windows is the ANSI code page, such as cp1252.
+		// Python before 3.15 writes to a pipe in the locale's encoding, which on Windows is the ANSI code page,
+		// such as cp1252.
 		env: { ...env, PYTHONPATH: join(dir, "modules"), PYTHONDONTWRITEBYTECODE: "1", PYTHONIOENCODING: encoding },
 	});
 	// A decoder that fails on anything but UTF-8. Windows ends lines with CRLF.

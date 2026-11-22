@@ -146,8 +146,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # Atomic: matches are read from a pipe as UTF-8, but on Windows Python writes to a pipe in the ANSI code page,
-    # such as cp1252, which has no separator line and lacks most characters: write UTF-8 unless the stream already does.
+    # Atomic: matches are read from a pipe as UTF-8, but on Windows Python before 3.15 writes to a pipe in the ANSI
+    # code page, such as cp1252, which has no separator line and lacks most characters: write UTF-8 unless the stream
+    # already does.
     for stream in (sys.stdout, sys.stderr):
         if isinstance(stream, io.TextIOWrapper) and codecs.lookup(stream.encoding).name != "utf-8":
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
