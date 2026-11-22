@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelsRefreshResult } from "@bastani/atomic-ai";
@@ -91,9 +92,20 @@ describe("model catalog refresh across a models.json change", () => {
 
 		const [first, second] = await Promise.all([runtime.readCatalogInputsKey(), runtime.readCatalogInputsKey()]);
 		expect(second).toBe(first);
+		const oldSha256 = createHash("sha256").update(readFileSync(modelsPath)).digest("hex");
+		expect(first.endsWith(`:${oldSha256}`)).toBe(true);
+
+		// Alternating sync and async observations of the unchanged file keep the same generation.
+		const genBefore = runtime.getCatalogInputsGeneration();
+		expect(await runtime.getCatalogInputsGenerationAsync()).toBe(genBefore);
+		expect(runtime.getCatalogInputsGeneration()).toBe(genBefore);
 
 		writeModels(modelsPath, "new-key", "new-model");
-		expect(await runtime.readCatalogInputsKey()).not.toBe(first);
+		const afterEditKey = await runtime.readCatalogInputsKey();
+		const newSha256 = createHash("sha256").update(readFileSync(modelsPath)).digest("hex");
+		expect(afterEditKey).not.toBe(first);
+		expect(afterEditKey.endsWith(`:${newSha256}`)).toBe(true);
+		expect(runtime.getCatalogInputsGeneration()).toBeGreaterThan(genBefore);
 	});
 
 	it("does not answer a post-edit request with the pass that loaded the old models.json", async () => {
