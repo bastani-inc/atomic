@@ -19,6 +19,7 @@ import type {
 	SessionRecordHeader,
 	SessionRecoveryState,
 	SessionResume,
+	SessionResumeRetainedSetting,
 	SessionSnapshotCut,
 	SessionStateEntry,
 	SessionStore,
@@ -1359,6 +1360,15 @@ export function selectedPagePlan(
 	return { seqs: backward ? selected.reverse() : selected };
 }
 
+function latestIndexSettingSeq(
+	index: SessionResumeIndex,
+	ranges: readonly (readonly [number, number])[],
+	key: "setting:model_change" | "setting:thinking_level_change",
+): number | undefined {
+	const seq = index.latest[key]?.at(-1);
+	return seq !== undefined && onBranch(ranges, seq) ? seq : undefined;
+}
+
 export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.leafSeq, deferChildren = false) {
 	const compaction = latestCompactionOf(index, leafSeq);
 	const from =
@@ -1381,12 +1391,20 @@ export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.lea
 	].sort((left, right) => left - right);
 	const candidates = deferChildren ? new Set(childCatalogCut(index).seqs) : undefined;
 	const children = candidates ? state.filter((seq) => candidates.has(seq)) : [];
+	const settings =
+		leafSeq === index.leafSeq
+			? {
+					model: latestIndexSettingSeq(index, ranges, "setting:model_change") ?? null,
+					thinkingLevel: latestIndexSettingSeq(index, ranges, "setting:thinking_level_change") ?? null,
+				}
+			: undefined;
 	return {
 		leafSeq,
 		compaction,
 		branch,
 		state: children.length ? state.filter((seq) => !candidates!.has(seq)) : state,
 		children,
+		...(settings ? { settings } : {}),
 	};
 }
 
@@ -1492,6 +1510,27 @@ export function sessionResumeFrom(
 	const boundary =
 		plan.compaction === undefined ? undefined : branch.find((held) => held.seq === plan.compaction!.seq)?.entry;
 	const returned = [...state, ...branch].sort((a, b) => a.seq - b.seq);
+	const retainedSetting = (
+		entryType: "model_change" | "thinking_level_change",
+		expectedSeq: number | null | undefined,
+	): SessionResumeRetainedSetting => {
+		if (expectedSeq === undefined) return { status: "not-held" };
+		if (expectedSeq === null) {
+			return returned.some((held) => held.entry.type === entryType && onBranch(ranges, held.seq))
+				? { status: "not-held" }
+				: { status: "none" };
+		}
+		const match = returned.find((held) => held.seq === expectedSeq);
+		if (
+			!match ||
+			match.entry.type !== entryType ||
+			!onBranch(ranges, expectedSeq) ||
+			returned.some((held) => held.seq > expectedSeq && held.entry.type === entryType && onBranch(ranges, held.seq))
+		) {
+			return { status: "not-held" };
+		}
+		return { status: "held", seq: expectedSeq };
+	};
 	return {
 		header,
 		lastSeq: index.seq,
@@ -1511,6 +1550,10 @@ export function sessionResumeFrom(
 					},
 				}
 			: {}),
+		retainedSettings: {
+			model: retainedSetting("model_change", plan.settings?.model),
+			thinkingLevel: retainedSetting("thinking_level_change", plan.settings?.thinkingLevel),
+		},
 		omitted: omittedTotals(
 			index,
 			branch[0]?.seq ?? index.seq + 1,

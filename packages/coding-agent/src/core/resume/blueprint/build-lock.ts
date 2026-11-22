@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
 import { windowsPowerShellEnvironment } from "../../../utils/windows-powershell.ts";
 import { type AsyncTakeoverMutex, takeTakeoverMutexAsync } from "../../lock-takeover.js";
-import { processStartTokenAsync } from "../../process-start-token.js";
+import * as processStartToken from "../../process-start-token.js";
 import { readLedger, rootKey } from "./ledger.ts";
 import { stepProcessWatcher, stepStartingWatcher } from "./process.ts";
 
@@ -41,9 +41,34 @@ export const BUILD_LOCK_POLL_MS = 200;
 
 const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
 
-async function locked(pid: number): Promise<LockedProcess> {
-	const start = await processStartTokenAsync(pid);
+async function locked(pid: number, options?: { readonly fresh?: boolean }): Promise<LockedProcess> {
+	const start =
+		options === undefined
+			? await processStartToken.processStartTokenAsync(pid)
+			: await processStartToken.processStartTokenAsync(pid, options);
 	return start === undefined ? { pid } : { pid, start };
+}
+
+/** Milliseconds between Windows FILETIME epoch (1601-01-01) and Unix epoch (1970-01-01). */
+const WINDOWS_EPOCH_OFFSET_MS = 11_644_473_600_000n;
+
+function filetimeToUnixMs(created: string): number | undefined {
+	if (!/^[1-9]\d*$/.test(created)) return undefined;
+	const ms = BigInt(created) / 10_000n;
+	if (ms < WINDOWS_EPOCH_OFFSET_MS) return undefined;
+	return Number(ms - WINDOWS_EPOCH_OFFSET_MS);
+}
+
+function windowsStartToken(created: string): string {
+	return (
+		processStartToken.windowsStartTokenForCreationTime?.(created) ??
+		createHash("sha256").update(`windows\n${created}`).digest("hex").slice(0, 12)
+	);
+}
+
+interface ProvenProcess extends LockedProcess {
+	/** Exact Windows FILETIME creation time verified against `start`, for atomic native termination. */
+	readonly created?: string;
 }
 
 export function buildLockPath(storeDir: string, root: string): string {
@@ -139,7 +164,7 @@ function clearAllRetryTimers(writer: BuildLockWriter): void {
 }
 
 function readStepStartDurably(writer: BuildLockWriter, pid: number, step: LockedProcess, attempt: number): void {
-	void processStartTokenAsync(pid, { fresh: true }).then((start) => {
+	void processStartToken.processStartTokenAsync(pid, { fresh: true }).then((start) => {
 		if (writer.settled || writer.steps.get(pid) !== step) return;
 		if (start !== undefined) {
 			writer.steps.set(pid, { ...step, start });
@@ -165,7 +190,7 @@ function backfillHolderStart(writer: BuildLockWriter, attempt: number): void {
 	const timer = setTimeout(() => {
 		writer.retryTimers.delete(HOLDER_RETRY_KEY);
 		if (writer.settled || writer.holder.start !== undefined) return;
-		void processStartTokenAsync(process.pid, { fresh: true }).then((start) => {
+		void processStartToken.processStartTokenAsync(process.pid, { fresh: true }).then((start) => {
 			if (writer.settled || writer.holder.start !== undefined) return;
 			if (start !== undefined) {
 				writer.holder = { pid: process.pid, start };
@@ -241,8 +266,8 @@ async function identity(recorded: LockedProcess, options?: { readonly fresh?: bo
 	if (recorded.start === undefined) return "unknown";
 	const start =
 		options === undefined
-			? await processStartTokenAsync(recorded.pid)
-			: await processStartTokenAsync(recorded.pid, options);
+			? await processStartToken.processStartTokenAsync(recorded.pid)
+			: await processStartToken.processStartTokenAsync(recorded.pid, options);
 	if (start !== undefined) return start === recorded.start ? "same" : "gone";
 	return processAlive(recorded.pid) ? "unknown" : "gone";
 }
@@ -252,10 +277,10 @@ async function identity(recorded: LockedProcess, options?: { readonly fresh?: bo
  * starts the shell as a child and may end without it, and nothing then ties that shell to a process tree. They are
  * found as processes whose parent has a step's id, started after the step and before any later process given that id;
  * stopping each stops its own children. Only steps whose start was recorded are followed, and without one the host's
- * processes are not listed. Each is returned with its start, so the wait for it to end follows that process, not a
- * later one given its id.
+ * processes are not listed. Each is returned with its verified creation time and start token, so stopping checks the
+ * exact creation time atomically and the wait follows that process, not a later one given its id.
  */
-async function orphanedChildren(steps: readonly LockedProcess[]): Promise<LockedProcess[]> {
+async function orphanedChildren(steps: readonly LockedProcess[]): Promise<ProvenProcess[]> {
 	if (!steps.some((step) => step.start !== undefined && step.at !== undefined)) return [];
 	const script =
 		"Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }";
@@ -266,7 +291,7 @@ async function orphanedChildren(steps: readonly LockedProcess[]): Promise<Locked
 		.map((line) => line.trim().split(/\s+/).map(Number))
 		.filter((fields) => fields.length === 3 && fields.every(Number.isFinite))
 		.map(([pid, parent, created]) => ({ pid: pid!, parent: parent!, created: created! }));
-	const found: LockedProcess[] = [];
+	const found: ProvenProcess[] = [];
 	// Only a step's direct children: stopping one stops its tree, and a descendant stopped on its own could already
 	// have ended, its id given to a process of the build that follows, before its separate stop ran.
 	for (const step of steps) {
@@ -278,7 +303,11 @@ async function orphanedChildren(steps: readonly LockedProcess[]): Promise<Locked
 			if (candidate.parent !== step.pid || candidate.created < after) continue;
 			if (before !== undefined && candidate.created >= before) continue;
 			if (found.some((known) => known.pid === candidate.pid)) continue;
-			found.push(await locked(candidate.pid));
+			const created = await processStartToken.readProcessCreationTime(candidate.pid);
+			if (created === undefined) continue;
+			const createdMs = filetimeToUnixMs(created);
+			if (createdMs === undefined || createdMs < after || (before !== undefined && createdMs >= before)) continue;
+			found.push({ pid: candidate.pid, start: windowsStartToken(created), created });
 		}
 	}
 	return found;
@@ -321,14 +350,37 @@ async function stepsWhose(
 	return steps.filter((_, index) => identities[index] === wanted);
 }
 
+async function provenForStop(steps: readonly LockedProcess[]): Promise<ProvenProcess[]> {
+	if (process.platform !== "win32") return stepsWhose(steps, "same", { fresh: true });
+	const checked = await Promise.all(
+		steps.map(async (step): Promise<ProvenProcess | undefined> => {
+			if (!processAlive(step.pid) || step.start === undefined) return undefined;
+			const created = await processStartToken.readProcessCreationTime(step.pid);
+			if (created === undefined || windowsStartToken(created) !== step.start) return undefined;
+			return { ...step, created };
+		}),
+	);
+	return checked.filter((step): step is ProvenProcess => step !== undefined);
+}
+
 /** Stops each of `steps` proven to be the step its lock recorded, and `extra`, and waits briefly until they ended. */
 async function stopProven(
 	steps: readonly LockedProcess[],
 	signal: AbortSignal | undefined,
-	extra: readonly LockedProcess[] = [],
+	extra: readonly ProvenProcess[] = [],
 ): Promise<void> {
-	const proven = [...(await stepsWhose(steps, "same", { fresh: true })), ...extra];
-	for (const step of proven) killProcessTree(step.pid);
+	const proven = [...(await provenForStop(steps)), ...extra];
+	for (const step of proven) {
+		if (process.platform === "win32") {
+			if (step.created === undefined) continue;
+			// Atomic native termination verifies the creation time on the opened handle before terminating the root and
+			// its sequence-number-verified descendants. `null` means already gone or reused (never fall back to taskkill).
+			const terminated = processStartToken.nativeTerminateProcess?.(step.pid, step.created, true);
+			if (terminated === undefined) killProcessTree(step.pid);
+		} else {
+			killProcessTree(step.pid);
+		}
+	}
 	// Stopping is asynchronous on Windows: the next build starts only once they have ended, or after a bounded wait.
 	for (let waited = 0; waited < 50 && (await stepsWhose(proven, "same")).length > 0; waited++) {
 		await delay(BUILD_LOCK_POLL_MS / 2, signal);
@@ -574,10 +626,9 @@ export async function withBuildLocks<T>(
 ): Promise<T> {
 	const files = new Map(roots.map((root) => [buildLockPath(storeDir, root), root]));
 	const steps = new Map<number, LockedProcess>();
-	const ownStart = await processStartTokenAsync(process.pid, { fresh: true });
 	const writer: BuildLockWriter = {
 		files,
-		holder: ownStart === undefined ? { pid: process.pid } : { pid: process.pid, start: ownStart },
+		holder: await locked(process.pid, { fresh: true }),
 		steps,
 		retryTimers: new Map(),
 		...(onUnwritable === undefined ? {} : { onUnwritable }),

@@ -274,9 +274,10 @@ describe("blueprint build lock step starts (#4748)", () => {
 			"dead pids are ruled gone by liveness without querying start tokens",
 		);
 
-		// A live step that exited right after killProcessTree must not spin for 50 polls even when a stale cached start
-		// token would still return its old start.
+		// A live step that exited right after stopping must not spin for 50 polls even when a stale cached start token
+		// would still return its old start.
 		const orphan = sleeper();
+		const orphanStart = (await startTokens.processStartTokenAsync(orphan.pid!)) ?? "cccccccccccc";
 		const orphanExited = new Promise<void>((resolve) => orphan.once("exit", () => resolve()));
 		let pollsAfterExit = 0;
 		let exited = false;
@@ -287,12 +288,12 @@ describe("blueprint build lock step starts (#4748)", () => {
 		vi.mocked(startTokens.processStartTokenAsync).mockImplementation(async (pid, options) => {
 			if (pid === orphan.pid) {
 				if (exited) pollsAfterExit++;
-				return "cccccccccccc";
+				return orphanStart;
 			}
 			return actual(pid, options);
 		});
 		try {
-			writeLock({ pid: goneHolder, start: "aaaaaaaaaaaa", steps: [{ pid: orphan.pid, start: "cccccccccccc" }] });
+			writeLock({ pid: goneHolder, start: "aaaaaaaaaaaa", steps: [{ pid: orphan.pid, start: orphanStart }] });
 			const started = performance.now();
 			const settled = await settleOtherBuilds(dir, [root()], { waitMs: 600 });
 			await settled.release();

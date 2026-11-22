@@ -18,6 +18,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { codeStringLiteral } from "./code-string-literal.mjs";
 import { cliImports, markerPlace, readModule } from "./startup-stages-source.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -64,7 +65,7 @@ const stages = planStages(
 rmSync(stagesDir, { recursive: true, force: true });
 mkdirSync(stagesDir, { recursive: true });
 for (const [index, stage] of stages.entries())
-	writeFileSync(join(stagesDir, `${index}.js`), `${stage.map((specifier) => `import ${JSON.stringify(specifier)};`).join("\n")}\n`);
+	writeFileSync(join(stagesDir, `${index}.js`), `${stage.map((specifier) => `import ${codeStringLiteral(specifier)};`).join("\n")}\n`);
 writeFileSync(join(stagesDir, "stages.json"), `${JSON.stringify({ version: 1, stages: stages.length })}\n`);
 console.log(`Wrote ${stages.length} startup stages -> ${relative(packageRoot, stagesDir)}`);
 
@@ -99,7 +100,7 @@ async function trace(outFile) {
 			if ((result.format !== "module" && result.format !== "commonjs") || result.source == null) return result;
 			marked.push(url);
 			const source = typeof result.source === "string" ? result.source : Buffer.from(result.source).toString("utf8");
-			const marker = `globalThis.__atomicStartupStagesTrace.push(${JSON.stringify(url)});`;
+			const marker = `globalThis.__atomicStartupStagesTrace.push(${codeStringLiteral(url)});`;
 			const { at, before } = markerPlace(source, result.format);
 			return { ...result, source: `${source.slice(0, at)}${before}${marker}${source.slice(at)}` };
 		},
