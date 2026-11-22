@@ -45,13 +45,13 @@ interface TestApi {
 function makeApi(ineffectiveUnsubscribe = false): TestApi {
 	const events = new TestEventBus(ineffectiveUnsubscribe);
 	const messages: TestApi["messages"] = [];
-	const pi = {
+	const atomic = {
 		events,
 		sendMessage(message: { customType?: string; content: string }) {
 			messages.push(message);
 		},
 	} as unknown as ExtensionAPI;
-	return { pi, events, messages };
+	return { pi: atomic, events, messages };
 }
 
 interface ExtensionHarness extends TestApi {

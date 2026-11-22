@@ -21,10 +21,10 @@ const active = new Set();
 let factories = 0;
 async function factory({ cwd, agentDir, sessionManager, sessionStartEvent }) {
  const id = ++factories;
- const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noContextFiles: true, extensionFactories: [pi => {
-  pi.on("session_before_switch", async () => { if (!nested && ++switches === 1) { preflight.resolve(); await releasePreflight.promise; } });
-  pi.on("session_start", () => { active.add(id); });
-  pi.on("session_shutdown", () => { active.delete(id); });
+ const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noContextFiles: true, extensionFactories: [atomic => {
+  atomic.on("session_before_switch", async () => { if (!nested && ++switches === 1) { preflight.resolve(); await releasePreflight.promise; } });
+  atomic.on("session_start", () => { active.add(id); });
+  atomic.on("session_shutdown", () => { active.delete(id); });
  }] });
  await resourceLoader.reload();
  const result = await createAgentSession({ cwd, agentDir, settingsManager, modelRuntime, resourceLoader, sessionManager, sessionStartEvent, builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false } });

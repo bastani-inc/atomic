@@ -15,15 +15,15 @@ describe("regression #6162: extension active tools next-turn refresh", () => {
 
 	it("applies pi.setActiveTools before the next provider request in the same run", async () => {
 		const extensionFactories: ExtensionFactory[] = [
-			(pi) => {
-				pi.registerTool({
+			(atomic) => {
+				atomic.registerTool({
 					name: "switch_tools",
 					label: "Switch Tools",
 					description: "Switch the active extension tool set",
 					promptSnippet: "Switch to the next extension tool",
 					parameters: Type.Object({}),
 					execute: async () => {
-						pi.setActiveTools(["after_switch"]);
+						atomic.setActiveTools(["after_switch"]);
 						return {
 							content: [{ type: "text", text: "switched" }],
 							details: {},
@@ -31,7 +31,7 @@ describe("regression #6162: extension active tools next-turn refresh", () => {
 					},
 				});
 
-				pi.registerTool({
+				atomic.registerTool({
 					name: "after_switch",
 					label: "After Switch",
 					description: "Tool that should be available after switching",
@@ -79,19 +79,19 @@ describe("regression #6162: extension active tools next-turn refresh", () => {
 
 	it("preserves before_agent_start system prompt overrides when tools change mid-run", async () => {
 		const extensionFactories: ExtensionFactory[] = [
-			(pi) => {
-				pi.on("before_agent_start", async (event) => ({
+			(atomic) => {
+				atomic.on("before_agent_start", async (event) => ({
 					systemPrompt: `${event.systemPrompt}\n\nkeep this run override`,
 				}));
 
-				pi.registerTool({
+				atomic.registerTool({
 					name: "switch_tools",
 					label: "Switch Tools",
 					description: "Switch the active extension tool set",
 					promptSnippet: "Switch to the next extension tool",
 					parameters: Type.Object({}),
 					execute: async () => {
-						pi.setActiveTools(["after_switch"]);
+						atomic.setActiveTools(["after_switch"]);
 						return {
 							content: [{ type: "text", text: "switched" }],
 							details: {},
@@ -99,7 +99,7 @@ describe("regression #6162: extension active tools next-turn refresh", () => {
 					},
 				});
 
-				pi.registerTool({
+				atomic.registerTool({
 					name: "after_switch",
 					label: "After Switch",
 					description: "Tool that should be available after switching",

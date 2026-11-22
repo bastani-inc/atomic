@@ -262,8 +262,8 @@ export const WEB_ACCESS_MESSAGE_RENDERERS: Readonly<Record<string, MessageRender
 	"web-search-error": renderWebSearchErrorMessage,
 };
 
-export function registerWebAccessMessageRenderers(pi: Pick<ExtensionAPI, "registerMessageRenderer">): void {
+export function registerWebAccessMessageRenderers(atomic: Pick<ExtensionAPI, "registerMessageRenderer">): void {
 	for (const [customType, renderer] of Object.entries(WEB_ACCESS_MESSAGE_RENDERERS)) {
-		pi.registerMessageRenderer?.(customType, renderer);
+		atomic.registerMessageRenderer?.(customType, renderer);
 	}
 }

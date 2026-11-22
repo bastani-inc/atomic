@@ -109,8 +109,8 @@ test("a stored /tree and the archived branch a session_before_tree hook was give
 		sessionManager: manager,
 		settings: { branchSummary: { skipPrompt: true } },
 		extensionFactories: [
-			(pi) => {
-				pi.on("session_before_tree", (event) => {
+			(atomic) => {
+				atomic.on("session_before_tree", (event) => {
 					const { entriesToSummarize } = event.preparation;
 					hookEntries = entriesToSummarize.length;
 					sampled.push(["hook preparation", new WeakRef(event.preparation)]);

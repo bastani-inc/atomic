@@ -11,8 +11,8 @@
  */
 import type { ExtensionAPI } from "@bastani/atomic";
 
-export default function (pi: ExtensionAPI) {
-	pi.on("input", async (event, ctx) => {
+export default function (atomic: ExtensionAPI) {
+	atomic.on("input", async (event, ctx) => {
 		// Source-based logic: skip processing for extension-injected messages
 		if (event.source === "extension") {
 			return { action: "continue" };

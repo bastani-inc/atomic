@@ -66,15 +66,15 @@ for (const decision of ["approve", "deny", "cancel", "error", "override", "no-ui
 				noThemes: true,
 				noPromptTemplates: true,
 				extensionFactories: [
-					(pi) => {
+					(atomic) => {
 						factories++;
-						pi.on("session_start", () => {
+						atomic.on("session_start", () => {
 							starts++;
 						});
-						pi.on("session_shutdown", () => {
+						atomic.on("session_shutdown", () => {
 							shutdowns++;
 						});
-						pi.on("ui_prompt_start", (event, ctx) => {
+						atomic.on("ui_prompt_start", (event, ctx) => {
 							assert.equal(ctx.cwd, cwd);
 							assert.equal(ctx.sessionManager.getSessionId(), sessionManager.getSessionId());
 							assert.equal(ctx.isIdle(), true);
@@ -82,7 +82,7 @@ for (const decision of ["approve", "deny", "cancel", "error", "override", "no-ui
 							events.push(event);
 							observed();
 						});
-						pi.on("ui_prompt_end", (event, ctx) => {
+						atomic.on("ui_prompt_end", (event, ctx) => {
 							assert.equal(ctx.sessionManager.getSessionId(), sessionManager.getSessionId());
 							events.push(event);
 						});
@@ -187,12 +187,12 @@ test("prepared services start once and isolate a second borrowing session", asyn
 			resourceLoaderOptions: {
 				builtinPackagePaths: [],
 				extensionFactories: [
-					(pi) => {
+					(atomic) => {
 						const owner = ++factories;
-						pi.on("session_start", () => {
+						atomic.on("session_start", () => {
 							starts.push(owner);
 						});
-						pi.on("session_shutdown", () => {
+						atomic.on("session_shutdown", () => {
 							shutdowns.push(owner);
 						});
 					},

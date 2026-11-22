@@ -60,13 +60,13 @@ function scriptUi(actions: LlamaManagerAction[], connectionMessages: string[]): 
 
 async function runLlamaCommand(): Promise<Notification[]> {
 	let command: Omit<RegisteredCommand, "name" | "sourceInfo"> | undefined;
-	const pi = {
+	const atomic = {
 		registerProvider: () => {},
 		registerCommand: (name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">) => {
 			if (name === "llama") command = options;
 		},
 	} as Partial<ExtensionAPI> as ExtensionAPI;
-	llamaExtension(pi);
+	llamaExtension(atomic);
 	assert.ok(command);
 
 	const notifications: Notification[] = [];
@@ -101,7 +101,7 @@ it.each([true, false])(
 			},
 		});
 		const commandFailure = new Error("command registration failed");
-		const pi = {
+		const atomic = {
 			registerProvider: () => registration,
 			registerCommand: () => {
 				if (throws) throw commandFailure;
@@ -109,10 +109,10 @@ it.each([true, false])(
 		} as Partial<ExtensionAPI> as ExtensionAPI;
 		if (throws)
 			assert.throws(
-				() => llamaExtension(pi),
+				() => llamaExtension(atomic),
 				(cause) => cause === commandFailure,
 			);
-		else await llamaExtension(pi);
+		else await llamaExtension(atomic);
 	},
 );
 

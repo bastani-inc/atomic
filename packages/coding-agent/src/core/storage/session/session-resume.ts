@@ -105,7 +105,7 @@ export interface SessionResumeIndex {
 	readonly totals: SessionHistoryTotals;
 	readonly latestAssistantSeq?: number;
 	/**
-	 * Every entry an extension saved with `pi.appendEntry` (see {@link isExtensionCustomState}), on any branch. They
+	 * Every entry an extension saved with `atomic.appendEntry` (see {@link isExtensionCustomState}), on any branch. They
 	 * remain history; a subagent fork copies those on its branch. Absent from an index an earlier build saved or
 	 * extended, which a fork then compensates for by scanning.
 	 */
@@ -217,7 +217,7 @@ export function isBranchCustomState(customType: string | undefined): boolean {
 }
 /**
  * Custom entry types that Atomic and its bundled extensions write, or still read from older sessions. Every other
- * type is state an extension saved with `pi.appendEntry`, which a subagent fork copies from its branch as the
+ * type is state an extension saved with `atomic.appendEntry`, which a subagent fork copies from its branch as the
  * complete-branch copy did (#5500). A type missing here is copied too, so the list only limits what a fork copies.
  */
 const ATOMIC_CUSTOM_TYPES = new Set([

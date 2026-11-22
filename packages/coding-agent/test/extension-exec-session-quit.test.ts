@@ -83,14 +83,14 @@ for (const deaf of [false, true]) {
 			let result: ExecResult | undefined;
 			harness = await createHarness({
 				extensionFactories: [
-					(pi: ExtensionAPI) => {
-						pi.on("session_start", () => {
+					(atomic: ExtensionAPI) => {
+						atomic.on("session_start", () => {
 							const [command, args] = holdingCommand(started, deaf);
-							void pi.exec(command, args).then((value) => {
+							void atomic.exec(command, args).then((value) => {
 								result = value;
 							});
 						});
-						pi.on("session_shutdown", () => {
+						atomic.on("session_shutdown", () => {
 							record.shutdownRan = true;
 							record.resultAtShutdown = result;
 						});
@@ -126,13 +126,13 @@ test("a pi.exec command a session_shutdown handler runs is not ended by the inte
 		let handlerResult: ExecResult | undefined;
 		harness = await createHarness({
 			extensionFactories: [
-				(pi: ExtensionAPI) => {
-					pi.on("session_start", () => {
+				(atomic: ExtensionAPI) => {
+					atomic.on("session_start", () => {
 						const [command, args] = holdingCommand(started);
-						void pi.exec(command, args);
+						void atomic.exec(command, args);
 					});
-					pi.on("session_shutdown", async () => {
-						handlerResult = await pi.exec(process.execPath, [
+					atomic.on("session_shutdown", async () => {
+						handlerResult = await atomic.exec(process.execPath, [
 							"-e",
 							'setTimeout(() => process.stdout.write("saved"), 200)',
 						]);
@@ -166,18 +166,18 @@ test("a pi.exec command that work started before the interactive app's quit runs
 		let shutdownRan = false;
 		harness = await createHarness({
 			extensionFactories: [
-				(pi: ExtensionAPI) => {
+				(atomic: ExtensionAPI) => {
 					// An event handler is work the session's close waits for, and may still act once the quit began.
-					pi.events.on("hold", async () => {
+					atomic.events.on("hold", async () => {
 						const [command, args] = holdingCommand(first);
-						await pi.exec(command, args);
+						await atomic.exec(command, args);
 						const [nextCommand, nextArgs] = holdingCommand(second);
-						secondOutcome = await pi.exec(nextCommand, nextArgs).catch((error: Error) => error);
+						secondOutcome = await atomic.exec(nextCommand, nextArgs).catch((error: Error) => error);
 					});
-					pi.on("session_start", () => {
-						pi.events.emit("hold", {});
+					atomic.on("session_start", () => {
+						atomic.events.emit("hold", {});
 					});
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						shutdownRan = true;
 					});
 				},
@@ -210,8 +210,8 @@ test("a quit that bounds the shutdown handlers still runs the rest of the sessio
 		let handlerStarted = false;
 		harness = await createHarness({
 			extensionFactories: [
-				(pi: ExtensionAPI) => {
-					pi.on("session_shutdown", async () => {
+				(atomic: ExtensionAPI) => {
+					atomic.on("session_shutdown", async () => {
 						handlerStarted = true;
 						await new Promise(() => {});
 					});

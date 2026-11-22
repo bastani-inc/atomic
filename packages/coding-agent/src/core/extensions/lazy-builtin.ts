@@ -140,9 +140,9 @@ export interface LazyBuiltinController {
 	runCommand(name: string, args: string, ctx: ExtensionCommandContext): Promise<void>;
 	/** Run a statically registered shortcut by activating lazily, enforcing the lease fence. */
 	runShortcut(shortcut: string, ctx: ExtensionContext): Promise<void>;
-	/** Dispatch an event to the loaded implementation's captured `pi.on` handlers. */
+	/** Dispatch an event to the loaded implementation's captured `atomic.on` handlers. */
 	dispatchHandlers(eventName: string, event: unknown, ctx: ExtensionContext): Promise<unknown>;
-	/** Dispatch an event to the loaded implementation's captured `pi.events.on` handlers. */
+	/** Dispatch an event to the loaded implementation's captured `atomic.events.on` handlers. */
 	dispatchBusEvent(channel: string, payload: unknown): Promise<void>;
 	/** Most recent lifecycle context observed in this session generation. */
 	latestContext(): ExtensionContext | undefined;
@@ -172,16 +172,16 @@ export interface LazyBuiltinController {
 
 export interface LazyBuiltinSpec {
 	readonly label: string;
-	/** Additional `pi.on` events managed by the lazy wrapper (captured instead of re-subscribed on `pi`). */
+	/** Additional `atomic.on` events managed by the lazy wrapper (captured instead of re-subscribed on `atomic`). */
 	readonly managedEvents?: readonly string[];
-	/** `pi.events` channels intercepted by the lazy wrapper (captured instead of re-subscribed on `pi.events`). */
+	/** `atomic.events` channels intercepted by the lazy wrapper (captured instead of re-subscribed on `atomic.events`). */
 	readonly interceptedBusEvents?: readonly string[];
-	/** Whether the lazy wrapper owns `pi.onMcpServerContributionsChanged`. */
+	/** Whether the lazy wrapper owns `atomic.onMcpServerContributionsChanged`. */
 	readonly interceptsMcpContributions?: boolean;
 	/** Optional callback when an activation attempt fails. */
 	readonly onActivationError?: (error: unknown, ctx: ExtensionContext | undefined) => void;
-	/** Register static tools, commands, shortcuts, flags, renderers, and fast-path event handlers on `pi`. */
-	register(pi: ExtensionAPI, controller: LazyBuiltinController): void | Promise<void>;
+	/** Register static tools, commands, shortcuts, flags, renderers, and fast-path event handlers on `atomic`. */
+	register(atomic: ExtensionAPI, controller: LazyBuiltinController): void | Promise<void>;
 }
 
 const DEFAULT_MANAGED_EVENTS: readonly string[] = [
@@ -323,8 +323,8 @@ function isFixedDataProperty(target: object, prop: string | symbol): boolean {
 	return descriptor !== undefined && !descriptor.configurable && !descriptor.writable && "value" in descriptor;
 }
 
-function createStaticRecordingApi(pi: ExtensionAPI, surface: StaticSurfaceSets): ExtensionAPI {
-	return new Proxy(pi, {
+function createStaticRecordingApi(atomic: ExtensionAPI, surface: StaticSurfaceSets): ExtensionAPI {
+	return new Proxy(atomic, {
 		get(target, prop) {
 			if (isFixedDataProperty(target, prop)) return Reflect.get(target, prop, target);
 			if (prop === "registerTool") {
@@ -401,7 +401,7 @@ const FENCED_ACTION_PROPS: ReadonlySet<string | symbol> = new Set([
 ]);
 
 function createCaptureProxy(
-	pi: ExtensionAPI,
+	atomic: ExtensionAPI,
 	captured: CapturedLazyBuiltin,
 	surface: StaticSurfaceSets,
 	managedEvents: ReadonlySet<string>,
@@ -413,7 +413,7 @@ function createCaptureProxy(
 	const eventsProxy: EventBus = {
 		emit(channel, data) {
 			assertLiveActionLease();
-			pi.events.emit(channel, data);
+			atomic.events.emit(channel, data);
 		},
 		on(channel, handler) {
 			assertLease();
@@ -422,7 +422,7 @@ function createCaptureProxy(
 			captured.eventHandlers.set(channel, list);
 			let hostUnsub: (() => void) | undefined;
 			if (!interceptedBusEvents.has(channel)) {
-				hostUnsub = pi.events.on(channel, handler);
+				hostUnsub = atomic.events.on(channel, handler);
 				captured.disposables.push(hostUnsub);
 			}
 			return () => {
@@ -436,9 +436,9 @@ function createCaptureProxy(
 			};
 		},
 	};
-	registerCanonicalEventBus(eventsProxy, canonicalEventBusFor(pi.events));
+	registerCanonicalEventBus(eventsProxy, canonicalEventBusFor(atomic.events));
 
-	return new Proxy(pi, {
+	return new Proxy(atomic, {
 		get(target, prop) {
 			if (isFixedDataProperty(target, prop)) return Reflect.get(target, prop, target);
 			if (prop === "events") return eventsProxy;
@@ -577,7 +577,7 @@ export function createLazyBuiltinFactory(
 	const interceptedBusEvents = new Set(spec.interceptedBusEvents ?? []);
 	const invalidatedMessage = `${spec.label} initialization was invalidated by session shutdown`;
 
-	return async (pi: ExtensionAPI): Promise<void> => {
+	return async (atomic: ExtensionAPI): Promise<void> => {
 		let nextLeaseId = 1;
 		let activeLease: LazyLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++);
 		let lifecycleGeneration = 0;
@@ -817,7 +817,7 @@ export function createLazyBuiltinFactory(
 					}
 					assertLease(lease);
 					const proxy = createCaptureProxy(
-						pi,
+						atomic,
 						captured,
 						staticSurface,
 						managedEvents,
@@ -993,7 +993,7 @@ export function createLazyBuiltinFactory(
 		};
 
 		// Register managed lifecycle handlers first so startupRegistrationTokens stay deterministic.
-		pi.on("session_start", async (event, ctx) => {
+		atomic.on("session_start", async (event, ctx) => {
 			if (activeLease.retired) {
 				activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
 			}
@@ -1010,7 +1010,7 @@ export function createLazyBuiltinFactory(
 			}
 		});
 
-		pi.on("session_tree", async (event, ctx) => {
+		atomic.on("session_tree", async (event, ctx) => {
 			const lease = activeLease;
 			if (lease.retired) return;
 			await lease.priorCleanup;
@@ -1025,7 +1025,7 @@ export function createLazyBuiltinFactory(
 			}
 		});
 
-		pi.on("session_shutdown", async (event, ctx) => {
+		atomic.on("session_shutdown", async (event, ctx) => {
 			for (const cleanup of dormantShutdownCleanups) {
 				try {
 					cleanup();
@@ -1064,13 +1064,13 @@ export function createLazyBuiltinFactory(
 			}
 		});
 
-		pi.on("turn_start", async (event, ctx) => {
+		atomic.on("turn_start", async (event, ctx) => {
 			if (activeLease.retired) return;
 			activeLifecycle.turnStart = { event, ctx };
 			await forwardLiveEvent("turn_start", event, ctx);
 		});
 
-		pi.on("turn_end", async (event, ctx) => {
+		atomic.on("turn_end", async (event, ctx) => {
 			if (activeLease.retired) return;
 			activeLifecycle.turnStart = null;
 			activeLifecycle.agentStart = null;
@@ -1079,7 +1079,7 @@ export function createLazyBuiltinFactory(
 			await forwardLiveEvent("turn_end", event, ctx);
 		});
 
-		pi.on("agent_start", async (event, ctx) => {
+		atomic.on("agent_start", async (event, ctx) => {
 			if (activeLease.retired) return;
 			activeLifecycle.agentStart = { event, ctx };
 			activeLifecycle.activeTools.clear();
@@ -1089,7 +1089,7 @@ export function createLazyBuiltinFactory(
 			await forwardLiveEvent("agent_start", event, ctx);
 		});
 
-		pi.on("agent_end", async (event, ctx) => {
+		atomic.on("agent_end", async (event, ctx) => {
 			if (activeLease.retired) return;
 			activeLifecycle.agentStart = null;
 			activeLifecycle.pendingMessages.length = 0;
@@ -1097,7 +1097,7 @@ export function createLazyBuiltinFactory(
 			await forwardLiveEvent("agent_end", event, ctx);
 		});
 
-		pi.on("message_start", async (event, ctx) => {
+		atomic.on("message_start", async (event, ctx) => {
 			if (activeLease.retired) return;
 			const lease = activeLease;
 			if (loaded?.lease === lease || activeReplay?.lease === lease) {
@@ -1109,25 +1109,25 @@ export function createLazyBuiltinFactory(
 			}
 		});
 
-		pi.on("tool_execution_start", async (event, ctx) => {
+		atomic.on("tool_execution_start", async (event, ctx) => {
 			if (activeLease.retired) return;
 			activeLifecycle.activeTools.set(event.toolCallId, { event, ctx });
 			await forwardLiveEvent("tool_execution_start", event, ctx);
 		});
 
-		pi.on("tool_execution_end", async (event, ctx) => {
+		atomic.on("tool_execution_end", async (event, ctx) => {
 			if (activeLease.retired) return;
 			activeLifecycle.activeTools.delete(event.toolCallId);
 			await forwardLiveEvent("tool_execution_end", event, ctx);
 		});
 
-		pi.on("model_select", async (event, ctx) => {
+		atomic.on("model_select", async (event, ctx) => {
 			if (activeLease.retired) return;
 			activeLifecycle.modelSelect = { event, ctx };
 			await forwardLiveEvent("model_select", event, ctx);
 		});
 
-		pi.registerToolRenderer?.((toolName, next) => {
+		atomic.registerToolRenderer?.((toolName, next) => {
 			const resolvers = controller.active?.captured.toolRenderers;
 			if (!resolvers || resolvers.length === 0) return next();
 			const resolve = (index: number): ReturnType<ToolRendererResolver> =>
@@ -1135,7 +1135,7 @@ export function createLazyBuiltinFactory(
 			return resolve(0);
 		});
 
-		const recordingApi = createStaticRecordingApi(pi, staticSurface);
+		const recordingApi = createStaticRecordingApi(atomic, staticSurface);
 		await spec.register(recordingApi, controller);
 	};
 }

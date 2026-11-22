@@ -213,8 +213,8 @@ describe("deferred startup reload", () => {
 				extensionFactories: [
 					{
 						name: "probe",
-						factory: (pi) => {
-							pi.on("session_start", (_event, ctx) => {
+						factory: (atomic) => {
+							atomic.on("session_start", (_event, ctx) => {
 								childCtx = ctx;
 							});
 						},

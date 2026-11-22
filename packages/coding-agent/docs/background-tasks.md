@@ -54,7 +54,7 @@ Press `↓` on an empty prompt to focus the panel from either `main` or a subage
 
 In fullscreen mode, clicking any row acts like `Enter`. Clicking `main` switches back to `main` when viewing a subagent, or returns to the prompt when the panel is focused. Footer hints click too: `↓ N agents` focuses the panel, `/tasks to manage` and `/tasks to see subagents` open `/tasks`, and key hints trigger their bound action.
 
-If an extension panel source fails, Atomic hides its invalid rows and warns once per source while keeping other rows and chat usable. Fix the extension and run `/reload` to register it again. Extension authors can add rows with [`pi.registerAgentPanelSource()`](/extensions/api-reference#pi-registeragentpanelsource-source).
+If an extension panel source fails, Atomic hides its invalid rows and warns once per source while keeping other rows and chat usable. Fix the extension and run `/reload` to register it again. Extension authors can add rows with [`atomic.registerAgentPanelSource()`](/extensions/api-reference#atomic-registeragentpanelsource-source).
 
 ### Viewing a subagent
 

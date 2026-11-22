@@ -29,8 +29,8 @@ async function extensionApi(): Promise<{ pi: ExtensionAPI; folder: string }> {
 	let api: ExtensionAPI | undefined;
 	harness = await createHarness({
 		extensionFactories: [
-			(pi: ExtensionAPI) => {
-				api = pi;
+			(atomic: ExtensionAPI) => {
+				api = atomic;
 			},
 		],
 	});
@@ -89,11 +89,11 @@ describe.skipIf(process.platform !== "win32")("pi.exec on Windows", () => {
 	});
 
 	test("never runs a program the folder a command runs in holds, for a command named without a path", async () => {
-		const { pi, folder } = await extensionApi();
+		const { pi: atomic, folder } = await extensionApi();
 		plantProgram(folder);
 		const marker = join(folder, "ran.txt");
 
-		const result = await pi.exec(PROGRAM, writes(marker));
+		const result = await atomic.exec(PROGRAM, writes(marker));
 
 		assert.notEqual(result.code, 0);
 		assert.match(result.stderr, /ENOENT/);
@@ -101,18 +101,18 @@ describe.skipIf(process.platform !== "win32")("pi.exec on Windows", () => {
 	});
 
 	test("runs the program from a PATH directory, and one named by a path as written", async () => {
-		const { pi, folder } = await extensionApi();
+		const { pi: atomic, folder } = await extensionApi();
 		// An absolute PATH entry is searched even inside that folder: only the folder itself never is.
 		const bin = join(folder, "bin");
 		plantProgram(bin);
 		vi.stubEnv("PATH", `${bin};${process.env.PATH ?? ""}`);
 		const fromPath = join(folder, "from-path.txt");
-		assert.equal((await pi.exec(PROGRAM, writes(fromPath))).code, 0);
+		assert.equal((await atomic.exec(PROGRAM, writes(fromPath))).code, 0);
 		assert.equal(existsSync(fromPath), true);
 
 		plantProgram(folder);
 		const byPath = join(folder, "by-path.txt");
-		assert.equal((await pi.exec(`.\\${PROGRAM}.exe`, writes(byPath))).code, 0);
+		assert.equal((await atomic.exec(`.\\${PROGRAM}.exe`, writes(byPath))).code, 0);
 		assert.equal(existsSync(byPath), true);
 	});
 });

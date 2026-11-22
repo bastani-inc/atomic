@@ -112,8 +112,8 @@ async function firstRequestRecords(kind: PromptKind, recorded: boolean): Promise
 	const extensionsResult =
 		kind === "forced by a handler"
 			? await createTestExtensionsResult([
-					(pi) => {
-						pi.on("before_agent_start", () => ({ systemPrompt: "A prompt of the handler's own." }));
+					(atomic) => {
+						atomic.on("before_agent_start", () => ({ systemPrompt: "A prompt of the handler's own." }));
 					},
 				])
 			: undefined;

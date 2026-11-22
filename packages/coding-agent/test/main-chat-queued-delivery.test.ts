@@ -28,8 +28,8 @@ function gate(): Gate {
 
 /** An extension whose `message_start` hook waits on `hold` for the user message `text`. */
 function holdMessageStart(text: string, hold: Gate): ExtensionFactory {
-	return (pi) => {
-		pi.on("message_start", async (event) => {
+	return (atomic) => {
+		atomic.on("message_start", async (event) => {
 			if (event.message.role !== "user" || getMessageText(event.message) !== text) return;
 			hold.entered.resolve();
 			await hold.release.promise;
@@ -406,8 +406,8 @@ describe("a queued message the isolated engine's main session takes", () => {
 		async () => {
 			const hook = gate();
 			gates.push(hook);
-			const rewrite: ExtensionFactory = (pi) => {
-				pi.on("input", (event) => ({ action: "transform", text: `rewritten: ${event.text}` }));
+			const rewrite: ExtensionFactory = (atomic) => {
+				atomic.on("input", (event) => ({ action: "transform", text: `rewritten: ${event.text}` }));
 			};
 			const chat = await busyChat("isolated", {
 				extensions: [rewrite, holdMessageStart("rewritten: later one", hook)],

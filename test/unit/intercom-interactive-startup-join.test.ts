@@ -99,7 +99,7 @@ function hostExtension(handlers: Map<string, LifecycleHandler[]>): Extension {
 }
 
 /** One session's Intercom, loaded the way Atomic loads it, on a broker that records each registration. */
-type HeavyModule = { default: (pi: ExtensionAPI) => void | Promise<void> };
+type HeavyModule = { default: (atomic: ExtensionAPI) => void | Promise<void> };
 
 function intercomSession(
 	options: { activeTools?: readonly string[]; refuse?: () => boolean; importHeavy?: () => Promise<HeavyModule> } = {},
@@ -125,7 +125,7 @@ function intercomSession(
 	const handlers = new Map<string, LifecycleHandler[]>();
 	const tools = new Map<string, ToolDefinition>();
 	let sessionName: string | undefined;
-	const pi = {
+	const atomic = {
 		on(event: string, handler: LifecycleHandler) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
@@ -146,7 +146,7 @@ function intercomSession(
 		setActiveTools() {},
 		events: createEventBus(),
 	} as never as ExtensionAPI;
-	intercom(pi, options.importHeavy === undefined ? {} : { importHeavy: options.importHeavy });
+	intercom(atomic, options.importHeavy === undefined ? {} : { importHeavy: options.importHeavy });
 	const emit = async (event: LifecycleEvent, ctx: ExtensionContext): Promise<ExtensionError[]> => {
 		const reported: ExtensionError[] = [];
 		await runGenericHandlers([hostExtension(handlers)], ctx, event, (error) => reported.push(error));

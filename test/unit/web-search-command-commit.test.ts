@@ -47,7 +47,7 @@ vi.mock("../../packages/web-access/web-search-summary.js", () => ({
 
 interface CommandModule {
 	registerWebSearchCommand(
-		pi: ExtensionAPI,
+		atomic: ExtensionAPI,
 		deps: {
 			state: { activeCurator: { close(): void } | null };
 			closeCurator(): void;
@@ -149,16 +149,16 @@ for (const ending of ["reload", "shutdown"] as const) {
 				handle?.close();
 			};
 			const extensions = await createTestExtensionsResult([
-				(pi) => {
-					registerWebSearchCommand(pi, {
+				(atomic) => {
+					registerWebSearchCommand(atomic, {
 						state,
 						closeCurator,
 						async buildSearchReturn() {
-							await pi.appendEntry("curator-save", { saved: true });
+							await atomic.appendEntry("curator-save", { saved: true });
 							return { content: [{ type: "text", text: "saved" }], details: {} };
 						},
 					});
-					pi.on("session_shutdown", () => {
+					atomic.on("session_shutdown", () => {
 						shutdown = true;
 						closeCurator();
 					});

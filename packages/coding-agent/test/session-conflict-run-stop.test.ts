@@ -172,7 +172,7 @@ async function conflictStoppedSession() {
 	const harness = await createHarness({
 		sessionManager: await SessionManager.open(store, sessionId),
 		extensionFactories: [
-			(pi) => pi.registerCommand("noop", { description: "does nothing", handler: async () => {} }),
+			(atomic) => atomic.registerCommand("noop", { description: "does nothing", handler: async () => {} }),
 		],
 	});
 	harnesses.push(harness);

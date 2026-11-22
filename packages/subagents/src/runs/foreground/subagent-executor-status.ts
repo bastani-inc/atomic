@@ -166,9 +166,9 @@ export function notifyDetachedForegroundChildExit(input: {
 	notificationId?: string;
 	noticeLabel?: string;
 }): void {
-	const { pi, runId, index, result } = input;
+	const { pi: atomic, runId, index, result } = input;
 	void deliverLocalCompletionNotification(
-		pi.events,
+		atomic.events,
 		{
 			id: runId,
 			runId,

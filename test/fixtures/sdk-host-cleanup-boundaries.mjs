@@ -37,10 +37,10 @@ try {
 			async reload() { await super.reload(); if (generation > 1 && mode !== "getter-control" && mode !== "getter-after-transfer") unavailable = true; }
 			async prepareReload() { await this.reload(); throw primary; }
 		}
-		const resourceLoader = new Loader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [(pi) => {
+		const resourceLoader = new Loader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [(atomic) => {
 			const id = ++generation;
 			active.add(id);
-			pi.on("session_shutdown", () => { active.delete(id); stopped.push(id); if (mode.endsWith("cleanup") && id > 1) throw cleanup; });
+			atomic.on("session_shutdown", () => { active.delete(id); stopped.push(id); if (mode.endsWith("cleanup") && id > 1) throw cleanup; });
 		}] });
 		let error;
 		if (mode === "getter-creation") {
@@ -70,13 +70,13 @@ try {
 		let cleanupAPI;
 		let freshDeliveries = 0;
 		const eventBus = createEventBus();
-		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, eventBus, noExtensions: true, extensionFactories: [(pi) => {
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, eventBus, noExtensions: true, extensionFactories: [(atomic) => {
 			const id = ++generation;
-			pi.events.on("fresh-during-cleanup", () => { freshDeliveries++; });
-			pi.on("session_shutdown", async () => {
+			atomic.events.on("fresh-during-cleanup", () => { freshDeliveries++; });
+			atomic.on("session_shutdown", async () => {
 				if (mode.startsWith("spawn-candidate") && id === 1) return;
-				cleanupAPI = pi;
-				child = pi.exec(process.execPath, ["-e", 'const fs=require("node:fs");fs.writeFileSync("started","");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);process.stdout.write("complete");}},10);']);
+				cleanupAPI = atomic;
+				child = atomic.exec(process.execPath, ["-e", 'const fs=require("node:fs");fs.writeFileSync("started","");const t=setInterval(()=>{if(fs.existsSync("release")){clearInterval(t);process.stdout.write("complete");}},10);']);
 				void child.then(() => { settled = true; });
 				while (!existsSync(join(cwd, "started"))) await delay(10);
 				started.resolve();
@@ -84,7 +84,7 @@ try {
 				if (mode.endsWith("error")) throw new Error("shutdown primary");
 			});
 			if (mode === "spawn-factory") throw new Error("factory primary");
-			if (mode.startsWith("spawn-candidate") && id > 1) pi.on("session_start", () => { throw new Error("startup primary"); });
+			if (mode.startsWith("spawn-candidate") && id > 1) atomic.on("session_start", () => { throw new Error("startup primary"); });
 		}] });
 		const creating = createAgentSession({ ...options, resourceLoader });
 		const operation = creating.then(async (result) => {
@@ -126,9 +126,9 @@ try {
 		const held = defer();
 		const entered = defer();
 		release = held.resolve;
-		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, eventBus, noExtensions: true, extensionFactories: [(pi) => {
-			api = pi;
-			pi.on("session_shutdown", async () => { entered.resolve(); await held.promise; });
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, eventBus, noExtensions: true, extensionFactories: [(atomic) => {
+			api = atomic;
+			atomic.on("session_shutdown", async () => { entered.resolve(); await held.promise; });
 		}] });
 		({ session } = await createAgentSession({ ...options, resourceLoader }));
 		const handles = [];

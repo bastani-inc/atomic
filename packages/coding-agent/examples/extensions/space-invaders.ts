@@ -467,8 +467,8 @@ class SpaceInvadersComponent {
 	}
 }
 const INVADERS_SAVE_TYPE = "space-invaders-save";
-export default function (pi: ExtensionAPI) {
-	pi.registerCommand("invaders", {
+export default function (atomic: ExtensionAPI) {
+	atomic.registerCommand("invaders", {
 		description: "Play Space Invaders!",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
@@ -490,7 +490,7 @@ export default function (pi: ExtensionAPI) {
 					tui,
 					() => done(undefined),
 					(state) => {
-						void pi
+						void atomic
 							.appendEntry(INVADERS_SAVE_TYPE, state)
 							.catch((error: Error) => ctx.ui.notify(error.message, "error"));
 					},

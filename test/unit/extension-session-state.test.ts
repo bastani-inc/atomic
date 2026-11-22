@@ -56,8 +56,8 @@ test("the events facade built for each extension resolves to the bus it forwards
 	const eventsPerLoad: EventBus[] = [];
 	const loadOnce = async () => {
 		await loadExtensionFromFactory(
-			(pi) => {
-				eventsPerLoad.push(pi.events);
+			(atomic) => {
+				eventsPerLoad.push(atomic.events);
 			},
 			process.cwd(),
 			bus,
@@ -162,8 +162,8 @@ test("state captured through successive load generations of one session survives
 	let events: EventBus | undefined;
 
 	await loadExtensionFromFactory(
-		(pi) => {
-			events = pi.events;
+		(atomic) => {
+			events = atomic.events;
 		},
 		process.cwd(),
 		bus,
@@ -172,8 +172,8 @@ test("state captured through successive load generations of one session survives
 	const first = sessionScopedExtensionState(events!, "generation:v1", () => ({ loads: 1 }));
 
 	await loadExtensionFromFactory(
-		(pi) => {
-			events = pi.events;
+		(atomic) => {
+			events = atomic.events;
 		},
 		process.cwd(),
 		bus,
@@ -190,16 +190,16 @@ test("two extensions on one session share a key; callers must namespace keys the
 	const states: Array<{ owner: string }> = [];
 
 	await loadExtensionFromFactory(
-		(pi) => {
-			states.push(sessionScopedExtensionState(pi.events, "shared:v1", () => ({ owner: "first" })));
+		(atomic) => {
+			states.push(sessionScopedExtensionState(atomic.events, "shared:v1", () => ({ owner: "first" })));
 		},
 		process.cwd(),
 		bus,
 		createExtensionRuntime(),
 	);
 	await loadExtensionFromFactory(
-		(pi) => {
-			states.push(sessionScopedExtensionState(pi.events, "shared:v1", () => ({ owner: "second" })));
+		(atomic) => {
+			states.push(sessionScopedExtensionState(atomic.events, "shared:v1", () => ({ owner: "second" })));
 		},
 		process.cwd(),
 		bus,

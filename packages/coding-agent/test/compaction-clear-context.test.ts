@@ -242,8 +242,8 @@ describe("compaction clears the context window without calling a model", () => {
 			settings: { compaction: { enabled: true, reserveTokens: RESERVE }, retry: { enabled: false } },
 			fauxProvider: { tokensPerSecond: 20 },
 			extensionFactories: [
-				(pi) => {
-					pi.on("session_before_compact", (_event, ctx) => {
+				(atomic) => {
+					atomic.on("session_before_compact", (_event, ctx) => {
 						streamingAtPlan.push(!ctx.isIdle());
 					});
 				},

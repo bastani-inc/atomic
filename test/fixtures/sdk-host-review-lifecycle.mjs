@@ -41,7 +41,7 @@ try {
     const entered = new Promise((resolve) => { enter = resolve; });
     const gate = new Promise((resolve) => { release = resolve; });
     const loader = new DefaultResourceLoader({ ...options, noExtensions: true, noContextFiles: true,
-      extensionFactories: [(pi) => { pi.on("input", async () => { enter(); await gate; return { action: "transform", text: "retired" }; }); }] });
+      extensionFactories: [(atomic) => { atomic.on("input", async () => { enter(); await gate; return { action: "transform", text: "retired" }; }); }] });
     await loader.reload();
     const session = (await createAgentSession({ ...options, resourceLoader: loader })).session;
     sessions.push(session);

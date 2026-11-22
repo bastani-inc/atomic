@@ -49,8 +49,8 @@ function bash(command: string): Content[number] {
 	};
 }
 
-export default function (pi: ExtensionAPI): void {
-	pi.registerProvider("e2e4521", {
+export default function (atomic: ExtensionAPI): void {
+	atomic.registerProvider("e2e4521", {
 		api: "issue-4521-fixture",
 		apiKey: "fixture-only",
 		baseUrl: "http://127.0.0.1:1/unused",

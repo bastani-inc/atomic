@@ -244,7 +244,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				deliveries.close();
 				throw error;
 			});
-			// #6113: an extension command can answer with a message it queues (`pi.sendMessage`) and return before it is
+			// #6113: an extension command can answer with a message it queues (`atomic.sendMessage`) and return before it is
 			// delivered. Its answer, and the reply of a turn that message starts, come before the result and before the
 			// next prompt; the session is closed only after them.
 			const queued = await deliveries.settle();

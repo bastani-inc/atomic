@@ -20,10 +20,10 @@ function getWeakMap<T>(key: string): WeakMap<ExtensionAPI, T> {
 	return registry;
 }
 
-export function beginApiLifecycle(pi: ExtensionAPI): ApiLifecycle {
+export function beginApiLifecycle(atomic: ExtensionAPI): ApiLifecycle {
 	const registry = getWeakMap<ApiRegistration>("__piSubagentRuntimeRegistrations");
 	try {
-		registry.get(pi)?.cleanup();
+		registry.get(atomic)?.cleanup();
 	} catch {
 		// Reload cleanup is best effort; a stale resource must not block registration.
 	}
@@ -37,28 +37,28 @@ export function beginApiLifecycle(pi: ExtensionAPI): ApiLifecycle {
 			try {
 				ownedCleanup();
 			} finally {
-				if (registry.get(pi) === registration) registry.delete(pi);
+				if (registry.get(atomic) === registration) registry.delete(atomic);
 			}
 		},
 	};
-	registry.set(pi, registration);
+	registry.set(atomic, registration);
 
 	return {
-		isCurrent: () => !registration.disposed && registry.get(pi) === registration,
+		isCurrent: () => !registration.disposed && registry.get(atomic) === registration,
 		setCleanup(cleanup) {
 			ownedCleanup = cleanup;
 		},
 		dispose() {
-			if (registry.get(pi) === registration) registration.cleanup();
+			if (registry.get(atomic) === registration) registration.cleanup();
 		},
 	};
 }
 
-export function getApiScopedSet(pi: ExtensionAPI, key: string): Set<string> {
+export function getApiScopedSet(atomic: ExtensionAPI, key: string): Set<string> {
 	const registry = getWeakMap<Set<string>>(key);
-	const existing = registry.get(pi);
+	const existing = registry.get(atomic);
 	if (existing) return existing;
 	const values = new Set<string>();
-	registry.set(pi, values);
+	registry.set(atomic, values);
 	return values;
 }

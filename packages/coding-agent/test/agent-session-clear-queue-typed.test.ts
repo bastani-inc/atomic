@@ -7,8 +7,10 @@ import type { ExtensionFactory } from "../src/core/extensions/index.js";
 import { createHarness, getUserTexts, type Harness } from "./suite/harness.js";
 
 /** An `input` hook that rewrites "beta" to "alpha" and leaves every other message as typed. */
-const betaBecomesAlpha: ExtensionFactory = (pi) => {
-	pi.on("input", (event) => (event.text === "beta" ? { action: "transform", text: "alpha" } : { action: "continue" }));
+const betaBecomesAlpha: ExtensionFactory = (atomic) => {
+	atomic.on("input", (event) =>
+		event.text === "beta" ? { action: "transform", text: "alpha" } : { action: "continue" },
+	);
 };
 
 /** A tool that holds each call until the test releases it, so the test can act while a turn is open. */

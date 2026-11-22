@@ -16,15 +16,15 @@ let omittedCalls = 0;
 const writes = new Map();
 const resourceLoader = new DefaultResourceLoader({
   cwd, agentDir: cwd, settingsManager, noExtensions: true,
-  extensionFactories: ["keep", "omit"].map(name => pi => {
+  extensionFactories: ["keep", "omit"].map(name => atomic => {
     active.set(name, setInterval(() => {}, 60_000));
-    writes.set(name, () => pi.setSessionName("omitted-write"));
-    pi.events.on("selected-ping", () => { if (name === "keep") calls++; else omittedCalls++; });
-    pi.registerCommand(name, { description: name, handler: async (_args, ctx) => {
-      await pi.setSessionName("selected"); assert.ok(ctx.getAgentTaskHost()); pi.events.emit("selected-ping");
+    writes.set(name, () => atomic.setSessionName("omitted-write"));
+    atomic.events.on("selected-ping", () => { if (name === "keep") calls++; else omittedCalls++; });
+    atomic.registerCommand(name, { description: name, handler: async (_args, ctx) => {
+      await atomic.setSessionName("selected"); assert.ok(ctx.getAgentTaskHost()); atomic.events.emit("selected-ping");
     } });
-    pi.on("session_start", () => { started.push(name); if (mode === "startup") throw new Error("selected startup failed"); });
-    pi.on("session_shutdown", () => {
+    atomic.on("session_start", () => { started.push(name); if (mode === "startup") throw new Error("selected startup failed"); });
+    atomic.on("session_shutdown", () => {
       clearInterval(active.get(name)); active.delete(name); stopped.push(name);
       if (mode === "cleanup" && name === "omit") throw new Error("omitted cleanup failed");
     });

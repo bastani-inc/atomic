@@ -42,18 +42,18 @@ async function configuredClient(ctx: ExtensionCommandContext): Promise<LlamaClie
 	return new LlamaClient(serverUrl, result.auth.apiKey);
 }
 
-export default function llamaExtension(pi: ExtensionAPI): void {
+export default function llamaExtension(atomic: ExtensionAPI): void {
 	const provider = createLlamaProvider();
-	pi.registerProvider(provider.provider);
-	pi.registerCommand("llama", llamaCommand(provider));
+	atomic.registerProvider(provider.provider);
+	atomic.registerCommand("llama", llamaCommand(provider));
 }
 
 /** The CLI is finishing its own deferred load after quit; its SDK registration may already be closed. */
-export function finishLlamaAfterQuit(pi: ExtensionAPI): void {
+export function finishLlamaAfterQuit(atomic: ExtensionAPI): void {
 	const provider = createLlamaProvider();
-	const registration = pi.registerProvider(provider.provider);
+	const registration = atomic.registerProvider(provider.provider);
 	try {
-		pi.registerCommand("llama", llamaCommand(provider));
+		atomic.registerCommand("llama", llamaCommand(provider));
 	} catch (error) {
 		// The closed SDK facade also rejected the preceding registration. Keep the command's diagnostic
 		// without leaving a second, unhandled rejection behind it.

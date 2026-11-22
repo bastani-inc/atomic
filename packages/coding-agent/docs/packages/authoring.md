@@ -86,7 +86,7 @@ Contribute [MCP servers](/mcp-servers) via `mcpServers` in the manifest (manifes
 
 - Contributed servers use the standard `mcp.json` schema (URL environment interpolation, `exposure`, `toolExposure`, `timeout` in seconds). Relative `cwd` resolves against the package root (`"cwd": "."` targets files shipped in the package). `auth.provider` is not allowed in package manifests.
 - Contributed servers have lowest precedence. User and project configurations can override or disable them by name, and settings can filter them via `mcpServers` patterns. Project packages contribute servers only in trusted projects.
-- For dynamically computed server configs, call [`pi.registerMcpServer()`](/extensions/api-reference#pi-registermcpserver-name-config) from an extension.
+- For dynamically computed server configs, call [`atomic.registerMcpServer()`](/extensions/api-reference#atomic-registermcpserver-name-config) from an extension.
 
 ### Storage adapters
 

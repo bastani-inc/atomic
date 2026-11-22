@@ -83,9 +83,9 @@ interface Sender {
 const card = { customType: "intercom_message", content: LATE_TEXT, display: true };
 
 function viaIntercom(options: SendMessageOptions, text = LATE_TEXT): Sender["send"] {
-	return ({ pi, context }, key) => {
+	return ({ pi: atomic, context }, key) => {
 		const admitted = admitActiveSessionInbound(context, () =>
-			pi.sendMessage(
+			atomic.sendMessage(
 				{ ...card, content: text },
 				{ ...options, stageAdmissionKey: `intercom:${key}`, persistWhenStreaming: true },
 			),
@@ -104,12 +104,13 @@ const senders: Sender[] = [
 	{
 		id: "extension",
 		name: "an extension's message",
-		send: ({ pi }) => Promise.resolve(pi.sendMessage(card, { triggerTurn: true })),
+		send: ({ pi: atomic }) => Promise.resolve(atomic.sendMessage(card, { triggerTurn: true })),
 	},
 	{
 		id: "extension-interrupt",
 		name: "an extension's interrupting message",
-		send: ({ pi }) => Promise.resolve(pi.sendMessage(card, { triggerTurn: true, deliverAs: "interrupt" })),
+		send: ({ pi: atomic }) =>
+			Promise.resolve(atomic.sendMessage(card, { triggerTurn: true, deliverAs: "interrupt" })),
 	},
 	{ id: "steer", name: "a steering message", send: ({ session }) => session.steer(LATE_TEXT) },
 	{ id: "follow-up", name: "a follow-up message", send: ({ session }) => session.followUp(LATE_TEXT) },
@@ -139,7 +140,7 @@ async function attemptReceiving(
 	microtasks: number,
 ): Promise<{ readonly outcome: Outcome; readonly detail: string }> {
 	env.faux.setResponses(Array.from({ length: 3 }, () => answerPendingInput()));
-	let pi: ExtensionAPI | undefined;
+	let atomic: ExtensionAPI | undefined;
 	let context: ExtensionContext | undefined;
 	let sent: Promise<string | undefined> | undefined;
 	const key = `late-${microtasks}`;
@@ -148,7 +149,7 @@ async function attemptReceiving(
 			resourceLoaderInheritanceSnapshot: {
 				extensionFactories: [
 					(api: ExtensionAPI) => {
-						pi = api;
+						atomic = api;
 						api.on("session_start", (_event, ctx) => {
 							context = ctx;
 						});
@@ -164,7 +165,7 @@ async function attemptReceiving(
 					session.subscribe((event) => {
 						if (event.type !== "agent_settled" || sent !== undefined) return;
 						afterMicrotasks(microtasks, () => {
-							sent = (async () => sender.send({ pi: pi!, context: context!, session }, key))().then(
+							sent = (async () => sender.send({ pi: atomic!, context: context!, session }, key))().then(
 								() => undefined,
 								(error: unknown) => (error instanceof Error ? error.message : String(error)),
 							);
@@ -235,7 +236,7 @@ test(
 		const transcript = Promise.withResolvers<{ source: TaskTranscriptSource; session: AgentSession }>();
 		const lateTurnBlocked = Promise.withResolvers<void>();
 		let lateSent: Promise<unknown> | undefined;
-		let pi: ExtensionAPI | undefined;
+		let atomic: ExtensionAPI | undefined;
 		let context: ExtensionContext | undefined;
 		let escPressed = false;
 		let startsAfterEsc = 0;
@@ -246,7 +247,7 @@ test(
 				resourceLoaderInheritanceSnapshot: {
 					extensionFactories: [
 						(api: ExtensionAPI) => {
-							pi = api;
+							atomic = api;
 							api.on("session_start", (_event, ctx) => {
 								context = ctx;
 							});
@@ -264,7 +265,7 @@ test(
 							if (event.type === "tool_execution_start" && event.toolName === "block") lateTurnBlocked.resolve();
 							if (event.type !== "agent_settled" || lateSent !== undefined) return;
 							onceDrained(session, () => {
-								lateSent = senders[0]!.send({ pi: pi!, context: context!, session }, "late-esc");
+								lateSent = senders[0]!.send({ pi: atomic!, context: context!, session }, "late-esc");
 							});
 						});
 						transcript.resolve({ source, session });
@@ -288,7 +289,7 @@ test(
 
 			await within(
 				viaIntercom({ triggerTurn: true }, "the next message")(
-					{ pi: pi!, context: context!, session },
+					{ pi: atomic!, context: context!, session },
 					"after-esc",
 				),
 				"the waiting child never accepted the next message",
@@ -311,7 +312,7 @@ test(
 	async () => {
 		const env = await liveChildEnvironment(cleanups);
 		env.faux.setResponses(Array.from({ length: 4 }, () => answerPendingInput()));
-		let pi: ExtensionAPI | undefined;
+		let atomic: ExtensionAPI | undefined;
 		let context: ExtensionContext | undefined;
 		let settledTurns = 0;
 		let lateSent: Promise<unknown> | undefined;
@@ -321,7 +322,7 @@ test(
 				resourceLoaderInheritanceSnapshot: {
 					extensionFactories: [
 						(api: ExtensionAPI) => {
-							pi = api;
+							atomic = api;
 							api.on("session_start", (_event, ctx) => {
 								context = ctx;
 							});
@@ -339,7 +340,7 @@ test(
 							settledTurns += 1;
 							if (settledTurns === 1)
 								onceDrained(session, () => {
-									lateSent = senders[0]!.send({ pi: pi!, context: context!, session }, "late-settling");
+									lateSent = senders[0]!.send({ pi: atomic!, context: context!, session }, "late-settling");
 								});
 							else if (settledTurns === 2) settlingSent = session.sendUserMessage("a prompt sent as it settles");
 						});
@@ -369,7 +370,7 @@ test.each(promptSenders)(
 		const lost: string[] = [];
 		for (let microtasks = 0; microtasks <= MAX_MICROTASKS_AFTER_LATE_END; microtasks++) {
 			env.faux.setResponses(Array.from({ length: 5 }, () => answerPendingInput()));
-			let pi: ExtensionAPI | undefined;
+			let atomic: ExtensionAPI | undefined;
 			let context: ExtensionContext | undefined;
 			let session: AgentSession | undefined;
 			let endedTurns = 0;
@@ -382,7 +383,7 @@ test.each(promptSenders)(
 					resourceLoaderInheritanceSnapshot: {
 						extensionFactories: [
 							(api: ExtensionAPI) => {
-								pi = api;
+								atomic = api;
 								api.on("session_start", (_event, ctx) => {
 									context = ctx;
 								});
@@ -400,7 +401,7 @@ test.each(promptSenders)(
 									endedTurns += 1;
 									if (endedTurns === 2)
 										afterMicrotasks(microtasks, () => {
-											sent = sender.send({ pi: pi!, context: context!, session: session! }, key).then(
+											sent = sender.send({ pi: atomic!, context: context!, session: session! }, key).then(
 												() => undefined,
 												(error: unknown) => (error instanceof Error ? error.message : String(error)),
 											);
@@ -410,7 +411,7 @@ test.each(promptSenders)(
 								if (event.type === "agent_settled" && lateSent === undefined)
 									onceDrained(session!, () => {
 										lateSent = viaIntercom({ triggerTurn: true }, "first late")(
-											{ pi: pi!, context: context!, session: session! },
+											{ pi: atomic!, context: context!, session: session! },
 											`first-${key}`,
 										);
 									});
@@ -459,15 +460,15 @@ const releaseSenders: Array<
 			cardType: card.customType,
 			excludeFromContext: true,
 			texts: batch ? [LATE_TEXT, BATCH_SECOND_TEXT] : [LATE_TEXT],
-			send: ({ pi }: Receiver) =>
+			send: ({ pi: atomic }: Receiver) =>
 				Promise.resolve(
 					batch
-						? pi.sendMessages([card, { ...card, content: BATCH_SECOND_TEXT }], {
+						? atomic.sendMessages([card, { ...card, content: BATCH_SECOND_TEXT }], {
 								triggerTurn: true,
 								excludeFromContext: true,
 								deliverAs,
 							})
-						: pi.sendMessage(card, { triggerTurn: true, excludeFromContext: true, deliverAs }),
+						: atomic.sendMessage(card, { triggerTurn: true, excludeFromContext: true, deliverAs }),
 				),
 		})),
 	),
@@ -475,9 +476,9 @@ const releaseSenders: Array<
 		id: "subagent-notify",
 		name: "a background grandchild's completion notice",
 		cardType: "subagent-notify",
-		send: ({ pi }, key) =>
+		send: ({ pi: atomic }, key) =>
 			Promise.resolve(
-				pi.sendMessage(
+				atomic.sendMessage(
 					{ ...card, customType: "subagent-notify" },
 					{ triggerTurn: true, stageAdmissionKey: `subagent:${key}` },
 				),
@@ -488,9 +489,9 @@ const releaseSenders: Array<
 		name: "an extension's batch of messages",
 		cardType: card.customType,
 		texts: [LATE_TEXT, BATCH_SECOND_TEXT],
-		send: ({ pi }, key) =>
+		send: ({ pi: atomic }, key) =>
 			Promise.resolve(
-				pi.sendMessages([card, { ...card, content: BATCH_SECOND_TEXT }], {
+				atomic.sendMessages([card, { ...card, content: BATCH_SECOND_TEXT }], {
 					triggerTurn: true,
 					stageAdmissionKey: `batch:${key}`,
 				}),
@@ -509,7 +510,7 @@ test.each(releaseSenders)(
 				stopReason: "toolUse",
 			}),
 		]);
-		let pi: ExtensionAPI | undefined;
+		let atomic: ExtensionAPI | undefined;
 		let context: ExtensionContext | undefined;
 		let session: AgentSession | undefined;
 		let outcome = "never sent";
@@ -522,7 +523,7 @@ test.each(releaseSenders)(
 					resourceLoaderInheritanceSnapshot: {
 						extensionFactories: [
 							(api: ExtensionAPI) => {
-								pi = api;
+								atomic = api;
 								api.on("session_start", (_event, ctx) => {
 									context = ctx;
 								});
@@ -531,7 +532,7 @@ test.each(releaseSenders)(
 					},
 					onBeforeRelease: async () => {
 						outcome = await outcomeOf(
-							sender.send({ pi: pi!, context: context!, session: session! }, "release-wake"),
+							sender.send({ pi: atomic!, context: context!, session: session! }, "release-wake"),
 						);
 					},
 					taskExecution: childHooks(new AbortController().signal, (opened) => {
@@ -717,11 +718,11 @@ test("a steering hook's custom message wakes an interrupted subagent before the 
 			taskPending: () => true,
 		},
 		extensionFactories: [
-			(pi) => {
-				pi.on("input", async (event) => {
+			(atomic) => {
+				atomic.on("input", async (event) => {
 					if (event.text !== "outer steering") return;
 					wakeRequested = true;
-					await pi.sendMessage(
+					await atomic.sendMessage(
 						{ customType: "intercom_message", content: "nested after Esc", display: true },
 						{ triggerTurn: true, persistWhenStreaming: true },
 					);
@@ -932,8 +933,8 @@ test("a subagent session's steering message whose input hook sends a user messag
 			taskPending: () => true,
 		},
 		extensionFactories: [
-			(pi) => {
-				pi.on("input", async (event) => {
+			(atomic) => {
+				atomic.on("input", async (event) => {
 					if (event.text === "outer steering") await session?.sendUserMessage("nested chat");
 				});
 			},
@@ -962,7 +963,7 @@ test(
 		const env = await liveChildEnvironment(cleanups);
 		env.faux.setResponses(Array.from({ length: 5 }, () => answerPendingInput()));
 		const stop = new AbortController();
-		let pi: ExtensionAPI | undefined;
+		let atomic: ExtensionAPI | undefined;
 		let session: AgentSession | undefined;
 		let late: Promise<string> | undefined;
 		let settledTurns = 0;
@@ -972,7 +973,7 @@ test(
 				resourceLoaderInheritanceSnapshot: {
 					extensionFactories: [
 						(api: ExtensionAPI) => {
-							pi = api;
+							atomic = api;
 						},
 					],
 				},
@@ -986,8 +987,8 @@ test(
 								late = outcomeOf(bound.sendUserMessage("late"));
 							});
 						else if (settledTurns === 2) {
-							pi!.sendUserMessage("deferred one");
-							pi!.sendUserMessage("deferred two");
+							atomic!.sendUserMessage("deferred one");
+							atomic!.sendUserMessage("deferred two");
 						}
 					});
 				}),

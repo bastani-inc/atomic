@@ -36,11 +36,11 @@ try {
   runtime = await createAgentSessionRuntime(async ({ sessionManager, sessionStartEvent }) => {
    const id = ++generations;
    if (id === 2 && mode === "command-create-failure") throw new Error("candidate failed");
-   const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, eventBus, noExtensions: true, extensionFactories: [pi => {
-    pi.events.on("retired", () => { deliveries.push(id); });
-    pi.on("thinking_level_select", async () => { peerEntered.resolve(); await peerRelease.promise; });
-    pi.on("session_shutdown", event => { events.push(`shutdown:${id}:${event.reason}`); if (id === 1) { active = 0; pi.events.emit("retired"); cleaned.resolve(); if (mode === "command-cleanup") throw new Error("retiring cleanup failed"); } });
-    pi.registerCommand("replace-me", { description: "fixture", handler: async (_args, ctx) => {
+   const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, eventBus, noExtensions: true, extensionFactories: [atomic => {
+    atomic.events.on("retired", () => { deliveries.push(id); });
+    atomic.on("thinking_level_select", async () => { peerEntered.resolve(); await peerRelease.promise; });
+    atomic.on("session_shutdown", event => { events.push(`shutdown:${id}:${event.reason}`); if (id === 1) { active = 0; atomic.events.emit("retired"); cleaned.resolve(); if (mode === "command-cleanup") throw new Error("retiring cleanup failed"); } });
+    atomic.registerCommand("replace-me", { description: "fixture", handler: async (_args, ctx) => {
      entered.resolve();
      if (++enteredCount === 2) await joinReplacement.promise;
      if (mode === "command-create-failure") await assert.rejects(ctx.newSession(), /candidate failed/);
@@ -79,9 +79,9 @@ try {
   let serial = 0;
   const active = new Set();
   class OrdinaryLoader extends DefaultResourceLoader { supportsTransactionalReload() { return false; } }
-  const resourceLoader = new OrdinaryLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [pi => {
+  const resourceLoader = new OrdinaryLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [atomic => {
    const id = ++serial; active.add(id);
-   pi.on("session_shutdown", () => { active.delete(id); if (id === 3 && mode === "ordinary-cleanup") throw new Error("candidate cleanup failed"); });
+   atomic.on("session_shutdown", () => { active.delete(id); if (id === 3 && mode === "ordinary-cleanup") throw new Error("candidate cleanup failed"); });
   }], extensionsOverride: base => { if (fail) throw new Error("discovery failed"); return base; } });
   await resourceLoader.reload();
   ({ session } = await createAgentSession({ ...options, resourceLoader }));
@@ -99,7 +99,7 @@ try {
    const stream = createAssistantMessageEventStream(); const tool = ++count === 1;
    queueMicrotask(() => { stream.push({ type: "done", reason: tool ? "toolUse" : "stop", message: { role: "assistant", content: tool ? [{ type: "toolCall", id: "one", name: "fixture_effect", arguments: {} }] : [{ type: "text", text: "done" }], api: model.api, provider: model.provider, model: model.id, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: tool ? "toolUse" : "stop", timestamp: Date.now() } }); stream.end(); }); return stream;
   };
-  const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [pi => { pi.on("tool_result", () => { hooks++; return { content: [{ type: "text", text: "  completed\n" }] }; }); }] });
+  const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [atomic => { atomic.on("tool_result", () => { hooks++; return { content: [{ type: "text", text: "  completed\n" }] }; }); }] });
   ({ session } = await createAgentSession({ ...options, resourceLoader, customTools: [{ name: "fixture_effect", label: "effect", description: "fixture", parameters: { type: "object", properties: {} }, execute: async () => { entered.resolve(); await release.promise; return { content: [{ type: "text", text: "completed" }], details: { completed: true } }; } }] }));
   session.setActiveToolsByName(["fixture_effect"]);
   const turn = session.prompt("run fixture"); await entered.promise;

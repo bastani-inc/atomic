@@ -19,8 +19,8 @@ import { pressAltEnter } from "./helpers/interactive-submission-host.js";
 /** An `input` hook that holds `text`, as a session busy with other work delays it. */
 function slowInputHook(gate: Gate, text: string): ExtensionFactory {
 	const wait = gateOnce(gate);
-	return (pi) => {
-		pi.on("input", async (event) => {
+	return (atomic) => {
+		atomic.on("input", async (event) => {
 			if (event.text === text) await wait();
 			return { action: "continue" };
 		});

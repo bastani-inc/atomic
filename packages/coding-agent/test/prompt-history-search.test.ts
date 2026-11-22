@@ -306,8 +306,8 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 			}),
 		};
 		const extensionsResult = await createTestExtensionsResult([
-			(pi) => {
-				pi.on("input", (event) =>
+			(atomic) => {
+				atomic.on("input", (event) =>
 					event.text === "shorthand check"
 						? { action: "transform", text: "Run the full check suite." }
 						: { action: "continue" },
@@ -456,8 +456,8 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 		};
 		const hookInputs: string[] = [];
 		const extensionsResult = await createTestExtensionsResult([
-			(pi) => {
-				pi.on("input", (event) => {
+			(atomic) => {
+				atomic.on("input", (event) => {
 					hookInputs.push(event.text);
 					return event.text.includes(secret)
 						? { action: "transform", text: event.text.replaceAll(secret, "[redacted]") }

@@ -22,7 +22,7 @@ import type { ExtensionAPI } from "./api-types.ts";
 export type { AtomicProviderCompat } from "../model-capabilities.ts";
 export type { ProviderAliasConfig } from "../provider-alias.js";
 
-/** Configuration for registering a provider via pi.registerProvider(). */
+/** Configuration for registering a provider via atomic.registerProvider(). */
 export interface ProviderConfig {
 	/** Display name for the provider in UI. */
 	name?: string;
@@ -126,7 +126,7 @@ export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
 export type ProviderModelConfig = ProviderChatModelConfig | ProviderImageModelConfig | ProviderClassifierModelConfig;
 
 /** Extension factory function type. Supports both sync and async initialization. */
-export type ExtensionFactory = (pi: ExtensionAPI) => void | Promise<void>;
+export type ExtensionFactory = (atomic: ExtensionAPI) => void | Promise<void>;
 
 /** Inline extension factory, optionally carrying a stable name and display visibility. */
 export type InlineExtension =

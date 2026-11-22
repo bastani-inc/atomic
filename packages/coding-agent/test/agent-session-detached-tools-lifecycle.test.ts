@@ -254,11 +254,11 @@ describe("a detached call's placeholder (#4309)", () => {
 		const turnEndsSeenByExtension: string[][] = [];
 		const ci = waitTool();
 		const harness = await harnessWith([ci.definition, fastTool()], undefined, [
-			(pi) => {
-				pi.on("tool_result", (event) => {
+			(atomic) => {
+				atomic.on("tool_result", (event) => {
 					resultsSeenByExtension.push(event.toolCallId);
 				});
-				pi.on("turn_end", (event) => {
+				atomic.on("turn_end", (event) => {
 					turnEndsSeenByExtension.push(event.toolResults.map((result) => result.toolCallId));
 				});
 			},
@@ -591,9 +591,9 @@ describe("which transcripts are waiting on a detached call (#4309)", () => {
 		const { store, sessionId } = await reopenedAfterDetaching(pool, [tool.definition], [waitForCiTurn("ci-1")]);
 		let register: ((definition: ToolDefinition) => void) | undefined;
 		const reopened = await harnessWith([], await SessionManager.open(store, sessionId), [
-			(pi) => {
-				register = (definition) => pi.registerTool(definition);
-				pi.registerTool(tool.definition);
+			(atomic) => {
+				register = (definition) => atomic.registerTool(definition);
+				atomic.registerTool(tool.definition);
 			},
 		]);
 		assert.equal(reopened.session.hasPendingDetachedTurn(), true);

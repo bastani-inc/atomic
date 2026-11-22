@@ -29,27 +29,27 @@ class Loader extends DefaultResourceLoader {
 let session;
 const resourceLoader = new (acquisitions || mode === "self-ordinary" ? Loader : DefaultResourceLoader)({
   cwd, agentDir: cwd, settingsManager, noExtensions: true,
-  extensionFactories: [pi => {
+  extensionFactories: [atomic => {
     const id = ++next;
     if (acquisitions) active.add(id);
-    pi.events.on("acquire", async () => { enter(); await gate; active.add(id); });
-    pi.events.on("retired-cleanup", () => { retiredDeliveries.push(id); });
-    pi.on("session_start", (_event, ctx) => {
-      capabilities.set(id, { write: () => pi.setSessionName(`generation-${id}`), host: () => ctx.getAgentTaskHost() });
-      if (candidate && reloading) { pi.events.emit("acquire"); throw new Error("candidate startup failed"); }
+    atomic.events.on("acquire", async () => { enter(); await gate; active.add(id); });
+    atomic.events.on("retired-cleanup", () => { retiredDeliveries.push(id); });
+    atomic.on("session_start", (_event, ctx) => {
+      capabilities.set(id, { write: () => atomic.setSessionName(`generation-${id}`), host: () => ctx.getAgentTaskHost() });
+      if (candidate && reloading) { atomic.events.emit("acquire"); throw new Error("candidate startup failed"); }
     });
-    pi.registerCommand("reload-acquire", { description: "reload and finish owned work", handler: async () => {
+    atomic.registerCommand("reload-acquire", { description: "reload and finish owned work", handler: async () => {
       invoking = id;
       await session.reload();
       if (mode === "self-twice") await session.reload();
       enter(); await gate; active.add(id);
     } });
-    pi.on("session_shutdown", async (_event, ctx) => {
+    atomic.on("session_shutdown", async (_event, ctx) => {
       assert.equal(ctx.cwd, cwd);
       if (id === invoking) {
-        await assert.rejects(() => pi.setSessionName("retired-cleanup-write"), /stale|no longer active/i);
+        await assert.rejects(() => atomic.setSessionName("retired-cleanup-write"), /stale|no longer active/i);
         assert.throws(() => ctx.getAgentTaskHost(), /stale|no longer active/i);
-        pi.events.emit("retired-cleanup");
+        atomic.events.emit("retired-cleanup");
       }
       stopped.push(id); active.delete(id);
       if (cleanupFails && id === (acquisitions ? 3 : candidate ? 2 : 1)) throw new Error("owned cleanup failed");

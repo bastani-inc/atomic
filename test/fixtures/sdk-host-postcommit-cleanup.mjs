@@ -19,10 +19,10 @@ class Loader extends DefaultResourceLoader {
   return { ...transaction, prepareCommit() { const prepared = transaction.prepareCommit(); return { ...prepared, commit() { prepared.commit(); committed = true; } }; } };
  }
 }
-const loader = new Loader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [pi => {
+const loader = new Loader({ cwd, agentDir: cwd, settingsManager, noExtensions: true, extensionFactories: [atomic => {
  const id = ++next;
- pi.on("session_start", () => { active.add(id); });
- pi.on("session_shutdown", () => { active.delete(id); stopped.push(id); if (id === 2 && mode === "shutdown") throw new Error("retiring shutdown failed"); });
+ atomic.on("session_start", () => { active.add(id); });
+ atomic.on("session_shutdown", () => { active.delete(id); stopped.push(id); if (id === 2 && mode === "shutdown") throw new Error("retiring shutdown failed"); });
 }] });
 const causes = error => error instanceof AggregateError ? [error, ...error.errors.flatMap(causes)] : error instanceof Error && error.cause ? [error, ...causes(error.cause)] : [error];
 let session;

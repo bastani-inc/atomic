@@ -424,8 +424,8 @@ describe("child context refresh (#5481)", () => {
 		await manager.appendCustomMessageEntry("subagent-notify", "Previous worker finished.", true);
 		const runtime = createExtensionRuntime();
 		const extension = await loadExtensionFromFactory(
-			(pi) => {
-				pi.on("turn_end", ({ message }) => {
+			(atomic) => {
+				atomic.on("turn_end", ({ message }) => {
 					if (message.role === "assistant" && message.stopReason === "error")
 						return {
 							entries: [
