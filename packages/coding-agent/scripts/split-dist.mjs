@@ -31,7 +31,15 @@ import { fileURLToPath } from "node:url";
 import { transform } from "esbuild";
 import { rolldown } from "rolldown";
 import { codeStringLiteral } from "./code-string-literal.mjs";
-import { assignStartupGroups, compatSharedFiles, groupName, sharedFileName } from "./split-dist-names.mjs";
+import {
+	assignStartupGroups,
+	compatSharedFiles,
+	computePrewarmBuildStamp,
+	groupName,
+	PREWARM_BUILD_STAMP_MARK,
+	sharedFileName,
+	stampPrewarmBuildChunk,
+} from "./split-dist-names.mjs";
 import { parse } from "acorn";
 import semver from "semver";
 import {
@@ -878,6 +886,9 @@ for (const [name, directory] of [...inlined].sort(([a], [b]) => (a < b ? -1 : 1)
 	notices.push(`## ${name} ${manifest.version}\n\n${license}${notice}\n`);
 }
 
+const prewarmBuildStamp = computePrewarmBuildStamp(generated.output);
+let prewarmBuildStamped = false;
+
 const outputFiles = [];
 const emittedMaps = new Set(
 	generated.output.filter((item) => item.type === "asset" && item.fileName.endsWith(".js.map")).map((item) => item.fileName),
@@ -894,6 +905,9 @@ for (const item of generated.output) {
 		if (contents.includes(DIST_PATH_MARK)) {
 			throw new Error(`split-dist: ${item.fileName} retained an unrewritten ${DIST_PATH_MARK} path`);
 		}
+		const stamped = stampPrewarmBuildChunk(contents, prewarmBuildStamp);
+		contents = stamped.contents;
+		if (stamped.stamped) prewarmBuildStamped = true;
 		// Synthetic runtime chunks (e.g. rolldown:runtime) and thin virtual facade entries emit no source map; write an
 		// empty valid v3 map beside every emitted `.js` chunk lacking one and link it with `sourceMappingURL` so
 		// pre-split `tsc` maps for facade entries are overwritten instead of shipped stale in `dist/`.
@@ -909,6 +923,9 @@ for (const item of generated.output) {
 		}
 	}
 	outputFiles.push({ path, contents });
+}
+if (!prewarmBuildStamped) {
+	throw new Error(`split-dist: expected ${PREWARM_BUILD_STAMP_MARK} in engine-prewarm chunk`);
 }
 
 // Verify generated chunk names are unique and startup chunks contain no lazy document-converter modules.

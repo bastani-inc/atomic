@@ -12,7 +12,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { constants, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -41,8 +41,11 @@ export const BUILD_LOCK_POLL_MS = 200;
 
 const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
 
-async function locked(pid: number): Promise<LockedProcess> {
-	const start = await processStartToken.processStartTokenAsync(pid);
+async function locked(pid: number, options?: { readonly fresh?: boolean }): Promise<LockedProcess> {
+	const start =
+		options === undefined
+			? await processStartToken.processStartTokenAsync(pid)
+			: await processStartToken.processStartTokenAsync(pid, options);
 	return start === undefined ? { pid } : { pid, start };
 }
 
@@ -88,12 +91,34 @@ function isLockedProcess(value: unknown): value is LockedProcess {
 	);
 }
 
-async function readLockFile(file: string): Promise<ReadLock> {
+const STEP_START_MAX_ATTEMPTS = 4;
+const STEP_START_RETRY_MS = 500;
+const LOCK_IO_MAX_ATTEMPTS = 25;
+const LOCK_IO_RETRY_MS = 20;
+const TRANSIENT_LOCK_IO_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
+const HOLDER_RETRY_KEY = -1;
+const WRITE_RETRY_KEY = -2;
+
+function isTransientWindowsLockError(error: unknown, attempt: number): boolean {
+	const code = (error as NodeJS.ErrnoException).code ?? "";
+	return process.platform === "win32" && attempt < LOCK_IO_MAX_ATTEMPTS && TRANSIENT_LOCK_IO_CODES.has(code);
+}
+
+async function readLockFile(file: string, signal?: AbortSignal): Promise<ReadLock> {
 	let text: string;
-	try {
-		text = await readFile(file, "utf8");
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "none" } : { kind: "corrupt" };
+	for (let attempt = 1; ; attempt++) {
+		signal?.throwIfAborted();
+		try {
+			text = await readFile(file, "utf8");
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "none" };
+			if (isTransientWindowsLockError(error, attempt)) {
+				await delay(LOCK_IO_RETRY_MS, signal);
+				continue;
+			}
+			return { kind: "corrupt" };
+		}
 	}
 	try {
 		const lock = JSON.parse(text) as Partial<BuildLock> | null;
@@ -120,37 +145,133 @@ async function removeLock(file: string): Promise<void> {
 
 interface BuildLockWriter {
 	readonly files: ReadonlyMap<string, string>;
-	readonly holder: LockedProcess;
+	holder: LockedProcess;
 	readonly steps: Map<number, LockedProcess>;
+	readonly retryTimers: Map<number, ReturnType<typeof setTimeout>>;
 	readonly onUnwritable?: (message: string) => void;
+	writeFailures: number;
+	started: boolean;
 	settled: boolean;
 	told: boolean;
 }
 
-function recordStepProcessDurably(writer: BuildLockWriter, pid: number, running: boolean): void {
+function processAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+function clearRetryTimer(writer: BuildLockWriter, key: number): void {
+	const timer = writer.retryTimers.get(key);
+	if (timer !== undefined) {
+		clearTimeout(timer);
+		writer.retryTimers.delete(key);
+	}
+}
+
+function clearAllRetryTimers(writer: BuildLockWriter): void {
+	for (const timer of writer.retryTimers.values()) clearTimeout(timer);
+	writer.retryTimers.clear();
+}
+
+function usesFallbackStartReader(): boolean {
+	return process.platform === "win32" && processStartToken.nativeProcessCreationTime?.(process.pid) === undefined;
+}
+
+function readStepStartDurably(
+	writer: BuildLockWriter,
+	pid: number,
+	step: LockedProcess,
+	attempt: number,
+	stillRunning?: () => boolean,
+): void {
+	const isAlive = () => (stillRunning === undefined ? processAlive(pid) : stillRunning());
+	if (!isAlive()) return;
+	void processStartToken.processStartTokenAsync(pid, { fresh: true }).then((start) => {
+		if (writer.settled || writer.steps.get(pid) !== step || !isAlive()) return;
+		if (start !== undefined) {
+			writer.steps.set(pid, { ...step, start });
+			writeBuildLocksDurably(writer);
+			return;
+		}
+		if (!usesFallbackStartReader() || attempt >= STEP_START_MAX_ATTEMPTS) return;
+		clearRetryTimer(writer, pid);
+		const timer = setTimeout(() => {
+			writer.retryTimers.delete(pid);
+			if (writer.settled || writer.steps.get(pid) !== step || !isAlive()) return;
+			readStepStartDurably(writer, pid, step, attempt + 1, stillRunning);
+		}, STEP_START_RETRY_MS);
+		timer.unref?.();
+		writer.retryTimers.set(pid, timer);
+	});
+}
+
+function backfillHolderStart(writer: BuildLockWriter, attempt: number): void {
+	if (writer.settled || writer.holder.start !== undefined) return;
+	if (!usesFallbackStartReader() || attempt >= STEP_START_MAX_ATTEMPTS) return;
+	clearRetryTimer(writer, HOLDER_RETRY_KEY);
+	const timer = setTimeout(() => {
+		writer.retryTimers.delete(HOLDER_RETRY_KEY);
+		if (writer.settled || writer.holder.start !== undefined) return;
+		void processStartToken.processStartTokenAsync(process.pid, { fresh: true }).then((start) => {
+			if (writer.settled || writer.holder.start !== undefined) return;
+			if (start !== undefined) {
+				writer.holder = { pid: process.pid, start };
+				if (writer.started) writeBuildLocksDurably(writer);
+				return;
+			}
+			backfillHolderStart(writer, attempt + 1);
+		});
+	}, STEP_START_RETRY_MS);
+	timer.unref?.();
+	writer.retryTimers.set(HOLDER_RETRY_KEY, timer);
+}
+
+function recordStepProcessDurably(
+	writer: BuildLockWriter,
+	pid: number,
+	running: boolean,
+	stillRunning?: () => boolean,
+): void {
 	const { steps } = writer;
+	clearRetryTimer(writer, pid);
 	if (running) {
+		writer.started = true;
 		const step: LockedProcess = { pid, at: Date.now() };
 		steps.set(pid, step);
-		void processStartToken.processStartTokenAsync(pid).then((start) => {
-			if (start === undefined || steps.get(pid) !== step) return;
-			steps.set(pid, { ...step, start });
-			writeBuildLocksDurably(writer);
-		});
+		readStepStartDurably(writer, pid, step, 1, stillRunning);
 	} else steps.delete(pid);
 	writeBuildLocksDurably(writer);
 }
 
 function writeBuildLocksDurably(writer: BuildLockWriter): void {
 	if (writer.settled) return;
+	clearRetryTimer(writer, WRITE_RETRY_KEY);
 	const lock: BuildLock = { host: HOST, ...writer.holder, steps: [...writer.steps.values()] };
+	let transientFailed = false;
+	let permanentFailed = false;
+	const nextAttempt = writer.writeFailures + 1;
 	for (const [file, root] of writer.files) {
+		const temporary = `${file}.${process.pid}.tmp`;
+		let dirReady = false;
 		try {
 			mkdirSync(dirname(file), { recursive: true });
-			const temporary = `${file}.${process.pid}.tmp`;
+			dirReady = true;
 			writeFileSync(temporary, JSON.stringify(lock), { mode: 0o600 });
 			renameSync(temporary, file);
 		} catch (error) {
+			try {
+				rmSync(temporary, { force: true });
+			} catch {}
+			if (dirReady && isTransientWindowsLockError(error, nextAttempt)) {
+				transientFailed = true;
+				continue;
+			}
+			permanentFailed = true;
 			if (writer.told) continue;
 			writer.told = true;
 			const reason = error instanceof Error ? error.message : String(error);
@@ -158,6 +279,19 @@ function writeBuildLocksDurably(writer: BuildLockWriter): void {
 				`The blueprint build lock of ${root} could not be written (${reason.slice(0, 200)}); if Atomic is killed during this build, the next resume cannot tell, and may build the worktree again while a step of this build still runs there.`,
 			);
 		}
+	}
+	if (!transientFailed && !permanentFailed) {
+		writer.writeFailures = 0;
+		return;
+	}
+	if (transientFailed && !writer.settled) {
+		writer.writeFailures = nextAttempt;
+		const timer = setTimeout(() => {
+			writer.retryTimers.delete(WRITE_RETRY_KEY);
+			writeBuildLocksDurably(writer);
+		}, LOCK_IO_RETRY_MS);
+		timer.unref?.();
+		writer.retryTimers.set(WRITE_RETRY_KEY, timer);
 	}
 }
 
@@ -168,15 +302,15 @@ type Identity = "same" | "gone" | "unknown";
  * running process's. `"unknown"` when either start cannot be read: a process of that id runs, but it may be a later
  * one given the same id.
  */
-async function identity(recorded: LockedProcess): Promise<Identity> {
-	const start = await processStartToken.processStartTokenAsync(recorded.pid);
-	if (recorded.start !== undefined && start !== undefined) return start === recorded.start ? "same" : "gone";
-	try {
-		process.kill(recorded.pid, 0);
-		return "unknown";
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM" ? "unknown" : "gone";
-	}
+async function identity(recorded: LockedProcess, options?: { readonly fresh?: boolean }): Promise<Identity> {
+	if (!processAlive(recorded.pid)) return "gone";
+	if (recorded.start === undefined) return "unknown";
+	const start =
+		options === undefined
+			? await processStartToken.processStartTokenAsync(recorded.pid)
+			: await processStartToken.processStartTokenAsync(recorded.pid, options);
+	if (start !== undefined) return start === recorded.start ? "same" : "gone";
+	return processAlive(recorded.pid) ? "unknown" : "gone";
 }
 
 /**
@@ -248,8 +382,12 @@ function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	});
 }
 
-async function stepsWhose(steps: readonly LockedProcess[], wanted: Identity): Promise<LockedProcess[]> {
-	const identities = await Promise.all(steps.map((step) => identity(step)));
+async function stepsWhose(
+	steps: readonly LockedProcess[],
+	wanted: Identity,
+	options?: { readonly fresh?: boolean },
+): Promise<LockedProcess[]> {
+	const identities = await Promise.all(steps.map((step) => identity(step, options)));
 	return steps.filter((_, index) => identities[index] === wanted);
 }
 
@@ -258,7 +396,13 @@ async function provenForStop(steps: readonly LockedProcess[]): Promise<ProvenPro
 	const checked = await Promise.all(
 		steps.map(async (step): Promise<ProvenProcess | undefined> => {
 			if (step.start === undefined) return undefined;
-			const created = await processStartToken.readProcessCreationTime(step.pid);
+			const native = processStartToken.nativeProcessCreationTime?.(step.pid);
+			const created =
+				native !== undefined
+					? (native ?? undefined)
+					: processAlive(step.pid)
+						? await processStartToken.readProcessCreationTime(step.pid)
+						: undefined;
 			if (created === undefined || windowsStartToken(created) !== step.start) return undefined;
 			return { ...step, created };
 		}),
@@ -353,7 +497,7 @@ async function settleLock(
 	};
 	let stopped = false;
 	for (;;) {
-		const read = await readLockFile(file);
+		const read = await readLockFile(file, options.signal);
 		if (read.kind === "none") return { warnings: [], cancelled: false };
 		if (read.kind === "corrupt") {
 			await remove();
@@ -531,24 +675,29 @@ export async function withBuildLocks<T>(
 	const steps = new Map<number, LockedProcess>();
 	const writer: BuildLockWriter = {
 		files,
-		holder: await locked(process.pid),
+		holder: await locked(process.pid, { fresh: true }),
 		steps,
+		retryTimers: new Map(),
 		...(onUnwritable === undefined ? {} : { onUnwritable }),
+		writeFailures: 0,
+		started: false,
 		settled: false,
 		told: false,
 	};
+	if (writer.holder.start === undefined) backfillHolderStart(writer, 1);
 	// Written once a step starts a process, so a build that runs nothing, as for an untrusted worktree, writes nothing.
-	let started = false;
 	const starting = () => {
-		if (started) return;
-		started = true;
+		if (writer.started) return;
+		writer.started = true;
 		writeBuildLocksDurably(writer);
 	};
-	const watch = (pid: number, running: boolean) => recordStepProcessDurably(writer, pid, running);
+	const watch = (pid: number, running: boolean, stillRunning?: () => boolean) =>
+		recordStepProcessDurably(writer, pid, running, stillRunning);
 	try {
 		return await stepStartingWatcher.run(starting, () => stepProcessWatcher.run(watch, build));
 	} finally {
 		writer.settled = true;
+		clearAllRetryTimers(writer);
 		steps.clear();
 		for (const file of files.keys()) if ((await readLock(file))?.pid === process.pid) await removeLock(file);
 	}

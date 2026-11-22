@@ -217,6 +217,11 @@ export async function main(argv: string[], options?: MainOptions) {
 	const engineEnv = captureInteractiveEngineStartupEnv(
 		bootstrap.path === undefined ? undefined : readInteractiveEngineBootstrap(bootstrap.path),
 	);
+	// A prewarmed engine child can receive an updated ATOMIC_DEBUG_SETTING over its adoption handshake after
+	// `core/debug-setting.ts` initialized its module flag from the spawn environment: align the flag before startup.
+	if (engineEnv.child === "1" && inheritsDebugSetting()) {
+		setDebugSetting(process.env.ATOMIC_DEBUG_SETTING === "1");
+	}
 	resetTimings();
 	const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
 	// Whether everything the loader takes for bundled is Atomic's own: no custom builtin packages or bundled factories.
