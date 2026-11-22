@@ -32,6 +32,10 @@ export interface AgentViewStatus {
 	readonly taskId: TaskId;
 	/** The subagent across resumes: its first attempt's task id. Per-agent prompt state is keyed by it. */
 	readonly agentKey: string;
+	/** The subagent's own session id, when known: identifies the same child conversation across engine restarts. */
+	readonly sessionId?: string;
+	/** The file the subagent's session is kept in, when it has its own. */
+	readonly sessionFile?: string;
 	/** Display name without "@", such as "worker". */
 	readonly name: string;
 	/** The prompt's top-rule label, such as "worker · Fix the parser · running". */

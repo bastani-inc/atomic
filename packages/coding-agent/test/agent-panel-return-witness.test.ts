@@ -54,6 +54,7 @@ test("a request from the one view that hid a panel with rows says the panel come
 		assert.deepEqual(engine.request({ keepScreen: true }), {
 			type: "engine_view_agent",
 			taskId: "task-1",
+			requestId: 1,
 			keepScreen: true,
 			panel: true,
 		});
@@ -82,6 +83,7 @@ test("a request says nothing of the panel when another view still hides it, it h
 		assert.deepEqual(empty.request({ keepScreen: true }), {
 			type: "engine_view_agent",
 			taskId: "task-1",
+			requestId: 1,
 			keepScreen: true,
 		});
 		setAgentPanelVisible(empty.session, true);

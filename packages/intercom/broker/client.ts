@@ -58,7 +58,11 @@ import {
 	IntercomClientDisconnectedError,
 } from "../recoverable-disconnect.js";
 import { type IntercomHostedSessionTimeoutFields, IntercomHostedSessionTimeoutError } from "../hosted-session-timeout-error.js";
-import { isSocketAnswering } from "./socket-liveness.js";
+import {
+	type BrokerPidStat,
+	isUnansweredCloseFromRetiringBroker,
+	snapshotBrokerPidBeforeRequest,
+} from "./retiring-broker-check.js";
 import { IntercomBrokerProtocolError, IntercomRoutingChangedError, IntercomRoutingUnavailableError } from "@bastani/atomic";
 import {
 	BROKER_PROTOCOL,
@@ -154,13 +158,21 @@ function isLostBrokerSignature(error: Error): boolean {
 }
 
 /**
- * A failure before registration, classified: when it has the signature of a lost broker and nothing answers on the
- * broker socket any more, the broker retired first and the failure is recoverable by spawning its replacement. A broker
- * that still answers closed the connection for its own reasons (a refused or malformed registration), so the failure
- * stays what it was.
+ * A failure before registration, classified through the shared retiring-broker check: when it has the signature of a
+ * lost broker and the broker went away, changed `broker.pid`, crashed, or is being replaced under a live spawn lock,
+ * the failure is recoverable by spawning or connecting to its replacement. A broker that stays up and unchanged closed
+ * the connection for its own reasons (a refused, unsupported, or malformed registration), so the failure stays what it
+ * was.
  */
-async function classifyRegistrationFailure(error: Error, socketPath: string): Promise<Error> {
-	if (!isLostBrokerSignature(error) || (await isSocketAnswering(socketPath))) return error;
+async function classifyRegistrationFailure(
+	error: Error,
+	socketPath: string,
+	agentDir: string | undefined,
+	pidBefore: BrokerPidStat | undefined,
+): Promise<Error> {
+	if (!isLostBrokerSignature(error) || !(await isUnansweredCloseFromRetiringBroker(socketPath, agentDir, pidBefore))) {
+		return error;
+	}
 	return new IntercomBrokerRetiringError(`Intercom broker went away before it registered this session: ${error.message}`, {
     cause: error,
   });
@@ -695,6 +707,9 @@ export class IntercomClient extends EventEmitter {
         const resolvedSocketPath = this.resolveBrokerSocketPath();
         const socketPath = typeof resolvedSocketPath === "string" ? resolvedSocketPath : await resolvedSocketPath;
         if (attempt.signal.aborted) throw connectAborted();
+        const agentDir = this.explicitBrokerSocketPath === undefined ? this.brokerAgentDir : undefined;
+        const pidBefore = await snapshotBrokerPidBeforeRequest(agentDir);
+        if (attempt.signal.aborted) throw connectAborted();
         try {
           await this.connectOnce(
             socketPath,
@@ -711,7 +726,7 @@ export class IntercomClient extends EventEmitter {
           if (attempt.signal.aborted) throw connectAborted();
           if (!(error instanceof Error)) throw error;
           if (!isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) {
-            const classified = await classifyRegistrationFailure(error, socketPath);
+            const classified = await classifyRegistrationFailure(error, socketPath, agentDir, pidBefore);
             if (attempt.signal.aborted) throw connectAborted();
             if (expectedRouting?.verify === true && classified instanceof ConnectionClosedBeforeRegistrationError) {
               throw new IntercomRoutingUnavailableError("unsupported", "register");

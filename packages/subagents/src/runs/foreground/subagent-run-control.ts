@@ -566,6 +566,9 @@ async function stopLiveChild(
  * the child's latest record, never over the copy `record` was read as; returns that latest record, which tells whether
  * the stop took or the child runs again.
  */
+/** Emitted on the session's canonical event bus when an idle (released or paused) child is stopped. */
+export const SUBAGENT_CHILD_STOPPED_EVENT = "subagent:child-stopped";
+
 async function stopIdleChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -576,7 +579,21 @@ async function stopIdleChild(
 	try {
 		await stop.decided;
 		indexSubagentChildOwner(ctx);
-		return await recordSubagentChildStop(deps.pi, record, status);
+		const latest = await recordSubagentChildStop(deps.pi, record, status);
+		if (latest.state === "terminal" && latest.terminalStatus === status) {
+			try {
+				deps.pi.events.emit(SUBAGENT_CHILD_STOPPED_EVENT, {
+					childId: latest.childId,
+					...(latest.taskId === undefined ? {} : { taskId: latest.taskId }),
+					...(latest.childSessionId === undefined ? {} : { sessionId: latest.childSessionId }),
+					...(latest.childSessionFile === undefined ? {} : { sessionFile: latest.childSessionFile }),
+					status,
+				});
+			} catch {
+				// Best-effort notification: never fail the stop itself if the session is already closing.
+			}
+		}
+		return latest;
 	} finally {
 		stop.end();
 	}

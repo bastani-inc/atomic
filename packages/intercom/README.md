@@ -399,7 +399,6 @@ Runtime files live in `~/.atomic/agent/intercom/`. Setting `ATOMIC_CODING_AGENT_
 - `broker.starting` records a starting broker's PID until it begins listening.
 - `broker.spawn.lock` coordinates concurrent broker spawns with a 60-second backstop.
 - `broker.sock.replace.lock` serializes stale socket replacement during broker startup.
-- `broker-launch.vbs` launches the broker without a console window on Windows.
 - `broker.log` captures broker stderr, capped internally at 8 KiB by `broker/bounded-stderr-install.ts`.
 - `broker.log.previous` keeps the bounded tail of the previous nonempty broker log.
 - `broker-watchdog.log` records the latest watchdog termination.
