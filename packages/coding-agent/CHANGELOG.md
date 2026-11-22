@@ -20,6 +20,7 @@
 - Startup refreshes the model catalog once instead of three times and checks each provider's auth configuration once per availability pass instead of twice, cutting model-registry startup overhead on both the host and engine processes while preserving externally supplied runtimes, credential mutations, and missing-catalog recovery.
 - Built-in Intercom now registers its tool, command, and shortcut from a static description at startup and loads the Intercom extension bundle on first use or when the background startup join runs, reducing time to first prompt in both the host and engine processes.
 - Built-in Web Access now registers its tools, commands, and shortcuts from a static description at startup and loads the 4.9 MB Web Access bundle only on first tool, command, or shortcut use.
+- Built-in Subagents now registers its tool, `/agents` command, argument validation, and message renderers from a static description at startup and loads the 1.9 MB Subagents bundle on first use or when resuming a session with existing subagent history.
 - Startup parallelizes independent setup chains: `-p` and standalone `--mode rpc`/`json`/`text` launches warm the spare SQLite connection thread while modules load, async project-trust inspection short-circuits absent config directories and probes ancestors in parallel, package resource resolution and `ModelRuntime.create`/`SettingsManager.createAsync` run concurrently, and resource discovery loads skills, prompts, themes, context files, and system prompt files in parallel.
 
 ### Fixed
