@@ -89,6 +89,20 @@ function disconnectedOnce(client: TwoBrokerClient): Promise<void> {
 	return new Promise((resolve) => client.client.once("disconnected", () => resolve()));
 }
 
+/**
+ * Stops the broker process `pid` while it holds no write lock on the shared database: the test holds that lock itself
+ * meanwhile. A broker on another machine that crashed holds none, as a broker stopped in the middle of a write would, for
+ * as long as it stays stopped, keeping every other broker's writes waiting.
+ */
+async function stopOutsideAWrite(pid: number): Promise<RecordedProcess> {
+	const database = await harness.openSharedStorage("c");
+	return database.transaction(async () => {
+		const recorded = await recordProcess(pid);
+		assert.ok(await signalRecordedProcess(recorded, "SIGSTOP"));
+		return recorded;
+	});
+}
+
 async function within(promise: Promise<void>, ms: number, what: string): Promise<void> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -123,8 +137,7 @@ test.skipIf(process.platform === "win32")(
 
 		const pid = harness.brokerPid("a");
 		assert.ok(pid !== undefined);
-		stopped = await recordProcess(pid);
-		assert.ok(await signalRecordedProcess(stopped, "SIGSTOP"));
+		stopped = await stopOutsideAWrite(pid);
 		const stoppedAt = performance.now();
 		await sleep(500);
 
