@@ -24,6 +24,28 @@ function findPython(): string | undefined {
 
 export const python = findPython();
 
+/** The variables a script's environment keeps from the test's: what Python and `cmd.exe` need to start on Windows. */
+function inheritedEnvironment(): Record<string, string> {
+	const inherited: Record<string, string> = {};
+	for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "WINDIR", "LANG", "LC_ALL"]) {
+		const value = process.env[key];
+		if (value !== undefined) inherited[key] = value;
+	}
+	return inherited;
+}
+
+/**
+ * Whether that interpreter imports PyYAML, which package_skill and quick_validate read SKILL.md's frontmatter with, in an
+ * environment like the scripts' own (a package installed for the user only, under %APPDATA%, is not found there).
+ */
+export const pyyaml =
+	python !== undefined &&
+	spawnSync(python, ["-c", "import yaml"], { env: { ...inheritedEnvironment(), PATH: process.env.PATH ?? "" } })
+		.status === 0;
+
+/** CI installs PyYAML and sets ATOMIC_REQUIRE_PYYAML=1: there, the tests that need it must run, never skip. */
+export const pyyamlRequired = process.env.ATOMIC_REQUIRE_PYYAML === "1";
+
 /** What the fake `atomic` recorded about one start. */
 export interface FakeAtomicRecord {
 	readonly pid: number;
@@ -87,13 +109,8 @@ export function createScriptSandbox(prefix: string): ScriptSandbox {
 		temp,
 		log,
 		env(extra = {}) {
-			const inherited: Record<string, string> = {};
-			for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "WINDIR", "LANG", "LC_ALL"]) {
-				const value = process.env[key];
-				if (value !== undefined) inherited[key] = value;
-			}
 			return {
-				...inherited,
+				...inheritedEnvironment(),
 				PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
 				PYTHONPATH: skillCreatorDir,
 				PYTHONDONTWRITEBYTECODE: "1",
@@ -150,9 +167,9 @@ export async function waitUntilGone(pids: readonly number[], timeoutMs: number):
 	}
 }
 
-/** The first line a stream prints. */
+/** The first line a stream prints, without its line ending (LF, or CRLF as Windows writes it). */
 export async function readLine(stream: ReadableStream<Uint8Array> | null): Promise<string> {
-	return readUntil(stream, /^(.*)\n/u);
+	return readUntil(stream, /^(.*)\r?\n/u);
 }
 
 /** The first capture group of `pattern` in what a stream prints, once it appears; fails if the stream ends first. */
