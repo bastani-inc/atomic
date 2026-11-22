@@ -3,7 +3,8 @@ import type * as ChildProcessModule from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -240,7 +241,8 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 	for (const recorded of recordedProcs.splice(0)) await signalRecordedProcess(recorded);
-	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+	for (const dir of tempDirs.splice(0))
+		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
 
 describe("Windows tree-kill safety without bare-PID taskkill", () => {
@@ -520,16 +522,16 @@ if (role === "orphan") {
 		const childScript = join(dir, "sleeper.cjs");
 		writeFileSync(
 			childScript,
-			`require("node:fs").writeFileSync(process.argv[2], String(process.pid)); setTimeout(() => process.exit(0), 120_000);`,
+			`const fs = require("node:fs"); fs.writeFileSync(process.argv[2] + ".tmp", String(process.pid)); fs.renameSync(process.argv[2] + ".tmp", process.argv[2]); setTimeout(() => process.exit(0), 120_000);`,
 		);
 		const parentScript = join(dir, "parent.cjs");
 		writeFileSync(
 			parentScript,
-			`require("node:child_process").spawn(process.execPath, [process.argv[2], process.argv[3]], { stdio: "ignore", windowsHide: true }); setTimeout(() => process.exit(0), 120_000);`,
+			`require("node:child_process").spawn(process.execPath, [process.argv[2], process.argv[3]], { cwd: require("node:os").tmpdir(), stdio: "ignore", windowsHide: true }); setTimeout(() => process.exit(0), 120_000);`,
 		);
 
 		const shellProc = await spawnShellProcess(process.execPath, [parentScript, childScript, pidFile], {
-			cwd: dir,
+			cwd: tmpdir(),
 			env: process.env,
 			stdin: "ignore",
 		});
@@ -540,6 +542,7 @@ if (role === "orphan") {
 			shellProc.stop();
 
 			assert.equal(await waitUntilGone(descendant, GONE_MS), true, "fallback stop ended live descendant");
+			await exited(shellProc.child as ChildProcess);
 			assert.deepEqual(fakes.taskkillRuns, [], "fallback stop used native holdProcessDescendants, never taskkill");
 		} finally {
 			shellProc.finish();
@@ -547,7 +550,7 @@ if (role === "orphan") {
 
 		// Exited shell: stop() and killTrackedDetachedChildren() must never invoke taskkill on its bare PID.
 		const quickProc = await spawnShellProcess(process.execPath, ["-e", "process.exit(0)"], {
-			cwd: dir,
+			cwd: tmpdir(),
 			env: process.env,
 			stdin: "ignore",
 		});
@@ -567,16 +570,16 @@ if (role === "orphan") {
 		const childScript = join(dir, "desc.cjs");
 		writeFileSync(
 			childScript,
-			`require("node:fs").writeFileSync(process.argv[2], String(process.pid)); setTimeout(() => process.exit(0), 120_000);`,
+			`const fs = require("node:fs"); fs.writeFileSync(process.argv[2] + ".tmp", String(process.pid)); fs.renameSync(process.argv[2] + ".tmp", process.argv[2]); setTimeout(() => process.exit(0), 120_000);`,
 		);
 		const engineScript = join(dir, "engine.cjs");
 		writeFileSync(
 			engineScript,
-			`require("node:child_process").spawn(process.execPath, [process.argv[2], process.argv[3]], { stdio: "ignore", windowsHide: true }); process.stdin.resume(); setTimeout(() => process.exit(0), 120_000);`,
+			`require("node:child_process").spawn(process.execPath, [process.argv[2], process.argv[3]], { cwd: require("node:os").tmpdir(), stdio: "ignore", windowsHide: true }); process.stdin.resume(); setTimeout(() => process.exit(0), 120_000);`,
 		);
 
 		const child = spawn(process.execPath, [engineScript, childScript, pidFile], {
-			cwd: dir,
+			cwd: tmpdir(),
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});
@@ -598,12 +601,12 @@ if (role === "orphan") {
 		const childScript = join(dir, "step-child.cjs");
 		writeFileSync(
 			childScript,
-			`require("node:fs").writeFileSync(process.argv[2], String(process.pid)); setTimeout(() => process.exit(0), 120_000);`,
+			`const fs = require("node:fs"); fs.writeFileSync(process.argv[2] + ".tmp", String(process.pid)); fs.renameSync(process.argv[2] + ".tmp", process.argv[2]); setTimeout(() => process.exit(0), 120_000);`,
 		);
 		const stepScript = join(dir, "step.cjs");
 		writeFileSync(
 			stepScript,
-			`require("node:child_process").spawn(process.execPath, [process.argv[2], process.argv[3]], { stdio: "ignore", windowsHide: true }); setTimeout(() => process.exit(0), 120_000);`,
+			`require("node:child_process").spawn(process.execPath, [process.argv[2], process.argv[3]], { cwd: require("node:os").tmpdir(), stdio: "ignore", windowsHide: true }); setTimeout(() => process.exit(0), 120_000);`,
 		);
 
 		// Dead holder process.
@@ -613,7 +616,7 @@ if (role === "orphan") {
 
 		// Live step + child + unrelated bystander (simulating reused PID with different start token).
 		const step = spawn(process.execPath, [stepScript, childScript, pidFile], {
-			cwd: dir,
+			cwd: tmpdir(),
 			stdio: "ignore",
 			windowsHide: true,
 		});
@@ -647,6 +650,7 @@ if (role === "orphan") {
 		assert.deepEqual(settled.warnings, []);
 		assert.equal(await waitUntilGone(stepRec, GONE_MS), true, "proven step ended");
 		assert.equal(await waitUntilGone(stepChild, GONE_MS), true, "proven step's child ended");
+		await exited(step);
 		assert.equal(await waitUntilGone(bystanderRec, NOT_ENDED_MS), false, "process with mismatched start survived");
 		assert.deepEqual(fakes.taskkillRuns, [], "build-lock never spawned taskkill on native Windows");
 	});
@@ -664,10 +668,11 @@ if (role === "orphan") {
 			writeFileSync(
 				script,
 				`const { spawn } = require("node:child_process");
-const { writeFileSync } = require("node:fs");
+const { renameSync, writeFileSync } = require("node:fs");
 const [self, pidFile, role] = process.argv.slice(1);
 if (role === "leaf") {
-	writeFileSync(pidFile, String(process.pid));
+	writeFileSync(pidFile + ".tmp", String(process.pid));
+	renameSync(pidFile + ".tmp", pidFile);
 	setTimeout(() => process.exit(0), 120_000);
 } else {
 	spawn(process.execPath, [self, pidFile, "leaf"], { stdio: "ignore", windowsHide: true });
@@ -698,17 +703,17 @@ if (role === "leaf") {
 		const childScript = join(dir, "tracked-child.cjs");
 		writeFileSync(
 			childScript,
-			`require("node:fs").writeFileSync(process.argv[2], String(process.pid)); setTimeout(() => process.exit(0), 120_000);`,
+			`const fs = require("node:fs"); fs.writeFileSync(process.argv[2] + ".tmp", String(process.pid)); fs.renameSync(process.argv[2] + ".tmp", process.argv[2]); setTimeout(() => process.exit(0), 120_000);`,
 		);
 		const parentScript = join(dir, "tracked-parent.cjs");
 		writeFileSync(
 			parentScript,
-			`require("node:child_process").spawn(process.execPath, [process.argv[2], process.argv[3]], { stdio: "ignore", windowsHide: true }); setTimeout(() => process.exit(0), 120_000);`,
+			`require("node:child_process").spawn(process.execPath, [process.argv[2], process.argv[3]], { cwd: require("node:os").tmpdir(), stdio: "ignore", windowsHide: true }); setTimeout(() => process.exit(0), 120_000);`,
 		);
 
 		// Live tracked parent + child -> ended synchronously via nativeTerminateProcess without taskkill.
 		const parent = spawn(process.execPath, [parentScript, childScript, pidFile], {
-			cwd: dir,
+			cwd: tmpdir(),
 			stdio: "ignore",
 			windowsHide: true,
 		});
@@ -731,6 +736,7 @@ if (role === "leaf") {
 
 		assert.equal(await waitUntilGone(parentRec, GONE_MS), true, "tracked parent ended");
 		assert.equal(await waitUntilGone(childRec, GONE_MS), true, "tracked parent's child ended");
+		await exited(parent);
 		assert.deepEqual(fakes.taskkillRuns, [], "killTrackedDetachedChildren never spawned taskkill on native Windows");
 	});
 });
