@@ -78,9 +78,12 @@ export function processCreationTimeOf(pid: number): string | undefined {
 	}
 }
 
-/** When this process was created, as {@link processCreationTimeOf} reads it. */
+/**
+ * When this process was created, as {@link processCreationTimeOf} reads it, on Windows: only the Windows launcher asks a
+ * broker for it, and earlier versions read no other platform's start in that form.
+ */
 function ownCreationTime(): string | undefined {
-	return processCreationTimeOf(process.pid);
+	return process.platform === "win32" ? processCreationTimeOf(process.pid) : undefined;
 }
 
 /**

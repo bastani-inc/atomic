@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -56,6 +56,37 @@ describe.runIf(process.platform === "darwin")("a process's start on macOS", () =
 		const own = processCreationTimeOf(process.pid);
 		assert.match(own ?? "", /^[1-9]\d*$/u);
 		assert.ok(BigInt(own ?? "0") < BigInt(started ?? "0"));
+	});
+
+	test("is read for a process another user owns, as ps reads it", () => {
+		// launchd runs as root.
+		const started = processCreationTimeOf(1);
+		assert.match(started ?? "", /^[1-9]\d*$/u);
+		const printed = execFileSync("/bin/ps", ["-o", "lstart=", "-p", "1"], {
+			encoding: "utf8",
+			env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+		}).trim();
+		const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+		const parts = /^\w{3} (\w{3}) +(\d+) (\d+):(\d+):(\d+) (\d+)$/u.exec(printed);
+		assert.ok(parts, printed);
+		const [, month = "", day, hours, minutes, seconds, year] = parts;
+		const unixSeconds =
+			Date.UTC(Number(year), months.indexOf(month), Number(day), Number(hours), Number(minutes), Number(seconds)) /
+			1000;
+		assert.equal(Number(BigInt(started ?? "0") / 10_000_000n) - 11_644_473_600, unixSeconds, printed);
+	});
+
+	test("tells a broker's pid that now names another user's process from the broker, and signals neither", async () => {
+		const own = processCreationTimeOf(process.pid);
+		assert.ok(own !== undefined);
+		// The broker found exited, and macOS gave its pid to a process of another user: launchd stands in for it.
+		await endUnansweredBroker({ pid: 1, started: own, wroteBrokerPid: "unknown" });
+		const directory = makeTempDirectory("macos-other-user-");
+		directories.push(directory);
+		const lock = join(directory, "broker.spawn.lock");
+		writeFileSync(lock, `${process.pid}\n${Date.now()}\n1 ${own}\n`);
+		assert.equal(isSpawnLockStale(lock), true, "the lock's broker is gone");
+		assert.equal(processStart(1), processCreationTimeOf(1));
 	});
 
 	test("is not read once the process has exited", async () => {

@@ -40,40 +40,85 @@ fn creation_time(pid: u32) -> Option<u64> {
 	(read && running && ticks != 0).then_some(ticks)
 }
 
+/// A zombie on macOS: exited, not yet reaped by its parent.
+#[cfg(target_os = "macos")]
+const SZOMB: u32 = 5;
+
 #[cfg(target_os = "macos")]
 fn creation_time(pid: u32) -> Option<u64> {
 	/// Seconds between 1601-01-01 and 1970-01-01, both UTC.
 	const UNIX_EPOCH_SINCE_1601_SECS: u64 = 11_644_473_600;
-	/// A zombie: exited, not yet reaped by its parent.
-	const SZOMB: u32 = 5;
 	// Process id 0 is the kernel; it never holds anything.
-	if pid == 0 {
-		return None;
-	}
+	let pid = libc::c_int::try_from(pid).ok().filter(|&pid| pid > 0)?;
+	// A process another user owns is not read by proc_pidinfo, only by sysctl, as `ps` reads it.
+	let (seconds, microseconds) = bsd_info_start(pid).or_else(|| kern_proc_start(pid))?;
+	seconds
+		.checked_add(UNIX_EPOCH_SINCE_1601_SECS)?
+		.checked_mul(10_000_000)?
+		.checked_add(microseconds.checked_mul(10)?)
+}
+
+/// The start of running process `pid`, in seconds and microseconds since 1970, by proc_pidinfo: a process of this user.
+#[cfg(target_os = "macos")]
+fn bsd_info_start(pid: libc::c_int) -> Option<(u64, u64)> {
 	let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
 	let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
 	// SAFETY: the buffer is a zeroed `proc_bsdinfo` of `size` bytes, which proc_pidinfo fills for PROC_PIDTBSDINFO.
-	let written = unsafe {
-		libc::proc_pidinfo(
-			pid as libc::c_int,
-			libc::PROC_PIDTBSDINFO,
-			0,
-			info.as_mut_ptr().cast(),
-			size,
-		)
-	};
+	let written =
+		unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size) };
 	if written != size {
 		return None;
 	}
 	// SAFETY: proc_pidinfo wrote the whole structure.
 	let info = unsafe { info.assume_init() };
-	if info.pbi_pid != pid || info.pbi_status == SZOMB || info.pbi_start_tvsec == 0 {
+	if i64::from(info.pbi_pid) != i64::from(pid)
+		|| info.pbi_status == SZOMB
+		|| info.pbi_start_tvsec == 0
+	{
 		return None;
 	}
-	let ticks = (info.pbi_start_tvsec + UNIX_EPOCH_SINCE_1601_SECS)
-		.checked_mul(10_000_000)?
-		.checked_add(info.pbi_start_tvusec.checked_mul(10)?)?;
-	Some(ticks)
+	Some((info.pbi_start_tvsec, info.pbi_start_tvusec))
+}
+
+/// The start of running process `pid`, in seconds and microseconds since 1970, by `sysctl(KERN_PROC_PID)`, which reads
+/// a process of any user. The answer is a `struct kinfo_proc` (648 bytes); only the head of its `extern_proc` is read:
+/// the start (`p_starttime`, a `timeval`) at byte 0, the state (`p_stat`) at 36 and the process id (`p_pid`) at 40.
+#[cfg(target_os = "macos")]
+fn kern_proc_start(pid: libc::c_int) -> Option<(u64, u64)> {
+	const KINFO_PROC_SIZE: usize = 648;
+	let mut buffer = [0u64; KINFO_PROC_SIZE / 8];
+	let mut size: libc::size_t = KINFO_PROC_SIZE;
+	let mut name = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+	// SAFETY: `buffer` holds `size` bytes, which sysctl fills with at most that many, and says how many in `size`.
+	let status = unsafe {
+		libc::sysctl(
+			name.as_mut_ptr(),
+			name.len() as libc::c_uint,
+			buffer.as_mut_ptr().cast(),
+			&mut size,
+			std::ptr::null_mut(),
+			0,
+		)
+	};
+	// No such process: sysctl answers with nothing.
+	if status != 0 || size != KINFO_PROC_SIZE {
+		return None;
+	}
+	// SAFETY: the buffer is KINFO_PROC_SIZE initialised bytes.
+	let bytes: &[u8] =
+		unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast(), KINFO_PROC_SIZE) };
+	let seconds = i64::from_ne_bytes(bytes[0..8].try_into().ok()?);
+	let microseconds = i32::from_ne_bytes(bytes[8..12].try_into().ok()?);
+	let state = bytes[36];
+	let named = i32::from_ne_bytes(bytes[40..44].try_into().ok()?);
+	if named != pid
+		|| u32::from(state) == SZOMB
+		|| seconds <= 0
+		|| !(0..1_000_000).contains(&microseconds)
+	{
+		return None;
+	}
+	Some((u64::try_from(seconds).ok()?, u64::try_from(microseconds).ok()?))
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -152,6 +197,8 @@ fn terminate(_pid: u32, _created: u64, _descendants: bool) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+	#[cfg(target_os = "macos")]
+	use super::{bsd_info_start, kern_proc_start};
 	use super::{process_creation_time, terminate_process_created_at};
 
 	#[cfg(windows)]
@@ -257,7 +304,14 @@ mod tests {
 
 		let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
 		let started = process_creation_time(child.id()).expect("the child's creation time");
-		assert!(started >= own, "the child started after this process");
+		let ticks = |text: &str| text.parse::<u64>().unwrap();
+		assert!(ticks(&started) >= ticks(&own), "the child started after this process");
+		// Both readers read the same start of a process of this user.
+		let pid = libc::c_int::try_from(child.id()).unwrap();
+		assert_eq!(kern_proc_start(pid), bsd_info_start(pid));
+		// launchd, which another user owns, is read too: it started at boot, long before.
+		let launchd = process_creation_time(1).expect("launchd's creation time");
+		assert!(ticks(&launchd) < ticks(&own));
 		child.kill().unwrap();
 		child.wait().unwrap();
 		assert_eq!(process_creation_time(child.id()), None, "a reaped child is gone");
