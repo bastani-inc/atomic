@@ -147,7 +147,12 @@ function assertExitedWithinBound(closed: {
 	readonly run: ClosedConsoleRun;
 }): void {
 	const shutdown = delayOf(closed.records, "host", "shutdown");
-	assert.ok(shutdown, `Atomic did not end itself (it exited ${closed.run.exitedAfterMs} ms after the close)`);
+	// The record of the session phase is written as the shutdown begins: whether Atomic had learned of the close at all.
+	const session = delayOf(closed.records, "host", "session");
+	assert.ok(
+		shutdown,
+		`Atomic did not end itself: it exited ${closed.run.exitedAfterMs} ms after the close, ${session ? `${session.durationMs} ms into its session, after its shutdown began` : "before its shutdown began"}`,
+	);
 	assert.ok(
 		shutdown.durationMs < CONSOLE_CLOSED_SHUTDOWN_MS + EXIT_HEADROOM_MS,
 		`Atomic exited ${shutdown.durationMs} ms after it learned the console closed, ${closed.run.exitedAfterMs} ms after the close`,
