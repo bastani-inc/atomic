@@ -7,6 +7,7 @@ import {
 	installRealHomeStorageGuard,
 	realHomeAtomicRoots,
 } from "./real-home-storage-guard.js";
+import { installSystemPromptDateIsolation } from "./system-prompt-date-isolation.js";
 import { installTemporaryAgentDirDefault } from "./temporary-agent-dir.js";
 
 /**
@@ -24,6 +25,13 @@ setWorktreeSnapshotExcludedRootsForTest([checkout]);
 beforeEach(() => {
 	setWorktreeSnapshotExcludedRootsForTest([checkout]);
 });
+
+/**
+ * Pin the system prompt's `<date>` section to one calendar day per test worker so midnight rollovers never inject
+ * unexpected `<date>` updates mid-test while `Date.now()` stays on the real wall clock and fake `Date` timers still
+ * advance the prompt's date. The date module imports nothing, so loading it here evaluates no modules a test may mock.
+ */
+installSystemPromptDateIsolation({ beforeEach });
 
 /**
  * Every test file runs with an agent directory of its own (#4473): `ATOMIC_CODING_AGENT_DIR` points at a new

@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withTestSystemPromptDate } from "../../../test/helpers/system-prompt-date-isolation.js";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 export const cliPath = resolve(testDir, "../src/cli.ts");
@@ -68,7 +69,7 @@ export async function runCliProcess(
 		settled = false;
 	const child = spawn(bunExecutable(), [cliPath, ...args], {
 		cwd: options.cwd,
-		env: options.env,
+		env: options.env ? withTestSystemPromptDate(options.env) : undefined,
 		stdio: ["ignore", "pipe", "pipe"],
 		detached: process.platform !== "win32",
 		windowsHide: true,
