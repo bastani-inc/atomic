@@ -595,7 +595,7 @@ export class WindowedContainer extends Container {
 	): boolean {
 		if (this.laidOut.length === 0) return false;
 		const visible = Math.max(height, 1);
-		const overscan = Math.ceil(height / 2);
+		const overscan = Math.min(4, Math.ceil(height / 4));
 		let changed = false;
 		const ensureRendered = (entry: Entry): void => {
 			if (entry.renderedIn === layout) return;
