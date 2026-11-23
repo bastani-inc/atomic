@@ -244,6 +244,8 @@ export interface RegisterRequest {
 			/** #4538: the wire protocol versions this client speaks; absent from a client of protocol 1 (0.9.71 and earlier). */
 			protocol?: { min: number; max: number };
 			reach?: ReachPolicyFrame;
+			/** Client's remaining monotonic registration budget in ms when `register` is written, so the broker keeps internal waits within the client's deadline without comparing wall clocks. */
+			connectTimeoutMs?: number;
 }
 
 export type ClientMessage =

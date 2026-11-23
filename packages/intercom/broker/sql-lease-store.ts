@@ -12,6 +12,7 @@ import type {
 	Lease,
 	LeaseKey,
 	LeaseKind,
+	LeaseRenewResult,
 	LeaseState,
 	LeaseSubject,
 	StateStoreInvalidReason,
@@ -199,6 +200,42 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 							);
 				return changes === 1 ? ({ status: "renewed" } as const) : stale(await holderOf(tx, lease.key));
 			});
+		},
+		async renewMany(requests) {
+			if (requests.length === 0) return [];
+			const results: Array<LeaseRenewResult | undefined> = new Array(requests.length);
+			let validCount = 0;
+			for (let i = 0; i < requests.length; i++) {
+				const { lease, subject } = requests[i]!;
+				const bad = validLease(lease);
+				if (bad !== undefined) {
+					results[i] = bad;
+				} else if (
+					subject !== undefined &&
+					(subject.kind !== lease.key.kind || keyId(keyOf(subject)) !== keyId(lease.key))
+				) {
+					results[i] = invalid("subject-key-mismatch");
+				} else {
+					validCount++;
+				}
+			}
+			if (validCount === 0) return results as LeaseRenewResult[];
+			await database.transaction(async (tx) => {
+				for (let i = 0; i < requests.length; i++) {
+					if (results[i] !== undefined) continue;
+					const { lease, subject } = requests[i]!;
+					const { changes } =
+						subject === undefined
+							? await tx.run(`UPDATE ${table} SET renewed_at = ${nowMs} WHERE ${owned}`, ...ownedParams(lease))
+							: await tx.run(
+									`UPDATE ${table} SET renewed_at = ${nowMs}, subject_json = ? WHERE ${owned}`,
+									JSON.stringify(subject),
+									...ownedParams(lease),
+								);
+					results[i] = changes === 1 ? ({ status: "renewed" } as const) : stale(await holderOf(tx, lease.key));
+				}
+			});
+			return results as LeaseRenewResult[];
 		},
 		async release(lease) {
 			const bad = validLease(lease);

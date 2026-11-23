@@ -502,3 +502,205 @@ test(
 	},
 	TEST_TIMEOUT_MS,
 );
+
+test(
+	"a returning session whose broker stalls for most of the client deadline still registers with its kept id even when recording and presence are slow (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const observer = await harness.connect("b", unique("observer"));
+		const original = await harness.connect("a", unique("returning"));
+		const id = await leaveAway(original, observer);
+		// A 6 s claim stall leaves 4 s of the client's 10 s connect timeout: waiting a full 5 s presence bound after
+		// reclaim already kept the id would exceed the client's 10 s deadline.
+		const LONG_CLAIM_STALL_MS = 6_000;
+		harness.stallIdClaim(original.returnAddress, LONG_CLAIM_STALL_MS);
+		harness.holdRegistration(original.name);
+		try {
+			await explained(id, original.returnAddress, async () => {
+				const back = await harness.connect("a", original.name, {
+					returnAddress: original.returnAddress,
+					preferredSessionId: id,
+					connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+				});
+				assert.equal(harness.idClaimStalled(original.returnAddress), true);
+				await harness.registrationParked(original.name);
+				assert.equal(back.sessionId, id, "the database wrote the id for this registration");
+			});
+		} finally {
+			harness.releaseRegistration();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a returning session after an 8 s broker stall on a healthy database publishes presence before registered so a peer can list and send immediately (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const peer = await harness.connect("b", unique("peer"));
+		const original = await harness.connect("a", unique("returning"));
+		const id = await leaveAway(original, peer);
+		harness.stallIdClaim(original.returnAddress, BROKER_STALL_MS);
+
+		await explained(id, original.returnAddress, async () => {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
+			assert.equal(harness.idClaimStalled(original.returnAddress), true);
+			assert.equal(back.sessionId, id);
+			const listed = await peer.client.listSessions();
+			assert.ok(
+				listed.some((session) => session.id === back.sessionId),
+				"peer lists kept id immediately",
+			);
+			const sent = await peer.client.send(back.sessionId, { text: "after 8 s stall" });
+			assert.equal(sent.delivered, true, sent.reason);
+		});
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a returning session after a 5.5 s broker stall and a 2.5 s slow known-session write still publishes presence before registered within its 10 s deadline (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const peer = await harness.connect("b", unique("peer"));
+		const original = await harness.connect("b", unique("returning"));
+		const id = await leaveAway(original, peer);
+		harness.stallIdClaim(original.returnAddress, 5_500, undefined, 2_500, "known session");
+
+		await explained(id, original.returnAddress, async () => {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
+			assert.equal(harness.idClaimStalled(original.returnAddress), true);
+			assert.equal(back.sessionId, id);
+			const listed = await peer.client.listSessions();
+			assert.ok(
+				listed.some((session) => session.id === back.sessionId),
+				"peer lists kept id immediately",
+			);
+			const sent = await peer.client.send(back.sessionId, { text: "after 5.5s+2.5s" });
+			assert.equal(sent.delivered, true, sent.reason);
+		});
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a returning session after a 9.6 s broker stall honours a custom 15 s connectTimeoutMs, keeping its claimed id and publishing presence (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const peer = await harness.connect("b", unique("peer"));
+		const original = await harness.connect("a", unique("returning"));
+		const id = await leaveAway(original, peer);
+		harness.stallIdClaim(original.returnAddress, 9_600);
+
+		await explained(id, original.returnAddress, async () => {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: 15_000,
+			});
+			assert.equal(harness.idClaimStalled(original.returnAddress), true);
+			assert.equal(back.sessionId, id, "custom 15 s connect timeout gives reclaim and presence time to finish");
+			const listed = await peer.client.listSessions();
+			assert.ok(
+				listed.some((session) => session.id === back.sessionId),
+				"peer lists kept id immediately",
+			);
+		});
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"wall-clock skew (+10 s broker ahead of client) never shrinks a healthy registration's presence bound or hides it from peers (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const peer = await harness.connect("b", unique("peer"));
+		const name = unique("skew-a1");
+		harness.holdRegistration(name);
+		const releaseTimer = setTimeout(() => harness.releaseRegistration(), 80);
+		const realDateNow = Date.now;
+		Date.now = () => realDateNow() - 10_000;
+		try {
+			const joined = await harness.connect("a", name, { connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS });
+			Date.now = realDateNow;
+			const listed = await peer.client.listSessions();
+			assert.ok(
+				listed.some((session) => session.id === joined.sessionId),
+				"peer lists session despite +10 s clock skew",
+			);
+			const sent = await peer.client.send(joined.sessionId, { text: "skew-a1" });
+			assert.equal(sent.delivered, true, sent.reason);
+		} finally {
+			Date.now = realDateNow;
+			clearTimeout(releaseTimer);
+			harness.releaseRegistration();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"wall-clock skew (+6 s broker ahead of client) still allows a 3.8 s registration write to publish presence before registered (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const peer = await harness.connect("b", unique("peer"));
+		const name = unique("skew-a2");
+		harness.holdRegistration(name);
+		const releaseTimer = setTimeout(() => harness.releaseRegistration(), 3_800);
+		const realDateNow = Date.now;
+		Date.now = () => realDateNow() - 6_000;
+		try {
+			const joined = await harness.connect("a", name, { connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS });
+			Date.now = realDateNow;
+			const listed = await peer.client.listSessions();
+			assert.ok(
+				listed.some((session) => session.id === joined.sessionId),
+				"peer lists session despite +6 s clock skew",
+			);
+			const sent = await peer.client.send(joined.sessionId, { text: "skew-a2" });
+			assert.equal(sent.delivered, true, sent.reason);
+		} finally {
+			Date.now = realDateNow;
+			clearTimeout(releaseTimer);
+			harness.releaseRegistration();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"wall-clock skew (+10 s broker ahead of client) never forfeits a returning session's claimed id on an async reclaim (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const peer = await harness.connect("b", unique("peer"));
+		const original = await harness.connect("a", unique("returning"));
+		const id = await leaveAway(original, peer);
+		harness.stallIdClaim(original.returnAddress, 2_800, undefined, 50, "fresh binding");
+
+		const realDateNow = Date.now;
+		Date.now = () => realDateNow() - 10_000;
+		try {
+			await explained(id, original.returnAddress, async () => {
+				const back = await harness.connect("a", original.name, {
+					returnAddress: original.returnAddress,
+					preferredSessionId: id,
+					connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+				});
+				Date.now = realDateNow;
+				assert.equal(harness.idClaimStalled(original.returnAddress), true);
+				assert.equal(back.sessionId, id, "kept claimed id despite +10 s clock skew");
+			});
+		} finally {
+			Date.now = realDateNow;
+		}
+	},
+	TEST_TIMEOUT_MS,
+);

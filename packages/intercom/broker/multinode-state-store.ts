@@ -155,6 +155,11 @@ export type LeaseReadResult =
 	| { readonly status: "missing" }
 	| InvalidStateInput;
 
+export interface LeaseRenewalRequest {
+	readonly lease: Lease;
+	readonly subject?: LeaseSubject;
+}
+
 /** S1: broker membership and recipient presence leases with fencing tokens. */
 export interface BrokerLeaseStore {
 	/**
@@ -164,6 +169,11 @@ export interface BrokerLeaseStore {
 	acquire(subject: LeaseSubject, holderId: string, staleAfterMs: number): Promise<LeaseAcquireResult>;
 	/** Reset the age, replacing the subject when one is given. A superseded token is `stale`. */
 	renew(lease: Lease, subject?: LeaseSubject): Promise<LeaseRenewResult>;
+	/**
+	 * Reset the age of multiple leases in a single shared-store transaction, returning one result per entry in input
+	 * order. Absent on custom stores that only implement `renew`.
+	 */
+	renewMany?(requests: readonly LeaseRenewalRequest[]): Promise<LeaseRenewResult[]>;
 	/** Give the lease up; the next acquisition still gets a greater token. A non-holder's release is `stale`. */
 	release(lease: Lease): Promise<LeaseReleaseResult>;
 	/** Current holder of the key at any age; `missing` when unheld. */

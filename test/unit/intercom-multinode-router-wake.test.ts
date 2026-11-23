@@ -5,6 +5,7 @@ import { AgentWakeDispatcher, type ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AwayAsks } from "../../packages/intercom/broker/away-asks.js";
+import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client.js";
 import { UNAUTHORIZED_REPLY_REASON } from "../../packages/intercom/broker/delivery-failure-reason.js";
 import {
 	LOCAL_RETRY_LOOKUP_BOUND_MS,
@@ -15,6 +16,7 @@ import {
 	presenceBoundAfterClaim,
 	RESERVED_ID_HOLD_MS,
 	type ReservationOptions,
+	registrationBoundAfterClaim,
 	type SavedHandoff,
 	type SavedHandoffStore,
 	SESSION_ID_CLAIM_BOUND_MS,
@@ -36,6 +38,7 @@ import {
 	reservationKeyFor,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
+import { REGISTRATION_CONNECT_HEADROOM_MS } from "../../packages/intercom/broker/registration-bounds.js";
 import { releasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import {
 	RESTORING_RECIPIENT_HOLD_MS,
@@ -5097,5 +5100,554 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		);
 		assert.ok(failure !== undefined && failure.type === "delivery_failed");
 		assert.match(failure.reason, /could not reach the shared storage/);
+	});
+
+	test("renew issues membership and all live presence lease renewals concurrently so SQLite group-commits them without clobbering newer leases", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const node = await startNode(await cluster());
+		const sessions = [session("s1"), session("s2"), session("s3"), session("s4"), session("s5")];
+		for (const s of sessions) await registeredOn(node, s);
+
+		const realRenew = node.state.leases.renew.bind(node.state.leases);
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const gates: Array<ReturnType<typeof Promise.withResolvers<void>>> = [];
+		vi.spyOn(node.state.leases, "renew").mockImplementation(async (lease, subject) => {
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			const gate = Promise.withResolvers<void>();
+			gates.push(gate);
+			await gate.promise;
+			inFlight--;
+			return realRenew(lease, subject);
+		});
+
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		await flush();
+		assert.equal(
+			maxInFlight,
+			1 + sessions.length,
+			"membership and all 5 presence lease renewals are issued together so a single group commit serves them",
+		);
+		for (const gate of gates) gate.resolve();
+		await flush();
+	});
+
+	test("renew returning stale for an earlier lease never clears a newer lease acquired while the renewal was in flight", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const s = session("s-reacquire");
+		await registeredOn(node, s);
+
+		const firstRenew = Promise.withResolvers<void>();
+		const realRenew = node.state.leases.renew.bind(node.state.leases);
+		let intercepted = false;
+		const renewSpy = vi.spyOn(node.state.leases, "renew").mockImplementation(async (lease, subject) => {
+			if (!intercepted && lease.key.kind === "presence") {
+				intercepted = true;
+				await firstRenew.promise;
+				return { status: "stale", currentFencingToken: lease.fencingToken + 1 };
+			}
+			return realRenew(lease, subject);
+		});
+
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		await flush();
+		assert.equal(intercepted, true);
+
+		// Simulate the lease being replaced while the stale renewal is in flight: releasing and re-registering gives a
+		// fresh lease, or renewing after re-acquisition succeeds only if the entry kept its newer lease.
+		node.sessions.delete(s.info.id);
+		node.router.sessionLeft(s);
+		await flush();
+		const s2: BrokerConnectedSession = {
+			...session("s-reacquire"),
+			info: { ...s.info },
+			registrationReturnAddress: s.registrationReturnAddress,
+		};
+		await registeredOn(node, s2);
+
+		firstRenew.resolve();
+		await flush();
+		renewSpy.mockRestore();
+
+		const nextRenew = vi.spyOn(node.state.leases, "renew");
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		await flush();
+		assert.ok(
+			nextRenew.mock.calls.some(([lease]) => lease.key.kind === "presence"),
+			"the newer presence lease stays intact and is renewed on the next interval",
+		);
+	});
+
+	test("renew batches membership and all live presence leases into one renewMany call when the store supports it", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const node = await startNode(await cluster());
+		const sessions = [session("b1"), session("b2"), session("b3"), session("b4")];
+		for (const s of sessions) await registeredOn(node, s);
+
+		const batches: number[] = [];
+		const realRenew = node.state.leases.renew.bind(node.state.leases);
+		node.state.leases.renewMany = async (requests) => {
+			batches.push(requests.length);
+			return Promise.all(requests.map((req) => realRenew(req.lease, req.subject)));
+		};
+
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(
+			batches,
+			[1 + sessions.length],
+			"one batched renewMany call covers membership + all 4 presences",
+		);
+	});
+
+	test("BROKER_CONNECT_TIMEOUT_MS is derived from claim, presence, and headroom bounds (#5607)", () => {
+		assert.equal(
+			BROKER_CONNECT_TIMEOUT_MS,
+			SESSION_ID_CLAIM_BOUND_MS + PRESENCE_REGISTRATION_BOUND_MS + REGISTRATION_CONNECT_HEADROOM_MS,
+		);
+		assert.ok(SESSION_ID_CLAIM_BOUND_MS + PRESENCE_REGISTRATION_BOUND_MS < BROKER_CONNECT_TIMEOUT_MS);
+		assert.ok(
+			SESSION_ID_CLAIM_PROGRESS_CAP_MS + presenceBoundAfterClaim(SESSION_ID_CLAIM_BOUND_MS) <
+				BROKER_CONNECT_TIMEOUT_MS,
+		);
+	});
+
+	test("a stalled id-claim never blocks an unrelated session's claim or registration (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const stalled = session("stalled-a");
+		const unrelated = session("unrelated-b");
+		const stallGate = Promise.withResolvers<void>();
+		const realBind = node.state.knownSessions.bind.bind(node.state.knownSessions);
+		vi.spyOn(node.state.knownSessions, "bind").mockImplementation(async (id, ra, retention, claim, owner) => {
+			if (ra === stalled.registrationReturnAddress) {
+				await stallGate.promise;
+			}
+			return realBind(id, ra, retention, claim, owner);
+		});
+		try {
+			// Start A's id-claim, which parks indefinitely inside the store until the claim bound expires.
+			let stalledDone = false;
+			const stalledClaim = node.router
+				.claimSessionId(stalled.info.id, stalled.registrationReturnAddress!)
+				.then((ans) => {
+					stalledDone = true;
+					return ans;
+				});
+
+			// While A's claim is stalled, unrelated session B claims and registers immediately without waiting for A.
+			const bClaim = await node.router.claimSessionId(unrelated.info.id, unrelated.registrationReturnAddress!);
+			assert.equal(bClaim.status, "granted");
+			assert.equal(stalledDone, false, "A's claim is still stalled while B already succeeded");
+			node.sessions.set(unrelated.info.id, unrelated);
+			await node.router.sessionRegistered(unrelated, undefined, undefined, bClaim.grant);
+			assert.equal(stalledDone, false, "B finished full registration while A's claim remained stalled");
+
+			// Advancing to SESSION_ID_CLAIM_BOUND_MS resolves A's stalled claim cleanly as unanswered.
+			await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+			const aResult = await stalledClaim;
+			assert.equal(aResult.status, "unanswered");
+		} finally {
+			stallGate.resolve();
+		}
+	});
+
+	test("registrationBoundAfterClaim derives wait from the client's real remaining deadline while preserving healthy and exited-broker bounds (#5607)", () => {
+		// Healthy claim (elapsed <= 2.5 s, remaining >= 7.5 s): identical to main (5000 ms).
+		assert.equal(registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 10 }), 5_000);
+		assert.equal(registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 2_500 }), 5_000);
+		// Exited-host-broker takeover (#6369): identical to main.
+		assert.equal(registrationBoundAfterClaim({ extendedMs: 1_100, elapsedMs: 3_600 }), 3_900);
+		// 5.5 s stall (4.5 s left on 10 s timeout): 4,000 ms bound (> 2.5 s slow known write).
+		assert.equal(registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 5_500 }), 4_000);
+		// 8 s stall (2 s left on 10 s timeout): 1,500 ms bound (fast DB publishes presence, parked DB finishes at 9.5 s).
+		assert.equal(registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 8_000 }), 1_500);
+		assert.ok(8_000 + registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 8_000 }) < BROKER_CONNECT_TIMEOUT_MS);
+		// 9.6 s stall on 10 s timeout (400 ms left): positive 200 ms bound (never 0 while time remains!).
+		assert.equal(registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 9_600 }), 200);
+		assert.ok(9_600 + registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 9_600 }) < BROKER_CONNECT_TIMEOUT_MS);
+		// Custom 15 s connectTimeoutMs after 9.6 s stall (5,400 ms left): honours custom deadline (4,900 ms).
+		assert.equal(registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 9_600 }, 5_400), 4_900);
+		// Late accept (2.6 s before read + 2.6 s stall = 4,800 ms remaining on 10 s timeout): 4,300 ms (< 4,800 ms).
+		assert.equal(registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 2_600 }, 4_800), 4_300);
+		// Short custom 2 s timeout (1,900 ms remaining): honours custom deadline (1,400 ms).
+		assert.equal(registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 100 }, 1_900), 1_400);
+	});
+
+	test("sessionRegistered keeps the claimed id and finishes within the client's remaining deadline when recordKnown is parked, completing presence in the background (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const original = session("returning");
+		await registeredOn(node, original);
+		node.sessions.delete(original.info.id);
+		node.router.sessionLeft(original);
+		await vi.advanceTimersByTimeAsync(0);
+		await flush();
+
+		const realBind = node.state.knownSessions.bind.bind(node.state.knownSessions);
+		vi.spyOn(node.state.knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			const bound = await realBind(...args);
+			assert.equal(bound.status, "bound");
+			return new Promise(() => {});
+		});
+		const claimPromise = node.router.claimSessionId(original.info.id, original.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claimed = await claimPromise;
+		assert.equal(claimed.status, "unanswered");
+
+		// 8 s stall -> 2,000 ms left -> 1,500 ms registration bound (finishes at 9.5 s < 10 s if recordKnown is parked).
+		const boundMs = registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 8_000 });
+		assert.equal(boundMs, 1_500);
+
+		const reclaimGate = Promise.withResolvers<void>();
+		const recordGate = Promise.withResolvers<void>();
+		try {
+			const realReclaim = node.state.knownSessions.reclaim!.bind(node.state.knownSessions);
+			vi.spyOn(node.state.knownSessions, "reclaim").mockImplementationOnce(async (req) => {
+				await reclaimGate.promise;
+				return realReclaim(req);
+			});
+			let recordStarted = false;
+			let recordFinished = false;
+			const realRecord = node.state.knownSessions.record.bind(node.state.knownSessions);
+			vi.spyOn(node.state.knownSessions, "record").mockImplementationOnce(async (rec) => {
+				recordStarted = true;
+				await recordGate.promise;
+				const ans = await realRecord(rec);
+				recordFinished = true;
+				return ans;
+			});
+
+			const returning: BrokerConnectedSession = {
+				...session("returning"),
+				registrationReturnAddress: original.registrationReturnAddress,
+			};
+			let settledId: string | undefined;
+			let registrationResolved = false;
+			const reg = node.router.sessionRegistered(
+				returning,
+				undefined,
+				{
+					...claimed.unanswered,
+					settle: (keep) => {
+						if (settledId !== undefined) return false;
+						settledId = keep ? claimed.unanswered.sessionId : returning.info.id;
+						returning.info.id = settledId;
+						return keep;
+					},
+					unsettled: () => settledId === undefined,
+				},
+				undefined,
+				undefined,
+				undefined,
+				boundMs,
+			);
+			void reg.then(() => {
+				registrationResolved = true;
+			});
+
+			// Reclaim takes 100 ms: keeps the claimed id and waits within boundMs for recordKnown + acquirePresence.
+			await vi.advanceTimersByTimeAsync(100);
+			reclaimGate.resolve();
+			await vi.advanceTimersByTimeAsync(0);
+			await flush();
+			assert.equal(settledId, original.info.id, "kept the claimed id");
+			assert.equal(recordStarted, true, "recordKnown started");
+			assert.equal(
+				registrationResolved,
+				false,
+				"waits within remaining client budget for presence instead of cutting off prematurely",
+			);
+
+			// If recordKnown stays parked past boundMs (1,500 ms -> 9.5 s total), registration resolves before 10 s.
+			await vi.advanceTimersByTimeAsync(boundMs - 100);
+			await flush();
+			assert.equal(registrationResolved, true, "resolved at boundMs (500 ms before 10 s client deadline)");
+			assert.equal(recordFinished, false);
+
+			// Unpark recordKnown -> background recordKnown + acquirePresence still finish cleanly.
+			recordGate.resolve();
+			await vi.advanceTimersByTimeAsync(0);
+			await flush();
+			assert.equal(recordFinished, true, "background recordKnown completed");
+			const live = await node.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS);
+			assert.ok(
+				live.some((lease) => (lease.subject as RecipientPresenceSubject).session.id === original.info.id),
+				"background acquirePresence still published the kept id",
+			);
+		} finally {
+			reclaimGate.resolve();
+			recordGate.resolve();
+		}
+	});
+
+	test("sessionRegistered falls back before the client deadline when a stalled claim meets a hung database (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const original = session("returning-hung");
+		await registeredOn(node, original);
+		node.sessions.delete(original.info.id);
+		node.router.sessionLeft(original);
+		await vi.advanceTimersByTimeAsync(0);
+		await flush();
+
+		vi.spyOn(node.state.knownSessions, "bind").mockReturnValueOnce(new Promise(() => {}));
+		const claimPromise = node.router.claimSessionId(original.info.id, original.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claimed = await claimPromise;
+		assert.equal(claimed.status, "unanswered");
+
+		// 6 s stall + hung reclaim: remaining = 4 s -> bound = 3.5 s (6 s + 3.5 s = 9.5 s < 10 s, instead of 6 s + 5 s = 11 s).
+		const boundMs = registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 6_000 });
+		assert.equal(boundMs, 3_500);
+
+		const reclaimGate = Promise.withResolvers<void>();
+		const realReclaim = node.state.knownSessions.reclaim!.bind(node.state.knownSessions);
+		vi.spyOn(node.state.knownSessions, "reclaim").mockImplementationOnce(async (req) => {
+			await reclaimGate.promise;
+			return realReclaim(req);
+		});
+		try {
+			const returning: BrokerConnectedSession = {
+				...session("returning-hung"),
+				registrationReturnAddress: original.registrationReturnAddress,
+			};
+			let settledId: string | undefined;
+			let resolved = false;
+			void node.router
+				.sessionRegistered(
+					returning,
+					undefined,
+					{
+						...claimed.unanswered,
+						settle: (keep) => {
+							if (settledId !== undefined) return false;
+							settledId = keep ? claimed.unanswered.sessionId : returning.info.id;
+							returning.info.id = settledId;
+							return keep;
+						},
+						unsettled: () => settledId === undefined,
+					},
+					undefined,
+					undefined,
+					undefined,
+					boundMs,
+				)
+				.then(() => {
+					resolved = true;
+				});
+
+			await vi.advanceTimersByTimeAsync(boundMs - 1);
+			await flush();
+			assert.equal(resolved, false);
+			await vi.advanceTimersByTimeAsync(1);
+			await flush();
+			assert.equal(resolved, true, "falls back within the remaining client budget (500 ms before 10 s deadline)");
+		} finally {
+			reclaimGate.resolve();
+		}
+	});
+
+	test("renew still retries entry.unfinished registration steps when presence renewal returns stale (#5138)", async () => {
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const s = session("stale-unfinished");
+		await registeredOn(node, s);
+
+		let listForTargetCalls = 0;
+		const origList = node.state.pendingAsks.listForTarget.bind(node.state.pendingAsks);
+		vi.spyOn(node.state.pendingAsks, "listForTarget").mockImplementation(async (tid) => {
+			listForTargetCalls++;
+			if (listForTargetCalls === 1) throw new Error("transient store error");
+			return origList(tid);
+		});
+		s.info.replyCapability = "terminal";
+		node.router.sessionUpdated(s);
+		await flush();
+		assert.equal(listForTargetCalls, 1, "first failTerminalAsks attempt ran and recorded entry.unfinished");
+
+		const pKey = { kind: "presence" as const, targetIdentity: deliveryTargetIdentity(s) };
+		const found = await node.state.leases.read(pKey);
+		assert.equal(found.status, "found");
+		await node.state.leases.release(found.lease);
+
+		await (node.router as unknown as { renew(): Promise<void> }).renew();
+		await flush();
+		assert.ok(listForTargetCalls >= 2, "entry.unfinished retried even though presence renewal returned stale");
+	});
+
+	test("fallback renew without renewMany still records storeAnswered and reacquires stale membership when a presence renewal throws", async () => {
+		const shared = await cluster();
+		const node = await startNode(shared);
+		assert.equal(node.state.leases.renewMany, undefined);
+		const s = session("fallback-err");
+		await registeredOn(node, s);
+
+		const brokerLease = await node.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS);
+		assert.equal(brokerLease.length, 1);
+		const mKey = brokerLease[0]!.key;
+		const found = await node.state.leases.read(mKey);
+		assert.equal(found.status, "found");
+		await node.state.leases.release(found.lease);
+
+		const routerAny = node.router as unknown as { storeAnsweredAt: number; renew(): Promise<void> };
+		const answeredBefore = routerAny.storeAnsweredAt;
+		const origRenew = node.state.leases.renew.bind(node.state.leases);
+		vi.spyOn(node.state.leases, "renew").mockImplementation(async (lease, subject) => {
+			if (lease.key.kind === "presence") throw new Error("injected presence renew error");
+			return origRenew(lease, subject);
+		});
+
+		await assert.rejects(() => routerAny.renew(), /injected presence renew error/);
+		assert.ok(routerAny.storeAnsweredAt > answeredBefore, "fulfilled membership renewal still updated storeAnswered");
+		const mAfter = await node.state.leases.read(mKey);
+		assert.equal(mAfter.status, "found", "stale membership lease was reacquired despite presence renewal error");
+	});
+
+	test("reclaim after a 9.6 s stall on a 10 s timeout keeps a positive bound derived from remaining time instead of forfeiting the claimed id at 0 ms (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const original = session("ret-96s");
+		await registeredOn(node, original);
+		node.sessions.delete(original.info.id);
+		node.router.sessionLeft(original);
+		await vi.advanceTimersByTimeAsync(0);
+		await flush();
+
+		const claimId = randomUUID();
+		const owner = { token: randomUUID(), brokerId: "b", staleAfterMs: BROKER_LEASE_STALE_AFTER_MS };
+		const boundRes = await node.state.knownSessions.bind(
+			original.info.id,
+			original.registrationReturnAddress!,
+			KNOWN_SESSION_RETENTION_MS,
+			claimId,
+			owner,
+		);
+		assert.equal(boundRes.status, "bound");
+
+		const realReclaim = node.state.knownSessions.reclaim!.bind(node.state.knownSessions);
+		vi.spyOn(node.state.knownSessions, "reclaim").mockImplementationOnce(async (req) => {
+			await new Promise((r) => setTimeout(r, 20));
+			return realReclaim(req);
+		});
+
+		const boundMs = registrationBoundAfterClaim({ extendedMs: 0, elapsedMs: 9_600 });
+		assert.ok(boundMs > 0 && boundMs < 400, `expected positive bound within 400 ms remaining, got ${boundMs}`);
+
+		const returning: BrokerConnectedSession = {
+			...session("ret-96s"),
+			registrationReturnAddress: original.registrationReturnAddress,
+		};
+		let settledId: string | undefined;
+		const settle = (keep: boolean) => {
+			if (settledId !== undefined) return false;
+			settledId = keep ? original.info.id : returning.info.id;
+			returning.info.id = settledId;
+			node.sessions.set(settledId, returning);
+			return keep;
+		};
+		const reg = node.router.sessionRegistered(
+			returning,
+			undefined,
+			{
+				sessionId: original.info.id,
+				claim: claimId,
+				token: owner.token,
+				settle,
+				unsettled: () => settledId === undefined,
+			},
+			undefined,
+			undefined,
+			undefined,
+			boundMs,
+		);
+		await vi.advanceTimersByTimeAsync(30);
+		await reg;
+		settle(false);
+		assert.equal(
+			settledId,
+			original.info.id,
+			"kept claimed id when 20 ms async reclaim fits inside remaining 400 ms",
+		);
+	});
+
+	test("sessionRegistered resolves before starting acquirePresence when recordKnown already ran past boundMs (#5607)", async () => {
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const s = session("overdue-before-presence");
+		node.sessions.set(s.info.id, s);
+
+		let resolvedBeforeAcquire = false;
+		let registrationResolved = false;
+		const realRecord = node.state.knownSessions.record.bind(node.state.knownSessions);
+		vi.spyOn(node.state.knownSessions, "record").mockImplementationOnce(async (rec) => {
+			const res = await realRecord(rec);
+			// Block the event loop past boundMs so the bound timer is overdue when recordKnown's microtask resumes.
+			stallEventLoop(150);
+			return res;
+		});
+		const realAcquire = node.state.leases.acquire.bind(node.state.leases);
+		vi.spyOn(node.state.leases, "acquire").mockImplementationOnce(async (subject, holderId, staleAfterMs) => {
+			resolvedBeforeAcquire = registrationResolved;
+			return realAcquire(subject, holderId, staleAfterMs);
+		});
+
+		await node.router.sessionRegistered(s, undefined, undefined, undefined, undefined, undefined, 100).then(() => {
+			registrationResolved = true;
+		});
+		await new Promise((r) => setTimeout(r, 30));
+		assert.equal(
+			resolvedBeforeAcquire,
+			true,
+			"registration resolves and lets `registered` flush before starting acquirePresence once boundMs has elapsed",
+		);
+		const live = await node.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS);
+		assert.ok(
+			live.some((lease) => (lease.subject as RecipientPresenceSubject).session.id === s.info.id),
+			"background acquirePresence still completes after registration resolved",
+		);
+	});
+
+	test("a forward wall-clock jump during recordKnown never triggers yieldIfOverdue prematurely while monotonic time remains (#5607)", async () => {
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const s = session("wall-jump-session");
+		node.sessions.set(s.info.id, s);
+
+		const realDateNow = Date.now;
+		let wallOffset = 0;
+		Date.now = () => realDateNow() + wallOffset;
+		let acquireCompletedBeforeResolve = false;
+		try {
+			const realRecord = node.state.knownSessions.record.bind(node.state.knownSessions);
+			vi.spyOn(node.state.knownSessions, "record").mockImplementationOnce(async (rec) => {
+				const res = await realRecord(rec);
+				// Simulate a +10 s NTP forward wall-clock jump while monotonic time barely moved.
+				wallOffset = 10_000;
+				return res;
+			});
+			const realAcquire = node.state.leases.acquire.bind(node.state.leases);
+			vi.spyOn(node.state.leases, "acquire").mockImplementationOnce(async (subject, holderId, staleAfterMs) => {
+				const ans = await realAcquire(subject, holderId, staleAfterMs);
+				acquireCompletedBeforeResolve = true;
+				return ans;
+			});
+
+			await node.router.sessionRegistered(s, undefined, undefined, undefined, undefined, undefined, 500);
+			assert.equal(
+				acquireCompletedBeforeResolve,
+				true,
+				"forward Date.now() jump must not resolve sessionRegistered before acquirePresence completes while monotonic time remains",
+			);
+		} finally {
+			Date.now = realDateNow;
+		}
 	});
 });

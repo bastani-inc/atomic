@@ -194,3 +194,45 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 );
+
+test("backlog refusal errors after the register frame is written are never retried, preventing duplicate claims", async () => {
+	let attempts = 0;
+	let registersWritten = 0;
+	const broker = net.createServer((socket) => {
+		socket.on(
+			"data",
+			createMessageReader(
+				(message) => {
+					if ((message as { type?: string }).type === "register") registersWritten += 1;
+				},
+				() => socket.destroy(),
+			),
+		);
+	});
+	if (existsSync(socketPath)) unlinkSync(socketPath);
+	await new Promise<void>((resolveListening) => broker.listen(socketPath, () => resolveListening()));
+	const connect = net.connect;
+	const spy = vi.spyOn(net, "connect").mockImplementation(((...args: Parameters<typeof net.connect>) => {
+		attempts += 1;
+		const socket = connect(...args);
+		const origWrite = socket.write.bind(socket);
+		socket.write = ((...writeArgs: Parameters<typeof socket.write>) => {
+			const res = origWrite(...writeArgs);
+			const err = Object.assign(new Error("simulated post-write EAGAIN"), { code: "EAGAIN" });
+			queueMicrotask(() => socket.emit("error", err));
+			return res;
+		}) as typeof socket.write;
+		return socket;
+	}) as typeof net.connect);
+	const client = new IntercomClient("post-write-session", { preferredSessionId: "pref-id", connectTimeoutMs: 2_000 });
+	client.on("error", () => {});
+	try {
+		await assert.rejects(client.connect(SESSION), (error: NodeJS.ErrnoException) => error.code === "EAGAIN");
+		assert.equal(attempts, 1, "must not retry once register has already been written");
+		assert.ok(registersWritten <= 1, "at most one register frame reaches the broker");
+	} finally {
+		spy.mockRestore();
+		await client.disconnect().catch(() => {});
+		await new Promise<void>((resolveClose) => broker.close(() => resolveClose()));
+	}
+});

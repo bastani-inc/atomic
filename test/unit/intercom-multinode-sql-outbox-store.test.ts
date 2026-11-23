@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { OutboxStore, RecipientPresenceSubject } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
@@ -133,6 +133,46 @@ test("a message queued for an offline session is kept when the wake-up hint writ
 		await state.close();
 	} finally {
 		await database.close().catch(() => {});
+		removeTempDirectory(directory);
+	}
+});
+
+test("claim skips opening a write transaction when the target has no undelivered outbox rows", async () => {
+	const directory = makeTempDirectory("intercom-outbox-empty-claim-");
+	const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+	try {
+		const outbox = await openSqlOutboxStore({ database, prefix: "" });
+		const txSpy = vi.spyOn(database, "transaction");
+		const empty = await outbox.claim({
+			claimantId: "broker-a",
+			targetIdentity: '["return","idle-session","default"]',
+			staleAfterMs: 30_000,
+		});
+		assert.deepEqual(empty, { status: "claimed", rows: [] });
+		assert.equal(txSpy.mock.calls.length, 0, "empty claim performs a read-only check without a write lock");
+
+		const frame = {
+			type: "message",
+			from: { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
+			message: { id: "m-new", timestamp: 1, content: { text: "wake" } },
+		} as const;
+		await outbox.enqueue({
+			targetIdentity: '["return","idle-session","default"]',
+			originBrokerId: "broker-b",
+			digest: "d-new",
+			frame,
+		});
+		txSpy.mockClear();
+		const claimed = await outbox.claim({
+			claimantId: "broker-a",
+			targetIdentity: '["return","idle-session","default"]',
+			staleAfterMs: 30_000,
+		});
+		assert.equal(claimed.status, "claimed");
+		if (claimed.status === "claimed") assert.equal(claimed.rows.length, 1);
+		assert.equal(txSpy.mock.calls.length, 1, "non-empty claim still claims atomically in one transaction");
+	} finally {
+		await database.close();
 		removeTempDirectory(directory);
 	}
 });

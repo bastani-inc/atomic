@@ -95,13 +95,15 @@ import {
   type BrokerStateOpener,
   LOCAL_RETRY_LOOKUP_BOUND_MS,
   MultiNodeRouter,
-  presenceBoundAfterClaim,
   readSharedStorageSetting,
+  registrationBoundAfterClaim,
   resolveMultiNodeStartup,
   SHARED_STORAGE_UNAVAILABLE_REASON,
+  type SessionIdClaimProgress,
   type SessionIdGrant,
   type UnansweredSessionIdClaim,
 } from "./multinode-router.js";
+import { BROKER_CONNECT_TIMEOUT_MS } from "./registration-bounds.js";
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { SessionIdReclaim } from "./session-id-reclaim.js";
@@ -1231,6 +1233,14 @@ class IntercomBroker {
 		if (clientMessage.protocol !== undefined && !isBrokerProtocolRange(clientMessage.protocol)) {
 			throw new Error("Invalid protocol range");
 		}
+		if (
+			clientMessage.connectTimeoutMs !== undefined &&
+			(typeof clientMessage.connectTimeoutMs !== "number" ||
+				!Number.isFinite(clientMessage.connectTimeoutMs) ||
+				clientMessage.connectTimeoutMs <= 0)
+		) {
+			throw new Error("Invalid connect timeout");
+		}
 		const registrationReach = readRegistrationReach(
 			clientMessage.reach,
 			clientMessage.session,
@@ -1277,6 +1287,11 @@ class IntercomBroker {
         }
 
         this.openDeliveredMessages();
+        const clientTimeoutMs =
+          typeof clientMessage.connectTimeoutMs === "number" ? clientMessage.connectTimeoutMs : BROKER_CONNECT_TIMEOUT_MS;
+        const readMono = performance.now();
+        const clientRemainingMs = (): number =>
+          Math.max(0, clientTimeoutMs - Math.max(0, performance.now() - readMono));
         // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
         const preferred = this.sessionIdReclaim.grant(
           clientMessage.preferredSessionId,
@@ -1304,7 +1319,7 @@ class IntercomBroker {
           // #5607: a client that takes ids back is told which id it awaits; a hand-over it presents takes one.
           const takesIdHandoff = clientMessage.takesIdHandoff === true;
           const idHandoff = typeof clientMessage.idHandoff === "string" ? clientMessage.idHandoff : undefined;
-          const claimProgress = { extendedMs: 0 };
+          const claimProgress: SessionIdClaimProgress = { extendedMs: 0 };
           void multiNode
             .claimSessionId(
               preferred,
@@ -1347,13 +1362,15 @@ class IntercomBroker {
               const awaited =
                 takesIdHandoff &&
                 (claimed.status === "held" || (claimed.status === "unanswered" && claimed.unanswered.recovery !== undefined));
+              const unanswered = claimed.status === "unanswered" ? claimed.unanswered : undefined;
+              const presenceBoundMs = registrationBoundAfterClaim(claimProgress, clientRemainingMs());
               this.completeSessionRegistration(
                 socket,
                 registration,
                 granted !== undefined ? granted.sessionId : randomUUID(),
                 supervisorId,
                 setId,
-                claimed.status === "unanswered" ? claimed.unanswered : undefined,
+                unanswered,
                 granted,
                 // #5607: held by another registration of this session (or for this one, by a hand-over that did not take
                 // it this time): a client that takes ids back awaits it, and keeps asking for it rather than saving the
@@ -1361,13 +1378,24 @@ class IntercomBroker {
                 awaited ? preferred : undefined,
                 !awaited ? undefined : claimed.status === "held" ? claimed.recovery : claimed.unanswered.recovery,
                 // The claim and the presence wait together stay within the client's registration wait.
-                presenceBoundAfterClaim(claimProgress.extendedMs),
+                presenceBoundMs,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
           break;
         }
-        this.completeSessionRegistration(socket, registration, preferred ?? randomUUID(), supervisorId, setId);
+        this.completeSessionRegistration(
+          socket,
+          registration,
+          preferred ?? randomUUID(),
+          supervisorId,
+          setId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          registrationBoundAfterClaim({ extendedMs: 0 }, clientRemainingMs()),
+        );
         break;
       }
 
