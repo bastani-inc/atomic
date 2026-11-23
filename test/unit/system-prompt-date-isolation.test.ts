@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { afterEach, describe, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, test, vi } from "vitest";
 import {
 	buildSystemPromptSections,
 	diffSystemPromptSections,
@@ -126,39 +126,114 @@ describe("shared test setup timezone isolation", () => {
 		});
 	});
 
-	test("restores the worker's midday TZ in beforeEach after a test changes or deletes TZ", () => {
+	test("preserves a TZ set in beforeAll, restores per-test leaks in afterEach, and restores worker TZ in afterAll", () => {
 		const env: NodeJS.ProcessEnv = {};
 		const beforeEachHooks: Array<() => void> = [];
+		const afterEachHooks: Array<() => void> = [];
+		const afterAllHooks: Array<() => void> = [];
 		const handle = installMiddayTimezoneIsolation(
-			{ beforeEach: (fn) => beforeEachHooks.push(fn) },
-			{ now: new Date("2026-11-22T23:59:59Z"), env },
+			{
+				beforeEach: (fn) => beforeEachHooks.push(fn),
+				afterEach: (fn) => afterEachHooks.push(fn),
+				afterAll: (fn) => afterAllHooks.push(fn),
+			},
+			{ now: new Date("2026-11-22T23:59:59Z"), env, caseInsensitive: true },
 		);
 		cleanups.push(() => handle.restore());
 
 		assert.equal(handle.timezone, "Etc/GMT+12");
 		assert.equal(env.TZ, "Etc/GMT+12");
 
-		env.TZ = "UTC";
+		// Simulate a test file setting TZ in beforeAll.
+		env.TZ = "America/New_York";
 		for (const hook of beforeEachHooks) hook();
-		assert.equal(env.TZ, "Etc/GMT+12");
+		assert.equal(env.TZ, "America/New_York", "setup:beforeEach must not silently reset a beforeAll TZ");
 
-		delete env.TZ;
+		// Simulate test 1 mutating TZ (including a lowercase Windows variant) without restoring.
+		env.TZ = "UTC";
+		env.tz = "Asia/Tokyo";
+		for (const hook of afterEachHooks) hook();
+		assert.equal(env.TZ, "America/New_York", "setup:afterEach must restore the pre-test TZ snapshot");
+		assert.equal(
+			Object.hasOwn(env, "tz"),
+			false,
+			"setup:afterEach must clear leaked case-variant tz keys on Windows",
+		);
+
+		// Test 2 still sees beforeAll's TZ, and if it deletes TZ, afterEach restores it too.
 		for (const hook of beforeEachHooks) hook();
+		delete env.TZ;
+		for (const hook of afterEachHooks) hook();
+		assert.equal(env.TZ, "America/New_York");
+
+		// File ends without restoring in its own afterAll; setup:afterAll restores worker midday TZ for the next file.
+		for (const hook of afterAllHooks) hook();
 		assert.equal(env.TZ, "Etc/GMT+12");
 	});
 });
 
+describe("shared setup respects a test suite's beforeAll TZ and contains test leaks", () => {
+	const savedWorkerTz = process.env.TZ;
+	beforeAll(() => {
+		process.env.TZ = "America/New_York";
+	});
+	afterAll(() => {
+		if (savedWorkerTz === undefined) delete process.env.TZ;
+		else process.env.TZ = savedWorkerTz;
+	});
+
+	test("test 1 observes the TZ set in beforeAll even after the shared setup's beforeEach runs", () => {
+		assert.equal(process.env.TZ, "America/New_York");
+		// Deliberately leak a mutation without restoring in this test body.
+		process.env.TZ = "UTC";
+	});
+
+	test("test 2 still observes beforeAll's TZ after test 1 leaked a mutation", () => {
+		assert.equal(process.env.TZ, "America/New_York");
+	});
+});
+
 describe("child-process timezone forwarding", () => {
-	test("withTestTimezone forwards TZ unless the caller explicitly sets or clears TZ", () => {
+	test("withTestTimezone forwards TZ unless the caller explicitly sets or clears TZ (case-insensitively on Windows)", () => {
 		const source: NodeJS.ProcessEnv = { TZ: "Etc/GMT+12" };
-		assert.deepEqual(withTestTimezone({ PATH: "/bin" }, source), { PATH: "/bin", TZ: "Etc/GMT+12" });
-		assert.deepEqual(withTestTimezone({ PATH: "/bin", TZ: "UTC" }, source), { PATH: "/bin", TZ: "UTC" });
-		assert.deepEqual(withTestTimezone({ PATH: "/bin", TZ: "America/New_York" }, source), {
+		assert.deepEqual(withTestTimezone({ PATH: "/bin" }, source, { caseInsensitive: false }), {
+			PATH: "/bin",
+			TZ: "Etc/GMT+12",
+		});
+		assert.deepEqual(withTestTimezone({ PATH: "/bin", TZ: "UTC" }, source, { caseInsensitive: false }), {
+			PATH: "/bin",
+			TZ: "UTC",
+		});
+		assert.deepEqual(withTestTimezone({ PATH: "/bin", TZ: "America/New_York" }, source, { caseInsensitive: false }), {
 			PATH: "/bin",
 			TZ: "America/New_York",
 		});
-		assert.deepEqual(withTestTimezone({ PATH: "/bin", TZ: undefined }, source), { PATH: "/bin", TZ: undefined });
-		assert.deepEqual(withTestTimezone({ PATH: "/bin" }, {}), { PATH: "/bin" });
+		assert.deepEqual(withTestTimezone({ PATH: "/bin", TZ: undefined }, source, { caseInsensitive: false }), {
+			PATH: "/bin",
+			TZ: undefined,
+		});
+		assert.deepEqual(withTestTimezone({ PATH: "/bin" }, {}, { caseInsensitive: false }), { PATH: "/bin" });
+
+		// On POSIX, lowercase `tz` is distinct from `TZ`, so `TZ` is still forwarded.
+		assert.deepEqual(withTestTimezone({ PATH: "/bin", tz: "UTC" }, source, { caseInsensitive: false }), {
+			PATH: "/bin",
+			tz: "UTC",
+			TZ: "Etc/GMT+12",
+		});
+
+		// On Windows, any case variant of TZ (including empty/undefined opt-out) counts as caller-specified.
+		for (const env of [
+			{ PATH: "C:\\bin", tz: "UTC" },
+			{ PATH: "C:\\bin", Tz: "America/New_York" },
+			{ PATH: "C:\\bin", tZ: "" },
+			{ PATH: "C:\\bin", tz: undefined },
+		]) {
+			assert.deepEqual(withTestTimezone(env, source, { caseInsensitive: true }), env);
+		}
+		assert.deepEqual(withTestTimezone({ PATH: "C:\\bin" }, { tz: "Etc/GMT-5" }, { caseInsensitive: true }), {
+			PATH: "C:\\bin",
+			TZ: "Etc/GMT-5",
+		});
 	});
 
 	test("Node and Bun children spawned via spawnSyncCollect and spawnProcess honor forwarded TZ across 00:00:00 UTC", async () => {
@@ -187,6 +262,12 @@ describe("child-process timezone forwarding", () => {
 			const explicitUtc = spawnSyncCollect([executable, "-e", probe], { env: { ...minimalEnv, TZ: "UTC" } });
 			assert.equal(explicitUtc.exitCode, 0, explicitUtc.stderr.toString());
 			assert.deepEqual(JSON.parse(explicitUtc.stdout.toString()), ["UTC", "2026-11-22", "2026-11-23"]);
+
+			if (process.platform === "win32") {
+				const explicitLowerTz = spawnSyncCollect([executable, "-e", probe], { env: { ...minimalEnv, tz: "UTC" } });
+				assert.equal(explicitLowerTz.exitCode, 0, explicitLowerTz.stderr.toString());
+				assert.deepEqual(JSON.parse(explicitLowerTz.stdout.toString()), ["UTC", "2026-11-22", "2026-11-23"]);
+			}
 		}
 
 		const asyncChild = spawnProcess([process.execPath, "-e", probe], {

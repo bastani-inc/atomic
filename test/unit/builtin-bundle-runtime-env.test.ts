@@ -12,10 +12,12 @@ function requireBuiltPath(path: string): void {
 	assert.ok(fileExistsSync(path), `Missing built artifact ${path}. Run \`${buildCommand}\` before this test.`);
 }
 
-// A bundle built under NODE_ENV=test must not select stub sessions in production.
-test("shipped subagent extension bundle decides test-host stubbing at runtime, not at bundle time", () => {
+// Shipped subagents must never enable stub sessions from ambient NODE_ENV or NODE_TEST_CONTEXT
+// (neither at bundle time nor at runtime); only an explicit options.testSession opts in.
+test("shipped subagent extension bundle never stubs sessions from NODE_ENV or NODE_TEST_CONTEXT", () => {
 	const bundle = join(distBuiltinRoot, "subagents", INSTALLED_EXTENSION_ENTRIES.subagents);
 	requireBuiltPath(bundle);
 	const source = readTextSync(bundle, "utf8");
-	assert.match(source, /process\.env(?:\.NODE_ENV|\["NODE_ENV"\]) === "test"/);
+	assert.doesNotMatch(source, /process\.env(?:\.NODE_ENV|\["NODE_ENV"\])\s*===?\s*"test"/);
+	assert.doesNotMatch(source, /NODE_TEST_CONTEXT/);
 });
