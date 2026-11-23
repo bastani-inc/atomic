@@ -431,4 +431,60 @@ describe("issue #5303 bash output truncation past exit", () => {
 		expect(exitCode).toBe(0);
 		expect(vi.getTimerCount()).toBe(0);
 	});
+
+	it("clears the pending idle timer when the active-drain hard cap fires and clears the hard-cap fallback on early stdio end", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate"] });
+		const synthetic = createSyntheticChildProcess();
+
+		const wait = waitForChildProcess(synthetic.child);
+		synthetic.child.emit("exit", 0, null);
+
+		// Keep extending the 100 ms idle timer up to t = 4,950 ms so it is due at 5,050 ms
+		// while the active-drain hard cap is due at 5,000 ms.
+		for (let elapsed = 50; elapsed < ACTIVE_DRAIN_HARD_CAP_MS; elapsed += 50) {
+			vi.advanceTimersByTime(50);
+			synthetic.stdout.emit("data", Buffer.from("NOISE\n"));
+		}
+
+		// Fire only the hard-cap timer at t = 5,000 ms; it must clear the pending idle timer,
+		// leaving only the single hard-cap fallback immediate pending.
+		vi.advanceTimersToNextTimer();
+		expect(vi.getTimerCount()).toBe(1);
+
+		// Stdio ending before the check phase must clear the pending hard-cap fallback immediate too.
+		synthetic.stdout.emit("end");
+		synthetic.stderr.emit("end");
+
+		const exitCode = await wait;
+		expect(exitCode).toBe(0);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("clears an already-pending idle fallback immediate when the active-drain hard cap fires", async () => {
+		// Fake timers control the 100 ms and 5 s timers while real setImmediate preserves check-phase FIFO order.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		const synthetic = createSyntheticChildProcess();
+		const order: string[] = [];
+
+		const wait = waitForChildProcess(synthetic.child).then((code) => {
+			order.push("settled");
+			return code;
+		});
+		synthetic.child.emit("exit", 0, null);
+
+		// 1. Fire the idle timer, queueing its check-phase fallback first.
+		vi.advanceTimersByTime(EXIT_STDIO_IDLE_GRACE_MS);
+		// 2. Queue a check-phase marker behind the idle fallback.
+		setImmediate(() => {
+			order.push("marker");
+		});
+		// 3. Fire the hard-cap timer in the same turn; it must clear the earlier idle fallback
+		//    and queue the hard-cap fallback after the marker.
+		vi.advanceTimersByTime(ACTIVE_DRAIN_HARD_CAP_MS - EXIT_STDIO_IDLE_GRACE_MS);
+
+		const exitCode = await wait;
+		expect(exitCode).toBe(0);
+		expect(order).toEqual(["marker", "settled"]);
+		expect(vi.getTimerCount()).toBe(0);
+	});
 });
