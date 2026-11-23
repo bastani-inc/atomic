@@ -7,6 +7,7 @@ import {
 	installRealHomeStorageGuard,
 	realHomeAtomicRoots,
 } from "./real-home-storage-guard.js";
+import { installMiddayTimezoneIsolation } from "./system-prompt-date-isolation.js";
 import { installTemporaryAgentDirDefault } from "./temporary-agent-dir.js";
 
 /**
@@ -24,6 +25,13 @@ setWorktreeSnapshotExcludedRootsForTest([checkout]);
 beforeEach(() => {
 	setWorktreeSnapshotExcludedRootsForTest([checkout]);
 });
+
+/**
+ * Pin the worker's local timezone (`TZ`) to a fixed-offset IANA `Etc/GMT` zone near local noon so midnight rollovers
+ * never change `buildSystemPromptSections()`'s `<date>` section mid-test, while `Date.now()` stays on the real UTC
+ * epoch and fake `Date` timers still advance calendar days normally. Imports nothing from `packages/`.
+ */
+installMiddayTimezoneIsolation({ beforeEach });
 
 /**
  * Every test file runs with an agent directory of its own (#4473): `ATOMIC_CODING_AGENT_DIR` points at a new

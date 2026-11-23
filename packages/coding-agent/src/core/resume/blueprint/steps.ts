@@ -163,6 +163,7 @@ function describeExit(exit: ProcessExit, timeoutMs: number): string {
 	if (exit.timedOut) return `# timed out after ${timeoutMs} ms and was stopped`;
 	if (exit.spawnError) return `# could not be started: ${exit.spawnError.message}`;
 	if (exit.signal !== null) return `# stopped by signal ${exit.signal}`;
+	if (exit.exitStatus === null) return `# exit status unknown${exit.exitError ? `: ${exit.exitError.message}` : ""}`;
 	return `# exit status ${exit.exitStatus}`;
 }
 
@@ -186,10 +187,12 @@ function failureOf(
 			phase: location.section,
 		});
 	}
-	if (exit.exitStatus === 0 && exit.signal === null && exit.spawnError === undefined) return undefined;
+	if (exit.exitStatus === 0 && exit.signal === null && exit.spawnError === undefined && exit.exitError === undefined) {
+		return undefined;
+	}
 	return new BlueprintStepFailedError(
 		{ ...location, exitStatus: exit.exitStatus, signal: exit.signal, logPath },
-		exit.spawnError,
+		exit.spawnError ?? exit.exitError,
 	);
 }
 
