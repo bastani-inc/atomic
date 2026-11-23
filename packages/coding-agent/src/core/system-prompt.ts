@@ -7,7 +7,6 @@ import { getAgentDir, getDocsPath, getExamplesPath, getReadmePath } from "../con
 import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";
 import { defaultSessionDatabasePath } from "./storage/file-identity.js";
-import { currentSystemPromptDate } from "./system-prompt-date.js";
 
 const DEFAULT_PROMPT_TOOLS = ["read", "bash", "edit", "write", "find", "search", "ask_user_question", "todo"] as const;
 
@@ -283,7 +282,8 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 	const examplesPath = getExamplesPath();
 	const modelName = options.selectedModel?.name?.trim() || options.selectedModel?.id || "unknown";
 	const modelReasoningLevel = options.selectedThinkingLevel?.trim() || "off";
-	const date = currentSystemPromptDate();
+	const now = new Date();
+	const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
 	for (const name of Object.keys(customSections)) {
 		if (!SYSTEM_PROMPT_SECTION_NAME.test(name) || name === "preamble") {

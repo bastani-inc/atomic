@@ -5,20 +5,14 @@ import {
 	buildSystemPromptSections,
 	diffSystemPromptSections,
 } from "../../packages/coding-agent/src/core/system-prompt.js";
-import {
-	currentSystemPromptDate,
-	formatLocalCalendarDate,
-	isCalendarDate,
-	SYSTEM_PROMPT_DATE_ENV,
-	setSystemPromptDateProviderForTest,
-	systemPromptDateProviderForTest,
-} from "../../packages/coding-agent/src/core/system-prompt-date.js";
 import { startPtyProgram } from "../helpers/pty-program.js";
-import { readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
-import { installSystemPromptDateIsolation, withTestSystemPromptDate } from "../helpers/system-prompt-date-isolation.js";
-
-const SYSTEM_PROMPT_DATE_MODULE = new URL("../../packages/coding-agent/src/core/system-prompt-date.ts", import.meta.url)
-	.href;
+import { bunExecutable, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	installMiddayTimezoneIsolation,
+	middayOffsetHours,
+	middayTimezone,
+	withTestTimezone,
+} from "../helpers/system-prompt-date-isolation.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -26,272 +20,247 @@ afterEach(() => {
 	while (cleanups.length > 0) cleanups.pop()?.();
 });
 
-describe("calendar date validation and formatting", () => {
-	test("accepts valid Gregorian dates including leap years and rejects invalid or injected values", () => {
-		for (const valid of ["2024-02-29", "2000-02-29", "2026-01-31", "2026-04-30", "2026-11-22", "2026-12-31"]) {
-			assert.equal(isCalendarDate(valid), true, `expected valid: ${valid}`);
+function localCalendarDate(date: Date): string {
+	return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+describe("midday IANA Etc/GMT timezone selection", () => {
+	test("places every UTC hour and minute into local [11:30, 12:29] and stays on the same local day for >11h", () => {
+		const hadTz = Object.hasOwn(process.env, "TZ");
+		const savedTz = process.env.TZ;
+		cleanups.push(() => {
+			if (hadTz) process.env.TZ = savedTz;
+			else delete process.env.TZ;
+		});
+
+		for (let utcHour = 0; utcHour < 24; utcHour++) {
+			for (const utcMinute of [0, 29, 30, 59]) {
+				const start = new Date(Date.UTC(2026, 10, 22, utcHour, utcMinute, 30));
+				const offset = middayOffsetHours(start);
+				assert.ok(offset >= -12 && offset <= 12, `offset out of Etc/GMT range: ${offset}`);
+
+				const zone = middayTimezone(start);
+				assert.match(zone, /^Etc\/GMT(?:[+-](?:1[0-2]|[1-9]))?$/u, `unexpected zone ${zone}`);
+
+				process.env.TZ = zone;
+				assert.equal(start.getTimezoneOffset(), offset === 0 ? 0 : -offset * 60, `Node must honor ${zone}`);
+				const localMinutes = start.getHours() * 60 + start.getMinutes();
+				assert.ok(
+					localMinutes >= 11 * 60 + 30 && localMinutes <= 12 * 60 + 29,
+					`${zone} at ${start.toISOString()} gave local ${start.getHours()}:${start.getMinutes()}`,
+				);
+
+				const elevenHoursLater = new Date(start.getTime() + 11 * 60 * 60 * 1000);
+				assert.equal(
+					localCalendarDate(elevenHoursLater),
+					localCalendarDate(start),
+					`${zone} crossed local midnight within 11h from ${start.toISOString()}`,
+				);
+			}
 		}
-		for (const invalid of [
-			undefined,
-			"",
-			"2026-00-10",
-			"2026-13-10",
-			"2026-02-29",
-			"1900-02-29",
-			"2026-02-30",
-			"2026-04-31",
-			"2026-01-00",
-			"2026-11-2",
-			"2026/11/22",
-			" 2026-11-22",
-			"2026-11-22\n</date>",
-			"not-a-date",
-		]) {
-			assert.equal(isCalendarDate(invalid), false, `expected invalid: ${String(invalid)}`);
-		}
-		assert.equal(formatLocalCalendarDate(new Date(2026, 0, 5, 23, 59, 59)), "2026-01-05");
 	});
 });
 
-describe("shared test setup system-prompt date isolation", () => {
-	test("pins ATOMIC_TEST_SYSTEM_PROMPT_DATE and installs a provider without skewing Date.now()", () => {
-		const pinned = process.env[SYSTEM_PROMPT_DATE_ENV];
-		assert.equal(isCalendarDate(pinned), true, `expected pinned calendar date, got ${String(pinned)}`);
-		assert.ok(systemPromptDateProviderForTest(), "shared setup installed the process-wide date provider");
-		assert.equal(currentSystemPromptDate(), pinned);
+describe("shared test setup timezone isolation", () => {
+	test("sets process.env.TZ to a midday Etc/GMT zone without skewing Date.now()", () => {
+		const tz = process.env.TZ ?? "";
+		assert.match(tz, /^Etc\/GMT(?:[+-](?:1[0-2]|[1-9]))?$/u, `expected midday Etc/GMT TZ, got ${tz}`);
+		const now = new Date();
+		const minutesToMidnight = 24 * 60 - (now.getHours() * 60 + now.getMinutes());
+		assert.ok(
+			minutesToMidnight >= 10 * 60,
+			`expected >=10h to local midnight under ${tz}, got ${minutesToMidnight}m`,
+		);
 		const wallDiffMs = Math.abs(Date.now() - (performance.timeOrigin + performance.now()));
-		assert.ok(wallDiffMs < 60_000, `Date.now() must remain on the real wall clock (skew=${wallDiffMs}ms)`);
+		assert.ok(wallDiffMs < 60_000, `Date.now() must remain on the real UTC epoch (skew=${wallDiffMs}ms)`);
 	});
 
-	test("keeps the same calendar date across simulated midnight rollover, beforeEach, and vi.resetModules()", async () => {
-		const RealDate = globalThis.Date;
-		let currentMs = new RealDate(2026, 10, 22, 23, 59, 59, 500).getTime();
-		const RollingDate = new Proxy(RealDate, {
-			construct(target, args, newTarget) {
-				if (args.length === 0) return Reflect.construct(target, [currentMs], newTarget);
-				return Reflect.construct(target, args, newTarget);
-			},
-			get(target, prop, receiver) {
-				if (prop === "now") return () => currentMs;
-				return Reflect.get(target, prop, receiver);
-			},
-		});
-		const savedDate = globalThis.Date;
-		globalThis.Date = RollingDate;
+	test("prevents <date> prompt updates across 00:00:00 UTC while preserving live rollover under UTC (#6092)", () => {
+		const hadTz = Object.hasOwn(process.env, "TZ");
+		const savedTz = process.env.TZ;
 		cleanups.push(() => {
-			globalThis.Date = savedDate;
+			if (hadTz) process.env.TZ = savedTz;
+			else delete process.env.TZ;
 		});
 
-		const env: NodeJS.ProcessEnv = {};
-		const beforeEachHooks: Array<() => void> = [];
-		const handle = installSystemPromptDateIsolation(
-			{ beforeEach: (fn) => beforeEachHooks.push(fn) },
-			{ realDate: RollingDate, env },
-		);
-		cleanups.push(() => handle.restore());
+		const beforeUtcMidnight = new Date("2026-11-22T23:59:59Z");
+		const afterUtcMidnight = new Date("2026-11-23T00:00:01Z");
 
-		assert.equal(handle.pinnedDate, "2026-11-22");
-		assert.equal(env[SYSTEM_PROMPT_DATE_ENV], "2026-11-22");
-		const beforeMidnight = buildSystemPromptSections({ cwd: "/project" });
-		assert.equal(beforeMidnight.date, "<date>\nCurrent date: 2026-11-22\n</date>");
-
-		// Midnight ticks between beforeAll/request 1 and beforeEach/request 2.
-		currentMs = new RealDate(2026, 10, 23, 0, 0, 1, 0).getTime();
-		for (const hook of beforeEachHooks) hook();
-
-		const afterMidnight = buildSystemPromptSections({ cwd: "/project" });
-		assert.equal(afterMidnight.date, "<date>\nCurrent date: 2026-11-22\n</date>");
-		assert.equal(diffSystemPromptSections(beforeMidnight, afterMidnight), undefined);
-		assert.equal(env[SYSTEM_PROMPT_DATE_ENV], "2026-11-22");
-
-		// A fresh module instance loaded after vi.resetModules() still reads the globalThis Symbol slot.
-		vi.resetModules();
-		const fresh = (await import(
-			"../../packages/coding-agent/src/core/system-prompt.js"
-		)) as typeof import("../../packages/coding-agent/src/core/system-prompt.js");
-		assert.equal(
-			fresh.buildSystemPromptSections({ cwd: "/project" }).date,
-			"<date>\nCurrent date: 2026-11-22\n</date>",
-		);
-	});
-
-	test("keeps the date pinned when only timers (not Date) are faked", () => {
-		const pinned = process.env[SYSTEM_PROMPT_DATE_ENV]!;
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-		assert.equal(currentSystemPromptDate(), pinned);
-		assert.equal(buildSystemPromptSections({ cwd: "/project" }).date, `<date>\nCurrent date: ${pinned}\n</date>`);
-	});
-
-	test("follows vi.useFakeTimers({ toFake: ['Date'] }) and vi.setSystemTime across days despite the pinned env var", () => {
-		assert.equal(isCalendarDate(process.env[SYSTEM_PROMPT_DATE_ENV]), true);
+		// Under UTC (as on CI runners without midday TZ), crossing 00:00:00 UTC emits a <date> section update.
+		process.env.TZ = "UTC";
 		vi.useFakeTimers({ toFake: ["Date"] });
-		vi.setSystemTime(new Date(2026, 10, 20, 12, 0, 0));
+		vi.setSystemTime(beforeUtcMidnight);
+		const utcBefore = buildSystemPromptSections({ cwd: "/project" });
+		vi.setSystemTime(afterUtcMidnight);
+		const utcAfter = buildSystemPromptSections({ cwd: "/project" });
+		assert.equal(utcBefore.date, "<date>\nCurrent date: 2026-11-22\n</date>");
+		assert.deepEqual(diffSystemPromptSections(utcBefore, utcAfter), {
+			date: "<date>\nCurrent date: 2026-11-23\n</date>",
+		});
+
+		// Under midday TZ chosen at 23:59:59Z (Etc/GMT+12), crossing 00:00:00 UTC moves 11:59:59 -> 12:00:01 (same day).
+		const handle = installMiddayTimezoneIsolation(undefined, { now: beforeUtcMidnight });
+		cleanups.push(() => handle.restore());
+		assert.equal(handle.timezone, "Etc/GMT+12");
+
+		vi.setSystemTime(beforeUtcMidnight);
+		const middayBefore = buildSystemPromptSections({ cwd: "/project" });
+		vi.setSystemTime(afterUtcMidnight);
+		const middayAfter = buildSystemPromptSections({ cwd: "/project" });
+		assert.equal(middayBefore.date, "<date>\nCurrent date: 2026-11-22\n</date>");
+		assert.equal(middayAfter.date, "<date>\nCurrent date: 2026-11-22\n</date>");
+		assert.equal(diffSystemPromptSections(middayBefore, middayAfter), undefined);
+	});
+
+	test("preserves explicit fake Date multi-day transitions (vi.setSystemTime across local days)", () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date("2026-11-20T12:00:00"));
 		const dayOne = buildSystemPromptSections({ cwd: "/project" });
 		assert.equal(dayOne.date, "<date>\nCurrent date: 2026-11-20\n</date>");
 
-		vi.setSystemTime(new Date(2026, 10, 21, 12, 0, 0));
+		vi.setSystemTime(new Date("2026-11-21T12:00:00"));
 		const dayTwo = buildSystemPromptSections({ cwd: "/project" });
 		assert.equal(dayTwo.date, "<date>\nCurrent date: 2026-11-21\n</date>");
 		assert.deepEqual(diffSystemPromptSections(dayOne, dayTwo), {
 			date: "<date>\nCurrent date: 2026-11-21\n</date>",
 		});
-
-		vi.useRealTimers();
-		assert.equal(currentSystemPromptDate(), process.env[SYSTEM_PROMPT_DATE_ENV]);
 	});
 
-	test("restores the shared provider and env in beforeEach after a test clears or replaces them", () => {
+	test("restores the worker's midday TZ in beforeEach after a test changes or deletes TZ", () => {
 		const env: NodeJS.ProcessEnv = {};
 		const beforeEachHooks: Array<() => void> = [];
-		const handle = installSystemPromptDateIsolation({ beforeEach: (fn) => beforeEachHooks.push(fn) }, { env });
+		const handle = installMiddayTimezoneIsolation(
+			{ beforeEach: (fn) => beforeEachHooks.push(fn) },
+			{ now: new Date("2026-11-22T23:59:59Z"), env },
+		);
 		cleanups.push(() => handle.restore());
 
-		setSystemPromptDateProviderForTest(undefined);
-		delete env[SYSTEM_PROMPT_DATE_ENV];
-		assert.equal(systemPromptDateProviderForTest(), undefined);
-		assert.equal(env[SYSTEM_PROMPT_DATE_ENV], undefined);
+		assert.equal(handle.timezone, "Etc/GMT+12");
+		assert.equal(env.TZ, "Etc/GMT+12");
 
+		env.TZ = "UTC";
 		for (const hook of beforeEachHooks) hook();
-		assert.equal(systemPromptDateProviderForTest(), handle.provider);
-		assert.equal(env[SYSTEM_PROMPT_DATE_ENV], handle.pinnedDate);
-	});
+		assert.equal(env.TZ, "Etc/GMT+12");
 
-	test("follows live Date in production mode (no provider, no valid env) and respects custom sections.date", () => {
-		const previousProvider = setSystemPromptDateProviderForTest(undefined);
-		const hadEnv = Object.hasOwn(process.env, SYSTEM_PROMPT_DATE_ENV);
-		const previousEnv = process.env[SYSTEM_PROMPT_DATE_ENV];
-		cleanups.push(() => {
-			setSystemPromptDateProviderForTest(previousProvider);
-			if (hadEnv) process.env[SYSTEM_PROMPT_DATE_ENV] = previousEnv;
-			else delete process.env[SYSTEM_PROMPT_DATE_ENV];
-		});
-
-		vi.useFakeTimers({ toFake: ["Date"] });
-		vi.setSystemTime(new Date(2026, 10, 22, 23, 59, 59));
-		delete process.env[SYSTEM_PROMPT_DATE_ENV];
-		const before = buildSystemPromptSections({ cwd: "/project" });
-		assert.equal(before.date, "<date>\nCurrent date: 2026-11-22\n</date>");
-
-		// Invalid env value is ignored and falls back to live Date.
-		process.env[SYSTEM_PROMPT_DATE_ENV] = "2026-02-30";
-		vi.setSystemTime(new Date(2026, 10, 23, 0, 0, 1));
-		const after = buildSystemPromptSections({ cwd: "/project" });
-		assert.equal(after.date, "<date>\nCurrent date: 2026-11-23\n</date>");
-		assert.deepEqual(diffSystemPromptSections(before, after), {
-			date: "<date>\nCurrent date: 2026-11-23\n</date>",
-		});
-
-		// Custom sections.date always overrides.
-		const custom = buildSystemPromptSections({ cwd: "/project", sections: { date: "Current date: custom" } });
-		assert.equal(custom.date, "<date>\nCurrent date: custom\n</date>");
+		delete env.TZ;
+		for (const hook of beforeEachHooks) hook();
+		assert.equal(env.TZ, "Etc/GMT+12");
 	});
 });
 
-describe("child-process system-prompt date forwarding", () => {
-	test("withTestSystemPromptDate forwards a valid pinned date unless the caller explicitly sets or clears it", () => {
-		const source: NodeJS.ProcessEnv = { [SYSTEM_PROMPT_DATE_ENV]: "2026-11-22" };
-		assert.deepEqual(withTestSystemPromptDate({ PATH: "/bin" }, source), {
+describe("child-process timezone forwarding", () => {
+	test("withTestTimezone forwards TZ unless the caller explicitly sets or clears TZ", () => {
+		const source: NodeJS.ProcessEnv = { TZ: "Etc/GMT+12" };
+		assert.deepEqual(withTestTimezone({ PATH: "/bin" }, source), { PATH: "/bin", TZ: "Etc/GMT+12" });
+		assert.deepEqual(withTestTimezone({ PATH: "/bin", TZ: "UTC" }, source), { PATH: "/bin", TZ: "UTC" });
+		assert.deepEqual(withTestTimezone({ PATH: "/bin", TZ: "America/New_York" }, source), {
 			PATH: "/bin",
-			[SYSTEM_PROMPT_DATE_ENV]: "2026-11-22",
+			TZ: "America/New_York",
 		});
-		assert.deepEqual(withTestSystemPromptDate({ PATH: "/bin", [SYSTEM_PROMPT_DATE_ENV]: "" }, source), {
-			PATH: "/bin",
-			[SYSTEM_PROMPT_DATE_ENV]: "",
-		});
-		assert.deepEqual(withTestSystemPromptDate({ PATH: "/bin", [SYSTEM_PROMPT_DATE_ENV]: undefined }, source), {
-			PATH: "/bin",
-			[SYSTEM_PROMPT_DATE_ENV]: undefined,
-		});
-		assert.deepEqual(withTestSystemPromptDate({ PATH: "/bin", [SYSTEM_PROMPT_DATE_ENV]: "2026-01-02" }, source), {
-			PATH: "/bin",
-			[SYSTEM_PROMPT_DATE_ENV]: "2026-01-02",
-		});
-		assert.deepEqual(withTestSystemPromptDate({ PATH: "/bin" }, { [SYSTEM_PROMPT_DATE_ENV]: "not-a-date" }), {
-			PATH: "/bin",
-		});
+		assert.deepEqual(withTestTimezone({ PATH: "/bin", TZ: undefined }, source), { PATH: "/bin", TZ: undefined });
+		assert.deepEqual(withTestTimezone({ PATH: "/bin" }, {}), { PATH: "/bin" });
 	});
 
-	test("spawnSyncCollect and spawnProcess forward the pinned date to minimal child environments and respect opt-out", async () => {
-		const pinned = process.env[SYSTEM_PROMPT_DATE_ENV]!;
-		const script = [
-			`const mod = await import(${JSON.stringify(SYSTEM_PROMPT_DATE_MODULE)});`,
-			"const RealDate = globalThis.Date;",
-			"let calls = 0;",
-			"const day1 = new RealDate(2026, 10, 22, 23, 59, 59).getTime();",
-			"const day2 = new RealDate(2026, 10, 23, 0, 0, 1).getTime();",
-			"globalThis.Date = new Proxy(RealDate, {",
-			"  construct(t, a, n) { return Reflect.construct(t, a.length === 0 ? [++calls === 1 ? day1 : day2] : a, n); },",
-			"});",
-			"process.stdout.write(JSON.stringify([mod.currentSystemPromptDate(), mod.currentSystemPromptDate()]));",
-		].join("\n");
-
-		const synced = spawnSyncCollect([process.execPath, "--input-type=module", "-e", script], {
-			env: { PATH: process.env.PATH ?? "" },
+	test("Node and Bun children spawned via spawnSyncCollect and spawnProcess honor forwarded TZ across 00:00:00 UTC", async () => {
+		const hadTz = Object.hasOwn(process.env, "TZ");
+		const savedTz = process.env.TZ;
+		process.env.TZ = "Etc/GMT+12";
+		cleanups.push(() => {
+			if (hadTz) process.env.TZ = savedTz;
+			else delete process.env.TZ;
 		});
-		assert.equal(synced.exitCode, 0, synced.stderr.toString());
-		assert.deepEqual(JSON.parse(synced.stdout.toString()), [pinned, pinned]);
 
-		const spawned = spawnProcess([process.execPath, "--input-type=module", "-e", script], {
-			env: { PATH: process.env.PATH ?? "" },
+		const probe = [
+			'const fmt = (iso) => { const d = new Date(iso); return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-"); };',
+			'process.stdout.write(JSON.stringify([process.env.TZ ?? "", fmt("2026-11-22T23:59:59Z"), fmt("2026-11-23T00:00:01Z")]));',
+		].join(" ");
+		const minimalEnv = {
+			...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+			PATH: process.env.PATH ?? "",
+		};
+
+		for (const executable of [process.execPath, bunExecutable()]) {
+			const forwarded = spawnSyncCollect([executable, "-e", probe], { env: minimalEnv });
+			assert.equal(forwarded.exitCode, 0, forwarded.stderr.toString());
+			assert.deepEqual(JSON.parse(forwarded.stdout.toString()), ["Etc/GMT+12", "2026-11-22", "2026-11-22"]);
+
+			const explicitUtc = spawnSyncCollect([executable, "-e", probe], { env: { ...minimalEnv, TZ: "UTC" } });
+			assert.equal(explicitUtc.exitCode, 0, explicitUtc.stderr.toString());
+			assert.deepEqual(JSON.parse(explicitUtc.stdout.toString()), ["UTC", "2026-11-22", "2026-11-23"]);
+		}
+
+		const asyncChild = spawnProcess([process.execPath, "-e", probe], {
+			env: minimalEnv,
 			stdout: "pipe",
 			stderr: "pipe",
 		});
 		const [exitCode, stdout, stderr] = await Promise.all([
-			spawned.exited,
-			readStreamText(spawned.stdout),
-			readStreamText(spawned.stderr),
+			asyncChild.exited,
+			readStreamText(asyncChild.stdout),
+			readStreamText(asyncChild.stderr),
 		]);
 		assert.equal(exitCode, 0, stderr);
-		assert.deepEqual(JSON.parse(stdout), [pinned, pinned]);
-
-		// Explicit opt-out restores live midnight rollover in the child.
-		const optedOut = spawnSyncCollect([process.execPath, "--input-type=module", "-e", script], {
-			env: { PATH: process.env.PATH ?? "", [SYSTEM_PROMPT_DATE_ENV]: "" },
-		});
-		assert.equal(optedOut.exitCode, 0, optedOut.stderr.toString());
-		assert.deepEqual(JSON.parse(optedOut.stdout.toString()), ["2026-11-22", "2026-11-23"]);
+		assert.deepEqual(JSON.parse(stdout), ["Etc/GMT+12", "2026-11-22", "2026-11-22"]);
 	});
 
-	test("startPtyProgram forwards the pinned date and respects explicit opt-out", async () => {
-		const pinned = process.env[SYSTEM_PROMPT_DATE_ENV]!;
+	test("startPtyProgram forwards TZ and respects explicit TZ opt-out", async () => {
+		const hadTz = Object.hasOwn(process.env, "TZ");
+		const savedTz = process.env.TZ;
+		process.env.TZ = "Etc/GMT+12";
+		cleanups.push(() => {
+			if (hadTz) process.env.TZ = savedTz;
+			else delete process.env.TZ;
+		});
+
 		const baseEnv: Record<string, string> = {
 			...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
 			PATH: process.env.PATH ?? "",
 		};
+		const probe = [
+			'const fmt = (iso) => { const d = new Date(iso); return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-"); };',
+			'process.stdout.write("RES=" + [process.env.TZ, fmt("2026-11-22T23:59:59Z"), fmt("2026-11-23T00:00:01Z")].join("|") + "\\n");',
+		].join(" ");
+
 		const forwarded = startPtyProgram({
 			executable: process.execPath,
-			args: ["-e", `process.stdout.write("PIN=" + (process.env.${SYSTEM_PROMPT_DATE_ENV} ?? "UNSET") + "\\n")`],
+			args: ["-e", probe],
 			cwd: process.cwd(),
 			env: baseEnv,
 			timeoutMs: 15_000,
-			cols: 80,
+			cols: 120,
 			rows: 24,
 		});
 		try {
 			const exit = await forwarded.exited;
 			assert.equal(exit.timedOut, false);
 			assert.equal(exit.exitCode, 0);
-			assert.ok(stripVTControlCharacters(forwarded.output()).includes(`PIN=${pinned}`), forwarded.output());
+			assert.ok(
+				stripVTControlCharacters(forwarded.output()).includes("RES=Etc/GMT+12|2026-11-22|2026-11-22"),
+				forwarded.output(),
+			);
 		} finally {
 			forwarded.kill();
 		}
 
-		const optedOut = startPtyProgram({
+		const explicitUtc = startPtyProgram({
 			executable: process.execPath,
-			args: ["-e", `process.stdout.write("PIN=" + (process.env.${SYSTEM_PROMPT_DATE_ENV} || "EMPTY") + "\\n")`],
+			args: ["-e", probe],
 			cwd: process.cwd(),
-			env: { ...baseEnv, [SYSTEM_PROMPT_DATE_ENV]: "" },
+			env: { ...baseEnv, TZ: "UTC" },
 			timeoutMs: 15_000,
-			cols: 80,
+			cols: 120,
 			rows: 24,
 		});
 		try {
-			const exit = await optedOut.exited;
+			const exit = await explicitUtc.exited;
 			assert.equal(exit.timedOut, false);
 			assert.equal(exit.exitCode, 0);
-			assert.ok(stripVTControlCharacters(optedOut.output()).includes("PIN=EMPTY"), optedOut.output());
+			assert.ok(
+				stripVTControlCharacters(explicitUtc.output()).includes("RES=UTC|2026-11-22|2026-11-23"),
+				explicitUtc.output(),
+			);
 		} finally {
-			optedOut.kill();
+			explicitUtc.kill();
 		}
 	});
 });

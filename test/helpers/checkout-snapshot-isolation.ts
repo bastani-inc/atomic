@@ -7,7 +7,7 @@ import {
 	installRealHomeStorageGuard,
 	realHomeAtomicRoots,
 } from "./real-home-storage-guard.js";
-import { installSystemPromptDateIsolation } from "./system-prompt-date-isolation.js";
+import { installMiddayTimezoneIsolation } from "./system-prompt-date-isolation.js";
 import { installTemporaryAgentDirDefault } from "./temporary-agent-dir.js";
 
 /**
@@ -27,11 +27,11 @@ beforeEach(() => {
 });
 
 /**
- * Pin the system prompt's `<date>` section to one calendar day per test worker so midnight rollovers never inject
- * unexpected `<date>` updates mid-test while `Date.now()` stays on the real wall clock and fake `Date` timers still
- * advance the prompt's date. The date module imports nothing, so loading it here evaluates no modules a test may mock.
+ * Pin the worker's local timezone (`TZ`) to a fixed-offset IANA `Etc/GMT` zone near local noon so midnight rollovers
+ * never change `buildSystemPromptSections()`'s `<date>` section mid-test, while `Date.now()` stays on the real UTC
+ * epoch and fake `Date` timers still advance calendar days normally. Imports nothing from `packages/`.
  */
-installSystemPromptDateIsolation({ beforeEach });
+installMiddayTimezoneIsolation({ beforeEach });
 
 /**
  * Every test file runs with an agent directory of its own (#4473): `ATOMIC_CODING_AGENT_DIR` points at a new

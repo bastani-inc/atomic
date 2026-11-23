@@ -1,69 +1,70 @@
-import {
-	formatLocalCalendarDate,
-	isCalendarDate,
-	SYSTEM_PROMPT_DATE_ENV,
-	type SystemPromptDateProvider,
-	setSystemPromptDateProviderForTest,
-} from "../../packages/coding-agent/src/core/system-prompt-date.js";
-
-export interface SystemPromptDateIsolationHandle {
-	readonly pinnedDate: string;
-	readonly provider: SystemPromptDateProvider;
+export interface MiddayTimezoneIsolationHandle {
+	readonly timezone: string;
 	restore(): void;
 }
 
 /**
- * Pin the system prompt's `<date>` section to one calendar day per test worker so midnight rollovers never inject
- * unexpected `<date>` system updates mid-test, while leaving `Date.now()` untouched (no wall-clock skew against
- * SQLite, filesystem mtimes, or timers).
- *
- * When a test explicitly replaces `globalThis.Date` (for example with `vi.useFakeTimers({ toFake: ["Date"] })` and
- * `vi.setSystemTime(...)`), the provider returns `undefined` so `currentSystemPromptDate()` follows the test's fake
- * `Date` directly without reading `ATOMIC_TEST_SYSTEM_PROMPT_DATE`.
- *
- * Also publishes the pinned date in `ATOMIC_TEST_SYSTEM_PROMPT_DATE` so spawned child processes (CLI, isolated engine,
- * and subagents) share the same calendar day unless a test explicitly clears or overrides that variable.
+ * Whole-hour UTC offset in `[-12, +12]` that puts `now` into local `[11:30, 12:29]`, leaving at least 11 hours 30
+ * minutes before the next local midnight (and after the previous one).
  */
-export function installSystemPromptDateIsolation(
+export function middayOffsetHours(now: Date = new Date()): number {
+	return (now.getUTCMinutes() >= 30 ? 11 : 12) - now.getUTCHours();
+}
+
+/**
+ * Fixed-offset IANA `Etc/GMT` timezone name (no DST) that places `now` near local noon.
+ *
+ * IANA `Etc/GMT` uses the POSIX inverted sign convention: `Etc/GMT-N` is UTC+N (east of Greenwich) and `Etc/GMT+N` is
+ * UTC-N (west of Greenwich). Both Node (V8/ICU) and Bun honor `Etc/GMT` and `Etc/GMT±1..12` on Linux, macOS, and
+ * Windows, both via `process.env.TZ` and via child-process `TZ`.
+ */
+export function middayTimezone(now: Date = new Date()): string {
+	const offsetHours = middayOffsetHours(now);
+	if (offsetHours === 0) return "Etc/GMT";
+	return offsetHours > 0 ? `Etc/GMT-${offsetHours}` : `Etc/GMT+${-offsetHours}`;
+}
+
+/**
+ * Pin the worker's local timezone (`process.env.TZ`) to a fixed-offset IANA `Etc/GMT` zone near local noon once at
+ * worker startup, and restore it in `beforeEach`.
+ *
+ * Local calendar dates (`buildSystemPromptSections()`) stay more than 11 hours away from local midnight for the entire
+ * test run without modifying `Date.now()`, UTC timestamps, or shipped source code, while fake `Date` timers
+ * (`vi.useFakeTimers({ toFake: ["Date"] })` + `vi.setSystemTime(...)`) still advance calendar days normally.
+ */
+export function installMiddayTimezoneIsolation(
 	hooks?: { readonly beforeEach: (fn: () => void) => void },
-	options?: { readonly realDate?: DateConstructor; readonly env?: NodeJS.ProcessEnv },
-): SystemPromptDateIsolationHandle {
-	const realDate = options?.realDate ?? globalThis.Date;
+	options?: { readonly now?: Date; readonly env?: NodeJS.ProcessEnv },
+): MiddayTimezoneIsolationHandle {
 	const env = options?.env ?? process.env;
-	const hadEnv = Object.hasOwn(env, SYSTEM_PROMPT_DATE_ENV);
-	const previousEnv = env[SYSTEM_PROMPT_DATE_ENV];
-	const inherited = env[SYSTEM_PROMPT_DATE_ENV];
-	const pinnedDate = isCalendarDate(inherited) ? inherited : formatLocalCalendarDate(new realDate());
-	const provider: SystemPromptDateProvider = () => (globalThis.Date === realDate ? pinnedDate : undefined);
-	const previousProvider = setSystemPromptDateProviderForTest(provider);
-	env[SYSTEM_PROMPT_DATE_ENV] = pinnedDate;
+	const hadTz = Object.hasOwn(env, "TZ");
+	const previousTz = env.TZ;
+	const timezone = middayTimezone(options?.now ?? new Date());
+	env.TZ = timezone;
 
 	hooks?.beforeEach(() => {
-		setSystemPromptDateProviderForTest(provider);
-		env[SYSTEM_PROMPT_DATE_ENV] = pinnedDate;
+		env.TZ = timezone;
 	});
 
 	return {
-		pinnedDate,
-		provider,
+		timezone,
 		restore() {
-			setSystemPromptDateProviderForTest(previousProvider);
-			if (hadEnv) env[SYSTEM_PROMPT_DATE_ENV] = previousEnv;
-			else delete env[SYSTEM_PROMPT_DATE_ENV];
+			if (hadTz) env.TZ = previousTz;
+			else delete env.TZ;
 		},
 	};
 }
 
 /**
- * Forward the worker's pinned system-prompt date into a child process's explicit environment unless the caller already
- * named `ATOMIC_TEST_SYSTEM_PROMPT_DATE` (including setting it to `""` or `undefined` to opt out).
+ * Forward the worker's `TZ` into a child process's explicit environment unless the caller already named `TZ`
+ * (including setting `TZ: "UTC"` or `TZ: undefined` to opt out).
  */
-export function withTestSystemPromptDate<T extends Record<string, string | undefined>>(
+export function withTestTimezone<T extends Record<string, string | undefined>>(
 	env: T,
 	sourceEnv: NodeJS.ProcessEnv = process.env,
 ): T {
-	if (Object.hasOwn(env, SYSTEM_PROMPT_DATE_ENV)) return env;
-	const pinned = sourceEnv[SYSTEM_PROMPT_DATE_ENV];
-	if (!isCalendarDate(pinned)) return env;
-	return { ...env, [SYSTEM_PROMPT_DATE_ENV]: pinned };
+	if (Object.hasOwn(env, "TZ")) return env;
+	const tz = sourceEnv.TZ;
+	if (!tz) return env;
+	return { ...env, TZ: tz };
 }
