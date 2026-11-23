@@ -164,7 +164,7 @@ mod windows {
 				std::ptr::null_mut(),
 			)
 		};
-		(status >= 0).then(|| info.InheritedFromUniqueProcessId as u32)
+		(status >= 0).then_some(info.InheritedFromUniqueProcessId as u32)
 	}
 
 	fn sequence_of(handle: HANDLE) -> Option<u64> {

@@ -19,6 +19,7 @@ import {
 	type WindowsProcessExitStatus,
 	waitForChildProcess,
 } from "../../../src/utils/child-process.ts";
+import { spawnContainedProcess, spawnHostProcess } from "../../../src/utils/host-spawn.ts";
 
 function createSyntheticChildProcess(pid: number): { child: ChildProcess; stdout: PassThrough; stderr: PassThrough } {
 	const stdout = new PassThrough();
@@ -386,6 +387,32 @@ describe("issue #1647 Windows exit-code verification", () => {
 		expect(holdSpy).not.toHaveBeenCalled();
 	});
 
+	it("waits for async spawn error instead of treating a pid-less failed start with preset exitCode as exited", async () => {
+		const synthetic = createSyntheticChildProcess(0);
+		Object.defineProperty(synthetic.child, "pid", { value: undefined, configurable: true });
+		Object.defineProperty(synthetic.child, "exitCode", { value: -4058, configurable: true });
+		// Mimic ContainedProcess.failedStart: streams end on nextTick while "error" fires on setImmediate.
+		synthetic.stdout.push(null);
+		synthetic.stdout.resume();
+		synthetic.stderr.push(null);
+		synthetic.stderr.resume();
+		const enoent = Object.assign(new Error("spawn missing ENOENT"), { code: "ENOENT", errno: -4058 });
+		setImmediate(() => {
+			synthetic.child.emit("error", enoent);
+		});
+
+		await expect(waitForChildProcess(synthetic.child, { platform: "win32" })).rejects.toBe(enoent);
+	});
+
+	it.each(["ignore", "pipe"] as const)(
+		"rejects cleanly on async ENOENT from spawnHostProcess (stdio: %s) without an unhandled error event",
+		async (stdio) => {
+			const missing = join(tmpdir(), `atomic-missing-binary-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+			const child = spawnHostProcess(missing, [], { stdio });
+			await expect(waitForChildProcess(child)).rejects.toMatchObject({ code: "ENOENT" });
+		},
+	);
+
 	it.each(["before", "after"] as const)(
 		"keeps a stopped process's queued exit and signal when a loaded machine holds the loop past the grace (output ended %s it)",
 		async (outputEnds) => {
@@ -541,5 +568,15 @@ describe("issue #1647 Windows exit-code verification", () => {
 				}
 			},
 		);
+
+		it("rejects cleanly on async ENOENT from spawnContainedProcess without an unhandled error event", async () => {
+			const missing = join(
+				tmpdir(),
+				`atomic-missing-contained-${Date.now()}-${Math.random().toString(16).slice(2)}.exe`,
+			);
+			const child = await spawnContainedProcess(missing, [], { stdio: ["ignore", "pipe", "pipe"] });
+			expect(child).toBeDefined();
+			await expect(waitForChildProcess(child!)).rejects.toMatchObject({ code: "ENOENT" });
+		});
 	});
 });

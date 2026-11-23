@@ -339,7 +339,11 @@ export function waitForChildProcess(
 			} catch {}
 		};
 
-		const alreadyExited = child.exitCode !== null || child.signalCode !== null;
+		// A failed async spawn (e.g. NativeChildProcess / ContainedProcess ENOENT) sets exitCode to -errno with
+		// pid === undefined before emitting "error" on a later turn: only treat a child as already exited when it
+		// actually started (has a positive pid), so we stay attached for the async "error" event.
+		const alreadyExited =
+			child.pid !== undefined && child.pid > 0 && (child.exitCode !== null || child.signalCode !== null);
 		const needsWindowsFallback = platform === "win32" && Boolean(child.pid) && !isNativeContainedChild(child);
 
 		if (alreadyExited || !needsWindowsFallback) {
