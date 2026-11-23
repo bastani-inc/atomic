@@ -16,6 +16,7 @@ import {
 	COMMITTED_WIDGET_PREVIEW_GATE,
 	canPaintWidgetFrame,
 	classifyWidgetFrame,
+	isUnansweredCancelMatch,
 	type WidgetPreviewGate,
 } from "../interactive/agent-view/view-preview-protocol.js";
 import { awaitFirstContent, PROMPT_SLOT_HOLD_MS } from "../interactive/components/prompt-slot.ts";
@@ -53,6 +54,7 @@ interface MountedRemoteComponent {
 	handlesCtrlC: boolean;
 	/** The extension declared that this component claims internal UI actions. */
 	handlesInternalUiAction: boolean;
+	purpose?: "prompt" | "navigation";
 	handle?: OverlayHandle;
 	widgetKey?: string;
 	unsubscribeWidgetRelease?: () => void;
@@ -71,6 +73,8 @@ interface PendingInput {
 	timer: ReturnType<typeof setTimeout>;
 	/** The frame requested with the key: a handled key answers once that frame is here, so one paint shows it. */
 	readonly frameRequestId: number | undefined;
+	/** Raw key data sent in `engine_custom_input`, used to detect unanswered pre-view cancel keys on arrival. */
+	readonly data: string;
 }
 
 class RemoteComponent implements Component {
@@ -108,6 +112,13 @@ class RemoteComponent implements Component {
 	private readonly pendingInputs = new Map<number, PendingInput>();
 	/** Handled keys whose frame has not arrived yet. */
 	private readonly answeredInputs = new Set<number>();
+	/** Highest `inputRequestId` sent when a host-level cancel (`Esc`) was consumed while this component was mounted. */
+	private cancelUpToInputId = 0;
+	/** Monotonic ack id for in-flight click commands when the engine supports `engine_custom_click_result`. */
+	private clickAckId = 0;
+	/** In-flight `engine_custom_click` / `engine_custom_click_settle` commands awaiting `engine_custom_click_result`. */
+	private readonly inFlightClicks = new Map<number, { afterInputId: number; cancelled: boolean }>();
+	private readonly acksClicks: boolean;
 	private readonly frameClamp = new RemoteFrameWidthClamp();
 
 	private readonly componentId: string;
@@ -130,6 +141,7 @@ class RemoteComponent implements Component {
 		handlesInternalUiAction = false,
 		getRenderSettings: () => EngineHostRenderSettings | undefined = () => undefined,
 		paintNow: () => void = requestRender,
+		acksClicks = false,
 	) {
 		this.componentId = componentId;
 		this.runtime = runtime;
@@ -139,6 +151,7 @@ class RemoteComponent implements Component {
 		this.getHostMode = getHostMode;
 		this.handlesInternalUiAction = handlesInternalUiAction;
 		this.getRenderSettings = getRenderSettings;
+		this.acksClicks = acksClicks;
 	}
 
 	/**
@@ -286,23 +299,47 @@ class RemoteComponent implements Component {
 		if (this.paintedFrame === undefined) return undefined;
 		const rowKey = this.paintedRowKeys?.[Math.floor(event.y)];
 		const clickId = ++this.clickId;
-		this.runtime.sendEngineCommand({
-			type: "engine_custom_click",
-			componentId: this.componentId,
-			frame: this.paintedFrame,
-			...(rowKey === undefined ? {} : { rowKey }),
-			clickId,
-			cancelsClicks: true,
-			x: Math.max(0, Math.floor(event.x)),
-			y: Math.max(0, Math.floor(event.y)),
-			width: Math.max(0, Math.floor(event.width)),
-			height: Math.max(0, Math.floor(event.height)),
-		});
+		const clickAckId = this.acksClicks ? ++this.clickAckId : undefined;
+		if (clickAckId !== undefined) {
+			this.inFlightClicks.set(clickAckId, { afterInputId: this.inputRequestId, cancelled: false });
+		}
+		try {
+			this.runtime.sendEngineCommand({
+				type: "engine_custom_click",
+				componentId: this.componentId,
+				frame: this.paintedFrame,
+				...(rowKey === undefined ? {} : { rowKey }),
+				clickId,
+				cancelsClicks: true,
+				...(clickAckId === undefined ? {} : { ackId: clickAckId }),
+				x: Math.max(0, Math.floor(event.x)),
+				y: Math.max(0, Math.floor(event.y)),
+				width: Math.max(0, Math.floor(event.width)),
+				height: Math.max(0, Math.floor(event.height)),
+			});
+		} catch (error) {
+			if (clickAckId !== undefined) this.inFlightClicks.delete(clickAckId);
+			throw error;
+		}
 		const finish = (type: "engine_custom_click_settle" | "engine_custom_click_cancel") => {
 			if (this.disposed || this.retiredShowing !== undefined) return;
+			const settleAckId = type === "engine_custom_click_settle" && this.acksClicks ? ++this.clickAckId : undefined;
+			if (settleAckId !== undefined) {
+				this.inFlightClicks.set(settleAckId, { afterInputId: this.inputRequestId, cancelled: false });
+			}
 			try {
-				this.runtime.sendEngineCommand({ type, componentId: this.componentId, clickId });
+				if (type === "engine_custom_click_settle") {
+					this.runtime.sendEngineCommand({
+						type,
+						componentId: this.componentId,
+						clickId,
+						...(settleAckId === undefined ? {} : { ackId: settleAckId }),
+					});
+				} else {
+					this.runtime.sendEngineCommand({ type, componentId: this.componentId, clickId });
+				}
 			} catch {
+				if (settleAckId !== undefined) this.inFlightClicks.delete(settleAckId);
 				// An engine that went away takes no click; the host keeps its frame.
 			}
 		};
@@ -320,7 +357,7 @@ class RemoteComponent implements Component {
 		const result = new Promise<boolean | undefined>((resolve) => {
 			const timer = setTimeout(() => this.resolveInput(requestId, false), REMOTE_INPUT_REPLY_TIMEOUT_MS);
 			timer.unref?.();
-			this.pendingInputs.set(requestId, { resolve, timer, frameRequestId });
+			this.pendingInputs.set(requestId, { resolve, timer, frameRequestId, data });
 		});
 		try {
 			this.runtime.sendEngineCommand({
@@ -379,6 +416,10 @@ class RemoteComponent implements Component {
 		});
 	}
 
+	resolveClick(ackId: number): void {
+		this.inFlightClicks.delete(ackId);
+	}
+
 	resolveInput(requestId: number, handled: boolean | undefined): void {
 		const pending = this.pendingInputs.get(requestId);
 		if (!pending) return;
@@ -403,6 +444,57 @@ class RemoteComponent implements Component {
 		pending.resolve(handled);
 	}
 
+	/** Record that a host-level cancel key (`Esc`) was consumed while this component had inputs/clicks in flight. */
+	noteHostCancel(): void {
+		if (this.disposed || this.retiredShowing !== undefined) return;
+		if (this.inputRequestId > this.cancelUpToInputId) this.cancelUpToInputId = this.inputRequestId;
+		for (const click of this.inFlightClicks.values()) click.cancelled = true;
+	}
+
+	/**
+	 * True when this component has an unanswered cancel input strictly after the triggering input (`minUnansweredId`),
+	 * an unanswered input predating a consumed host-level cancel, a physical `Esc`, or a cancel/host-cancel on an
+	 * unacknowledged in-flight click. Excludes `minUnansweredId` by identity so overlapping keybindings never
+	 * self-cancel, and removes finished clicks on `engine_custom_click_result` so non-opening clicks never arm cancels.
+	 */
+	hasUnansweredCancelInput(isCancel: (data: string) => boolean, isPhysicalEsc: (data: string) => boolean): boolean {
+		if (this.disposed || this.retiredShowing !== undefined) return false;
+		for (const click of this.inFlightClicks.values()) {
+			if (click.cancelled) return true;
+		}
+		let minUnansweredId: number | undefined;
+		for (const requestId of this.pendingInputs.keys()) {
+			if (!this.answeredInputs.has(requestId)) {
+				minUnansweredId = requestId;
+				break;
+			}
+		}
+		if (minUnansweredId === undefined) return false;
+		let inFlightClickBeforeOldest = false;
+		for (const click of this.inFlightClicks.values()) {
+			if (click.afterInputId < minUnansweredId) {
+				inFlightClickBeforeOldest = true;
+				break;
+			}
+		}
+		for (const [requestId, pending] of this.pendingInputs) {
+			if (
+				isUnansweredCancelMatch(
+					this.answeredInputs.has(requestId),
+					isCancel(pending.data),
+					isPhysicalEsc(pending.data),
+					requestId,
+					minUnansweredId,
+					this.cancelUpToInputId,
+					inFlightClickBeforeOldest,
+				)
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	invalidate(): void {
 		this.dirty = true;
 	}
@@ -420,6 +512,8 @@ class RemoteComponent implements Component {
 		this.paintedFrame = undefined;
 		this.paintedRowKeys = undefined;
 		this.clickId++;
+		this.cancelUpToInputId = 0;
+		this.inFlightClicks.clear();
 		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
 		return true;
 	}
@@ -513,6 +607,8 @@ class RemoteComponent implements Component {
 	dispose(notifyEngine = true): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.cancelUpToInputId = 0;
+		this.inFlightClicks.clear();
 		clearTimeout(this.hiddenTimer);
 		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
 		if (notifyEngine)
@@ -649,6 +745,23 @@ export function clearPromotedWidgetPreview(runtime: object, widgetKey: string): 
 /** Reset preview gate and hide state for `widgetKey` across engine generation replacement. */
 export function resetWidgetPreview(runtime: object, widgetKey: string): void {
 	controllers.get(runtime)?.resetWidgetPreview(widgetKey);
+}
+
+/**
+ * True when the topmost live interactive component on `runtime` is a navigation view (`/tasks`) that already has an
+ * unanswered cancel key in flight (or had an unanswered input in flight when a host-level cancel consumed `Esc`).
+ */
+export function hasUnansweredNavigationCancelInput(
+	runtime: object,
+	isCancel: (data: string) => boolean,
+	isPhysicalEsc: (data: string) => boolean,
+): boolean {
+	return controllers.get(runtime)?.hasUnansweredNavigationCancelInput(isCancel, isPhysicalEsc) === true;
+}
+
+/** Record that a host-level `Esc` cancelled a pending open while the topmost live navigation component was mounted. */
+export function noteNavigationHostCancel(runtime: object): void {
+	controllers.get(runtime)?.noteNavigationHostCancel();
 }
 
 export function watchWidgetFrames(runtime: object, widgetKey: string): { drawn(): Promise<void>; stop(): void } {
@@ -867,6 +980,28 @@ export class RemoteComponentController {
 		for (const record of this.mounted.values()) if (record.widgetKey === widgetKey) record.component.cancelPreview();
 	}
 
+	private topmostLiveNavigationComponent(): RemoteComponent | undefined {
+		const records = [...this.mounted.values()];
+		for (let i = records.length - 1; i >= 0; i--) {
+			const record = records[i]!;
+			if (record.widgetKey !== undefined || record.transcript !== undefined) continue;
+			if (record.purpose !== "navigation" || record.engineDone) return undefined;
+			return record.component;
+		}
+		return undefined;
+	}
+
+	hasUnansweredNavigationCancelInput(
+		isCancel: (data: string) => boolean,
+		isPhysicalEsc: (data: string) => boolean,
+	): boolean {
+		return this.topmostLiveNavigationComponent()?.hasUnansweredCancelInput(isCancel, isPhysicalEsc) === true;
+	}
+
+	noteNavigationHostCancel(): void {
+		this.topmostLiveNavigationComponent()?.noteHostCancel();
+	}
+
 	private readonly hideOpening = new Map<string, number>();
 	private readonly previewGates = new Map<string, WidgetPreviewGate>();
 
@@ -949,6 +1084,7 @@ export class RemoteComponentController {
 					message.widgetScroll,
 					message.blocked,
 					message.placement === "transcript" ? message.viewId : undefined,
+					message.acksClicks === true,
 				);
 				break;
 			case "engine_custom_close":
@@ -972,6 +1108,9 @@ export class RemoteComponentController {
 			}
 			case "engine_custom_input_result":
 				this.mounted.get(message.componentId)?.component.resolveInput(message.requestId, message.handled);
+				break;
+			case "engine_custom_click_result":
+				this.mounted.get(message.componentId)?.component.resolveClick(message.ackId);
 				break;
 			case "engine_custom_invalidate":
 				this.mounted.get(message.componentId)?.component.requestRemoteRender();
@@ -1033,6 +1172,7 @@ export class RemoteComponentController {
 		widgetScroll?: { maxHeight: number; maxHeightFraction?: number },
 		blocked?: EngineBlockedStatus,
 		transcriptViewId?: string,
+		acksClicks = false,
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (transcriptViewId !== undefined) {
@@ -1107,11 +1247,12 @@ export class RemoteComponentController {
 						handlesInternalUiAction,
 						() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 						() => tui.requestImmediateRender(),
+						acksClicks,
 					);
 					component.hostColorDepth = tui.terminal?.colorDepth;
 					// In the prompt's place, the rows there stay until its first frame is here.
 					if (!overlay) awaitFirstContent(component, () => component.awaitingFirstContent());
-					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
+					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction, purpose };
 					this.mounted.set(componentId, mounted);
 					// Bind this component to the real host terminal so a buffered
 					// autowrap control emitted before the mount frame applies to the host TTY.

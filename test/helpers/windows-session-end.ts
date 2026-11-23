@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { withTestTimezone } from "./system-prompt-date-isolation.js";
 
 /** Atomic's hidden window, which hears the end of the Windows session, as another program sees it. */
 export interface SessionEndWindow {
@@ -240,7 +241,11 @@ export async function runUntilSessionEnded(options: EndedSessionOptions): Promis
 	const helper = spawn(
 		"powershell.exe",
 		["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, params, result],
-		{ env: options.env, stdio: ["ignore", "ignore", "pipe"], windowsHide: true },
+		{
+			env: options.env ? withTestTimezone(options.env) : undefined,
+			stdio: ["ignore", "ignore", "pipe"],
+			windowsHide: true,
+		},
 	);
 	let stderr = "";
 	helper.stderr.setEncoding("utf8").on("data", (chunk: string) => {
