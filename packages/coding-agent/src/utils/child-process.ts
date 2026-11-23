@@ -173,6 +173,7 @@ export type WaitForChildProcessOptions = {
 	holdWindowsProcessExit?: (pid: number) => WindowsProcessExitHandle | null;
 	windowsExitPollIntervalMs?: number;
 	windowsExitCodeGraceMs?: number;
+	postExitIdleGraceMs?: number;
 };
 
 const WINDOWS_SHELL_COMMANDS = new Set(["bun", "npm", "npx", "pnpm", "yarn", "yarnpkg", "corepack"]);
@@ -350,6 +351,7 @@ export function waitForChildProcess(
 		const processAlive = options.isWindowsProcessAlive ?? isWindowsProcessAlive;
 		const windowsExitPollIntervalMs = options.windowsExitPollIntervalMs ?? WINDOWS_EXIT_POLL_INTERVAL_MS;
 		const windowsExitCodeGraceMs = options.windowsExitCodeGraceMs ?? WINDOWS_EXIT_CODE_GRACE_MS;
+		const postExitIdleGraceMs = options.postExitIdleGraceMs ?? EXIT_STDIO_IDLE_GRACE_MS;
 
 		const claimedRetained = retainedWindowsExitHandles.get(child);
 		if (claimedRetained !== undefined) retainedWindowsExitHandles.delete(child);
@@ -472,7 +474,7 @@ export function waitForChildProcess(
 					postExitIdleFallback = undefined;
 					finalize(exitCode);
 				});
-			}, EXIT_STDIO_IDLE_GRACE_MS);
+			}, postExitIdleGraceMs);
 		};
 
 		const armActiveDrainHardCapTimer = () => {

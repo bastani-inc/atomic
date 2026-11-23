@@ -15,8 +15,12 @@ import { spawnProcess, waitForChildProcess } from "../../../src/utils/child-proc
 
 const EXIT_STDIO_IDLE_GRACE_MS = 100;
 const ACTIVE_DRAIN_HARD_CAP_MS = 5_000;
-const ACTIVE_STREAM_DURATION_MS = 350;
-const ACTIVE_STREAM_TICK_INTERVAL_MS = 10;
+// Load-proof grace for the live-process active-drain test: 950 ms per-tick headroom absorbs
+// Windows scheduler pauses while ACTIVE_STREAM_DURATION_MS still outlives a non-rearming timer.
+// The default 100 ms grace is pinned deterministically in the fake-timer suite below.
+const ACTIVE_TEST_IDLE_GRACE_MS = 1_000;
+const ACTIVE_STREAM_DURATION_MS = 1_400;
+const ACTIVE_STREAM_TICK_INTERVAL_MS = 50;
 const QUIET_EXIT_BUDGET_MS = 3_000;
 const QUIET_DESCENDANT_HOLD_MS = 30_000;
 const LOOP_HOLD_MS = 150;
@@ -49,7 +53,7 @@ const writeLine = (line) => {
 };
 const interval = setInterval(() => {
 	tick += 1;
-	if (postExitStart < 0 && fs.existsSync(exitFile)) {
+	if (postExitStart < 0 && tick % 2 === 1 && fs.existsSync(exitFile)) {
 		postExitStart = performance.now();
 	}
 	if (postExitStart >= 0 && performance.now() - postExitStart >= durationMs) {
@@ -94,7 +98,7 @@ const waitReady = setInterval(() => {
 	fs.writeSync(1, banner + "\\n");
 	descendant.unref();
 	process.exit(0);
-}, 5);
+}, 20);
 `;
 
 function createSyntheticChildProcess(): { child: ChildProcess; stdout: PassThrough; stderr: PassThrough } {
@@ -204,7 +208,7 @@ describe("issue #5303 bash output truncation past exit", () => {
 			writeFileSync(exitFile, "1");
 		});
 
-		const exitCode = await waitForChildProcess(child);
+		const exitCode = await waitForChildProcess(child, { postExitIdleGraceMs: ACTIVE_TEST_IDLE_GRACE_MS });
 		recordDescendantFromFile(pidFile);
 
 		expect(exitCode).toBe(0);
