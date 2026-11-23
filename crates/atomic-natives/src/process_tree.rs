@@ -187,7 +187,7 @@ mod windows {
 		TH32CS_SNAPPROCESS,
 	};
 	use windows_sys::Win32::System::Threading::{
-		OpenProcess, PROCESS_BASIC_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+		GetProcessId, OpenProcess, PROCESS_BASIC_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
 		PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, WaitForSingleObject,
 	};
 
@@ -226,7 +226,13 @@ mod windows {
 			return None;
 		}
 		// SAFETY: `handle` is a process handle this function just opened and owns.
-		Some(unsafe { OwnedHandle::from_raw_handle(handle) })
+		let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+		// Windows OpenProcess masks off the low 2 PID bits (EXHANDLE tag bits), so an unaligned
+		// PID such as `real_pid | 1` opens `real_pid`. Reject handles whose kernel PID differs.
+		if unsafe { GetProcessId(handle.as_raw_handle()) } != pid {
+			return None;
+		}
+		Some(handle)
 	}
 
 	/// The process's `ProcessSequenceNumber` from `ProcessTelemetryIdInformation` (Windows 10 and later): its place in
@@ -420,6 +426,26 @@ mod tests {
 		cmd.wait().expect("cmd.exe exits");
 		// `cmd` still holds the process's handle, so its id names that process, which has exited.
 		assert!(super::hold_process_descendants(cmd.id()).is_none());
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn rejects_unaligned_pid_that_aliases_a_live_process() {
+		let mut cmd = std::process::Command::new("cmd.exe")
+			.args(["/d", "/c", "ping -n 30 127.0.0.1 > nul"])
+			.spawn()
+			.expect("cmd.exe starts");
+		let pid = cmd.id();
+		for offset in 1..=3 {
+			assert!(
+				super::hold_process_descendants(pid | offset).is_none(),
+				"unaligned pid {} must not open live pid {pid}",
+				pid | offset
+			);
+		}
+		let mut held = super::hold_process_descendants(pid).expect("exact live pid is held");
+		assert!(held.end_all());
+		let _ = cmd.wait();
 	}
 
 	#[test]
