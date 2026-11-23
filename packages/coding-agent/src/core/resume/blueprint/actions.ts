@@ -396,7 +396,13 @@ function failure(
 }
 
 function succeeded(exit: ProcessExit): boolean {
-	return exit.exitStatus === 0 && exit.signal === null && !exit.timedOut && exit.spawnError === undefined;
+	return (
+		exit.exitStatus === 0 &&
+		exit.signal === null &&
+		!exit.timedOut &&
+		exit.spawnError === undefined &&
+		exit.exitError === undefined
+	);
 }
 
 function timedOut(context: RunContext): ProcessExit {
