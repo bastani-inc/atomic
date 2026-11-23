@@ -7,7 +7,11 @@ import { stat } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
+import {
+	createChildProcessEnvironment,
+	isChildProcessExitStatusUnknownError,
+	waitForChildProcess,
+} from "../utils/child-process.ts";
 import { type HelperLaunch, helperLaunchAsync, missingHelperOptions } from "../utils/helper-command.ts";
 import { type HostChildProcess, spawnHostProcess } from "../utils/host-spawn.ts";
 import {
@@ -319,9 +323,11 @@ export async function execCommand(
 		return treeStop;
 	};
 
+	const waitAbort = new AbortController();
 	const killProcess = (startedAborted = false) => {
 		if (killed) return;
 		killed = true;
+		waitAbort.abort();
 		// A command started with its abort already signalled has started nothing: it ends at once, as it always did.
 		if (startedAborted) proc.kill("SIGTERM");
 		else void endTree();
@@ -397,12 +403,16 @@ export async function execCommand(
 	let code: number | null;
 	try {
 		// Do not hang on inherited stdio handles held open by detached descendants.
-		code = await waitForChildProcess(proc);
+		code = await waitForChildProcess(proc, { signal: waitAbort.signal });
 	} catch (error) {
 		if (!(error instanceof Error)) throw error;
-		// Child-process errors (e.g. ENOENT) are failed executions, not host failures.
+		// Child-process errors (e.g. ENOENT or unknown exit status) are failed executions, not host failures.
 		code = 1;
-		if (!stderr) stderr = error.message;
+		if (!killed && isChildProcessExitStatusUnknownError(error)) {
+			stderr = stderr ? `${stderr}\n${error.message}` : error.message;
+		} else if (!stderr) {
+			stderr = error.message;
+		}
 	} finally {
 		clearTimeout(timeoutId);
 		options?.signal?.removeEventListener("abort", abort);

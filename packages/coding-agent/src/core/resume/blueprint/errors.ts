@@ -1,3 +1,4 @@
+import { isChildProcessExitStatusUnknownError } from "../../../utils/child-process.ts";
 import {
 	findInCauseChain,
 	rehydrateErrorCause,
@@ -147,7 +148,9 @@ export class BlueprintStepFailedError extends BlueprintError {
 			fields.signal !== null
 				? `was stopped by ${fields.signal}`
 				: fields.exitStatus === null
-					? "could not be started"
+					? isChildProcessExitStatusUnknownError(cause)
+						? "ended with an unknown exit status"
+						: "could not be started"
 					: `exited with status ${fields.exitStatus}`;
 		super(
 			"blueprint-step-failed",
