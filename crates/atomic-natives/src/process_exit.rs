@@ -137,7 +137,7 @@ mod windows {
 	};
 	use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 	use windows_sys::Win32::System::Threading::{
-		GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess,
+		GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessTimes, OpenProcess,
 		PROCESS_BASIC_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
 		WaitForSingleObject,
 	};
@@ -207,6 +207,9 @@ mod windows {
 		}
 		// SAFETY: `raw` is a valid process handle just opened by `OpenProcess`.
 		let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+		if unsafe { GetProcessId(handle.as_raw_handle()) } != pid {
+			return None;
+		}
 		let created = creation_time_of(handle.as_raw_handle())?;
 		if let Some(expected) = expected_created
 			&& created != expected
@@ -447,6 +450,10 @@ mod tests {
 		// Holding WindowsProcessExitHandle pins the terminated process object and its real exit
 		// status even after std::process::Child drops its handle and new processes churn PIDs.
 		let mut child_c = Command::new("cmd").args(["/d", "/c", "exit 7"]).spawn().unwrap();
+		assert!(
+			hold_windows_process_exit(child_c.id() | 1, None).is_none(),
+			"unaligned pid must not alias direct child"
+		);
 		let mut held_c = hold_windows_process_exit(child_c.id(), None).expect("hold child C");
 		assert_eq!(child_c.wait().unwrap().code(), Some(7));
 		drop(child_c);
