@@ -259,6 +259,65 @@ export function assignStartupGroups(allIds, inlineEntryIds, ownerEntryIds, tierR
 		}
 	}
 
+	// Guarantee acyclicity across `OWNER_ENTRIES` for every non-`mainCore` tier too: if a non-`mainCore` group contains
+	// both callers reaching an owner entry `O` (`u ->+ O`) and modules strictly downstream of `O` (`O ->+ v`), refine
+	// that group by the bitmask of crossing owners so callers (`mask > 0`) and callees (`mask === 0`) never share a
+	// chunk and create a `group -> O -> group` static import cycle.
+	if (ownerEntryIds.length > 0 && groups.size > 0) {
+		/** @type {Map<string, number>} */
+		const globalOwnerUpMask = new Map();
+		/** @type {Map<string, number>} */
+		const globalOwnerDownMask = new Map();
+		for (const ownerId of ownerEntryIds) {
+			if (!bundled.has(ownerId)) continue;
+			const bit = ownerBit.get(ownerId) ?? 0;
+			// Reverse BFS along `globalImporters`: every module that statically reaches `ownerId`.
+			const upSeen = new Set([ownerId]);
+			const upStack = [ownerId];
+			while (upStack.length > 0) {
+				const cur = /** @type {string} */ (upStack.pop());
+				for (const imp of globalImporters.get(cur) ?? []) {
+					if (upSeen.has(imp)) continue;
+					upSeen.add(imp);
+					globalOwnerUpMask.set(imp, (globalOwnerUpMask.get(imp) ?? 0) | bit);
+					upStack.push(imp);
+				}
+			}
+			// Forward BFS from `staticDepsOf(ownerId)`: every module strictly downstream of `ownerId`.
+			const downSeen = new Set();
+			const downStack = [...staticDepsOf(ownerId)].filter((dep) => bundled.has(dep) && dep !== ownerId);
+			while (downStack.length > 0) {
+				const cur = /** @type {string} */ (downStack.pop());
+				if (downSeen.has(cur)) continue;
+				downSeen.add(cur);
+				globalOwnerDownMask.set(cur, (globalOwnerDownMask.get(cur) ?? 0) | bit);
+				for (const dep of staticDepsOf(cur)) {
+					if (bundled.has(dep) && !downSeen.has(dep) && dep !== ownerId) downStack.push(dep);
+				}
+			}
+		}
+		/** @type {Map<string, { up: number, down: number, members: string[] }>} */
+		const byGroup = new Map();
+		for (const [id, group] of groups) {
+			let entry = byGroup.get(group);
+			if (!entry) {
+				entry = { up: 0, down: 0, members: [] };
+				byGroup.set(group, entry);
+			}
+			entry.up |= globalOwnerUpMask.get(id) ?? 0;
+			entry.down |= globalOwnerDownMask.get(id) ?? 0;
+			entry.members.push(id);
+		}
+		for (const [group, { up, down, members }] of byGroup) {
+			const crossing = up & down;
+			if (crossing === 0) continue;
+			for (const id of members) {
+				const mask = (globalOwnerUpMask.get(id) ?? 0) & crossing;
+				if (mask !== 0) groups.set(id, `${group}-${mask}`);
+			}
+		}
+	}
+
 	if (mainCore.size === 0) return groups;
 
 	// Include main-reachable inline entries (such as OWNER_ENTRIES and intermediate SPLIT_ENTRIES) AND owner-private

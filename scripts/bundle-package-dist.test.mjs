@@ -139,7 +139,8 @@ test("importing a module loads only the packages its own graph imports", async (
 	// Neither a module that imports no package nor one beside it in the main entry's graph loads the entry's packages.
 	assert.deepEqual(inChild(join(pkg, "dist/deep/thing.js"), loaded), []);
 	assert.deepEqual(inChild(join(pkg, "dist/nested/asset-user.js"), loaded), []);
-	assert.deepEqual(inChild(join(pkg, "dist/heavy-user.js"), loaded), ["light-pkg", "heavy-pkg"]);
+	// heavy-user imports "heavy-pkg" before "./shared.js" (which imports "light-pkg"), matching unbundled ESM order.
+	assert.deepEqual(inChild(join(pkg, "dist/heavy-user.js"), loaded), ["heavy-pkg", "light-pkg"]);
 });
 
 test("every path of a module reaches one instance", async () => {
@@ -651,19 +652,22 @@ test("strictExecutionOrder: false routes dynamic imports of inlined chunks throu
 	);
 	assert.deepEqual(v1Out, { v: "0.10.6-alpha.1", helper: "helper:0.10.6-alpha.1" });
 
-	// Build v2 with modified inlined-sdk bytes (changes every content-hashed chunk) plus a compat alias for an earlier
-	// content-hashed release filename.
+	// Build v2 with modified inlined-sdk bytes (changes every content-hashed chunk) plus a compat alias and legacy
+	// namespace re-export for earlier releases that read Rolldown 1.2's synthetic `node_helper_exports` namespace.
 	const pkgV2 = makeInlinedFixture("0.10.6");
 	const earlierHashAlias = "_lazy-e0123456.js";
 	await bundlePackageDist(pkgV2, {
 		inline: ["inlined-sdk"],
 		strictExecutionOrder: false,
+		compatNoopExports: { [legacyTarget]: ["init_node_helper"] },
+		compatNamespaceExports: { [legacyTarget]: ["node_helper_exports"] },
 		compatAliases: { [legacyTarget]: [earlierHashAlias] },
 		log: () => {},
 	});
 	const sharedV2 = sharedFiles(pkgV2);
 	assert.equal(sharedV2.includes(dynFacade), true, `v2 must keep stable dynamic facade ${dynFacade}`);
 	assert.equal(sharedV2.includes(earlierHashAlias), true, `v2 must emit compat alias ${earlierHashAlias}`);
+	assert.equal(sharedV2.includes(legacyTarget), true, `v2 must emit legacy compat shim ${legacyTarget}`);
 	const contentChunksV1 = sharedV1.filter((name) => name.includes("-e"));
 	const contentChunksV2 = sharedV2.filter((name) => name.includes("-e") && name !== earlierHashAlias);
 	assert.notDeepEqual(contentChunksV2, contentChunksV1, "changed bytes must produce new content-hashed chunks");
@@ -685,10 +689,22 @@ test("strictExecutionOrder: false routes dynamic imports of inlined chunks throu
 	});
 	assert.deepEqual(checkRelease(recordRelease([appDir, pkgV1]), [appDir, pkgV2]), []);
 
-	// Compat alias re-exports the target chunk's exports cleanly at runtime.
+	// Stable _dyn-* facade keeps only the dynamic entry's real exports without leaking legacy namespace wrappers.
+	const dynOut = inChild(
+		join(pkgV2, "dist", dynFacade),
+		`process.stdout.write(JSON.stringify({ keys: Object.keys(m).sort(), helperValue: m.helperValue }));`,
+	);
+	assert.deepEqual(dynOut, { keys: ["helperValue"], helperValue: "helper:0.10.6" });
+
+	// Compat alias and legacy shim expose both direct exports and the legacy namespace object at runtime.
 	const aliasOut = inChild(
 		join(pkgV2, "dist", earlierHashAlias),
-		`process.stdout.write(JSON.stringify({ helperValue: m.node_helper_exports.helperValue }));`,
+		`process.stdout.write(JSON.stringify({ direct: m.helperValue, ns: m.node_helper_exports.helperValue }));`,
 	);
-	assert.deepEqual(aliasOut, { helperValue: "helper:0.10.6" });
+	assert.deepEqual(aliasOut, { direct: "helper:0.10.6", ns: "helper:0.10.6" });
+	const legacyOut = inChild(
+		join(pkgV2, "dist", legacyTarget),
+		`process.stdout.write(JSON.stringify({ initType: typeof m.init_node_helper, ns: m.node_helper_exports.helperValue }));`,
+	);
+	assert.deepEqual(legacyOut, { initType: "function", ns: "helper:0.10.6" });
 });

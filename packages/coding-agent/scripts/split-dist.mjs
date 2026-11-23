@@ -574,7 +574,11 @@ const bundle = await rolldown({
 			async resolveId(source, importer, extra) {
 				if (source.startsWith(VIRTUAL_ENTRY_PREFIX) || source.startsWith(VIRTUAL_COMPAT_PREFIX)) return source;
 				if (!importer) return null;
-				if (importer.startsWith(VIRTUAL_ENTRY_PREFIX) || importer.startsWith(VIRTUAL_COMPAT_PREFIX)) return source;
+				if (importer.startsWith(VIRTUAL_ENTRY_PREFIX) || importer.startsWith(VIRTUAL_COMPAT_PREFIX)) {
+					return isAbsolute(source)
+						? source
+						: this.resolve(source, join(packageDir, "package.json"), { ...extra, skipSelf: true });
+				}
 				const cleanImporter = normalizeId(importer);
 				const recordNodeModuleExternal = (specifier) => {
 					if (/(?:^|\/)node_modules\//.test(toPosix(cleanImporter))) {
@@ -636,10 +640,16 @@ const bundle = await rolldown({
 					const code = compiledEntries.get(target)?.code ?? "";
 					const hasDefault = /^export\s+(?:default\b|\{[^}]*\bas\s+default\b)/m.test(code);
 					const spec = codeStringLiteral(target);
+					// Preserve stage 0/1 lazy undici preloading: `http-dispatcher.ts` imports `@bastani/atomic-ai`
+					// (1.7 MB) ahead of `undici` in source order, and Rolldown 1.3+ preserves external import order.
+					// Importing `undici` first on the entry facade ensures `startup-stages` loads the lazy
+					// `http-undici` wrapper chunk and yields to the early editor before either `@bastani/atomic-ai`
+					// or `require_undici()` executes.
+					const preload = entry === "core/http-dispatcher" ? `import "undici";\n` : "";
 					return {
 						code: hasDefault
-							? `export * from ${spec};\nexport { default } from ${spec};\n`
-							: `export * from ${spec};\n`,
+							? `${preload}export * from ${spec};\nexport { default } from ${spec};\n`
+							: `${preload}export * from ${spec};\n`,
 						map: null,
 					};
 				}

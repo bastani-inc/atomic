@@ -263,7 +263,7 @@ async function analyzeModules(esbuild, packageDir, dist, sources, isExternal) {
 /**
  * Bundles `packageDir`'s compiled `dist` in place.
  * @param {string} packageDir
- * @param {{ standalone?: readonly string[], isolate?: readonly string[], inline?: readonly string[], dist?: string, cacheDir?: string, strictExecutionOrder?: boolean, compatNoopExports?: Readonly<Record<string, readonly string[]>>, compatAliases?: Readonly<Record<string, readonly string[]>>, log?: (message: string) => void }} [options]
+ * @param {{ standalone?: readonly string[], isolate?: readonly string[], inline?: readonly string[], dist?: string, cacheDir?: string, strictExecutionOrder?: boolean, compatNoopExports?: Readonly<Record<string, readonly string[]>>, compatNamespaceExports?: Readonly<Record<string, readonly string[]>>, compatAliases?: Readonly<Record<string, readonly string[]>>, log?: (message: string) => void }} [options]
  *   `standalone`: modules, by path below `dist`, that keep their compiled files. `isolate`: modules, by path below
  *   `dist`, whose top-level side effects must stay isolated from modules that do not statically import them (in
  *   addition to `./dist/...` entries declared in `package.json`'s `sideEffects` array). `inline`: packages bundled in.
@@ -272,9 +272,12 @@ async function analyzeModules(esbuild, packageDir, dist, sources, isExternal) {
  *   facades and content-hashed shared chunk names so V8 compile cache pre-compiles top-level ESM bytecode without ever
  *   colliding with an earlier release's deferred-init shared chunks. `compatNoopExports`: legacy shared-chunk filenames
  *   and their no-op `init_*` exports preserved as unreachable compat shims for in-place updates from earlier releases
- *   that dynamically imported those shared files directly. `compatAliases`: map from legacy shared-chunk filename to
- *   additional unreachable re-export filenames (for earlier content-hashed releases that dynamically imported a chunk
- *   before dynamic targets used stable `_dyn-*` facades).
+ *   that dynamically imported those shared files directly. `compatNamespaceExports`: legacy shared-chunk filenames and
+ *   namespace re-export names (`export * as <name> from "./<chunk>"`) emitted on unreachable compat shims and
+ *   `compatAliases` for earlier releases that read Rolldown 1.2's synthetic `<stem>_exports` namespace object from a
+ *   chunk that Rolldown 1.3+ emits as a direct dynamic-entry facade. `compatAliases`: map from legacy shared-chunk
+ *   filename to additional unreachable re-export filenames (for earlier content-hashed releases that dynamically
+ *   imported a chunk before dynamic targets used stable `_dyn-*` facades).
  */
 export async function bundlePackageDist(packageDir, options = {}) {
 	const { rolldown } = await import("rolldown");
@@ -285,6 +288,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 	const cacheDir = options.cacheDir ?? join(packageDir, "node_modules", ".cache", "atomic-bundle-dist");
 	const strictExecutionOrder = options.strictExecutionOrder ?? true;
 	const compatNoopExports = options.compatNoopExports ?? {};
+	const compatNamespaceExports = options.compatNamespaceExports ?? {};
 	const compatAliases = options.compatAliases ?? {};
 	if (options.dist !== undefined) {
 		// The bundle names modules by their paths from the directory holding `dist`, so it is the same wherever that is.
@@ -797,11 +801,13 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			Number(entryFiles.has(b.fileName.replace(/\.map$/, ""))),
 	);
 	/**
-	 * Builds a thin re-export shim pointing to `./<item.fileName>`, plus optional no-op `init_*` exports.
+	 * Builds a thin re-export shim pointing to `./<item.fileName>`, plus optional namespace re-exports and no-op `init_*`
+	 * exports.
 	 * @param {{ fileName: string, exports: string[] }} item
 	 * @param {readonly string[]} [noopNames]
+	 * @param {readonly string[]} [namespaceNames]
 	 */
-	const buildReexportShim = (item, noopNames = []) => {
+	const buildReexportShim = (item, noopNames = [], namespaceNames = []) => {
 		const namedExports = item.exports.filter((name) => name !== "default").sort();
 		const shimLines = [];
 		if (namedExports.length > 0) {
@@ -809,6 +815,11 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		}
 		if (item.exports.includes("default")) {
 			shimLines.push(`export { default } from ${codeStringLiteral(`./${item.fileName}`)};`);
+		}
+		for (const name of namespaceNames) {
+			if (!item.exports.includes(name)) {
+				shimLines.push(`export * as ${name} from ${codeStringLiteral(`./${item.fileName}`)};`);
+			}
 		}
 		for (const name of noopNames) {
 			shimLines.push(`export function ${name}() {}`);
@@ -894,16 +905,22 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		if (item.type === "chunk" && !item.isEntry) {
 			const legacyName = legacyInfoByChunk.get(item.fileName)?.legacyName ?? item.fileName;
 			const compatNames = (compatNoopExports[legacyName] ?? []).filter((name) => !item.exports.includes(name));
+			const compatNamespaces = (compatNamespaceExports[legacyName] ?? []).filter(
+				(name) => !item.exports.includes(name),
+			);
 			if (legacyName === item.fileName && compatNames.length > 0) {
 				const stubs = `${compatNames.map((name) => `export function ${name}() {}`).join("\n")}\n`;
 				const mapComment = /\n\/\/# sourceMappingURL=[^\r\n]*\s*$/;
 				contents = mapComment.test(contents)
 					? contents.replace(mapComment, (match) => `\n${stubs}${match.trimStart()}`)
 					: `${contents}\n${stubs}`;
-			} else if (legacyName !== item.fileName && Object.hasOwn(compatNoopExports, legacyName)) {
+			} else if (
+				legacyName !== item.fileName &&
+				(Object.hasOwn(compatNoopExports, legacyName) || Object.hasOwn(compatNamespaceExports, legacyName))
+			) {
 				extraShims.push({
 					shimPath: join(dist, legacyName),
-					shimContents: buildReexportShim(item, compatNames),
+					shimContents: buildReexportShim(item, compatNames, compatNamespaces),
 					shimName: legacyName,
 				});
 			}
@@ -911,7 +928,7 @@ export async function bundlePackageDist(packageDir, options = {}) {
 				if (aliasName === item.fileName) continue;
 				extraShims.push({
 					shimPath: join(dist, aliasName),
-					shimContents: buildReexportShim(item),
+					shimContents: buildReexportShim(item, [], compatNamespaces),
 					shimName: aliasName,
 				});
 			}
@@ -1057,6 +1074,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
 	/** @type {Record<string, string[]>} */
 	const compatNoopExports = {};
 	/** @type {Record<string, string[]>} */
+	const compatNamespaceExports = {};
+	/** @type {Record<string, string[]>} */
 	const compatAliases = {};
 	const parseKeyedListFlag = (/** @type {string} */ prefix, /** @type {Record<string, string[]>} */ target) => {
 		for (const arg of process.argv.slice(2)) {
@@ -1074,6 +1093,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
 		}
 	};
 	parseKeyedListFlag("--compat-noop-exports=", compatNoopExports);
+	parseKeyedListFlag("--compat-namespace-exports=", compatNamespaceExports);
 	parseKeyedListFlag("--compat-aliases=", compatAliases);
 	await bundlePackageDist(process.cwd(), {
 		standalone: list("standalone"),
@@ -1082,6 +1102,7 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
 		dist,
 		strictExecutionOrder,
 		compatNoopExports,
+		compatNamespaceExports,
 		compatAliases,
 	});
 }

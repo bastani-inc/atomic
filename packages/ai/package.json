@@ -115,7 +115,7 @@
 		"check": "biome check --error-on-warnings . && npm run typecheck",
 		"format": "biome check --write .",
 		"prepublishOnly": "npm run clean && npm run build",
-		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --no-strict-execution-order --isolate=api/openai-codex-responses.js --inline=typebox,openai,@anthropic-ai/sdk,partial-json,standardwebhooks,@stablelib/base64,fast-sha256 --compat-noop-exports=_lazy-33R5T6YA.js:init_node --compat-noop-exports=_lazy-344MRX5C.js:init_fs_util,init_memories,init_node,init_skills --compat-aliases=_lazy-344MRX5C.js:_lazy-e23a319f.js --compat-aliases=_lazy-33R5T6YA.js:_lazy-e492435e.js",
+		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --no-strict-execution-order --isolate=api/openai-codex-responses.js --inline=typebox,openai,@anthropic-ai/sdk,partial-json,standardwebhooks,@stablelib/base64,fast-sha256 --compat-noop-exports=_lazy-33R5T6YA.js:init_node --compat-noop-exports=_lazy-344MRX5C.js:init_fs_util,init_memories,init_node,init_skills --compat-namespace-exports=_lazy-33R5T6YA.js:node_exports --compat-aliases=_lazy-344MRX5C.js:_lazy-e23a319f.js --compat-aliases=_lazy-33R5T6YA.js:_lazy-e492435e.js",
 		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\"",
 		"build:catalog": "npm run generate-models && npm run build:offline"
 	},
