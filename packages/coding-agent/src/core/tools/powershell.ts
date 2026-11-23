@@ -83,11 +83,16 @@ export function createLocalPowerShellOperations(binding?: {
 			const { child } = shellProcess;
 			let timedOut = false;
 			let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-			const onAbort = () => shellProcess.stop();
+			const waitAbort = new AbortController();
+			const onAbort = () => {
+				waitAbort.abort();
+				shellProcess.stop();
+			};
 			try {
 				if (options.timeout !== undefined && options.timeout > 0) {
 					timeoutHandle = setTimeout(() => {
 						timedOut = true;
+						waitAbort.abort();
 						shellProcess.stop();
 					}, options.timeout * 1000);
 				}
@@ -97,7 +102,14 @@ export function createLocalPowerShellOperations(binding?: {
 					if (options.signal.aborted) onAbort();
 					else options.signal.addEventListener("abort", onAbort, { once: true });
 				}
-				const exitCode = await waitForChildProcess(child);
+				let exitCode: number | null;
+				try {
+					exitCode = await waitForChildProcess(child, { signal: waitAbort.signal });
+				} catch (error) {
+					if (options.signal?.aborted) throw new Error("aborted");
+					if (timedOut) throw new Error(`timeout:${options.timeout}`);
+					throw error;
+				}
 				if (options.signal?.aborted) throw new Error("aborted");
 				if (timedOut) throw new Error(`timeout:${options.timeout}`);
 				return { exitCode };

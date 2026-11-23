@@ -10,9 +10,11 @@ import {
 	type StdioNull,
 	type StdioPipe,
 } from "node:child_process";
+import { createRequire } from "node:module";
 import { constants as osConstants } from "node:os";
 import { basename, isAbsolute } from "node:path";
 import type { Readable } from "node:stream";
+import { pathToFileURL } from "node:url";
 import crossSpawn from "cross-spawn";
 import { applyDebugSettingToChildEnvironment } from "../core/debug-setting.ts";
 import { HOST_STORAGE_ADAPTERS_ENV, hostStorageAdaptersEnvironment } from "../core/storage/host-adapters.ts";
@@ -30,6 +32,114 @@ const EXIT_STDIO_IDLE_GRACE_MS = 100;
 const EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS = 5_000;
 const WINDOWS_EXIT_POLL_INTERVAL_MS = 50;
 const WINDOWS_EXIT_CODE_GRACE_MS = 1_000;
+
+/**
+ * Thrown by {@link waitForChildProcess} when a child process terminated without delivering an exit status and no
+ * creation-time-verified kernel handle could read its real exit code. Never fabricated as `0`.
+ */
+export class ChildProcessExitStatusUnknownError extends Error {
+	override readonly name = "ChildProcessExitStatusUnknownError" as const;
+	readonly pid: number | undefined;
+
+	constructor(pid?: number) {
+		super(pid === undefined ? "Child process exit status unknown" : `Child process ${pid} exit status unknown`);
+		this.pid = pid;
+	}
+}
+
+export function isChildProcessExitStatusUnknownError(value: unknown): value is ChildProcessExitStatusUnknownError {
+	return (
+		value instanceof ChildProcessExitStatusUnknownError ||
+		(value instanceof Error && value.name === "ChildProcessExitStatusUnknownError")
+	);
+}
+
+/** Result of polling a held Windows child process handle. */
+export interface WindowsProcessExitStatus {
+	readonly exited: boolean;
+	readonly exitCode?: number | null;
+	readonly unknown?: boolean;
+}
+
+/** A creation-time- and parent-verified Windows handle to a child process, held until `close()`. */
+export interface WindowsProcessExitHandle {
+	readonly creationTime: string;
+	pollExit(): WindowsProcessExitStatus;
+	close(): void;
+}
+
+type HoldWindowsProcessExit = (pid: number, expectedCreated?: string | null) => WindowsProcessExitHandle | null;
+
+const NATIVE_WINDOWS_HOST = process.platform === "win32";
+let nativeHoldWindowsProcessExit: HoldWindowsProcessExit | null | undefined;
+
+function loadNativeHoldWindowsProcessExit(): HoldWindowsProcessExit | null {
+	if (!NATIVE_WINDOWS_HOST) return null;
+	if (nativeHoldWindowsProcessExit === undefined) {
+		try {
+			let binding: { holdWindowsProcessExit?: HoldWindowsProcessExit };
+			try {
+				binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+					holdWindowsProcessExit?: HoldWindowsProcessExit;
+				};
+			} catch {
+				binding = createRequire(pathToFileURL(process.execPath).href)("@bastani/atomic-natives") as {
+					holdWindowsProcessExit?: HoldWindowsProcessExit;
+				};
+			}
+			nativeHoldWindowsProcessExit = binding.holdWindowsProcessExit ?? null;
+		} catch {
+			nativeHoldWindowsProcessExit = null;
+		}
+	}
+	return nativeHoldWindowsProcessExit;
+}
+
+/**
+ * Processes started through `spawnContainedProcess`: their exit event comes directly from our native
+ * `WaitForMultipleObjects` + `GetExitCodeProcess` handle rather than libuv, so {@link waitForChildProcess} must not
+ * open or poll their PID separately.
+ */
+const nativeContainedChildren = new WeakSet<HostChildProcess>();
+
+export function markNativeContainedChild(child: HostChildProcess): void {
+	nativeContainedChildren.add(child);
+}
+
+function isNativeContainedChild(child: HostChildProcess): boolean {
+	return nativeContainedChildren.has(child);
+}
+
+const retainedWindowsExitHandles = new WeakMap<HostChildProcess, WindowsProcessExitHandle>();
+
+/**
+ * On Windows, opens and holds a creation-time-verified process handle right after spawn so
+ * {@link waitForChildProcess} can read the child's real exit code via `GetExitCodeProcess` if libuv's `exit` event
+ * is delayed or lost. Callers that never await {@link waitForChildProcess} must release it with
+ * {@link releaseRetainedWindowsProcessExitHandle}.
+ */
+export function retainWindowsProcessExitHandle(child: HostChildProcess): void {
+	if (process.platform !== "win32" || !child.pid || child.exitCode !== null || child.signalCode !== null) return;
+	if (isNativeContainedChild(child) || retainedWindowsExitHandles.has(child)) return;
+	const hold = loadNativeHoldWindowsProcessExit();
+	if (hold === null) return;
+	try {
+		const handle = hold(child.pid);
+		if (handle !== null) retainedWindowsExitHandles.set(child, handle);
+	} catch {
+		// Unavailable or refused: waitForChildProcess falls back to waiting for libuv's exit event.
+	}
+}
+
+/** Closes any spawn-retained Windows process handle not claimed by {@link waitForChildProcess}. */
+export function releaseRetainedWindowsProcessExitHandle(child: HostChildProcess): void {
+	const handle = retainedWindowsExitHandles.get(child);
+	if (handle === undefined) return;
+	retainedWindowsExitHandles.delete(child);
+	try {
+		handle.close();
+	} catch {}
+}
 
 /** Build the environment for every Atomic child process. */
 export { ATOMIC_AI_AGENT } from "./agent-attribution.ts";
@@ -51,9 +161,16 @@ export function createChildProcessEnvironment(
 	return env;
 }
 
-type WaitForChildProcessOptions = {
+export type WaitForChildProcessOptions = {
 	platform?: NodeJS.Platform;
+	/**
+	 * Caller's abort or timeout boundary. On Windows without a verified native handle, `waitForChildProcess` waits for
+	 * libuv's real `exit` event rather than guessing after 1 s; once `signal` aborts and the process is confirmed gone
+	 * without an `exit` event, the wait fails with {@link ChildProcessExitStatusUnknownError} instead of hanging.
+	 */
+	signal?: AbortSignal;
 	isWindowsProcessAlive?: (pid: number) => boolean;
+	holdWindowsProcessExit?: (pid: number) => WindowsProcessExitHandle | null;
 	windowsExitPollIntervalMs?: number;
 	windowsExitCodeGraceMs?: number;
 };
@@ -222,8 +339,8 @@ export function waitForChildProcess(
 		let exitCode: number | null = null;
 		let postExitIdleTimer: NodeJS.Timeout | undefined;
 		let postExitActiveDrainHardCapTimer: NodeJS.Timeout | undefined;
-		let stdoutEnded = child.stdout === null;
-		let stderrEnded = child.stderr === null;
+		let stdoutEnded = child.stdout === null || child.stdout.readableEnded;
+		let stderrEnded = child.stderr === null || child.stderr.readableEnded;
 		let windowsExitPoll: NodeJS.Timeout | undefined;
 		let windowsExitCodeGraceTimer: NodeJS.Timeout | undefined;
 		let windowsExitCodeFallback: NodeJS.Immediate | undefined;
@@ -231,6 +348,47 @@ export function waitForChildProcess(
 		const processAlive = options.isWindowsProcessAlive ?? isWindowsProcessAlive;
 		const windowsExitPollIntervalMs = options.windowsExitPollIntervalMs ?? WINDOWS_EXIT_POLL_INTERVAL_MS;
 		const windowsExitCodeGraceMs = options.windowsExitCodeGraceMs ?? WINDOWS_EXIT_CODE_GRACE_MS;
+
+		const claimedRetained = retainedWindowsExitHandles.get(child);
+		if (claimedRetained !== undefined) retainedWindowsExitHandles.delete(child);
+
+		let exitHandle: WindowsProcessExitHandle | undefined = claimedRetained;
+		const closeExitHandle = () => {
+			if (exitHandle === undefined) return;
+			const handle = exitHandle;
+			exitHandle = undefined;
+			try {
+				handle.close();
+			} catch {}
+		};
+
+		// A failed async spawn (e.g. NativeChildProcess / ContainedProcess ENOENT) sets exitCode to -errno with
+		// pid === undefined before emitting "error" on a later turn: only treat a child as already exited when it
+		// actually started (has a positive pid), so we stay attached for the async "error" event.
+		const alreadyExited =
+			child.pid !== undefined && child.pid > 0 && (child.exitCode !== null || child.signalCode !== null);
+		const needsWindowsFallback = platform === "win32" && Boolean(child.pid) && !isNativeContainedChild(child);
+
+		if (alreadyExited || !needsWindowsFallback) {
+			closeExitHandle();
+		} else if (exitHandle === undefined && child.pid) {
+			if (options.holdWindowsProcessExit !== undefined) {
+				try {
+					exitHandle = options.holdWindowsProcessExit(child.pid) ?? undefined;
+				} catch {
+					exitHandle = undefined;
+				}
+			} else if (options.isWindowsProcessAlive === undefined) {
+				const hold = loadNativeHoldWindowsProcessExit();
+				if (hold !== null) {
+					try {
+						exitHandle = hold(child.pid) ?? undefined;
+					} catch {
+						exitHandle = undefined;
+					}
+				}
+			}
+		}
 
 		const cleanup = () => {
 			if (windowsExitPoll) {
@@ -253,6 +411,8 @@ export function waitForChildProcess(
 				clearImmediate(windowsExitCodeFallback);
 				windowsExitCodeFallback = undefined;
 			}
+			closeExitHandle();
+			options.signal?.removeEventListener("abort", onAbort);
 			child.removeListener("error", onError);
 			child.removeListener("exit", onExit);
 			child.removeListener("close", onClose);
@@ -269,6 +429,15 @@ export function waitForChildProcess(
 			child.stdout?.destroy();
 			child.stderr?.destroy();
 			resolve(code);
+		};
+
+		const failUnknownExitStatus = () => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			reject(new ChildProcessExitStatusUnknownError(child.pid));
 		};
 
 		const maybeFinalizeAfterExit = () => {
@@ -310,7 +479,12 @@ export function waitForChildProcess(
 			cleanup();
 			reject(err);
 		};
+
 		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+			if (windowsExitPoll) {
+				clearInterval(windowsExitPoll);
+				windowsExitPoll = undefined;
+			}
 			if (windowsExitCodeGraceTimer) {
 				clearTimeout(windowsExitCodeGraceTimer);
 				windowsExitCodeGraceTimer = undefined;
@@ -328,8 +502,35 @@ export function waitForChildProcess(
 			}
 		};
 
+		const resolveWindowsFallback = () => {
+			if (exited || settled) return;
+			if (child.exitCode !== null || child.signalCode !== null) {
+				onExit(child.exitCode, child.signalCode);
+				return;
+			}
+			if (exitHandle !== undefined) {
+				let status: WindowsProcessExitStatus | undefined;
+				try {
+					status = exitHandle.pollExit();
+				} catch {
+					status = undefined;
+				}
+				if (status?.exited && !status.unknown && status.exitCode !== undefined && status.exitCode !== null) {
+					onExit(status.exitCode, null);
+					return;
+				}
+				// The held handle could not prove an exit code: drop it and keep waiting for libuv unless the caller stopped.
+				closeExitHandle();
+				if (!options.signal?.aborted) {
+					return;
+				}
+			}
+			// Never fabricate exit code 0 without proof from libuv or a verified kernel handle.
+			failUnknownExitStatus();
+		};
+
 		const armWindowsExitCodeGraceTimer = () => {
-			if (windowsExitCodeGraceTimer) return;
+			if (windowsExitCodeGraceTimer || windowsExitCodeFallback || exited || settled) return;
 			if (windowsExitPoll) {
 				clearInterval(windowsExitPoll);
 				windowsExitPoll = undefined;
@@ -337,32 +538,74 @@ export function waitForChildProcess(
 			windowsExitCodeGraceTimer = setTimeout(() => {
 				windowsExitCodeGraceTimer = undefined;
 				// A loop held past the grace runs this timer before the events that arrived meanwhile, the child's exit among
-				// them: let those go first, so a reported exit code always wins over the fallback.
+				// them: let those go first, so a reported exit code or signal always wins over the fallback.
 				windowsExitCodeFallback = setImmediate(() => {
 					windowsExitCodeFallback = undefined;
-					onExit(child.exitCode ?? 0, null);
+					resolveWindowsFallback();
 				});
 			}, windowsExitCodeGraceMs);
 		};
 
 		const pollWindowsExit = () => {
-			if (platform !== "win32" || !child.pid || exited || settled) return;
-			if (!processAlive(child.pid)) {
-				if (child.exitCode !== null) {
-					onExit(child.exitCode, null);
-				} else {
+			if (
+				!needsWindowsFallback ||
+				!child.pid ||
+				exited ||
+				settled ||
+				windowsExitCodeGraceTimer ||
+				windowsExitCodeFallback
+			) {
+				return;
+			}
+			if (child.exitCode !== null || child.signalCode !== null) {
+				onExit(child.exitCode, child.signalCode);
+				return;
+			}
+			if (exitHandle !== undefined) {
+				let status: WindowsProcessExitStatus | undefined;
+				try {
+					status = exitHandle.pollExit();
+				} catch {
+					status = undefined;
+				}
+				if (status === undefined || status.unknown) {
+					// The handle cannot read an exit status: close it and fall back to waiting for libuv unless the caller
+					// already aborted/timed out and the process is confirmed gone.
+					closeExitHandle();
+					if (options.signal?.aborted) {
+						if (status?.exited || !processAlive(child.pid)) {
+							armWindowsExitCodeGraceTimer();
+						}
+					} else if (windowsExitPoll) {
+						clearInterval(windowsExitPoll);
+						windowsExitPoll = undefined;
+					}
+					return;
+				}
+				if (status.exited) {
 					armWindowsExitCodeGraceTimer();
 				}
+				return;
 			}
+			// Without a verified handle, never arm a fixed-deadline fallback while the caller has not stopped.
+			if (!options.signal?.aborted) return;
+			if (!processAlive(child.pid)) {
+				armWindowsExitCodeGraceTimer();
+			}
+		};
+
+		const onAbort = () => {
+			if (!needsWindowsFallback || exited || settled) return;
+			if (exitHandle === undefined && !windowsExitPoll && !windowsExitCodeGraceTimer && !windowsExitCodeFallback) {
+				windowsExitPoll = setInterval(pollWindowsExit, windowsExitPollIntervalMs);
+			}
+			pollWindowsExit();
 		};
 
 		const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
 			finalize(mapSignalExitCode(code, signal, platform));
 		};
 
-		if (platform === "win32" && child.pid) {
-			windowsExitPoll = setInterval(pollWindowsExit, windowsExitPollIntervalMs);
-		}
 		child.stdout?.once("end", onStdoutEnd);
 		child.stderr?.once("end", onStderrEnd);
 		child.stdout?.on("data", onData);
@@ -370,5 +613,23 @@ export function waitForChildProcess(
 		child.once("error", onError);
 		child.once("exit", onExit);
 		child.once("close", onClose);
+
+		if (alreadyExited) {
+			onExit(child.exitCode, child.signalCode);
+			return;
+		}
+
+		if (needsWindowsFallback) {
+			if (exitHandle !== undefined) {
+				windowsExitPoll = setInterval(pollWindowsExit, windowsExitPollIntervalMs);
+			}
+			if (options.signal !== undefined) {
+				if (options.signal.aborted) {
+					onAbort();
+				} else {
+					options.signal.addEventListener("abort", onAbort, { once: true });
+				}
+			}
+		}
 	});
 }

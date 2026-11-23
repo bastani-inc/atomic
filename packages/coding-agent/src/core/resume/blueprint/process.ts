@@ -3,7 +3,7 @@ import { write } from "node:fs";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
-import { waitForChildProcess } from "../../../utils/child-process.ts";
+import { isChildProcessExitStatusUnknownError, waitForChildProcess } from "../../../utils/child-process.ts";
 import { killChildProcessTree } from "../../../utils/shell.ts";
 import { asyncScope } from "../../async-scope.ts";
 import { containProcessTree, type ProcessTreeContainment, processTreeEnded } from "../../process-tree-containment.ts";
@@ -31,6 +31,8 @@ export interface ProcessExit {
 	readonly elapsedMs: number;
 	/** Why the process could not be started, when it could not. */
 	readonly spawnError?: Error;
+	/** Set when the process ran and exited, but its exit status could not be determined. */
+	readonly exitError?: Error;
 }
 
 export interface LoggedProcessOptions {
@@ -219,8 +221,10 @@ export async function runLoggedProcess(
 		let warnedAboutDescendants = false;
 		let writeError: Error | undefined;
 		let copying = Promise.resolve();
+		const waitAbort = new AbortController();
 		const stop = () => {
 			stopped = true;
+			waitAbort.abort();
 			// Terminating the tree ends every process in it, and closing it ends any left: it is terminated at most once.
 			if (!treeTerminated) treeTerminated = tree?.terminate() === true;
 			// A failed spawn can have an exit code even though no process was created.
@@ -293,7 +297,7 @@ export async function runLoggedProcess(
 				spawnError: error,
 			});
 		};
-		const ended = async (exitStatus: number | null, exitSignal: NodeJS.Signals | null) => {
+		const ended = async (exitStatus: number | null, exitSignal: NodeJS.Signals | null, exitError?: Error) => {
 			clearTimeout(timer);
 			options.signal?.removeEventListener("abort", onAbort);
 			await settleTree(tree, stopped);
@@ -307,10 +311,25 @@ export async function runLoggedProcess(
 				reject(writeError);
 				return;
 			}
-			resolveExit({ exitStatus, signal: exitSignal, timedOut, elapsedMs: elapsedMs() });
+			resolveExit({
+				exitStatus,
+				signal: exitSignal,
+				timedOut,
+				elapsedMs: elapsedMs(),
+				...(exitError === undefined ? {} : { exitError }),
+			});
 		};
 		if (copiesOutput) {
-			waitForChildProcess(child).then((exitStatus) => ended(exitStatus, child.signalCode), onSpawnError);
+			waitForChildProcess(child, { signal: waitAbort.signal }).then(
+				(exitStatus) => ended(exitStatus, child.signalCode),
+				(error) => {
+					if (isChildProcessExitStatusUnknownError(error)) {
+						void ended(null, child.signalCode, timedOut || options.signal?.aborted ? undefined : error);
+						return;
+					}
+					onSpawnError(error);
+				},
+			);
 		} else {
 			child.once("error", onSpawnError);
 			child.once("close", ended);
