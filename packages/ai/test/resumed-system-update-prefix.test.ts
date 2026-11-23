@@ -157,7 +157,7 @@ const transports: Transport[] = [
 	},
 	{
 		name: "Mistral Conversations",
-		model: { ...getModel("mistral", "devstral-latest"), ...offline },
+		model: { ...getModel("mistral", "mistral-medium-latest"), ...offline },
 		stream: streamMistral as StreamFunction,
 		apiKey: "test-key",
 		conversation: "messages",

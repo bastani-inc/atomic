@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the default Mistral model from the retired `devstral-medium-latest` to `mistral-large-latest`.
+
 ## [0.10.5] - 2026-11-23
 
 Atomic starts faster, installs fewer files, keeps subagents and Intercom messages intact across restarts, and makes Windows installs, process stops, and proxies more reliable.

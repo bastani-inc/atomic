@@ -120,7 +120,7 @@ describe("Anthropic SSE chunk boundaries", () => {
 	}
 });
 
-const mistralModel = getModel("mistral", "devstral-medium-latest");
+const mistralModel = getModel("mistral", "mistral-medium-latest");
 
 function mistralEvents(texts: string[]): string[][] {
 	const chunk = (delta: object, finishReason: string | null) => [

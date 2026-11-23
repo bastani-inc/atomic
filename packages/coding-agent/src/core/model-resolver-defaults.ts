@@ -22,7 +22,7 @@ export const defaultModelPerProvider: Record<string, string> = {
 	"ant-ling": "Ring-2.6-1T",
 	zai: "glm-5.3",
 	"zai-coding-cn": "glm-5.3",
-	mistral: "devstral-medium-latest",
+	mistral: "mistral-large-latest",
 	minimax: "MiniMax-M3",
 	"minimax-cn": "MiniMax-M3",
 	moonshotai: "kimi-k2.7-code",
