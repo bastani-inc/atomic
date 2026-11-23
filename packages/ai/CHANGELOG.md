@@ -4,6 +4,18 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-11-23
+
+### Changed
+
+- Deferred image-model index construction until first lookup, reduced temporary array allocations when flattening generated model catalogs, and bundled shared package chunks with content-hashed filenames and without `__esmMin` wrappers so Node's compile cache pre-compiles them while preserving side-effect isolation and compatibility shims for in-place updates ([#6455](https://github.com/bastani-inc/atomic/pull/6455)).
+
+### Fixed
+
+- On Bun and in the standalone binary, Amazon Bedrock HTTP/1.1 requests whose TLS connection closes before its handshake finishes (`ERR_SOCKET_CLOSED`) — including plain-HTTP endpoints through an `https://` proxy, HTTPS endpoints whose `http://` proxy tunnel closes after `200 Connection Established`, and direct `AWS_BEDROCK_FORCE_HTTP1=1` connections — now normalize that pre-response transport failure to a fresh `ECONNRESET` wrapper below the AWS SDK's retry middleware so SDK-level retries (`maxRetries`) run as on Node.js. Post-response, mid-stream, aborted, hook, and certificate errors remain unretried and unmutated ([#6448](https://github.com/bastani-inc/atomic/pull/6448)).
+- On Node.js, Amazon Bedrock requests to plain-HTTP endpoints through an `https://` proxy by hostname now send TLS SNI (`servername`) on the proxy connection, matching HTTPS Bedrock endpoints and Bun so virtual-hosted and SNI-requiring HTTPS proxies select the right certificate instead of failing TLS verification or the handshake. IP-literal proxies continue to omit SNI per RFC 6066 while verifying IP SANs ([#6458](https://github.com/bastani-inc/atomic/pull/6458)).
+- Lazy OAuth flows (`lazyOAuth`) and lazy built-in image provider loaders (`openrouter-images`, `openai-images`) now clear rejected load promises so a transient module import failure (such as during an in-place package update) does not permanently fail subsequent authentication or image generation calls in the same process ([#6499](https://github.com/bastani-inc/atomic/pull/6499)).
+
 ## [0.10.5-alpha.1] - 2026-11-23
 
 ### Changed

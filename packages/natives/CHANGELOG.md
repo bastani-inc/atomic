@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-11-23
+
+### Added
+
+- `containProcessTreeAllowingBreakaway(pid)`: on Windows, puts process `pid` into a kill-on-close Job object with `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so descendants that explicitly ask to leave the job (`CREATE_BREAKAWAY_FROM_JOB`) can start and outlive it while non-breakaway descendants remain contained and end on `terminate()`. `release()` clears kill-on-close while keeping `JOB_OBJECT_LIMIT_BREAKAWAY_OK`. Returns `null` off Windows ([#6445](https://github.com/bastani-inc/atomic/pull/6445)).
+- `HeldProcessDescendants.endDescendants()`: ends only the held descendants while keeping the root handle intact so a process cleaning up its own tree can terminate verified descendants before ending itself ([#6477](https://github.com/bastani-inc/atomic/pull/6477)).
+- `holdWindowsProcessExit(pid, expectedCreated?)`: on Windows, opens and holds a creation-time-, parent-, and sequence-verified handle to a direct child process so callers can detect termination (`WaitForSingleObject`) and read the child's exact 32-bit exit status (`GetExitCodeProcess`, including exit code `259`) via `WindowsProcessExitHandle.pollExit()` until `close()` or drop. Returns `null` off Windows or when verification fails ([#6484](https://github.com/bastani-inc/atomic/pull/6484)).
+
+### Fixed
+
+- Windows native process helpers (`processCreationTime`, `terminateProcessCreatedAt`, `holdProcessDescendants`, `containProcessTree`, `containProcessTreeAllowingBreakaway`, `holdWindowsProcessExit`, and `watchHostProcess`) now verify `GetProcessId(handle) == pid` after `OpenProcess`, so unaligned process IDs never silently alias and inspect or terminate a running process at `pid & ~3` ([#6498](https://github.com/bastani-inc/atomic/pull/6498)).
+
 ## [0.10.5-alpha.1] - 2026-11-23
 
 ### Added
