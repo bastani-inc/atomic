@@ -8,10 +8,11 @@ import {
 	type ToolResultMessage,
 	type Usage,
 } from "@bastani/atomic-ai/compat";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { SessionStats } from "../src/core/agent-session-types.js";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { estimateDirectBranchContextTokens, estimateProjectedContextTokens } from "../src/core/compaction/index.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
@@ -357,6 +358,54 @@ describe("AgentSession.getSessionStats", () => {
 			assert.deepEqual(replies[0]?.stats.latestAssistantUsage, replies[0]?.usage);
 		} finally {
 			await harness.cleanup();
+		}
+	});
+
+	it("computes context usage directly on plain branches without allocating a full session projection", async () => {
+		const { session, sessionManager } = await createSession();
+		try {
+			await sessionManager.appendMessage(createUserMessage("hello", 1));
+			await sessionManager.appendMessage(createAssistantMessage("first reply", 500, 10));
+			// Out-of-order older assistant timestamp must NOT override the newer prefix timestamp.
+			await sessionManager.appendMessage(createAssistantMessage("stale", 100, 5));
+			await sessionManager.appendMessage(createUserMessage("trailing follow-up text", 20));
+			syncAgentMessages(session, sessionManager);
+
+			const projectedBaseline = sessionManager.buildSessionProjection();
+			const expectedTokens = 500 + Math.ceil("stale".length / 4) + Math.ceil("trailing follow-up text".length / 4);
+			expect(projectedBaseline.messages.length).toBe(4);
+
+			const projectionSpy = vi.spyOn(sessionManager, "buildSessionProjection");
+			const directUsage = session.getContextUsage();
+			expect(projectionSpy).not.toHaveBeenCalled();
+			expect(directUsage?.tokens).toBe(expectedTokens);
+			expect(directUsage?.contextWindow).toBe(model.contextWindow);
+			expect(directUsage?.percent).toBe((expectedTokens / model.contextWindow) * 100);
+
+			// Once a custom_message appears on the branch, getContextUsage falls back cleanly to full projection.
+			await sessionManager.appendCustomMessageEntry("notice", "extra notice", true);
+			const fallbackUsage = session.getContextUsage();
+			expect(projectionSpy).toHaveBeenCalledTimes(1);
+			expect(fallbackUsage?.tokens).toBeGreaterThan(expectedTokens);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("estimateDirectBranchContextTokens matches estimateProjectedContextTokens lastUsageIndex across non-message entries", async () => {
+		const { session, sessionManager } = await createSession();
+		try {
+			await sessionManager.appendThinkingLevelChange("high");
+			await sessionManager.appendModelChange("anthropic", "claude-sonnet-4-5");
+			await sessionManager.appendMessage(createUserMessage("hello", 1));
+			await sessionManager.appendMessage(createAssistantMessage("reply", 320, 2));
+			await sessionManager.appendMessage(createUserMessage("follow-up", 3));
+			const branch = sessionManager.getBranch();
+			const projected = estimateProjectedContextTokens(sessionManager.buildSessionProjection(), branch);
+			const direct = estimateDirectBranchContextTokens(branch);
+			expect(direct).toEqual(projected);
+		} finally {
+			session.dispose();
 		}
 	});
 });

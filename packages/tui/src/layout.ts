@@ -9,6 +9,7 @@ import {
 	getActiveBackgroundAnsi,
 	getGraphemeCellRange,
 	sliceByColumn,
+	sliceWithWidth,
 	visibleWidth,
 } from "./utils.ts";
 
@@ -322,9 +323,9 @@ function replaceScrollbarCell(
 	const graphemeRange = getGraphemeCellRange(line, column);
 	const start = graphemeRange?.start ?? column;
 	const end = graphemeRange?.end ?? column + 1;
-	const before = sliceByColumn(line, 0, start, true);
+	const before = sliceWithWidth(line, 0, start, true);
 	const target = sliceByColumn(line, start, end - start, true);
-	const after = sliceByColumn(line, end, Math.max(0, totalWidth - end), true);
+	const after = end < totalWidth ? sliceByColumn(line, end, totalWidth - end, true) : "";
 
 	let targetPrefix = "";
 	let targetIndex = 0;
@@ -334,11 +335,11 @@ function replaceScrollbarCell(
 		targetPrefix += ansi.code;
 		targetIndex += ansi.length;
 	}
-	const beforePadding = " ".repeat(Math.max(0, start - visibleWidth(before)));
+	const beforePadding = " ".repeat(Math.max(0, start - before.width));
 	const cellPaddingBefore = " ".repeat(Math.max(0, column - start));
 	const cellPaddingAfter = " ".repeat(Math.max(0, end - column - 1));
 	const targetStyle = `\x1b[0m\x1b]8;;\x07${preserveTargetBackground ? getActiveBackgroundAnsi(targetPrefix) : ""}`;
-	return `${before}${beforePadding}${targetStyle}${cellPaddingBefore}${replacement}${cellPaddingAfter}${after}`;
+	return `${before.text}${beforePadding}${targetStyle}${cellPaddingBefore}${replacement}${cellPaddingAfter}${after}`;
 }
 
 export function getScrollbarGeometry(box: LayoutBox, includeHiddenAuto = false): ScrollbarGeometry | undefined {

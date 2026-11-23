@@ -1,5 +1,5 @@
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
-import { resetCapabilitiesCache, setCapabilities } from "@bastani/atomic-tui";
+import { Marked, resetCapabilitiesCache, setCapabilities } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MarkdownTransformContext } from "../src/core/extensions/types.ts";
 import type { MermaidRenderingMode } from "../src/core/settings-manager.ts";
@@ -259,5 +259,25 @@ describe("Mermaid rendering", () => {
 
 		expect(rendered).toContain("│ Start ├───▶│ Done │");
 		expect(message.content).toEqual(originalContent);
+	});
+
+	it("skips lexing markdown that cannot contain a Mermaid fence while still rendering uppercase and tilde fences", () => {
+		const lexSpy = vi.spyOn(Marked.prototype, "lexer");
+		try {
+			const plain = '## Section 1\n\n```ts\nexport const x = a && "\\n";\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n';
+			expect(transformMermaid(plain)).toBe(plain);
+			expect(lexSpy).not.toHaveBeenCalled();
+
+			for (const fence of [
+				"```MERMAID\nflowchart LR\n  A[Start] --> B[Done]\n```",
+				"~~~mermaid\nflowchart LR\n  A[Start] --> B[Done]\n~~~",
+			]) {
+				const rendered = transformMermaid(fence);
+				expect(rendered).toContain("│ Start ├───▶│ Done │");
+			}
+			expect(lexSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			lexSpy.mockRestore();
+		}
 	});
 });
