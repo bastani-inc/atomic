@@ -221,7 +221,9 @@ export function waitForChildProcess(
 		let exited = false;
 		let exitCode: number | null = null;
 		let postExitIdleTimer: NodeJS.Timeout | undefined;
+		let postExitIdleFallback: NodeJS.Immediate | undefined;
 		let postExitActiveDrainHardCapTimer: NodeJS.Timeout | undefined;
+		let postExitActiveDrainHardCapFallback: NodeJS.Immediate | undefined;
 		let stdoutEnded = child.stdout === null;
 		let stderrEnded = child.stderr === null;
 		let windowsExitPoll: NodeJS.Timeout | undefined;
@@ -241,9 +243,17 @@ export function waitForChildProcess(
 				clearTimeout(postExitIdleTimer);
 				postExitIdleTimer = undefined;
 			}
+			if (postExitIdleFallback) {
+				clearImmediate(postExitIdleFallback);
+				postExitIdleFallback = undefined;
+			}
 			if (postExitActiveDrainHardCapTimer) {
 				clearTimeout(postExitActiveDrainHardCapTimer);
 				postExitActiveDrainHardCapTimer = undefined;
+			}
+			if (postExitActiveDrainHardCapFallback) {
+				clearImmediate(postExitActiveDrainHardCapFallback);
+				postExitActiveDrainHardCapFallback = undefined;
 			}
 			if (windowsExitCodeGraceTimer) {
 				clearTimeout(windowsExitCodeGraceTimer);
@@ -279,13 +289,42 @@ export function waitForChildProcess(
 		};
 
 		const armIdleTimer = () => {
+			if (postExitActiveDrainHardCapFallback) return;
 			if (postExitIdleTimer) clearTimeout(postExitIdleTimer);
-			postExitIdleTimer = setTimeout(() => finalize(exitCode), EXIT_STDIO_IDLE_GRACE_MS);
+			if (postExitIdleFallback) {
+				clearImmediate(postExitIdleFallback);
+				postExitIdleFallback = undefined;
+			}
+			postExitIdleTimer = setTimeout(() => {
+				postExitIdleTimer = undefined;
+				// A loop held past the idle grace runs this timer before the poll phase delivers stdio chunks
+				// or EOF that arrived meanwhile: let one poll cycle run so ready output wins over cutoff.
+				postExitIdleFallback = setImmediate(() => {
+					postExitIdleFallback = undefined;
+					finalize(exitCode);
+				});
+			}, EXIT_STDIO_IDLE_GRACE_MS);
 		};
 
 		const armActiveDrainHardCapTimer = () => {
-			if (postExitActiveDrainHardCapTimer) return;
-			postExitActiveDrainHardCapTimer = setTimeout(() => finalize(exitCode), EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS);
+			if (postExitActiveDrainHardCapTimer || postExitActiveDrainHardCapFallback) return;
+			postExitActiveDrainHardCapTimer = setTimeout(() => {
+				postExitActiveDrainHardCapTimer = undefined;
+				if (postExitIdleTimer) {
+					clearTimeout(postExitIdleTimer);
+					postExitIdleTimer = undefined;
+				}
+				if (postExitIdleFallback) {
+					clearImmediate(postExitIdleFallback);
+					postExitIdleFallback = undefined;
+				}
+				// Let one poll cycle drain output already queued before the cap without allowing data to
+				// postpone finalization past this turn.
+				postExitActiveDrainHardCapFallback = setImmediate(() => {
+					postExitActiveDrainHardCapFallback = undefined;
+					finalize(exitCode);
+				});
+			}, EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS);
 		};
 
 		const onData = () => {
