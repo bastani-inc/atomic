@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { after, test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { assignGroups, bundlePackageDist } from "./bundle-package-dist.mjs";
+import { assignGroups, bundlePackageDist, isSharedFile } from "./bundle-package-dist.mjs";
+import { checkRelease, recordRelease } from "./in-place-update-exports.mjs";
 
 const roots = [];
 after(() => {
@@ -592,4 +593,102 @@ test("strictExecutionOrder: false uses content-hashed chunks, isolates side effe
 		}));`,
 	);
 	assert.deepEqual(swapOut, { extraHasShared: true, extraHasClass: true, heavyOk: true, shimInit: true });
+});
+
+test("strictExecutionOrder: false routes dynamic imports of inlined chunks through stable _dyn-* facades and supports compatAliases", async () => {
+	const makeInlinedFixture = (sdkVersion) => {
+		const root = mkdtempSync(join(tmpdir(), "bundle-dyn-facade-"));
+		roots.push(root);
+		writeTree(root, {
+			"node_modules/inlined-sdk/package.json": JSON.stringify({
+				name: "inlined-sdk",
+				type: "module",
+				main: "index.js",
+			}),
+			"node_modules/inlined-sdk/index.js": [
+				`export const sdkVersion = ${JSON.stringify(sdkVersion)};`,
+				`export async function loadNodeHelper() { return (await import("./node-helper.js")).helperValue; }`,
+			].join("\n"),
+			"node_modules/inlined-sdk/node-helper.js": [
+				`import { sdkVersion } from "./index.js";`,
+				`export const helperValue = "helper:" + sdkVersion;`,
+			].join("\n"),
+			"pkg/package.json": JSON.stringify({
+				name: "@bastani/atomic-ai",
+				version: sdkVersion,
+				type: "module",
+				main: "./dist/index.js",
+				exports: {
+					".": {
+						module: "./dist/_modules/index.js",
+						browser: "./dist/_modules/index.js",
+						import: "./dist/index.js",
+					},
+				},
+			}),
+			"pkg/dist/index.js": `import { sdkVersion, loadNodeHelper } from "inlined-sdk";\nexport { sdkVersion, loadNodeHelper };\n`,
+		});
+		return join(root, "pkg");
+	};
+
+	const pkgV1 = makeInlinedFixture("0.10.6-alpha.1");
+	await bundlePackageDist(pkgV1, {
+		inline: ["inlined-sdk"],
+		strictExecutionOrder: false,
+		log: () => {},
+	});
+	const sharedV1 = sharedFiles(pkgV1);
+	const dynFacadesV1 = sharedV1.filter((name) => name.startsWith("_dyn-"));
+	assert.equal(dynFacadesV1.length, 1, `expected 1 _dyn-* facade, got ${sharedV1.join(", ")}`);
+	const dynFacade = dynFacadesV1[0];
+	assert.equal(isSharedFile(dynFacade), true, `${dynFacade} must satisfy isSharedFile`);
+	const legacyTarget = `_lazy-${dynFacade.slice("_dyn-".length)}`;
+
+	// Runtime check on v1: dynamic import resolves through the stable _dyn-* facade.
+	const v1Out = inChild(
+		join(pkgV1, "dist/index.js"),
+		`process.stdout.write(JSON.stringify({ v: m.sdkVersion, helper: await m.loadNodeHelper() }));`,
+	);
+	assert.deepEqual(v1Out, { v: "0.10.6-alpha.1", helper: "helper:0.10.6-alpha.1" });
+
+	// Build v2 with modified inlined-sdk bytes (changes every content-hashed chunk) plus a compat alias for an earlier
+	// content-hashed release filename.
+	const pkgV2 = makeInlinedFixture("0.10.6");
+	const earlierHashAlias = "_lazy-e0123456.js";
+	await bundlePackageDist(pkgV2, {
+		inline: ["inlined-sdk"],
+		strictExecutionOrder: false,
+		compatAliases: { [legacyTarget]: [earlierHashAlias] },
+		log: () => {},
+	});
+	const sharedV2 = sharedFiles(pkgV2);
+	assert.equal(sharedV2.includes(dynFacade), true, `v2 must keep stable dynamic facade ${dynFacade}`);
+	assert.equal(sharedV2.includes(earlierHashAlias), true, `v2 must emit compat alias ${earlierHashAlias}`);
+	const contentChunksV1 = sharedV1.filter((name) => name.includes("-e"));
+	const contentChunksV2 = sharedV2.filter((name) => name.includes("-e") && name !== earlierHashAlias);
+	assert.notDeepEqual(contentChunksV2, contentChunksV1, "changed bytes must produce new content-hashed chunks");
+
+	// In-place update compatibility check: a recorded v1 package updating to v2 passes checkRelease cleanly even though
+	// every content-hashed chunk changed.
+	const appDir = mkdtempSync(join(tmpdir(), "bundle-dyn-app-"));
+	roots.push(appDir);
+	writeTree(appDir, {
+		"package.json": JSON.stringify({
+			name: "@bastani/atomic",
+			version: "0.10.6-alpha.1",
+			type: "module",
+			bin: { atomic: "dist/cli.js" },
+			exports: { ".": "./dist/index.js" },
+		}),
+		"dist/cli.js": `import { sdkVersion } from "@bastani/atomic-ai";\nexport { sdkVersion };\n`,
+		"dist/index.js": `import { loadNodeHelper } from "@bastani/atomic-ai";\nexport { loadNodeHelper };\n`,
+	});
+	assert.deepEqual(checkRelease(recordRelease([appDir, pkgV1]), [appDir, pkgV2]), []);
+
+	// Compat alias re-exports the target chunk's exports cleanly at runtime.
+	const aliasOut = inChild(
+		join(pkgV2, "dist", earlierHashAlias),
+		`process.stdout.write(JSON.stringify({ helperValue: m.node_helper_exports.helperValue }));`,
+	);
+	assert.deepEqual(aliasOut, { helperValue: "helper:0.10.6" });
 });

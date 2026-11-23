@@ -263,7 +263,7 @@ async function analyzeModules(esbuild, packageDir, dist, sources, isExternal) {
 /**
  * Bundles `packageDir`'s compiled `dist` in place.
  * @param {string} packageDir
- * @param {{ standalone?: readonly string[], isolate?: readonly string[], inline?: readonly string[], dist?: string, cacheDir?: string, strictExecutionOrder?: boolean, compatNoopExports?: Readonly<Record<string, readonly string[]>>, log?: (message: string) => void }} [options]
+ * @param {{ standalone?: readonly string[], isolate?: readonly string[], inline?: readonly string[], dist?: string, cacheDir?: string, strictExecutionOrder?: boolean, compatNoopExports?: Readonly<Record<string, readonly string[]>>, compatAliases?: Readonly<Record<string, readonly string[]>>, log?: (message: string) => void }} [options]
  *   `standalone`: modules, by path below `dist`, that keep their compiled files. `isolate`: modules, by path below
  *   `dist`, whose top-level side effects must stay isolated from modules that do not statically import them (in
  *   addition to `./dist/...` entries declared in `package.json`'s `sideEffects` array). `inline`: packages bundled in.
@@ -272,15 +272,20 @@ async function analyzeModules(esbuild, packageDir, dist, sources, isExternal) {
  *   facades and content-hashed shared chunk names so V8 compile cache pre-compiles top-level ESM bytecode without ever
  *   colliding with an earlier release's deferred-init shared chunks. `compatNoopExports`: legacy shared-chunk filenames
  *   and their no-op `init_*` exports preserved as unreachable compat shims for in-place updates from earlier releases
- *   that dynamically imported those shared files directly.
+ *   that dynamically imported those shared files directly. `compatAliases`: map from legacy shared-chunk filename to
+ *   additional unreachable re-export filenames (for earlier content-hashed releases that dynamically imported a chunk
+ *   before dynamic targets used stable `_dyn-*` facades).
  */
 export async function bundlePackageDist(packageDir, options = {}) {
 	const { rolldown } = await import("rolldown");
 	const esbuild = await import("esbuild");
+	const { parse: parseAst } = await import("acorn");
+	const { simple: walkAst } = await import("acorn-walk");
 	const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
 	const cacheDir = options.cacheDir ?? join(packageDir, "node_modules", ".cache", "atomic-bundle-dist");
 	const strictExecutionOrder = options.strictExecutionOrder ?? true;
 	const compatNoopExports = options.compatNoopExports ?? {};
+	const compatAliases = options.compatAliases ?? {};
 	if (options.dist !== undefined) {
 		// The bundle names modules by their paths from the directory holding `dist`, so it is the same wherever that is.
 		const staged = resolve(packageDir, options.dist);
@@ -646,9 +651,9 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			},
 		],
 	});
-	/** Legacy first-module chunk filename for each generated non-entry chunk (for compat shims). */
-	/** @type {Map<string, string>} */
-	const legacyNameByChunk = new Map();
+	/** Legacy first-module chunk identity for each generated non-entry chunk (for compat shims and `_dyn-*` facades). */
+	/** @type {Map<string, { label: string, stableHash: string, legacyName: string }>} */
+	const legacyInfoByChunk = new Map();
 	const chunkLegacyName = (/** @type {{ moduleIds: string[], name: string, exports: string[] }} */ chunk) => {
 		const own = chunk.moduleIds
 			.map(normalizeId)
@@ -660,7 +665,8 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		const label =
 			group === undefined ? chunk.name.replace(/[^a-zA-Z0-9.-]/g, "-") : group.slice(0, group.indexOf(":"));
 		const key = own.length === 0 ? `runtime:${first}\0${[...chunk.exports].sort().join(",")}` : `module:${first}`;
-		return { label, legacyName: `_${label}-${stableName(key)}.js` };
+		const stableHash = stableName(key);
+		return { label, stableHash, legacyName: `_${label}-${stableHash}.js` };
 	};
 	const output = await bundle.generate({
 		format: "esm",
@@ -693,10 +699,37 @@ export async function bundlePackageDist(packageDir, options = {}) {
 	const chunks = output.output.filter((item) => item.type === "chunk");
 	for (const chunk of chunks) {
 		if (!chunk.isEntry) {
-			legacyNameByChunk.set(chunk.fileName, chunkLegacyName(chunk).legacyName);
+			legacyInfoByChunk.set(chunk.fileName, chunkLegacyName(chunk));
 		}
 	}
 	const entryFiles = new Set(chunks.filter((chunk) => chunk.isEntry).map((chunk) => chunk.fileName));
+	/**
+	 * With `strictExecutionOrder: false`, shared chunks are content-hashed (`-e<7hex>`), so a dynamic `import()` inside
+	 * an inlined package targeting a non-entry chunk would change path on every release and break in-place updates from
+	 * the previous release. Route dynamic imports of non-entry chunks through a stable `_dyn-<8BASE32>.js` facade that
+	 * re-exports from the content-hashed chunk, leaving static imports pointed directly at the content-hashed chunk.
+	 * @type {Map<string, string>}
+	 */
+	const dynamicFacadeByTarget = new Map();
+	if (!strictExecutionOrder) {
+		const chunkFileSet = new Set(chunks.map((chunk) => chunk.fileName));
+		const usedDynamicFacades = new Set();
+		for (const chunk of chunks) {
+			for (const target of chunk.dynamicImports) {
+				if (entryFiles.has(target) || dynamicFacadeByTarget.has(target)) continue;
+				const info = legacyInfoByChunk.get(target);
+				if (info === undefined) continue;
+				const facadeName = `_dyn-${info.stableHash}.js`;
+				if (usedDynamicFacades.has(facadeName) || chunkFileSet.has(facadeName)) {
+					throw new Error(
+						`bundle-package-dist: dynamic target facade ${facadeName} collides with an existing file`,
+					);
+				}
+				usedDynamicFacades.add(facadeName);
+				dynamicFacadeByTarget.set(target, facadeName);
+			}
+		}
+	}
 	for (const chunk of chunks) {
 		// Nothing imports from an entry, so no entry gains an export its module lacks.
 		const entryImport = chunk.imports.find((name) => entryFiles.has(name));
@@ -763,6 +796,64 @@ export async function bundlePackageDist(packageDir, options = {}) {
 			Number(entryFiles.has(a.fileName.replace(/\.map$/, ""))) -
 			Number(entryFiles.has(b.fileName.replace(/\.map$/, ""))),
 	);
+	/**
+	 * Builds a thin re-export shim pointing to `./<item.fileName>`, plus optional no-op `init_*` exports.
+	 * @param {{ fileName: string, exports: string[] }} item
+	 * @param {readonly string[]} [noopNames]
+	 */
+	const buildReexportShim = (item, noopNames = []) => {
+		const namedExports = item.exports.filter((name) => name !== "default").sort();
+		const shimLines = [];
+		if (namedExports.length > 0) {
+			shimLines.push(`export { ${namedExports.join(", ")} } from ${codeStringLiteral(`./${item.fileName}`)};`);
+		}
+		if (item.exports.includes("default")) {
+			shimLines.push(`export { default } from ${codeStringLiteral(`./${item.fileName}`)};`);
+		}
+		for (const name of noopNames) {
+			shimLines.push(`export function ${name}() {}`);
+		}
+		if (shimLines.length === 0) {
+			shimLines.push(`import ${codeStringLiteral(`./${item.fileName}`)};`);
+			shimLines.push("export {};");
+		}
+		return `${shimLines.join("\n")}\n`;
+	};
+	/**
+	 * Rewrites literal dynamic `import("./...")` expressions targeting a non-entry chunk in `dynamicFacadeByTarget`
+	 * so they load via the chunk's stable `_dyn-<8BASE32>.js` facade while leaving static imports untouched.
+	 * @param {string} code
+	 * @param {string} importerFile
+	 */
+	const rewriteDynamicChunkImports = (code, importerFile) => {
+		const program = parseAst(code, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
+		const fromDir = dirname(join(dist, importerFile));
+		/** @type {{ start: number, end: number, replacement: string }[]} */
+		const replacements = [];
+		walkAst(program, {
+			ImportExpression(node) {
+				if (node.source?.type !== "Literal" || typeof node.source.value !== "string") return;
+				const specifier = node.source.value;
+				if (!specifier.startsWith(".")) return;
+				const relTarget = toPosix(relative(dist, resolve(fromDir, specifier)));
+				const facadeName = dynamicFacadeByTarget.get(relTarget);
+				if (facadeName === undefined) return;
+				const facadeRel = toPosix(relative(fromDir, join(dist, facadeName)));
+				replacements.push({
+					start: node.source.start,
+					end: node.source.end,
+					replacement: codeStringLiteral(facadeRel.startsWith(".") ? facadeRel : `./${facadeRel}`),
+				});
+			},
+		});
+		if (replacements.length === 0) return code;
+		replacements.sort((a, b) => b.start - a.start);
+		let rewritten = code;
+		for (const { start, end, replacement } of replacements) {
+			rewritten = `${rewritten.slice(0, start)}${replacement}${rewritten.slice(end)}`;
+		}
+		return rewritten;
+	};
 	/** @type {Record<string, string>} */
 	const facades = {};
 	/** @type {Set<string>} */
@@ -791,10 +882,17 @@ export async function bundlePackageDist(packageDir, options = {}) {
 				throw new Error(`bundle-package-dist: ${item.fileName} names a module URL the build could not replace`);
 			}
 		}
-		/** @type {{ shimPath: string, shimContents: string, legacyName: string } | undefined} */
-		let compatShim;
+		if (
+			item.type === "chunk" &&
+			dynamicFacadeByTarget.size > 0 &&
+			item.dynamicImports.some((target) => dynamicFacadeByTarget.has(target))
+		) {
+			contents = rewriteDynamicChunkImports(contents, item.fileName);
+		}
+		/** @type {{ shimPath: string, shimContents: string, shimName: string }[]} */
+		const extraShims = [];
 		if (item.type === "chunk" && !item.isEntry) {
-			const legacyName = legacyNameByChunk.get(item.fileName) ?? item.fileName;
+			const legacyName = legacyInfoByChunk.get(item.fileName)?.legacyName ?? item.fileName;
 			const compatNames = (compatNoopExports[legacyName] ?? []).filter((name) => !item.exports.includes(name));
 			if (legacyName === item.fileName && compatNames.length > 0) {
 				const stubs = `${compatNames.map((name) => `export function ${name}() {}`).join("\n")}\n`;
@@ -803,22 +901,27 @@ export async function bundlePackageDist(packageDir, options = {}) {
 					? contents.replace(mapComment, (match) => `\n${stubs}${match.trimStart()}`)
 					: `${contents}\n${stubs}`;
 			} else if (legacyName !== item.fileName && Object.hasOwn(compatNoopExports, legacyName)) {
-				const namedExports = item.exports.filter((name) => name !== "default").sort();
-				const shimLines = [];
-				if (namedExports.length > 0) {
-					shimLines.push(`export { ${namedExports.join(", ")} } from ${codeStringLiteral(`./${item.fileName}`)};`);
-				}
-				if (item.exports.includes("default")) {
-					shimLines.push(`export { default } from ${codeStringLiteral(`./${item.fileName}`)};`);
-				}
-				for (const name of compatNames) {
-					shimLines.push(`export function ${name}() {}`);
-				}
-				compatShim = {
+				extraShims.push({
 					shimPath: join(dist, legacyName),
-					shimContents: `${shimLines.join("\n")}\n`,
-					legacyName,
-				};
+					shimContents: buildReexportShim(item, compatNames),
+					shimName: legacyName,
+				});
+			}
+			for (const aliasName of compatAliases[legacyName] ?? []) {
+				if (aliasName === item.fileName) continue;
+				extraShims.push({
+					shimPath: join(dist, aliasName),
+					shimContents: buildReexportShim(item),
+					shimName: aliasName,
+				});
+			}
+			const dynamicFacade = dynamicFacadeByTarget.get(item.fileName);
+			if (dynamicFacade !== undefined) {
+				extraShims.push({
+					shimPath: join(dist, dynamicFacade),
+					shimContents: buildReexportShim(item),
+					shimName: dynamicFacade,
+				});
 			}
 		}
 		mkdirSync(dirname(path), { recursive: true });
@@ -826,10 +929,10 @@ export async function bundlePackageDist(packageDir, options = {}) {
 		const mode = existsSync(path) ? statSync(path).mode : undefined;
 		renameSync(`${path}.bundle`, path);
 		if (mode !== undefined && (mode & 0o111) !== 0) chmodSync(path, statSync(path).mode | (mode & 0o111));
-		if (compatShim !== undefined) {
-			writeFileSync(`${compatShim.shimPath}.bundle`, compatShim.shimContents);
-			renameSync(`${compatShim.shimPath}.bundle`, compatShim.shimPath);
-			writtenShims.add(compatShim.legacyName);
+		for (const shim of extraShims) {
+			writeFileSync(`${shim.shimPath}.bundle`, shim.shimContents);
+			renameSync(`${shim.shimPath}.bundle`, shim.shimPath);
+			writtenShims.add(shim.shimName);
 		}
 		if (item.type === "chunk" && item.isEntry) {
 			facades[item.fileName] = digest(readFileSync(path));
@@ -953,19 +1056,25 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
 	const strictExecutionOrder = !process.argv.slice(2).includes("--no-strict-execution-order");
 	/** @type {Record<string, string[]>} */
 	const compatNoopExports = {};
-	for (const arg of process.argv.slice(2)) {
-		if (!arg.startsWith("--compat-noop-exports=")) continue;
-		for (const entry of arg.slice("--compat-noop-exports=".length).split(";").filter(Boolean)) {
-			const sepIndex = entry.indexOf(":");
-			if (sepIndex <= 0) continue;
-			const file = entry.slice(0, sepIndex);
-			const names = entry
-				.slice(sepIndex + 1)
-				.split(",")
-				.filter(Boolean);
-			if (names.length > 0) compatNoopExports[file] = [...(compatNoopExports[file] ?? []), ...names];
+	/** @type {Record<string, string[]>} */
+	const compatAliases = {};
+	const parseKeyedListFlag = (/** @type {string} */ prefix, /** @type {Record<string, string[]>} */ target) => {
+		for (const arg of process.argv.slice(2)) {
+			if (!arg.startsWith(prefix)) continue;
+			for (const entry of arg.slice(prefix.length).split(";").filter(Boolean)) {
+				const sepIndex = entry.indexOf(":");
+				if (sepIndex <= 0) continue;
+				const file = entry.slice(0, sepIndex);
+				const names = entry
+					.slice(sepIndex + 1)
+					.split(",")
+					.filter(Boolean);
+				if (names.length > 0) target[file] = [...(target[file] ?? []), ...names];
+			}
 		}
-	}
+	};
+	parseKeyedListFlag("--compat-noop-exports=", compatNoopExports);
+	parseKeyedListFlag("--compat-aliases=", compatAliases);
 	await bundlePackageDist(process.cwd(), {
 		standalone: list("standalone"),
 		isolate: list("isolate"),
@@ -973,5 +1082,6 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
 		dist,
 		strictExecutionOrder,
 		compatNoopExports,
+		compatAliases,
 	});
 }

@@ -5,7 +5,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { checkDeferredChunkDisjointness, checkRelease, recordRelease } from "./in-place-update-exports.mjs";
+import {
+	checkDeferredChunkDisjointness,
+	checkRelease,
+	recordRelease,
+	resolveReleaseRecords,
+} from "./in-place-update-exports.mjs";
 
 /** Writes a package of `files` (path -> source) with `manifest` into a new directory, and returns it. */
 function writePackage(t, manifest, files) {
@@ -244,4 +249,64 @@ test("importing a deferred-init shared chunk from an earlier release without cal
 	);
 	assert.deepEqual(checkRelease(record, [app, goodDep]), []);
 	assert.deepEqual(checkDeferredChunkDisjointness(record, [app, goodDep]), []);
+});
+
+test("resolveReleaseRecords requires committed records only before GUARDED_SINCE and fetches newer releases on the fly", (t) => {
+	const earlier = recordRelease([application(t, {}, { version: "0.10.4" }), dependency(t, {}, { version: "0.10.4" })]);
+	const guarded = recordRelease([application(t, {}, { version: "0.10.5" }), dependency(t, {}, { version: "0.10.5" })]);
+	let downloads = [];
+
+	const unrecordedUnguarded = resolveReleaseRecords([], {
+		previous: "0.10.4",
+		recordsDir: "packages/coding-agent/in-place-update",
+		download: (version) => {
+			downloads.push(version);
+			return earlier;
+		},
+	});
+	assert.equal(unrecordedUnguarded.ok, false);
+	assert.match(unrecordedUnguarded.error, /0\.10\.4 is not recorded/);
+	assert.deepEqual(downloads, []);
+
+	const recordedUnguarded = resolveReleaseRecords([earlier], {
+		previous: "0.10.4",
+		recordsDir: "packages/coding-agent/in-place-update",
+		download: (version) => {
+			downloads.push(version);
+			return earlier;
+		},
+	});
+	assert.equal(recordedUnguarded.ok, true);
+	assert.deepEqual(
+		recordedUnguarded.records.map((record) => record.version),
+		["0.10.4"],
+	);
+	assert.deepEqual(downloads, []);
+
+	const unrecordedGuarded = resolveReleaseRecords([earlier], {
+		previous: "0.10.5",
+		recordsDir: "packages/coding-agent/in-place-update",
+		download: (version) => {
+			downloads.push(version);
+			return guarded;
+		},
+	});
+	assert.equal(unrecordedGuarded.ok, true);
+	assert.deepEqual(downloads, ["0.10.5"]);
+	assert.deepEqual(
+		unrecordedGuarded.records.map((record) => record.version),
+		["0.10.4", "0.10.5"],
+	);
+
+	downloads = [];
+	const recordedGuarded = resolveReleaseRecords([earlier, guarded], {
+		previous: "0.10.5",
+		recordsDir: "packages/coding-agent/in-place-update",
+		download: (version) => {
+			downloads.push(version);
+			return guarded;
+		},
+	});
+	assert.equal(recordedGuarded.ok, true);
+	assert.deepEqual(downloads, []);
 });
