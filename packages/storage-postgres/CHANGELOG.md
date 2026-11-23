@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
+## [0.10.5-alpha.1] - 2026-11-23
+
 ### Fixed
 
-- Cloud-auth SDK client initialization (`lazyClient`) now clears rejected promises with an identity check attached once per load instead of attaching a new `.catch` handler on every token lookup, preventing handler accumulation and ensuring concurrent retries after a failed SDK load cannot clear a newer in-flight client.
+- Cloud-auth SDK client initialization (`lazyClient`) now clears rejected promises with an identity check attached once per load instead of attaching a new `.catch` handler on every token lookup, preventing handler accumulation and ensuring concurrent retries after a failed SDK load cannot clear a newer in-flight client ([#6499](https://github.com/bastani-inc/atomic/pull/6499)).
 
 ## [0.10.4] - 2026-11-22
 
