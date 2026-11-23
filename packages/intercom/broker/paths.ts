@@ -162,6 +162,19 @@ export function brokerSocketPathOverride(env: NodeJS.ProcessEnv = process.env): 
   return isValidWindowsPipeSuffix(raw.slice(WINDOWS_PIPE_PREFIX.length)) ? raw : undefined;
 }
 
+/**
+ * Reads the validated {@link BROKER_SOCKET_PATH_ENV} override and removes every case-insensitive copy of it from `env`
+ * so child processes spawned by the broker (such as host commands) never inherit it.
+ */
+export function consumeBrokerSocketPathOverride(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const override = brokerSocketPathOverride(env);
+  const target = BROKER_SOCKET_PATH_ENV.toLowerCase();
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === target) delete env[key];
+  }
+  return override;
+}
+
 /** Every spelling of one agent directory, such as a trailing separator or a `..` segment, gets the same digest. */
 function agentDirDigest(agentDir: string): string {
   return createHash("sha256").update(resolve(agentDir)).digest("hex").slice(0, 16);

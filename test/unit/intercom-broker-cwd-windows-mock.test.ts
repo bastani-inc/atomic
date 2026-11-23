@@ -81,6 +81,7 @@ vi.mock("@bastani/atomic", () => ({
 import {
 	BROKER_SOCKET_PATH_ENV,
 	brokerSocketPathOverride,
+	consumeBrokerSocketPathOverride,
 	getBrokerSocketPath,
 } from "../../packages/intercom/broker/paths.js";
 import { getBrokerSpawnOptions, getBrokerSpawnOptionsAsync } from "../../packages/intercom/broker/spawn.js";
@@ -297,6 +298,23 @@ describe("Windows broker safe working directory selection (mocked Win32)", () =>
 		// Reject malformed pipe overrides.
 		assert.equal(brokerSocketPathOverride({ [BROKER_SOCKET_PATH_ENV]: "\\\\.\\pipe\\other" }), undefined);
 		assert.equal(brokerSocketPathOverride({ [BROKER_SOCKET_PATH_ENV]: "\\\\.\\pipe\\pi-intercom-BAD" }), undefined);
+
+		// consumeBrokerSocketPathOverride reads the validated pipe and removes every case variant from env so broker
+		// child processes (host commands, helpers) never inherit ATOMIC_INTERCOM_BROKER_SOCKET_PATH.
+		const brokerEnv: NodeJS.ProcessEnv = {
+			atomic_intercom_broker_socket_path: "\\\\.\\pipe\\pi-intercom-old",
+			[BROKER_SOCKET_PATH_ENV]: "\\\\.\\pipe\\pi-intercom-r-agent",
+			KEEP_ME: "1",
+		};
+		assert.equal(consumeBrokerSocketPathOverride(brokerEnv), "\\\\.\\pipe\\pi-intercom-r-agent");
+		assert.deepEqual(brokerEnv, { KEEP_ME: "1" });
+
+		const malformedEnv: NodeJS.ProcessEnv = {
+			[BROKER_SOCKET_PATH_ENV]: "\\\\.\\pipe\\invalid-prefix",
+			KEEP_ME: "1",
+		};
+		assert.equal(consumeBrokerSocketPathOverride(malformedEnv), undefined);
+		assert.deepEqual(malformedEnv, { KEEP_ME: "1" });
 
 		// Mixed-case key `atomic_coding_agent_dir` must be overwritten in place with zero case duplicates.
 		delete process.env.ATOMIC_CODING_AGENT_DIR;
