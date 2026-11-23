@@ -19,6 +19,7 @@ import { constants as osConstants } from "node:os";
 import { Readable, Writable } from "node:stream";
 import { getSystemErrorMap } from "node:util";
 import type * as native from "@bastani/atomic-natives";
+import { markNativeContainedChild } from "./child-process.ts";
 import { createModuleRequire } from "./module-require.js";
 
 /** Which stream a child process gets: a pipe to the host, or nothing (`/dev/null`). */
@@ -519,6 +520,11 @@ class ContainedProcess extends EventEmitter implements ContainedChildProcess {
 	#exited = false;
 	#openOutputs = 0;
 	#closed = false;
+
+	constructor() {
+		super();
+		markNativeContainedChild(this);
+	}
 
 	/** The native module's events: only the exit, held until `spawn` was emitted. */
 	event(event: native.HostProcessEvent): void {

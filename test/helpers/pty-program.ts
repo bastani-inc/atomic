@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { Terminal } from "@xterm/headless";
 import { sleep } from "./runtime.js";
+import { withTestTimezone } from "./system-prompt-date-isolation.js";
 
 interface NativePtySession {
 	start(
@@ -115,7 +116,7 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 			{
 				command,
 				cwd: options.cwd,
-				env: withoutInheritedTestRunnerEnv(withSessionCompileCache(options.env)),
+				env: withoutInheritedTestRunnerEnv(withTestTimezone(withSessionCompileCache(options.env))),
 				timeoutMs: options.timeoutMs,
 				cols: options.cols,
 				rows: options.rows,

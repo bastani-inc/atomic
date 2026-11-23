@@ -1896,9 +1896,18 @@ export class TaskInspector implements Component {
 				liveTask.execution.kind === "settled" && liveTask.execution.result.kind !== "cancelled"
 					? liveTask.execution.result.exitCode
 					: undefined;
+			const unknownCommandExit =
+				liveTask.kind === "command" &&
+				liveTask.execution.kind === "settled" &&
+				liveTask.execution.result.kind === "completed" &&
+				exitCode === undefined;
 			const statusValue =
 				theme.fg(appearance.color, `${appearance.icon} ${appearance.label}`) +
-				(exitCode === undefined ? "" : theme.fg("dim", ` · exit ${exitCode}`));
+				(exitCode !== undefined
+					? theme.fg("dim", ` · exit ${exitCode}`)
+					: unknownCommandExit
+						? theme.fg("dim", " · exit status unknown")
+						: "");
 			const elapsedMs = liveTask.metrics?.elapsedMs;
 			const runtimeText = elapsedMs === undefined ? undefined : formatPanelElapsed(elapsedMs);
 			if (fullLayout) {
