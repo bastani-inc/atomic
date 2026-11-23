@@ -27,6 +27,7 @@ import {
 import {
 	type ActionFetcher,
 	BLUEPRINT_FULL_BUILD_MAX_AGE_MS,
+	BLUEPRINT_STEP_TIMEOUT_MS,
 	type BlueprintBuildConfig,
 	type BlueprintBuildOutcome,
 	type BlueprintLayer,
@@ -43,7 +44,7 @@ import {
 	runBlueprintBuild,
 	SETUP_COMMAND_ALIAS,
 } from "../src/core/resume/index.ts";
-import { shellSpelling, WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
+import { expireStepBudgetOnceStarted, shellSpelling, WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
 import { shellPath } from "./helpers/hook-commands.ts";
 
 let sandbox: string;
@@ -615,10 +616,50 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 
 	test("a step that exceeds its timeout is stopped and reported as timed out (#4588)", async () => {
 		const repo = repository("slow");
+		const expectedStart = `started ${shellPath(repo.root)}`;
 		blueprint(
 			repo.root,
 			`maintenance:\n  - name: hang\n    run: |\n      ${mark("started")}\n      sleep 30\n      ${mark("finished")}\n`,
 		);
+		const budget = expireStepBudgetOnceStarted(() => {
+			try {
+				return ran().includes(expectedStart);
+			} catch {
+				return false;
+			}
+		});
+		let outcome: BlueprintBuildOutcome;
+		try {
+			outcome = await runBlueprintBuild([repo], config());
+		} finally {
+			budget.restore();
+		}
+		assert.equal(outcome.status, "partial");
+		const failure = failureStep(outcome);
+		assert.ok(isBlueprintStepTimedOutError(failure.error));
+		assert.equal(failure.error.timeoutMs, BLUEPRINT_STEP_TIMEOUT_MS);
+		assert.equal(failure.error.phase, "maintenance");
+		assert.equal(failure.error.step, "hang");
+		assert.equal(budget.armedDelays.length, 1);
+		assert.ok(
+			budget.armedDelays[0]! <= BLUEPRINT_STEP_TIMEOUT_MS && budget.armedDelays[0]! > BLUEPRINT_STEP_TIMEOUT_MS / 2,
+			`armed delay ${String(budget.armedDelays[0])} ms`,
+		);
+		assert.ok(
+			typeof failure.error.elapsedMs === "number" && failure.error.elapsedMs >= 0,
+			`elapsed ${String(failure.error.elapsedMs)} ms`,
+		);
+		assert.deepEqual(ran(), [expectedStart]);
+		assert.ok(failure.logPath !== null);
+		assert.match(
+			readFileSync(failure.logPath, "utf8"),
+			new RegExp(`timed out after ${BLUEPRINT_STEP_TIMEOUT_MS} ms`),
+		);
+	});
+
+	test("a configured stepTimeoutMs enforces its wall-clock budget and records elapsed time (#4588)", async () => {
+		const repo = repository("slow-budget");
+		blueprint(repo.root, "maintenance:\n  - name: hang\n    run: sleep 30\n");
 		const outcome = await runBlueprintBuild([repo], config({ stepTimeoutMs: 400 }));
 		assert.equal(outcome.status, "partial");
 		const failure = failureStep(outcome);
@@ -626,10 +667,7 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 		assert.equal(failure.error.timeoutMs, 400);
 		assert.equal(failure.error.phase, "maintenance");
 		assert.equal(failure.error.step, "hang");
-		assert.ok(failure.error.elapsedMs >= 300);
-		// It never finished. A shell that starts slowly on a loaded machine is stopped before it marks its start.
-		const marks = ran();
-		assert.deepEqual(marks, [`started ${shellPath(repo.root)}`].slice(0, marks.length));
+		assert.ok(failure.error.elapsedMs >= 300, `elapsed ${String(failure.error.elapsedMs)} ms`);
 		assert.ok(failure.logPath !== null);
 		assert.match(readFileSync(failure.logPath, "utf8"), /timed out after 400 ms/);
 	});
