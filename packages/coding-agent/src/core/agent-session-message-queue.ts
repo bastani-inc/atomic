@@ -701,12 +701,18 @@ export function _enqueueInterruptCustomMessage<T>(
 			this._pendingInterruptDeliveries === 0 &&
 			this._activePromptCount === 0 &&
 			!this.isStreaming &&
+			!this.isRetrying &&
 			!this._disposed &&
 			!sessionGenerationClosing.has(this) &&
 			!sessionLifetime(this).aborted
 		) {
 			await this._runAgentContinuation(async () => {}, "settle");
-		} else if (this._pendingInterruptDeliveries === 0 && this._activePromptCount === 0 && !this.isStreaming) {
+		} else if (
+			this._pendingInterruptDeliveries === 0 &&
+			this._activePromptCount === 0 &&
+			!this.isStreaming &&
+			!this.isRetrying
+		) {
 			this._subagentPolicy?.onTurnDrained?.();
 		}
 	});
@@ -745,6 +751,7 @@ async function sendInterruptCustomMessageUnlocked<T>(
 	assertSessionOpen(session);
 	if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
 	await session.agent.prompt(message);
+	await session.waitForRetry();
 }
 
 export function _sendInterruptCustomMessageNow<T>(

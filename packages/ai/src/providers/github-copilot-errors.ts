@@ -788,14 +788,34 @@ function requestIdOf(error: ProviderFailure): string | undefined {
 	return nonEmptyString(error.requestID) ?? nonEmptyString(error.request_id) ?? nonEmptyString(header);
 }
 
+const RUNTIME_TRANSPORT_ERROR_CODE_PATTERNS: readonly RegExp[] = [
+	/^UND_ERR_/i,
+	/^ERR_(?:HTTP2|SOCKET|TLS|SSL)_/i,
+	/^(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN)$/i,
+];
+
+function isRuntimeTransportErrorCode(code: string): boolean {
+	return RUNTIME_TRANSPORT_ERROR_CODE_PATTERNS.some((pattern) => pattern.test(code));
+}
+
 /**
  * The provider's code: the SDK's `code`, then the parsed body's `error.code` or `code`. A Messages `error` event
- * arrives with no HTTP status and names its failure only by `type`, so that type is its code.
+ * arrives with no HTTP status and names its failure only by `type`, so that type is its code. Bare non-HTTP runtime
+ * transport codes (Node/undici/POSIX socket codes) are ignored so they stay transport failures rather than unknown
+ * provider error events.
  */
 function providerCodeOf(error: ProviderFailure): string | undefined {
+	const rawCode = nonEmptyString(error.code);
+	const topLevelCode =
+		rawCode !== undefined &&
+		error.status === undefined &&
+		error.error === undefined &&
+		isRuntimeTransportErrorCode(rawCode)
+			? undefined
+			: rawCode;
 	const body = structural(error.error) as { code?: unknown; error?: unknown } | undefined;
 	return (
-		nonEmptyString(error.code) ??
+		topLevelCode ??
 		nonEmptyString((structural(body?.error) as { code?: unknown } | undefined)?.code) ??
 		nonEmptyString(body?.code) ??
 		(error.status === undefined && error.error !== undefined ? nonEmptyString(error.type) : undefined)

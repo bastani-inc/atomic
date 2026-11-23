@@ -59,8 +59,10 @@ describe("AgentSession retry", () => {
 	async function createSession(options?: {
 		failCount?: number;
 		maxRetries?: number;
+		baseDelayMs?: number;
 		maxAgentDelayMs?: number;
 		delayAssistantMessageEndMs?: number;
+		subagentPolicy?: import("../src/core/extensions/context-types.ts").SubagentChildPolicy;
 	}) {
 		const failCount = options?.failCount ?? 1;
 		const maxRetries = options?.maxRetries ?? 3;
@@ -98,7 +100,12 @@ describe("AgentSession retry", () => {
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		settingsManager.applyOverrides({
-			retry: { enabled: true, maxRetries, baseDelayMs: 1, maxAgentDelayMs: options?.maxAgentDelayMs },
+			retry: {
+				enabled: true,
+				maxRetries,
+				baseDelayMs: options?.baseDelayMs ?? 1,
+				maxAgentDelayMs: options?.maxAgentDelayMs,
+			},
 		});
 
 		session = new AgentSession({
@@ -108,6 +115,7 @@ describe("AgentSession retry", () => {
 			cwd: tempDir,
 			modelRuntime: getModelRuntime(modelRegistry),
 			resourceLoader: createTestResourceLoader(),
+			...(options?.subagentPolicy ? { subagentPolicy: options.subagentPolicy } : {}),
 		});
 
 		if (delayAssistantMessageEndMs > 0) {
@@ -603,5 +611,172 @@ describe("AgentSession retry", () => {
 				}),
 			),
 		).toBe(false);
+	});
+
+	it("settles waitForRetry and resets retry state if _omitTrailingAssistantAttempt throws", async () => {
+		const created = await createSession({ failCount: 1, maxRetries: 2 });
+		const internal = created.session as unknown as {
+			_omitTrailingAssistantAttempt: () => Promise<boolean>;
+			_retryAttempt: number;
+			_longStreamCutRetries: number;
+			_retryAbortController: AbortController | undefined;
+		};
+		internal._omitTrailingAssistantAttempt = async () => {
+			throw new Error("storage write failed");
+		};
+		const retryEnds: Array<{ success: boolean; attempt: number; finalError?: string }> = [];
+		created.session.subscribe((event) => {
+			if (event.type === "auto_retry_end") {
+				retryEnds.push({ success: event.success, attempt: event.attempt, finalError: event.finalError });
+			}
+		});
+
+		await Promise.race([
+			created.session.prompt("Test"),
+			new Promise<never>((_resolve, reject) =>
+				setTimeout(
+					() => reject(new Error("waitForRetry() stranded after _omitTrailingAssistantAttempt failure")),
+					1_500,
+				),
+			),
+		]);
+
+		assert.equal(created.session.isRetrying, false);
+		assert.equal(internal._retryAttempt, 0);
+		assert.equal(internal._longStreamCutRetries, 0);
+		assert.equal(internal._retryAbortController, undefined);
+		assert.deepEqual(retryEnds, [{ success: false, attempt: 1, finalError: "storage write failed" }]);
+	});
+
+	it("settles waitForRetry and emits auto_retry_end if scheduled agent.continue rejects pre-loop", async () => {
+		const created = await createSession({ failCount: 1, maxRetries: 2 });
+		const internal = created.session as unknown as {
+			_retryAttempt: number;
+			_longStreamCutRetries: number;
+		};
+		created.session.agent.continue = async () => {
+			throw new Error("Cannot continue from message role: assistant");
+		};
+		const retryEnds: Array<{ success: boolean; attempt: number; finalError?: string }> = [];
+		created.session.subscribe((event) => {
+			if (event.type === "auto_retry_end") {
+				retryEnds.push({ success: event.success, attempt: event.attempt, finalError: event.finalError });
+			}
+		});
+
+		await Promise.race([
+			created.session.prompt("Test"),
+			new Promise<never>((_resolve, reject) =>
+				setTimeout(() => reject(new Error("waitForRetry() stranded after agent.continue rejection")), 1_500),
+			),
+		]);
+
+		assert.equal(created.session.isRetrying, false);
+		assert.equal(internal._retryAttempt, 0);
+		assert.equal(internal._longStreamCutRetries, 0);
+		assert.deepEqual(retryEnds, [
+			{ success: false, attempt: 1, finalError: "Cannot continue from message role: assistant" },
+		]);
+	});
+
+	it("_sealMessageAdmissionIfDrained does not seal subagent admission while isRetrying is true", async () => {
+		const ended = new AbortController();
+		const created = await createSession({
+			failCount: 1,
+			maxRetries: 2,
+			baseDelayMs: 5_000,
+			subagentPolicy: {
+				managementActions: "restricted",
+				fanoutAuthorized: false,
+				inheritProjectContext: false,
+				inheritSkills: false,
+				depth: 1,
+				executionEnded: ended.signal,
+			},
+		});
+		const internal = created.session as unknown as {
+			_activePromptCount: number;
+			_sealMessageAdmissionIfDrained: () => boolean;
+			_subagentMessageAdmission?: { isOpen(): boolean };
+		};
+		const retryStarted = Promise.withResolvers<void>();
+		created.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") retryStarted.resolve();
+		});
+
+		const pending = created.session.prompt("Test");
+		await retryStarted.promise;
+
+		// Simulate drain check during retry backoff when nothing streams and prompt count is 0.
+		const savedActiveCount = internal._activePromptCount;
+		internal._activePromptCount = 0;
+		try {
+			assert.equal(created.session.isStreaming, false);
+			assert.equal(created.session.isRetrying, true);
+			assert.equal(internal._sealMessageAdmissionIfDrained(), false);
+			assert.equal(internal._subagentMessageAdmission?.isOpen(), true);
+		} finally {
+			internal._activePromptCount = savedActiveCount;
+		}
+
+		created.session.abortRetry();
+		await pending;
+		assert.equal(created.session.isRetrying, false);
+		assert.equal(internal._sealMessageAdmissionIfDrained(), true);
+		assert.equal(internal._subagentMessageAdmission?.isOpen(), false);
+		ended.abort();
+	});
+
+	it("interrupt custom message waits for retry completion and does not signal drain while retrying", async () => {
+		const created = await createSession({
+			failCount: 1,
+			maxRetries: 2,
+			baseDelayMs: 40,
+		});
+		const drainedWhileRetrying: boolean[] = [];
+		const internal = created.session as unknown as {
+			_subagentPolicy?: { onTurnDrained?: () => void };
+			_enqueueInterruptCustomMessage: (
+				message: {
+					role: "custom";
+					customType: string;
+					content: string;
+					display: boolean;
+					timestamp: number;
+				},
+				options?: { triggerTurn?: boolean; deliverAs?: "interrupt" },
+			) => Promise<void>;
+		};
+		internal._subagentPolicy = {
+			onTurnDrained: () => {
+				drainedWhileRetrying.push(created.session.isRetrying);
+			},
+		};
+
+		const events: string[] = [];
+		created.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") events.push(`end:success=${event.success}`);
+		});
+
+		await internal._enqueueInterruptCustomMessage(
+			{
+				role: "custom",
+				customType: "interrupt_notice",
+				content: "urgent update",
+				display: true,
+				timestamp: Date.now(),
+			},
+			{ triggerTurn: true, deliverAs: "interrupt" },
+		);
+
+		assert.equal(created.getCallCount(), 2, "interrupt turn waited for its retry to complete");
+		assert.equal(created.session.isRetrying, false);
+		assert.deepEqual(events, ["start:1", "end:success=true"]);
+		assert.deepEqual(
+			drainedWhileRetrying,
+			[false],
+			"onTurnDrained fires only after retry completes, never while isRetrying is true",
+		);
 	});
 });

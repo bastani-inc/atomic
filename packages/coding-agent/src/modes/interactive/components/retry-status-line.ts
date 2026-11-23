@@ -47,7 +47,7 @@ const RETRY_REASONS: readonly (readonly [RegExp, string | ((match: RegExpExecArr
 	[/stream deadline|timed? ?out|timeout/i, "response timed out"],
 	[/\bECONNREFUSED\b|connection.?refused/i, "connection refused"],
 	[
-		/\bECONNRESET\b|\bECONNABORTED\b|\bEPIPE\b|connection.?(?:reset|closed|lost)|socket hang up|other side closed|socket connection was closed|reset before headers|websocket.?closed/i,
+		/\bECONNRESET\b|\bECONNABORTED\b|\bEPIPE\b|\bUND_ERR_SOCKET\b|connection.?(?:reset|closed|lost)|socket hang up|other side closed|socket connection was closed|reset before headers|websocket.?closed/i,
 		"connection reset",
 	],
 	[

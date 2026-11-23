@@ -747,7 +747,7 @@ export async function sessionDrained(
 		| "_activePromptCount"
 		| "_pendingInterruptDeliveries"
 		| "_sealMessageAdmissionIfDrained"
-	>,
+	> & { readonly isRetrying?: boolean },
 	stops: readonly AbortSignal[],
 	subscribeDrained: (listener: () => void) => () => void,
 	waitsForNextTurn: () => boolean = () => false,
@@ -757,12 +757,19 @@ export async function sessionDrained(
 		(session._activePromptCount ?? 0) === 0 &&
 		(session._pendingInterruptDeliveries ?? 0) === 0 &&
 		!session.isStreaming &&
+		!session.isRetrying &&
 		(waitsForNextTurn() || (session._sealMessageAdmissionIfDrained?.() ?? true));
 	while (!drained() && !stops.some((stop) => stop.aborted)) {
 		await new Promise<void>((resolve) => {
 			const unsubscribeDrained = subscribeDrained(() => done());
 			const unsubscribe = session.subscribe((event) => {
-				if (event.type === "agent_end" || event.type === "agent_settled") queueMicrotask(() => done());
+				if (
+					event.type === "agent_end" ||
+					event.type === "agent_settled" ||
+					event.type === "auto_retry_end" ||
+					event.type === "model_fallback_end"
+				)
+					queueMicrotask(() => done());
 			});
 			function done(): void {
 				unsubscribeDrained();
@@ -780,7 +787,7 @@ export async function sessionDrained(
  * child starts one, or once any of `stops` aborts. A child that is never messaged again waits here until it is stopped.
  */
 export function nextTurnSettled(
-	session: Pick<AgentSession, "subscribe" | "isStreaming">,
+	session: Pick<AgentSession, "subscribe" | "isStreaming"> & { readonly isRetrying?: boolean },
 	stops: readonly AbortSignal[],
 	options: {
 		readonly waitForStart?: boolean;
@@ -791,7 +798,7 @@ export function nextTurnSettled(
 	} = {},
 ): Promise<void> {
 	return new Promise<void>((resolve) => {
-		let started = !options.waitForStart && session.isStreaming;
+		let started = !options.waitForStart && (session.isStreaming || session.isRetrying === true);
 		let startsToSkip = options.skipStarts ?? 0;
 		let unsubscribe = () => {};
 		let unsubscribeDrained = () => {};
@@ -800,6 +807,9 @@ export function nextTurnSettled(
 			unsubscribeDrained();
 			for (const stop of stops) stop.removeEventListener("abort", finish);
 			resolve();
+		};
+		const finishIfSettled = () => {
+			if (started && !session.isStreaming && !session.isRetrying) finish();
 		};
 		if (stops.some((stop) => stop.aborted)) return resolve();
 		for (const stop of stops) stop.addEventListener("abort", finish, { once: true });
@@ -811,15 +821,14 @@ export function nextTurnSettled(
 					options.onStart?.();
 				}
 			} else if (options.subscribeDrained === undefined) {
-				if (event.type === "agent_settled" && started && !session.isStreaming) finish();
-				else if (event.type === "agent_end" && started)
-					queueMicrotask(() => (session.isStreaming ? undefined : finish()));
+				if (event.type === "agent_settled") finishIfSettled();
+				else if (event.type === "agent_end" && started && !("retryPending" in event && event.retryPending === true))
+					queueMicrotask(finishIfSettled);
+				else if ((event.type === "auto_retry_end" || event.type === "model_fallback_end") && started)
+					queueMicrotask(finishIfSettled);
 			}
 		});
-		unsubscribeDrained =
-			options.subscribeDrained?.(() => {
-				if (started && !session.isStreaming) finish();
-			}) ?? (() => {});
+		unsubscribeDrained = options.subscribeDrained?.(finishIfSettled) ?? (() => {});
 	});
 }
 

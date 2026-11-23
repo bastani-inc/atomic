@@ -58,7 +58,7 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/connection.?lost/i,
 	/connection.?closed/i,
 	/connection.?reset/i,
-	/(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)(?![a-z0-9_])/i,
+	/(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE|UND_ERR_SOCKET|UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT)(?![a-z0-9_])/i,
 	/other side closed/i,
 	/websocket.?closed/i,
 	/websocket.?error/i,
@@ -347,9 +347,12 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "timeout":
 		case "timeout_error":
 		case "und_err_connect_timeout":
+		case "und_err_body_timeout":
+		case "und_err_headers_timeout":
 			return "network_timeout";
 		case "err_http2_stream_error":
 		case "err_http2_stream_cancel":
+		case "und_err_socket":
 			return "transport_error";
 		case "rate_limit":
 		case "rate_limit_exceeded":
@@ -526,6 +529,7 @@ const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
 	// A streamed response cut off before its finish reason, as GitHub Copilot's Gemini models do now and then: the
 	// same request normally completes when sent again (#4223).
 	/\bstream\s+ended\s+without\s+finish[_\s-]?reason\b/i,
+	/(?<![a-z0-9_])UND_ERR_SOCKET(?![a-z0-9_])/i,
 ];
 
 // HTTP 402 and explicit quota exhaustion: the account cannot be served again until its quota resets.
@@ -625,7 +629,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 		return "auth_on_candidate_provider";
 	if (transientKind === undefined && messageLooksLikeModelUnavailable(message)) return "model_unavailable";
 	if (
-		/network|fetch|socket|connection\s*refused|(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)(?![a-z0-9_])|getaddrinfo|ENOTFOUND|EAI_AGAIN|timeout|timed\s+out/i.test(
+		/network|fetch|socket|connection\s*refused|(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE|UND_ERR_BODY_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_CONNECT_TIMEOUT)(?![a-z0-9_])|getaddrinfo|ENOTFOUND|EAI_AGAIN|timeout|timed\s+out/i.test(
 			message,
 		)
 	)

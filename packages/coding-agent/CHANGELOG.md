@@ -15,6 +15,11 @@
 
 - Clicking `x stop` or `Press x again` inside the fullscreen `/tasks` shell viewer or detail page no longer disarms the two-press stop confirmation on mouse-down before the hint click registers ([#6507](https://github.com/bastani-inc/atomic/pull/6507)).
 
+### Fixed
+
+- Model fallback failure classification and the interactive retry status line now recognize `UND_ERR_SOCKET` as a connection-reset transport failure and `UND_ERR_BODY_TIMEOUT` / `UND_ERR_HEADERS_TIMEOUT` / `UND_ERR_CONNECT_TIMEOUT` as network timeouts.
+- Fixed retry recovery edge cases where interrupting custom messages could settle before an in-flight retry finished, subagent message admission could seal during a retry backoff gap, or a failed retry-attempt omission or pre-loop `agent.continue()` rejection could leave `waitForRetry()` unsettled.
+
 ## [0.10.5] - 2026-11-23
 
 Atomic starts faster, installs fewer files, keeps subagents and Intercom messages intact across restarts, and makes Windows installs, process stops, and proxies more reliable.

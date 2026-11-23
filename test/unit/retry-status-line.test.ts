@@ -23,6 +23,8 @@ test.each([
 	["500 internal_error: Internal server error", "server error 500"],
 	["Provider returned error", "server error"],
 	["read ECONNRESET", "connection reset"],
+	["UND_ERR_SOCKET", "connection reset"],
+	["fetch failed (UND_ERR_SOCKET)", "connection reset"],
 	["socket hang up", "connection reset"],
 	["connect ECONNREFUSED 127.0.0.1:8080", "connection refused"],
 	["fetch failed", "network error"],

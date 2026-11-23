@@ -1071,6 +1071,7 @@ function awaitsSubagentAnswer(
 export function _sealMessageAdmissionIfDrained(this: AgentSession): boolean {
 	if (
 		this.isStreaming ||
+		this.isRetrying ||
 		this._activePromptCount > 0 ||
 		this._pendingInterruptDeliveries > 0 ||
 		messageAdmissionHolds.has(this)

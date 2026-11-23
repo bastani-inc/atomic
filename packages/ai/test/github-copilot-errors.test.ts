@@ -1676,4 +1676,47 @@ describe("stream-ended-early diagnostics (#4626)", () => {
 		expectTypeOf<GitHubCopilotErrorFieldValue>().toEqualTypeOf<string | number | boolean | null>();
 		expectTypeOf<GitHubCopilotFailureContext["stream"]>().toEqualTypeOf<GitHubCopilotStreamSnapshot | undefined>();
 	});
+
+	it.each([
+		"UND_ERR_SOCKET",
+		"UND_ERR_BODY_TIMEOUT",
+		"UND_ERR_HEADERS_TIMEOUT",
+		"UND_ERR_CONNECT_TIMEOUT",
+		"ERR_HTTP2_STREAM_ERROR",
+		"ERR_SOCKET_CLOSED",
+		"ERR_TLS_HANDSHAKE_TIMEOUT",
+		"ERR_SSL_WRONG_VERSION_NUMBER",
+		"ECONNRESET",
+		"ECONNABORTED",
+		"ECONNREFUSED",
+		"ETIMEDOUT",
+		"EPIPE",
+		"EHOSTUNREACH",
+		"ENETUNREACH",
+		"ENOTFOUND",
+		"EAI_AGAIN",
+	])("classifies bare runtime transport code %s as stream-ended-early after HTTP 200 and undefined before HTTP 200", (code) => {
+		const transportErr = Object.assign(new Error("other side closed"), { code });
+
+		const afterStart = classifyGitHubCopilotFailure(transportErr, {
+			modelId: "claude-opus-5.5",
+			api: "anthropic-messages",
+			stream: cutAfterMinutes(2),
+		});
+
+		assert.ok(afterStart instanceof GitHubCopilotStreamEndedEarlyError);
+		assert.equal(afterStart.code, "stream-ended-early");
+		assert.equal(afterStart.providerCode, undefined);
+		assert.equal(afterStart.durationMs, 120_000);
+		assert.equal(afterStart.startedContent, true);
+		assert.equal(afterStart.requestId, "req-snapshot");
+		assert.equal(afterStart.cause, transportErr);
+
+		const beforeStart = classifyGitHubCopilotFailure(transportErr, {
+			modelId: "claude-opus-5.5",
+			api: "anthropic-messages",
+		});
+
+		assert.equal(beforeStart, undefined);
+	});
 });

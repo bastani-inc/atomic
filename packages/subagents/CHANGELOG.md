@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- In-process subagent drain and turn-settlement waits (`sessionDrained` and `nextTurnSettled`) now remain open while a session retry or model fallback is in progress instead of settling between retry attempts, and wake cleanly when retries end (`auto_retry_end` or `model_fallback_end`).
+
 ## [0.10.5] - 2026-11-23
 
 ### Fixed
