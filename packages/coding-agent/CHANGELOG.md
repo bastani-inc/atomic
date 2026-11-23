@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.10.6-alpha.1] - 2026-11-23
+
+Atomic unifies picker selection cursors around `∀`, makes `/tasks` rows clickable across every host, hardens recovery from transient mid-stream socket drops, and updates the default Mistral model.
+
+**Interface and `/tasks`**
+
+- **Consistent `∀` picker cursor.** Every picker UI — `/tasks`, `/model`, `/settings`, `/resume`, `/tree`, `/fork`, `/mcp`, `/llama`, `/intercom`, `atomic config`, `ask_user_question`, extension dialogs, and editor completion menus — now marks the selected row with Atomic's `∀` cursor matching the agent panel, while editor and reply prompts keep `❯` ([#6507](https://github.com/bastani-inc/atomic/pull/6507))
+- **Clickable `/tasks` rows and shell stop hints.** Clicking any row in `/tasks` opens it just like pressing `Enter` — including clicking a shell row in a shell-only `/tasks` view to open its command and retained output viewer across in-process, isolated, and subagent chats — and clicking `x stop` or `Press x again` inside the fullscreen shell or detail view no longer disarms two-press confirmation on mouse-down ([#6507](https://github.com/bastani-inc/atomic/pull/6507))
+
+**Providers, retries and subagents**
+
+- **Resilient mid-stream and socket-drop recovery.** Bare runtime transport codes such as `UND_ERR_SOCKET` now classify as `stream-ended-early` or retryable transport failures across GitHub Copilot, classifiers, fallback routing, and retry banners; interrupting custom-message turns and subagent drain waits now wait for active retries to settle without stranding `waitForRetry()` ([#6509](https://github.com/bastani-inc/atomic/pull/6509))
+- **Updated Mistral default model.** The default Mistral model moved from retired `devstral-medium-latest` to `mistral-large-latest` ([#6508](https://github.com/bastani-inc/atomic/pull/6508))
+
 ### Added
 
 - Clicking any row in `/tasks` (shells, subagents, or extension items) now opens it like pressing `Enter` — including clicking a shell row in a shell-only `/tasks` view to inspect its command and retained output, across in-process hosts, isolated hosts, and subagent chats ([#6507](https://github.com/bastani-inc/atomic/pull/6507)).
@@ -14,11 +28,8 @@
 ### Fixed
 
 - Clicking `x stop` or `Press x again` inside the fullscreen `/tasks` shell viewer or detail page no longer disarms the two-press stop confirmation on mouse-down before the hint click registers ([#6507](https://github.com/bastani-inc/atomic/pull/6507)).
-
-### Fixed
-
-- Model fallback failure classification and the interactive retry status line now recognize `UND_ERR_SOCKET` as a connection-reset transport failure and `UND_ERR_BODY_TIMEOUT` / `UND_ERR_HEADERS_TIMEOUT` / `UND_ERR_CONNECT_TIMEOUT` as network timeouts.
-- Fixed retry recovery edge cases where interrupting custom messages could settle before an in-flight retry finished, subagent message admission could seal during a retry backoff gap, or a failed retry-attempt omission or pre-loop `agent.continue()` rejection could leave `waitForRetry()` unsettled.
+- Model fallback failure classification and the interactive retry status line now recognize `UND_ERR_SOCKET` as a connection-reset transport failure and `UND_ERR_BODY_TIMEOUT` / `UND_ERR_HEADERS_TIMEOUT` / `UND_ERR_CONNECT_TIMEOUT` as network timeouts ([#6509](https://github.com/bastani-inc/atomic/pull/6509)).
+- Fixed retry recovery edge cases where interrupting custom messages could settle before an in-flight retry finished, subagent message admission could seal during a retry backoff gap, or a failed retry-attempt omission or pre-loop `agent.continue()` rejection could leave `waitForRetry()` unsettled ([#6509](https://github.com/bastani-inc/atomic/pull/6509)).
 
 ## [0.10.5] - 2026-11-23
 
