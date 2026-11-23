@@ -1513,7 +1513,7 @@ export class MultiNodeRouter {
 			clearTimeout(bound);
 			clearTimeout(cap);
 			if (progress !== undefined) {
-				progress.elapsedMs = Math.max(elapsed(), gaveUpAt ?? 0);
+				progress.elapsedMs = Math.max(0, performance.now() - started.monotonic);
 				// What the claim took past its own bound because it gave an exited broker's ids up, and only that: a claim answered
 				// within its bound, or late for any other reason (a stalled broker), takes nothing off `extendedMs`.
 				if (extended)
@@ -2531,7 +2531,7 @@ export class MultiNodeRouter {
 		const initialScanEntry = { promise: initialScanPromise, resolve: resolveInitialScan };
 		this.initialScans.get(identity)?.resolve();
 		this.initialScans.set(identity, initialScanEntry);
-		const started = clockMark();
+		const startedMono = performance.now();
 		return new Promise<void>((resolve) => {
 			let resolved = false;
 			const finish = (): void => {
@@ -2540,11 +2540,11 @@ export class MultiNodeRouter {
 				clearTimeout(bound);
 				resolve();
 			};
-			// If `boundMs` already elapsed during an earlier step (e.g., synchronous SQLite I/O or an event-loop stall),
-			// resolve and yield once before starting the next store write so `registered` flushes to the client before
-			// background persistence continues. Zero overhead while still within `boundMs`.
+			// If `boundMs` already elapsed monotonically during an earlier step (e.g., synchronous SQLite I/O or an
+			// event-loop stall), resolve and yield once before starting the next store write so `registered` flushes to
+			// the client before background persistence continues. Zero overhead while still within `boundMs`.
 			const yieldIfOverdue = async (): Promise<void> => {
-				if (resolved || elapsedSince(started) < boundMs) return;
+				if (resolved || performance.now() - startedMono < boundMs) return;
 				finish();
 				await new Promise<void>((resume) => setImmediate(resume));
 			};

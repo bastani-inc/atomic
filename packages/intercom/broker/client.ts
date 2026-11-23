@@ -768,7 +768,7 @@ export class IntercomClient extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       const connectTimeoutMs = this.connectTimeoutMs;
-      const connectDeadlineAt = Date.now() + connectTimeoutMs;
+      const connectStartedAt = performance.now();
       const socket = net.connect(socketPath);
       this.socket = socket;
       this.disconnectError = null;
@@ -899,8 +899,7 @@ export class IntercomClient extends EventEmitter {
             session: registration,
             ...(reach === undefined ? {} : { reach: { home: reach.home, reachable: [...reach.reachable] } }),
             protocol: { ...BROKER_PROTOCOL },
-            connectTimeoutMs,
-            connectDeadlineAt,
+            connectTimeoutMs: Math.max(1, Math.round(connectTimeoutMs - Math.max(0, performance.now() - connectStartedAt))),
             ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
 			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),

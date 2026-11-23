@@ -1241,12 +1241,6 @@ class IntercomBroker {
 		) {
 			throw new Error("Invalid connect timeout");
 		}
-		if (
-			clientMessage.connectDeadlineAt !== undefined &&
-			(typeof clientMessage.connectDeadlineAt !== "number" || !Number.isFinite(clientMessage.connectDeadlineAt))
-		) {
-			throw new Error("Invalid connect deadline");
-		}
 		const registrationReach = readRegistrationReach(
 			clientMessage.reach,
 			clientMessage.session,
@@ -1295,20 +1289,9 @@ class IntercomBroker {
         this.openDeliveredMessages();
         const clientTimeoutMs =
           typeof clientMessage.connectTimeoutMs === "number" ? clientMessage.connectTimeoutMs : BROKER_CONNECT_TIMEOUT_MS;
-        const readWall = Date.now();
         const readMono = performance.now();
-        const preReadElapsedMs =
-          typeof clientMessage.connectDeadlineAt === "number"
-            ? Math.min(clientTimeoutMs, Math.max(0, clientTimeoutMs - (clientMessage.connectDeadlineAt - readWall)))
-            : 0;
-        const clientRemainingMs = (claimElapsedMs?: number): number => {
-          const sinceReadMs = Math.max(0, performance.now() - readMono, Date.now() - readWall);
-          const brokerElapsedMs =
-            claimElapsedMs !== undefined && Number.isFinite(claimElapsedMs)
-              ? Math.max(sinceReadMs, claimElapsedMs)
-              : sinceReadMs;
-          return Math.max(0, clientTimeoutMs - preReadElapsedMs - brokerElapsedMs);
-        };
+        const clientRemainingMs = (): number =>
+          Math.max(0, clientTimeoutMs - Math.max(0, performance.now() - readMono));
         // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
         const preferred = this.sessionIdReclaim.grant(
           clientMessage.preferredSessionId,
@@ -1380,10 +1363,7 @@ class IntercomBroker {
                 takesIdHandoff &&
                 (claimed.status === "held" || (claimed.status === "unanswered" && claimed.unanswered.recovery !== undefined));
               const unanswered = claimed.status === "unanswered" ? claimed.unanswered : undefined;
-              const presenceBoundMs = registrationBoundAfterClaim(
-                claimProgress,
-                clientRemainingMs(claimProgress.elapsedMs),
-              );
+              const presenceBoundMs = registrationBoundAfterClaim(claimProgress, clientRemainingMs());
               this.completeSessionRegistration(
                 socket,
                 registration,

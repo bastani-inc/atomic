@@ -5614,4 +5614,40 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			"background acquirePresence still completes after registration resolved",
 		);
 	});
+
+	test("a forward wall-clock jump during recordKnown never triggers yieldIfOverdue prematurely while monotonic time remains (#5607)", async () => {
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const s = session("wall-jump-session");
+		node.sessions.set(s.info.id, s);
+
+		const realDateNow = Date.now;
+		let wallOffset = 0;
+		Date.now = () => realDateNow() + wallOffset;
+		let acquireCompletedBeforeResolve = false;
+		try {
+			const realRecord = node.state.knownSessions.record.bind(node.state.knownSessions);
+			vi.spyOn(node.state.knownSessions, "record").mockImplementationOnce(async (rec) => {
+				const res = await realRecord(rec);
+				// Simulate a +10 s NTP forward wall-clock jump while monotonic time barely moved.
+				wallOffset = 10_000;
+				return res;
+			});
+			const realAcquire = node.state.leases.acquire.bind(node.state.leases);
+			vi.spyOn(node.state.leases, "acquire").mockImplementationOnce(async (subject, holderId, staleAfterMs) => {
+				const ans = await realAcquire(subject, holderId, staleAfterMs);
+				acquireCompletedBeforeResolve = true;
+				return ans;
+			});
+
+			await node.router.sessionRegistered(s, undefined, undefined, undefined, undefined, undefined, 500);
+			assert.equal(
+				acquireCompletedBeforeResolve,
+				true,
+				"forward Date.now() jump must not resolve sessionRegistered before acquirePresence completes while monotonic time remains",
+			);
+		} finally {
+			Date.now = realDateNow;
+		}
+	});
 });
