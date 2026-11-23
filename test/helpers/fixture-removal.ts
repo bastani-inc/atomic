@@ -125,6 +125,26 @@ export function runThenRemoveFixtureTree<T>(path: string, work: () => T, options
 	return result;
 }
 
+/**
+ * Awaits `work`, then removes `path` with {@link removeFixtureTree}, also when `work` rejects. A failure of `work`
+ * stays the thrown error: when the removal fails as well, its {@link FixtureRemovalError} is attached as
+ * `cleanupCause`.
+ */
+export async function runThenRemoveFixtureTreeAsync<T>(
+	path: string,
+	work: () => Promise<T>,
+	options: FixtureRemovalOptions = {},
+): Promise<T> {
+	let result: T;
+	try {
+		result = await work();
+	} catch (primary) {
+		throw removeAfterFailure(path, primary, options);
+	}
+	removeFixtureTree(path, options);
+	return result;
+}
+
 function removeAfterFailure(path: string, primary: unknown, options: FixtureRemovalOptions): unknown {
 	try {
 		removeFixtureTree(path, options);

@@ -34,6 +34,7 @@ import { delimiter, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { hasTimezoneKey, readTimezone } from "./system-prompt-date-isolation.js";
 /** Create a temporary directory using the same canonical path reported by SQLite and child processes. */
 export function makeTempDirectory(prefix: string): string {
 	return nodeRealpathSync(nodeMkdtempSync(join(tmpdir(), prefix)));
@@ -216,8 +217,9 @@ function environment(env: Record<string, string | undefined> | undefined): NodeJ
 	if (!env) return undefined;
 	const resolved: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(env)) if (value !== undefined) resolved[key] = value;
-	if (!Object.hasOwn(env, "TZ") && process.env.TZ) {
-		resolved.TZ = process.env.TZ;
+	if (!hasTimezoneKey(env)) {
+		const tz = readTimezone(process.env);
+		if (tz) resolved.TZ = tz;
 	}
 	return resolved;
 }
