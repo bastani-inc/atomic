@@ -231,9 +231,10 @@ export class WindowedContainer extends Container {
 		this.syncEntries();
 		this.updateOffsets();
 		const layout = ++this.layouts;
+		const overscan = this.measuredChildren === 0 ? 0 : Math.min(4, Math.ceil(height / 4));
 		let top = this.topFor(request, anchor, height);
 		for (let pass = 0; pass < MAX_WINDOW_PASSES; pass++) {
-			if (!this.renderWindow(top, height, request.followEnd, request.exact === true, width, layout)) break;
+			if (!this.renderWindow(top, height, overscan, request.followEnd, request.exact === true, width, layout)) break;
 			this.updateOffsets();
 			top = this.topFor(request, anchor, height);
 		}
@@ -588,6 +589,7 @@ export class WindowedContainer extends Container {
 	private renderWindow(
 		top: number,
 		height: number,
+		overscan: number,
 		followEnd: boolean,
 		exact: boolean,
 		width: number,
@@ -595,7 +597,6 @@ export class WindowedContainer extends Container {
 	): boolean {
 		if (this.laidOut.length === 0) return false;
 		const visible = Math.max(height, 1);
-		const overscan = Math.min(4, Math.ceil(height / 4));
 		let changed = false;
 		const ensureRendered = (entry: Entry): void => {
 			if (entry.renderedIn === layout) return;

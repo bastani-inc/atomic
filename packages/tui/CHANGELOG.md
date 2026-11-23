@@ -10,7 +10,7 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ### Fixed
 
-- `WindowedContainer.layoutWindow()` now bounds each layout pass by actual rendered row heights (walking backwards from the end when following the tail and anchoring around the requested top otherwise) instead of iterating over stale 1-row estimates, preventing large unmeasured transcripts from rendering dozens of off-screen components synchronously on a single frame.
+- `WindowedContainer.layoutWindow()` now bounds each layout pass by actual rendered row heights (rendering only the visible viewport on a cold unmeasured frame, walking backwards from the end when following the tail, and anchoring around the requested top otherwise) instead of iterating over stale 1-row estimates, and `sliceWithWidth()`, `extractSegments()`, and `getGraphemeCellRange()` fast-path pure printable ASCII runs to keep scrollbar and pinned-prompt compositing fast when paging through large transcripts.
 
 ## [0.10.4] - 2026-11-22
 

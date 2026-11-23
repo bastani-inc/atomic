@@ -210,6 +210,17 @@ function boundaryCoveredIndex(path: SessionEntry[], boundary: CompactionEntry, b
 	return covered >= 0 ? covered : boundaryIndex - 1;
 }
 
+function contextEntriesFromPath(path: SessionEntry[]): SessionEntry[] {
+	const boundary = getLatestCompactionBoundaryEntry(path);
+	if (!boundary) return path;
+	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
+	const firstKeptIndex = path.findIndex(
+		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
+	);
+	const retainedStart = firstKeptIndex >= 0 ? firstKeptIndex : boundaryCoveredIndex(path, boundary, boundaryIndex) + 1;
+	return [boundary, ...path.slice(retainedStart, boundaryIndex), ...path.slice(boundaryIndex + 1)];
+}
+
 /** Return the active branch entries after applying the latest compaction boundary. */
 export function buildContextEntries(
 	entries: SessionEntry[],
@@ -220,15 +231,7 @@ export function buildContextEntries(
 	if (leafId === null) return [];
 	const leaf = leafId ? byId.get(leafId) : entries[entries.length - 1];
 	if (!leaf) return [];
-	const path = normalizeDerivedSessionEntries(branch ?? getBranchPath(leaf.id, byId));
-	const boundary = getLatestCompactionBoundaryEntry(path);
-	if (!boundary) return path;
-	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
-	const firstKeptIndex = path.findIndex(
-		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
-	);
-	const retainedStart = firstKeptIndex >= 0 ? firstKeptIndex : boundaryCoveredIndex(path, boundary, boundaryIndex) + 1;
-	return [boundary, ...path.slice(retainedStart, boundaryIndex), ...path.slice(boundaryIndex + 1)];
+	return contextEntriesFromPath(normalizeDerivedSessionEntries(branch ?? getBranchPath(leaf.id, byId)));
 }
 
 /**
@@ -283,7 +286,7 @@ export function buildSessionProjection(
 	const walked = branch ?? getBranchPath(leaf.id, byId);
 	const path = normalizeDerivedSessionEntries(walked);
 	const { thinkingLevel, model } = getSessionContextSettings(path);
-	const contextEntries = buildContextEntries(entries, leaf.id, byId, walked);
+	const contextEntries = contextEntriesFromPath(path);
 	const edits = collectContextEdits(contextEntries);
 	const headers = new ReopenedCompletionHeaders(() => ({ entries: path, recovery }), isProxy);
 

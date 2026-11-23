@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Text } from "@bastani/atomic-tui";
 import { describe, test } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager.js";
@@ -17,6 +19,7 @@ import {
 } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { stripAnsi } from "../src/utils/ansi.js";
+import { yieldToTimerTurn } from "../src/utils/event-loop.ts";
 
 const usage = {
 	input: 10,
@@ -363,5 +366,21 @@ describe("sliced fullscreen transcript planning", () => {
 		ref.render(entries);
 		finishChatHistory(full.chatContainer);
 		assert.deepEqual(full.lines(), ref.lines());
+	});
+
+	test("yieldToTimerTurn lets a pre-armed timer flush from an I/O callback before resuming", async () => {
+		const order: string[] = [];
+		await new Promise<void>((resolve, reject) => {
+			readFile(fileURLToPath(import.meta.url), () => {
+				setTimeout(() => order.push("pre-armed"), 0);
+				void yieldToTimerTurn()
+					.then(() => {
+						order.push("after-yield");
+						resolve();
+					})
+					.catch(reject);
+			});
+		});
+		assert.deepEqual(order, ["pre-armed", "after-yield"]);
 	});
 });

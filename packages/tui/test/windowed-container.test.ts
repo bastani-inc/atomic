@@ -290,13 +290,15 @@ describe("WindowedContainer in a scroll view", () => {
 		const windowed = openTall(new WindowedContainer(), windowedChildren);
 		const plain = openTall(new Container(), plainChildren);
 		try {
-			// First frame at bottom (followEnd = true): 36 visible rows = 3 entries of height 12.
+			// First frame at bottom (followEnd = true): 36 visible rows = exactly 3 entries of height 12.
+			// Cold start renders only the visible viewport without pulling extra off-screen entries above it.
 			// Measure synchronously right after renderNow(), before background sweepSlice runs on setImmediate.
 			windowed.tui.renderNow();
 			const renderedBottom = windowedChildren.filter((child) => child.renders > 0).length;
-			assert.ok(
-				renderedBottom <= 10,
-				`first frame at bottom rendered ${renderedBottom} tall children (expected <= 10)`,
+			assert.equal(
+				renderedBottom,
+				3,
+				`cold first frame at bottom rendered ${renderedBottom} tall children (expected exactly 3 for 36 visible rows)`,
 			);
 			await windowed.terminal.flush();
 			const bottomWindowed = windowed.terminal.getViewport();

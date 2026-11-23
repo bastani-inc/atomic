@@ -1395,8 +1395,8 @@ type TranscriptStep =
 			readonly seq?: number;
 	  };
 
-const TAIL_STEPS = 48;
-const TAIL_PLAN_ENTRIES = 64;
+const TAIL_STEPS = 24;
+const TAIL_PLAN_ENTRIES = 32;
 const HISTORY_PLAN_CHUNK_ENTRIES = 64;
 const MAX_TAIL_SCAN_ENTRIES = 512;
 const EDITOR_PROMPT_HISTORY_LIMIT = 100;
@@ -2135,7 +2135,10 @@ InteractiveModeBase.prototype.renderInitialMessages = function (this: Interactiv
 	if (previousSessionId !== sessionId) renderer.newMessages?.reset();
 	this.attachStartupNoticesContainer({ resetDetached: true });
 	showNativeHistoryHint(this);
-	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
+	const entries =
+		typeof this.sessionManager.buildContextEntries === "function"
+			? this.sessionManager.buildContextEntries()
+			: buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { updateFooter: true, populateHistory: true });
 	renderProjectTrustWarningIfNeeded(this);
 	refreshInteractiveTasks(this);
@@ -2295,7 +2298,10 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	this.managedToolStatusStarted = false;
 	this.lastStatusSpacer = undefined;
 	this.lastStatusText = undefined;
-	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
+	const entries =
+		typeof this.sessionManager.buildContextEntries === "function"
+			? this.sessionManager.buildContextEntries()
+			: buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	// Count what arrived unread before the rows the reader sees leave the chat with the rest.
 	if (this.chatContainer.children.length > 0) {
 		renderer.newMessages?.observe(renderer.isFollowingOutput !== false, countChatMessages(this.chatContainer));

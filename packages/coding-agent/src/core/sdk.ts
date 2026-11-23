@@ -423,7 +423,7 @@ async function constructAgentSession(
 	}
 
 	const settingsManager = options.settingsManager ?? (await SettingsManager.createAsync(cwd, agentDir));
-	migrateCompactionModelSettings(settingsManager, modelRuntime.getAllModels());
+	migrateCompactionModelSettings(settingsManager, () => modelRuntime.getAllModels());
 	const effectiveSettings = settingsManager.getSettings();
 	let sessionManager = suppliedSession;
 	if (!sessionManager) {

@@ -10,7 +10,11 @@ import { loadOnDemand } from "../utils/updated-install.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { SessionStats } from "./agent-session-types.js";
 import { adoptCommandSession } from "./command-deliveries.ts";
-import { calculateContextTokens, estimateProjectedContextTokens } from "./compaction/index.ts";
+import {
+	calculateContextTokens,
+	estimateDirectBranchContextTokens,
+	estimateProjectedContextTokens,
+} from "./compaction/index.ts";
 import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.js";
 import { forkTranscriptEntries } from "./fork-transcript-boundary.js";
@@ -105,11 +109,20 @@ export function getContextUsage(this: AgentSession): ContextUsage | undefined {
 	const contextWindow = model.contextWindow ?? 0;
 	if (contextWindow <= 0) return undefined;
 
+	const branchEntries = this.sessionManager.getBranch();
+	const directEstimate = estimateDirectBranchContextTokens(branchEntries);
+	if (directEstimate) {
+		return {
+			tokens: directEstimate.tokens,
+			contextWindow,
+			percent: (directEstimate.tokens / contextWindow) * 100,
+		};
+	}
+
 	// After compaction, the last assistant usage reflects pre-compaction context size.
 	// We can only trust usage from an assistant that responded after the latest compaction.
 	// If no such assistant exists, context token count is unknown until the next LLM response.
 	const projection = this.sessionManager.buildSessionProjection();
-	const branchEntries = this.sessionManager.getBranch();
 	const latestCompactionBoundary = getLatestCompactionBoundaryEntry(branchEntries);
 
 	if (latestCompactionBoundary) {

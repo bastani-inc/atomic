@@ -226,4 +226,43 @@ describe("compaction settings after the clear-and-recover change", () => {
 			ignored: { configured: UNKNOWN, reason: "unknown" },
 		});
 	});
+
+	it("skips materializing the model catalog when no configured scope needs compaction-model migration", () => {
+		let catalogCalls = 0;
+		const lazyModels = () => {
+			catalogCalls += 1;
+			return [{ ...getModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<typeof resolveCompactionModel>[1];
+		};
+		const state: { global?: string; project?: string } = { global: undefined, project: "auto" };
+		const writes: Array<[string, string | undefined]> = [];
+		const settings = {
+			getGlobalSettings: () => ({ compactionModel: state.global }),
+			getProjectSettings: () => ({ compactionModel: state.project }),
+			isProjectTrusted: () => true,
+			setCompactionModel: (model: string, scope?: "global" | "project") => {
+				writes.push([model, scope]);
+				if (scope === "project") state.project = model;
+				else state.global = model;
+			},
+		};
+		assert.deepEqual(migrateCompactionModelSettings(settings, lazyModels), []);
+		assert.equal(catalogCalls, 0);
+
+		state.global = "  ";
+		state.project = " auto ";
+		assert.deepEqual(migrateCompactionModelSettings(settings, lazyModels), []);
+		assert.equal(catalogCalls, 0);
+
+		state.global = CHAT;
+		state.project = CHAT;
+		assert.deepEqual(migrateCompactionModelSettings(settings, lazyModels), [
+			{ scope: "global", from: CHAT },
+			{ scope: "project", from: CHAT },
+		]);
+		assert.equal(catalogCalls, 1);
+		assert.deepEqual(writes, [
+			["auto", "global"],
+			["auto", "project"],
+		]);
+	});
 });
