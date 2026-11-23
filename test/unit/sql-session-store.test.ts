@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, it, test } from "vitest";
@@ -581,47 +582,106 @@ test("SQL light listing of a project gives the event loop a turn every 256 sessi
 	});
 });
 
-/** Sessions of another project whose wide columns a light listing of this project must not read. */
-const OTHER_PROJECT_SESSIONS = 128;
-/** Characters of each other session's stored summary: 64 MiB across them, most of it in overflow pages. */
-const OTHER_SUMMARY_CHARS = 512 * 1024;
-/** Best of several listings, so a pause of the test process does not decide the comparison. */
-const LISTING_TIMINGS = 5;
-/** Time a listing may take beyond four times its time beside narrow sessions; copying the summaries takes ~20 ms. */
-const LISTING_TIMING_SLACK_MS = 5;
+/**
+ * Characters of each other project's wide column: 128 KiB exceeds 2 * max SQLite page size (65,536), so each value
+ * spans at least two overflow pages on any page size.
+ */
+const OTHER_WIDE_COLUMN_CHARS = 128 * 1024;
+/** Out-of-range overflow next-page pointer: SQLite rejects with SQLITE_CORRUPT only if a query reads that overflow page. */
+const INVALID_OVERFLOW_NEXT_PAGE = Buffer.from([0xff, 0xff, 0xff, 0xff]);
+
+/**
+ * Finds one non-final overflow page whose payload is filled with `sentinelByte` and poisons its 4-byte next-page
+ * pointer. Any query that reads that column (or copies it into a window table) must walk the overflow chain and fails
+ * with SQLITE_CORRUPT, whereas a query reading only preceding key columns never touches the overflow page.
+ */
+function poisonOverflowPage(databasePath: string, pageSize: number, sentinelByte: number): void {
+	const bytes = readFileSync(databasePath);
+	const totalPages = Math.floor(bytes.length / pageSize);
+	let targetPageIndex = -1;
+	for (let pageIndex = 1; pageIndex < totalPages; pageIndex++) {
+		const offset = pageIndex * pageSize;
+		const nextPage = bytes.readUInt32BE(offset);
+		const selfPageNo = pageIndex + 1;
+		if (nextPage < 1 || nextPage > totalPages || nextPage === selfPageNo) continue;
+		let allSentinel = true;
+		for (let i = 4; i < pageSize; i++) {
+			if (bytes[offset + i] !== sentinelByte) {
+				allSentinel = false;
+				break;
+			}
+		}
+		if (allSentinel) {
+			targetPageIndex = pageIndex;
+			break;
+		}
+	}
+	assert.notEqual(targetPageIndex, -1, `found an overflow page for byte 0x${sentinelByte.toString(16)}`);
+	const fd = openSync(databasePath, "r+");
+	try {
+		writeSync(fd, INVALID_OVERFLOW_NEXT_PAGE, 0, 4, targetPageIndex * pageSize);
+	} finally {
+		closeSync(fd);
+	}
+}
 
 test("SQL light listing of a project reads only the keys of other projects' sessions (#5480)", async () => {
-	await withNodeSqliteDatabase(async ({ database }) => {
-		const store = await SqlSessionStore.open(database);
-		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES);
+	const directory = makeTempDirectory("atomic-light-listing-keys-");
+	const path = join(directory, "sessions.sqlite");
+	const tables = renderStorageIdentifiers("sessions", SESSION_TABLES);
+	const otherColumns = [
+		{ id: "other-summary", column: "summary", sentinel: "s" },
+		{ id: "other-first", column: "first_message", sentinel: "f" },
+		{ id: "other-name", column: "name", sentinel: "n" },
+	] as const;
+	let database: SqliteDatabase | undefined;
+	let store: SqlSessionStore | undefined;
+	try {
+		database = await openNodeSqliteDatabase(path);
+		store = await SqlSessionStore.open(database);
 		await database.exec("PRAGMA synchronous=OFF");
 		await store.create(header, [message("m", "this project")]);
-		for (let index = 0; index < OTHER_PROJECT_SESSIONS; index++)
-			await store.create({ ...header, id: `other-${index}`, cwd: "/other" }, [message("m", "other project")]);
-		const fastestListing = async (): Promise<number> => {
-			let fastest = Number.POSITIVE_INFINITY;
-			for (let run = 0; run < LISTING_TIMINGS; run++) {
-				const started = performance.now();
-				const listed: string[] = [];
-				for await (const summary of store.list({ cwd: header.cwd, withoutSearchText: true }))
-					listed.push(summary.id);
-				fastest = Math.min(fastest, performance.now() - started);
-				assert.deepEqual(listed, [header.id]);
-			}
-			return fastest;
-		};
-		const narrow = await fastestListing();
-		await database.run(
-			`UPDATE ${tables.sessions} SET summary = json_quote(printf('%.*c', ?, 'y')) WHERE cwd = '/other'`,
-			OTHER_SUMMARY_CHARS,
-		);
-		const wide = await fastestListing();
-		assert.ok(
-			wide <= narrow * 4 + LISTING_TIMING_SLACK_MS,
-			`listing took ${wide.toFixed(1)} ms beside wide sessions, ${narrow.toFixed(1)} ms beside narrow ones`,
-		);
+		for (const { id, column, sentinel } of otherColumns) {
+			await store.create({ ...header, id, cwd: "/other" }, [message("m", "other project")]);
+			await database.run(
+				`UPDATE ${tables.sessions} SET ${column} = json_quote(printf('%.*c', ?, ?)) WHERE id = ?`,
+				OTHER_WIDE_COLUMN_CHARS,
+				sentinel,
+				id,
+			);
+		}
+		const pageSize = Number((await database.get<{ page_size: number }>("PRAGMA page_size"))!.page_size);
+		await database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
 		await store.close();
-	});
+		store = undefined;
+		await database.close();
+		database = undefined;
+
+		for (const { sentinel } of otherColumns) {
+			poisonOverflowPage(path, pageSize, sentinel.charCodeAt(0));
+		}
+
+		database = await openNodeSqliteDatabase(path);
+		store = await SqlSessionStore.open(database);
+		const listed: string[] = [];
+		for await (const summary of store.list({ cwd: header.cwd, withoutSearchText: true })) {
+			listed.push(summary.id);
+		}
+		assert.deepEqual(listed, [header.id]);
+
+		// Positive control: listing the other project must read each wide column and trip its poisoned overflow page.
+		for (const { id } of otherColumns) {
+			await assert.rejects(async () => {
+				for await (const _summary of store!.list({ cwd: "/other", idPrefix: id, withoutSearchText: true })) {
+					// Drain until SQLite reads the wide column's overflow chain.
+				}
+			}, /database disk image is malformed/i);
+		}
+	} finally {
+		if (store) await store.close();
+		if (database) await database.close();
+		removeTempDirectory(directory);
+	}
 });
 
 /** Stored project spellings a paced listing resolves at once: each can be a chain of file system calls. */
