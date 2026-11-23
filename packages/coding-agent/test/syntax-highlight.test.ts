@@ -216,4 +216,116 @@ describe("theme syntax highlighting", () => {
 			stdio: "pipe",
 		});
 	});
+
+	it("retries loadAllHighlightLanguages after transient fallback import, index read, or chunk require failures", () => {
+		const syntaxHighlightUrl = pathToFileURL(resolve(import.meta.dirname, "../src/utils/syntax-highlight.ts")).href;
+
+		// Case 1: Fallback dynamic import("highlight.js/lib/index.js") fails transiently (e.g. bundled/in-place swap).
+		const fallbackScript = [
+			NODE_TS_SOURCE_HOOK,
+			`import assert from "node:assert/strict";`,
+			`const hljs = (await import("highlight.js/lib/core.js")).default;`,
+			`globalThis[Symbol.for("atomic.bundledHighlightCore")] = hljs;`,
+			`let failNextImport = true;`,
+			`let importAttempts = 0;`,
+			`registerHooks({`,
+			`  resolve(specifier, context, nextResolve) {`,
+			`    if (specifier === "highlight.js/lib/index.js") {`,
+			`      importAttempts += 1;`,
+			`      if (failNextImport) {`,
+			`        failNextImport = false;`,
+			`        const err = Object.assign(new Error("transient mid-swap ENOENT"), { code: "ERR_MODULE_NOT_FOUND" });`,
+			`        throw err;`,
+			`      }`,
+			`    }`,
+			`    return nextResolve(specifier, context);`,
+			`  },`,
+			`});`,
+			`const sh = await import(${JSON.stringify(syntaxHighlightUrl)});`,
+			`assert.equal(sh.supportsLanguage("ada"), false);`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(importAttempts, 1);`,
+			`assert.equal(sh.supportsLanguage("ada"), false, "failed fallback import must not register ada");`,
+			`// Retry after transient swap clears must succeed instead of being poisoned by allLanguagesLoaded = true.`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(importAttempts, 2, "second loadAllHighlightLanguages call must retry after transient failure");`,
+			`assert.equal(sh.supportsLanguage("ada"), true, "ada must load once retry succeeds");`,
+			`// Subsequent call after success is a cached no-op.`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(importAttempts, 2);`,
+		].join("\n");
+		execFileSync(process.execPath, ["--input-type=module", "-e", fallbackScript], {
+			cwd: resolve(import.meta.dirname, ".."),
+			stdio: "pipe",
+		});
+
+		// Case 2: Both chunk index resolve and fallback import fail transiently, then recover via chunked load.
+		const indexAndFallbackScript = [
+			NODE_TS_SOURCE_HOOK,
+			`import assert from "node:assert/strict";`,
+			`import Module from "node:module";`,
+			`let failSwap = true;`,
+			`let resolveAttempts = 0;`,
+			`const origResolveFilename = Module._resolveFilename;`,
+			`Module._resolveFilename = function (request, ...rest) {`,
+			`  if (request === "highlight.js/lib/index.js") {`,
+			`    resolveAttempts += 1;`,
+			`    if (failSwap) {`,
+			`      throw Object.assign(new Error("transient ENOENT"), { code: "MODULE_NOT_FOUND" });`,
+			`    }`,
+			`  }`,
+			`  return origResolveFilename.call(this, request, ...rest);`,
+			`};`,
+			`registerHooks({`,
+			`  resolve(specifier, context, nextResolve) {`,
+			`    if (specifier === "highlight.js/lib/index.js") {`,
+			`      resolveAttempts += 1;`,
+			`      if (failSwap) {`,
+			`        throw Object.assign(new Error("transient ERR_MODULE_NOT_FOUND"), { code: "ERR_MODULE_NOT_FOUND" });`,
+			`      }`,
+			`    }`,
+			`    return nextResolve(specifier, context);`,
+			`  },`,
+			`});`,
+			`const sh = await import(${JSON.stringify(syntaxHighlightUrl)});`,
+			`await sh.loadAllHighlightLanguages();`,
+			`const attemptsAfterFirst = resolveAttempts;`,
+			`assert.ok(attemptsAfterFirst >= 2, "first attempt must try both req.resolve and fallback import, got " + attemptsAfterFirst);`,
+			`assert.equal(sh.supportsLanguage("ada"), false);`,
+			`failSwap = false;`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.ok(resolveAttempts > attemptsAfterFirst, "retry must re-resolve highlight.js/lib/index.js instead of caching null or allLanguagesLoaded");`,
+			`assert.equal(sh.supportsLanguage("ada"), true, "chunked load must recover after transient index+fallback failure");`,
+		].join("\n");
+		execFileSync(process.execPath, ["--input-type=module", "-e", indexAndFallbackScript], {
+			cwd: resolve(import.meta.dirname, ".."),
+			stdio: "pipe",
+		});
+
+		// Case 3: Mid-chunk transient require() error on ada.js must NOT skip ada on retry.
+		const midChunkScript = [
+			NODE_TS_SOURCE_HOOK,
+			`import assert from "node:assert/strict";`,
+			`import Module from "node:module";`,
+			`const origLoad = Module._load;`,
+			`let failAdaOnce = true;`,
+			`Module._load = function (request, parent, isMain) {`,
+			`  if (failAdaOnce && typeof request === "string" && /[\\\\/]languages[\\\\/]ada(?:\\.js)?$/.test(request)) {`,
+			`    failAdaOnce = false;`,
+			`    throw Object.assign(new Error("transient mid-chunk ENOENT"), { code: "ENOENT" });`,
+			`  }`,
+			`  return origLoad.call(this, request, parent, isMain);`,
+			`};`,
+			`const sh = await import(${JSON.stringify(syntaxHighlightUrl)});`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(failAdaOnce, false, "ada fault must have triggered");`,
+			`assert.equal(sh.supportsLanguage("ada"), false);`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(sh.supportsLanguage("ada"), true, "ada must not be permanently skipped after transient mid-chunk require failure");`,
+		].join("\n");
+		execFileSync(process.execPath, ["--input-type=module", "-e", midChunkScript], {
+			cwd: resolve(import.meta.dirname, ".."),
+			stdio: "pipe",
+		});
+	});
 });
