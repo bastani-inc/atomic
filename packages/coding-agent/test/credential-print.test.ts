@@ -13,6 +13,7 @@ import { join, relative, resolve } from "node:path";
 import { inspect } from "node:util";
 import { createModels, createProvider, InMemoryCredentialStore, ModelsError, type Provider } from "@bastani/atomic-ai";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { withTestTimezone } from "../../../test/helpers/system-prompt-date-isolation.js";
 import { type Args, parseArgs } from "../src/cli/args.ts";
 import {
 	AuthCommandError,
@@ -92,7 +93,7 @@ function runCliWithClosedStdout(
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string }> {
 	const child = spawn(bunExecutable(), [cliPath, ...argv], {
 		cwd: options.cwd,
-		env: options.env,
+		env: withTestTimezone(options.env),
 		stdio: ["ignore", "pipe", "pipe"],
 		windowsHide: true,
 	});

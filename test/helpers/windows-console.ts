@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { withTestTimezone } from "./system-prompt-date-isolation.js";
 
 /** How a program run on a console of its own ended once that console was closed. */
 export interface ClosedConsoleRun {
@@ -191,7 +192,11 @@ export async function runUntilConsoleClosed(options: ClosedConsoleOptions): Prom
 	const helper = spawn(
 		"powershell.exe",
 		["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, params, result],
-		{ env: options.env, stdio: ["ignore", "ignore", "pipe"], windowsHide: true },
+		{
+			env: options.env ? withTestTimezone(options.env) : undefined,
+			stdio: ["ignore", "ignore", "pipe"],
+			windowsHide: true,
+		},
 	);
 	let stderr = "";
 	helper.stderr.setEncoding("utf8").on("data", (chunk: string) => {
