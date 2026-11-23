@@ -4188,7 +4188,12 @@ try {
             $wmStop = Join-Path $workspace ("wm-stop-" + $Label + ".txt")
             $wmLog = Join-Path $workspace ("wm-log-" + $Label + ".txt")
             Remove-Item -LiteralPath $wmReady, $wmStop, $wmLog -Force -ErrorAction SilentlyContinue
-            $listener = Start-Process -FilePath $wmListenerPath -ArgumentList @($wmReady, $wmStop, $wmLog, "60000") -PassThru -NoNewWindow
+            $psi = New-Object Diagnostics.ProcessStartInfo
+            $psi.FileName = $wmListenerPath
+            $psi.Arguments = ('"' + $wmReady + '" "' + $wmStop + '" "' + $wmLog + '" 60000')
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $listener = [Diagnostics.Process]::Start($psi)
             try {
                 $readyDeadline = (Get-Date).AddSeconds(15)
                 while (-not (Test-Path -LiteralPath $wmReady) -and -not $listener.HasExited -and (Get-Date) -lt $readyDeadline) {
