@@ -30,6 +30,11 @@ export declare class HeldProcessDescendants {
    * leaves them running. Lets go of all of them; returns whether it ended that process.
    */
   endAll(): boolean
+  /**
+   * Ends only the held descendants (leaving the root handle intact) and releases their handles.
+   * Used when the root is the current process itself so verified descendants end before the process exits.
+   */
+  endDescendants(): number
   /** Lets go of the processes it holds without ending them. */
   release(): void
 }

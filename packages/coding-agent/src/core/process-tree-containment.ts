@@ -77,6 +77,11 @@ export interface HeldProcessDescendants {
 	 * leaves them running. Lets go of all of them; returns whether it ended that process.
 	 */
 	endAll(): boolean;
+	/**
+	 * Ends only the held descendants while keeping the root handle open. Used when the root is the current process
+	 * itself so descendants end before the current process terminates.
+	 */
+	endDescendants?(): number;
 	/** Lets go of the processes it holds without ending them. */
 	release(): void;
 }
@@ -111,6 +116,10 @@ export type ProcessDescendantsHold =
 	| { readonly kind: "held"; readonly held: HeldProcessDescendants }
 	| { readonly kind: "absent" }
 	| { readonly kind: "unavailable" };
+
+export function hasNativeProcessHold(): boolean {
+	return process.platform === "win32" && holdDescendantsFunction() !== null;
+}
 
 export function holdProcessDescendantsResult(pid: number): ProcessDescendantsHold {
 	if (process.platform !== "win32") return { kind: "unavailable" };

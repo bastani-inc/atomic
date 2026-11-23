@@ -39,6 +39,13 @@ impl HeldProcessDescendants {
 		ended
 	}
 
+	/// Ends only the held descendants (leaving the root handle intact) and releases their handles.
+	/// Used when the root is the current process itself so verified descendants end before the process exits.
+	#[napi(js_name = "endDescendants")]
+	pub fn end_descendants(&mut self) -> u32 {
+		end_held_only(&mut self.held, end)
+	}
+
 	/// Lets go of the processes it holds without ending them.
 	#[napi]
 	pub fn release(&mut self) {
@@ -57,6 +64,17 @@ pub(crate) fn end_root_then_held<H>(root: &H, held: &[H], mut end: impl FnMut(&H
 		end(process);
 	}
 	true
+}
+
+/// Ends every handle in `held` and drains `held`; returns how many `end` succeeded on.
+pub(crate) fn end_held_only<H>(held: &mut Vec<H>, mut end: impl FnMut(&H) -> bool) -> u32 {
+	let mut ended = 0u32;
+	for process in held.drain(..) {
+		if end(&process) {
+			ended += 1;
+		}
+	}
+	ended
 }
 
 /// Ends `process` through its handle; fails for one that already exited or is exiting by itself.
@@ -436,6 +454,21 @@ mod tests {
 			*process != 1
 		}));
 		assert_eq!(*ended.borrow(), vec![1]);
+	}
+
+	#[test]
+	fn ends_descendants_only_and_drains_held() {
+		let mut held = vec![2, 3, 4];
+		let mut ended = Vec::new();
+		assert_eq!(
+			super::end_held_only(&mut held, |process| {
+				ended.push(*process);
+				*process != 3
+			}),
+			2
+		);
+		assert_eq!(ended, vec![2, 3, 4]);
+		assert!(held.is_empty());
 	}
 
 	#[test]

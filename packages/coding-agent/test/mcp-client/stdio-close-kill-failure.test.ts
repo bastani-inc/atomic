@@ -100,6 +100,17 @@ vi.mock("cross-spawn", async (importOriginal) => {
 	return { ...actual, default: crossSpawn };
 });
 
+// Exercise the non-native taskkill fallback path (cwd safety, error handling, and close bounds) on all platforms.
+vi.mock("../../src/core/process-tree-containment.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../src/core/process-tree-containment.ts")>();
+	return {
+		...actual,
+		containProcessTreeAllowingBreakaway: () => undefined,
+		holdProcessDescendantsResult: () => ({ kind: "unavailable" as const }),
+		hasNativeProcessHold: () => false,
+	};
+});
+
 interface FakeChild extends EventEmitter {
 	pid: number;
 	exitCode: number | null;
