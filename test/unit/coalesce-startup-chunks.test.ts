@@ -122,6 +122,25 @@ test("assignStartupGroups keeps phases and tiers disjoint, isolates http/setting
 	for (const [id, group] of g1) {
 		assert.equal(g2.get(id), group, `adding a private leaf must not shift group of ${id}`);
 	}
+
+	// Non-mainCore tiers (like `settings-startup`) that statically import an OWNER_ENTRY must not place both the
+	// caller of the owner entry and a shared dependency downstream of that owner entry in the same chunk group
+	// (which would create a `group -> owner -> group` static import cycle).
+	const withSettingsOwnerCycleRisk: Record<string, string[]> = {
+		...baseGraph,
+		settingsStartup: ["settingsStartupOnly", "ownerA"],
+		ownerA: ["ownerPrivate", "baseDep", "ownerSharedDep"],
+		ownerSharedDep: [],
+		mainTop: ["midDep", "sharedThroughOwnerPrivate", "ownerSharedDep"],
+	};
+	const g3 = run(withSettingsOwnerCycleRisk);
+	assert.notEqual(
+		g3.get("settingsStartup"),
+		g3.get("ownerSharedDep"),
+		"caller of ownerA and downstream dep of ownerA in settings-startup must be split to stay strictly acyclic",
+	);
+	assert.equal(g3.get("settingsStartupOnly"), "settings-startup");
+	assert.equal(g3.get("ownerSharedDep"), "settings-startup");
 });
 
 builtTest(
