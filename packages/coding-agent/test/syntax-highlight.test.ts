@@ -259,32 +259,30 @@ describe("theme syntax highlighting", () => {
 			stdio: "pipe",
 		});
 
-		// Case 2: Both chunk index read and fallback import fail transiently, then recover via chunked load.
+		// Case 2: Both chunk index resolve and fallback import fail transiently, then recover via chunked load.
 		const indexAndFallbackScript = [
 			NODE_TS_SOURCE_HOOK,
 			`import assert from "node:assert/strict";`,
-			`import fsPromises from "node:fs/promises";`,
 			`let failSwap = true;`,
-			`const origReadFile = fsPromises.readFile.bind(fsPromises);`,
-			`fsPromises.readFile = async (...args) => {`,
-			`  if (failSwap && String(args[0]).includes("highlight.js")) {`,
-			`    throw Object.assign(new Error("transient ENOENT"), { code: "ENOENT" });`,
-			`  }`,
-			`  return origReadFile(...args);`,
-			`};`,
+			`let resolveAttempts = 0;`,
 			`registerHooks({`,
 			`  resolve(specifier, context, nextResolve) {`,
-			`    if (failSwap && specifier === "highlight.js/lib/index.js") {`,
-			`      throw Object.assign(new Error("transient ERR_MODULE_NOT_FOUND"), { code: "ERR_MODULE_NOT_FOUND" });`,
+			`    if (specifier === "highlight.js/lib/index.js") {`,
+			`      resolveAttempts += 1;`,
+			`      if (failSwap) {`,
+			`        throw Object.assign(new Error("transient ERR_MODULE_NOT_FOUND"), { code: "ERR_MODULE_NOT_FOUND" });`,
+			`      }`,
 			`    }`,
 			`    return nextResolve(specifier, context);`,
 			`  },`,
 			`});`,
 			`const sh = await import(${JSON.stringify(syntaxHighlightUrl)});`,
 			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(resolveAttempts, 2, "first attempt must fail both req.resolve and fallback import");`,
 			`assert.equal(sh.supportsLanguage("ada"), false);`,
 			`failSwap = false;`,
 			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(resolveAttempts, 3, "retry must re-resolve highlight.js/lib/index.js instead of caching null or allLanguagesLoaded");`,
 			`assert.equal(sh.supportsLanguage("ada"), true, "chunked load must recover after transient index+fallback failure");`,
 		].join("\n");
 		execFileSync(process.execPath, ["--input-type=module", "-e", indexAndFallbackScript], {
