@@ -235,6 +235,7 @@ interface ReaderStart {
 	readonly threads: string | undefined;
 	readonly nodeOptions: string | undefined;
 	readonly pid: number;
+	readonly cwd: string;
 }
 
 const marker = () => join(dir, "reader-started.json");
@@ -260,6 +261,7 @@ writeFileSync(${JSON.stringify(`${marker()}.tmp`)}, JSON.stringify({
 	threads: process.env.UV_THREADPOOL_SIZE,
 	nodeOptions: process.env.NODE_OPTIONS,
 	pid: process.pid,
+	cwd: process.cwd(),
 }));
 renameSync(${JSON.stringify(`${marker()}.tmp`)}, ${JSON.stringify(marker())});
 // Ends only when its standard input does, as the real reader does once its parent is gone.
@@ -338,8 +340,18 @@ test.runIf(process.platform === "win32")(
 		const threads = Number(start.threads);
 		assert.ok(threads >= 4 && threads <= Math.min(32, Math.max(4, 4 * availableParallelism())), `${threads} threads`);
 		assert.equal(start.nodeOptions, "");
-		// It runs below Atomic's own priority.
+		// It runs below Atomic's own priority and outside the package directory and caller's cwd.
 		assert.equal(start.priority, constants.priority.PRIORITY_BELOW_NORMAL);
+		assert.ok(
+			start.cwd.length < 248 && !start.cwd.startsWith("\\\\?\\"),
+			`expected short safe cwd, got ${start.cwd}`,
+		);
+		assert.equal(
+			start.cwd.toLowerCase().startsWith(packageDir.toLowerCase()),
+			false,
+			`reader cwd ${start.cwd} pinned ${packageDir}`,
+		);
+		assert.notEqual(start.cwd.toLowerCase(), tmpdir().toLowerCase(), `reader cwd ${start.cwd} inherited parent cwd`);
 		await expectGone(start.pid);
 	},
 );

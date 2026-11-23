@@ -179,6 +179,8 @@ Installing an older release with `--ref`/`-Ref` skips this step silently if that
 
 You can run `atomic intercom upgrade` manually anytime (it is idempotent), and you should run it after upgrading via a package manager such as `npm install -g`.
 
+**Windows npm upgrades from 0.10.4 or earlier:** Earlier Intercom brokers ran with `dist\builtin\intercom` as their working directory, which can make `npm install -g @bastani/atomic` fail with `EBUSY` on Windows while an older broker is running. Close running Atomic sessions and wait 5 seconds (or run `atomic intercom restart`), then run `npm install -g @bastani/atomic`. From 0.10.5 onward, the broker runs outside the installation directory, so npm upgrades and uninstalls succeed while sessions and the broker run.
+
 ## Uninstall
 
 **Release archive:**

@@ -555,4 +555,59 @@ process.exit(23);
 		expect(process.exitCode).toBe(1);
 		expect(fakeAtomic.upgradeCalls()).toEqual([]);
 	});
+
+	it("prints the Windows install-directory lock hint only on EBUSY/EPERM rename/unlink failures, not unrelated npm failures", async () => {
+		const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+		const runWithStderr = async (stderrMessage: string): Promise<string> => {
+			process.exitCode = 0;
+			prepareSuccessfulNpmSelfUpdate();
+			writeFileSync(
+				join(tempDir, "fake-npm.cjs"),
+				`const path=require("node:path"),args=process.argv.slice(2),prefix=args[args.indexOf("--prefix")+1];
+if(args.includes("root")) { console.log(path.join(prefix,"lib","node_modules")); process.exit(0); }
+process.stderr.write(${JSON.stringify(stderrMessage)});
+process.exit(127);
+`,
+			);
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const stderrWriteSpy = vi.spyOn(process.stderr, "write").mockImplementation(((
+				_chunk: unknown,
+				encodingOrCallback?: unknown,
+				callback?: unknown,
+			) => {
+				const done =
+					typeof encodingOrCallback === "function"
+						? (encodingOrCallback as () => void)
+						: typeof callback === "function"
+							? (callback as () => void)
+							: undefined;
+				done?.();
+				return true;
+			}) as typeof process.stderr.write);
+			Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+			try {
+				await expect(main(["update", "--self", "--force"])).resolves.toBeUndefined();
+				expect(process.exitCode).toBe(1);
+				return errorSpy.mock.calls.map(([msg]) => String(msg)).join("\n");
+			} finally {
+				Object.defineProperty(process, "platform", originalPlatform);
+				logSpy.mockRestore();
+				errorSpy.mockRestore();
+				stderrWriteSpy.mockRestore();
+			}
+		};
+
+		const ebusyErrors = await runWithStderr(
+			"npm error code EBUSY\nnpm error syscall rename\nnpm error errno -4082\nnpm error EBUSY: resource busy or locked, rename 'C:\\prefix\\node_modules\\@bastani\\atomic\\dist\\builtin\\intercom'\n",
+		);
+		expect(ebusyErrors).toContain("Close running atomic sessions");
+		expect(ebusyErrors).toContain("atomic intercom restart");
+
+		const unrelatedErrors = await runWithStderr(
+			"npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/@bastani/atomic\n",
+		);
+		expect(unrelatedErrors).not.toContain("Close running atomic sessions");
+		expect(unrelatedErrors).not.toContain("atomic intercom restart");
+	});
 });

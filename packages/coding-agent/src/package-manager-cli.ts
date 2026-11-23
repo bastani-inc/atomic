@@ -49,6 +49,7 @@ import {
 } from "./utils/child-process.ts";
 import {
 	cleanupWindowsSelfUpdateQuarantine,
+	isWindowsInstallDirectoryLockError,
 	quarantineWindowsNativeDependencies,
 } from "./utils/windows-self-update.ts";
 
@@ -158,14 +159,38 @@ function printSelfUpdateNote(note: string): void {
 	console.log();
 }
 
-async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
+const SELF_UPDATE_STDERR_TAIL_BYTES = 32 * 1024;
+const IDLE_BROKER_PRE_UPDATE_STOP_TIMEOUT_MS = 5_000;
+
+class SelfUpdateCommandError extends Error {
+	readonly stderrTail?: string;
+	constructor(message: string, stderrTail?: string) {
+		super(message);
+		this.name = "SelfUpdateCommandError";
+		this.stderrTail = stderrTail;
+	}
+}
+
+async function runSelfUpdate(command: SelfUpdateCommand, options: { captureStderr?: boolean } = {}): Promise<void> {
 	console.log(chalk.dim(`Updating ${APP_NAME} with ${command.display}...`));
+	const captureStderr = options.captureStderr === true;
 	for (const step of command.steps ?? [command]) {
 		const launch = await processLaunchAsync(step.command);
 		await new Promise<void>((resolve, reject) => {
 			const child = spawnLaunchedProcess(launch, step.args, {
-				stdio: "inherit",
+				stdio: captureStderr ? ["inherit", "inherit", "pipe"] : "inherit",
 			});
+			let stderrTail = "";
+			if (captureStderr && child.stderr) {
+				child.stderr.on("data", (chunk: Buffer | string) => {
+					process.stderr.write(chunk);
+					const text = typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+					stderrTail += text;
+					if (stderrTail.length > SELF_UPDATE_STDERR_TAIL_BYTES) {
+						stderrTail = stderrTail.slice(-SELF_UPDATE_STDERR_TAIL_BYTES);
+					}
+				});
+			}
 			child.on("error", (error) => {
 				reject(error);
 			});
@@ -173,9 +198,16 @@ async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
 				if (code === 0) {
 					resolve();
 				} else if (signal) {
-					reject(new Error(`${step.display} terminated by signal ${signal}`));
+					reject(
+						new SelfUpdateCommandError(`${step.display} terminated by signal ${signal}`, stderrTail || undefined),
+					);
 				} else {
-					reject(new Error(`${step.display} exited with code ${code ?? "unknown"}`));
+					reject(
+						new SelfUpdateCommandError(
+							`${step.display} exited with code ${code ?? "unknown"}`,
+							stderrTail || undefined,
+						),
+					);
 				}
 			});
 		});
@@ -276,7 +308,7 @@ async function runIntercomUpgrade(): Promise<void> {
 	}
 }
 
-function prepareWindowsNpmSelfUpdate(): void {
+async function prepareWindowsNpmSelfUpdate(agentDir: string): Promise<void> {
 	if (process.platform !== "win32") {
 		return;
 	}
@@ -284,6 +316,19 @@ function prepareWindowsNpmSelfUpdate(): void {
 	const packageDir = getPackageDir();
 	cleanupWindowsSelfUpdateQuarantine(packageDir);
 	quarantineWindowsNativeDependencies(packageDir);
+
+	// Stop an idle Intercom broker (0 connected sessions) before npm renames the package directory;
+	// skips IPC completely when no broker.pid exists, and never interrupts a broker with connected sessions.
+	if (!existsSync(join(agentDir, "intercom", "broker.pid"))) {
+		return;
+	}
+	try {
+		const { loadIntercomBrokerControl } = await import("./core/intercom-broker-control.js");
+		const control = await loadIntercomBrokerControl();
+		await control.stopIdleIntercomBroker?.(agentDir, { stopTimeoutMs: IDLE_BROKER_PRE_UPDATE_STOP_TIMEOUT_MS });
+	} catch {
+		// Best-effort: never block self-update if the broker control module cannot load or reach the broker.
+	}
 }
 
 export interface PackageCommandRuntimeOptions {
@@ -602,12 +647,24 @@ export async function handlePackageCommand(
 					if (selfUpdatePlan.note) printSelfUpdateNote(selfUpdatePlan.note);
 					try {
 						if (installMethod === "npm") {
-							prepareWindowsNpmSelfUpdate();
+							await prepareWindowsNpmSelfUpdate(agentDir);
 						}
-						await runSelfUpdate(selfUpdateCommand);
+						await runSelfUpdate(selfUpdateCommand, { captureStderr: process.platform === "win32" });
 					} catch (error: unknown) {
 						const message = error instanceof Error ? error.message : "Unknown package command error";
 						console.error(chalk.red(`Error: ${message}`));
+						if (
+							process.platform === "win32" &&
+							error instanceof SelfUpdateCommandError &&
+							error.stderrTail &&
+							isWindowsInstallDirectoryLockError(error.stderrTail)
+						) {
+							console.error(
+								chalk.yellow(
+									`A running ${APP_NAME} session or an earlier Intercom broker may be locking files in the install directory. Close running ${APP_NAME} sessions, wait 5 seconds (or run \`${APP_NAME} intercom restart\`), then re-run the update.`,
+								),
+							);
+						}
 						printSelfUpdateFallback(selfUpdateCommand);
 						process.exitCode = 1;
 						return true;

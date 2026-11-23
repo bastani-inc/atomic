@@ -8,10 +8,18 @@
  * after five minutes at most.
  */
 import { spawn } from "node:child_process";
-import { parse } from "node:path";
+import { isAbsolute, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CompileCacheHelperRuntime } from "./compile-cache.ts";
 import { processCompileCacheDeferral } from "./compile-cache-deferral.ts";
+import {
+	collectInstallProtectedDirs,
+	DEFAULT_WINDOWS_CWD_TIMEOUT_MS,
+	isAbsoluteWindowsPath,
+	resolveSafeWindowsKillCwdLexical,
+	resolveSafeWindowsWorkingDirectoryAsync,
+	windowsDriveRoot,
+} from "./windows-cwd.js";
 
 /** What a helper does after its own cache: the helpers still to run, and the markers that must still stand. */
 export interface CompileCacheWarmupPlan {
@@ -41,6 +49,31 @@ export interface CompileCacheHelperLaunch {
 	readonly detached: true;
 }
 
+function resolveWarmupScriptPath(script: string): string {
+	if (process.platform === "win32") {
+		if (isAbsoluteWindowsPath(script)) return script;
+		try {
+			return win32.resolve(process.cwd(), script);
+		} catch {
+			return script;
+		}
+	}
+	return isAbsolute(script) ? script : resolve(script);
+}
+
+function resolveWarmupHelperCwd(resolvedScript: string): string {
+	if (process.platform !== "win32") return "/";
+	const scriptDir = win32.dirname(resolvedScript);
+	return (
+		resolveSafeWindowsKillCwdLexical({
+			protectedDirs: collectInstallProtectedDirs(scriptDir),
+			commandPath: process.execPath,
+		}) ??
+		windowsDriveRoot(scriptDir) ??
+		"C:\\"
+	);
+}
+
 /**
  * The helper for `runtime`: this runtime with its heap size and without preloads, loading no native module
  * (`--no-addons`), working outside the installation (an upgrade or an uninstall replaces it while the helper may run).
@@ -55,10 +88,11 @@ export function compileCacheHelperLaunch(
 	const helperEnv = { ...env };
 	if (runtime.nodeOptions) helperEnv.NODE_OPTIONS = runtime.nodeOptions;
 	else delete helperEnv.NODE_OPTIONS;
+	const resolvedScript = resolveWarmupScriptPath(script);
 	return {
 		command: process.execPath,
-		args: [...runtime.execArgv, "--no-addons", script, buildId, encodeCompileCacheWarmupPlan(plan)],
-		cwd: parse(script).root,
+		args: [...runtime.execArgv, "--no-addons", resolvedScript, buildId, encodeCompileCacheWarmupPlan(plan)],
+		cwd: resolveWarmupHelperCwd(resolvedScript),
 		env: helperEnv,
 		detached: true,
 	};
@@ -66,20 +100,39 @@ export function compileCacheHelperLaunch(
 
 /** Start a helper that runs on its own: nothing of it keeps this process alive, and it outlives this process. */
 export function startCompileCacheHelper(launch: CompileCacheHelperLaunch): boolean {
-	try {
-		const child = spawn(launch.command, [...launch.args], {
-			cwd: launch.cwd,
-			env: launch.env,
-			detached: launch.detached,
-			stdio: "ignore",
-			windowsHide: true,
-		});
-		child.on("error", () => {});
-		child.unref();
-		return true;
-	} catch {
-		return false;
-	}
+	const spawnWithCwd = (cwd: string, allowRetry: boolean): boolean => {
+		try {
+			const child = spawn(launch.command, [...launch.args], {
+				cwd,
+				env: launch.env,
+				detached: launch.detached,
+				stdio: "ignore",
+				windowsHide: true,
+			});
+			child.on("error", (error: NodeJS.ErrnoException) => {
+				if (allowRetry && process.platform === "win32" && error.code === "ENOENT") {
+					const scriptArg = launch.args[launch.args.length - 3];
+					const scriptDir = scriptArg ? win32.dirname(resolveWarmupScriptPath(scriptArg)) : undefined;
+					void resolveSafeWindowsWorkingDirectoryAsync({
+						installDirs: scriptDir ? [scriptDir] : undefined,
+						commandPath: launch.command,
+						timeoutMs: DEFAULT_WINDOWS_CWD_TIMEOUT_MS,
+					})
+						.then((freshCwd) => {
+							if (freshCwd !== undefined && freshCwd.toLowerCase() !== cwd.toLowerCase()) {
+								spawnWithCwd(freshCwd, false);
+							}
+						})
+						.catch(() => {});
+				}
+			});
+			child.unref();
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	return spawnWithCwd(launch.cwd, true);
 }
 
 let warmupStarted = false;

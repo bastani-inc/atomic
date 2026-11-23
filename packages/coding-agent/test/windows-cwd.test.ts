@@ -400,4 +400,27 @@ describe("windows-cwd helper", () => {
 			"D:\\",
 		);
 	});
+
+	test("protects enclosing install roots across subst drives, junctions, and npm/standalone layouts via installDirs", async () => {
+		const { resolveSafeWindowsWorkingDirectoryAsync, resolveSafeWindowsWorkingDirectorySync } = await import(
+			"../src/utils/windows-cwd.js"
+		);
+		const pkgRoot = "C:\\prefix\\node_modules\\@bastani\\atomic";
+		const badJunction = "C:\\BadSysRoot";
+		setupWin({
+			cwd: "C:\\repo\\project",
+			systemRoot: badJunction,
+			windir: badJunction,
+			tmpdir: `${pkgRoot}\\tmp`,
+			dirs: [badJunction, `${pkgRoot}\\tmp`, "S:\\", "S:\\dist\\utils", pkgRoot, "C:\\"],
+			realpaths: {
+				[badJunction]: pkgRoot,
+				"S:\\": pkgRoot,
+				"S:\\dist\\utils": `${pkgRoot}\\dist\\utils`,
+			},
+		});
+
+		assert.equal(resolveSafeWindowsWorkingDirectorySync({ installDirs: ["S:\\dist\\utils"] }), "C:\\");
+		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync({ installDirs: ["S:\\dist\\utils"] }), "C:\\");
+	});
 });

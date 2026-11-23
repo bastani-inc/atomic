@@ -4,6 +4,7 @@ import { availableParallelism, constants, setPriority, uptime } from "node:os";
 import { join } from "node:path";
 import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
 import { getAgentDir, isBunBinary, VERSION } from "../config.js";
+import { collectInstallProtectedDirs, resolveSafeWindowsKillCwdLexical, windowsDriveRoot } from "./windows-cwd.js";
 
 /** Options that make Node run code of the user's in every process it starts: a preload or a module loader. */
 const USER_CODE_OPTIONS = new Set(["--require", "-r", "--import", "--loader", "--experimental-loader"]);
@@ -86,9 +87,19 @@ export function startStartupPrefetch(packageDir: string): void {
 	}
 	if (startupFilesReadThisStart(markerText, VERSION, packageDir, machineStartTimeMs())) return;
 	try {
+		// The reader receives all paths as arguments and never uses its working directory; start it in a zero-syscall
+		// safe directory outside both the installation directory and the user's project directory so it never pins either.
+		const readerCwd =
+			resolveSafeWindowsKillCwdLexical({
+				protectedDirs: collectInstallProtectedDirs(packageDir),
+				commandPath: process.execPath,
+			}) ??
+			windowsDriveRoot(packageDir) ??
+			"C:\\";
 		// The reader's standard input is a pipe this process holds open for as long as it runs: the reader ends when the
 		// pipe does, also when this process is killed before it could end the reader itself.
 		const reader = spawn(process.execPath, [readerPath, listPath, packageDir, marker, VERSION], {
+			cwd: readerCwd,
 			stdio: ["pipe", "ignore", "ignore"],
 			windowsHide: true,
 			env: { ...process.env, UV_THREADPOOL_SIZE: readerThreads(), NODE_OPTIONS: "" },

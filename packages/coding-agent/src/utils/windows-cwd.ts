@@ -26,6 +26,11 @@ export interface SafeWindowsWorkingDirectoryOptions {
 	readonly commandPath?: string;
 	/** Additional folders (besides `process.cwd()`) that the child process must not run inside. */
 	readonly protectedDirs?: readonly (string | undefined)[];
+	/**
+	 * Installation directories (e.g. extension dir, `dist/utils`, standalone executable dir) whose enclosing
+	 * install roots—both lexical and canonical realpath (catching `subst` drives and junctions)—must be protected.
+	 */
+	readonly installDirs?: readonly (string | undefined)[];
 	/** When true (kill/stop commands), try `commandPath`'s directory ahead of `os.tmpdir()`. */
 	readonly preferCommandDir?: boolean;
 	/** Maximum time in milliseconds spent on async `stat`/`realpath`/`lstat` probes. Default: 100 ms. */
@@ -130,6 +135,76 @@ export function windowsDriveRoot(value: string | undefined): string | undefined 
 export function isDriveRootWindowsPath(normalized: string): boolean {
 	const root = windowsDriveRoot(normalized);
 	return root !== undefined && normalized.toLowerCase() === root.toLowerCase();
+}
+
+function addNonRootWindowsDir(target: string[], seen: Set<string>, candidate: string): void {
+	const normalized = normalizeWindowsPathForCompare(candidate);
+	if (normalized === undefined || isDriveRootWindowsPath(normalized)) return;
+	const key = normalized.toLowerCase();
+	if (seen.has(key)) return;
+	seen.add(key);
+	target.push(normalized);
+}
+
+/**
+ * Returns the install-root directories enclosing `entryDir` that background helpers must not keep as their working
+ * directory on Windows (npm/pnpm/bun package root + `@scope`/`node_modules`, standalone binary `versions/<ver>` +
+ * install root, or `dist/utils` package root). Never promotes a drive or share root to an inferred protected ancestor.
+ */
+export function collectInstallProtectedDirs(entryDir: string | undefined): string[] {
+	if (entryDir === undefined || entryDir === "") return [];
+	const normalized = normalizeWindowsPathForCompare(entryDir);
+	if (normalized === undefined) return [];
+	const result: string[] = [normalized];
+	const seen = new Set<string>([normalized.toLowerCase()]);
+
+	const add = (dir: string) => addNonRootWindowsDir(result, seen, dir);
+	const parent = win32.dirname(normalized);
+	const parentName = win32.basename(parent).toLowerCase();
+	const ownName = win32.basename(normalized).toLowerCase();
+	const grandParent = win32.dirname(parent);
+	const grandParentName = win32.basename(grandParent).toLowerCase();
+
+	let packageDir = normalized;
+	if (parentName === "builtin" && grandParentName === "dist") {
+		packageDir = win32.dirname(grandParent);
+		add(grandParent);
+		add(packageDir);
+	} else if (parentName === "builtin") {
+		const versionDir = grandParent;
+		packageDir = versionDir;
+		add(versionDir);
+		const versionDirName = win32.basename(versionDir).toLowerCase();
+		const versionsParent = win32.dirname(versionDir);
+		if (win32.basename(versionsParent).toLowerCase() === "versions") {
+			add(versionsParent);
+			add(win32.dirname(versionsParent));
+		} else if (versionDirName === "current" || versionDirName === "atomic-current") {
+			add(versionsParent);
+		}
+	} else if (ownName === "utils" && parentName === "dist") {
+		packageDir = grandParent;
+		add(parent);
+		add(packageDir);
+	} else if (parentName === "versions") {
+		add(parent);
+		add(grandParent);
+	} else if (ownName === "current" || ownName === "atomic-current") {
+		add(parent);
+	}
+
+	const pkgParent = win32.dirname(packageDir);
+	const pkgParentName = win32.basename(pkgParent).toLowerCase();
+	const pkgGrandParent = win32.dirname(pkgParent);
+	const pkgGrandParentName = win32.basename(pkgGrandParent).toLowerCase();
+	if (pkgParentName.startsWith("@") && pkgGrandParentName === "node_modules") {
+		add(pkgParent);
+		add(pkgGrandParent);
+	} else if (pkgParentName === "node_modules") {
+		add(pkgParent);
+	}
+
+	return result;
 }
 
 function isSubpathOrSame(folderNormalized: string, candidateNormalized: string): boolean {
@@ -318,9 +393,29 @@ export function resolveSafeWindowsWorkingDirectorySync(
 	options: SafeWindowsWorkingDirectoryOptions = {},
 ): string | undefined {
 	const protectedDirs: ResolvedProtectedDir[] = [];
+	const seenProtected = new Set<string>();
+	const addProtected = (dir: ResolvedProtectedDir | undefined) => {
+		if (dir === undefined) return;
+		const key = `${dir.lexical.toLowerCase()}\0${dir.real?.toLowerCase() ?? ""}`;
+		if (seenProtected.has(key)) return;
+		seenProtected.add(key);
+		protectedDirs.push(dir);
+	};
 	for (const raw of collectRawProtectedDirs(options.protectedDirs)) {
-		const resolved = resolveProtectedDirSync(raw);
-		if (resolved !== undefined) protectedDirs.push(resolved);
+		addProtected(resolveProtectedDirSync(raw));
+	}
+	for (const rawInstall of options.installDirs ?? []) {
+		if (rawInstall === undefined) continue;
+		const resolvedEntry = resolveProtectedDirSync(rawInstall);
+		addProtected(resolvedEntry);
+		for (const dir of collectInstallProtectedDirs(rawInstall)) {
+			addProtected(resolveProtectedDirSync(dir));
+		}
+		if (resolvedEntry?.real !== undefined) {
+			for (const dir of collectInstallProtectedDirs(resolvedEntry.real)) {
+				addProtected({ lexical: dir, real: tryRealPathSync(probePathFor(dir, dir)) ?? dir });
+			}
+		}
 	}
 	const candidates = buildCandidates(protectedDirs, options.commandPath, options.preferCommandDir === true);
 	let longOutsideFallback: string | undefined;
@@ -394,12 +489,38 @@ export async function resolveSafeWindowsWorkingDirectoryAsync(
 	const protectedBudgetMs = Math.min(MAX_PROTECTED_REALPATH_BUDGET_MS, Math.floor(totalMs / 2));
 	const protectedDeadline = startedAt + protectedBudgetMs;
 
-	const rawProtected = collectRawProtectedDirs(options.protectedDirs);
+	const installLexical = (options.installDirs ?? []).flatMap((raw) => collectInstallProtectedDirs(raw));
+	const rawProtected = collectRawProtectedDirs([...(options.protectedDirs ?? []), ...installLexical]);
 	const resolvedProtected = await Promise.all(
 		rawProtected.map((raw) => resolveProtectedDirAsync(raw, protectedDeadline, signal)),
 	);
 	if (signal?.aborted) return undefined;
-	const protectedDirs = resolvedProtected.filter((dir): dir is ResolvedProtectedDir => dir !== undefined);
+	const protectedDirs: ResolvedProtectedDir[] = [];
+	const seenProtected = new Set<string>();
+	const addProtected = (dir: ResolvedProtectedDir | undefined) => {
+		if (dir === undefined) return;
+		const key = `${dir.lexical.toLowerCase()}\0${dir.real?.toLowerCase() ?? ""}`;
+		if (seenProtected.has(key)) return;
+		seenProtected.add(key);
+		protectedDirs.push(dir);
+	};
+	for (const dir of resolvedProtected) addProtected(dir);
+	if ((options.installDirs?.length ?? 0) > 0) {
+		const installEntries = await Promise.all(
+			(options.installDirs ?? [])
+				.filter((raw): raw is string => raw !== undefined)
+				.map((raw) => resolveProtectedDirAsync(raw, protectedDeadline, signal)),
+		);
+		if (signal?.aborted) return undefined;
+		for (const entry of installEntries) {
+			addProtected(entry);
+			if (entry?.real !== undefined) {
+				for (const dir of collectInstallProtectedDirs(entry.real)) {
+					addProtected({ lexical: dir, real: dir });
+				}
+			}
+		}
+	}
 	const candidates = buildCandidates(protectedDirs, options.commandPath, options.preferCommandDir === true);
 	let longOutsideFallback: string | undefined;
 	let shortFallback: string | undefined;
