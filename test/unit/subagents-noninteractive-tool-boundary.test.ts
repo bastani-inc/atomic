@@ -4,8 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@bastani/atomic";
+import { SettingsManager } from "@bastani/atomic";
+import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { Value } from "typebox/value";
 import { describe, test } from "vitest";
+import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
+import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
+import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
+import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
@@ -338,20 +344,63 @@ describe("programmatic subagent tool boundary", () => {
 		assert.ok(registered);
 
 		let customCalls = 0;
-		const result = await registered.execute(
-			"parent-parallel",
-			{ tasks: [{ agent: "debugger", task: "inspect" }] },
-			new AbortController().signal,
-			undefined,
-			toolContext(
-				makeContext(process.cwd(), () => {
-					customCalls += 1;
-					throw new Error("unexpected UI prompt");
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-parent-boundary-"));
+		const provider = `faux-parent-boundary-${Date.now()}`;
+		const faux = registerFauxProvider({ provider, models: [{ id: "child" }] });
+		faux.setResponses([fauxAssistantMessage("inspected")]);
+		const authStorage = AuthStorage.inMemory();
+		await authStorage.modify(provider, async () => ({ type: "api_key", key: "faux-key" }));
+		const modelRuntime = await ModelRuntime.create({
+			credentials: authStorage,
+			modelsPath: null,
+			modelsStore: new InMemoryCodingAgentModelsStore(),
+		});
+		modelRuntime.registerProvider(provider, {
+			baseUrl: faux.getModel().baseUrl,
+			apiKey: "faux-key",
+			api: faux.api,
+			models: faux.models.map((registered) => ({
+				id: registered.id,
+				name: registered.name,
+				api: registered.api,
+				reasoning: registered.reasoning,
+				input: registered.input,
+				contextWindow: registered.contextWindow,
+				maxTokens: registered.maxTokens,
+				cost: registered.cost,
+			})),
+		});
+		try {
+			const ctx = makeContext(cwd, () => {
+				customCalls += 1;
+				throw new Error("unexpected UI prompt");
+			}) as ExtensionContext & { getChildSessionOptions?: () => Record<string, unknown> };
+			(ctx as unknown as { model: unknown }).model = faux.getModel("child");
+			(ctx as unknown as { modelRegistry: unknown }).modelRegistry = modelRuntime;
+			ctx.getChildSessionOptions = () => ({
+				agentDir: join(cwd, "agent"),
+				modelRuntime,
+				model: faux.getModel("child"),
+				settingsManager: SettingsManager.inMemory({
+					compaction: { enabled: false },
+					retry: { enabled: false },
+					sessionSummary: { enabled: false },
 				}),
-			),
-		);
-		assert.equal(customCalls, 0);
-		assert.equal((result as { details?: { mode?: string } }).details?.mode, "parallel");
+				resourceLoader: createTestResourceLoader(),
+			});
+			const result = await registered.execute(
+				"parent-parallel",
+				{ tasks: [{ agent: "debugger", task: "inspect" }] },
+				new AbortController().signal,
+				undefined,
+				toolContext(ctx),
+			);
+			assert.equal(customCalls, 0);
+			assert.equal((result as { details?: { mode?: string } }).details?.mode, "parallel");
+		} finally {
+			faux.unregister();
+			rmSync(cwd, { recursive: true, force: true });
+		}
 
 		assert.deepEqual(
 			commands.filter((name) => ["run", "parallel"].includes(name)),

@@ -46,13 +46,6 @@ import { registerExecutionIntercomDetach } from "./execution-intercom-detach.js"
 import { registerExecutionParentAskHandoff } from "./execution-parent-ask-handoff.js";
 import { missingCwdMessage } from "./subagent-executor-cwd.js";
 
-function defaultTestSession(): boolean {
-	if (process.env.NODE_TEST_CONTEXT !== undefined) return true;
-	// Bracket lookup so Bun.build cannot inline `process.env.NODE_ENV` at
-	// bundle time. Packed Node consumers must not inherit a compile-time stub.
-	return process.env["NODE_ENV"] === "test";
-}
-
 function emptyUsage(): Usage {
 	return {
 		input: 0,
@@ -411,7 +404,8 @@ async function launchSingleInProcess(
 		await ensureArtifactsDir(artifactsDir);
 		await writeArtifact(artifactPaths.inputPath, `# Task for ${agent.name}\n\n${task}`);
 	}
-	const testSession = options.testSession ?? defaultTestSession();
+	// Only explicit options.testSession selects the in-process stub; ambient NODE_ENV or NODE_TEST_CONTEXT never does.
+	const testSession = options.testSession ?? false;
 	// Where the child is in its start, across its attempts, until its first turn starts: never merely "running".
 	const launchedAt = elapsedSpan.dispatchedAt;
 	let startAttempt = 1;
