@@ -281,8 +281,9 @@ export function shouldCancelEngineViewOnArrival(
 
 /**
  * Whether an in-flight `RemoteComponent` input represents a cancel key pressed after the action that triggered an
- * incoming `engine_view_agent` (excluding the triggering `minUnansweredId` by identity so arbitrary keybinding
- * overlaps never self-cancel, while still honoring host-consumed watermarks and physical `Esc` after a settled click).
+ * incoming `engine_view_agent` (excluding the triggering `minUnansweredId` by identity so arbitrary non-Esc keybinding
+ * overlaps never self-cancel, while honoring host-consumed watermarks, physical `Esc`, and cancel keys after an
+ * unacknowledged in-flight click).
  */
 export function isUnansweredCancelMatch(
 	inputAnswered: boolean,
@@ -291,12 +292,12 @@ export function isUnansweredCancelMatch(
 	inputId: number,
 	minUnansweredId: number,
 	cancelUpToInputId: number,
-	clickBeforeOldest: boolean,
+	inFlightClickBeforeOldest: boolean,
 ): boolean {
 	if (inputAnswered) return false;
 	if (inputId <= cancelUpToInputId) return true;
 	if (inputId > minUnansweredId) return isCancelKey;
-	return clickBeforeOldest && isPhysicalEsc;
+	return isCancelKey && (isPhysicalEsc || inFlightClickBeforeOldest);
 }
 
 /**

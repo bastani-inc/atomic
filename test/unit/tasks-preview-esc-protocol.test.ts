@@ -170,6 +170,15 @@ function createHarnessWithOpenPort(
 	const keybindings = options.keybindings ?? new KeybindingsManager();
 
 	const engineCustomUi = new EngineCustomUiService((line) => {
+		if (options.engineVersion === "old") {
+			const raw = JSON.parse(line) as Record<string, unknown>;
+			if (raw.type === "engine_custom_open") {
+				delete raw.acksClicks;
+				engineToHostQueue.push(JSON.stringify(raw));
+				return;
+			}
+			if (raw.type === "engine_custom_click_result") return;
+		}
 		engineToHostQueue.push(line);
 	}, keybindings);
 
@@ -1897,6 +1906,7 @@ test("no-regression: Esc closing a /tasks peek card right before Enter, Kitty Es
 	assert.notEqual(topDialog, topTasks);
 
 	topTasks.handleInput?.(ENTER);
+	topDialog.handleInput?.("x");
 	topDialog.handleInput?.(ESC);
 	await h.deliverAllHostCommandsToEngine();
 	h.deliverAllEngineToHost();
@@ -2123,4 +2133,281 @@ test("host-cancel watermark stays bounded to earlier input ids on the same compo
 	await h.deliverAllSetViewedToEngine();
 	await done3;
 	assert.equal(h.switcher.viewedTaskId(), "a3", "reopened /tasks after watermark must open normally");
+});
+
+test("non-opening single click and double-click on /tasks never arm a cancel after holdWhileOpening Esc (Enter, overlap key, or no-key open)", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const clickEvent = {
+		type: "click" as const,
+		button: "left" as const,
+		clickCount: 1,
+		x: 5,
+		y: 1,
+		screenX: 5,
+		screenY: 1,
+		width: 100,
+		height: 10,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
+
+	for (const engineVersion of ["new", "old"] as const) {
+		for (const mode of [
+			"nonopen-single-then-enter",
+			"nonopen-single-then-nokey",
+			"double-click-then-enter",
+		] as const) {
+			let releaseA1!: (port: AgentViewPort | undefined) => void;
+			const h = createHarnessWithOpenPort(
+				[a1, a2],
+				(taskId) =>
+					taskId === "a1"
+						? new Promise((resolve) => {
+								releaseA1 = resolve;
+							})
+						: Promise.resolve(fakePort(taskId)),
+				{ fullscreen: false, engineVersion },
+			);
+			disposers.push(() => h.dispose());
+
+			const remoteTasksUi: TaskInspectorUi = {
+				notify() {},
+				custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+			};
+			const done = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+			await tick(2);
+			h.deliverAllEngineToHost();
+			const top = h.editorContainer.children.at(-1) as Component & {
+				handleInput?(data: string): unknown;
+				handleMouse?(event: typeof clickEvent): {
+					handled?: boolean;
+					whenSingleClick?: () => void;
+					onSingleClickCancel?: () => void;
+				};
+			};
+			top.render(100);
+			await h.deliverAllHostCommandsToEngine();
+			h.deliverAllEngineToHost();
+			top.render(100);
+
+			// 1. Harmless click on /tasks (list view ignores clicks).
+			const mouseRes = top.handleMouse?.(clickEvent);
+			assert.ok(mouseRes?.whenSingleClick && mouseRes?.onSingleClickCancel);
+			if (mode === "double-click-then-enter") {
+				mouseRes.onSingleClickCancel();
+			} else {
+				mouseRes.whenSingleClick();
+			}
+			await h.deliverAllHostCommandsToEngine();
+			h.deliverAllEngineToHost();
+
+			// 2. Prior keepScreen open cancelled via holdWhileOpening -> calls noteNavigationHostCancel().
+			h.switcher.requestView("a1" as TaskId, { keepScreen: true });
+			assert.equal(h.sendHostKey(ESC), true, `${engineVersion}/${mode}: holdWhileOpening cancels a1`);
+			releaseA1(fakePort("a1"));
+			await h.deliverAllHostCommandsToEngine();
+			h.deliverAllEngineToHost();
+			await h.deliverAllSetViewedToEngine();
+
+			// 3. Subsequent open (Enter OR programmatic/no-key engine_view_agent) must NOT be falsely cancelled!
+			if (mode === "nonopen-single-then-nokey") {
+				agentViewBridge(h.session)?.requestView("a2" as TaskId, { keepScreen: true });
+				h.deliverAllEngineToHost();
+				await tick(4);
+				await h.deliverAllSetViewedToEngine();
+				assert.equal(
+					h.switcher.viewedTaskId(),
+					"a2",
+					`${engineVersion}/${mode}: settled non-opening click must never arm cancel against no-key open`,
+				);
+				// Cleanly close /tasks.
+				top.handleInput?.(ESC);
+				await h.deliverAllHostCommandsToEngine();
+				h.deliverAllEngineToHost();
+				await done;
+			} else {
+				top.handleInput?.(ENTER);
+				await h.deliverAllHostCommandsToEngine();
+				h.deliverAllEngineToHost();
+				await tick(4);
+				await h.deliverAllSetViewedToEngine();
+				await done;
+				assert.equal(
+					h.switcher.viewedTaskId(),
+					"a2",
+					`${engineVersion}/${mode}: harmless click + holdWhileOpening Esc must not cancel subsequent Enter`,
+				);
+			}
+		}
+	}
+});
+
+test("in-flight opening single click (immediate or deferred) cancelled by Esc, custom app.interrupt, or holdWhileOpening+Down never opens or leaves preview", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const clickEvent = {
+		type: "click" as const,
+		button: "left" as const,
+		clickCount: 1,
+		x: 5,
+		y: 0,
+		screenX: 5,
+		screenY: 0,
+		width: 100,
+		height: 10,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
+
+	for (const clickStyle of ["immediate", "deferred"] as const) {
+		for (const cancelStyle of ["esc", "custom-interrupt", "hold-esc-then-down"] as const) {
+			const customKb = new KeybindingsManager({ "app.interrupt": ["escape", "ctrl+g"] });
+			setKeybindings(customKb);
+			let releaseA1!: (port: AgentViewPort | undefined) => void;
+			const opened: TaskId[] = [];
+			const h = createHarnessWithOpenPort(
+				[a1, a2],
+				(taskId) => {
+					if (taskId === "a1") {
+						return new Promise((resolve) => {
+							releaseA1 = resolve;
+						});
+					}
+					opened.push(taskId);
+					return Promise.resolve(fakePort(taskId));
+				},
+				{ fullscreen: false, keybindings: customKb },
+			);
+			disposers.push(() => h.dispose());
+
+			const navDone = h.engineCustomUi.custom(
+				(_tui, _theme, _kb, done) => ({
+					render: () => ["clickable row"],
+					invalidate() {},
+					handleMouse() {
+						const trigger = () => {
+							agentViewBridge(h.session)?.requestView("a2" as TaskId, { keepScreen: true });
+							done(undefined);
+						};
+						if (clickStyle === "immediate") {
+							trigger();
+							return { handled: true };
+						}
+						return { handled: true, whenSingleClick: trigger };
+					},
+				}),
+				{ overlay: false, purpose: "navigation" },
+			);
+			await tick(2);
+			h.deliverAllEngineToHost();
+			const top = h.editorContainer.children.at(-1) as Component & {
+				handleInput?(data: string): unknown;
+				handleMouse?(event: typeof clickEvent): {
+					handled?: boolean;
+					whenSingleClick?: () => void;
+				};
+			};
+			top.render(100);
+			await h.deliverAllHostCommandsToEngine();
+			h.deliverAllEngineToHost();
+			top.render(100);
+
+			if (cancelStyle === "hold-esc-then-down") {
+				h.switcher.requestView("a1" as TaskId, { keepScreen: true });
+			}
+
+			const mouseRes = top.handleMouse?.(clickEvent);
+			assert.ok(mouseRes?.whenSingleClick);
+			if (clickStyle === "deferred") {
+				// Let phase 1 finish first, then settle phase 2 (in flight to engine!).
+				await h.deliverAllHostCommandsToEngine();
+				h.deliverAllEngineToHost();
+				mouseRes.whenSingleClick();
+			}
+
+			if (cancelStyle === "esc") {
+				top.handleInput?.(ESC);
+			} else if (cancelStyle === "custom-interrupt") {
+				top.handleInput?.("\x07");
+			} else {
+				assert.equal(h.sendHostKey(ESC), true, "holdWhileOpening cancels a1 and marks in-flight click cancelled");
+				top.handleInput?.(DOWN); // non-cancel key after Esc must NOT mask cancelled in-flight click!
+				releaseA1(fakePort("a1"));
+			}
+
+			await h.deliverAllHostCommandsToEngine();
+			h.deliverAllEngineToHost();
+			await tick(4);
+			await h.deliverAllSetViewedToEngine();
+			await navDone;
+
+			assert.equal(
+				h.switcher.viewedTaskId(),
+				undefined,
+				`${clickStyle}/${cancelStyle}: cancelled opening click must stay on main`,
+			);
+			assert.deepEqual(opened, [], `${clickStyle}/${cancelStyle}: openPort(a2) must never run`);
+		}
+	}
+});
+
+test("old host without ackId causes new engine to emit zero engine_custom_click_result messages", async () => {
+	const lines: string[] = [];
+	const service = new EngineCustomUiService((line) => lines.push(line), new KeybindingsManager());
+	try {
+		void service.custom(
+			() => ({
+				render: () => ["row"],
+				invalidate() {},
+				handleMouse: () => ({ handled: true, whenSingleClick: () => {} }),
+			}),
+			{ overlay: false, purpose: "navigation" },
+		);
+		await tick(2);
+		const open = lines.map(parseInteractiveEngineMessage).find((m) => m?.type === "engine_custom_open");
+		assert.ok(open && open.type === "engine_custom_open");
+		assert.equal(open.acksClicks, true, "new engine advertises acksClicks on navigation custom open");
+
+		// Simulate old host: sends click + settle WITHOUT ackId.
+		service.handleLine(
+			JSON.stringify({
+				type: "engine_custom_render",
+				componentId: open.componentId,
+				requestId: 1,
+				width: 40,
+				rows: 10,
+			}),
+		);
+		lines.length = 0;
+		service.handleLine(
+			JSON.stringify({
+				type: "engine_custom_click",
+				componentId: open.componentId,
+				frame: 1,
+				clickId: 1,
+				cancelsClicks: true,
+				x: 0,
+				y: 0,
+				width: 40,
+				height: 10,
+			}),
+		);
+		service.handleLine(
+			JSON.stringify({
+				type: "engine_custom_click_settle",
+				componentId: open.componentId,
+				clickId: 1,
+			}),
+		);
+		assert.equal(
+			lines.some((line) => line.includes("engine_custom_click_result")),
+			false,
+			"new engine must never emit engine_custom_click_result to an old host that omitted ackId",
+		);
+	} finally {
+		service.dispose();
+	}
 });
