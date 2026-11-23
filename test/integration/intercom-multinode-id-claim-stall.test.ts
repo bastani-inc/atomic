@@ -532,3 +532,88 @@ test(
 	},
 	TEST_TIMEOUT_MS,
 );
+
+test(
+	"a returning session after an 8 s broker stall on a healthy database publishes presence before registered so a peer can list and send immediately (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const peer = await harness.connect("b", unique("peer"));
+		const original = await harness.connect("a", unique("returning"));
+		const id = await leaveAway(original, peer);
+		harness.stallIdClaim(original.returnAddress, BROKER_STALL_MS);
+
+		await explained(id, original.returnAddress, async () => {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
+			assert.equal(harness.idClaimStalled(original.returnAddress), true);
+			assert.equal(back.sessionId, id);
+			const listed = await peer.client.listSessions();
+			assert.ok(
+				listed.some((session) => session.id === back.sessionId),
+				"peer lists kept id immediately",
+			);
+			const sent = await peer.client.send(back.sessionId, { text: "after 8 s stall" });
+			assert.equal(sent.delivered, true, sent.reason);
+		});
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a returning session after a 5.5 s broker stall and a 2.5 s slow known-session write still publishes presence before registered within its 10 s deadline (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const peer = await harness.connect("b", unique("peer"));
+		const original = await harness.connect("b", unique("returning"));
+		const id = await leaveAway(original, peer);
+		harness.stallIdClaim(original.returnAddress, 5_500, undefined, 2_500, "known session");
+
+		await explained(id, original.returnAddress, async () => {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+			});
+			assert.equal(harness.idClaimStalled(original.returnAddress), true);
+			assert.equal(back.sessionId, id);
+			const listed = await peer.client.listSessions();
+			assert.ok(
+				listed.some((session) => session.id === back.sessionId),
+				"peer lists kept id immediately",
+			);
+			const sent = await peer.client.send(back.sessionId, { text: "after 5.5s+2.5s" });
+			assert.equal(sent.delivered, true, sent.reason);
+		});
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test(
+	"a returning session after a 9.6 s broker stall honours a custom 15 s connectTimeoutMs, keeping its claimed id and publishing presence (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const peer = await harness.connect("b", unique("peer"));
+		const original = await harness.connect("a", unique("returning"));
+		const id = await leaveAway(original, peer);
+		harness.stallIdClaim(original.returnAddress, 9_600);
+
+		await explained(id, original.returnAddress, async () => {
+			const back = await harness.connect("a", original.name, {
+				returnAddress: original.returnAddress,
+				preferredSessionId: id,
+				connectTimeoutMs: 15_000,
+			});
+			assert.equal(harness.idClaimStalled(original.returnAddress), true);
+			assert.equal(back.sessionId, id, "custom 15 s connect timeout gives reclaim and presence time to finish");
+			const listed = await peer.client.listSessions();
+			assert.ok(
+				listed.some((session) => session.id === back.sessionId),
+				"peer lists kept id immediately",
+			);
+		});
+	},
+	TEST_TIMEOUT_MS,
+);

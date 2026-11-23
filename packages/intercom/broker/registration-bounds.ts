@@ -34,11 +34,5 @@ export const REGISTRATION_CONNECT_HEADROOM_MS = 2_500;
 export const BROKER_CONNECT_TIMEOUT_MS =
 	SESSION_ID_CLAIM_BOUND_MS + PRESENCE_REGISTRATION_BOUND_MS + REGISTRATION_CONNECT_HEADROOM_MS;
 
-/** Minimum time an unanswered claim's reclaim write gets to decide its id even after a long broker stall. */
-export const MIN_RECLAIM_DECISION_BOUND_MS = 1_500;
-
-/**
- * Latest time from claim start that a registration waits for a reclaim decision, leaving IPC margin below
- * {@link BROKER_CONNECT_TIMEOUT_MS}.
- */
-export const RECLAIM_DECISION_CLIENT_CAP_MS = BROKER_CONNECT_TIMEOUT_MS - 500;
+/** Maximum IPC margin reserved below the client's remaining registration deadline when bounding broker-side waits. */
+export const REGISTRATION_IPC_MARGIN_MS = 500;

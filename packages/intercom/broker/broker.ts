@@ -95,15 +95,15 @@ import {
   type BrokerStateOpener,
   LOCAL_RETRY_LOOKUP_BOUND_MS,
   MultiNodeRouter,
-  presenceWaitAfterClaim,
   readSharedStorageSetting,
-  reclaimDecisionBoundAfterClaim,
+  registrationBoundAfterClaim,
   resolveMultiNodeStartup,
   SHARED_STORAGE_UNAVAILABLE_REASON,
   type SessionIdClaimProgress,
   type SessionIdGrant,
   type UnansweredSessionIdClaim,
 } from "./multinode-router.js";
+import { BROKER_CONNECT_TIMEOUT_MS } from "./registration-bounds.js";
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { SessionIdReclaim } from "./session-id-reclaim.js";
@@ -913,7 +913,6 @@ class IntercomBroker {
     awaits?: string,
     recovery?: string,
     presenceBoundMs?: number,
-    presenceWaitMs?: number,
   ): void {
         let id = grantedId;
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
@@ -1124,7 +1123,6 @@ class IntercomBroker {
           awaits,
           recovery,
           presenceBoundMs,
-          presenceWaitMs,
         );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
         // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS once the store can open, and by ENDED_QUEUE_TOTAL_WAIT_MS in all).
@@ -1235,6 +1233,20 @@ class IntercomBroker {
 		if (clientMessage.protocol !== undefined && !isBrokerProtocolRange(clientMessage.protocol)) {
 			throw new Error("Invalid protocol range");
 		}
+		if (
+			clientMessage.connectTimeoutMs !== undefined &&
+			(typeof clientMessage.connectTimeoutMs !== "number" ||
+				!Number.isFinite(clientMessage.connectTimeoutMs) ||
+				clientMessage.connectTimeoutMs <= 0)
+		) {
+			throw new Error("Invalid connect timeout");
+		}
+		if (
+			clientMessage.connectDeadlineAt !== undefined &&
+			(typeof clientMessage.connectDeadlineAt !== "number" || !Number.isFinite(clientMessage.connectDeadlineAt))
+		) {
+			throw new Error("Invalid connect deadline");
+		}
 		const registrationReach = readRegistrationReach(
 			clientMessage.reach,
 			clientMessage.session,
@@ -1281,6 +1293,22 @@ class IntercomBroker {
         }
 
         this.openDeliveredMessages();
+        const clientTimeoutMs =
+          typeof clientMessage.connectTimeoutMs === "number" ? clientMessage.connectTimeoutMs : BROKER_CONNECT_TIMEOUT_MS;
+        const readWall = Date.now();
+        const readMono = performance.now();
+        const preReadElapsedMs =
+          typeof clientMessage.connectDeadlineAt === "number"
+            ? Math.min(clientTimeoutMs, Math.max(0, clientTimeoutMs - (clientMessage.connectDeadlineAt - readWall)))
+            : 0;
+        const clientRemainingMs = (claimElapsedMs?: number): number => {
+          const sinceReadMs = Math.max(0, performance.now() - readMono, Date.now() - readWall);
+          const brokerElapsedMs =
+            claimElapsedMs !== undefined && Number.isFinite(claimElapsedMs)
+              ? Math.max(sinceReadMs, claimElapsedMs)
+              : sinceReadMs;
+          return Math.max(0, clientTimeoutMs - preReadElapsedMs - brokerElapsedMs);
+        };
         // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
         const preferred = this.sessionIdReclaim.grant(
           clientMessage.preferredSessionId,
@@ -1352,9 +1380,10 @@ class IntercomBroker {
                 takesIdHandoff &&
                 (claimed.status === "held" || (claimed.status === "unanswered" && claimed.unanswered.recovery !== undefined));
               const unanswered = claimed.status === "unanswered" ? claimed.unanswered : undefined;
-              const presenceWaitMs = presenceWaitAfterClaim(claimProgress);
-              const presenceBoundMs =
-                unanswered === undefined ? presenceWaitMs : reclaimDecisionBoundAfterClaim(claimProgress);
+              const presenceBoundMs = registrationBoundAfterClaim(
+                claimProgress,
+                clientRemainingMs(claimProgress.elapsedMs),
+              );
               this.completeSessionRegistration(
                 socket,
                 registration,
@@ -1370,13 +1399,23 @@ class IntercomBroker {
                 !awaited ? undefined : claimed.status === "held" ? claimed.recovery : claimed.unanswered.recovery,
                 // The claim and the presence wait together stay within the client's registration wait.
                 presenceBoundMs,
-                presenceWaitMs,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
           break;
         }
-        this.completeSessionRegistration(socket, registration, preferred ?? randomUUID(), supervisorId, setId);
+        this.completeSessionRegistration(
+          socket,
+          registration,
+          preferred ?? randomUUID(),
+          supervisorId,
+          setId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          registrationBoundAfterClaim({ extendedMs: 0 }, clientRemainingMs()),
+        );
         break;
       }
 

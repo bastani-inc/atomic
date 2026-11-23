@@ -767,6 +767,8 @@ export class IntercomClient extends EventEmitter {
     this.verifyRelease = undefined;
 
     return new Promise((resolve, reject) => {
+      const connectTimeoutMs = this.connectTimeoutMs;
+      const connectDeadlineAt = Date.now() + connectTimeoutMs;
       const socket = net.connect(socketPath);
       this.socket = socket;
       this.disconnectError = null;
@@ -781,7 +783,7 @@ export class IntercomClient extends EventEmitter {
           socket.destroy();
           reject(new IntercomBrokerTimeoutError("Connection timeout"));
         }
-      }, this.connectTimeoutMs);
+      }, connectTimeoutMs);
       
       let connectionEstablished = false;
       
@@ -897,6 +899,8 @@ export class IntercomClient extends EventEmitter {
             session: registration,
             ...(reach === undefined ? {} : { reach: { home: reach.home, reachable: [...reach.reachable] } }),
             protocol: { ...BROKER_PROTOCOL },
+            connectTimeoutMs,
+            connectDeadlineAt,
             ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
 			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),

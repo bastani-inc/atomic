@@ -244,6 +244,10 @@ export interface RegisterRequest {
 			/** #4538: the wire protocol versions this client speaks; absent from a client of protocol 1 (0.9.71 and earlier). */
 			protocol?: { min: number; max: number };
 			reach?: ReachPolicyFrame;
+			/** Client's own registration timeout in ms, so the broker keeps internal waits within the client's deadline. */
+			connectTimeoutMs?: number;
+			/** Client's local-host epoch deadline (`Date.now() + connectTimeoutMs`) when this connect attempt started. */
+			connectDeadlineAt?: number;
 }
 
 export type ClientMessage =
