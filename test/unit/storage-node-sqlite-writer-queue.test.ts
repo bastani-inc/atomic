@@ -38,6 +38,10 @@ const WATCHED_RECHECK_MS = 250;
 const UNWATCHED_RETRY_MS = 20;
 /** Bound on the event-loop turns a test gives a connection's holder record write to land. */
 const RECORD_WRITE_TURNS = 2_000;
+/** Disables hold-time batch splits in tests that measure batch joining or the batch-size cap under load. */
+const UNBOUNDED_GROUP_COMMIT_HOLD_MS = Number.MAX_SAFE_INTEGER;
+/** When every release notice a test makes was last touched, until a releasing writer touches it. */
+const NOTICE_UNTOUCHED_MS = Date.UTC(2000, 0, 1);
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -57,12 +61,17 @@ interface Counts {
 
 /**
  * A file database opened by the adapter, a raw connection to the same file that can hold the write lock the way
- * another process would, and counts of what the adapter's connection begins and commits.
+ * another process would, and counts of what the adapter's connection begins and commits. By default the database clock
+ * stands still for the test, so a ticket's age is whatever the test sets and a loaded runner never ages a live ticket
+ * into a stale one.
  */
-async function fixture(options?: Parameters<typeof openNodeSqliteDatabase>[1]) {
+async function fixture(options?: Parameters<typeof openNodeSqliteDatabase>[1] & { readonly freezeClock?: boolean }) {
+	const { freezeClock = true, ...openOptions } = options ?? {};
+	const clock = freezeClock ? freezeDatabaseClock(Math.floor(databaseNow() / 1000) * 1000) : undefined;
+	if (clock !== undefined) cleanups.push(() => clock.restore());
 	const directory = makeTempDirectory("atomic-writer-queue-");
 	const path = join(directory, "queue.sqlite");
-	const database = await openNodeSqliteDatabase(path, options);
+	const database = await openNodeSqliteDatabase(path, openOptions);
 	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
 	const holder = new DatabaseSync(path);
 	const counts: Counts = { attempts: [], begins: 0, commits: 0, inFlight: 0 };
@@ -153,13 +162,19 @@ function wakes(writers: string): string {
 	return writers.replace(/-writers$/, "-wakes");
 }
 
+/** Whether a releasing writer has touched the release notice of `name` since it was made. */
+function noticeTouched(writers: string, name: string): boolean {
+	return statSync(join(wakes(writers), name)).mtimeMs > NOTICE_UNTOUCHED_MS;
+}
+
 function ticket(writers: string, timeMs: number, pid: number, mtimeOffsetMs = 0): string {
 	mkdirSync(writers, { recursive: true });
 	mkdirSync(wakes(writers), { recursive: true });
 	const name = `${String(timeMs).padStart(15, "0")}-${pid}-1`;
 	writeFileSync(join(writers, name), "");
 	writeFileSync(join(wakes(writers), name), "");
-	touch(join(wakes(writers), name), -3_600_000);
+	const untouched = new Date(NOTICE_UNTOUCHED_MS);
+	utimesSync(join(wakes(writers), name), untouched, untouched);
 	touch(join(writers, name), mtimeOffsetMs);
 	return name;
 }
@@ -318,7 +333,7 @@ test("a writer that watches its release notice rechecks every recheck period, up
 });
 
 test("transactions requested while a batch waits for the lock share its acquisition and commit, in order (#4316)", async () => {
-	const { database, holder, counts, writers } = await fixture();
+	const { database, holder, counts, writers } = await fixture({ groupCommitHoldMs: UNBOUNDED_GROUP_COMMIT_HOLD_MS });
 	holder.exec("BEGIN IMMEDIATE");
 	const first = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('1')"));
 	const [name] = await untilTickets(writers, 1);
@@ -348,7 +363,7 @@ test("a statement requested between waiting transactions keeps them in separate 
 });
 
 test("a waiting batch takes in at most the batch size limit, and the rest joins the next acquisition (#4316)", async () => {
-	const { database, holder, counts, writers } = await fixture({ groupCommitHoldMs: 60_000 });
+	const { database, holder, counts, writers } = await fixture({ groupCommitHoldMs: UNBOUNDED_GROUP_COMMIT_HOLD_MS });
 	holder.exec("BEGIN IMMEDIATE");
 	const first = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('0')"));
 	const [name] = await untilTickets(writers, 1);
@@ -600,10 +615,7 @@ test("a writer that lets go of the lock wakes the oldest live ticket through its
 			[false, true, false, false],
 			`${outcome}: only the oldest live ticket was woken`,
 		);
-		assert.ok(
-			Date.now() - statSync(join(wakes(writers), oldest)).mtimeMs < 500,
-			`${outcome}: its notice was touched`,
-		);
+		assert.ok(noticeTouched(writers, oldest), `${outcome}: its notice was touched`);
 		for (const name of [stale, oldest, next, last])
 			assert.equal(
 				statSync(join(writers, name)).mtimeMs,
@@ -1057,7 +1069,8 @@ test("a writer whose own clock is off the system clock by seconds still finds th
 });
 
 test("a waiting writer whose own clock is off the system clock refreshes its ticket on the database clock, so other writers keep it live (#4387)", async () => {
-	const { database, holder, writers } = await fixture();
+	// Keep the real database clock so this exercises the connection thread's actual SQLite clock query.
+	const { database, holder, writers } = await fixture({ freezeClock: false });
 	holder.exec("BEGIN IMMEDIATE");
 	for (const offsetMs of PROCESS_CLOCK_OFFSETS_MS) {
 		vi.useFakeTimers({
@@ -1072,10 +1085,15 @@ test("a waiting writer whose own clock is off the system clock refreshes its tic
 		assert.ok(databaseNow() - statSync(path).mtimeMs >= 1_400, "the ticket starts stale");
 		await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
 		await untilWaiting();
+		const before = databaseNow();
 		await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
 		await untilWaiting();
-		const ageMs = databaseNow() - statSync(path).mtimeMs;
-		assert.ok(Math.abs(ageMs) < 1_000, `with its clock ${offsetMs} ms off, refreshed ${ageMs} ms from now`);
+		const after = databaseNow();
+		const refreshedMs = statSync(path).mtimeMs;
+		assert.ok(
+			refreshedMs >= Math.floor(before / 1000) * 1000 && refreshedMs <= after + 1_000,
+			`with its clock ${offsetMs} ms off, refreshed to ${refreshedMs} outside [${before}, ${after}]`,
+		);
 		holder.exec("COMMIT");
 		touch(join(wakes(writers), name!));
 		await write;
@@ -1083,6 +1101,58 @@ test("a waiting writer whose own clock is off the system clock refreshes its tic
 		vi.useRealTimers();
 	}
 	holder.exec("ROLLBACK");
+	assert.deepEqual(await values(database), PROCESS_CLOCK_OFFSETS_MS.map(String));
+});
+
+test("a writer whose own clock is off the system clock still queues behind, defers maintenance to, and wakes live tickets off the event loop (#4387)", async () => {
+	const { database, writers } = await fixture();
+	for (const [index, offsetMs] of PROCESS_CLOCK_OFFSETS_MS.entries()) {
+		const now = databaseNow();
+		const live = ticket(writers, now, 999_999_860 + index * 3);
+		const stale = ticket(writers, now - 10, 999_999_861 + index * 3, -5_000);
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout", "performance", "Date"],
+			now: now + offsetMs,
+		});
+		assert.equal(
+			await database.tryMaintenance!(async (tx) => {
+				await tx.run("INSERT INTO items VALUES ('cut-in')");
+			}),
+			false,
+			`with its clock ${offsetMs} ms off, maintenance deferred to the live ticket`,
+		);
+		assert.deepEqual(
+			readdirSync(writers).sort(),
+			[stale, live].sort(),
+			`with its clock ${offsetMs} ms off, maintenance removed neither ticket`,
+		);
+		let nextLive = "";
+		const write = database.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES (?)", String(offsetMs));
+			nextLive = ticket(writers, now + 10, 999_999_862 + index * 3);
+		});
+		const write$ = settledFlag(write);
+		while (!write$.settled && vi.getTimerCount() === 0) await turn();
+		assert.equal(write$.settled, false, `with its clock ${offsetMs} ms off, queued behind the live ticket`);
+		const names = readdirSync(writers).sort();
+		const own = names.find((name) => name !== live && name !== stale);
+		assert.ok(own !== undefined, `with its clock ${offsetMs} ms off, took its own ticket behind the live one`);
+		assert.ok(existsSync(join(writers, live)), `with its clock ${offsetMs} ms off, kept the live ticket`);
+		assert.ok(existsSync(join(writers, stale)), `with its clock ${offsetMs} ms off, kept the stale ticket`);
+		touch(join(writers, live), -60_000);
+		touch(join(wakes(writers), own));
+		await write;
+		assert.equal(existsSync(join(writers, live)), false, "the aged-out ticket was removed once abandoned");
+		assert.ok(existsSync(join(writers, nextLive)), `with its clock ${offsetMs} ms off, release kept the live ticket`);
+		assert.ok(existsSync(join(writers, stale)), `with its clock ${offsetMs} ms off, release kept the stale ticket`);
+		assert.ok(noticeTouched(writers, nextLive), `with its clock ${offsetMs} ms off, release woke the live ticket`);
+		assert.equal(noticeTouched(writers, stale), false, "release did not wake the stale ticket");
+		for (const name of [nextLive, stale]) {
+			fs.unlinkSync(join(wakes(writers), name));
+			fs.unlinkSync(join(writers, name));
+		}
+		vi.useRealTimers();
+	}
 	assert.deepEqual(await values(database), PROCESS_CLOCK_OFFSETS_MS.map(String));
 });
 
@@ -1215,14 +1285,11 @@ test("a group commit frees the holder record, counts one commit, and hands the t
 	assert.equal(getWriterQueueStats(database).commitsPerSecond, 1);
 	const [record] = readdirSync(`${path}-holders`).filter((entry) => entry.startsWith(`${process.pid}-`));
 	assert.equal(fs.readFileSync(join(`${path}-holders`, record!), "utf8").slice(0, 4), "free");
-	assert.ok(
-		Date.now() - statSync(join(wakes(writers), waiting)).mtimeMs < 500,
-		"the next writer's notice was touched",
-	);
+	assert.ok(noticeTouched(writers, waiting), "the next writer's notice was touched");
 });
 
 test("transactions requested together join one batch up to the batch size limit (#4316)", async () => {
-	const { database, counts } = await fixture();
+	const { database, counts } = await fixture({ groupCommitHoldMs: UNBOUNDED_GROUP_COMMIT_HOLD_MS });
 	const expected = Array.from({ length: 129 }, (_, index) => String(index));
 	await Promise.all(
 		expected.map((value) => database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", value))),
@@ -1255,7 +1322,7 @@ test("a batch waits for the lock as long as the most patient of the transactions
 });
 
 test("a transaction requested while an absorbing batch commits still runs, in its own commit (#4316)", async () => {
-	const { database, holder, counts, writers } = await fixture();
+	const { database, holder, counts, writers } = await fixture({ groupCommitHoldMs: UNBOUNDED_GROUP_COMMIT_HOLD_MS });
 	holder.exec("BEGIN IMMEDIATE");
 	const first = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('first')"));
 	const [name] = await untilTickets(writers, 1);

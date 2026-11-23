@@ -54,16 +54,20 @@ export interface CompactionModelSettings {
  */
 export function migrateCompactionModelSettings(
 	settings: CompactionModelSettings,
-	models: readonly AnyModel[],
+	models: readonly AnyModel[] | (() => readonly AnyModel[]),
 ): Array<{ scope: "global" | "project"; from: string }> {
 	const migrated: Array<{ scope: "global" | "project"; from: string }> = [];
 	const scopes: Array<"global" | "project"> = settings.isProjectTrusted() ? ["global", "project"] : ["global"];
+	let resolvedModels: readonly AnyModel[] | undefined;
 	for (const scope of scopes) {
 		try {
 			const value = (scope === "global" ? settings.getGlobalSettings() : settings.getProjectSettings())
 				.compactionModel;
 			if (typeof value !== "string") continue;
-			const kind = classifyCompactionModel(value, models);
+			const trimmed = value.trim();
+			if (trimmed === "" || trimmed === "auto") continue;
+			resolvedModels ??= typeof models === "function" ? models() : models;
+			const kind = classifyCompactionModel(trimmed, resolvedModels);
 			if (kind !== "chat" && kind !== "classifier") continue;
 			settings.setCompactionModel("auto", scope);
 			migrated.push({ scope, from: value });

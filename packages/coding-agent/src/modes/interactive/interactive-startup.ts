@@ -7,6 +7,7 @@ import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { processCompileCacheDeferral } from "../../utils/compile-cache-deferral.ts";
 import { setDeprecationWarningSink } from "../../utils/deprecation.js";
+import { yieldToTimerTurn } from "../../utils/event-loop.ts";
 import { findHelperExecutableAsync } from "../../utils/helper-command.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
@@ -527,6 +528,11 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		await bindInitialEagerSession(this);
 		if (startup?.cancelled || this.isShuttingDown) return;
 		void reportUnavailableTools(this);
+		// Finish this libuv poll/check turn and flush any pre-armed empty render before populating a large resumed transcript.
+		if ((this.sessionManager?.getEntryCount?.() ?? 0) > 64) {
+			await yieldToTimerTurn();
+			if (startup?.cancelled || this.isShuttingDown) return;
+		}
 	}
 
 	this.attachStartupNoticesContainer();
