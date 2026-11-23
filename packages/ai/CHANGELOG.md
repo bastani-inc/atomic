@@ -4,11 +4,13 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.6-alpha.1] - 2026-11-23
+
 ### Fixed
 
-- GitHub Copilot requests that fail with bare Node.js, undici, or POSIX runtime transport codes (such as `UND_ERR_SOCKET`, `ERR_HTTP2_*`, `ERR_SOCKET_*`, `ERR_TLS_*`, `ERR_SSL_*`, or `ECONNRESET`) are no longer misclassified as `unrecognized-response` (`unknown-error-event`); after an HTTP 200 response they classify as `stream-ended-early` with duration, progress, and request ID preserved, and before a response they stay generic network errors.
-- `isRetryableAssistantError()` now treats undici transport codes (`UND_ERR_SOCKET`, `UND_ERR_BODY_TIMEOUT`, `UND_ERR_HEADERS_TIMEOUT`, and `UND_ERR_CONNECT_TIMEOUT`) as retryable failures.
-- Classifier HTTP requests now retry transient raw-fetch transport errors (such as `UND_ERR_SOCKET`) while leaving caller aborts, TLS certificate refusals, and invalid JSON responses unretried.
+- GitHub Copilot requests that fail with bare Node.js, undici, or POSIX runtime transport codes (such as `UND_ERR_SOCKET`, `ERR_HTTP2_*`, `ERR_SOCKET_*`, `ERR_TLS_*`, `ERR_SSL_*`, or `ECONNRESET`) are no longer misclassified as `unrecognized-response` (`unknown-error-event`); after an HTTP 200 response they classify as `stream-ended-early` with duration, progress, and request ID preserved, and before a response they stay generic network errors ([#6509](https://github.com/bastani-inc/atomic/pull/6509)).
+- `isRetryableAssistantError()` now treats undici transport codes (`UND_ERR_SOCKET`, `UND_ERR_BODY_TIMEOUT`, `UND_ERR_HEADERS_TIMEOUT`, and `UND_ERR_CONNECT_TIMEOUT`) as retryable failures ([#6509](https://github.com/bastani-inc/atomic/pull/6509)).
+- Classifier HTTP requests now retry transient raw-fetch transport errors (such as `UND_ERR_SOCKET`) while leaving caller aborts, TLS certificate refusals, and invalid JSON responses unretried ([#6509](https://github.com/bastani-inc/atomic/pull/6509)).
 
 ## [0.10.5] - 2026-11-23
 
