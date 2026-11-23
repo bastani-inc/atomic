@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { withTestTimezone } from "../../../../test/helpers/system-prompt-date-isolation.js";
 
 /** The pinned upstream suite. Bumping it requires reviewing and regenerating the baseline. */
 const CONFORMANCE_PACKAGE = "@modelcontextprotocol/conformance@0.2.0-alpha.11";
@@ -68,7 +69,11 @@ function runCommand(
 	options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
 ): Promise<{ code: number; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, { cwd: options.cwd, env: options.env ?? process.env, detached: true });
+		const child = spawn(command, args, {
+			cwd: options.cwd,
+			env: options.env ? withTestTimezone(options.env) : process.env,
+			detached: true,
+		});
 		let stdout = "";
 		let stderr = "";
 		child.stdout.on("data", (data: Buffer) => {
