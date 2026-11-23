@@ -339,4 +339,127 @@ mod tests {
 			);
 		}
 	}
+
+	#[cfg(windows)]
+	#[test]
+	fn rejects_non_direct_child_grandchild_with_greater_sequence_number() {
+		use std::{
+			process::Command,
+			time::{Duration, Instant},
+		};
+
+		// `cmd` starts `ping` as its own child, so `ping` is our grandchild:
+		// `ProcessSequenceNumber(ping) > ProcessSequenceNumber(self)`, while
+		// `InheritedFromUniqueProcessId(ping) == cmd.id() != self_pid`.
+		let mut parent =
+			Command::new("cmd").args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"]).spawn().unwrap();
+		let parent_pid = parent.id();
+		let parent_created = crate::process_start::process_creation_time(parent_pid)
+			.expect("direct child creation time");
+
+		struct Cleanup {
+			pid: u32,
+			created: String,
+		}
+		impl Drop for Cleanup {
+			fn drop(&mut self) {
+				let _ = crate::process_start::terminate_process_created_at(
+					self.pid,
+					self.created.clone(),
+					true,
+				);
+			}
+		}
+		let _guard = Cleanup { pid: parent_pid, created: parent_created };
+
+		let deadline = Instant::now() + Duration::from_secs(10);
+		let grandchild_pid = loop {
+			let listed = crate::process_tree::process_table();
+			if let Some(&(id, _)) = listed.iter().find(|&&(_, started_by)| started_by == parent_pid) {
+				break id;
+			}
+			assert!(Instant::now() < deadline, "cmd never listed the ping grandchild");
+			std::thread::yield_now();
+		};
+
+		// Positive controls: our direct child IS accepted, and the grandchild IS live and openable.
+		let mut parent_held =
+			hold_windows_process_exit(parent_pid, None).expect("direct child must be accepted");
+		parent_held.close();
+		let grandchild_created = crate::process_start::process_creation_time(grandchild_pid)
+			.expect("grandchild must be live and queryable");
+
+		// A grandchild has sequence > self_seq, so only the parent-PID check rejects it.
+		assert!(
+			hold_windows_process_exit(grandchild_pid, None).is_none(),
+			"must reject a grandchild that is not our direct child"
+		);
+		assert!(
+			hold_windows_process_exit(grandchild_pid, Some(grandchild_created)).is_none(),
+			"must still reject a grandchild even when expected_created matches"
+		);
+
+		drop(_guard);
+		let _ = parent.wait();
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn rejects_stale_creation_time_and_pins_exited_child_against_pid_reuse() {
+		use std::{process::Command, thread::sleep, time::Duration};
+
+		// Spawn child A (exit 2), record its creation time, let it finish, and release its handle.
+		let mut child_a = Command::new("cmd").args(["/d", "/c", "exit 2"]).spawn().unwrap();
+		let mut held_a = hold_windows_process_exit(child_a.id(), None).expect("hold child A");
+		let created_a = held_a.creation_time();
+		assert_eq!(child_a.wait().unwrap().code(), Some(2));
+		held_a.close();
+
+		// Wait until a brand-new direct child B has a strictly distinct creation time (Windows
+		// FILETIME clock resolution is ~15.6 ms), simulating a later process after PID reuse.
+		let mut child_b = loop {
+			sleep(Duration::from_millis(20));
+			let mut candidate = Command::new("cmd").args(["/d", "/c", "exit 0"]).spawn().unwrap();
+			let mut held_b = hold_windows_process_exit(candidate.id(), None).expect("hold child B");
+			let created_b = held_b.creation_time();
+			if created_b != created_a {
+				// Presenting child A's stale creation time against child B must be rejected.
+				assert!(
+					hold_windows_process_exit(candidate.id(), Some(created_a.clone())).is_none(),
+					"stale creation time from an earlier process must be rejected"
+				);
+				let mut matched_b = hold_windows_process_exit(candidate.id(), Some(created_b))
+					.expect("matching creation time on child B must succeed");
+				assert_eq!(candidate.wait().unwrap().code(), Some(0));
+				assert_eq!(
+					matched_b.poll_exit(),
+					WindowsProcessExitStatus { exited: true, exit_code: Some(0), unknown: false }
+				);
+				matched_b.close();
+				held_b.close();
+				break candidate;
+			}
+			let _ = candidate.wait();
+			held_b.close();
+		};
+		let _ = child_b.wait();
+
+		// Holding WindowsProcessExitHandle pins the terminated process object and its real exit
+		// status even after std::process::Child drops its handle and new processes churn PIDs.
+		let mut child_c = Command::new("cmd").args(["/d", "/c", "exit 7"]).spawn().unwrap();
+		let mut held_c = hold_windows_process_exit(child_c.id(), None).expect("hold child C");
+		assert_eq!(child_c.wait().unwrap().code(), Some(7));
+		drop(child_c);
+
+		for _ in 0..10 {
+			let status = Command::new("cmd").args(["/d", "/c", "exit 0"]).status().unwrap();
+			assert_eq!(status.code(), Some(0));
+		}
+
+		assert_eq!(
+			held_c.poll_exit(),
+			WindowsProcessExitStatus { exited: true, exit_code: Some(7), unknown: false }
+		);
+		held_c.close();
+	}
 }
