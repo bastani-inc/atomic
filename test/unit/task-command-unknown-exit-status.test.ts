@@ -63,6 +63,84 @@ test("taskOutcomeStatus treats a command with missing or non-zero exitCode as fa
 	// Agents and kind-less restored tasks keep their existing completion semantics.
 	assert.equal(taskOutcomeStatus({ kind: "completed", output }, "agent"), "completed");
 	assert.equal(taskOutcomeStatus({ kind: "completed", output }, undefined), "completed");
+
+	// User- or agent-initiated stop always stays cancelled regardless of kind or exit code absence.
+	for (const cause of [
+		"user",
+		"owner-close",
+		"execution-timeout",
+		"output-limit",
+		"parent-handoff",
+		"pause",
+		"quit",
+		"shutdown",
+	] as const) {
+		const cancelled: TaskResult = { kind: "cancelled", cause, output };
+		const shell: TaskRecord = {
+			...taskRecord(`task-cancel-${cause}`, "command"),
+			title: "sleep 30",
+			execution: { kind: "settled", result: cancelled },
+		};
+		const env = makeEnvelope(cancelled, { taskId: shell.ref.taskId, taskKind: "command" });
+		assert.equal(taskOutcomeStatus(cancelled, "command"), "cancelled");
+		assert.equal(taskBoardState(shell), "stopped");
+		assert.equal(taskCompletionNotice(env, shell).status, "cancelled");
+		assert.equal(taskCompletionNotice(env, undefined).status, "cancelled");
+		assert.equal(taskNoticeLine(env, shell).status, cause === "execution-timeout" ? "warning" : "stopped");
+	}
+});
+
+test("successful commands (live, restored with taskKind, and legacy kind-less intents) never render failed", async () => {
+	// Restored command with exitCode: 0 (with and without live TaskRecord).
+	const okResult: TaskResult = { kind: "completed", output, exitCode: 0 };
+	const okShell: TaskRecord = {
+		...taskRecord("task-cmd-ok", "command"),
+		title: "echo ok",
+		execution: { kind: "settled", result: okResult },
+	};
+	const okEnv = makeEnvelope(okResult, { taskId: okShell.ref.taskId, taskKind: "command" });
+	assert.equal(taskOutcomeStatus(okResult, "command"), "completed");
+	assert.equal(taskState(okShell), "completed");
+	assert.equal(taskBoardState(okShell), "done");
+	assert.equal(taskCompletionNotice(okEnv, okShell).status, "completed");
+	assert.equal(taskCompletionNotice(okEnv, undefined).status, "completed");
+	assert.equal(taskNoticeLine(okEnv, okShell).status, "success");
+
+	// Older restored intent without taskKind still renders completed.
+	const legacyEnv = makeEnvelope({ kind: "completed", output }, { taskKind: undefined });
+	assert.equal(taskCompletionNotice(legacyEnv, undefined).status, "completed");
+	assert.equal(taskNoticeLine(legacyEnv, undefined).status, "success");
+
+	// Real supervised background command exiting 0 attaches exitCode: 0 atomically on settle (Linux and Windows).
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: crypto.randomUUID() },
+		authorizeLaunch() {},
+	});
+	onTestFinished(async () => {
+		await host.close("session-close");
+	});
+	const { supervisor, owner } = host.ownerBinding;
+	const started = await supervisor.startCommandTask(
+		owner,
+		{ kind: "command", command: "exit 0", terminal: { kind: "pipe" } },
+		crypto.randomUUID() as OperationId,
+	);
+	assert.ok(started.ok);
+	const settled = await supervisor.waitForTask(started.value, 10_000);
+	assert.ok(settled.ok && settled.value.kind === "settled");
+	assert.equal(settled.value.result.kind, "completed");
+	assert.equal(settled.value.result.exitCode, 0);
+	const [shell] = host.taskRecords(new Set([settled.value.taskId]));
+	assert.ok(shell);
+	assert.equal(taskOutcomeStatus(settled.value.result, "command"), "completed");
+	assert.equal(taskBoardState(shell), "done");
+	const env = makeEnvelope(settled.value.result, {
+		ownerId: shell.ref.ownerId,
+		taskId: shell.ref.taskId,
+		taskKind: "command",
+	});
+	assert.equal(taskCompletionNotice(env, shell).status, "completed");
+	assert.equal(taskNoticeLine(env, shell).status, "success");
 });
 
 test("command completion notices, text, rows, and inspector never report missing exitCode as success", () => {
