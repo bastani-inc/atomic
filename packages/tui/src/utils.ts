@@ -1593,7 +1593,8 @@ export function extractSegments(
 		const textEnd = nextAnsiCode(line, i + 1);
 		if (isPrintableAsciiRange(line, i, textEnd)) {
 			const len = textEnd - i;
-			const beforeTakeEnd = Math.min(len, beforeEnd - currentCol);
+			const effectiveBeforeEnd = afterLen > 0 ? Math.min(beforeEnd, afterEnd) : beforeEnd;
+			const beforeTakeEnd = Math.min(len, effectiveBeforeEnd - currentCol);
 			if (beforeTakeEnd > 0) {
 				if (pendingAnsiBefore) {
 					before += pendingAnsiBefore;

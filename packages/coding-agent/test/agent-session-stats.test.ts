@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { SessionStats } from "../src/core/agent-session-types.js";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { estimateDirectBranchContextTokens, estimateProjectedContextTokens } from "../src/core/compaction/index.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
@@ -386,6 +387,23 @@ describe("AgentSession.getSessionStats", () => {
 			const fallbackUsage = session.getContextUsage();
 			expect(projectionSpy).toHaveBeenCalledTimes(1);
 			expect(fallbackUsage?.tokens).toBeGreaterThan(expectedTokens);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("estimateDirectBranchContextTokens matches estimateProjectedContextTokens lastUsageIndex across non-message entries", async () => {
+		const { session, sessionManager } = await createSession();
+		try {
+			await sessionManager.appendThinkingLevelChange("high");
+			await sessionManager.appendModelChange("anthropic", "claude-sonnet-4-5");
+			await sessionManager.appendMessage(createUserMessage("hello", 1));
+			await sessionManager.appendMessage(createAssistantMessage("reply", 320, 2));
+			await sessionManager.appendMessage(createUserMessage("follow-up", 3));
+			const branch = sessionManager.getBranch();
+			const projected = estimateProjectedContextTokens(sessionManager.buildSessionProjection(), branch);
+			const direct = estimateDirectBranchContextTokens(branch);
+			expect(direct).toEqual(projected);
 		} finally {
 			session.dispose();
 		}

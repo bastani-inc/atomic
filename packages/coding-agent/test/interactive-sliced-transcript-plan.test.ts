@@ -97,7 +97,7 @@ function createModeHarness(options: {
 	mode: "fullscreen" | "regular";
 	entries: SessionEntry[];
 	chatRecords?: {
-		present: boolean;
+		present: boolean | Promise<boolean>;
 		byAnchor?: Map<string, readonly AnchoredChatRecord[]>;
 		orders?: readonly { anchor: string; promptId: string }[];
 	};
@@ -382,5 +382,80 @@ describe("sliced fullscreen transcript planning", () => {
 			});
 		});
 		assert.deepEqual(order, ["pre-armed", "after-yield"]);
+	});
+
+	test("preserves older saved chat-record decorations when index() runs before mount.present resolves", async () => {
+		const entries = makeTurns(120);
+		const firstReplyId = entries[3]!.id;
+		const lastReplyId = entries.at(-1)!.id;
+		const byAnchor = new Map<string, readonly AnchoredChatRecord[]>([
+			[
+				firstReplyId,
+				[
+					{
+						anchor: firstReplyId,
+						record: { kind: "line", id: "rec-pre-0", level: "warning", text: "PRE-OBSERVE-OLD" },
+					},
+				],
+			],
+			[
+				lastReplyId,
+				[
+					{
+						anchor: lastReplyId,
+						record: { kind: "line", id: "rec-pre-last", level: "warning", text: "PRE-OBSERVE-TAIL" },
+					},
+				],
+			],
+		]);
+		let resolvePresent!: (value: boolean) => void;
+		const presentPromise = new Promise<boolean>((resolve) => {
+			resolvePresent = resolve;
+		});
+		const full = createModeHarness({
+			mode: "fullscreen",
+			entries,
+			chatRecords: { present: presentPromise, byAnchor },
+		});
+		full.render(entries);
+		// Trigger layout.index() BEFORE mount.present resolves (as anchorsAfter/orderTargets does while plannedFrom > 0).
+		const { boundChatLayout } = await import("../src/modes/interactive/chat-reader-layout.js");
+		boundChatLayout(full.mode as never)?.orderTargets();
+		// Complete all history slices while mount.present is still unresolved.
+		await chatHistoryBuilt(full.chatContainer);
+		// Now resolve mount.present and render all rows.
+		resolvePresent(true);
+		for (let i = 0; i < 15; i++) {
+			await new Promise((r) => setImmediate(r));
+			full.chatContainer.render(200);
+		}
+		const text = full.lines().join("\n");
+		assert.ok(text.includes("PRE-OBSERVE-OLD"), "older saved record dropped when index() ran before observeWindow()");
+		assert.ok(text.includes("PRE-OBSERVE-TAIL"), "tail saved record must still be applied");
+	});
+
+	test("handles unnormalized lax assistant entries with null content without throwing during sliced split scan", async () => {
+		const entries = makeTurns(80);
+		// Inject a lax assistant entry with `content: null` inside the tail scan window.
+		const idx = entries.length - 5;
+		const orig = entries[idx]!;
+		entries[idx] = {
+			...orig,
+			type: "message",
+			message: {
+				role: "assistant",
+				content: null as never,
+				api: "openai-completions",
+				provider: "test",
+				model: "test-model",
+				usage,
+				stopReason: "stop",
+				timestamp: 999_999,
+			},
+		} as SessionEntry;
+		const full = createModeHarness({ mode: "fullscreen", entries });
+		full.render(entries);
+		await chatHistoryBuilt(full.chatContainer);
+		assert.ok(full.lines().join("\n").includes("Turn 79: prompt"));
 	});
 });

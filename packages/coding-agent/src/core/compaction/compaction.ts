@@ -185,7 +185,8 @@ export function estimateDirectBranchContextTokens(
 	branchEntries: readonly SessionEntry[],
 ): ContextUsageEstimate | undefined {
 	let latestPrefixTimestamp = Number.NEGATIVE_INFINITY;
-	let usageInfo: { usage: Usage; api: Api; index: number } | undefined;
+	let messageIndex = 0;
+	let usageInfo: { usage: Usage; api: Api; entryIndex: number; messageIndex: number } | undefined;
 
 	for (let i = 0; i < branchEntries.length; i++) {
 		const entry = branchEntries[i]!;
@@ -206,16 +207,17 @@ export function estimateDirectBranchContextTokens(
 			message.timestamp >= latestPrefixTimestamp &&
 			calculateContextTokens(usage, message.api) > 0
 		) {
-			usageInfo = { usage, api: message.api, index: i };
+			usageInfo = { usage, api: message.api, entryIndex: i, messageIndex };
 		}
 		latestPrefixTimestamp = Math.max(latestPrefixTimestamp, message.timestamp);
+		messageIndex += 1;
 	}
 
 	if (!usageInfo) return undefined;
 
 	const usageTokens = calculateContextTokens(usageInfo.usage, usageInfo.api);
 	let trailingTokens = 0;
-	for (let i = usageInfo.index + 1; i < branchEntries.length; i++) {
+	for (let i = usageInfo.entryIndex + 1; i < branchEntries.length; i++) {
 		const entry = branchEntries[i]!;
 		if (entry.type === "message") {
 			trailingTokens += estimateTokens(normalizeMessageContent(entry.message));
@@ -226,7 +228,7 @@ export function estimateDirectBranchContextTokens(
 		tokens: usageTokens + trailingTokens,
 		usageTokens,
 		trailingTokens,
-		lastUsageIndex: usageInfo.index,
+		lastUsageIndex: usageInfo.messageIndex,
 	};
 }
 

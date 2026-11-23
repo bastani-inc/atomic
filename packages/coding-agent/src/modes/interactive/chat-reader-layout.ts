@@ -57,7 +57,8 @@ export class ChatReaderLayout {
 	private byId?: Map<string, Position>;
 	private original?: readonly SessionEntry[];
 	private plannedFrom = 0;
-	private onChunkPlanned?: (from: number, to: number) => void;
+	private indexedFrom = Number.POSITIVE_INFINITY;
+	private onChunkPlanned?: (from: number, added: readonly Position[]) => void;
 	private pendingMoves = new Map<number, Component[]>();
 	private readonly queried = new Set<string>();
 	readonly live = new Set<string>();
@@ -103,10 +104,16 @@ export class ChatReaderLayout {
 		const clamped = Math.max(0, nextFrom);
 		if (clamped >= prev) return;
 		this.plannedFrom = clamped;
-		this.onChunkPlanned?.(clamped, prev);
-		if (clamped === 0 && this.byId) {
-			this.original = undefined;
-			this.onChunkPlanned = undefined;
+		if (this.onChunkPlanned) {
+			const target = this.byId ?? new Map<string, Position>();
+			const added = this.indexSlice(clamped, prev, target);
+			this.byId = target;
+			this.indexedFrom = Math.min(this.indexedFrom, clamped);
+			this.onChunkPlanned(clamped, added);
+			if (clamped === 0) {
+				this.original = undefined;
+				this.onChunkPlanned = undefined;
+			}
 		}
 	}
 	private indexSlice(from: number, to: number, target: Map<string, Position>): Position[] {
@@ -133,18 +140,25 @@ export class ChatReaderLayout {
 		return added;
 	}
 	private index(): Map<string, Position> {
-		if (this.byId && this.plannedFrom === 0) return this.byId;
 		const positions = this.byId ?? new Map<string, Position>();
+		const len = this.original?.length ?? 0;
 		if (!this.byId) {
 			const start = this.plannedFrom;
-			this.indexSlice(start, this.original?.length ?? 0, positions);
+			this.indexSlice(start, len, positions);
 			this.byId = positions;
+			this.indexedFrom = start;
 			if (start === 0) this.original = undefined;
+			return positions;
+		}
+		if (this.indexedFrom > this.plannedFrom) {
+			this.indexSlice(this.plannedFrom, Math.min(this.indexedFrom, len), positions);
+			this.indexedFrom = this.plannedFrom;
 		}
 		return positions;
 	}
 	anchors(): string[] {
-		if (this.byId && this.plannedFrom === 0) return [...(this.hasRoot ? [""] : []), ...this.byId.keys()];
+		if (this.byId && this.plannedFrom === 0 && this.indexedFrom === 0)
+			return [...(this.hasRoot ? [""] : []), ...this.byId.keys()];
 		const seen = new Set<string>();
 		if (this.hasRoot) seen.add("");
 		for (const entry of this.original ?? []) seen.add(entry.id);
@@ -198,16 +212,28 @@ export class ChatReaderLayout {
 				groups.set(earliestGroup, localLeading.concat(groups.get(earliestGroup)!));
 			}
 		};
-		registerPositions(this.index().values(), this.plannedFrom === 0);
+		const positions = this.index();
+		// Iterate in strict source order even if `index()` previously populated a tail slice before earlier chunks arrived.
+		const initialPositions: Position[] = [];
+		if (this.original) {
+			for (let i = this.plannedFrom; i < this.original.length; i++) {
+				const p = positions.get(this.original[i]!.id);
+				if (p) initialPositions.push(p);
+			}
+		} else {
+			for (const p of positions.values()) initialPositions.push(p);
+		}
+		registerPositions(initialPositions, this.plannedFrom === 0);
 		if (this.plannedFrom > 0) {
-			this.onChunkPlanned = (from, to) => {
-				const added = this.indexSlice(from, to, this.index());
+			this.onChunkPlanned = (from, added) => {
 				registerPositions(added, from === 0);
 				if (from === 0) {
 					if (earliestGroup === undefined && leading.length) submit(leading);
 					request();
 				}
 			};
+		} else {
+			this.original = undefined;
 		}
 		const queued = new Set<string>();
 		const submit = (ids: readonly string[]) => {

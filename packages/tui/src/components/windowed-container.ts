@@ -233,10 +233,29 @@ export class WindowedContainer extends Container {
 		const layout = ++this.layouts;
 		const overscan = this.measuredChildren === 0 ? 0 : Math.min(4, Math.ceil(height / 4));
 		let top = this.topFor(request, anchor, height);
+		// When scrolling upward from an anchor into unmeasured taller entries, measure backwards from
+		// the anchor first so `top = anchorOffset + moved` converges in one pass instead of shifting past rendered rows.
+		if (
+			!request.followEnd &&
+			anchor &&
+			this.laidOut[anchor.entry.index] === anchor.entry &&
+			(request.moved ?? 0) < 0
+		) {
+			if (this.measureAboveAnchor(anchor, -(request.moved ?? 0) + overscan, width, layout)) {
+				this.updateOffsets();
+				top = this.topFor(request, anchor, height);
+			}
+		}
 		for (let pass = 0; pass < MAX_WINDOW_PASSES; pass++) {
 			if (!this.renderWindow(top, height, overscan, request.followEnd, request.exact === true, width, layout)) break;
 			this.updateOffsets();
 			top = this.topFor(request, anchor, height);
+		}
+		// Final coverage guarantee: if the last pass's height updates moved `top` into unrendered entries,
+		// render the final visible window in-place so no visible row is ever blank.
+		if (this.ensureVisibleWindowRendered(top, height, width, layout)) {
+			this.updateOffsets();
+			top = Math.max(0, Math.min(Math.max(0, this.rowCount() - height), top));
 		}
 		this.scheduleSweep();
 		this.lastTop = top;
@@ -586,6 +605,69 @@ export class WindowedContainer extends Container {
 		this.staleOffsetsFrom = Number.POSITIVE_INFINITY;
 	}
 
+	private measureAboveAnchor(
+		anchor: { entry: Entry; within: number },
+		targetRowsAbove: number,
+		width: number,
+		layout: number,
+	): boolean {
+		let changed = false;
+		const ensureRendered = (entry: Entry): void => {
+			if (entry.renderedIn === layout) return;
+			entry.renderedIn = layout;
+			if (this.renderEntry(entry, width)) changed = true;
+		};
+		let rowsAbove = Math.min(anchor.within, Math.max(0, anchor.entry.height - 1));
+		let index = anchor.entry.index;
+		while (index > 0 && rowsAbove < targetRowsAbove) {
+			index--;
+			const entry = this.laidOut[index];
+			if (!entry) continue;
+			ensureRendered(entry);
+			rowsAbove += entry.height;
+		}
+		return changed;
+	}
+
+	private ensureVisibleWindowRendered(top: number, height: number, width: number, layout: number): boolean {
+		if (this.laidOut.length === 0) return false;
+		const visible = Math.max(height, 1);
+		let changed = false;
+		const ensureRendered = (entry: Entry): void => {
+			if (entry.renderedIn === layout) return;
+			entry.renderedIn = layout;
+			if (this.renderEntry(entry, width)) changed = true;
+		};
+		const anchorIndex = this.indexAt(Math.max(0, top));
+		let startIndex = anchorIndex;
+		while (startIndex > 0 && this.offsets[startIndex - 1] === this.offsets[startIndex]) startIndex--;
+		const within = Math.max(0, top - (this.offsets[anchorIndex] ?? 0));
+		let rowsBelow = 0;
+		let endIndex = startIndex;
+		for (; endIndex < this.laidOut.length && rowsBelow < visible; endIndex++) {
+			const entry = this.laidOut[endIndex];
+			if (!entry) continue;
+			ensureRendered(entry);
+			if (endIndex > anchorIndex) rowsBelow += entry.height;
+			else if (endIndex === anchorIndex) rowsBelow += Math.max(0, entry.height - within);
+		}
+		let first = startIndex;
+		if (rowsBelow < visible) {
+			const deficit = visible - rowsBelow;
+			let rowsAbove = 0;
+			while (first > 0 && rowsAbove < deficit) {
+				first--;
+				const entry = this.laidOut[first];
+				if (!entry) continue;
+				ensureRendered(entry);
+				rowsAbove += entry.height;
+			}
+		}
+		this.windowStart = first;
+		this.windowEnd = endIndex;
+		return changed;
+	}
+
 	private renderWindow(
 		top: number,
 		height: number,
@@ -605,8 +687,37 @@ export class WindowedContainer extends Container {
 		};
 		if (followEnd) {
 			const targetRows = visible + overscan;
+			// Small containers and already-measured tails render top-to-bottom so async renderers dispatch in document order.
+			if (this.laidOut.length <= 8 && this.rowCount() <= targetRows) {
+				for (let index = 0; index < this.laidOut.length; index++) {
+					const entry = this.laidOut[index];
+					if (entry) ensureRendered(entry);
+				}
+				this.windowStart = 0;
+				this.windowEnd = this.laidOut.length;
+				return changed;
+			}
+			// Walk backwards over already-measured entries first so warm frames render strictly top-to-bottom.
 			let first = this.laidOut.length;
+			let measuredRows = 0;
+			while (first > 0 && measuredRows < targetRows) {
+				const prev = this.laidOut[first - 1];
+				if (!prev) {
+					first--;
+					continue;
+				}
+				if (prev.width === 0) break;
+				first--;
+				measuredRows += prev.height;
+			}
 			let rows = 0;
+			for (let index = first; index < this.laidOut.length; index++) {
+				const entry = this.laidOut[index];
+				if (!entry) continue;
+				ensureRendered(entry);
+				rows += entry.height;
+			}
+			// Extend backwards into any unmeasured entries (or if measured entries shrank below targetRows).
 			while (first > 0 && rows < targetRows) {
 				first--;
 				const entry = this.laidOut[first];

@@ -47,5 +47,12 @@ describe("sliceByColumn ANSI order regression", () => {
 			after: "\x1b[31mef",
 			afterWidth: 2,
 		});
+		// When afterLen > 0 and beforeEnd > afterEnd, stops at afterEnd just like the grapheme path.
+		assert.deepStrictEqual(extractSegments("\x1b[31mhello\x1b[0m", 9, 1, 1, false), {
+			before: "\x1b[31mhe",
+			beforeWidth: 2,
+			after: "",
+			afterWidth: 0,
+		});
 	});
 });

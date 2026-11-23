@@ -1395,7 +1395,8 @@ type TranscriptStep =
 			readonly seq?: number;
 	  };
 
-const TAIL_STEPS = 24;
+const TAIL_STEPS = 32;
+const PARKED_TAIL_STEPS = 128;
 const TAIL_PLAN_ENTRIES = 32;
 const HISTORY_PLAN_CHUNK_ENTRIES = 64;
 const MAX_TAIL_SCAN_ENTRIES = 512;
@@ -1431,8 +1432,10 @@ function findSafeHistorySplit(
 				unmatchedResults.add(msg.toolCallId);
 			} else if (msg.role === "assistant") {
 				if (msg.stopReason === "aborted" || msg.stopReason === "error") return 0;
-				for (const block of msg.content) {
-					if (block.type === "toolCall") unmatchedResults.delete(block.id);
+				if (Array.isArray(msg.content)) {
+					for (const block of msg.content) {
+						if (block.type === "toolCall") unmatchedResults.delete(block.id);
+					}
 				}
 			} else if (
 				msg.role === "user" &&
@@ -2016,7 +2019,8 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	}
 	// Only the drawn context's saved lines stay resident; a saved page reads its own with its rows.
 	if (mount && layout) retainChatRecords(mount, () => layout?.anchors() ?? []);
-	let tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
+	const initialTailSteps = parked?.keys.size ? PARKED_TAIL_STEPS : TAIL_STEPS;
+	let tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - initialTailSteps) : 0;
 	if (parked?.keys.size) {
 		// The reader's kept rows are drawn now, in place, so the first frame shows them where they were.
 		const adopted = steps.findIndex((step) => {

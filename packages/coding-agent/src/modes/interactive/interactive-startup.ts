@@ -529,7 +529,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		if (startup?.cancelled || this.isShuttingDown) return;
 		void reportUnavailableTools(this);
 		// Finish this libuv poll/check turn and flush any pre-armed empty render before populating a large resumed transcript.
-		if (this.sessionManager.getEntryCount() > 64) {
+		if ((this.sessionManager?.getEntryCount?.() ?? 0) > 64) {
 			await yieldToTimerTurn();
 			if (startup?.cancelled || this.isShuttingDown) return;
 		}
