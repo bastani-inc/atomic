@@ -511,15 +511,20 @@ export class LegacySessionStore implements SessionStore {
 		if (this.deletions === undefined) {
 			const current = openNodeSqliteDatabase(this.databasePath)
 				.then(async (database) => {
-					// Read first, so a database that has the table, as every one this store opened before does, takes no write lock.
-					const exists = `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${DELETED_TABLE}'`;
-					if ((await database.get(exists)) === undefined)
-						await database.transaction((transaction) =>
-							transaction.exec(
-								`CREATE TABLE IF NOT EXISTS ${DELETED_TABLE}(id TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL)`,
-							),
-						);
-					return database;
+					try {
+						// Read first, so a database that has the table, as every one this store opened before does, takes no write lock.
+						const exists = `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${DELETED_TABLE}'`;
+						if ((await database.get(exists)) === undefined)
+							await database.transaction((transaction) =>
+								transaction.exec(
+									`CREATE TABLE IF NOT EXISTS ${DELETED_TABLE}(id TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL)`,
+								),
+							);
+						return database;
+					} catch (error) {
+						await database.close().catch(() => {});
+						throw error;
+					}
 				})
 				.catch((error: unknown) => {
 					if (this.deletions === current) this.deletions = undefined;

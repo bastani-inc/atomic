@@ -316,6 +316,142 @@ describe("memoized lazy loaders across packages recover after transient failures
 		assert.equal(await isNativeBuiltinExtensionPath(subagentsEntry), true);
 	});
 
+	test("native-builtin-entries does not cache a 3-of-4 set when one builtin directory is absent mid-swap", async () => {
+		const packageDir = makeTempDirectory("atomic-native-entries-partial-swap-");
+		cleanupPaths.push(packageDir);
+		for (const dirName of BUILTIN_PACKAGE_DIR_NAMES) {
+			const builtinDir = join(packageDir, "builtin", dirName);
+			const installedEntry = join(builtinDir, INSTALLED_EXTENSION_ENTRIES[dirName]);
+			mkdirSync(dirname(installedEntry), { recursive: true });
+			writeFileSync(join(builtinDir, "package.json"), JSON.stringify({ name: `@bastani/${dirName}` }));
+			writeFileSync(installedEntry, "export default function register() {}\n");
+		}
+		process.env.ATOMIC_PACKAGE_DIR = packageDir;
+		resetNativeBuiltinExtensionEntriesForTest();
+
+		const { getNativeBuiltinExtensionEntries } = await import(
+			"../../packages/coding-agent/src/core/extensions/native-builtin-entries.ts"
+		);
+		const subDir = join(packageDir, "builtin", "subagents");
+		const subSwap = join(packageDir, "builtin", "subagents.swap");
+		const intercomEntry = resolve(packageDir, "builtin", "intercom", INSTALLED_EXTENSION_ENTRIES.intercom);
+		const subagentsEntry = resolve(packageDir, "builtin", "subagents", INSTALLED_EXTENSION_ENTRIES.subagents);
+
+		renameSync(subDir, subSwap);
+		try {
+			assert.equal(await isNativeBuiltinExtensionPath(intercomEntry), true);
+		} finally {
+			renameSync(subSwap, subDir);
+		}
+
+		assert.equal(await isNativeBuiltinExtensionPath(subagentsEntry), true);
+		assert.equal((await getNativeBuiltinExtensionEntries()).size, BUILTIN_PACKAGE_DIR_NAMES.length);
+	});
+
+	test(
+		"LegacySessionStore.deletionDatabase closes its opened database on post-open init failure without leaking workers or handles",
+		() => {
+			const root = makeTempDirectory("atomic-legacy-db-leak-");
+			cleanupPaths.push(root);
+			const outcome = runBuiltDistScript(
+				"node",
+				root,
+				`
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
+
+const [codingAgentRoot] = process.argv.slice(2);
+const tmp = mkdtempSync(join(tmpdir(), "atomic-legacy-leak-child-"));
+const agentDir = join(tmp, "agent");
+const legacyDir = join(agentDir, "sessions");
+mkdirSync(legacyDir, { recursive: true });
+process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+
+const storageMod = await import(pathToFileURL(join(codingAgentRoot, "dist/core/storage/index.js")).href);
+const dbPath = storageMod.defaultSessionDatabasePath(agentDir);
+const sdk = await import(pathToFileURL(join(codingAgentRoot, "dist/index.js")).href);
+await sdk.SessionManager.list(tmp, undefined);
+
+writeFileSync(
+	join(legacyDir, "2026-01-01T00-00-00-000Z_abc.jsonl"),
+	JSON.stringify({ type: "session", version: 3, id: "abc", timestamp: "2026-01-01T00:00:00.000Z", cwd: tmp }) + "\\n",
+);
+
+const admin = new DatabaseSync(dbPath);
+admin.exec("CREATE TABLE _tmp_blocker(x INT); CREATE INDEX session_legacy_deleted ON _tmp_blocker(x);");
+
+const ss = await import(pathToFileURL(join(codingAgentRoot, "dist/core/session-storage.js")).href);
+const store = await ss.resolveSessionStore(tmp, agentDir);
+
+const fds = () => (process.platform === "linux" ? readdirSync("/proc/self/fd").length : -1);
+const threads = () =>
+	process.platform === "linux" ? Number(readFileSync("/proc/self/status", "utf8").match(/Threads:\\s+(\\d+)/)[1]) : -1;
+
+const before = { threads: threads(), fds: fds() };
+let failCount = 0;
+for (let i = 0; i < 6; i++) {
+	try {
+		await store.readHeader("abc");
+	} catch {
+		failCount++;
+	}
+}
+await new Promise((r) => setTimeout(r, 150));
+const afterFailures = { threads: threads(), fds: fds() };
+
+admin.exec("DROP INDEX session_legacy_deleted; DROP TABLE _tmp_blocker;");
+admin.close();
+const recoveredId = (await store.readHeader("abc"))?.id ?? null;
+await store.close();
+await new Promise((r) => setTimeout(r, 200));
+const afterClose = { threads: threads(), fds: fds() };
+
+let rmError = null;
+try {
+	rmSync(tmp, { recursive: true, force: false });
+} catch (error) {
+	rmError = { code: error?.code, message: String(error?.message ?? error) };
+}
+console.log(JSON.stringify({ platform: process.platform, failCount, recoveredId, before, afterFailures, afterClose, rmError }));
+`,
+				[CODING_AGENT_ROOT],
+			);
+
+			assert.equal(outcome.failCount, 6);
+			assert.equal(outcome.recoveredId, "abc");
+			assert.equal(
+				outcome.rmError,
+				null,
+				`cleanup rmSync after store.close() must not fail: ${JSON.stringify(outcome.rmError)}`,
+			);
+			if (outcome.platform === "linux") {
+				const before = outcome.before as { threads: number; fds: number };
+				const afterFailures = outcome.afterFailures as { threads: number; fds: number };
+				const afterClose = outcome.afterClose as { threads: number; fds: number };
+				assert.ok(
+					afterFailures.threads - before.threads <= 1,
+					`threads leaked across 6 failed retries: before=${before.threads} afterFailures=${afterFailures.threads}`,
+				);
+				assert.ok(
+					afterFailures.fds - before.fds <= 4,
+					`FDs leaked across 6 failed retries: before=${before.fds} afterFailures=${afterFailures.fds}`,
+				);
+				assert.ok(
+					afterClose.threads - before.threads <= 1,
+					`threads still leaked after store.close(): before=${before.threads} afterClose=${afterClose.threads}`,
+				);
+				assert.ok(
+					afterClose.fds - before.fds <= 4,
+					`FDs still leaked after store.close(): before=${before.fds} afterClose=${afterClose.fds}`,
+				);
+			}
+		},
+		CHILD_TIMEOUT_MS,
+	);
+
 	test("createBrokerHostModulePlugin retries loadApp after a transient rejection and caches success", async () => {
 		let attempts = 0;
 		const plugin = createBrokerHostModulePlugin(async () => {
@@ -805,5 +941,60 @@ describe("memoizeAsync and memoizeAsyncByKey state-machine invariants", () => {
 
 		load.reset();
 		assert.equal(await load("sentinel"), "sentinel:3");
+	});
+
+	test("memoizeAsyncByKey never lets a superseded flight rejection or uncacheable result after reset(key) clobber a newer flight", async () => {
+		let calls = 0;
+		let reject1!: (error: Error) => void;
+		let resolve2!: (value: string | null) => void;
+		let resolve3!: (value: string | null) => void;
+		let resolve4!: (value: string | null) => void;
+		const load = memoizeAsyncByKey(
+			(key: string): Promise<string | null> => {
+				calls += 1;
+				if (key === "k" && calls === 1) {
+					return new Promise((_resolve, reject) => {
+						reject1 = reject;
+					});
+				}
+				if (key === "k" && calls === 2) {
+					return new Promise((resolve) => {
+						resolve2 = resolve;
+					});
+				}
+				if (key === "k" && calls === 3) {
+					return new Promise((resolve) => {
+						resolve3 = resolve;
+					});
+				}
+				return new Promise((resolve) => {
+					resolve4 = resolve;
+				});
+			},
+			{ shouldCache: (value) => value !== null },
+		);
+
+		// Case A: superseded flight 1 rejects after reset("k") and flight 2 started -> must NOT delete flight 2.
+		const f1 = load("k");
+		load.reset("k");
+		const f2 = load("k");
+		reject1(new Error("stale-key-reject"));
+		await assert.rejects(() => f1, /stale-key-reject/);
+		assert.equal(load("k"), f2, "stale rejection must not clobber newer flight for the same key");
+		resolve2("fresh-2");
+		assert.equal(await f2, "fresh-2");
+		assert.equal(await load("k"), "fresh-2");
+
+		// Case B: superseded flight 3 resolves with uncacheable null after reset("k") and flight 4 started -> must NOT delete flight 4.
+		load.reset("k");
+		const f3 = load("k");
+		load.reset("k");
+		const f4 = load("k");
+		resolve3(null);
+		assert.equal(await f3, null);
+		assert.equal(load("k"), f4, "stale uncacheable settlement must not clobber newer flight for the same key");
+		resolve4("fresh-4");
+		assert.equal(await f4, "fresh-4");
+		assert.equal(calls, 4);
 	});
 });

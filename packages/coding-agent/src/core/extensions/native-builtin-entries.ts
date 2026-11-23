@@ -1,7 +1,11 @@
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 import { memoizeAsync } from "../../utils/memoize-async.js";
-import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../builtin-install-layout.ts";
+import {
+	BUILTIN_PACKAGE_DIR_NAMES,
+	INSTALLED_EXTENSION_ENTRIES,
+	SOURCE_EXTENSION_ENTRIES,
+} from "../builtin-install-layout.ts";
 import { getBuiltinPackageLocations } from "../builtin-packages.ts";
 
 function candidateNativeBuiltinEntries(): string[] {
@@ -24,7 +28,10 @@ async function findNativeBuiltinExtensionEntries(): Promise<{
 		),
 	);
 	const entries = new Set(found.flat());
-	return { entries, complete: candidates.length > 0 && entries.size === candidates.length };
+	return {
+		entries,
+		complete: candidates.length === BUILTIN_PACKAGE_DIR_NAMES.length && entries.size === candidates.length,
+	};
 }
 
 const loadNativeBuiltinExtensionEntries = memoizeAsync(findNativeBuiltinExtensionEntries, {
