@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { openNodeSqliteDatabase, type SqliteDatabase, type StorageOpenContext } from "@bastani/atomic/storage";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { BrokerLeaseStore } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
 import { useFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
@@ -50,3 +50,45 @@ registerBrokerLeaseStoreConformance(test, "module-selected SQLite adapter", () =
 		return adapter.openDatabase({ path: join(directory, "shared.sqlite") }, context);
 	}),
 );
+
+test("renewMany renews membership and multiple presence leases in a single SQLite transaction while reporting per-lease status", async () => {
+	const directory = makeTempDirectory("intercom-sql-leases-batch-");
+	const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+	try {
+		const store = await openSqlBrokerLeaseStore({ database, prefix: "" });
+		assert.equal(typeof store.renewMany, "function", "SQL lease store exposes single-transaction renewMany");
+		const memberSubject = { kind: "broker", brokerId: "broker-a", nodeId: "host-a", startedAt: 1 } as const;
+		const member = await store.acquire(memberSubject, "broker-a", 30_000);
+		assert.equal(member.status, "acquired");
+		const presences = [];
+		for (let i = 0; i < 5; i++) {
+			const subject = {
+				kind: "presence" as const,
+				targetIdentity: `["return","s-${i}","default"]`,
+				session: { id: `id-${i}`, name: `s-${i}`, cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
+			};
+			const acquired = await store.acquire(subject, "broker-a", 30_000);
+			assert.equal(acquired.status, "acquired");
+			presences.push({ lease: acquired.lease, subject });
+		}
+		// Release the 3rd presence lease so its renewal reports stale alongside live renewals.
+		const released = await store.release(presences[2]!.lease);
+		assert.equal(released.status, "released");
+
+		const txSpy = vi.spyOn(database, "transaction");
+		const results = await store.renewMany!([
+			{ lease: member.lease },
+			...presences.map(({ lease, subject }) => ({ lease, subject })),
+			{ lease: member.lease, subject: presences[0]!.subject },
+		]);
+
+		assert.equal(txSpy.mock.calls.length, 1, "all 6 valid renewals execute inside one transaction");
+		assert.deepEqual(
+			results.map((r) => r.status),
+			["renewed", "renewed", "renewed", "stale", "renewed", "renewed", "invalid"],
+		);
+	} finally {
+		await database.close();
+		removeTempDirectory(directory);
+	}
+});

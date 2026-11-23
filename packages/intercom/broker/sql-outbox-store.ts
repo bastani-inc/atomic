@@ -300,6 +300,13 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		async claim(request) {
 			if (request.claimantId.length === 0) return invalid("empty-claimant-id");
 			if (request.targetIdentity.length === 0) return invalid("empty-target-identity");
+			// Fast read-only index check so empty scans (such as fan-out wake-up polls across idle sessions) never take a
+			// SQLite write lock. Linearizable: if a row commits after this snapshot, its enqueue writes a new wake-up hint.
+			const pending = await database.get(
+				`SELECT 1 AS present FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} LIMIT 1`,
+				request.targetIdentity,
+			);
+			if (pending === undefined) return { status: "claimed", rows: [] } as const;
 			return database.transaction(async (executor) => {
 				const records = await undelivered(executor, request.targetIdentity);
 				const other = records.find(
