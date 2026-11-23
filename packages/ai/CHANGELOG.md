@@ -4,9 +4,11 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.5-alpha.1] - 2026-11-23
+
 ### Changed
 
-- Deferred image-model index construction until first lookup, reduced temporary array allocations when flattening generated model catalogs, and bundled shared package chunks with content-hashed filenames and without `__esmMin` wrappers so Node's compile cache pre-compiles them while preserving side-effect isolation and compatibility shims for in-place updates.
+- Deferred image-model index construction until first lookup, reduced temporary array allocations when flattening generated model catalogs, and bundled shared package chunks with content-hashed filenames and without `__esmMin` wrappers so Node's compile cache pre-compiles them while preserving side-effect isolation and compatibility shims for in-place updates ([#6455](https://github.com/bastani-inc/atomic/pull/6455)).
 
 ### Fixed
 
