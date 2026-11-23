@@ -16,7 +16,8 @@ fn creation_time(pid: u32) -> Option<u64> {
 	use windows_sys::Win32::{
 		Foundation::{CloseHandle, FILETIME, STILL_ACTIVE},
 		System::Threading::{
-			GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+			GetExitCodeProcess, GetProcessId, GetProcessTimes, OpenProcess,
+			PROCESS_QUERY_LIMITED_INFORMATION,
 		},
 	};
 	// Process id 0 is the idle process, which OpenProcess refuses; it never holds anything.
@@ -25,6 +26,10 @@ fn creation_time(pid: u32) -> Option<u64> {
 	}
 	let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
 	if handle.is_null() {
+		return None;
+	}
+	if unsafe { GetProcessId(handle) } != pid {
+		unsafe { CloseHandle(handle) };
 		return None;
 	}
 	let empty = || FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
@@ -145,8 +150,8 @@ fn hold(pid: u32) -> Option<(std::os::windows::io::OwnedHandle, u64)> {
 	use windows_sys::Win32::{
 		Foundation::{FILETIME, STILL_ACTIVE},
 		System::Threading::{
-			GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-			PROCESS_TERMINATE,
+			GetExitCodeProcess, GetProcessId, GetProcessTimes, OpenProcess,
+			PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 		},
 	};
 	if pid == 0 {
@@ -158,6 +163,9 @@ fn hold(pid: u32) -> Option<(std::os::windows::io::OwnedHandle, u64)> {
 	}
 	// SAFETY: `raw` is a process handle this function just opened and owns.
 	let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+	if unsafe { GetProcessId(handle.as_raw_handle()) } != pid {
+		return None;
+	}
 	let empty = || FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
 	let (mut created, mut exited, mut kernel, mut user) = (empty(), empty(), empty(), empty());
 	let mut code = 0u32;
@@ -204,12 +212,17 @@ mod tests {
 	#[cfg(windows)]
 	#[test]
 	fn reads_this_process_and_nothing_for_a_missing_one() {
-		let own = process_creation_time(std::process::id()).expect("this process's creation time");
+		let own_pid = std::process::id();
+		let own = process_creation_time(own_pid).expect("this process's creation time");
 		assert!(own.parse::<u64>().unwrap() > 0);
-		assert_eq!(process_creation_time(std::process::id()), Some(own));
-		// Windows process ids are multiples of four: this one is never assigned.
+		assert_eq!(process_creation_time(own_pid), Some(own.clone()));
+		// Windows OpenProcess masks off the low 2 PID bits: unaligned offsets of a live PID must not alias it.
+		for offset in 1..=3 {
+			assert_eq!(process_creation_time(own_pid | offset), None);
+		}
 		assert_eq!(process_creation_time(4_294_967_293), None);
 		assert_eq!(process_creation_time(0), None);
+		assert_eq!(terminate_process_created_at(own_pid | 1, own, false), None);
 	}
 
 	#[cfg(windows)]
