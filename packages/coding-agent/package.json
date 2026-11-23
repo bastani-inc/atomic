@@ -167,7 +167,7 @@
     "markit-ai": "0.5.3",
     "minimatch": "11.0.4",
     "p-limit": "^7.3.2",
-    "semver": "7.8.5",
+    "semver": "7.8.6",
     "stream-json": "3.9.0",
     "turndown": "7.2.5",
     "typescript": "7.0.2",

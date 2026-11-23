@@ -19,8 +19,8 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import { moduleDir, readJson } from "../helpers/runtime.js";
 
 /**
- * Contract for the semver 7.8.5 pin shared by shipped code and build tooling.
- * The BASELINE_* tables were measured against a real upstream 7.8.5 build;
+ * Contract for the semver 7.8.6 pin shared by shipped code and build tooling.
+ * The BASELINE_* tables were measured against a real upstream 7.8.6 build;
  * they preserve prerelease, build-metadata and package-source range behavior.
  * Numeric tails after x-ranges must be rejected by the upstream 7.8.4 fix.
  *
@@ -29,13 +29,13 @@ import { moduleDir, readJson } from "../helpers/runtime.js";
  * To re-record these tables after a future pin move, unpack upstream outside
  * this tree and replay the same calls against it:
  *
- *   npm pack semver@7.8.5 --pack-destination "$TMPDIR"
- *   tar -xzf "$TMPDIR/semver-7.8.5.tgz" -C "$TMPDIR"
+ *   npm pack semver@7.8.6 --pack-destination "$TMPDIR"
+ *   tar -xzf "$TMPDIR/semver-7.8.6.tgz" -C "$TMPDIR"
  *   node -e "const baseline = require('$TMPDIR/package')"   # then replay each call below against it
  */
 
-const PINNED_SEMVER_VERSION = "7.8.5";
-const BASELINE_SEMVER_VERSION = "7.8.5";
+const PINNED_SEMVER_VERSION = "7.8.6";
+const BASELINE_SEMVER_VERSION = "7.8.6";
 
 const root = join(moduleDir(import.meta.url), "../..");
 const codingAgentDir = join(root, "packages/coding-agent");
@@ -137,10 +137,10 @@ const REPOSITORY_RANGE_FORMS = [
 	"not-a-range",
 ] as const;
 
-/** `rcompare` head of PROJECT_SHAPED_VERSIONS at 7.8.5. */
+/** `rcompare` head of PROJECT_SHAPED_VERSIONS at 7.8.6. */
 const BASELINE_PROJECT_RCOMPARE_HEAD = "0.10.0-alpha.1";
 
-/** `maxSatisfying(PROJECT_SHAPED_VERSIONS, range)` at 7.8.5. */
+/** `maxSatisfying(PROJECT_SHAPED_VERSIONS, range)` at 7.8.6. */
 const BASELINE_PROJECT_MAX_SATISFYING = new Map<string, string | null>([
 	["^0.9.0", "0.9.11"],
 	["0.9.x", "0.9.11"],
@@ -152,7 +152,7 @@ const BASELINE_PROJECT_MAX_SATISFYING = new Map<string, string | null>([
 	[">=0.9.11-alpha.1 <0.10.0", "0.9.11"],
 ]);
 
-/** `maxSatisfying(BUILD_METADATA_VERSIONS, range)` at 7.8.5. */
+/** `maxSatisfying(BUILD_METADATA_VERSIONS, range)` at 7.8.6. */
 const BASELINE_BUILD_METADATA_MAX_SATISFYING = new Map<string, string | null>([
 	["^1.2.0", "1.2.4+build.2"],
 	["^1.2.3+build.1", "1.2.4+build.2"],
@@ -162,7 +162,7 @@ const BASELINE_BUILD_METADATA_MAX_SATISFYING = new Map<string, string | null>([
 	["*", "2.0.0+build.4"],
 ]);
 
-/** `satisfies(version, range)` at 7.8.5, one flag per BUILD_METADATA_VERSIONS entry, in order. */
+/** `satisfies(version, range)` at 7.8.6, one flag per BUILD_METADATA_VERSIONS entry, in order. */
 const BASELINE_BUILD_METADATA_SATISFIES = new Map<string, readonly boolean[]>([
 	["^1.2.0", [true, true, false, false]],
 	["^1.2.3+build.1", [true, true, false, false]],
@@ -172,7 +172,7 @@ const BASELINE_BUILD_METADATA_SATISFIES = new Map<string, readonly boolean[]>([
 	["*", [true, true, false, true]],
 ]);
 
-/** `validRange(form)` at 7.8.5 for each form above. */
+/** `validRange(form)` at 7.8.6 for each form above. */
 const BASELINE_RANGE_VALID_RANGE = new Map<string, string | null>([
 	["1.2.3", "1.2.3"],
 	["2.0.0", "2.0.0"],
@@ -198,7 +198,7 @@ const BASELINE_RANGE_VALID_RANGE = new Map<string, string | null>([
 	["not-a-range", null],
 ]);
 
-/** `valid(form)` at 7.8.5 for each form above - what `parseSource` reads as "pinned". */
+/** `valid(form)` at 7.8.6 for each form above - what `parseSource` reads as "pinned". */
 const BASELINE_RANGE_VALID = new Map<string, string | null>([
 	["1.2.3", "1.2.3"],
 	["2.0.0", "2.0.0"],
@@ -224,7 +224,7 @@ const BASELINE_RANGE_VALID = new Map<string, string | null>([
 	["not-a-range", null],
 ]);
 
-/** Numeric tails after x-ranges: every case was measured as `null` at 7.8.5. */
+/** Numeric tails after x-ranges: every case was measured as `null` at 7.8.6. */
 const XRANGE_NUMERIC_TAILS = ["1.x.3", "1.x.2", "1.X.4", "0.x.9"] as const;
 
 const tempDirs: string[] = [];
@@ -289,7 +289,7 @@ async function installedPackage(version: string): Promise<string> {
 	return dir;
 }
 
-/** Recorded 7.8.5 output for `key`, or a failure naming the table that is missing it. */
+/** Recorded 7.8.6 output for `key`, or a failure naming the table that is missing it. */
 function baselineFor<T>(table: Map<string, T>, key: string, tableName: string): T {
 	const recorded = table.get(key);
 	if (recorded === undefined) {
@@ -298,8 +298,8 @@ function baselineFor<T>(table: Map<string, T>, key: string, tableName: string): 
 	return recorded;
 }
 
-describe("semver pinned at 7.8.5", () => {
-	test("every locked semver is 7.8.5 and shipped code links against the pin", async () => {
+describe("semver pinned at 7.8.6", () => {
+	test("every locked semver is 7.8.6 and shipped code links against the pin", async () => {
 		assert.equal(
 			requireFromTest.resolve("semver", { paths: [codingAgentDir] }),
 			requireFromTest.resolve("semver"),
