@@ -184,7 +184,10 @@ test("kill and interrupt are rejected with an error that names quit as the repla
 
 test("public parallel dispatch retries capacity refusals until all six tasks complete", async () => {
 	const cwd = makeRoot();
-	const { execute } = executor(cwd, new TestEvents());
+	const { execute } = executor(cwd, new TestEvents(), {
+		runSync: (dir, agents, name, task, options) =>
+			runSync(dir, agents, name, task, { ...options, testSession: { output: "done" } }),
+	});
 	const result = await execute.execute(
 		"parallel-six",
 		{
