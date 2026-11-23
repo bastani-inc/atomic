@@ -66,7 +66,8 @@ if (positionals[0] === "wait") {
   tmux("-V");
   const home = join(dirname(directory), `${nonce}-home`); mkdirSync(home);
   // A tmux server can retain another Atomic invocation's engine/session/test markers.
-  tmux("new-session", "-d", "-s", session, "-c", cwd, "-x", values.columns, "-y", values.rows, `exec env -i PATH=${quote(process.env.PATH)} HOME=${quote(home)} TERM=xterm-256color bun ${quote(join(cwd, "test/fixtures/task-experience-session.ts"))} --chat ${values.chat} --evidence-dir ${quote(directory)} --run-id ${nonce} 2>${quote(join(dirname(directory), `${nonce}-stderr.log`))}`);
+  const tzArg = process.env.TZ ? ` TZ=${quote(process.env.TZ)}` : "";
+  tmux("new-session", "-d", "-s", session, "-c", cwd, "-x", values.columns, "-y", values.rows, `exec env -i PATH=${quote(process.env.PATH)} HOME=${quote(home)} TERM=xterm-256color${tzArg} bun ${quote(join(cwd, "test/fixtures/task-experience-session.ts"))} --chat ${values.chat} --evidence-dir ${quote(directory)} --run-id ${nonce} 2>${quote(join(dirname(directory), `${nonce}-stderr.log`))}`);
   const ready = await wait(directory, nonce, "ready", "boot", -1, live); assert.equal(ready.evidence.host, values.chat); assert.ok(ready.evidence.ownerId);
   await rendered("boot");
   send("intercom", "live"); const started = await wait(directory, nonce, "intercom-live", "live", -1, live);

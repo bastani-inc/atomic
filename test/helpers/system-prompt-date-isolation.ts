@@ -3,6 +3,81 @@ export interface MiddayTimezoneIsolationHandle {
 	restore(): void;
 }
 
+export interface MiddayTimezoneHooks {
+	readonly beforeEach: (fn: () => void) => void;
+	readonly afterEach?: (fn: () => void) => void;
+	readonly afterAll?: (fn: () => void) => void;
+}
+
+type CapturedTimezone = ReadonlyArray<readonly [string, string | undefined]>;
+
+function isTimezoneKeyName(key: string, caseInsensitive: boolean): boolean {
+	return caseInsensitive ? key.toLowerCase() === "tz" : key === "TZ";
+}
+
+/**
+ * Whether `env` explicitly names `TZ` (including `{ TZ: undefined }` or `{ TZ: "" }` opt-outs). On Windows,
+ * environment variable names are case-insensitive, so any case variant (`tz`, `Tz`, `tZ`, `TZ`) counts.
+ */
+export function hasTimezoneKey(
+	env: Record<string, string | undefined>,
+	caseInsensitive: boolean = process.platform === "win32",
+): boolean {
+	if (Object.hasOwn(env, "TZ")) return true;
+	if (!caseInsensitive) return false;
+	for (const key of Object.keys(env)) {
+		if (key.toLowerCase() === "tz") return true;
+	}
+	return false;
+}
+
+/** Read the effective `TZ` string from `env`, matching case-insensitively on Windows. */
+export function readTimezone(
+	env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+	caseInsensitive: boolean = process.platform === "win32",
+): string | undefined {
+	if (Object.hasOwn(env, "TZ")) return env.TZ;
+	if (!caseInsensitive) return undefined;
+	for (const key of Object.keys(env)) {
+		if (key.toLowerCase() === "tz") return env[key];
+	}
+	return undefined;
+}
+
+function captureTimezone(env: NodeJS.ProcessEnv, caseInsensitive: boolean): CapturedTimezone {
+	if (!caseInsensitive) {
+		return Object.hasOwn(env, "TZ") ? [["TZ", env.TZ]] : [];
+	}
+	const entries: Array<readonly [string, string | undefined]> = [];
+	for (const key of Object.keys(env)) {
+		if (key.toLowerCase() === "tz") entries.push([key, env[key]]);
+	}
+	return entries;
+}
+
+function clearTimezoneKeys(env: NodeJS.ProcessEnv, caseInsensitive: boolean): void {
+	if (!caseInsensitive) {
+		delete env.TZ;
+		return;
+	}
+	for (const key of Object.keys(env)) {
+		if (isTimezoneKeyName(key, true)) delete env[key];
+	}
+}
+
+function restoreTimezone(env: NodeJS.ProcessEnv, saved: CapturedTimezone, caseInsensitive: boolean): void {
+	clearTimezoneKeys(env, caseInsensitive);
+	for (const [key, value] of saved) {
+		if (value === undefined) delete env[key];
+		else env[key] = value;
+	}
+}
+
+function setWorkerTimezone(env: NodeJS.ProcessEnv, timezone: string, caseInsensitive: boolean): void {
+	clearTimezoneKeys(env, caseInsensitive);
+	env.TZ = timezone;
+}
+
 /**
  * Whole-hour UTC offset in `[-12, +12]` that puts `now` into local `[11:30, 12:29]`, leaving at least 11 hours 30
  * minutes before the next local midnight (and after the previous one).
@@ -26,45 +101,58 @@ export function middayTimezone(now: Date = new Date()): string {
 
 /**
  * Pin the worker's local timezone (`process.env.TZ`) to a fixed-offset IANA `Etc/GMT` zone near local noon once at
- * worker startup, and restore it in `beforeEach`.
+ * worker startup.
  *
- * Local calendar dates (`buildSystemPromptSections()`) stay more than 11 hours away from local midnight for the entire
- * test run without modifying `Date.now()`, UTC timestamps, or shipped source code, while fake `Date` timers
- * (`vi.useFakeTimers({ toFake: ["Date"] })` + `vi.setSystemTime(...)`) still advance calendar days normally.
+ * `beforeEach` snapshots the current `TZ` (preserving any `TZ` a test file set at top level or in `beforeAll`),
+ * `afterEach` restores that snapshot so per-test mutations never leak to later tests, and `afterAll` restores the
+ * worker's midday `TZ` before the next test file runs in the same worker.
  */
 export function installMiddayTimezoneIsolation(
-	hooks?: { readonly beforeEach: (fn: () => void) => void },
-	options?: { readonly now?: Date; readonly env?: NodeJS.ProcessEnv },
+	hooks?: MiddayTimezoneHooks,
+	options?: { readonly now?: Date; readonly env?: NodeJS.ProcessEnv; readonly caseInsensitive?: boolean },
 ): MiddayTimezoneIsolationHandle {
 	const env = options?.env ?? process.env;
-	const hadTz = Object.hasOwn(env, "TZ");
-	const previousTz = env.TZ;
+	const caseInsensitive = options?.caseInsensitive ?? process.platform === "win32";
+	const initialSnapshot = captureTimezone(env, caseInsensitive);
 	const timezone = middayTimezone(options?.now ?? new Date());
-	env.TZ = timezone;
+	setWorkerTimezone(env, timezone, caseInsensitive);
 
-	hooks?.beforeEach(() => {
-		env.TZ = timezone;
-	});
+	const preTestSnapshots: CapturedTimezone[] = [];
+	if (hooks) {
+		hooks.beforeEach(() => {
+			preTestSnapshots.push(captureTimezone(env, caseInsensitive));
+		});
+		hooks.afterEach?.(() => {
+			const saved = preTestSnapshots.pop();
+			if (saved !== undefined) restoreTimezone(env, saved, caseInsensitive);
+		});
+		hooks.afterAll?.(() => {
+			preTestSnapshots.length = 0;
+			setWorkerTimezone(env, timezone, caseInsensitive);
+		});
+	}
 
 	return {
 		timezone,
 		restore() {
-			if (hadTz) env.TZ = previousTz;
-			else delete env.TZ;
+			preTestSnapshots.length = 0;
+			restoreTimezone(env, initialSnapshot, caseInsensitive);
 		},
 	};
 }
 
 /**
  * Forward the worker's `TZ` into a child process's explicit environment unless the caller already named `TZ`
- * (including setting `TZ: "UTC"` or `TZ: undefined` to opt out).
+ * (case-insensitively on Windows, including setting `TZ: "UTC"` or `TZ: undefined` to opt out).
  */
 export function withTestTimezone<T extends Record<string, string | undefined>>(
 	env: T,
 	sourceEnv: NodeJS.ProcessEnv = process.env,
+	options?: { readonly caseInsensitive?: boolean },
 ): T {
-	if (Object.hasOwn(env, "TZ")) return env;
-	const tz = sourceEnv.TZ;
+	const caseInsensitive = options?.caseInsensitive ?? process.platform === "win32";
+	if (hasTimezoneKey(env, caseInsensitive)) return env;
+	const tz = readTimezone(sourceEnv, caseInsensitive);
 	if (!tz) return env;
 	return { ...env, TZ: tz };
 }
