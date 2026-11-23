@@ -68,10 +68,9 @@ pub fn remove_windows_file_older_than(path: String, before_ms: f64) -> crate::ta
 				&& let Ok(meta) = file.metadata()
 				&& meta.is_file()
 				&& meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+				&& mtime_ms(&meta) < before_ms
 			{
-				if mtime_ms(&meta) < before_ms {
-					let _ = dispose_by_handle(&file);
-				}
+				let _ = dispose_by_handle(&file);
 			}
 		}
 		#[cfg(not(windows))]
