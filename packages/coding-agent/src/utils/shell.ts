@@ -443,7 +443,9 @@ function safeKillCwd(commandPath) {
   const cmdNorm = commandPath ? normalizeWinPath(commandPath) : undefined;
   const cmdDir = cmdNorm ? win32.dirname(cmdNorm) : undefined;
   const cands = [process.env.SystemRoot, process.env.windir, "C:\\\\Windows", cmdDir, temp, winRoot(commandPath), winRoot(temp), winRoot(cwdReal), winRoot(cwdLex), "C:\\\\"];
-  let fallback;
+  let longOut;
+  let shortFb;
+  let anyFb;
   for (const raw of cands) {
     const lex = raw ? normalizeWinPath(raw) : undefined;
     if (!lex) continue;
@@ -453,6 +455,7 @@ function safeKillCwd(commandPath) {
     let unverified = false;
     if (!real) { try { unverified = lstatSync(probe).isSymbolicLink(); } catch {} }
     const chosen = toSpawnWinPath(real || lex);
+    const isShort = !chosen.startsWith("\\\\\\\\?\\\\") && chosen.length < 248;
     let blocked = unverified;
     if (!blocked && cwdLex) {
       const f = cwdReal || cwdLex;
@@ -461,10 +464,15 @@ function safeKillCwd(commandPath) {
       const isRealRoot = fRoot && f.toLowerCase() === fRoot.toLowerCase();
       blocked = isRealRoot ? f.toLowerCase() === c.toLowerCase() : (isInsideDir(f, c) || (!winRoot(cwdLex) || cwdLex.toLowerCase() !== winRoot(cwdLex).toLowerCase()) && isInsideDir(cwdLex, lex));
     }
-    if (!blocked) return chosen;
-    if (!fallback) fallback = chosen;
+    if (!blocked) {
+      if (isShort) return chosen;
+      if (!longOut) longOut = chosen;
+      continue;
+    }
+    if (isShort && !shortFb) shortFb = chosen;
+    if (!anyFb) anyFb = chosen;
   }
-  return fallback;
+  return longOut || shortFb || anyFb;
 }
 function exitHost() {
   // Inside a worker thread, process.exit(1) only exits the worker; SIGKILL on our own PID terminates the host process.
