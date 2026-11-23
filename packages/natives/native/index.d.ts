@@ -222,6 +222,22 @@ export declare class WindowsFileIdentity {
   removeHardLink(temporary: string, published: string): Promise<boolean>
 }
 
+/** A creation-time- and parent-verified Windows handle to a child process, held until `close()` or drop. */
+export declare class WindowsProcessExitHandle {
+  /** The child's creation time verified when the handle was acquired (decimal 100-ns ticks since 1601-01-01 UTC). */
+  get creationTime(): string
+  /**
+   * Non-blocking poll of the held handle.
+   *
+   * Returns `{ exited: false, exitCode: undefined, unknown: false }` while the child still runs.
+   * Once signaled (`WAIT_OBJECT_0`), re-verifies the handle's creation time and reads `GetExitCodeProcess`.
+   * If reading or verification fails, returns `{ exited: true, exitCode: undefined, unknown: true }`.
+   */
+  pollExit(): WindowsProcessExitStatus
+  /** Closes the underlying OS process handle immediately (idempotent). */
+  close(): void
+}
+
 export declare class WindowsTemporaryFile {
   /** Dispose the reserved name, not a file which may since have appeared at the same path. */
   close(): Promise<undefined>
@@ -576,6 +592,21 @@ export declare function hasMatch(content: string | Uint8Array, pattern: string |
  * the call is not found.
  */
 export declare function holdProcessDescendants(pid: number): HeldProcessDescendants | null
+
+/**
+ * Opens and holds a verified handle to direct child process `pid` on Windows (`PROCESS_QUERY_LIMITED_INFORMATION |
+ * PROCESS_SYNCHRONIZE`).
+ *
+ * Verification requires:
+ * - `pid != 0` and `OpenProcess` succeeds,
+ * - `GetProcessTimes` yields a non-zero creation time (matching `expected_created` if supplied),
+ * - `ProcessBasicInformation.InheritedFromUniqueProcessId` equals this process's PID, and
+ * - when `ProcessTelemetryIdInformation` is available on both processes, the child's `ProcessSequenceNumber` is
+ *   strictly greater than this process's.
+ *
+ * Returns `null` off Windows, when the handle cannot be opened, or when any verification check fails.
+ */
+export declare function holdWindowsProcessExit(pid: number, expectedCreated?: string | undefined | null): WindowsProcessExitHandle | null
 
 export type HostObservation =
   | { kind: 'foreground'; waitId: string }
@@ -1108,5 +1139,18 @@ export interface WindowsDirectorySecurity {
 }
 
 export declare function windowsDirectorySecurityAsync(path: string): Promise<WindowsDirectorySecurity | undefined | null>
+
+/** Result of polling a held Windows child process handle. */
+export interface WindowsProcessExitStatus {
+  /** True once the kernel has signaled process termination (`WAIT_OBJECT_0`). */
+  exited: boolean
+  /** The child's exact 32-bit exit status from `GetExitCodeProcess`, or `None` when still running or unknowable. */
+  exitCode?: number
+  /**
+   * True when the exit status could not be determined (e.g. handle closed, `GetExitCodeProcess` failed, or
+   * creation-time verification failed). Callers must treat this as an unknown exit status, never `0`.
+   */
+  unknown: boolean
+}
 
 export type YieldReason = 'explicit' | 'default-background' | 'elapsed' | 'intercom-coordination' | 'input-needed'
