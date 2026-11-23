@@ -1104,6 +1104,58 @@ test("a waiting writer whose own clock is off the system clock refreshes its tic
 	assert.deepEqual(await values(database), PROCESS_CLOCK_OFFSETS_MS.map(String));
 });
 
+test("a writer whose own clock is off the system clock still queues behind, defers maintenance to, and wakes live tickets off the event loop (#4387)", async () => {
+	const { database, writers } = await fixture();
+	for (const [index, offsetMs] of PROCESS_CLOCK_OFFSETS_MS.entries()) {
+		const now = databaseNow();
+		const live = ticket(writers, now, 999_999_860 + index * 3);
+		const stale = ticket(writers, now - 10, 999_999_861 + index * 3, -5_000);
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout", "performance", "Date"],
+			now: now + offsetMs,
+		});
+		assert.equal(
+			await database.tryMaintenance!(async (tx) => {
+				await tx.run("INSERT INTO items VALUES ('cut-in')");
+			}),
+			false,
+			`with its clock ${offsetMs} ms off, maintenance deferred to the live ticket`,
+		);
+		assert.deepEqual(
+			readdirSync(writers).sort(),
+			[stale, live].sort(),
+			`with its clock ${offsetMs} ms off, maintenance removed neither ticket`,
+		);
+		let nextLive = "";
+		const write = database.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES (?)", String(offsetMs));
+			nextLive = ticket(writers, now + 10, 999_999_862 + index * 3);
+		});
+		const write$ = settledFlag(write);
+		while (!write$.settled && vi.getTimerCount() === 0) await turn();
+		assert.equal(write$.settled, false, `with its clock ${offsetMs} ms off, queued behind the live ticket`);
+		const names = readdirSync(writers).sort();
+		const own = names.find((name) => name !== live && name !== stale);
+		assert.ok(own !== undefined, `with its clock ${offsetMs} ms off, took its own ticket behind the live one`);
+		assert.ok(existsSync(join(writers, live)), `with its clock ${offsetMs} ms off, kept the live ticket`);
+		assert.ok(existsSync(join(writers, stale)), `with its clock ${offsetMs} ms off, kept the stale ticket`);
+		touch(join(writers, live), -60_000);
+		touch(join(wakes(writers), own));
+		await write;
+		assert.equal(existsSync(join(writers, live)), false, "the aged-out ticket was removed once abandoned");
+		assert.ok(existsSync(join(writers, nextLive)), `with its clock ${offsetMs} ms off, release kept the live ticket`);
+		assert.ok(existsSync(join(writers, stale)), `with its clock ${offsetMs} ms off, release kept the stale ticket`);
+		assert.ok(noticeTouched(writers, nextLive), `with its clock ${offsetMs} ms off, release woke the live ticket`);
+		assert.equal(noticeTouched(writers, stale), false, "release did not wake the stale ticket");
+		for (const name of [nextLive, stale]) {
+			fs.unlinkSync(join(wakes(writers), name));
+			fs.unlinkSync(join(writers, name));
+		}
+		vi.useRealTimers();
+	}
+	assert.deepEqual(await values(database), PROCESS_CLOCK_OFFSETS_MS.map(String));
+});
+
 /** Counts the database clock reads of every connection until the test ends. */
 function countDatabaseClockReads(): { readonly reads: number } {
 	const counted = { reads: 0 };
