@@ -8,6 +8,11 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 - Deferred `Intl.Segmenter` and internal Unicode regex initialization until first use, narrowed the Dingbats emoji pre-filter so non-emoji UI glyphs such as `❯` skip compiling the RGI emoji pattern, and bundled shared package chunks without `__esmMin` wrappers so Node's compile cache pre-compiles them.
 
+### Fixed
+
+- `WindowedContainer.layoutWindow()` now bounds each layout pass by actual rendered row heights (rendering only the visible viewport on a cold unmeasured frame, walking backwards from the end when following the tail, and anchoring around the requested top otherwise) instead of iterating over stale 1-row estimates, and `sliceWithWidth()`, `extractSegments()`, and `getGraphemeCellRange()` fast-path pure printable ASCII runs to keep scrollbar and pinned-prompt compositing fast when paging through large transcripts.
+- `extractSegments()`, `sliceWithWidth()`, and `getGraphemeCellRange()` now fall back to grapheme scanning on negative or non-integer column bounds so edge-case calls match the grapheme path identically.
+
 ## [0.10.4] - 2026-11-22
 
 ### Added

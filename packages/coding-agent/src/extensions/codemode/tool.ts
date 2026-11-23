@@ -14,6 +14,7 @@ import { str } from "../../core/tools/render-utils.ts";
 import { wrapToolDefinition } from "../../core/tools/tool-definition-wrapper.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import { resolveSchemaRef } from "../../utils/json-schema-ref.ts";
+import { memoizeAsync } from "../../utils/memoize-async.js";
 import { singleLineDisplayText } from "../../utils/terminal-text.ts";
 
 export const CODEMODE_TOOL_NAME = "codemode";
@@ -298,32 +299,21 @@ function prepareLoadout(loadout: ToolLoadout, options: CodemodeToolOptions) {
 }
 type CodemodeRenderersModule = typeof import("./renderer.js")["codemodeRenderers"];
 
-let loadedCodemodeRenderers: CodemodeRenderersModule | undefined;
-let loadingCodemodeRenderers: Promise<CodemodeRenderersModule> | undefined;
+const codemodeRenderers = memoizeAsync(
+	(): Promise<CodemodeRenderersModule> => import("./renderer.js").then((mod) => mod.codemodeRenderers),
+);
 
 /** Load the rich codemode result renderer (syntax highlighter + nested ToolBlock group) on first use. */
 export function loadCodemodeRenderers(): Promise<CodemodeRenderersModule> {
-	if (loadedCodemodeRenderers) return Promise.resolve(loadedCodemodeRenderers);
-	loadingCodemodeRenderers ??= import("./renderer.js").then(
-		(mod) => {
-			loadedCodemodeRenderers = mod.codemodeRenderers;
-			return mod.codemodeRenderers;
-		},
-		(error: unknown) => {
-			loadingCodemodeRenderers = undefined;
-			throw error;
-		},
-	);
-	return loadingCodemodeRenderers;
+	return codemodeRenderers();
 }
 
 export function isCodemodeRendererLoadedForTest(): boolean {
-	return loadedCodemodeRenderers !== undefined;
+	return codemodeRenderers.peek() !== undefined;
 }
 
 export function resetCodemodeRendererForTest(): void {
-	loadedCodemodeRenderers = undefined;
-	loadingCodemodeRenderers = undefined;
+	codemodeRenderers.reset();
 }
 
 class LightweightCodemodeCall implements Component {
@@ -371,12 +361,14 @@ export function createCodemodeToolDefinition(
 			return executeCodemode(id, input, signal, update, ctx, options);
 		},
 		renderCall(args, theme, context) {
-			if (loadedCodemodeRenderers?.renderCall) return loadedCodemodeRenderers.renderCall(args, theme, context);
+			const loaded = codemodeRenderers.peek();
+			if (loaded?.renderCall) return loaded.renderCall(args, theme, context);
 			return new LightweightCodemodeCall(str(args?.code), theme);
 		},
 		renderResult(result, renderOptions, theme, context) {
-			if (loadedCodemodeRenderers?.renderResult) {
-				return loadedCodemodeRenderers.renderResult(result, renderOptions, theme, context);
+			const loaded = codemodeRenderers.peek();
+			if (loaded?.renderResult) {
+				return loaded.renderResult(result, renderOptions, theme, context);
 			}
 			void loadCodemodeRenderers().catch(() => undefined);
 			const text = result.content.find((block) => block.type === "text")?.text ?? "";

@@ -31,6 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { isSharedArrayBuffer, isUint8Array } from "node:util/types";
 import type * as native from "@bastani/atomic-natives";
+import { memoizeAsync } from "../../utils/memoize-async.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -95,12 +96,11 @@ import {
 import { configureConnection, isSqliteBusy, switchToWriteAheadLogSync } from "./write-ahead-log.js";
 
 /** Loaded at the first degradation only, so opening a database does not load debug output. */
-let debugOutput: Promise<typeof import("../debug.ts")> | undefined;
+const loadDebugOutput = memoizeAsync(() => import("../debug.ts"));
 
 function reportDegradationInDebugMode(degradation: StorageWriterQueueDegradedError): void {
 	const errno = (degradation.cause as { readonly code?: unknown } | undefined)?.code;
-	debugOutput ??= import("../debug.ts");
-	void debugOutput.then(
+	void loadDebugOutput().then(
 		({ reportDebugAsync: reportDebug }) =>
 			reportDebug("storage", "writer-queue-degraded", {
 				code: degradation.code,

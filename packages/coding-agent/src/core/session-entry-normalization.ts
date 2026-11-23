@@ -6,9 +6,20 @@ import type { SessionEntry } from "./session-manager-types.ts";
  * session entries. Only lax message entries whose content is null are cloned.
  */
 export function normalizeDerivedSessionEntries(entries: readonly SessionEntry[]): SessionEntry[] {
-	return entries.map((entry) => {
-		if (entry.type !== "message") return entry;
+	let normalized: SessionEntry[] | undefined;
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i]!;
+		if (entry.type !== "message") {
+			if (normalized) normalized.push(entry);
+			continue;
+		}
 		const message = normalizeMessageContent(entry.message);
-		return message === entry.message ? entry : { ...entry, message };
-	});
+		if (message !== entry.message) {
+			if (!normalized) normalized = entries.slice(0, i);
+			normalized.push({ ...entry, message });
+		} else if (normalized) {
+			normalized.push(entry);
+		}
+	}
+	return normalized ?? entries.slice();
 }

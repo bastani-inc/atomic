@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { createJiti } from "jiti";
 import { APP_NAME, getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
+import { memoizeAsync, memoizeAsyncByKey } from "../../utils/memoize-async.js";
 import { resolutionBaseUrl } from "../../utils/module-require.js";
 import { pathExists } from "../../utils/path-exists.ts";
 import { pathsEqual, resolvePath } from "../../utils/paths.ts";
@@ -46,8 +47,6 @@ import type { ExtensionFactory } from "./types.ts";
 export { getVirtualModules } from "./loader-host-modules.js";
 
 const requireFromHere = createRequire(import.meta.url);
-let _aliases: Promise<Record<string, string>> | null = null;
-let createJitiPromise: Promise<typeof createJiti> | undefined;
 // A transpile cache directory nothing has used for this long is removed by the next process that sets up another one.
 const UNUSED_TRANSPILE_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 // How often a process marks a transpile cache directory it keeps using as used.
@@ -56,20 +55,18 @@ const transpileCacheUseMarks = new Map<string, number>();
 // Per cache directory this process has set up, the removal of the unused ones beside it.
 const transpileCachePrunes = new Map<string, Promise<void>>();
 
-function getCreateJiti(): Promise<typeof createJiti> {
-	createJitiPromise ??= (
-		isBunBinary || isBundledBuild ? import("./jiti-static-loader.ts") : import("./jiti-loader.ts")
-	).then((module) =>
-		// jiti imports a module natively first under Bun, and Bun then resolves the module's own imports itself, so an
-		// extension's `typebox` or Atomic package imports could reach other copies than the host's. Every load is
-		// transformed instead, as under Node: each import goes through the host's modules and aliases. Atomic's own
-		// packages in a source checkout are the exception (see `bunImportsNatively`).
-		process.versions.bun === undefined
-			? module.createJiti
-			: (((id, options) => module.createJiti(id, { tryNative: false, ...options })) as typeof createJiti),
-	);
-	return createJitiPromise;
-}
+const getCreateJiti = memoizeAsync(
+	(): Promise<typeof createJiti> =>
+		(isBunBinary || isBundledBuild ? import("./jiti-static-loader.ts") : import("./jiti-loader.ts")).then((module) =>
+			// jiti imports a module natively first under Bun, and Bun then resolves the module's own imports itself, so an
+			// extension's `typebox` or Atomic package imports could reach other copies than the host's. Every load is
+			// transformed instead, as under Node: each import goes through the host's modules and aliases. Atomic's own
+			// packages in a source checkout are the exception (see `bunImportsNatively`).
+			process.versions.bun === undefined
+				? module.createJiti
+				: (((id, options) => module.createJiti(id, { tryNative: false, ...options })) as typeof createJiti),
+		),
+);
 
 /** Where Atomic's own packages import TypeBox's `Type` from. */
 const HOST_TYPEBOX = "@bastani/atomic-ai";
@@ -89,11 +86,15 @@ function bunImportsNatively(extensionPath: string): Promise<boolean> {
 	const dir = path.dirname(extensionPath);
 	let shares = sharesHostTypeboxByDir.get(dir);
 	if (shares === undefined) {
-		shares = Promise.all([bun.resolve(HOST_TYPEBOX, dir), bun.resolve(HOST_TYPEBOX, currentModuleDir())]).then(
+		const pending = Promise.all([bun.resolve(HOST_TYPEBOX, dir), bun.resolve(HOST_TYPEBOX, currentModuleDir())]).then(
 			([fromPackage, fromHost]) => fromPackage === fromHost,
-			() => false,
+			() => {
+				if (sharesHostTypeboxByDir.get(dir) === pending) sharesHostTypeboxByDir.delete(dir);
+				return false;
+			},
 		);
-		sharesHostTypeboxByDir.set(dir, shares);
+		shares = pending;
+		sharesHostTypeboxByDir.set(dir, pending);
 	}
 	return shares;
 }
@@ -504,7 +505,6 @@ const extensionCache = new Map<string, ExtensionFactory>();
 // evaluated factories outside the generation-scoped editable-extension cache.
 const nativeBuiltinFactories = new Map<string, ExtensionFactory>();
 const nativeBuiltinLoads = new Map<string, Promise<ExtensionFactory | undefined>>();
-const nativeBuiltinRootChecks = new Map<string, Promise<boolean>>();
 
 /**
  * Host packages whose module identity an installed builtin bundle imported natively must share with the host.
@@ -534,6 +534,49 @@ async function resolveOptionalPackageRoot(packageName: string, searchPaths?: str
 	}
 }
 
+const nativeBuiltinRootChecks = memoizeAsyncByKey(
+	async (extensionPath: string): Promise<boolean> => {
+		try {
+			const hostPackageRoot = path.resolve(currentModuleDir(), "../../..");
+			if (!(await pathExists(path.join(hostPackageRoot, "dist", "index.js")))) return false;
+			const hostAtomicReal = await realpathJs(hostPackageRoot);
+			const requireFromExt = createRequire(extensionPath);
+			const extAtomicReal = await resolveOptionalPackageRoot(
+				"@bastani/atomic",
+				requireFromExt.resolve.paths("@bastani/atomic") ?? [],
+			);
+			if (extAtomicReal === undefined || !pathsEqual(extAtomicReal, hostAtomicReal)) return false;
+
+			const requiredMatches = await Promise.all(
+				NATIVE_BUILTIN_HOST_PACKAGES.map(async (pkg) => {
+					const [hostRoot, extRoot] = await Promise.all([
+						resolveOptionalPackageRoot(pkg),
+						resolveOptionalPackageRoot(pkg, requireFromExt.resolve.paths(pkg) ?? []),
+					]);
+					return hostRoot !== undefined && extRoot !== undefined && pathsEqual(hostRoot, extRoot);
+				}),
+			);
+			if (requiredMatches.some((matched) => !matched)) return false;
+
+			const optionalMatches = await Promise.all(
+				OPTIONAL_NATIVE_BUILTIN_HOST_PACKAGES.map(async (pkg) => {
+					const [hostRoot, extRoot] = await Promise.all([
+						resolveOptionalPackageRoot(pkg),
+						resolveOptionalPackageRoot(pkg, requireFromExt.resolve.paths(pkg) ?? []),
+					]);
+					if (hostRoot === undefined && extRoot === undefined) return true;
+					return hostRoot !== undefined && extRoot !== undefined && pathsEqual(hostRoot, extRoot);
+				}),
+			);
+			return optionalMatches.every(Boolean);
+		} catch {
+			return false;
+		}
+	},
+	// Never permanently cache `false` so a transient mid-swap ENOENT does not force a builtin off native loading.
+	{ shouldCache: (matched) => matched },
+);
+
 /**
  * Verifies that natively importing `extensionPath` resolves `@bastani/atomic` and every shared host package to the
  * exact same canonical package roots as this compiled host, guaranteeing single module instances without `jiti` or
@@ -541,50 +584,7 @@ async function resolveOptionalPackageRoot(packageName: string, searchPaths?: str
  */
 async function sharesHostPackageRoots(extensionPath: string): Promise<boolean> {
 	if (!hostRunsCompiledDist()) return false;
-	const dir = path.dirname(extensionPath);
-	let pending = nativeBuiltinRootChecks.get(dir);
-	if (pending === undefined) {
-		pending = (async () => {
-			try {
-				const hostPackageRoot = path.resolve(currentModuleDir(), "../../..");
-				if (!(await pathExists(path.join(hostPackageRoot, "dist", "index.js")))) return false;
-				const hostAtomicReal = await realpathJs(hostPackageRoot);
-				const requireFromExt = createRequire(extensionPath);
-				const extAtomicReal = await resolveOptionalPackageRoot(
-					"@bastani/atomic",
-					requireFromExt.resolve.paths("@bastani/atomic") ?? [],
-				);
-				if (extAtomicReal === undefined || !pathsEqual(extAtomicReal, hostAtomicReal)) return false;
-
-				const requiredMatches = await Promise.all(
-					NATIVE_BUILTIN_HOST_PACKAGES.map(async (pkg) => {
-						const [hostRoot, extRoot] = await Promise.all([
-							resolveOptionalPackageRoot(pkg),
-							resolveOptionalPackageRoot(pkg, requireFromExt.resolve.paths(pkg) ?? []),
-						]);
-						return hostRoot !== undefined && extRoot !== undefined && pathsEqual(hostRoot, extRoot);
-					}),
-				);
-				if (requiredMatches.some((matched) => !matched)) return false;
-
-				const optionalMatches = await Promise.all(
-					OPTIONAL_NATIVE_BUILTIN_HOST_PACKAGES.map(async (pkg) => {
-						const [hostRoot, extRoot] = await Promise.all([
-							resolveOptionalPackageRoot(pkg),
-							resolveOptionalPackageRoot(pkg, requireFromExt.resolve.paths(pkg) ?? []),
-						]);
-						if (hostRoot === undefined && extRoot === undefined) return true;
-						return hostRoot !== undefined && extRoot !== undefined && pathsEqual(hostRoot, extRoot);
-					}),
-				);
-				return optionalMatches.every(Boolean);
-			} catch {
-				return false;
-			}
-		})();
-		nativeBuiltinRootChecks.set(dir, pending);
-	}
-	return pending;
+	return nativeBuiltinRootChecks(extensionPath);
 }
 
 async function canLoadNativeBuiltinExtension(extensionPath: string, isSingleFileBuild: boolean): Promise<boolean> {
@@ -622,7 +622,9 @@ async function loadNativeBuiltinExtensionModule(
 		try {
 			factory = await pending;
 		} finally {
-			nativeBuiltinLoads.delete(extensionPath);
+			if (nativeBuiltinLoads.get(extensionPath) === pending) {
+				nativeBuiltinLoads.delete(extensionPath);
+			}
 		}
 	}
 	if (factory && isCurrentCacheToken(cacheToken)) {
@@ -709,13 +711,7 @@ function currentModuleDir(): string {
  * Get aliases for jiti (used in Node.js/development mode).
  * In Bun binary mode, virtualModules is used instead.
  */
-function getAliases(): Promise<Record<string, string>> {
-	_aliases ??= computeAliases().then(normalizeJitiAliases, (error: Error) => {
-		_aliases = null;
-		throw error;
-	});
-	return _aliases;
-}
+const getAliases = memoizeAsync((): Promise<Record<string, string>> => computeAliases().then(normalizeJitiAliases));
 
 async function computeAliases(): Promise<Record<string, string>> {
 	const __dirname = currentModuleDir();

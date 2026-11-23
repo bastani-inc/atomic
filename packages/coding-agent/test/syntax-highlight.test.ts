@@ -1,5 +1,9 @@
+import { execFileSync } from "node:child_process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { resetCapabilitiesCache, setCapabilities } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { NODE_TS_SOURCE_HOOK } from "../../../test/helpers/node-ts-sources.js";
 import {
 	getLanguageFromPath,
 	getMarkdownTheme,
@@ -154,5 +158,174 @@ describe("theme syntax highlighting", () => {
 		);
 		expect(highlightCode("@decorator", "python")[0]).toBe("\x1b[38;2;128;128;128m@decorator\x1b[39m");
 		expect(highlightCode("<div></div>", "html")[0]).toContain("\x1b[38;2;86;156;214mdiv\x1b[39m");
+	});
+
+	it("loads only the requested eager language on demand instead of all 20 grammars at once, preserving overrides and aliases", () => {
+		const syntaxHighlightUrl = pathToFileURL(resolve(import.meta.dirname, "../src/utils/syntax-highlight.ts")).href;
+		const tuiThemeUrl = pathToFileURL(resolve(import.meta.dirname, "../src/modes/interactive/theme/theme.ts")).href;
+		const script = [
+			NODE_TS_SOURCE_HOOK,
+			`import assert from "node:assert/strict";`,
+			`import { createRequire } from "node:module";`,
+			`const req = createRequire(import.meta.url);`,
+			`const loadedHljsLangFiles = () => Object.keys(req.cache).filter((k) => /[\\\\/]highlight\\.js[\\\\/]lib[\\\\/]languages[\\\\/]/.test(k)).map((k) => k.split(/[\\\\/]/).pop()).sort();`,
+			`const hljs = (await import("highlight.js/lib/core.js")).default;`,
+			`const sh = await import(${JSON.stringify(syntaxHighlightUrl)});`,
+			`const th = await import(${JSON.stringify(tuiThemeUrl)});`,
+			`// Pre-register custom override for python (without declaring "py"), dangling alias redirects hpp -> c / cc -> rust, and custom alias myrs -> rust.`,
+			`hljs.registerLanguage("python", () => ({ keywords: "custompyonly" }));`,
+			`hljs.registerAliases("hpp", { languageName: "c" });`,
+			`hljs.registerAliases("cc", { languageName: "rust" });`,
+			`hljs.registerAliases("myrs", { languageName: "rust" });`,
+			`// Asking for an uncommon language or supportsLanguage() loads ZERO eager grammar files from disk.`,
+			`assert.equal(sh.supportsLanguage("ada"), false);`,
+			`assert.equal(sh.supportsLanguage("TS"), true);`,
+			`assert.equal(sh.supportsLanguage("myrs"), true);`,
+			`assert.deepEqual(loadedHljsLangFiles(), []);`,
+			`// Highlighting TypeScript via its alias loads ONLY typescript.js from disk, not all 20 eager grammars.`,
+			`const tsOut = sh.highlight("const x = 1;", { language: "ts", theme: { keyword: (t) => "[kw:" + t + "]" } });`,
+			`assert.ok(tsOut.includes("[kw:const]"), tsOut);`,
+			`assert.deepEqual(loadedHljsLangFiles(), ["typescript.js"]);`,
+			`// CodeHighlighter reuses its first cached result without loading unrelated languages.`,
+			`th.initTheme("dark");`,
+			`const ch = new th.CodeHighlighter();`,
+			`const first = ch.highlight("const a = 1;", "ts");`,
+			`assert.equal(ch.highlight("const a = 1;", "ts"), first);`,
+			`assert.deepEqual(loadedHljsLangFiles(), ["typescript.js"]);`,
+			`// Pre-registered python override still owns "py" when requested on demand without loading python.js.`,
+			`assert.equal(sh.highlight("custompyonly", { language: "py", theme: { keyword: (t) => "[kw:" + t + "]" } }), "[kw:custompyonly]");`,
+			`assert.deepEqual(loadedHljsLangFiles(), ["typescript.js"]);`,
+			`// Pre-registered dangling aliases hpp -> c, cc -> rust, and custom alias myrs -> rust resolve to C and Rust.`,
+			`assert.ok(sh.highlight("int main() { return 0; }", { language: "hpp" }).length > 0);`,
+			`assert.equal(hljs.getLanguage("hpp")?.name, "C");`,
+			`assert.ok(sh.highlight("fn main() {}", { language: "cc" }).length > 0);`,
+			`assert.equal(hljs.getLanguage("cc")?.name, "Rust");`,
+			`assert.equal(sh.highlight("fn main() {}", { language: "myrs" }), sh.highlight("fn main() {}", { language: "rust" }));`,
+			`assert.deepEqual(loadedHljsLangFiles(), ["c.js", "rust.js", "typescript.js"]);`,
+			`// Loading cpp afterwards does NOT steal hpp or cc.`,
+			`assert.ok(sh.highlight("class A {};", { language: "cpp" }).length > 0);`,
+			`assert.equal(hljs.getLanguage("hpp")?.name, "C");`,
+			`assert.equal(hljs.getLanguage("cc")?.name, "Rust");`,
+			`// Unspecified language (highlightAuto) materializes remaining eager grammars and highlights.`,
+			`const autoOut = sh.highlight("def foo(): return 1", {});`,
+			`assert.ok(autoOut.length > 0);`,
+			`assert.equal(loadedHljsLangFiles().length, 19);`, // all 20 eager minus custom-overridden python
+		].join("\n");
+		execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+			cwd: resolve(import.meta.dirname, ".."),
+			stdio: "pipe",
+		});
+	});
+
+	it("retries loadAllHighlightLanguages after transient fallback import, index read, or chunk require failures", () => {
+		const syntaxHighlightUrl = pathToFileURL(resolve(import.meta.dirname, "../src/utils/syntax-highlight.ts")).href;
+
+		// Case 1: Fallback dynamic import("highlight.js/lib/index.js") fails transiently (e.g. bundled/in-place swap).
+		const fallbackScript = [
+			NODE_TS_SOURCE_HOOK,
+			`import assert from "node:assert/strict";`,
+			`const hljs = (await import("highlight.js/lib/core.js")).default;`,
+			`globalThis[Symbol.for("atomic.bundledHighlightCore")] = hljs;`,
+			`let failNextImport = true;`,
+			`let importAttempts = 0;`,
+			`registerHooks({`,
+			`  resolve(specifier, context, nextResolve) {`,
+			`    if (specifier === "highlight.js/lib/index.js") {`,
+			`      importAttempts += 1;`,
+			`      if (failNextImport) {`,
+			`        failNextImport = false;`,
+			`        const err = Object.assign(new Error("transient mid-swap ENOENT"), { code: "ERR_MODULE_NOT_FOUND" });`,
+			`        throw err;`,
+			`      }`,
+			`    }`,
+			`    return nextResolve(specifier, context);`,
+			`  },`,
+			`});`,
+			`const sh = await import(${JSON.stringify(syntaxHighlightUrl)});`,
+			`assert.equal(sh.supportsLanguage("ada"), false);`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(importAttempts, 1);`,
+			`assert.equal(sh.supportsLanguage("ada"), false, "failed fallback import must not register ada");`,
+			`// Retry after transient swap clears must succeed instead of being poisoned by allLanguagesLoaded = true.`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(importAttempts, 2, "second loadAllHighlightLanguages call must retry after transient failure");`,
+			`assert.equal(sh.supportsLanguage("ada"), true, "ada must load once retry succeeds");`,
+			`// Subsequent call after success is a cached no-op.`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(importAttempts, 2);`,
+		].join("\n");
+		execFileSync(process.execPath, ["--input-type=module", "-e", fallbackScript], {
+			cwd: resolve(import.meta.dirname, ".."),
+			stdio: "pipe",
+		});
+
+		// Case 2: Both chunk index resolve and fallback import fail transiently, then recover via chunked load.
+		const indexAndFallbackScript = [
+			NODE_TS_SOURCE_HOOK,
+			`import assert from "node:assert/strict";`,
+			`import Module from "node:module";`,
+			`let failSwap = true;`,
+			`let resolveAttempts = 0;`,
+			`const origResolveFilename = Module._resolveFilename;`,
+			`Module._resolveFilename = function (request, ...rest) {`,
+			`  if (request === "highlight.js/lib/index.js") {`,
+			`    resolveAttempts += 1;`,
+			`    if (failSwap) {`,
+			`      throw Object.assign(new Error("transient ENOENT"), { code: "MODULE_NOT_FOUND" });`,
+			`    }`,
+			`  }`,
+			`  return origResolveFilename.call(this, request, ...rest);`,
+			`};`,
+			`registerHooks({`,
+			`  resolve(specifier, context, nextResolve) {`,
+			`    if (specifier === "highlight.js/lib/index.js") {`,
+			`      resolveAttempts += 1;`,
+			`      if (failSwap) {`,
+			`        throw Object.assign(new Error("transient ERR_MODULE_NOT_FOUND"), { code: "ERR_MODULE_NOT_FOUND" });`,
+			`      }`,
+			`    }`,
+			`    return nextResolve(specifier, context);`,
+			`  },`,
+			`});`,
+			`const sh = await import(${JSON.stringify(syntaxHighlightUrl)});`,
+			`await sh.loadAllHighlightLanguages();`,
+			`const attemptsAfterFirst = resolveAttempts;`,
+			`assert.ok(attemptsAfterFirst >= 2, "first attempt must try both req.resolve and fallback import, got " + attemptsAfterFirst);`,
+			`assert.equal(sh.supportsLanguage("ada"), false);`,
+			`failSwap = false;`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.ok(resolveAttempts > attemptsAfterFirst, "retry must re-resolve highlight.js/lib/index.js instead of caching null or allLanguagesLoaded");`,
+			`assert.equal(sh.supportsLanguage("ada"), true, "chunked load must recover after transient index+fallback failure");`,
+		].join("\n");
+		execFileSync(process.execPath, ["--input-type=module", "-e", indexAndFallbackScript], {
+			cwd: resolve(import.meta.dirname, ".."),
+			stdio: "pipe",
+		});
+
+		// Case 3: Mid-chunk transient require() error on ada.js must NOT skip ada on retry.
+		const midChunkScript = [
+			NODE_TS_SOURCE_HOOK,
+			`import assert from "node:assert/strict";`,
+			`import Module from "node:module";`,
+			`const origLoad = Module._load;`,
+			`let failAdaOnce = true;`,
+			`Module._load = function (request, parent, isMain) {`,
+			`  if (failAdaOnce && typeof request === "string" && /[\\\\/]languages[\\\\/]ada(?:\\.js)?$/.test(request)) {`,
+			`    failAdaOnce = false;`,
+			`    throw Object.assign(new Error("transient mid-chunk ENOENT"), { code: "ENOENT" });`,
+			`  }`,
+			`  return origLoad.call(this, request, parent, isMain);`,
+			`};`,
+			`const sh = await import(${JSON.stringify(syntaxHighlightUrl)});`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(failAdaOnce, false, "ada fault must have triggered");`,
+			`assert.equal(sh.supportsLanguage("ada"), false);`,
+			`await sh.loadAllHighlightLanguages();`,
+			`assert.equal(sh.supportsLanguage("ada"), true, "ada must not be permanently skipped after transient mid-chunk require failure");`,
+		].join("\n");
+		execFileSync(process.execPath, ["--input-type=module", "-e", midChunkScript], {
+			cwd: resolve(import.meta.dirname, ".."),
+			stdio: "pipe",
+		});
 	});
 });

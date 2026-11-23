@@ -272,4 +272,166 @@ describe("WindowedContainer in a scroll view", () => {
 			session.tui.stop();
 		}
 	});
+
+	it("bounds first-frame and top-jump renders by real row height rather than stale 1-row estimates", async () => {
+		const tallRows = 36;
+		const makeTall = () => Array.from({ length: 128 }, (_, index) => new Entry(`tall ${index}`, 12, index % 4 === 0));
+		const windowedChildren = makeTall();
+		const plainChildren = makeTall();
+		const openTall = (container: Container, list: readonly Component[]) => {
+			for (const child of list) container.addChild(child);
+			const terminal = new VirtualTerminal(COLUMNS, tallRows);
+			const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+			const transcript = new ScrollView(container, { follow: "end", primary: true });
+			tui.setLayoutRoot(transcript);
+			tui.start();
+			return { terminal, tui, transcript };
+		};
+		const windowed = openTall(new WindowedContainer(), windowedChildren);
+		const plain = openTall(new Container(), plainChildren);
+		try {
+			// First frame at bottom (followEnd = true): 36 visible rows = exactly 3 entries of height 12.
+			// Cold start renders only the visible viewport without pulling extra off-screen entries above it.
+			// Measure synchronously right after renderNow(), before background sweepSlice runs on setImmediate.
+			windowed.tui.renderNow();
+			const renderedBottom = windowedChildren.filter((child) => child.renders > 0).length;
+			assert.equal(
+				renderedBottom,
+				3,
+				`cold first frame at bottom rendered ${renderedBottom} tall children (expected exactly 3 for 36 visible rows)`,
+			);
+			await windowed.terminal.flush();
+			const bottomWindowed = windowed.terminal.getViewport();
+			const bottomPlain = await screen(plain);
+			assert.deepEqual(bottomWindowed, bottomPlain);
+
+			// Jump to top (followEnd = false) onto unmeasured tall children: also bounded by real height.
+			for (const child of windowedChildren) child.renders = 0;
+			windowed.tui.scrollToTop();
+			plain.tui.scrollToTop();
+			windowed.tui.renderNow();
+			const renderedTop = windowedChildren.filter((child) => child.renders > 0).length;
+			assert.ok(renderedTop <= 10, `top jump rendered ${renderedTop} tall children (expected <= 10)`);
+			await windowed.terminal.flush();
+			const topWindowed = windowed.terminal.getViewport();
+			const topPlain = await screen(plain);
+			assert.deepEqual(topWindowed, topPlain);
+		} finally {
+			windowed.tui.stop();
+			plain.tui.stop();
+		}
+	});
+
+	it("covers every visible row when non-followEnd entries near the bottom shrink below their estimates", async () => {
+		// Seed a large height estimate (20) from the first rendered entry, then add 20 entries that actually render 1 row.
+		const children = [
+			new Entry("tall 0", 20, true),
+			...Array.from({ length: 20 }, (_, i) => new Entry(`short ${i + 1}`, 1, false)),
+		];
+		const content = new WindowedContainer();
+		for (const child of children) content.addChild(child);
+		const request = { width: COLUMNS, height: ROWS, followEnd: false, requestRender() {} };
+		// Measure tall 0 at top so estimated height is 20.
+		content.layoutWindow({ ...request, top: 0 });
+		// Now jump near the estimated bottom (non-followEnd, exact) where entries shrink from 20 -> 1.
+		const layout = content.layoutWindow({ ...request, top: 380, exact: true });
+		for (let r = layout.top; r < Math.min(layout.length, layout.top + ROWS); r++) {
+			const line = layout.at(r);
+			assert.ok(
+				line !== undefined && line.length > 0,
+				`visible row ${r} was blank (top=${layout.top}, len=${layout.length})`,
+			);
+		}
+	});
+
+	it("leaves no blank visible rows when scrolling up into unmeasured taller entries or jumping into tall entries", async () => {
+		// Repro A: 50 tall (15-row) older entries + 20 short (1-row) tail entries, scroll up from tail.
+		const makeMixed = () => [
+			...Array.from({ length: 50 }, (_, i) => new Entry(`tall-${i}`, 15, i % 5 === 0)),
+			...Array.from({ length: 20 }, (_, i) => new Entry(`short-${i}`, 1, false)),
+		];
+		const viewportRows = 12;
+		const openMixed = (container: Container, list: readonly Component[]) => {
+			for (const child of list) container.addChild(child);
+			const terminal = new VirtualTerminal(COLUMNS, viewportRows);
+			const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+			const transcript = new ScrollView(container, { follow: "end", primary: true });
+			tui.setLayoutRoot(transcript);
+			tui.start();
+			return { terminal, tui, transcript };
+		};
+		const windowed = openMixed(new WindowedContainer(), makeMixed());
+		const plain = openMixed(new Container(), makeMixed());
+		try {
+			// Measure synchronously before background sweepSlice warms offscreen entries.
+			windowed.tui.renderNow();
+			plain.tui.renderNow();
+			windowed.transcript.scrollBy(-30);
+			plain.transcript.scrollBy(-30);
+			windowed.tui.renderNow();
+			plain.tui.renderNow();
+			const got = windowed.tui.getScreenLines();
+			const expected = plain.tui.getScreenLines();
+			assert.deepEqual(got, expected, "upward scroll into unmeasured tall entries must match Container");
+		} finally {
+			windowed.tui.stop();
+			plain.tui.stop();
+		}
+
+		// Repro B: content replaced with tall unmeasured entries while scrolled.
+		const content = new WindowedContainer();
+		for (let i = 0; i < 300; i++) content.addChild(new Entry(`s-${i}`, 1, false));
+		const terminalB = new VirtualTerminal(COLUMNS, viewportRows);
+		const tuiB = new TuiAltScreen(terminalB, false, undefined, { mouse: true });
+		const transcriptB = new ScrollView(content, { follow: "end", primary: true });
+		tuiB.setLayoutRoot(transcriptB);
+		tuiB.start();
+		try {
+			transcriptB.scrollTo(200);
+			tuiB.renderNow();
+			content.clear();
+			for (let i = 0; i < 40; i++) content.addChild(new Entry(`t-${i}`, 10, false));
+			tuiB.renderNow();
+			const rowsB = tuiB.getScreenLines();
+			for (let r = 0; r < rowsB.length; r++) {
+				assert.ok(rowsB[r]!.trim().length > 0, `Repro B row ${r} was blank:\n${rowsB.join("\n")}`);
+			}
+		} finally {
+			tuiB.stop();
+		}
+
+		// Repro C: cold exact jump into tall unmeasured entries.
+		const contentC = new WindowedContainer();
+		for (let i = 0; i < 40; i++) contentC.addChild(new Entry(`c-${i}`, 10, false));
+		const layoutC = contentC.layoutWindow({
+			width: 80,
+			height: 10,
+			top: 200,
+			followEnd: false,
+			exact: true,
+			requestRender() {},
+		});
+		for (let r = layoutC.top; r < Math.min(layoutC.length, layoutC.top + 10); r++) {
+			const line = layoutC.at(r);
+			assert.ok(
+				line !== undefined && line.length > 0,
+				`Repro C row ${r} was blank (top=${layoutC.top}, len=${layoutC.length})`,
+			);
+		}
+
+		// Small followEnd container renders in top-to-bottom document order.
+		const order: string[] = [];
+		const ordered = new WindowedContainer();
+		for (const name of ["first", "second"]) {
+			ordered.addChild({
+				render: () => {
+					order.push(name);
+					return [name];
+				},
+				invalidate() {},
+			});
+		}
+		ordered.layoutWindow({ width: 80, height: 40, top: 0, followEnd: true, requestRender() {} });
+		assert.deepEqual(order, ["first", "second"]);
+	});
 });

@@ -1,3 +1,4 @@
+import { memoizeAsync } from "../../utils/memoize-async.js";
 import type { OversizedSessionEntry } from "../storage/session/types.js";
 import {
 	loadTaskOwnTranscriptHistory,
@@ -208,11 +209,7 @@ export function projectTaskCompletionEntries(entries: readonly Entry[], unavaila
 }
 
 type EntryFields = typeof import("./task-completion-entry.js");
-let entryFields: Promise<EntryFields> | undefined;
-function oversized(): Promise<EntryFields> {
-	entryFields ??= import("./task-completion-entry.js");
-	return entryFields;
-}
+const oversized = memoizeAsync((): Promise<EntryFields> => import("./task-completion-entry.js"));
 
 /** Whether a saved assistant message is the unsaved answer, compared by what it adds to the card. */
 async function sameCalls(chunks: Chunks, unsaved: Message): Promise<boolean> {

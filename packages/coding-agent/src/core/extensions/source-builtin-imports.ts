@@ -134,9 +134,10 @@ function shared(promises: Map<string, Promise<void>>, key: string, start: () => 
 	let pending = promises.get(key);
 	if (pending === undefined) {
 		const started = start();
-		void started.then(() => {
+		const cleanup = (): void => {
 			if (promises.get(key) === started) promises.delete(key);
-		});
+		};
+		void started.then(cleanup, cleanup);
 		promises.set(key, started);
 		pending = started;
 	}

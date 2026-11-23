@@ -48,7 +48,7 @@ use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Threading::{
 	CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
 	CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW, DETACHED_PROCESS,
-	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+	DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, GetProcessId,
 	GetProcessTimes, INFINITE, InitializeProcThreadAttributeList, OpenProcess,
 	PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
 	PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, ResumeThread, STARTF_USESHOWWINDOW,
@@ -1022,6 +1022,9 @@ pub(super) fn watch(
 		return Err(os_error(io::Error::last_os_error()));
 	}
 	let process = unsafe { OwnedHandle::from_raw_handle(raw_process) };
+	if unsafe { GetProcessId(raw(&process)) } != pid {
+		return Err(code_error("ENOENT", format!("process {pid} does not match opened handle")));
+	}
 	let actual = handle_creation_time(raw(&process));
 	if actual.as_deref() != Some(expected_creation_time.as_str()) {
 		return Err(code_error("ENOENT", format!("process {pid} creation time does not match")));
