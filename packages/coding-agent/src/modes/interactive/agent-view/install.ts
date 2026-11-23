@@ -1,4 +1,3 @@
-import { isKeyRelease, matchesKey } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
 import {
@@ -15,7 +14,7 @@ import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { setAgentViewBridge } from "./agent-view-bridge.ts";
 import { AgentViewSwitcher, type OpenAgentViewPort } from "./agent-view-switcher.ts";
 import { openAgentViewPort } from "./open-port.ts";
-import { installPromptRetarget } from "./prompt-retarget.ts";
+import { installPromptRetarget, isCancelPendingOpenKey } from "./prompt-retarget.ts";
 import { FIRST_FRAME_TIMEOUT_MS, PANEL_FIRST_FRAME_TIMEOUT_MS } from "./remote-port.ts";
 import { holdTranscriptDock, installTranscriptSlot } from "./transcript-slot.ts";
 import {
@@ -170,12 +169,6 @@ export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 				const engineRequestId = message.requestId;
 				const tagged = engineRequestId !== undefined;
 
-				const isPreViewCancelKey = (data: string): boolean =>
-					!isKeyRelease(data) &&
-					(isPhysicalEscape(data) ||
-						(mode.keybindings.matches(data, "app.interrupt") &&
-							!mode.keybindings.matches(data, "app.list.open") &&
-							!matchesKey(data, "enter")));
 				const cancelledBeforeArrival =
 					taskId !== undefined &&
 					keepScreen &&
@@ -183,7 +176,11 @@ export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 						true,
 						true,
 						true,
-						hasUnansweredNavigationCancelInput(runtime, isPreViewCancelKey),
+						hasUnansweredNavigationCancelInput(
+							runtime,
+							(data) => isCancelPendingOpenKey(mode.keybindings, data),
+							isPhysicalEscape,
+						),
 					);
 				if (cancelledBeforeArrival) {
 					const priorPendingActive = switcher.pendingTaskId !== undefined;

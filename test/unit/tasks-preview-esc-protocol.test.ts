@@ -158,7 +158,7 @@ function createHarnessWithOpenPort(
 		taskId: TaskId,
 		requestOptions?: { keepScreen?: boolean; panel?: boolean },
 	) => Promise<AgentViewPort | undefined>,
-	options: { engineVersion?: "new" | "old"; fullscreen?: boolean } = {},
+	options: { engineVersion?: "new" | "old"; fullscreen?: boolean; keybindings?: KeybindingsManager } = {},
 ) {
 	const store = new FakeOwnerTaskStore(tasks);
 	const session = { extensionRunner: {} } as unknown as AgentSession;
@@ -167,10 +167,11 @@ function createHarnessWithOpenPort(
 	const engineToHostQueue: string[] = [];
 	const hostToEngineSetViewed: Array<{ command: AgentViewRpcCommandBody; resolve: () => void }> = [];
 	const hostToEngineCommands: string[] = [];
+	const keybindings = options.keybindings ?? new KeybindingsManager();
 
 	const engineCustomUi = new EngineCustomUiService((line) => {
 		engineToHostQueue.push(line);
-	}, new KeybindingsManager());
+	}, keybindings);
 
 	const engineContext = {
 		session,
@@ -340,7 +341,7 @@ function createHarnessWithOpenPort(
 		statusContainer: new Text("", 0, 0),
 		footer: { setViewedWork() {} },
 		sessionManager: { getSessionName: () => undefined },
-		keybindings: getKeybindings(),
+		keybindings: options.keybindings ?? getKeybindings(),
 		showWarning() {},
 		showStatus() {},
 		showError() {},
@@ -1904,4 +1905,222 @@ test("no-regression: Esc closing a /tasks peek card right before Enter, Kitty Es
 	await Promise.all([tasksDone2, dialogDone]);
 
 	assert.equal(h.switcher.viewedTaskId(), "a2", "unanswered Esc on non-navigation dialog must not cancel /tasks open");
+});
+
+test("arbitrary keybinding overlap (app.interrupt sharing app.list.peek) never self-cancels opening an input-needed subagent, while a second press cancels", async () => {
+	const askingBase = taskRecord("ask1");
+	const asking: TaskRecord = {
+		...askingBase,
+		agentName: "worker",
+		title: "asking worker",
+		launchOrdinal: 1,
+		wasBackground: true,
+		launchOperationId: "op-ask1" as OperationId,
+		observation: { kind: "background", reason: "default-background" },
+		execution: { kind: "running" },
+		attention: {
+			kind: "input-needed",
+			requestId: "req-ask1",
+			prompt: "Proceed?",
+			route: { kind: "task", taskId: "ask1" as TaskId, requestId: "req-ask1" } as never,
+		},
+	};
+
+	for (const combo of [
+		{ name: "ctrl+g overlap", bindings: { "app.interrupt": "ctrl+g", "app.list.peek": "ctrl+g" }, key: "\x07" },
+		{ name: "default space peek overlap", bindings: { "app.interrupt": "space" }, key: SPACE },
+	] as const) {
+		const customKb = new KeybindingsManager(combo.bindings);
+		setKeybindings(customKb);
+		const opened: TaskId[] = [];
+		const h = createHarnessWithOpenPort(
+			[asking],
+			async (taskId) => {
+				opened.push(taskId);
+				return fakePort(taskId);
+			},
+			{ keybindings: customKb },
+		);
+		disposers.push(() => h.dispose());
+
+		const remoteTasksUi: TaskInspectorUi = {
+			notify() {},
+			custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+		};
+
+		// 1. Single press of the overlapping key must OPEN ask1 (never self-cancel!).
+		const done1 = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+		await tick(2);
+		h.deliverAllEngineToHost();
+		await h.deliverAllHostCommandsToEngine();
+		h.deliverAllEngineToHost();
+
+		const top1 = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+		top1.handleInput?.(combo.key);
+		await h.deliverAllHostCommandsToEngine();
+		h.deliverAllEngineToHost();
+		await tick(4);
+		await h.deliverAllSetViewedToEngine();
+		await done1;
+
+		assert.equal(
+			h.switcher.viewedTaskId(),
+			"ask1",
+			`${combo.name}: single press must open ask1 without self-cancelling`,
+		);
+		assert.deepEqual(opened, ["ask1"]);
+
+		// Return to main and verify a SECOND overlapping press right after the first cancels!
+		await h.switcher.view(undefined);
+		await h.deliverAllSetViewedToEngine();
+		opened.length = 0;
+
+		const done2 = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+		await tick(2);
+		h.deliverAllEngineToHost();
+		await h.deliverAllHostCommandsToEngine();
+		h.deliverAllEngineToHost();
+
+		const top2 = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+		top2.handleInput?.(combo.key); // triggering open
+		top2.handleInput?.(combo.key); // subsequent cancel (id > minUnansweredId)
+		await h.deliverAllHostCommandsToEngine();
+		h.deliverAllEngineToHost();
+		await tick(4);
+		await h.deliverAllSetViewedToEngine();
+		await done2;
+
+		assert.equal(h.switcher.viewedTaskId(), undefined, `${combo.name}: second press must cancel on arrival`);
+		assert.deepEqual(opened, []);
+	}
+});
+
+test("pre-view cancel predicate matches holdWhileOpening parity (physical Ctrl+C, app.clear, app.exit never cancel)", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const customKb = new KeybindingsManager({ "app.interrupt": ["escape", "ctrl+c", "ctrl+d"] });
+	setKeybindings(customKb);
+	const h = createHarnessWithOpenPort([a1, a2], async (taskId) => fakePort(taskId), { keybindings: customKb });
+	disposers.push(() => h.dispose());
+
+	const remoteTasksUi: TaskInspectorUi = {
+		notify() {},
+		custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+	};
+
+	for (const key of ["\x03", "\x04"] as const) {
+		const done = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+		await tick(2);
+		h.deliverAllEngineToHost();
+		await h.deliverAllHostCommandsToEngine();
+		h.deliverAllEngineToHost();
+
+		const top = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+		top.handleInput?.(ENTER);
+		top.handleInput?.(key); // physical Ctrl+C / app.clear or Ctrl+D / app.exit
+		await h.deliverAllHostCommandsToEngine();
+		h.deliverAllEngineToHost();
+		await tick(4);
+		await h.deliverAllSetViewedToEngine();
+		await done;
+
+		assert.equal(
+			h.switcher.viewedTaskId(),
+			"a2",
+			`key ${JSON.stringify(key)} (Ctrl+C/clear/exit) must not cancel pre-view open`,
+		);
+		await h.switcher.view(undefined);
+		await h.deliverAllSetViewedToEngine();
+	}
+});
+
+test("host-cancel watermark stays bounded to earlier input ids on the same component and resets across /tasks reopens", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const a3 = doneAgent("a3", "third gamma", 3);
+	const resolvers = new Map<string, (port: AgentViewPort | undefined) => void>();
+	const h = createHarnessWithOpenPort(
+		[a1, a2, a3],
+		(taskId) => {
+			if (taskId === "a1") {
+				return new Promise((resolve) => {
+					resolvers.set(taskId, resolve);
+				});
+			}
+			return Promise.resolve(fakePort(taskId));
+		},
+		{ fullscreen: false },
+	);
+	disposers.push(() => h.dispose());
+
+	const remoteTasksUi: TaskInspectorUi = {
+		notify() {},
+		custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+	};
+
+	// 1. Same-component post-watermark open (kills sticky-on-component watermark mutation):
+	//    DOWN (id=1) -> holdWhileOpening consumes Esc (watermark=1, cancels prior a1) -> DOWN answered ->
+	//    ENTER (id=2 > watermark) on the SAME mounted /tasks component must OPEN a2!
+	const done1 = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const top1 = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	h.switcher.requestView("a1" as TaskId, { keepScreen: true });
+	top1.handleInput?.(DOWN); // id=1 -> selects a2, does not close /tasks
+	assert.equal(h.sendHostKey(ESC), true, "holdWhileOpening cancels prior a1 and bumps watermark to 1");
+	resolvers.get("a1")?.(fakePort("a1"));
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	await h.deliverAllSetViewedToEngine();
+
+	// Now press ENTER (id=2 > watermark 1) on the SAME /tasks component -> must open a2!
+	top1.handleInput?.(ENTER);
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	await tick(4);
+	await h.deliverAllSetViewedToEngine();
+	await done1;
+	assert.equal(h.switcher.viewedTaskId(), "a2", "post-watermark Enter on the same /tasks component must open a2");
+
+	// Return to main and dismiss anchor.
+	await h.switcher.view(undefined);
+	await h.deliverAllSetViewedToEngine();
+
+	// 2. Reopen post-watermark open (kills global-never-reset watermark mutation):
+	//    Open /tasks #2, set watermark on closing Enter+Esc (cancelling a1 & a2), then reopen /tasks #3 and press Enter!
+	const done2 = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const top2 = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	h.switcher.requestView("a1" as TaskId, { keepScreen: true });
+	top2.handleInput?.(ENTER); // id=1
+	assert.equal(h.sendHostKey(ESC), true, "holdWhileOpening cancels a1 and watermarks closing Enter");
+	resolvers.get("a1")?.(fakePort("a1"));
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	await h.deliverAllSetViewedToEngine();
+	await done2;
+	assert.equal(h.switcher.viewedTaskId(), undefined, "cancelled /tasks #2 stays on main");
+
+	// Reopen /tasks #3 -> watermark must be 0, so immediate Enter (id=1) opens top task (a3)!
+	const done3 = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const top3 = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	top3.handleInput?.(ENTER); // id=1 on fresh /tasks #3
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	await tick(4);
+	await h.deliverAllSetViewedToEngine();
+	await done3;
+	assert.equal(h.switcher.viewedTaskId(), "a3", "reopened /tasks after watermark must open normally");
 });

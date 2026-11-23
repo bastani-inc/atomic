@@ -114,6 +114,10 @@ class RemoteComponent implements Component {
 	private readonly answeredInputs = new Set<number>();
 	/** Highest `inputRequestId` sent when a host-level cancel (`Esc`) was consumed while this component was mounted. */
 	private cancelUpToInputId = 0;
+	/** `inputRequestId` at the moment the latest `engine_custom_click_settle` was sent, until a later input answers. */
+	private lastSettledClickAfterInputId: number | undefined;
+	/** True when a host-level cancel (`Esc`) was consumed while a settled click was still in flight. */
+	private pendingClickCancelled = false;
 	private readonly frameClamp = new RemoteFrameWidthClamp();
 
 	private readonly componentId: string;
@@ -307,6 +311,10 @@ class RemoteComponent implements Component {
 		const finish = (type: "engine_custom_click_settle" | "engine_custom_click_cancel") => {
 			if (this.disposed || this.retiredShowing !== undefined) return;
 			try {
+				if (type === "engine_custom_click_settle") {
+					this.lastSettledClickAfterInputId = this.inputRequestId;
+					this.pendingClickCancelled = false;
+				}
 				this.runtime.sendEngineCommand({ type, componentId: this.componentId, clickId });
 			} catch {
 				// An engine that went away takes no click; the host keeps its frame.
@@ -386,6 +394,10 @@ class RemoteComponent implements Component {
 	}
 
 	resolveInput(requestId: number, handled: boolean | undefined): void {
+		if (this.lastSettledClickAfterInputId !== undefined && requestId > this.lastSettledClickAfterInputId) {
+			this.lastSettledClickAfterInputId = undefined;
+			this.pendingClickCancelled = false;
+		}
 		const pending = this.pendingInputs.get(requestId);
 		if (!pending) return;
 		clearTimeout(pending.timer);
@@ -409,25 +421,41 @@ class RemoteComponent implements Component {
 		pending.resolve(handled);
 	}
 
-	/** Record that a host-level cancel key (`Esc`) was consumed while this component had inputs in flight. */
+	/** Record that a host-level cancel key (`Esc`) was consumed while this component had inputs/clicks in flight. */
 	noteHostCancel(): void {
 		if (this.disposed || this.retiredShowing !== undefined) return;
 		if (this.inputRequestId > this.cancelUpToInputId) this.cancelUpToInputId = this.inputRequestId;
+		if (this.lastSettledClickAfterInputId !== undefined) this.pendingClickCancelled = true;
 	}
 
 	/**
-	 * True when this component has an unanswered cancel input (or an unanswered input already in flight when a
-	 * host-level cancel consumed `Esc`), meaning `Esc` was pressed after the input/click that emitted `engine_view_agent`.
+	 * True when this component has an unanswered cancel input strictly after the triggering input (`minUnansweredId`),
+	 * an unanswered input predating a consumed host-level cancel, or a physical `Esc` / host-level cancel after an
+	 * unsettled click. Excludes `minUnansweredId` by identity so overlapping keybindings never self-cancel.
 	 */
-	hasUnansweredCancelInput(isCancel: (data: string) => boolean): boolean {
+	hasUnansweredCancelInput(isCancel: (data: string) => boolean, isPhysicalEsc: (data: string) => boolean): boolean {
 		if (this.disposed || this.retiredShowing !== undefined) return false;
+		if (this.pendingClickCancelled) return true;
+		let minUnansweredId: number | undefined;
+		for (const requestId of this.pendingInputs.keys()) {
+			if (!this.answeredInputs.has(requestId)) {
+				minUnansweredId = requestId;
+				break;
+			}
+		}
+		if (minUnansweredId === undefined) return false;
+		const clickBeforeOldest =
+			this.lastSettledClickAfterInputId !== undefined && this.lastSettledClickAfterInputId < minUnansweredId;
 		for (const [requestId, pending] of this.pendingInputs) {
 			if (
 				isUnansweredCancelMatch(
 					this.answeredInputs.has(requestId),
 					isCancel(pending.data),
+					isPhysicalEsc(pending.data),
 					requestId,
+					minUnansweredId,
 					this.cancelUpToInputId,
+					clickBeforeOldest,
 				)
 			) {
 				return true;
@@ -454,6 +482,8 @@ class RemoteComponent implements Component {
 		this.paintedRowKeys = undefined;
 		this.clickId++;
 		this.cancelUpToInputId = 0;
+		this.lastSettledClickAfterInputId = undefined;
+		this.pendingClickCancelled = false;
 		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
 		return true;
 	}
@@ -548,6 +578,8 @@ class RemoteComponent implements Component {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.cancelUpToInputId = 0;
+		this.lastSettledClickAfterInputId = undefined;
+		this.pendingClickCancelled = false;
 		clearTimeout(this.hiddenTimer);
 		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
 		if (notifyEngine)
@@ -690,8 +722,12 @@ export function resetWidgetPreview(runtime: object, widgetKey: string): void {
  * True when the topmost live interactive component on `runtime` is a navigation view (`/tasks`) that already has an
  * unanswered cancel key in flight (or had an unanswered input in flight when a host-level cancel consumed `Esc`).
  */
-export function hasUnansweredNavigationCancelInput(runtime: object, isCancel: (data: string) => boolean): boolean {
-	return controllers.get(runtime)?.hasUnansweredNavigationCancelInput(isCancel) === true;
+export function hasUnansweredNavigationCancelInput(
+	runtime: object,
+	isCancel: (data: string) => boolean,
+	isPhysicalEsc: (data: string) => boolean,
+): boolean {
+	return controllers.get(runtime)?.hasUnansweredNavigationCancelInput(isCancel, isPhysicalEsc) === true;
 }
 
 /** Record that a host-level `Esc` cancelled a pending open while the topmost live navigation component was mounted. */
@@ -926,8 +962,11 @@ export class RemoteComponentController {
 		return undefined;
 	}
 
-	hasUnansweredNavigationCancelInput(isCancel: (data: string) => boolean): boolean {
-		return this.topmostLiveNavigationComponent()?.hasUnansweredCancelInput(isCancel) === true;
+	hasUnansweredNavigationCancelInput(
+		isCancel: (data: string) => boolean,
+		isPhysicalEsc: (data: string) => boolean,
+	): boolean {
+		return this.topmostLiveNavigationComponent()?.hasUnansweredCancelInput(isCancel, isPhysicalEsc) === true;
 	}
 
 	noteNavigationHostCancel(): void {
