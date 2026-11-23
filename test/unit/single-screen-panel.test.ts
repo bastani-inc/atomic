@@ -148,7 +148,10 @@ function done(task: TaskRecord): TaskRecord {
 	return {
 		...task,
 		observation: { kind: "none", reason: "task-settled" },
-		execution: { kind: "settled", result: { kind: "completed", output: task.output } },
+		execution: {
+			kind: "settled",
+			result: { kind: "completed", output: task.output, ...(task.kind === "command" ? { exitCode: 0 } : {}) },
+		},
 	} as TaskRecord;
 }
 

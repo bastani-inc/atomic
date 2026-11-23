@@ -212,7 +212,7 @@ test("sections order tasks by status with running work first and newest first wi
 	};
 	const completedNew = settled("completed-new", { kind: "completed", output });
 	const runningNew = taskRecord("running-new");
-	const shellDone = settled("shell-done", { kind: "completed", output }, "command");
+	const shellDone = settled("shell-done", { kind: "completed", output, exitCode: 0 }, "command");
 	const shellRunning = taskRecord("shell-running", "command");
 	const tasks = [
 		completedOld,

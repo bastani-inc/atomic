@@ -15,11 +15,12 @@ export function commandSpoolExceedsCap(fileBytes: bigint, capBytes = BigInt(COMM
 	return fileBytes > capBytes;
 }
 
-/** Native completion means the process exited; nonzero shell exits are UI failures. */
+/**
+ * Native completion means the process exited; only exit code 0 proves shell command success.
+ * Non-zero exits and missing exit codes (such as signal termination or an unreadable exit status) are failures.
+ */
 export function taskOutcomeStatus(result: TaskResult, kind?: "agent" | "command"): TaskResult["kind"] {
-	return kind === "command" && result.kind === "completed" && result.exitCode !== undefined && result.exitCode !== 0
-		? "failed"
-		: result.kind;
+	return kind === "command" && result.kind === "completed" && result.exitCode !== 0 ? "failed" : result.kind;
 }
 
 export type OmissionSpan = { start: number; end: number };
