@@ -8,6 +8,10 @@
 - `HeldProcessDescendants.endDescendants()`: ends only the held descendants while keeping the root handle intact so a process cleaning up its own tree can terminate verified descendants before ending itself.
 - `holdWindowsProcessExit(pid, expectedCreated?)`: on Windows, opens and holds a creation-time-, parent-, and sequence-verified handle to a direct child process so callers can detect termination (`WaitForSingleObject`) and read the child's exact 32-bit exit status (`GetExitCodeProcess`, including exit code `259`) via `WindowsProcessExitHandle.pollExit()` until `close()` or drop. Returns `null` off Windows or when verification fails.
 
+### Fixed
+
+- Windows native process helpers (`processCreationTime`, `terminateProcessCreatedAt`, `holdProcessDescendants`, `containProcessTree`, `containProcessTreeAllowingBreakaway`, `holdWindowsProcessExit`, and `watchHostProcess`) now verify `GetProcessId(handle) == pid` after `OpenProcess`, so unaligned process IDs never silently alias and inspect or terminate a running process at `pid & ~3`.
+
 ## [0.10.4] - 2026-11-22
 
 ### Breaking Changes
