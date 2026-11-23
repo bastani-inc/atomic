@@ -3,6 +3,8 @@ import type { ClassifierApi, ClassifierModel, ClassifierOptions, ProviderHeaders
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
+import { findTlsCertificateRefusal, transportFailure } from "../utils/tls-certificate.ts";
 
 export interface ClassifierHttpError extends Error {
 	status: number | undefined;
@@ -21,6 +23,24 @@ function httpError(label: string, response: Response, body: string): ClassifierH
 function timeoutError(timeoutMs: number): ClassifierHttpError {
 	const error = new Error(`Request timed out after ${timeoutMs}ms`) as ClassifierHttpError;
 	error.name = "TimeoutError";
+	error.status = undefined;
+	error.headers = undefined;
+	error.body = "";
+	return error;
+}
+
+function transportError(cause: Error): ClassifierHttpError {
+	const code = (cause as Error & { code?: unknown }).code;
+	const detail =
+		(typeof code === "string" || typeof code === "number") &&
+		cause.cause === undefined &&
+		!cause.message.includes(String(code))
+			? cause.message
+				? `${cause.message} (${code})`
+				: String(code)
+			: cause.message;
+	const error = new Error(detail, { cause }) as ClassifierHttpError;
+	error.name = cause.name;
 	error.status = undefined;
 	error.headers = undefined;
 	error.body = "";
@@ -87,6 +107,20 @@ export async function postClassifierRequest(
 				return { response: next, json: (await next.json()) as unknown };
 			} catch (error) {
 				if (timeoutSignal?.aborted && !options.signal?.aborted) throw timeoutError(options.timeoutMs!);
+				if (options.signal?.aborted) throw error;
+				if (
+					error instanceof RetryDeadlineError ||
+					(error instanceof Error && error.name === "AbortError") ||
+					error instanceof SyntaxError
+				) {
+					throw error;
+				}
+				if (error instanceof Error && !("status" in error) && !("headers" in error)) {
+					if (findTlsCertificateRefusal(error) !== undefined) throw error;
+					const failure = transportFailure(error, url);
+					if (findTlsCertificateRefusal(failure) !== undefined) throw failure;
+					throw transportError(error);
+				}
 				throw error;
 			}
 		},

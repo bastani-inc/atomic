@@ -41,6 +41,18 @@ function scheduleRetry(session: AgentSession, generation: number, run: () => voi
 	}, 0);
 }
 
+/** Notify subagent drain waiters when a retry finishes outside an active prompt or interrupt wrapper. */
+function notifyRetryDrainedIfIdle(session: AgentSession): void {
+	if (
+		(session._activePromptCount ?? 0) === 0 &&
+		(session._pendingInterruptDeliveries ?? 0) === 0 &&
+		!session.isStreaming &&
+		!session.isRetrying
+	) {
+		session._subagentPolicy?.onTurnDrained?.();
+	}
+}
+
 function modelLabel(model: Model<Api> | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "unknown model";
 }
@@ -426,8 +438,17 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 
 		// Keep the failed attempt in raw history while durably omitting it from model projection.
 		const generation = this._retryGeneration;
+		const createdRetryPromise = this._retryPromise === undefined;
 		ensureRetryPromise(this); // Unresolved overflow may reach fallback without a same-model retry.
-		await this._omitTrailingAssistantAttempt();
+		try {
+			await this._omitTrailingAssistantAttempt();
+		} catch {
+			if (createdRetryPromise && retryIsCurrent(this, generation)) {
+				this._resolveRetry();
+				notifyRetryDrainedIfIdle(this);
+			}
+			return false;
+		}
 		if (!retryIsCurrent(this, generation)) return true;
 		await selectFallback(
 			this,
@@ -461,6 +482,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 					this._retryAttempt = 0;
 					this._longStreamCutRetries = 0;
 					this._resolveRetry();
+					notifyRetryDrainedIfIdle(this);
 				}
 			});
 		});
@@ -556,6 +578,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 		this._retryAttempt = 0;
 		this._longStreamCutRetries = 0;
 		this._resolveRetry();
+		notifyRetryDrainedIfIdle(this);
 		return false;
 	}
 
@@ -592,6 +615,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 		this._retryAttempt = 0;
 		this._longStreamCutRetries = 0;
 		this._resolveRetry(); // Resolve so waitForRetry() completes
+		notifyRetryDrainedIfIdle(this);
 		return false;
 	}
 	if (isLongStreamCut(message)) this._longStreamCutRetries += 1;
@@ -609,7 +633,25 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	});
 
 	// Keep the failed attempt in raw history while durably omitting it from model projection.
-	await this._omitTrailingAssistantAttempt();
+	try {
+		await this._omitTrailingAssistantAttempt();
+	} catch (error) {
+		if (this._retryAbortController === backoff) this._retryAbortController = undefined;
+		if (retryIsCurrent(this, generation)) {
+			const attempt = this._retryAttempt;
+			this._retryAttempt = 0;
+			this._longStreamCutRetries = 0;
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt,
+				finalError: error instanceof Error ? error.message : String(error),
+			});
+			this._resolveRetry();
+			notifyRetryDrainedIfIdle(this);
+		}
+		return false;
+	}
 
 	// Wait with exponential backoff (abortable)
 	try {
@@ -620,9 +662,38 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 		if (this._retryAbortController === backoff) this._retryAbortController = undefined;
 	}
 
+	const fallbackGeneration = this._fallbackOriginGeneration;
 	scheduleRetry(this, generation, () => {
-		this.agent.continue().catch(() => {
-			// Retry failed - will be caught by next agent_end
+		void this.agent.continue().catch(async (error: unknown) => {
+			if (!retryIsCurrent(this, generation)) return;
+			const attempt = this._retryAttempt;
+			const finalError = error instanceof Error ? error.message : String(error);
+			this._retryAttempt = 0;
+			this._longStreamCutRetries = 0;
+			this._emit({
+				type: "auto_retry_end",
+				success: false,
+				attempt,
+				finalError,
+			});
+			if (fallbackGeneration !== undefined && this._fallbackOriginGeneration === fallbackGeneration) {
+				this._fallbackRestoreError = finalError;
+				try {
+					await this._settleFallbackModelScope();
+				} catch {
+					if (this._fallbackOriginGeneration === fallbackGeneration) {
+						finishFallbackModelScope.call(this, {
+							success: false,
+							from: modelLabel(this.agent.state.model ?? this.model),
+							finalError,
+						});
+					}
+				}
+			}
+			if (retryIsCurrent(this, generation)) {
+				this._resolveRetry();
+				notifyRetryDrainedIfIdle(this);
+			}
 		});
 	});
 
@@ -656,6 +727,7 @@ export function abortTurnRetries(this: AgentSession): void {
 		finishFallbackModelScope.call(this, { success: false, from: modelLabel(this.model) });
 	}
 	this._resolveRetry();
+	notifyRetryDrainedIfIdle(this);
 }
 
 /**

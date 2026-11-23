@@ -144,11 +144,20 @@ describe("provider retry classification", () => {
 		"connect ECONNREFUSED 127.0.0.1:443",
 		"ECONNABORTED",
 		"Connection reset by peer",
+		"UND_ERR_SOCKET",
+		"UND_ERR_BODY_TIMEOUT",
+		"UND_ERR_HEADERS_TIMEOUT",
+		"UND_ERR_CONNECT_TIMEOUT",
 	])("matches Node socket error codes (#12128): %s", (errorMessage) => {
 		assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), true);
 	});
 
-	it.each(["Invalid value EXECONNRESET", "Unknown field ETIMEDOUTX", "Invalid key ERR_EPIPE_ID"])(
+	it.each([
+		"Invalid value EXECONNRESET",
+		"Unknown field ETIMEDOUTX",
+		"Invalid key ERR_EPIPE_ID",
+		"Invalid code MY_UND_ERR_SOCKET_X",
+	])(
 		"does not match socket error codes inside longer identifiers (#12128): %s",
 		(errorMessage) => {
 			assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), false);
