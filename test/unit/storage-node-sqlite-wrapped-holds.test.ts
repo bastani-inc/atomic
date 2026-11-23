@@ -1163,7 +1163,9 @@ test("a wrapped write that also writes another attached file, here from a trigge
 	raw.exec(`ATTACH '${otherPath}' AS other`);
 	raw.exec("CREATE TABLE other.copies (x)");
 	raw.exec("CREATE TEMP TABLE originals (x)");
-	raw.exec("CREATE TEMP TRIGGER copy AFTER INSERT ON originals BEGIN INSERT INTO other.copies VALUES (new.x); END");
+	// SQLite before 3.53 rejects schema-qualified DML targets inside triggers; a TEMP trigger resolves an unqualified
+	// table name across attached databases (here `other.copies`, which exists in neither `temp` nor `main`).
+	raw.exec("CREATE TEMP TRIGGER copy AFTER INSERT ON originals BEGIN INSERT INTO copies VALUES (new.x); END");
 	cleanups.push(() => raw.exec("DETACH other"));
 	// A reader of the other file, in its rollback journal: a commit there waits for the reader's lock.
 	const reader = new DatabaseSync(otherPath);
@@ -1179,6 +1181,8 @@ test("a wrapped write that also writes another attached file, here from a trigge
 	reader.exec("COMMIT");
 	await committed;
 	assert.deepEqual(await wrapped.all("SELECT x FROM other.copies"), []);
+	await wrapped.run("INSERT INTO originals VALUES (2)");
+	assert.deepEqual(await wrapped.all("SELECT x FROM other.copies"), [{ x: 2 }]);
 });
 
 test("a wrapped VACUUM during a threaded transaction runs once, as before (#6081)", async () => {
