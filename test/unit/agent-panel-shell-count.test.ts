@@ -127,7 +127,7 @@ test("with only shells running there are no rows: the hint counts them and point
 test("finished shells are not counted", () => {
 	const session = {};
 	const done = shell("sh-done");
-	done.execution = { kind: "settled", result: { kind: "completed", output: done.output } };
+	done.execution = { kind: "settled", result: { kind: "completed", output: done.output, exitCode: 0 } };
 	bindTasks(session, [done]);
 	assert.deepEqual(agentPanelCounts(session as never), {
 		total: 0,

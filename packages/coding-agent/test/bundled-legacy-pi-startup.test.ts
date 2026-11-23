@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { withTestTimezone } from "../../../test/helpers/system-prompt-date-isolation.js";
 import { killProcessTree } from "../src/utils/shell.js";
 
 const packageDir = path.resolve(import.meta.dirname, "..");
@@ -70,7 +71,7 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 		],
 		{
 			cwd: home,
-			env: {
+			env: withTestTimezone({
 				HOME: home,
 				USERPROFILE: home,
 				PATH: process.env.PATH,
@@ -80,7 +81,7 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 				ATOMIC_SKIP_VERSION_CHECK: "1",
 				ATOMIC_INTERCOM_JOIN_AT_STARTUP: "0",
 				...(mode === "interactive" ? { ATOMIC_INTERACTIVE_ENGINE_CHILD: "1" } : {}),
-			},
+			}),
 			stdio: "pipe",
 			// Give the watchdog a process group to kill on POSIX.
 			detached: process.platform !== "win32",
@@ -215,6 +216,7 @@ setInterval(() => {}, 1000);`,
 it(
 	"loads an auto-discovered legacy pi extension through the bundled app without installed pi packages",
 	async () => {
+		const expectedTz = process.env.TZ ?? "";
 		const result = await run(
 			"legacy",
 			`import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -222,10 +224,10 @@ import { getAgentDir as legacy } from "@mariozechner/pi-coding-agent";
 import { getAgentDir as current } from "@earendil-works/pi-coding-agent";
 export default function(pi: ExtensionAPI) {
   if (legacy !== current) throw new Error("host identity mismatch");
-  console.error("LEGACY_EXTENSION_LOADED");
+  console.error("LEGACY_EXTENSION_LOADED TZ=" + (process.env.TZ ?? ""));
 }`,
 		);
-		expect(result.stderr).toContain("LEGACY_EXTENSION_LOADED");
+		expect(result.stderr).toContain(`LEGACY_EXTENSION_LOADED TZ=${expectedTz}`);
 		expect(result.stderr).not.toContain("Failed to load extension");
 		expect(result.stderr).not.toContain("missing sourcemaps");
 	},
@@ -328,7 +330,7 @@ it.skipIf(!tmuxAvailable)(
 		const modes = path.join(home, "terminal-modes.txt");
 		fs.writeFileSync(config, "set -g remain-on-exit on\n");
 		const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
-		const env = {
+		const env = withTestTimezone({
 			HOME: home,
 			USERPROFILE: home,
 			PATH: process.env.PATH ?? "",
@@ -338,7 +340,7 @@ it.skipIf(!tmuxAvailable)(
 			ATOMIC_PACKAGE_DIR: packageDir,
 			ATOMIC_SKIP_VERSION_CHECK: "1",
 			ATOMIC_INTERCOM_JOIN_AT_STARTUP: "0",
-		};
+		});
 		const command = [
 			"env -i",
 			...Object.entries(env).map(([key, value]) => `${key}=${quote(value)}`),
