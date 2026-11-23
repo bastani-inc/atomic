@@ -1,5 +1,9 @@
+import { execFileSync } from "node:child_process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { resetCapabilitiesCache, setCapabilities } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { NODE_TS_SOURCE_HOOK } from "../../../test/helpers/node-ts-sources.js";
 import {
 	getLanguageFromPath,
 	getMarkdownTheme,
@@ -154,5 +158,48 @@ describe("theme syntax highlighting", () => {
 		);
 		expect(highlightCode("@decorator", "python")[0]).toBe("\x1b[38;2;128;128;128m@decorator\x1b[39m");
 		expect(highlightCode("<div></div>", "html")[0]).toContain("\x1b[38;2;86;156;214mdiv\x1b[39m");
+	});
+
+	it("loads only the requested eager language on demand instead of all 20 grammars at once, preserving overrides and aliases", () => {
+		const syntaxHighlightUrl = pathToFileURL(resolve(import.meta.dirname, "../src/utils/syntax-highlight.ts")).href;
+		const tuiThemeUrl = pathToFileURL(resolve(import.meta.dirname, "../src/modes/interactive/theme/theme.ts")).href;
+		const script = [
+			NODE_TS_SOURCE_HOOK,
+			`import assert from "node:assert/strict";`,
+			`const hljs = (await import("highlight.js/lib/core.js")).default;`,
+			`const sh = await import(${JSON.stringify(syntaxHighlightUrl)});`,
+			`const th = await import(${JSON.stringify(tuiThemeUrl)});`,
+			`// Pre-register custom override for python (without declaring "py") and alias redirect hpp -> c.`,
+			`hljs.registerLanguage("python", () => ({ keywords: "custompyonly" }));`,
+			`hljs.registerLanguage("c", () => ({ aliases: ["hpp"], keywords: "customcword" }));`,
+			`// Asking for an uncommon language loads zero eager grammars.`,
+			`assert.equal(sh.supportsLanguage("ada"), false);`,
+			`assert.deepEqual(hljs.listLanguages().sort(), ["c", "python"]);`,
+			`// Highlighting TypeScript via its alias loads only typescript, not all 20 eager grammars.`,
+			`assert.equal(sh.supportsLanguage("TS"), true);`,
+			`const tsOut = sh.highlight("const x = 1;", { language: "ts", theme: { keyword: (t) => "[kw:" + t + "]" } });`,
+			`assert.ok(tsOut.includes("[kw:const]"), tsOut);`,
+			`assert.deepEqual(hljs.listLanguages().sort(), ["c", "python", "typescript"]);`,
+			`// CodeHighlighter reuses its first cached result without loading unrelated languages.`,
+			`th.initTheme("dark");`,
+			`const ch = new th.CodeHighlighter();`,
+			`const first = ch.highlight("const a = 1;", "ts");`,
+			`assert.equal(ch.highlight("const a = 1;", "ts"), first);`,
+			`assert.deepEqual(hljs.listLanguages().sort(), ["c", "python", "typescript"]);`,
+			`// Pre-registered python override still owns "py" when requested on demand.`,
+			`assert.equal(sh.supportsLanguage("py"), true);`,
+			`assert.equal(sh.highlight("custompyonly", { language: "py", theme: { keyword: (t) => "[kw:" + t + "]" } }), "[kw:custompyonly]");`,
+			`// Pre-registered hpp -> c alias is NOT stolen when cpp is loaded on demand.`,
+			`assert.equal(sh.supportsLanguage("cpp"), true);`,
+			`assert.equal(sh.highlight("customcword", { language: "hpp", theme: { keyword: (t) => "[kw:" + t + "]" } }), "[kw:customcword]");`,
+			`// Unspecified language (highlightAuto) loads remaining eager grammars and highlights.`,
+			`const autoOut = sh.highlight("def foo(): return 1", {});`,
+			`assert.ok(autoOut.length > 0);`,
+			`assert.ok(hljs.listLanguages().length >= 20);`,
+		].join("\n");
+		execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+			cwd: resolve(import.meta.dirname, ".."),
+			stdio: "pipe",
+		});
 	});
 });

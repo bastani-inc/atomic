@@ -272,4 +272,73 @@ describe("WindowedContainer in a scroll view", () => {
 			session.tui.stop();
 		}
 	});
+
+	it("bounds first-frame and top-jump renders by real row height rather than stale 1-row estimates", async () => {
+		const tallRows = 36;
+		const makeTall = () => Array.from({ length: 128 }, (_, index) => new Entry(`tall ${index}`, 12, index % 4 === 0));
+		const windowedChildren = makeTall();
+		const plainChildren = makeTall();
+		const openTall = (container: Container, list: readonly Component[]) => {
+			for (const child of list) container.addChild(child);
+			const terminal = new VirtualTerminal(COLUMNS, tallRows);
+			const tui = new TuiAltScreen(terminal, false, undefined, { mouse: true });
+			const transcript = new ScrollView(container, { follow: "end", primary: true });
+			tui.setLayoutRoot(transcript);
+			tui.start();
+			return { terminal, tui, transcript };
+		};
+		const windowed = openTall(new WindowedContainer(), windowedChildren);
+		const plain = openTall(new Container(), plainChildren);
+		try {
+			// First frame at bottom (followEnd = true): 36 visible rows = 3 entries of height 12.
+			// Measure synchronously right after renderNow(), before background sweepSlice runs on setImmediate.
+			windowed.tui.renderNow();
+			const renderedBottom = windowedChildren.filter((child) => child.renders > 0).length;
+			assert.ok(
+				renderedBottom <= 10,
+				`first frame at bottom rendered ${renderedBottom} tall children (expected <= 10)`,
+			);
+			await windowed.terminal.flush();
+			const bottomWindowed = windowed.terminal.getViewport();
+			const bottomPlain = await screen(plain);
+			assert.deepEqual(bottomWindowed, bottomPlain);
+
+			// Jump to top (followEnd = false) onto unmeasured tall children: also bounded by real height.
+			for (const child of windowedChildren) child.renders = 0;
+			windowed.tui.scrollToTop();
+			plain.tui.scrollToTop();
+			windowed.tui.renderNow();
+			const renderedTop = windowedChildren.filter((child) => child.renders > 0).length;
+			assert.ok(renderedTop <= 10, `top jump rendered ${renderedTop} tall children (expected <= 10)`);
+			await windowed.terminal.flush();
+			const topWindowed = windowed.terminal.getViewport();
+			const topPlain = await screen(plain);
+			assert.deepEqual(topWindowed, topPlain);
+		} finally {
+			windowed.tui.stop();
+			plain.tui.stop();
+		}
+	});
+
+	it("covers every visible row when non-followEnd entries near the bottom shrink below their estimates", async () => {
+		// Seed a large height estimate (20) from the first rendered entry, then add 20 entries that actually render 1 row.
+		const children = [
+			new Entry("tall 0", 20, true),
+			...Array.from({ length: 20 }, (_, i) => new Entry(`short ${i + 1}`, 1, false)),
+		];
+		const content = new WindowedContainer();
+		for (const child of children) content.addChild(child);
+		const request = { width: COLUMNS, height: ROWS, followEnd: false, requestRender() {} };
+		// Measure tall 0 at top so estimated height is 20.
+		content.layoutWindow({ ...request, top: 0 });
+		// Now jump near the estimated bottom (non-followEnd, exact) where entries shrink from 20 -> 1.
+		const layout = content.layoutWindow({ ...request, top: 380, exact: true });
+		for (let r = layout.top; r < Math.min(layout.length, layout.top + ROWS); r++) {
+			const line = layout.at(r);
+			assert.ok(
+				line !== undefined && line.length > 0,
+				`visible row ${r} was blank (top=${layout.top}, len=${layout.length})`,
+			);
+		}
+	});
 });

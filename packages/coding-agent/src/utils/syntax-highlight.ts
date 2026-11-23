@@ -7,79 +7,158 @@ import { createModuleRequire } from "./module-require.js";
 type HighlightCore = typeof import("highlight.js/lib/core.js").default;
 type HighlightLanguageFactory = typeof import("highlight.js/lib/languages/bash.js").default;
 
-const EAGER_LANGUAGE_SPECIFIERS: readonly (readonly [string, string])[] = [
-	["python", "highlight.js/lib/languages/python.js"],
-	["java", "highlight.js/lib/languages/java.js"],
-	["go", "highlight.js/lib/languages/go.js"],
-	["javascript", "highlight.js/lib/languages/javascript.js"],
-	["cpp", "highlight.js/lib/languages/cpp.js"],
-	["typescript", "highlight.js/lib/languages/typescript.js"],
-	["php", "highlight.js/lib/languages/php.js"],
-	["ruby", "highlight.js/lib/languages/ruby.js"],
-	["c", "highlight.js/lib/languages/c.js"],
-	["csharp", "highlight.js/lib/languages/csharp.js"],
-	["nix", "highlight.js/lib/languages/nix.js"],
-	["bash", "highlight.js/lib/languages/bash.js"],
-	["rust", "highlight.js/lib/languages/rust.js"],
-	["scala", "highlight.js/lib/languages/scala.js"],
-	["kotlin", "highlight.js/lib/languages/kotlin.js"],
-	["swift", "highlight.js/lib/languages/swift.js"],
-	["dart", "highlight.js/lib/languages/dart.js"],
-	["groovy", "highlight.js/lib/languages/groovy.js"],
-	["perl", "highlight.js/lib/languages/perl.js"],
-	["lua", "highlight.js/lib/languages/lua.js"],
+interface EagerLanguageEntry {
+	readonly name: string;
+	readonly specifier: string;
+	readonly aliases: readonly string[];
+}
+
+const EAGER_LANGUAGE_ENTRIES: readonly EagerLanguageEntry[] = [
+	{ name: "python", specifier: "highlight.js/lib/languages/python.js", aliases: ["py", "gyp", "ipython"] },
+	{ name: "java", specifier: "highlight.js/lib/languages/java.js", aliases: ["jsp"] },
+	{ name: "go", specifier: "highlight.js/lib/languages/go.js", aliases: ["golang"] },
+	{ name: "javascript", specifier: "highlight.js/lib/languages/javascript.js", aliases: ["js", "jsx", "mjs", "cjs"] },
+	{
+		name: "cpp",
+		specifier: "highlight.js/lib/languages/cpp.js",
+		aliases: ["cc", "c++", "h++", "hpp", "hh", "hxx", "cxx"],
+	},
+	{ name: "typescript", specifier: "highlight.js/lib/languages/typescript.js", aliases: ["ts", "tsx"] },
+	{
+		name: "php",
+		specifier: "highlight.js/lib/languages/php.js",
+		aliases: ["php3", "php4", "php5", "php6", "php7", "php8"],
+	},
+	{
+		name: "ruby",
+		specifier: "highlight.js/lib/languages/ruby.js",
+		aliases: ["rb", "gemspec", "podspec", "thor", "irb"],
+	},
+	{ name: "c", specifier: "highlight.js/lib/languages/c.js", aliases: ["h"] },
+	{ name: "csharp", specifier: "highlight.js/lib/languages/csharp.js", aliases: ["cs", "c#"] },
+	{ name: "nix", specifier: "highlight.js/lib/languages/nix.js", aliases: ["nixos"] },
+	{ name: "bash", specifier: "highlight.js/lib/languages/bash.js", aliases: ["sh", "zsh"] },
+	{ name: "rust", specifier: "highlight.js/lib/languages/rust.js", aliases: ["rs"] },
+	{ name: "scala", specifier: "highlight.js/lib/languages/scala.js", aliases: [] },
+	{ name: "kotlin", specifier: "highlight.js/lib/languages/kotlin.js", aliases: ["kt", "kts"] },
+	{ name: "swift", specifier: "highlight.js/lib/languages/swift.js", aliases: [] },
+	{ name: "dart", specifier: "highlight.js/lib/languages/dart.js", aliases: [] },
+	{ name: "groovy", specifier: "highlight.js/lib/languages/groovy.js", aliases: [] },
+	{ name: "perl", specifier: "highlight.js/lib/languages/perl.js", aliases: ["pl", "pm"] },
+	{ name: "lua", specifier: "highlight.js/lib/languages/lua.js", aliases: [] },
 ];
+
+const EAGER_BY_ALIAS: ReadonlyMap<string, EagerLanguageEntry> = (() => {
+	const map = new Map<string, EagerLanguageEntry>();
+	for (const entry of EAGER_LANGUAGE_ENTRIES) {
+		map.set(entry.name, entry);
+		for (const alias of entry.aliases) map.set(alias, entry);
+	}
+	return map;
+})();
 
 const BUNDLED_HIGHLIGHT_CORE_SYMBOL = Symbol.for("atomic.bundledHighlightCore");
 
 let hljsCore: HighlightCore | undefined;
+let hljsRequire: ReturnType<typeof createModuleRequire> | undefined;
+const loadedEagerLanguages = new Set<string>();
 
-function getHighlightCore(): HighlightCore {
+function getHighlightRequire(): ReturnType<typeof createModuleRequire> {
+	if (hljsRequire === undefined) hljsRequire = createModuleRequire(import.meta.url);
+	return hljsRequire;
+}
+
+function getBareHighlightCore(): HighlightCore {
 	if (hljsCore !== undefined) return hljsCore;
 	const bundled = (globalThis as Record<symbol, unknown>)[BUNDLED_HIGHLIGHT_CORE_SYMBOL] as HighlightCore | undefined;
 	if (bundled !== undefined) {
 		hljsCore = bundled;
+		for (const entry of EAGER_LANGUAGE_ENTRIES) loadedEagerLanguages.add(entry.name);
 		return bundled;
 	}
-	const req = createModuleRequire(import.meta.url);
+	const req = getHighlightRequire();
 	const loaded = req("highlight.js/lib/core.js") as HighlightCore & { default?: HighlightCore };
-	const core = loaded.default ?? loaded;
-	// Match eager-registration semantics: grammars and aliases registered by an app or extension
-	// after importing @bastani/atomic (and before the first highlightCode call) always win over
-	// built-in eager grammars, while pre-registered overrides of an eager language name keep that
-	// language's unclaimed built-in aliases (e.g. overriding "python" keeps "py").
-	// Register missing eager grammars in two passes so aliases redirected to a later eager grammar
-	// (e.g. "hpp" -> "c" registered before "cpp") resolve before any built-in alias is judged free.
-	const eagerBuilt = EAGER_LANGUAGE_SPECIFIERS.map(([name, specifier]) => {
-		const mod = req(specifier) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
+	hljsCore = loaded.default ?? loaded;
+	return hljsCore;
+}
+
+function registerEagerEntry(core: HighlightCore, entry: EagerLanguageEntry): void {
+	if (loadedEagerLanguages.has(entry.name)) return;
+	loadedEagerLanguages.add(entry.name);
+	const alreadyRegistered = core.getLanguage(entry.name) !== undefined;
+	let aliases: readonly string[] | undefined = entry.aliases;
+	if (!alreadyRegistered) {
+		const req = getHighlightRequire();
+		const mod = req(entry.specifier) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
 		const factory = mod.default ?? mod;
-		return { name, built: factory(core) };
-	});
-	const newlyRegistered = new Set<string>();
-	for (const { name, built } of eagerBuilt) {
-		if (core.getLanguage(name) === undefined) {
-			core.registerLanguage(name, () => ({ ...built, aliases: undefined }));
-			newlyRegistered.add(name);
+		const built = factory(core);
+		aliases = built.aliases;
+		core.registerLanguage(entry.name, () => ({ ...built, aliases: undefined }));
+	}
+	const freeAliases = (aliases ?? []).filter((alias) => core.getLanguage(alias) === undefined);
+	if (freeAliases.length > 0) {
+		core.registerAliases(freeAliases, { languageName: entry.name });
+	}
+	if (!alreadyRegistered) {
+		const registered = core.getLanguage(entry.name);
+		if (registered !== undefined) {
+			if (aliases !== undefined) {
+				registered.aliases = [...aliases];
+			} else {
+				delete registered.aliases;
+			}
 		}
 	}
-	for (const { name, built } of eagerBuilt) {
-		const freeAliases = (built.aliases ?? []).filter((alias) => core.getLanguage(alias) === undefined);
-		if (freeAliases.length > 0) {
-			core.registerAliases(freeAliases, { languageName: name });
+}
+
+function ensureEagerLanguage(core: HighlightCore, name: string): boolean {
+	if (core.getLanguage(name) !== undefined) return true;
+	const entry = EAGER_BY_ALIAS.get(name.toLowerCase());
+	if (!entry) return false;
+	registerEagerEntry(core, entry);
+	return core.getLanguage(name) !== undefined;
+}
+
+function ensureAllEagerLanguages(core: HighlightCore): void {
+	if (loadedEagerLanguages.size >= EAGER_LANGUAGE_ENTRIES.length) return;
+	const pending = EAGER_LANGUAGE_ENTRIES.filter((entry) => !loadedEagerLanguages.has(entry.name));
+	if (pending.length === 0) return;
+	// Register remaining eager grammars in two passes so aliases redirected to a later eager grammar
+	// (e.g. "hpp" -> "c" registered before "cpp") resolve before any built-in alias is judged free.
+	const req = getHighlightRequire();
+	const eagerBuilt = pending.map((entry) => {
+		loadedEagerLanguages.add(entry.name);
+		if (core.getLanguage(entry.name) !== undefined) {
+			return { entry, built: undefined };
 		}
-		if (newlyRegistered.has(name)) {
-			const registered = core.getLanguage(name);
+		const mod = req(entry.specifier) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
+		const factory = mod.default ?? mod;
+		return { entry, built: factory(core) };
+	});
+	const newlyRegistered = new Set<string>();
+	for (const { entry, built } of eagerBuilt) {
+		if (built !== undefined && core.getLanguage(entry.name) === undefined) {
+			core.registerLanguage(entry.name, () => ({ ...built, aliases: undefined }));
+			newlyRegistered.add(entry.name);
+		}
+	}
+	for (const { entry, built } of eagerBuilt) {
+		const aliases = built ? built.aliases : entry.aliases;
+		const freeAliases = (aliases ?? []).filter((alias) => core.getLanguage(alias) === undefined);
+		if (freeAliases.length > 0) {
+			core.registerAliases(freeAliases, { languageName: entry.name });
+		}
+		if (newlyRegistered.has(entry.name)) {
+			const registered = core.getLanguage(entry.name);
 			if (registered !== undefined) {
-				if (built.aliases !== undefined) {
-					registered.aliases = built.aliases;
+				if (aliases !== undefined) {
+					registered.aliases = [...aliases];
 				} else {
 					delete registered.aliases;
 				}
 			}
 		}
 	}
-	hljsCore = core;
-	return core;
 }
 
 export interface LoadAllHighlightLanguagesOptions {
@@ -186,31 +265,36 @@ async function runChunkedHighlightLoad(): Promise<void> {
 			return;
 		}
 
-		// Warm eager language files in bounded slices before getHighlightCore() registers them with
+		// Warm remaining eager language files in bounded slices before registering them with
 		// two-pass override/alias preservation, so a cold background load never opens 20 files in one turn.
-		if (hljsCore === undefined && preloadedEagerIndex < EAGER_LANGUAGE_SPECIFIERS.length) {
-			req("highlight.js/lib/core.js");
-			await nextEventLoopTurn();
-			while (preloadedEagerIndex < EAGER_LANGUAGE_SPECIFIERS.length && hasLiveHighlightWaiter()) {
+		if (
+			loadedEagerLanguages.size < EAGER_LANGUAGE_ENTRIES.length &&
+			preloadedEagerIndex < EAGER_LANGUAGE_ENTRIES.length
+		) {
+			if (hljsCore === undefined) {
+				req("highlight.js/lib/core.js");
+				await nextEventLoopTurn();
+			}
+			while (preloadedEagerIndex < EAGER_LANGUAGE_ENTRIES.length && hasLiveHighlightWaiter()) {
 				const sliceStart = performance.now();
-				const batchEnd = Math.min(
-					EAGER_LANGUAGE_SPECIFIERS.length,
-					preloadedEagerIndex + HIGHLIGHT_CHUNK_BATCH_SIZE,
-				);
+				const batchEnd = Math.min(EAGER_LANGUAGE_ENTRIES.length, preloadedEagerIndex + HIGHLIGHT_CHUNK_BATCH_SIZE);
 				while (preloadedEagerIndex < batchEnd && hasLiveHighlightWaiter()) {
-					const [, specifier] = EAGER_LANGUAGE_SPECIFIERS[preloadedEagerIndex]!;
-					req(specifier);
+					const entry = EAGER_LANGUAGE_ENTRIES[preloadedEagerIndex]!;
 					preloadedEagerIndex += 1;
+					if (!loadedEagerLanguages.has(entry.name)) {
+						req(entry.specifier);
+					}
 					if (performance.now() - sliceStart >= HIGHLIGHT_CHUNK_SLICE_BUDGET_MS) break;
 				}
-				if (preloadedEagerIndex < EAGER_LANGUAGE_SPECIFIERS.length && hasLiveHighlightWaiter()) {
+				if (preloadedEagerIndex < EAGER_LANGUAGE_ENTRIES.length && hasLiveHighlightWaiter()) {
 					await nextEventLoopTurn();
 				}
 			}
 			if (!hasLiveHighlightWaiter()) return;
 		}
 
-		const core = getHighlightCore();
+		const core = getBareHighlightCore();
+		ensureAllEagerLanguages(core);
 		while (registeredIndexCursor < entries.length && hasLiveHighlightWaiter()) {
 			const sliceStart = performance.now();
 			const batchEnd = Math.min(entries.length, registeredIndexCursor + HIGHLIGHT_CHUNK_BATCH_SIZE);
@@ -408,7 +492,14 @@ export function renderHighlightedHtml(html: string, theme: HighlightTheme = {}):
 }
 
 export function highlight(code: string, options: HighlightOptions = {}): string {
-	const hljs = getHighlightCore();
+	const hljs = getBareHighlightCore();
+	if (options.language) {
+		ensureEagerLanguage(hljs, options.language);
+	} else if (options.languageSubset) {
+		for (const lang of options.languageSubset) ensureEagerLanguage(hljs, lang);
+	} else {
+		ensureAllEagerLanguages(hljs);
+	}
 	const html = options.language
 		? hljs.highlight(code, {
 				language: options.language,
@@ -419,13 +510,13 @@ export function highlight(code: string, options: HighlightOptions = {}): string 
 }
 
 export function supportsLanguage(name: string): boolean {
-	return getHighlightCore().getLanguage(name) !== undefined;
+	return ensureEagerLanguage(getBareHighlightCore(), name);
 }
 
 /**
- * Number of registered grammars. It grows when the deferred grammars load, which can change the highlighting of
- * code that embeds another language, such as HTML in a JavaScript template literal.
+ * Number of registered grammars. It grows when on-demand or deferred grammars load, which can change the highlighting
+ * of code that embeds another language, such as HTML in a JavaScript template literal.
  */
 export function getHighlightLanguageCount(): number {
-	return getHighlightCore().listLanguages().length;
+	return getBareHighlightCore().listLanguages().length;
 }

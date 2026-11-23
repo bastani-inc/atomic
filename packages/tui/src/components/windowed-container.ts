@@ -233,7 +233,7 @@ export class WindowedContainer extends Container {
 		const layout = ++this.layouts;
 		let top = this.topFor(request, anchor, height);
 		for (let pass = 0; pass < MAX_WINDOW_PASSES; pass++) {
-			if (!this.renderRows(top - height, top + 2 * height, width, layout)) break;
+			if (!this.renderWindow(top, height, request.followEnd, request.exact === true, width, layout)) break;
 			this.updateOffsets();
 			top = this.topFor(request, anchor, height);
 		}
@@ -585,20 +585,65 @@ export class WindowedContainer extends Container {
 		this.staleOffsetsFrom = Number.POSITIVE_INFINITY;
 	}
 
-	private renderRows(start: number, end: number, width: number, layout: number): boolean {
+	private renderWindow(
+		top: number,
+		height: number,
+		followEnd: boolean,
+		exact: boolean,
+		width: number,
+		layout: number,
+	): boolean {
 		if (this.laidOut.length === 0) return false;
+		const visible = Math.max(height, 1);
+		const overscan = Math.ceil(height / 2);
 		let changed = false;
-		let first = this.indexAt(Math.max(0, start));
-		while (first > 0 && this.offsets[first - 1] === this.offsets[first]) first--;
-		let index = first;
-		for (; index < this.laidOut.length && (this.offsets[index] ?? 0) < Math.max(end, 1); index++) {
-			const entry = this.laidOut[index];
-			if (!entry || entry.renderedIn === layout) continue;
+		const ensureRendered = (entry: Entry): void => {
+			if (entry.renderedIn === layout) return;
 			entry.renderedIn = layout;
 			if (this.renderEntry(entry, width)) changed = true;
+		};
+		if (followEnd) {
+			const targetRows = visible + overscan;
+			let first = this.laidOut.length;
+			let rows = 0;
+			while (first > 0 && rows < targetRows) {
+				first--;
+				const entry = this.laidOut[first];
+				if (!entry) continue;
+				ensureRendered(entry);
+				rows += entry.height;
+			}
+			this.windowStart = first;
+			this.windowEnd = this.laidOut.length;
+			return changed;
+		}
+		const anchorIndex = this.indexAt(Math.max(0, top));
+		let startIndex = anchorIndex;
+		while (startIndex > 0 && this.offsets[startIndex - 1] === this.offsets[startIndex]) startIndex--;
+		const within = Math.max(0, top - (this.offsets[anchorIndex] ?? 0));
+		const forwardTarget = visible + overscan;
+		let rowsBelow = 0;
+		let endIndex = startIndex;
+		for (; endIndex < this.laidOut.length && rowsBelow < forwardTarget; endIndex++) {
+			const entry = this.laidOut[endIndex];
+			if (!entry) continue;
+			ensureRendered(entry);
+			if (endIndex > anchorIndex) rowsBelow += entry.height;
+			else if (endIndex === anchorIndex) rowsBelow += Math.max(0, entry.height - within);
+		}
+		const deficit = rowsBelow < visible ? visible - rowsBelow : 0;
+		const backTarget = exact ? deficit : Math.max(overscan, deficit);
+		let first = startIndex;
+		let rowsAbove = 0;
+		while (first > 0 && rowsAbove < backTarget) {
+			first--;
+			const entry = this.laidOut[first];
+			if (!entry) continue;
+			ensureRendered(entry);
+			rowsAbove += entry.height;
 		}
 		this.windowStart = first;
-		this.windowEnd = index;
+		this.windowEnd = endIndex;
 		return changed;
 	}
 

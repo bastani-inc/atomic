@@ -12,12 +12,17 @@ import {
 	type PreviousRequest,
 } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
-import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
+import {
+	isVerbatimCompactionMessage,
+	normalizeMessageContent,
+	stripVerbatimCompactionPrefix,
+} from "../../core/messages.ts";
 import { projectTrustWarningVisible } from "../../core/project-trust-state.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry } from "../../core/session-manager.ts";
 import { sessionEntryToDisplayMessages } from "../../core/session-manager-history.ts";
+import { chatPosition } from "../../core/storage/session/chat-records.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ReopenedCompletionHeaders } from "../../core/tasks/reopened-completion.js";
 import { taskTranscriptSource } from "../../core/tasks/supervisor.js";
@@ -53,6 +58,7 @@ import {
 	callsAwaitingLaterResults,
 	isResultWithoutCall,
 } from "./components/chat-message-renderer.ts";
+import { extractMessageText } from "./components/chat-session-host-utils.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
 import type { NewMessageCounter } from "./components/jump-to-latest.ts";
 import { createMarkdownTransform } from "./components/markdown-transform.ts";
@@ -1389,9 +1395,74 @@ type TranscriptStep =
 			readonly seq?: number;
 	  };
 
-const TAIL_STEPS = 128;
+const TAIL_STEPS = 48;
+const TAIL_PLAN_ENTRIES = 64;
+const HISTORY_PLAN_CHUNK_ENTRIES = 64;
+const MAX_TAIL_SCAN_ENTRIES = 512;
+const EDITOR_PROMPT_HISTORY_LIMIT = 100;
 const HISTORY_SLICE_BUDGET_MS = 8;
 const HISTORY_SLICE_STEPS = 24;
+
+function isCleanUserTurnEntry(entry: SessionEntry): boolean {
+	if (entry.type !== "message" || entry.message.role !== "user") return false;
+	return extractMessageText(normalizeMessageContent(entry.message).content).trim().length > 0;
+}
+
+/**
+ * Find a sound split index `cut` in `(0, end)` so `entries.slice(cut, end)` can be planned independently without
+ * affecting tool-call pairing, aborted-turn settlement, tool grouping, or notice-before-prompt ordering. Returns 0
+ * when no clean boundary exists within `maxScan` entries (falling back to planning the whole range together).
+ */
+function findSafeHistorySplit(
+	entries: readonly SessionEntry[],
+	end: number,
+	targetEntries: number,
+	maxScan: number,
+): number {
+	if (end <= targetEntries) return 0;
+	const minIndex = Math.max(1, end - maxScan);
+	const unmatchedResults = new Set<string>();
+	let fallbackCut = 0;
+	for (let i = end - 1; i >= minIndex; i--) {
+		const entry = entries[i]!;
+		if (entry.type === "message") {
+			const msg = entry.message;
+			if (msg.role === "toolResult") {
+				unmatchedResults.add(msg.toolCallId);
+			} else if (msg.role === "assistant") {
+				if (msg.stopReason === "aborted" || msg.stopReason === "error") return 0;
+				for (const block of msg.content) {
+					if (block.type === "toolCall") unmatchedResults.delete(block.id);
+				}
+			} else if (
+				msg.role === "user" &&
+				unmatchedResults.size === 0 &&
+				isCleanUserTurnEntry(entry) &&
+				chatPosition(entries[i - 1]!).role !== "notice"
+			) {
+				if (end - i >= targetEntries) return i;
+				fallbackCut = i;
+			}
+		}
+	}
+	return unmatchedResults.size === 0 ? fallbackCut : 0;
+}
+
+/**
+ * Populate editor Up-arrow history with the last `EDITOR_PROMPT_HISTORY_LIMIT` adjacent-deduplicated user prompts,
+ * scanning from the tail instead of replaying every user turn in a huge transcript.
+ */
+function populateRecentPromptHistory(mode: InteractiveModeBase, sessionEntries: readonly SessionEntry[]): void {
+	const recent: string[] = [];
+	for (let i = sessionEntries.length - 1; i >= 0 && recent.length < EDITOR_PROMPT_HISTORY_LIMIT; i--) {
+		const entry = sessionEntries[i]!;
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		const text = extractMessageText(normalizeMessageContent(entry.message).content).trim();
+		if (!text || recent.at(-1) === text) continue;
+		recent.push(text);
+	}
+	for (let i = recent.length - 1; i >= 0; i--) addMainPromptHistory(mode.editor, recent[i]!);
+}
 
 /**
  * Where a saved page's replies start from, as the whole chat reaches them: the request and the dropped thinking of
@@ -1418,19 +1489,23 @@ function planTranscript(
 		populateHistory?: boolean;
 		suppressCompactionBoundary?: VerbatimCompactionResult;
 		saved?: { seqs: Map<SessionEntry, number>; owners: WeakMap<object, string>; earlier?: SavedPageEarlier };
+		localGrouping?: MainToolGrouping;
+		headers?: ReopenedCompletionHeaders;
 	},
 	layout?: ChatReaderLayout,
 ): TranscriptStep[] {
 	const steps: TranscriptStep[] = [];
-	const grouping: MainToolGrouping = options.saved
-		? {
-				tracker: new ToolGroupTracker({ groupBash: false }),
-				starts: new Map(),
-				lastMember: undefined,
-				carriedBreak: false,
-			}
-		: mainToolGrouping(mode);
-	if (!options.saved) resetMainToolGroup(mode);
+	const grouping: MainToolGrouping =
+		options.localGrouping ??
+		(options.saved
+			? {
+					tracker: new ToolGroupTracker({ groupBash: false }),
+					starts: new Map(),
+					lastMember: undefined,
+					carriedBreak: false,
+				}
+			: mainToolGrouping(mode));
+	if (!options.saved && !options.localGrouping) resetMainToolGroup(mode);
 	let messageBuffer: AgentMessage[] = [];
 	const sources = layout ? ([] as string[]) : undefined;
 	const messageMeta = new Map<AgentMessage, PersistedMessageMeta>();
@@ -1461,7 +1536,7 @@ function planTranscript(
 			}
 		}
 		firstMessage = false;
-		if (options.saved) grouping.tracker.break();
+		if (options.saved || options.localGrouping) grouping.tracker.break();
 		else breakMainToolGroup(mode);
 		const saved = options.saved;
 		// Pair by occurrence, not by message identity: an SDK caller can append the very same object twice.
@@ -1498,13 +1573,15 @@ function planTranscript(
 		if (sources) sources.length = 0;
 		messageBuffer = [];
 	};
-	const headers = new ReopenedCompletionHeaders(
-		() => ({
-			entries: mode.sessionManager.getBranch(),
-			recovery: mode.sessionManager.getSessionRecoveryState(),
-		}),
-		isProxy,
-	);
+	const headers =
+		options.headers ??
+		new ReopenedCompletionHeaders(
+			() => ({
+				entries: mode.sessionManager.getBranch(),
+				recovery: mode.sessionManager.getSessionRecoveryState(),
+			}),
+			isProxy,
+		);
 	for (const entry of sessionEntries) {
 		if (entry.type === "custom") {
 			// An unrendered record between a tool call and its result must not split them into two cards.
@@ -1784,30 +1861,70 @@ function markRecordRows(
 	}
 }
 
+interface UnplannedHistory {
+	readonly entries: SessionEntry[];
+	remainingEnd: number;
+	readonly headers: ReopenedCompletionHeaders;
+}
+
 function buildHistoryInSlices(
 	mode: InteractiveModeBase,
 	history: readonly TranscriptStep[],
 	end: Component,
 	layout?: WeakRef<ChatReaderLayout>,
+	unplanned?: UnplannedHistory,
 ): void {
 	const chat = mode.chatContainer;
-	let remaining = history.length;
+	let pendingSteps: readonly TranscriptStep[] = history;
+	let remaining = pendingSteps.length;
 	let before = end;
+	const hasMore = (): boolean => remaining > 0 || (unplanned !== undefined && unplanned.remainingEnd > 0);
+	const planNextChunk = (planAll: boolean): void => {
+		if (!unplanned || unplanned.remainingEnd <= 0) return;
+		const chunkEnd = unplanned.remainingEnd;
+		const chunkStart = planAll
+			? 0
+			: findSafeHistorySplit(unplanned.entries, chunkEnd, HISTORY_PLAN_CHUNK_ENTRIES, MAX_TAIL_SCAN_ENTRIES);
+		const localGrouping: MainToolGrouping = {
+			tracker: new ToolGroupTracker({ groupBash: false }),
+			starts: mainToolGrouping(mode).starts,
+			lastMember: undefined,
+			carriedBreak: false,
+		};
+		const activeLayout = layout?.deref();
+		const chunkSteps = planTranscript(
+			mode,
+			unplanned.entries.slice(chunkStart, chunkEnd),
+			{ populateHistory: false, localGrouping, headers: unplanned.headers },
+			activeLayout,
+		);
+		unplanned.remainingEnd = chunkStart;
+		activeLayout?.advancePlannedFrom(chunkStart);
+		pendingSteps = chunkSteps;
+		remaining = chunkSteps.length;
+	};
 	const build = (budgetMs: number, maxSteps: number): boolean => {
 		const at = chat.children.indexOf(before);
-		if (at < 0 || remaining === 0) return false;
+		if (at < 0 || !hasMore()) return false;
+		const finishAll = !Number.isFinite(budgetMs);
 		const deadline = performance.now() + budgetMs;
 		const built: Component[][] = [];
 		const preceding = new Spacer(0);
 		const scratch = new Container();
 		mode.chatContainer = scratch;
 		try {
-			for (let steps = 0; remaining > 0 && steps < maxSteps; steps++) {
+			let steps = 0;
+			while (steps < maxSteps && hasMore()) {
+				if (remaining === 0) {
+					planNextChunk(finishAll);
+					if (remaining === 0) continue;
+				}
 				scratch.children = [preceding];
-				const step = history[--remaining]!;
+				const step = pendingSteps[--remaining]!;
 				addTranscriptStep(mode, step, false);
 				layout?.deref()?.paint(step.kind === "cost" ? step : step.entry, scratch, 1);
 				built.push(scratch.children.slice(1));
+				steps++;
 				if (performance.now() >= deadline) break;
 			}
 		} finally {
@@ -1822,7 +1939,7 @@ function buildHistoryInSlices(
 			if (messages > 0) (mode.ui as AltScreenMessageCounterHost).newMessages?.historyPrepended(messages);
 			mode.ui.requestRender();
 		}
-		if (remaining > 0) return true;
+		if (hasMore()) return true;
 		chat.removeChild(end);
 		return false;
 	};
@@ -1866,9 +1983,39 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 	if (layout) bindChatLayout(this, layout);
 	// Saved lines a parked reader still sees stay in their rows; this drawing does not show them twice.
 	if (layout && parked?.shownRecords) layout.keepShown(parked.shownRecords);
-	const steps = planTranscript(this, sessionEntries, options, layout);
+	const canSlicePlan =
+		!regular &&
+		!parked?.keys.size &&
+		!options.suppressCompactionBoundary &&
+		!this.settingsManager.getShowCacheMissNotices() &&
+		sessionEntries.length > TAIL_PLAN_ENTRIES;
+	const splitIndex = canSlicePlan
+		? findSafeHistorySplit(sessionEntries, sessionEntries.length, TAIL_PLAN_ENTRIES, MAX_TAIL_SCAN_ENTRIES)
+		: 0;
+	let steps: TranscriptStep[];
+	let unplanned: UnplannedHistory | undefined;
+	if (splitIndex > 0) {
+		if (options.populateHistory) populateRecentPromptHistory(this, sessionEntries);
+		layout?.beginSlicedPlan(splitIndex);
+		const headers = new ReopenedCompletionHeaders(
+			() => ({
+				entries: this.sessionManager.getBranch(),
+				recovery: this.sessionManager.getSessionRecoveryState(),
+			}),
+			isProxy,
+		);
+		steps = planTranscript(
+			this,
+			sessionEntries.slice(splitIndex),
+			{ ...options, populateHistory: false, headers },
+			layout,
+		);
+		unplanned = { entries: sessionEntries, remainingEnd: splitIndex, headers };
+	} else {
+		steps = planTranscript(this, sessionEntries, options, layout);
+	}
 	// Only the drawn context's saved lines stay resident; a saved page reads its own with its rows.
-	if (mount && layout) retainChatRecords(mount, layout.anchors());
+	if (mount && layout) retainChatRecords(mount, () => layout?.anchors() ?? []);
 	let tailStart = this.ui.mode === "fullscreen" ? Math.max(0, steps.length - TAIL_STEPS) : 0;
 	if (parked?.keys.size) {
 		// The reader's kept rows are drawn now, in place, so the first frame shows them where they were.
@@ -1881,10 +2028,10 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 			adoptions.set(this, { ...parked, inserted: false });
 		}
 	}
-	if (tailStart > 0) {
+	if (tailStart > 0 || unplanned !== undefined) {
 		const historyEnd = new Spacer(0);
 		this.chatContainer.addChild(historyEnd);
-		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd, layout && new WeakRef(layout));
+		buildHistoryInSlices(this, steps.slice(0, tailStart), historyEnd, layout && new WeakRef(layout), unplanned);
 	}
 	const adoption = adoptions.get(this);
 	try {
