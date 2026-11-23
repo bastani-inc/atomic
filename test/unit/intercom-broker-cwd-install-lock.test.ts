@@ -13,8 +13,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, test } from "vitest";
+import { stopIdleIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "../../packages/intercom/broker/control-request.js";
-import { getBrokerPidPath, getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
+import { BROKER_SOCKET_PATH_ENV, getBrokerPidPath, getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import {
 	getBrokerSpawnOptions,
 	getBrokerSpawnOptionsAsync,
@@ -182,16 +183,21 @@ describe("Intercom broker working directory never pins the installation director
 		const relAgent = join(root, "rel-agent");
 		mkdirSync(relAgent, { recursive: true });
 		const origCwd = process.cwd();
+		const relSpelling = process.platform === "win32" ? ".\\rel-agent" : "./rel-agent";
 		process.chdir(root);
-		process.env.ATOMIC_CODING_AGENT_DIR = process.platform === "win32" ? ".\\rel-agent" : "./rel-agent";
+		process.env.ATOMIC_CODING_AGENT_DIR = relSpelling;
 		delete process.env.PI_CODING_AGENT_DIR;
-		brokerAgentDirs.push(relAgent);
 		try {
 			await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], 20_000, BUILT_INTERCOM_DIR);
-			const socketPath = getBrokerSocketPath(process.platform, relAgent);
+			assert.equal(existsSync(getBrokerPidPath(relAgent)), true);
+			const socketPath = getBrokerSocketPath();
 			const answer = await controlRequest(socketPath, "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
 			assert.equal(answer.connected, true);
+			await stopIdleIntercomBroker(relSpelling, { stopTimeoutMs: 5_000 });
 		} finally {
+			try {
+				await stopIdleIntercomBroker(relSpelling, { stopTimeoutMs: 5_000 });
+			} catch {}
 			process.chdir(origCwd);
 		}
 	});
@@ -217,27 +223,26 @@ describe("Intercom broker working directory never pins the installation director
 				process.chdir(`${drive}\\proj`);
 				process.env.ATOMIC_CODING_AGENT_DIR = "\\r-agent";
 				delete process.env.PI_CODING_AGENT_DIR;
-				brokerAgentDirs.push(rootedAgent);
 
 				const opts = await getBrokerSpawnOptionsAsync(`${drive}\\pkg\\dist\\builtin\\intercom`);
 				assert.equal(opts.env.ATOMIC_CODING_AGENT_DIR, `${drive}\\r-agent`);
+				assert.equal(opts.env[BROKER_SOCKET_PATH_ENV], "\\\\.\\pipe\\pi-intercom-r-agent");
 
 				await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], 20_000, `${drive}\\pkg\\dist\\builtin\\intercom`);
 				assert.equal(existsSync(`${drive}\\r-agent\\intercom\\broker.pid`), true);
 				const answer = await controlRequest(
-					getBrokerSocketPath("win32", `${drive}\\r-agent`),
+					getBrokerSocketPath("win32", "\\r-agent"),
 					"broker_status",
 					"broker_status",
 					BROKER_CONTROL_TIMEOUT_MS,
 				);
 				assert.equal(answer.connected, true);
-				await stopDetachedBroker(rootedAgent);
+				await stopIdleIntercomBroker("\\r-agent", { stopTimeoutMs: 5_000 });
 
 				const lowerAgent = join(proj, "rel-lower");
 				mkdirSync(lowerAgent, { recursive: true });
 				delete process.env.ATOMIC_CODING_AGENT_DIR;
 				process.env.atomic_coding_agent_dir = ".\\rel-lower";
-				brokerAgentDirs.push(lowerAgent);
 				try {
 					const lowerOpts = await getBrokerSpawnOptionsAsync(BUILT_INTERCOM_DIR);
 					const matching = Object.entries(lowerOpts.env).filter(
@@ -249,22 +254,29 @@ describe("Intercom broker working directory never pins the installation director
 						`expected single case-insensitive key, got ${JSON.stringify(matching)}`,
 					);
 					assert.equal((matching[0]![1] ?? "").toLowerCase(), `${drive}\\proj\\rel-lower`.toLowerCase());
+					assert.equal(lowerOpts.env[BROKER_SOCKET_PATH_ENV], "\\\\.\\pipe\\pi-intercom-rel-lower");
 
 					await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], 20_000, BUILT_INTERCOM_DIR);
+					assert.equal(existsSync(join(lowerAgent, "intercom", "broker.pid")), true);
 					const lowerAnswer = await controlRequest(
-						getBrokerSocketPath("win32", `${drive}\\proj\\rel-lower`),
+						getBrokerSocketPath("win32", ".\\rel-lower"),
 						"broker_status",
 						"broker_status",
 						BROKER_CONTROL_TIMEOUT_MS,
 					);
 					assert.equal(lowerAnswer.connected, true);
+					await stopIdleIntercomBroker(".\\rel-lower", { stopTimeoutMs: 5_000 });
 				} finally {
+					try {
+						await stopIdleIntercomBroker(".\\rel-lower", { stopTimeoutMs: 5_000 });
+					} catch {}
 					delete process.env.atomic_coding_agent_dir;
 				}
 			} finally {
+				try {
+					await stopIdleIntercomBroker("\\r-agent", { stopTimeoutMs: 5_000 });
+				} catch {}
 				process.chdir(origCwd);
-				await stopDetachedBroker(rootedAgent);
-				await stopDetachedBroker(join(proj, "rel-lower"));
 				try {
 					execFileSync("subst.exe", [drive!, "/D"], { stdio: "ignore" });
 				} catch {}

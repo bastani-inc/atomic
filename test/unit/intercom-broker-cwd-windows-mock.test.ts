@@ -78,7 +78,11 @@ vi.mock("@bastani/atomic", () => ({
 	takeTakeoverMutexAsync: async () => undefined,
 }));
 
-import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
+import {
+	BROKER_SOCKET_PATH_ENV,
+	brokerSocketPathOverride,
+	getBrokerSocketPath,
+} from "../../packages/intercom/broker/paths.js";
 import { getBrokerSpawnOptions, getBrokerSpawnOptionsAsync } from "../../packages/intercom/broker/spawn.js";
 import {
 	collectInstallProtectedDirs,
@@ -93,6 +97,7 @@ const savedEnv = {
 	USERPROFILE: process.env.USERPROFILE,
 	ATOMIC_CODING_AGENT_DIR: process.env.ATOMIC_CODING_AGENT_DIR,
 	PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+	ATOMIC_INTERCOM_BROKER_SOCKET_PATH: process.env.ATOMIC_INTERCOM_BROKER_SOCKET_PATH,
 };
 
 function setupWindows(opts: {
@@ -259,18 +264,39 @@ describe("Windows broker safe working directory selection (mocked Win32)", () =>
 		assert.equal(syncRooted.cwd, "C:\\Windows");
 		assert.equal(syncRooted.env.ATOMIC_CODING_AGENT_DIR, "R:\\r-agent");
 		assert.equal(asyncRooted.env.ATOMIC_CODING_AGENT_DIR, "R:\\r-agent");
-		// Parent and broker MUST compute the exact same Windows named pipe for rooted-without-drive agentDir!
-		assert.equal(getBrokerSocketPath("win32"), getBrokerSocketPath("win32", "R:\\r-agent"));
-		assert.equal(getBrokerSocketPath("win32", "\\r-agent"), getBrokerSocketPath("win32", "R:\\r-agent"));
+		// Pipe names derived from any agentDir string MUST stay byte-identical to 0.9.71 / 0.10.4 across versions.
+		assert.equal(
+			getBrokerSocketPath("win32", "/home/dev/.atomic/agent"),
+			"\\\\.\\pipe\\pi-intercom-home-dev-atomic-agent",
+		);
+		assert.equal(getBrokerSocketPath("win32"), "\\\\.\\pipe\\pi-intercom-r-agent");
+		assert.equal(getBrokerSocketPath("win32", "\\r-agent"), "\\\\.\\pipe\\pi-intercom-r-agent");
+		// Spawner hands the exact legacy pipe name via BROKER_SOCKET_PATH_ENV so broker and parent agree.
+		assert.equal(syncRooted.env[BROKER_SOCKET_PATH_ENV], "\\\\.\\pipe\\pi-intercom-r-agent");
+		assert.equal(asyncRooted.env[BROKER_SOCKET_PATH_ENV], "\\\\.\\pipe\\pi-intercom-r-agent");
+		assert.equal(brokerSocketPathOverride(syncRooted.env), "\\\\.\\pipe\\pi-intercom-r-agent");
 
-		// Drive-relative `R:sub` resolves against caller's `R:\proj`.
+		// Drive-relative `R:sub` resolves against caller's `R:\proj` for files and passes raw pipe name.
 		process.env.ATOMIC_CODING_AGENT_DIR = "R:sub-agent";
-		assert.equal(getBrokerSpawnOptions(extDir).env.ATOMIC_CODING_AGENT_DIR, "R:\\proj\\sub-agent");
-		assert.equal(getBrokerSocketPath("win32"), getBrokerSocketPath("win32", "R:\\proj\\sub-agent"));
+		const driveRelOpts = getBrokerSpawnOptions(extDir);
+		assert.equal(driveRelOpts.env.ATOMIC_CODING_AGENT_DIR, "R:\\proj\\sub-agent");
+		assert.equal(driveRelOpts.env[BROKER_SOCKET_PATH_ENV], "\\\\.\\pipe\\pi-intercom-r-sub-agent");
 
-		// Relative `.\rel-agent` produces the exact same Windows named pipe in parent and broker!
+		// Relative `.\rel-agent` keeps legacy pipe name `pi-intercom-rel-agent` and passes it to broker.
 		process.env.ATOMIC_CODING_AGENT_DIR = ".\\rel-agent";
-		assert.equal(getBrokerSocketPath("win32"), getBrokerSocketPath("win32", "R:\\proj\\rel-agent"));
+		assert.equal(getBrokerSocketPath("win32"), "\\\\.\\pipe\\pi-intercom-rel-agent");
+		assert.equal(getBrokerSpawnOptions(extDir).env[BROKER_SOCKET_PATH_ENV], "\\\\.\\pipe\\pi-intercom-rel-agent");
+
+		// Already-absolute agentDir sets no override and clears any stale inherited BROKER_SOCKET_PATH_ENV.
+		process.env.ATOMIC_CODING_AGENT_DIR = "C:\\Users\\dev\\.atomic\\agent";
+		process.env[BROKER_SOCKET_PATH_ENV] = "\\\\.\\pipe\\pi-intercom-stale";
+		const absOpts = getBrokerSpawnOptions(extDir);
+		assert.equal(absOpts.env[BROKER_SOCKET_PATH_ENV], undefined);
+		delete process.env[BROKER_SOCKET_PATH_ENV];
+
+		// Reject malformed pipe overrides.
+		assert.equal(brokerSocketPathOverride({ [BROKER_SOCKET_PATH_ENV]: "\\\\.\\pipe\\other" }), undefined);
+		assert.equal(brokerSocketPathOverride({ [BROKER_SOCKET_PATH_ENV]: "\\\\.\\pipe\\pi-intercom-BAD" }), undefined);
 
 		// Mixed-case key `atomic_coding_agent_dir` must be overwritten in place with zero case duplicates.
 		delete process.env.ATOMIC_CODING_AGENT_DIR;
@@ -282,6 +308,7 @@ describe("Windows broker safe working directory selection (mocked Win32)", () =>
 				const matches = Object.entries(opts.env).filter(([k]) => k.toLowerCase() === "atomic_coding_agent_dir");
 				assert.equal(matches.length, 1, `expected single case-insensitive key, got ${JSON.stringify(matches)}`);
 				assert.equal(matches[0]![1], "R:\\proj\\rel-lower");
+				assert.equal(opts.env[BROKER_SOCKET_PATH_ENV], "\\\\.\\pipe\\pi-intercom-rel-lower");
 			}
 		} finally {
 			delete process.env.atomic_coding_agent_dir;

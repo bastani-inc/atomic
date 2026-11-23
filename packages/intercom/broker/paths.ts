@@ -2,14 +2,22 @@ import { createHash } from "crypto";
 import { type BigIntStats, lstatSync, mkdirSync, readFileSync, renameSync, type Stats, writeFileSync } from "fs";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "os";
-import { basename, dirname, join, resolve, win32 } from "path";
-import { isAbsoluteWindowsPath } from "./windows-cwd.js";
+import { basename, dirname, join, resolve } from "path";
 
 /**
  * The shared storage selection (`ATOMIC_STORAGE` JSON) the launching Atomic process hands its broker: its
  * `--storage`/`--storage-file` or its own `ATOMIC_STORAGE`. It outranks the agent directory's settings.
  */
 export const BROKER_STORAGE_ENV = "ATOMIC_STORAGE";
+
+/**
+ * Windows: exact named pipe derived by the launching process from its raw `ATOMIC_CODING_AGENT_DIR` /
+ * `PI_CODING_AGENT_DIR` before absolutizing the path for the detached broker (which runs in a safe cwd outside
+ * the installation directory). Lets the broker bind the exact byte-identical legacy pipe name that the parent and
+ * earlier-release sessions connect to while resolving its own files (`broker.pid`, `broker.log`, stores) against the
+ * absolutized agent directory.
+ */
+export const BROKER_SOCKET_PATH_ENV = "ATOMIC_INTERCOM_BROKER_SOCKET_PATH";
 
 function getHomeDir(): string {
   if (process.platform === "win32") {
@@ -29,25 +37,26 @@ function expandTildePath(path: string): string {
   return path;
 }
 
-function resolveAgentDirPath(rawPath: string): string {
-  if (process.platform === "win32") {
-    if (isAbsoluteWindowsPath(rawPath)) return rawPath;
-    try {
-      return win32.resolve(process.cwd(), rawPath);
-    } catch {
-      return rawPath;
-    }
-  }
-  return resolve(rawPath);
+function envValue(env: NodeJS.ProcessEnv, canonicalKey: string): string | undefined {
+  if (process.platform !== "win32") return env[canonicalKey];
+  const upper = canonicalKey.toUpperCase();
+  const keys = Object.keys(env).filter((key) => key.toUpperCase() === upper);
+  const lastKey = keys.at(-1);
+  return lastKey === undefined ? env[canonicalKey] : env[lastKey];
+}
+
+/** The agent directory selected by `env`, keeping its exact raw spelling for pipe-name compatibility across versions. */
+export function getAgentDirFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  const atomicAgentDir = envValue(env, "ATOMIC_CODING_AGENT_DIR");
+  if (atomicAgentDir) return expandTildePath(atomicAgentDir);
+  const piAgentDir = envValue(env, "PI_CODING_AGENT_DIR");
+  if (piAgentDir) return expandTildePath(piAgentDir);
+  return join(getHomeDir(), ".atomic", "agent");
 }
 
 /** The agent directory the environment selects now. */
 export function getAgentDir(): string {
-  const atomicAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
-  if (atomicAgentDir) return resolveAgentDirPath(expandTildePath(atomicAgentDir));
-  const piAgentDir = process.env.PI_CODING_AGENT_DIR;
-  if (piAgentDir) return resolveAgentDirPath(expandTildePath(piAgentDir));
-  return join(getHomeDir(), ".atomic", "agent");
+  return getAgentDirFromEnv(process.env);
 }
 
 function sanitizePipeSegment(value: string): string {
@@ -125,6 +134,33 @@ export function maxUnixSocketPathBytes(platform: NodeJS.Platform): number {
 
 /** A Windows pipe name is at most 256 characters. */
 const MAX_PIPE_NAME_LENGTH = 256;
+const WINDOWS_PIPE_PREFIX = "\\\\.\\pipe\\pi-intercom-";
+
+function isValidWindowsPipeSuffix(suffix: string): boolean {
+  if (suffix.length === 0) return false;
+  for (let i = 0; i < suffix.length; i += 1) {
+    const code = suffix.charCodeAt(i);
+    const isLower = code >= 97 && code <= 122;
+    const isDigit = code >= 48 && code <= 57;
+    const isHyphen = code === 45;
+    if (!isLower && !isDigit && !isHyphen) return false;
+  }
+  return true;
+}
+
+/**
+ * Validated Windows named-pipe override passed by the spawner via {@link BROKER_SOCKET_PATH_ENV} when the caller's
+ * raw `ATOMIC_CODING_AGENT_DIR`/`PI_CODING_AGENT_DIR` was relative or drive-relative rooted. Returns `undefined` off
+ * Windows, when unset, or when malformed.
+ */
+export function brokerSocketPathOverride(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  const raw = envValue(env, BROKER_SOCKET_PATH_ENV);
+  if (raw === undefined || raw.length > MAX_PIPE_NAME_LENGTH || !raw.startsWith(WINDOWS_PIPE_PREFIX)) {
+    return undefined;
+  }
+  return isValidWindowsPipeSuffix(raw.slice(WINDOWS_PIPE_PREFIX.length)) ? raw : undefined;
+}
 
 /** Every spelling of one agent directory, such as a trailing separator or a `..` segment, gets the same digest. */
 function agentDirDigest(agentDir: string): string {
@@ -211,12 +247,8 @@ export function directBrokerSocketPath(
   agentDir: string = getAgentDir(),
 ): string | undefined {
   if (platform === "win32") {
-    const resolved =
-      process.platform === "win32" && !isAbsoluteWindowsPath(agentDir)
-        ? resolveAgentDirPath(agentDir)
-        : agentDir;
-    const pipe = `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(resolved)}`;
-    return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `\\\\.\\pipe\\pi-intercom-${agentDirDigest(resolved)}`;
+    const pipe = `${WINDOWS_PIPE_PREFIX}${sanitizePipeSegment(agentDir)}`;
+    return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `${WINDOWS_PIPE_PREFIX}${agentDirDigest(agentDir)}`;
   }
   const socketPath = inDirectorySocketPath(agentDir);
   return fitsUnixSocketPath(socketPath, platform) ? socketPath : undefined;

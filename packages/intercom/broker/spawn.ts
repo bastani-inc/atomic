@@ -58,8 +58,11 @@ import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js"
 import { BROKER_PROTOCOL, type BrokerProtocolRange, decideBrokerProtocol, protocolRangeOf } from "./protocol-version.js";
 import { readSharedStorageSettingAsync, sharedStorageDigest } from "./shared-storage-setting.js";
 import {
+  BROKER_SOCKET_PATH_ENV,
   BROKER_STORAGE_ENV,
+  directBrokerSocketPath,
   getAgentDir,
+  getAgentDirFromEnv,
   getBrokerLogPath,
   getBrokerPidPath,
   getBrokerSocketPathAsync,
@@ -416,6 +419,17 @@ function absolutizeAgentDirEnvInPlace(env: NodeJS.ProcessEnv): void {
  * With `announcement` it also gets the file and token it announces its pid with, and asks it to add when it was created
  * (`start-announcement.ts`).
  */
+function deleteEnvKeyCaseInsensitive(env: NodeJS.ProcessEnv, canonicalKey: string): void {
+  if (process.platform !== "win32") {
+    delete env[canonicalKey];
+    return;
+  }
+  const upper = canonicalKey.toUpperCase();
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === upper) delete env[key];
+  }
+}
+
 function buildBrokerSpawnOptions(
   storage: string | undefined,
   cwd: string,
@@ -429,7 +443,15 @@ function buildBrokerSpawnOptions(
   windowsHide: true;
 } {
   const env = createChildProcessEnvironment();
+  const rawWinPipe =
+    process.platform === "win32" ? directBrokerSocketPath("win32", getAgentDirFromEnv(env)) : undefined;
   absolutizeAgentDirEnvInPlace(env);
+  const resolvedWinPipe =
+    process.platform === "win32" ? directBrokerSocketPath("win32", getAgentDirFromEnv(env)) : undefined;
+  deleteEnvKeyCaseInsensitive(env, BROKER_SOCKET_PATH_ENV);
+  if (rawWinPipe !== undefined && rawWinPipe !== resolvedWinPipe) {
+    setEnvValue(env, BROKER_SOCKET_PATH_ENV, rawWinPipe);
+  }
   setEnvValue(env, "NODE_NO_WARNINGS", "1");
   if (storage !== undefined) setEnvValue(env, BROKER_STORAGE_ENV, storage);
   if (announcement !== undefined) {
