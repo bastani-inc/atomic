@@ -9,7 +9,11 @@ import { APP_NAME } from "../../config.js";
 import { slashCommandHint } from "../../modes/interactive/components/nav-keys.ts";
 import { TASK_MARKS } from "../../modes/interactive/components/task-marks.ts";
 import { theme } from "../../modes/interactive/theme/theme.js";
-import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
+import {
+	createChildProcessEnvironment,
+	isChildProcessExitStatusUnknownError,
+	waitForChildProcess,
+} from "../../utils/child-process.ts";
 import { getShellConfigAsync, getShellEnvAsync, spawnShellProcess } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { formatTimeoutSeconds, longerRunAdvice, MAX_COMMAND_TIMEOUT_SECONDS } from "../tasks/cancel-reason.js";
@@ -265,7 +269,11 @@ export function createLocalBashOperations(options?: {
 			// Set when the deadline fires, with the shell's exit time if it had already exited.
 			let deadline: { timeoutSeconds: number; elapsedMs: number; shellExitedAfterMs?: number } | undefined;
 			let timeoutHandle: NodeJS.Timeout | undefined;
-			const onAbort = () => shellProcess.stop();
+			const waitAbort = new AbortController();
+			const onAbort = () => {
+				waitAbort.abort();
+				shellProcess.stop();
+			};
 			try {
 				if (timeout !== undefined && timeout > 0) {
 					timeoutHandle = setTimeout(() => {
@@ -274,6 +282,7 @@ export function createLocalBashOperations(options?: {
 							elapsedMs: Math.round(performance.now() - startedAt),
 							shellExitedAfterMs,
 						};
+						waitAbort.abort();
 						// Also when the shell already exited: on Unix the group kill still reaches background
 						// processes holding the pipes, and on Windows the shell's job does. Without the job, Windows
 						// cannot find them once the shell pid is gone.
@@ -286,7 +295,19 @@ export function createLocalBashOperations(options?: {
 					if (signal.aborted) onAbort();
 					else signal.addEventListener("abort", onAbort, { once: true });
 				}
-				const exitCode = await waitForChildProcess(child);
+				let exitCode: number | null;
+				try {
+					exitCode = await waitForChildProcess(child, { signal: waitAbort.signal });
+				} catch (error) {
+					if (signal?.aborted) throw new Error("aborted");
+					if (deadline) {
+						throw new ShellTimeoutError({
+							timeoutSeconds: deadline.timeoutSeconds,
+							elapsedMs: deadline.elapsedMs,
+						});
+					}
+					throw error;
+				}
 				if (signal?.aborted) throw new Error("aborted");
 				// A signal-killed shell has no exit code. Use the standard shell convention so
 				// callers do not mistake the termination for a successful command.
@@ -674,6 +695,9 @@ export function createBashToolDefinition(
 						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`), {
 							cause: err,
 						});
+					}
+					if (isChildProcessExitStatusUnknownError(err)) {
+						throw new Error(appendStatus(text, err.message), { cause: err });
 					}
 					throw err;
 				}

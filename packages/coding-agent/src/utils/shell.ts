@@ -6,7 +6,11 @@ import { type ChildProcess, spawn } from "child_process";
 import { getBinDir } from "../config.js";
 import * as processStartToken from "../core/process-start-token.js";
 import * as processTreeContainment from "../core/process-tree-containment.ts";
-import { createChildProcessEnvironment } from "./child-process.ts";
+import {
+	createChildProcessEnvironment,
+	releaseRetainedWindowsProcessExitHandle,
+	retainWindowsProcessExitHandle,
+} from "./child-process.ts";
 import { findHelperExecutable, findHelperExecutableAsync } from "./helper-command.ts";
 import { type HostChildProcess, spawnContainedProcess } from "./host-spawn.ts";
 import { resolutionBaseUrl } from "./module-require.js";
@@ -671,6 +675,7 @@ export async function spawnShellProcess(
 		stdio: [...stdio],
 		windowsHide: true,
 	});
+	retainWindowsProcessExitHandle(child);
 	const pid = child.pid;
 	let exited = false;
 	child.once("exit", () => {
@@ -684,6 +689,7 @@ export async function spawnShellProcess(
 			killChildProcessTree(child, exited);
 		},
 		finish: () => {
+			releaseRetainedWindowsProcessExitHandle(child);
 			if (pid !== undefined) untrackDetachedChildPid(pid);
 		},
 	};
