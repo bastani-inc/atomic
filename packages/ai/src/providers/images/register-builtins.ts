@@ -9,6 +9,7 @@ import type {
 	ImagesFunction,
 	ImagesOptions,
 } from "../../types.ts";
+import { memoizeAsync } from "../../utils/memoize-async.js";
 
 interface OpenRouterImagesProviderModule {
 	generateImages: typeof generateImagesOpenRouterFunction;
@@ -17,9 +18,6 @@ interface OpenRouterImagesProviderModule {
 interface OpenAIImagesProviderModule {
 	generateImages: typeof generateImagesOpenAIFunction;
 }
-
-let openRouterImagesProviderModulePromise: Promise<OpenRouterImagesProviderModule> | undefined;
-let openAIImagesProviderModulePromise: Promise<OpenAIImagesProviderModule> | undefined;
 
 function createLazyLoadErrorImages(model: ImageModel<ImageApi>, error: unknown): AssistantImages {
 	return {
@@ -33,19 +31,15 @@ function createLazyLoadErrorImages(model: ImageModel<ImageApi>, error: unknown):
 	};
 }
 
-function loadOpenRouterImagesProviderModule(): Promise<OpenRouterImagesProviderModule> {
-	openRouterImagesProviderModulePromise ||= import("../../api/openrouter-images.ts").then(
-		(module) => module as OpenRouterImagesProviderModule,
-	);
-	return openRouterImagesProviderModulePromise;
-}
+const loadOpenRouterImagesProviderModule = memoizeAsync(
+	(): Promise<OpenRouterImagesProviderModule> =>
+		import("../../api/openrouter-images.ts").then((module) => module as OpenRouterImagesProviderModule),
+);
 
-function loadOpenAIImagesProviderModule(): Promise<OpenAIImagesProviderModule> {
-	openAIImagesProviderModulePromise ||= import("../../api/openai-images.ts").then(
-		(module) => module as OpenAIImagesProviderModule,
-	);
-	return openAIImagesProviderModulePromise;
-}
+const loadOpenAIImagesProviderModule = memoizeAsync(
+	(): Promise<OpenAIImagesProviderModule> =>
+		import("../../api/openai-images.ts").then((module) => module as OpenAIImagesProviderModule),
+);
 
 export const generateImagesOpenRouter: ImagesFunction<ImagesOptions> = async (
 	model: ImageModel<ImageApi>,

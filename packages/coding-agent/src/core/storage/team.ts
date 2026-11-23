@@ -636,9 +636,12 @@ export async function assertTeamAdapterInstalled(
 	const key = resolve(agentDir);
 	let check = installedAdapters.get(key);
 	if (check === undefined) {
-		check = loadTeamAdapter(key, reason);
-		installedAdapters.set(key, check);
-		check.catch(() => installedAdapters.delete(key));
+		const current = loadTeamAdapter(key, reason).catch((error: unknown) => {
+			if (installedAdapters.get(key) === current) installedAdapters.delete(key);
+			throw error;
+		});
+		installedAdapters.set(key, current);
+		check = current;
 	}
 	return check;
 }

@@ -178,6 +178,91 @@ describe("lazy OAuth flow loading", () => {
 		for (const [id, loadFlow, flow] of flows) {
 			assert.equal(await loadFlow(), flow, `${id} loads its flow module's export`);
 		}
+	});
 
+	it("lazyOAuth clears a rejected load promise so a later attempt retries and caches success", async () => {
+		const { lazyOAuth } = await import("../src/auth/helpers.ts");
+		let attempts = 0;
+		const flow = lazyOAuth({
+			name: "Transient OAuth",
+			load: async () => {
+				attempts += 1;
+				if (attempts === 1) throw new Error("transient oauth module missing");
+				return {
+					name: "Transient OAuth",
+					login: async () => ({ type: "oauth", access: "a", refresh: "r", expires: Date.now() + 60_000 }),
+					refresh: async (cred) => cred,
+					toAuth: async (cred) => ({ apiKey: `tok:${cred.access}` }),
+				};
+			},
+		});
+
+		const credential = { type: "oauth" as const, access: "ok", refresh: "r", expires: Date.now() + 60_000 };
+		await assert.rejects(() => flow.toAuth(credential), /transient oauth module missing/);
+		assert.deepEqual(await flow.toAuth(credential), { apiKey: "tok:ok" });
+		assert.deepEqual(await flow.toAuth(credential), { apiKey: "tok:ok" });
+		assert.equal(attempts, 2);
+	});
+});
+
+describe("lazy image provider module loading", () => {
+	it("generateImagesOpenRouter and generateImagesOpenAI retry after a transient module import rejection", async () => {
+		vi.resetModules();
+		let openRouterCalls = 0;
+		let openAICalls = 0;
+		vi.doMock("../src/api/openrouter-images.ts", () => {
+			openRouterCalls += 1;
+			if (openRouterCalls === 1) throw new Error("transient openrouter-images missing");
+			return {
+				generateImages: async (model: { api: string; provider: string; id: string }) => ({
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					output: [],
+					stopReason: "stop",
+					timestamp: 1,
+				}),
+			};
+		});
+		vi.doMock("../src/api/openai-images.ts", () => {
+			openAICalls += 1;
+			if (openAICalls === 1) throw new Error("transient openai-images missing");
+			return {
+				generateImages: async (model: { api: string; provider: string; id: string }) => ({
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					output: [],
+					stopReason: "stop",
+					timestamp: 1,
+				}),
+			};
+		});
+
+		const { generateImagesOpenRouter, generateImagesOpenAI } = await import(
+			"../src/providers/images/register-builtins.ts"
+		);
+		const orModel = { id: "or-img", name: "or-img", api: "openrouter-images", provider: "openrouter" } as never;
+		const oaModel = { id: "oa-img", name: "oa-img", api: "openai-images", provider: "openai" } as never;
+		const imgCtx = { prompt: "cat" } as never;
+
+		const orFirst = await generateImagesOpenRouter(orModel, imgCtx);
+		assert.equal(orFirst.stopReason, "error");
+		const orSecond = await generateImagesOpenRouter(orModel, imgCtx);
+		assert.equal(orSecond.stopReason, "stop");
+		const orThird = await generateImagesOpenRouter(orModel, imgCtx);
+		assert.equal(orThird.stopReason, "stop");
+		assert.equal(openRouterCalls, 2);
+
+		const oaFirst = await generateImagesOpenAI(oaModel, imgCtx);
+		assert.equal(oaFirst.stopReason, "error");
+		const oaSecond = await generateImagesOpenAI(oaModel, imgCtx);
+		assert.equal(oaSecond.stopReason, "stop");
+		const oaThird = await generateImagesOpenAI(oaModel, imgCtx);
+		assert.equal(oaThird.stopReason, "stop");
+		assert.equal(openAICalls, 2);
+
+		vi.doUnmock("../src/api/openrouter-images.ts");
+		vi.doUnmock("../src/api/openai-images.ts");
 	});
 });
