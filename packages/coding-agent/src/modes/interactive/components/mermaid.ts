@@ -18,6 +18,10 @@ function isMermaid(token: Token): token is Token & { type: "code"; text: string;
 	return token.type === "code" && token.lang?.trim().split(/\s+/, 1)[0]?.toLowerCase() === "mermaid";
 }
 
+function mightContainMermaidFence(markdown: string): boolean {
+	return (markdown.includes("```") || markdown.includes("~~~")) && markdown.toLowerCase().includes("mermaid");
+}
+
 function codeSpan(line: string): string {
 	// Encode each diagram row as inline code (` ... `) so Markdown preserves its spacing and
 	// box-drawing characters. Use a non-breaking space for blank rows because an
@@ -78,7 +82,8 @@ export function createMermaidMarkdownTransformer(options: MermaidTransformerOpti
 		if (
 			mode === "off" ||
 			(context.messageType !== "user" && context.messageType !== "assistant" && context.messageType !== "summary") ||
-			(context.isStreaming && mode !== "streaming")
+			(context.isStreaming && mode !== "streaming") ||
+			!mightContainMermaidFence(markdown)
 		) {
 			return markdown;
 		}

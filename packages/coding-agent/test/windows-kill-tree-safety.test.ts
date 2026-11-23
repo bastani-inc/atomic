@@ -237,6 +237,17 @@ function fakeChild(pid: number, exitCode: number | null = null) {
 	});
 }
 
+/**
+ * Returns a deterministic 4-byte-aligned fake PID that never equals `process.pid` or any PID in `avoid`.
+ * Slots `1..15` occupy disjoint residue classes mod 64, so skipping forbidden PIDs never creates collisions.
+ */
+function fakePid(slot: number, ...avoid: readonly number[]): number {
+	const forbidden = new Set([process.pid, ...avoid]);
+	let candidate = 41_000 + slot * 4;
+	while (forbidden.has(candidate)) candidate += 64;
+	return candidate;
+}
+
 function exited(child: ChildProcess): Promise<void> {
 	return child.exitCode !== null || child.signalCode !== null
 		? Promise.resolve()
@@ -313,11 +324,12 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakePlatform("win32");
 		fakes.interceptHold = true;
 		fakes.holdMode = "held";
-		const running = fakeChild(41004, null);
+		const pid = fakePid(1);
+		const running = fakeChild(pid, null);
 
 		killChildProcessTree(running as unknown as ChildProcess, false);
 
-		assert.deepEqual(fakes.holdCalls, [41004]);
+		assert.deepEqual(fakes.holdCalls, [pid]);
 		assert.equal(fakes.holdEnded, 1);
 		assert.deepEqual(fakes.taskkillRuns, [], "never spawns taskkill when native hold is available");
 		assert.equal(running.kill.mock.calls.length, 0);
@@ -327,11 +339,12 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakePlatform("win32");
 		fakes.interceptHold = true;
 		fakes.holdMode = "absent";
-		const running = fakeChild(41008, null);
+		const pid = fakePid(2);
+		const running = fakeChild(pid, null);
 
 		killChildProcessTree(running as unknown as ChildProcess, false);
 
-		assert.deepEqual(fakes.holdCalls, [41008]);
+		assert.deepEqual(fakes.holdCalls, [pid]);
 		assert.deepEqual(fakes.taskkillRuns, [], "must not fall back to taskkill when native saw the process absent");
 		assert.equal(running.kill.mock.calls.length, 1, "falls back to the live handle only");
 	});
@@ -340,7 +353,7 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakePlatform("win32");
 		fakes.interceptHold = true;
 		fakes.holdMode = "unavailable";
-		const alreadyExited = fakeChild(41012, 0);
+		const alreadyExited = fakeChild(fakePid(3), 0);
 
 		killChildProcessTree(alreadyExited as unknown as ChildProcess, false);
 
@@ -353,32 +366,39 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakePlatform("win32");
 		fakes.interceptHold = true;
 		fakes.holdMode = "held";
+		const heldPid = fakePid(4);
+		const absentPid = fakePid(5);
 
-		killProcessTree(41016);
+		killProcessTree(heldPid);
 
-		assert.deepEqual(fakes.holdCalls, [41016]);
+		assert.deepEqual(fakes.holdCalls, [heldPid]);
 		assert.equal(fakes.holdEnded, 1);
 		assert.deepEqual(fakes.taskkillRuns, []);
 
 		fakes.holdMode = "absent";
-		killProcessTree(41020);
+		killProcessTree(absentPid);
+		assert.deepEqual(fakes.holdCalls, [heldPid, absentPid]);
 		assert.deepEqual(fakes.taskkillRuns, [], "absent under native must not fall back to taskkill");
 	});
 
 	test("killTrackedDetachedChildren verifies Windows creation time via nativeTerminateProcess and never kills a reused PID", () => {
 		fakePlatform("win32");
+		fakes.interceptHold = true;
+		fakes.holdMode = "unavailable";
 		fakes.interceptStartToken = true;
-		fakes.creationTimes.set(41024, "133500000000000001");
+		const pid = fakePid(6);
+		fakes.creationTimes.set(pid, "133500000000000001");
 		fakes.nativeTerminateMode = "null";
 
-		trackDetachedChildPid(41024);
+		trackDetachedChildPid(pid);
 		try {
 			killTrackedDetachedChildren();
 		} finally {
-			untrackDetachedChildPid(41024);
+			untrackDetachedChildPid(pid);
 		}
 
-		assert.deepEqual(fakes.nativeTerminateCalls, [{ pid: 41024, started: "133500000000000001", descendants: true }]);
+		assert.deepEqual(fakes.nativeTerminateCalls, [{ pid, started: "133500000000000001", descendants: true }]);
+		assert.deepEqual(fakes.holdCalls, [], "must not fall back to killProcessTree when native proved PID was reused");
 		assert.deepEqual(fakes.taskkillRuns, [], "must not fall back to taskkill when native proved PID was reused");
 	});
 
@@ -400,6 +420,8 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		recordedProcs.push(holderRec, stepRec);
 
 		fakePlatform("win32");
+		fakes.interceptHold = true;
+		fakes.holdMode = "unavailable";
 		fakes.interceptStartToken = true;
 		const restoreKill = isolateFakeProcessLiveness();
 		try {
@@ -409,7 +431,7 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 
 			const created = "133500000000000099";
 			const start = createHash("sha256").update(`windows\n${created}`).digest("hex").slice(0, 12);
-			const reusedPid = 41029;
+			const reusedPid = fakePid(7, holderBystander.pid!, stepBystander.pid!);
 			fakes.creationTimes.set(stepBystander.pid!, created);
 			fakes.creationTimes.set(reusedPid, "133500000000000888");
 			fakes.nativeTerminateMode = "terminated";
@@ -434,9 +456,15 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 			assert.deepEqual(fakes.nativeTerminateCalls, [
 				{ pid: stepBystander.pid!, started: created, descendants: true },
 			]);
+			assert.deepEqual(
+				fakes.holdCalls,
+				[],
+				"build-lock must use nativeTerminateProcess without falling back to killProcessTree",
+			);
 			assert.deepEqual(fakes.taskkillRuns, [], "build-lock must use nativeTerminateProcess, never taskkill");
 		} finally {
 			restoreKill();
+			fakes.interceptHold = false;
 			fakes.interceptStartToken = false;
 			Object.defineProperty(process, "platform", realPlatform);
 		}
@@ -454,6 +482,8 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		recordedProcs.push(holderRec);
 
 		fakePlatform("win32");
+		fakes.interceptHold = true;
+		fakes.holdMode = "unavailable";
 		fakes.interceptStartToken = true;
 		const restoreKill = isolateFakeProcessLiveness();
 		try {
@@ -463,7 +493,8 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 
 			const created = "133500000000000111";
 			const start = createHash("sha256").update(`windows\n${created}`).digest("hex").slice(0, 12);
-			fakes.creationTimes.set(41030, created);
+			const stepPid = fakePid(8, holderBystander.pid!);
+			fakes.creationTimes.set(stepPid, created);
 			// Simulate the process exiting and being replaced right as nativeTerminateProcess runs.
 			fakes.nativeTerminateMode = "null";
 
@@ -473,7 +504,7 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 					host: THIS_HOST,
 					pid: holderBystander.pid!,
 					start: "aaaaaaaaaaaa",
-					steps: [{ pid: 41030, start }],
+					steps: [{ pid: stepPid, start }],
 				}),
 			);
 
@@ -481,10 +512,12 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 			await settled.release();
 
 			assert.deepEqual(settled.warnings, []);
-			assert.deepEqual(fakes.nativeTerminateCalls, [{ pid: 41030, started: created, descendants: true }]);
+			assert.deepEqual(fakes.nativeTerminateCalls, [{ pid: stepPid, started: created, descendants: true }]);
+			assert.deepEqual(fakes.holdCalls, [], "must not fall back to killProcessTree on native null");
 			assert.deepEqual(fakes.taskkillRuns, [], "must not fall back to taskkill on native null");
 		} finally {
 			restoreKill();
+			fakes.interceptHold = false;
 			fakes.interceptStartToken = false;
 			Object.defineProperty(process, "platform", realPlatform);
 		}
@@ -497,10 +530,11 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakes.holdMode = "held";
 		vi.useFakeTimers();
 		try {
-			const child = fakeChild(41032, null);
+			const pid = fakePid(9);
+			const child = fakeChild(pid, null);
 			const stopping = terminateRpcClientProcess(child as unknown as ChildProcess, true, true);
 			await vi.advanceTimersByTimeAsync(5_000);
-			assert.deepEqual(fakes.holdCalls, [41032]);
+			assert.deepEqual(fakes.holdCalls, [pid]);
 			assert.equal(fakes.holdEnded, 1);
 			assert.deepEqual(fakes.taskkillRuns, [], "rpc-client-process must use holdProcessDescendants, never taskkill");
 			child.exitCode = 1;

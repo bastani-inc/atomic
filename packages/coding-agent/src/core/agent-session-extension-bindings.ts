@@ -398,7 +398,7 @@ async function bindSessionExtensions(
  * registered their providers: a model an extension registers is unknown when the session is created.
  */
 function migrateSavedCompactionModel(session: AgentSession): void {
-	migrateCompactionModelSettings(session.settingsManager, session._modelRuntime.getAllModels());
+	migrateCompactionModelSettings(session.settingsManager, () => session._modelRuntime.getAllModels());
 }
 
 export async function _waitForExtensionStart(this: AgentSession): Promise<void> {

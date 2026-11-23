@@ -5,7 +5,7 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import type { Api, AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
-import { messageIsLlmVisible, userLikeContentBlockIsLlmVisible } from "../messages.ts";
+import { messageIsLlmVisible, normalizeMessageContent, userLikeContentBlockIsLlmVisible } from "../messages.ts";
 import type { SessionEntry, SessionProjection } from "../session-manager.ts";
 
 export interface CompactionSettings {
@@ -174,6 +174,62 @@ export function estimateProjectedContextTokens(
 		if (message.role !== "system") tokens += estimateTokens(message);
 	}
 	return { tokens, usageTokens: 0, trailingTokens: tokens, lastUsageIndex: null };
+}
+
+/**
+ * Direct single-pass context token estimate for plain branches (no compaction, context edit, custom message, or
+ * branch summary). Returns `undefined` when any special entry is present or no valid assistant usage exists so the
+ * caller falls back to full projection.
+ */
+export function estimateDirectBranchContextTokens(
+	branchEntries: readonly SessionEntry[],
+): ContextUsageEstimate | undefined {
+	let latestPrefixTimestamp = Number.NEGATIVE_INFINITY;
+	let messageIndex = 0;
+	let usageInfo: { usage: Usage; api: Api; entryIndex: number; messageIndex: number } | undefined;
+
+	for (let i = 0; i < branchEntries.length; i++) {
+		const entry = branchEntries[i]!;
+		if (
+			entry.type === "compaction" ||
+			entry.type === "context_edit" ||
+			entry.type === "custom_message" ||
+			entry.type === "branch_summary"
+		) {
+			return undefined;
+		}
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		const usage = getAssistantUsage(message);
+		if (
+			usage &&
+			message.role === "assistant" &&
+			message.timestamp >= latestPrefixTimestamp &&
+			calculateContextTokens(usage, message.api) > 0
+		) {
+			usageInfo = { usage, api: message.api, entryIndex: i, messageIndex };
+		}
+		latestPrefixTimestamp = Math.max(latestPrefixTimestamp, message.timestamp);
+		messageIndex += 1;
+	}
+
+	if (!usageInfo) return undefined;
+
+	const usageTokens = calculateContextTokens(usageInfo.usage, usageInfo.api);
+	let trailingTokens = 0;
+	for (let i = usageInfo.entryIndex + 1; i < branchEntries.length; i++) {
+		const entry = branchEntries[i]!;
+		if (entry.type === "message") {
+			trailingTokens += estimateTokens(normalizeMessageContent(entry.message));
+		}
+	}
+
+	return {
+		tokens: usageTokens + trailingTokens,
+		usageTokens,
+		trailingTokens,
+		lastUsageIndex: usageInfo.messageIndex,
+	};
 }
 
 /**
