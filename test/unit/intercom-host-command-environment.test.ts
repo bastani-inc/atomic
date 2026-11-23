@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { afterEach, test } from "vitest";
@@ -28,6 +38,8 @@ test("a host command starts without the parent's PSModulePath, which breaks Wind
 	}
 });
 
+const stripExtendedPrefix = (value: string) => (value.startsWith("\\\\?\\") ? value.slice(4) : value);
+
 test.skipIf(process.platform !== "win32")(
 	"an explicit-path host command still runs outside the project folder under a nonexistent, file, relative, bare-drive, or project SystemRoot",
 	async () => {
@@ -40,8 +52,6 @@ test.skipIf(process.platform !== "win32")(
 		const project = join(root, "project");
 		const relativeDirInsideProject = join(project, "Windows");
 		const notADir = join(root, "not-a-dir.txt");
-		mkdirSync(relativeDirInsideProject, { recursive: true });
-		writeFileSync(notADir, "file");
 		const isInside = (folder: string, candidate: string) => {
 			const realFolder = realpathSync.native(folder);
 			const realCandidate = realpathSync.native(candidate);
@@ -50,13 +60,14 @@ test.skipIf(process.platform !== "win32")(
 		};
 		const externalJunctionIntoProject = join(root, "ext-junc-win");
 		const projectJunction = join(root, "proj-junc");
-		execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", externalJunctionIntoProject, relativeDirInsideProject], {
-			windowsHide: true,
-		});
-		execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", projectJunction, project], {
-			windowsHide: true,
-		});
 		try {
+			mkdirSync(relativeDirInsideProject, { recursive: true });
+			writeFileSync(notADir, "file");
+			// Use symlinkSync(..., "junction") with plain targets rather than cmd.exe `mklink /J`: under
+			// LongPathsEnabled=0, `mklink /J` with a plain >260-char target exits 0 while writing a corrupt
+			// mount point with an empty substitute name (lstat ENOENT, rmSync ENOTEMPTY).
+			symlinkSync(relativeDirInsideProject, externalJunctionIntoProject, "junction");
+			symlinkSync(project, projectJunction, "junction");
 			process.chdir(project);
 			for (const [label, badValue] of [
 				["nonexistent", "Z:\\NoSuchWindowsDir"],
@@ -111,7 +122,18 @@ test.skipIf(process.platform !== "win32")(
 				const longExt = `\\\\?\\${longDir}`;
 				mkdirSync(longExt, { recursive: true });
 				const shortToLong = join(root, "j-long");
-				execFileSync(cmdExe, ["/d", "/c", "mklink", "/J", shortToLong, longDir], { windowsHide: true });
+				symlinkSync(longDir, shortToLong, "junction");
+				assert.equal(lstatSync(shortToLong).isSymbolicLink(), true, "shortToLong must be a valid junction");
+				assert.equal(
+					statSync(shortToLong).isDirectory(),
+					true,
+					"shortToLong must resolve to its long directory target",
+				);
+				assert.equal(
+					stripExtendedPrefix(realpathSync.native(shortToLong)).toLowerCase(),
+					stripExtendedPrefix(realpathSync.native(longExt)).toLowerCase(),
+					"shortToLong must resolve to longDir",
+				);
 
 				process.chdir(project);
 				for (const [label, sr] of [
@@ -192,5 +214,62 @@ test.skipIf(process.platform !== "win32")(
 			else process.env.windir = originalWindir;
 			rmSync(root, { recursive: true, force: true });
 		}
+		assert.equal(existsSync(root), false, "cleanup should remove the temporary root completely");
+	},
+);
+
+test.skipIf(process.platform !== "win32")(
+	"a long temporary root with a junction to a >260-char directory resolves outside the project and cleans up without ENOTEMPTY",
+	async () => {
+		const originalSystemRoot = process.env.SystemRoot;
+		const originalWindir = process.env.windir;
+		const originalCwd = process.cwd();
+		const realSystemRoot = originalSystemRoot || originalWindir || "C:\\Windows";
+		const cmdExe = win32.join(realSystemRoot, "System32", "cmd.exe");
+		const outer = mkdtempSync(join(tmpdir(), "atomic-host-cwd-long-"));
+		try {
+			let deepRoot = outer;
+			while (deepRoot.length + 61 < 210) {
+				deepRoot = join(deepRoot, "d".repeat(60));
+			}
+			const project = join(deepRoot, "project");
+			let longDir = join(deepRoot, "lp");
+			for (let i = 0; i < 12; i++) {
+				longDir = join(longDir, `seg_${String(i).padStart(2, "0")}_1234567890123456`);
+			}
+			const longExt = `\\\\?\\${longDir}`;
+			const shortToLong = join(deepRoot, "j-long");
+			mkdirSync(project, { recursive: true });
+			mkdirSync(longExt, { recursive: true });
+			symlinkSync(longDir, shortToLong, "junction");
+			assert.equal(lstatSync(shortToLong).isSymbolicLink(), true, "deep j-long must be a valid junction");
+			assert.equal(statSync(shortToLong).isDirectory(), true, "deep j-long must resolve to its target");
+			assert.equal(
+				stripExtendedPrefix(realpathSync.native(shortToLong)).toLowerCase(),
+				stripExtendedPrefix(realpathSync.native(longExt)).toLowerCase(),
+				"deep j-long must resolve to longDir",
+			);
+
+			process.chdir(project);
+			process.env.SystemRoot = shortToLong;
+			process.env.windir = shortToLong;
+			const chosen = await resolveSafeWindowsWorkingDirectoryAsync({ commandPath: cmdExe, timeoutMs: 150 });
+			assert.ok(
+				chosen !== undefined && chosen.length < 248 && !chosen.startsWith("\\\\?\\"),
+				`deep-root short-junction-to-long: expected short cwd (<248 chars), got ${JSON.stringify(chosen)}`,
+			);
+			const out = (await systemSources().run(cmdExe, ["/d", "/c", "cd"])).trim();
+			assert.ok(win32.isAbsolute(out), `deep-root short-junction-to-long: got ${JSON.stringify(out)}`);
+			const rel = win32.relative(realpathSync.native(project).toLowerCase(), realpathSync.native(out).toLowerCase());
+			assert.ok(rel === ".." || rel.startsWith("..\\") || win32.isAbsolute(rel), `ran inside project (${out})`);
+		} finally {
+			process.chdir(originalCwd);
+			if (originalSystemRoot === undefined) delete process.env.SystemRoot;
+			else process.env.SystemRoot = originalSystemRoot;
+			if (originalWindir === undefined) delete process.env.windir;
+			else process.env.windir = originalWindir;
+			rmSync(outer, { recursive: true, force: true });
+		}
+		assert.equal(existsSync(outer), false, "cleanup should remove the deep temporary root completely");
 	},
 );

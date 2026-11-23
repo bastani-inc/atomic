@@ -216,6 +216,9 @@ function environment(env: Record<string, string | undefined> | undefined): NodeJ
 	if (!env) return undefined;
 	const resolved: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(env)) if (value !== undefined) resolved[key] = value;
+	if (!Object.hasOwn(env, "TZ") && process.env.TZ) {
+		resolved.TZ = process.env.TZ;
+	}
 	return resolved;
 }
 
