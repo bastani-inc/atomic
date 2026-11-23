@@ -9,7 +9,7 @@ import { makeTempDirectory, moduleDir, sleep } from "../helpers/runtime.js";
 import { messageText, startScriptedChatServer } from "../helpers/scripted-chat-server.js";
 
 const CLI = join(moduleDir(import.meta.url), "../../packages/coding-agent/dist/cli.js");
-// Real isolated CLI startup + 3 background subagents + multiple /tasks PTY transitions under Node on Linux & Windows.
+// Real isolated CLI startup + 3 sequential background subagents + multiple /tasks PTY transitions under Node on Linux & Windows.
 const PTY_SCENARIO_TIMEOUT_MS = 120_000;
 const WAIT_MS = 45_000;
 
@@ -17,6 +17,13 @@ const ENTER = "\r";
 const DOWN = "\x1b[B";
 const LEFT = "\x1b[D";
 const ESC = "\x1b";
+const KITTY_ESC = "\x1b[27u";
+
+const SEQUENTIAL_TASKS = [
+	{ key: "alpha", command: "LAUNCH_ALPHA", task: "TASK-ALPHA first item" },
+	{ key: "beta", command: "LAUNCH_BETA", task: "TASK-BETA middle item" },
+	{ key: "gamma", command: "LAUNCH_GAMMA", task: "TASK-GAMMA newest item" },
+] as const;
 
 function selectedRow(screen: string): string {
 	return (
@@ -28,7 +35,7 @@ function selectedRow(screen: string): string {
 }
 
 function isTasksOpen(screen: string): boolean {
-	return screen.includes("↑↓ select") && selectedRow(screen) !== "";
+	return /Tasks\s+3 done/.test(screen) && screen.includes("↑↓ select") && selectedRow(screen) !== "";
 }
 
 function isViewingBeta(screen: string): boolean {
@@ -37,8 +44,12 @@ function isViewingBeta(screen: string): boolean {
 
 function dockLines(screen: string): string[] {
 	const lines = screen.split("\n").map((line) => line.trimEnd());
-	const promptIndex = lines.findLastIndex((line) => /^\s*❯(?:\s|$)/.test(line));
+	const promptIndex = lines.findLastIndex((line) => /^❯(?:\s|$)/.test(line));
 	return promptIndex < 0 ? [] : lines.slice(promptIndex);
+}
+
+function promptShows(screen: string, text: string): boolean {
+	return dockLines(screen).some((line) => line.startsWith(`❯ ${text}`));
 }
 
 test(
@@ -55,39 +66,59 @@ test(
 			const last = messages.at(-1);
 			const lastUser = [...messages].reverse().find((m) => m.role === "user");
 			const prompt = messageText(lastUser);
-			if (prompt.includes("LAUNCH_THREE_DONE")) {
-				if (last?.role === "tool") {
-					return { label: "launched", text: "ALL_SUBAGENTS_LAUNCHED", chunks: 1, chunkDelayMs: 0 };
-				}
-				return {
-					label: "launch-call",
-					text: "Launching finished subagents.",
-					chunks: 1,
-					chunkDelayMs: 0,
-					toolCalls: [
-						{
-							name: "subagent",
-							arguments: {
-								context: "fresh",
-								tasks: [
-									{ agent: "worker", model: "scripted/local", task: "TASK-ALPHA first item" },
-									{ agent: "worker", model: "scripted/local", task: "TASK-BETA middle item" },
-									{ agent: "worker", model: "scripted/local", task: "TASK-GAMMA newest item" },
-								],
+
+			for (const entry of SEQUENTIAL_TASKS) {
+				if (prompt.includes(entry.command)) {
+					if (last?.role === "tool") {
+						return {
+							label: `launched-${entry.key}`,
+							text: `LAUNCHED_${entry.key.toUpperCase()}`,
+							chunks: 1,
+							chunkDelayMs: 0,
+						};
+					}
+					return {
+						label: `call-${entry.key}`,
+						text: `Launching ${entry.key}.`,
+						chunks: 1,
+						chunkDelayMs: 0,
+						toolCalls: [
+							{
+								name: "subagent",
+								arguments: {
+									context: "fresh",
+									tasks: [{ agent: "worker", model: "scripted/local", task: entry.task }],
+								},
 							},
-						},
-					],
-				};
+						],
+					};
+				}
 			}
-			if (prompt.includes("TASK-ALPHA")) {
-				return { label: "alpha", text: "Finished TASK-ALPHA work.", chunks: 1, chunkDelayMs: 0 };
+
+			if (prompt.includes("Subagent worker completed")) {
+				for (const entry of SEQUENTIAL_TASKS) {
+					if (prompt.includes(entry.task)) {
+						return {
+							label: `wake-${entry.key}`,
+							text: `Acknowledged ${entry.task}.`,
+							chunks: 1,
+							chunkDelayMs: 0,
+						};
+					}
+				}
 			}
-			if (prompt.includes("TASK-BETA")) {
-				return { label: "beta", text: "Finished TASK-BETA work.", chunks: 1, chunkDelayMs: 0 };
+
+			for (const entry of SEQUENTIAL_TASKS) {
+				if (prompt.includes(entry.task)) {
+					return {
+						label: `subagent-${entry.key}`,
+						text: `Finished ${entry.task}.`,
+						chunks: 1,
+						chunkDelayMs: 0,
+					};
+				}
 			}
-			if (prompt.includes("TASK-GAMMA")) {
-				return { label: "gamma", text: "Finished TASK-GAMMA work.", chunks: 1, chunkDelayMs: 0 };
-			}
+
 			return { label: "other", text: "Done.", chunks: 1, chunkDelayMs: 0 };
 		});
 
@@ -147,6 +178,8 @@ test(
 			cwd,
 			env: {
 				...osEnv,
+				// Override Vitest's inherited NODE_ENV=test so subagents run real sessions against the scripted server.
+				NODE_ENV: "production",
 				HOME: root,
 				USERPROFILE: root,
 				TERM: "xterm-256color",
@@ -166,7 +199,7 @@ test(
 
 		const openTasks = async () => {
 			program.write("/tasks");
-			await program.waitForScreen((s) => s.includes("❯ /tasks"), WAIT_MS, "/tasks typed");
+			await program.waitForScreen((s) => promptShows(s, "/tasks"), WAIT_MS, "/tasks typed");
 			program.write(ENTER);
 			await program.waitForScreen(isTasksOpen, WAIT_MS, "/tasks list with 3 finished subagents");
 		};
@@ -179,22 +212,25 @@ test(
 			);
 
 		try {
-			await program.waitForScreen((s) => s.includes("❯"), WAIT_MS, "initial prompt");
-			program.write("LAUNCH_THREE_DONE");
-			await program.waitForScreen((s) => s.includes("❯ LAUNCH_THREE_DONE"), WAIT_MS, "prompt text");
-			program.write(ENTER);
+			await program.waitForScreen((s) => dockLines(s).length > 0, WAIT_MS, "initial prompt");
 
-			// Wait until all 3 subagents finished and the idle agent panel is hidden
-			// (`/tasks to see subagents` in footer -> 0-row idle panel -> opening any subagent triggers panelOnView: true).
-			await program.waitForScreen(
-				(s) =>
-					server.completed.includes("alpha") &&
-					server.completed.includes("beta") &&
-					server.completed.includes("gamma") &&
-					isMainPanelHidden(s),
-				WAIT_MS,
-				"all 3 subagents finished and idle panel hidden",
-			);
+			// Launch the 3 subagents sequentially so settlement order is deterministically
+			// ALPHA < BETA < GAMMA, giving /tasks Done order [TASK-GAMMA, TASK-BETA, TASK-ALPHA].
+			for (const entry of SEQUENTIAL_TASKS) {
+				program.write(entry.command);
+				await program.waitForScreen((s) => promptShows(s, entry.command), WAIT_MS, `${entry.command} typed`);
+				program.write(ENTER);
+				await program.waitForScreen(
+					(s) =>
+						server.completed.includes(`subagent-${entry.key}`) &&
+						server.completed.includes(`wake-${entry.key}`) &&
+						server.streaming() === 0 &&
+						!promptShows(s, entry.command) &&
+						isMainPanelHidden(s),
+					WAIT_MS,
+					`${entry.task} finished and idle panel hidden`,
+				);
+			}
 
 			// 1. Happy path panelOnView: open TASK-BETA from /tasks -> opens single chat screen with pinned panel row!
 			await openTasks();
@@ -224,7 +260,35 @@ test(
 			await openTasks();
 			assert.match(selectedRow(program.screen()), /TASK-GAMMA/, "fresh /tasks after Esc starts at top");
 
-			// 4. Rapid Enter + Esc on TASK-BETA (with idle panel empty -> panelOnView: true).
+			// 4a. Deterministic pre-view Esc (Enter + Kitty CSI-u Esc in the same PTY write, 0ms buffer delay):
+			// Esc arrives at host BEFORE engine_view_agent returns from the engine, so it must ALWAYS cancel cleanly.
+			program.write(DOWN);
+			await program.waitForScreen(
+				(s) => /TASK-BETA/.test(selectedRow(s)),
+				WAIT_MS,
+				"TASK-BETA selected (kitty Esc)",
+			);
+			program.write(`${ENTER}${KITTY_ESC}`);
+			await program.waitForScreen(
+				(s) => !s.includes("↑↓ select") && isMainPanelHidden(s),
+				WAIT_MS,
+				"/tasks closed after Enter+Kitty-Esc",
+			);
+			await sleep(350);
+			const kittySettled = program.screen();
+			assert.equal(isViewingBeta(kittySettled), false, `pre-view Kitty Esc must cancel open:\n${kittySettled}`);
+			assert.ok(
+				!dockLines(kittySettled).some((line) => line.includes("● worker") || line.includes("TASK-BETA")),
+				`speculative preview leaked on main after Kitty Esc:\n${kittySettled}`,
+			);
+			await openTasks();
+			assert.match(
+				selectedRow(program.screen()),
+				/TASK-GAMMA/,
+				`next /tasks after pre-view Kitty Esc must land at top:\n${program.screen()}`,
+			);
+
+			// 4b. Rapid Enter + legacy Esc on TASK-BETA (with idle panel empty -> panelOnView: true).
 			// Verify across 0ms, 5ms, and 15ms delays that neither a stale speculative preview nor a bad selection survives.
 			for (const delayMs of [0, 5, 15]) {
 				program.write(DOWN);
@@ -279,7 +343,7 @@ test(
 			program.write(ESC);
 			await program.waitForScreen((s) => !s.includes("↑↓ select"), WAIT_MS, "close /tasks before quit");
 			program.write("/quit");
-			await program.waitForScreen((s) => s.includes("❯ /quit"), WAIT_MS, "/quit typed");
+			await program.waitForScreen((s) => promptShows(s, "/quit"), WAIT_MS, "/quit typed");
 			program.write(ENTER);
 			assert.equal((await program.exited).exitCode, 0);
 
