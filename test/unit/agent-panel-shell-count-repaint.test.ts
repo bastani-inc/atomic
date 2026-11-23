@@ -65,7 +65,7 @@ function changingStore(session: object, initial: TaskRecord[]) {
 const runningShell: TaskRecord = { ...taskRecord("sh1", "command"), title: "sleep 300" };
 const finishedShell: TaskRecord = {
 	...runningShell,
-	execution: { kind: "settled", result: { kind: "completed", output: runningShell.output } },
+	execution: { kind: "settled", result: { kind: "completed", output: runningShell.output, exitCode: 0 } },
 };
 const runningAgent: TaskRecord = { ...taskRecord("a1"), agentName: "worker", title: "fix shipping batches" };
 

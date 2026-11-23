@@ -32,7 +32,7 @@ test("a pause waits for the quarantined cleanup of a command it stopped, not one
 			task.ref.taskId === taskId
 				? ({
 						...task,
-						execution: { kind: "settled", result: { kind: "completed" } },
+						execution: { kind: "settled", result: { kind: "completed", exitCode: 0 } },
 						cleanup,
 					} as unknown as TaskRecord)
 				: task,

@@ -152,7 +152,10 @@ test("peek card and detail page show 3m and 1h 6m beside board rows instead of 3
 	const threeMin = {
 		...taskRecord("three-min", "command"),
 		title: "build-step",
-		execution: { kind: "settled" as const, result: { kind: "completed" as const, output: taskRecord("x").output } },
+		execution: {
+			kind: "settled" as const,
+			result: { kind: "completed" as const, output: taskRecord("x").output, exitCode: 0 },
+		},
 		metrics: { elapsedMs: 192_000 },
 	};
 	const hourSix = {
