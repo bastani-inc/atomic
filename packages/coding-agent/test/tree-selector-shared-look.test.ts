@@ -33,7 +33,7 @@ describe("/tree on the shared picker look (#5224)", () => {
 	beforeAll(() => initTheme("dark"));
 	beforeEach(() => setKeybindings(new KeybindingsManager()));
 
-	it("has a title, a search box, the ❯ marker and one hint line at the bottom", () => {
+	it("has a title, a search box, the ∀ marker and one hint line at the bottom", () => {
 		const selector = new TreeSelectorComponent(
 			chain(3),
 			"u2",
@@ -51,7 +51,7 @@ describe("/tree on the shared picker look (#5224)", () => {
 			out.join("\n"),
 		);
 		assert.ok(
-			out.some((line) => /❯ .*message 2/.test(line)),
+			out.some((line) => /∀ .*message 2/.test(line)),
 			out.join("\n"),
 		);
 		const hint = out.at(-2)!;

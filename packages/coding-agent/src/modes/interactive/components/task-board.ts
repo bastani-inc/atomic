@@ -212,7 +212,7 @@ export function renderBoardRow(
 ): string {
 	const state = rowState(row);
 	const { glyph, color } = stateGlyph(state, row.kind === "task" ? row.task.kind : row.item.kind);
-	const marker = selected ? theme.fg("accent", "❯ ") : "  ";
+	const marker = selected ? theme.fg("accent", theme.bold("∀ ")) : "  ";
 
 	const nameColumn = nameColumnFor(width);
 	const modelColumn = model === undefined ? 0 : model.column;

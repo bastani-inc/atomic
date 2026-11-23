@@ -131,8 +131,8 @@ test("paused rows remain distinct from stopped rows (#5224)", () => {
 	});
 	const paused = stripVTControlCharacters(renderBoardRow(row("paused"), true, 80));
 	const stopped = stripVTControlCharacters(renderBoardRow(row("stopped"), true, 80));
-	assert.match(paused, /❯ ‖ release.*paused · 5s$/);
-	assert.match(stopped, /❯ ◯ release.*stopped · 5s$/);
+	assert.match(paused, /∀ ‖ release.*paused · 5s$/);
+	assert.match(stopped, /∀ ◯ release.*stopped · 5s$/);
 });
 
 test("settled resumable subagents display stopped consistently with their panel rows (#5224)", () => {
@@ -140,7 +140,7 @@ test("settled resumable subagents display stopped consistently with their panel 
 		const task = taskRecord(`resumable-${cause}`);
 		task.execution = { kind: "settled", result: { kind: "cancelled", cause, output: task.output } };
 		const text = stripVTControlCharacters(renderBoardRow({ id: task.ref.taskId, kind: "task", task }, true, 160));
-		assert.match(text, /❯ ◯.*stopped/);
+		assert.match(text, /∀ ◯.*stopped/);
 		assert.doesNotMatch(text, /‖|paused/);
 	}
 });
@@ -167,7 +167,7 @@ test("task rows omit invalid metrics and progress instead of displaying non-fini
 				160,
 			),
 		);
-		assert.equal(line.trimEnd(), "❯ ◯ release       Build", `invalid value ${value}`);
+		assert.equal(line.trimEnd(), "∀ ◯ release       Build", `invalid value ${value}`);
 	}
 });
 

@@ -418,7 +418,7 @@ test("an option list measures and paints from one layout per props and width (#4
 	assert.equal(select.mock.calls.length, 2, "a new width lays the list out again");
 	list.setProps({ selectedIndex: 1, focused: true, inputBuffer: "", inputCaret: 0 });
 	assert.ok(
-		list.render(30).some((line) => line.startsWith("❯ 2. Prose")),
+		list.render(30).some((line) => line.startsWith("∀ 2. Prose")),
 		"new props move the pointer",
 	);
 	list.render(40);

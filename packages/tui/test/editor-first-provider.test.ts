@@ -69,7 +69,7 @@ describe("Editor completion typed before it has a provider", () => {
 			type(editor, "/mo");
 			editor.setAutocompleteProvider(catalog(), options);
 			await settle();
-			assert.ok(rows(editor).includes("❯ /model"), JSON.stringify(options));
+			assert.ok(rows(editor).includes("∀ /model"), JSON.stringify(options));
 		}
 	});
 
@@ -138,7 +138,7 @@ describe("Editor completion typed before it has a provider", () => {
 		editor.setAutocompleteProvider(catalog(asked));
 		type(editor, "/mo");
 		await settle();
-		assert.ok(rows(editor).includes("❯ /model"));
+		assert.ok(rows(editor).includes("∀ /model"));
 		clickText(editor, 2);
 		await settle();
 		assert.deepEqual(asked, ["/mo", "/m"]);
@@ -166,7 +166,7 @@ describe("Editor completion typed before it has a provider", () => {
 			session.restoreDraft(early.snapshotDraft());
 			if (order === "prompt first") session.setAutocompleteProvider(catalog());
 			await settle();
-			assert.ok(rows(session).includes("❯ /model"), order);
+			assert.ok(rows(session).includes("∀ /model"), order);
 		}
 	});
 
@@ -205,7 +205,7 @@ describe("Editor text put in as typed", () => {
 		assert.equal(editor.getText(), "/mo");
 		editor.setAutocompleteProvider(catalog(asked));
 		await settle();
-		assert.ok(rows(editor).includes("❯ /model"));
+		assert.ok(rows(editor).includes("∀ /model"));
 		assert.deepEqual(asked, ["/mo"]);
 	});
 
@@ -214,7 +214,7 @@ describe("Editor text put in as typed", () => {
 		editor.setAutocompleteProvider(catalog());
 		editor.setTextAsTyped("/mo");
 		await settle();
-		assert.ok(rows(editor).includes("❯ /model"));
+		assert.ok(rows(editor).includes("∀ /model"));
 	});
 
 	it("looks up nothing for text whose last character asks for no lookup when typed", async () => {

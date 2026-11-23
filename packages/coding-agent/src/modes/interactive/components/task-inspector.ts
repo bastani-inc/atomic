@@ -62,6 +62,7 @@ import {
 	shellViewerBoxGeometry,
 	stepShellStopConfirm,
 } from "./shell-viewer-layout.js";
+import { isSingleLeftClick } from "./single-click.ts";
 import {
 	type BoardRowModel,
 	boardModelFits,
@@ -110,6 +111,10 @@ import { formatToolActionSummary } from "./tool-block-summary.ts";
 import { repaintAfterSingleClick } from "./transcript-block-clicks.ts";
 
 const DETAIL_WHEEL_ROWS = 4;
+
+function isNonWheelMouseReport(data: string): boolean {
+	return parseWheelReport(data) === undefined && (/^\x1b\[<\d+;\d+;\d+[mM]$/.test(data) || data.startsWith("\x1b[M"));
+}
 
 function samePromptChoices(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
 	if (a === b) return true;
@@ -304,6 +309,11 @@ export class TaskInspector implements Component {
 	private transcript?: TaskTranscriptPage;
 	/** The frame row the open transcript started on in the last `renderViewport`, while one was drawn. */
 	private transcriptTop: number | undefined;
+	/** What the last board frame drew on each rendered row, for single-click opening and stale-click guards. */
+	private paintedBoard?: {
+		readonly rowsByLine: readonly (string | undefined)[];
+		readonly rowsById: ReadonlyMap<string, TaskBoardRow>;
+	};
 	private status = "";
 	/** A failure shown once on the task pages, until the next key. */
 	private failureNotice = "";
@@ -848,6 +858,7 @@ export class TaskInspector implements Component {
 	}
 	dispose(): void {
 		this.disposed = true;
+		this.paintedBoard = undefined;
 		this.detailRead?.abort();
 		this.detailRead = undefined;
 		this.releaseBoardSource?.();
@@ -1085,11 +1096,16 @@ export class TaskInspector implements Component {
 		}
 		if (current()) this.requestRender();
 	}
-	/** A click on any row of a block in an open transcript expands or collapses that block. */
+	/**
+	 * A single click on a `/tasks` board row opens it (matching `Enter`); on an open transcript, it expands or
+	 * collapses the clicked block.
+	 */
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.disposed || this.helpOpen) return undefined;
+		if (this.navigation.focus.kind === "tasks") return this.handleBoardClick(event);
 		const transcript = this.transcript;
 		const top = this.transcriptTop;
-		if (transcript?.handleMouse === undefined || top === undefined || this.helpOpen) return undefined;
+		if (transcript?.handleMouse === undefined || top === undefined) return undefined;
 		if (this.navigation.focus.kind !== "detail") return undefined;
 		const result = transcript.handleMouse({ ...event, y: event.y - top });
 		if (result === undefined) return undefined;
@@ -1097,22 +1113,108 @@ export class TaskInspector implements Component {
 		return repaintAfterSingleClick(result, () => this.requestRender());
 	}
 
+	private handleBoardClick(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (!isSingleLeftClick(event) || this.sending || this.paintedBoard === undefined) return undefined;
+		const index = Math.floor(event.y);
+		if (index < 0 || index >= this.paintedBoard.rowsByLine.length) return undefined;
+		const paintedId = this.paintedBoard.rowsByLine[index];
+		if (paintedId === undefined) return undefined;
+		const paintedRow = this.paintedBoard.rowsById.get(paintedId);
+		if (paintedRow === undefined) return undefined;
+
+		if (this.boardStale) this.refreshOrder();
+		let target = this.rowsById.get(paintedId);
+		if (target === undefined && paintedRow.kind === "task") {
+			const stableKey = taskStableKey(paintedRow.task);
+			const entry = this.navigationEntries.find((candidate) => candidate.key === stableKey);
+			if (entry !== undefined) target = this.rowsById.get(entry.id);
+		}
+		if (target === undefined) {
+			this.requestRender();
+			return { handled: true };
+		}
+
+		this.failureNotice = "";
+		this.status = "";
+		this.navigation.stopConfirm.reset();
+		this.navigation.finishedWhileArmed = undefined;
+		this.itemFinishedWhileArmed = undefined;
+		this.itemFinishedAcknowledged = false;
+		if (this.filtering) this.filtering = false;
+		if (this.peekId !== undefined) this.closePeek();
+		this.selectionChosen = true;
+		this.navigation.select(target.id);
+		if (target.kind === "item") {
+			if (!this.openBoardItem(target)) this.requestRender();
+		} else {
+			this.openBoardTask(target.task);
+		}
+		return { handled: true };
+	}
+
+	private openBoardTask(task: TaskRecord): void {
+		this.navigation.focus = { kind: "detail" };
+		if (this.showAgent(task)) return;
+		this.enterAwayView(task);
+		this.chatFrom = "list";
+		this.detailGeneration++;
+		this.openTranscript();
+		if (this.transcript === undefined) {
+			void this.loadDetail();
+			this.requestRender();
+		}
+	}
+
+	private openBoardItem(row: Extract<TaskBoardRow, { kind: "item" }>): boolean {
+		if (this.boardSource?.open) {
+			const reopen = this.reopen;
+			const anchor = this.captureListAnchor(row.id);
+			try {
+				const opened = this.boardSource.open(
+					row.id,
+					reopen ? { onReturn: () => reopen(row.id, anchor) } : undefined,
+				);
+				if (opened === false) this.failureNotice = `Could not open ${rowName(row)}.`;
+				else {
+					this.returnAnchor = anchor;
+					this.closeReason = "navigated-item";
+					this.close();
+					return true;
+				}
+			} catch (error) {
+				const reason = taskDisplayText(error instanceof Error ? error.message : String(error));
+				this.failureNotice = reason
+					? `Could not open ${rowName(row)}: ${reason}`
+					: `Could not open ${rowName(row)}.`;
+			}
+		} else this.status = "This item can't be opened from here.";
+		return false;
+	}
+
 	/** Ctrl+O was pressed: the open transcript's blocks follow the tool-output setting again. */
 	toolOutputToggled(): void {
 		this.transcript?.toolOutputToggled?.();
 	}
 
-	/** What the last frame drew on `row` of the open transcript, named by the transcript; undefined elsewhere. */
+	/** What the last frame drew on `row`: a `/tasks` board row id or the open transcript's row key; undefined elsewhere. */
 	paintedRowKey(row: number): string | undefined {
+		if (this.disposed || this.helpOpen) return undefined;
+		if (this.navigation.focus.kind === "tasks") {
+			if (this.sending || this.paintedBoard === undefined) return undefined;
+			const index = Math.floor(row);
+			const rowId = index >= 0 ? this.paintedBoard.rowsByLine[index] : undefined;
+			return rowId === undefined ? undefined : `board:${rowId}`;
+		}
 		const transcript = this.transcript;
 		const top = this.transcriptTop;
-		if (transcript?.paintedRowKey === undefined || top === undefined || this.helpOpen) return undefined;
+		if (transcript?.paintedRowKey === undefined || top === undefined) return undefined;
 		if (this.navigation.focus.kind !== "detail") return undefined;
 		return transcript.paintedRowKey(row - top);
 	}
 
 	/** Every key belongs to the inspector except the host's thinking toggle when it leaves that alone. */
 	handleInput(data: string): boolean {
+		if (isNonWheelMouseReport(data)) return true;
 		const keys = getKeybindings();
 		const stopKey = keys.matches(data, "app.list.stop");
 		const selectionAction =
@@ -1495,27 +1597,7 @@ export class TaskInspector implements Component {
 		}
 		if (row?.kind !== "item") return false;
 		if (keys.matches(data, "app.list.open")) {
-			if (this.boardSource?.open) {
-				const reopen = this.reopen;
-				const anchor = this.captureListAnchor(row.id);
-				try {
-					const opened = this.boardSource.open(
-						row.id,
-						reopen ? { onReturn: () => reopen(row.id, anchor) } : undefined,
-					);
-					if (opened === false) this.failureNotice = `Could not open ${rowName(row)}.`;
-					else {
-						this.returnAnchor = anchor;
-						this.closeReason = "navigated-item";
-						this.close();
-					}
-				} catch (error) {
-					const reason = taskDisplayText(error instanceof Error ? error.message : String(error));
-					this.failureNotice = reason
-						? `Could not open ${rowName(row)}: ${reason}`
-						: `Could not open ${rowName(row)}.`;
-				}
-			} else this.status = "This item can't be opened from here.";
+			this.openBoardItem(row);
 			return true;
 		}
 		if (keys.matches(data, "app.list.stop")) {
@@ -2153,11 +2235,14 @@ export class TaskInspector implements Component {
 		].slice(0, Math.max(1, budget));
 	}
 	renderViewport(width: number, budget: number): string[] {
-		if (this.transcript && this.navigation.focus.kind === "detail")
+		if (this.transcript && this.navigation.focus.kind === "detail") {
+			this.paintedBoard = undefined;
 			return this.renderTranscriptPage(width, budget, this.transcript);
+		}
 		this.transcriptTop = undefined;
 		const style = themedNavKeyStyle();
 		if (this.helpOpen) {
+			this.paintedBoard = undefined;
 			const detailOpen = this.navigation.focus.kind === "detail";
 			return renderNavKeyOverlay(
 				detailOpen ? "keys · task" : "keys · tasks",
@@ -2167,8 +2252,12 @@ export class TaskInspector implements Component {
 				getKeybindings(),
 			).slice(-Math.max(1, budget));
 		}
-		if (this.navigation.focus.kind === "stdin") return this.renderInputSheet(width, budget);
+		if (this.navigation.focus.kind === "stdin") {
+			this.paintedBoard = undefined;
+			return this.renderInputSheet(width, budget);
+		}
 		if (this.navigation.focus.kind !== "detail") return this.renderBoard(width, budget);
+		this.paintedBoard = undefined;
 		const framed = width >= 20 && budget >= 7;
 		const inner = Math.max(1, width - (framed ? 4 : 0));
 		const current = this.selected();
@@ -2524,6 +2613,7 @@ export class TaskInspector implements Component {
 			}
 		}
 		this.navigation.paint(drawnTasks);
+		const windowRowIds = painted.map((line) => (typeof line === "string" ? undefined : line.id));
 		const renderedWindow = painted.map((line) =>
 			clip(
 				typeof line === "string"
@@ -2531,10 +2621,19 @@ export class TaskInspector implements Component {
 					: ` ${renderBoardRow(line, line.id === selected?.id, width - 1, modelOf(line))}`,
 			),
 		);
+		const paintedRowsById = new Map(paintedRows.map((row) => [row.id, row]));
 		if (shortViewport) {
 			const shortHint = lineBudget >= 2 ? footer.slice(-1) : [];
+			this.paintedBoard = {
+				rowsByLine: [...windowRowIds, ...shortHint.map(() => undefined)].slice(0, lineBudget),
+				rowsById: paintedRowsById,
+			};
 			return [...renderedWindow, ...shortHint].slice(0, lineBudget);
 		}
+		this.paintedBoard = {
+			rowsByLine: [...head.map(() => undefined), ...windowRowIds, ...footer.map(() => undefined)],
+			rowsById: paintedRowsById,
+		};
 		return [...head, ...renderedWindow, ...footer];
 	}
 	private renderAll(width: number): string[] {

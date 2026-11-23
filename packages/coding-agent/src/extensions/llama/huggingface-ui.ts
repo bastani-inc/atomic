@@ -103,7 +103,7 @@ export class HuggingFaceSearch extends Container implements Focusable {
 		for (let index = start; index < end; index++) {
 			const model = this.filteredResults[index];
 			if (!model) continue;
-			const prefix = index === this.selectedIndex ? "❯ " : "  ";
+			const prefix = index === this.selectedIndex ? "∀ " : "  ";
 			const details = `${compactCount(model.downloads)} downloads`;
 			this.resultsContainer.addChild(
 				new Text(

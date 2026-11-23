@@ -288,11 +288,11 @@ export async function showTaskInspector(
 								return line + " ".repeat(Math.max(0, width - visibleWidth(line)));
 							});
 						},
-						// A full-screen page draws from the top row, so the click's row is the page's.
+						// Both the inline `/tasks` board and full-screen pages draw from row 0 of their own mount.
 						handleMouse: (event: TuiMouseEvent): TuiMouseEventResult | undefined =>
-							mountFullscreen && inspector.fullscreen ? inspector.handleMouse(event) : undefined,
+							!closed && mountFullscreen === inspector.fullscreen ? inspector.handleMouse(event) : undefined,
 						paintedRowKey: (row: number): string | undefined =>
-							mountFullscreen && inspector.fullscreen ? inspector.paintedRowKey(row) : undefined,
+							!closed && mountFullscreen === inspector.fullscreen ? inspector.paintedRowKey(row) : undefined,
 						handleInput: (data: string) => {
 							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
 							// Ctrl+C closes the view: what it shows here (lists, details, a shell's output) has no prompt.

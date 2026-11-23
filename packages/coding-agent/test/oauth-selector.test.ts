@@ -334,12 +334,12 @@ describe("OAuthSelectorComponent", () => {
 			const output = selector.render(120).join("\n");
 			expect(output).not.toContain(theme.fg("accent", "OpenRouter"));
 			expect(output).toContain(theme.fg("text", "Anthropic"));
-			expect(stripAnsi(output)).toContain("❯ OpenRouter");
+			expect(stripAnsi(output)).toContain("∀ OpenRouter");
 
 			selector.handleInput("\x1b[B");
 			const moved = selector.render(120).join("\n");
 			expect(moved).toContain(theme.fg("text", "OpenRouter"));
-			expect(stripAnsi(moved)).toContain("❯ Anthropic");
+			expect(stripAnsi(moved)).toContain("∀ Anthropic");
 		} finally {
 			selector.dispose();
 		}
@@ -362,7 +362,7 @@ describe("OAuthSelectorComponent", () => {
 		);
 		try {
 			const lines = selector.render(120).map(stripAnsi);
-			expect(lines.some((line) => line.includes(" ❯ OpenRouter ✦ · account"))).toBe(true);
+			expect(lines.some((line) => line.includes(" ∀ OpenRouter ✦ · account"))).toBe(true);
 			expect(lines.some((line) => line.includes("   OpenRouter ✦ · API key"))).toBe(true);
 		} finally {
 			selector.dispose();
@@ -435,7 +435,7 @@ describe("OAuthSelectorComponent", () => {
 		);
 
 		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output).toMatch(/^ ❯ OpenRouter ✦ +not configured$/m);
+		expect(output).toMatch(/^ ∀ OpenRouter ✦ +not configured$/m);
 		expect(output).toMatch(/^ {3}Anthropic +not configured$/m);
 	});
 
@@ -457,7 +457,7 @@ describe("OAuthSelectorComponent", () => {
 		const openRouterRow = rendered.find((line) => line.includes("OpenRouter")) ?? "";
 		const anthropicRow = rendered.find((line) => line.includes("Anthropic")) ?? "";
 		expect(output).toContain("│ ⌕ ");
-		expect(openRouterRow).toMatch(/^ ❯ OpenRouter ✦ {2,}not configured$/);
+		expect(openRouterRow).toMatch(/^ ∀ OpenRouter ✦ {2,}not configured$/);
 		expect(anthropicRow).toMatch(/^ {3}Anthropic {2,}not configured$/);
 		expect(visibleWidth(openRouterRow)).toBe(119);
 		expect(visibleWidth(anthropicRow)).toBe(119);

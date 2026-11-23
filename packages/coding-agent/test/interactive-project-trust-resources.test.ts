@@ -213,7 +213,7 @@ test.each(["isolated", "in-process"] as const)(
 				cli.write("theme");
 				await cli.waitForScreen((s) => s.includes("⌕ theme"), STARTUP_TIMEOUT_MS, "the theme setting");
 				cli.write("\r");
-				await cli.waitForScreen((s) => /❯ Light theme +light/.test(s), STARTUP_TIMEOUT_MS, "the automatic pair");
+				await cli.waitForScreen((s) => /∀ Light theme +light/.test(s), STARTUP_TIMEOUT_MS, "the automatic pair");
 				await approveProject();
 				if (host === "in-process") {
 					settleSource();
@@ -223,14 +223,14 @@ test.each(["isolated", "in-process"] as const)(
 						"the theme inventory",
 					);
 				}
-				assert.match(cli.screen(), /❯ Light theme +light/);
+				assert.match(cli.screen(), /∀ Light theme +light/);
 				cli.write("\r");
 				await cli.waitForScreen(
 					(s) => s.includes("Select the theme to use for light terminal appearance"),
 					STARTUP_TIMEOUT_MS,
 					"the light-theme picker",
 				);
-				assert.match(cli.screen(), /❯ ● catppuccin-latte/);
+				assert.match(cli.screen(), /∀ ● catppuccin-latte/);
 				assert.match(cli.screen(), /○ folder-extra/);
 			},
 			(project, agentDir) => {
@@ -277,13 +277,13 @@ test(
 				);
 				cli.write("\x1b[A");
 				await cli.waitForScreen(
-					(screen) => /❯ ○ catppuccin-mocha/.test(screen),
+					(screen) => /∀ ○ catppuccin-mocha/.test(screen),
 					STARTUP_TIMEOUT_MS,
 					"the highlighted theme",
 				);
 				await approveProject();
 				assert.doesNotMatch(cli.screen(), /approved-theme/);
-				assert.match(cli.screen(), /❯ ○ catppuccin-mocha/);
+				assert.match(cli.screen(), /∀ ○ catppuccin-mocha/);
 			},
 			(project) => {
 				const theme = JSON.parse(
@@ -332,7 +332,7 @@ test.each(["decision", "compaction"] as const)(
 					STARTUP_TIMEOUT_MS,
 					"the new picker",
 				);
-				assert.match(cli.screen(), /❯ ● fixture\/project/);
+				assert.match(cli.screen(), /∀ ● fixture\/project/);
 			},
 			(project, agentDir) => {
 				projectSettings = join(project, ".atomic/settings.json");
@@ -462,7 +462,7 @@ test(
 				await cli.waitForScreen((s) => s.includes("Search settings"), STARTUP_TIMEOUT_MS, "Settings");
 				cli.write("tree filter");
 				await cli.waitForScreen((s) => s.includes("⌕ tree filter"), STARTUP_TIMEOUT_MS, "the tree setting");
-				assert.match(cli.screen(), /❯ Tree filter mode +all/);
+				assert.match(cli.screen(), /∀ Tree filter mode +all/);
 			},
 			(_project, agentDir) => {
 				userSettings = join(agentDir, "settings.json");
@@ -481,9 +481,9 @@ test(
 				cli.write("/settings\r");
 				await cli.waitForScreen((s) => s.includes("Search settings"), STARTUP_TIMEOUT_MS, "Settings");
 				cli.write("hide thinking");
-				await cli.waitForScreen((s) => /❯ Hide thinking +false/.test(s), STARTUP_TIMEOUT_MS, "Hide thinking");
+				await cli.waitForScreen((s) => /∀ Hide thinking +false/.test(s), STARTUP_TIMEOUT_MS, "Hide thinking");
 				cli.write("\r");
-				await cli.waitForScreen((s) => /❯ Hide thinking +true/.test(s), STARTUP_TIMEOUT_MS, "the choice");
+				await cli.waitForScreen((s) => /∀ Hide thinking +true/.test(s), STARTUP_TIMEOUT_MS, "the choice");
 				await approveProject();
 				cli.write("\x1b");
 				await cli.waitForScreen((s) => !s.includes("⌕ hide thinking"), STARTUP_TIMEOUT_MS, "the cleared filter");
@@ -668,7 +668,7 @@ test.each(["cwd decision", "startup settlement"])(
 				await cli.waitForScreen((s) => s.includes("Search settings"), STARTUP_TIMEOUT_MS, "Settings");
 				cli.write("decision model");
 				await cli.waitForScreen(
-					(s) => /❯ Decision model +Automatic/.test(s),
+					(s) => /∀ Decision model +Automatic/.test(s),
 					STARTUP_TIMEOUT_MS,
 					"the original parent",
 				);
@@ -683,11 +683,11 @@ test.each(["cwd decision", "startup settlement"])(
 				} else {
 					assert.doesNotMatch(cli.screen(), /\/projectapproved/);
 				}
-				assert.match(cli.screen(), /❯ Decision model +Automatic/);
+				assert.match(cli.screen(), /∀ Decision model +Automatic/);
 				cli.write("\r");
 				await cli.waitForScreen((s) => s.includes("A classifier answers"), STARTUP_TIMEOUT_MS, "the new child");
 				assert.match(cli.screen(), /Saves to project settings\./);
-				assert.match(cli.screen(), /❯ ● fixture\/project/);
+				assert.match(cli.screen(), /∀ ● fixture\/project/);
 			},
 			(project) =>
 				write(join(project, ".atomic/settings.json"), JSON.stringify({ decisionModel: "fixture/project" })),
@@ -702,7 +702,7 @@ test(
 		withPendingProject(
 			async (cli, approveProject, settleSource) => {
 				cli.write("@demo");
-				await cli.waitForScreen((s) => /❯ demo0\.txt/.test(s), STARTUP_TIMEOUT_MS, "the first file");
+				await cli.waitForScreen((s) => /∀ demo0\.txt/.test(s), STARTUP_TIMEOUT_MS, "the first file");
 				const row =
 					cli
 						.screen()
@@ -710,7 +710,7 @@ test(
 						.findIndex((line) => line.trim() === "demo1.txt") + 1;
 				assert.ok(row > 0);
 				cli.write(`\x1b[<0;8;${row}M`);
-				await cli.waitForScreen((s) => /❯ demo1\.txt/.test(s), STARTUP_TIMEOUT_MS, "the pressed file");
+				await cli.waitForScreen((s) => /∀ demo1\.txt/.test(s), STARTUP_TIMEOUT_MS, "the pressed file");
 				await approveProject();
 				settleSource();
 				await cli.waitForScreen(
@@ -718,7 +718,7 @@ test(
 					STARTUP_TIMEOUT_MS,
 					"the in-process publication",
 				);
-				assert.match(cli.screen(), /❯ demo1\.txt/);
+				assert.match(cli.screen(), /∀ demo1\.txt/);
 				cli.write(`\x1b[<0;8;${row}m`);
 				await cli.waitForScreen((s) => /❯ @demo1\.txt/.test(s), 5_000, "release commits the pressed file");
 			},
@@ -735,7 +735,7 @@ test(
 	() =>
 		withPendingProject(async (cli, approveProject) => {
 			cli.write("/global");
-			const highlighted = (screen: string) => /❯ (globalone|globaltwo)\s/.exec(screen)?.[1];
+			const highlighted = (screen: string) => /∀ (globalone|globaltwo)\s/.exec(screen)?.[1];
 			await cli.waitForScreen((screen) => !!highlighted(screen), STARTUP_TIMEOUT_MS, "the open menu");
 			// These two matches have equal scores; either file can be discovered first.
 			const second = highlighted(cli.screen()) === "globalone" ? "globaltwo" : "globalone";
@@ -763,10 +763,10 @@ test(
 	() =>
 		withPendingProject(async (cli, approveProject) => {
 			cli.write("/global");
-			await cli.waitForScreen((screen) => /❯ (globalone|globaltwo)\s/.test(screen), STARTUP_TIMEOUT_MS, "the menu");
+			await cli.waitForScreen((screen) => /∀ (globalone|globaltwo)\s/.test(screen), STARTUP_TIMEOUT_MS, "the menu");
 			await approveProject();
 			await cli.waitForScreen(
-				(screen) => /❯ global\s/.test(screen) && screen.includes("Project exact match"),
+				(screen) => /∀ global\s/.test(screen) && screen.includes("Project exact match"),
 				STARTUP_TIMEOUT_MS,
 				"the approved exact command, selected",
 			);

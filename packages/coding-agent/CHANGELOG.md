@@ -2,9 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Clicking any row in `/tasks` (shells, subagents, or extension items) now opens it like pressing `Enter` — including clicking a shell row in a shell-only `/tasks` view to inspect its command and retained output, across in-process hosts, isolated hosts, and subagent chats ([#6507](https://github.com/bastani-inc/atomic/pull/6507)).
+
 ### Changed
 
-- Changed the default Mistral model from the retired `devstral-medium-latest` to `mistral-large-latest`.
+- Changed the default Mistral model from the retired `devstral-medium-latest` to `mistral-large-latest` ([#6508](https://github.com/bastani-inc/atomic/pull/6508)).
+- Picker UIs across Atomic (`/tasks`, `/model`, `/settings`, `/resume`, `/tree`, `/fork`, `/mcp`, `/llama`, `atomic config`, `ask_user_question`, extension dialogs, and editor completion menus) now consistently use Atomic's `∀` selection cursor instead of `❯` or `→`, matching the agent panel. Editor and inline reply prompts keep `❯` ([#6507](https://github.com/bastani-inc/atomic/pull/6507)).
+
+### Fixed
+
+- Clicking `x stop` or `Press x again` inside the fullscreen `/tasks` shell viewer or detail page no longer disarms the two-press stop confirmation on mouse-down before the hint click registers ([#6507](https://github.com/bastani-inc/atomic/pull/6507)).
 
 ## [0.10.5] - 2026-11-23
 

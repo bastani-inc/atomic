@@ -86,7 +86,7 @@ describe("shared selector (#5224)", () => {
 		const { text } = picker({ title: "Select theme", items: items(3) });
 		const lines = text();
 		assert.equal(lines[0], "  Select theme");
-		assert.ok(lines.includes(" ❯ item 0"));
+		assert.ok(lines.includes(" ∀ item 0"));
 		assert.ok(lines.includes("   item 1"));
 		assert.equal(hint(lines), "↑↓ select · enter choose · esc cancel · ? keys");
 	});
@@ -117,7 +117,7 @@ describe("shared selector (#5224)", () => {
 		const lines = text(40);
 		assert.ok(lines.includes("   ○ item 0"));
 		const current = lines.find((line) => line.includes("item 2")) ?? "";
-		assert.match(current, /^ ❯ ● item 2 +current$/);
+		assert.match(current, /^ ∀ ● item 2 +current$/);
 		assert.equal(current.length, 39, "the tag is right-aligned");
 	});
 
@@ -129,7 +129,7 @@ describe("shared selector (#5224)", () => {
 		const one = picker({ items: rows }).text(80);
 		assert.equal(
 			one.find((line) => line.includes("short")),
-			" ❯ short          first",
+			" ∀ short          first",
 		);
 		assert.equal(
 			one.find((line) => line.includes("longer")),
@@ -144,7 +144,7 @@ describe("shared selector (#5224)", () => {
 		assert.ok(longOne[0]?.includes("loaded · 33k context"), longOne.join("\n"));
 		assert.ok(longOne[1]?.includes("Hugging Face"), longOne.join("\n"));
 		const two = picker({ items: rows, layout: "two-line" }).text(80);
-		const index = two.indexOf(" ❯ short");
+		const index = two.indexOf(" ∀ short");
 		assert.equal(two[index + 1], "   first");
 	});
 
@@ -266,7 +266,7 @@ describe("shared selector (#5224)", () => {
 		selector.handleInput(UP);
 		selector.handleInput(SPACE);
 		const lines = text();
-		assert.ok(lines.includes(" ❯ [✓] item 0"));
+		assert.ok(lines.includes(" ∀ [✓] item 0"));
 		assert.ok(lines.includes("   [ ] item 1"));
 		assert.equal(hint(lines), "↑↓ select · space toggle · enter confirm · esc cancel · ? keys");
 		selector.handleInput(ENTER);
@@ -297,7 +297,7 @@ describe("shared selector (#5224)", () => {
 
 	test("numbered rows: digits choose directly when there is no search box", () => {
 		const { selector, events, text } = picker({ numbered: true, items: items(3) });
-		assert.ok(text().includes(" ❯ 1. item 0"));
+		assert.ok(text().includes(" ∀ 1. item 0"));
 		assert.equal(hint(text()), "↑↓ select · enter choose · 1-3 pick · esc cancel · ? keys");
 		selector.handleInput("3");
 		assert.deepEqual(events, ["select:id-2"]);
@@ -428,23 +428,23 @@ describe("shared selector (#5224)", () => {
 
 	test("cached renders follow public state updates and picker metadata (#5224)", () => {
 		const { selector, text } = picker({ items: items(4), mode: "multi", maxVisible: 2 });
-		assert.ok(text().includes(" ❯ [ ] item 0"));
+		assert.ok(text().includes(" ∀ [ ] item 0"));
 		selector.state.move(1);
-		assert.ok(text().includes(" ❯ [ ] item 1"));
+		assert.ok(text().includes(" ∀ [ ] item 1"));
 		selector.state.page(1);
-		assert.ok(text().includes(" ❯ [ ] item 3"));
+		assert.ok(text().includes(" ∀ [ ] item 3"));
 		selector.state.edge("first");
-		assert.ok(text().includes(" ❯ [ ] item 0"));
+		assert.ok(text().includes(" ∀ [ ] item 0"));
 		selector.state.select(2);
-		assert.ok(text().includes(" ❯ [ ] item 2"));
+		assert.ok(text().includes(" ∀ [ ] item 2"));
 		selector.state.toggle("id-2");
-		assert.ok(text().includes(" ❯ [✓] item 2"));
+		assert.ok(text().includes(" ∀ [✓] item 2"));
 		selector.state.setQuery("item 1");
-		assert.ok(text().includes(" ❯ [ ] item 1"));
+		assert.ok(text().includes(" ∀ [ ] item 1"));
 		selector.state.setItems([{ id: "new", value: 9, label: "replacement" }]);
 		assert.ok(text().some((line) => line.includes("No matches")));
 		selector.state.setQuery("replacement");
-		assert.ok(text().includes(" ❯ [ ] replacement"));
+		assert.ok(text().includes(" ∀ [ ] replacement"));
 		selector.setTitle("Updated title");
 		selector.setSubtitle("Updated subtitle");
 		selector.setNotice({ text: "Updated notice", tone: "success" });
@@ -478,9 +478,9 @@ describe("shared selector (#5224)", () => {
 		const { text } = picker({
 			items: items(2, (index) => (index === 0 ? { labelStyle: (label) => `${label}${suffix}` } : {})),
 		});
-		assert.ok(text().includes(" ❯ item 0:one"));
+		assert.ok(text().includes(" ∀ item 0:one"));
 		suffix = ":two";
-		assert.ok(text().includes(" ❯ item 0:two"));
+		assert.ok(text().includes(" ∀ item 0:two"));
 	});
 
 	test("notifies onSelectionChange when search replaces the selected row at the same index (#5224)", () => {
@@ -535,7 +535,7 @@ describe("shared selector (#5224)", () => {
 			items: items(2, (index) => ({ mark: index === 0 ? "checked" : "unchecked" })),
 		});
 		const lines = text();
-		assert.ok(lines.includes(" ❯ [✓] item 0"), lines.join("\n"));
+		assert.ok(lines.includes(" ∀ [✓] item 0"), lines.join("\n"));
 		assert.ok(lines.includes("   [ ] item 1"), lines.join("\n"));
 	});
 
@@ -545,10 +545,10 @@ describe("shared selector (#5224)", () => {
 				labelStyle: (label: string, selected: boolean) => (selected ? `<${label}>` : label),
 			})),
 		});
-		assert.ok(text().includes(" ❯ <item 0>"));
+		assert.ok(text().includes(" ∀ <item 0>"));
 		selector.handleInput(DOWN);
 		assert.ok(text().includes("   item 0"));
-		assert.ok(text().includes(" ❯ <item 1>"));
+		assert.ok(text().includes(" ∀ <item 1>"));
 	});
 
 	test("a subtitle with several lines shows each line, wrapped to the width", () => {

@@ -410,7 +410,7 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 				items: [{ id: "a", value: "a", label: "abcdef", tag }],
 				style: PLAIN_SELECTOR_STYLE,
 			});
-			assert.equal(plain(selector.render(10)[0] ?? "").trimEnd(), " ❯ abcdef");
+			assert.equal(plain(selector.render(10)[0] ?? "").trimEnd(), " ∀ abcdef");
 		}
 	});
 
@@ -420,48 +420,48 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 			style: PLAIN_SELECTOR_STYLE,
 		});
 		for (const width of [31, 32, 33]) {
-			assert.equal(plain(loginLike.render(width)[0] ?? "").trimEnd(), " ❯ Anthropic · subscription");
+			assert.equal(plain(loginLike.render(width)[0] ?? "").trimEnd(), " ∀ Anthropic · subscription");
 		}
-		assert.equal(plain(loginLike.render(34)[0] ?? "").trimEnd(), " ❯ Anthropic · subscription  s...");
+		assert.equal(plain(loginLike.render(34)[0] ?? "").trimEnd(), " ∀ Anthropic · subscription  s...");
 
 		const modelLike = new Selector<string>({
 			items: [{ id: "gpt-4o", value: "gpt-4o", label: "openai/gpt-4o", mark: "on", tag: "current" }],
 			style: PLAIN_SELECTOR_STYLE,
 		});
 		for (const width of [22, 23, 24]) {
-			assert.equal(plain(modelLike.render(width)[0] ?? "").trimEnd(), " ❯ ● openai/gpt-4o");
+			assert.equal(plain(modelLike.render(width)[0] ?? "").trimEnd(), " ∀ ● openai/gpt-4o");
 		}
-		assert.equal(plain(modelLike.render(25)[0] ?? "").trimEnd(), " ❯ ● openai/gpt-4o  c...");
+		assert.equal(plain(modelLike.render(25)[0] ?? "").trimEnd(), " ∀ ● openai/gpt-4o  c...");
 
 		const shortTag = new Selector<string>({
 			items: [{ id: "gpt-4o", value: "gpt-4o", label: "openai/gpt-4o", tag: "on" }],
 			style: PLAIN_SELECTOR_STYLE,
 		});
-		assert.equal(plain(shortTag.render(20)[0] ?? "").trimEnd(), " ❯ openai/gpt-4o");
-		assert.equal(plain(shortTag.render(21)[0] ?? "").trimEnd(), " ❯ openai/gpt-4o  on");
+		assert.equal(plain(shortTag.render(20)[0] ?? "").trimEnd(), " ∀ openai/gpt-4o");
+		assert.equal(plain(shortTag.render(21)[0] ?? "").trimEnd(), " ∀ openai/gpt-4o  on");
 
 		const emojiTag = new Selector<string>({
 			items: [{ id: "a", value: "a", label: "x", tag: "🔒 locked" }],
 			style: PLAIN_SELECTOR_STYLE,
 		});
-		assert.equal(plain(emojiTag.render(11)[0] ?? "").trimEnd(), " ❯ x");
-		assert.equal(plain(emojiTag.render(12)[0] ?? "").trimEnd(), " ❯ x  🔒...");
+		assert.equal(plain(emojiTag.render(11)[0] ?? "").trimEnd(), " ∀ x");
+		assert.equal(plain(emojiTag.render(12)[0] ?? "").trimEnd(), " ∀ x  🔒...");
 
 		const cjkTag = new Selector<string>({
 			items: [{ id: "a", value: "a", label: "x", tag: "日本語" }],
 			style: PLAIN_SELECTOR_STYLE,
 		});
-		assert.equal(plain(cjkTag.render(11)[0] ?? "").trimEnd(), " ❯ x");
-		assert.equal(plain(cjkTag.render(12)[0] ?? "").trimEnd(), " ❯ x  日...");
+		assert.equal(plain(cjkTag.render(11)[0] ?? "").trimEnd(), " ∀ x");
+		assert.equal(plain(cjkTag.render(12)[0] ?? "").trimEnd(), " ∀ x  日...");
 
 		const tabTag = new Selector<string>({
 			items: [{ id: "a", value: "a", label: "x", tag: "\tlocked" }],
 			style: PLAIN_SELECTOR_STYLE,
 		});
 		for (const width of [11, 12]) {
-			assert.equal(plain(tabTag.render(width)[0] ?? "").trimEnd(), " ❯ x");
+			assert.equal(plain(tabTag.render(width)[0] ?? "").trimEnd(), " ∀ x");
 		}
-		assert.equal(plain(tabTag.render(13)[0] ?? "").trimEnd(), " ❯ x  \t...");
+		assert.equal(plain(tabTag.render(13)[0] ?? "").trimEnd(), " ∀ x  \t...");
 	});
 
 	test("notifies onSelectionChange only when the selected row id changes across all input paths (#5237)", () => {
@@ -591,8 +591,8 @@ describe("selector interaction and rendering regressions (#5237)", () => {
 			style: PLAIN_SELECTOR_STYLE,
 		});
 		assert.equal(
-			marginSelector.render(12).find((line) => line.startsWith(" ❯ ")),
-			` ❯ ${truncateToWidth(longLabel, 8)}`,
+			marginSelector.render(12).find((line) => line.startsWith(" ∀ ")),
+			` ∀ ${truncateToWidth(longLabel, 8)}`,
 		);
 
 		const kb = getKeybindings();

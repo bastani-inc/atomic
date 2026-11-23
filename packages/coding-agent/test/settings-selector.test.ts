@@ -96,12 +96,12 @@ test("keeps the configured fixed theme marked while browsing", () => {
 
 	let output = render(submenu);
 	expect(output).toContain("○ Automatic");
-	expect(output).toContain("❯ ● dark");
+	expect(output).toContain("∀ ● dark");
 
 	submenu.handleInput?.("\x1b[B");
 	output = render(submenu);
 	expect(output).toContain("  ● dark");
-	expect(output).toContain("❯ ○ light");
+	expect(output).toContain("∀ ○ light");
 });
 
 test("opening automatic mode reads the eligible pair without changing the existing fixed-theme menu (#5693)", () => {
@@ -111,9 +111,9 @@ test("opening automatic mode reads the eligible pair without changing the existi
 		readThemeChoices: () => ({ currentTheme, availableThemes }),
 	} as SettingsCallbacks);
 	currentTheme = "latte/mocha";
-	expect(render(submenu)).toContain("❯ ● dark");
+	expect(render(submenu)).toContain("∀ ● dark");
 	submenu.handleInput?.("\x1b[A");
-	expect(render(submenu)).toContain("❯ ○ Automatic");
+	expect(render(submenu)).toContain("∀ ○ Automatic");
 	submenu.handleInput?.("\r");
 	expect(render(submenu)).toMatch(/Light theme\s+latte/);
 	expect(render(submenu)).toMatch(/Dark theme\s+mocha/);
@@ -131,11 +131,11 @@ test("a new appearance picker keeps its edited slot but reads a newly eligible u
 	expect(render(submenu)).toMatch(/Light theme\s+latte/);
 	currentTheme = "mocha/mocha";
 	submenu.handleInput?.("\r");
-	expect(render(submenu)).toContain("❯ ● latte");
+	expect(render(submenu)).toContain("∀ ● latte");
 	submenu.handleInput?.("\x1b");
 	submenu.handleInput?.("\x1b[B");
 	submenu.handleInput?.("\r");
-	expect(render(submenu)).toContain("❯ ● mocha");
+	expect(render(submenu)).toContain("∀ ● mocha");
 });
 
 test("keeps a configured automatic theme marked while browsing", () => {
@@ -152,12 +152,12 @@ test("keeps a configured automatic theme marked while browsing", () => {
 	// picker, whose configured value is "light".
 	submenu.handleInput?.("\r");
 	let output = render(submenu);
-	expect(output).toContain("❯ ● light");
+	expect(output).toContain("∀ ● light");
 
 	submenu.handleInput?.("\x1b[B");
 	output = render(submenu);
 	expect(output).toContain("  ● light");
-	expect(output).toContain("❯ ○ other");
+	expect(output).toContain("∀ ○ other");
 });
 
 test.each(["decision", "compaction"] as const)(
@@ -173,7 +173,7 @@ test.each(["decision", "compaction"] as const)(
 		list.handleInput("\r");
 		panel.refreshSettings(settingsConfig({ [`${kind}Model`]: "fixture/project", [`${kind}ModelScope`]: "project" }));
 		expect(render(panel)).toContain("Saves to project settings");
-		expect(render(panel)).toContain("❯ ● fixture/project");
+		expect(render(panel)).toContain("∀ ● fixture/project");
 		list.handleInput("\r");
 		expect(save).toHaveBeenCalledExactlyOnceWith("fixture/project");
 	},
@@ -188,12 +188,12 @@ test("mounted warnings toggle from the approved value and keep it when reopened 
 	list.selectItem("warnings");
 	list.handleInput("\r");
 	panel.refreshSettings(settingsConfig({ warnings: { anthropicExtraUsage: false } }));
-	expect(render(panel)).toMatch(/❯ Anthropic extra usage\s+false/);
+	expect(render(panel)).toMatch(/∀ Anthropic extra usage\s+false/);
 	list.handleInput("\r");
 	expect(save).toHaveBeenCalledExactlyOnceWith({ anthropicExtraUsage: true });
 	list.handleInput("\x1b");
 	list.handleInput("\r");
-	expect(render(panel)).toMatch(/❯ Anthropic extra usage\s+true/);
+	expect(render(panel)).toMatch(/∀ Anthropic extra usage\s+true/);
 });
 
 test("the automatic theme menu keeps the open dark picker and browsed theme across approval (#5693)", () => {
@@ -209,10 +209,10 @@ test("the automatic theme menu keeps the open dark picker and browsed theme acro
 	list.handleInput("\r");
 	list.handleInput("\x1b[B");
 	panel.refreshSettings(settingsConfig({ ...base, currentTheme: "latte/mocha" }));
-	expect(render(panel)).toContain("❯ ○ light");
+	expect(render(panel)).toContain("∀ ○ light");
 	expect(render(panel)).toContain("● mocha");
 	list.handleInput("\x1b");
-	expect(render(panel)).toMatch(/❯ Dark theme\s+mocha/);
+	expect(render(panel)).toMatch(/∀ Dark theme\s+mocha/);
 	expect(render(panel)).toMatch(/Light theme\s+latte/);
 	list.handleInput("\x1b[B");
 	list.handleInput("\r");
@@ -234,7 +234,7 @@ test("mounted thinking rows keep the search and choice while gaining the approve
 		settingsConfig({ availableDefaultModels: models, modelThinkingLevels: { "fixture/chat": "high" } }),
 	);
 	expect(render(panel)).toContain("⌕ fixture");
-	expect(render(panel)).toMatch(/❯ ○ fixture\/chat\s+minimal/);
+	expect(render(panel)).toMatch(/∀ ○ fixture\/chat\s+minimal/);
 	expect(render(panel)).toMatch(/● fixture\/chat\s+high · default/);
 	expect(render(panel)).toContain("clear override");
 	for (let i = 0; i < 6; i++) list.handleInput("\x1b[B");
@@ -278,7 +278,7 @@ test("router settings list registered classifiers and use the current chat model
 	expect(config.availableDefaultModels).toEqual([]);
 
 	const reopened = openRouterSubmenu(config, changed);
-	expect(render(reopened)).toContain("❯ ● judge/custom");
+	expect(render(reopened)).toContain("∀ ● judge/custom");
 	reopened.handleInput?.("\x1b[A");
 	reopened.handleInput?.("\r");
 	expect(changed).toHaveBeenLastCalledWith("");
@@ -314,7 +314,7 @@ test("router settings search exact provider/model IDs without changing chat defa
 	const changed = vi.fn();
 	const submenu = openRouterSubmenu(config, changed);
 	for (const character of "nested") submenu.handleInput?.(character);
-	expect(render(submenu)).toContain("❯ ○ test/nested/model");
+	expect(render(submenu)).toContain("∀ ○ test/nested/model");
 	expect(changed).not.toHaveBeenCalled();
 	submenu.handleInput?.("\r");
 	expect(changed).toHaveBeenCalledExactlyOnceWith("test/nested/model");
@@ -327,7 +327,7 @@ test("router settings preserve an unavailable selection and cancellation does no
 	const changed = vi.fn();
 	const done = vi.fn();
 	const submenu = openRouterSubmenu(config, changed, done);
-	expect(render(submenu)).toContain("❯ ● missing/model");
+	expect(render(submenu)).toContain("∀ ● missing/model");
 	expect(render(submenu)).toContain("not currently available");
 	submenu.handleInput?.("\x1b");
 	expect(changed).not.toHaveBeenCalled();
@@ -345,7 +345,7 @@ test("router picker marks an unavailable classifier ID and excludes non-chat exe
 	});
 	const menu = openRouterSubmenu(config, vi.fn());
 	const output = render(menu);
-	expect(output).toContain("❯ ● typesafe-ai/jev-latest");
+	expect(output).toContain("∀ ● typesafe-ai/jev-latest");
 	expect(output).toContain("Configured model is not currently available");
 	expect(output).not.toContain("gallery/paint");
 	expect(output).not.toContain("judge/jev");
@@ -393,7 +393,7 @@ test("decision model setter accepts auto and rejects malformed IDs with a typed 
 	manager.setDecisionModel("auto");
 	expect(manager.getDecisionModel()).toBe("auto");
 	const submenu = openRouterSubmenu(settingsConfig({ decisionModel: manager.getDecisionModel() }), vi.fn());
-	expect(render(submenu)).toContain("❯ ● Automatic");
+	expect(render(submenu)).toContain("∀ ● Automatic");
 });
 
 test("router menu edits the project override including Automatic without changing global defaults", async () => {
@@ -605,7 +605,7 @@ test("/settings shows the decision model, its scope and what Automatic means (#4
 	assert.ok(shown.includes("Decision model"));
 	assert.ok(shown.includes("Saves to project settings. Choose a provider permitted to receive decision context."));
 	assert.ok(shown.includes("Automatic saves an empty decisionModel."));
-	assert.ok(shown.includes("❯ ● Automatic"));
+	assert.ok(shown.includes("∀ ● Automatic"));
 	submenu.handleInput?.("\r");
 	assert.ok(done.mock.calls.some((args: unknown[]) => args.length === 1 && args[0] === "Automatic"));
 	assert.equal(projectConfig.decisionModel, "");
@@ -632,7 +632,7 @@ test("an unset decision model opens on Automatic and the submenu names the globa
 	const config = settingsConfig({ decisionModel: undefined, availableDefaultModels: [] });
 	const item = buildSettingsItems(config, {} as SettingsCallbacks).find(({ id }) => id === "decision-model");
 	const shown = render(item!.submenu!(item!.currentValue, vi.fn()) as Container);
-	assert.ok(shown.includes("❯ ● Automatic"));
+	assert.ok(shown.includes("∀ ● Automatic"));
 	assert.ok(!shown.includes("not currently available"));
 	assert.ok(shown.includes("Saves to global settings. Choose a provider permitted to receive decision context."));
 });

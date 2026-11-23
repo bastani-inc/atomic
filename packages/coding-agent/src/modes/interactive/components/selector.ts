@@ -1068,7 +1068,7 @@ export class Selector<T> implements Component, Focusable {
 		hasMarks: boolean,
 		multi: boolean,
 	): { lead: string; label: (text: string) => string } {
-		const cursor = isSelected ? this.style.accent(this.style.bold("❯ ")) : "  ";
+		const cursor = isSelected ? this.style.accent(this.style.bold("∀ ")) : "  ";
 		const number = numbered ? this.style.dim(`${index + 1}.`.padEnd(numberWidth)) : "";
 		let mark = "";
 		if (multi) {

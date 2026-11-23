@@ -193,7 +193,7 @@ export function getSettingsListTheme(): import("@bastani/atomic-tui").SettingsLi
 		label: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : text),
 		value: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),
 		description: (text: string) => theme.fg("dim", text),
-		cursor: theme.fg("accent", "→ "),
+		cursor: theme.fg("accent", theme.bold("∀ ")),
 		hint: (text: string) => theme.fg("dim", text),
 	};
 }

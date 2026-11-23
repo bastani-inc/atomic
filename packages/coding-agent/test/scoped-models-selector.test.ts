@@ -119,14 +119,14 @@ describe("scoped models selector", () => {
 
 		assert.doesNotThrow(() => selector.handleInput(REORDER_UP));
 		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]]]);
-		assert.match(stripAnsi(selector.render(120).join("\n")), /❯ \[✓\] \S+\/model-b *$/m);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /∀ \[✓\] \S+\/model-b *$/m);
 
 		selector.handleInput(REORDER_UP);
 		assert.equal(changes.length, 1);
 
 		selector.handleInput(REORDER_DOWN);
 		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]], orderedIds]);
-		assert.match(stripAnsi(selector.render(120).join("\n")), /❯ \[✓\] \S+\/model-b *$/m);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /∀ \[✓\] \S+\/model-b *$/m);
 
 		selector.handleInput(REORDER_DOWN);
 		assert.equal(changes.length, 2);

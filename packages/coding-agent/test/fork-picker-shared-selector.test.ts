@@ -34,7 +34,7 @@ describe("fork picker on the shared selector (#5224)", () => {
 			out.some((line) => line.includes("⌕")),
 			out.join("\n"),
 		);
-		const selected = out.findIndex((line) => line.includes("❯ ship it"));
+		const selected = out.findIndex((line) => line.includes("∀ ship it"));
 		assert.ok(selected >= 0, out.join("\n"));
 		assert.equal(out[selected + 1]?.trim(), "message 3 of 3");
 		assert.ok(out.some((line) => line.includes("now add a test for the redirect loop")));
@@ -52,7 +52,7 @@ describe("fork picker on the shared selector (#5224)", () => {
 			() => {},
 			"e1",
 		);
-		assert.ok(lines(selector).some((line) => line.includes("❯ fix the login bug")));
+		assert.ok(lines(selector).some((line) => line.includes("∀ fix the login bug")));
 		for (const ch of "redirect") selector.handleInput(ch);
 		selector.handleInput("\r");
 		assert.deepEqual(chosen, ["e2"]);

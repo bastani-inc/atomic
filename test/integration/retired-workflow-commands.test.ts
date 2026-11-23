@@ -309,7 +309,7 @@ test(
 						);
 					}
 					await program.waitForScreen(
-						(s) => s.includes(`❯ skill:${skill}`),
+						(s) => s.includes(`∀ skill:${skill}`),
 						CLI_START_TIMEOUT_MS,
 						`highlighted ${skill}`,
 					);

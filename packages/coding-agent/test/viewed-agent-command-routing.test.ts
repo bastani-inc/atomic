@@ -190,7 +190,7 @@ describe("commands typed while a subagent is shown on the main screen", () => {
 			assert.match(screen.promptSlotText(), /\/new acts on the main conversation, not worker/);
 			assert.match(
 				screen.promptSlotText(),
-				/❯ 1\. Cancel\s+2\. Run \/new on the main conversation/,
+				/∀ 1\. Cancel\s+2\. Run \/new on the main conversation/,
 				"Cancel first, chosen",
 			);
 			const drawn = promptsDrawn(mode);
@@ -417,7 +417,7 @@ describe("a command typed for a subagent that went away, moved into main's promp
 				screen.promptSlotText(),
 				/\/new was typed for worker, which is gone\. It acts on the main conversation\./,
 			);
-			assert.match(screen.promptSlotText(), /❯ 1\. Cancel\s+2\. Run \/new on the main conversation/);
+			assert.match(screen.promptSlotText(), /∀ 1\. Cancel\s+2\. Run \/new on the main conversation/);
 			const drawn = promptsDrawn(mode);
 			answer(ESC);
 			await until(() => screen?.promptSlot() === mode.editor);

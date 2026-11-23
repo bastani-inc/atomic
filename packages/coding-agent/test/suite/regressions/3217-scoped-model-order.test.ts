@@ -96,7 +96,7 @@ describe("issue #3217 scoped model ordering", () => {
 		const orderedIds = renderedLines.slice(0, 3).map((line) => {
 			const [label] = line
 				.trim()
-				.replace(/^❯\s*/, "")
+				.replace(/^∀\s*/, "")
 				.replace(/^[●○]\s*/, "")
 				.split(" ");
 			return label?.slice(`${modelOne.provider}/`.length) ?? "";

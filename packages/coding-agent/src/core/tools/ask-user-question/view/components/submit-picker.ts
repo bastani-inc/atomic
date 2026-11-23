@@ -3,7 +3,7 @@ import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import type { StatefulView } from "../stateful-view.ts";
 
-const ACTIVE_POINTER = "❯ ";
+const ACTIVE_POINTER = "∀ ";
 const INACTIVE_POINTER = "  ";
 const NUMBER_SEPARATOR = ". ";
 

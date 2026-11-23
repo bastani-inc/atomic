@@ -112,14 +112,14 @@ describe("Editor completion lookups", () => {
 					editor.handleInput("\t");
 				} else type(editor, menu.text);
 				await settle();
-				assert.ok(rows(editor).includes(`❯ ${menu.prefix}-one`), menu.text);
+				assert.ok(rows(editor).includes(`∀ ${menu.prefix}-one`), menu.text);
 
 				editor.setAutocompleteProvider(
 					provider(async () => answer(menu.prefix, `${menu.prefix}-new`, `${menu.prefix}-one`)),
 					keep,
 				);
 				await settle();
-				assert.ok(rows(editor).includes(`❯ ${menu.prefix}-new`), menu.text);
+				assert.ok(rows(editor).includes(`∀ ${menu.prefix}-new`), menu.text);
 				assert.equal(editor.getText(), menu.text);
 				editor.handleInput("\t");
 				assert.equal(editor.getText(), menu.text.slice(0, -menu.prefix.length) + `${menu.prefix}-new`);
@@ -142,7 +142,7 @@ describe("Editor completion lookups", () => {
 			);
 			await settle();
 			assert.equal(asked, 0);
-			assert.ok(rows(editor).includes("❯ /global"));
+			assert.ok(rows(editor).includes("∀ /global"));
 		});
 
 		it("keeps a file menu's chosen row and the provider that offered it", async () => {
@@ -157,7 +157,7 @@ describe("Editor completion lookups", () => {
 				keep,
 			);
 			await settle();
-			assert.ok(rows(editor).includes("❯ src/demo2.txt"));
+			assert.ok(rows(editor).includes("∀ src/demo2.txt"));
 			editor.handleInput("\t");
 			assert.equal(editor.getText(), "src/demo2.txt");
 		});
@@ -170,7 +170,7 @@ describe("Editor completion lookups", () => {
 			);
 			type(editor, "/g");
 			await settle();
-			assert.ok(rows(editor).includes("❯ /go"));
+			assert.ok(rows(editor).includes("∀ /go"));
 			editor.handleInput("l");
 			editor.setAutocompleteProvider(
 				provider(async () => answer("/gl", "/glimpse", "/global")),
@@ -179,7 +179,7 @@ describe("Editor completion lookups", () => {
 			await settle();
 			late.resolve(answer("/gl", "/global"));
 			await settle();
-			assert.ok(rows(editor).includes("❯ /glimpse"));
+			assert.ok(rows(editor).includes("∀ /glimpse"));
 		});
 	});
 
@@ -197,14 +197,14 @@ describe("Editor completion lookups", () => {
 					);
 					type(editor, "/a");
 					await settle();
-					assert.ok(rows(editor).includes("❯ /a-row"), failure);
+					assert.ok(rows(editor).includes("∀ /a-row"), failure);
 					editor.handleInput("b");
 					await settle();
 					// The rows answered "/a", not the text typed since: the failed lookup closes them.
 					assert.equal(editor.isShowingAutocomplete(), false, failure);
 					editor.handleInput("c");
 					await settle();
-					assert.ok(rows(editor).includes("❯ /abc-row"), failure);
+					assert.ok(rows(editor).includes("∀ /abc-row"), failure);
 				});
 			}
 		});
@@ -217,7 +217,7 @@ describe("Editor completion lookups", () => {
 			editor.setText("src");
 			editor.handleInput("\t");
 			await settle();
-			assert.ok(rows(editor).includes("❯ src/"));
+			assert.ok(rows(editor).includes("∀ src/"));
 			editor.handleInput(" ");
 			await settle();
 			editor.handleInput("x");
@@ -258,7 +258,7 @@ describe("Editor completion lookups", () => {
 			await settle();
 			t.mock.timers.tick(1_000);
 			await settle();
-			assert.ok(rows(editor).includes("❯ /ab-row"));
+			assert.ok(rows(editor).includes("∀ /ab-row"));
 		});
 
 		it("never holds later lookups behind the new provider's retry of a lookup that found nothing", async () => {
@@ -274,7 +274,7 @@ describe("Editor completion lookups", () => {
 			await settle();
 			editor.handleInput("b");
 			await settle();
-			assert.ok(rows(editor).includes("❯ /ab-row"));
+			assert.ok(rows(editor).includes("∀ /ab-row"));
 		});
 	});
 
@@ -302,7 +302,7 @@ describe("Editor completion lookups", () => {
 				keep,
 			);
 			await settle();
-			assert.ok(rows(editor).includes("❯ /zzq"));
+			assert.ok(rows(editor).includes("∀ /zzq"));
 			editor.handleInput("\r");
 			assert.deepEqual(submitted, ["/zz", "/zzq"]);
 		});
@@ -325,7 +325,7 @@ describe("Editor completion lookups", () => {
 					type(editor, "/a");
 					await settle();
 					editor.handleInput("\x1b[B");
-					assert.ok(rows(editor).includes("❯ /apricot"));
+					assert.ok(rows(editor).includes("∀ /apricot"));
 					reordered = true;
 					editor.handleInput("b");
 					if (answered) await settle();
@@ -376,7 +376,7 @@ describe("Editor completion lookups", () => {
 			type(editor, "/a");
 			await settle();
 			retired = true;
-			assert.ok(rows(editor).includes("❯ /abc"));
+			assert.ok(rows(editor).includes("∀ /abc"));
 			editor.handleInput("\t");
 			assert.equal(applied, row);
 		});
@@ -421,7 +421,7 @@ describe("Editor completion lookups", () => {
 				for (const resolve of waiting.splice(0)) resolve();
 				await settle();
 				await settle();
-				const expected = { chars: "❯ mod.ts", left: "❯ main.ts", slashLeft: "❯ /model" }[variant];
+				const expected = { chars: "∀ mod.ts", left: "∀ main.ts", slashLeft: "∀ /model" }[variant];
 				assert.ok(rows(editor).includes(expected), `${variant}: ${rows(editor).join(" | ")}`);
 			}
 		});
@@ -447,7 +447,7 @@ describe("Editor completion lookups", () => {
 			// "/zz" now has rows, not drawn yet; moving the cursor goes on from them, as from a menu on screen.
 			editor.handleInput("\x1b[D");
 			await settle();
-			assert.ok(rows(editor).includes("❯ /zap"), rows(editor).join(" | "));
+			assert.ok(rows(editor).includes("∀ /zap"), rows(editor).join(" | "));
 		});
 
 		it("stops, with Esc, a lookup that continues a menu not drawn yet", async () => {

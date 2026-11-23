@@ -155,7 +155,7 @@ function subagentPage(
 
 function select(component: { handleInput(data: string): boolean }, render: () => string[], pattern: RegExp): void {
 	for (let attempt = 0; attempt < 10; attempt++) {
-		const selected = plain(render()).find((row) => row.includes(" ❯ "));
+		const selected = plain(render()).find((row) => row.includes(" ∀ "));
 		if (selected !== undefined && pattern.test(selected)) return;
 		component.handleInput("\x1b[B");
 	}
@@ -839,7 +839,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			page.handleInput(ENTER);
 			await flush();
 			const list = plain(page.render(80, 24));
-			assert.match(list.find((row) => row.includes(" ❯ ")) ?? "", new RegExp(` ❯ . \\S+ +${selected}\\b`));
+			assert.match(list.find((row) => row.includes(" ∀ ")) ?? "", new RegExp(` ∀ . \\S+ +${selected}\\b`));
 			page.handleInput(SPACE);
 			page.handleInput(ENTER);
 			await flush();

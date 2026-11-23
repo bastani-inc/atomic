@@ -125,7 +125,7 @@ describe("resume picker: selection, search, preview and leaving stay consistent 
 						expected.some((session) => session.path === selected),
 						`selected row is not listed: ${where}`,
 					);
-					assert.equal(lines.filter((line) => line.includes("❯ ")).length, 1, where);
+					assert.equal(lines.filter((line) => line.includes("∀ ")).length, 1, where);
 				}
 				// A changed search selects its best match; emptying it returns to the row selected before.
 				if (queryChanged && model.query.trim()) assert.equal(selected, expected[0]?.path, where);

@@ -116,7 +116,7 @@ test("an empty file menu keeps Down before the main chat's agent-panel shortcut 
 		editor
 			.render(100)
 			.map(stripTerminalSequences)
-			.some((line) => line.includes("❯ src/")),
+			.some((line) => line.includes("∀ src/")),
 	);
 	editor.handleInput("\x1b");
 	pressDown();

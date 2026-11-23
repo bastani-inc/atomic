@@ -155,7 +155,14 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	private unsubscribeTaskBinding?: () => void;
 	private taskInspector?: TaskInspector;
 	/** How the last `renderBody` laid out the body: a full-screen task view, or the transcript's rows above a picker. */
-	private bodyLayout: { readonly taskView: true } | { readonly taskView: false; readonly transcriptRows: number } = {
+	private bodyLayout:
+		| { readonly taskView: true }
+		| {
+				readonly taskView: false;
+				readonly transcriptRows: number;
+				readonly pickerTop?: number;
+				readonly pickerRows?: number;
+		  } = {
 		taskView: false,
 		transcriptRows: Number.POSITIVE_INFINITY,
 	};
@@ -701,8 +708,14 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			const picker = this.taskInspector.renderPicker(width, budget);
 			const remaining = Math.max(0, budget - picker.length);
 			const body = remaining ? renderChatSessionBody(this.state, width, remaining) : [];
-			this.bodyLayout = { taskView: false, transcriptRows: body.length };
-			return [...body, ...Array.from({ length: Math.max(0, remaining - body.length) }, () => ""), ...picker];
+			const gap = Math.max(0, remaining - body.length);
+			this.bodyLayout = {
+				taskView: false,
+				transcriptRows: body.length,
+				pickerTop: body.length + gap,
+				pickerRows: picker.length,
+			};
+			return [...body, ...Array.from({ length: gap }, () => ""), ...picker];
 		}
 		const body = renderChatSessionBody(this.state, width, budget);
 		this.bodyLayout = { taskView: false, transcriptRows: body.length };
@@ -858,6 +871,15 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const layout = this.bodyLayout;
 		// A task's transcript the chat shows full-screen takes the click into its own transcript.
 		if (layout.taskView) return this.taskInspector?.handleMouse(event);
+		if (
+			this.taskInspector !== undefined &&
+			layout.pickerTop !== undefined &&
+			layout.pickerRows !== undefined &&
+			event.y >= layout.pickerTop &&
+			event.y < layout.pickerTop + layout.pickerRows
+		) {
+			return this.taskInspector.handleMouse({ ...event, y: event.y - layout.pickerTop });
+		}
 		// While the prompt search or a completion menu owns input, a click on the transcript does nothing.
 		if (event.y >= layout.transcriptRows || hasChatSessionTransientModal(this.state)) return undefined;
 		const state = this.state;
@@ -921,6 +943,15 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	bodyRowKey(row: number): string | undefined {
 		const layout = this.bodyLayout;
 		if (layout.taskView) return this.taskInspector?.paintedRowKey(row);
+		if (
+			this.taskInspector !== undefined &&
+			layout.pickerTop !== undefined &&
+			layout.pickerRows !== undefined &&
+			row >= layout.pickerTop &&
+			row < layout.pickerTop + layout.pickerRows
+		) {
+			return this.taskInspector.paintedRowKey(row - layout.pickerTop);
+		}
 		if (row < 0 || row >= layout.transcriptRows) return undefined;
 		const state = this.state;
 		const hit = state.bodyViewport.componentAtRow(row);

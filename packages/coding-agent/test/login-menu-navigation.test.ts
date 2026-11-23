@@ -61,9 +61,9 @@ describe("login method menu", () => {
 		Base.prototype.showLoginAuthTypeSelector.call(harness as unknown as InteractiveModeBase, options);
 
 		const rendered = lines(created[0]!);
-		expect(rendered).toContain("❯ Use an account");
+		expect(rendered).toContain("∀ Use an account");
 		expect(rendered).toContain("Use an API key");
-		expect(rendered).not.toContain("❯ Use a subscription");
+		expect(rendered).not.toContain("∀ Use a subscription");
 	});
 
 	it("keeps the subscription label for a subscription-backed provider", () => {
@@ -72,7 +72,7 @@ describe("login method menu", () => {
 
 		Base.prototype.showLoginAuthTypeSelector.call(harness as unknown as InteractiveModeBase, options);
 
-		expect(lines(created[0]!)).toContain("❯ Use a subscription");
+		expect(lines(created[0]!)).toContain("∀ Use a subscription");
 	});
 
 	it("returns to the method choice when a login started from it is cancelled", () => {
@@ -87,7 +87,7 @@ describe("login method menu", () => {
 		expect(option).toBe(options[0]);
 		onBack();
 		expect(created).toHaveLength(2);
-		expect(lines(created[1]!)).toContain("❯ Use an account");
+		expect(lines(created[1]!)).toContain("∀ Use an account");
 	});
 });
 

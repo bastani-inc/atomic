@@ -7,7 +7,7 @@ import { rowTone, styleFieldTone } from "../../state/selectors/field-tone.ts";
 import type { QuestionData } from "../../tool/types.js";
 import type { StatefulView } from "../stateful-view.ts";
 
-const ACTIVE_POINTER = "❯ ";
+const ACTIVE_POINTER = "∀ ";
 const INACTIVE_POINTER = "  ";
 const CHECKED = "[✔]";
 const UNCHECKED = "[ ]";

@@ -134,16 +134,16 @@ test("keeps the configured per-model thinking level marked while browsing", () =
 	// The shared picker opens on the configured override, as every picker opens on its current value; the other
 	// rows carry "○" in the same column so the list stays aligned.
 	expect(rowFor("off").startsWith("   ○ ")).toBe(true);
-	expect(rowFor("medium · default").startsWith(" ❯ ● ")).toBe(true);
+	expect(rowFor("medium · default").startsWith(" ∀ ● ")).toBe(true);
 	expect(rowFor("high").startsWith("   ○ ")).toBe(true);
 	expect(rowFor("clear override").startsWith("   ○ ")).toBe(true);
 
 	// Browsing away must not move or drop the marker.
 	submenu.handleInput?.("\x1b[B");
-	expect(rowFor("high").startsWith(" ❯ ○ ")).toBe(true);
+	expect(rowFor("high").startsWith(" ∀ ○ ")).toBe(true);
 	expect(rowFor("medium · default").startsWith("   ● ")).toBe(true);
 	submenu.handleInput?.("\x1b[A");
 	submenu.handleInput?.("\x1b[A");
-	expect(rowFor("low").startsWith(" ❯ ○ ")).toBe(true);
+	expect(rowFor("low").startsWith(" ∀ ○ ")).toBe(true);
 	expect(rowFor("medium · default").startsWith("   ● ")).toBe(true);
 });

@@ -592,7 +592,7 @@ test("/tasks renders single-line rows, updated close hint, and compact Space pee
 			const lines = inspector.renderViewport(width, 24).map((line) => stripVTControlCharacters(line).trimEnd());
 			const expectedHint = "↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← close · ? keys";
 			assert.equal(lines.at(-1)?.trim(), expectedHint);
-			const selectedIdx = lines.findIndex((line) => line.startsWith(" ❯ "));
+			const selectedIdx = lines.findIndex((line) => line.startsWith(" ∀ "));
 			assert.ok(selectedIdx > 0);
 			assert.doesNotMatch(lines[selectedIdx + 1] ?? "", /gpt-6-astra|git status/);
 		}
