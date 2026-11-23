@@ -1,13 +1,16 @@
+import { isKeyRelease, matchesKey } from "@bastani/atomic-tui";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
 import {
 	cancelWidgetPreview,
 	clearPromotedWidgetPreview,
 	commitWidgetPreview,
+	hasUnansweredNavigationCancelInput,
 	resetWidgetPreview,
 	stageWidgetPreview,
 } from "../../interactive-engine/remote-component.ts";
 import { AGENT_PANEL_WIDGET_KEY } from "../../rpc/agent-panel-bridge.ts";
+import { isPhysicalEscape } from "../interactive-key-identity.ts";
 import type { InteractiveModeBase } from "../interactive-mode-base.ts";
 import { setAgentViewBridge } from "./agent-view-bridge.ts";
 import { AgentViewSwitcher, type OpenAgentViewPort } from "./agent-view-switcher.ts";
@@ -15,7 +18,12 @@ import { openAgentViewPort } from "./open-port.ts";
 import { installPromptRetarget } from "./prompt-retarget.ts";
 import { FIRST_FRAME_TIMEOUT_MS, PANEL_FIRST_FRAME_TIMEOUT_MS } from "./remote-port.ts";
 import { holdTranscriptDock, installTranscriptSlot } from "./transcript-slot.ts";
-import { type HostEngineViewSyncState, initialHostEngineViewSyncState } from "./view-preview-protocol.js";
+import {
+	type HostEngineViewSyncState,
+	initialHostEngineViewSyncState,
+	planPreViewCancelAck,
+	shouldCancelEngineViewOnArrival,
+} from "./view-preview-protocol.js";
 import { installViewedCommandGates } from "./viewed-commands.ts";
 
 const switchers = new WeakMap<InteractiveModeBase, AgentViewSwitcher>();
@@ -161,6 +169,46 @@ export function installAgentView(mode: InteractiveModeBase): AgentViewSwitcher {
 				const panelOnView = keepScreen && taskId !== undefined && message.panelOnView === true;
 				const engineRequestId = message.requestId;
 				const tagged = engineRequestId !== undefined;
+
+				const isPreViewCancelKey = (data: string): boolean =>
+					!isKeyRelease(data) &&
+					(isPhysicalEscape(data) ||
+						(mode.keybindings.matches(data, "app.interrupt") &&
+							!mode.keybindings.matches(data, "app.list.open") &&
+							!matchesKey(data, "enter")));
+				const cancelledBeforeArrival =
+					taskId !== undefined &&
+					keepScreen &&
+					shouldCancelEngineViewOnArrival(
+						true,
+						true,
+						true,
+						hasUnansweredNavigationCancelInput(runtime, isPreViewCancelKey),
+					);
+				if (cancelledBeforeArrival) {
+					const priorPendingActive = switcher.pendingTaskId !== undefined;
+					const plan = planPreViewCancelAck(
+						sync.settledRequestId,
+						sync.lastSentSettledRequestId,
+						engineRequestId ?? 0,
+						priorPendingActive,
+					);
+					advanceSettled(engineRequestId);
+					if (priorPendingActive) {
+						switcher.cancelPending();
+					}
+					if (plan.shouldSendAck) {
+						const viewed = switcher.viewedTaskId();
+						sendSetViewed({
+							...(viewed === undefined ? {} : { taskId: viewed }),
+							...(engineRequestId === undefined && plan.nextSettledReq === 0
+								? {}
+								: { settledRequestId: plan.nextSettledReq }),
+						});
+					}
+					return;
+				}
+
 				const willOpenAsyncWithPreview = panelOnView && switcher.viewedTaskId() !== taskId;
 
 				replacingWithPreview = willOpenAsyncWithPreview;

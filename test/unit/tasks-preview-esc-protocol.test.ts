@@ -48,7 +48,10 @@ import { taskRecord } from "../helpers/task-record.js";
 
 const ENTER = "\r";
 const DOWN = "\x1b[B";
+const SPACE = " ";
 const ESC = "\x1b";
+const KITTY_ESC = "\x1b[27u";
+const KITTY_ESC_RELEASE = "\x1b[27;1:3u";
 
 const plain = (lines: readonly string[]) => lines.map((line) => stripVTControlCharacters(line).trimEnd());
 const selectedLine = (lines: readonly string[]) => plain(lines).find((line) => /^\s*(?:❯|∀)\s/.test(line)) ?? "";
@@ -155,7 +158,7 @@ function createHarnessWithOpenPort(
 		taskId: TaskId,
 		requestOptions?: { keepScreen?: boolean; panel?: boolean },
 	) => Promise<AgentViewPort | undefined>,
-	options: { engineVersion?: "new" | "old" } = {},
+	options: { engineVersion?: "new" | "old"; fullscreen?: boolean } = {},
 ) {
 	const store = new FakeOwnerTaskStore(tasks);
 	const session = { extensionRunner: {} } as unknown as AgentSession;
@@ -261,11 +264,59 @@ function createHarnessWithOpenPort(
 			set.add(listener);
 			return () => set.delete(listener);
 		},
-		custom: () => new Promise(() => {}),
+		custom(factory, customOptions) {
+			return new Promise((resolve) => {
+				const previous = [...editorContainer.children];
+				let component: Component | undefined;
+				let settled = false;
+				const done = (result: unknown) => {
+					if (settled) return;
+					settled = true;
+					if (customOptions?.purpose === "navigation" && component !== undefined) {
+						markNavigationView(component, false);
+					}
+					if (customOptions?.overlay !== true) {
+						editorContainer.clear();
+						for (const child of previous) editorContainer.addChild(child);
+					} else {
+						hasOverlay = false;
+					}
+					resolve(result as never);
+				};
+				component = (
+					factory as (
+						tui: {
+							terminal: { rows: number; columns: number };
+							requestRender(): void;
+							requestImmediateRender(): void;
+						},
+						themeObj: typeof theme,
+						kb: KeybindingsManager,
+						finish: (result: unknown) => void,
+					) => Component
+				)(
+					{
+						terminal: { rows: 24, columns: 100 },
+						requestRender() {},
+						requestImmediateRender() {},
+					},
+					theme,
+					getKeybindings() as KeybindingsManager,
+					done,
+				);
+				if (customOptions?.purpose === "navigation") markNavigationView(component, true);
+				if (customOptions?.overlay === true) {
+					hasOverlay = true;
+				} else {
+					editorContainer.clear();
+					editorContainer.addChild(component);
+				}
+			});
+		},
 	};
 
 	const lifecycle: TuiRendererLifecycle = {
-		isFullscreen: () => true,
+		isFullscreen: () => options.fullscreen !== false,
 		onRendererReplaced: () => () => {},
 	};
 	const controller = new RemoteComponentController(runtime, ui, lifecycle);
@@ -1486,4 +1537,371 @@ test("urgent bridge preview mount/unmount bypasses refresh budget even when sche
 		true,
 		"bridge preview mount must run in the microtask without being deferred by background refresh budget",
 	);
+});
+
+test("pre-view Esc arriving after Enter and before engine_view_agent cancels the open on arrival without preview or stale anchor", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const a3 = doneAgent("a3", "third gamma", 3);
+	const opened: TaskId[] = [];
+	const h = createHarnessWithOpenPort([a1, a2, a3], async (taskId) => {
+		opened.push(taskId);
+		return fakePort(taskId);
+	});
+	disposers.push(() => h.dispose());
+
+	const remoteTasksUi: TaskInspectorUi = {
+		notify() {},
+		custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+	};
+	const tasksDone = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const top = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	assert.notEqual(top, h.editor, "/tasks remote proxy must be mounted");
+
+	// Move down to a2 (second beta) and let engine process it.
+	top.handleInput?.(DOWN);
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	// Rapid Enter + Kitty Esc BEFORE delivering Enter to engine (Window W1: Esc arrives at host before engine_view_agent).
+	top.handleInput?.(ENTER);
+	top.handleInput?.(KITTY_ESC);
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	const sent = await h.deliverAllSetViewedToEngine();
+	await tasksDone;
+
+	assert.deepEqual(opened, [], "openPort must never be called when pre-view Esc cancelled on arrival");
+	assert.equal(h.switcher.viewedTaskId(), undefined, "host must stay on main");
+	assert.equal(
+		sent.some((cmd) => cmd.type === "set_viewed_agent" && cmd.preview === true),
+		false,
+		"no speculative preview may be sent when cancelled on arrival",
+	);
+	assert.equal(h.widgets.has(AGENT_PANEL_WIDGET_KEY), false, "idle panel must remain hidden");
+	assert.equal(agentViewBridge(h.session)?.viewedTaskId(), undefined, "engine committed view stays on main");
+
+	// Next /tasks MUST land at top (third gamma), NOT cancelled a2!
+	let nextSelection = "";
+	await showTaskInspector(
+		mountTasksUi((c, rows) => {
+			nextSelection = selectedLine(rows());
+			c.handleInput?.(ESC);
+		}),
+		h.store,
+		undefined,
+		{ board: agentPanelBoardSource(h.session) },
+	);
+	assert.match(nextSelection, /third gamma/, `next /tasks after pre-view Esc must land at top, got: ${nextSelection}`);
+});
+
+test("pre-view Esc while already viewing another subagent keeps the prior subagent and its /tasks return anchor", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const a3 = doneAgent("a3", "third gamma", 3);
+	const opened: TaskId[] = [];
+	const h = createHarnessWithOpenPort([a1, a2, a3], async (taskId) => {
+		opened.push(taskId);
+		return fakePort(taskId);
+	});
+	disposers.push(() => h.dispose());
+
+	// First open a1 legitimately from /tasks so a1 is viewed and anchored.
+	await showTaskInspector(
+		mountTasksUi(async (c) => {
+			await tick(2);
+			c.handleInput?.(DOWN);
+			c.handleInput?.(DOWN);
+			c.handleInput?.(ENTER);
+		}),
+		h.store,
+		undefined,
+		{ board: agentPanelBoardSource(h.session) },
+	);
+	h.deliverAllEngineToHost();
+	await tick(4);
+	await h.deliverAllSetViewedToEngine();
+	assert.equal(h.switcher.viewedTaskId(), "a1");
+	opened.length = 0;
+
+	// Re-open /tasks remotely (restores a1), move up to a2, then press Enter + Esc before engine_view_agent.
+	const remoteTasksUi: TaskInspectorUi = {
+		notify() {},
+		custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+	};
+	const tasksDone = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const top = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	top.handleInput?.("\x1b[A"); // UP to a2
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	top.handleInput?.(ENTER);
+	top.handleInput?.(ESC);
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	await h.deliverAllSetViewedToEngine();
+	await tasksDone;
+
+	assert.deepEqual(opened, [], "cancelled a2 must never open");
+	assert.equal(h.switcher.viewedTaskId(), "a1", "host must remain on a1");
+
+	// Next /tasks must restore a1, not a2 and not jump to top.
+	let nextSelection = "";
+	await showTaskInspector(
+		mountTasksUi((c, rows) => {
+			nextSelection = selectedLine(rows());
+			c.handleInput?.(ESC);
+		}),
+		h.store,
+		undefined,
+		{ board: agentPanelBoardSource(h.session) },
+	);
+	assert.match(nextSelection, /first alpha/, `prior anchor a1 must be preserved, got: ${nextSelection}`);
+});
+
+test("pre-view Esc cancels any prior in-flight open too and never lets holdWhileOpening hide an in-flight Enter", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const a3 = doneAgent("a3", "third gamma", 3);
+	const resolvers = new Map<string, (port: AgentViewPort | undefined) => void>();
+	const opened: TaskId[] = [];
+	const h = createHarnessWithOpenPort(
+		[a1, a2, a3],
+		(taskId) => {
+			opened.push(taskId);
+			return new Promise((resolve) => {
+				resolvers.set(taskId, resolve);
+			});
+		},
+		{ fullscreen: false },
+	);
+	disposers.push(() => h.dispose());
+
+	const remoteTasksUi: TaskInspectorUi = {
+		notify() {},
+		custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+	};
+	const tasksDone = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const top = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	top.handleInput?.(DOWN); // select a2
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	// Prior keepScreen pending open (a1) is active while /tasks is mounted.
+	h.switcher.requestView("a1" as TaskId, { keepScreen: true });
+	assert.equal(h.switcher.pendingTaskId, "a1");
+
+	// User presses Enter (sent to /tasks), then Esc (intercepted by holdWhileOpening, cancelling a1!).
+	top.handleInput?.(ENTER);
+	assert.equal(h.sendHostKey(ESC), true, "holdWhileOpening consumes Esc for prior pending a1");
+	assert.equal(h.switcher.pendingTaskId, undefined, "prior pending a1 cancelled");
+
+	// Now engine processes Enter and sends engine_view_agent(a2) -> must ALSO be cancelled!
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	await h.deliverAllSetViewedToEngine();
+	resolvers.get("a1")?.(fakePort("a1"));
+	await tick(4);
+	await tasksDone;
+
+	assert.deepEqual(opened, ["a1"], "a2 must never start opening after Esc cancelled while Enter was in flight");
+	assert.equal(h.switcher.viewedTaskId(), undefined, "host must remain on main");
+	assert.equal(h.switcher.pendingTaskId, undefined, "no pending open may remain");
+});
+
+test("pre-view Esc cancels prior non-keepScreen pending open when arriving on engine_view_agent", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const a3 = doneAgent("a3", "third gamma", 3);
+	let releaseA1!: (port: AgentViewPort | undefined) => void;
+	const opened: TaskId[] = [];
+	const h = createHarnessWithOpenPort([a1, a2, a3], (taskId) => {
+		opened.push(taskId);
+		if (taskId === "a1") {
+			return new Promise((resolve) => {
+				releaseA1 = resolve;
+			});
+		}
+		return Promise.resolve(fakePort(taskId));
+	});
+	disposers.push(() => h.dispose());
+
+	const remoteTasksUi: TaskInspectorUi = {
+		notify() {},
+		custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+	};
+	const tasksDone = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const top = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	top.handleInput?.(DOWN); // select a2
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	// Prior non-keepScreen pending open (a1) is active; holdWhileOpening does not claim closingComponent for it.
+	h.switcher.requestView("a1" as TaskId, { keepScreen: false });
+	assert.equal(h.switcher.pendingTaskId, "a1");
+
+	top.handleInput?.(ENTER);
+	top.handleInput?.(KITTY_ESC);
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	await h.deliverAllSetViewedToEngine();
+	releaseA1(fakePort("a1"));
+	await tick(4);
+	await tasksDone;
+
+	assert.deepEqual(opened, ["a1"], "a2 must not open and prior a1 must be cancelled");
+	assert.equal(h.switcher.viewedTaskId(), undefined, "prior pending a1 must not commit after Esc");
+	assert.equal(h.switcher.pendingTaskId, undefined, "no pending open may remain");
+});
+
+test("pre-view Esc against an older engine (omitting requestId) still acknowledges main and clears pending /tasks return", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const a3 = doneAgent("a3", "third gamma", 3);
+	const opened: TaskId[] = [];
+	const h = createHarnessWithOpenPort(
+		[a1, a2, a3],
+		async (taskId) => {
+			opened.push(taskId);
+			return fakePort(taskId);
+		},
+		{ engineVersion: "old" },
+	);
+	disposers.push(() => h.dispose());
+
+	const remoteTasksUi: TaskInspectorUi = {
+		notify() {},
+		custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+	};
+	const tasksDone = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const top = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	top.handleInput?.(DOWN);
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	top.handleInput?.(ENTER);
+	top.handleInput?.(KITTY_ESC);
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	const sent = await h.deliverAllSetViewedToEngine();
+	await tasksDone;
+
+	assert.deepEqual(opened, []);
+	assert.ok(
+		sent.some((cmd) => cmd.type === "set_viewed_agent" && cmd.preview !== true && cmd.taskId === undefined),
+		"must send committed main ack so older engine clears pending /tasks return",
+	);
+	let nextSelection = "";
+	await showTaskInspector(
+		mountTasksUi((c, rows) => {
+			nextSelection = selectedLine(rows());
+			c.handleInput?.(ESC);
+		}),
+		h.store,
+		undefined,
+		{ board: agentPanelBoardSource(h.session) },
+	);
+	assert.match(nextSelection, /third gamma/, `old engine next /tasks must land at top, got: ${nextSelection}`);
+});
+
+test("no-regression: Esc closing a /tasks peek card right before Enter, Kitty Esc key-release, and non-navigation overlays never falsely cancel opening a subagent", async () => {
+	const a1 = doneAgent("a1", "first alpha", 1);
+	const a2 = doneAgent("a2", "second beta", 2);
+	const a3 = doneAgent("a3", "third gamma", 3);
+	const h = createHarnessWithOpenPort([a1, a2, a3], async (taskId) => fakePort(taskId));
+	disposers.push(() => h.dispose());
+
+	const remoteTasksUi: TaskInspectorUi = {
+		notify() {},
+		custom: (factory, opts) => h.engineCustomUi.custom(factory as never, opts as never),
+	};
+
+	// 1. Esc closing peek card BEFORE Enter + Kitty Esc key-release AFTER Enter -> must still open a2!
+	const tasksDone1 = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const top1 = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	top1.handleInput?.(DOWN); // select a2
+	top1.handleInput?.(SPACE); // open peek card on a2
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	// Send Esc (closes peek card), Enter (opens a2), and Kitty Esc release in one burst before draining!
+	top1.handleInput?.(ESC);
+	top1.handleInput?.(ENTER);
+	top1.handleInput?.(KITTY_ESC_RELEASE);
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	await tick(4);
+	await h.deliverAllSetViewedToEngine();
+	await tasksDone1;
+
+	assert.equal(h.switcher.viewedTaskId(), "a2", "Esc-before-Enter + Esc key-release must NOT cancel opening a2");
+
+	// Return to main.
+	await h.switcher.view(undefined);
+	await h.deliverAllSetViewedToEngine();
+
+	// 2. Non-navigation dialog stacked above /tasks with an unanswered Esc must NOT cancel /tasks view_agent.
+	const tasksDone2 = showTaskInspector(remoteTasksUi, h.store, undefined, { board: agentPanelBoardSource(h.session) });
+	await tick(2);
+	h.deliverAllEngineToHost();
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+
+	const topTasks = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	// Stack an unrelated prompt dialog on top of /tasks and send Esc to it.
+	const dialogDone = h.engineCustomUi.custom(
+		(_tui, _theme, _kb, done) => ({
+			render: () => ["dialog"],
+			invalidate() {},
+			handleInput(data: string) {
+				if (data === ESC) done(undefined);
+				return true;
+			},
+		}),
+		{ overlay: false, purpose: "prompt" },
+	);
+	await tick(2);
+	h.deliverAllEngineToHost();
+	const topDialog = h.editorContainer.children.at(-1) as Component & { handleInput?(data: string): unknown };
+	assert.notEqual(topDialog, topTasks);
+
+	topTasks.handleInput?.(ENTER);
+	topDialog.handleInput?.(ESC);
+	await h.deliverAllHostCommandsToEngine();
+	h.deliverAllEngineToHost();
+	await tick(4);
+	await h.deliverAllSetViewedToEngine();
+	await Promise.all([tasksDone2, dialogDone]);
+
+	assert.equal(h.switcher.viewedTaskId(), "a2", "unanswered Esc on non-navigation dialog must not cancel /tasks open");
 });

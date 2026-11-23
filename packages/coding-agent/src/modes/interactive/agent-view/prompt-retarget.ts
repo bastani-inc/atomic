@@ -3,6 +3,7 @@ import { firstSubagentAttempt } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
+import { noteNavigationHostCancel } from "../../interactive-engine/remote-component.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import { promptHistoryFor } from "../components/agent-prompt-history.ts";
 import { AtomicWorkedStatusComponent, watchAtomicWorkingClock } from "../components/atomic-working-status.ts";
@@ -348,6 +349,9 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 		if (isPhysicalCtrlC(data) || mode.keybindings.matches(data, "app.clear")) return undefined;
 		if (mode.keybindings.matches(data, "app.exit")) return undefined;
 		if (isPhysicalEscape(data) || mode.keybindings.matches(data, "app.interrupt")) {
+			if (closingTasksActive && mode.runtimeHost instanceof IsolatedInteractiveRuntime) {
+				noteNavigationHostCancel(mode.runtimeHost);
+			}
 			switcher.cancelPending();
 			return { consume: true };
 		}

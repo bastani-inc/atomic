@@ -16,6 +16,7 @@ import {
 	COMMITTED_WIDGET_PREVIEW_GATE,
 	canPaintWidgetFrame,
 	classifyWidgetFrame,
+	isUnansweredCancelMatch,
 	type WidgetPreviewGate,
 } from "../interactive/agent-view/view-preview-protocol.js";
 import { awaitFirstContent, PROMPT_SLOT_HOLD_MS } from "../interactive/components/prompt-slot.ts";
@@ -53,6 +54,7 @@ interface MountedRemoteComponent {
 	handlesCtrlC: boolean;
 	/** The extension declared that this component claims internal UI actions. */
 	handlesInternalUiAction: boolean;
+	purpose?: "prompt" | "navigation";
 	handle?: OverlayHandle;
 	widgetKey?: string;
 	unsubscribeWidgetRelease?: () => void;
@@ -71,6 +73,8 @@ interface PendingInput {
 	timer: ReturnType<typeof setTimeout>;
 	/** The frame requested with the key: a handled key answers once that frame is here, so one paint shows it. */
 	readonly frameRequestId: number | undefined;
+	/** Raw key data sent in `engine_custom_input`, used to detect unanswered pre-view cancel keys on arrival. */
+	readonly data: string;
 }
 
 class RemoteComponent implements Component {
@@ -108,6 +112,8 @@ class RemoteComponent implements Component {
 	private readonly pendingInputs = new Map<number, PendingInput>();
 	/** Handled keys whose frame has not arrived yet. */
 	private readonly answeredInputs = new Set<number>();
+	/** Highest `inputRequestId` sent when a host-level cancel (`Esc`) was consumed while this component was mounted. */
+	private cancelUpToInputId = 0;
 	private readonly frameClamp = new RemoteFrameWidthClamp();
 
 	private readonly componentId: string;
@@ -320,7 +326,7 @@ class RemoteComponent implements Component {
 		const result = new Promise<boolean | undefined>((resolve) => {
 			const timer = setTimeout(() => this.resolveInput(requestId, false), REMOTE_INPUT_REPLY_TIMEOUT_MS);
 			timer.unref?.();
-			this.pendingInputs.set(requestId, { resolve, timer, frameRequestId });
+			this.pendingInputs.set(requestId, { resolve, timer, frameRequestId, data });
 		});
 		try {
 			this.runtime.sendEngineCommand({
@@ -403,6 +409,33 @@ class RemoteComponent implements Component {
 		pending.resolve(handled);
 	}
 
+	/** Record that a host-level cancel key (`Esc`) was consumed while this component had inputs in flight. */
+	noteHostCancel(): void {
+		if (this.disposed || this.retiredShowing !== undefined) return;
+		if (this.inputRequestId > this.cancelUpToInputId) this.cancelUpToInputId = this.inputRequestId;
+	}
+
+	/**
+	 * True when this component has an unanswered cancel input (or an unanswered input already in flight when a
+	 * host-level cancel consumed `Esc`), meaning `Esc` was pressed after the input/click that emitted `engine_view_agent`.
+	 */
+	hasUnansweredCancelInput(isCancel: (data: string) => boolean): boolean {
+		if (this.disposed || this.retiredShowing !== undefined) return false;
+		for (const [requestId, pending] of this.pendingInputs) {
+			if (
+				isUnansweredCancelMatch(
+					this.answeredInputs.has(requestId),
+					isCancel(pending.data),
+					requestId,
+					this.cancelUpToInputId,
+				)
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	invalidate(): void {
 		this.dirty = true;
 	}
@@ -420,6 +453,7 @@ class RemoteComponent implements Component {
 		this.paintedFrame = undefined;
 		this.paintedRowKeys = undefined;
 		this.clickId++;
+		this.cancelUpToInputId = 0;
 		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
 		return true;
 	}
@@ -513,6 +547,7 @@ class RemoteComponent implements Component {
 	dispose(notifyEngine = true): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.cancelUpToInputId = 0;
 		clearTimeout(this.hiddenTimer);
 		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
 		if (notifyEngine)
@@ -649,6 +684,19 @@ export function clearPromotedWidgetPreview(runtime: object, widgetKey: string): 
 /** Reset preview gate and hide state for `widgetKey` across engine generation replacement. */
 export function resetWidgetPreview(runtime: object, widgetKey: string): void {
 	controllers.get(runtime)?.resetWidgetPreview(widgetKey);
+}
+
+/**
+ * True when the topmost live interactive component on `runtime` is a navigation view (`/tasks`) that already has an
+ * unanswered cancel key in flight (or had an unanswered input in flight when a host-level cancel consumed `Esc`).
+ */
+export function hasUnansweredNavigationCancelInput(runtime: object, isCancel: (data: string) => boolean): boolean {
+	return controllers.get(runtime)?.hasUnansweredNavigationCancelInput(isCancel) === true;
+}
+
+/** Record that a host-level `Esc` cancelled a pending open while the topmost live navigation component was mounted. */
+export function noteNavigationHostCancel(runtime: object): void {
+	controllers.get(runtime)?.noteNavigationHostCancel();
 }
 
 export function watchWidgetFrames(runtime: object, widgetKey: string): { drawn(): Promise<void>; stop(): void } {
@@ -865,6 +913,25 @@ export class RemoteComponentController {
 		this.previewGates.delete(widgetKey);
 		this.hideOpening.delete(widgetKey);
 		for (const record of this.mounted.values()) if (record.widgetKey === widgetKey) record.component.cancelPreview();
+	}
+
+	private topmostLiveNavigationComponent(): RemoteComponent | undefined {
+		const records = [...this.mounted.values()];
+		for (let i = records.length - 1; i >= 0; i--) {
+			const record = records[i]!;
+			if (record.widgetKey !== undefined || record.transcript !== undefined) continue;
+			if (record.purpose !== "navigation" || record.engineDone) return undefined;
+			return record.component;
+		}
+		return undefined;
+	}
+
+	hasUnansweredNavigationCancelInput(isCancel: (data: string) => boolean): boolean {
+		return this.topmostLiveNavigationComponent()?.hasUnansweredCancelInput(isCancel) === true;
+	}
+
+	noteNavigationHostCancel(): void {
+		this.topmostLiveNavigationComponent()?.noteHostCancel();
 	}
 
 	private readonly hideOpening = new Map<string, number>();
@@ -1111,7 +1178,7 @@ export class RemoteComponentController {
 					component.hostColorDepth = tui.terminal?.colorDepth;
 					// In the prompt's place, the rows there stay until its first frame is here.
 					if (!overlay) awaitFirstContent(component, () => component.awaitingFirstContent());
-					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
+					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction, purpose };
 					this.mounted.set(componentId, mounted);
 					// Bind this component to the real host terminal so a buffered
 					// autowrap control emitted before the mount frame applies to the host TTY.

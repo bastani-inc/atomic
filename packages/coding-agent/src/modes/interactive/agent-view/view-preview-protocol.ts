@@ -265,3 +265,45 @@ export function setBridgePanelPreview(bridge: object, preview: BridgePanelPrevie
 export function bridgePanelPreview(bridge: object | undefined): BridgePanelPreview | undefined {
 	return bridge === undefined ? undefined : bridgePanelPreviews.get(bridge);
 }
+
+/**
+ * Decide whether an incoming `engine_view_agent` should be cancelled immediately on arrival because the closing
+ * navigation component (`/tasks`) already has an unanswered cancel key (`Esc` / `app.interrupt`) in flight.
+ */
+export function shouldCancelEngineViewOnArrival(
+	hasTaskId: boolean,
+	keepScreen: boolean,
+	topIsLiveNavigation: boolean,
+	hasUnansweredCancel: boolean,
+): boolean {
+	return hasTaskId && keepScreen && topIsLiveNavigation && hasUnansweredCancel;
+}
+
+/**
+ * Whether an in-flight `RemoteComponent` input represents a cancel key pressed after the action that triggered an
+ * incoming `engine_view_agent` (or an unanswered input present when a host-level cancel already consumed `Esc`).
+ */
+export function isUnansweredCancelMatch(
+	inputAnswered: boolean,
+	isCancelKey: boolean,
+	inputId: number,
+	cancelUpToInputId: number,
+): boolean {
+	return !inputAnswered && (isCancelKey || inputId <= cancelUpToInputId);
+}
+
+/**
+ * Compute the next `settledRequestId` watermark and whether a committed `set_viewed_agent` acknowledgement must still
+ * be sent after cancelling an incoming `engine_view_agent` on arrival.
+ */
+export function planPreViewCancelAck(
+	currentSettledReq: number,
+	lastSentSettledReq: number,
+	engineRequestId: number,
+	priorPendingActive: boolean,
+): { readonly nextSettledReq: number; readonly shouldSendAck: boolean } {
+	const nextSettledReq = engineRequestId > currentSettledReq ? engineRequestId : currentSettledReq;
+	const effectiveLastSent = priorPendingActive ? nextSettledReq : lastSentSettledReq;
+	const shouldSendAck = engineRequestId === 0 ? !priorPendingActive : effectiveLastSent < engineRequestId;
+	return { nextSettledReq, shouldSendAck };
+}
