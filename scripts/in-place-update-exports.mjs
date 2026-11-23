@@ -16,10 +16,10 @@
 // `record` writes a release's record: for the application and the packages of its own it depends on, each package's
 // exports map, each JavaScript file's export names, the files its code loads on demand, the files the CLI loads at start
 // and the files every running process has loaded. `check` lists what a build breaks for a process of each recorded
-// release, and `release` does it for a packed release in the release workflow, which also fails when the latest release
-// published before it is not recorded: the build's gates recognize a process of a recorded release only
-// (`packages/coding-agent/scripts/in-place-update-gate.mjs`). `packages/coding-agent/in-place-update/` holds the records
-// (see its README.md).
+// release, and `release` does it for a packed release in the release workflow: releases before `GUARDED_SINCE` must be
+// recorded before building so the build's gates recognize them (`packages/coding-agent/scripts/in-place-update-gate.mjs`),
+// while releases from `GUARDED_SINCE` onward self-guard on-demand imports at call sites and are downloaded from npm on
+// the fly when not committed. `packages/coding-agent/in-place-update/` holds the records (see its README.md).
 //
 // Usage:
 //   node scripts/in-place-update-exports.mjs record <package-dir>...       (prints the record; the application first)
@@ -38,6 +38,7 @@ import { pathToFileURL } from "node:url";
 import { parse } from "acorn";
 import { ancestor } from "acorn-walk";
 import semver from "semver";
+import { GUARDED_SINCE } from "../packages/coding-agent/scripts/in-place-update-gate.mjs";
 
 /** A file's export names when one of its `export *` comes from a module outside Atomic's packages: any name. */
 const ANY = "*";
@@ -741,6 +742,29 @@ function report(records, allowed, dirs) {
 	return ok;
 }
 
+/**
+ * Resolves the release records `release` checks against: every committed record in `recordsDir`, plus `previous` (the
+ * latest published release before the version being packed). Releases before `GUARDED_SINCE` lack call-site guards and
+ * must be recorded before building so `split-dist.mjs` generates gates and version probes for them; releases from
+ * `GUARDED_SINCE` onward self-guard every on-demand import and are fetched on the fly when not committed.
+ * @param {readonly ReleaseRecord[]} records
+ * @param {{ previous: string | undefined, recordsDir: string, download: (version: string) => ReleaseRecord }} options
+ * @returns {{ ok: true, records: ReleaseRecord[] } | { ok: false, error: string }}
+ */
+export function resolveReleaseRecords(records, { previous, recordsDir, download }) {
+	const resolved = [...records];
+	if (previous !== undefined && !resolved.some((record) => record.version === previous)) {
+		if (semver.lt(previous, GUARDED_SINCE)) {
+			return {
+				ok: false,
+				error: `${previous} is not recorded in ${recordsDir}: record it (node scripts/in-place-update-exports.mjs record --published ${previous}) and build again`,
+			};
+		}
+		resolved.push(download(previous));
+	}
+	return { ok: true, records: resolved };
+}
+
 function main(argv) {
 	const [command, ...rest] = argv;
 	const work = () => mkdtempSync(join(tmpdir(), "atomic-in-place-update-"));
@@ -769,15 +793,16 @@ function main(argv) {
 			const dirs = unpackRelease(tarballs, into);
 			const { records, allowed } = readRecords(recordsDir);
 			const previous = previousRelease(version);
-			// The build tells a process of each recorded release to restart before it loads code on demand
-			// (packages/coding-agent/scripts/in-place-update-gate.mjs); one of an unrecorded release it cannot recognize.
-			if (previous !== undefined && !records.some((record) => record.version === previous)) {
-				console.error(
-					`${previous} is not recorded in ${recordsDir}: record it (node scripts/in-place-update-exports.mjs record --published ${previous}) and build again`,
-				);
+			const resolved = resolveReleaseRecords(records, {
+				previous,
+				recordsDir,
+				download: (prev) => recordRelease(downloadRelease(prev, into)),
+			});
+			if (!resolved.ok) {
+				console.error(resolved.error);
 				return 1;
 			}
-			return report(records, allowed, dirs) ? 0 : 1;
+			return report(resolved.records, allowed, dirs) ? 0 : 1;
 		} finally {
 			rmSync(into, { recursive: true, force: true });
 		}

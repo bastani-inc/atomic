@@ -35,8 +35,10 @@ What reads them:
   release. It also updates a running process of the build itself to a later release whose code for some of the modules
   it loads on demand cannot load there: its own call sites say to restart. `test/integration/in-place-update-e2e.test.ts`
   runs it on the build.
-- The release workflow runs both on the packed release, and fails when the latest version published before it is not
-  recorded.
+- The release workflow runs both on the packed release. For releases before 0.10.5 (`GUARDED_SINCE`), it fails when the
+  latest version published before this release is not recorded here (those releases need build-time gates); from 0.10.5
+  onward, an unrecorded previous release is downloaded from npm and checked automatically without needing a committed
+  JSON snapshot first.
 
 `allowed.json` lists, by release, the package subpaths this build may import although that release's exports map
 lacks them, each with why no process of that release meets them. The test fails once nothing imports one any more.

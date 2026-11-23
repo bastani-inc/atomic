@@ -222,7 +222,11 @@ export async function updateRunningRelease(record, tarballs, version, work, allo
 		);
 		const problems = [];
 		for (const [path, outcome] of Object.entries(outcomes)) {
-			const modulePath = path.endsWith(".impl.js") ? `${path.slice(0, -".impl.js".length)}.js` : path;
+			const modulePath = path.endsWith(".code.js")
+				? `${path.slice(0, -".code.js".length)}.js`
+				: path.endsWith(".impl.js")
+					? `${path.slice(0, -".impl.js".length)}.js`
+					: path;
 			const excused =
 				outcome.causeCode === "ERR_PACKAGE_PATH_NOT_EXPORTED" &&
 				Object.keys(allowed).some((specifier) =>
