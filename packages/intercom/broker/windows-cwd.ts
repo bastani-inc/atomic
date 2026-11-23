@@ -164,6 +164,15 @@ function preferredCandidatePath(candidate: ResolvedCandidateDir): string {
 	return toSpawnWindowsPath(candidate.real ?? candidate.lexical);
 }
 
+/**
+ * Win32 `CreateProcessW` rejects `lpCurrentDirectory` >= `MAX_PATH` (even with `\\?\`) when Windows' default
+ * `LongPathsEnabled = 0` is in effect. Prefer a short (< 248-char) verified directory outside the project whenever
+ * one is available so host commands work across both default Windows installs and `LongPathsEnabled = 1` hosts.
+ */
+function isShortWindowsSpawnPath(spawnPath: string): boolean {
+	return !spawnPath.startsWith("\\\\?\\") && spawnPath.length < SAFE_WINDOWS_CWD_LENGTH;
+}
+
 function probePathFor(rawDir: string, lexical: string): string {
 	if (rawDir.length >= SAFE_WINDOWS_CWD_LENGTH && !rawDir.startsWith("\\\\?\\")) {
 		return toSpawnWindowsPath(lexical);
@@ -315,16 +324,24 @@ export function resolveSafeWindowsWorkingDirectorySync(
 		if (resolved !== undefined) protectedDirs.push(resolved);
 	}
 	const candidates = buildCandidates(protectedDirs, options.commandPath, options.preferCommandDir === true);
-	let fallback: string | undefined;
+	let longOutsideFallback: string | undefined;
+	let shortFallback: string | undefined;
+	let anyFallback: string | undefined;
 	for (const rawCandidate of candidates) {
 		const candidate = resolveCandidateDirSync(rawCandidate);
 		if (candidate === undefined) continue;
 		const chosen = preferredCandidatePath(candidate);
+		const isShort = isShortWindowsSpawnPath(chosen);
 		const insideAny = protectedDirs.some((folder) => isInsideProtectedFolder(folder, candidate));
-		if (!insideAny) return chosen;
-		fallback ??= chosen;
+		if (!insideAny) {
+			if (isShort) return chosen;
+			longOutsideFallback ??= chosen;
+			continue;
+		}
+		if (isShort) shortFallback ??= chosen;
+		anyFallback ??= chosen;
 	}
-	return fallback;
+	return longOutsideFallback ?? shortFallback ?? anyFallback;
 }
 
 async function tryRealPathAsync(dir: string, deadline: number, signal?: AbortSignal): Promise<string | undefined> {
@@ -385,15 +402,23 @@ export async function resolveSafeWindowsWorkingDirectoryAsync(
 	if (signal?.aborted) return undefined;
 	const protectedDirs = resolvedProtected.filter((dir): dir is ResolvedProtectedDir => dir !== undefined);
 	const candidates = buildCandidates(protectedDirs, options.commandPath, options.preferCommandDir === true);
-	let fallback: string | undefined;
+	let longOutsideFallback: string | undefined;
+	let shortFallback: string | undefined;
+	let anyFallback: string | undefined;
 	for (const rawCandidate of candidates) {
 		if (signal?.aborted || overallDeadline - Date.now() <= 0) break;
 		const candidate = await resolveCandidateDirAsync(rawCandidate, overallDeadline, signal);
 		if (candidate === undefined) continue;
 		const chosen = preferredCandidatePath(candidate);
+		const isShort = isShortWindowsSpawnPath(chosen);
 		const insideAny = protectedDirs.some((folder) => isInsideProtectedFolder(folder, candidate));
-		if (!insideAny) return chosen;
-		fallback ??= chosen;
+		if (!insideAny) {
+			if (isShort) return chosen;
+			longOutsideFallback ??= chosen;
+			continue;
+		}
+		if (isShort) shortFallback ??= chosen;
+		anyFallback ??= chosen;
 	}
-	return fallback;
+	return longOutsideFallback ?? shortFallback ?? anyFallback;
 }

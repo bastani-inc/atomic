@@ -248,47 +248,75 @@ describe("windows-cwd helper", () => {
 		assert.equal(resolveSafeWindowsWorkingDirectorySync(), "C:\\Windows");
 		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync(), "C:\\Windows");
 
-		// 5. Long >248-char outside paths keep \\?\ and \\?\UNC\ while long in-project paths are rejected
+		// 5. Long >248-char paths yield to a short (<248-char) verified outside directory when one exists (so
+		// CreateProcessW succeeds with LongPathsEnabled=0), and preserve \\?\ / \\?\UNC\ when only long paths exist.
 		const longTail = Array.from({ length: 12 }, (_, i) => `seg_${String(i).padStart(2, "0")}_1234567890123456`).join(
 			"\\",
 		);
-		const longPlain = `C:\\longroot\\${longTail}`;
+		const longPlain = `D:\\a\\_temp\\${longTail}`;
 		const longExt = `\\\\?\\${longPlain}`;
 		const longUncPlain = `\\\\srv\\share\\${longTail}`;
 		const longUncExt = `\\\\?\\UNC\\srv\\share\\${longTail}`;
-		const longInProj = `\\\\?\\C:\\repo\\project\\${longTail}`;
+		const longInProj = `\\\\?\\D:\\a\\project\\${longTail}`;
 
+		// Short C:\Windows exists -> prefer short C:\Windows over >=248-char longExt or longUncExt
 		setupWin({
-			cwd: "C:\\repo\\project",
+			cwd: "D:\\a\\project",
 			systemRoot: longExt,
 			windir: longExt,
-			dirs: ["C:\\repo\\project", longExt, "C:\\Windows"],
-			realpaths: { "C:\\repo\\project": "C:\\repo\\project", [longExt]: longPlain, "C:\\Windows": "C:\\Windows" },
+			dirs: ["D:\\a\\project", longExt, "C:\\Windows"],
+			realpaths: { "D:\\a\\project": "D:\\a\\project", [longExt]: longPlain, "C:\\Windows": "C:\\Windows" },
+		});
+		assert.equal(resolveSafeWindowsWorkingDirectorySync(), "C:\\Windows");
+		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync(), "C:\\Windows");
+
+		setupWin({
+			cwd: "D:\\a\\project",
+			systemRoot: longUncExt,
+			windir: longUncExt,
+			dirs: ["D:\\a\\project", longUncExt, "C:\\Windows"],
+			realpaths: {
+				"D:\\a\\project": "D:\\a\\project",
+				[longUncExt]: longUncPlain,
+				"C:\\Windows": "C:\\Windows",
+			},
+		});
+		assert.equal(resolveSafeWindowsWorkingDirectorySync(), "C:\\Windows");
+		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync(), "C:\\Windows");
+
+		// No short outside directory exists -> Tier 2 preserves \\?\ and \\?\UNC\
+		setupWin({
+			cwd: "D:\\a\\project",
+			systemRoot: longExt,
+			windir: longExt,
+			tmpdir: "Z:\\NoSuchTemp",
+			dirs: ["D:\\a\\project", longExt],
+			realpaths: { "D:\\a\\project": "D:\\a\\project", [longExt]: longPlain },
 		});
 		assert.equal(resolveSafeWindowsWorkingDirectorySync(), longExt);
 		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync(), longExt);
 
 		setupWin({
-			cwd: "C:\\repo\\project",
+			cwd: "D:\\a\\project",
 			systemRoot: longUncExt,
 			windir: longUncExt,
-			dirs: ["C:\\repo\\project", longUncExt, "C:\\Windows"],
+			tmpdir: "Z:\\NoSuchTemp",
+			dirs: ["D:\\a\\project", longUncExt],
 			realpaths: {
-				"C:\\repo\\project": "C:\\repo\\project",
+				"D:\\a\\project": "D:\\a\\project",
 				[longUncExt]: longUncPlain,
-				"C:\\Windows": "C:\\Windows",
 			},
 		});
 		assert.equal(resolveSafeWindowsWorkingDirectorySync(), longUncExt);
 		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync(), longUncExt);
 
 		setupWin({
-			cwd: "C:\\repo\\project",
+			cwd: "D:\\a\\project",
 			systemRoot: longInProj,
 			windir: longInProj,
-			dirs: ["C:\\repo\\project", longInProj, "C:\\Windows"],
+			dirs: ["D:\\a\\project", longInProj, "C:\\Windows"],
 			realpaths: {
-				"C:\\repo\\project": "C:\\repo\\project",
+				"D:\\a\\project": "D:\\a\\project",
 				[longInProj]: longInProj,
 				"C:\\Windows": "C:\\Windows",
 			},
@@ -355,5 +383,21 @@ describe("windows-cwd helper", () => {
 			windir: "C:",
 		});
 		assert.equal(resolveSafeWindowsKillCwdLexical(), "C:\\Windows");
+
+		// Long >=248-char SystemRoot on D: prefers short drive root D:\ (works with LongPathsEnabled=0)
+		const longTail = Array.from({ length: 12 }, (_, i) => `seg_${String(i).padStart(2, "0")}_1234567890123456`).join(
+			"\\",
+		);
+		setupWin({
+			cwd: "D:\\a\\atomic\\atomic",
+			systemRoot: `\\\\?\\D:\\a\\_temp\\${longTail}`,
+			windir: `\\\\?\\D:\\a\\_temp\\${longTail}`,
+		});
+		assert.equal(
+			resolveSafeWindowsKillCwdLexical({
+				commandPath: `\\\\?\\D:\\a\\_temp\\${longTail}\\System32\\taskkill.exe`,
+			}),
+			"D:\\",
+		);
 	});
 });

@@ -21,6 +21,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
+import { nativeProcessCreationTime, processStartToken } from "../src/core/process-start-token.js";
 import {
 	closedObject,
 	type ExpressionContext,
@@ -57,20 +58,17 @@ import {
 	stepProcessWatcher,
 	stepStartingWatcher,
 } from "../src/core/resume/blueprint/process.ts";
+import { BLUEPRINT_STEP_TIMEOUT_MS } from "../src/core/resume/blueprint/steps.ts";
 import { isWorkspaceGitError } from "../src/core/workspace/errors.ts";
 import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
 import { createGitEnvironment } from "../src/utils/git-env.ts";
 import * as shell from "../src/utils/shell.ts";
 import { getShellConfig, type ShellConfig } from "../src/utils/shell.ts";
 import { bunExecutable } from "./cli-test-helpers.ts";
+import { expireStepBudgetOnceStarted } from "./helpers/blueprint-fixtures.ts";
 
 /** Room for a node or bash process to start and finish on a loaded machine. */
 const ACTION_TIMEOUT_MS = 60_000;
-/**
- * The budget of an action that never finishes. The clock never ends it: {@link expireBudgetOnceStarted} makes it run
- * out once the action has started, however long a loaded machine takes to fetch and start it.
- */
-const HANG_TIMEOUT_MS = 60 * 60 * 1_000;
 /** A Bun child loads this module graph and runs two actions: a real child process, not a slow test. */
 const BUN_PROBE_TIMEOUT_MS = 120_000;
 /** The budget of a step that only has to expire: long enough for bash to have started, short enough not to wait. */
@@ -246,55 +244,6 @@ function startRun(uses: string, options: RunOptions = {}): StartedRun {
 	return { logPath, result };
 }
 
-/**
- * Makes the budget of the run about to start run out once `started` exists, which the action writes as it starts,
- * rather than once {@link HANG_TIMEOUT_MS} has passed. The timer a run arms for what is left of that budget is the only
- * one longer than half of it; every other timer is armed as asked. Returns a restore for the timer functions.
- *
- * A test that uses it no longer sees how long the timer is armed for: "does not forgive a step that ran out of time"
- * still runs a step against a real budget, which node actions and composite steps share through the same process
- * runner.
- */
-function expireBudgetOnceStarted(started: string): () => void {
-	const realSetTimeout = globalThis.setTimeout;
-	const realClearTimeout = globalThis.clearTimeout;
-	const budgets: { readonly standIn: NodeJS.Timeout; cleared: boolean; watch?: NodeJS.Timeout }[] = [];
-	globalThis.setTimeout = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
-		if (typeof timeout !== "number" || timeout <= HANG_TIMEOUT_MS / 2)
-			return realSetTimeout(handler, timeout, ...args);
-		const budget: (typeof budgets)[number] = {
-			standIn: realSetTimeout(() => undefined, 2 ** 31 - 1),
-			cleared: false,
-		};
-		budget.standIn.unref();
-		budgets.push(budget);
-		const look = () => {
-			if (budget.cleared) return;
-			if (existsSync(started)) handler(...args);
-			else budget.watch = realSetTimeout(look, 20);
-		};
-		look();
-		return budget.standIn;
-	}) as typeof setTimeout;
-	globalThis.clearTimeout = ((timer?: NodeJS.Timeout | string | number) => {
-		const budget = budgets.find((entry) => entry.standIn === timer);
-		if (budget !== undefined) {
-			budget.cleared = true;
-			realClearTimeout(budget.watch);
-		}
-		realClearTimeout(timer);
-	}) as typeof clearTimeout;
-	return () => {
-		globalThis.setTimeout = realSetTimeout;
-		globalThis.clearTimeout = realClearTimeout;
-		for (const budget of budgets) {
-			budget.cleared = true;
-			realClearTimeout(budget.watch);
-			realClearTimeout(budget.standIn);
-		}
-	};
-}
-
 function readText(path: string): string {
 	return readFileSync(path, "utf8");
 }
@@ -383,6 +332,26 @@ function isAlive(pid: number): boolean {
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
+}
+
+function readRecordedPid(path: string): number {
+	const text = readText(path).trim();
+	assert.match(text, /^\d+$/, `expected numeric PID in ${path}, got ${JSON.stringify(text)}`);
+	const pid = Number(text);
+	assert.ok(Number.isSafeInteger(pid) && pid > 0, `expected positive PID in ${path}, got ${pid}`);
+	return pid;
+}
+
+/** Synchronous per-process identity when available (Windows native creation time or Linux `/proc` start token). */
+function liveProcessIdentity(pid: number): string | undefined {
+	if (process.platform === "win32") return nativeProcessCreationTime(pid) ?? undefined;
+	return processStartToken(pid);
+}
+
+function isSameProcessAlive(pid: number, identity: string | undefined): boolean {
+	if (!isAlive(pid)) return false;
+	if (identity === undefined) return true;
+	return liveProcessIdentity(pid) === identity;
 }
 
 async function waitForFile(path: string): Promise<void> {
@@ -1263,8 +1232,12 @@ describe("the action cache", () => {
 });
 
 describe("how an action ends", () => {
+	// Publish the PID file via rename so the test never observes a newly created empty file before its bytes are written.
 	const hang = script(
-		'require("node:fs").writeFileSync(process.env.PID_FILE, String(process.pid));',
+		'const fs = require("node:fs");',
+		'const tmp = process.env.PID_FILE + ".tmp";',
+		"fs.writeFileSync(tmp, String(process.pid));",
+		"fs.renameSync(tmp, process.env.PID_FILE);",
 		"setInterval(() => {}, 1000);",
 	);
 
@@ -1272,19 +1245,35 @@ describe("how an action ends", () => {
 		commitNodeAction("acme/hang", hang);
 		const pidFile = join(fixture.root, "hang.pid");
 
-		const restore = expireBudgetOnceStarted(pidFile);
+		let identity: string | undefined;
+		const budget = expireStepBudgetOnceStarted(() => {
+			if (!existsSync(pidFile)) return false;
+			try {
+				identity = liveProcessIdentity(readRecordedPid(pidFile));
+				return true;
+			} catch {
+				return false;
+			}
+		});
 		let exit: ProcessExit;
 		try {
-			exit = await startRun("github.com/acme/hang@v1", { env: { PID_FILE: pidFile }, timeoutMs: HANG_TIMEOUT_MS })
-				.result;
+			exit = await startRun("github.com/acme/hang@v1", {
+				env: { PID_FILE: pidFile },
+				timeoutMs: BLUEPRINT_STEP_TIMEOUT_MS,
+			}).result;
 		} finally {
-			restore();
+			budget.restore();
 		}
 
 		assert.equal(exit.timedOut, true);
 		assert.notEqual(exit.exitStatus, 0);
+		assert.equal(budget.armedDelays.length, 1);
+		assert.ok(
+			budget.armedDelays[0]! <= BLUEPRINT_STEP_TIMEOUT_MS && budget.armedDelays[0]! > BLUEPRINT_STEP_TIMEOUT_MS / 2,
+			`armed delay ${String(budget.armedDelays[0])} ms`,
+		);
 		assert.ok(existsSync(pidFile), "the action started before its budget ran out");
-		assert.equal(isAlive(Number(readText(pidFile))), false);
+		assert.equal(isSameProcessAlive(readRecordedPid(pidFile), identity), false);
 	});
 
 	test("aborting rejects with the signal's reason and stops the process (#4588)", async () => {
@@ -1298,10 +1287,12 @@ describe("how an action ends", () => {
 			signal: controller.signal,
 		});
 		await waitForFile(pidFile);
+		const pid = readRecordedPid(pidFile);
+		const identity = liveProcessIdentity(pid);
 		controller.abort(reason);
 
 		assert.equal(await rejectionOf(started.result), reason);
-		assert.equal(isAlive(Number(readText(pidFile))), false);
+		assert.equal(isSameProcessAlive(pid, identity), false);
 	});
 
 	test("an already aborted signal rejects before anything is fetched (#4588)", async () => {
@@ -2298,52 +2289,96 @@ describe("the budget of a step", () => {
 		},
 	});
 
-	/** Return a real shell lookup at the specified wall millisecond. Neither clock nor the command timer is patched. */
+	/**
+	 * Run a real action with a real shell lookup and real command timer, landing `remainingMs()` at the exact `setupMs`
+	 * boundary without relying on wall-clock scheduling alignment.
+	 *
+	 * Clocks are pinned only across the two synchronous sampling windows (`createContext` at entry and `remainingMs()`
+	 * after shell lookup returns). Async setup I/O (including Windows directory-rename retries and the real shell lookup)
+	 * and child execution (`startElapsedMs()`, spawn retries, the unpatched command timer, and tree settlement) observe
+	 * advancing real clocks. `startedMono` is kept at or below 0 so epoch-precision rounding is exercised exclusively on
+	 * the wall clock and a wrong-clock monotonic deadline cannot accidentally mask fractional-ms residue.
+	 */
 	async function runAtSetupBoundary(timeoutMs: number, setupMs: number) {
 		const log = await openStepLog(join(fixture.logs, "fractional.log"));
 		const lookup = shell.getShellConfigAsync;
-		let readyAt = 0;
-		let returnedAt = 0;
+		const realDateNow = Date.now.bind(Date);
+		const realPerfNow = performance.now.bind(performance);
+		const boundaryWall = realDateNow();
+		const boundaryMono = Math.min(setupMs, Math.floor(realPerfNow()));
+		const startedWall = boundaryWall - setupMs;
+		const startedMono = boundaryMono - setupMs;
+
+		let pinned: { readonly wall: number; readonly mono: number } | undefined = {
+			wall: startedWall,
+			mono: startedMono,
+		};
+		let entryWallReads = 0;
+		let entryMonoReads = 0;
+		let lookupReturned = false;
+		let unpinTimer: NodeJS.Immediate | undefined;
+
+		const wallSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+			if (pinned === undefined) return realDateNow();
+			if (!lookupReturned) entryWallReads++;
+			return pinned.wall;
+		});
+		const monoSpy = vi.spyOn(performance, "now").mockImplementation(() => {
+			if (pinned === undefined) return realPerfNow();
+			if (!lookupReturned) entryMonoReads++;
+			return pinned.mono;
+		});
 		const lookupSpy = vi.spyOn(shell, "getShellConfigAsync").mockImplementation(async () => {
 			const config = await lookup();
-			const sleepMs = readyAt - Date.now() - 20;
-			if (sleepMs > 0) await delay(sleepMs);
-			while (Date.now() < readyAt) {
-				/* finish in the target millisecond */
-			}
-			returnedAt = Date.now();
+			lookupReturned = true;
+			pinned = { wall: boundaryWall, mono: boundaryMono };
+			// `remainingMs()` runs in the microtask right after this resolves; unpin before async `createFileCommands`
+			// and `runLoggedProcess`'s `startElapsedMs()` so setup time never leaks into the child's spawn-retry clock.
+			unpinTimer = setImmediate(() => {
+				if (lookupReturned) pinned = undefined;
+			});
 			return config;
 		});
 		try {
-			for (let attempt = 0; attempt < 8; attempt++) {
-				const pids: number[] = [];
-				const options = {
-					step: { uses: "github.com/acme/fractional@v1", inputs: {} },
-					location: LOCATION,
-					cwd: fixture.workspace,
-					env: process.env,
-					envrcPath: fixture.envrcPath,
-					cacheDir: fixture.cacheDir,
-					log,
-					timeoutMs,
-					fetchAction,
-				};
-				const before = Date.now();
-				const result = stepProcessWatcher.run(
-					(pid, live) => {
-						if (live) pids.push(pid);
-					},
-					() => runAction(options),
-				);
-				const after = Date.now();
-				readyAt = after + setupMs;
-				const exit = await result;
-				// If setup began across a tick or lookup overslept, this wasn't the boundary under test.
-				if (before === after && returnedAt === readyAt) return { pids, exit };
-			}
-			throw new Error(`Shell lookup never returned at setup millisecond ${setupMs}`);
+			const pids: number[] = [];
+			const options = {
+				step: { uses: "github.com/acme/fractional@v1", inputs: {} },
+				location: LOCATION,
+				cwd: fixture.workspace,
+				env: process.env,
+				envrcPath: fixture.envrcPath,
+				cacheDir: fixture.cacheDir,
+				log,
+				timeoutMs,
+				fetchAction,
+			};
+			const result = stepProcessWatcher.run(
+				(pid, live) => {
+					if (live) pids.push(pid);
+				},
+				() =>
+					stepStartingWatcher.run(
+						() => {
+							if (lookupReturned) pinned = undefined;
+						},
+						() => {
+							const pending = runAction(options);
+							// `createContext` synchronously captures `wallStart` and `monoStart` before its first
+							// `await`; unpin immediately so setup I/O and the real shell lookup run unpinned.
+							pinned = undefined;
+							return pending;
+						},
+					),
+			);
+			const exit = await result;
+			assert.ok(entryWallReads > 0 && entryMonoReads > 0, "runAction captured its start clocks at entry");
+			return { pids, exit };
 		} finally {
+			if (unpinTimer !== undefined) clearImmediate(unpinTimer);
+			pinned = undefined;
 			lookupSpy.mockRestore();
+			monoSpy.mockRestore();
+			wallSpy.mockRestore();
 			await log.close();
 		}
 	}
@@ -2352,6 +2387,7 @@ describe("the budget of a step", () => {
 		const { exit, pids } = await runAtSetupBoundary(1000 * (0.1 + 0.2), 300);
 		assert.deepEqual(pids, []);
 		assert.equal(exit.timedOut, true);
+		assert.equal(exit.elapsedMs, 300);
 		assert.equal(existsSync(join(fixture.workspace, "marker")), false);
 	});
 
