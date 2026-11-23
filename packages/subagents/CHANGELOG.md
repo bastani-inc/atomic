@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-23
+
+### Fixed
+
+- In-process subagent drain and turn-settlement waits (`sessionDrained` and `nextTurnSettled`) now remain open while a session retry or model fallback is in progress instead of settling between retry attempts, and wake cleanly when retries end (`auto_retry_end` or `model_fallback_end`) ([#6509](https://github.com/bastani-inc/atomic/pull/6509)).
+
 ## [0.10.6-alpha.1] - 2026-11-23
 
 ### Fixed

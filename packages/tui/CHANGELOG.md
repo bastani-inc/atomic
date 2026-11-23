@@ -4,6 +4,12 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-23
+
+### Changed
+
+- `SelectList` now marks the selected row with Atomic's `∀` cursor instead of `❯`, matching Atomic's other pickers ([#6507](https://github.com/bastani-inc/atomic/pull/6507)).
+
 ## [0.10.6-alpha.1] - 2026-11-23
 
 ### Changed
