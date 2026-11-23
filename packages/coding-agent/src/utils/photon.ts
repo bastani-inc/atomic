@@ -19,6 +19,7 @@ import { readFile } from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { memoizeAsync } from "./memoize-async.js";
 
 const requireFromHere = createRequire(import.meta.url);
 const fs = requireFromHere("fs") as { readFileSync: (...args: unknown[]) => unknown };
@@ -28,10 +29,6 @@ const unpatchedReadFile: (...args: unknown[]) => unknown = fs.readFileSync.bind(
 export type { PhotonImage as PhotonImageType } from "@silvia-odwyer/photon-node";
 
 const WASM_FILENAME = "photon_rs_bg.wasm";
-
-// Lazy-loaded photon module
-let photonModule: typeof import("@silvia-odwyer/photon-node") | null = null;
-let loadPromise: Promise<typeof import("@silvia-odwyer/photon-node") | null> | null = null;
 
 function pathOrNull(file: PathOrFileDescriptor): string | null {
 	if (typeof file === "string") {
@@ -124,34 +121,27 @@ function installPhotonWasmRead(wasmBytes: Buffer | null): () => void {
 	};
 }
 
-/**
- * Load the photon module asynchronously.
- * Returns cached module on subsequent calls.
- */
-export async function loadPhoton(): Promise<typeof import("@silvia-odwyer/photon-node") | null> {
-	if (photonModule) {
-		return photonModule;
-	}
-
-	if (loadPromise) {
-		return loadPromise;
-	}
-
-	loadPromise = (async () => {
+const loadPhotonOnce = memoizeAsync(
+	async (): Promise<typeof import("@silvia-odwyer/photon-node") | null> => {
 		try {
 			const wasmBytes = await readPhotonWasmBytes();
 			const restoreWasmRead = installPhotonWasmRead(wasmBytes);
 			try {
-				photonModule = await import("@silvia-odwyer/photon-node");
-				return photonModule;
+				return await import("@silvia-odwyer/photon-node");
 			} finally {
 				restoreWasmRead();
 			}
 		} catch {
-			photonModule = null;
-			return photonModule;
+			return null;
 		}
-	})();
+	},
+	{ shouldCache: (mod) => mod !== null },
+);
 
-	return loadPromise;
+/**
+ * Load the photon module asynchronously.
+ * Returns cached module on subsequent calls; transient load failures are not cached.
+ */
+export function loadPhoton(): Promise<typeof import("@silvia-odwyer/photon-node") | null> {
+	return loadPhotonOnce();
 }

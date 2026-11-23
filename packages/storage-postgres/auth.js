@@ -102,10 +102,15 @@ function lazyClient(auth, create, searchPaths) {
 	/** @type {Promise<T> | undefined} */
 	let client;
 	return () => {
-		client ??= loadSdk(auth, searchPaths).then(create);
-		client.catch(() => {
-			client = undefined;
-		});
+		if (client === undefined) {
+			const current = loadSdk(auth, searchPaths)
+				.then(create)
+				.catch((error) => {
+					if (client === current) client = undefined;
+					throw error;
+				});
+			client = current;
+		}
 		return client;
 	};
 }

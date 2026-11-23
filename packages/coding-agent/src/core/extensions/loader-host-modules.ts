@@ -1,10 +1,8 @@
 import { join } from "node:path";
 import { getPackageDir, isBunBinary, isBundledBuild } from "../../config.js";
+import { memoizeAsync } from "../../utils/memoize-async.js";
 import { createModuleRequire } from "../../utils/module-require.js";
 import { withLegacyPackageNames } from "./forked-package-names.ts";
-
-let virtualModules: Record<string, object> | null = null;
-let virtualModulesPromise: Promise<Record<string, object>> | null = null;
 
 type HostModuleRequire = (specifier: string) => object;
 
@@ -162,20 +160,11 @@ function prefixedModules(name: string, modules: Record<string, object>): Record<
 
 export const loaderHostModulesTestHooks = { loadOptionalAtomicNatives };
 
+const cachedVirtualModules = memoizeAsync(loadVirtualModules);
+
 /** Live host modules shared with single-file builds and transformed extension reloads. */
-export async function getVirtualModules(): Promise<Record<string, object>> {
-	if (virtualModules) return virtualModules;
-	virtualModulesPromise ??= loadVirtualModules().then(
-		(modules) => {
-			virtualModules = modules;
-			return modules;
-		},
-		(error: Error) => {
-			virtualModulesPromise = null;
-			throw error;
-		},
-	);
-	return virtualModulesPromise;
+export function getVirtualModules(): Promise<Record<string, object>> {
+	return cachedVirtualModules();
 }
 
 /**

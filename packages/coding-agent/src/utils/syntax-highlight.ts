@@ -66,7 +66,6 @@ function materializeEagerEntry(core: HighlightCore, entry: EagerLanguageEntry): 
 		loadedEagerLanguages.add(entry.name);
 		return existing;
 	}
-	loadedEagerLanguages.add(entry.name);
 	const req = getHighlightRequire();
 	const mod = req(entry.specifier) as HighlightLanguageFactory & { default?: HighlightLanguageFactory };
 	const factory = mod.default ?? mod;
@@ -79,6 +78,7 @@ function materializeEagerEntry(core: HighlightCore, entry: EagerLanguageEntry): 
 	} else {
 		delete registered.aliases;
 	}
+	loadedEagerLanguages.add(entry.name);
 	return registered;
 }
 
@@ -204,10 +204,10 @@ interface HighlightLoadWaiter {
 }
 
 let allLanguagesLoaded = false;
-let highlightIndexEntries: readonly HighlightLanguageEntry[] | null | undefined;
+let highlightIndexEntries: readonly HighlightLanguageEntry[] | undefined;
 let preloadedEagerIndex = 0;
 let registeredIndexCursor = 0;
-let activeHighlightLoadLoop: Promise<void> | undefined;
+let activeHighlightLoadToken: symbol | undefined;
 const activeHighlightWaiters = new Set<HighlightLoadWaiter>();
 
 function parseHighlightIndexEntries(source: string, indexDir: string): HighlightLanguageEntry[] {
@@ -251,14 +251,18 @@ async function resolveHighlightIndexEntries(
 		const indexPath = req.resolve("highlight.js/lib/index.js");
 		const source = await readFile(indexPath, "utf8");
 		const entries = parseHighlightIndexEntries(source, dirname(indexPath));
-		highlightIndexEntries = entries.length > 0 ? entries : null;
+		if (entries.length > 0) {
+			highlightIndexEntries = entries;
+			return entries;
+		}
+		return null;
 	} catch {
-		highlightIndexEntries = null;
+		// Leave uncached so a transient miss (e.g. during an in-place package swap) can retry.
+		return null;
 	}
-	return highlightIndexEntries;
 }
 
-async function runChunkedHighlightLoad(): Promise<void> {
+async function runChunkedHighlightLoad(token: symbol): Promise<void> {
 	try {
 		await nextEventLoopTurn();
 		if (!hasLiveHighlightWaiter()) return;
@@ -275,13 +279,15 @@ async function runChunkedHighlightLoad(): Promise<void> {
 			try {
 				const mod = await import("highlight.js/lib/index.js");
 				const loaded = (mod as { default?: HighlightCore }).default ?? (mod as unknown as HighlightCore);
-				if (hljsCore === undefined && typeof loaded?.highlight === "function") {
-					hljsCore = loaded;
+				if (typeof loaded?.highlight === "function") {
+					if (hljsCore === undefined) {
+						hljsCore = loaded;
+					}
+					allLanguagesLoaded = true;
 				}
 			} catch {
-				// Eager languages and plaintext fallback remain available.
+				// Leave allLanguagesLoaded false so later highlight loads retry after transient failures.
 			}
-			allLanguagesLoaded = true;
 			return;
 		}
 
@@ -300,10 +306,10 @@ async function runChunkedHighlightLoad(): Promise<void> {
 				const batchEnd = Math.min(EAGER_LANGUAGE_ENTRIES.length, preloadedEagerIndex + HIGHLIGHT_CHUNK_BATCH_SIZE);
 				while (preloadedEagerIndex < batchEnd && hasLiveHighlightWaiter()) {
 					const entry = EAGER_LANGUAGE_ENTRIES[preloadedEagerIndex]!;
-					preloadedEagerIndex += 1;
 					if (!loadedEagerLanguages.has(entry.name)) {
 						req(entry.specifier);
 					}
+					preloadedEagerIndex += 1;
 					if (performance.now() - sliceStart >= HIGHLIGHT_CHUNK_SLICE_BUDGET_MS) break;
 				}
 				if (preloadedEagerIndex < EAGER_LANGUAGE_ENTRIES.length && hasLiveHighlightWaiter()) {
@@ -320,7 +326,6 @@ async function runChunkedHighlightLoad(): Promise<void> {
 			const batchEnd = Math.min(entries.length, registeredIndexCursor + HIGHLIGHT_CHUNK_BATCH_SIZE);
 			while (registeredIndexCursor < batchEnd && hasLiveHighlightWaiter()) {
 				const { name, filePath } = entries[registeredIndexCursor]!;
-				registeredIndexCursor += 1;
 				// Check registered primary language names rather than getLanguage(), so pre-registered
 				// overrides stay intact while aliases added by earlier chunks (e.g. handlebars -> htmlbars)
 				// do not suppress later built-in language modules.
@@ -329,6 +334,7 @@ async function runChunkedHighlightLoad(): Promise<void> {
 					const factory = mod.default ?? mod;
 					core.registerLanguage(name, factory);
 				}
+				registeredIndexCursor += 1;
 				if (performance.now() - sliceStart >= HIGHLIGHT_CHUNK_SLICE_BUDGET_MS) break;
 			}
 			if (registeredIndexCursor < entries.length && hasLiveHighlightWaiter()) {
@@ -340,9 +346,11 @@ async function runChunkedHighlightLoad(): Promise<void> {
 			allLanguagesLoaded = true;
 		}
 	} catch {
-		// Eager languages and plaintext fallback remain available.
+		// Eager languages and plaintext fallback remain available; leave allLanguagesLoaded false for retry.
 	} finally {
-		activeHighlightLoadLoop = undefined;
+		if (activeHighlightLoadToken === token) {
+			activeHighlightLoadToken = undefined;
+		}
 		const completed = [...activeHighlightWaiters];
 		activeHighlightWaiters.clear();
 		for (const waiter of completed) {
@@ -370,8 +378,10 @@ export function loadAllHighlightLanguages(options?: LoadAllHighlightLanguagesOpt
 		};
 		activeHighlightWaiters.add(waiter);
 		signal?.addEventListener("abort", onAbort, { once: true });
-		if (!activeHighlightLoadLoop) {
-			activeHighlightLoadLoop = runChunkedHighlightLoad();
+		if (activeHighlightLoadToken === undefined) {
+			const token = Symbol("highlight-load");
+			activeHighlightLoadToken = token;
+			void runChunkedHighlightLoad(token);
 		}
 	});
 }

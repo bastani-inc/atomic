@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Cloud-auth SDK client initialization (`lazyClient`) now clears rejected promises with an identity check attached once per load instead of attaching a new `.catch` handler on every token lookup, preventing handler accumulation and ensuring concurrent retries after a failed SDK load cannot clear a newer in-flight client.
+
 ## [0.10.4] - 2026-11-22
 
 ### Fixed

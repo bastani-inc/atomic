@@ -1,4 +1,5 @@
 import { isBunBinary, isBundledBuild } from "../../config.js";
+import { memoizeAsync } from "../../utils/memoize-async.js";
 import { getVirtualModules } from "./loader-host-modules.js";
 
 export interface HostModuleBridgeInstallResult {
@@ -38,7 +39,16 @@ export function createHostModuleBridgePlugin(modules: Record<string, object>): H
 	};
 }
 
-let installPromise: Promise<HostModuleBridgeInstallResult> | null = null;
+const installHostModuleBridgeOnce = memoizeAsync(async (): Promise<HostModuleBridgeInstallResult> => {
+	const bun = getBunRuntime();
+	if (!(isBunBinary || isBundledBuild) || !bun || typeof bun.plugin !== "function") {
+		return { installed: false, specifiers: [] };
+	}
+	const modules = await getVirtualModules();
+	const specifiers = Object.keys(modules);
+	bun.plugin(createHostModuleBridgePlugin(modules));
+	return { installed: true, specifiers };
+});
 
 /** Register live host module objects before native builtin imports. */
 export function installHostModuleBridge(): Promise<HostModuleBridgeInstallResult> {
@@ -46,16 +56,5 @@ export function installHostModuleBridge(): Promise<HostModuleBridgeInstallResult
 	if (!(isBunBinary || isBundledBuild) || !bun || typeof bun.plugin !== "function") {
 		return Promise.resolve({ installed: false, specifiers: [] });
 	}
-
-	installPromise ??= getVirtualModules()
-		.then((modules) => {
-			const specifiers = Object.keys(modules);
-			bun.plugin(createHostModuleBridgePlugin(modules));
-			return { installed: true, specifiers };
-		})
-		.catch((error: Error) => {
-			installPromise = null;
-			throw error;
-		});
-	return installPromise;
+	return installHostModuleBridgeOnce();
 }

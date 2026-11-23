@@ -406,7 +406,7 @@ export function getGraphemeCellRange(line: string, column: number): GraphemeCell
 			continue;
 		}
 		const textEnd = nextAnsiCode(line, i + 1);
-		if (isPrintableAsciiRange(line, i, textEnd)) {
+		if (Number.isInteger(column) && isPrintableAsciiRange(line, i, textEnd)) {
 			const len = textEnd - i;
 			if (column >= currentCol && column < currentCol + len) {
 				return { start: column, end: column + 1 };
@@ -1487,6 +1487,8 @@ export function sliceWithWidth(
 		i = 0,
 		pendingAnsi = "";
 
+	const useAsciiFastPath = startCol >= 0 && Number.isInteger(startCol) && Number.isInteger(length);
+
 	while (i < line.length) {
 		const ansi = extractAnsiCode(line, i);
 		if (ansi) {
@@ -1502,7 +1504,7 @@ export function sliceWithWidth(
 		}
 
 		const textEnd = nextAnsiCode(line, i + 1);
-		if (isPrintableAsciiRange(line, i, textEnd)) {
+		if (useAsciiFastPath && isPrintableAsciiRange(line, i, textEnd)) {
 			const len = textEnd - i;
 			const takeStart = Math.max(0, startCol - currentCol);
 			const takeEnd = Math.min(len, endCol - currentCol);
@@ -1566,6 +1568,15 @@ export function extractSegments(
 	let afterStarted = false;
 	const afterEnd = afterStart + afterLen;
 
+	// Fall back to the grapheme loop for negative or non-integer bounds so edge-case early exits match identically.
+	const useAsciiFastPath =
+		beforeEnd >= 0 &&
+		afterStart >= 0 &&
+		afterLen >= 0 &&
+		Number.isInteger(beforeEnd) &&
+		Number.isInteger(afterStart) &&
+		Number.isInteger(afterLen);
+
 	// Track styling state so "after" inherits styling from before the overlay
 	pooledStyleTracker.clear();
 
@@ -1591,7 +1602,7 @@ export function extractSegments(
 		}
 
 		const textEnd = nextAnsiCode(line, i + 1);
-		if (isPrintableAsciiRange(line, i, textEnd)) {
+		if (useAsciiFastPath && isPrintableAsciiRange(line, i, textEnd)) {
 			const len = textEnd - i;
 			const effectiveBeforeEnd = afterLen > 0 ? Math.min(beforeEnd, afterEnd) : beforeEnd;
 			const beforeTakeEnd = Math.min(len, effectiveBeforeEnd - currentCol);

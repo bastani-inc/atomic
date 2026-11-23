@@ -1,3 +1,4 @@
+import { memoizeAsync } from "../utils/memoize-async.js";
 import type { ApiKeyAuth, OAuthAuth, OAuthCredential } from "./types.ts";
 
 function resolveStoredKeyOrEnv(envVars: readonly string[]): ApiKeyAuth["resolve"] {
@@ -62,11 +63,7 @@ export function lazyOAuth(input: {
 	needsRefresh?: (credential: OAuthCredential) => boolean;
 	load: () => Promise<OAuthAuth>;
 }): OAuthAuth {
-	let promise: Promise<OAuthAuth> | undefined;
-	const loaded = () => {
-		promise ??= input.load();
-		return promise;
-	};
+	const loaded = memoizeAsync(input.load);
 	return {
 		name: input.name,
 		isSubscription: input.isSubscription,
