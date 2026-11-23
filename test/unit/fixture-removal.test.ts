@@ -10,6 +10,7 @@ import {
 	isFixtureRemovalError,
 	removeFixtureTree,
 	runThenRemoveFixtureTree,
+	runThenRemoveFixtureTreeAsync,
 } from "../helpers/fixture-removal.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -286,6 +287,55 @@ test("a removal failure after successful work is thrown as the FixtureRemovalErr
 	const run = recorder([errno("EACCES")]);
 	assert.throws(
 		() => runThenRemoveFixtureTree(TREE, () => "SCENARIO_OK", run.options),
+		(error) => isFixtureRemovalError(error) && error.code === "removal-refused" && error.path === TREE,
+	);
+});
+
+test("runThenRemoveFixtureTreeAsync awaits async work before removing the tree and preserves primary errors on cleanup failure", async () => {
+	const order: string[] = [];
+	const run = recorder([]);
+	const value = await runThenRemoveFixtureTreeAsync(
+		TREE,
+		async () => {
+			await Promise.resolve();
+			order.push("work");
+			return "SCENARIO_OK";
+		},
+		{
+			...run.options,
+			remove: (path) => {
+				order.push("remove");
+				run.options.remove(path);
+			},
+		},
+	);
+	assert.equal(value, "SCENARIO_OK");
+	assert.deepEqual(order, ["work", "remove"]);
+
+	const primary = new assert.AssertionError({ message: "PowerShell fixture install failed." });
+	const failingCleanup = recorder(exhaustedFailures());
+	await assert.rejects(
+		() =>
+			runThenRemoveFixtureTreeAsync(
+				TREE,
+				async () => {
+					await Promise.resolve();
+					throw primary;
+				},
+				failingCleanup.options,
+			),
+		(error) => {
+			assert.equal(error, primary);
+			assert.ok("cleanupCause" in primary);
+			assert.ok(isFixtureRemovalError(primary.cleanupCause));
+			assert.equal(primary.cleanupCause.code, "removal-exhausted");
+			return true;
+		},
+	);
+
+	const postSuccessFailure = recorder([errno("EACCES")]);
+	await assert.rejects(
+		() => runThenRemoveFixtureTreeAsync(TREE, async () => "SCENARIO_OK", postSuccessFailure.options),
 		(error) => isFixtureRemovalError(error) && error.code === "removal-refused" && error.path === TREE,
 	);
 });
