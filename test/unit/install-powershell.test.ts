@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { runThenRemoveFixtureTree } from "../helpers/fixture-removal.js";
+import { removeFixtureTree, runThenRemoveFixtureTree } from "../helpers/fixture-removal.js";
 import { spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -1051,7 +1052,7 @@ const powershell7Executable = powershellEngines.find(
 )?.executable;
 const POWERSHELL_FIXTURE_TIMEOUT_MS = 120_000;
 const runOrSkipPowerShellFixture = powershellExecutable === undefined ? test.skip : test;
-function powershellTest(name: string, fn: () => void, timeout = POWERSHELL_FIXTURE_TIMEOUT_MS): void {
+function powershellTest(name: string, fn: () => void | Promise<void>, timeout = POWERSHELL_FIXTURE_TIMEOUT_MS): void {
 	runOrSkipPowerShellFixture(name, fn, timeout);
 }
 const runOrSkipPowerShell7Fixture = powershell7Executable === undefined ? test.skip : test;
@@ -1686,7 +1687,12 @@ interface AsyncProcessResult {
 	stderr: string;
 }
 
-function spawnCollectAsync(command: string, args: string[], timeout: number): Promise<AsyncProcessResult> {
+function spawnCollectAsync(
+	command: string,
+	args: string[],
+	timeout: number,
+	label = "PowerShell redirect fixture",
+): Promise<AsyncProcessResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
 		const stdout: Buffer[] = [];
@@ -1710,11 +1716,7 @@ function spawnCollectAsync(command: string, args: string[], timeout: number): Pr
 				stderr: Buffer.concat(stderr).toString(),
 			};
 			if (timedOut) {
-				reject(
-					new Error(
-						`PowerShell redirect fixture timed out.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-					),
-				);
+				reject(new Error(`${label} timed out.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`));
 				return;
 			}
 			resolve(result);
@@ -1841,7 +1843,8 @@ for (const engine of powershellEngines) {
 const fixtureHarness = String.raw`
 param(
     [Parameter(Mandatory=$true)][string]$InstallerPath,
-    [Parameter(Mandatory=$true)][string]$Scenario
+    [Parameter(Mandatory=$true)][string]$Scenario,
+    [string]$IsolatedHkcuRunId = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -2072,6 +2075,19 @@ Add-Type -TypeDefinition ([IO.File]::ReadAllText($SourcePath)) -OutputAssembly $
         Remove-Item -LiteralPath $compilerScript, $compilerSource -Force -ErrorAction SilentlyContinue
     }
 }
+
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class AtomicTestHkcuOverride
+{
+    public static readonly IntPtr HKEY_CURRENT_USER = new IntPtr(unchecked((int)0x80000001));
+
+    [DllImport("advapi32.dll")]
+    public static extern int RegOverridePredefKey(IntPtr hKey, IntPtr hNewHKey);
+}
+'@
 
 function Get-FixtureSha256 {
     param([string]$Path)
@@ -2610,9 +2626,34 @@ $originalEnvironment = @{}
 foreach ($name in $environmentNames) {
     $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
 }
-$originalUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$isolatedHkcuParentPath = "Software\AtomicTestIsolatedHkcu"
+$isolatedHkcuRunId = if ([string]::IsNullOrWhiteSpace($IsolatedHkcuRunId)) { "run-" + [Guid]::NewGuid().ToString("N") } else { $IsolatedHkcuRunId }
+if ($isolatedHkcuRunId.Contains("\") -or $isolatedHkcuRunId.Contains("/")) {
+    throw "IsolatedHkcuRunId must be a single registry key name: $isolatedHkcuRunId"
+}
+$isolatedHkcuSubKey = "$isolatedHkcuParentPath\$isolatedHkcuRunId"
+$isolatedHkcuKey = $null
+$isolatedHkcuActive = $false
+$isolatedSeedUserPath = "%SystemRoot%\AtomicFixtureSeedPath"
 
 try {
+    $isolatedHkcuKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($isolatedHkcuSubKey)
+    Assert-Fixture ($null -ne $isolatedHkcuKey) "failed to create isolated HKCU registry key $isolatedHkcuSubKey"
+    $isolatedEnvKey = $isolatedHkcuKey.CreateSubKey("Environment")
+    Assert-Fixture ($null -ne $isolatedEnvKey) "failed to create isolated Environment subkey under $isolatedHkcuSubKey"
+    try {
+        $isolatedEnvKey.SetValue("Path", $isolatedSeedUserPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    }
+    finally {
+        $isolatedEnvKey.Close()
+    }
+    $overrideRc = [AtomicTestHkcuOverride]::RegOverridePredefKey(
+        [AtomicTestHkcuOverride]::HKEY_CURRENT_USER,
+        $isolatedHkcuKey.Handle.DangerousGetHandle()
+    )
+    Assert-Fixture ($overrideRc -eq 0) "RegOverridePredefKey enable failed with Win32 error $overrideRc"
+    $isolatedHkcuActive = $true
+
     $env:ATOMIC_INSTALL_DIR = $installRoot
     $env:ATOMIC_BIN_DIR = $binDir
     $env:TEMP = $fixtureTemp
@@ -2666,6 +2707,16 @@ try {
         $exitProbe = Invoke-FixtureShim $shim "--exit 37"
         Assert-Fixture ($exitProbe.ExitCode -eq 37) "shim did not preserve atomic.exe exit status"
         Assert-Fixture (Test-ExactPathEntry ([Environment]::GetEnvironmentVariable("Path", "User")) $binDir) "User PATH was not persisted"
+        $installedEnvKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $false)
+        try {
+            $rawInstalledUserPath = $installedEnvKey.GetValue("Path", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $installedUserPathKind = $installedEnvKey.GetValueKind("Path")
+        }
+        finally {
+            $installedEnvKey.Close()
+        }
+        Assert-Fixture ($rawInstalledUserPath -ceq "$isolatedSeedUserPath;$binDir") "User PATH did not preserve unexpanded seed entry: [$rawInstalledUserPath]"
+        Assert-Fixture ($installedUserPathKind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) "User PATH lost REG_EXPAND_SZ registry kind: [$installedUserPathKind]"
         Assert-Fixture (Test-ExactPathEntry $env:Path $binDir) "current PATH was not refreshed"
         Assert-Fixture ($firstInstallOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "first install did not report the installed launcher path"
         Assert-Fixture ($firstInstallOutput -match ('(?m)^Added ' + [regex]::Escape($binDir) + ' to your User PATH; open a new terminal to use atomic\.\s*$')) "first install did not report the User PATH update"
@@ -3515,7 +3566,8 @@ try {
                 "-ReadyPath", $readyPath,
                 "-MoveLogPath", $moveLogPath,
                 "-ObservedProcessPath", $observedProcessPath,
-                "-FinallyPath", $childFinallyPath
+                "-FinallyPath", $childFinallyPath,
+                "-IsolatedHkcuSubKey", $isolatedHkcuSubKey
             )
             $helperOutput = & $ctrlHelperPath $ctrlArguments 2>&1 | Out-String
             $helperExitCode = $LASTEXITCODE
@@ -4158,7 +4210,32 @@ finally {
         if ($null -ne $lockedStream) { $lockedStream.Dispose() }
     }
     $global:AtomicFixtureDualRollbackLockStreams.Clear()
-    [Environment]::SetEnvironmentVariable("Path", $originalUserPath, "User")
+    $hkcuRestored = $true
+    if ($isolatedHkcuActive) {
+        $restoreRc = [AtomicTestHkcuOverride]::RegOverridePredefKey(
+            [AtomicTestHkcuOverride]::HKEY_CURRENT_USER,
+            [IntPtr]::Zero
+        )
+        $isolatedHkcuActive = $false
+        if ($restoreRc -ne 0) {
+            $hkcuRestored = $false
+        }
+    }
+    if ($null -ne $isolatedHkcuKey) {
+        $isolatedHkcuKey.Close()
+        $isolatedHkcuKey = $null
+    }
+    if ($hkcuRestored) {
+        $parentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($isolatedHkcuParentPath, $true)
+        if ($null -ne $parentKey) {
+            try {
+                $parentKey.DeleteSubKeyTree($isolatedHkcuRunId, $false)
+            }
+            finally {
+                $parentKey.Close()
+            }
+        }
+    }
     foreach ($name in $environmentNames) {
         [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], "Process")
     }
@@ -4179,7 +4256,8 @@ param(
     [Parameter(Mandatory=$true)][string]$ReadyPath,
     [Parameter(Mandatory=$true)][string]$MoveLogPath,
     [Parameter(Mandatory=$true)][string]$ObservedProcessPath,
-    [Parameter(Mandatory=$true)][string]$FinallyPath
+    [Parameter(Mandatory=$true)][string]$FinallyPath,
+    [Parameter(Mandatory=$true)][string]$IsolatedHkcuSubKey
 )
 
 $ErrorActionPreference = "Stop"
@@ -4191,6 +4269,19 @@ $env:TEMP = $TempRoot
 $env:TMP = $TempRoot
 $env:PROCESSOR_ARCHITEW6432 = "AMD64"
 $env:PROCESSOR_ARCHITECTURE = "AMD64"
+
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class AtomicTestCtrlCHkcuOverride
+{
+    public static readonly IntPtr HKEY_CURRENT_USER = new IntPtr(unchecked((int)0x80000001));
+
+    [DllImport("advapi32.dll")]
+    public static extern int RegOverridePredefKey(IntPtr hKey, IntPtr hNewHKey);
+}
+'@
 
 function global:Invoke-WebRequest {
     [CmdletBinding()]
@@ -4313,11 +4404,37 @@ function global:Rename-Item {
     }
 }
 
+$isolatedChildHkcuKey = $null
+$isolatedChildHkcuActive = $false
 try {
+    $isolatedChildHkcuKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($IsolatedHkcuSubKey, $true)
+    if ($null -eq $isolatedChildHkcuKey) {
+        throw "Ctrl+C child could not open isolated HKCU key: $IsolatedHkcuSubKey"
+    }
+    $childOverrideRc = [AtomicTestCtrlCHkcuOverride]::RegOverridePredefKey(
+        [AtomicTestCtrlCHkcuOverride]::HKEY_CURRENT_USER,
+        $isolatedChildHkcuKey.Handle.DangerousGetHandle()
+    )
+    if ($childOverrideRc -ne 0) {
+        throw "Ctrl+C child RegOverridePredefKey failed with Win32 error $childOverrideRc"
+    }
+    $isolatedChildHkcuActive = $true
+
     & $InstallerPath -Ref "2.0.0" -Force | Out-Null
     throw "Installer unexpectedly completed before Ctrl+C"
 }
 finally {
+    if ($isolatedChildHkcuActive) {
+        [void][AtomicTestCtrlCHkcuOverride]::RegOverridePredefKey(
+            [AtomicTestCtrlCHkcuOverride]::HKEY_CURRENT_USER,
+            [IntPtr]::Zero
+        )
+        $isolatedChildHkcuActive = $false
+    }
+    if ($null -ne $isolatedChildHkcuKey) {
+        $isolatedChildHkcuKey.Close()
+        $isolatedChildHkcuKey = $null
+    }
     [IO.File]::WriteAllText($ObservedProcessPath, [string]$env:Path, [Text.Encoding]::Unicode)
     [IO.File]::WriteAllText($FinallyPath, "CHILD_FINALLY", [Text.Encoding]::ASCII)
 }
@@ -4823,31 +4940,189 @@ test("Windows PowerShell 5.1 backup-cleanup fixture proves committed backups sur
 	assert.match(scenario, /an exhausted backup removal did not warn once per cleanup call site/u);
 });
 
+test("Windows PowerShell fixtures isolate HKCU User PATH per process and never rewrite the host User PATH", () => {
+	assert.match(fixtureHarness, /RegOverridePredefKey/u);
+	assert.match(fixtureHarness, /0x80000001/u);
+	assert.match(fixtureHarness, /Software\\AtomicTestIsolatedHkcu/u);
+	assert.match(fixtureHarness, /CreateSubKey\("Environment"\)/u);
+	assert.match(fixtureHarness, /RegistryValueKind\]::ExpandString/u);
+	assert.doesNotMatch(
+		fixtureHarness,
+		/\$originalUserPath\b/u,
+		"the fixture must not snapshot or write back the host user's real HKCU\\Environment\\Path",
+	);
+
+	const finallyStart = fixtureHarness.lastIndexOf("\nfinally {");
+	assert.ok(finallyStart >= 0);
+	const finallyBlock = fixtureHarness.slice(finallyStart);
+	const unoverrideIdx = finallyBlock.indexOf("RegOverridePredefKey(");
+	const deleteIdx = finallyBlock.indexOf("DeleteSubKeyTree(");
+	assert.ok(unoverrideIdx >= 0, "finally must restore HKEY_CURRENT_USER before cleanup");
+	assert.ok(deleteIdx > unoverrideIdx, "finally must restore HKEY_CURRENT_USER before deleting its scratch subkey");
+	assert.doesNotMatch(
+		finallyBlock,
+		/DeleteSubKeyTree\("Software\\AtomicTestIsolatedHkcu"/u,
+		"finally must never delete the shared container key while sibling runs may be active",
+	);
+	assert.doesNotMatch(
+		finallyBlock,
+		/SetEnvironmentVariable\("Path",/u,
+		"finally must never write back to the host user's real User PATH",
+	);
+
+	assert.match(fixtureHarness, /"-IsolatedHkcuSubKey",\s*\$isolatedHkcuSubKey/u);
+	assert.match(ctrlCChildHarness, /\[Parameter\(Mandatory=\$true\)\]\[string\]\$IsolatedHkcuSubKey/u);
+	const childOverride = ctrlCChildHarness.indexOf("RegOverridePredefKey(");
+	const childInstall = ctrlCChildHarness.indexOf("& $InstallerPath");
+	assert.ok(
+		childOverride >= 0 && childInstall > childOverride,
+		"ctrl-c child must activate RegOverridePredefKey before running install.ps1",
+	);
+	const childFinally = ctrlCChildHarness.slice(ctrlCChildHarness.lastIndexOf("\nfinally {"));
+	assert.match(childFinally, /RegOverridePredefKey\([\s\S]*\[IntPtr\]::Zero/u);
+	assert.doesNotMatch(
+		ctrlCChildHarness,
+		/DeleteSubKeyTree/u,
+		"ctrl-c child must not delete the parent-owned scratch key",
+	);
+});
+
+type FixtureScenario =
+	| "install"
+	| "tag-grammar"
+	| "missing-cmd-pathext"
+	| "pointer-conflicts"
+	| "preflight-errors"
+	| "checksum"
+	| "final-smoke"
+	| "busy-stage-move"
+	| "locked-version-backup"
+	| "unicode"
+	| "dangling-junction"
+	| "rollback-retries"
+	| "transaction-failures"
+	| "ctrl-c"
+	| "hash-fallback"
+	| "ref-identity"
+	| "api-rate-limit"
+	| "semicolon-bin"
+	| "shadowed-shim"
+	| "custom-pathext"
+	| "skip-installed"
+	| "backup-cleanup"
+	| "temp-cleanup";
+
+function fixtureTimeoutMs(scenario: FixtureScenario): number {
+	return scenario === "ctrl-c"
+		? CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS
+		: scenario === "rollback-retries"
+			? ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS
+			: scenario === "transaction-failures"
+				? TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS
+				: scenario === "temp-cleanup"
+					? TEMP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS
+					: scenario === "backup-cleanup"
+						? BACKUP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS
+						: POWERSHELL_FIXTURE_TIMEOUT_MS;
+}
+
+function readHostUserPathAndScratchPresence(
+	executable: string,
+	runIds: readonly string[],
+): { exists: boolean; value: string | null; kind: string | null; leftoverRunIds: string[] } {
+	const idsLiteral = runIds.map((id) => `'${id.replaceAll("'", "''")}'`).join(", ");
+	const probe = [
+		'$ErrorActionPreference = "Stop"',
+		'$envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $false)',
+		"$exists = $null -ne $envKey",
+		"$val = $null; $kind = $null",
+		"if ($exists) {",
+		"  try {",
+		'    $val = $envKey.GetValue("Path", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)',
+		'    if ($null -ne $val) { $kind = [string]$envKey.GetValueKind("Path") }',
+		"  } finally { $envKey.Close() }",
+		"}",
+		"$leftovers = @()",
+		`$parentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\\AtomicTestIsolatedHkcu", $false)`,
+		"if ($null -ne $parentKey) {",
+		"  try {",
+		`    foreach ($id in @(${idsLiteral})) {`,
+		"      $child = $parentKey.OpenSubKey($id, $false)",
+		"      if ($null -ne $child) { $child.Close(); $leftovers += $id }",
+		"    }",
+		"  } finally { $parentKey.Close() }",
+		"}",
+		"[pscustomobject]@{ exists = $exists; value = $val; kind = $kind; leftoverRunIds = @($leftovers) } | ConvertTo-Json -Compress",
+	].join("\n");
+	const result = spawnSyncCollect([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", probe], {
+		timeout: 30_000,
+	});
+	assert.equal(result.exitCode, 0, `${result.stdout.toString()}${result.stderr.toString()}`);
+	const parsed = JSON.parse(result.stdout.toString().trim()) as {
+		exists: boolean;
+		value: string | null;
+		kind: string | null;
+		leftoverRunIds: string | string[] | null;
+	};
+	const leftoverRunIds =
+		parsed.leftoverRunIds === null
+			? []
+			: Array.isArray(parsed.leftoverRunIds)
+				? parsed.leftoverRunIds
+				: [parsed.leftoverRunIds];
+	return { exists: parsed.exists, value: parsed.value, kind: parsed.kind, leftoverRunIds };
+}
+
+async function runPowerShellFixtureAsync(
+	scenario: FixtureScenario,
+	executable: string | undefined = powershellExecutable,
+	isolatedHkcuRunId?: string,
+): Promise<string> {
+	assert.ok(executable);
+	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
+	const harnessPath = join(workspace, "fixture.ps1");
+	if (scenario === "ctrl-c") {
+		writeFileSync(join(workspace, "ctrl-c-child.ps1"), `\uFEFF${ctrlCChildHarness}`, "utf16le");
+		writeFileSync(join(workspace, "ctrl-c-helper.cs"), ctrlCHelperSource, "utf8");
+	}
+	writeFileSync(harnessPath, `\uFEFF${fixtureHarness}`, "utf16le");
+	const args = [
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy",
+		"Bypass",
+		"-File",
+		harnessPath,
+		"-InstallerPath",
+		installerPath,
+		"-Scenario",
+		scenario,
+	];
+	if (isolatedHkcuRunId !== undefined) {
+		args.push("-IsolatedHkcuRunId", isolatedHkcuRunId);
+	}
+	try {
+		const result = await spawnCollectAsync(
+			executable,
+			args,
+			fixtureTimeoutMs(scenario),
+			`PowerShell fixture ${scenario}`,
+		);
+		assert.equal(
+			result.exitCode,
+			0,
+			`PowerShell fixture ${scenario} failed.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+		);
+		assert.match(result.stdout, new RegExp(`SCENARIO_OK:${scenario}`, "u"));
+		return result.stdout;
+	} finally {
+		removeFixtureTree(workspace);
+	}
+}
+
 function runPowerShellFixture(
-	scenario:
-		| "install"
-		| "tag-grammar"
-		| "missing-cmd-pathext"
-		| "pointer-conflicts"
-		| "preflight-errors"
-		| "checksum"
-		| "final-smoke"
-		| "busy-stage-move"
-		| "locked-version-backup"
-		| "unicode"
-		| "dangling-junction"
-		| "rollback-retries"
-		| "transaction-failures"
-		| "ctrl-c"
-		| "hash-fallback"
-		| "ref-identity"
-		| "api-rate-limit"
-		| "semicolon-bin"
-		| "shadowed-shim"
-		| "custom-pathext"
-		| "skip-installed"
-		| "backup-cleanup"
-		| "temp-cleanup",
+	scenario: FixtureScenario,
 	executable: string | undefined = powershellExecutable,
 ): string {
 	assert.ok(executable);
@@ -4859,18 +5134,6 @@ function runPowerShellFixture(
 	}
 	writeFileSync(harnessPath, `\uFEFF${fixtureHarness}`, "utf16le");
 	return runThenRemoveFixtureTree(workspace, () => {
-		const fixtureTimeout =
-			scenario === "ctrl-c"
-				? CTRL_C_FIXTURE_STRUCTURAL_TIMEOUT_MS
-				: scenario === "rollback-retries"
-					? ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS
-					: scenario === "transaction-failures"
-						? TRANSACTION_FAILURE_FIXTURE_STRUCTURAL_TIMEOUT_MS
-						: scenario === "temp-cleanup"
-							? TEMP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS
-							: scenario === "backup-cleanup"
-								? BACKUP_CLEANUP_FIXTURE_STRUCTURAL_TIMEOUT_MS
-								: POWERSHELL_FIXTURE_TIMEOUT_MS;
 		const result = spawnSyncCollect(
 			[
 				executable,
@@ -4886,7 +5149,7 @@ function runPowerShellFixture(
 				"-Scenario",
 				scenario,
 			],
-			{ timeout: fixtureTimeout },
+			{ timeout: fixtureTimeoutMs(scenario) },
 		);
 		const stdout = result.stdout.toString();
 		const stderr = result.stderr.toString();
@@ -4899,6 +5162,26 @@ function runPowerShellFixture(
 		return stdout;
 	});
 }
+
+powershellTest(
+	"PowerShell 5.1 fixtures run concurrent PATH-mutating scenarios without racing or mutating host User PATH",
+	async () => {
+		assert.ok(powershellExecutable);
+		const scenarios: readonly FixtureScenario[] = ["install", "final-smoke", "semicolon-bin", "skip-installed"];
+		const runIds = scenarios.map(() => `run-${randomUUID().replaceAll("-", "")}`);
+		const before = readHostUserPathAndScratchPresence(powershellExecutable, runIds);
+		await Promise.all(
+			scenarios.map((scenario, index) => runPowerShellFixtureAsync(scenario, powershellExecutable, runIds[index])),
+		);
+		const after = readHostUserPathAndScratchPresence(powershellExecutable, runIds);
+		assert.deepEqual(
+			{ exists: after.exists, value: after.value, kind: after.kind },
+			{ exists: before.exists, value: before.value, kind: before.kind },
+			"concurrent PowerShell fixtures must not mutate the host user's real HKCU\\Environment\\Path",
+		);
+		assert.deepEqual(after.leftoverRunIds, [], "isolated HKCU scratch subkeys must be removed after exit");
+	},
+);
 
 powershellTest("PowerShell 5.1 fixture installs exact refs for both architectures and is idempotent", () => {
 	runPowerShellFixture("install");
