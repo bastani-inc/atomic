@@ -380,6 +380,7 @@ export class EngineCustomUiService {
 			componentId,
 			overlay: options?.overlay === true,
 			purpose: options?.purpose,
+			...(options?.purpose === "navigation" ? { acksClicks: true as const } : {}),
 			deferInlineCustomUiFocus: options?.deferInlineCustomUiFocus,
 			handlesCtrlC: options?.handlesCtrlC,
 			handlesInternalUiAction: options?.handlesInternalUiAction,
@@ -484,6 +485,15 @@ export class EngineCustomUiService {
 					requestId: command.requestId,
 					handled: false,
 				});
+			else if (
+				(command.type === "engine_custom_click" || command.type === "engine_custom_click_settle") &&
+				command.ackId !== undefined
+			)
+				this.send({
+					type: "engine_custom_click_result",
+					componentId: command.componentId,
+					ackId: command.ackId,
+				});
 			return true;
 		}
 		switch (command.type) {
@@ -547,55 +557,64 @@ export class EngineCustomUiService {
 				break;
 			}
 			case "engine_custom_click": {
-				// A component that names its rows takes the click while the clicked row still shows the item the host
-				// showed there, through frames that only animate. Otherwise a newer frame than the one clicked may have
-				// moved what was under the pointer, and the click is dropped.
-				// A row the component left unnamed is sent as an empty name, and needs the frame itself unchanged.
-				const paintedRowKey = record.component.paintedRowKey;
-				if (paintedRowKey !== undefined && command.rowKey) {
-					if (paintedRowKey.call(record.component, command.y) !== command.rowKey) break;
-				} else if (command.frame !== record.frame) break;
-				const { x, y, width, height, clickId } = command;
-				record.handlingInput = true;
 				try {
-					runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
-						const handleMouse = record.component.handleMouse as
-							| ((event: TuiMouseEvent) => TuiMouseEventResult | undefined)
-							| undefined;
-						const result = handleMouse?.call(record.component, {
-							type: "click",
-							button: "left",
-							x,
-							y,
-							screenX: x,
-							screenY: y,
-							width,
-							height,
-							shift: false,
-							alt: false,
-							ctrl: false,
-							clickCount: 1,
-						});
-						// Resolved against the frame the host clicked, it acts once the host settles the click. A host from
-						// before clicks were settled numbers none and settles none: its click acts now, as it did there.
-						if (!result?.whenSingleClick) return;
-						if (clickId === undefined) result.whenSingleClick();
-						else {
-							const waiting = record.singleClickActions ?? new Map<number, TuiMouseEventResult>();
-							record.singleClickActions = waiting;
-							waiting.set(clickId, result);
-							if (!command.cancelsClicks && waiting.size > LEGACY_WAITING_SINGLE_CLICKS) {
-								const oldest = waiting.keys().next().value!;
-								const evicted = waiting.get(oldest);
-								waiting.delete(oldest);
-								evicted?.onSingleClickCancel?.();
+					// A component that names its rows takes the click while the clicked row still shows the item the host
+					// showed there, through frames that only animate. Otherwise a newer frame than the one clicked may have
+					// moved what was under the pointer, and the click is dropped.
+					// A row the component left unnamed is sent as an empty name, and needs the frame itself unchanged.
+					const paintedRowKey = record.component.paintedRowKey;
+					if (paintedRowKey !== undefined && command.rowKey) {
+						if (paintedRowKey.call(record.component, command.y) !== command.rowKey) break;
+					} else if (command.frame !== record.frame) break;
+					const { x, y, width, height, clickId } = command;
+					record.handlingInput = true;
+					try {
+						runSynchronousCallback({ kind: "renderer", name: command.componentId }, () => {
+							const handleMouse = record.component.handleMouse as
+								| ((event: TuiMouseEvent) => TuiMouseEventResult | undefined)
+								| undefined;
+							const result = handleMouse?.call(record.component, {
+								type: "click",
+								button: "left",
+								x,
+								y,
+								screenX: x,
+								screenY: y,
+								width,
+								height,
+								shift: false,
+								alt: false,
+								ctrl: false,
+								clickCount: 1,
+							});
+							// Resolved against the frame the host clicked, it acts once the host settles the click. A host from
+							// before clicks were settled numbers none and settles none: its click acts now, as it did there.
+							if (!result?.whenSingleClick) return;
+							if (clickId === undefined) result.whenSingleClick();
+							else {
+								const waiting = record.singleClickActions ?? new Map<number, TuiMouseEventResult>();
+								record.singleClickActions = waiting;
+								waiting.set(clickId, result);
+								if (!command.cancelsClicks && waiting.size > LEGACY_WAITING_SINGLE_CLICKS) {
+									const oldest = waiting.keys().next().value!;
+									const evicted = waiting.get(oldest);
+									waiting.delete(oldest);
+									evicted?.onSingleClickCancel?.();
+								}
 							}
-						}
-					});
-				} catch {
-					// A click a component fails to handle changes nothing; the host keeps its frame.
+						});
+					} catch {
+						// A click a component fails to handle changes nothing; the host keeps its frame.
+					} finally {
+						record.handlingInput = false;
+					}
 				} finally {
-					record.handlingInput = false;
+					if (command.ackId !== undefined)
+						this.send({
+							type: "engine_custom_click_result",
+							componentId: command.componentId,
+							ackId: command.ackId,
+						});
 				}
 				if (record.paintAfterInput === true) {
 					record.paintAfterInput = false;
@@ -605,18 +624,27 @@ export class EngineCustomUiService {
 			}
 			case "engine_custom_click_cancel":
 			case "engine_custom_click_settle": {
-				const result = record.singleClickActions?.get(command.clickId);
-				record.singleClickActions?.delete(command.clickId);
-				const action =
-					command.type === "engine_custom_click_cancel" ? result?.onSingleClickCancel : result?.whenSingleClick;
-				if (action === undefined) break;
-				record.handlingInput = true;
 				try {
-					runSynchronousCallback({ kind: "renderer", name: command.componentId }, action);
-				} catch {
-					// A click a component fails to act on changes nothing; the host keeps its frame.
+					const result = record.singleClickActions?.get(command.clickId);
+					record.singleClickActions?.delete(command.clickId);
+					const action =
+						command.type === "engine_custom_click_cancel" ? result?.onSingleClickCancel : result?.whenSingleClick;
+					if (action === undefined) break;
+					record.handlingInput = true;
+					try {
+						runSynchronousCallback({ kind: "renderer", name: command.componentId }, action);
+					} catch {
+						// A click a component fails to act on changes nothing; the host keeps its frame.
+					} finally {
+						record.handlingInput = false;
+					}
 				} finally {
-					record.handlingInput = false;
+					if (command.type === "engine_custom_click_settle" && command.ackId !== undefined)
+						this.send({
+							type: "engine_custom_click_result",
+							componentId: command.componentId,
+							ackId: command.ackId,
+						});
 				}
 				if (record.paintAfterInput === true) {
 					record.paintAfterInput = false;

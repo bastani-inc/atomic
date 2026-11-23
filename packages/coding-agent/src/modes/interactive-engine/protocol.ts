@@ -157,6 +157,8 @@ export type InteractiveEngineMessage =
 			componentId: string;
 			overlay: boolean;
 			purpose?: "prompt" | "navigation";
+			/** When true, the engine acknowledges `engine_custom_click` / `engine_custom_click_settle` carrying `ackId`. */
+			acksClicks?: true;
 			deferInlineCustomUiFocus?: boolean;
 			handlesCtrlC?: boolean;
 			handlesInternalUiAction?: boolean;
@@ -194,6 +196,7 @@ export type InteractiveEngineMessage =
 			previewSeq?: number;
 	  }
 	| { type: "engine_custom_input_result"; componentId: string; requestId: number; handled: boolean }
+	| { type: "engine_custom_click_result"; componentId: string; ackId: number }
 	| { type: "engine_custom_invalidate"; componentId: string; evictCache?: true }
 	| {
 			type: "engine_custom_done";
@@ -311,6 +314,8 @@ export type InteractiveEngineCommand =
 			clickId?: number;
 			/** The host explicitly cancels every deferred click it does not settle. */
 			cancelsClicks?: true;
+			/** Host-assigned acknowledgement id; when present, the engine replies with `engine_custom_click_result`. */
+			ackId?: number;
 			x: number;
 			y: number;
 			width: number;
@@ -321,7 +326,14 @@ export type InteractiveEngineCommand =
 	 * What the component left for that moment, such as expanding a block, runs now. A click that became part of a
 	 * double- or triple-click is never settled.
 	 */
-	| { type: "engine_custom_click_settle" | "engine_custom_click_cancel"; componentId: string; clickId: number }
+	| {
+			type: "engine_custom_click_settle";
+			componentId: string;
+			clickId: number;
+			/** Host-assigned acknowledgement id; when present, the engine replies with `engine_custom_click_result`. */
+			ackId?: number;
+	  }
+	| { type: "engine_custom_click_cancel"; componentId: string; clickId: number }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
 	/**
 	 * A click on a hint the engine drew that names a route of the engine's (`componentId`), such as a subagent chat's own
@@ -704,6 +716,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						componentId: value.componentId,
 						overlay: value.overlay,
 						...(value.purpose === "navigation" || value.purpose === "prompt" ? { purpose: value.purpose } : {}),
+						...(value.acksClicks === true ? { acksClicks: true as const } : {}),
 						deferInlineCustomUiFocus: value.deferInlineCustomUiFocus === true,
 						handlesCtrlC: value.handlesCtrlC === true,
 						handlesInternalUiAction: value.handlesInternalUiAction === true,
@@ -779,6 +792,13 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				typeof value.requestId === "number" &&
 				typeof value.handled === "boolean"
 				? { type: value.type, componentId: value.componentId, requestId: value.requestId, handled: value.handled }
+				: undefined;
+		case "engine_custom_click_result":
+			return typeof value.componentId === "string" &&
+				typeof value.ackId === "number" &&
+				Number.isSafeInteger(value.ackId) &&
+				value.ackId > 0
+				? { type: value.type, componentId: value.componentId, ackId: value.ackId }
 				: undefined;
 		case "engine_custom_invalidate":
 			return typeof value.componentId === "string"
@@ -964,15 +984,24 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			...(typeof value.rowKey === "string" ? { rowKey: value.rowKey } : {}),
 			...(isCellCount(value.clickId) ? { clickId: value.clickId } : {}),
 			...(value.cancelsClicks === true ? { cancelsClicks: true } : {}),
+			...(typeof value.ackId === "number" && Number.isSafeInteger(value.ackId) && value.ackId > 0
+				? { ackId: value.ackId }
+				: {}),
 			x: value.x,
 			y: value.y,
 			width: value.width,
 			height: value.height,
 		};
-	if (
-		(value.type === "engine_custom_click_settle" || value.type === "engine_custom_click_cancel") &&
-		isCellCount(value.clickId)
-	)
+	if (value.type === "engine_custom_click_settle" && isCellCount(value.clickId))
+		return {
+			type: value.type,
+			componentId: value.componentId,
+			clickId: value.clickId,
+			...(typeof value.ackId === "number" && Number.isSafeInteger(value.ackId) && value.ackId > 0
+				? { ackId: value.ackId }
+				: {}),
+		};
+	if (value.type === "engine_custom_click_cancel" && isCellCount(value.clickId))
 		return { type: value.type, componentId: value.componentId, clickId: value.clickId };
 	if (
 		value.type === "engine_custom_copy_result" &&

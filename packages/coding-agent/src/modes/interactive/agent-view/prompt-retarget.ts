@@ -1,8 +1,10 @@
 import { type Component, decodePrintableKey, isKeyRelease, matchesKey } from "@bastani/atomic-tui";
+import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { firstSubagentAttempt } from "../../../core/tasks/completion.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { IsolatedInteractiveRuntime } from "../../interactive-engine/isolated-runtime.js";
+import { noteNavigationHostCancel } from "../../interactive-engine/remote-component.ts";
 import { combineQueuedMessagesForEditor } from "../chat-input-actions.ts";
 import { promptHistoryFor } from "../components/agent-prompt-history.ts";
 import { AtomicWorkedStatusComponent, watchAtomicWorkingClock } from "../components/atomic-working-status.ts";
@@ -290,6 +292,19 @@ function agentKeyOf(mode: InteractiveModeBase, taskId: TaskId): TaskId {
 const heldForTask = new WeakMap<InteractiveModeBase, Map<TaskId, string>>();
 
 /**
+ * Single source of truth for keys that cancel a pending subagent open (both in `holdWhileOpening` while `openPort`
+ * is pending and on arrival of `engine_view_agent` when a pre-view cancel is already in flight).
+ * Never matches key releases, physical Ctrl+C, `app.clear`, or `app.exit`.
+ */
+export function isCancelPendingOpenKey(keybindings: Pick<KeybindingsManager, "matches">, data: string): boolean {
+	if (isKeyRelease(data)) return false;
+	if (isPhysicalCtrlC(data) || keybindings.matches(data, "app.clear") || keybindings.matches(data, "app.exit")) {
+		return false;
+	}
+	return isPhysicalEscape(data) || keybindings.matches(data, "app.interrupt");
+}
+
+/**
  * While a subagent is being opened, what the reader types is meant for it. The keys wait, and once it is shown they
  * reach its prompt in order, Enter included. When the request does not land, their text is kept for that subagent
  * (or, when it cannot be opened, shown in a notice) and the keys that send, pause or take back are dropped: nothing
@@ -347,7 +362,10 @@ function holdWhileOpening(mode: InteractiveModeBase, switcher: AgentViewSwitcher
 		// Ctrl+C and Ctrl+D act as they always do; Esc cancels the request and the screen stays as it is.
 		if (isPhysicalCtrlC(data) || mode.keybindings.matches(data, "app.clear")) return undefined;
 		if (mode.keybindings.matches(data, "app.exit")) return undefined;
-		if (isPhysicalEscape(data) || mode.keybindings.matches(data, "app.interrupt")) {
+		if (isCancelPendingOpenKey(mode.keybindings, data)) {
+			if (closingTasksActive && mode.runtimeHost instanceof IsolatedInteractiveRuntime) {
+				noteNavigationHostCancel(mode.runtimeHost);
+			}
 			switcher.cancelPending();
 			return { consume: true };
 		}
