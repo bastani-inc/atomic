@@ -95,10 +95,12 @@ import {
   type BrokerStateOpener,
   LOCAL_RETRY_LOOKUP_BOUND_MS,
   MultiNodeRouter,
-  presenceBoundAfterClaim,
+  presenceWaitAfterClaim,
   readSharedStorageSetting,
+  reclaimDecisionBoundAfterClaim,
   resolveMultiNodeStartup,
   SHARED_STORAGE_UNAVAILABLE_REASON,
+  type SessionIdClaimProgress,
   type SessionIdGrant,
   type UnansweredSessionIdClaim,
 } from "./multinode-router.js";
@@ -911,6 +913,7 @@ class IntercomBroker {
     awaits?: string,
     recovery?: string,
     presenceBoundMs?: number,
+    presenceWaitMs?: number,
   ): void {
         let id = grantedId;
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
@@ -1121,6 +1124,7 @@ class IntercomBroker {
           awaits,
           recovery,
           presenceBoundMs,
+          presenceWaitMs,
         );
         // #5999 durable wake queue: `registered` names what keeps queued messages, decided once, when the first session
         // registers (bounded by ENDED_QUEUE_OPEN_WAIT_MS once the store can open, and by ENDED_QUEUE_TOTAL_WAIT_MS in all).
@@ -1304,7 +1308,7 @@ class IntercomBroker {
           // #5607: a client that takes ids back is told which id it awaits; a hand-over it presents takes one.
           const takesIdHandoff = clientMessage.takesIdHandoff === true;
           const idHandoff = typeof clientMessage.idHandoff === "string" ? clientMessage.idHandoff : undefined;
-          const claimProgress = { extendedMs: 0 };
+          const claimProgress: SessionIdClaimProgress = { extendedMs: 0 };
           void multiNode
             .claimSessionId(
               preferred,
@@ -1347,13 +1351,17 @@ class IntercomBroker {
               const awaited =
                 takesIdHandoff &&
                 (claimed.status === "held" || (claimed.status === "unanswered" && claimed.unanswered.recovery !== undefined));
+              const unanswered = claimed.status === "unanswered" ? claimed.unanswered : undefined;
+              const presenceWaitMs = presenceWaitAfterClaim(claimProgress);
+              const presenceBoundMs =
+                unanswered === undefined ? presenceWaitMs : reclaimDecisionBoundAfterClaim(claimProgress);
               this.completeSessionRegistration(
                 socket,
                 registration,
                 granted !== undefined ? granted.sessionId : randomUUID(),
                 supervisorId,
                 setId,
-                claimed.status === "unanswered" ? claimed.unanswered : undefined,
+                unanswered,
                 granted,
                 // #5607: held by another registration of this session (or for this one, by a hand-over that did not take
                 // it this time): a client that takes ids back awaits it, and keeps asking for it rather than saving the
@@ -1361,7 +1369,8 @@ class IntercomBroker {
                 awaited ? preferred : undefined,
                 !awaited ? undefined : claimed.status === "held" ? claimed.recovery : claimed.unanswered.recovery,
                 // The claim and the presence wait together stay within the client's registration wait.
-                presenceBoundAfterClaim(claimProgress.extendedMs),
+                presenceBoundMs,
+                presenceWaitMs,
               );
             })
             .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));

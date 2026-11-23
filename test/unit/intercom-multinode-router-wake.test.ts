@@ -5,6 +5,7 @@ import { AgentWakeDispatcher, type ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AwayAsks } from "../../packages/intercom/broker/away-asks.js";
+import { BROKER_CONNECT_TIMEOUT_MS } from "../../packages/intercom/broker/client.js";
 import { UNAUTHORIZED_REPLY_REASON } from "../../packages/intercom/broker/delivery-failure-reason.js";
 import {
 	LOCAL_RETRY_LOOKUP_BOUND_MS,
@@ -13,8 +14,10 @@ import {
 	type MultiNodeRouterOptions,
 	PRESENCE_REGISTRATION_BOUND_MS,
 	presenceBoundAfterClaim,
+	presenceWaitAfterClaim,
 	RESERVED_ID_HOLD_MS,
 	type ReservationOptions,
+	reclaimDecisionBoundAfterClaim,
 	type SavedHandoff,
 	type SavedHandoffStore,
 	SESSION_ID_CLAIM_BOUND_MS,
@@ -36,6 +39,7 @@ import {
 	reservationKeyFor,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
+import { REGISTRATION_CONNECT_HEADROOM_MS } from "../../packages/intercom/broker/registration-bounds.js";
 import { releasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import {
 	RESTORING_RECIPIENT_HOLD_MS,
@@ -5097,5 +5101,377 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		);
 		assert.ok(failure !== undefined && failure.type === "delivery_failed");
 		assert.match(failure.reason, /could not reach the shared storage/);
+	});
+
+	test("renew issues membership and all live presence lease renewals concurrently so SQLite group-commits them without clobbering newer leases", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const node = await startNode(await cluster());
+		const sessions = [session("s1"), session("s2"), session("s3"), session("s4"), session("s5")];
+		for (const s of sessions) await registeredOn(node, s);
+
+		const realRenew = node.state.leases.renew.bind(node.state.leases);
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const gates: Array<ReturnType<typeof Promise.withResolvers<void>>> = [];
+		vi.spyOn(node.state.leases, "renew").mockImplementation(async (lease, subject) => {
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			const gate = Promise.withResolvers<void>();
+			gates.push(gate);
+			await gate.promise;
+			inFlight--;
+			return realRenew(lease, subject);
+		});
+
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		await flush();
+		assert.equal(
+			maxInFlight,
+			1 + sessions.length,
+			"membership and all 5 presence lease renewals are issued together so a single group commit serves them",
+		);
+		for (const gate of gates) gate.resolve();
+		await flush();
+	});
+
+	test("renew returning stale for an earlier lease never clears a newer lease acquired while the renewal was in flight", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const s = session("s-reacquire");
+		await registeredOn(node, s);
+
+		const firstRenew = Promise.withResolvers<void>();
+		const realRenew = node.state.leases.renew.bind(node.state.leases);
+		let intercepted = false;
+		const renewSpy = vi.spyOn(node.state.leases, "renew").mockImplementation(async (lease, subject) => {
+			if (!intercepted && lease.key.kind === "presence") {
+				intercepted = true;
+				await firstRenew.promise;
+				return { status: "stale", currentFencingToken: lease.fencingToken + 1 };
+			}
+			return realRenew(lease, subject);
+		});
+
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		await flush();
+		assert.equal(intercepted, true);
+
+		// Simulate the lease being replaced while the stale renewal is in flight: releasing and re-registering gives a
+		// fresh lease, or renewing after re-acquisition succeeds only if the entry kept its newer lease.
+		node.sessions.delete(s.info.id);
+		node.router.sessionLeft(s);
+		await flush();
+		const s2: BrokerConnectedSession = {
+			...session("s-reacquire"),
+			info: { ...s.info },
+			registrationReturnAddress: s.registrationReturnAddress,
+		};
+		await registeredOn(node, s2);
+
+		firstRenew.resolve();
+		await flush();
+		renewSpy.mockRestore();
+
+		const nextRenew = vi.spyOn(node.state.leases, "renew");
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		await flush();
+		assert.ok(
+			nextRenew.mock.calls.some(([lease]) => lease.key.kind === "presence"),
+			"the newer presence lease stays intact and is renewed on the next interval",
+		);
+	});
+
+	test("renew batches membership and all live presence leases into one renewMany call when the store supports it", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const node = await startNode(await cluster());
+		const sessions = [session("b1"), session("b2"), session("b3"), session("b4")];
+		for (const s of sessions) await registeredOn(node, s);
+
+		const batches: number[] = [];
+		const realRenew = node.state.leases.renew.bind(node.state.leases);
+		node.state.leases.renewMany = async (requests) => {
+			batches.push(requests.length);
+			return Promise.all(requests.map((req) => realRenew(req.lease, req.subject)));
+		};
+
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(
+			batches,
+			[1 + sessions.length],
+			"one batched renewMany call covers membership + all 4 presences",
+		);
+	});
+
+	test("BROKER_CONNECT_TIMEOUT_MS is derived from claim, presence, and headroom bounds (#5607)", () => {
+		assert.equal(
+			BROKER_CONNECT_TIMEOUT_MS,
+			SESSION_ID_CLAIM_BOUND_MS + PRESENCE_REGISTRATION_BOUND_MS + REGISTRATION_CONNECT_HEADROOM_MS,
+		);
+		assert.ok(SESSION_ID_CLAIM_BOUND_MS + PRESENCE_REGISTRATION_BOUND_MS < BROKER_CONNECT_TIMEOUT_MS);
+		assert.ok(
+			SESSION_ID_CLAIM_PROGRESS_CAP_MS + presenceBoundAfterClaim(SESSION_ID_CLAIM_BOUND_MS) <
+				BROKER_CONNECT_TIMEOUT_MS,
+		);
+	});
+
+	test("a stalled id-claim never blocks an unrelated session's claim or registration (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const stalled = session("stalled-a");
+		const unrelated = session("unrelated-b");
+		const stallGate = Promise.withResolvers<void>();
+		const realBind = node.state.knownSessions.bind.bind(node.state.knownSessions);
+		vi.spyOn(node.state.knownSessions, "bind").mockImplementation(async (id, ra, retention, claim, owner) => {
+			if (ra === stalled.registrationReturnAddress) {
+				await stallGate.promise;
+			}
+			return realBind(id, ra, retention, claim, owner);
+		});
+		try {
+			// Start A's id-claim, which parks indefinitely inside the store until the claim bound expires.
+			let stalledDone = false;
+			const stalledClaim = node.router
+				.claimSessionId(stalled.info.id, stalled.registrationReturnAddress!)
+				.then((ans) => {
+					stalledDone = true;
+					return ans;
+				});
+
+			// While A's claim is stalled, unrelated session B claims and registers immediately without waiting for A.
+			const bClaim = await node.router.claimSessionId(unrelated.info.id, unrelated.registrationReturnAddress!);
+			assert.equal(bClaim.status, "granted");
+			assert.equal(stalledDone, false, "A's claim is still stalled while B already succeeded");
+			node.sessions.set(unrelated.info.id, unrelated);
+			await node.router.sessionRegistered(unrelated, undefined, undefined, bClaim.grant);
+			assert.equal(stalledDone, false, "B finished full registration while A's claim remained stalled");
+
+			// Advancing to SESSION_ID_CLAIM_BOUND_MS resolves A's stalled claim cleanly as unanswered.
+			await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+			const aResult = await stalledClaim;
+			assert.equal(aResult.status, "unanswered");
+		} finally {
+			stallGate.resolve();
+		}
+	});
+
+	test("presenceWaitAfterClaim and reclaimDecisionBoundAfterClaim keep stalled claims inside the client connect timeout while preserving healthy and exited-broker bounds (#5607)", () => {
+		// Healthy claim: identical to main (5000 ms).
+		assert.equal(presenceWaitAfterClaim({ extendedMs: 0, elapsedMs: 10 }), 5_000);
+		assert.equal(reclaimDecisionBoundAfterClaim({ extendedMs: 0, elapsedMs: 10 }), 5_000);
+		assert.equal(presenceWaitAfterClaim({ extendedMs: 0, elapsedMs: 2_500 }), 5_000);
+		assert.equal(reclaimDecisionBoundAfterClaim({ extendedMs: 0, elapsedMs: 2_500 }), 5_000);
+		// Exited-host-broker takeover (#6369): identical to main.
+		assert.equal(presenceWaitAfterClaim({ extendedMs: 1_100, elapsedMs: 3_600 }), 3_900);
+		assert.equal(reclaimDecisionBoundAfterClaim({ extendedMs: 1_100, elapsedMs: 3_600 }), 3_900);
+		// Stalled claim past 2.5 s: trims post-decision presence wait to keep combined bound at 7.5 s.
+		assert.equal(presenceWaitAfterClaim({ extendedMs: 0, elapsedMs: 5_500 }), 2_000);
+		assert.equal(reclaimDecisionBoundAfterClaim({ extendedMs: 0, elapsedMs: 5_500 }), 2_000);
+		// Long 8 s stall: zero extra post-decision presence wait, but reclaim still keeps 1.5 s to decide (< 10 s client cap).
+		assert.equal(presenceWaitAfterClaim({ extendedMs: 0, elapsedMs: 8_000 }), 0);
+		assert.equal(reclaimDecisionBoundAfterClaim({ extendedMs: 0, elapsedMs: 8_000 }), 1_500);
+		assert.ok(
+			8_000 + reclaimDecisionBoundAfterClaim({ extendedMs: 0, elapsedMs: 8_000 }) < BROKER_CONNECT_TIMEOUT_MS,
+		);
+		// Near client cap: decision bound shrinks to stay below 9.5 s.
+		assert.equal(reclaimDecisionBoundAfterClaim({ extendedMs: 0, elapsedMs: 9_000 }), 500);
+		assert.equal(reclaimDecisionBoundAfterClaim({ extendedMs: 0, elapsedMs: 9_600 }), 0);
+	});
+
+	test("sessionRegistered tightens its wait after reclaim decides on a long stall, keeping the id while still running recordKnown and acquirePresence in the background (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const original = session("returning");
+		await registeredOn(node, original);
+		node.sessions.delete(original.info.id);
+		node.router.sessionLeft(original);
+		await vi.advanceTimersByTimeAsync(0);
+		await flush();
+
+		// Claim writes binding, then stalls 8 s (past combined 7.5 s budget -> presenceWait=0, decisionBound=1500).
+		const realBind = node.state.knownSessions.bind.bind(node.state.knownSessions);
+		vi.spyOn(node.state.knownSessions, "bind").mockImplementationOnce(async (...args) => {
+			const bound = await realBind(...args);
+			assert.equal(bound.status, "bound");
+			return new Promise(() => {});
+		});
+		const progress = { extendedMs: 0, elapsedMs: 0 };
+		const claimPromise = node.router.claimSessionId(
+			original.info.id,
+			original.registrationReturnAddress!,
+			undefined,
+			undefined,
+			progress,
+		);
+		await vi.advanceTimersByTimeAsync(8_000);
+		const claimed = await claimPromise;
+		assert.equal(claimed.status, "unanswered");
+		// Manually simulate an 8 s broker stall (fake timers fired at 2.5 s; real wall stall delivers 8 s).
+		const stalledProgress = { extendedMs: 0, elapsedMs: 8_000 };
+		const decisionBound = reclaimDecisionBoundAfterClaim(stalledProgress);
+		const presenceWait = presenceWaitAfterClaim(stalledProgress);
+		assert.equal(decisionBound, 1_500);
+		assert.equal(presenceWait, 0);
+
+		const reclaimGate = Promise.withResolvers<void>();
+		const recordGate = Promise.withResolvers<void>();
+		try {
+			const realReclaim = node.state.knownSessions.reclaim!.bind(node.state.knownSessions);
+			vi.spyOn(node.state.knownSessions, "reclaim").mockImplementationOnce(async (req) => {
+				await reclaimGate.promise;
+				return realReclaim(req);
+			});
+			let recordStarted = false;
+			let recordFinished = false;
+			const realRecord = node.state.knownSessions.record.bind(node.state.knownSessions);
+			vi.spyOn(node.state.knownSessions, "record").mockImplementationOnce(async (rec) => {
+				recordStarted = true;
+				await recordGate.promise;
+				const ans = await realRecord(rec);
+				recordFinished = true;
+				return ans;
+			});
+
+			const returning: BrokerConnectedSession = {
+				...session("returning"),
+				registrationReturnAddress: original.registrationReturnAddress,
+			};
+			let settledId: string | undefined;
+			let registrationResolved = false;
+			const reg = node.router.sessionRegistered(
+				returning,
+				undefined,
+				{
+					...claimed.unanswered,
+					settle: (keep) => {
+						if (settledId !== undefined) return false;
+						settledId = keep ? claimed.unanswered.sessionId : returning.info.id;
+						returning.info.id = settledId;
+						return keep;
+					},
+					unsettled: () => settledId === undefined,
+				},
+				undefined,
+				undefined,
+				undefined,
+				decisionBound,
+				presenceWait,
+			);
+			void reg.then(() => {
+				registrationResolved = true;
+			});
+
+			// Reclaim takes 100 ms: registration MUST NOT resolve at 0 ms (would forfeit the claimed id!).
+			await vi.advanceTimersByTimeAsync(100);
+			await flush();
+			assert.equal(registrationResolved, false, "waits for reclaim decision instead of forfeiting the id at 0 ms");
+			assert.equal(settledId, undefined);
+
+			// Reclaim resolves and keeps the id -> registration resolves IMMEDIATELY without waiting for slow recordKnown!
+			reclaimGate.resolve();
+			await vi.advanceTimersByTimeAsync(0);
+			await flush();
+			assert.equal(settledId, original.info.id, "kept the claimed id");
+			assert.equal(
+				registrationResolved,
+				true,
+				"resolved immediately after reclaim since presenceWait was already 0",
+			);
+			assert.equal(recordStarted, true, "recordKnown still started in the background");
+			assert.equal(recordFinished, false);
+
+			// Unpark recordKnown -> background recordKnown + acquirePresence still finish cleanly.
+			recordGate.resolve();
+			await vi.advanceTimersByTimeAsync(0);
+			await flush();
+			assert.equal(recordFinished, true, "background recordKnown completed");
+			const live = await node.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS);
+			assert.ok(
+				live.some((lease) => (lease.subject as RecipientPresenceSubject).session.id === original.info.id),
+				"background acquirePresence still published the kept id",
+			);
+		} finally {
+			reclaimGate.resolve();
+			recordGate.resolve();
+		}
+	});
+
+	test("sessionRegistered falls back within the capped decision bound when a stalled claim meets a hung database (#5607)", async () => {
+		vi.useFakeTimers({ toFake: [...ADVANCE] });
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const original = session("returning-hung");
+		await registeredOn(node, original);
+		node.sessions.delete(original.info.id);
+		node.router.sessionLeft(original);
+		await vi.advanceTimersByTimeAsync(0);
+		await flush();
+
+		vi.spyOn(node.state.knownSessions, "bind").mockReturnValueOnce(new Promise(() => {}));
+		const claimPromise = node.router.claimSessionId(original.info.id, original.registrationReturnAddress!);
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		const claimed = await claimPromise;
+		assert.equal(claimed.status, "unanswered");
+
+		// 6 s stall + hung reclaim: decisionBound = 1.5 s (6 s + 1.5 s = 7.5 s << 10 s, instead of 6 s + 5 s = 11 s).
+		const stalledProgress = { extendedMs: 0, elapsedMs: 6_000 };
+		const decisionBound = reclaimDecisionBoundAfterClaim(stalledProgress);
+		const presenceWait = presenceWaitAfterClaim(stalledProgress);
+		assert.equal(decisionBound, 1_500);
+		assert.equal(presenceWait, 1_500);
+
+		const reclaimGate = Promise.withResolvers<void>();
+		const realReclaim = node.state.knownSessions.reclaim!.bind(node.state.knownSessions);
+		vi.spyOn(node.state.knownSessions, "reclaim").mockImplementationOnce(async (req) => {
+			await reclaimGate.promise;
+			return realReclaim(req);
+		});
+		try {
+			const returning: BrokerConnectedSession = {
+				...session("returning-hung"),
+				registrationReturnAddress: original.registrationReturnAddress,
+			};
+			let settledId: string | undefined;
+			let resolved = false;
+			void node.router
+				.sessionRegistered(
+					returning,
+					undefined,
+					{
+						...claimed.unanswered,
+						settle: (keep) => {
+							if (settledId !== undefined) return false;
+							settledId = keep ? claimed.unanswered.sessionId : returning.info.id;
+							returning.info.id = settledId;
+							return keep;
+						},
+						unsettled: () => settledId === undefined,
+					},
+					undefined,
+					undefined,
+					undefined,
+					decisionBound,
+					presenceWait,
+				)
+				.then(() => {
+					resolved = true;
+				});
+
+			await vi.advanceTimersByTimeAsync(decisionBound - 1);
+			await flush();
+			assert.equal(resolved, false);
+			await vi.advanceTimersByTimeAsync(1);
+			await flush();
+			assert.equal(
+				resolved,
+				true,
+				"falls back within the capped 1.5 s decision bound, well before the 10 s client deadline",
+			);
+		} finally {
+			reclaimGate.resolve();
+		}
 	});
 });

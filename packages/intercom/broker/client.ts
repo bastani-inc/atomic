@@ -104,8 +104,8 @@ function expiredHere(
 /** #5999: the most messages kept here as queued for subagents that ended; the oldest is forgotten first. */
 const ENDED_QUEUED_MAX = 1_024;
 
-/** How long `connect()` waits for the broker to answer `register`. */
-export const BROKER_CONNECT_TIMEOUT_MS = 10_000;
+import { BROKER_CONNECT_TIMEOUT_MS } from "./registration-bounds.js";
+export { BROKER_CONNECT_TIMEOUT_MS };
 const GROUP_REQUEST_TIMEOUT_MS = 5000;
 const PRESENCE_ACK_TIMEOUT_MS = 5000;
 const RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS = 5000;
@@ -710,6 +710,7 @@ export class IntercomClient extends EventEmitter {
         const agentDir = this.explicitBrokerSocketPath === undefined ? this.brokerAgentDir : undefined;
         const pidBefore = await snapshotBrokerPidBeforeRequest(agentDir);
         if (attempt.signal.aborted) throw connectAborted();
+        const attemptState = { registerWritten: false };
         try {
           await this.connectOnce(
             socketPath,
@@ -720,12 +721,13 @@ export class IntercomClient extends EventEmitter {
             messageSource,
             registrationGroup,
             expectedRouting,
+            attemptState,
           );
           return;
         } catch (error) {
           if (attempt.signal.aborted) throw connectAborted();
           if (!(error instanceof Error)) throw error;
-          if (!isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) {
+          if (attemptState.registerWritten || !isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) {
             const classified = await classifyRegistrationFailure(error, socketPath, agentDir, pidBefore);
             if (attempt.signal.aborted) throw connectAborted();
             if (expectedRouting?.verify === true && classified instanceof ConnectionClosedBeforeRegistrationError) {
@@ -751,6 +753,7 @@ export class IntercomClient extends EventEmitter {
     messageSource?: Message["source"],
     registrationGroup?: string,
     expectedRouting?: ExpectedRouting,
+    attemptState?: { registerWritten: boolean },
   ): Promise<void> {
     if (this.socket) {
       return Promise.reject(new Error("Already connected"));
@@ -886,6 +889,7 @@ export class IntercomClient extends EventEmitter {
           };
           this._groups = normalizeGroups(registration.groups, registration.group);
           this.sentReach = reach;
+          if (attemptState !== undefined) attemptState.registerWritten = true;
           writeMessage(socket, {
             ...(expectedRouting?.verify === true
               ? { type: "register_verified", expectedRouting: { acrossMachines: expectedRouting.acrossMachines } }

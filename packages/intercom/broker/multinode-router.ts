@@ -43,6 +43,8 @@ import {
 	type KnownSessionOwnership,
 	type KnownSessionState,
 	type Lease,
+	type LeaseRenewalRequest,
+	type LeaseRenewResult,
 	type LeaseState,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
@@ -62,6 +64,13 @@ import {
 	type SentMessageReservation,
 	type SessionIdReclaimResult,
 } from "./multinode-state-store.js";
+import {
+	MIN_RECLAIM_DECISION_BOUND_MS,
+	PRESENCE_REGISTRATION_BOUND_MS,
+	RECLAIM_DECISION_CLIENT_CAP_MS,
+	SESSION_ID_CLAIM_BOUND_MS,
+	SESSION_ID_CLAIM_PROGRESS_CAP_MS,
+} from "./registration-bounds.js";
 import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { ROUTE_UNAVAILABLE_REASON, UNAUTHORIZED_REPLY_REASON } from "./delivery-failure-reason.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
@@ -161,30 +170,19 @@ const PRESENCE_HANDOVER_RETRY_MS = 50;
  * session's asks) are tried, once when due and then at each renewal, before a failure that keeps recurring is given up.
  */
 export const REGISTRATION_STEP_ATTEMPTS = 30;
-/**
- * The longest a registration waits for its presence lease. A hung shared database must not hang registration (the
- * client gives up after 10 s); the lease is still written when the database answers.
- */
-export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
-/**
- * The longest a registration that asks for its id back waits for the shared database to bind it, before the presence
- * wait: both together stay within the client's 10 s. Past it the session gets a fresh id, never an unchecked one.
- */
-export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
-/**
- * The longest a claim waits in all once it found the id owned by a broker of this host that has exited: each step that
- * gives that broker's ids up and binds the id again has `SESSION_ID_CLAIM_BOUND_MS` of its own, as a shared database
- * that answers slowly takes one round trip for each, up to this. The registration's presence wait is shortened by the
- * extra time (`presenceBoundAfterClaim`), so both together stay within the client's 10 s.
- */
-export const SESSION_ID_CLAIM_PROGRESS_CAP_MS = 2 * SESSION_ID_CLAIM_BOUND_MS;
+export {
+	PRESENCE_REGISTRATION_BOUND_MS,
+	SESSION_ID_CLAIM_BOUND_MS,
+	SESSION_ID_CLAIM_PROGRESS_CAP_MS,
+};
 
 /**
  * What a claim reports to its registration: how much longer than `SESSION_ID_CLAIM_BOUND_MS` it gave itself to take the
- * id from a broker of this host that has exited (0 when it did not).
+ * id from a broker of this host that has exited (0 when it did not), and how long the claim actually took overall.
  */
 export interface SessionIdClaimProgress {
 	extendedMs: number;
+	elapsedMs?: number;
 }
 
 /**
@@ -195,6 +193,36 @@ export interface SessionIdClaimProgress {
 export function presenceBoundAfterClaim(extendedMs: number): number {
 	const most = SESSION_ID_CLAIM_PROGRESS_CAP_MS - SESSION_ID_CLAIM_BOUND_MS;
 	return PRESENCE_REGISTRATION_BOUND_MS - Math.min(most, Math.max(0, extendedMs));
+}
+
+/**
+ * How long a registration waits for `recordKnown` and `acquirePresence` after its id is decided, given the id claim's
+ * progress. Never exceeds `presenceBoundAfterClaim(progress.extendedMs)`, and takes off any extra time the claim
+ * actually spent past `SESSION_ID_CLAIM_BOUND_MS` (such as a broker stall or slow store I/O) so the claim and
+ * post-decision presence wait stay within `SESSION_ID_CLAIM_BOUND_MS + PRESENCE_REGISTRATION_BOUND_MS` (7.5 s).
+ */
+export function presenceWaitAfterClaim(progress: SessionIdClaimProgress): number {
+	const base = presenceBoundAfterClaim(progress.extendedMs);
+	const elapsedMs = progress.elapsedMs;
+	if (elapsedMs === undefined || !Number.isFinite(elapsedMs)) return base;
+	const excessMs = Math.max(0, elapsedMs - SESSION_ID_CLAIM_BOUND_MS);
+	return Math.min(base, Math.max(0, PRESENCE_REGISTRATION_BOUND_MS - excessMs));
+}
+
+/**
+ * How long a registration with an unanswered id claim waits for its binding write (`reclaimOrBind`) to decide the id
+ * before falling back to a fresh id. Keeps at least `MIN_RECLAIM_DECISION_BOUND_MS` (capped so the total wait from
+ * claim start stays within `RECLAIM_DECISION_CLIENT_CAP_MS`, below the client's 10 s connect timeout), so a long broker
+ * stall never prematurely forfeits a claimed id while a hung database still falls back before the client times out.
+ */
+export function reclaimDecisionBoundAfterClaim(progress: SessionIdClaimProgress): number {
+	const base = presenceBoundAfterClaim(progress.extendedMs);
+	const presenceWait = presenceWaitAfterClaim(progress);
+	const elapsedMs = progress.elapsedMs;
+	if (elapsedMs === undefined || !Number.isFinite(elapsedMs)) return base;
+	const remToCap = Math.max(0, RECLAIM_DECISION_CLIENT_CAP_MS - Math.max(0, elapsedMs));
+	const floor = Math.min(MIN_RECLAIM_DECISION_BOUND_MS, remToCap);
+	return Math.min(base, Math.max(presenceWait, floor));
 }
 /**
  * #5607: waits between a returning registration's attempts at an id that another registration of the same session
@@ -1492,10 +1520,13 @@ export class MultiNodeRouter {
 		} finally {
 			clearTimeout(bound);
 			clearTimeout(cap);
-			// What the claim took past its own bound because it gave an exited broker's ids up, and only that: a claim answered
-			// within its bound, or late for any other reason (a stalled broker), takes nothing off the presence wait.
-			if (progress !== undefined && extended)
-				progress.extendedMs = Math.max(0, (gaveUpAt ?? Math.min(deadline, elapsed())) - retryDeadline);
+			if (progress !== undefined) {
+				progress.elapsedMs = Math.max(elapsed(), gaveUpAt ?? 0);
+				// What the claim took past its own bound because it gave an exited broker's ids up, and only that: a claim answered
+				// within its bound, or late for any other reason (a stalled broker), takes nothing off `extendedMs`.
+				if (extended)
+					progress.extendedMs = Math.max(0, (gaveUpAt ?? Math.min(deadline, elapsed())) - retryDeadline);
+			}
 			// A held token stays in use until the registration that took it is registered here, which its broker does as
 			// it reads this answer.
 			if (reserved !== undefined) setImmediate(() => this.consumingClaims.delete(claim));
@@ -2463,6 +2494,7 @@ export class MultiNodeRouter {
 		awaits?: string,
 		recovery?: string,
 		boundMs: number = PRESENCE_REGISTRATION_BOUND_MS,
+		presenceWaitMs: number = boundMs,
 	): Promise<void> {
 		if (this.closed || this.presence.has(session)) return Promise.resolve();
 		const entry: PresenceEntry = { registeredSeq: ++this.registrationSeq };
@@ -2509,8 +2541,30 @@ export class MultiNodeRouter {
 		this.initialScans.get(identity)?.resolve();
 		this.initialScans.set(identity, initialScanEntry);
 		return new Promise<void>((resolve) => {
-			const bound = setTimeout(resolve, boundMs);
+			let settled = false;
+			let bound: ReturnType<typeof setTimeout> | undefined;
+			const finish = (): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(bound);
+				resolve();
+			};
+			bound = setTimeout(finish, boundMs);
 			bound.unref?.();
+			if (decided !== undefined && presenceWaitMs < boundMs) {
+				const regStarted = clockMark();
+				const tightenAfterDecision = (): void => {
+					if (settled) return;
+					const remaining = presenceWaitMs - elapsedSince(regStarted);
+					if (remaining <= 0) finish();
+					else {
+						clearTimeout(bound);
+						bound = setTimeout(finish, remaining);
+						bound.unref?.();
+					}
+				};
+				void decided.then(tightenAfterDecision, tightenAfterDecision);
+			}
 			this.serial(identity, async () => {
 				let shouldScan = false;
 				try {
@@ -2550,8 +2604,7 @@ export class MultiNodeRouter {
 					}
 					shouldScan = true;
 				} finally {
-					clearTimeout(bound);
-					resolve();
+					finish();
 					const finishInitial = () => {
 						if (this.initialScans.get(identity) === initialScanEntry) this.initialScans.delete(identity);
 						resolveInitialScan();
@@ -6210,10 +6263,53 @@ export class MultiNodeRouter {
 	}
 
 	private async renew(): Promise<void> {
-		if (this.membership !== undefined) {
-			const renewed = await this.state.leases.renew(this.membership);
-			this.storeAnswered();
-			if (renewed.status !== "renewed") this.membership = undefined;
+		// Batch membership and all live presence lease renewals into one shared-store transaction when `renewMany` is
+		// available (1 fsync instead of N+1 sequential fsyncs on SQLite), falling back to concurrent `renew` calls on
+		// custom stores. Each callback guards against a newer lease replacing the captured one while renewal is in flight.
+		const membership = this.membership;
+		const batch: LeaseRenewalRequest[] = [];
+		const handlers: Array<(renewed: LeaseRenewResult) => void> = [];
+		if (membership !== undefined) {
+			batch.push({ lease: membership });
+			handlers.push((renewed) => {
+				this.storeAnswered();
+				if (this.membership === membership && renewed.status !== "renewed") this.membership = undefined;
+			});
+		}
+		const missingPresence: Array<readonly [BrokerConnectedSession, PresenceEntry]> = [];
+		for (const [session, entry] of this.presence) {
+			const lease = entry.lease;
+			if (lease !== undefined) {
+				batch.push({ lease, subject: this.presenceSubject(session) });
+				handlers.push((renewed) => {
+					if (this.presence.get(session) !== entry || entry.lease !== lease) return;
+					if (renewed.status !== "renewed") {
+						entry.lease = undefined;
+						return;
+					}
+					if (entry.knownAt === undefined || Date.now() - entry.knownAt >= KNOWN_SESSION_REFRESH_INTERVAL_MS) {
+						// A live session stays known: retention counts from its last renewal, not from its registration.
+						this.serial(deliveryTargetIdentity(session), () => this.recordKnown(session, entry));
+					}
+					if (entry.unfinished !== undefined) {
+						this.serial(deliveryTargetIdentity(session), async () => {
+							if (this.presence.get(session) === entry) await this.finishRegistration(session, entry);
+						});
+					}
+				});
+			} else {
+				missingPresence.push([session, entry]);
+			}
+		}
+		if (batch.length > 0) {
+			const results =
+				this.state.leases.renewMany !== undefined
+					? await this.state.leases.renewMany(batch)
+					: await Promise.all(batch.map((request) => this.state.leases.renew(request.lease, request.subject)));
+			for (let i = 0; i < handlers.length; i++) {
+				const result = results[i];
+				if (result !== undefined) handlers[i]!(result);
+			}
 		}
 		if (this.membership === undefined) {
 			const acquired = await this.state.leases.acquire(
@@ -6223,37 +6319,23 @@ export class MultiNodeRouter {
 			);
 			if (acquired.status === "acquired") this.membership = acquired.lease;
 		}
-		for (const [session, entry] of this.presence) {
-			if (entry.lease !== undefined) {
-				const renewed = await this.state.leases.renew(entry.lease, this.presenceSubject(session));
-				if (renewed.status !== "renewed") entry.lease = undefined;
-				else if (entry.knownAt === undefined || Date.now() - entry.knownAt >= KNOWN_SESSION_REFRESH_INTERVAL_MS) {
-					// A live session stays known: retention counts from its last renewal, not from its registration.
-					this.serial(deliveryTargetIdentity(session), () => this.recordKnown(session, entry));
+		for (const [session, entry] of missingPresence) {
+			this.serial(deliveryTargetIdentity(session), async () => {
+				// #5607: a session still to take its id is not presented across nodes before it has.
+				if (this.presence.get(session) !== entry || entry.unbound === true || entry.adoption !== undefined) return;
+				await this.acquirePresence(session, entry);
+				const { rebind } = entry;
+				if (entry.lease !== undefined && rebind !== undefined) {
+					// #5138: kept as an unfinished step until it succeeds, so a store error does not lose it.
+					delete entry.rebind;
+					entry.unfinished = { ...(entry.unfinished ?? { attempts: 0 }), rebind };
 				}
-				if (entry.unfinished !== undefined) {
-					this.serial(deliveryTargetIdentity(session), async () => {
-						if (this.presence.get(session) === entry) await this.finishRegistration(session, entry);
-					});
+				try {
+					await this.finishRegistration(session, entry);
+				} finally {
+					if (entry.lease !== undefined) this.scanIdentity(deliveryTargetIdentity(session));
 				}
-			} else {
-				this.serial(deliveryTargetIdentity(session), async () => {
-					// #5607: a session still to take its id is not presented across nodes before it has.
-					if (this.presence.get(session) !== entry || entry.unbound === true || entry.adoption !== undefined) return;
-					await this.acquirePresence(session, entry);
-					const { rebind } = entry;
-					if (entry.lease !== undefined && rebind !== undefined) {
-						// #5138: kept as an unfinished step until it succeeds, so a store error does not lose it.
-						delete entry.rebind;
-						entry.unfinished = { ...(entry.unfinished ?? { attempts: 0 }), rebind };
-					}
-					try {
-						await this.finishRegistration(session, entry);
-					} finally {
-						if (entry.lease !== undefined) this.scanIdentity(deliveryTargetIdentity(session));
-					}
-				});
-			}
+			});
 		}
 		for (const inflight of [...this.inflight.values()]) {
 			const renewed = await this.state.outbox.renewClaim(inflight.claim);

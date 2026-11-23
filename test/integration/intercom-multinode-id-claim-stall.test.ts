@@ -502,3 +502,33 @@ test(
 	},
 	TEST_TIMEOUT_MS,
 );
+
+test(
+	"a returning session whose broker stalls for most of the client deadline still registers with its kept id even when recording and presence are slow (#5607)",
+	async () => {
+		assert.equal(harness.multiNodeRouting, true);
+		const observer = await harness.connect("b", unique("observer"));
+		const original = await harness.connect("a", unique("returning"));
+		const id = await leaveAway(original, observer);
+		// A 6 s claim stall leaves 4 s of the client's 10 s connect timeout: waiting a full 5 s presence bound after
+		// reclaim already kept the id would exceed the client's 10 s deadline.
+		const LONG_CLAIM_STALL_MS = 6_000;
+		harness.stallIdClaim(original.returnAddress, LONG_CLAIM_STALL_MS);
+		harness.holdRegistration(original.name);
+		try {
+			await explained(id, original.returnAddress, async () => {
+				const back = await harness.connect("a", original.name, {
+					returnAddress: original.returnAddress,
+					preferredSessionId: id,
+					connectTimeoutMs: BROKER_CONNECT_TIMEOUT_MS,
+				});
+				assert.equal(harness.idClaimStalled(original.returnAddress), true);
+				await harness.registrationParked(original.name);
+				assert.equal(back.sessionId, id, "the database wrote the id for this registration");
+			});
+		} finally {
+			harness.releaseRegistration();
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
