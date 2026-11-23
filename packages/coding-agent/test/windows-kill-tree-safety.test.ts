@@ -237,10 +237,55 @@ function fakeChild(pid: number, exitCode: number | null = null) {
 	});
 }
 
+/**
+ * Returns a deterministic 4-byte-aligned fake PID that never equals `process.pid` or any PID in `avoid`.
+ * Slots `1..15` occupy disjoint residue classes mod 64, so skipping forbidden PIDs never creates collisions.
+ */
+function fakePid(slot: number, ...avoid: readonly number[]): number {
+	const forbidden = new Set([process.pid, ...avoid]);
+	let candidate = 41_000 + slot * 4;
+	while (forbidden.has(candidate)) candidate += 64;
+	return candidate;
+}
+
 function exited(child: ChildProcess): Promise<void> {
 	return child.exitCode !== null || child.signalCode !== null
 		? Promise.resolve()
 		: new Promise((resolve) => child.once("exit", () => resolve()));
+}
+
+/**
+ * Routes `process.kill(pid, 0)` through `fakes.creationTimes` while `fakes.interceptStartToken` is active so mocked
+ * `build-lock` tests never probe real host OS processes when a fake PID is absent or terminated.
+ */
+function isolateFakeProcessLiveness(): () => void {
+	const realKill = process.kill.bind(process);
+	const spy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+		if (signal === 0 && fakes.interceptStartToken) {
+			const created = fakes.creationTimes.get(pid);
+			if (created !== undefined && created !== null) return true;
+			throw Object.assign(new Error(`kill ESRCH ${pid}`), { code: "ESRCH" });
+		}
+		return realKill(pid, signal as NodeJS.Signals);
+	}) as typeof process.kill);
+	return () => spy.mockRestore();
+}
+
+const PID_FILE_POLL_MS = 20;
+
+async function waitForPidNumber(file: string, timeoutMs = 20_000): Promise<number> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try {
+			if (existsSync(file)) {
+				const raw = readFileSync(file, "utf8").trim();
+				const pid = Number(raw);
+				if (raw !== "" && Number.isInteger(pid) && pid > 0) return pid;
+			}
+		} catch {}
+		assert.ok(Date.now() < deadline, `timed out waiting for PID file ${file}`);
+		await new Promise((resolve) => setTimeout(resolve, PID_FILE_POLL_MS));
+	}
 }
 
 beforeEach(() => {
@@ -262,9 +307,14 @@ beforeEach(() => {
 
 afterEach(async () => {
 	Object.defineProperty(process, "platform", realPlatform);
+	fakes.interceptContainment = false;
+	fakes.interceptHold = false;
+	fakes.interceptStartToken = false;
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
-	for (const recorded of recordedProcs.splice(0)) await signalRecordedProcess(recorded);
+	for (const recorded of recordedProcs.splice(0)) {
+		if (await signalRecordedProcess(recorded)) await waitUntilGone(recorded, 5_000);
+	}
 	for (const dir of tempDirs.splice(0))
 		await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
@@ -274,11 +324,12 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakePlatform("win32");
 		fakes.interceptHold = true;
 		fakes.holdMode = "held";
-		const running = fakeChild(41004, null);
+		const pid = fakePid(1);
+		const running = fakeChild(pid, null);
 
 		killChildProcessTree(running as unknown as ChildProcess, false);
 
-		assert.deepEqual(fakes.holdCalls, [41004]);
+		assert.deepEqual(fakes.holdCalls, [pid]);
 		assert.equal(fakes.holdEnded, 1);
 		assert.deepEqual(fakes.taskkillRuns, [], "never spawns taskkill when native hold is available");
 		assert.equal(running.kill.mock.calls.length, 0);
@@ -288,11 +339,12 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakePlatform("win32");
 		fakes.interceptHold = true;
 		fakes.holdMode = "absent";
-		const running = fakeChild(41008, null);
+		const pid = fakePid(2);
+		const running = fakeChild(pid, null);
 
 		killChildProcessTree(running as unknown as ChildProcess, false);
 
-		assert.deepEqual(fakes.holdCalls, [41008]);
+		assert.deepEqual(fakes.holdCalls, [pid]);
 		assert.deepEqual(fakes.taskkillRuns, [], "must not fall back to taskkill when native saw the process absent");
 		assert.equal(running.kill.mock.calls.length, 1, "falls back to the live handle only");
 	});
@@ -301,7 +353,7 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakePlatform("win32");
 		fakes.interceptHold = true;
 		fakes.holdMode = "unavailable";
-		const alreadyExited = fakeChild(41012, 0);
+		const alreadyExited = fakeChild(fakePid(3), 0);
 
 		killChildProcessTree(alreadyExited as unknown as ChildProcess, false);
 
@@ -314,83 +366,162 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakePlatform("win32");
 		fakes.interceptHold = true;
 		fakes.holdMode = "held";
+		const heldPid = fakePid(4);
+		const absentPid = fakePid(5);
 
-		killProcessTree(41016);
+		killProcessTree(heldPid);
 
-		assert.deepEqual(fakes.holdCalls, [41016]);
+		assert.deepEqual(fakes.holdCalls, [heldPid]);
 		assert.equal(fakes.holdEnded, 1);
 		assert.deepEqual(fakes.taskkillRuns, []);
 
 		fakes.holdMode = "absent";
-		killProcessTree(41020);
+		killProcessTree(absentPid);
+		assert.deepEqual(fakes.holdCalls, [heldPid, absentPid]);
 		assert.deepEqual(fakes.taskkillRuns, [], "absent under native must not fall back to taskkill");
 	});
 
 	test("killTrackedDetachedChildren verifies Windows creation time via nativeTerminateProcess and never kills a reused PID", () => {
 		fakePlatform("win32");
+		fakes.interceptHold = true;
+		fakes.holdMode = "unavailable";
 		fakes.interceptStartToken = true;
-		fakes.creationTimes.set(41024, "133500000000000001");
+		const pid = fakePid(6);
+		fakes.creationTimes.set(pid, "133500000000000001");
 		fakes.nativeTerminateMode = "null";
 
-		trackDetachedChildPid(41024);
+		trackDetachedChildPid(pid);
 		try {
 			killTrackedDetachedChildren();
 		} finally {
-			untrackDetachedChildPid(41024);
+			untrackDetachedChildPid(pid);
 		}
 
-		assert.deepEqual(fakes.nativeTerminateCalls, [{ pid: 41024, started: "133500000000000001", descendants: true }]);
+		assert.deepEqual(fakes.nativeTerminateCalls, [{ pid, started: "133500000000000001", descendants: true }]);
+		assert.deepEqual(fakes.holdCalls, [], "must not fall back to killProcessTree when native proved PID was reused");
 		assert.deepEqual(fakes.taskkillRuns, [], "must not fall back to taskkill when native proved PID was reused");
 	});
 
 	test("build-lock settleOtherBuilds terminates Windows steps via nativeTerminateProcess without taskkill and skips reused PIDs", async () => {
+		// Spawn real host processes whose PIDs collide with the mocked dead holder and terminated step
+		// so the test proves fake-table isolation even when those PIDs are live on the host OS.
+		const holderBystander = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 60_000)"], {
+			cwd: tmpdir(),
+			stdio: "ignore",
+			windowsHide: true,
+		});
+		const stepBystander = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 60_000)"], {
+			cwd: tmpdir(),
+			stdio: "ignore",
+			windowsHide: true,
+		});
+		const holderRec = await recordProcess(holderBystander.pid!);
+		const stepRec = await recordProcess(stepBystander.pid!);
+		recordedProcs.push(holderRec, stepRec);
+
 		fakePlatform("win32");
+		fakes.interceptHold = true;
+		fakes.holdMode = "unavailable";
 		fakes.interceptStartToken = true;
-		const storeDir = makeTempDir("atomic-killtree-lock-");
-		const root = join(storeDir, "worktree");
-		mkdirSync(join(storeDir, "blueprint-builds", "locks"), { recursive: true });
+		const restoreKill = isolateFakeProcessLiveness();
+		try {
+			const storeDir = makeTempDir("atomic-killtree-lock-");
+			const root = join(storeDir, "worktree");
+			mkdirSync(join(storeDir, "blueprint-builds", "locks"), { recursive: true });
 
-		const created = "133500000000000099";
-		const start = createHash("sha256").update(`windows\n${created}`).digest("hex").slice(0, 12);
-		fakes.creationTimes.set(41028, created);
-		fakes.nativeTerminateMode = "terminated";
+			const created = "133500000000000099";
+			const start = createHash("sha256").update(`windows\n${created}`).digest("hex").slice(0, 12);
+			const reusedPid = fakePid(7, holderBystander.pid!, stepBystander.pid!);
+			fakes.creationTimes.set(stepBystander.pid!, created);
+			fakes.creationTimes.set(reusedPid, "133500000000000888");
+			fakes.nativeTerminateMode = "terminated";
 
-		writeFileSync(
-			buildLockPath(storeDir, root),
-			JSON.stringify({ host: THIS_HOST, pid: 41000, start: "aaaaaaaaaaaa", steps: [{ pid: 41028, start }] }),
-		);
+			writeFileSync(
+				buildLockPath(storeDir, root),
+				JSON.stringify({
+					host: THIS_HOST,
+					pid: holderBystander.pid!,
+					start: "aaaaaaaaaaaa",
+					steps: [
+						{ pid: stepBystander.pid!, start },
+						{ pid: reusedPid, start: "bbbbbbbbbbbb" },
+					],
+				}),
+			);
 
-		const settled = await settleOtherBuilds(storeDir, [root], { waitMs: 300 });
-		await settled.release();
+			const settled = await settleOtherBuilds(storeDir, [root], { waitMs: 300 });
+			await settled.release();
 
-		assert.deepEqual(settled.warnings, []);
-		assert.deepEqual(fakes.nativeTerminateCalls, [{ pid: 41028, started: created, descendants: true }]);
-		assert.deepEqual(fakes.taskkillRuns, [], "build-lock must use nativeTerminateProcess, never taskkill");
+			assert.deepEqual(settled.warnings, []);
+			assert.deepEqual(fakes.nativeTerminateCalls, [
+				{ pid: stepBystander.pid!, started: created, descendants: true },
+			]);
+			assert.deepEqual(
+				fakes.holdCalls,
+				[],
+				"build-lock must use nativeTerminateProcess without falling back to killProcessTree",
+			);
+			assert.deepEqual(fakes.taskkillRuns, [], "build-lock must use nativeTerminateProcess, never taskkill");
+		} finally {
+			restoreKill();
+			fakes.interceptHold = false;
+			fakes.interceptStartToken = false;
+			Object.defineProperty(process, "platform", realPlatform);
+		}
+		assert.equal(await stillRuns(holderRec), true, "host process colliding with dead holder PID was never signalled");
+		assert.equal(await stillRuns(stepRec), true, "host process colliding with mocked step PID was never signalled");
 	});
 
 	test("build-lock settleOtherBuilds never falls back to taskkill when nativeTerminateProcess returns null for a reused PID", async () => {
+		const holderBystander = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 60_000)"], {
+			cwd: tmpdir(),
+			stdio: "ignore",
+			windowsHide: true,
+		});
+		const holderRec = await recordProcess(holderBystander.pid!);
+		recordedProcs.push(holderRec);
+
 		fakePlatform("win32");
+		fakes.interceptHold = true;
+		fakes.holdMode = "unavailable";
 		fakes.interceptStartToken = true;
-		const storeDir = makeTempDir("atomic-killtree-lock-reused-");
-		const root = join(storeDir, "worktree");
-		mkdirSync(join(storeDir, "blueprint-builds", "locks"), { recursive: true });
+		const restoreKill = isolateFakeProcessLiveness();
+		try {
+			const storeDir = makeTempDir("atomic-killtree-lock-reused-");
+			const root = join(storeDir, "worktree");
+			mkdirSync(join(storeDir, "blueprint-builds", "locks"), { recursive: true });
 
-		const created = "133500000000000111";
-		const start = createHash("sha256").update(`windows\n${created}`).digest("hex").slice(0, 12);
-		fakes.creationTimes.set(41030, created);
-		// Simulate the process exiting and being replaced right as nativeTerminateProcess runs.
-		fakes.nativeTerminateMode = "null";
+			const created = "133500000000000111";
+			const start = createHash("sha256").update(`windows\n${created}`).digest("hex").slice(0, 12);
+			const stepPid = fakePid(8, holderBystander.pid!);
+			fakes.creationTimes.set(stepPid, created);
+			// Simulate the process exiting and being replaced right as nativeTerminateProcess runs.
+			fakes.nativeTerminateMode = "null";
 
-		writeFileSync(
-			buildLockPath(storeDir, root),
-			JSON.stringify({ host: THIS_HOST, pid: 41000, start: "aaaaaaaaaaaa", steps: [{ pid: 41030, start }] }),
-		);
+			writeFileSync(
+				buildLockPath(storeDir, root),
+				JSON.stringify({
+					host: THIS_HOST,
+					pid: holderBystander.pid!,
+					start: "aaaaaaaaaaaa",
+					steps: [{ pid: stepPid, start }],
+				}),
+			);
 
-		const settled = await settleOtherBuilds(storeDir, [root], { waitMs: 50 });
-		await settled.release();
+			const settled = await settleOtherBuilds(storeDir, [root], { waitMs: 50 });
+			await settled.release();
 
-		assert.deepEqual(fakes.nativeTerminateCalls, [{ pid: 41030, started: created, descendants: true }]);
-		assert.deepEqual(fakes.taskkillRuns, [], "must not fall back to taskkill on native null");
+			assert.deepEqual(settled.warnings, []);
+			assert.deepEqual(fakes.nativeTerminateCalls, [{ pid: stepPid, started: created, descendants: true }]);
+			assert.deepEqual(fakes.holdCalls, [], "must not fall back to killProcessTree on native null");
+			assert.deepEqual(fakes.taskkillRuns, [], "must not fall back to taskkill on native null");
+		} finally {
+			restoreKill();
+			fakes.interceptHold = false;
+			fakes.interceptStartToken = false;
+			Object.defineProperty(process, "platform", realPlatform);
+		}
+		assert.equal(await stillRuns(holderRec), true, "host process colliding with dead holder PID was never signalled");
 	});
 
 	test("terminateRpcClientProcess uses holdProcessDescendants on Windows escalation and never spawns taskkill", async () => {
@@ -399,10 +530,11 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 		fakes.holdMode = "held";
 		vi.useFakeTimers();
 		try {
-			const child = fakeChild(41032, null);
+			const pid = fakePid(9);
+			const child = fakeChild(pid, null);
 			const stopping = terminateRpcClientProcess(child as unknown as ChildProcess, true, true);
 			await vi.advanceTimersByTimeAsync(5_000);
-			assert.deepEqual(fakes.holdCalls, [41032]);
+			assert.deepEqual(fakes.holdCalls, [pid]);
 			assert.equal(fakes.holdEnded, 1);
 			assert.deepEqual(fakes.taskkillRuns, [], "rpc-client-process must use holdProcessDescendants, never taskkill");
 			child.exitCode = 1;
@@ -431,28 +563,44 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 			fakes.interceptHold = true;
 			fakes.holdMode = "held";
 			const dir = makeTempDir("atomic-killtree-git-");
+			const readyFile = join(dir, "fake-git.pid");
 			const fakeGit = join(dir, "fake-git.sh");
-			writeFileSync(fakeGit, "#!/bin/sh\nexec sleep 30\n");
+			writeFileSync(
+				fakeGit,
+				`#!/bin/sh\nprintf '%s\\n' "$$" > "$ATOMIC_FAKE_GIT_READY.tmp" && mv "$ATOMIC_FAKE_GIT_READY.tmp" "$ATOMIC_FAKE_GIT_READY"\nexec sleep 30\n`,
+			);
 			chmodSync(fakeGit, 0o755);
 			const prevGit = setWorktreeSnapshotGit(async () => ({ path: fakeGit, env: {} }));
+			let childPid: number | undefined;
+			let childKilled = false;
 			try {
 				const controller = new AbortController();
-				const running = runGit(["status"], { cwd: dir, signal: controller.signal });
+				const running = runGit(["status"], {
+					cwd: dir,
+					env: { ATOMIC_FAKE_GIT_READY: readyFile },
+					signal: controller.signal,
+				});
 				running.catch(() => {});
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				childPid = await waitForPidNumber(readyFile);
 				controller.abort(new Error("aborted"));
 				await vi.waitFor(() => assert.equal(fakes.holdCalls.length, 1));
+				assert.equal(fakes.holdCalls[0], childPid);
 				assert.deepEqual(
 					fakes.taskkillRuns,
 					[],
 					"git fallback must use holdProcessDescendants when native is available",
 				);
-				const pid = fakes.holdCalls[0]!;
+				childKilled = true;
 				try {
-					process.kill(pid, "SIGKILL");
+					process.kill(childPid, "SIGKILL");
 				} catch {}
 				await assert.rejects(running, /aborted/);
 			} finally {
+				if (childPid !== undefined && !childKilled) {
+					try {
+						process.kill(childPid, "SIGKILL");
+					} catch {}
+				}
 				setWorktreeSnapshotGit(prevGit);
 			}
 		},
@@ -463,14 +611,9 @@ describe("Windows tree-kill safety without bare-PID taskkill", () => {
 describe.runIf(process.platform === "win32")("on Windows, real kernel tree-kill safety", () => {
 	const GONE_MS = 10_000;
 	const NOT_ENDED_MS = 800;
-	const POLL_MS = 20;
 
 	async function waitForPidFile(file: string): Promise<RecordedProcess> {
-		const deadline = Date.now() + 20_000;
-		while (!(existsSync(file) && readFileSync(file, "utf8").trim() !== "") && Date.now() < deadline) {
-			await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-		}
-		const recorded = await recordProcess(Number(readFileSync(file, "utf8").trim()));
+		const recorded = await recordProcess(await waitForPidNumber(file));
 		recordedProcs.push(recorded);
 		return recorded;
 	}
@@ -534,9 +677,9 @@ if (role === "orphan") {
 		const running = runWorkspaceProcess({
 			path: process.execPath,
 			args: [script, pidFile, "root"],
-			cwd: dir,
+			cwd: tmpdir(),
 			env: process.env,
-			timeoutMs: 3_000,
+			timeoutMs: 5_000,
 			timeoutError: (ms) => new Error(`timed out after ${ms}ms`),
 		});
 		running.catch(() => {});
@@ -568,6 +711,7 @@ if (role === "orphan") {
 			env: process.env,
 			stdin: "ignore",
 		});
+		if (shellProc.child.pid !== undefined) recordedProcs.push(await recordProcess(shellProc.child.pid));
 		try {
 			const descendant = await waitForPidFile(pidFile);
 			assert.equal(await stillRuns(descendant), true);
@@ -616,6 +760,7 @@ if (role === "orphan") {
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});
+		recordedProcs.push(await recordProcess(child.pid!));
 		const desc = await waitForPidFile(pidFile);
 		assert.equal(await stillRuns(desc), true);
 
@@ -642,9 +787,16 @@ if (role === "orphan") {
 			`require("node:child_process").spawn(process.execPath, [process.argv[2], process.argv[3]], { cwd: require("node:os").tmpdir(), stdio: "ignore", windowsHide: true }); setTimeout(() => process.exit(0), 120_000);`,
 		);
 
-		// Dead holder process.
-		const dead = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore", windowsHide: true });
+		// Dead holder process: hold stdin open until its start token is captured so a fast exit never leaves
+		// `deadStart` undefined and vulnerable to PID reuse under load.
+		const dead = spawn(process.execPath, ["-e", "process.stdin.resume()"], {
+			cwd: tmpdir(),
+			stdio: ["pipe", "ignore", "ignore"],
+			windowsHide: true,
+		});
 		const deadStart = processStartToken(dead.pid!);
+		assert.ok(deadStart !== undefined, "captured dead holder start token while process was live");
+		dead.stdin!.end();
 		await exited(dead);
 
 		// Live step + child + unrelated bystander (simulating reused PID with different start token).
@@ -657,6 +809,7 @@ if (role === "orphan") {
 		recordedProcs.push(stepRec);
 		const stepChild = await waitForPidFile(pidFile);
 		const bystander = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 120_000)"], {
+			cwd: tmpdir(),
 			stdio: "ignore",
 			windowsHide: true,
 		});
@@ -754,9 +907,15 @@ if (role === "leaf") {
 		recordedProcs.push(parentRec);
 		const childRec = await waitForPidFile(pidFile);
 
-		// Short-lived tracked process that exits before killTrackedDetachedChildren -> native sees gone, no taskkill.
-		const shortLived = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore", windowsHide: true });
+		// Short-lived tracked process: hold stdin open until tracked so its live creation time is captured,
+		// then let it exit before killTrackedDetachedChildren -> native sees gone, no taskkill.
+		const shortLived = spawn(process.execPath, ["-e", "process.stdin.resume()"], {
+			cwd: tmpdir(),
+			stdio: ["pipe", "ignore", "ignore"],
+			windowsHide: true,
+		});
 		trackDetachedChildPid(shortLived.pid!);
+		shortLived.stdin!.end();
 		await exited(shortLived);
 
 		trackDetachedChildPid(parent.pid!);

@@ -76,9 +76,9 @@ export function chatRecordsChanged(view: object, receipt: { anchor: string; id: 
 	}
 }
 /** Forget the saved lines of anchors no longer drawn: a saved page reads its own again with its rows. */
-export function retainChatRecords(mount: ChatMount, anchors: readonly string[]): void {
+export function retainChatRecords(mount: ChatMount, anchors: readonly string[] | (() => readonly string[])): void {
 	if (!mount.records.size) return;
-	const drawn = new Set(anchors);
+	const drawn = new Set(typeof anchors === "function" ? anchors() : anchors);
 	for (const id of mount.records.keys()) if (!drawn.has(id)) mount.records.delete(id);
 }
 export function discardChatMount(view: object): void {

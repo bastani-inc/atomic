@@ -50,6 +50,37 @@ export interface PtyProgramOptions {
 
 const SCREEN_POLL_MS = 50;
 
+const TEST_RUNNER_MARKER_ENV_KEYS = [
+	"VITEST",
+	"VITEST_MODE",
+	"VITEST_POOL_ID",
+	"VITEST_WORKER_ID",
+	"NODE_TEST_CONTEXT",
+] as const;
+
+/**
+ * `PtySession` overlays `env` on top of the test runner's inherited `process.env` rather than replacing it.
+ * Clear inherited test-runner markers (and Vitest's `NODE_ENV=test`) unless the caller explicitly sets them,
+ * so PTY children observe a production-like environment while still honoring explicit caller overrides.
+ */
+export function withoutInheritedTestRunnerEnv(
+	env: Record<string, string>,
+	parentEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+	let cleaned: Record<string, string> | undefined;
+	if (!("NODE_ENV" in env) && parentEnv.NODE_ENV === "test") {
+		cleaned ??= { ...env };
+		cleaned.NODE_ENV = "";
+	}
+	for (const key of TEST_RUNNER_MARKER_ENV_KEYS) {
+		if (!(key in env) && parentEnv[key] !== undefined) {
+			cleaned ??= { ...env };
+			cleaned[key] = "";
+		}
+	}
+	return cleaned ?? env;
+}
+
 /**
  * On Windows an interactive session that finds the default compile cache cold runs without it and starts a helper
  * process that writes it. Test sessions keep the cache Node enables from NODE_COMPILE_CACHE instead, in the directory
@@ -85,7 +116,7 @@ export function startPtyProgram(options: PtyProgramOptions): PtyProgram {
 			{
 				command,
 				cwd: options.cwd,
-				env: withTestTimezone(withSessionCompileCache(options.env)),
+				env: withoutInheritedTestRunnerEnv(withTestTimezone(withSessionCompileCache(options.env))),
 				timeoutMs: options.timeoutMs,
 				cols: options.cols,
 				rows: options.rows,

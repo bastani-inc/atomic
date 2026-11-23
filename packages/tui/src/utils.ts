@@ -386,6 +386,15 @@ interface GraphemeCellRange {
 	end: number;
 }
 
+/** Printable ASCII runs (0x20..0x7e) followed by end-of-string or ESC have 1 column per code unit with no combining marks. */
+function isPrintableAsciiRange(str: string, start: number, end: number): boolean {
+	for (let i = start; i < end; i++) {
+		const code = str.charCodeAt(i);
+		if (code < 0x20 || code > 0x7e) return false;
+	}
+	return true;
+}
+
 /** Return the terminal-cell range occupied by the grapheme at a visible column. */
 export function getGraphemeCellRange(line: string, column: number): GraphemeCellRange | undefined {
 	let currentCol = 0;
@@ -397,6 +406,15 @@ export function getGraphemeCellRange(line: string, column: number): GraphemeCell
 			continue;
 		}
 		const textEnd = nextAnsiCode(line, i + 1);
+		if (isPrintableAsciiRange(line, i, textEnd)) {
+			const len = textEnd - i;
+			if (column >= currentCol && column < currentCol + len) {
+				return { start: column, end: column + 1 };
+			}
+			currentCol += len;
+			i = textEnd;
+			continue;
+		}
 		for (const { segment } of getGraphemeSegmenter().segment(line.slice(i, textEnd))) {
 			const width = graphemeWidth(segment);
 			if (width > 0 && column >= currentCol && column < currentCol + width) {
@@ -1484,6 +1502,23 @@ export function sliceWithWidth(
 		}
 
 		const textEnd = nextAnsiCode(line, i + 1);
+		if (isPrintableAsciiRange(line, i, textEnd)) {
+			const len = textEnd - i;
+			const takeStart = Math.max(0, startCol - currentCol);
+			const takeEnd = Math.min(len, endCol - currentCol);
+			if (takeStart < takeEnd) {
+				if (pendingAnsi) {
+					result += pendingAnsi;
+					pendingAnsi = "";
+				}
+				result += line.slice(i + takeStart, i + takeEnd);
+				resultWidth += takeEnd - takeStart;
+			}
+			currentCol += len;
+			i = textEnd;
+			if (currentCol >= endCol) break;
+			continue;
+		}
 
 		for (const { segment } of getGraphemeSegmenter().segment(line.slice(i, textEnd))) {
 			const w = graphemeWidth(segment);
@@ -1556,6 +1591,33 @@ export function extractSegments(
 		}
 
 		const textEnd = nextAnsiCode(line, i + 1);
+		if (isPrintableAsciiRange(line, i, textEnd)) {
+			const len = textEnd - i;
+			const effectiveBeforeEnd = afterLen > 0 ? Math.min(beforeEnd, afterEnd) : beforeEnd;
+			const beforeTakeEnd = Math.min(len, effectiveBeforeEnd - currentCol);
+			if (beforeTakeEnd > 0) {
+				if (pendingAnsiBefore) {
+					before += pendingAnsiBefore;
+					pendingAnsiBefore = "";
+				}
+				before += line.slice(i, i + beforeTakeEnd);
+				beforeWidth += beforeTakeEnd;
+			}
+			const afterColStart = Math.max(currentCol, beforeEnd, afterStart);
+			const afterColEnd = Math.min(currentCol + len, afterEnd);
+			if (afterColStart < afterColEnd) {
+				if (!afterStarted) {
+					after += pooledStyleTracker.getActiveCodes();
+					afterStarted = true;
+				}
+				after += line.slice(i + (afterColStart - currentCol), i + (afterColEnd - currentCol));
+				afterWidth += afterColEnd - afterColStart;
+			}
+			currentCol += len;
+			i = textEnd;
+			if (afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd) break;
+			continue;
+		}
 
 		for (const { segment } of getGraphemeSegmenter().segment(line.slice(i, textEnd))) {
 			const w = graphemeWidth(segment);

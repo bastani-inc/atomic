@@ -67,10 +67,8 @@ const HOST_PROVIDED_EXTERNALS = [
 ];
 
 // Bun.build folds `process.env.NODE_ENV` into a constant taken from the build
-// environment. Builtins read it at runtime to pick test-host stubs over real
-// subagent sessions. A build run with NODE_ENV=test (vitest sets it) must
-// not select those stubs in production.
-// Keep the read literal so the shipped bundle decides at runtime.
+// environment. Keep the read literal so a build run under Vitest (NODE_ENV=test)
+// never bakes `"test"` into bundled third-party code in the shipped package.
 const RUNTIME_ENV_DEFINES = { "process.env.NODE_ENV": "process.env.NODE_ENV" };
 
 const SELF_CONTAINED_BUILTIN_PLUGINS: Bun.BunPlugin[] = [
