@@ -1,5 +1,6 @@
 import { getCapabilities, type ImageTranscoder, setImageTranscoder } from "@bastani/atomic-tui";
 import { applyExifOrientation } from "./exif-orientation.ts";
+import { memoizeAsync } from "./memoize-async.js";
 import { loadPhoton } from "./photon.ts";
 
 type Photon = NonNullable<Awaited<ReturnType<typeof loadPhoton>>>;
@@ -61,19 +62,23 @@ export async function loadPngTranscoder(): Promise<ImageTranscoder | undefined> 
 	};
 }
 
-let pngTranscoderLoad: Promise<boolean> | undefined;
-let pngTranscoderRegistered = false;
+const registerPngTranscoder = memoizeAsync(
+	async (): Promise<boolean> => {
+		const transcoder = await loadPngTranscoder();
+		if (!transcoder) return false;
+		setImageTranscoder(transcoder);
+		return true;
+	},
+	{ shouldCache: (registered) => registered },
+);
 
 /** Register the PNG transcoder on Kitty terminals, then redraw callers' fallback images. */
 export function ensurePngTranscoder(onRegistered: () => void): void {
-	if (pngTranscoderRegistered || getCapabilities().images !== "kitty") return;
-	pngTranscoderLoad ??= loadPngTranscoder().then((transcoder) => {
-		if (!transcoder) return false;
-		setImageTranscoder(transcoder);
-		pngTranscoderRegistered = true;
-		return true;
-	});
-	void pngTranscoderLoad.then((registered) => {
-		if (registered) onRegistered();
-	});
+	if (registerPngTranscoder.peek() === true || getCapabilities().images !== "kitty") return;
+	void registerPngTranscoder().then(
+		(registered) => {
+			if (registered) onRegistered();
+		},
+		() => {},
+	);
 }

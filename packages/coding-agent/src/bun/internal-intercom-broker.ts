@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { INTERCOM_BROKER_BUNDLE_ENTRY } from "../core/builtin-install-layout.ts";
+import { memoizeAsync } from "../utils/memoize-async.js";
 import { type AppHostModuleSpecifier, type AppHostModules, requestAppHostModulesOnly } from "./app-host-modules.js";
 
 export const INTERNAL_INTERCOM_BROKER_ARG = "--atomic-internal-intercom-broker";
@@ -25,14 +26,13 @@ export interface BrokerHostModulePlugin {
  * warms the local store an earlier broker left, or its multi-node routing.
  */
 export function createBrokerHostModulePlugin(loadApp: () => Promise<AppHostModules>): BrokerHostModulePlugin {
-	let app: Promise<AppHostModules> | undefined;
+	const getApp = memoizeAsync(loadApp);
 	return {
 		name: "atomic-broker-host-modules",
 		setup(build) {
 			for (const specifier of BROKER_HOST_MODULE_SPECIFIERS) {
 				build.module(specifier, async () => {
-					app ??= loadApp();
-					return { exports: await (await app).loadHostModule(specifier), loader: "object" };
+					return { exports: await (await getApp()).loadHostModule(specifier), loader: "object" };
 				});
 			}
 		},

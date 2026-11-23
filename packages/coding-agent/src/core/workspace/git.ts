@@ -230,11 +230,14 @@ export async function assertWorkspaceGitAvailable(signal?: AbortSignal): Promise
 	const { path } = await executable(signal);
 	let check = availableExecutables.get(path);
 	if (check === undefined) {
-		check = runWorkspaceGit({ cwd: tmpdir(), args: ["--version"], phase: "probe" }).then((result) =>
-			assertSupportedVersion(path, result.stdout),
-		);
-		availableExecutables.set(path, check);
-		check.catch(() => availableExecutables.delete(path));
+		const current = runWorkspaceGit({ cwd: tmpdir(), args: ["--version"], phase: "probe" })
+			.then((result) => assertSupportedVersion(path, result.stdout))
+			.catch((error: unknown) => {
+				if (availableExecutables.get(path) === current) availableExecutables.delete(path);
+				throw error;
+			});
+		availableExecutables.set(path, current);
+		check = current;
 	}
 	await waitFor(check, signal);
 }

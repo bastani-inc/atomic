@@ -149,6 +149,10 @@ function readManifestExtensionPaths(packageDir: string): string[] {
 	}
 }
 
+function hasAllBuiltinPackages(roots: BuiltinPackageDiscovery["roots"]): boolean {
+	return BUILTIN_PACKAGES.every((descriptor) => (roots.get(descriptor)?.length ?? 0) > 0);
+}
+
 function discoverBuiltinPackages(): BuiltinPackageDiscovery {
 	const packageDir = getPackageDir();
 	const known = builtinPackageDiscoveries.get(packageDir);
@@ -164,7 +168,9 @@ function discoverBuiltinPackages(): BuiltinPackageDiscovery {
 		),
 	);
 	const discovery = { roots, mandatoryExtensionPaths: mandatoryRoots(roots).flatMap(readManifestExtensionPaths) };
-	builtinPackageDiscoveries.set(packageDir, discovery);
+	if (hasAllBuiltinPackages(roots)) {
+		builtinPackageDiscoveries.set(packageDir, discovery);
+	}
 	return discovery;
 }
 
@@ -186,7 +192,7 @@ async function preloadBuiltinPackages(): Promise<void> {
 			manifestExtensionPathsOf(root, await readFile(join(root, "package.json"), "utf-8").catch(() => "")),
 		),
 	);
-	if (!builtinPackageDiscoveries.has(packageDir)) {
+	if (!builtinPackageDiscoveries.has(packageDir) && hasAllBuiltinPackages(roots)) {
 		builtinPackageDiscoveries.set(packageDir, { roots, mandatoryExtensionPaths: manifests.flat() });
 	}
 }
