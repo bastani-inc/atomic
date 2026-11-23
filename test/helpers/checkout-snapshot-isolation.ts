@@ -31,7 +31,7 @@ beforeEach(() => {
  * never change `buildSystemPromptSections()`'s `<date>` section mid-test, while `Date.now()` stays on the real UTC
  * epoch and fake `Date` timers still advance calendar days normally. Imports nothing from `packages/`.
  */
-installMiddayTimezoneIsolation({ beforeEach });
+installMiddayTimezoneIsolation({ beforeEach, afterEach, afterAll });
 
 /**
  * Every test file runs with an agent directory of its own (#4473): `ATOMIC_CODING_AGENT_DIR` points at a new
