@@ -400,4 +400,71 @@ describe("windows-cwd helper", () => {
 			"D:\\",
 		);
 	});
+
+	test("protects enclosing install roots across subst drives, junctions, and npm/standalone layouts via installDirs", async () => {
+		const { resolveSafeWindowsWorkingDirectoryAsync, resolveSafeWindowsWorkingDirectorySync } = await import(
+			"../src/utils/windows-cwd.js"
+		);
+		const pkgRoot = "C:\\prefix\\node_modules\\@bastani\\atomic";
+		const badJunction = "C:\\BadSysRoot";
+		setupWin({
+			cwd: "C:\\repo\\project",
+			systemRoot: badJunction,
+			windir: badJunction,
+			tmpdir: `${pkgRoot}\\tmp`,
+			dirs: [badJunction, `${pkgRoot}\\tmp`, "S:\\", "S:\\dist\\utils", pkgRoot, "C:\\"],
+			realpaths: {
+				[badJunction]: pkgRoot,
+				"S:\\": pkgRoot,
+				"S:\\dist\\utils": `${pkgRoot}\\dist\\utils`,
+			},
+		});
+
+		assert.equal(resolveSafeWindowsWorkingDirectorySync({ installDirs: ["S:\\dist\\utils"] }), "C:\\");
+		assert.equal(await resolveSafeWindowsWorkingDirectoryAsync({ installDirs: ["S:\\dist\\utils"] }), "C:\\");
+	});
+
+	test("keeps canonical installDirs protection when process.cwd() is a hung UNC path and honors installDirs in lexical selector", async () => {
+		const { resolveSafeWindowsKillCwdLexical, resolveSafeWindowsWorkingDirectoryAsync } = await import(
+			"../src/utils/windows-cwd.js"
+		);
+		const pkgRoot = "C:\\prefix\\node_modules\\@bastani\\atomic";
+		const badJunction = "C:\\BadSysRoot";
+		setupWin({
+			cwd: "\\\\hung-server\\share\\proj",
+			systemRoot: badJunction,
+			windir: badJunction,
+			tmpdir: `${pkgRoot}\\tmp`,
+			dirs: ["\\\\hung-server\\share\\proj", badJunction, "S:\\", "S:\\dist\\utils", pkgRoot, "C:\\"],
+			realpaths: {
+				[badJunction]: pkgRoot,
+				"S:\\": pkgRoot,
+				"S:\\dist\\utils": `${pkgRoot}\\dist\\utils`,
+				"C:\\": "C:\\",
+			},
+			realpathHangs: ["\\\\hung-server\\share\\proj"],
+		});
+
+		assert.equal(
+			await resolveSafeWindowsWorkingDirectoryAsync({
+				installDirs: ["S:\\dist\\utils"],
+				timeoutMs: 150,
+			}),
+			"C:\\",
+		);
+
+		// Lexical selector must honor installDirs and reject candidates inside the enclosing install root.
+		setupWin({
+			cwd: "C:\\Windows",
+			systemRoot: "C:\\Windows",
+			windir: "C:\\Windows",
+		});
+		assert.equal(
+			resolveSafeWindowsKillCwdLexical({
+				installDirs: [`${pkgRoot}\\dist\\builtin\\intercom`],
+				commandPath: `${pkgRoot}\\dist\\atomic.exe`,
+			}),
+			"C:\\",
+		);
+	});
 });

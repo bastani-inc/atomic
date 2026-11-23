@@ -83,3 +83,33 @@ export function quarantineWindowsNativeDependencies(packageDir: string): void {
 		copyFileSync(quarantinePath, loadedFile);
 	}
 }
+
+/**
+ * Whether package-manager stderr on Windows indicates a file/directory lock (`EBUSY` / `EPERM` on `rename`, `unlink`,
+ * `rmdir`, or `rm`), such as an earlier Intercom broker holding a directory handle on `dist\builtin\intercom`.
+ */
+export function isWindowsInstallDirectoryLockError(output: string): boolean {
+	if (!output) return false;
+	const lower = output.toLowerCase();
+	const hasLockCode =
+		lower.includes("code ebusy") ||
+		lower.includes("ebusy:") ||
+		lower.includes("errno -4082") ||
+		lower.includes("code eperm") ||
+		lower.includes("eperm:") ||
+		lower.includes("errno -4048");
+	if (!hasLockCode) return false;
+	return (
+		lower.includes("syscall rename") ||
+		lower.includes("syscall unlink") ||
+		lower.includes("syscall rmdir") ||
+		lower.includes("syscall rm") ||
+		lower.includes("syscall copyfile") ||
+		lower.includes(", rename ") ||
+		lower.includes(", unlink ") ||
+		lower.includes(", rmdir ") ||
+		lower.includes(", rm ") ||
+		lower.includes(", copyfile ") ||
+		lower.includes("resource busy or locked")
+	);
+}

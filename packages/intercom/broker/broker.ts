@@ -35,14 +35,15 @@ import { retractBrokerStartAnnouncement } from "./start-announcement.js";
 import { type HeldDirectory, holdDirectory, socketPathIdentity } from "./directory-hold.js";
 import { createBrokerHostIdentityReader, systemSources } from "./broker-instance.js";
 import {
+	chooseBrokerSocketPath,
+	consumeBrokerSocketPathOverride,
 	getBrokerAwayAsksPath,
 	getBrokerDeliveredMessagesPath,
 	getBrokerEndedChildQueuePath,
 	getBrokerPidPath,
-	getBrokerWatchdogLogPath,
-	chooseBrokerSocketPath,
 	getBrokerSocketPath,
 	getBrokerSocketReplacementLockPath,
+	getBrokerWatchdogLogPath,
 	getIntercomDirPath,
 	recordBrokerSocketPath,
 } from "./paths.js";
@@ -199,8 +200,10 @@ import {
 import { SUPERVISOR_AUTHORIZATION_REFUSED_CODE, SUPERVISOR_AUTHORIZATION_REFUSED_REASON } from "../supervisor-refusal.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
+/** Consumed once at startup and removed from `process.env` so broker-spawned host commands never inherit it. */
+const BROKER_SOCKET_PATH_OVERRIDE = consumeBrokerSocketPathOverride();
 /** The socket clients reach the running broker on, until this broker chooses its own under the startup lock (#5040). */
-let SOCKET_PATH = getBrokerSocketPath();
+let SOCKET_PATH = BROKER_SOCKET_PATH_OVERRIDE ?? getBrokerSocketPath();
 const BROKER_IDLE_TIMEOUT_MS = 5_000;
 const UNCLASSIFIED_CONNECTION_RECHECK_MS = 100;
 const PID_PATH = getBrokerPidPath();
@@ -578,12 +581,12 @@ class IntercomBroker {
     this.releaseStartupLock = startupLock;
     this.holdsStartupLock = startupLock.held;
     // Read again under the lock: a broker that started meanwhile may have recorded a socket of its own.
-    SOCKET_PATH = getBrokerSocketPath();
+    SOCKET_PATH = BROKER_SOCKET_PATH_OVERRIDE ?? getBrokerSocketPath();
     if (await isSocketAnswering(SOCKET_PATH)) {
       this.releaseStartupLock();
       exitBecauseLiveBrokerOwnsSocket();
     }
-    SOCKET_PATH = chooseBrokerSocketPath();
+    SOCKET_PATH = BROKER_SOCKET_PATH_OVERRIDE ?? chooseBrokerSocketPath();
     // #5999 durable wake queue: which broker served before this one, as every version leaves it: the pid it recorded
     // (kept when it crashed), and the socket lock generation before the one this broker took.
     const taken = latestSocketReplacementGeneration(SOCKET_REPLACEMENT_LOCK_PATH);

@@ -53,6 +53,13 @@ export type RestartOutcome =
 			readonly current: Exclude<BrokerQuery, { state: "stopped" }>;
 	  };
 
+export type StopIdleOutcome =
+	| { readonly status: "not-running" }
+	| { readonly status: "unreported"; readonly pid?: number }
+	| { readonly status: "busy"; readonly pid: number; readonly sessions: number }
+	| { readonly status: "stopped"; readonly pid: number }
+	| { readonly status: "not-stopped"; readonly pid: number };
+
 export type UpgradeOutcome =
 	| { readonly status: "not-running" }
 	| { readonly status: "unreported"; readonly pid?: number }
@@ -83,6 +90,11 @@ export interface IntercomBrokerControl {
 		agentDir: string,
 		options?: { readonly onProgress?: (line: string) => void },
 	): Promise<RestartOutcome>;
+	/** Stop the broker only when it reports 0 connected sessions; never interrupts active or legacy brokers. */
+	stopIdleIntercomBroker?(
+		agentDir: string,
+		options?: { readonly stopTimeoutMs?: number; readonly controlTimeoutMs?: number },
+	): Promise<StopIdleOutcome>;
 	/** #4538: replace an older broker when that is safe; see `atomic intercom upgrade`. */
 	upgradeIntercomBroker(
 		agentDir: string,

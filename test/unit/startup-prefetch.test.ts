@@ -235,6 +235,7 @@ interface ReaderStart {
 	readonly threads: string | undefined;
 	readonly nodeOptions: string | undefined;
 	readonly pid: number;
+	readonly cwd: string;
 }
 
 const marker = () => join(dir, "reader-started.json");
@@ -260,6 +261,7 @@ writeFileSync(${JSON.stringify(`${marker()}.tmp`)}, JSON.stringify({
 	threads: process.env.UV_THREADPOOL_SIZE,
 	nodeOptions: process.env.NODE_OPTIONS,
 	pid: process.pid,
+	cwd: process.cwd(),
 }));
 renameSync(${JSON.stringify(`${marker()}.tmp`)}, ${JSON.stringify(marker())});
 // Ends only when its standard input does, as the real reader does once its parent is gone.
@@ -338,8 +340,18 @@ test.runIf(process.platform === "win32")(
 		const threads = Number(start.threads);
 		assert.ok(threads >= 4 && threads <= Math.min(32, Math.max(4, 4 * availableParallelism())), `${threads} threads`);
 		assert.equal(start.nodeOptions, "");
-		// It runs below Atomic's own priority.
+		// It runs below Atomic's own priority and outside the package directory and caller's cwd.
 		assert.equal(start.priority, constants.priority.PRIORITY_BELOW_NORMAL);
+		assert.ok(
+			start.cwd.length < 248 && !start.cwd.startsWith("\\\\?\\"),
+			`expected short safe cwd, got ${start.cwd}`,
+		);
+		assert.equal(
+			start.cwd.toLowerCase().startsWith(packageDir.toLowerCase()),
+			false,
+			`reader cwd ${start.cwd} pinned ${packageDir}`,
+		);
+		assert.notEqual(start.cwd.toLowerCase(), tmpdir().toLowerCase(), `reader cwd ${start.cwd} inherited parent cwd`);
 		await expectGone(start.pid);
 	},
 );
@@ -470,3 +482,72 @@ test("no reader starts without the list the build writes", () => {
 	assert.equal(existsSync(marker()), false);
 	assert.ok(pathToFileURL(packageDir));
 });
+
+test.runIf(process.platform === "win32")(
+	"startStartupPrefetch writes startup-files-read.json when ATOMIC_CODING_AGENT_DIR and packageDir are relative",
+	async () => {
+		const relParentDir = join(dir, "rel-case");
+		const relAgentDir = join(relParentDir, "rel-agent");
+		const relPkgDir = join(relParentDir, "rel-pkg");
+		mkdirSync(relAgentDir, { recursive: true });
+		mkdirSync(join(relPkgDir, "dist", "utils"), { recursive: true });
+		file(join(relPkgDir, "package.json"), JSON.stringify({ name: "@bastani/atomic", type: "module" }));
+		file(
+			join(relPkgDir, "dist", "startup-files.json"),
+			JSON.stringify({
+				version: 2,
+				self: "@bastani/atomic",
+				packages: [["@bastani/atomic", -1]],
+				files: [[0, "package.json"]],
+			}),
+		);
+		// Use a minimal real marker-writing reader that mirrors startup-prefetch-reader.js checking existsSync(dirname(markerPath)).
+		file(
+			join(relPkgDir, "dist", "utils", "startup-prefetch-reader.js"),
+			`import { existsSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+const [, listPath, packageDir, markerPath, version] = process.argv.slice(1);
+if (!existsSync(dirname(markerPath))) process.exit(2);
+writeFileSync(markerPath, JSON.stringify({ version, install: packageDir, listPath, readerCwd: process.cwd() }));
+process.exit(0);
+`,
+		);
+		const runner = file(
+			join(dir, "rel-prefetch-runner.mjs"),
+			`${NODE_TS_SOURCE_HOOK}
+import { existsSync } from "node:fs";
+const { startStartupPrefetch } = await import(${JSON.stringify(prefetchModule)});
+startStartupPrefetch(".\\\\rel-pkg");
+const deadline = Date.now() + 10_000;
+while (!existsSync(${JSON.stringify(join(relAgentDir, STARTUP_FILES_READ_MARKER))}) && Date.now() < deadline) {
+	await new Promise((r) => setTimeout(r, 25));
+}
+`,
+		);
+		const result = spawnSyncCollect([process.execPath, runner], {
+			cwd: relParentDir,
+			stdout: "pipe",
+			stderr: "pipe",
+			timeout: CHILD_TIMEOUT_MS,
+			env: {
+				...process.env,
+				ATOMIC_CODING_AGENT_DIR: ".\\rel-agent",
+				PI_CODING_AGENT_DIR: undefined,
+				NODE_OPTIONS: "",
+			},
+		});
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		const markerFile = join(relAgentDir, STARTUP_FILES_READ_MARKER);
+		assert.equal(
+			existsSync(markerFile),
+			true,
+			"marker must be written in caller-relative agent dir even when reader cwd is C:\\Windows",
+		);
+		const written = JSON.parse(readFileSync(markerFile, "utf8")) as {
+			install: string;
+			readerCwd: string;
+		};
+		assert.equal(written.install.toLowerCase(), relPkgDir.toLowerCase());
+		assert.notEqual(written.readerCwd.toLowerCase(), relParentDir.toLowerCase());
+	},
+);

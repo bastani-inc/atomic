@@ -429,20 +429,15 @@ pub(super) fn verbatim_command_line(program: &[u16], args: &[Vec<u16>]) -> Vec<u
 /// Looks up `file`: directly via `program_path` when it contains a separator or drive prefix, else by searching the
 /// `PATH` entries of `env` (or this process's `PATH` when `env` sets none), trying exact name when it has an extension
 /// and then `.com` and `.exe`.
-fn resolve_program_path(
-	file: &[u16],
-	env: &HashMap<String, String>,
-) -> napi::Result<Option<Vec<u16>>, String> {
+fn resolve_program_path(file: &[u16], env: &OrderedEnv) -> napi::Result<Option<Vec<u16>>, String> {
 	if file.iter().any(|&unit| unit == b'\\' as u16 || unit == b'/' as u16 || unit == b':' as u16) {
 		return Ok(program_path(file));
 	}
-	let mut path_keys: Vec<&String> =
-		env.keys().filter(|key| key.eq_ignore_ascii_case("PATH")).collect();
-	path_keys.sort();
-	let path_value: Option<Vec<u16>> = match path_keys.first() {
-		Some(key) => Some(wide(&env[*key])?),
-		None => current_variable("PATH"),
-	};
+	let path_value: Option<Vec<u16>> =
+		match env.iter().rev().find(|(key, _)| key.eq_ignore_ascii_case("PATH")) {
+			Some((_, value)) => Some(wide(value)?),
+			None => current_variable("PATH"),
+		};
 	let Some(path_value) = path_value else {
 		return Ok(None);
 	};
@@ -543,29 +538,44 @@ fn entry_name(entry: &[u16]) -> &[u16] {
 	&entry[..entry.iter().position(|&unit| unit == b'=' as u16).unwrap_or(entry.len())]
 }
 
-/// libuv's `make_program_env`: the `NAME=value` entries sorted by name, ignoring case, with each of
-/// [`REQUIRED_VARIABLES`] the entries lack added from `lookup` where it is set; ends in an empty entry.
+/// libuv's `make_program_env`: deduplicates case-insensitively equal variable names keeping the
+/// last entry in input order (matching Node.js `child_process` on Windows), adds each of
+/// [`REQUIRED_VARIABLES`] the entries lack from `lookup` where it is set, and sorts by name
+/// ignoring case; ends in an empty entry.
 pub(super) fn environment_block(
 	entries: Vec<Vec<u16>>,
 	compare: impl Fn(&[u16], &[u16]) -> Order,
 	lookup: impl Fn(&str) -> Option<Vec<u16>>,
 ) -> Vec<u16> {
-	let mut entries = entries;
+	let mut indexed: Vec<(usize, Vec<u16>)> = entries.into_iter().enumerate().collect();
+	indexed.sort_by(|left, right| {
+		compare(entry_name(&left.1), entry_name(&right.1)).then_with(|| left.0.cmp(&right.0))
+	});
+	let mut deduped: Vec<Vec<u16>> = Vec::with_capacity(indexed.len());
+	for (_, entry) in indexed {
+		if let Some(prev) = deduped.last_mut()
+			&& compare(entry_name(prev), entry_name(&entry)).is_eq()
+		{
+			*prev = entry;
+		} else {
+			deduped.push(entry);
+		}
+	}
 	for name in REQUIRED_VARIABLES {
 		let name_units: Vec<u16> = name.encode_utf16().collect();
-		if entries.iter().any(|entry| compare(entry_name(entry), &name_units).is_eq()) {
+		if deduped.iter().any(|entry| compare(entry_name(entry), &name_units).is_eq()) {
 			continue;
 		}
 		if let Some(value) = lookup(name) {
 			let mut entry = name_units;
 			entry.push(b'=' as u16);
 			entry.extend(value);
-			entries.push(entry);
+			deduped.push(entry);
 		}
 	}
-	entries.sort_by(|left, right| compare(entry_name(left), entry_name(right)));
+	deduped.sort_by(|left, right| compare(entry_name(left), entry_name(right)));
 	let mut block = Vec::new();
-	for entry in entries {
+	for entry in deduped {
 		block.extend(entry);
 		block.push(0);
 	}
@@ -1112,6 +1122,46 @@ mod tests {
 	}
 
 	#[test]
+	fn deduplicates_case_insensitive_environment_keys_deterministically_keeping_last_entry() {
+		let ascii = |left: &[u16], right: &[u16]| {
+			let upper = |text: &[u16]| String::from_utf16(text).unwrap().to_ascii_uppercase();
+			upper(left).cmp(&upper(right))
+		};
+		let lookup = |_: &str| None;
+
+		let forward = environment_block(
+			vec![
+				units(r"atomic_coding_agent_dir=.\rel"),
+				units("path=first"),
+				units(r"ATOMIC_CODING_AGENT_DIR=C:\abs"),
+				units("PATH=second"),
+			],
+			ascii,
+			lookup,
+		);
+		assert_eq!(
+			String::from_utf16(&forward).unwrap(),
+			"ATOMIC_CODING_AGENT_DIR=C:\\abs\0PATH=second\0\0"
+		);
+
+		// Reversing order deterministically picks the last entry in input order (matching Node child_process).
+		let reversed = environment_block(
+			vec![units(r"ATOMIC_CODING_AGENT_DIR=C:\abs"), units(r"atomic_coding_agent_dir=.\rel")],
+			ascii,
+			lookup,
+		);
+		assert_eq!(String::from_utf16(&reversed).unwrap(), "atomic_coding_agent_dir=.\\rel\0\0");
+
+		// Also verify with Win32 CompareStringOrdinal directly.
+		let ordinal = environment_block(
+			vec![units(r"atomic_coding_agent_dir=.\rel"), units(r"ATOMIC_CODING_AGENT_DIR=C:\abs")],
+			ordinal_ignoring_case,
+			lookup,
+		);
+		assert_eq!(String::from_utf16(&ordinal).unwrap(), "ATOMIC_CODING_AGENT_DIR=C:\\abs\0\0");
+	}
+
+	#[test]
 	fn finds_a_program_as_libuv_does_for_a_path() {
 		let directory =
 			std::env::temp_dir().join(format!("atomic-program-path-{}", std::process::id()));
@@ -1150,8 +1200,10 @@ mod tests {
 		let directory = std::env::temp_dir().join(format!("atomic-bare-path-{}", std::process::id()));
 		std::fs::create_dir_all(&directory).unwrap();
 		std::fs::write(directory.join("custom-broker.exe"), b"").unwrap();
-		let mut env = HashMap::new();
-		env.insert("PATH".to_string(), format!("\"{}\";C:\\nonexistent", directory.display()));
+		let env = OrderedEnv(vec![
+			("path".to_string(), r"C:\nonexistent-first".to_string()),
+			("PATH".to_string(), format!("\"{}\";C:\\nonexistent", directory.display())),
+		]);
 		let found = resolve_program_path(&units("custom-broker"), &env)
 			.unwrap()
 			.map(|path| String::from_utf16(&path).unwrap());

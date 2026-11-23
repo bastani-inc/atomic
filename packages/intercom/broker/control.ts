@@ -204,6 +204,60 @@ export async function restartIntercomBroker(agentDir: string, options: RestartOp
 	return current.state === "stopped" ? { status: "stopped", previous } : { status: "restarted", previous, current };
 }
 
+export type StopIdleOutcome =
+	| { readonly status: "not-running" }
+	/** A broker older than `broker_status`: its session count is unknown, so it is left running. */
+	| { readonly status: "unreported"; readonly pid?: number }
+	/** Connected sessions are using the broker, so it is left running without interruption. */
+	| { readonly status: "busy"; readonly pid: number; readonly sessions: number }
+	/** The idle broker (0 connected sessions) shut down cleanly. */
+	| { readonly status: "stopped"; readonly pid: number }
+	/** Shutdown was unanswered or did not finish within the timeout; the broker was left alone. */
+	| { readonly status: "not-stopped"; readonly pid: number };
+
+export interface StopIdleOptions {
+	readonly stopTimeoutMs?: number;
+	readonly controlTimeoutMs?: number;
+}
+
+/**
+ * Stop the agent directory's Intercom broker only if it reports 0 connected sessions.
+ *
+ * Used before a Windows npm self-update so an idle broker (for example one left running by an earlier version whose
+ * working directory pinned `dist\builtin\intercom`) releases its directory handle before npm renames the package.
+ * Never stops a broker with connected sessions or a legacy broker whose session count is unreported. If a session
+ * connects while shutdown is in flight, the broker retires cleanly and the session reconnects automatically.
+ */
+export async function stopIdleIntercomBroker(
+	agentDir: string,
+	options: StopIdleOptions = {},
+): Promise<StopIdleOutcome> {
+	const controlTimeoutMs = options.controlTimeoutMs ?? BROKER_CONTROL_TIMEOUT_MS;
+	const query = await queryIntercomBroker(agentDir, controlTimeoutMs);
+	if (query.state === "stopped") return { status: "not-running" };
+	if (query.state === "legacy") {
+		return query.pid === undefined ? { status: "unreported" } : { status: "unreported", pid: query.pid };
+	}
+	const { pid, sessions } = query.report;
+	if (sessions > 0) return { status: "busy", pid, sessions };
+	const found = identifyBrokerProcess(pid, getBrokerPidPath(agentDir));
+	const answer = await requestBrokerShutdown(getBrokerSocketPath(process.platform, agentDir), controlTimeoutMs);
+	if (answer === "unanswered") return { status: "not-stopped", pid };
+	try {
+		await waitForBrokerExit(
+			pid,
+			options.stopTimeoutMs ?? BROKER_STOP_TIMEOUT_MS,
+			undefined,
+			found,
+			readProcessStartWithoutProcess,
+		);
+	} catch (error) {
+		if (isIntercomBrokerStopTimeoutError(error)) return { status: "not-stopped", pid };
+		throw error;
+	}
+	return { status: "stopped", pid };
+}
+
 export type UpgradeOutcome =
 	| { readonly status: "not-running" }
 	/** A broker older than `broker_status`: it cannot report its sessions, so stopping it is never known to be safe. */

@@ -14,14 +14,18 @@ import {
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { afterEach, test } from "vitest";
-import { systemSources } from "../../packages/intercom/broker/broker-instance.ts";
+import { hostCommandEnvironment, systemSources } from "../../packages/intercom/broker/broker-instance.ts";
+import { BROKER_SOCKET_PATH_ENV, consumeBrokerSocketPathOverride } from "../../packages/intercom/broker/paths.js";
 import { resolveSafeWindowsWorkingDirectoryAsync } from "../../packages/intercom/broker/windows-cwd.js";
 
 const saved = process.env.PSModulePath;
+const savedBrokerSocketPath = process.env[BROKER_SOCKET_PATH_ENV];
 
 afterEach(() => {
 	if (saved === undefined) delete process.env.PSModulePath;
 	else process.env.PSModulePath = saved;
+	if (savedBrokerSocketPath === undefined) delete process.env[BROKER_SOCKET_PATH_ENV];
+	else process.env[BROKER_SOCKET_PATH_ENV] = savedBrokerSocketPath;
 });
 
 test("a host command starts without the parent's PSModulePath, which breaks Windows PowerShell's Get-Process under a PowerShell 7 parent", async () => {
@@ -31,6 +35,37 @@ test("a host command starts without the parent's PSModulePath, which breaks Wind
 		const output = await systemSources().run(process.execPath, [
 			"-e",
 			"process.stdout.write(JSON.stringify(Object.keys(process.env).filter((k) => /^psmodulepath$/i.test(k)).concat(process.env.ATOMIC_HOST_COMMAND_ENV_PROBE ?? 'missing')))",
+		]);
+		assert.deepEqual(JSON.parse(output), ["kept"]);
+	} finally {
+		delete process.env.ATOMIC_HOST_COMMAND_ENV_PROBE;
+	}
+});
+
+test("a broker-spawned host command never inherits ATOMIC_INTERCOM_BROKER_SOCKET_PATH in any casing", async () => {
+	const cleaned = hostCommandEnvironment({
+		[BROKER_SOCKET_PATH_ENV]: "\\\\.\\pipe\\pi-intercom-r-agent",
+		atomic_intercom_broker_socket_path: "\\\\.\\pipe\\pi-intercom-lower",
+		PSModulePath: "C:\\Program Files\\PowerShell\\7\\Modules",
+		ATOMIC_HOST_COMMAND_ENV_PROBE: "kept",
+	});
+	assert.deepEqual(cleaned, { ATOMIC_HOST_COMMAND_ENV_PROBE: "kept" });
+
+	const consumedEnv: NodeJS.ProcessEnv = {
+		[BROKER_SOCKET_PATH_ENV]: "\\\\.\\pipe\\pi-intercom-r-agent",
+		atomic_intercom_broker_socket_path: "\\\\.\\pipe\\pi-intercom-lower",
+		ATOMIC_HOST_COMMAND_ENV_PROBE: "kept",
+	};
+	const consumed = consumeBrokerSocketPathOverride(consumedEnv);
+	assert.equal(consumed, process.platform === "win32" ? "\\\\.\\pipe\\pi-intercom-lower" : undefined);
+	assert.deepEqual(consumedEnv, { ATOMIC_HOST_COMMAND_ENV_PROBE: "kept" });
+
+	process.env[BROKER_SOCKET_PATH_ENV] = "\\\\.\\pipe\\pi-intercom-r-agent";
+	process.env.ATOMIC_HOST_COMMAND_ENV_PROBE = "kept";
+	try {
+		const output = await systemSources().run(process.execPath, [
+			"-e",
+			"process.stdout.write(JSON.stringify(Object.keys(process.env).filter((k) => /^atomic_intercom_broker_socket_path$/i.test(k)).concat(process.env.ATOMIC_HOST_COMMAND_ENV_PROBE ?? 'missing')))",
 		]);
 		assert.deepEqual(JSON.parse(output), ["kept"]);
 	} finally {

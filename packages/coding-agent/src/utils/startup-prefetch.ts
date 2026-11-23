@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { availableParallelism, constants, setPriority, uptime } from "node:os";
-import { join } from "node:path";
+import { win32 } from "node:path";
 import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
 import { getAgentDir, isBunBinary, VERSION } from "../config.js";
+import { isAbsoluteWindowsPath, resolveSafeWindowsKillCwdLexical, windowsDriveRoot } from "./windows-cwd.js";
 
 /** Options that make Node run code of the user's in every process it starts: a preload or a module loader. */
 const USER_CODE_OPTIONS = new Set(["--require", "-r", "--import", "--loader", "--experimental-loader"]);
@@ -65,6 +66,15 @@ export function startupFilesReadThisStart(
  * not this installation's code), when the user sets Node's I/O pool size, or when the process runs a preload, a module
  * loader or the permission model.
  */
+function resolveAgainstWindowsCallerCwd(rawPath: string): string {
+	if (isAbsoluteWindowsPath(rawPath)) return rawPath;
+	try {
+		return win32.resolve(process.cwd(), rawPath);
+	} catch {
+		return rawPath;
+	}
+}
+
 export function startStartupPrefetch(packageDir: string): void {
 	// Windows only: the files' first-open antivirus scans are what the reader overlaps. Node only: the reader's read
 	// concurrency comes from Node's I/O pool, which the reader's own environment sizes.
@@ -73,22 +83,36 @@ export function startStartupPrefetch(packageDir: string): void {
 	// A pool size the user chose budgets Node's I/O on this machine: no helper reads past it.
 	if (process.env.UV_THREADPOOL_SIZE !== undefined) return;
 	if (startupNodeOptions().some((option) => USER_CODE_OPTIONS.has(option.name))) return;
-	const listPath = join(packageDir, "dist", "startup-files.json");
-	const readerPath = join(packageDir, "dist", "utils", "startup-prefetch-reader.js");
+	const resolvedPackageDir = resolveAgainstWindowsCallerCwd(packageDir);
+	const listPath = win32.join(resolvedPackageDir, "dist", "startup-files.json");
+	const readerPath = win32.join(resolvedPackageDir, "dist", "utils", "startup-prefetch-reader.js");
 	if (!existsSync(listPath) || !existsSync(readerPath)) return;
 	// Already read since the machine started: they are in memory, where reading them again only costs CPU time.
-	const marker = join(getAgentDir(), STARTUP_FILES_READ_MARKER);
+	const resolvedAgentDir = resolveAgainstWindowsCallerCwd(getAgentDir());
+	const marker = win32.join(resolvedAgentDir, STARTUP_FILES_READ_MARKER);
 	let markerText: string | undefined;
 	try {
 		markerText = readFileSync(marker, "utf8");
 	} catch {
 		// None yet: read them.
 	}
-	if (startupFilesReadThisStart(markerText, VERSION, packageDir, machineStartTimeMs())) return;
+	if (startupFilesReadThisStart(markerText, VERSION, resolvedPackageDir, machineStartTimeMs())) return;
 	try {
+		// The reader receives all paths as arguments and never uses its working directory; start it in a zero-syscall
+		// safe directory outside the installation directory, the caller's project directory, and the agent directory
+		// so it never pins any of them.
+		const readerCwd =
+			resolveSafeWindowsKillCwdLexical({
+				installDirs: [resolvedPackageDir],
+				protectedDirs: [resolvedAgentDir],
+				commandPath: process.execPath,
+			}) ??
+			windowsDriveRoot(resolvedPackageDir) ??
+			"C:\\";
 		// The reader's standard input is a pipe this process holds open for as long as it runs: the reader ends when the
 		// pipe does, also when this process is killed before it could end the reader itself.
-		const reader = spawn(process.execPath, [readerPath, listPath, packageDir, marker, VERSION], {
+		const reader = spawn(process.execPath, [readerPath, listPath, resolvedPackageDir, marker, VERSION], {
+			cwd: readerCwd,
 			stdio: ["pipe", "ignore", "ignore"],
 			windowsHide: true,
 			env: { ...process.env, UV_THREADPOOL_SIZE: readerThreads(), NODE_OPTIONS: "" },
