@@ -10,9 +10,11 @@ import {
 	type StdioNull,
 	type StdioPipe,
 } from "node:child_process";
+import { createRequire } from "node:module";
 import { constants as osConstants } from "node:os";
 import { basename, isAbsolute } from "node:path";
 import type { Readable } from "node:stream";
+import { pathToFileURL } from "node:url";
 import crossSpawn from "cross-spawn";
 import { applyDebugSettingToChildEnvironment } from "../core/debug-setting.ts";
 import { HOST_STORAGE_ADAPTERS_ENV, hostStorageAdaptersEnvironment } from "../core/storage/host-adapters.ts";
@@ -24,8 +26,7 @@ import {
 	helperLaunchAsync,
 	missingHelperOptions,
 } from "./helper-command.ts";
-import { type HostChildProcess, isNativeContainedChild } from "./host-spawn.ts";
-import { createModuleRequire } from "./module-require.js";
+import type { HostChildProcess } from "./host-spawn.ts";
 
 const EXIT_STDIO_IDLE_GRACE_MS = 100;
 const EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS = 5_000;
@@ -76,15 +77,37 @@ function loadNativeHoldWindowsProcessExit(): HoldWindowsProcessExit | null {
 	if (!NATIVE_WINDOWS_HOST) return null;
 	if (nativeHoldWindowsProcessExit === undefined) {
 		try {
-			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
-				holdWindowsProcessExit?: HoldWindowsProcessExit;
-			};
+			let binding: { holdWindowsProcessExit?: HoldWindowsProcessExit };
+			try {
+				binding = createRequire(import.meta.url)("@bastani/atomic-natives") as {
+					holdWindowsProcessExit?: HoldWindowsProcessExit;
+				};
+			} catch {
+				binding = createRequire(pathToFileURL(process.execPath).href)("@bastani/atomic-natives") as {
+					holdWindowsProcessExit?: HoldWindowsProcessExit;
+				};
+			}
 			nativeHoldWindowsProcessExit = binding.holdWindowsProcessExit ?? null;
 		} catch {
 			nativeHoldWindowsProcessExit = null;
 		}
 	}
 	return nativeHoldWindowsProcessExit;
+}
+
+/**
+ * Processes started through `spawnContainedProcess`: their exit event comes directly from our native
+ * `WaitForMultipleObjects` + `GetExitCodeProcess` handle rather than libuv, so {@link waitForChildProcess} must not
+ * open or poll their PID separately.
+ */
+const nativeContainedChildren = new WeakSet<HostChildProcess>();
+
+export function markNativeContainedChild(child: HostChildProcess): void {
+	nativeContainedChildren.add(child);
+}
+
+function isNativeContainedChild(child: HostChildProcess): boolean {
+	return nativeContainedChildren.has(child);
 }
 
 const retainedWindowsExitHandles = new WeakMap<HostChildProcess, WindowsProcessExitHandle>();

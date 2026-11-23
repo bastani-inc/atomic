@@ -19,6 +19,7 @@ import { constants as osConstants } from "node:os";
 import { Readable, Writable } from "node:stream";
 import { getSystemErrorMap } from "node:util";
 import type * as native from "@bastani/atomic-natives";
+import { markNativeContainedChild } from "./child-process.ts";
 import { createModuleRequire } from "./module-require.js";
 
 /** Which stream a child process gets: a pipe to the host, or nothing (`/dev/null`). */
@@ -501,17 +502,6 @@ class NativeChildProcess extends EventEmitter implements HostChildProcess {
 }
 
 /**
- * Processes started through {@link spawnContainedProcess}: their exit event comes directly from our native
- * `WaitForMultipleObjects` + `GetExitCodeProcess` handle rather than libuv, so `waitForChildProcess` must not open
- * or poll their PID separately.
- */
-const nativeContainedChildren = new WeakSet<HostChildProcess>();
-
-export function isNativeContainedChild(child: HostChildProcess): boolean {
-	return nativeContainedChildren.has(child);
-}
-
-/**
  * A process {@link spawnContainedProcess} started, with the events `child_process` gives one and its streams as
  * `child_process` gives them: sockets of this process on pipes whose other ends are the program's. Its exit comes from
  * the native module, after its `spawn`.
@@ -533,7 +523,7 @@ class ContainedProcess extends EventEmitter implements ContainedChildProcess {
 
 	constructor() {
 		super();
-		nativeContainedChildren.add(this);
+		markNativeContainedChild(this);
 	}
 
 	/** The native module's events: only the exit, held until `spawn` was emitted. */
