@@ -2531,8 +2531,24 @@ export class MultiNodeRouter {
 		const initialScanEntry = { promise: initialScanPromise, resolve: resolveInitialScan };
 		this.initialScans.get(identity)?.resolve();
 		this.initialScans.set(identity, initialScanEntry);
+		const started = clockMark();
 		return new Promise<void>((resolve) => {
-			const bound = setTimeout(resolve, boundMs);
+			let resolved = false;
+			const finish = (): void => {
+				if (resolved) return;
+				resolved = true;
+				clearTimeout(bound);
+				resolve();
+			};
+			// If `boundMs` already elapsed during an earlier step (e.g., synchronous SQLite I/O or an event-loop stall),
+			// resolve and yield once before starting the next store write so `registered` flushes to the client before
+			// background persistence continues. Zero overhead while still within `boundMs`.
+			const yieldIfOverdue = async (): Promise<void> => {
+				if (resolved || elapsedSince(started) < boundMs) return;
+				finish();
+				await new Promise<void>((resume) => setImmediate(resume));
+			};
+			const bound = setTimeout(finish, boundMs);
 			bound.unref?.();
 			this.serial(identity, async () => {
 				let shouldScan = false;
@@ -2550,11 +2566,14 @@ export class MultiNodeRouter {
 						// A registration whose id was decided early, and that lost it while it waited here, takes nothing more.
 						if (decided !== undefined && entry.fenced === true) return;
 					}
+					await yieldIfOverdue();
 					await this.recordKnown(session, entry);
+					await yieldIfOverdue();
 					for (let attempt = 0; ; attempt++) {
 						await this.acquirePresence(session, entry);
 						if (entry.lease !== undefined || attempt >= PRESENCE_HANDOVER_ATTEMPTS || this.presence.get(session) !== entry)
 							break;
+						await yieldIfOverdue();
 						await new Promise<void>((wait) => setTimeout(wait, PRESENCE_HANDOVER_RETRY_MS * 2 ** attempt).unref());
 					}
 					if (consumed !== undefined) {
@@ -2569,12 +2588,12 @@ export class MultiNodeRouter {
 							rebind: registration,
 							attempts: 0,
 						};
+						await yieldIfOverdue();
 						await this.finishRegistration(session, entry);
 					}
 					shouldScan = true;
 				} finally {
-					clearTimeout(bound);
-					resolve();
+					finish();
 					const finishInitial = () => {
 						if (this.initialScans.get(identity) === initialScanEntry) this.initialScans.delete(identity);
 						resolveInitialScan();

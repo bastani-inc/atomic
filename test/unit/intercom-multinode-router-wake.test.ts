@@ -5577,4 +5577,41 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 			"kept claimed id when 20 ms async reclaim fits inside remaining 400 ms",
 		);
 	});
+
+	test("sessionRegistered resolves before starting acquirePresence when recordKnown already ran past boundMs (#5607)", async () => {
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const s = session("overdue-before-presence");
+		node.sessions.set(s.info.id, s);
+
+		let resolvedBeforeAcquire = false;
+		let registrationResolved = false;
+		const realRecord = node.state.knownSessions.record.bind(node.state.knownSessions);
+		vi.spyOn(node.state.knownSessions, "record").mockImplementationOnce(async (rec) => {
+			const res = await realRecord(rec);
+			// Block the event loop past boundMs so the bound timer is overdue when recordKnown's microtask resumes.
+			stallEventLoop(150);
+			return res;
+		});
+		const realAcquire = node.state.leases.acquire.bind(node.state.leases);
+		vi.spyOn(node.state.leases, "acquire").mockImplementationOnce(async (subject, holderId, staleAfterMs) => {
+			resolvedBeforeAcquire = registrationResolved;
+			return realAcquire(subject, holderId, staleAfterMs);
+		});
+
+		await node.router.sessionRegistered(s, undefined, undefined, undefined, undefined, undefined, 100).then(() => {
+			registrationResolved = true;
+		});
+		await new Promise((r) => setTimeout(r, 30));
+		assert.equal(
+			resolvedBeforeAcquire,
+			true,
+			"registration resolves and lets `registered` flush before starting acquirePresence once boundMs has elapsed",
+		);
+		const live = await node.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS);
+		assert.ok(
+			live.some((lease) => (lease.subject as RecipientPresenceSubject).session.id === s.info.id),
+			"background acquirePresence still completes after registration resolved",
+		);
+	});
 });
