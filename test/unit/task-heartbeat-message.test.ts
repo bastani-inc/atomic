@@ -88,7 +88,7 @@ test("/tasks detail shows a running task's heartbeat cadence, or that it is off"
 				? {
 						execution: {
 							kind: "settled" as const,
-							result: { kind: "completed" as const, output: taskRecord("heartbeat-detail").output },
+							result: { kind: "completed" as const, output: taskRecord("heartbeat-detail").output, exitCode: 0 },
 						},
 					}
 				: { execution: { kind: "running" as const } }),
