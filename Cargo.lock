@@ -330,9 +330,9 @@ dependencies = [
 
 [[package]]
 name = "grep-matcher"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9417543f4870fc8f1c8e1af870afae2431007626d9e703fce6471c468d33847"
+checksum = "2749f3ee57cd8e3ec525b1e7767303128ee83bd19b3ea2e878e3be793f6484c3"
 dependencies = [
  "memchr",
 ]
