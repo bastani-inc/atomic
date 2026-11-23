@@ -1,30 +1,44 @@
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
+import { memoizeAsync } from "../../utils/memoize-async.js";
 import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../builtin-install-layout.ts";
 import { getBuiltinPackageLocations } from "../builtin-packages.ts";
 
-let nativeBuiltinExtensionEntries: Promise<ReadonlySet<string>> | undefined;
-
-async function findNativeBuiltinExtensionEntries(): Promise<ReadonlySet<string>> {
-	const entries = await Promise.all(
-		getBuiltinPackageLocations().map(async ({ distDirName, packageDir }) => {
-			const entryPath = resolve(packageDir, INSTALLED_EXTENSION_ENTRIES[distDirName]);
-			return access(entryPath).then(
-				() => [entryPath],
-				() => [],
-			);
-		}),
+function candidateNativeBuiltinEntries(): string[] {
+	return getBuiltinPackageLocations().map(({ distDirName, packageDir }) =>
+		resolve(packageDir, INSTALLED_EXTENSION_ENTRIES[distDirName]),
 	);
-	return new Set(entries.flat());
 }
 
+async function findNativeBuiltinExtensionEntries(): Promise<{
+	readonly entries: ReadonlySet<string>;
+	readonly complete: boolean;
+}> {
+	const candidates = candidateNativeBuiltinEntries();
+	const found = await Promise.all(
+		candidates.map((entryPath) =>
+			access(entryPath).then(
+				() => [entryPath],
+				() => [],
+			),
+		),
+	);
+	const entries = new Set(found.flat());
+	return { entries, complete: candidates.length > 0 && entries.size === candidates.length };
+}
+
+const loadNativeBuiltinExtensionEntries = memoizeAsync(findNativeBuiltinExtensionEntries, {
+	// Never permanently cache a partial or empty set (for example, during an in-place update directory swap).
+	shouldCache: (result) => result.complete,
+});
+
 /** Exact installed entry paths belonging to identity-verified Atomic builtin packages. */
-export function getNativeBuiltinExtensionEntries(): Promise<ReadonlySet<string>> {
-	nativeBuiltinExtensionEntries ??= findNativeBuiltinExtensionEntries();
-	return nativeBuiltinExtensionEntries;
+export async function getNativeBuiltinExtensionEntries(): Promise<ReadonlySet<string>> {
+	return (await loadNativeBuiltinExtensionEntries()).entries;
 }
 
 export async function isNativeBuiltinExtensionPath(resolvedPath: string): Promise<boolean> {
+	if (!candidateNativeBuiltinEntries().includes(resolvedPath)) return false;
 	return (await getNativeBuiltinExtensionEntries()).has(resolvedPath);
 }
 
@@ -40,5 +54,5 @@ export function isSourceBuiltinExtensionPath(resolvedPath: string): boolean {
 
 /** Reset memoized discovery after a test changes the simulated install layout. */
 export function resetNativeBuiltinExtensionEntriesForTest(): void {
-	nativeBuiltinExtensionEntries = undefined;
+	loadNativeBuiltinExtensionEntries.reset();
 }

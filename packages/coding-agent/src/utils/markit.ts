@@ -1,4 +1,5 @@
 import type { Markit, StreamInfo } from "markit-ai";
+import { memoizeAsync } from "./memoize-async.js";
 import { loadOnDemand } from "./updated-install.ts";
 
 export interface MarkitConversionResult {
@@ -63,17 +64,12 @@ function withMupdfDiagnostics(message: string): string {
 	return `${message} (mupdf: ${detail})`;
 }
 
-let markit: () => Markit | Promise<Markit> = async () => {
+const getMarkit = memoizeAsync(async (): Promise<Markit> => {
 	captureMupdfDiagnostics();
 	// A shared file of the installation: an update that replaced it while this process runs asks for a restart.
-	const promise = loadOnDemand("document conversion", () => import("markit-ai")).then(({ Markit }) => {
-		const instance = new Markit();
-		markit = () => instance;
-		return instance;
-	});
-	markit = () => promise;
-	return promise;
-};
+	const { Markit } = await loadOnDemand("document conversion", () => import("markit-ai"));
+	return new Markit();
+});
 
 function normalizeExtension(extension: string): string {
 	const trimmed = extension.trim().toLowerCase();
@@ -92,7 +88,7 @@ function abortError(): Error {
 
 async function runMarkitConversion<T>(task: (markit: Markit) => Promise<T>, signal?: AbortSignal): Promise<T> {
 	if (signal?.aborted) throw abortError();
-	const instance = await markit();
+	const instance = await getMarkit();
 	mupdfDiagnostics = [];
 	if (!signal) return task(instance);
 	return await new Promise<T>((resolve, reject) => {

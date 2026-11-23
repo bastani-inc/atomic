@@ -23,13 +23,14 @@ export function loadQuickJSWasm(path?: string): Promise<CodemodeWasmModule> {
 	let module = modules.get(resolved);
 	if (!module) {
 		const { WebAssembly } = globalThis as unknown as { WebAssembly: WebAssemblyGlobal };
-		module = readFile(resolved)
+		const current = readFile(resolved)
 			.then((bytes) => WebAssembly.compile(bytes))
 			.catch((error: unknown) => {
-				modules.delete(resolved);
+				if (modules.get(resolved) === current) modules.delete(resolved);
 				throw error;
 			});
-		modules.set(resolved, module);
+		modules.set(resolved, current);
+		module = current;
 	}
 	return module;
 }
