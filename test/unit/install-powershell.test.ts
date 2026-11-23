@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { removeFixtureTree, runThenRemoveFixtureTree } from "../helpers/fixture-removal.js";
+import { runThenRemoveFixtureTree, runThenRemoveFixtureTreeAsync } from "../helpers/fixture-removal.js";
 import { spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -1844,7 +1844,8 @@ const fixtureHarness = String.raw`
 param(
     [Parameter(Mandatory=$true)][string]$InstallerPath,
     [Parameter(Mandatory=$true)][string]$Scenario,
-    [string]$IsolatedHkcuRunId = ""
+    [string]$IsolatedHkcuRunId = "",
+    [int]$IsolatedHkcuOwnerPid = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -2088,6 +2089,103 @@ public static class AtomicTestHkcuOverride
     public static extern int RegOverridePredefKey(IntPtr hKey, IntPtr hNewHKey);
 }
 '@
+
+function Test-IsolatedOwnerProcessAlive {
+    param([int]$ProcessId, [long]$ExpectedStartTicks)
+
+    if ($ProcessId -le 0) {
+        return $false
+    }
+    try {
+        $proc = [Diagnostics.Process]::GetProcessById($ProcessId)
+    }
+    catch [ArgumentException], [InvalidOperationException] {
+        return $false
+    }
+    catch {
+        return $true
+    }
+    try {
+        if ($proc.HasExited) {
+            return $false
+        }
+        return ($proc.StartTime.ToUniversalTime().Ticks -eq $ExpectedStartTicks)
+    }
+    catch [InvalidOperationException] {
+        return $false
+    }
+    catch {
+        return $true
+    }
+    finally {
+        $proc.Dispose()
+    }
+}
+
+function Clear-DeadIsolatedHkcuKeys {
+    param($ParentKey, [string]$SelfRunId)
+
+    foreach ($candidateId in @($ParentKey.GetSubKeyNames())) {
+        if ($candidateId -ieq $SelfRunId) {
+            continue
+        }
+        $candidateKey = $null
+        $metaReady = $null
+        $rawFixturePid = $null
+        $rawFixtureTicks = $null
+        $rawOwnerPid = $null
+        $rawOwnerTicks = $null
+        try {
+            $candidateKey = $ParentKey.OpenSubKey($candidateId, $false)
+            if ($null -eq $candidateKey) {
+                continue
+            }
+            $metaReady = $candidateKey.GetValue("MetadataReady", $null)
+            $rawFixturePid = $candidateKey.GetValue("FixturePid", $null)
+            $rawFixtureTicks = $candidateKey.GetValue("FixtureStartTicks", $null)
+            $rawOwnerPid = $candidateKey.GetValue("OwnerPid", $null)
+            $rawOwnerTicks = $candidateKey.GetValue("OwnerStartTicks", $null)
+        }
+        catch {
+            continue
+        }
+        finally {
+            if ($null -ne $candidateKey) {
+                $candidateKey.Close()
+            }
+        }
+        if ($null -eq $metaReady -or ([string]$metaReady) -cne "1") {
+            continue
+        }
+        $fixturePid = 0
+        $fixtureTicks = [long]0
+        if ($null -eq $rawFixturePid -or $null -eq $rawFixtureTicks -or
+            -not [int]::TryParse([string]$rawFixturePid, [ref]$fixturePid) -or
+            -not [long]::TryParse([string]$rawFixtureTicks, [ref]$fixtureTicks)) {
+            continue
+        }
+        if (Test-IsolatedOwnerProcessAlive $fixturePid $fixtureTicks) {
+            continue
+        }
+        if ($null -ne $rawOwnerPid -and -not [string]::IsNullOrWhiteSpace([string]$rawOwnerPid)) {
+            $ownerPid = 0
+            $ownerTicks = [long]0
+            if ($null -eq $rawOwnerTicks -or
+                -not [int]::TryParse([string]$rawOwnerPid, [ref]$ownerPid) -or
+                -not [long]::TryParse([string]$rawOwnerTicks, [ref]$ownerTicks)) {
+                continue
+            }
+            if (Test-IsolatedOwnerProcessAlive $ownerPid $ownerTicks) {
+                continue
+            }
+        }
+        try {
+            $ParentKey.DeleteSubKeyTree($candidateId, $false)
+        }
+        catch {
+        }
+    }
+}
 
 function Get-FixtureSha256 {
     param([string]$Path)
@@ -2637,15 +2735,56 @@ $isolatedHkcuActive = $false
 $isolatedSeedUserPath = "%SystemRoot%\AtomicFixtureSeedPath"
 
 try {
-    $isolatedHkcuKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($isolatedHkcuSubKey)
-    Assert-Fixture ($null -ne $isolatedHkcuKey) "failed to create isolated HKCU registry key $isolatedHkcuSubKey"
-    $isolatedEnvKey = $isolatedHkcuKey.CreateSubKey("Environment")
-    Assert-Fixture ($null -ne $isolatedEnvKey) "failed to create isolated Environment subkey under $isolatedHkcuSubKey"
+    $isolatedHkcuParentKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($isolatedHkcuParentPath)
+    Assert-Fixture ($null -ne $isolatedHkcuParentKey) "failed to open isolated HKCU parent key $isolatedHkcuParentPath"
     try {
-        $isolatedEnvKey.SetValue("Path", $isolatedSeedUserPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        $isolatedHkcuKey = $isolatedHkcuParentKey.CreateSubKey(
+            $isolatedHkcuRunId,
+            [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+            [Microsoft.Win32.RegistryOptions]::Volatile
+        )
+        Assert-Fixture ($null -ne $isolatedHkcuKey) "failed to create isolated volatile HKCU registry key $isolatedHkcuSubKey"
+        $selfProcess = [Diagnostics.Process]::GetCurrentProcess()
+        try {
+            $isolatedHkcuKey.SetValue("FixturePid", [string]$PID, [Microsoft.Win32.RegistryValueKind]::String)
+            $isolatedHkcuKey.SetValue("FixtureStartTicks", [string]$selfProcess.StartTime.ToUniversalTime().Ticks, [Microsoft.Win32.RegistryValueKind]::String)
+        }
+        finally {
+            $selfProcess.Dispose()
+        }
+        if ($IsolatedHkcuOwnerPid -gt 0) {
+            try {
+                $ownerProcess = [Diagnostics.Process]::GetProcessById($IsolatedHkcuOwnerPid)
+                try {
+                    $isolatedHkcuKey.SetValue("OwnerPid", [string]$IsolatedHkcuOwnerPid, [Microsoft.Win32.RegistryValueKind]::String)
+                    $isolatedHkcuKey.SetValue("OwnerStartTicks", [string]$ownerProcess.StartTime.ToUniversalTime().Ticks, [Microsoft.Win32.RegistryValueKind]::String)
+                }
+                finally {
+                    $ownerProcess.Dispose()
+                }
+            }
+            catch {
+            }
+        }
+        $isolatedHkcuKey.SetValue("MetadataReady", "1", [Microsoft.Win32.RegistryValueKind]::String)
+
+        $isolatedEnvKey = $isolatedHkcuKey.CreateSubKey(
+            "Environment",
+            [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+            [Microsoft.Win32.RegistryOptions]::Volatile
+        )
+        Assert-Fixture ($null -ne $isolatedEnvKey) "failed to create isolated volatile Environment subkey under $isolatedHkcuSubKey"
+        try {
+            $isolatedEnvKey.SetValue("Path", $isolatedSeedUserPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        }
+        finally {
+            $isolatedEnvKey.Close()
+        }
+
+        Clear-DeadIsolatedHkcuKeys $isolatedHkcuParentKey $isolatedHkcuRunId
     }
     finally {
-        $isolatedEnvKey.Close()
+        $isolatedHkcuParentKey.Close()
     }
     $overrideRc = [AtomicTestHkcuOverride]::RegOverridePredefKey(
         [AtomicTestHkcuOverride]::HKEY_CURRENT_USER,
@@ -4035,6 +4174,75 @@ try {
         Assert-Fixture (-not (Test-Path -LiteralPath (Join-Path $versionOne "sentinel.txt"))) "ATOMIC_FORCE_INSTALL=1 did not replace the installed version"
         Assert-ShimRuns "1.0.0" "the forced reinstall"
     }
+    elseif ($Scenario -eq "path-broadcast") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $wmListenerSourcePath = Join-Path $workspace "wm-listener.cs"
+        $wmListenerPath = Join-Path $workspace "wm-listener.exe"
+        Add-Type -Path $wmListenerSourcePath -OutputAssembly $wmListenerPath -OutputType ConsoleApplication
+
+        function Invoke-WithSettingChangeListener {
+            param([string]$Label, [int]$MinBroadcasts, [scriptblock]$Action)
+
+            $wmReady = Join-Path $workspace ("wm-ready-" + $Label + ".txt")
+            $wmStop = Join-Path $workspace ("wm-stop-" + $Label + ".txt")
+            $wmLog = Join-Path $workspace ("wm-log-" + $Label + ".txt")
+            Remove-Item -LiteralPath $wmReady, $wmStop, $wmLog -Force -ErrorAction SilentlyContinue
+            $listener = Start-Process -FilePath $wmListenerPath -ArgumentList @($wmReady, $wmStop, $wmLog, "60000") -PassThru -NoNewWindow
+            try {
+                $readyDeadline = (Get-Date).AddSeconds(15)
+                while (-not (Test-Path -LiteralPath $wmReady) -and -not $listener.HasExited -and (Get-Date) -lt $readyDeadline) {
+                    Start-Sleep -Milliseconds 20
+                }
+                Assert-Fixture (Test-Path -LiteralPath $wmReady) "$Label WM_SETTINGCHANGE listener did not become ready"
+                & $Action
+                [IO.File]::WriteAllText($wmStop, "STOP")
+                $exited = $listener.WaitForExit(10000)
+                Assert-Fixture ($exited -and $listener.ExitCode -eq 0) "$Label WM_SETTINGCHANGE listener did not exit cleanly (exited=$exited, rc=$($listener.ExitCode))"
+                $broadcastLines = @()
+                if (Test-Path -LiteralPath $wmLog) {
+                    $broadcastLines = @(Get-Content -LiteralPath $wmLog | Where-Object { $_ -like "*WM_SETTINGCHANGE area=Environment*" })
+                }
+                Assert-Fixture ($broadcastLines.Count -ge $MinBroadcasts) "$Label did not broadcast WM_SETTINGCHANGE area=Environment (expected >= $MinBroadcasts, got $($broadcastLines.Count))"
+            }
+            finally {
+                if (-not (Test-Path -LiteralPath $wmStop)) {
+                    [IO.File]::WriteAllText($wmStop, "STOP")
+                }
+                if (-not $listener.HasExited) {
+                    $listener.Kill()
+                    [void]$listener.WaitForExit(5000)
+                }
+                $listener.Dispose()
+            }
+        }
+
+        Invoke-WithSettingChangeListener "fresh-install" 1 {
+            & $InstallerPath -Ref "1.0.0" | Out-Null
+        }
+
+        Reset-FixtureInstallState @($installRoot, $binDir)
+        $resetEnvKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+        try {
+            $resetEnvKey.SetValue("Path", $isolatedSeedUserPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        }
+        finally {
+            $resetEnvKey.Close()
+        }
+        $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = "2.0.0"
+        try {
+            Invoke-WithSettingChangeListener "rollback" 2 {
+                $rollbackFailure = $null
+                try { & $InstallerPath -Ref "2.0.0" | Out-Null }
+                catch { $rollbackFailure = $_ }
+                Assert-Fixture ($null -ne $rollbackFailure) "failing final smoke unexpectedly succeeded in path-broadcast"
+            }
+        }
+        finally {
+            $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+        }
+        Assert-NoTransactionResidue $installRoot $binDir
+    }
     elseif ($Scenario -eq "backup-cleanup") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
         $env:PROCESSOR_ARCHITECTURE = "AMD64"
@@ -4437,6 +4645,150 @@ finally {
     }
     [IO.File]::WriteAllText($ObservedProcessPath, [string]$env:Path, [Text.Encoding]::Unicode)
     [IO.File]::WriteAllText($FinallyPath, "CHILD_FINALLY", [Text.Encoding]::ASCII)
+}
+`;
+
+const wmListenerSource = `
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+
+public static class AtomicWmSettingChangeListener
+{
+    private const uint WM_SETTINGCHANGE = 0x001A;
+    private const uint PM_REMOVE = 1;
+
+    private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WNDCLASS
+    {
+        public uint style;
+        public WndProcDelegate lpfnWndProc;
+        public int cbClsExtra;
+        public int cbWndExtra;
+        public IntPtr hInstance;
+        public IntPtr hIcon;
+        public IntPtr hCursor;
+        public IntPtr hbrBackground;
+        public string lpszMenuName;
+        public string lpszClassName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public int pt_x;
+        public int pt_y;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern ushort RegisterClass(ref WNDCLASS lpWndClass);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateWindowEx(
+        uint exStyle, string className, string windowName, uint style,
+        int x, int y, int width, int height,
+        IntPtr parent, IntPtr menu, IntPtr hInstance, IntPtr param);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr DefWindowProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint min, uint max, uint remove);
+
+    [DllImport("user32.dll")]
+    private static extern bool TranslateMessage(ref MSG lpMsg);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr DispatchMessage(ref MSG lpMsg);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr GetModuleHandle(string name);
+
+    private static string _logPath;
+    private static WndProcDelegate _proc;
+
+    private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        if (msg == WM_SETTINGCHANGE)
+        {
+            string area = lParam != IntPtr.Zero ? Marshal.PtrToStringUni(lParam) : "<null>";
+            File.AppendAllText(_logPath, "WM_SETTINGCHANGE area=" + area + Environment.NewLine);
+        }
+        return DefWindowProc(hWnd, msg, wParam, lParam);
+    }
+
+    private static void PumpPending()
+    {
+        MSG msg;
+        while (PeekMessage(out msg, IntPtr.Zero, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(ref msg);
+            DispatchMessage(ref msg);
+        }
+    }
+
+    public static int Main(string[] args)
+    {
+        if (args.Length < 4)
+        {
+            Console.Error.WriteLine("Usage: wm-listener.exe <readyPath> <stopPath> <logPath> <maxMs>");
+            return 2;
+        }
+        string readyPath = args[0];
+        string stopPath = args[1];
+        _logPath = args[2];
+        int maxMs = int.Parse(args[3]);
+
+        _proc = new WndProcDelegate(WndProc);
+        WNDCLASS wc = new WNDCLASS();
+        wc.lpfnWndProc = _proc;
+        wc.hInstance = GetModuleHandle(null);
+        wc.lpszClassName = "AtomicWmSettingChangeListener_" + Guid.NewGuid().ToString("N");
+        if (RegisterClass(ref wc) == 0)
+        {
+            Console.Error.WriteLine("RegisterClass failed");
+            return 1;
+        }
+        IntPtr hwnd = CreateWindowEx(
+            0, wc.lpszClassName, "atomic-wm-probe", 0,
+            0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, wc.hInstance, IntPtr.Zero);
+        if (hwnd == IntPtr.Zero)
+        {
+            Console.Error.WriteLine("CreateWindowEx failed");
+            return 1;
+        }
+        try
+        {
+            File.WriteAllText(readyPath, "READY");
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(maxMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                PumpPending();
+                if (File.Exists(stopPath))
+                {
+                    PumpPending();
+                    return 0;
+                }
+                System.Threading.Thread.Sleep(10);
+            }
+            PumpPending();
+            return 0;
+        }
+        finally
+        {
+            DestroyWindow(hwnd);
+        }
+    }
 }
 `;
 
@@ -4944,8 +5296,21 @@ test("Windows PowerShell fixtures isolate HKCU User PATH per process and never r
 	assert.match(fixtureHarness, /RegOverridePredefKey/u);
 	assert.match(fixtureHarness, /0x80000001/u);
 	assert.match(fixtureHarness, /Software\\AtomicTestIsolatedHkcu/u);
-	assert.match(fixtureHarness, /CreateSubKey\("Environment"\)/u);
+	assert.match(fixtureHarness, /RegistryOptions\]::Volatile/u);
+	assert.equal(
+		(fixtureHarness.match(/RegistryOptions\]::Volatile/gu) ?? []).length,
+		2,
+		"both the per-run scratch key and its Environment subkey must be created volatile",
+	);
+	assert.match(fixtureHarness, /"Environment",[\s\S]{0,160}RegistryOptions\]::Volatile/u);
 	assert.match(fixtureHarness, /RegistryValueKind\]::ExpandString/u);
+	assert.match(fixtureHarness, /"FixturePid"/u);
+	assert.match(fixtureHarness, /"FixtureStartTicks"/u);
+	assert.match(fixtureHarness, /"OwnerPid"/u);
+	assert.match(fixtureHarness, /"OwnerStartTicks"/u);
+	assert.match(fixtureHarness, /"MetadataReady"/u);
+	assert.match(fixtureHarness, /function Clear-DeadIsolatedHkcuKeys/u);
+	assert.match(fixtureHarness, /function Test-IsolatedOwnerProcessAlive/u);
 	assert.doesNotMatch(
 		fixtureHarness,
 		/\$originalUserPath\b/u,
@@ -4985,6 +5350,8 @@ test("Windows PowerShell fixtures isolate HKCU User PATH per process and never r
 		/DeleteSubKeyTree/u,
 		"ctrl-c child must not delete the parent-owned scratch key",
 	);
+	assert.match(fixtureHarness, /elseif \(\$Scenario -eq "path-broadcast"\)/u);
+	assert.match(fixtureHarness, /WM_SETTINGCHANGE area=Environment/u);
 });
 
 type FixtureScenario =
@@ -5009,8 +5376,63 @@ type FixtureScenario =
 	| "shadowed-shim"
 	| "custom-pathext"
 	| "skip-installed"
+	| "path-broadcast"
 	| "backup-cleanup"
 	| "temp-cleanup";
+
+function createIsolatedHkcuRunId(): string {
+	return `run-${randomUUID().replaceAll("-", "")}`;
+}
+
+function deleteIsolatedHkcuRunKeyBestEffort(runId: string, executable?: string): void {
+	if (process.platform !== "win32" || !/^[A-Za-z0-9_-]+$/u.test(runId)) {
+		return;
+	}
+	try {
+		const regResult = spawnSyncCollect(
+			["reg.exe", "delete", `HKCU\\Software\\AtomicTestIsolatedHkcu\\${runId}`, "/f"],
+			{ timeout: 10_000 },
+		);
+		if (regResult.exitCode === 0) {
+			return;
+		}
+		const regText = `${regResult.stdout.toString()}${regResult.stderr.toString()}`;
+		if (/unable to find/iu.test(regText)) {
+			return;
+		}
+	} catch {
+		// Fall through to PowerShell registry cleanup below.
+	}
+	if (executable === undefined) {
+		return;
+	}
+	const escapedRunId = runId.replaceAll("'", "''");
+	const cleanupScript = [
+		'$p = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\\AtomicTestIsolatedHkcu", $true)',
+		`if ($null -ne $p) { try { $p.DeleteSubKeyTree('${escapedRunId}', $false) } finally { $p.Close() } }`,
+	].join("\n");
+	try {
+		spawnSyncCollect([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", cleanupScript], {
+			timeout: 15_000,
+		});
+	} catch {
+		// Best-effort cleanup must never mask the primary fixture failure.
+	}
+}
+
+function preparePowerShellFixtureWorkspace(scenario: FixtureScenario): { workspace: string; harnessPath: string } {
+	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
+	const harnessPath = join(workspace, "fixture.ps1");
+	if (scenario === "ctrl-c") {
+		writeFileSync(join(workspace, "ctrl-c-child.ps1"), `\uFEFF${ctrlCChildHarness}`, "utf16le");
+		writeFileSync(join(workspace, "ctrl-c-helper.cs"), ctrlCHelperSource, "utf8");
+	}
+	if (scenario === "path-broadcast") {
+		writeFileSync(join(workspace, "wm-listener.cs"), wmListenerSource, "utf8");
+	}
+	writeFileSync(harnessPath, `\uFEFF${fixtureHarness}`, "utf16le");
+	return { workspace, harnessPath };
+}
 
 function fixtureTimeoutMs(scenario: FixtureScenario): number {
 	return scenario === "ctrl-c"
@@ -5079,13 +5501,8 @@ async function runPowerShellFixtureAsync(
 	isolatedHkcuRunId?: string,
 ): Promise<string> {
 	assert.ok(executable);
-	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
-	const harnessPath = join(workspace, "fixture.ps1");
-	if (scenario === "ctrl-c") {
-		writeFileSync(join(workspace, "ctrl-c-child.ps1"), `\uFEFF${ctrlCChildHarness}`, "utf16le");
-		writeFileSync(join(workspace, "ctrl-c-helper.cs"), ctrlCHelperSource, "utf8");
-	}
-	writeFileSync(harnessPath, `\uFEFF${fixtureHarness}`, "utf16le");
+	const { workspace, harnessPath } = preparePowerShellFixtureWorkspace(scenario);
+	const runId = isolatedHkcuRunId ?? createIsolatedHkcuRunId();
 	const args = [
 		"-NoLogo",
 		"-NoProfile",
@@ -5098,69 +5515,130 @@ async function runPowerShellFixtureAsync(
 		installerPath,
 		"-Scenario",
 		scenario,
+		"-IsolatedHkcuRunId",
+		runId,
+		"-IsolatedHkcuOwnerPid",
+		String(process.pid),
 	];
-	if (isolatedHkcuRunId !== undefined) {
-		args.push("-IsolatedHkcuRunId", isolatedHkcuRunId);
-	}
-	try {
-		const result = await spawnCollectAsync(
-			executable,
-			args,
-			fixtureTimeoutMs(scenario),
-			`PowerShell fixture ${scenario}`,
-		);
-		assert.equal(
-			result.exitCode,
-			0,
-			`PowerShell fixture ${scenario} failed.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-		);
-		assert.match(result.stdout, new RegExp(`SCENARIO_OK:${scenario}`, "u"));
-		return result.stdout;
-	} finally {
-		removeFixtureTree(workspace);
-	}
+	return runThenRemoveFixtureTreeAsync(workspace, async () => {
+		let childSucceeded = false;
+		try {
+			const result = await spawnCollectAsync(
+				executable,
+				args,
+				fixtureTimeoutMs(scenario),
+				`PowerShell fixture ${scenario}`,
+			);
+			assert.equal(
+				result.exitCode,
+				0,
+				`PowerShell fixture ${scenario} failed.\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+			);
+			assert.match(result.stdout, new RegExp(`SCENARIO_OK:${scenario}`, "u"));
+			childSucceeded = true;
+			return result.stdout;
+		} finally {
+			if (!childSucceeded) {
+				deleteIsolatedHkcuRunKeyBestEffort(runId, executable);
+			}
+		}
+	});
 }
 
 function runPowerShellFixture(
 	scenario: FixtureScenario,
 	executable: string | undefined = powershellExecutable,
+	isolatedHkcuRunId?: string,
 ): string {
 	assert.ok(executable);
-	const workspace = mkdtempSync(join(tmpdir(), `atomic-ps-fixture-${scenario}-`));
-	const harnessPath = join(workspace, "fixture.ps1");
-	if (scenario === "ctrl-c") {
-		writeFileSync(join(workspace, "ctrl-c-child.ps1"), `\uFEFF${ctrlCChildHarness}`, "utf16le");
-		writeFileSync(join(workspace, "ctrl-c-helper.cs"), ctrlCHelperSource, "utf8");
-	}
-	writeFileSync(harnessPath, `\uFEFF${fixtureHarness}`, "utf16le");
+	const { workspace, harnessPath } = preparePowerShellFixtureWorkspace(scenario);
+	const runId = isolatedHkcuRunId ?? createIsolatedHkcuRunId();
 	return runThenRemoveFixtureTree(workspace, () => {
-		const result = spawnSyncCollect(
-			[
-				executable,
-				"-NoLogo",
-				"-NoProfile",
-				"-NonInteractive",
-				"-ExecutionPolicy",
-				"Bypass",
-				"-File",
-				harnessPath,
-				"-InstallerPath",
-				installerPath,
-				"-Scenario",
-				scenario,
-			],
-			{ timeout: fixtureTimeoutMs(scenario) },
-		);
-		const stdout = result.stdout.toString();
-		const stderr = result.stderr.toString();
-		assert.equal(
-			result.exitCode,
-			0,
-			`PowerShell fixture ${scenario} failed.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
-		);
-		assert.match(stdout, new RegExp(`SCENARIO_OK:${scenario}`, "u"));
-		return stdout;
+		let childSucceeded = false;
+		try {
+			const result = spawnSyncCollect(
+				[
+					executable,
+					"-NoLogo",
+					"-NoProfile",
+					"-NonInteractive",
+					"-ExecutionPolicy",
+					"Bypass",
+					"-File",
+					harnessPath,
+					"-InstallerPath",
+					installerPath,
+					"-Scenario",
+					scenario,
+					"-IsolatedHkcuRunId",
+					runId,
+					"-IsolatedHkcuOwnerPid",
+					String(process.pid),
+				],
+				{ timeout: fixtureTimeoutMs(scenario) },
+			);
+			const stdout = result.stdout.toString();
+			const stderr = result.stderr.toString();
+			assert.equal(
+				result.exitCode,
+				0,
+				`PowerShell fixture ${scenario} failed.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+			);
+			assert.match(stdout, new RegExp(`SCENARIO_OK:${scenario}`, "u"));
+			childSucceeded = true;
+			return stdout;
+		} finally {
+			if (!childSucceeded) {
+				deleteIsolatedHkcuRunKeyBestEffort(runId, executable);
+			}
+		}
 	});
+}
+
+function spawnVerifiedFixtureKiller(executable: string, targetRunId: string): Promise<AsyncProcessResult> {
+	const escapedRunId = targetRunId.replaceAll("'", "''");
+	const killerScript = [
+		'$ErrorActionPreference = "Stop"',
+		`$subKey = "Software\\AtomicTestIsolatedHkcu\\${escapedRunId}"`,
+		"$deadline = (Get-Date).AddSeconds(60)",
+		"$killed = $false",
+		"while ((Get-Date) -lt $deadline) {",
+		"  $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($subKey, $false)",
+		"  if ($null -ne $k) {",
+		"    try {",
+		'      $ready = $k.GetValue("MetadataReady", $null)',
+		'      $rawPid = $k.GetValue("FixturePid", $null)',
+		'      $rawTicks = $k.GetValue("FixtureStartTicks", $null)',
+		'      $envSub = $k.OpenSubKey("Environment", $false)',
+		"      $hasEnv = $null -ne $envSub",
+		"      if ($hasEnv) { $envSub.Close() }",
+		"    } finally { $k.Close() }",
+		'    if ($ready -ceq "1" -and $hasEnv -and $null -ne $rawPid -and $null -ne $rawTicks) {',
+		"      Start-Sleep -Milliseconds 300",
+		"      $targetPid = [int]$rawPid",
+		"      $expectedTicks = [long]$rawTicks",
+		"      $proc = [Diagnostics.Process]::GetProcessById($targetPid)",
+		"      try {",
+		"        if (-not $proc.HasExited -and $proc.StartTime.ToUniversalTime().Ticks -eq $expectedTicks) {",
+		"          $proc.Kill()",
+		"          [void]$proc.WaitForExit(10000)",
+		"          $killed = $true",
+		"        }",
+		"      } finally { $proc.Dispose() }",
+		"      break",
+		"    }",
+		"  }",
+		"  Start-Sleep -Milliseconds 30",
+		"}",
+		'if (-not $killed) { throw "Did not observe and kill fixture for $subKey before timeout" }',
+		'Write-Output "KILLED_OK"',
+	].join("\n");
+	return spawnCollectAsync(
+		executable,
+		["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", killerScript],
+		90_000,
+		`Verified fixture killer for ${targetRunId}`,
+	);
 }
 
 powershellTest(
@@ -5168,7 +5646,7 @@ powershellTest(
 	async () => {
 		assert.ok(powershellExecutable);
 		const scenarios: readonly FixtureScenario[] = ["install", "final-smoke", "semicolon-bin", "skip-installed"];
-		const runIds = scenarios.map(() => `run-${randomUUID().replaceAll("-", "")}`);
+		const runIds = scenarios.map(() => createIsolatedHkcuRunId());
 		const before = readHostUserPathAndScratchPresence(powershellExecutable, runIds);
 		await Promise.all(
 			scenarios.map((scenario, index) => runPowerShellFixtureAsync(scenario, powershellExecutable, runIds[index])),
@@ -5182,6 +5660,109 @@ powershellTest(
 		assert.deepEqual(after.leftoverRunIds, [], "isolated HKCU scratch subkeys must be removed after exit");
 	},
 );
+
+powershellTest(
+	"PowerShell 5.1 and 7 fixtures clean up volatile HKCU scratch keys when killed mid-run and sweep dead-owner orphans",
+	async () => {
+		assert.ok(powershellExecutable);
+		const engines = [powershellExecutable, ...(powershell7Executable !== undefined ? [powershell7Executable] : [])];
+		const beforeHost = readHostUserPathAndScratchPresence(powershellExecutable, []);
+
+		for (const engine of engines) {
+			const asyncRunId = createIsolatedHkcuRunId();
+			const asyncFixture = runPowerShellFixtureAsync("rollback-retries", engine, asyncRunId).then(
+				() => null,
+				(error: unknown) => error,
+			);
+			const asyncKill = await spawnVerifiedFixtureKiller(powershellExecutable, asyncRunId);
+			assert.equal(asyncKill.exitCode, 0, `${asyncKill.stdout}${asyncKill.stderr}`);
+			const asyncError = await asyncFixture;
+			assert.ok(asyncError instanceof Error, "mid-run killed async fixture unexpectedly succeeded");
+			const afterAsync = readHostUserPathAndScratchPresence(powershellExecutable, [asyncRunId]);
+			assert.deepEqual(afterAsync.leftoverRunIds, [], `killed async fixture leaked ${asyncRunId}`);
+
+			const syncRunId = createIsolatedHkcuRunId();
+			const syncKillPromise = spawnVerifiedFixtureKiller(powershellExecutable, syncRunId);
+			assert.throws(() => runPowerShellFixture("rollback-retries", engine, syncRunId));
+			const syncKill = await syncKillPromise;
+			assert.equal(syncKill.exitCode, 0, `${syncKill.stdout}${syncKill.stderr}`);
+			const afterSync = readHostUserPathAndScratchPresence(powershellExecutable, [syncRunId]);
+			assert.deepEqual(afterSync.leftoverRunIds, [], `killed sync fixture leaked ${syncRunId}`);
+		}
+
+		// Dead-owner sweep: seed a volatile dead-owner orphan, an unready sibling key, and a live-owner key.
+		const orphanDeadId = createIsolatedHkcuRunId();
+		const unreadySiblingId = createIsolatedHkcuRunId();
+		const liveOwnerId = createIsolatedHkcuRunId();
+		const seedSweepKeys = [
+			'$ErrorActionPreference = "Stop"',
+			`$selfExe = Join-Path $PSHOME "powershell.exe"`,
+			'$deadProc = Start-Process -FilePath $selfExe -ArgumentList @("-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "exit 0") -PassThru -NoNewWindow',
+			"$deadTicks = $deadProc.StartTime.ToUniversalTime().Ticks",
+			"$deadPid = $deadProc.Id",
+			"[void]$deadProc.WaitForExit(10000)",
+			"$deadProc.Dispose()",
+			`$liveProc = [Diagnostics.Process]::GetProcessById(${process.pid})`,
+			"$liveTicks = $liveProc.StartTime.ToUniversalTime().Ticks",
+			"$liveProc.Dispose()",
+			'$parent = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Software\\AtomicTestIsolatedHkcu")',
+			"try {",
+			`  $orphan = $parent.CreateSubKey('${orphanDeadId}', [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [Microsoft.Win32.RegistryOptions]::Volatile)`,
+			"  try {",
+			'    $orphan.SetValue("FixturePid", [string]$deadPid, [Microsoft.Win32.RegistryValueKind]::String)',
+			'    $orphan.SetValue("FixtureStartTicks", [string]$deadTicks, [Microsoft.Win32.RegistryValueKind]::String)',
+			'    $orphan.SetValue("OwnerPid", [string]$deadPid, [Microsoft.Win32.RegistryValueKind]::String)',
+			'    $orphan.SetValue("OwnerStartTicks", [string]$deadTicks, [Microsoft.Win32.RegistryValueKind]::String)',
+			'    $orphan.SetValue("MetadataReady", "1", [Microsoft.Win32.RegistryValueKind]::String)',
+			"  } finally { $orphan.Close() }",
+			`  $unready = $parent.CreateSubKey('${unreadySiblingId}', [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [Microsoft.Win32.RegistryOptions]::Volatile)`,
+			"  $unready.Close()",
+			`  $live = $parent.CreateSubKey('${liveOwnerId}', [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [Microsoft.Win32.RegistryOptions]::Volatile)`,
+			"  try {",
+			'    $live.SetValue("FixturePid", [string]$deadPid, [Microsoft.Win32.RegistryValueKind]::String)',
+			'    $live.SetValue("FixtureStartTicks", [string]$deadTicks, [Microsoft.Win32.RegistryValueKind]::String)',
+			`    $live.SetValue("OwnerPid", '${process.pid}', [Microsoft.Win32.RegistryValueKind]::String)`,
+			'    $live.SetValue("OwnerStartTicks", [string]$liveTicks, [Microsoft.Win32.RegistryValueKind]::String)',
+			'    $live.SetValue("MetadataReady", "1", [Microsoft.Win32.RegistryValueKind]::String)',
+			"  } finally { $live.Close() }",
+			"} finally { $parent.Close() }",
+		].join("\n");
+		try {
+			const seeded = spawnSyncCollect(
+				[powershellExecutable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", seedSweepKeys],
+				{ timeout: 30_000 },
+			);
+			assert.equal(seeded.exitCode, 0, `${seeded.stdout.toString()}${seeded.stderr.toString()}`);
+
+			runPowerShellFixture("semicolon-bin", powershellExecutable);
+			const afterSweep = readHostUserPathAndScratchPresence(powershellExecutable, [
+				orphanDeadId,
+				unreadySiblingId,
+				liveOwnerId,
+			]);
+			assert.ok(!afterSweep.leftoverRunIds.includes(orphanDeadId), "dead-owner orphan key was not swept");
+			assert.ok(
+				afterSweep.leftoverRunIds.includes(unreadySiblingId),
+				"unready sibling key without MetadataReady was swept prematurely",
+			);
+			assert.ok(afterSweep.leftoverRunIds.includes(liveOwnerId), "key with live OwnerPid was swept prematurely");
+			assert.deepEqual(
+				{ exists: afterSweep.exists, value: afterSweep.value, kind: afterSweep.kind },
+				{ exists: beforeHost.exists, value: beforeHost.value, kind: beforeHost.kind },
+				"killed fixtures and dead-owner sweep must not mutate host HKCU\\Environment\\Path",
+			);
+		} finally {
+			deleteIsolatedHkcuRunKeyBestEffort(orphanDeadId, powershellExecutable);
+			deleteIsolatedHkcuRunKeyBestEffort(unreadySiblingId, powershellExecutable);
+			deleteIsolatedHkcuRunKeyBestEffort(liveOwnerId, powershellExecutable);
+		}
+	},
+	ROLLBACK_RETRY_FIXTURE_STRUCTURAL_TIMEOUT_MS,
+);
+
+powershellTest("PowerShell 5.1 fixture broadcasts WM_SETTINGCHANGE Environment when updating User PATH", () => {
+	runPowerShellFixture("path-broadcast");
+});
 
 powershellTest("PowerShell 5.1 fixture installs exact refs for both architectures and is idempotent", () => {
 	runPowerShellFixture("install");
