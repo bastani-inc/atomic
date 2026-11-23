@@ -735,7 +735,7 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 describe("thinking off on the Mistral API (#4552)", () => {
 	it.each([
 		["mistral/mistral-large-4", getModel("mistral", "mistral-large-4")],
-		["mistral/mistral-large-4-0-8", getModel("mistral", "mistral-large-4-0-8")],
+		["mistral/mistral-large-latest", getModel("mistral", "mistral-large-latest")],
 		["mistral/zai-glm-5-3", getModel("mistral", "zai-glm-5-3")],
 		["mistral/zai-glm-5-3-flash", getModel("mistral", "zai-glm-5-3-flash")],
 	])("sends %s its lowest listed level, low, when it cannot disable thinking", async (_name, model) => {
@@ -792,13 +792,12 @@ describe("thinking off on Azure OpenAI deployments (#4552)", () => {
 		["azure/gpt-5-pro", "high", getModel("azure", "gpt-5-pro")],
 		["azure/gpt-5.2-pro", "medium", getModel("azure", "gpt-5.2-pro")],
 		["azure/gpt-5.4-pro", "medium", getModel("azure", "gpt-5.4-pro")],
-		["azure/gpt-5.3-codex-spark", "low", getModel("azure", "gpt-5.3-codex-spark")],
-		["azure/o1", "low", getModel("azure", "o1")],
-		["azure/o1-pro", "low", getModel("azure", "o1-pro")],
+		["azure/gpt-5.5-pro", "medium", getModel("azure", "gpt-5.5-pro")],
+		["azure/gpt-6.1-sol", "low", getModel("azure", "gpt-6.1-sol")],
+		["azure/gpt-6.2-astra", "low", getModel("azure", "gpt-6.2-astra")],
+		["azure/gpt-6.2-sol", "low", getModel("azure", "gpt-6.2-sol")],
 		["azure/o3", "low", getModel("azure", "o3")],
-		["azure/o3-mini", "low", getModel("azure", "o3-mini")],
 		["azure/o3-pro", "low", getModel("azure", "o3-pro")],
-		["azure/o4-mini", "low", getModel("azure", "o4-mini")],
 		["azure/gpt-realtime-2.1", "minimal", getModel("azure", "gpt-realtime-2.1")],
 	] as const)("sends %s its lowest listed level, %s, instead of none or no effort", async (_name, level, model) => {
 		const off = await captureRequest(model);
@@ -855,22 +854,28 @@ const azureDeploymentsThatCannotDisableThinking = [
 		levels: ["medium", "high", "xhigh"],
 	},
 	{
-		name: "azure/gpt-5.3-codex-spark",
-		model: getModel("azure", "gpt-5.3-codex-spark"),
-		openAIModel: getModel("openai", "gpt-5.3-codex-spark"),
-		levels: ["low", "medium", "high", "xhigh"],
+		name: "azure/gpt-5.5-pro",
+		model: getModel("azure", "gpt-5.5-pro"),
+		openAIModel: getModel("openai", "gpt-5.5-pro"),
+		levels: ["medium", "high", "xhigh"],
 	},
 	{
-		name: "azure/o1",
-		model: getModel("azure", "o1"),
-		openAIModel: getModel("openai", "o1"),
-		levels: ["low", "medium", "high"],
+		name: "azure/gpt-6.1-sol",
+		model: getModel("azure", "gpt-6.1-sol"),
+		openAIModel: getModel("openai", "gpt-6.1-sol"),
+		levels: ["low", "medium", "high", "xhigh", "max"],
 	},
 	{
-		name: "azure/o1-pro",
-		model: getModel("azure", "o1-pro"),
-		openAIModel: getModel("openai", "o1-pro"),
-		levels: ["low", "medium", "high"],
+		name: "azure/gpt-6.2-astra",
+		model: getModel("azure", "gpt-6.2-astra"),
+		openAIModel: getModel("openai", "gpt-6.2-astra"),
+		levels: ["low", "medium", "high", "xhigh", "max"],
+	},
+	{
+		name: "azure/gpt-6.2-sol",
+		model: getModel("azure", "gpt-6.2-sol"),
+		openAIModel: getModel("openai", "gpt-6.2-sol"),
+		levels: ["low", "medium", "high", "xhigh", "max"],
 	},
 	{
 		name: "azure/o3",
@@ -879,21 +884,9 @@ const azureDeploymentsThatCannotDisableThinking = [
 		levels: ["low", "medium", "high"],
 	},
 	{
-		name: "azure/o3-mini",
-		model: getModel("azure", "o3-mini"),
-		openAIModel: getModel("openai", "o3-mini"),
-		levels: ["low", "medium", "high"],
-	},
-	{
 		name: "azure/o3-pro",
 		model: getModel("azure", "o3-pro"),
 		openAIModel: getModel("openai", "o3-pro"),
-		levels: ["low", "medium", "high"],
-	},
-	{
-		name: "azure/o4-mini",
-		model: getModel("azure", "o4-mini"),
-		openAIModel: getModel("openai", "o4-mini"),
 		levels: ["low", "medium", "high"],
 	},
 ] as const;
