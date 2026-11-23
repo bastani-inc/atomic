@@ -2870,7 +2870,7 @@ describe("Editor component", () => {
 				const editor = await openMenu();
 				editor.setAutocompleteProvider(catalog("/globalone", "/global", "/globaltwo"), approved);
 				await flushAutocomplete();
-				assert.ok(rows(editor).includes("❯ /global"));
+				assert.ok(rows(editor).includes("∀ /global"));
 				editor.handleInput("\t");
 				assert.equal(editor.getText(), "/global");
 			});
@@ -3033,7 +3033,7 @@ describe("Editor component", () => {
 					editor.setAutocompleteProvider(catalog("/globalone", "/globaltwo"));
 					editor.handleInput("\t");
 					await flushAutocomplete();
-					assert.ok(rows(editor).includes("❯ /globalone"));
+					assert.ok(rows(editor).includes("∀ /globalone"));
 				} finally {
 					process.off("unhandledRejection", onUnhandled);
 				}
@@ -3054,7 +3054,7 @@ describe("Editor component", () => {
 				await flushAutocomplete();
 				editor.setAutocompleteProvider(files("@demo0.txt", "@demo1.txt", "@demo2.txt"), approved);
 				await flushAutocomplete();
-				assert.ok(rows(editor).includes("❯ @demo0.txt"));
+				assert.ok(rows(editor).includes("∀ @demo0.txt"));
 			});
 		});
 

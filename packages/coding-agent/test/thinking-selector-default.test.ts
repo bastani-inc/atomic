@@ -132,10 +132,10 @@ test("keeps the current thinking level marked while browsing", () => {
 			.find((line) => line.includes(level));
 
 	expect(selector.selector.getSelected()?.value).toBe("medium");
-	expect(getLevelRow("medium")?.startsWith(" ❯ ● medium")).toBe(true);
+	expect(getLevelRow("medium")?.startsWith(" ∀ ● medium")).toBe(true);
 	selector.handleInput("\x1b[B");
 	expect(getLevelRow("medium")?.startsWith("   ● medium")).toBe(true);
-	expect(getLevelRow("high")?.startsWith(" ❯ ○ high")).toBe(true);
+	expect(getLevelRow("high")?.startsWith(" ∀ ○ high")).toBe(true);
 });
 
 test("has no save-default shortcut or hint", () => {

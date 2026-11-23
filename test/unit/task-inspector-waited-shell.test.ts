@@ -123,7 +123,7 @@ test("alt+w after a list update that moved the selection opens no other subagent
 	const { inspector, screen } = inspectorOver(live.source);
 	try {
 		inspector.open(a.ref.taskId);
-		assert.match(screen(), /❯ ◌ alpha/, "alpha is painted as selected");
+		assert.match(screen(), /∀ ◌ alpha/, "alpha is painted as selected");
 		// alpha leaves the list before the next paint; beta, also waiting, remains.
 		live.update([b, shellOf("beta")]);
 		inspector.handleInput(ALT_W);

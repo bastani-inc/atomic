@@ -291,7 +291,7 @@ describe("the @ and / menus' hint line in Atomic's theme (#5224)", () => {
 			await flushAutocomplete();
 			const lines = editor.render(width);
 			const menu = lines.map(plain);
-			assert.ok(menu.some((line) => line.startsWith("❯ tree")));
+			assert.ok(menu.some((line) => line.startsWith("∀ tree")));
 			assert.equal(menu.at(-1), "↑↓ select · tab complete · enter run · esc close");
 			assert.ok(lines.every((line) => stripTerminalSequences(line).length <= width));
 		});

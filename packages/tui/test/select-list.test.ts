@@ -137,9 +137,9 @@ describe("SelectList: the shared picker look (#5224)", () => {
 		description: `command ${index}`,
 	}));
 
-	it("marks the selected row with ❯ and keeps the other rows aligned", () => {
+	it("marks the selected row with ∀ and keeps the other rows aligned", () => {
 		const rendered = new SelectList(items.slice(0, 3), 5, testTheme).render(80);
-		assert.ok(rendered[0]?.startsWith("❯ /cmd0"), rendered[0]);
+		assert.ok(rendered[0]?.startsWith("∀ /cmd0"), rendered[0]);
 		assert.ok(rendered[1]?.startsWith("  /cmd1"), rendered[1]);
 	});
 

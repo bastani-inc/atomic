@@ -57,7 +57,7 @@ describe("a command typed while Atomic is starting", () => {
 		setupAutocompleteProvider.call(host);
 		await settle();
 		assert.ok(
-			editor.render(80).some((line) => stripTerminalSequences(line).trim() === "❯ /model"),
+			editor.render(80).some((line) => stripTerminalSequences(line).trim() === "∀ /model"),
 			editor.render(80).join("\n"),
 		);
 	});

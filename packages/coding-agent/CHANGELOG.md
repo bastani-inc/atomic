@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Clicking any row in `/tasks` (shells, subagents, or extension items) now opens it like pressing `Enter` — including clicking a shell row in a shell-only `/tasks` view to inspect its command and retained output, across in-process hosts, isolated hosts, and subagent chats.
+
+### Changed
+
+- Picker UIs across Atomic (`/tasks`, `/model`, `/settings`, `/resume`, `/tree`, `/fork`, `/mcp`, `/llama`, `atomic config`, `ask_user_question`, extension dialogs, and editor completion menus) now consistently use Atomic's `∀` selection cursor instead of `❯` or `→`, matching the agent panel. Editor and inline reply prompts keep `❯`.
+
+### Fixed
+
+- Clicking `x stop` or `Press x again` inside the fullscreen `/tasks` shell viewer or detail page no longer disarms the two-press stop confirmation on mouse-down before the hint click registers.
+
 ## [0.10.5] - 2026-11-23
 
 Atomic starts faster, installs fewer files, keeps subagents and Intercom messages intact across restarts, and makes Windows installs, process stops, and proxies more reliable.

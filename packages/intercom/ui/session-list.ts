@@ -170,7 +170,7 @@ export class SessionListOverlay implements Component {
         const session = this.sessions[index];
         const isSelected = index === this.selectedIndex;
         const sameCwd = session.cwd === this.currentSession.cwd;
-        const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
+        const prefix = isSelected ? this.theme.fg("accent", this.theme.bold("∀ ")) : "  ";
         const titleLines = sessionTitleLines(session, Math.max(1, contentWidth - 2), { sameCwd });
         const pathText = `${middleTruncate(terminalSafeLabel(session.cwd), Math.max(8, contentWidth - 4))} • ${terminalSafeLabel(session.model)}`;
 

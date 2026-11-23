@@ -36,7 +36,7 @@ export interface WrappingSelectOptions {
 }
 
 export class WrappingSelect implements Component {
-	private static readonly ACTIVE_POINTER = "❯ ";
+	private static readonly ACTIVE_POINTER = "∀ ";
 	private static readonly INACTIVE_POINTER = "  ";
 	private static readonly NUMBER_SEPARATOR = ". ";
 	private static readonly CURSOR_INVERSE_START = "\x1b[7m";

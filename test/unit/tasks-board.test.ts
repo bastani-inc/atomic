@@ -319,7 +319,7 @@ test("/tasks opens on its first row, a waiting run above a working subagent, and
 			.renderViewport(100, 24)
 			.map((line) => stripVTControlCharacters(line).trimEnd())
 			.join("\n");
-		assert.match(text, /❯ ◆ ralph/, "the waiting run, the first row, is selected");
+		assert.match(text, /∀ ◆ ralph/, "the waiting run, the first row, is selected");
 		assert.match(text, /◯ worker +Spawn lock fix +1m$/m, "/tasks counts from when another view first saw the task");
 		inspector.dispose();
 	} finally {
@@ -343,10 +343,10 @@ test("/tasks formats only visible rows when navigating a large board (#5224)", a
 	try {
 		const viewportRows = 12;
 		taskReads = 0;
-		assert.match(h.text(100, viewportRows), /❯ ◯ run-0/);
+		assert.match(h.text(100, viewportRows), /∀ ◯ run-0/);
 		h.inspector.handleInput("\x1b[F");
 		const last = h.text(100, viewportRows);
-		assert.match(last, /❯ ◯ run-999/);
+		assert.match(last, /∀ ◯ run-999/);
 		assert.ok(last.split("\n").length <= viewportRows);
 		assert.ok(taskReads <= viewportRows * 2, `two paints read ${taskReads} task descriptions`);
 	} finally {
@@ -364,7 +364,7 @@ test("/tasks reads a live board source once per paint, not again for each naviga
 	};
 	try {
 		h.inspector.handleInput(DOWN);
-		assert.match(h.text(), /❯ ✗ review-pr/);
+		assert.match(h.text(), /∀ ✗ review-pr/);
 		assert.ok(reads <= 1, `one key and paint read the source ${reads} times`);
 		reads = 0;
 		elapsedMs = 240_000;
@@ -445,7 +445,7 @@ test("/tasks fits a short viewport: the selected row first, then its hint line (
 			const lines = h.inspector.renderViewport(100, rows).map((line) => stripVTControlCharacters(line));
 			assert.equal(lines.length, rows, `exactly ${rows} rows`);
 			assert.ok(
-				lines.some((line) => /❯ ◆ ralph/.test(line)),
+				lines.some((line) => /∀ ◆ ralph/.test(line)),
 				`the selected row shows at ${rows} rows`,
 			);
 		}

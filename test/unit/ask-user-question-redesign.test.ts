@@ -110,7 +110,7 @@ describe("ask_user_question dialog (#5224)", () => {
 
 	test("numbers the options and indents each description under its label", () => {
 		const rows = open(THREE).inner();
-		const first = rows.indexOf("❯ 1. Build it as shown");
+		const first = rows.indexOf("∀ 1. Build it as shown");
 		assert.ok(first > 0, rows.join("\n"));
 		assert.equal(rows[first + 1], "     Follow the approved mockups exactly");
 		assert.equal(rows[first + 2], "  2. Simplify");
@@ -123,7 +123,7 @@ describe("ask_user_question dialog (#5224)", () => {
 		const dialog = open(THREE);
 		dialog.press(TAB);
 		const rows = dialog.inner();
-		const first = rows.indexOf("❯ 1. [ ] coding-agent");
+		const first = rows.indexOf("∀ 1. [ ] coding-agent");
 		assert.ok(first > 0, rows.join("\n"));
 		assert.equal(rows[first + 1], "         The CLI");
 		assert.equal(rows[first + 2], "  2. [ ] workflows");
@@ -131,14 +131,14 @@ describe("ask_user_question dialog (#5224)", () => {
 		assert.ok(rows.includes("  3. Next"), rows.join("\n"));
 		assert.ok(rows.includes("  4. Chat about this"), rows.join("\n"));
 		dialog.press(" ");
-		assert.ok(dialog.inner().includes("❯ 1. [✔] coding-agent"), dialog.inner().join("\n"));
+		assert.ok(dialog.inner().includes("∀ 1. [✔] coding-agent"), dialog.inner().join("\n"));
 	});
 
 	test("keeps the preview beside the options at 80 columns", () => {
 		const dialog = open(THREE, 80);
 		dialog.press(TAB, TAB);
 		const rows = dialog.inner();
-		const row = rows.findIndex((line) => line.startsWith("❯ 1. Sidebar"));
+		const row = rows.findIndex((line) => line.startsWith("∀ 1. Sidebar"));
 		assert.ok(rows[row]?.includes("┌"), rows.join("\n"));
 		assert.ok(rows[row + 1]?.includes("nav | main"), rows.join("\n"));
 	});
@@ -147,7 +147,7 @@ describe("ask_user_question dialog (#5224)", () => {
 		for (const width of [67, 68]) {
 			const dialog = open(THREE, width);
 			dialog.press(TAB, TAB);
-			const firstOption = dialog.inner().find((line) => line.startsWith("❯ 1. Sidebar"));
+			const firstOption = dialog.inner().find((line) => line.startsWith("∀ 1. Sidebar"));
 			assert.equal(firstOption?.includes("┌"), width === 68);
 		}
 	});

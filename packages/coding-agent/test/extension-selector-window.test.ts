@@ -18,7 +18,7 @@ function visibleOptions(output: string): string[] {
 	return output
 		.split("\n")
 		.filter((line) => line.includes("option-"))
-		.map((line) => line.trim().replace(/^❯ /, ""));
+		.map((line) => line.trim().replace(/^∀ /, ""));
 }
 
 function hint(selector: ExtensionSelectorComponent, width = 80): string {
@@ -51,19 +51,19 @@ describe("extension selector", () => {
 
 		let output = render(selector);
 		assert.deepEqual(visibleOptions(output), options.slice(0, 10));
-		assert.ok(output.includes("❯ option-1"));
+		assert.ok(output.includes("∀ option-1"));
 		assert.ok(output.includes("↓ 5 more"));
 		assert.ok(!/↑ \d+ more/.test(output));
 
 		for (let i = 0; i < 7; i++) selector.handleInput("\x1b[B");
 		output = render(selector);
 		assert.ok(visibleOptions(output).includes("option-8"));
-		assert.ok(output.includes("❯ option-8"));
+		assert.ok(output.includes("∀ option-8"));
 
 		for (let i = 0; i < 7; i++) selector.handleInput("\x1b[B");
 		output = render(selector);
 		assert.deepEqual(visibleOptions(output), options.slice(5, 15));
-		assert.ok(output.includes("❯ option-15"));
+		assert.ok(output.includes("∀ option-15"));
 		assert.ok(output.includes("↑ 5 more"));
 		assert.ok(!/↓ \d+ more/.test(output));
 	});
@@ -81,14 +81,14 @@ describe("extension selector", () => {
 		const shortOptions = ["option-1", "option-2", "option-3"];
 		const shortOutput = render(choose(shortOptions).selector);
 		assert.deepEqual(visibleOptions(shortOutput), shortOptions);
-		assert.ok(shortOutput.includes("❯ option-1"));
+		assert.ok(shortOutput.includes("∀ option-1"));
 		assert.ok(!shortOutput.includes("more"));
 
 		const empty = choose([]).selector;
 		const emptyOutput = render(empty);
 		assert.ok(emptyOutput.includes("Choose"));
 		assert.ok(emptyOutput.includes("Nothing to choose from"));
-		assert.ok(!emptyOutput.includes("❯"));
+		assert.ok(!emptyOutput.includes("∀"));
 		assert.equal(hint(empty), "esc cancel · ? keys");
 	});
 
@@ -148,7 +148,7 @@ describe("extension selector", () => {
 	it("numbers the options of a permission prompt so a digit answers it (#5224)", () => {
 		const { selector, onSelect } = choose(["Yes", "No"], { numbered: true });
 		const out = lines(selector);
-		assert.ok(out.includes(" ❯ 1. Yes"), out.join("\n"));
+		assert.ok(out.includes(" ∀ 1. Yes"), out.join("\n"));
 		assert.ok(out.includes("   2. No"), out.join("\n"));
 		assert.equal(hint(selector), "↑↓ select · enter choose · 1-2 pick · esc cancel · ? keys");
 		selector.handleInput("2");

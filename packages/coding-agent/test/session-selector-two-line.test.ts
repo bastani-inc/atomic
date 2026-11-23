@@ -124,7 +124,7 @@ describe("resume picker: two-line session and extension picker rows (#5224)", ()
 		);
 		const titleIndex = lines.findIndex((line) => line.includes("fix the login bug"));
 		assert.ok(titleIndex >= 0, lines.join("\n"));
-		assert.match(lines[titleIndex]!, /❯ fix the login bug/);
+		assert.match(lines[titleIndex]!, /∀ fix the login bug/);
 		assert.match(lines[titleIndex + 1]!, /^\s+2h ago · 42 messages · OAuth loop\s*$/);
 	});
 
@@ -753,15 +753,15 @@ describe("mixed resume shortcut priority (#5256)", () => {
 			onSelect: (row) => selected.push(row.id),
 		});
 		try {
-			while (!/❯ Run B/.test(frame(picker).join("\n"))) picker.handleInput("\x1b[B");
+			while (!/∀ Run B/.test(frame(picker).join("\n"))) picker.handleInput("\x1b[B");
 			picker.getSessionList().setSessions([runD, runA, runB, runC], false);
-			assert.match(frame(picker).join("\n"), /❯ Run B/);
+			assert.match(frame(picker).join("\n"), /∀ Run B/);
 			picker.getSessionList().setSessions([runD, runA, runC], false);
 			for (const key of ["\r", "\x1b[C"]) picker.handleInput(key);
 			assert.deepEqual(selected, [], "Enter and → wait for the moved selection to be painted");
 			const painted = frame(picker)
 				.join("\n")
-				.match(/❯ (Run [A-D])/)?.[1];
+				.match(/∀ (Run [A-D])/)?.[1];
 			assert.ok(painted, "a row is selected");
 			picker.handleInput("\r");
 			assert.deepEqual(selected, [`run-${painted.at(-1)!.toLowerCase()}`]);
@@ -783,9 +783,9 @@ describe("mixed resume shortcut priority (#5256)", () => {
 			const picker = mount([runA, runB], { variant, onSelect: (row) => selected.push(row.id) });
 			try {
 				await new Promise<void>((resolve) => setImmediate(resolve));
-				assert.match(frame(picker).join("\n"), /❯ Run A/, variant);
+				assert.match(frame(picker).join("\n"), /∀ Run A/, variant);
 				picker.getSessionList().setSessions([runNew, runA, runB], false);
-				assert.match(frame(picker).join("\n"), /❯ Run A/, `${variant}: the run the reader saw stays selected`);
+				assert.match(frame(picker).join("\n"), /∀ Run A/, `${variant}: the run the reader saw stays selected`);
 				picker.handleInput("\r");
 				assert.deepEqual(selected, ["run-a"], variant);
 			} finally {
@@ -814,14 +814,14 @@ describe("mixed resume shortcut priority (#5256)", () => {
 		);
 		try {
 			await new Promise<void>((resolve) => setImmediate(resolve));
-			assert.match(frame(picker).join("\n"), /❯ Run A/);
+			assert.match(frame(picker).join("\n"), /∀ Run A/);
 			void picker.refreshSessions();
 			picker.getSessionList().setSessions([runB], false);
 			picker.handleInput("\t");
 			await new Promise<void>((resolve) => setImmediate(resolve));
-			assert.match(frame(picker).join("\n"), /❯ Run C/);
+			assert.match(frame(picker).join("\n"), /∀ Run C/);
 			picker.getSessionList().setSessions([runD, runC], true);
-			assert.match(frame(picker).join("\n"), /❯ Run C/, "the run the reader saw stays selected");
+			assert.match(frame(picker).join("\n"), /∀ Run C/, "the run the reader saw stays selected");
 		} finally {
 			pendingRefresh.resolve([runA]);
 			picker.dispose();
@@ -843,7 +843,7 @@ describe("mixed resume shortcut priority (#5256)", () => {
 			},
 		});
 		try {
-			while (!/❯ Run B/.test(frame(picker).join("\n"))) picker.handleInput("\x1b[B");
+			while (!/∀ Run B/.test(frame(picker).join("\n"))) picker.handleInput("\x1b[B");
 			picker.handleInput("\x04");
 			assert.match(frame(picker).join("\n"), /Delete this session\?/);
 			picker.getSessionList().setSessions([runA, runC], false);

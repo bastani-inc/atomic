@@ -377,7 +377,7 @@ export class ResourceList implements Component, Focusable {
 			else if (entry.type === "subgroup")
 				lines.push(truncateToWidth(`    ${theme.fg("muted", entry.subgroup.label)}`, width, ""));
 			else {
-				const cursor = selected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
+				const cursor = selected ? theme.fg("accent", theme.bold("∀ ")) : "  ";
 				const checkbox = entry.item.enabled ? theme.fg("success", "[✓]") : theme.fg("dim", "[ ]");
 				const name = selected
 					? theme.fg("accent", theme.bold(entry.item.displayName))

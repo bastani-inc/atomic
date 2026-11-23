@@ -20,8 +20,8 @@ function model(id: string): HuggingFaceModel {
 function selectedId(view: Component): string | undefined {
 	const row = stripAnsi(view.render(120).join("\n"))
 		.split("\n")
-		.find((line) => line.includes("❯ "));
-	return row?.split("❯ ")[1]?.split(" ")[0];
+		.find((line) => line.includes("∀ "));
+	return row?.split("∀ ")[1]?.split(" ")[0];
 }
 
 // Opens the Hugging Face search with each query's results held until the test resolves them.

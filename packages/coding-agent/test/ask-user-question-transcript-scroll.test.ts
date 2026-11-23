@@ -113,7 +113,7 @@ function activeOptionRow(tui: TuiAltScreen): string | undefined {
 	const screen = (Reflect.get(tui, "previousScreen") as string[] | undefined) ?? [];
 	for (const row of screen) {
 		const plain = row.replace(ANSI, "");
-		if (plain.includes("❯")) return plain.trim();
+		if (plain.includes("∀")) return plain.trim();
 	}
 	return undefined;
 }
@@ -1425,7 +1425,7 @@ describe("ask_user_question transcript scrolling (#2378)", () => {
 			for (const rows of [16, 18, 20, 22, 24, 30]) {
 				const bounded = boundOverlayLines(frame, rows - MIN_TRANSCRIPT_STRIP_ROWS);
 				expect(bounded.length, `height at 80x${rows}`).toBeLessThanOrEqual(rows - MIN_TRANSCRIPT_STRIP_ROWS);
-				const pointer = bounded.filter((line) => line.replace(ANSI, "").includes("❯"));
+				const pointer = bounded.filter((line) => line.replace(ANSI, "").includes("∀"));
 				expect(pointer, `option ${option} survives 80x${rows}`).toHaveLength(1);
 
 				expect(pointer[0], `option ${option} survives 80x${rows}`).toContain(`${option}.`);

@@ -145,7 +145,7 @@ export class TreeList implements Component {
 			const isSelected = i === state.selectedIndex;
 
 			// Build line: cursor + prefix + path marker + label + content
-			const cursor = isSelected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
+			const cursor = isSelected ? theme.fg("accent", theme.bold("∀ ")) : "  ";
 
 			// If multiple roots, shift display (roots at 0, not 1)
 			const displayIndent = state.multipleRoots ? Math.max(0, flatNode.indent - 1) : flatNode.indent;

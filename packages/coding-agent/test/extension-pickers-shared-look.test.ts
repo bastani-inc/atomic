@@ -54,7 +54,7 @@ describe("MCP manager menus share the picker look (#5224)", () => {
 		setKeybindings(new KeybindingsManager());
 	});
 
-	test("rows carry the ❯ marker and one hint line lists exactly the keys that work", () => {
+	test("rows carry the ∀ marker and one hint line lists exactly the keys that work", () => {
 		const view = new McpManagerView(tui, theme, new KeybindingsManager());
 		void view.menu(() => ({
 			title: "MCP servers",
@@ -67,7 +67,7 @@ describe("MCP manager menus share the picker look (#5224)", () => {
 			cancelLabel: "close",
 		}));
 		const rendered = lines(view);
-		assert.ok(rendered.some((line) => line.includes("❯ issues")));
+		assert.ok(rendered.some((line) => line.includes("∀ issues")));
 		assert.ok(!rendered.some((line) => line.includes("→ ")));
 		assert.equal(hint(view), "↑↓ select · enter open · esc close · ? keys");
 	});
@@ -82,7 +82,7 @@ describe("MCP manager menus share the picker look (#5224)", () => {
 			lines(view)
 				.filter((line) => /server-\d+/.test(line) && !line.includes("⌕"))
 				.map((line) => line.trim()),
-			["❯ server-17"],
+			["∀ server-17"],
 		);
 		view.handleInput("\r");
 		assert.equal(await result, "server-17");
@@ -111,7 +111,7 @@ describe("MCP manager menus share the picker look (#5224)", () => {
 		notify?.();
 		const raw = view.render(100).join("\n");
 		assert.ok(raw.includes(theme.fg("error", "search: connection refused")));
-		assert.ok(lines(view).some((line) => line.includes("❯ b")));
+		assert.ok(lines(view).some((line) => line.includes("∀ b")));
 		view.handleInput("\r");
 		assert.equal(await result, "b");
 		assert.equal(notify, undefined);
@@ -138,7 +138,7 @@ describe("MCP manager menus share the picker look (#5224)", () => {
 				};
 			},
 		);
-		assert.ok(lines(view).some((line) => line.includes("❯ Reconnect")));
+		assert.ok(lines(view).some((line) => line.includes("∀ Reconnect")));
 
 		menu = {
 			title: "docs",
@@ -202,7 +202,7 @@ describe("MCP manager menus share the picker look (#5224)", () => {
 			lines(view)
 				.filter((line) => /server-\d+/.test(line) && !line.includes("⌕"))
 				.map((line) => line.trim()),
-			["❯ server-18"],
+			["∀ server-18"],
 		);
 
 		menu = makeMenu(2);
@@ -213,7 +213,7 @@ describe("MCP manager menus share the picker look (#5224)", () => {
 			lines(view)
 				.filter((line) => /server-\d+/.test(line))
 				.map((line) => line.trim()),
-			["❯ server-0", "server-1"],
+			["∀ server-0", "server-1"],
 		);
 		view.handleInput(ESCAPE);
 		assert.equal(await result, undefined);
@@ -248,7 +248,7 @@ describe("llama.cpp pickers share the picker look (#5224)", () => {
 		vi.useRealTimers();
 	});
 
-	test("the models list shows the server under the title, ❯ rows and one hint line", async () => {
+	test("the models list shows the server under the title, ∀ rows and one hint line", async () => {
 		let action: unknown;
 		const view = await openLlama(async (ui) => {
 			action = await ui.showModels("http://127.0.0.1:8080", [llamaModel("b"), llamaModel("a", "loaded")]);
@@ -256,7 +256,7 @@ describe("llama.cpp pickers share the picker look (#5224)", () => {
 		const rendered = lines(view);
 		assert.ok(rendered.some((line) => line.trim() === "llama.cpp models"));
 		assert.ok(rendered.some((line) => line.trim() === "http://127.0.0.1:8080"));
-		assert.ok(rendered.some((line) => line.includes("❯ a")));
+		assert.ok(rendered.some((line) => line.includes("∀ a")));
 		assert.equal(hint(view), "↑↓ select · enter load/unload/download · esc close · ? keys");
 		view.handleInput(DOWN);
 		view.handleInput(DOWN);
@@ -279,10 +279,10 @@ describe("llama.cpp pickers share the picker look (#5224)", () => {
 			await ui.showModels("http://127.0.0.1:8080", models);
 		});
 		const rendered80 = lines(view, 80);
-		const loadedRow = rendered80.find((line) => line.includes("❯ ")) ?? "";
+		const loadedRow = rendered80.find((line) => line.includes("∀ ")) ?? "";
 		assert.match(
 			loadedRow,
-			/❯ bartowski\/Meta-Llama-3\.1-70B-Instruct-GGUF:Meta-L\.\.\. {2}loaded · 32\.8k context *$/,
+			/∀ bartowski\/Meta-Llama-3\.1-70B-Instruct-GGUF:Meta-L\.\.\. {2}loaded · 32\.8k context *$/,
 			rendered80.join("\n"),
 		);
 		const downloadRow = rendered80.find((line) => line.includes("Download model…")) ?? "";
@@ -304,7 +304,7 @@ describe("llama.cpp pickers share the picker look (#5224)", () => {
 		assert.equal(choice, "Close");
 	});
 
-	test("the Hugging Face search uses the search box, ❯ rows, more indicators and live keys", async () => {
+	test("the Hugging Face search uses the search box, ∀ rows, more indicators and live keys", async () => {
 		const pending = new Map<string, (results: HuggingFaceModel[]) => void>();
 		const view = await openLlama(async (ui) => {
 			await ui.searchModels(
@@ -321,7 +321,7 @@ describe("llama.cpp pickers share the picker look (#5224)", () => {
 		pending.get("qw")?.(Array.from({ length: 15 }, (_, index) => ({ id: `qwen/m${index}-GGUF`, downloads: 10 })));
 		await vi.advanceTimersByTimeAsync(0);
 		const rendered = lines(view);
-		assert.ok(rendered.some((line) => line.includes("❯ qwen/m0-GGUF")));
+		assert.ok(rendered.some((line) => line.includes("∀ qwen/m0-GGUF")));
 		assert.ok(rendered.some((line) => line.trim() === "↓ 5 more"));
 		assert.ok(!rendered.some((line) => /\(\d+\/\d+\)/.test(line)));
 		assert.equal(hint(view), "↑↓ select · enter download · type to search · esc back");

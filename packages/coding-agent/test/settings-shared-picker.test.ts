@@ -44,7 +44,7 @@ describe("/settings on the shared picker (#5224)", () => {
 			const out = plain(picker.render(width));
 			assert.equal(out[0]?.trim(), "Settings");
 			assert.ok(out.some((line) => line.includes("⌕ Search settings…")));
-			assert.match(out.find((line) => line.includes("Auto-compact")) ?? "", /^ ❯ Auto-compact\s+true$/);
+			assert.match(out.find((line) => line.includes("Auto-compact")) ?? "", /^ ∀ Auto-compact\s+true$/);
 			assert.match(out.find((line) => line.includes("Theme")) ?? "", /^ {3}Theme\s+dark ›$/);
 			assert.ok(out.some((line) => line.trim() === "↓ 6 more"));
 			assert.ok(out.some((line) => line.trim() === "Compact the context when it gets too large"));
@@ -62,7 +62,7 @@ describe("/settings on the shared picker (#5224)", () => {
 		});
 		for (const width of [42, 45, 80, 160]) {
 			const out = plain(picker.render(width));
-			assert.match(out.find((line) => line.includes("❯")) ?? "", /false\s+current$/);
+			assert.match(out.find((line) => line.includes("∀")) ?? "", /false\s+current$/);
 			assert.ok(out.every((line) => line.length <= width));
 		}
 	});
@@ -109,13 +109,13 @@ describe("/settings on the shared picker (#5224)", () => {
 		assert.deepEqual(changes, ["auto-compact=false"]);
 		assert.match(
 			plain(picker.render(100)).find((line) => line.includes("Auto-compact")) ?? "",
-			/^ ❯ Auto-compact\s+false$/,
+			/^ ∀ Auto-compact\s+false$/,
 		);
 		picker.handleInput(" ");
 		assert.deepEqual(changes, ["auto-compact=false", "auto-compact=true"]);
 		assert.match(
 			plain(picker.render(100)).find((line) => line.includes("Auto-compact")) ?? "",
-			/^ ❯ Auto-compact\s+true$/,
+			/^ ∀ Auto-compact\s+true$/,
 		);
 		for (const ch of "Setting 1") picker.handleInput(ch);
 		assert.ok(plain(picker.render(100)).some((line) => line.includes("⌕ Setting 1")));
@@ -165,7 +165,7 @@ describe("/settings on the shared picker (#5224)", () => {
 		for (const width of [42, 45, 48]) {
 			const out = plain(picker.render(width));
 			assert.ok(out.every((line) => line.length <= width));
-			assert.match(out.find((line) => line.includes("Auto-compact")) ?? "", /^ ❯ Auto-compact\s+true$/);
+			assert.match(out.find((line) => line.includes("Auto-compact")) ?? "", /^ ∀ Auto-compact\s+true$/);
 			assert.match(out.find((line) => line.includes("Background compaction thres")) ?? "", /75$/);
 			assert.match(out.find((line) => line.includes("Default thinking level")) ?? "", /none ›$/);
 			assert.match(out.find((line) => line.includes("Theme")) ?? "", /^ {3}Theme\s+dark ›$/);
@@ -193,7 +193,7 @@ describe("/settings on the shared picker (#5224)", () => {
 		assert.deepEqual(changes, []);
 		assert.match(
 			plain(picker.render(100)).find((line) => line.includes("Auto-compact")) ?? "",
-			/^ ❯ Auto-compact\s+true$/,
+			/^ ∀ Auto-compact\s+true$/,
 		);
 
 		picker.handleInput("\x1b[B");
@@ -228,7 +228,7 @@ describe("/settings on the shared picker (#5224)", () => {
 		assert.ok(plain(picker.render(100)).some((line) => line.includes("THEME PICKER")));
 		finish?.("light");
 		const out = plain(picker.render(100));
-		assert.match(out.find((line) => line.includes("Theme")) ?? "", /^ ❯ Theme\s+light ›$/);
+		assert.match(out.find((line) => line.includes("Theme")) ?? "", /^ ∀ Theme\s+light ›$/);
 		assert.deepEqual(changes, ["theme=light"]);
 
 		picker.handleInput("\r");
@@ -248,7 +248,7 @@ describe("/settings on the shared picker (#5224)", () => {
 		assert.match(plain(picker.render(100)).find((line) => line.includes("Auto-compact")) ?? "", /false$/);
 		picker.handleInput("z");
 		picker.selectItem("theme");
-		assert.match(plain(picker.render(100)).find((line) => line.includes("Theme")) ?? "", /^ ❯ Theme\s+dark ›$/);
+		assert.match(plain(picker.render(100)).find((line) => line.includes("Theme")) ?? "", /^ ∀ Theme\s+dark ›$/);
 		picker.handleInput("z");
 		picker.handleInput("\x1b");
 		assert.equal(cancelled, 0);
@@ -283,7 +283,7 @@ describe("settings value pickers on the shared picker (#5224)", () => {
 				out.find((line) => line.includes("Automatic")) ?? "",
 				/^ {3}○ Automatic\s+Use the current chat model$/,
 			);
-			assert.match(out.find((line) => line.includes("judge/custom")) ?? "", /^ ❯ ● judge\/custom\s+Judge$/);
+			assert.match(out.find((line) => line.includes("judge/custom")) ?? "", /^ ∀ ● judge\/custom\s+Judge$/);
 			assert.equal(out.at(-1)?.trim(), "↑↓ select · enter choose · type to search · esc back");
 			assert.ok(out.every((line) => line.length <= width));
 		});

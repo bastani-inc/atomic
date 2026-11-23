@@ -200,7 +200,7 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 			open.some((line) => line.trim() === "Search prompts"),
 			open.join("\n"),
 		);
-		assert.ok(open.some((line) => line.includes("❯ summarize the failing gate") && line.endsWith("6m ago")));
+		assert.ok(open.some((line) => line.includes("∀ summarize the failing gate") && line.endsWith("6m ago")));
 		assert.equal(open.at(-2)?.trim(), "enter use · type to search · esc cancel");
 		chat.handleInput("\r");
 		assert.equal(chat.inputText(), "summarize the failing gate");
@@ -292,7 +292,7 @@ describe("ctrl+r in a subagent or stage chat behaves as in the main chat (#5224)
 			assert.doesNotMatch(subagent.screen(), /esc to interrupt|← tasks/);
 			subagent.inspector.handleInput("\x1b[B");
 			await flush();
-			assert.match(subagent.screen(), /❯ inspect the older prompt/);
+			assert.match(subagent.screen(), /∀ inspect the older prompt/);
 			subagent.inspector.handleInput("?");
 			subagent.inspector.handleInput("\x1b[D");
 			await flush();

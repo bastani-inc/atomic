@@ -29,12 +29,12 @@ describe("TrustSelectorComponent", () => {
 		let output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toContain(`Saved decision: trusted (${projectPath})`);
 		expect(output).toContain("Current session: trusted");
-		expect(output).toMatch(/^ ❯ 1\. ● Trust +saved$/m);
+		expect(output).toMatch(/^ ∀ 1\. ● Trust +saved$/m);
 
 		selector.handleInput("\x1b[B");
 		output = stripAnsi(selector.render(120).join("\n"));
 		expect(output).toMatch(/^ {3}1\. ● Trust +saved$/m);
-		expect(output).toContain(` ❯ 2. ○ Trust parent folder (${dirname(projectPath)})`);
+		expect(output).toContain(` ∀ 2. ○ Trust parent folder (${dirname(projectPath)})`);
 		expect(output).toContain("   3. ○ Do not trust");
 	});
 

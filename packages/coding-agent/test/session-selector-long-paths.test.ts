@@ -46,19 +46,19 @@ describe("session selector rows with long paths", () => {
 	test("keeps a session name whole on its own line beside a project path longer than the row (#4406)", () => {
 		assert.equal(projectPath.length, 106);
 		const list = allScopeList([session({ name: "foreign target" })]);
-		assert.deepEqual(rows(list, 80), [" ❯ foreign target", `   just now · 0 messages · …${projectPath.slice(-51)}`]);
+		assert.deepEqual(rows(list, 80), [" ∀ foreign target", `   just now · 0 messages · …${projectPath.slice(-51)}`]);
 	});
 
 	test("shows the whole project path when it fits", () => {
 		const fitting = projectPath.slice(-96);
 		const list = allScopeList([session({ name: "foreign target", cwd: fitting })]);
-		assert.deepEqual(rows(list, 130), [" ❯ foreign target", `   just now · 0 messages · ${fitting}`]);
+		assert.deepEqual(rows(list, 130), [" ∀ foreign target", `   just now · 0 messages · ${fitting}`]);
 	});
 
 	test("shortens a project path from its start, one cell past the room it has", () => {
 		const overflowing = projectPath.slice(-97);
 		const list = allScopeList([session({ name: "foreign target", cwd: overflowing })]);
-		assert.deepEqual(rows(list, 124), [" ❯ foreign target", `   just now · 0 messages · …${overflowing.slice(-95)}`]);
+		assert.deepEqual(rows(list, 124), [" ∀ foreign target", `   just now · 0 messages · …${overflowing.slice(-95)}`]);
 	});
 
 	test("keeps the tree prefix of a forked session on both of its lines", () => {
@@ -70,7 +70,7 @@ describe("session selector rows with long paths", () => {
 		});
 		const list = allScopeList([parent, child]);
 		assert.deepEqual(rows(list, 80), [
-			" ❯ parent chat",
+			" ∀ parent chat",
 			`   just now · 0 messages · …${projectPath.slice(-51)}`,
 			"      └─ forked target",
 			`         just now · 0 messages · …${projectPath.slice(-45)}`,
@@ -81,14 +81,14 @@ describe("session selector rows with long paths", () => {
 		const message = "fix the login bug ".repeat(12).trim();
 		const list = allScopeList([session({ firstMessage: message })]);
 		const [title, detail] = rows(list, 80);
-		assert.equal(title, ` ❯ ${message.slice(0, 75)}…`);
+		assert.equal(title, ` ∀ ${message.slice(0, 75)}…`);
 		assert.equal(detail, `   just now · 0 messages · …${projectPath.slice(-51)}`);
 	});
 
 	test("puts a summary after the path when the line has room for it", () => {
 		const summary = "Renamed the foreign session";
 		const list = allScopeList([session({ name: "foreign target", summary, cwd: "/work/foreign" })]);
-		assert.deepEqual(rows(list, 120), [" ❯ foreign target", `   just now · 0 messages · /work/foreign · ${summary}`]);
+		assert.deepEqual(rows(list, 120), [" ∀ foreign target", `   just now · 0 messages · /work/foreign · ${summary}`]);
 	});
 
 	test("keeps the session file name and project path visible with path display on", () => {
@@ -102,7 +102,7 @@ describe("session selector rows with long paths", () => {
 	test("shows only the age and message count in the current-folder scope", () => {
 		const message = "m".repeat(60);
 		const list = allScopeList([session({ firstMessage: message })], false);
-		assert.deepEqual(rows(list, 40), [` ❯ ${"m".repeat(35)}…`, "   just now · 0 messages"]);
+		assert.deepEqual(rows(list, 40), [` ∀ ${"m".repeat(35)}…`, "   just now · 0 messages"]);
 	});
 });
 

@@ -589,7 +589,7 @@ export class SessionList implements Component, Focusable {
 			const isDeleting = this.isDeleting(session);
 			const prefix = this.buildTreePrefix(node);
 			const continuation = this.buildTreeContinuation(node);
-			const cursor = isSelected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
+			const cursor = isSelected ? theme.fg("accent", theme.bold("∀ ")) : "  ";
 			const lead = ` ${cursor}`;
 			const indent = visibleWidth(lead);
 			const titleRoom = Math.max(1, width - indent - visibleWidth(prefix) - 1);

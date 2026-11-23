@@ -468,7 +468,7 @@ describe("/debug (#4360)", () => {
 		try {
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
 			const painted = tui.getScreenLines().map(stripAnsi);
-			const listRow = painted.findIndex((line) => line.includes("❯ openai/gpt-4o"));
+			const listRow = painted.findIndex((line) => line.includes("∀ openai/gpt-4o"));
 			const customRow = painted.findIndex((line) => line.trim() === "openai/gpt-4o");
 			assert.equal(listRow >= 0, true);
 			assert.equal(customRow >= 0, true);

@@ -76,7 +76,7 @@ test("narrow inspector keeps the selected input-needed task visible", async () =
 		inspector.open(fixture.store.tasks[7].ref.taskId);
 		for (const width of [20, 21, 48]) {
 			const text = stripVTControlCharacters(inspector.renderViewport(width, 8).join("\n"));
-			assert.match(text, /❯ ◆ .*Cont/);
+			assert.match(text, /∀ ◆ .*Cont/);
 			assert.doesNotMatch(text, /task-0/);
 		}
 	} finally {

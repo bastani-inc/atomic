@@ -72,12 +72,12 @@ describe("rebuilding main's completion provider while the user types", () => {
 		setupAutocompleteProvider.call(host);
 		for (const ch of "/glo") host.editor.handleInput(ch);
 		await settle();
-		assert.ok(rows(host.editor).includes("❯ /global"));
+		assert.ok(rows(host.editor).includes("∀ /global"));
 
 		offer("/globe", "/global", "/glossary");
 		setupAutocompleteProvider.call(host);
 		await settle();
-		assert.ok(rows(host.editor).includes("❯ /globe"));
+		assert.ok(rows(host.editor).includes("∀ /globe"));
 		assert.equal(host.editor.getText(), "/glo");
 	});
 
@@ -95,7 +95,7 @@ describe("rebuilding main's completion provider while the user types", () => {
 		offer("/globe", "/global");
 		setupAutocompleteProvider.call(host);
 		await settle();
-		assert.ok(rows(own).includes("❯ /globe"));
+		assert.ok(rows(own).includes("∀ /globe"));
 	});
 
 	it("closes the menu when the folder's resources are withheld", async () => {
@@ -103,7 +103,7 @@ describe("rebuilding main's completion provider while the user types", () => {
 		setupAutocompleteProvider.call(host);
 		for (const ch of "/glo") host.editor.handleInput(ch);
 		await settle();
-		assert.ok(rows(host.editor).includes("❯ /global"));
+		assert.ok(rows(host.editor).includes("∀ /global"));
 		setupAutocompleteProvider.call(host, { closeMenu: true });
 		await settle();
 		assert.equal(host.editor.isShowingAutocomplete(), false);

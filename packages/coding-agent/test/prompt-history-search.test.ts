@@ -105,7 +105,7 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 				out.join("\n"),
 			);
 			assert.ok(out.some((line) => line.includes("⌕ Filter prompts…")));
-			const first = out.find((line) => line.includes("❯ ship it"));
+			const first = out.find((line) => line.includes("∀ ship it"));
 			assert.ok(first?.endsWith("2m ago"), out.join("\n"));
 			assert.ok(out.some((line) => line.includes("fix the login bug and the redirect") && line.endsWith("30m ago")));
 			assert.ok(out.some((line) => line.trim() === "typed before a restart"));
@@ -122,11 +122,11 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 			{ onSelect: (text) => chosen.push(text), onCancel: () => cancelled++, now: () => NOW },
 		);
 		for (const ch of "redirect") selector.handleInput(ch);
-		assert.ok(lines(selector, 100).some((line) => line.includes("❯ fix the login bug and the redirect")));
+		assert.ok(lines(selector, 100).some((line) => line.includes("∀ fix the login bug and the redirect")));
 		selector.handleInput("\x1b");
 		assert.equal(cancelled, 0);
 		const cleared = lines(selector, 100);
-		assert.ok(cleared.some((line) => line.includes("❯ fix the login bug and the redirect")));
+		assert.ok(cleared.some((line) => line.includes("∀ fix the login bug and the redirect")));
 		assert.ok(cleared.some((line) => line.trim() === "ship it"));
 		selector.handleInput("\x1b");
 		assert.equal(cancelled, 1);
@@ -206,7 +206,7 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 		mode.showPromptHistorySearch();
 		assert.ok(shown);
 		const out = lines(shown, 100);
-		assert.ok(out.some((line) => line.includes("❯ ship it")));
+		assert.ok(out.some((line) => line.includes("∀ ship it")));
 		assert.ok(out.some((line) => line.includes("fix the login bug") && line.endsWith("4m ago")));
 		shown.handleInput?.("\x1b[B");
 		shown.handleInput?.("\r");
@@ -259,7 +259,7 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 		assert.ok(shown);
 		const out = lines(shown, 100);
 		assert.ok(
-			out.some((line) => line.trim() === "❯ typed to the subagent"),
+			out.some((line) => line.trim() === "∀ typed to the subagent"),
 			out.join("\n"),
 		);
 		assert.ok(out.some((line) => line.trim() === "and the cache"));
@@ -272,7 +272,7 @@ describe("prompt history search (ctrl+r) (#5224)", () => {
 		promptHistoryFor(editor).viewMain();
 		mode.showPromptHistorySearch();
 		const main = lines(shown, 100);
-		assert.ok(main.some((line) => line.includes("❯ a main prompt")));
+		assert.ok(main.some((line) => line.includes("∀ a main prompt")));
 		assert.ok(!main.some((line) => line.includes("trace the loader") || line.includes("typed to the subagent")));
 	});
 

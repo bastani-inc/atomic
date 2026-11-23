@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Changed
+
+- The `/intercom` session list picker now marks the selected session with Atomic's bold accent `∀` cursor instead of `→`, matching Atomic's other pickers.
+
 ## [0.10.5] - 2026-11-23
 
 ### Changed

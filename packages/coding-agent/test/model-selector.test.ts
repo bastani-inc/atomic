@@ -25,9 +25,9 @@ function rowBody(line: string): string {
 function selectedModelId(selector: ModelSelectorComponent): string | undefined {
 	const row = stripAnsi(selector.render(120).join("\n"))
 		.split("\n")
-		.find((line) => line.startsWith(" ❯"));
+		.find((line) => line.startsWith(" ∀"));
 	return row
-		?.replace(/^ ❯\s*([●○]\s*)?/, "")
+		?.replace(/^ ∀\s*([●○]\s*)?/, "")
 		.split(" ")[0]
 		?.split("/")
 		.pop();
@@ -76,10 +76,10 @@ describe("model selector", () => {
 				.find((line) => line.includes(`/${id}`));
 
 		const provider = currentModel.provider;
-		expect(untagged(getModelRow("current-model") ?? "")).toBe(` ❯ ● ${provider}/current-model  high`);
+		expect(untagged(getModelRow("current-model") ?? "")).toBe(` ∀ ● ${provider}/current-model  high`);
 		selector.handleInput("\x1b[B");
 		expect(untagged(getModelRow("current-model") ?? "")).toBe(`   ● ${provider}/current-model  high`);
-		expect(untagged(getModelRow("browsed-model") ?? "")).toBe(` ❯ ○ ${provider}/browsed-model  high`);
+		expect(untagged(getModelRow("browsed-model") ?? "")).toBe(` ∀ ○ ${provider}/browsed-model  high`);
 		selector.dispose();
 	});
 
@@ -168,7 +168,7 @@ describe("model selector", () => {
 		);
 		const row = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
-			.find((line) => line.startsWith(" ❯ ● "))!;
+			.find((line) => line.startsWith(" ∀ ● "))!;
 		const rowText = rowBody(row).trim();
 		selector.dispose();
 
@@ -198,7 +198,7 @@ describe("model selector", () => {
 		);
 		const row = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
-			.find((line) => line.startsWith(" ❯ ● "))!;
+			.find((line) => line.startsWith(" ∀ ● "))!;
 		const rowText = rowBody(row).trim();
 
 		const [reference, level] = rowText.split(/\s+/);

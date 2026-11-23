@@ -50,7 +50,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 	beforeAll(() => initTheme("dark"));
 	beforeEach(() => setKeybindings(new KeybindingsManager()));
 
-	it("has the rounded search box, the ❯ marker and the shared checkboxes", () => {
+	it("has the rounded search box, the ∀ marker and the shared checkboxes", () => {
 		const list = new ResourceList(groups(3), {} as SettingsManager, "/cwd", "/agent");
 		const out = render(list);
 		assert.ok(
@@ -58,7 +58,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 			out.join("\n"),
 		);
 		assert.ok(
-			out.some((line) => /❯ +\[✓\] ext0/.test(line)),
+			out.some((line) => /∀ +\[✓\] ext0/.test(line)),
 			out.join("\n"),
 		);
 		assert.ok(
@@ -235,7 +235,7 @@ describe("package and resource picker on the shared look (#5224)", () => {
 				viewport.join("\n"),
 			);
 			assert.ok(
-				viewport.some((line) => line.includes("❯")),
+				viewport.some((line) => line.includes("∀")),
 				viewport.join("\n"),
 			);
 		} finally {

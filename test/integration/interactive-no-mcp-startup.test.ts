@@ -205,7 +205,7 @@ export default function(pi) {
 						assert.match(typedMcp, /^❯ \/mcp\s*$/m);
 						tmux("send-keys", "-t", name, "Enter");
 						const managerTitle = /^\s*MCP servers\s*$/m;
-						const serverRow = /^\s*❯ startup\s+.+$/m;
+						const serverRow = /^\s*∀ startup\s+.+$/m;
 						// The pending server never connects, so its row must read "connecting" in the
 						// same frame; a frame still being drawn may hold the row without its status.
 						const manager = await waitForPane(

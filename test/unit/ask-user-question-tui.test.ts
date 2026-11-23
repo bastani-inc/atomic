@@ -243,11 +243,11 @@ test("ask_user_question chat and custom inline drafts stay isolated when focus m
 	assert.doesNotMatch(rows().custom, /chat draft/);
 
 	session.component.handleInput(UP);
-	assert.match(rows().custom, /^❯ 3\. custom draft/);
+	assert.match(rows().custom, /^∀ 3\. custom draft/);
 	assert.match(rows().chat, /^ {2}4\. chat draft/);
 
 	session.component.handleInput(DOWN);
-	assert.match(rows().chat, /^❯ 4\. chat draft/);
+	assert.match(rows().chat, /^∀ 4\. chat draft/);
 	assert.match(rows().custom, /^ {2}3\. custom draft/);
 });
 

@@ -238,7 +238,7 @@ async function harness() {
 function workerRows(text: string): string[] {
 	return text
 		.split("\n")
-		.filter((line) => /^ [❯ ] [●◯✗◼◌] worker\b/u.test(line))
+		.filter((line) => /^ [∀ ] [●◯✗◼◌] worker\b/u.test(line))
 		.map((line) => line.replace(/\s+/g, " ").trim());
 }
 
@@ -250,24 +250,24 @@ test("/tasks lists a resumed subagent as one row, in its live state, and keeps i
 		await h.settle(0);
 		h.inspector.open(h.fixture.store.tasks[0]!.ref.taskId);
 		assert.equal(workerRows(h.text()).length, 2);
-		assert.match(workerRows(h.text()).find((row) => row.startsWith("❯"))!, /Slow rounds .*done/);
+		assert.match(workerRows(h.text()).find((row) => row.startsWith("∀"))!, /Slow rounds .*done/);
 
 		await h.source.sendTaskMessage!(h.fixture.store.tasks[0]!.ref.taskId, "continue please");
 		await flush();
 		const resumed = workerRows(h.text());
 		assert.equal(resumed.length, 2, `one row per subagent while it runs again:\n${h.text()}`);
 		assert.doesNotMatch(resumed.join("\n"), /done/, "neither row says done: the resumed subagent runs");
-		assert.match(resumed.find((row) => row.startsWith("❯")) ?? "", /^❯ ◯ worker/, "the selection stays on it");
+		assert.match(resumed.find((row) => row.startsWith("∀")) ?? "", /^∀ ◯ worker/, "the selection stays on it");
 
 		await h.settle(2);
 		const finished = workerRows(h.text());
 		assert.equal(finished.length, 2, `one row once it finished again:\n${h.text()}`);
-		assert.match(finished.find((row) => row.startsWith("❯")) ?? "", /^❯ ● worker .*done/);
+		assert.match(finished.find((row) => row.startsWith("∀")) ?? "", /^∀ ● worker .*done/);
 
 		h.inspector.handleInput("x");
 		await flush();
 		assert.deepEqual(
-			workerRows(h.text()).map((row) => row.replace(/^[❯ ] /, "")),
+			workerRows(h.text()).map((row) => row.replace(/^[∀ ] /, "")),
 			["◯ worker Other work 0s"],
 			"x dismisses the subagent's row, and the attempt it continued does not come back",
 		);
@@ -318,7 +318,7 @@ test("a finished subagent's chat follows its resumed attempt: header and working
 
 		h.inspector.handleInput(LEFT);
 		assert.equal(workerRows(h.text()).length, 1, `still one row:\n${h.text()}`);
-		assert.match(workerRows(h.text())[0]!, /^❯ ◯ worker/);
+		assert.match(workerRows(h.text())[0]!, /^∀ ◯ worker/);
 	} finally {
 		await h.dispose();
 	}
@@ -334,11 +334,11 @@ test("an earlier attempt's id opens its subagent's one row and its live chat, as
 		await flush();
 
 		h.inspector.open(h.fixture.store.tasks[1]!.ref.taskId);
-		assert.match(workerRows(h.text()).find((row) => row.startsWith("❯")) ?? "", /Other work/);
+		assert.match(workerRows(h.text()).find((row) => row.startsWith("∀")) ?? "", /Other work/);
 		h.inspector.open(first);
 		assert.match(
-			workerRows(h.text()).find((row) => row.startsWith("❯")) ?? "",
-			/^❯ ◯ worker continue please/,
+			workerRows(h.text()).find((row) => row.startsWith("∀")) ?? "",
+			/^∀ ◯ worker continue please/,
 			`/tasks <earlier attempt> selects the subagent's row:\n${h.text()}`,
 		);
 
