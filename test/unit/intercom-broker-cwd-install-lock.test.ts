@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
 	cpSync,
 	existsSync,
@@ -175,4 +176,99 @@ describe("Intercom broker working directory never pins the installation director
 			assert.equal(recordedCwd, "/");
 		}
 	});
+
+	test("spawning the real broker succeeds when ATOMIC_CODING_AGENT_DIR is relative (absolutizing broker.log and env for relay)", async () => {
+		const root = makeTempRoot("ic-rel-agent-live-");
+		const relAgent = join(root, "rel-agent");
+		mkdirSync(relAgent, { recursive: true });
+		const origCwd = process.cwd();
+		process.chdir(root);
+		process.env.ATOMIC_CODING_AGENT_DIR = process.platform === "win32" ? ".\\rel-agent" : "./rel-agent";
+		delete process.env.PI_CODING_AGENT_DIR;
+		brokerAgentDirs.push(relAgent);
+		try {
+			await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], 20_000, BUILT_INTERCOM_DIR);
+			const socketPath = getBrokerSocketPath(process.platform, relAgent);
+			const answer = await controlRequest(socketPath, "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
+			assert.equal(answer.connected, true);
+		} finally {
+			process.chdir(origCwd);
+		}
+	});
+
+	test.runIf(process.platform === "win32")(
+		"spawning the real Windows broker resolves drive-relative rooted paths on subst drives and mixed-case env keys",
+		async () => {
+			const root = makeTempRoot("ic-win-r2-");
+			const driveRoot = join(root, "drive");
+			const proj = join(driveRoot, "proj");
+			const rootedAgent = join(driveRoot, "r-agent");
+			const extDir = join(driveRoot, "pkg", "dist", "builtin", "intercom");
+			mkdirSync(proj, { recursive: true });
+			mkdirSync(rootedAgent, { recursive: true });
+			mkdirSync(extDir, { recursive: true });
+			cpSync(BUILT_INTERCOM_DIR, extDir, { recursive: true });
+
+			const drive = ["R:", "T:", "U:", "V:", "W:", "X:", "Y:", "Z:"].find((letter) => !existsSync(`${letter}\\`));
+			assert.ok(drive, "expected an available Windows drive letter for subst");
+			execFileSync("subst.exe", [drive!, driveRoot], { stdio: "ignore" });
+			const origCwd = process.cwd();
+			try {
+				process.chdir(`${drive}\\proj`);
+				process.env.ATOMIC_CODING_AGENT_DIR = "\\r-agent";
+				delete process.env.PI_CODING_AGENT_DIR;
+				brokerAgentDirs.push(rootedAgent);
+
+				const opts = await getBrokerSpawnOptionsAsync(`${drive}\\pkg\\dist\\builtin\\intercom`);
+				assert.equal(opts.env.ATOMIC_CODING_AGENT_DIR, `${drive}\\r-agent`);
+
+				await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], 20_000, `${drive}\\pkg\\dist\\builtin\\intercom`);
+				assert.equal(existsSync(`${drive}\\r-agent\\intercom\\broker.pid`), true);
+				const answer = await controlRequest(
+					getBrokerSocketPath("win32", `${drive}\\r-agent`),
+					"broker_status",
+					"broker_status",
+					BROKER_CONTROL_TIMEOUT_MS,
+				);
+				assert.equal(answer.connected, true);
+				await stopDetachedBroker(rootedAgent);
+
+				const lowerAgent = join(proj, "rel-lower");
+				mkdirSync(lowerAgent, { recursive: true });
+				delete process.env.ATOMIC_CODING_AGENT_DIR;
+				process.env.atomic_coding_agent_dir = ".\\rel-lower";
+				brokerAgentDirs.push(lowerAgent);
+				try {
+					const lowerOpts = await getBrokerSpawnOptionsAsync(BUILT_INTERCOM_DIR);
+					const matching = Object.entries(lowerOpts.env).filter(
+						([k]) => k.toLowerCase() === "atomic_coding_agent_dir",
+					);
+					assert.equal(
+						matching.length,
+						1,
+						`expected single case-insensitive key, got ${JSON.stringify(matching)}`,
+					);
+					assert.equal((matching[0]![1] ?? "").toLowerCase(), `${drive}\\proj\\rel-lower`.toLowerCase());
+
+					await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], 20_000, BUILT_INTERCOM_DIR);
+					const lowerAnswer = await controlRequest(
+						getBrokerSocketPath("win32", `${drive}\\proj\\rel-lower`),
+						"broker_status",
+						"broker_status",
+						BROKER_CONTROL_TIMEOUT_MS,
+					);
+					assert.equal(lowerAnswer.connected, true);
+				} finally {
+					delete process.env.atomic_coding_agent_dir;
+				}
+			} finally {
+				process.chdir(origCwd);
+				await stopDetachedBroker(rootedAgent);
+				await stopDetachedBroker(join(proj, "rel-lower"));
+				try {
+					execFileSync("subst.exe", [drive!, "/D"], { stdio: "ignore" });
+				} catch {}
+			}
+		},
+	);
 });

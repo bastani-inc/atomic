@@ -144,6 +144,60 @@ describe("stopIdleIntercomBroker (idle-only, never interrupts connected sessions
 		const outcome = await stopIdle!(agentDir);
 		assert.equal(outcome.status, "unreported");
 	});
+
+	test("honors options.controlTimeoutMs on requestBrokerShutdown when a broker hangs on shutdown", async () => {
+		const agentDir = makeTempDir("ic-idle-hang-");
+		mkdirSync(getIntercomDirPath(agentDir), { recursive: true });
+		const socketPath = getBrokerSocketPath(process.platform, agentDir);
+		const server = net.createServer((socket) => {
+			let buf = Buffer.alloc(0);
+			socket.on("data", (chunk) => {
+				buf = Buffer.concat([buf, chunk]);
+				while (buf.length >= 4) {
+					const len = buf.readUInt32BE(0);
+					if (buf.length < 4 + len) break;
+					const msg = JSON.parse(buf.subarray(4, 4 + len).toString("utf8")) as {
+						type?: string;
+						requestId?: string;
+					};
+					buf = buf.subarray(4 + len);
+					if (msg.type === "broker_status") {
+						const payload = Buffer.from(
+							JSON.stringify({
+								type: "broker_status",
+								requestId: msg.requestId,
+								report: {
+									pid: process.pid,
+									sessions: 0,
+									multiNode: { status: "off" },
+									protocol: { min: 1, max: 4 },
+								},
+							}),
+						);
+						const hdr = Buffer.alloc(4);
+						hdr.writeUInt32BE(payload.length, 0);
+						socket.write(Buffer.concat([hdr, payload]));
+					}
+					// Intentionally hang on "shutdown" without replying.
+				}
+			});
+		});
+		activeServers.push(server);
+		await new Promise<void>((resolveListen) => server.listen(socketPath, resolveListen));
+		writeFileSync(getBrokerPidPath(agentDir), `${process.pid}\n`, "utf8");
+
+		const started = performance.now();
+		const outcome = await brokerControl.stopIdleIntercomBroker(agentDir, {
+			controlTimeoutMs: 250,
+			stopTimeoutMs: 250,
+		});
+		const elapsedMs = performance.now() - started;
+		assert.deepEqual(outcome, { status: "not-stopped", pid: process.pid });
+		assert.ok(
+			elapsedMs < 1_500,
+			`expected shutdown request to honor 250 ms controlTimeoutMs, took ${elapsedMs.toFixed(0)} ms`,
+		);
+	});
 });
 
 describe("Windows npm install-directory lock error classifier", () => {
@@ -189,6 +243,12 @@ describe("Windows npm install-directory lock error classifier", () => {
 		assert.equal(classify!("npm error code ENOTFOUND\nnpm error syscall getaddrinfo"), false);
 		assert.equal(
 			classify!("npm error code EPERM\nnpm error syscall mkdir\nnpm error path C:\\Program Files\\nodejs"),
+			false,
+		);
+		assert.equal(
+			classify!(
+				"npm error code EPERM\nnpm error syscall mkdir\nnpm error path C:\\prefix\\node_modules\\@bastani\\atomic\\dist\\builtin\\intercom",
+			),
 			false,
 		);
 		assert.equal(classify!("npm error code EACCES\nnpm error syscall open"), false);

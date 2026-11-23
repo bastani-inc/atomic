@@ -92,6 +92,8 @@ const savedEnv = {
 	UV_THREADPOOL_SIZE: process.env.UV_THREADPOOL_SIZE,
 	ATOMIC_PACKAGE_DIR: process.env.ATOMIC_PACKAGE_DIR,
 	PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR,
+	ATOMIC_CODING_AGENT_DIR: process.env.ATOMIC_CODING_AGENT_DIR,
+	PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
 	NODE_OPTIONS: process.env.NODE_OPTIONS,
 };
 
@@ -211,5 +213,42 @@ describe("compile-cache warmup helper and startup-prefetch reader safe working d
 		const cwd = hooks.spawnCalls[0]!.options.cwd;
 		assert.equal(typeof cwd, "string", "startup-prefetch reader must pass an explicit safe cwd");
 		assert.equal(cwd, "C:\\Windows");
+	});
+
+	test("startStartupPrefetch absolutizes relative and drive-rooted packageDir and ATOMIC_CODING_AGENT_DIR against caller cwd", () => {
+		const callerCwd = "R:\\work\\proj";
+		const resolvedPkg = "R:\\work\\proj\\pkg";
+		setupWindows({
+			cwd: callerCwd,
+			systemRoot: "C:\\Windows",
+			windir: "C:\\Windows",
+			dirs: ["C:\\Windows", "C:\\", callerCwd, resolvedPkg],
+			files: [
+				`${resolvedPkg}\\dist\\startup-files.json`,
+				`${resolvedPkg}\\dist\\utils\\startup-prefetch-reader.js`,
+				`${resolvedPkg}/dist/startup-files.json`,
+				`${resolvedPkg}/dist/utils/startup-prefetch-reader.js`,
+			],
+		});
+		process.env.ATOMIC_CODING_AGENT_DIR = ".\\rel-agent";
+		delete process.env.PI_CODING_AGENT_DIR;
+
+		startStartupPrefetch(".\\pkg");
+		assert.equal(hooks.spawnCalls.length, 1, "expected reader spawn for relative packageDir and agentDir");
+		const [readerPath, listPath, passedPkgDir, markerPath] = hooks.spawnCalls[0]!.args;
+		assert.equal(readerPath, `${resolvedPkg}\\dist\\utils\\startup-prefetch-reader.js`);
+		assert.equal(listPath, `${resolvedPkg}\\dist\\startup-files.json`);
+		assert.equal(passedPkgDir, resolvedPkg);
+		assert.equal(markerPath, "R:\\work\\proj\\rel-agent\\startup-files-read.json");
+		assert.equal(hooks.spawnCalls[0]!.options.cwd, "C:\\Windows");
+
+		// Drive-relative rooted path `\r-agent` on drive R: must resolve against R:, not C: (reader cwd).
+		hooks.spawnCalls.length = 0;
+		process.env.ATOMIC_CODING_AGENT_DIR = "\\r-agent";
+		startStartupPrefetch("\\work\\proj\\pkg");
+		assert.equal(hooks.spawnCalls.length, 1, "expected reader spawn for drive-rooted packageDir and agentDir");
+		assert.equal(hooks.spawnCalls[0]!.args[0], `${resolvedPkg}\\dist\\utils\\startup-prefetch-reader.js`);
+		assert.equal(hooks.spawnCalls[0]!.args[2], resolvedPkg);
+		assert.equal(hooks.spawnCalls[0]!.args[3], "R:\\r-agent\\startup-files-read.json");
 	});
 });

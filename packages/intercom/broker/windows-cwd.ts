@@ -494,6 +494,12 @@ export async function resolveSafeWindowsWorkingDirectoryAsync(
 	const protectedBudgetMs = Math.min(MAX_PROTECTED_REALPATH_BUDGET_MS, Math.floor(totalMs / 2));
 	const protectedDeadline = startedAt + protectedBudgetMs;
 
+	const installEntryKeys = new Set<string>();
+	for (const raw of options.installDirs ?? []) {
+		if (raw === undefined) continue;
+		const normalized = normalizeWindowsPathForCompare(raw);
+		if (normalized !== undefined) installEntryKeys.add(normalized.toLowerCase());
+	}
 	const installLexical = (options.installDirs ?? []).flatMap((raw) => collectInstallProtectedDirs(raw));
 	const rawProtected = collectRawProtectedDirs([...(options.protectedDirs ?? []), ...installLexical]);
 	const resolvedProtected = await Promise.all(
@@ -509,20 +515,11 @@ export async function resolveSafeWindowsWorkingDirectoryAsync(
 		seenProtected.add(key);
 		protectedDirs.push(dir);
 	};
-	for (const dir of resolvedProtected) addProtected(dir);
-	if ((options.installDirs?.length ?? 0) > 0) {
-		const installEntries = await Promise.all(
-			(options.installDirs ?? [])
-				.filter((raw): raw is string => raw !== undefined)
-				.map((raw) => resolveProtectedDirAsync(raw, protectedDeadline, signal)),
-		);
-		if (signal?.aborted) return undefined;
-		for (const entry of installEntries) {
-			addProtected(entry);
-			if (entry?.real !== undefined) {
-				for (const dir of collectInstallProtectedDirs(entry.real)) {
-					addProtected({ lexical: dir, real: dir });
-				}
+	for (const dir of resolvedProtected) {
+		addProtected(dir);
+		if (dir !== undefined && dir.real !== undefined && installEntryKeys.has(dir.lexical.toLowerCase())) {
+			for (const canonicalAncestor of collectInstallProtectedDirs(dir.real)) {
+				addProtected({ lexical: canonicalAncestor, real: canonicalAncestor });
 			}
 		}
 	}

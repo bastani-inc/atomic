@@ -232,7 +232,8 @@ export async function stopIdleIntercomBroker(
 	agentDir: string,
 	options: StopIdleOptions = {},
 ): Promise<StopIdleOutcome> {
-	const query = await queryIntercomBroker(agentDir, options.controlTimeoutMs ?? BROKER_CONTROL_TIMEOUT_MS);
+	const controlTimeoutMs = options.controlTimeoutMs ?? BROKER_CONTROL_TIMEOUT_MS;
+	const query = await queryIntercomBroker(agentDir, controlTimeoutMs);
 	if (query.state === "stopped") return { status: "not-running" };
 	if (query.state === "legacy") {
 		return query.pid === undefined ? { status: "unreported" } : { status: "unreported", pid: query.pid };
@@ -240,7 +241,7 @@ export async function stopIdleIntercomBroker(
 	const { pid, sessions } = query.report;
 	if (sessions > 0) return { status: "busy", pid, sessions };
 	const found = identifyBrokerProcess(pid, getBrokerPidPath(agentDir));
-	const answer = await requestBrokerShutdown(getBrokerSocketPath(process.platform, agentDir));
+	const answer = await requestBrokerShutdown(getBrokerSocketPath(process.platform, agentDir), controlTimeoutMs);
 	if (answer === "unanswered") return { status: "not-stopped", pid };
 	try {
 		await waitForBrokerExit(

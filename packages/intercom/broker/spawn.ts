@@ -82,15 +82,19 @@ export function resolveIntercomPackageRoot(moduleHref: string): string {
 }
 
 export function resolveBrokerEntrypoint(packageRoot: string): string {
-  const root = resolve(packageRoot);
-  const bundled = join(root, "broker", "broker.bundle.mjs");
-  return existsSync(bundled) ? bundled : join(root, "broker", "broker.ts");
+  const root = resolveAgainstCallerCwd(packageRoot);
+  const bundled = process.platform === "win32" ? win32.join(root, "broker", "broker.bundle.mjs") : join(root, "broker", "broker.bundle.mjs");
+  return existsSync(bundled) ? bundled : process.platform === "win32" ? win32.join(root, "broker", "broker.ts") : join(root, "broker", "broker.ts");
 }
 
 export async function resolveBrokerEntrypointAsync(packageRoot: string): Promise<string> {
-  const root = resolve(packageRoot);
-  const bundled = join(root, "broker", "broker.bundle.mjs");
-  return (await pathExists(bundled)) ? bundled : join(root, "broker", "broker.ts");
+  const root = resolveAgainstCallerCwd(packageRoot);
+  const bundled = process.platform === "win32" ? win32.join(root, "broker", "broker.bundle.mjs") : join(root, "broker", "broker.bundle.mjs");
+  return (await pathExists(bundled))
+    ? bundled
+    : process.platform === "win32"
+      ? win32.join(root, "broker", "broker.ts")
+      : join(root, "broker", "broker.ts");
 }
 
 
@@ -163,12 +167,14 @@ function requireFromExtensionDir(extensionDir: string): NodeJS.Require {
 }
 
 export function getJitiCliPath(extensionDir: string = EXTENSION_DIR): string {
-  const root = resolve(extensionDir);
+  const root = resolveAgainstCallerCwd(extensionDir);
   try {
     const jitiPackage = requireFromExtensionDir(root).resolve("jiti/package.json");
     return join(dirname(jitiPackage), "lib", "jiti-cli.mjs");
   } catch {
-    return join(root, "node_modules", "jiti", "lib", "jiti-cli.mjs");
+    return process.platform === "win32"
+      ? win32.join(root, "node_modules", "jiti", "lib", "jiti-cli.mjs")
+      : join(root, "node_modules", "jiti", "lib", "jiti-cli.mjs");
   }
 }
 
@@ -310,22 +316,25 @@ export function getBrokerLaunchSpec(
   };
 }
 
-function absolutizeWindowsPath(rawPath: string): string {
-  if (isAbsoluteWindowsPath(rawPath)) return rawPath;
-  try {
-    return win32.resolve(process.cwd(), rawPath);
-  } catch {
-    return rawPath;
+function resolveAgainstCallerCwd(rawPath: string): string {
+  if (process.platform === "win32") {
+    if (isAbsoluteWindowsPath(rawPath)) return rawPath;
+    try {
+      return win32.resolve(process.cwd(), rawPath);
+    } catch {
+      return rawPath;
+    }
   }
+  return isAbsolute(rawPath) ? rawPath : resolve(rawPath);
 }
 
 function brokerSafeCwdOptions(extensionDir: string, commandPath?: string) {
-  const resolvedExt = absolutizeWindowsPath(extensionDir);
+  const resolvedExt = resolveAgainstCallerCwd(extensionDir);
   const installDirs = isBunBinary
-    ? [resolvedExt, win32.dirname(absolutizeWindowsPath(process.execPath))]
+    ? [resolvedExt, win32.dirname(resolveAgainstCallerCwd(process.execPath))]
     : [resolvedExt];
-  const agentDir = absolutizeWindowsPath(getAgentDir());
-  const intercomDir = absolutizeWindowsPath(getIntercomDirPath());
+  const agentDir = resolveAgainstCallerCwd(getAgentDir());
+  const intercomDir = resolveAgainstCallerCwd(getIntercomDirPath());
   return {
     protectedDirs: [intercomDir, agentDir],
     installDirs,
@@ -337,7 +346,7 @@ function resolveBrokerWorkingDirectorySync(extensionDir: string, commandPath?: s
   if (process.platform !== "win32") return "/";
   return (
     resolveSafeWindowsWorkingDirectorySync(brokerSafeCwdOptions(extensionDir, commandPath)) ??
-    windowsDriveRoot(absolutizeWindowsPath(extensionDir)) ??
+    windowsDriveRoot(resolveAgainstCallerCwd(extensionDir)) ??
     "C:\\"
   );
 }
@@ -349,23 +358,47 @@ async function resolveBrokerWorkingDirectoryAsync(extensionDir: string, commandP
       ...brokerSafeCwdOptions(extensionDir, commandPath),
       timeoutMs: 150,
     })) ??
-    windowsDriveRoot(absolutizeWindowsPath(extensionDir)) ??
+    windowsDriveRoot(resolveAgainstCallerCwd(extensionDir)) ??
     "C:\\"
   );
 }
 
-function absolutizeRelativeAgentDirOverrides(baseEnv: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const overrides: Record<string, string> = {};
-  for (const key of ["ATOMIC_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"] as const) {
-    const value = baseEnv[key];
+function setEnvValue(env: NodeJS.ProcessEnv, canonicalKey: string, value: string): void {
+  if (process.platform !== "win32") {
+    env[canonicalKey] = value;
+    return;
+  }
+  const upper = canonicalKey.toUpperCase();
+  const matching = Object.keys(env).filter((k) => k.toUpperCase() === upper);
+  const targetKey = matching.at(-1) ?? canonicalKey;
+  for (const key of matching) {
+    if (key !== targetKey) delete env[key];
+  }
+  env[targetKey] = value;
+}
+
+function absolutizeAgentDirEnvInPlace(env: NodeJS.ProcessEnv): void {
+  for (const canonicalKey of ["ATOMIC_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR"] as const) {
+    const matching =
+      process.platform === "win32"
+        ? Object.keys(env).filter((k) => k.toUpperCase() === canonicalKey)
+        : Object.hasOwn(env, canonicalKey)
+          ? [canonicalKey]
+          : [];
+    if (matching.length === 0) continue;
+    const targetKey = matching.at(-1)!;
+    const value = env[targetKey];
+    for (const key of matching) {
+      if (key !== targetKey) delete env[key];
+    }
     if (!value || value === "~" || value.startsWith("~/") || (process.platform === "win32" && value.startsWith("~\\"))) {
       continue;
     }
-    if (!isAbsolute(value)) {
-      overrides[key] = resolve(value);
+    const needsResolve = process.platform === "win32" ? !isAbsoluteWindowsPath(value) : !isAbsolute(value);
+    if (needsResolve) {
+      env[targetKey] = resolveAgainstCallerCwd(value);
     }
   }
-  return overrides;
 }
 
 /**
@@ -395,22 +428,20 @@ function buildBrokerSpawnOptions(
   env: NodeJS.ProcessEnv;
   windowsHide: true;
 } {
+  const env = createChildProcessEnvironment();
+  absolutizeAgentDirEnvInPlace(env);
+  setEnvValue(env, "NODE_NO_WARNINGS", "1");
+  if (storage !== undefined) setEnvValue(env, BROKER_STORAGE_ENV, storage);
+  if (announcement !== undefined) {
+    setEnvValue(env, BROKER_ANNOUNCE_PATH_ENV, resolveAgainstCallerCwd(announcement.path));
+    setEnvValue(env, BROKER_ANNOUNCE_TOKEN_ENV, announcement.token);
+    setEnvValue(env, BROKER_ANNOUNCE_START_ENV, "1");
+  }
   return {
     detached: true,
     stdio: ["ignore", "ignore", stderr],
     cwd,
-    env: createChildProcessEnvironment({
-      NODE_NO_WARNINGS: "1",
-      ...absolutizeRelativeAgentDirOverrides(),
-      ...(storage === undefined ? {} : { [BROKER_STORAGE_ENV]: storage }),
-      ...(announcement === undefined
-        ? {}
-        : {
-            [BROKER_ANNOUNCE_PATH_ENV]: announcement.path,
-            [BROKER_ANNOUNCE_TOKEN_ENV]: announcement.token,
-            [BROKER_ANNOUNCE_START_ENV]: "1",
-          }),
-    }),
+    env,
     windowsHide: true,
   };
 }
@@ -1230,13 +1261,14 @@ async function spawnBrokerHoldingLock(
     }
     cancelSignal?.throwIfAborted();
 
-    const resolvedExtensionDir = resolve(extensionDir);
+    const resolvedExtensionDir = resolveAgainstCallerCwd(extensionDir);
     const brokerPath = await resolveBrokerEntrypointAsync(resolvedExtensionDir);
-    const normalizedCustomCommand =
+    const isCustomPath =
       !usesDefaultBrokerCommand(brokerCommand, brokerArgs) &&
-      /[\\/]/u.test(brokerCommand) &&
-      !isAbsolute(brokerCommand)
-        ? resolve(brokerCommand)
+      (/[\\/]/u.test(brokerCommand) || (process.platform === "win32" && /^[A-Za-z]:/u.test(brokerCommand)));
+    const normalizedCustomCommand =
+      isCustomPath && (process.platform === "win32" ? !isAbsoluteWindowsPath(brokerCommand) : !isAbsolute(brokerCommand))
+        ? resolveAgainstCallerCwd(brokerCommand)
         : brokerCommand;
     const initialCommandPath = usesDefaultBrokerCommand(brokerCommand, brokerArgs)
       ? process.execPath
@@ -1261,7 +1293,7 @@ async function spawnBrokerHoldingLock(
     // The last point before the broker exists; from here it is waited for, never abandoned while it starts.
     cancelSignal?.throwIfAborted();
 
-    const logPath = getBrokerLogPath();
+    const logPath = resolveAgainstCallerCwd(getBrokerLogPath());
     let logHandle: FileHandle | undefined;
     let child: SpawnedBrokerChild | undefined;
     if (process.platform === "win32") {

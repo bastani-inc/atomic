@@ -104,12 +104,12 @@ export function isWindowsInstallDirectoryLockError(output: string): boolean {
 		lower.includes("syscall unlink") ||
 		lower.includes("syscall rmdir") ||
 		lower.includes("syscall rm") ||
+		lower.includes("syscall copyfile") ||
 		lower.includes(", rename ") ||
 		lower.includes(", unlink ") ||
 		lower.includes(", rmdir ") ||
 		lower.includes(", rm ") ||
-		lower.includes("resource busy or locked") ||
-		lower.includes("dist\\builtin\\intercom") ||
-		lower.includes("dist/builtin/intercom")
+		lower.includes(", copyfile ") ||
+		lower.includes("resource busy or locked")
 	);
 }

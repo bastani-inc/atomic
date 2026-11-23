@@ -6,6 +6,7 @@ const hooks = vi.hoisted(() => ({
 	dirs: new Set<string>(),
 	files: new Set<string>(),
 	realpaths: new Map<string, string>(),
+	realpathHangs: new Set<string>(),
 	symlinks: new Set<string>(),
 	tmpdirValue: "C:\\Users\\tester\\AppData\\Local\\Temp",
 }));
@@ -51,6 +52,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	}) as typeof actual.lstat;
 	const realpath = (async (path: Parameters<typeof actual.realpath>[0]) => {
 		const key = String(path);
+		if (hooks.realpathHangs.has(key)) return new Promise<string>(() => {});
 		const mapped = hooks.realpaths.get(key);
 		if (mapped !== undefined) return mapped;
 		if (hooks.dirs.has(key)) return key;
@@ -77,7 +79,10 @@ vi.mock("@bastani/atomic", () => ({
 }));
 
 import { getBrokerSpawnOptions, getBrokerSpawnOptionsAsync } from "../../packages/intercom/broker/spawn.js";
-import { collectInstallProtectedDirs } from "../../packages/intercom/broker/windows-cwd.js";
+import {
+	collectInstallProtectedDirs,
+	resolveSafeWindowsWorkingDirectoryAsync,
+} from "../../packages/intercom/broker/windows-cwd.js";
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const originalCwd = process.cwd;
@@ -97,6 +102,7 @@ function setupWindows(opts: {
 	agentDir?: string;
 	dirs: readonly string[];
 	realpaths?: Record<string, string>;
+	realpathHangs?: readonly string[];
 	symlinks?: readonly string[];
 }) {
 	Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
@@ -114,6 +120,8 @@ function setupWindows(opts: {
 	for (const d of opts.dirs) hooks.dirs.add(d);
 	hooks.realpaths.clear();
 	for (const [k, v] of Object.entries(opts.realpaths ?? {})) hooks.realpaths.set(k, v);
+	hooks.realpathHangs.clear();
+	for (const h of opts.realpathHangs ?? []) hooks.realpathHangs.add(h);
 	hooks.symlinks.clear();
 	for (const s of opts.symlinks ?? []) hooks.symlinks.add(s);
 }
@@ -128,6 +136,7 @@ afterEach(() => {
 	hooks.dirs.clear();
 	hooks.files.clear();
 	hooks.realpaths.clear();
+	hooks.realpathHangs.clear();
 	hooks.symlinks.clear();
 });
 
@@ -207,5 +216,66 @@ describe("Windows broker safe working directory selection (mocked Win32)", () =>
 
 		assert.equal(getBrokerSpawnOptions(extDir).cwd, "C:\\");
 		assert.equal((await getBrokerSpawnOptionsAsync(extDir)).cwd, "C:\\");
+	});
+
+	test("keeps canonical installDirs protection intact when process.cwd() is a hung UNC path", async () => {
+		const pkgRoot = "C:\\prefix\\node_modules\\@bastani\\atomic";
+		const badJunction = "C:\\BadSysRoot";
+		setupWindows({
+			cwd: "\\\\hung-server\\share\\proj",
+			systemRoot: badJunction,
+			windir: badJunction,
+			tmpdir: `${pkgRoot}\\tmp`,
+			dirs: ["\\\\hung-server\\share\\proj", badJunction, "S:\\", "S:\\dist\\builtin\\intercom", pkgRoot, "C:\\"],
+			realpaths: {
+				[badJunction]: pkgRoot,
+				"S:\\": pkgRoot,
+				"S:\\dist\\builtin\\intercom": `${pkgRoot}\\dist\\builtin\\intercom`,
+				"C:\\": "C:\\",
+			},
+			realpathHangs: ["\\\\hung-server\\share\\proj"],
+		});
+
+		const chosen = await resolveSafeWindowsWorkingDirectoryAsync({
+			installDirs: ["S:\\dist\\builtin\\intercom"],
+			timeoutMs: 150,
+		});
+		assert.equal(chosen, "C:\\");
+	});
+
+	test("resolves drive-relative rooted and relative ATOMIC_CODING_AGENT_DIR against caller cwd and overwrites mixed-case env keys without duplicates", async () => {
+		const extDir = "R:\\pkg\\dist\\builtin\\intercom";
+		setupWindows({
+			cwd: "R:\\proj",
+			systemRoot: "C:\\Windows",
+			windir: "C:\\Windows",
+			agentDir: "\\r-agent",
+			dirs: ["C:\\Windows", "C:\\", "R:\\proj", extDir],
+		});
+
+		const syncRooted = getBrokerSpawnOptions(extDir);
+		const asyncRooted = await getBrokerSpawnOptionsAsync(extDir);
+		assert.equal(syncRooted.cwd, "C:\\Windows");
+		assert.equal(syncRooted.env.ATOMIC_CODING_AGENT_DIR, "R:\\r-agent");
+		assert.equal(asyncRooted.env.ATOMIC_CODING_AGENT_DIR, "R:\\r-agent");
+
+		// Drive-relative `R:sub` resolves against caller's `R:\proj`.
+		process.env.ATOMIC_CODING_AGENT_DIR = "R:sub-agent";
+		assert.equal(getBrokerSpawnOptions(extDir).env.ATOMIC_CODING_AGENT_DIR, "R:\\proj\\sub-agent");
+
+		// Mixed-case key `atomic_coding_agent_dir` must be overwritten in place with zero case duplicates.
+		delete process.env.ATOMIC_CODING_AGENT_DIR;
+		process.env.atomic_coding_agent_dir = ".\\rel-lower";
+		try {
+			const syncLower = getBrokerSpawnOptions(extDir);
+			const asyncLower = await getBrokerSpawnOptionsAsync(extDir);
+			for (const opts of [syncLower, asyncLower]) {
+				const matches = Object.entries(opts.env).filter(([k]) => k.toLowerCase() === "atomic_coding_agent_dir");
+				assert.equal(matches.length, 1, `expected single case-insensitive key, got ${JSON.stringify(matches)}`);
+				assert.equal(matches[0]![1], "R:\\proj\\rel-lower");
+			}
+		} finally {
+			delete process.env.atomic_coding_agent_dir;
+		}
 	});
 });

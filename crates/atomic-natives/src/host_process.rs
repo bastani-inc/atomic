@@ -3,13 +3,15 @@
 //! and a thread of their own moves their input and output and reaps them. On Windows a process starts suspended in a
 //! job of its own, which holds it and every process it starts until the host ends them or lets them go (see
 //! `windows`). Elsewhere `startHostProcess` refuses, and the host starts them through Node's `child_process` as before.
-use napi::bindgen_prelude::{Buffer, Unknown};
+use napi::bindgen_prelude::{
+	Buffer, FromNapiValue, Object, ToNapiValue, TypeName, Unknown, ValidateNapiValue, ValueType,
+};
+use napi::sys;
 use napi::threadsafe_function::ThreadsafeFunction;
 #[cfg(target_os = "linux")]
 use napi::threadsafe_function::ThreadsafeFunctionCallMode;
 use napi::{Env, Status};
 use napi_derive::napi;
-use std::collections::HashMap;
 
 #[cfg(windows)]
 mod windows;
@@ -17,6 +19,78 @@ mod windows;
 use linux as platform;
 #[cfg(windows)]
 use windows as platform;
+
+/// Environment entries preserving JavaScript own-property enumeration order so Windows case-insensitive
+/// deduplication deterministically keeps the last entry (matching Node.js `child_process`).
+#[derive(Clone, Debug, Default)]
+pub struct OrderedEnv(pub Vec<(String, String)>);
+
+impl OrderedEnv {
+	#[cfg(windows)]
+	pub(super) fn len(&self) -> usize {
+		self.0.len()
+	}
+
+	#[cfg(windows)]
+	pub(super) fn iter(&self) -> std::slice::Iter<'_, (String, String)> {
+		self.0.iter()
+	}
+}
+
+impl IntoIterator for OrderedEnv {
+	type Item = (String, String);
+	type IntoIter = std::vec::IntoIter<(String, String)>;
+
+	fn into_iter(self) -> Self::IntoIter {
+		self.0.into_iter()
+	}
+}
+
+impl<'a> IntoIterator for &'a OrderedEnv {
+	type Item = &'a (String, String);
+	type IntoIter = std::slice::Iter<'a, (String, String)>;
+
+	fn into_iter(self) -> Self::IntoIter {
+		self.0.iter()
+	}
+}
+
+impl TypeName for OrderedEnv {
+	fn type_name() -> &'static str {
+		"Record<string, string>"
+	}
+
+	fn value_type() -> ValueType {
+		ValueType::Object
+	}
+}
+
+impl ValidateNapiValue for OrderedEnv {}
+
+impl FromNapiValue for OrderedEnv {
+	unsafe fn from_napi_value(env: sys::napi_env, value: sys::napi_value) -> napi::Result<Self> {
+		let object = unsafe { Object::from_napi_value(env, value)? };
+		let keys = Object::keys(&object)?;
+		let mut entries = Vec::with_capacity(keys.len());
+		for key in keys {
+			if let Some(val) = object.get::<String>(&key)? {
+				entries.push((key, val));
+			}
+		}
+		Ok(Self(entries))
+	}
+}
+
+impl ToNapiValue for OrderedEnv {
+	unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> napi::Result<sys::napi_value> {
+		let env_wrapper = Env::from_raw(env);
+		let mut object = Object::new(&env_wrapper)?;
+		for (key, value) in val.0 {
+			object.set(key, value)?;
+		}
+		unsafe { Object::to_napi_value(env, object) }
+	}
+}
 
 /// Delivers a process's events to the host, keeping its event loop alive until the process has ended.
 type EventCallback =
@@ -29,7 +103,8 @@ pub struct HostProcessOptions {
 	pub args: Vec<String>,
 	pub cwd: Option<String>,
 	/// The complete environment of the process.
-	pub env: HashMap<String, String>,
+	#[napi(ts_type = "Record<string, string>")]
+	pub env: OrderedEnv,
 	/// Which of standard input, output and error are pipes; the others are `/dev/null`.
 	pub pipe_stdin: bool,
 	pub pipe_stdout: bool,
