@@ -152,7 +152,7 @@ for (const [view, render] of [
 
 test("finished shells are not counted, and one running shell reads in the singular", () => {
 	const [agent, running, finished] = tasksWithShells();
-	finished!.execution = { kind: "settled", result: { kind: "completed", output: finished!.output } };
+	finished!.execution = { kind: "settled", result: { kind: "completed", output: finished!.output, exitCode: 0 } };
 	const rows = plain(renderTaskFooter([agent!, running!, finished!], 80));
 	assert.deepEqual(
 		rows.filter((row) => /shell/.test(row)).map((row) => row.trim()),

@@ -117,9 +117,14 @@ export function taskNoticeLine(
 			: { elapsedMs: task?.metrics?.elapsedMs ?? envelope.elapsedMs }),
 	};
 	const label = kind === "agent" ? "Agent" : kind === "command" ? "Background command" : "Task";
+	const unknownCommandExit = kind === "command" && result.kind === "completed" && result.exitCode === undefined;
 	const exitCode =
-		result.kind !== "cancelled" && result.exitCode !== undefined ? ` (exit code ${result.exitCode})` : "";
-	// A command that exits non-zero completed, and failed.
+		result.kind !== "cancelled" && result.exitCode !== undefined
+			? ` (exit code ${result.exitCode})`
+			: unknownCommandExit
+				? " (exit status unknown)"
+				: "";
+	// A command that exits non-zero or without an exit code completed, and failed.
 	if (result.kind !== "cancelled" && taskOutcomeStatus(result, kind) === "completed")
 		return { status: "success", label, outcome: kind === "agent" ? "finished" : `completed${exitCode}`, ...facts };
 	if (result.kind !== "cancelled") return { status: "failure", label, outcome: `failed${exitCode}`, ...facts };
@@ -196,8 +201,8 @@ export function taskCompletionNotice(
 	output?: string,
 	omissions?: readonly OmissionSpan[],
 ): TaskCompletionNotice {
-	const exitCode =
-		task?.kind === "command" && envelope.result.kind !== "cancelled" ? envelope.result.exitCode : undefined;
+	const kind = task?.kind ?? envelope.taskKind;
+	const exitCode = kind === "command" && envelope.result.kind !== "cancelled" ? envelope.result.exitCode : undefined;
 	const preview = [envelope.result.kind === "failed" ? envelope.result.message : "", output ?? ""]
 		.filter(Boolean)
 		.join("\n");
@@ -206,12 +211,12 @@ export function taskCompletionNotice(
 		title:
 			formatTaskCompletion(envelope, task).split("\n")[0] + (exitCode === undefined ? "" : ` · exit ${exitCode}`),
 		preview:
-			(task?.kind ?? envelope.taskKind) === "command"
+			kind === "command"
 				? completionExcerpt(preview, "tail", omissions, preview.length - (output?.length ?? 0))
 				: completionExcerpt(preview, "head"),
-		status: taskOutcomeStatus(envelope.result, task?.kind),
+		status: taskOutcomeStatus(envelope.result, kind),
 		taskId: envelope.taskId,
-		...((task?.kind ?? envelope.taskKind) === undefined ? {} : { taskKind: task?.kind ?? envelope.taskKind }),
+		...(kind === undefined ? {} : { taskKind: kind }),
 		...(task?.kind === "agent" && task.agentName !== undefined ? { agentName: task.agentName } : {}),
 		...(task?.kind === "agent" && task.model !== undefined ? { model: task.model } : {}),
 		...(task?.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
@@ -538,6 +543,8 @@ export function formatTaskCompletion(
 	if (ranOn) lines.push(ranOn);
 	if (result.kind === "failed") lines.push(`Error: ${result.message}`);
 	if (result.kind !== "cancelled" && result.exitCode !== undefined) lines.push(`Exit code: ${result.exitCode}`);
+	else if (kind === "command" && result.kind === "completed")
+		lines.push("Exit status: unknown (ended without an exit code)");
 	if (result.kind === "cancelled")
 		lines.push(
 			`Stop reason: ${waitingOn ? "released" : result.cause}${stopReason === undefined ? "" : ` (${stopReason})`}`,
