@@ -78,6 +78,7 @@ vi.mock("@bastani/atomic", () => ({
 	takeTakeoverMutexAsync: async () => undefined,
 }));
 
+import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getBrokerSpawnOptions, getBrokerSpawnOptionsAsync } from "../../packages/intercom/broker/spawn.js";
 import {
 	collectInstallProtectedDirs,
@@ -258,10 +259,18 @@ describe("Windows broker safe working directory selection (mocked Win32)", () =>
 		assert.equal(syncRooted.cwd, "C:\\Windows");
 		assert.equal(syncRooted.env.ATOMIC_CODING_AGENT_DIR, "R:\\r-agent");
 		assert.equal(asyncRooted.env.ATOMIC_CODING_AGENT_DIR, "R:\\r-agent");
+		// Parent and broker MUST compute the exact same Windows named pipe for rooted-without-drive agentDir!
+		assert.equal(getBrokerSocketPath("win32"), getBrokerSocketPath("win32", "R:\\r-agent"));
+		assert.equal(getBrokerSocketPath("win32", "\\r-agent"), getBrokerSocketPath("win32", "R:\\r-agent"));
 
 		// Drive-relative `R:sub` resolves against caller's `R:\proj`.
 		process.env.ATOMIC_CODING_AGENT_DIR = "R:sub-agent";
 		assert.equal(getBrokerSpawnOptions(extDir).env.ATOMIC_CODING_AGENT_DIR, "R:\\proj\\sub-agent");
+		assert.equal(getBrokerSocketPath("win32"), getBrokerSocketPath("win32", "R:\\proj\\sub-agent"));
+
+		// Relative `.\rel-agent` produces the exact same Windows named pipe in parent and broker!
+		process.env.ATOMIC_CODING_AGENT_DIR = ".\\rel-agent";
+		assert.equal(getBrokerSocketPath("win32"), getBrokerSocketPath("win32", "R:\\proj\\rel-agent"));
 
 		// Mixed-case key `atomic_coding_agent_dir` must be overwritten in place with zero case duplicates.
 		delete process.env.ATOMIC_CODING_AGENT_DIR;

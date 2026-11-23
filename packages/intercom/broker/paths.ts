@@ -2,7 +2,8 @@ import { createHash } from "crypto";
 import { type BigIntStats, lstatSync, mkdirSync, readFileSync, renameSync, type Stats, writeFileSync } from "fs";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "os";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve, win32 } from "path";
+import { isAbsoluteWindowsPath } from "./windows-cwd.js";
 
 /**
  * The shared storage selection (`ATOMIC_STORAGE` JSON) the launching Atomic process hands its broker: its
@@ -28,12 +29,24 @@ function expandTildePath(path: string): string {
   return path;
 }
 
+function resolveAgentDirPath(rawPath: string): string {
+  if (process.platform === "win32") {
+    if (isAbsoluteWindowsPath(rawPath)) return rawPath;
+    try {
+      return win32.resolve(process.cwd(), rawPath);
+    } catch {
+      return rawPath;
+    }
+  }
+  return resolve(rawPath);
+}
+
 /** The agent directory the environment selects now. */
 export function getAgentDir(): string {
   const atomicAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
-  if (atomicAgentDir) return expandTildePath(atomicAgentDir);
+  if (atomicAgentDir) return resolveAgentDirPath(expandTildePath(atomicAgentDir));
   const piAgentDir = process.env.PI_CODING_AGENT_DIR;
-  if (piAgentDir) return expandTildePath(piAgentDir);
+  if (piAgentDir) return resolveAgentDirPath(expandTildePath(piAgentDir));
   return join(getHomeDir(), ".atomic", "agent");
 }
 
@@ -198,8 +211,12 @@ export function directBrokerSocketPath(
   agentDir: string = getAgentDir(),
 ): string | undefined {
   if (platform === "win32") {
-    const pipe = `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(agentDir)}`;
-    return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `\\\\.\\pipe\\pi-intercom-${agentDirDigest(agentDir)}`;
+    const resolved =
+      process.platform === "win32" && !isAbsoluteWindowsPath(agentDir)
+        ? resolveAgentDirPath(agentDir)
+        : agentDir;
+    const pipe = `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(resolved)}`;
+    return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `\\\\.\\pipe\\pi-intercom-${agentDirDigest(resolved)}`;
   }
   const socketPath = inDirectorySocketPath(agentDir);
   return fitsUnixSocketPath(socketPath, platform) ? socketPath : undefined;
