@@ -275,7 +275,7 @@ mod windows {
 				std::ptr::null_mut(),
 			)
 		};
-		(status >= 0).then(|| information.InheritedFromUniqueProcessId as u32)
+		(status >= 0).then_some(information.InheritedFromUniqueProcessId as u32)
 	}
 
 	/// Every process and the id of the process that started it, as Windows lists them.

@@ -5,10 +5,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, test, vi } from "
 import { WorkspaceTimeoutError } from "../src/core/workspace/errors.ts";
 import { runWorkspaceProcess } from "../src/core/workspace/process.ts";
 import { spawnHostProcess } from "../src/utils/host-spawn.ts";
-import { killProcessTree } from "../src/utils/shell.ts";
+import { killChildProcessTree, killProcessTree } from "../src/utils/shell.ts";
 
 const mocks = vi.hoisted(() => ({
 	spawnHostProcess: vi.fn(),
+	killChildProcessTree: vi.fn(),
 	killProcessTree: vi.fn(),
 	jobAttached: false,
 	holdResult: "unavailable" as "unavailable" | "held" | "absent",
@@ -37,7 +38,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/utils/host-spawn.ts", () => ({ spawnHostProcess: mocks.spawnHostProcess }));
-vi.mock("../src/utils/shell.ts", () => ({ killProcessTree: mocks.killProcessTree }));
+vi.mock("../src/utils/shell.ts", () => ({
+	killChildProcessTree: mocks.killChildProcessTree,
+	killProcessTree: mocks.killProcessTree,
+}));
 vi.mock("../src/core/process-tree-containment.ts", () => ({
 	containProcessTree: vi.fn(() => undefined),
 	containProcessTreeAllowingBreakaway: vi.fn((pid: number) => {
@@ -106,6 +110,7 @@ beforeEach(() => {
 	child = fixtureProcess();
 	mocks.resetContainment();
 	vi.mocked(spawnHostProcess).mockReturnValue(child);
+	vi.mocked(killChildProcessTree).mockReset();
 	vi.mocked(killProcessTree).mockReset();
 	vi.spyOn(process, "kill").mockImplementation((_pid, signal) => {
 		if (signal === 0) throw Object.assign(new Error("process group exited"), { code: "ESRCH" });
@@ -127,6 +132,7 @@ function firstTimerFiresEarly(): void {
 function terminationCount(): number {
 	return (
 		vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0).length +
+		vi.mocked(killChildProcessTree).mock.calls.length +
 		vi.mocked(killProcessTree).mock.calls.length +
 		child.kill.mock.calls.length
 	);
@@ -300,6 +306,25 @@ describe("Windows process-tree containment timeouts (#5332)", () => {
 			}),
 		]);
 	}
+
+	test("a Windows workspace command without native containment falls back to killChildProcessTree at the deadline (#5332)", async () => {
+		mocks.jobAttached = false;
+		mocks.holdResult = "unavailable";
+		firstTimerFiresEarly();
+		const outcome = runWindows();
+		await vi.advanceTimersByTimeAsync(99);
+		assert.equal(terminationCount(), 0, "an early timer must not stop the command");
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(vi.mocked(killChildProcessTree).mock.calls.length, 1);
+		assert.deepEqual(vi.mocked(killChildProcessTree).mock.calls[0], [child, false]);
+		assert.equal(terminationCount(), 1);
+		finish(null, "SIGTERM");
+		const [settled] = await outcome;
+		assert.equal(settled.status, "rejected");
+		assert.ok(settled.reason instanceof WorkspaceTimeoutError);
+		assert.equal(settled.reason.elapsedMs, 100);
+		assert.equal(vi.getTimerCount(), 0);
+	});
 
 	test("a Windows workspace command with Job-object containment keeps its full timeout budget when its timer fires early (#5332)", async () => {
 		mocks.jobAttached = true;
