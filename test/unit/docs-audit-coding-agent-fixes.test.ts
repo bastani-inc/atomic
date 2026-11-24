@@ -389,14 +389,26 @@ describe(".sqlite3 and .db3 selectors in read and search", () => {
 		});
 		await assert.rejects(
 			customBackendSearchTool.execute(
-				"missing-win-sqlite3",
-				{ pattern: "needle", paths: "C:\\missing\\app.sqlite3:notes" },
+				"missing-sqlite3-in-cwd",
+				{ pattern: "needle", paths: `${join(dir, "missing.sqlite3")}:notes` },
 				undefined,
 				undefined,
 				{} as never,
 			),
 			/Search resource selectors are not supported by this filesystem backend/,
 		);
+		if (process.platform !== "win32") {
+			await assert.rejects(
+				customBackendSearchTool.execute(
+					"missing-win-sqlite3",
+					{ pattern: "needle", paths: "C:\\missing\\app.sqlite3:notes" },
+					undefined,
+					undefined,
+					{} as never,
+				),
+				/Search resource selectors are not supported by this filesystem backend/,
+			);
+		}
 	});
 });
 
