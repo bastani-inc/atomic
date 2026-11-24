@@ -1,977 +1,162 @@
-# CI/CD Pipeline
+# CI guide
 
-Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomic-natives` from `packages/natives`, the forked pi packages (`@bastani/atomic-schema`, `@bastani/atomic-telemetry`, `@bastani/atomic-ai`, `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode`) from `packages/schema`, `packages/telemetry`, `packages/ai`, `packages/tui`, `packages/agent` and `packages/codemode`, `@bastani/atomic-storage-libsql` from `packages/storage-libsql`, and `@bastani/atomic-storage-postgres` from `packages/storage-postgres`. The other workspace packages remain private and are bundled into the coding-agent package. The storage adapters are the exception: each is a separate package that users install with `atomic install npm:<name>`, so neither is ever a dependency of `@bastani/atomic` and never enters its binaries. The first npm version of each forked pi package and of each storage adapter must be published by hand so npm trusted publishing can be attached; later tagged releases publish them from `publish.yml`.
+Pull requests need `test (all platforms)` and CodeQL results. Releases use a separate workflow that starts when a release tag is pushed.
 
 ## Workflow overview
 
-```text
-Pull request ready for review / selected branch push (a draft runs no work job)
-└─ test.yml (six concurrent work jobs + one result gate)
-   ├─ unit-tests (Linux, Windows; five shards each): build package -> one unit shard
-   ├─ integration-tests (Linux, Windows; four shards each): build package -> one integration shard
-   ├─ storage-conformance (Linux; two shards): build package -> half of the storage matrix and libSQL server tests (Postgres, sqld services per shard)
-   ├─ agent-suite (Linux, Windows; three shards each): native bindings -> one atomic-ai + coding-agent shard (Node), plus the other forked packages' suites on shard 1
-   ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
-   ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
-   └─ test (3 legs): result gate carrying the required contexts
-
-Pull request closed (merged or not)
-└─ cancel-closed-pr-runs.yml
-   └─ cancel: cancel the pull request's queued and running test.yml runs
-
-Release tag push (`0.9.10` or `0.9.10-alpha.1`)
-└─ publish.yml
-   ├─ integrity: source ref = tag commit, tag package version = tag, and tag
-   │  commit subject = `Release <tag>`; later jobs build that verified SHA
-   ├─ native-artifacts: eight-platform NAPI matrix
-   ├─ linux-binary-smoke + windows-binary-smoke (also builds both shipped
-   │  Windows archives on the Windows runner) + alpine-binary-smoke, whose
-   │  x64/ARM64 legs run embedded PostgreSQL initdb, start, connect, and shutdown
-   ├─ build (after native-artifacts, in parallel with the smoke jobs):
-   │  package validation, target PostgreSQL staging in all eight
-   │  native npm leaves, six non-Windows archives, eighteen npm tarballs, and
-   │  release notes
-   ├─ stage-github-release (after build and every smoke job): join the
-   │  Windows-built pair, write SHA256SUMS, create a verified draft, and refuse
-   │  to change a published release
-   ├─ publish-npm: tokenless OIDC publication of the eight native leaves four
-   │  at a time, then natives, the forked pi packages, the storage adapters, and atomic in order,
-   │  skipping existing versions and retrying transient failures
-   ├─ publish-github-release: undraft only after npm succeeds
-   └─ register-published-version: register the published version with a GitHub OIDC JWT
-
-Push or manual dispatch on `main`
-└─ warm-toolchain-cache.yml
-   ├─ release-linux-cache (x64, arm64): persist verified Zig tarballs and populate the
-   │  Linux release npm download caches
-   ├─ msvc-crt (after release-linux-cache): fetch the MSVC CRT and Windows SDK
-   │  for both Windows arches in one call onto the linux-x64 release volume
-   └─ release-windows-cache: populate the Windows release npm download cache
-
-Push or manual dispatch on `main`
-└─ warm-macos-release-cache.yml
-   └─ dependencies: populate the isolated macOS release dependency cache
-
-Manual dispatch by a maintainer, on any branch
-└─ macos-tests.yml
-   └─ tests: build the package and native bindings on macOS, then run the chosen root test files
-```
-
-This release graph follows pi's draft-first publication shape. Public GitHub Release publication remains last so users never see a release whose npm publication failed.
-
-The release build downloads checksum-pinned PostgreSQL artifacts while preparing packages, never during package installation or first use. All eight native npm leaves receive a `postgres-runtime` payload. Pack verification extracts each tarball and validates target provenance, executable architecture/libc, required libraries/catalog/licenses, and the payload file checksums; missing or wrong payloads fail packaging. Every standalone archive independently stages its target under the archive-local `@bastani/atomic-natives` package rather than relying on host-installed optional leaves. Existing native Linux glibc and macOS runners exercise scriptless pack/install and SQL persistence across restart; Linux and Windows x64 archive jobs do the same against extracted runtime paths. The Alpine smoke legs execute initdb, protocol queries, restart, and persisted-row checks on both native runner architectures. Windows ARM64 remains content- and architecture-validated only because the available Windows runner is x64; it cannot authoritatively exercise Windows 11 ARM64 x64 emulation.
-
-### Static checks
-
-The `static-checks` job runs `npm run check`: Biome, the root TypeScript check, package typechecks and the interactive event-loop check. The root TypeScript check covers the root tests and scripts and every TypeScript file the bundled `subagents`, `mcp`, `web-access` and `intercom` packages ship, including the Intercom broker. The typecheck path first brings the `dist` of `@bastani/atomic-schema`, `@bastani/atomic-telemetry` and `@bastani/atomic-ai` up to date with `scripts/refresh-package-dist.mjs`, then runs the ai package's existing `tsconfig.json` check over both `src/` and `test/`, and refreshes `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode` the same way. The refresh compiles each package into a staging directory beside `dist` and moves only the files whose bytes changed into `dist`, one rename each, so tests that read those packages while a check runs never see a missing or half-written file, and an up-to-date `dist` is not touched. It generates the ai model catalog only when `check:model-data` finds it missing or stale; this job builds `@bastani/atomic-ai` from the live catalog just before. It also checks the coding-agent build and `test/types/` configurations. No pre-existing coding-agent `dist/` is required.
-
-### Release artifact storage
-
-Release archives move between jobs through Namespace artifact storage (`namespace-actions/upload-artifact` and `namespace-actions/download-artifact`, pinned by SHA). Pulling the single 1.56 GB GitHub artifact onto a Namespace runner took 2.7–8.6 minutes in the four releases before 0.9.28-alpha.3, and over 10 minutes twice on 2026-10-07, which cancelled both 0.9.28-alpha.3 staging attempts. GitHub-hosted `publish-npm` pulled the same artifact in 20–77 s.
-
-Namespace artifact storage is readable only from Namespace runners, so it cannot serve `publish-npm`, which must stay GitHub-hosted (see below). The release therefore uses two stores:
-
-| Artifact | Producer | Consumer | Store |
-| --- | --- | --- | --- |
-| `atomic-windows-archives` | windows-binary-smoke | stage-github-release | Namespace |
-| `release-assets-<tag>` (non-Windows archives, release notes) | build | stage-github-release | Namespace |
-| `npm-packages-<tag>` | build | publish-npm (`ubuntu-latest`) | GitHub |
-| `atomic-natives-*` (native bindings) | native-artifacts | smoke jobs, build | GitHub |
-
-`stage-github-release` must stay on a Namespace runner. Namespace artifacts do not appear in the GitHub run's artifact list; they expire after the same 14-day retention. Every upload of an already-compressed archive uses `compression-level: 0`.
-
-## Runners
-
-Every job runs on a [Namespace](https://namespace.so/docs/reference/github-actions/runner-configuration) runner except npm publication, which stays on GitHub-hosted Linux for trusted publishing and provenance. How the runner is selected depends on whether the workflow can run pull-request code:
-
-- **Pull-request-capable workflows** (`test.yml` and `codeql.yml`, which trigger on `pull_request`) run every job on a repository-specific [runner profile](#runner-profiles), `namespace-profile-atomic-ci-*`, whose Access Level is Restricted. The profile, not the workflow, holds the machine shape.
-- **Release-path workflows** never run pull-request code. Most jobs use inline machine labels, `nscloud-{os}-{arch}-{shape}`. Both macOS native builds and `warm-macos-release-cache.yml` share the dedicated `namespace-profile-atomic-release-macos-arm64-6x14` profile, never a PR profile.
-- **`macos-tests.yml`** runs only when a maintainer dispatches it. It runs on the macOS release profile too, with `nscloud-cache-exp-do-not-commit`; see [macOS test dispatch](#macos-test-dispatch).
-
-Namespace refuses to schedule a job whose `runs-on` names more than one Namespace machine label, so each job names exactly one profile or label.
-
-Validate workflow changes with YAML parsing, actionlint, maintainer review, and hosted runs on the exact PR head. Do not add tests that restate workflow configuration, including runner labels, matrices, action pins, permissions, or required-check names. Product and executable release-tooling tests remain in the CI suite. Review the actual security settings and required GitHub contexts before merging; see [Approving fork workflow runs](#approving-fork-workflow-runs).
-
-### Runner mapping
-
-| Workflow and jobs | Before | Now | Shape |
-| --- | --- | --- | --- |
-| `test.yml` unit-tests, integration-tests and agent-suite (Linux legs); storage-conformance | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
-| `test.yml` unit-tests, integration-tests and agent-suite (Windows legs) | `blacksmith-4vcpu-windows-2025` | `namespace-profile-atomic-ci-windows-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
-| `test.yml` release-archive (Linux leg); `static-checks`; `test` result gate | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
-| `cancel-closed-pr-runs.yml` cancel | (new) | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
-| `test.yml` release-archive (Windows leg) | `blacksmith-4vcpu-windows-2025` | `namespace-profile-atomic-ci-windows-amd64-4x16` | 4 vCPU, 16 GB |
-| `codeql.yml` analyze | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
-| `publish.yml` integrity, linux-binary-smoke, build, stage-github-release, publish-github-release; native `linux-x64-gnu`, `linux-x64-musl`, `win32-x64-msvc` and `win32-arm64-msvc` (cross-compiled); alpine x64 | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
-| `publish.yml` native `linux-arm64-gnu` and `linux-arm64-musl`; alpine arm64 | `blacksmith-4vcpu-ubuntu-2404-arm` | `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
-| `publish.yml` native `darwin-arm64` | `blacksmith-6vcpu-macos-26` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB |
-| `publish.yml` windows-binary-smoke | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
-| `publish.yml` register-published-version | `ubuntu-latest` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
-| `warm-toolchain-cache.yml` release-linux-cache x64 (Zig/npm), msvc-crt / release-linux-cache arm64 (Zig/npm) | `blacksmith-4vcpu-ubuntu-2404` / `-arm` | `nscloud-ubuntu-24.04-amd64-4x16-with-cache-with-builders` / `nscloud-ubuntu-24.04-arm64-4x16-with-cache-with-builders`, with release cache tags | 4 vCPU, 16 GB |
-| `publish.yml` publish-npm | `ubuntu-latest` | `ubuntu-latest` (GitHub-hosted exception) | GitHub standard |
-| `publish.yml` native `darwin-x64` | `macos-26-intel` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB; cross-compile and Rosetta smoke |
-| `macos-tests.yml` tests | (new) | `namespace-profile-atomic-release-macos-arm64-6x14` with `nscloud-cache-exp-do-not-commit` | 6 vCPU, 14 GB |
-
-`4x16` is not in the label page's short list of standard shapes, but that page states that "larger and odd-sized shapes are available", and the [Machine Shapes](https://namespace.so/docs/architecture/compute/machine-shapes) tables list `4x16` for Linux and Windows. The label page's own examples also use `nscloud-ubuntu-22.04-amd64-4x16-*` and `nscloud-ubuntu-22.04-arm64-4x16-*`. `8x16` is in the standard list.
-
-### Runner profiles
-
-`test.yml` and `codeql.yml` run fork pull requests. On Namespace, every job receives a workload token: "Each [compute instance](https://namespace.so/docs/architecture/compute) receives a dedicated workload token, granting access to Namespace features and APIs. [...] By default, workload tokens allow access to any Namespace feature" ([Workspace access controls](https://namespace.so/docs/workspaces/access)). A job on an inline `nscloud-*` label runs with the default [Access Level](https://namespace.so/docs/solutions/github-actions/runner-controls/access-levels), Permissive, so fork code could use that token against the workspace. Access Level "is a profile-only setting": no inline label, `nsc` flag, or `--spec_file` field sets it. Every job in these two workflows therefore runs on one of four repository-specific profiles, each set to **Restricted**, under which "Namespace feature access is disabled for the runner workload". This protects fork runs of the workflow files as committed. A pull request that edits them can pick its own runner, and against that only maintainer approval stands in the way; see [Approving fork workflow runs](#approving-fork-workflow-runs).
-
-| Profile tag | OS | Arch | Shape | Builder mode | Access Level | Created with | Jobs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `atomic-ci-linux-amd64-8x16` | Ubuntu 24.04 | amd64 | 8x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` unit-tests, integration-tests, agent-suite (Linux legs), storage-conformance |
-| `atomic-ci-linux-amd64-4x16` | Ubuntu 24.04 | amd64 | 4x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` release-archive (Linux leg), static-checks, `test` result gate; `codeql.yml` analyze; `cancel-closed-pr-runs.yml` cancel |
-| `atomic-ci-windows-amd64-8x16` | Windows Server 2022 | amd64 | 8x16 | No remote builder | Restricted | Dashboard only | `test.yml` unit-tests, integration-tests, agent-suite (Windows legs) |
-| `atomic-ci-windows-amd64-4x16` | Windows Server 2022 | amd64 | 4x16 | No remote builder | Restricted | Dashboard only | `test.yml` release-archive (Windows leg) |
-
-A job selects a profile with `runs-on: namespace-profile-<tag>`. Recreate the Linux profiles with:
-
-```sh
-nsc github profile create --tag atomic-ci-linux-amd64-8x16 --os ubuntu-24.04 --machine_arch amd64 --machine_type 8x16 --builder_mode NO_CACHING --description "bastani-inc/atomic test.yml/codeql.yml PR-capable jobs; Access Level must be Restricted"
-nsc github profile create --tag atomic-ci-linux-amd64-4x16 --os ubuntu-24.04 --machine_arch amd64 --machine_type 4x16 --builder_mode NO_CACHING --description "bastani-inc/atomic test.yml/codeql.yml PR-capable jobs; Access Level must be Restricted"
-```
-
-Check them with `nsc github profile list -o json` or `nsc github profile describe --profile_id <id> -o json`.
-
-The rest is dashboard-only, in the [runner profile editor](https://cloud.namespace.so/workspace/actions/profiles):
-
-1. **Windows profiles.** `nsc github profile create` accepts only Ubuntu images for `--os`, so create `atomic-ci-windows-amd64-8x16` and `atomic-ci-windows-amd64-4x16` in the editor: Windows Server 2022, amd64, and the shape in the tag. Configure the cache and builder settings under [Cache setup and validation](#cache-setup-and-validation).
-2. **Access Level.** Under **Advanced Settings**, set Access Level to **Restricted** on all four profiles. Neither `nsc github profile describe` nor `list` reports the access level, so the only way to verify it, or any later change to it, is to open each profile in the editor. Until all four read Restricted, fork jobs on that profile still run with Permissive access.
-
-All four CI profiles retain Restricted access and have 50 GB cache volumes with updates allowed only from `main`. Toolchain and action caches are enabled in the profiles. `test.yml` configures npm and Rust caches through the pinned Namespace cache action after checkout and toolchain installation. This uses attached storage; no broader Namespace API permission is granted. Hosted validation must establish that the action works with Restricted access on each platform. If it fails, do not silently change Access Level. `NO_CACHING` disables the remote Docker builder cache, not the attached cache volume.
-
-**Resizing.** The shape lives in the profile, and its tag names the shape. Create a correctly named profile, set Restricted access and protected caching, then update the workflow and these tables. Remove the old profile only once no workflow uses it. Verify the selected shape and runtime performance in hosted CI.
-
-**If a profile is missing.** A job whose `runs-on` names a profile that does not exist (a missing Windows profile, or a mistyped tag) is never picked up. It stays queued, and GitHub cancels a self-hosted job after 24 hours in the queue ([Actions limits](https://docs.github.com/en/actions/reference/limits)). `timeout-minutes` counts from job start, so it does not bound that wait. Namespace also holds jobs in the queue while capacity is unavailable, so check the profile list first when a job stays queued far longer than usual.
-
-### Sizing
-
-Shapes come from the Blacksmith-era per-job CPU and memory metrics. The source is `blacksmith jobs aggregate --repo bastani-inc/atomic --since 14d --format json --min-runs 3`, for 2026-09-09 to 2026-09-23. Release jobs run too rarely for a 14-day window, so `publish.yml` uses `--since 30d --group-by repo,job_name,runner_label`. Release versions are separate workflow names, and that grouping merges them. Blacksmith's SKU catalog (`blacksmith runners catalog`) gives the memory behind each percentage: 15.2 GB for Linux amd64, 12 GB for Linux arm64, 14 GB for Windows (all 4 vCPU) and 24 GB for the 6-vCPU macOS runner.
-
-In the table, **CPU** is the p50 / p95 across runs of each run's average CPU. **Busy** is the median share of a run spent above 80 % CPU. **Mem** is the p95 of each run's peak memory. **Duration** is p50 / p95 against the job cap. Windows rows have metrics for 71–74 % of runs.
-
-| Job | Runs | CPU p50 / p95 | Busy | Mem p95 | Duration p50 / p95 (cap) | Shape now |
-| --- | ---: | --- | ---: | ---: | --- | --- |
-| unit-tests linux-x64 | 706 | 68 % / 83 % | 0.45 | 3.3 GB | 491 s / 1048 s (1320 s) | **8x16** |
-| unit-tests windows-x64 | 704 | 76 % / 100 % | 0.63 | 4.4 GB | 698 s / 1328 s (1320 s) | **8x16** |
-| integration-tests linux-x64 | 704 | 54 % / 64 % | 0.25 | 3.5 GB | 211 s / 521 s (1200 s) | **8x16** |
-| integration-tests windows-x64 | 708 | 64 % / 100 % | 0.42 | 4.9 GB | 365 s / 846 s (1200 s) | **8x16** |
-| agent-suite linux-x64 | 702 | 69 % / 74 % | 0.40 | 2.9 GB | 337 s / 695 s (900 s) | **8x16** |
-| agent-suite windows-x64 | 705 | 77 % / 100 % | 0.72 | 3.6 GB | 557 s / 864 s (1200 s) | **8x16** |
-| release-archive linux-x64 | 702 | 43 % / 48 % | 0.24 | 1.4 GB | 89 s / 124 s (420 s) | 4x16 |
-| release-archive windows-x64 | 702 | 49 % / 100 % | 0.25 | 3.5 GB | 166 s / 271 s (420 s) | 4x16 |
-| static-checks | 702 | 51 % / 55 % | 0.30 | 2.7 GB | 101 s / 151 s (300 s) | 4x16 |
-| `test` result gate (per leg) | 711 | 28 % / 33 % | 0.17 | 0.3 GB | 4 s / 5 s (60 s) | 4x16 |
-| CodeQL javascript-typescript | 704 | 61 % / 66 % | 0.43 | 10.5 GB | 190 s / 493 s (1800 s) | 4x16 |
-| CodeQL rust | 704 | 47 % / 50 % | 0.25 | 8.4 GB | 137 s / 196 s (1800 s) | 4x16 |
-| CodeQL actions | 703 | 32 % / 38 % | 0.10 | 1.0 GB | 32 s / 45 s (1800 s) | 4x16 |
-| Native win32-x64-msvc / win32-arm64-msvc (30 d) | 45 / 46 | 55–56 % / 71–72 % | 0.30–0.32 | 1.1 GB | 267–278 s / 401–471 s | 4x16 |
-| Native linux-x64-gnu / -musl (30 d) | 45 each | 46 % / 51–52 % | 0.29 | 0.9 GB | 63–65 s / 91–106 s | 4x16 |
-| Native linux-arm64-gnu / -musl (30 d) | 45 each | 52–53 % / 55–56 % | 0.31–0.33 | 1.0 GB | 122–127 s / 148–150 s | arm64 4x16 |
-| Native darwin-arm64 (30 d) | 45 | 64 % / 71 % | 0.33 | 7.9 GB | 58 s / 73 s | macOS 6x14 |
-| Smoke Linux binary (30 d) | 45 | 49 % / 51 % | 0.28 | 2.3 GB | 65 s / 94 s | 4x16 |
-| Build and smoke Windows archives (30 d) | 30 | 37 % / 82 % | 0.07 | 3.1 GB | 138 s / 181 s | 4x16 |
-| Smoke Alpine musl x64 / arm64 (30 d) | 41 each | 29–36 % / 34–37 % | 0.04 | 2.5–2.9 GB | 49–87 s / 68–122 s | 4x16 / arm64 4x16 |
-| Build release payload (30 d) | 40 | 27 % / 30 % | 0.01 | 1.2 GB | 205 s / 265 s | 4x16 |
-| Verify release tag, stage/publish/clean up GitHub Release (30 d) | 1–45 | 9–31 % | ≤ 0.2 | ≤ 0.4 GB | ≤ 96 s | 4x16 |
-
-The decisions:
-
-- **The three test suites move to 8 vCPU on both platforms.** On 4 vCPU they are CPU-bound. The Windows legs spend most of each run above 80 % CPU, and Windows unit-tests and integration-tests already reach their job caps at p95. Linux unit-tests and integration-tests reach 79 % and 87 % of their caps at p95. Vitest sizes its worker pool from the available cores, so the suites parallelize across the extra vCPU. Cargo also builds each job's native binding in parallel. Memory peaked at 2.9–4.9 GB with 4 workers, so twice that still fits in 16 GB.
-- **8 vCPU, not 16.** The Windows suites set the length of every run, and a larger Linux shape would not shorten it: Linux already finishes ahead of Windows. `test.yml` runs overlap often. Over 746 runs in the same 14 days, two or more were in flight for about 39 % of the time that any run was. Concurrency limits are per platform, so a 16-vCPU Windows shape would make overlapping runs queue for Windows capacity. 8 vCPU doubles the throughput of each suite and still lets overlapping runs start at once.
-- **Everything else keeps its shape.** release-archive, static-checks, the result gate, and every publish job average at most 64 % CPU and finish well inside their caps. The win32 cross-compile legs' slow runs (4–8 minutes) come from earlier releases in the window. The ten most recent successful `win32-x64-msvc` runs took 54–82 s. `Build release payload` is effectively single-threaded (busy share 0.01). Every CodeQL language keeps 4x16. CodeQL does gate merges: ruleset `9310196` has a `code_scanning` rule that requires CodeQL results (no alerts at `errors` or security alerts at `high_or_higher`), but the analysis finishes inside the `test.yml` critical path, so a larger shape would not shorten the wait for a mergeable pull request. JavaScript analysis peaks at 10.5 GB, so a smaller-memory shape would be unsafe. `darwin-arm64` moves from 24 GB to 14 GB of memory; its 7.9 GB peak fits.
-- **Jobs without data keep their shape.** `warm-toolchain-cache.yml` has not run in the 30-day window, so its 4-vCPU shape is unchanged. `publish-npm` and `register-published-version` ran GitHub-hosted, where Blacksmith recorded nothing. `register-published-version` is a short network-bound job, and its shape stays at 4x16.
-
-Whole-job caps remain enforced. Vitest enforces each test's effective timeout; the duration report warns at 40% but never fails a passing test for headroom alone. The historical seven-day aggregate (`--since 7d`) reported a median of 100% CPU and a busy share of 1.0 for every Windows job, including release-archive, which averaged 49% over 14 days. Only about half of that window's Windows runs had metrics, so the sizing relied on the 14-day data.
-
-Re-measure on Namespace:
-
-1. Let each job accumulate at least five successful runs on Namespace.
-2. Export `nsc instance report` (a CSV of every runner instance from the last seven days, with allocated shape and observed peak CPU and memory). Also read the dashboard's **p90 CPU per Job** and **Max Memory Used per Job** views.
-3. Move a job to a larger shape only when its p90 CPU stays near its vCPU count, or its peak memory approaches the shape's limit, *and* its step timings show that it is compute-bound. Record the numbers in the change that resizes it, as the table above does. A job with low utilization can move down on the same evidence. For a `test.yml` or `codeql.yml` job the new shape is a new profile; follow [Resizing](#runner-profiles).
-
-### Platform differences imposed by Namespace
-
-- **Windows Server 2022, not 2025.** Namespace offers only a `windows-2022` runner image (amd64), so the Windows legs moved from Windows Server 2025. Coverage of `win32-x64` is unchanged. Windows ARM64 is still validated by content and architecture only, as before.
-- **Windows toolchain.** The Windows jobs build the native binding with the MSVC target and run `shell: bash` and PowerShell 7 steps. The image metadata lists no Visual Studio, so a Namespace Windows 4x16 instance was probed on 2026-09-23. It had Visual Studio Enterprise 2022 17.14 (MSVC 14.44, x64 `link.exe`), Windows SDK 10.0.26100, Git 2.54 with Git LFS 3.7.1 and Git Bash, PowerShell 7, `rustup`, and Node 20 (the jobs pin Node 22 through `setup-node`). No extra setup step is needed. The probe used `nsc create` rather than a runner label; its layout (`C:\hostedtoolcache`, `ImageOS=win22`) matches the GitHub Windows Server 2022 image lineage, but the first Namespace Windows job is the authoritative check.
-- **macOS Tahoe.** Both macOS targets build on Apple Silicon with pinned Rust 1.97.0. The Intel target cross-compiles with `x86_64-apple-darwin`, then selects x64 Node 22, installs the x64 smoke dependencies, loads the x64 native binding, and runs PostgreSQL persistence under Rosetta. The job fails if Rosetta or x64 execution is unavailable. This preserves translated execution coverage, not real Intel hardware coverage.
-- **Node on Linux.** The Namespace Ubuntu image does not list Node, so `register-published-version` installs Node 22 with `setup-node` before its `node -e` URL check. Every other Node-using job already did.
-
-The Intel replacement was probed on a short-lived Namespace Tahoe 6x14 instance on 2026-09-23 with Xcode 26.1.1. Rust 1.97.0 produced an x86_64 Mach-O binding in 19.32 seconds. Node 22.23.3 x64 loaded it under Rosetta, and the packaged PostgreSQL 18 runtime passed initdb, SQL insert, stop, restart, and persisted-row verification. This was an isolated runner probe, not a production release or evidence of native Intel execution.
-
-### GitHub-hosted exceptions
-
-Only `publish-npm` stays GitHub-hosted, for the registry constraint below.
-
-1. **`publish-npm` (`ubuntu-latest`).** Namespace runners register with GitHub as self-hosted runners, so the job's GitHub OIDC token carries `runner_environment: self-hosted` ([GitHub OIDC reference](https://docs.github.com/en/actions/reference/security/oidc)). npm accepts trusted publishing and provenance only from cloud-hosted runners:
-   - "Trusted publishing currently supports only cloud-hosted runners. Support for self-hosted runners is intended for a future release." ([npm trusted publishers](https://docs.npmjs.com/trusted-publishers))
-   - "To publish a package with provenance, you must build your package with a supported cloud CI/CD provider using a cloud-hosted runner." ([Generating provenance statements](https://docs.npmjs.com/generating-provenance-statements))
-
-   The registry enforces this and returns HTTP 422 with the message `Unsupported GitHub Actions runner environment: "self-hosted"`. Other projects have hit exactly this error on Namespace runners. A static npm token is not a workaround: provenance from a self-hosted runner is rejected too, and this repository publishes without static credentials.
-
-`register-published-version` is not an exception. It also uses GitHub OIDC, but the registration Worker (`bastani-inc/atomic-telemetry`, `src/index.ts`) checks the issuer, audience, repository and owner IDs, tag ref, workflow ref, subject, event name and environment claims. It never checks `runner_environment`, so the job moved to Namespace with its permissions unchanged.
-
-### Checkout and cache trust model
-
-This is a public repository, and `test.yml` and `codeql.yml` run `pull_request` workflows for fork contributions on Namespace, the same provider that runs releases. GitHub warns that "self-hosted runners should almost never be used for public repositories on GitHub, because any user can open pull requests against the repository and compromise the environment" ([Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)). The controls that keep that risk bounded are:
-
-- **Ephemeral runners, persistent caches.** Namespace starts a fresh runner for each job. Attached caches outlive it. PR jobs use explicit repository-qualified cache tags, `bastani-inc.atomic.ci.<job>.<platform>`, through the documented `;overrides.cache-tag=` profile suffix. Unit, integration, agent, archive, static-check, CodeQL and result-gate jobs have separate cache identities so a sparse job cannot replace a build job's cache under Namespace's last-write-wins snapshot model. Branch-write restrictions and Restricted access remain on the underlying profiles. Concurrent runs of the same job can still select different cache generations; no build assumes an exact previous snapshot.
-- **Restricted runner profiles for pull-request code.** Every job in `test.yml` and `codeql.yml` uses a repository-specific Restricted profile. The cache identity suffix changes storage selection, not API permissions. A fork can edit its workflow to request a different runner or cache, so maintainer approval remains the security boundary for workflow edits. Configuration tests cannot enforce it against a malicious PR.
-- **Standard checkout everywhere.** Every job clones with `actions/checkout`. Namespace's `nscloud-checkout-action` requires the git mirror, which is a cache volume. Any job that exits 0 commits it, pull-request jobs included, and later checkouts read the mirror's objects through git alternates. Namespace documents branch-restricted commits for cache volumes but does not say whether they cover the mirror. The action also writes the token to global git config and skips that cleanup when checkout fails. The conservative choice is to not use it. Cost: on the former Blacksmith runners in run [35901305543](https://github.com/bastani-inc/atomic/actions/runs/35901305543), a full-history LFS clone with `actions/checkout` took 21–38 s on Windows, against 7–9 s for Blacksmith's Linux sticky disk. Linux jobs should pay a comparable difference, which fits inside every cap (Linux release-archive finished in 116 s of its 240 s cap). Verify it on the first Namespace runs. `integration-tests` clones shallow (`fetch-depth: 1`) and without LFS: the suite reads no repository history and none of the LFS files. A full-history fetch of every branch took 4.5 min of its 20-minute cap in job [122378270170](https://github.com/bastani-inc/atomic/actions/runs/40555086928/job/122378270170), and the LFS fetch alone took 162 s in job [122402195248](https://github.com/bastani-inc/atomic/actions/runs/40564552364/job/122402195248). `unit-tests` also skips LFS: the unit suite passes with every LFS file replaced by its pointer. It keeps full history because its changelog test reads tags. A depth-1 fetch of all tags measured slower than the full fetch (10.8 s against 5.3 s). `agent-suite` keeps LFS for the coding-agent session fixtures.
-- **Main-only cache updates.** The four `atomic-ci-*` profiles have 50 GB cache volumes. Namespace's [protected cache updates](https://namespace.so/docs/solutions/github-actions/caching#protect-caches-from-updates) allow jobs from `main` to persist changes; PR jobs read the cache and discard their local changes. `test.yml` uses `namespacelabs/nscloud-cache-action` pinned to `1124a6f3ce44e5cf84cc22111530961f4d2a15f9` for npm downloads and, in jobs that build native bindings, Cargo dependencies and build output. `setup-node` has `package-manager-cache: false` to avoid duplicate archive transfers. `npm ci --ignore-scripts` still installs from the lockfile on every run. Cold caches remain valid; no cache miss skips installation or tests. The profile also enables automatic action and toolchain caching. Git checkout still uses `actions/checkout`, not the Namespace mirror action.
-- **Native bindings cached by their sources.** `unit-tests`, `integration-tests`, `agent-suite` and `release-archive` restore `packages/natives/native/*.node` with `actions/cache`, pinned to `55cc8345863c7cc4c66a329aec7e433d2d1c52a9` (v6.1.0). The key is the platform, the ISO week, and a hash of `crates/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `packages/natives/package.json` and `packages/natives/scripts/**`. On a hit a job skips the Rust toolchain install and the native build, about 1.5 minutes of each Windows shard. On a miss it installs Rust, builds as before, and saves the result. The week is in the key because `rust-toolchain.toml` tracks `stable`: a cached binding never outlives the compiler that a fresh build would use by more than a week. GitHub scopes a pull request's saved caches to that pull request, so a pull request can read `main`'s bindings but never replace them; `main` and every pull request with unchanged native sources share one build. Releases don't use this cache: `publish.yml` builds every binding from source.
-- **Bun compile target runtimes cached and verified.** `bun build --compile --target=<target>` embeds that target's Bun runtime. Bun 1.4.5 looks for it at `$BUN_INSTALL_CACHE_DIR/<name>-v<version>` (default `$HOME/.bun/install/cache`) and, when it is missing, downloads `@oven/<name>` from the npm registry on one connection with no retry. On the Namespace runners that download has run at about 45 KB/s, so a cold runner spent the whole 7-minute `release-archive` cap on it (runs 42647542558, 42652123925, 42655719520). `release-archive` and the `publish.yml` binary build jobs now restore the registry tarballs with `actions/cache/restore` under `bun-compile-target-<bun version>-<platforms>`, run `scripts/prefetch-bun-compile-targets.ts`, and save the tarballs right away on a miss. The script checks every tarball, restored or downloaded, against the sha512 the registry publishes, downloads a missing one with `curl` (resuming on a new connection when a transfer drops below 100 KB/s for 20 s), and unpacks the runtime into `$BUN_INSTALL_CACHE_DIR`, which the build step points at the same directory. Pull requests read `main`'s entries; a release's tag-scoped save serves only re-runs of that release. `publish.yml` saves Actions caches (these tarballs and `setup-bun`'s Bun binary) only when `github.ref` is a tag: a `workflow_dispatch` run started from a branch, such as a recovery dispatch from `main`, restores but never saves, because its saves would land in that branch's scope, which `main` runs and pull requests restore, and they would be written after the release commit's own code had run. Its build jobs check out `refs/tags/<tag>` and fail unless it is still the commit the integrity job verified. `release-archive` also caches the rest of that Bun cache directory (`bun-packages-<bun version>-<platform>-<package-lock.json hash>`, newest prefix match on a miss, saved after the build). It holds the clipboard bindings that `build-binaries.sh` stages with `bun add` for every platform, about 8 MB; cold, that `bun add` took 271 s in run 42660721117. The target runtimes are excluded from it because they are rebuilt from their verified tarballs.
-- **Model data cached, fetched live in one place.** `@bastani/atomic-ai`'s model data (`packages/ai/src/providers/data/`) is gitignored, so its only source is the upstream catalogs (models.dev, NVIDIA NIM, OpenRouter, Vercel AI Gateway, Radius). `static-checks` is the one job that fetches them live and strictly (`npm run build`) on every run, so a generator or catalog problem still fails CI there. On a push to `main`, and only when that generation left the committed provider shards unchanged, it saves the data with `actions/cache/save` under `atomic-model-data-v1-<hash of models.generated.ts, model-data.ts and generate-models.ts>-<date>`. `unit-tests`, `integration-tests`, `agent-suite` and `release-archive` restore the newest snapshot with that hash prefix, whatever its date (`actions/cache/restore`, `enableCrossOsArchive` so Windows reads Linux's), check it with `npm run check:model-data`, and build with `build:offline`. A catalog outage can't fail them while a snapshot exists. A job hydrates itself (`npm run hydrate:model-data`, one live fetch) only with no valid snapshot: a cold cache, or a pull request that changes the generator or the provider list. Pull requests read `main`'s snapshot and can't replace it. It is a cache and not a producer job or an artifact, so no shard waits on another job. `publish.yml` still hydrates live for every release.
-- **Separate release caches.** The macOS profile has a separate 50 GB volume. Linux and Windows release jobs use repository-qualified release cache tags, not CI tags. Release consumers carry `nscloud-cache-exp-do-not-commit`, including recovery dispatches from main. Main-only warmers populate npm downloads, SHA-256-verified Zig tarballs on the Linux release volumes and, for the win32 legs, the MSVC CRT/Windows SDK cache (see [MSVC CRT cache epoch](#msvc-crt-cache-epoch)). Releases verify Zig again before extracting it; they do not restore Cargo sources, build output, `node_modules`, native bindings or release artifacts. Inline release jobs do not enable the Namespace toolchain cache because its isolation is not yet verified.
-- **Cache restrictions are job configuration.** Main-only labels and profile settings are not proven immutable volume ACLs. Approved workflow edits can request the same cache under different settings. Do not treat a repo-prefixed tag as an authorization boundary. Release npm downloads are checked against lockfile integrity and Linux Zig tarballs against pinned SHA-256; Cargo source caching is withheld because restored sources do not provide the same protection. The macOS profile's automatic action/tool caching also needs hosted isolation verification before release readiness.
-- **Fork pull-request approval.** The repository requires approval before workflows run for pull requests from all external contributors: the policy is `all_external_contributors` (read it back with `gh api repos/bastani-inc/atomic/actions/permissions/fork-pr-contributor-approval`). Fork runs never receive repository secrets or a write token. Against a pull request that changes anything under `.github/workflows`, approval is the only barrier: the Restricted profiles protect only runs that use the committed workflows. Follow [Approving fork workflow runs](#approving-fork-workflow-runs).
-
-### Cache setup and validation
-
-In the [profile editor](https://cloud.namespace.so/workspace/actions/profiles), enable a 50 GB Cache Volume for each of the four CI profiles and `atomic-release-macos-arm64-6x14`. Under the cache's advanced settings, allow updates only from `main`. Leave custom sharing tags empty and retain Restricted access. Enable toolchain and action caching. The Linux profiles also cache container pulls; these are not remote Docker builds.
-
-Read back the volume size, `allow_commit_from_branch: [main]`, and builder mode with `nsc github profile list -o json`. The dashboard may reset the hidden builder mode to `USE_REMOTE_BUILDER` when editing a Windows or macOS profile. Restore only that field with `nsc github profile update --profile_id <id> --builder_mode NO_CACHING`, then verify the volume settings remain intact. Access Level must be checked in the dashboard because the CLI does not expose it.
-
-The first main run populates the caches. PRs and release tags cannot warm them persistently, so pre-merge cache misses are expected. The macOS warmer checks `github.ref == 'refs/heads/main'`, including on manual dispatch. It performs no build or publication. Once merged, it can also be started with `gh workflow run warm-macos-release-cache.yml --ref main`.
-
-The cache action runs after checkout and after the relevant tools are installed, following the [action reference](https://namespace.so/docs/reference/github-actions/nscloud-cache-action). Both the action SHA and `spacectl-version: 0.12.3` are pinned. This version includes the Windows Rust junction-path fix introduced in 0.12.2. The action configures local mounts without calling Namespace APIs; profile access remains Restricted. Verify Linux, Windows, and macOS logs for configured paths and cache hits, compare setup/build timings after a successful main population, and confirm Restricted access remains unchanged. No warm-hit or performance claim is made until those runs complete. Cache wiring does not resolve the separate Windows SYSTEM temporary-directory ACL failures or per-test duration regressions found in the first migration run.
-
-The macOS warmer installs both arm64 and x64 Node/npm dependencies, so the first Intel smoke can reuse architecture-specific downloads. This remains download caching only; each release builds its native module from source.
-
-### Approving fork workflow runs
-
-Approving a fork run lets the pull request's own workflow files run on Namespace. Approval is required for every external contributor, and again for each push that triggers new runs, because GitHub requires approval when a run is "created by" or "triggered by" a user who needs it ([Managing GitHub Actions settings](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#controlling-changes-from-forks-to-workflows-in-public-repositories)). Members of the organization and of the repository bypass approval entirely. The approval control does not show the diff, so follow GitHub's [approval procedure](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks): open **Files changed**, inspect it, and only then click **Approve workflows to run**. Before approving:
-
-1. Inspect the pull request's diff for any change under `.github/`, especially `runs-on` (including a `;`-suffix on a profile label), new or renamed workflows, changed triggers (`on:`), and `permissions:`.
-2. If the pull request touches `.github/`, do not approve its workflow runs until a maintainer has reviewed that change. A `runs-on` that names anything other than an approved `namespace-profile-atomic-ci-*` profile, or a new pull-request-capable workflow, must not run from a fork.
-3. Repeat the check before approving a run for a later push: every push can change the workflows.
-
-#### Residual risk and available mitigations
-
-No Namespace or GitHub setting available to this repository enforces the profile choice against a pull request that edits workflow YAML:
-
-- **Inline labels stay open.** Namespace documents inline `runs-on` labels as a first-class configuration path ([Runner configuration](https://namespace.so/docs/reference/github-actions/runner-configuration)) and documents no way to disable them or to allowlist labels or profiles per repository. Access Level applies per profile ([Access levels](https://namespace.so/docs/solutions/github-actions/runner-controls/access-levels)), so it does not reach inline `nscloud-*` labels or other Permissive profiles, such as the workspace's `default` and `default-arm64`.
-- **Runner-group workflow restrictions do not fit.** Restricting a runner group to selected workflows requires GitHub Enterprise Cloud ([Managing access to self-hosted runners](https://docs.github.com/en/enterprise-cloud@latest/actions/how-tos/manage-runners/self-hosted-runners/manage-access)), and the workflow must be pinned to a branch, tag, or SHA. A `pull_request` run loads its workflow from `refs/pull/N/merge` ([Events that trigger workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)), so such a pin would block every pull-request run.
-- **Rulesets and CODEOWNERS gate merging, not execution** ([Available rules for rulesets](https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets), [About code owners](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)). Push rulesets that restrict file paths apply only to private and internal repositories ([About rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)), and this repository is public.
-- **Grants appended to a profile label.** Namespace documents appending `;permissions.additional_grant=...` to a profile label in `runs-on` ([Bazel remote execution](https://namespace.so/docs/bazel/execution)), and the setup guide says runner controls, access levels included, can be set by appending settings to a profile name ([GitHub Actions setup](https://namespace.so/docs/solutions/github-actions)). The docs do not say whether Restricted caps such a grant or suffix. This is an open question for Namespace support.
-
-**Accepted residual risk (decided 2026-09-23).** Approved fork pull-request code can request a Permissive runner despite the Restricted profiles, and the `permissions.additional_grant` question above is unresolved. The Restricted Access Level is therefore not enforcement that a pull request cannot bypass. The accepted controls are maintainer approval for all external contributors, with the approver reviewing workflow changes as described above, rather than workspace-wide Namespace changes. The workspace's existing `default` and `default-arm64` profiles stay as they are.
-
-Possible future decisions for the workspace owner. None is authorized or pending; they are recorded under [Follow-ups](#follow-ups):
-
-1. Set the workspace's existing `default` and `default-arm64` profiles to Restricted, or delete them. This closes only the `namespace-profile-default` pivot, and other repositories may use those profiles.
-2. Ask Namespace support to lock down the workspace-default workload permissions ([Workspace access controls](https://namespace.so/docs/workspaces/access#workload-access)). This is the only documented control that also covers inline labels, but it constrains the inline-label jobs in `publish.yml` and `warm-toolchain-cache.yml` too, because an Access Level can only tighten the workspace default.
-3. Run this repository's CI in a separate Namespace workspace that holds nothing sensitive, so a Permissive token reaches nothing of value. Whether one GitHub organization can split repositories across workspaces is unconfirmed.
-4. Confirm with Namespace support whether Restricted caps `permissions.additional_grant`, and whether an access level can be set through a `runs-on` suffix.
-
-### Standard runner images
-
-Both Linux CI profiles use standard Ubuntu 24.04 images. CI installs Rust explicitly through the pinned setup action; Node and Bun use their existing setup actions. Dependency caches remain enabled.
-
-Custom pre-baking was abandoned after the image built successfully but remained unavailable to hosted jobs. Do not require a baked toolchain or re-enable custom images without a new maintainer decision.
-
-### Follow-ups
-
-These are recorded here and deliberately not performed by the migration:
-
-2. **Measurement-based resizing.** Follow [Sizing](#sizing) once each job has five successful Namespace runs.
-3. **First-run verification.** Before the first pull-request run, confirm in the [runner profile editor](https://cloud.namespace.so/workspace/actions/profiles) that all four `atomic-ci-*` profiles exist and each reads Access Level Restricted. On the first runs, confirm that no `test.yml` or `codeql.yml` job stays queued (a missing profile queues until GitHub cancels it after 24 hours, and `timeout-minutes` does not count queue time), that each job's runner has the profile's shape, that Windows native builds link with MSVC, Linux checkout time fits its caps, `docker run` bind mounts work in `static-checks` and both Alpine legs, `patchelf` and LLVM 18 are present on arm64, and `register-published-version` mints its OIDC token.
-4. **Fork-workflow residual risk (accepted 2026-09-23).** The risk is accepted under the approval gate; see [Residual risk and available mitigations](#residual-risk-and-available-mitigations). If the workspace owner revisits it, the options are: restrict or delete the `default` and `default-arm64` profiles; lock down workspace-default workload permissions through Namespace support; move this repository's CI to a separate Namespace workspace; and ask Namespace support whether Restricted caps `permissions.additional_grant` and whether a `runs-on` suffix can set the access level. None is authorized.
-
-## Tests (`test.yml`)
-
-The workflow runs on pushes to `main` and on pull requests when they open, get a new push, reopen, are marked ready
-for review, or go back to draft. Release branches reach CI through their PRs, without duplicate push runs. A draft pull request runs no work
-job; see [Draft pull requests](#draft-pull-requests).
-
-Runs share a `concurrency:` group per pull request (`pr-<number>`) and one per pushed ref (`refs/heads/main`), using
-GitHub's documented [concurrency groups](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency):
-
-- A pull request sets `cancel-in-progress: true`, so a new push to it cancels the run of its previous head. Only the
-  head SHA's `test (all platforms)` can gate the pull request, so the cancelled context sits on a SHA that no longer
-  matters. Before the group, every push held a full matrix of runners until it finished; on a busy day about 570 runs
-  queued behind each other and runs took most of a day to start.
-- `main` sets `cancel-in-progress: false`, so a run that has started always finishes and every `main` SHA that published
-  `test (...)` gets its result. GitHub keeps at most one pending run per group: a newer `main` push replaces a pending
-  older one (that run ends cancelled without starting) and waits for the running one.
-
-Six independent job definitions expand to thirty-four work-job instances and three
-result-gate legs. Unit and integration suites run on separate Linux/Windows VMs,
-each building its own prerequisites. This duplicates setup cost but avoids
-serial dependencies between suites. The unit, integration and agent suites are split
-by file across five, five and three jobs on Linux and seven, five and five on Windows
-(see [Sharded suites](#sharded-suites)); no test is removed.
-
+- [Tests](../.github/workflows/test.yml) runs on pushes to `main` and when a pull request opens, gets a push, reopens or changes draft status. It runs tests and archive smoke checks on Linux and Windows.
+- [Cancel closed pull request runs](../.github/workflows/cancel-closed-pr-runs.yml) runs when a pull request closes, including after a merge. The `cancel` job stops queued and running `test.yml` runs for that PR without checking out its code.
+- [CodeQL](../.github/workflows/codeql.yml) runs on pushes to `main`, on PRs targeting any branch and weekly. The `analyze` job scans GitHub Actions, JavaScript and TypeScript, and Rust. Keep GitHub's CodeQL default setup disabled so this workflow can upload results.
+- [macOS tests](../.github/workflows/macos-tests.yml) runs selected root test files on a branch a maintainer dispatches. It is not a required check.
+- [Warm toolchain cache](../.github/workflows/warm-toolchain-cache.yml) warms Linux and Windows release caches on pushes to `main` or a manual dispatch on `main`.
+- [Warm macOS release cache](../.github/workflows/warm-macos-release-cache.yml) warms the macOS release cache on pushes to `main` or a manual dispatch on `main`.
+- [Publish](../.github/workflows/publish.yml) runs on release tag pushes. Use manual dispatch only for [recovery](#direct-release-trigger-and-recovery).
+
+## Tests
+
+- `unit-tests` and `integration-tests` run the root suites on Linux and Windows.
+- `agent-suite` runs the AI and coding-agent suites on both platforms. Its first shard on each platform also runs the other compiled workspace packages' suites.
+- `storage-conformance` runs the database-backed suites on Linux.
+- `release-archive` builds and smoke tests the Linux and Windows archives without publishing them.
+- `static-checks` runs `npm run check`, documentation checks, script and CI contract tests, and installer smoke tests.
+
+The `test` job reports `test (all platforms)`. It runs even if work jobs fail and requires every work job and shard to succeed. Keep `always()` on the gate. GitHub counts skipped checks as passing. If you rename a required check, add its replacement and update the ruleset before removing the old name.
 
 ### Draft pull requests
 
-A draft pull request runs none of the work jobs. Each work job has `if: ${{ !github.event.pull_request.draft }}`, so a
-push to a draft finishes at once and holds no runner. The Windows legs are the scarce ones: each full run needs eighteen
-Windows jobs, and on a busy day hundreds of them queued behind work-in-progress pushes that nobody was going to merge.
-
-A draft run never reports a passing `test (all platforms)`. GitHub counts a skipped job as a successful check, so
-skipping the result gate under its required name would let a draft run mark its head commit as passed. The gate's name
-is therefore an expression that yields `test (all platforms)` only outside a draft. GitHub doesn't evaluate a skipped
-job's `name`, so in a draft the skipped gate appears under the expression's text (as do the skipped matrix jobs, under
-their templates), and the draft run reports no `test (all platforms)` context at all. A commit that never had a full run
-therefore shows the required check as expected, and the pull request stays blocked. If GitHub ever evaluated the name
-of a skipped job, the draft branch, `test (draft, runs when marked ready)`, still differs from the required name. Do
-not replace the expression with a plain `test (all platforms)` while the gate skips itself in drafts.
-
-A result from an earlier full run stays on its commit. If a ready pull request whose full run passed is converted back
-to draft without a new push, its head commit keeps that passing `test (all platforms)`. What keeps the draft from being
-merged then is GitHub's own rule that a draft pull request can't be merged, not this workflow.
-
-Marking the pull request ready for review (`gh pr ready <number>`) starts a full run on its head commit, and the gate
-reports `test (all platforms)` as usual. Converting a ready pull request back to draft (`converted_to_draft`) starts a
-draft run, which cancels a full run still in progress through the pull request's concurrency group; the cancelled
-run's gate fails closed.
-
-Open a pull request as a draft while it is still changing (`gh pr create --draft`) and mark it ready once it is done.
-
-### Runs of a closed pull request
-
-`cancel-closed-pr-runs.yml` runs when a pull request closes, merged or not, and cancels its `test.yml` runs that are
-still queued or running. A closed pull request's run can no longer gate anything, and before this workflow such runs
-stayed queued for hours, holding Windows capacity that open pull requests were waiting for.
-
-- It triggers on `pull_request_target`, not `pull_request`, so it runs the copy of the workflow committed on the base
-  branch, with a token that can cancel runs of fork pull requests too, and it also runs for a pull request that closed
-  with merge conflicts, which gets no `pull_request` run. It never checks out or runs pull-request code; it reads only
-  the event payload.
-- Its job has `actions: write` and `pull-requests: read`, nothing else. It lists `test.yml` runs with event
-  `pull_request` and the pull request's head branch in each unfinished status, keeps those whose head repository and
-  branch match the pull request, and cancels them. A run's `pull_requests` field lists only open pull requests, so a run
-  that still names another open pull request from the same branch is left alone. A run that finished in the meantime is
-  skipped.
-- It first reads the pull request again and does nothing if it is open by then: a pull request closed and reopened
-  before the job ran keeps the run its reopening started. It also cancels only runs created no later than the close,
-  so a run started by a reopening that lands while the job is working is left alone too.
-- The `push` run that a merge starts on `main` is never touched.
-- It runs on the `atomic-ci-linux-amd64-4x16` profile with its own cache tag, `bastani-inc.atomic.ci.run-cleanup.linux-amd64`.
-  A `pull_request_target` run carries the base branch's ref, so the profile's main-only cache rule lets it commit that
-  volume; the job writes nothing to it, and the separate tag keeps it away from every other job's cache.
-
-### Why steps are grouped this way
-
-Steps stay in one job only when one consumes another's build output. Nothing is passed between jobs as an artifact because waiting for a producer job introduces a serial dependency. The dependency edge can lengthen the critical path; this is not a claim that uploading and downloading the bytes costs more than recompiling.
-
-- `test/unit/pi-0.82.1-artifacts.test.ts` gates its assertions on `packages/coding-agent/dist` and degrades to `test.skip` with a warning when the build has not run, so the unit suite must stay behind the package build. Moving it into a build-less job would lose coverage without failing anything.
-- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`. All six work-job definitions install Node; `integration-tests` owns this package smoke.
-- `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `npm run build --workspace=@bastani/atomic-natives`.
-- `packages/coding-agent/test/tools-05-01.suite.ts` runs the real ripgrep against files on disk. `agent-suite` installs a pinned ripgrep (version and per-platform SHA-256 in the job's `env` and matrix) into `$RUNNER_TEMP/ripgrep/bin` and puts it first on `PATH` before the coding-agent suite; the archive comes from an Actions cache keyed by its digest and is checked against the digest on every run, so only a cache miss downloads it, in that setup step with retries. `ATOMIC_REQUIRE_PROVISIONED_RIPGREP=1` then turns on offline mode for those tests and adds a check that ripgrep resolves, so a missing install fails at once instead of falling back to Atomic's latest-release download inside a test (#4389). To move the pin, change `RIPGREP_VERSION` and both `ripgrep_sha256` values together, taking each digest from the release's `.sha256` asset.
-- `test/unit/skill-creator-output.test.ts` and `test/unit/skill-creator-viewer-robustness.test.ts` run skill-creator's `package_skill.py` and `quick_validate.py`, which read `SKILL.md` with PyYAML. Linux's image has PyYAML; on Windows, `unit-tests` installs a pinned PyYAML from PyPI into the image's Python before the suite, checked against the SHA-256 of each Windows wheel for CPython 3.10-3.15, and checks that it imports without the user's site-packages, as the tests' reduced environment runs Python. `ATOMIC_REQUIRE_PYYAML=1` on the unit test step makes a guard test fail when Python or PyYAML is missing, so those tests never skip silently. To move the pin, change the version and every hash together, taking each from the release's files on PyPI.
-- `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. Both root-suite jobs also build native bindings explicitly. The CI project's native global setup builds a missing binding in `static-checks`, so a cold static job needs Rust despite having no explicit toolchain step.
-- `agent-suite` runs the `packages/ai` and `packages/coding-agent` Vitest suites under Node on both Linux and Windows, in separate steps. The AI suite runs after its package build via `npm run test --workspace=@bastani/atomic-ai`; shard 1 also runs the schema, telemetry, TUI, agent-core and codemode suites; live-provider tests skip when their credentials are absent, while deterministic tests remain required. The coding-agent suite runs after the native build; its SQLite selectors resolve `node:sqlite` on both runtimes (Bun ships it from 1.4.0; the repository's Bun floor is now 1.4.2). Both suites are covered by the existing `test (all platforms)` gate through `agent-suite`. Each agent-suite shard runs its share of both suites, so `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1` applies wherever the native-binding test lands.
-
-Keep Vitest's default file isolation and worker sizing. Do not serialize suites, cap workers, or remove existing duplicate executions to improve timings. Sharding splits a suite's files across jobs; every shard still runs its files with Vitest's defaults.
-
-Split long-running test files by topic so file-level parallelism can apply. Do not add a barrel that imports the split files: it would run their tests again in a single worker. Move a fixture the split files share into `test/helpers/` (for example `test/helpers/workflow-local-pool-lifecycle.ts`).
+Draft PRs skip the work jobs and do not report `test (all platforms)`. Keep the result gate's separate draft name so the skipped job cannot satisfy the required check. Mark a PR ready for review to start a full run. A new run cancels any in-progress run for the same PR. On `main`, a new run can replace a pending run but does not cancel one that has started.
 
 ### Sharded suites
 
-Each test job runs one shard of its suites, passing `--shard=<i>/<n>` through npm:
-
-| Job | Linux shards | Windows shards | Command |
-| --- | ---: | ---: | --- |
-| `unit-tests` | 5 | 7 | `npm run test:unit -- --shard=<i>/<n>` |
-| `integration-tests` | 5 | 5 | `npm run test:integration -- --shard=<i>/<n>` |
-| `agent-suite` | 3 | 5 | `npm run test --workspace=@bastani/atomic-ai -- --shard=<i>/<n>`, then the same for `@bastani/atomic` |
-
-A job's matrix crosses both OSes with the larger shard list, excludes the Linux shards above its count, and sets
-`shards` per OS through `include`, so the job name and both `--shard` arguments read `<i>/<n>` for that OS.
-
-The counts hold each job's projected wall time to at most 70% of its cap (see [Per-job time limits](#per-job-time-limits)).
-The projection is the job's measured setup (everything before the sharded test step) plus the sequencer's expected wall
-for its slowest shard, times the ratio of measured to expected test-step time in the same run (1.1 to 1.4). From
-[#5394](https://github.com/bastani-inc/atomic/pull/5394)'s full run on the CI-sized VMs, with the record refreshed from it:
-
-| Job | Old shards | Old slowest job | New shards | Projected slowest job | Cap |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| unit, Linux | 5 | 345 s | 5 | about 360 s (43%) | 14 min |
-| unit, Windows | 5 | 549 s | 7 | about 430 s (51%) | 14 min |
-| integration, Linux | 4 | 471 s | 5 | about 390 s (54%) | 12 min |
-| integration, Windows | 4 | 486 s | 5 | about 490 s (68%), bound by `sdk-builtin-host-parity-host-routing.test.ts` (303 s) | 12 min |
-| agent-suite, Linux | 3 | 290 s | 3 | about 290 s (48%) | 10 min |
-| agent-suite, Windows | 3 | 580 s | 5 | about 420 s (70%), bound by `worktree-pool-claim.test.ts` (209 s) and about 170 s of setup and the atomic-ai suite | 10 min |
-
-The Windows agent suite needed `resume-session.test.ts` (344 s on Windows, 26 s on Linux: each case drives Git and
-worktrees, which Windows runs about ten times slower) split by topic into `resume-session.test.ts`,
-`resume-session-setup.test.ts` and `resume-session-other-checkouts.test.ts`, with their fixture in
-`packages/coding-agent/test/helpers/resume-session-fixture.ts`. A further shard does not help a job whose slowest file
-already sets its floor; split that file instead. The two files that bound the table's Windows rows are split the same
-way: `sdk-builtin-host-parity-host-routing.test.ts` into `-prompt-nodes`, `-stage-questionnaire`, `-across-hosts` and
-`-children` (about 114, 87, 83 and 40 s of cases on Windows), and `worktree-pool-claim.test.ts` into itself,
-`-candidates` and `-edges` (about 81, 71 and 77 s), with their fixture in
-`packages/coding-agent/test/helpers/worktree-pool-claim-fixture.ts`.
-
-A whole-suite job's wall time was set by its longest files and by its total. Pooled-worker integration files ran for four to eight minutes each, and the unit suite alone took 7–10 minutes on one runner. Sharding spreads each suite over several 8-vCPU runners, and long files are split so that none outlasts its shard's share.
-
-The root `vitest.config.ts` and `packages/coding-agent/vitest.config.ts` set `test/helpers/duration-sequencer.ts` as the sequencer; the atomic-ai suite (about 25 s) keeps Vitest's own split: its three shards took 6, 14 and 8 s on Linux and 9, 15 and 8 s on Windows in November, about 5% of an agent-suite shard, and its step writes no per-file report to balance by. Vitest's own `--shard` splits files by a hash of their path and, with no local results cache (every CI run), starts the largest files first; neither looks at duration. The sequencer uses the per-file durations measured on CI for the current OS, recorded in `test/helpers/test-file-durations.json` by repository-relative path. Each file costs its duration plus 2 s to collect. A shard's expected wall time is its longest file or its total spread over 7 workers (Vitest's default on the 8-vCPU runners), whichever is larger. Files are placed longest first, each in the shard whose expected wall time would be lowest with it, and each shard starts its longest files first. No assignment finishes before its heaviest file or before every shard's balanced share of the suite, so a shard expected to finish within the larger of the two counts as finishing at it, and among those the least loaded shard takes the file. Without that floor, the heavy files that fit in any shard's share all went to the shard whose longest file was shortest: a Windows unit shard drew eight of the twelve heaviest files, which each start child processes, and running side by side its tests took 904 s against the 607 s recorded. And a shard holding a file longer than every share kept it alone while the other shards split the process-heavy files: a Windows integration shard of seventeen of them ran each about 1.7 times its recorded time and timed a test out. Every shard computes the same assignment from the same file list, so each file runs in exactly one shard. A file missing from the record counts as 20 s, so a stale record skews the balance but never drops or repeats a file. `test/unit/duration-sequencer.test.ts` checks this on the real configs of the unit, integration and coding-agent suites: for two to five shards it runs the configured sequencer for every shard and requires the union of the shards' files to equal the suite's full file list, each file once.
-
-The shard counts follow the measured totals. Integration runs five shards per OS. Its pool files start worker processes, so they are CPU-bound and slow down as a shard's 7 workers compete for its 8 vCPUs: in November three Linux shards had 3,300–3,500 worker-seconds of collection and tests between them, about 160 s each if perfectly balanced, and the slowest measured 240–290 s. Some files are long and cannot be split further. On Linux, `workflow-pool-load-gate.test.ts` (about 115–125 s) runs its 150-worker gates one after the other by design. On Windows, the package-install test in `installed-package-node-extensions.test.ts` takes about 80–185 s. Either file alone sets its shard's floor, and four shards bring the other shards' share to about that floor.
-
-Shard times vary more between runner VMs than between shards. In November the same shard's files, assigned the same way, took up to twice as long to import and run from one run to the next (one Linux unit shard: 343, 310 and 513 s of import), so a run's slowest shard is mostly its slowest VM. Balancing evens out the expected work; the shard counts leave room for that spread.
-
-The load gate measures the root's main-thread lag against fixed bounds, so it must not share its runner with other files. Unsharded, it happened to run last and alone. Sharded and longest-first, it started beside about five other pool files, and its p99 lag reached 105.6 ms of its 100 ms bound ([run 40577049870](https://github.com/bastani-inc/atomic/actions/runs/40577049870)). It is now its own Vitest project, `integration-load-gate`, with `sequence.groupOrder: 1`. Vitest runs it after every other integration file of the run or shard has finished. `npm run test:integration` selects all three integration projects, and the sequencer counts each gate's time after its shard's preceding projects rather than beside them. The interactive event-loop guard (`interactive-event-loop-guard.test.ts`) holds a real CLI's and its engine's event-loop delay to fixed budgets, so it is the project `integration-ui-gate`, with `sequence.groupOrder: 2`: it runs after the load gate, alone as well.
-
-Unit runs five shards on Linux and seven on Windows (counts above): in November its 1,140 files needed 3,300–4,000 worker-seconds of collection and tests on Linux and 4,000–5,700 on Windows, and with four shards the slowest took over three minutes in about half the runs. The agent suite runs three on Linux and five on Windows, where its coding-agent files need about 1,400 worker-seconds. Neither suite has a file that outlasts its shard's share, now that the longest unit files are split by case (Windows: `workflow-unhandled-rejection-attribution` 318 s, `workflow-stop-reason-containment` 221 s, `intercom-broker-watchdog` 155 s, `workflow-dropped-ctx-promise-containment` 154 s; and in November, once they had grown back, `workflow-unhandled-rejection-attribution-concurrency` 157–231 s, `workflow-stop-reason-containment` 146–165 s and `workflow-unhandled-rejection-attribution` 124–147 s on Windows, and `native-command-output-retention` 121 s on Linux). Each Node case in those files starts a child process that loads the workflow engine from source through jiti, about 5 s on Linux and 10 s on Windows, so a file of a dozen cases per runtime outlasts its shard on its own. Their shared helpers are in `test/helpers/`. In November the shared pool's worker-host cases (`workflow-shared-pool-coordinator.test.ts`, 290 s on Linux and 239 s on Windows, one case alone 65 s) outlasted their shard the same way. They are split by topic into six files, and a split file's record entry is the sum of its cases' measured durations until CI measures the file.
-
-The pool root fixtures the integration suite starts as processes of their own (`test/fixtures/pool-*-root.mjs`, `public-pool-coordinator.mjs`) load the workflow sources through jiti with its disk cache, as the source worker entry does. Without it, each start took about 5 s of CPU instead of 2.5 s, and a test that crashes and resumes a root starts several.
-
-Refresh the record when shard times drift apart, from the reports of several recent CI runs (each report's OS comes from its artifact name; a file that appears in several reports gets its mean over the reports where it passed, since a failed file's time is when it died or timed out). Pass only runs from after a change that moved many files' durations at once: keeping worktree snapshots out of the checkout (#4414) cut some files by 80–95%, and a mean over runs from before it still weighs them at the old time:
+The workflows split suites by file. To reproduce a shard locally, use the job's `--shard` value with its npm command:
 
 ```sh
-for run in <run-id> <run-id> <run-id>; do gh run download "$run" -p 'test-diagnostics-*' -D "/tmp/test-reports/$run"; done
+npm run test:unit -- --shard=1/5
+npm run test:integration -- --shard=1/5
+npm run test --workspace=@bastani/atomic-ai -- --shard=1/3
+npm run test --workspace=@bastani/atomic -- --shard=1/3
+```
+
+Keep Vitest's default worker sizing and file isolation. If one file dominates a shard, split it by topic. If the weights in `test/helpers/test-file-durations.json` are stale, download `test-diagnostics-*` artifacts from several recent runs. Run the first command for each run ID, then update the weights:
+
+```sh
+gh run download "$run_id" -p 'test-diagnostics-*' -D "/tmp/test-reports/$run_id"
 bun run scripts/test-file-durations.ts /tmp/test-reports/*/*/*.json
 ```
 
-A stale record never fails CI. `scripts/run-test-suite.ts` compares each shard's measured file durations with the record and, for a file at least 30 s and a factor of two away from its weight (a heavy new file, or one that gained cases), adds a `Stale test durations` warning and a step-summary table naming it and the refresh above. A new file without a recorded duration is expected and is only named when it is far heavier than the 20 s an unknown file weighs.
-
-### The `test` job is a result gate
-
-Repository ruleset `9310196` requires `test (all platforms)`. This single gate replaces the two legacy provider-named checks and runs on the Linux 4x16 Namespace profile. Its display name is independent of runner sizing and provider labels.
-
-The gate exists to fail closed:
-
-- Moving work into new jobs without a gate would silently un-protect every step that left `test`. The contexts would still exist and still go green.
-- `if: always()` is mandatory. A job whose `needs` failed is *skipped*, and GitHub counts a skipped required check as satisfied, which would turn a red suite green.
-- The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, the gate asserts every platform's work jobs.
-- In a draft pull request the gate is skipped under another name, so the required context is never reported rather than reported as skipped; see [Draft pull requests](#draft-pull-requests).
-
-The work jobs are named by platform, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`, and integration jobs also by shard, for example `integration-tests (linux-x64, 2/4)`. Their `runner` matrix key holds the Namespace runner profile label. No ruleset or contract depends on the work-job names. Because the gate needs `integration-tests` as a whole, any failed, cancelled or skipped shard fails it.
-
-When changing a required-check name, emit the replacement first, update the repository ruleset, then remove the old context. Never remove a context while branch rules still require it.
-
 ### Per-job time limits
 
-Current whole-job caps include setup, execution, retries and teardown. Queue
-time before a runner starts is excluded. Step limits never extend the enclosing
-job deadline.
-
-| Job | Linux | Windows | Calibration source |
-| --- | ---: | ---: | --- |
-| Unit tests (each shard) | 14 min | 14 min | Slowest recent unsharded job 925 s ([run 40564552364](https://github.com/bastani-inc/atomic/actions/runs/40564552364)): 411 s of setup with a 261 s checkout plus a quarter of 514 s of tests, plus 50% |
-| Integration tests (each shard) | 12 min | 12 min | Slowest four-shard job 340 s ([Windows 2/4](https://github.com/bastani-inc/atomic/actions/runs/40569411594)), scaled by 4/3 for three shards: `ceil(453 × 1.5 / 60)` |
-| Storage conformance (each shard) | 30 min | not run | Not yet measured: about 5 min of setup as in an integration shard, plus half of the storage files |
-| Agent suite (each shard) | 10 min | 10 min | Slowest recent unsharded job 540 s ([run 40564552364](https://github.com/bastani-inc/atomic/actions/runs/40564552364)): about 290 s of setup plus a third of its suites, plus 50% |
-| Release archive | 4 min | 7 min | [Linux build](https://github.com/bastani-inc/atomic/actions/runs/34653564242/job/103440964907), [Windows finalization](https://github.com/bastani-inc/atomic/actions/runs/34035777039/job/101493452122) |
-| Static checks | 6 min | not run | Includes the interactive event-loop analysis in addition to the earlier [182-second finalization timeout](https://github.com/bastani-inc/atomic/actions/runs/34873678170/job/104075487913) calibration |
-| Result gate | 1 min | 1 min | All three context legs execute on Linux |
-
-The default calibration is `ceil(observed job seconds × 1.5 / 60)`. Integration
-caps instead reserve setup plus two full test attempts and teardown; the Linux
-archive cap includes projected packaging and smoke work. The exact formulas
-are pinned in [`test-workflow-topology.test.ts`](../test/ci/test-workflow-topology.test.ts).
-
-Recalibrate from fresh job and step evidence, separating successful completion
-from timeout-censored runs, projected retries and cold-cache assumptions. A
-timeout boundary is not a measured completion or an upper bound. Static checks
-hit the old three-minute cap at 182 seconds despite every step succeeding;
-`ceil(182 × 1.5 / 60) = 5` leaves finalization headroom. Three recent successful
-samples were [150 s](https://github.com/bastani-inc/atomic/actions/runs/34867753417/job/104055765352),
-[93 s](https://github.com/bastani-inc/atomic/actions/runs/34811244121/job/103872866251) and
-[106 s](https://github.com/bastani-inc/atomic/actions/runs/34809819763/job/103868771048),
-all on the former Blacksmith 4-vCPU Linux runners. These are a small observational sample, not
-controlled cache or runner comparisons. Keep detailed incident history in PRs
-and linked runs rather than growing this guide with each calibration.
-
-The global per-test timeout remains 30000 ms. Expensive integration tests may use
-named, platform-neutral explicit budgets. Vitest fails actual timeouts; the wrapper
-only warns at 40% of each effective budget and retains duration artifacts. It does
-not retry failing suites. Missing or unreadable timing reports still fail as harness
-errors. Whole-job timeouts remain independent hang limits. npm's request policy allows at most 85 seconds for one stalled request
-and two retries; that is less than the smallest npm-installing job cap, but does
-not guarantee a whole install fits. Rust installation and its retry each have
-a four-minute step cap; PR-only Mintlify validation has a five-minute step cap.
-
-### macOS test dispatch
-
-`test.yml` has no macOS leg. `macos-tests.yml` lets a maintainer run chosen root test files on macOS before merging a change that behaves differently there, such as a macOS-only code path:
-
-```sh
-gh workflow run macos-tests.yml --ref <branch> \
-  -f project=unit \
-  -f tests="test/unit/<first>.test.ts test/unit/<second>.test.ts"
-```
-
-The job builds the packages and the native bindings from source, as the unit jobs do, and runs `vitest --run --project <project>` on the listed files. It accepts only paths under `test/` that end in `.test.ts`, and passes the inputs to the shell through environment variables, never by expression substitution.
-
-- **Trigger.** `workflow_dispatch` only. Starting it needs write access to the repository, so it never runs fork or pull-request code that a maintainer has not pushed.
-- **Runner.** The repository has no other macOS profile, so the job uses `namespace-profile-atomic-release-macos-arm64-6x14`, the release profile. It carries `nscloud-cache-exp-do-not-commit` and configures no cache action, so nothing it does is written to that profile's cache volume. A dispatch from a branch other than `main` cannot commit to the volume in any case (updates are allowed only from `main`).
-- **Permissions.** `contents: read`. The checkout does not persist credentials. Every action is pinned by SHA, as in the other workflows.
-- **Result.** The run is not a required check. A pull request that depends on it links the run.
+Read the job's `timeout-minutes` in the workflow. It covers setup, tests and teardown, not runner queue time. Check the job log to find the blocked step. For a test failure, look at `.ci-diagnostics/` in the `test-diagnostics-*` artifact. Duration warnings are diagnostic. Actual test timeouts fail the suite.
 
 ### Storage backend matrix
 
-`test/integration/storage-conformance-matrix.test.ts` runs every store's conformance suite (the database facade, sessions, the workflow run journal and Intercom's multi-node routing stores) against each storage backend in `test/helpers/storage-backends.ts`: a SQLite file, a libSQL server (sqld) and Postgres. A server backend runs when its URL is set (`ATOMIC_TEST_LIBSQL_URL`, `ATOMIC_TEST_POSTGRES_URL` with `ATOMIC_TEST_POSTGRES_PASSWORD`) and is skipped otherwise, so the integration shards run the SQLite rows on both OSes. The Postgres rows stay skipped until the Postgres adapter lands (#4793).
+`storage-conformance` runs the [storage matrix](../test/integration/storage-conformance-matrix.test.ts) with libSQL and PostgreSQL service containers, in addition to SQLite. `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1` makes missing server configuration fail instead of skipping coverage. See [`test/helpers/storage-backends.ts`](../test/helpers/storage-backends.ts) for local configuration.
 
-The `storage-conformance` job runs `postgres:16` and `libsql-server` v0.24.33 as service containers, both pinned by digest, and sets `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1`: a missing URL then fails the run instead of skipping its rows. sqld runs with `SQLD_CHECKPOINT_INTERVAL_S=60`, the setting that keeps v0.24.33 taking writes under contention (tursodatabase/libsql#2286, #4790). Besides the matrix, the job runs every integration file that needs a PostgreSQL server (`storage-postgres*`, `intercom-postgres`) or a libSQL server (`*sqld*`); the integration shards skip them. It runs as two shards (`--shard=1/2`, `--shard=2/2`, split like the other sharded suites), each with its own pair of service containers: run against one libSQL server, the files kept sqld saturated, and ordinary sqld tests ran past their 30-second budget. Service containers need Linux, so the job has no Windows leg.
+### macOS test dispatch
 
-The PostgreSQL suites (`storage-postgres*`, `*pool-postgres*`, `workflow-fleet-safety-postgres`, `intercom-postgres-wake-ups`) also run against a managed server, such as Azure Database for PostgreSQL, that takes TLS only. Give `ATOMIC_TEST_POSTGRES_URL` the administrator's user name, `sslmode=verify-full` and, unless Node.js trusts the server's CA, `sslrootcert=<CA file>`, for example `postgresql://atomicadmin@<server>.postgres.database.azure.com:5432/postgres?sslmode=verify-full&sslrootcert=/path/to/ca.pem`; the administrator needs `CREATEDB` and `CREATEROLE`. Tests that put a proxy between the adapter and the server (`test/helpers/postgres-proxy.ts`) terminate the adapter's TLS with a throwaway certificate for 127.0.0.1 and open TLS of their own to the server with that URL's `sslrootcert`, so they run there too (#5218).
-
-A row that fails on a backend because of an open bug is listed in the test file's `KNOWN_FAILURES` with its issue and runs as an expected failure, so it turns red once the bug is fixed.
-
-### Diagnostics and smoke coverage
-
-Suite jobs upload `.ci-diagnostics/` under unique
-`test-diagnostics-<job>-<binary_platform>` artifact names. Preserve `always()`,
-`include-hidden-files: true`, the narrow upload path, 14-day retention and
-`if-no-files-found: ignore`. Jobs failing before test execution may have no
-diagnostic artifact. The upload steps set `continue-on-error: true`: a failed
-upload (for example an artifact service timeout) shows as a warning, and the
-job's result is the tests' result.
-
-The root unit, integration and CI projects, and the coding-agent project, report
-lost Vitest fork workers. A worker that exits without a stop request or a kill call
-is a lost worker. The run prints `Lost test worker: ...` to stderr with its test files, its
-exit code and signal and what they mean, how long it ran, and the host's free
-memory. `scripts/run-test-suite.ts` repeats each one as an `::error` annotation
-and in the step summary, and keeps the records in
-`.ci-diagnostics/<suite>-lost-workers.jsonl`.
-
-Archive smoke tests check bundled builtins, native modules, runtime dependencies,
-`--version` and startup without extension-load failures. The static job also runs
-`scripts/test-installers-containers.sh` with a restricted PATH and local release
-fixtures in Alpine BusyBox `sh` and Debian slim. Neither fixture supplies a
-JavaScript runtime or package manager; Alpine also omits `ldd` to exercise musl
-detection through `/etc/alpine-release`.
-
-
-## Direct release trigger and recovery
-
-`.github/workflows/publish.yml` starts directly when an Atomic release tag is pushed. Atomic tags have no `v` prefix:
-
-| Tag | npm dist-tag | GitHub Release |
-| --- | --- | --- |
-| `0.9.10` | `latest` | stable, marked latest |
-| `0.9.10-alpha.1` | `next` | prerelease, not latest |
-
-A manual dispatch is available only for release recovery. It requires `tag` and accepts optional `source_ref`; when omitted, `source_ref` defaults to the tag. The integrity job checks out `source_ref` and fails unless it resolves to the tag's commit, so a branch or any other commit cannot be built under a release version. Native, smoke, and payload builds then check out the commit SHA the integrity job verified, not `source_ref` by name, so what is built is exactly what was verified.
-
-For a workflow-only repair of integrity, native, smoke, payload, npm, or GitHub Release jobs, dispatch with `--ref` selecting the reviewed branch containing the corrected workflow, supply the original `tag`, and omit `source_ref`. This executes the corrected workflow while building the unchanged tagged source. `source_ref` never selects the workflow definition, and it cannot change the build inputs: it must resolve to the tag's commit. Do not move the release tag to repair CI tooling.
-
-Published-version registration does not follow that branch-ref path. The Worker accepts `push` and `workflow_dispatch` only when the OIDC `ref`, `workflow_ref`, and `sub` equal `refs/tags/<version>` for that version. A dispatch from a repaired branch therefore mints `refs/heads/...` claims and the Worker returns a terminal HTTP 401, even if npm and GitHub publication succeed. That 401 is the trust contract, not a service outage. Do not broaden OIDC to accept branch refs.
-
-Registration recovery is rerunning the failed `register-published-version` job on a run whose ref is already the tag (the original tag push, or a dispatch whose `--ref` is the tag), or dispatching at the tag itself. A branch-ref dispatch cannot register. If the registration job YAML on the tag is wrong, fix it in a later tagged release rather than moving the tag.
-
-One publication runs at a time across all tags: every run shares the `publish` concurrency group with `cancel-in-progress: false` and `queue: max`, so a run started while another publishes waits for it, and a third run does not replace the one already waiting. Cutting an alpha and its stable back to back therefore publishes them one after the other. actionlint 1.7.12 does not know the `queue` key yet ([rhysd/actionlint#654](https://github.com/rhysd/actionlint/issues/654)), so `.github/actionlint.yaml` ignores that one finding in `publish.yml`.
-
-### Recovering a failed publication
-
-The publication jobs are resumable, so the first move after a failure is **Re-run failed jobs** on the same run (`gh run rerun <run-id> --failed`):
-
-- Once `stage-github-release` succeeds, nothing in the workflow deletes the draft. A failure in `publish-npm` or `publish-github-release` leaves it in place for the re-run.
-- `publish-npm` skips every package version npm already has. A publish the registry refuses because the version already exists counts as published once npm serves that version; a version npm refuses but never serves, such as an unpublished one, fails the job before any dependent publishes. A re-run therefore finishes a partly published payload without publishing anything twice.
-- `publish-github-release` leaves a release an earlier attempt already published as it is.
-- GitHub rejects a release body longer than 125,000 characters. When the merged notes are longer, `stage-github-release` keeps the summary, drops the collapsed full changelog, links to each package's `CHANGELOG.md` at the tag, and emits a workflow warning. Because staging runs from the workflow's own commit, a recovery dispatch from a branch with this fix stages a tag whose notes were built too long.
-- A failed `stage-github-release` deletes the draft it could not complete, and its re-run stages the draft from scratch. If GitHub cannot say whether the failed attempt left a draft, staging stops instead of creating a second one.
-- Skipping checks only the version, not the contents: npm never takes a version twice, so a recovery that builds different contents for the same tag (a moved tag) completes with the packages npm already had beside new GitHub assets. The integrity job refuses a `source_ref` other than the tag's commit; never move a release tag.
-- One tag has one draft, and the latest staging owns it. After a later dispatch has staged the tag again, recover from that dispatch's run, not an earlier one: re-running an earlier run would publish the draft the later build staged.
-
-Before giving up, the scripts retry transient failures with doubling waits: an npm publish up to four times (10, 20, 40 s) when it fails with a provenance transparency-log error, a registry 5xx, 408, 409 or 429, or a network error; a GitHub API call up to four times (15, 30, 60 s) on a 5xx, a 429, a secondary rate limit or a dropped connection. Other errors, such as a permission error or a missing trusted publisher, fail at once.
-
-Recover a failed release before cutting the next one on the same channel. Re-running an older stable release after a newer one has published publishes the remaining packages under npm's `latest` dist-tag and marks the older GitHub Release as Latest, moving both back. An older alpha moves npm's `next` back the same way. A full dispatch at the older tag does the same.
-
-If the draft is gone, for example because someone deleted it by hand, re-running failed jobs cannot finish the release; `publish-github-release` says so and names the command. Dispatch a full run at the tag instead: `gh workflow run publish.yml --ref <tag> -f tag=<tag>`. It rebuilds, stages the draft again, skips every npm version that already exists, and publishes the release.
-
-The scripts these jobs run live in `scripts/release/`, and each job checks them out from the workflow's own commit rather than from the verified tag commit. Those jobs only run the scripts against the already-built payload; they build nothing. `test/ci/release-publish-recovery.test.ts` runs the workflow's steps against fake `npm`, `gh` and `sleep` executables for each failure above.
-
-## Lightweight integrity gate
-
-The integrity job checks out `source_ref` (the tag unless a recovery dispatch supplies one) and performs only these release identity checks:
-
-1. The tag has the supported stable or `-alpha.N` format.
-2. `source_ref` resolves to the tag's commit.
-3. `packages/coding-agent/package.json` at the tag has a version exactly equal to the tag.
-4. The tag commit subject is exactly `Release <tag>`.
-
-It outputs that commit SHA, and every native, smoke, and payload job checks out that SHA.
-
-The publisher intentionally does not reconstruct the release tree, validate release-base trailers, inspect protected workflow ancestry, maintain a release-base allowlist, or bind a separate create event. `scripts/cut-release.ts` still records release-base trailers because they are useful release provenance, but they are not a publisher gate.
-
-## Versionless release bases
-
-`main` and supported workstream bases keep all versioned manifests at `0.0.0`. `scripts/cut-release.ts` resolves the selected remote branch SHA, creates a detached worktree, stamps the requested version, commits with subject `Release <version>`, tags that commit, removes the worktree, and pushes only the tag. The selected base never receives the version stamp. The stamp runs from the invoking checkout with `--root <worktree>`, so its imports resolve from that checkout's `node_modules`; the temporary worktree has none, and resolving from it would depend on whatever `node_modules` sits above the temp directory.
+A maintainer can run specific root tests on the chosen branch. Set `project` to `unit` or `integration` and provide space-separated `.test.ts` paths under `test/`.
 
 ```sh
-bun run scripts/cut-release.ts 0.9.10 --base main --push
-bun run scripts/cut-release.ts 0.9.10-alpha.1 --base main --push
+gh workflow run macos-tests.yml --ref "$branch" \
+  -f project=unit \
+  -f tests="test/unit/changelog.test.ts"
 ```
 
-The tag push is the publication signal. Do not bump package versions directly on a release base.
+Link the run from the PR if the change depends on macOS validation.
 
-### npm registration preflight
+## Runners
 
-Before it touches anything, `scripts/cut-release.ts` asks npm whether every package the publisher publishes already exists. Both halves of the question come from `.github/workflows/publish.yml`, read out of the **release base commit** the cut is about to tag rather than out of the caller's checkout — `--base` names another branch as often as not, and that branch's workflow is the one that will publish. The payload is the `packages=(…)` array, and the registry is the `--registry` the publisher pins on its own npm commands (`https://registry.npmjs.org`). npm's `npm_config_registry` is deliberately ignored: a mirror answering "yes" for a name that does not exist on npmjs would clear a check whose whole job is to predict the publish.
+`test.yml` and `codeql.yml` use repository-specific `namespace-profile-atomic-ci-*` profiles. In the [Namespace profile editor](https://cloud.namespace.so/workspace/actions/profiles), set their Access Level to Restricted. For the exact job mapping, see `runs-on` in each workflow. If a job stays queued, check that its profile exists and that Namespace has capacity.
 
-An unregistered name aborts the cut with nothing to unwind — no prune, no worktree, no version stamp, no tag. The exception is a name in the publisher's `requires_registered_name=(…)` array: the cut lists it as skipped for this release, because `publish.yml` will not try to publish it until it is registered (see [Registering a new package name](#registering-a-new-package-name)). `publish.yml`'s own `npm view` call is an idempotency check that runs after the binaries are built, so without this preflight a name npm has never seen fails at the very end of a release.
+Most release jobs use inline `nscloud-*` labels. Both macOS release targets use `namespace-profile-atomic-release-macos-arm64-6x14`. The Intel build runs its smoke test under Rosetta. Keep `publish-npm` on GitHub-hosted `ubuntu-latest`. npm requires a GitHub-hosted runner for trusted publishing and provenance.
 
-A genuine first publish is still possible, but only deliberately:
+### Sizing
 
-```sh
-bun run scripts/cut-release.ts 0.9.10 --base main --push --allow-new
-```
+The test suites use `8x16` profiles on both platforms. Smaller jobs use `4x16`. Check CPU, memory and step logs before resizing. Set up the new profile with the same access and cache rules before changing `runs-on`.
 
-`--allow-new` covers only "npm has never heard of this name". A registry that cannot answer — unreachable, unauthorized, no npm at all, or a probe killed by a signal — stops the cut regardless, because an unreadable answer is not evidence that a package is new.
+### Checkout and cache trust model
 
-### Inherited git environment
+Use `actions/checkout`, not the Namespace git mirror. CI and release jobs use separate cache volumes. Only `main` can persist updates to the CI volumes. PRs can read them, but their changes are discarded. Release consumers with `nscloud-cache-exp-do-not-commit` do not write back, including on recovery dispatches.
 
-`cut-release.ts` deletes every repository-local git variable — `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, and the rest of `git rev-parse --local-env-vars` — from its own process before its first git command. Git honors those over `-C <path>` and over a literal path argument alike, and the cut addresses every repository it touches by path: the checkout it reads, and the temporary worktree it stamps, commits, and tags. Running the script from a git hook, or from a workflow that runs under one, would otherwise stamp and tag a repository nobody is releasing.
+[Namespace cache volumes](https://namespace.so/docs/architecture/storage/cache-volumes#cache-hits-and-misses) are local to each node and replicate in the background. A job can land on a node with an older copy or no copy, even after a warmer succeeds. Jobs must repopulate missing data locally and proceed without a cache hit. Jobs that install npm dependencies still run `npm ci --ignore-scripts` on a cache hit.
 
-## Build and validation jobs
+### Approving fork workflow runs
 
-### Native NAPI matrix
+Open the PR's **Files changed** tab before approving each run from a fork. If it touches `.github/`, wait for maintainer review. Check `runs-on`, label suffixes, triggers and permissions. Do not approve a fork run that adds a PR workflow or picks a runner outside the approved Restricted profiles. Restricted access protects the committed configuration, not a workflow that the PR changes to select another runner.
 
-The native job always rebuilds and uploads one artifact for each shipped `@bastani/atomic-natives` target. It uses pinned Rust 1.97.0; x64 targets use the compatibility-oriented `x86-64-v2` baseline.
+### Model data cached, fetched live in one place
 
-| Platform | Runner | Explicit rustup target |
-| --- | --- | --- |
-| Linux x64 (GNU) | `nscloud-ubuntu-24.04-amd64-4x16` | `x86_64-unknown-linux-gnu` |
-| Linux arm64 (GNU) | `nscloud-ubuntu-24.04-arm64-4x16` | `aarch64-unknown-linux-gnu` |
-| Linux x64 (musl) | `nscloud-ubuntu-24.04-amd64-4x16` | `x86_64-unknown-linux-musl` |
-| Linux arm64 (musl) | `nscloud-ubuntu-24.04-arm64-4x16` | `aarch64-unknown-linux-musl` |
-| macOS x64 | `namespace-profile-atomic-release-macos-arm64-6x14` | `x86_64-apple-darwin`; smoke under Rosetta |
-| macOS arm64 | `namespace-profile-atomic-release-macos-arm64-6x14` | `aarch64-apple-darwin` |
-| Windows x64 | `nscloud-ubuntu-24.04-amd64-4x16` | `x86_64-pc-windows-msvc` |
-| Windows arm64 | `nscloud-ubuntu-24.04-amd64-4x16` | `aarch64-pc-windows-msvc` |
-
-GNU Linux builds use `GLIBC_FLOOR=2.17`: rustup installs the bare target while
-`build-native.ts` passes the glibc-suffixed target to cargo-zigbuild and copies
-the result from Cargo's bare-target output directory. Musl targets stay bare
-and use NAPI-RS `--cross-compile`; Windows uses LLVM and cargo-xwin. Both Darwin
-targets build on Apple Silicon, with the x64 target cross-compiled and smoke-tested under Rosetta. The matrix uses `fail-fast: false`,
-distinct platform/libc artifact names and only same-run native artifacts.
-
-The build job downloads the eight same-run bindings, generates the eight platform npm packages, and populates the root native package's exact-version optional dependencies without publishing during preparation.
-
-### Dependency-fetch bounds in the native matrix
-
-Step bounds detect stalled downloads; job caps bound the full attempt/retry
-chain. Each native compile has one bounded retry, with a second failure fatal.
-
-| Acquisition or check | Step limit |
-| --- | --- |
-| Verify cached Zig tarball, extraction and version (Linux) | 1 min |
-| `mlugg/setup-zig`, plus one retry | 2 min each |
-| Verify setup-zig tarball after fallback (Linux) | 1 min |
-| `dtolnay/rust-toolchain` | 4 min |
-| `taiki-e/install-action` | 3 min |
-| `cargo install cargo-xwin` (win32) | 3 min |
-| Verify installed LLVM 18 | 1 min |
-| `cargo-xwin xwin cache xwin` | 8 min |
-
-| Native leg | Compile limit per attempt | Whole-job cap |
-| --- | ---: | ---: |
-| linux-x64-gnu | 5 min | 17 min |
-| linux-arm64-gnu | 5 min | 18 min |
-| linux-x64-musl | 5 min | 18 min |
-| linux-arm64-musl | 5 min | 19 min |
-| darwin-x64 | 8 min | 19 min |
-| darwin-arm64 | 5 min | 12 min |
-| win32-x64-msvc | 5 min | 21 min |
-| win32-arm64-msvc | 5 min | 21 min |
-
-These caps reserve measured setup, both compile attempts, bounded Zig or xwin
-acquisition (on Linux, both setup-zig attempts plus the fallback SHA-256 check)
-and one minute for artifact upload. Re-measure before tightening
-them, using at least five samples and including recovery paths. Keep the
-explicit job names so matrix budget changes do not rename check contexts.
-
-### Windows host LLVM
-
-Both Windows targets build on x64 Ubuntu runners. The publisher selects `/usr/lib/llvm-18/bin`, verifies `clang`, `clang-cl`, `lld-link`, `llvm-ar`, `llvm-lib`, `llvm-dlltool`, and `llvm-ml`, logs compiler/linker versions, and prepends that directory through `GITHUB_PATH`. Missing tools fail the job rather than silently selecting another compiler version.
-
-LLVM comes from the runner image rather than apt downloads. Patch versions are
-image-provided; preserve both Windows build checks when changing the image or LLVM major.
-Namespace's `ubuntu-24.04` image lists `llvm-18`, `clang-18`, `lld-18` and
-`patchelf` (`nsc github base-image describe ubuntu-24.04`), so the checks below keep
-holding after the move; they still fail loudly if a future image drops them.
-
-The x64 and ARM64 Alpine smoke jobs and the payload job likewise verify the image-provided `patchelf` with `command -v` and `--version` instead of refreshing apt indexes. These checks have a one-minute bound and fail on missing tooling. Validate ELF editing on both host architectures when changing the runner image.
-
-### MSVC CRT cache epoch
-
-Both Windows legs use cargo-xwin and a bounded CRT/SDK acquisition step. The
-cache lives on the same Namespace release cache volume the win32 legs already
-mount (`nscloud-cache-tag-bastani-inc.atomic.release.linux-x64`), bind-mounted
-onto `~/.cache/cargo-xwin` by `namespacelabs/nscloud-cache-action` (the same
-pinned SHA used elsewhere in this file). `XWIN_CACHE_DIR` is pinned to the
-versioned subdirectory `$HOME/.cache/cargo-xwin/v1-17` inside that mount, and
-the same literal path is used in `publish.yml` and in the warmer. Each release
-leg sets `XWIN_ARCH` to the one architecture it links, and it hits when the
-first line of `DONE` names that architecture. The warmer populates both
-architectures in one call (`XWIN_ARCH=x86_64,aarch64`). cargo-xwin 0.23.1
-rewrites `DONE` with only the current call's architectures, and xwin 0.10.0
-deletes `crt/` and `sdk/` before each splat, so one call per architecture
-into the same directory would keep only the last one.
-
-cargo-xwin is built from crates.io (`cargo install cargo-xwin --version 0.23.1
---locked`), which links it against glibc, rather than installed as the upstream
-musl release binary. The musl binary spends a cold fetch in allocator system
-calls: on a Namespace amd64 4x16 runner it took 9m56s to populate the arm64
-CRT, past the 8-minute bound, where the glibc build (36s to compile) took 35s.
-Keep the glibc build when bumping cargo-xwin; a cold warmer run is the check.
-
-Don't go below cargo-xwin 0.23.1: older versions can't read the current Visual Studio manifest, so cold populates fail.
-
-`XWIN_SDK_VERSION` and `XWIN_CRT_VERSION` default to `latest`, so the path
-cannot express the content version: a hit pins the leg to whichever SDK was
-first stored under that path. A warmer run on a complete tree is also a hit
-and does not resolve `latest` again. That is more reproducible than resolving
-`latest` on every release, but it means **the `v1` subdirectory epoch is the
-only lever for a deliberate SDK refresh**. An empty volume or a
-partial-cache wipe (below) also fetches `latest` again, but not on purpose.
-To force a refresh, bump the epoch
-(`v2-…`) in both `.github/workflows/publish.yml` and
-`.github/workflows/warm-toolchain-cache.yml` in the same change and review
-that their paths match. The trailing `17` is `XWIN_VERSION`, the Visual
-Studio major version.
-
-**Partial-cache detection.** Namespace cache volumes can serve stale or
-missing contents ("Applications using Cache Volumes should not assume that
-the cache contents match exactly the last committed version"), so the
-populate-on-miss step (`cargo-xwin xwin cache xwin`, 8-minute bound) stays the
-fallback on both a miss and a partial hit. cargo-xwin 0.23.1's own
-`setup_msvc_crt` trusts a `DONE` marker that names an architecture without
-re-checking the splat files it lists, so a volume fork that was interrupted
-mid-populate would otherwise look complete. A `Detect partial MSVC CRT cache`
-step runs before the populate step in both workflows: when `DONE`'s first
-line claims an architecture but any of its required splat directories
-(`crt/include`, `crt/lib/<arch>`, `sdk/include/um`, `sdk/include/shared`,
-`sdk/include/ucrt`, `sdk/lib/um/<arch>`, `sdk/lib/ucrt/<arch>`) is missing or empty, it deletes
-the whole `xwin` tree so the populate step starts clean. An architecture that
-`DONE` does not yet claim is left alone; that is an ordinary cache miss, and
-cargo-xwin's own logic already handles it without help. `publish.yml`'s win32
-legs carry `nscloud-cache-exp-do-not-commit`, so this wipe (and any populate
-that follows it) only ever touches that job's private, discarded fork of the
-volume. The warmer probes both architectures before its single populate, so
-a partial tree left by an earlier interrupted warm run is wiped and fetched
-again instead of being accepted as a hit.
-
-**Integrity.** Restored CRT/SDK bytes are not validated against Microsoft's
-manifest checksums; cargo-xwin applies those checksums only during a fresh
-download, and the partial-cache probe above checks structural presence, not
-content. A structurally complete cache hit is an accepted trust boundary for
-this path, unlike npm downloads on the same volume, which are checked against
-lockfile integrity on every install. As `docs/ci.md` notes elsewhere, a cache
-tag is job configuration, not an authorization boundary.
-
-**Volume sizing.** The win32 legs' `-with-cache` runner label carries no
-`nscloud-cache-size-*` suffix, so the attached
-`bastani-inc.atomic.release.linux-x64` volume uses Namespace's 20 GB inline
-default, shared with the npm downloads on the same tag; exceeding it resets
-the whole volume, npm downloads included, back to empty. A local replay of
-the warmer's single populate (cargo-xwin 0.23.0, `XWIN_ARCH=x86_64,aarch64`,
-Ubuntu 24.04 container, 2026-09-25) left a `v1-17` tree of 1,144,008 KiB
-(`du -sk`, about 1.1 GB: `crt` 321 MB, `sdk` 797 MB). cargo-xwin deletes the
-downloaded payloads after the splat. That is under 6 % of the 20 GB cap,
-so no size label is added. The hosted volume's actual usage is not yet
-measured.
+Among the regular test jobs, `static-checks` always fetches the live model catalogs. The suites and archive job can restore a verified snapshot from `main`. A job with no valid snapshot runs `npm run hydrate:model-data` before building offline. Releases fetch live data.
 
 ### Warming the release toolchain caches
 
-`warm-toolchain-cache.yml` runs on main pushes and manual dispatch on main. It populates Namespace npm download volumes for Linux x64, Linux arm64 and Windows x64. Tags are `bastani-inc.atomic.release.linux-x64`, `bastani-inc.atomic.release.linux-arm64` and `bastani-inc.atomic.release.windows-x64`; the publisher selects the same tags. Warmers request main-only writes. Every release consumer explicitly disables cache commits, regardless of its trigger ref.
+`release-linux-cache` warms npm downloads and verified Zig tarballs. `release-windows-cache` warms Windows npm downloads. `msvc-crt` runs after the Linux warmer because both jobs write to the Linux x64 volume. The macOS warmer's `dependencies` job caches downloads for arm64 and x64. Warmers do not publish releases.
 
-Warmers install Node and Bun and download locked npm packages. The Linux warmer also downloads Zig 0.16.0 from bounded community mirrors or the official endpoint, verifies its pinned SHA-256, and atomically persists the tarball on the matching Namespace release volume. Its download step is bounded at 4 minutes within the existing 15-minute job cap. The separate macOS warmer covers both Node architectures. No warmer publishes packages, builds native bindings, or caches Cargo sources or compiled release output.
+To warm the volumes by hand, dispatch the cache workflows on `main`, not `publish.yml`:
 
-The four Linux native release legs read the volume without committing changes. Before extracting Zig, they verify the pinned SHA-256 and check the extracted binary version. A missing or corrupt tarball falls back to the existing setup-zig mirror download, bounded at 2 minutes plus one 2-minute retry. setup-zig's tool cache remains disabled; after the fallback, the tarball setup-zig used (fresh or restored from its Actions cache) is checked against the same pinned SHA-256. Keep the Zig version and SHA-256 pins in `publish.yml` and `warm-toolchain-cache.yml` together when updating Zig.
+```sh
+gh workflow run warm-toolchain-cache.yml --ref main
+gh workflow run warm-macos-release-cache.yml --ref main
+```
 
-The MSVC CRT/Windows SDK cache moved onto the same Namespace release cache
-volume as the win32 legs' npm downloads (see [MSVC CRT cache epoch](#msvc-crt-cache-epoch)).
-`msvc-crt` is one job, not a per-arch matrix, because Namespace cache volumes
-are last-write-wins forks: two parallel matrix jobs writing the same tag could
-each commit a fork missing the other architecture's files. It checks out the
-repository, mounts the volume, probes both architectures for a partial cache,
-then runs one `Populate MSVC CRT cache on miss` step for both architectures.
+### MSVC CRT cache epoch
 
-`msvc-crt` and the x64 leg of `release-linux-cache` both write
-`bastani-inc.atomic.release.linux-x64` with
-`nscloud-cache-allow-commit-from-main`. If they ran in parallel, whichever
-committed last would drop the other's writes: either the npm download and Zig
-tarball updates or the xwin tree. `msvc-crt` therefore declares
-`needs: release-linux-cache`, so it forks from that warmer's commit and
-commits last. It runs under `!cancelled()`, so a failed npm warm leg (which
-commits nothing) does not block the xwin warm. The workflow's
-`cancel-in-progress` concurrency group cancels an earlier run when a later
-main push starts one. Release consumers keep the do-not-commit label and never
-write back. Namespace does not promise that a fork sees the latest commit, so
-`msvc-crt` can still start from an older version and drop newer npm or Zig
-writes. Ordering removes this workflow's own race, not that one. Both outcomes
-stay safe for releases: `npm ci` checks lockfile integrity, a missing Zig
-tarball falls back to the verified setup-zig download, and the partial-cache
-probe and populate-on-miss cover the xwin tree.
+The Windows cross-builds use `$HOME/.cache/cargo-xwin/v1-17` for the CRT and Windows SDK. To refresh them deliberately, bump the epoch in both `publish.yml` and `warm-toolchain-cache.yml`. Keep the fallback that repopulates a missing or incomplete cache. The warmer fills both architectures in one call.
 
-The MSVC CRT warmer's 19-minute job cap reserves its bounded toolchain setup
-(4 minutes), cargo-xwin installation (3 minutes), and one 8-minute cold-cache
-population bound for both architectures, plus 4 minutes for runner setup,
-checkout and cache mount. Its wait for `release-linux-cache` is not part of
-this cap; that job has its own 15-minute cap.
+## Release pipeline
 
-Main-only persistence means pre-merge PR runs cannot demonstrate warmed release volumes. Zig release-path behavior remains unverified until a successful main warm run and a subsequent authorized release exercise it. Inspect those runs for hits. Do not dispatch publication solely to test a cache, and keep cold-cache installation and acquisition bounds intact.
+Follow the [publish-release skill](../.agents/skills/publish-release/SKILL.md) to prepare a changelog-only PR, check the exact head and merge it. Keep `main` and other protected release bases at `0.0.0`. Cut the release from the verified base once its CI passes. For example:
 
-### Pinned actions and build tools
+```sh
+bun run scripts/cut-release.ts 0.9.10 --base main --push --yes
+```
 
-Third-party actions are pinned to full commit SHAs
-with a trailing `# vX.Y.Z` comment, following upstream pi's convention.
-`publish.yml` carries `contents: write` and `id-token: write` in its graph, so a
-compromised floating tag anywhere in it is a release-integrity event.
-`.github/dependabot.yml` already runs the `github-actions` ecosystem weekly and
-maintains both the pins and the comments.
+The script stamps a detached `Release <version>` commit and pushes only its tag. Check the resulting `Publish <version>` run. Do not dispatch a second run during normal publication.
 
-`taiki-e/install-action` installs `cargo-zigbuild@0.23.0` rather than resolving
-`@latest`. The Windows legs build `cargo-xwin` with
-`cargo install cargo-xwin --version 0.23.1 --locked`. Both pins prevent an
-unreviewed build-tool update in a published, provenance-signed native artifact.
-`test.yml` pins `bun-version: 1.4.5` to match `publish.yml`; `latest` cannot be
-cached by `setup-bun` and left the suite testing a different Bun from the one
-that builds the shipped artifact.
+1. `integrity` checks that the source resolves to the tag commit, the subject is `Release <tag>` and `packages/coding-agent/package.json` matches the tag. Build jobs use that verified commit.
+2. `native-artifacts` builds the native bindings. `build` packs the npm tarballs and builds release archives and notes. `linux-binary-smoke`, `windows-binary-smoke` and `alpine-binary-smoke` test release binaries. The Windows smoke job also produces the Windows archives.
+3. `stage-github-release` waits for the build and smoke jobs. It stages the archives and `SHA256SUMS` in a verified draft. It does not change a public release.
+4. `publish-npm` uses OIDC and provenance. It publishes the native leaves before their dependents and `@bastani/atomic` last. It skips versions already on npm.
+5. `publish-github-release` makes the draft public only after npm succeeds. `register-published-version` then records the published version using a tag-scoped OIDC token.
 
-Action pins do not bound remote downloads; preserve acquisition deadlines even
-when the action commit is pinned.
-
-### Dependabot and the pi sync
-
-Atomic carries pi's `ai`, `coding-agent` and `mcp` packages, and its root
-manifest plays the role of pi's root. A dependency that pi declares in one of
-those four manifests moves only with a pi sync. The root npm entry in
-`.github/dependabot.yml` ignores each such dependency that an Atomic manifest
-(root or `packages/*/package.json`) also declares, by name and with no
-`versions` or `update-types` qualifier, so Dependabot proposes none of its
-updates. A Dependabot bump of one of them puts Atomic on a version pi does not
-run, and the next sync then has to reconcile or undo it: typebox (#4206),
-vitest (#4209) and minimatch (#4228, #4229) were all proposed and closed for
-that reason. Atomic no longer depends on any `@earendil-works/*` package: it
-carries its own forks of them (#5174), so Dependabot tracks none of them.
-
-The rule holds even where Atomic is ahead of pi today: `@biomejs/biome` is
-declared at both roots and Atomic runs a newer one, but it still moves with a
-sync, or by a deliberate manual bump, not by Dependabot. A dependency that pi
-declares only in a package Atomic does not carry (for example `tui` or
-`schema`) is not ignored: no sync would ever move it. pi's Rust daemon crate is
-not carried either, so the Cargo entry has no such rules.
-
-`test/fixtures/pi-carried-dependencies.json` records the dependency names in
-pi's four carried manifests at a given pi commit.
-`test/ci/dependabot-pi-sync-contract.test.ts` requires the ignore list to equal
-exactly the names that snapshot shares with Atomic's manifests, each ignored by
-name for every version. On each pi sync, run
-`git fetch pi main && node scripts/snapshot-pi-dependencies.mjs`, then add or
-remove ignore entries until the contract test passes; it prints the difference.
-
-Ignore rules also suppress Dependabot security updates for these names. An
-advisory against one of them is handled by a pi sync that carries the fix or,
-if pi has not moved, by a manual bump recorded as a divergence from pi.
-
-### Binary smoke tests
-
-Linux and Windows x64 each get `@bastani/atomic-ai` model data from the restored snapshot, or hydrate it once without one (`npm run hydrate:model-data`; see "Model data cached, fetched live in one place"), build the package with `build:offline`, and run `scripts/build-binaries.sh --offline-model-data` for their platform, so the script never regenerates the catalog a second time. They extract the resulting archive, check required bundled files, run `--version`, and start `--no-session` from a clean temporary directory. Expected no-model/no-key exits are accepted; extension-load failures and unexpected exits fail the job.
-
-The `alpine-binary-smoke` matrix downloads each x64/arm64 musl binding, builds the matching archive, and passes it to `scripts/test-musl-release-archive.sh` on a matching runner. That script uses stock `alpine:3.22` with no package installation, checks the full payload and bundled `libgcc`/`libstdc++`, and runs `atomic --version`. A separate matching-architecture `node:22-alpine` container directly requires each extracted native package and checks its search exports.
-
-### Release payload
-
-After native and smoke jobs pass, `build`:
-
-1. Installs with `npm ci --ignore-scripts`.
-2. Generates native platform package directories and the native root manifest.
-3. Hydrates `@bastani/atomic-ai` model data from models.dev, then runs `scripts/build-binaries.sh --skip-install --offline-model-data` for all eight archives. The script uses the just-staged `packages/natives/native/*.node` artifacts and does not `npm install` `@bastani/atomic-natives-*@$VERSION` from the registry (those packages are what this release publishes). If a registry install is attempted and fails, restore is `npm ci --ignore-scripts` followed by rebuilding the forked pi packages.
-   Musl payload assembly downloads pinned Alpine 3.22 `libgcc` and `libstdc++` packages, verifies their SHA256 hashes, copies only the matching runtime libraries under `atomic/lib`, and sets payload-local ELF search paths with `patchelf`.
-4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
-5. Packs exactly eighteen npm tarballs.
-   It then checks that a process of an earlier release, still running when an in-place update installs these packages, can load what it needs from them (`scripts/in-place-update-exports.mjs release`): against every release recorded in `packages/coding-agent/in-place-update/` and the latest version published before this one, which it downloads from npm. A file the earlier release loads on demand must still be there with the exports it had, and a file of this release that such a process can load must name only exports the earlier copies it may hold have, through the exports maps it read. Any problem fails the build before anything is published. `packages/coding-agent/in-place-update/README.md` says how to record a release once it is published.
-6. Builds release notes from every `packages/*/CHANGELOG.md` with `scripts/build-release-notes.ts`. A version summary leads when present, with the merged `###` sections folded under "Full changelog". Within the summary and within each section, bullets for one change are listed once: two bullets are the same change when they read the same, or when one cites every issue/PR link the other does and the smaller set has at least two links. The most complete bullet (most links, then longest) is kept where the change first appeared.
-7. Creates `SHA256SUMS` for the eight binary archives.
-8. Uploads the npm tarballs and GitHub Release assets as one same-run artifact.
-
-GitHub Release assets are:
-
-- `atomic-darwin-arm64.tar.gz`
-- `atomic-darwin-x64.tar.gz`
-- `atomic-linux-x64.tar.gz`
-- `atomic-linux-arm64.tar.gz`
-- `atomic-linux-x64-musl.tar.gz`
-- `atomic-linux-arm64-musl.tar.gz`
-- `atomic-windows-x64.zip`
-- `atomic-windows-arm64.zip`
-- `SHA256SUMS`
-
-## Draft-first GitHub Release
-
-`stage-github-release` validates `SHA256SUMS`, refuses to mutate an already-published release, replaces a prior recovery draft when necessary, and runs `gh release create --verify-tag --draft`. It verifies the exact uploaded asset-name set.
-
-After npm succeeds, `publish-github-release` changes the draft to public and sets stable/prerelease/latest metadata. The draft is never deleted after staging succeeds: a failed publication keeps it so that re-running the failed jobs can finish the release (see [Recovering a failed publication](#recovering-a-failed-publication)). Users never see a draft, and the next staging for the same tag replaces it. Delete it by hand only to abandon the tag. A staging attempt that fails deletes its own incomplete draft.
-
-## npm publication
-
-The npm job uses environment `npm-publish` with only `contents: read` and `id-token: write`. It runs on GitHub-hosted `ubuntu-latest` because npm trusted publishing and provenance reject self-hosted runners, which Namespace runners are (see [GitHub-hosted exceptions](#github-hosted-exceptions)). It upgrades to an npm version that supports trusted publishing and publishes with provenance. Configure the npm trusted publisher for workflow filename `publish.yml` and environment `npm-publish` on all eighteen package names:
-
-1. `@bastani/atomic-natives-darwin-arm64`
-2. `@bastani/atomic-natives-darwin-x64`
-3. `@bastani/atomic-natives-linux-arm64-gnu`
-4. `@bastani/atomic-natives-linux-arm64-musl`
-5. `@bastani/atomic-natives-linux-x64-gnu`
-6. `@bastani/atomic-natives-linux-x64-musl`
-7. `@bastani/atomic-natives-win32-arm64-msvc`
-8. `@bastani/atomic-natives-win32-x64-msvc`
-9. `@bastani/atomic-natives`
-10. `@bastani/atomic-schema`
-11. `@bastani/atomic-telemetry`
-12. `@bastani/atomic-ai`
-13. `@bastani/atomic-tui`
-14. `@bastani/atomic-agent-core`
-15. `@bastani/atomic-codemode`
-16. `@bastani/atomic-storage-libsql`
-17. `@bastani/atomic-storage-postgres`
-18. `@bastani/atomic`
-
-That order publishes native leaves first, four at a time, then the native root, then the forked pi packages in dependency order (each after the forks it depends on), then the two storage adapters, then the coding agent. `@bastani/atomic` stays last so a CLI version appears on npm only after every other package in the payload published. The adapters have no ordering requirement of their own, because their peer dependency on `@bastani/atomic` is optional. A package version already present in the registry is logged and skipped, making recovery idempotent. Transient failures are retried; see [Recovering a failed publication](#recovering-a-failed-publication). Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
+Tags have no `v` prefix. A stable tag such as `0.9.10` publishes to npm `latest` and becomes the latest GitHub Release. An alpha tag such as `0.9.10-alpha.1` publishes to npm `next` and becomes a GitHub prerelease.
 
 ### Registering a new package name
 
-A package name that npm has never seen cannot use trusted publishing. `publish.yml` lists such names in its `requires_registered_name=(…)` array, currently `@bastani/atomic-storage-libsql` and `@bastani/atomic-storage-postgres`, and skips them with a workflow warning only after npm confirms a not-found response. Network, rate-limit, server, and other indeterminate errors fail publication before dependent packages are published. The [registration preflight](#npm-registration-preflight) reads the same array and reports confirmed missing names as skipped instead of refusing the cut. Every other payload name still has to be registered.
+A maintainer must publish the first version of a new public package by hand. Run `npm publish --access public` from the prepared package directory. Then set its npm trusted publisher to repository `bastani-inc/atomic`, workflow `publish.yml` and environment `npm-publish`. Do not add a static npm token. See `packages` and `requires_registered_name` in the `publish-npm` job for the payload and names the workflow may skip until registered.
 
-To start publishing `@bastani/atomic-storage-libsql` or `@bastani/atomic-storage-postgres`, a maintainer does this once per package, outside the repository:
+## Direct release trigger and recovery
 
-1. Publish a first version of the package by hand from a maintainer account (`npm publish --access public` from the package directory, with the default `latest` dist-tag). Alpha releases publish to `next`, and the install commands in the user docs, such as `atomic install npm:@bastani/atomic-storage-libsql`, resolve `latest`.
-2. In the package's npm settings, add a trusted publisher for repository `bastani-inc/atomic`, workflow filename `publish.yml`, and environment `npm-publish`.
+A tag push starts `publish.yml` directly. Recover a failed release before cutting another on the same channel. Retrying an older release after a newer one has shipped can move `latest` or `next` backwards. Never delete, recreate or move a release tag.
 
-From the next release on, `publish.yml` publishes it with the rest of the payload. If step 2 is missing, `publish-npm` fails at that package before `@bastani/atomic` is published, and a re-dispatch after the setup skips every version that already published.
+### Recovering a failed publication
 
-## Published-version registration
+1. Start with **Re-run failed jobs** on the failed run. A successfully staged draft stays in place, and npm skips versions it already serves.
 
-After the GitHub Release is public, `register-published-version` requests a GitHub Actions OIDC token for audience `https://atomic-version-adoption.bastani-atomic.workers.dev/v1/published-versions` and POSTs the exact integrity version. The job has `contents: read` and `id-token: write`, no environment, and does not mutate npm packages or GitHub Releases on failure. It parses `ACTIONS_ID_TOKEN_REQUEST_URL` as an HTTPS URL whose host is `actions.githubusercontent.com` or a subdomain of it, with no userinfo and no non-default port. That host is the runner-provided token acquisition endpoint; it is not assumed to equal the JWT issuer `https://token.actions.githubusercontent.com`. The Worker still verifies the minted JWT against GitHub's JWKS and the tag claims. Transport failures, including curl status `000`, are retried up to three times; authentication failures are terminal. The failed job can be rerun independently on a tag-ref run. A branch-ref recovery dispatch cannot satisfy registration OIDC claims.
+   ```sh
+   gh run rerun "$run_id" --failed
+   ```
 
-## Permissions and time limits
+2. If GitHub has no draft or public release and the workflow needs no fix, dispatch a full run at the original tag. It rebuilds and stages the draft again.
 
-Repository-wide workflow permissions are read-only. Only draft staging and undrafting receive `contents: write`, and only `cancel-closed-pr-runs.yml` receives `actions: write`, to cancel runs. npm publication and published-version registration receive `id-token: write`; neither receives repository write permission. Registration has no GitHub environment. Failure of registration does not republish npm packages or mutate the GitHub Release. Every job has an explicit timeout.
+   ```sh
+   gh workflow run publish.yml --ref "$tag" -f tag="$tag"
+   ```
 
-## Workflow files
+3. If recovery needs a workflow fix, dispatch from the reviewed branch with the fix and pass the original tag. `--ref` selects the workflow definition. Leave `source_ref` unset so the original tag selects the source. An explicit `source_ref` must resolve to the same tag commit.
 
-| File | Trigger | Purpose |
-| --- | --- | --- |
-| `.github/workflows/test.yml` | pushes to `main`; pull requests opened, pushed, reopened, marked ready or converted to draft (work jobs skip in drafts) | workspace tests and cross-platform release smoke |
-| `.github/workflows/cancel-closed-pr-runs.yml` | a pull request closing, merged or not (`pull_request_target`) | cancel that pull request's queued and running `test.yml` runs |
-| `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, register the published version |
-| `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | persist verified Zig tarballs and commit the Linux/Windows npm download caches and the MSVC CRT/Windows SDK cache to their Namespace release cache volumes, from `main` only |
-| `.github/workflows/macos-tests.yml` | manual dispatch by a maintainer | run chosen root test files on macOS against the dispatched ref; see [macOS test dispatch](#macos-test-dispatch) |
+   ```sh
+   gh workflow run publish.yml --ref "$fixed_branch" -f tag="$tag"
+   ```
 
-## Repository-local release gates
+   If this dispatch stages a new draft, continue from that run instead of rerunning an older one.
 
-The [publish-release skill](../.agents/skills/publish-release/SKILL.md) follows the versionless-base and detached-tag sequence above. Run the skill's commands as `bun run scripts/release/publish-release.ts <command>` from the repository root. Exit 0 means passed, 2 blocked, 1 error. The three external inspection gates are:
+The version registry accepts only tag-ref runs. A branch dispatch can publish to npm and GitHub but cannot register the version. If only `register-published-version` fails, rerun it on a run at the tag. If the registration workflow at the tag is broken, fix it in a later tagged release. Do not change the tag or loosen the OIDC check.
 
-- `inspect-preparation` requires a clean worktree and reads the exact remote base/branch and matching open PR. It reuses an existing release only when the release branch has exactly one unique commit, whose sole parent is on the current remote base's history, every paginated commit-file destination and rename source is changelog-only, an optional local branch points to that same commit, and exactly one open PR matches the repository, base, head branch, and head SHA. Otherwise dirty state or conflicting base, commit, file set, branch, or PR fails closed. Reuse never resets or force-pushes and skips changelog preparation and PR creation entirely.
-- `wait-required-checks` reads configured contexts from both branch protection and active branch rulesets, preserving configured context/app identity. Only the classic unprotected-branch status-check lookup may return absent; a rules lookup error fails closed rather than accepting a partial set. A configured check missing from the commit remains pending. The gate fails on an actually empty configured set, PR/base/head drift, a terminal required-check failure, GitHub/auth/command errors, abort, or 45-minute timeout. After every exact configured check succeeds, it keeps polling until GitHub reports the PR mergeable (`clean`, `unstable` or `has_hooks`), because base-branch rules that are not status checks, such as required CodeQL results, can still block the merge; `behind`, `dirty` or `draft` fails. It passes only then, or when the exact captured PR is already admin-merged.
-- `wait-publish-run` waits up to 60 minutes for the push-event run from `.github/workflows/publish.yml` with repository `bastani-inc/atomic`, exact tag, exact detached release SHA, and exact workflow identity. A run that has not appeared remains pending; drift or a completed non-success conclusion fails closed. The tool never dispatches or reruns publication.
+## Maintaining CI
 
-The skill also uses `validate` for the requested version and base, `check-changelog-diff` before committing release notes, and `merge-exact-head` only after CI passes. The merge command rechecks the exact head, CI and changelog-only preparation, merges with a SHA precondition, then verifies a clean fast-forward of the base. `--dry-run` on that command performs the pre-merge inspections only. Both wait commands bound GitHub reads and polling sleeps. To check without releasing, use `--dry-run` and existing refs; do not run the tag cutter, even without `--push`.
+Keep third-party actions pinned to full commit SHAs. Validate workflow changes with YAML parsing, actionlint, maintainer review and a hosted run on the exact PR head. Do not write tests that duplicate workflow YAML. Keep product and release-tooling tests.
 
-## Release checklist
+### Dependabot and the pi sync
 
-1. Move relevant package changelog entries out of `[Unreleased]` and land the changelog-only PR on the selected versionless base. Do not bump package manifests.
-2. Require the selected base's normal CI to pass.
-3. From a clean checkout, run `bun run scripts/cut-release.ts <version> --base <base> --push`.
-4. Inspect the single `Publish <version>` push run. Do not start a duplicate manual run during normal publication.
-5. If publication fails, re-run the failed jobs first (see [Recovering a failed publication](#recovering-a-failed-publication)). If that cannot finish it, manually dispatch `publish.yml` with the original `tag` and omit `source_ref`; any `source_ref` that does not resolve to the tag's commit fails the integrity job. If only registration failed, rerun that job on the tag-ref run, or dispatch with `--ref` equal to the tag. A branch-ref dispatch will 401 at registration.
-6. Confirm all eighteen npm packages and the public GitHub Release exist with the expected dist-tag and assets.
+[Dependabot](../.github/dependabot.yml) skips npm updates for dependencies that Atomic shares with the carried pi manifests in [the snapshot](../test/fixtures/pi-carried-dependencies.json). When refreshing the snapshot, run `node scripts/snapshot-pi-dependencies.mjs "$upstream_ref"` with the fetched pi ref and align the ignore list. Handle security fixes for ignored packages explicitly.
