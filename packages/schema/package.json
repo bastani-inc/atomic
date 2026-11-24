@@ -1,73 +1,73 @@
 {
-	"name": "@bastani/atomic-schema",
-	"version": "0.0.0",
-	"description": "Atomic's JSON Schema builders and validation without eval: drafts 2020-12 and 7, compiled into plain closures",
-	"type": "module",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"exports": {
-		".": {
-			"source": "./src/index.ts",
-			"types": "./dist/index.d.ts",
-			"module": "./dist/_modules/index.js",
-			"browser": "./dist/_modules/index.js",
-			"import": "./dist/index.js"
-		},
-		"./formats": {
-			"source": "./src/formats/index.ts",
-			"types": "./dist/formats/index.d.ts",
-			"module": "./dist/_modules/formats/index.js",
-			"browser": "./dist/_modules/formats/index.js",
-			"import": "./dist/formats/index.js"
-		}
-	},
-	"sideEffects": false,
-	"files": [
-		"dist",
-		"!dist/**/*.d.ts.map",
-		"README.md",
-		"CHANGELOG.md",
-		"THIRD_PARTY_NOTICES",
-		"LICENSE",
-		"NOTICE.md"
-	],
-	"scripts": {
-		"clean": "node ../../scripts/package-files.mjs clean dist",
-		"build": "tsc -p tsconfig.build.json",
-		"test": "vitest --run",
-		"prepublishOnly": "npm run clean && npm run build",
-		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --no-strict-execution-order",
-		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\""
-	},
-	"keywords": [
-		"json-schema",
-		"validation",
-		"validator",
-		"csp",
-		"atomic"
-	],
-	"author": "Earendil Works",
-	"license": "MIT",
-	"contributors": [
-		"Bastani, Inc."
-	],
-	"publishConfig": {
-		"access": "public"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/bastani-inc/atomic.git",
-		"directory": "packages/schema"
-	},
-	"homepage": "https://docs.bastani.ai/libraries/schema",
-	"bugs": {
-		"url": "https://github.com/bastani-inc/atomic/issues"
-	},
-	"engines": {
-		"node": ">=22.19.0"
-	},
-	"devDependencies": {
-		"typebox": "1.3.27",
-		"vitest": "4.1.12"
-	}
+  "name": "@bastani/atomic-schema",
+  "version": "0.10.8",
+  "description": "Atomic's JSON Schema builders and validation without eval: drafts 2020-12 and 7, compiled into plain closures",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "module": "./dist/_modules/index.js",
+      "browser": "./dist/_modules/index.js",
+      "import": "./dist/index.js"
+    },
+    "./formats": {
+      "source": "./src/formats/index.ts",
+      "types": "./dist/formats/index.d.ts",
+      "module": "./dist/_modules/formats/index.js",
+      "browser": "./dist/_modules/formats/index.js",
+      "import": "./dist/formats/index.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "!dist/**/*.d.ts.map",
+    "README.md",
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES",
+    "LICENSE",
+    "NOTICE.md"
+  ],
+  "scripts": {
+    "clean": "node ../../scripts/package-files.mjs clean dist",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest --run",
+    "prepublishOnly": "npm run clean && npm run build",
+    "build:bundle": "node ../../scripts/bundle-package-dist.mjs --no-strict-execution-order",
+    "prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\""
+  },
+  "keywords": [
+    "json-schema",
+    "validation",
+    "validator",
+    "csp",
+    "atomic"
+  ],
+  "author": "Earendil Works",
+  "license": "MIT",
+  "contributors": [
+    "Bastani, Inc."
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bastani-inc/atomic.git",
+    "directory": "packages/schema"
+  },
+  "homepage": "https://docs.bastani.ai/libraries/schema",
+  "bugs": {
+    "url": "https://github.com/bastani-inc/atomic/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "devDependencies": {
+    "typebox": "1.3.27",
+    "vitest": "4.1.12"
+  }
 }
