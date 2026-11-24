@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.10] - 2026-11-24
+
+### Changed
+
+- Updated `package.json` `homepage` to `https://docs.bastani.ai/libraries/storage-postgres`, documented both `atomic install` (CLI) and `npm install` (SDK) flows with complete `createAgentSession()` + `database.close()` examples, and clarified the PostgreSQL 16+ session requirement, `secrets.password`, `listenUrl`, and 24-character lowercase `prefix` rules in `README.md` ([#6555](https://github.com/bastani-inc/atomic/pull/6555)).
+
 ## [0.10.10-alpha.2] - 2026-11-24
 
 ### Changed
