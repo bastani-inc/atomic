@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.10-alpha.2] - 2026-11-24
+
+### Fixed
+
+- Corrected `README.md` to accurately describe `@bastani/atomic-natives` as a required dependency of `@bastani/atomic` with optional per-platform binary packages and Android/Termux build requirements, and added installation, TypeScript usage, and hosted documentation links ([#6555](https://github.com/bastani-inc/atomic/pull/6555)).
+
 ## [0.10.5] - 2026-11-23
 
 ### Added

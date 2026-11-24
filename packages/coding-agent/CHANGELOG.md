@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [0.10.10-alpha.2] - 2026-11-24
+
+Atomic adds a dedicated SDK storage backends guide and standalone PostgreSQL and libSQL library docs, improves Mintlify navigation and cross-linking across all tabs, and fixes code-verified documentation and schema description gaps.
+
+**SDK storage and standalone library docs**
+
+- **Dedicated SDK storage guide.** Added `/sdk/storage` with complete `createAgentSession()`, `createAgentSessionRuntime()`, `SessionManager`, and `StorageError` recipes for local SQLite, JSONL, in-memory, `@bastani/atomic-storage-postgres` (PostgreSQL 16+), and `@bastani/atomic-storage-libsql` ([#6555](https://github.com/bastani-inc/atomic/pull/6555))
+- **Storage adapter library pages and catalog.** Added `/libraries/storage-postgres` and `/libraries/storage-libsql` alongside the six core libraries in `/libraries`, grouped SDK guides under **Build → Embed and integrate → TypeScript SDK**, and added convenience redirects (`/postgres`, `/libsql`, `/turso`, `/decisions`, `/compactors`, `/blueprints`) ([#6555](https://github.com/bastani-inc/atomic/pull/6555))
+
+**Discoverability and accuracy**
+
+- **Routing tables, signposts, and SDK wiring recipes.** Added "Where to configure what" and CLI-vs-SDK routing tables on storage, sessions, configuration, providers, models, and hub pages, added top-of-page signposts across subagents, Intercom, and orchestration docs, and documented SDK wiring for MCP, skills, tools, codemode, subagents, Intercom, and web access ([#6555](https://github.com/bastani-inc/atomic/pull/6555))
+- **Code-verified doc and schema fixes.** Fixed `SessionManager.listAll()`, `sm.getBranch()`, `sessionManager.forkTo()`, `openSessionById()`, `MemorySessionStore` disk-spilling semantics, JSONL `exactDirectory` layout, PostgreSQL 16+ / `secrets.password` / `listenUrl` rules, `ATOMIC_SKIP_VERSION_CHECK` and `NODE_DISABLE_COMPILE_CACHE` parsing, `decisionModel` / `compactionModel` error triggers, compactor support across `models.json` / `custom-provider` / `models.schema.json`, broken anchors, and package READMEs ([#6555](https://github.com/bastani-inc/atomic/pull/6555))
+
+### Added
+
+- Added the dedicated `/sdk/storage` guide (`docs/sdk/storage.md`) and standalone storage-adapter library pages (`docs/libraries/storage-postgres.md` and `docs/libraries/storage-libsql.md`) in the bundled documentation and Mintlify navigation, plus convenience redirects (`/postgres`, `/postgresql`, `/libsql`, `/turso`, `/decisions`, `/structured-decisions`, `/compactors`, `/blueprints`) ([#6555](https://github.com/bastani-inc/atomic/pull/6555)).
+
+### Changed
+
+- Overhauled Mintlify navigation, hub pages, routing tables, Learn/Build/Reference signposts, SDK wiring guides (MCP, skills, tools, codemode, subagents, Intercom, web access), and workspace package READMEs, and clarified `models.schema.json` / `docs/models-configuration.md` descriptions for chat vs. compactor defaults and overrides ([#6555](https://github.com/bastani-inc/atomic/pull/6555)).
+
+### Fixed
+
+- Corrected verified documentation discrepancies against runtime behavior across `docs/sdk/reference.md`, `docs/sdk.md`, `docs/storage.md`, `docs/sessions.md`, `docs/session-format.md`, `docs/settings.md`, `docs/environment-variables.md`, `docs/models/reference.md`, `docs/custom-provider/`, `docs/intercom/operations.md`, `docs/libraries/*.md`, and `examples/sdk/11-sessions.ts` (awaited `dispose()` calls), and fixed all broken doc anchors ([#6555](https://github.com/bastani-inc/atomic/pull/6555)).
+
 ## [0.10.10-alpha.1] - 2026-11-24
 
 Atomic adds configurable remote compaction models with live switching and typed compaction errors, remembers your last selected row in the agent panel, drops redundant multi-provider scope warnings, and fixes dozens of CLI, tool, subagent, Intercom, TUI, and Web Access bugs found during a full docs audit.
