@@ -341,6 +341,9 @@ class AgentSessionBase {
 		this.settingsManager.setCacheWarmingMode(mode);
 		this._cacheWarmer?.onModeChanged();
 	}
+	setDecisionModel(model: string, scope?: "global" | "project"): void {
+		this.settingsManager.setDecisionModel(model, scope);
+	}
 	/**
 	 * The save receipt of a message this session emitted: the sequence its entry was stored at, read while the entry is
 	 * in the session's memory, as at its `message_end`. Undefined for a message that was not saved.

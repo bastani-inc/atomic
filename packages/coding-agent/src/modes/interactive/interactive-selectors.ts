@@ -83,6 +83,11 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 				...decisionSettingScopes(project),
 				availableCompactorModels: [...this.session.modelRuntime.getModelsOfType("compactor")],
 				morphAuthenticated: this.session.modelRuntime.hasConfiguredAuth("morph"),
+				compactorProviderAuth: Object.fromEntries(
+					[...new Set(this.session.modelRuntime.getModelsOfType("compactor").map((model) => model.provider))].map(
+						(provider) => [provider, this.session.modelRuntime.hasConfiguredAuth(provider)],
+					),
+				),
 				compactionModel: this.settingsManager.getCompactionModel(),
 				compactionModelScope: project.compactionModel !== undefined ? "project" : "global",
 				currentTheme: this.themeController.getThemeSelection() || "dark",
@@ -166,10 +171,10 @@ InteractiveModeBase.prototype.showSettingsSelector = async function (this: Inter
 				this.updateEditorBorderColor();
 			},
 			onDecisionModelChange: (model) => {
-				this.settingsManager.setDecisionModel(model, config.decisionModelScope);
+				this.session.setDecisionModel(model, config.decisionModelScope);
 			},
 			onCompactionModelChange: (model) => {
-				this.settingsManager.setCompactionModel(model, config.compactionModelScope);
+				this.session.setCompactionModel(model, config.compactionModelScope);
 			},
 			onModelThinkingLevelChange: (provider, modelId, level) => {
 				this.settingsManager.setModelThinkingLevel(provider, modelId, level);

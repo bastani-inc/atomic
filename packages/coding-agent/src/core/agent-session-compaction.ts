@@ -171,31 +171,50 @@ function fallbackReasonText(error: Error | string, apiKey: string | undefined): 
  * Run the configured compactor model once over the current context window. Returns its text, or the reason it could
  * not be used; a cancel of the compaction itself throws.
  */
+function toStringHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {
+	if (!headers) return undefined;
+	const entries = Object.entries(headers).filter((entry): entry is [string, string] => typeof entry[1] === "string");
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 async function runCompactor(
 	session: AgentSession,
-	selection: { fullId: string; model: { provider: string; id: string; baseUrl?: string } },
+	selection: {
+		fullId: string;
+		model: import("@bastani/atomic-ai").CompactorModel;
+	},
 	pathEntries: SessionEntry[],
 	preparation: VerbatimCompactionPreparation,
 	signal: AbortSignal,
 	reason: VerbatimCompactionApplyOptions["reason"],
 ): Promise<{ compacted: CompactedReplacement; usage?: Usage } | { fallbackReason: string }> {
 	let apiKey: string | undefined;
+	let resolvedHeaders: Record<string, string> | undefined;
 	// Stopping the request (Escape, `abortCompaction()`) clears the context instead; a cancel of the compaction itself
 	// (a takeover, closing the session) still cancels.
 	const stop = new AbortController();
 	session._compactorAbortController = stop;
 	try {
-		apiKey = (
-			await session._modelRuntime.getAuth(selection.model.provider, {
-				signal: AbortSignal.any([signal, stop.signal]),
-			})
-		)?.auth.apiKey;
+		const authSignal = AbortSignal.any([signal, stop.signal]);
+		const authResult = await session._modelRuntime.getAuth(selection.model, { signal: authSignal });
 		stop.signal.throwIfAborted();
+		apiKey = authResult?.auth.apiKey;
+		resolvedHeaders = toStringHeaders(authResult?.auth.headers);
+		if (!apiKey && !resolvedHeaders && selection.model.provider !== "morph") {
+			const compat = await session._modelRuntime.getCompatibilityRequestConfigAsync(selection.model);
+			stop.signal.throwIfAborted();
+			resolvedHeaders = toStringHeaders(compat.headers);
+		}
 		const messages: AgentMessage[] = buildSessionProjection(pathEntries).messages;
 		const output = await requestCompactorOutput({
 			apiKey,
+			api: selection.model.api,
 			modelId: selection.model.id,
 			...(selection.model.baseUrl ? { baseUrl: selection.model.baseUrl } : {}),
+			...(selection.model.endpointPath !== undefined ? { endpointPath: selection.model.endpointPath } : {}),
+			...(selection.model.compactionParams ? { params: selection.model.compactionParams } : {}),
+			...(selection.model.timeoutMs !== undefined ? { timeoutMs: selection.model.timeoutMs } : {}),
+			...(resolvedHeaders ? { headers: resolvedHeaders } : {}),
 			messages: buildCompactorMessages(
 				messages,
 				(message) => message.role === "custom" && isVerbatimCompactionMessage(message),
@@ -205,7 +224,7 @@ async function runCompactor(
 			stop: stop.signal,
 		});
 		if (output.usage) session._emit({ type: "compaction_usage", reason, usage: output.usage });
-		const oversized = oversizedCompactedText(session, output.text);
+		const oversized = oversizedCompactedText(session, output.text, selection.model.maxTokens);
 		if (oversized !== undefined) return { fallbackReason: oversized };
 		return {
 			compacted: { text: output.text, backend: "compactor", model: selection.fullId },
@@ -221,10 +240,10 @@ async function runCompactor(
 	}
 }
 
-function oversizedCompactedText(session: AgentSession, text: string): string | undefined {
+function oversizedCompactedText(session: AgentSession, text: string, maxOutputTokens?: number): string | undefined {
 	const model = session.model;
 	const trigger = model ? model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens : 0;
-	const cap = compactedOutputTokenCap(trigger);
+	const cap = compactedOutputTokenCap(trigger, maxOutputTokens);
 	const tokens = estimateTextTokens(text);
 	return tokens > cap ? `output too long (${tokens} > ${cap} tokens)` : undefined;
 }
@@ -700,6 +719,9 @@ export function _enableSessionHistoryTool(this: AgentSession): void {
 export function setAutoCompactionEnabled(this: AgentSession, enabled: boolean): void {
 	this.settingsManager.setCompactionEnabled(enabled);
 }
+export function setCompactionModel(this: AgentSession, model: string, scope?: "global" | "project"): void {
+	this.settingsManager.setCompactionModel(model, scope);
+}
 
 export const agentSessionCompactionMethods = {
 	_applyVerbatimCompaction,
@@ -708,4 +730,5 @@ export const agentSessionCompactionMethods = {
 	abortCompaction,
 	abortBranchSummary,
 	setAutoCompactionEnabled,
+	setCompactionModel,
 };

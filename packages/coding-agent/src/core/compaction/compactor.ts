@@ -1,22 +1,25 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { CompactorApi } from "@bastani/atomic-ai";
 import type { Usage } from "@bastani/atomic-ai/compat";
 import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import { messageIsLlmVisible } from "../messages.ts";
 
-/** Share of the conversation the compactor keeps. A constant, not a setting. */
+/** Default share of the conversation a Morph compactor keeps unless overridden by model `compactionParams`. */
 export const COMPACTOR_COMPRESSION_RATIO = 0.5;
-/** Wall-clock bound on one compactor request; past it the context is cleared instead. */
+/** Default wall-clock bound on one compactor request unless overridden by model `timeoutMs`; past it the context is cleared instead. */
 export const COMPACTOR_REQUEST_TIMEOUT_MS = 120_000;
 /** Lines longer than this are wrapped before they are sent, so the compactor can keep or drop parts of them. */
 export const COMPACTOR_LINE_WIDTH = 2_000;
-/** Upper bound on compacted text, in estimated tokens. Longer output is a failure and the context is cleared. */
+/** Default upper bound on compacted text, in estimated tokens, unless overridden by model `maxTokens`. Longer output is a failure and the context is cleared. */
 export const COMPACTED_OUTPUT_MAX_TOKENS = 32_000;
 /** Compacted text never fills more than this share of the context the automatic trigger allows. */
 export const COMPACTED_OUTPUT_MAX_TRIGGER_SHARE = 0.5;
 
 const DEFAULT_COMPACTOR_BASE_URL = "https://api.morphllm.com/v1";
+const DEFAULT_COMPACTOR_ENDPOINT_PATH = "/compact";
 const HTTP_ERROR_EXCERPT_MAX_CHARS = 500;
 const HTTP_ERROR_BODY_MAX_BYTES = 8192;
+const SENSITIVE_HEADER_NAMES = new Set(["authorization", "proxy-authorization", "x-api-key", "api-key"]);
 
 export interface CompactorMessage {
 	role: "user" | "assistant";
@@ -140,11 +143,10 @@ export function buildCompactorMessages(
 }
 
 /** Largest compacted text, in estimated tokens, for a model whose automatic trigger fires above `triggerTokens`. */
-export function compactedOutputTokenCap(triggerTokens: number): number {
-	return Math.max(
-		0,
-		Math.min(COMPACTED_OUTPUT_MAX_TOKENS, Math.floor(triggerTokens * COMPACTED_OUTPUT_MAX_TRIGGER_SHARE)),
-	);
+export function compactedOutputTokenCap(triggerTokens: number, maxOutputTokens = COMPACTED_OUTPUT_MAX_TOKENS): number {
+	const limit =
+		Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : COMPACTED_OUTPUT_MAX_TOKENS;
+	return Math.max(0, Math.min(limit, Math.floor(triggerTokens * COMPACTED_OUTPUT_MAX_TRIGGER_SHARE)));
 }
 
 /** A conservative token estimate for text: four characters per token, one per character outside ASCII. */
@@ -154,8 +156,31 @@ export function estimateTextTokens(text: string): number {
 	return Math.ceil((text.length - dense) / 4) + dense;
 }
 
-function redact(text: string, apiKey: string): string {
-	return redactCredentialShapes(apiKey ? text.replaceAll(apiKey, "[redacted]") : text);
+function collectSecrets(apiKey: string | undefined, headers: Record<string, string> | undefined): string[] {
+	const secrets: string[] = [];
+	if (apiKey) secrets.push(apiKey);
+	if (headers) {
+		for (const [name, value] of Object.entries(headers)) {
+			if (!value) continue;
+			if (SENSITIVE_HEADER_NAMES.has(name.toLowerCase())) {
+				secrets.push(value);
+				const trimmed = value.trim();
+				if (trimmed.slice(0, 7).toLowerCase() === "bearer ") {
+					const token = trimmed.slice(7).trim();
+					if (token) secrets.push(token);
+				}
+			}
+		}
+	}
+	return [...new Set(secrets)].sort((a, b) => b.length - a.length);
+}
+
+function redact(text: string, secrets: readonly string[]): string {
+	let cleaned = text;
+	for (const secret of secrets) {
+		if (secret) cleaned = cleaned.replaceAll(secret, "[redacted]");
+	}
+	return redactCredentialShapes(cleaned);
 }
 
 async function readHttpErrorBody(response: Response): Promise<string> {
@@ -182,9 +207,9 @@ async function readHttpErrorBody(response: Response): Promise<string> {
 	}
 }
 
-async function httpErrorMessage(response: Response, apiKey: string): Promise<string> {
+async function httpErrorMessage(response: Response, secrets: readonly string[]): Promise<string> {
 	const body = await readHttpErrorBody(response);
-	const excerpt = redact(body, apiKey)
+	const excerpt = redact(body, secrets)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/\s+/g, " ")
 		.trim()
@@ -223,10 +248,18 @@ function responseText(body: CompactorResponse): string {
 
 export interface CompactorRequest {
 	readonly apiKey: string | undefined;
+	/** Compactor API dialect (default `"morph-compact"`, which supplies Morph's default body fields). Custom API names omit Morph-specific defaults unless configured in `params`. */
+	readonly api?: CompactorApi;
 	/** The compactor model's id, sent as `model`. */
 	readonly modelId: string;
-	/** The compactor model's base URL; the request goes to `<baseUrl>/compact`. */
+	/** The compactor model's base URL; the request goes to `<baseUrl><endpointPath>`. */
 	readonly baseUrl?: string;
+	/** Path appended to `baseUrl` (default `"/compact"`). Pass `""` to POST directly to `baseUrl`. */
+	readonly endpointPath?: string;
+	/** Additional or overridden API-specific request body parameters. */
+	readonly params?: Record<string, unknown>;
+	/** Optional resolved headers merged into the request (supporting custom auth headers or metadata). */
+	readonly headers?: Record<string, string>;
 	readonly messages: readonly CompactorMessage[];
 	readonly query: string;
 	/** Aborts when the compaction itself is cancelled; that is a cancel, not a failure. */
@@ -243,6 +276,43 @@ function trimTrailingSlashes(url: string): string {
 	return url.slice(0, end);
 }
 
+function resolveCompactorUrl(baseUrl: string, endpointPath: string | undefined): string {
+	const base = trimTrailingSlashes(baseUrl);
+	const path = endpointPath === undefined ? DEFAULT_COMPACTOR_ENDPOINT_PATH : endpointPath.trim();
+	if (!path) return base;
+	return path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
+}
+
+function hasHeaderCaseInsensitive(headers: Record<string, string>, target: string): boolean {
+	const lower = target.toLowerCase();
+	return Object.keys(headers).some((key) => key.toLowerCase() === lower);
+}
+
+function buildCompactorPayload(request: CompactorRequest): Record<string, unknown> {
+	const morphDefaults: Record<string, unknown> =
+		(request.api ?? "morph-compact") === "morph-compact"
+			? {
+					compression_ratio: COMPACTOR_COMPRESSION_RATIO,
+					preserve_recent: 0,
+					include_markers: true,
+					include_line_ranges: false,
+				}
+			: {};
+	const extra: Record<string, unknown> = {};
+	if (request.params) {
+		for (const [key, value] of Object.entries(request.params)) {
+			if (value !== undefined) extra[key] = value;
+		}
+	}
+	return {
+		...morphDefaults,
+		...extra,
+		messages: request.messages,
+		query: request.query,
+		model: request.modelId,
+	};
+}
+
 /**
  * Send the framed conversation to a compactor endpoint and return its text. Throws `CompactorFailure` naming the
  * reason for every failure (no credentials, HTTP error, malformed or empty output, timeout), and `Compaction cancelled`
@@ -251,8 +321,16 @@ function trimTrailingSlashes(url: string): string {
 export async function requestCompactorOutput(request: CompactorRequest): Promise<{ text: string; usage?: Usage }> {
 	if (request.signal.aborted) throw new Error("Compaction cancelled");
 	const apiKey = request.apiKey;
-	if (!apiKey) throw new CompactorFailure("no credentials (use /login or the provider's API key variable)");
-	const timeoutMs = request.timeoutMs ?? COMPACTOR_REQUEST_TIMEOUT_MS;
+	const customHeaders = request.headers;
+	const hasCustomHeaders = customHeaders !== undefined && Object.keys(customHeaders).length > 0;
+	if (!apiKey && !hasCustomHeaders) {
+		throw new CompactorFailure("no credentials (use /login or the provider's API key variable)");
+	}
+	const secrets = collectSecrets(apiKey, customHeaders);
+	const timeoutMs =
+		request.timeoutMs !== undefined && Number.isFinite(request.timeoutMs) && request.timeoutMs > 0
+			? request.timeoutMs
+			: COMPACTOR_REQUEST_TIMEOUT_MS;
 	const timeout = AbortSignal.timeout(timeoutMs);
 	const signal = AbortSignal.any([request.signal, timeout, ...(request.stop ? [request.stop] : [])]);
 	const failure = (error: Error | string): never => {
@@ -260,29 +338,25 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 		if (request.stop?.aborted) throw new CompactorFailure("request aborted");
 		if (timeout.aborted) throw new CompactorFailure(`timed out after ${timeoutMs} ms`);
 		const message = typeof error === "string" ? error : error.message || error.name;
-		throw new CompactorFailure(redact(message, apiKey));
+		throw new CompactorFailure(redact(message, secrets));
 	};
-	const baseUrl = trimTrailingSlashes(request.baseUrl ?? DEFAULT_COMPACTOR_BASE_URL);
+	const url = resolveCompactorUrl(request.baseUrl ?? DEFAULT_COMPACTOR_BASE_URL, request.endpointPath);
+	const headers: Record<string, string> = { "Content-Type": "application/json", ...customHeaders };
+	if (apiKey && !hasHeaderCaseInsensitive(headers, "authorization")) {
+		headers.Authorization = `Bearer ${apiKey}`;
+	}
 	let response: Response;
 	try {
-		response = await (request.fetchFn ?? fetch)(`${baseUrl}/compact`, {
+		response = await (request.fetchFn ?? fetch)(url, {
 			method: "POST",
-			headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-			body: JSON.stringify({
-				messages: request.messages,
-				query: request.query,
-				compression_ratio: COMPACTOR_COMPRESSION_RATIO,
-				preserve_recent: 0,
-				include_markers: true,
-				include_line_ranges: false,
-				model: request.modelId,
-			}),
+			headers,
+			body: JSON.stringify(buildCompactorPayload(request)),
 			signal,
 		});
 	} catch (error) {
 		return failure(error instanceof Error ? error : String(error));
 	}
-	if (!response.ok) return failure(await httpErrorMessage(response, apiKey));
+	if (!response.ok) return failure(await httpErrorMessage(response, secrets));
 	let body: CompactorResponse;
 	try {
 		body = (await response.json()) as CompactorResponse;
@@ -293,7 +367,10 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 	if (request.signal.aborted) throw new Error("Compaction cancelled");
 	if (typeof body !== "object" || body === null) throw new CompactorFailure("malformed response");
 	// The output becomes context and history, so a credential the endpoint echoed back must not survive in it.
-	const text = responseText(body).replaceAll(apiKey, "[redacted]");
+	let text = responseText(body);
+	for (const secret of secrets) {
+		if (secret) text = text.replaceAll(secret, "[redacted]");
+	}
 	if (!text) throw new CompactorFailure("empty output");
 	const usage = compactorUsage(body.usage);
 	return { text, ...(usage ? { usage } : {}) };

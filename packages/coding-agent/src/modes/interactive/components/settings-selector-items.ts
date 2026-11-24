@@ -23,7 +23,7 @@ export function decisionSettingScopes(project: Pick<Settings, "decisionModel">):
  * a deleted subagent environment key.
  */
 const NO_DEFAULT_MODELS_VALUE = "__no-models__";
-const COMPACTION_AUTO_LABEL = "Auto (clear and recover)";
+const COMPACTION_AUTO_LABEL = "Automatic";
 
 /** Index just after the compaction items, where the image and UI toggles start. */
 function afterCompactionItems(items: SettingItem[]): number {
@@ -353,14 +353,25 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 		{
 			id: "compaction-model",
 			label: "Compaction model",
-			description: `Saves to ${config.compactionModelScope ?? "global"} settings; Auto clears the context and the agent recovers from session history`,
+			description: `Saves to ${config.compactionModelScope ?? "global"} settings; Automatic clears the context and the agent recovers from session history`,
 			currentValue:
 				config.compactionModel && config.compactionModel !== "auto"
 					? config.compactionModel
 					: COMPACTION_AUTO_LABEL,
 			submenu: (_currentValue, done) => {
 				const current = config.compactionModel === "auto" ? "" : (config.compactionModel ?? "");
-				const models = config.availableCompactorModels ?? [];
+				const isProviderAuthenticated = (provider: string): boolean => {
+					const explicit = config.compactorProviderAuth?.[provider];
+					if (explicit !== undefined) return explicit;
+					if (provider === "morph") return config.morphAuthenticated === true;
+					return true;
+				};
+				const models = [...(config.availableCompactorModels ?? [])].sort((a, b) => {
+					const aAuth = isProviderAuthenticated(a.provider) ? 0 : 1;
+					const bAuth = isProviderAuthenticated(b.provider) ? 0 : 1;
+					if (aAuth !== bAuth) return aAuth - bAuth;
+					return `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`);
+				});
 				const options = [
 					{
 						value: "",
@@ -370,10 +381,9 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					...models.map((model) => ({
 						value: `${model.provider}/${model.id}`,
 						label: formatModelLabel(model),
-						description:
-							model.provider === "morph" && !config.morphAuthenticated
-								? `${model.name} · requires /login morph`
-								: model.name,
+						description: isProviderAuthenticated(model.provider)
+							? model.name
+							: `${model.name} · requires /login ${model.provider}`,
 					})),
 				];
 				if (current && !options.some((option) => option.value === current)) {

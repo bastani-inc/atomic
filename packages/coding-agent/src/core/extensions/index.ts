@@ -186,7 +186,11 @@ export type {
 	ProjectTrustHandler,
 	// Provider Registration
 	ProviderAliasConfig,
+	ProviderChatModelConfig,
+	ProviderClassifierModelConfig,
+	ProviderCompactorModelConfig,
 	ProviderConfig,
+	ProviderImageModelConfig,
 	ProviderModelConfig,
 	ProviderStreamEvent,
 	ReadToolCallEvent,

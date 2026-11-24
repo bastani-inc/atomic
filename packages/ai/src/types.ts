@@ -89,7 +89,9 @@ export type KnownClassifierApi =
 
 export type ClassifierApi = KnownClassifierApi | (string & {});
 
-export type CompactorApi = "morph-compact";
+export type KnownCompactorApi = "morph-compact";
+
+export type CompactorApi = KnownCompactorApi | (string & {});
 
 export type KnownProvider =
 	| "amazon-bedrock"
@@ -1108,6 +1110,14 @@ export interface ClassifierModel<TApi extends ClassifierApi> extends BaseModel<T
 /** Dedicated compaction model, excluded from chat model selection. */
 export interface CompactorModel<TApi extends CompactorApi = CompactorApi> extends BaseModel<TApi> {
 	type: "compactor";
+	/** Optional endpoint path appended to `baseUrl` (default: `"/compact"`). Set to `""` to POST directly to `baseUrl`. */
+	endpointPath?: string;
+	/** API-specific request-body parameters merged into compactor requests (for example `compression_ratio`, `preserve_recent`, `include_markers`, `include_line_ranges`, or custom fields). */
+	compactionParams?: Record<string, unknown>;
+	/** Optional wall-clock timeout in milliseconds for one compactor request (default: 120000). */
+	timeoutMs?: number;
+	/** Optional upper bound on compacted output in estimated tokens (default: 32000; still capped at 50% of the automatic trigger budget). */
+	maxTokens?: number;
 }
 
 /** Model shape for each model type. */

@@ -141,6 +141,41 @@ Any custom provider that defines `models` requires a `baseUrl` (unless overridin
 
 If the provider is supported but the model is unknown or lacks credentials, automatic selection picks an available authenticated model. See [Models and thinking](/settings#models-and-thinking).
 
+## Remote compaction models
+
+Add a custom remote compaction endpoint by setting `"type": "compactor"` on a model entry, or override built-in `morph/morph-compactor` parameters under `modelOverrides`. Custom compactor models are excluded from `/model` and appear automatically in `/settings` under **Compaction model**:
+
+```json
+{
+  "providers": {
+    "my-compactor": {
+      "baseUrl": "https://compact.example.com/v1",
+      "apiKey": "$MY_COMPACTOR_API_KEY",
+      "headers": {
+        "X-Team": "platform"
+      },
+      "models": [
+        {
+          "id": "compact-v2",
+          "name": "Internal Compactor v2",
+          "type": "compactor",
+          "api": "custom-compact",
+          "endpointPath": "/compress",
+          "compactionParams": {
+            "target_ratio": 0.4,
+            "preserve_recent": 2
+          },
+          "timeoutMs": 180000,
+          "maxTokens": 48000
+        }
+      ]
+    }
+  }
+}
+```
+
+Use `"api": "morph-compact"` (the default when `api` is omitted on a compactor) for Morph-compatible endpoints, or any custom `api` name to send only `{ messages, query, model, ...compactionParams }` without Morph defaults. See [Customize Morph or add a remote compactor](/compaction#customize-morph-or-add-a-remote-compactor) and [Compaction reference](/compaction/reference#compactor-request-contract).
+
 ## Use classifier models
 
 Classifier models answer typed questions about JSON state instead of chatting and do not appear in `/model`. In [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")` and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.

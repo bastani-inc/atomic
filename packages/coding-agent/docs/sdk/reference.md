@@ -1612,6 +1612,16 @@ EditToolError, EditInputError, EditMatchError, EditTargetError, WriteSelectorErr
 isEditToolError, isEditInputError, isEditMatchError, isEditTargetError, isWriteSelectorError, isFileToolAbortedError
 serializeFileToolError, rehydrateEditToolError, rehydrateWriteSelectorError
 
+// Compaction and custom compactor models
+type CompactorModel, type CompactorApi, type KnownCompactorApi
+type ProviderCompactorModelConfig, type ProviderChatModelConfig, type ProviderClassifierModelConfig, type ProviderImageModelConfig
+type CompactorRequest, type CompactorMessage, type CompactionModelSelection, type CompactionModelKind
+CompactorFailure
+requestCompactorOutput, buildCompactorMessages, compactedOutputTokenCap, classifyCompactionModel, resolveCompactionModel
+estimateTextTokens, wrapLongLines
+COMPACTOR_COMPRESSION_RATIO, COMPACTOR_REQUEST_TIMEOUT_MS, COMPACTOR_LINE_WIDTH
+COMPACTED_OUTPUT_MAX_TOKENS, COMPACTED_OUTPUT_MAX_TRIGGER_SHARE
+
 // Types
 type CreateAgentSessionOptions
 type CreateAgentSessionResult

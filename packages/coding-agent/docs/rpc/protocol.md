@@ -431,6 +431,7 @@ Response contains an array of full [Model](#model-type) objects:
   "data": {
     "models": [],
     "scopedModels": [],
+    "compactorModels": [],
     "customAuthProviders": [],
     "oauthProviders": [],
     "providerAuthStatuses": []
@@ -438,6 +439,7 @@ Response contains an array of full [Model](#model-type) objects:
 }
 ```
 
+- `compactorModels`: dedicated compactor models registered in the session (`morph/morph-compactor`, custom `models.json` compactors, and extension-registered compactors).
 - `customAuthProviders`: extension-registered providers (`{ id, name }`) accepting API-key login through `login_provider`.
 - `oauthProviders`: providers supporting interactive OAuth login through `login_provider`.
 - `providerAuthStatuses`: auth status of extension-registered providers (`{ provider, status }`, where `status` is `{ configured, source?, label? }`) when credentials do not come from `auth.json` (for example, an environment variable).
@@ -732,6 +734,34 @@ Response:
 
 ```json
 {"type": "response", "command": "set_auto_compaction", "success": true}
+```
+
+#### set_compaction_model
+
+Switch the active compaction model immediately without restarting or reloading, and persist it to global or project settings. Pass `""` or `"auto"` for Automatic (clear and recover), or an exact compactor `provider/model` ID.
+
+```json
+{"type": "set_compaction_model", "model": "my-compactor/compact-v2", "scope": "global"}
+```
+
+Response:
+
+```json
+{"type": "response", "command": "set_compaction_model", "success": true}
+```
+
+#### set_decision_model
+
+Switch the active decision model immediately without restarting or reloading, and persist it to global or project settings. Pass `""` or `"auto"` for Automatic (current chat model), or an exact registered classifier or chat `provider/model` ID.
+
+```json
+{"type": "set_decision_model", "model": "typesafe/jev-latest", "scope": "global"}
+```
+
+Response:
+
+```json
+{"type": "response", "command": "set_decision_model", "success": true}
 ```
 
 #### abort_compaction

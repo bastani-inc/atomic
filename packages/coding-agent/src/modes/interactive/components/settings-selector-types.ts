@@ -38,6 +38,7 @@ export interface SettingsConfig {
 	compactionModel?: string;
 	compactionModelScope?: "global" | "project";
 	morphAuthenticated?: boolean;
+	compactorProviderAuth?: Readonly<Record<string, boolean>>;
 	modelThinkingLevels?: Record<string, ThinkingLevel>;
 	currentTheme: string;
 	terminalTheme: TerminalTheme;

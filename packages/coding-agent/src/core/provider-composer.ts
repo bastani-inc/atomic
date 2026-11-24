@@ -19,6 +19,7 @@ import { getApiProvider } from "@bastani/atomic-ai/compat";
 import type { ModelConfig, ModelsJsonProvider } from "./model-config.ts";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer-internal.ts";
 import {
+	applyCompactorModelOverride,
 	applyExtension,
 	applyModelOverride,
 	applyModelsJson,
@@ -96,7 +97,10 @@ export function composeModelProvider(
 		}
 		return models.map((model) => {
 			const override = config?.modelOverrides?.[model.id];
-			return override && isModelType(model, "chat") ? applyModelOverride(model, override) : model;
+			if (!override) return model;
+			if (isModelType(model, "chat")) return applyModelOverride(model, override);
+			if (isModelType(model, "compactor")) return applyCompactorModelOverride(model, override);
+			return model;
 		});
 	};
 	// Validate eagerly so registration/reload reports structural errors immediately.

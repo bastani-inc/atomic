@@ -14,13 +14,25 @@ Extension events and compaction results carry one parameter:
 
 Instructions passed to `/compact`, `session.compact({ query })`, `ctx.compact({ query })`, or RPC `compact` are also appended to the boundary message after the recovery steps. Automatic compaction passes no custom instructions.
 
-`compression_ratio` and `preserve_recent` are no longer compaction options and are ignored if supplied. The compactor ratio, request timeout, and output cap are fixed constants exported from `@bastani/atomic`:
+`compression_ratio` and `preserve_recent` are not top-level `session.compact()` or `settings.json` compaction options and are ignored if supplied there, keeping default context-clearing compaction free of endpoint knobs. Configure endpoint-specific parameters directly on each compactor model in [`models.json`](/models#remote-compaction-models) (`compactionParams`, `endpointPath`, `timeoutMs`, `maxTokens`, `headers`) or via [`atomic.registerProvider()`](/custom-provider/api-reference) (`ProviderCompactorModelConfig`).
 
-| Value | Export | Meaning |
-| --- | --- | --- |
-| `0.5` | `COMPACTOR_COMPRESSION_RATIO` | Share of the conversation the compactor is asked to keep |
-| `120000` | `COMPACTOR_REQUEST_TIMEOUT_MS` | Wall-clock limit on one compactor request, in milliseconds |
-| `32000` | `COMPACTED_OUTPUT_MAX_TOKENS` | Largest allowed compacted text in estimated tokens (or 50% of the automatic trigger budget on small context windows) |
+Default values used when a compactor model omits an override are exported from `@bastani/atomic`:
+
+| Default | Export | Model override field | Meaning |
+| --- | --- | --- | --- |
+| `0.5` | `COMPACTOR_COMPRESSION_RATIO` | `compactionParams.compression_ratio` | Default share of the conversation requested for `api: "morph-compact"` |
+| `120000` | `COMPACTOR_REQUEST_TIMEOUT_MS` | `timeoutMs` | Wall-clock limit on one compactor request, in milliseconds |
+| `32000` | `COMPACTED_OUTPUT_MAX_TOKENS` | `maxTokens` | Largest allowed compacted text in estimated tokens (always also capped at `COMPACTED_OUTPUT_MAX_TRIGGER_SHARE` = 50% of the automatic trigger budget) |
+| `2000` | `COMPACTOR_LINE_WIDTH` | None | Character width at which long lines wrap before framing |
+
+### Compactor request contract
+
+Atomic POSTs JSON to `<baseUrl><endpointPath>` (`endpointPath` defaults to `"/compact"`; `""` POSTs directly to `baseUrl`):
+
+- **Payload for `api: "morph-compact"`:** sends `{ compression_ratio: 0.5, preserve_recent: 0, include_markers: true, include_line_ranges: false, ...compactionParams, messages, query, model }`. Any field in `compactionParams` overrides the default or adds custom endpoint fields.
+- **Payload for any other `api` string (such as `"custom-compact"`):** sends `{ ...compactionParams, messages, query, model }` without injecting Morph-specific defaults.
+- **Headers and authentication:** sends `Content-Type: application/json`, merges resolved provider and model `headers`, and adds `Authorization: Bearer <apiKey>` when `apiKey` is present and no explicit `Authorization` header was set. The API key and sensitive auth headers (`Authorization`, `Proxy-Authorization`, `X-API-Key`, `API-Key`) are redacted from HTTP error excerpts and compacted output.
+- **Response parsing:** reads joined non-empty `messages[].content` entries when present, otherwise `output`, plus optional `usage.input_tokens` and `usage.output_tokens`.
 
 Long lines sent to a compactor wrap at 2,000 characters. Compaction resets Claude's signed reasoning chain, so `thinking` and `redacted_thinking` blocks do not survive a boundary. See [Preserved thinking and model switches](/models/reference#preserved-thinking-and-model-switches) for behavior between boundaries.
 

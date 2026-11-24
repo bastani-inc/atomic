@@ -1,4 +1,4 @@
-import { type AnyModel, isModelType } from "@bastani/atomic-ai";
+import { type AnyModel, type CompactorModel, isModelType } from "@bastani/atomic-ai";
 
 /**
  * What a `compactionModel` value selects. `auto` (also an empty value) clears the context and lets the agent recover
@@ -7,7 +7,7 @@ import { type AnyModel, isModelType } from "@bastani/atomic-ai";
  */
 export type CompactionModelSelection =
 	| { kind: "auto"; ignored?: { configured: string; reason: "chat" | "classifier" | "unknown" } }
-	| { kind: "compactor"; fullId: string; model: AnyModel };
+	| { kind: "compactor"; fullId: string; model: CompactorModel };
 
 /** What kind of registered model a `compactionModel` value names. */
 export type CompactionModelKind = "auto" | "compactor" | "chat" | "classifier" | "unknown";
@@ -31,7 +31,7 @@ export function resolveCompactionModel(
 	if (kind === "auto") return { kind: "auto" };
 	if (kind === "compactor") {
 		const model = models.find((candidate) => `${candidate.provider}/${candidate.id}` === value);
-		if (model) return { kind: "compactor", fullId: value, model };
+		if (model && isModelType(model, "compactor")) return { kind: "compactor", fullId: value, model };
 	}
 	return {
 		kind: "auto",

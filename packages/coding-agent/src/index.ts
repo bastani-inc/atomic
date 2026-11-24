@@ -312,6 +312,8 @@ export {
 
 // Core session management
 
+// Compaction
+export type { CompactorApi, CompactorModel, KnownCompactorApi } from "@bastani/atomic-ai";
 // GitHub Copilot request failures, typed at the provider; see docs/providers.md.
 export {
 	classifyGitHubCopilotFailure,
@@ -481,26 +483,31 @@ export {
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
 } from "./core/cloudflare-gateway-binding.ts";
-// Compaction
 export {
 	type BranchPreparation,
 	type BranchSummaryResult,
 	buildBoundaryText,
 	buildCompactorMessages,
 	COMPACTED_OUTPUT_MAX_TOKENS,
+	COMPACTED_OUTPUT_MAX_TRIGGER_SHARE,
 	COMPACTOR_COMPRESSION_RATIO,
+	COMPACTOR_LINE_WIDTH,
 	COMPACTOR_REQUEST_TIMEOUT_MS,
 	type CollectEntriesResult,
 	type CompactionBackend,
 	type CompactionForm,
 	type CompactionHistoryLocation,
+	type CompactionModelKind,
 	type CompactionModelSelection,
 	CompactorFailure,
 	type CompactorMessage,
 	type CompactorRequest,
 	calculateContextTokens,
+	classifyCompactionModel,
 	collectEntriesForBranchSummary,
+	compactedOutputTokenCap,
 	DEFAULT_COMPACTION_SETTINGS,
+	estimateTextTokens,
 	estimateTokens,
 	type FileOperations,
 	type GenerateBranchSummaryOptions,
@@ -519,6 +526,7 @@ export {
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 	type VerbatimCompactionResult,
+	wrapLongLines,
 } from "./core/compaction/index.ts";
 export {
 	appendDebugRecord,

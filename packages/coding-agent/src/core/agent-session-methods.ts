@@ -392,6 +392,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_preflightPostToolContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]>;
 	_finishPostToolCompactionPreflight(messages: AgentMessage[]): AgentMessage[];
 	setAutoCompactionEnabled(enabled: boolean): void;
+	setCompactionModel(model: string, scope?: "global" | "project"): void;
 	/** Give an agent without `read` or `search` the read-only `session_history` tool after a compaction boundary. */
 	_enableSessionHistoryTool(): void;
 
@@ -575,6 +576,7 @@ export interface AgentSessionPublicSurface
 		| "abortCompaction"
 		| "abortBranchSummary"
 		| "setAutoCompactionEnabled"
+		| "setCompactionModel"
 		| "bindExtensions"
 		| "startPendingRecovery"
 		| "startPendingRecoveryRestore"
