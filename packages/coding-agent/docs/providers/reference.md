@@ -1,32 +1,42 @@
 ---
-title: Provider reference
-description: Provider stop reasons, credential resolution order, and GitHub Copilot error classes.
+title: "Provider reference"
+sidebarTitle: "Providers"
+description: "Credential resolution order, provider stop reasons, and GitHub Copilot error classes and helpers."
 ---
 
-# Provider reference
+This reference covers credential precedence, terminal stop reasons, and GitHub Copilot's typed error classes. For setup steps, subscriptions, and API keys, see [Model providers](/providers).
+
+## Credential resolution order {#resolution-order}
+
+Atomic resolves provider credentials from highest to lowest priority:
+
+1. **CLI `--api-key` flag** (or SDK runtime API key override).
+2. **Stored credential in `~/.atomic/agent/auth.json`** (API key or OAuth token; falls back to legacy `~/.pi/agent/auth.json`).
+3. **Provider configuration `apiKey`** from an extension's `registerProvider()` call, then from `~/.atomic/agent/models.json`.
+4. **Built-in environment variable or ambient credentials** (such as `ANTHROPIC_API_KEY`, AWS profiles/IAM/IRSA, Google Application Default Credentials, or Anthropic Workload Identity Federation).
+
+Watch out for two precedence rules:
+
+- **Unset `$VAR` in `models.json` blocks env fallback.** If you configure `"apiKey": "$UNSET_VAR"` on a built-in provider in `models.json` and `UNSET_VAR` is unset or empty, credential resolution stops and returns no credential instead of falling back to the provider's built-in environment variable.
+- **Anthropic environment variable order.** When no CLI flag, `auth.json` entry, or `models.json` `apiKey` is set for `anthropic`, Atomic checks `ANTHROPIC_AUTH_TOKEN`, then `ANTHROPIC_OAUTH_TOKEN`, then `ANTHROPIC_API_KEY`, then Anthropic Workload Identity Federation.
+
+### SDK login options
+
+Applications calling `@bastani/atomic-ai` directly can pass `{ agentName: "my-app" }` as the fourth argument to `models.login()` to set the OpenAI ChatGPT sign-in name hint or Codex login originator. ChatGPT sign-in defaults to `Atomic`.
 
 ## Stop reasons
 
-Every provider reports why a turn ended. Atomic maps the provider's string (`end_turn`, `MAX_TOKENS`, `tool_calls`, and similar values) onto `stop`, `length`, `toolUse`, `error`, or `aborted`.
+Every provider reports why a turn ended. Atomic maps the provider's raw stop reason (`end_turn`, `MAX_TOKENS`, `tool_calls`, and similar values) onto `stop`, `length`, `toolUse`, `error`, `aborted`, or `deferred` (for asynchronous batch APIs).
 
 An unrecognized terminal reason becomes a provider error that names the raw value instead of an ordinary stop. This surfaces new truncation or safety signals rather than letting a turn appear complete. Provider safety and refusal errors keep their raw reason, such as `Provider stopped with: SAFETY`.
 
-A streaming partial message carries `pending` until a terminal reason replaces it. A completed turn cannot remain `pending`, so a stream that ends in that state becomes a provider error. See [Custom providers](/custom-provider) for custom streaming requirements.
-
-## Resolution order
-
-Atomic resolves provider credentials in this order:
-
-1. CLI `--api-key` flag
-2. `~/.atomic/agent/auth.json` entry (API key or OAuth token)
-3. Environment variable
-4. Custom provider keys from `models.json`
+A streaming partial message carries `pending` until a terminal reason replaces it. A completed turn cannot remain `pending`, so a stream that ends in that state becomes a provider error. See [Implement provider streaming](/custom-provider/streaming#stop-reasons) for custom streaming requirements.
 
 ## GitHub Copilot errors
 
 Atomic classifies failed GitHub Copilot requests into typed error classes so retries and [model fallback](/settings#retry) react to the failure cause rather than message text. Each message states what failed, the model, the error code, the next step, and Copilot's response excerpt.
 
-Every `GitHubCopilotError` carries `code`, `retryable`, `hint`, `modelId`, `api`, `status`, `providerCode` (Copilot's error code), `requestId` (Copilot's `x-request-id`), `detail` (a short excerpt of Copilot's response text, which may quote parts of the request), and `cause`.
+Every `GitHubCopilotError` carries `code`, `retryable`, `hint`, `modelId`, `api`, `status`, `providerCode` (Copilot's error code), `requestId` (Copilot's `x-request-id`), `detail` (a response excerpt truncated to 300 characters, which may quote parts of the request), and `cause`.
 
 | Class | Code | When | Extra fields | Retried on same model | Falls back to next model | What to do |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -46,10 +56,16 @@ All 11 classes extend `GitHubCopilotError`. The same retry and fallback rules ap
 
 ### GitHub Copilot error helpers
 
-SDK callers can read the typed error from a failed assistant message with `getGitHubCopilotError(message)`. Call `findGitHubCopilotError(error)` to search an error's cause chain or a wrapped message and return the typed `GitHubCopilotError` instance.
+SDK callers can inspect, classify, and serialize Copilot errors using functions exported from `@bastani/atomic` and `@bastani/atomic-ai`:
 
-The error is stored in the message `diagnostics`, so it survives workers, RPC, and saved sessions. Use `serializeGitHubCopilotError()` and `deserializeGitHubCopilotError()` for explicit conversion. `deserializeGitHubCopilotError()` returns `undefined` if the class name does not match the code or if the `reason` does not belong to that class.
+- **Extract or classify errors:**
+  - `getGitHubCopilotError(message)`: reads the typed error from a failed assistant message's `diagnostics`.
+  - `findGitHubCopilotError(error)`: searches an error, its `cause` chain, or a wrapped message and returns the typed `GitHubCopilotError` instance.
+  - `classifyGitHubCopilotFailure(error, failure)`: maps a raw error and request context into a typed `GitHubCopilotError`.
+- **Serialize across processes:** Errors are stored in assistant message `diagnostics` under `GITHUB_COPILOT_ERROR_DIAGNOSTIC` (`"github_copilot_error"`), so they survive subagent workers, RPC, and saved sessions. Inferred Chat Completions stop reasons are recorded under `GITHUB_COPILOT_INFERRED_STOP_REASON_DIAGNOSTIC` (`"github_copilot_inferred_stop_reason"`). Use `serializeGitHubCopilotError()` and `deserializeGitHubCopilotError()` for explicit conversion; `deserializeGitHubCopilotError()` returns `undefined` if the class name does not match the code or if `reason` does not belong to that class.
+- **Type guards:** Return a plain `boolean` checking an error, its `cause` chain, or a failed message (including errors relayed from another process):
+  - `isGitHubCopilotError`, `isRetryableGitHubCopilotError`
+  - `isGitHubCopilotModelUnavailableError`, `isGitHubCopilotRateLimitError`, `isGitHubCopilotQuotaExhaustedError`, `isGitHubCopilotContentFilterError`, `isGitHubCopilotPromptTooLargeError`, `isGitHubCopilotInvalidRequestError`, `isGitHubCopilotAuthenticationError`, `isGitHubCopilotServiceUnavailableError`, `isGitHubCopilotStreamEndedEarlyError`, `isGitHubCopilotEmptyResponseError`, `isGitHubCopilotUnrecognizedResponseError`
+- **Model inspection:** Call `describeGitHubCopilotModel(model)` to inspect a Copilot model's capabilities.
 
-Type guards such as `isGitHubCopilotError()` and `isGitHubCopilotRateLimitError()` return a plain `boolean` indicating whether an error, its cause chain, or a failed message contains that error, including errors relayed from another process. Call `findGitHubCopilotError()` when you need the instance and its fields. Call `describeGitHubCopilotModel(model)` to inspect a Copilot model's capabilities.
-
-The guards and `findGitHubCopilotError()` also reject malformed serialized payloads. Only minimal relays containing `name`, `code`, and an optional string `message` are reconstructed without structured fields; a malformed full payload is never rebuilt with dropped context.
+The guards and `findGitHubCopilotError()` reject malformed serialized payloads. Only minimal serialized error objects containing `name`, `code`, and an optional string `message` are reconstructed without structured fields; a malformed full payload is never rebuilt with dropped context.

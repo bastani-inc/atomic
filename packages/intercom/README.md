@@ -8,15 +8,17 @@ See the [Intercom guide](https://docs.bastani.ai/intercom), [Intercom operations
 
 When you run multiple Atomic sessions at the same time, such as one researching and another implementing, Intercom lets you coordinate them without copying text between terminals:
 
-- **User-driven orchestration.** Press `Alt+M` or run `/intercom` to pick a session and send context or instructions.
-- **Agent collaboration.** Agents can list live peers, send notifications, ask questions, and exchange file or code attachments.
-- **Subagent escalation.** Delegated subagents receive a typed admission-issued `contact_supervisor` tool with canonical run metadata and a broker-issued supervisor capability bound to the child's `IntercomClient`. Descendants cannot inherit a parent capability through process environment variables. Normal sessions see only the `intercom` tool.
+- **User-driven orchestration:** Press `Alt+M` or run `/intercom` to pick a session and send context or instructions.
+- **Agent collaboration:** Agents can list live peers, send notifications, ask questions, and exchange file or code attachments.
+- **Subagent escalation:** Delegated subagents launched with supervisor coordination automatically receive a `contact_supervisor` tool scoped to their parent session. Regular sessions see only the `intercom` tool.
 
 ## Setup
 
 Atomic bundles `@bastani/intercom` with `@bastani/atomic`. No separate installation is required.
 
-At startup, the extension registers the `intercom` tool, `/intercom` command, `Alt+M` shortcut, and bundled `intercom` skill (`/skill:intercom`). An interactive session connects to the local broker in the background a few seconds after startup, so other sessions in its group can list and message it right away. Print (`-p`), JSON, RPC, and SDK sessions connect on first use, or when they launch a subagent with Intercom. Interactive sessions also wait for first use when `intercom` is excluded from the session's tools, or when joining at startup is off. It is off when `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` is set, or when `joinAtStartup` is `false` in config and `ATOMIC_INTERCOM_JOIN_AT_STARTUP` is not `1`. A subagent launched with Intercom connects as soon as its session starts, so sessions in its group can list and message it right away. Its group is the group of the session that launched it, unless the launch passes `group`.
+At startup, the extension registers the `intercom` tool, `/intercom` command, `Alt+M` shortcut, and bundled `intercom` skill (`/skill:intercom`). An interactive session connects to the local broker in the background 3 seconds after startup so other sessions in its group can list and message it right away. Print (`-p`), JSON, RPC, and SDK sessions connect on first use, or when they launch a subagent with Intercom. Interactive sessions also wait for first use when `intercom` is excluded from the session's tools, or when startup join is disabled (`joinAtStartup: false` in config, or `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` or `false`; legacy alias `PI_INTERCOM_JOIN_AT_STARTUP`). Setting `ATOMIC_INTERCOM_JOIN_AT_STARTUP=1` or `true` forces startup join even when config sets `joinAtStartup` to `false`.
+
+A subagent launched with Intercom connects as soon as its session starts so sessions in its group can list and message it immediately. Its group matches the launching session's group unless the launch specifies `group`.
 
 You can add this snippet to your project's `AGENTS.md` to guide when agents should coordinate across sessions:
 
@@ -30,7 +32,7 @@ Principle: use `send` for notifications and `ask` when you need an answer. `ask`
 </intercom>
 ```
 
-The session list, `Alt+M` picker, and group counts include connected agent sessions only. Internal control connections are hidden and cannot receive ordinary messages, even by exact session ID or through a supervisor route. An agent executing a tool or waiting for user input stays visible and messageable.
+The session list, `Alt+M` picker, and group counts include connected agent sessions only. An agent executing a tool or waiting for user input stays visible and messageable.
 
 Unnamed sessions keep a runtime alias such as `subagent-chat-1a2b3c4d-1111-4222-8333-123456789abc` for name lookup. Session listings omit that generated alias and lead with the copyable full session ID while keeping user-chosen names as metadata.
 
@@ -58,7 +60,7 @@ intercom({ action: "join", group: "api-review" })
 // Discover all active groups and see which ones you belong to
 intercom({ action: "groups" })
 
-// Leave one membership, or omit group to reset to your startup home group
+// Leave one membership, or omit group to reset to your resolved home group
 intercom({ action: "leave", group: "api-review" })
 
 // Send a message to a named session
@@ -84,15 +86,17 @@ intercom({ action: "status" })
 
 // Send with attachments (file, snippet, or context)
 intercom({
-  action: "send",
-  to: "worker",
-  message: "Here is the fix:",
-  attachments: [{
-    type: "snippet",
-    name: "auth.ts",
-    language: "typescript",
-    content: "function validate(user: User) { ... }"
-  }]
+	action: "send",
+	to: "worker",
+	message: "Here is the fix:",
+	attachments: [
+		{
+			type: "snippet",
+			name: "auth.ts",
+			language: "typescript",
+			content: "function validate(user: User) { ... }",
+		},
+	],
 })
 ```
 
@@ -101,7 +105,7 @@ intercom({
 Incoming messages appear inline in chat with the sender's details and a reply hint:
 
 ```text
-**From research** (~/projects/api)
+**📨 From research** (~/projects/api)
 
 To reply, use the intercom tool: intercom({ action: "reply", message: "..." })
 
@@ -109,7 +113,7 @@ Found the issue. UserService.validate() does not check for null input.
 See auth.ts:142-156.
 ```
 
-The reply hint is enabled by default and points to `intercom({ action: "reply", ... })`, so recipients do not have to reconstruct raw sender or message IDs. Idle recipients start a new turn immediately. Busy interactive recipients receive the message once idle. Attachment contents are included in the agent-visible body, and messages are stored in Atomic session history.
+The reply hint is enabled by default and points to `intercom({ action: "reply", ... })` so recipients do not have to reconstruct raw sender or message IDs. Idle recipients start a new turn immediately. How a busy recipient handles an incoming message depends on `delivery` (default `"steer"`, which arrives after current tool calls finish without cancelling work). Attachment contents are included in the agent-visible body, and messages are saved in Atomic session history.
 
 Recipients save each message to their session before the sender receives `delivered`. If a recipient closes or crashes before showing a saved message, reopening that session recovers the message in arrival order.
 
@@ -123,7 +127,7 @@ For `send` and `ask`, the `delivery` parameter controls how a busy recipient han
 
 A single-target `send` or `ask` to a subagent that completed or failed queues the message and has its launching session resume it. A message to a paused or quit subagent waits without expiring until its launching session continues it. Queued messages survive broker restarts in `ended-child-queue.sqlite`, or in the shared database when multi-node routing is active. Permanently cancelled children reject new messages.
 
-For delegated children, queued messages and terminal lifecycle notices stay ordered per child. Intercom drains the child's pre-terminal entries in FIFO order and admits that prelude together with the terminal notice, deduplicated by terminal identity so each child's terminal notice is admitted once.
+For delegated children, queued messages and completion notices stay ordered per child, and each child's completion notice is delivered once.
 
 ## Planner-worker coordination
 
@@ -139,20 +143,20 @@ Confirm both sessions appear in `intercom({ action: "list" })`, then coordinate:
 ```typescript
 // Planner delegates with send
 intercom({
-  action: "send",
-  to: "worker",
-  message: "Task-3: Add retry logic to src/api/client.ts and src/api/types.ts. Ask if anything is unclear."
+	action: "send",
+	to: "worker",
+	message: "Task-3: Add retry logic to src/api/client.ts and src/api/types.ts. Ask if anything is unclear.",
 })
 
 // Worker asks for clarification and keeps working if the answer is not immediate
 intercom({
-  action: "ask",
-  to: "planner",
-  message: "Should retry apply to all endpoints or only idempotent ones? What max retry count and backoff should I use?"
+	action: "ask",
+	to: "planner",
+	message: "Should retry apply to all endpoints or only idempotent ones? What max retry count and backoff should I use?",
 })
 ```
 
-If the planner replies within the wait budget, the reply returns inline as the tool result. Otherwise the ask stays pending with no expiry and the answer arrives later as a message starting `"Reply to your ask <id> from planner"`.
+If the planner replies within the wait budget, the reply returns inline as the tool result. Otherwise the ask stays pending with no expiry, and the answer arrives later as a message starting `"Reply to your ask <id> from planner"`.
 
 To coordinate two chat sessions privately without changing startup settings, have both call `intercom({ action: "join", group: "api-review" })`. Joining adds a membership without changing the session ID or removing existing memberships. Joined memberships survive broker reconnects and Atomic restarts; groups you leave are not rejoined. Sending to a session that is live only in another group fails with `<name> is live in group <group>; join it to send`.
 
@@ -177,44 +181,45 @@ To coordinate two chat sessions privately without changing startup settings, hav
 
 ## Subagent escalation with `contact_supervisor`
 
-When Atomic's subagent runtime admits a delegated child with supervisor coordination, the child receives the `contact_supervisor` tool alongside `intercom`. Normal sessions never see `contact_supervisor`.
+When a subagent is launched with supervisor coordination, it receives the `contact_supervisor` tool alongside `intercom`. Regular sessions never see `contact_supervisor`.
 
-The tool is registered from the child's typed admission record, which binds the supervisor target, child identity, child index, session name, and broker-issued capability directly to the child session. In parallel runs, blocking `contact_supervisor` requests wait only in the requesting child and resume that same execution once the supervisor replies. Active and queued siblings keep running with their original identities and worktrees. Only a single child run directly by an SDK host without a task owner ends with a `[TASK_CONTEXT]` fresh-child handoff when its blocking parent ask is claimed.
+In interactive and standard sessions, blocking `contact_supervisor` requests wait inside the requesting child and continue that same child once the supervisor replies. Active and queued siblings keep running with their original identities and worktrees. In custom SDK sessions without background task support, a blocking request ends the child with a `[TASK_CONTEXT]` handoff.
 
 | Reason | Behavior | Use when |
 | --- | --- | --- |
-| `need_decision` | Waits for a correlated reply in the same child (or returns a `[TASK_CONTEXT]` handoff for a single ownerless SDK child). | The child is blocked or faces an unapproved product, API, or scope decision. |
-| `interview_request` | Waits for structured JSON answers in the same child (or returns a `[TASK_CONTEXT]` handoff for a single ownerless SDK child). | The child needs multiple machine-readable answers in one exchange. |
+| `need_decision` | Requires `message`. Waits for a correlated reply in the same child (or returns a `[TASK_CONTEXT]` handoff in custom SDK sessions without background task support). | The child is blocked or faces an unapproved product, API, or scope decision. |
+| `interview_request` | Waits for structured JSON answers in the same child (or returns a `[TASK_CONTEXT]` handoff in custom SDK sessions without background task support). | The child needs multiple machine-readable answers in one exchange. |
 | `progress_update` | Sends a non-blocking update and returns at delivery. | A discovery changes the plan or merits an explicit update. |
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the child's normal final result instead.
 
-Cross-group supervisor delivery uses a dedicated broker protocol. Raw `send` frames remain group-isolated and reject forged `channel: "supervisor"` markers. A child crosses groups only after its broker-issued capability binds its socket to the exact supervisor. Replies cross back only when `replyTo` matches a recorded supervisor message in the reverse direction.
+Cross-group supervisor delivery is restricted strictly to the parent-child pair. Ordinary `send` calls stay group-isolated, and replies cross back only when `replyTo` matches a recorded supervisor message in the reverse direction.
 
 ```typescript
 // Blocked subagent asks for a decision
 contact_supervisor({
-  reason: "need_decision",
-  message: "The auth service returns 403 instead of 401 for expired tokens. Should I treat 403 as a re-auth trigger or a hard failure?"
+	reason: "need_decision",
+	message:
+		"The auth service returns 403 instead of 401 for expired tokens. Should I treat 403 as a re-auth trigger or a hard failure?",
 })
 
 // Structured supervisor interview
 contact_supervisor({
-  reason: "interview_request",
-  message: "Please answer these questions before I continue the migration.",
-  interview: {
-    title: "API migration choices",
-    questions: [
-      { id: "api", type: "single", question: "Which API should I target?", options: ["Stable API", "Experimental API"] },
-      { id: "constraints", type: "text", question: "What constraints should I preserve?" }
-    ]
-  }
+	reason: "interview_request",
+	message: "Please answer these questions before I continue the migration.",
+	interview: {
+		title: "API migration choices",
+		questions: [
+			{ id: "api", type: "single", question: "Which API should I target?", options: ["Stable API", "Experimental API"] },
+			{ id: "constraints", type: "text", question: "What constraints should I preserve?" },
+		],
+	},
 })
 
 // Non-blocking progress update
 contact_supervisor({
-  reason: "progress_update",
-  message: "The bug is in the retry wrapper rather than the API client."
+	reason: "progress_update",
+	message: "The bug is in the retry wrapper rather than the API client.",
 })
 ```
 
@@ -223,12 +228,13 @@ contact_supervisor({
 The supervisor sees the child identity, run metadata, and question:
 
 ```text
-**From subagent-worker-78f659a3-1**
+**📨 From subagent-worker-78f659a3-1**
 
 Subagent needs a supervisor decision.
 Run: 78f659a3
 Agent: worker
 Child index: 0
+Child intercom target: subagent-worker-78f659a3-1
 
 Which API should I use?
 ```
@@ -265,12 +271,12 @@ When the reply matches valid question IDs and options, the child tool result inc
 
 ### `contact_supervisor`
 
-Registered only in subagent sessions admitted with supervisor coordination.
+Registered only in subagent sessions launched with supervisor coordination.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `reason` | string | `"need_decision"`, `"interview_request"`, or `"progress_update"`. |
-| `message` | string | Decision request, optional interview note, or progress update. |
+| `message` | string | Decision request (required for `need_decision`), optional interview note, or progress update. |
 | `interview` | object | Required for `interview_request`: `{ title?, description?, questions: [...] }`. |
 
 ### Actions
@@ -278,7 +284,7 @@ Registered only in subagent sessions admitted with supervisor coordination.
 - **`list`** returns the current session and every active session sharing at least one membership. Pass `group` for a read-only view of one group.
 - **`groups`** lists every group represented by a connected session with connected counts and membership markers.
 - **`join`** adds a trimmed named membership and creates that group if empty. `default` is shared; `true` and `auto` are reserved for subagent auto-groups.
-- **`leave`** removes the specified `group`, or resets memberships to the startup home group when `group` is omitted.
+- **`leave`** removes the specified `group`, or resets memberships to your resolved home group when `group` is omitted. Leaving your last remaining group also returns you to your resolved home group (such as `project:<owner>/<repo>` under multi-node routing, or `default` otherwise).
 - **`send`** delivers a message to one target or every live match of a pattern within your groups. A session-name glob matching multiple sessions requires `broadcast: true`; without it, nothing is sent and the error lists all matches.
 - **`ask`** sends a question to one exact target, waits according to `wait`, and keeps the ask open until answered or cancelled. Up to `maxPendingAsks` (default 6) calls may wait concurrently; further asks still deliver and receive replies as messages.
 - **`reply`** answers the active incoming message or single pending inbound ask, or an explicit `to` / `replyTo` thread.
@@ -286,11 +292,9 @@ Registered only in subagent sessions admitted with supervisor coordination.
 - **`cancel`** cancels one of your outbound asks by `askId` (any later reply appears once, marked late), or closes an inbound ask sent to you by `replyTo` without notifying its sender.
 - **`status`** reports connection status, session ID, memberships, visible session count, and the `Multi-node routing:` state (including live peer brokers in shared storage).
 
-Target lookup accepts an exact full Intercom session ID, an exact case-insensitive session name, a unique 8-hex UUID prefix, or a connected session's Atomic session ID when unambiguous. Workflow stage targets (`workflow:<rootRunId>/...`) were removed with workflows in Atomic 0.10.0 and return `Session not found`.
+Target lookup accepts an exact full Intercom session ID, an exact case-insensitive session name, a unique 8-hex UUID prefix, or a connected session's Atomic session ID when unambiguous.
 
-A session outside your groups whose message reached you (such as through a host reach policy or supervisor exchange) can be answered directly without joining a group, up to 3 messages within 30 minutes of its latest message. Pattern sends never use this return path.
-
-Host registrations may set `recipientPurpose` to `"agent"` or `"control"` (omission defaults to `"agent"`). Presence updates cannot change a session's registered purpose, and control connections are excluded from discovery and ordinary delivery.
+A session outside your groups whose message reached you (such as through a supervisor exchange) can be answered directly without joining a group, up to 3 messages within 30 minutes of its latest message. Pattern sends never use this return path.
 
 Only one blocking `contact_supervisor` request can wait at a time per child. One supervisor wait can coexist with peer asks, while a second concurrent supervisor wait fails with `Already waiting for a supervisor reply`.
 
@@ -317,32 +321,30 @@ Create `~/.atomic/agent/intercom/config.json`. When that file is absent and neit
 
 ```json
 {
-  "brokerCommand": "npx",
-  "brokerArgs": ["--no-install", "tsx"],
-  "brokerStartupTimeoutMs": 30000,
   "confirmSend": false,
+  "group": "api-review",
+  "joinAtStartup": true,
   "maxPendingAsks": 6,
   "replyHint": true,
-  "joinAtStartup": true,
   "status": "researching"
 }
 ```
 
-The default `npx --no-install tsx` pair is a compatibility sentinel. Intercom recognizes it and spawns the broker with the current Atomic runtime (`process.execPath`) without resolving `npx`, `tsx`, or `bun` on `PATH`. Installed builds run `broker/broker.bundle.mjs`, Node source checkouts run `broker/broker.ts` through Atomic's bundled `jiti` loader, Bun source checkouts run with the active Bun binary, and standalone Atomic binaries re-enter the launcher internally.
-
 | Setting | Default | Description |
 | --- | --- | --- |
-| `brokerCommand` | `"npx"` | Broker spawn command. The default sentinel uses the active Atomic runtime internally. |
-| `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to `brokerCommand` before the broker script path. |
-| `brokerStartupTimeoutMs` | `30000` | Maximum milliseconds a session waits for a newly spawned broker to answer on its socket (minimum `1000`). Raise this if slow source-checkout starts time out. |
 | `confirmSend` | `false` | Prompt for interactive confirmation before non-reply sends. |
+| `group` | none | Optional default home group. `ATOMIC_INTERCOM_GROUP` (or legacy `PI_INTERCOM_GROUP`) overrides it. |
+| `joinAtStartup` | `true` | Connect interactive sessions in the background 3 seconds after startup. `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` or `false` disables startup join; `1` or `true` forces it on (legacy `PI_INTERCOM_JOIN_AT_STARTUP`). |
 | `maxPendingAsks` | `6` | Maximum concurrent waiting asks per session (minimum `1`). |
 | `replyHint` | `true` | Include the `intercom({ action: "reply", ... })` hint in incoming messages. |
 | `status` | none | Optional status suffix appended after automatic lifecycle states (`idle`, `thinking`, `tool:<name>`). |
-| `group` | none | Optional default home group. `ATOMIC_INTERCOM_GROUP` (or legacy `PI_INTERCOM_GROUP`) overrides it. |
-| `joinAtStartup` | `true` | Connect interactive sessions in the background at startup. `ATOMIC_INTERCOM_JOIN_AT_STARTUP=0` disables startup join, and `ATOMIC_INTERCOM_JOIN_AT_STARTUP=1` forces startup join even when config sets `joinAtStartup` to `false`. |
+| `brokerStartupTimeoutMs` | `30000` | Maximum milliseconds a session waits for a newly spawned broker to answer on its socket (minimum `1000`). Raise this if slow source-checkout starts time out. |
+| `brokerCommand` | `"npx"` | Advanced override for the broker spawn command. By default Atomic spawns the broker with its own runtime without invoking `npx` or `tsx` from `PATH`. |
+| `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to a custom `brokerCommand` before the broker script path. |
 
-Custom broker commands remain supported. To launch the broker explicitly with Bun from `PATH`:
+### Custom broker runtime
+
+To launch the broker explicitly with a custom runtime such as Bun from `PATH`, override `brokerCommand` and `brokerArgs`:
 
 ```json
 {
@@ -377,67 +379,36 @@ graph TB
     B2 <-->|Local Socket/Pipe| B3
 ```
 
-The broker is a standalone process that manages session registration and message routing over length-prefixed JSON frames (4-byte length header plus JSON payload) on a Unix domain socket (macOS and Linux) or named pipe (Windows). When shared storage is configured through `@bastani/atomic-storage-libsql` or `@bastani/atomic-storage-postgres`, brokers also enable multi-node routing so sessions on different machines can list and message each other, and ungrouped sessions default to their repository's `project:<owner>/<repo>` group instead of `default`.
+The broker is a standalone process that manages session registration and message routing over length-prefixed JSON frames on a Unix domain socket (macOS and Linux) or named pipe (Windows). When shared storage is configured through `@bastani/atomic-storage-libsql` or `@bastani/atomic-storage-postgres`, brokers also enable multi-node routing so sessions on different machines can list and message each other, and ungrouped sessions default to their repository's `project:<owner>/<repo>` group instead of `default`.
 
 ### Broker lifecycle and recovery
 
-- **Auto-spawn and idle exit.** The broker starts automatically when needed and exits after 5 seconds with no registered sessions. A spawn lock prevents duplicate brokers when multiple sessions connect concurrently.
-- **Reconnects.** Clients reconnect automatically with bounded backoff (1s, 2s, 5s, 10s, then 30s) if the broker restarts or retires.
-- **Watchdog.** A broker-owned watchdog probes its local request path independently of the main thread and exits its own process after roughly one minute without a valid response so clients spawn a healthy replacement.
-- **Internal delivery retries.** Each `send`, `ask`, or `reply` call retries recoverable disconnects internally up to 3 times (after 1, 2, and 5 seconds) with the same message ID, arguments, attachments, and reply route, within an 11-minute deadline. Caller-supplied `retryToken` parameters are rejected without sending. If recovery cannot confirm the outcome, the tool returns a terminal error with `outcome: "unknown"` so callers check with the recipient rather than duplicating automatically.
-- **Durable delivery authority.** Accepted operations are recorded for 12 minutes in `delivered-messages.sqlite` as keyed SHA-256 HMAC digests paired with `delivered-messages.key` (never plaintext bodies or attachments). On POSIX, the Intercom directory is set to `0700` and database and key files to `0600`. Capacity limits are bounded at 1,000 client identity slots, 10,000 live broker authority records, and 64 MiB of broker authority storage; limits fail closed instead of evicting live authority.
-- **Mixed-version compatibility.** The protocol range supports Atomic 0.9.x sessions alongside 0.10.x sessions on the same broker. Legacy 0.9.x workflow frames receive compatible responses without closing the connection, while `workflow:` targets return `Session not found`.
-- **Session teardown safety.** Async startup, reconnect, overlay, and relay tasks become no-ops if the session shuts down or reloads before they settle.
+- **Auto-spawn and idle exit:** The broker starts automatically when needed and exits after 5 seconds with no registered sessions. A spawn lock prevents duplicate brokers when multiple sessions connect concurrently.
+- **Reconnects:** Clients reconnect automatically with bounded backoff (1s, 2s, 5s, 10s, then 30s) if the broker restarts or retires.
+- **Watchdog:** A broker-owned watchdog probes its local request path independently and exits after roughly one minute without a valid response so clients spawn a healthy replacement.
+- **Internal delivery retries:** Each `send`, `ask`, or `reply` call retries recoverable disconnects internally up to 3 times (after 1, 2, and 5 seconds) with the same operation identity within an 11-minute deadline. If recovery cannot confirm the outcome, the tool returns an error with `outcome: "unknown"` so callers check with the recipient instead of duplicating automatically.
+- **Durable delivery deduplication:** Accepted operations are recorded for 12 minutes in `delivered-messages.sqlite` as keyed SHA-256 HMAC digests paired with `delivered-messages.key` (never plaintext bodies or attachments). On POSIX, the Intercom directory is `0700` and database and key files are `0600`. Storage is capped at 1,000 client identity slots, 10,000 live records, and 64 MiB; once a cap is reached, new requests return an error instead of evicting existing delivery records.
+- **Session teardown safety:** Async startup, reconnect, overlay, and relay tasks stop safely if the session shuts down or reloads before they finish.
 
 ### Runtime files
 
 Runtime files live in `~/.atomic/agent/intercom/`. Setting `ATOMIC_CODING_AGENT_DIR` (or legacy `PI_CODING_AGENT_DIR` when unset) relocates this directory.
 
-- `broker.sock` holds the Unix domain socket on macOS and Linux (Windows uses a named pipe). If the path exceeds the Unix socket path limit (107 bytes on Linux, 103 bytes on macOS), the broker creates an owner-only `atomic-intercom-<uid>/<digest>.sock` socket under `$XDG_RUNTIME_DIR` or the system temp directory.
-- `broker.sock.path` records the moved socket path when `broker.sock` would exceed the platform limit.
-- `broker.pid` stores the broker process ID.
-- `broker.starting` records a starting broker's PID until it begins listening.
-- `broker.spawn.lock` coordinates concurrent broker spawns with a 60-second backstop.
-- `broker.sock.replace.lock` serializes stale socket replacement during broker startup.
-- `broker.log` captures broker stderr, capped internally at 8 KiB by `broker/bounded-stderr-install.ts`.
-- `broker.log.previous` keeps the bounded tail of the previous nonempty broker log.
-- `broker-watchdog.log` records the latest watchdog termination.
-- `delivered-messages.sqlite` and `delivered-messages.key` store durable delivery deduplication digests and their owner-only HMAC key.
-- `away-asks.sqlite` stores open asks and replies held for away sessions, and, with multi-node routing, the sessions a broker moved back to their earlier Intercom ID until they register again (at most about 7 days).
-- `ended-child-queue.sqlite` stores queued messages waiting to resume or reach finished and paused subagents across broker restarts.
+- `broker.sock` holds the Unix domain socket on macOS and Linux (Windows uses a named pipe). If the path exceeds the platform Unix socket limit (107 bytes on Linux, 103 bytes on macOS), the broker creates an owner-only `atomic-intercom-<uid>/<digest>.sock` socket under `$XDG_RUNTIME_DIR` or the system temp directory and records its path in `broker.sock.path`.
+- `broker.pid`, `broker.starting`, `broker.spawn.lock`, and `broker.sock.replace.lock` coordinate broker startup and lock ownership.
+- `broker.log` (capped at 8 KiB), `broker.log.previous`, and `broker-watchdog.log` store diagnostic logs.
+- `delivered-messages.sqlite` and `delivered-messages.key` store delivery deduplication digests and their owner-only HMAC key.
+- `away-asks.sqlite` stores open asks and replies held for away sessions (retained up to about 7 days).
+- `ended-child-queue.sqlite` stores queued messages waiting to reach finished and paused subagents across broker restarts.
 - `config.json` stores user configuration.
-
-## Package layout
-
-```text
-packages/intercom/
-├── package.json
-├── index.ts                      # Lazy extension entry point
-├── index-heavy.ts                # Runtime wiring and session lifecycle
-├── intercom-tool.ts              # intercom tool implementation
-├── contact-supervisor-tool.ts    # Subagent-only contact_supervisor tool
-├── config.ts                     # Config loading and validation
-├── types.ts                      # Protocol and session types
-├── broker/
-│   ├── broker.ts                 # Broker process entry point
-│   ├── client.ts                 # IntercomClient socket client
-│   ├── framing.ts                # Length-prefixed JSON framing
-│   ├── paths.ts                  # Platform socket, pipe, and state paths
-│   ├── spawn.ts                  # Auto-spawn and lock coordination
-│   ├── multinode-router.ts       # Cross-machine routing over shared storage
-│   └── watchdog.ts               # Broker liveness watchdog
-├── ui/
-│   ├── session-list.ts           # Session picker overlay
-│   ├── compose.ts                # Message composition overlay
-│   └── inline-message.ts         # Inline received message renderer
-└── skills/
-    └── intercom/
-        └── SKILL.md              # Bundled /skill:intercom guide
-```
 
 ## Limitations
 
-- **Local IPC by default.** Without shared storage, Intercom connects sessions on the same machine only. Cross-machine messaging requires configuring a shared storage adapter (`@bastani/atomic-storage-libsql` or `@bastani/atomic-storage-postgres`).
-- **No separate transcript file.** Messages are stored in Atomic session history rather than a dedicated Intercom inbox file.
-- **No attachments UI.** The `intercom` tool supports `file`, `snippet`, and `context` attachments, while the `Alt+M` compose overlay sends plain text only.
-- **Connected sessions only.** `intercom list` shows sessions currently registered with the broker, not disconnected or offline Atomic processes.
+- **Local IPC by default:** Without shared storage, Intercom connects sessions on the same machine only. Cross-machine messaging requires configuring a shared storage adapter (`@bastani/atomic-storage-libsql` or `@bastani/atomic-storage-postgres`).
+- **No separate transcript file:** Messages are stored in Atomic session history rather than a dedicated Intercom inbox file.
+- **No attachments UI:** The `intercom` tool supports `file`, `snippet`, and `context` attachments, while the `Alt+M` compose overlay sends plain text only.
+- **Connected sessions only:** `intercom list` shows sessions currently registered with the broker, not disconnected or offline Atomic processes.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

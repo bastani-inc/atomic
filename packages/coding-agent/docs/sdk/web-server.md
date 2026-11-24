@@ -1,16 +1,12 @@
 ---
-title: "Embedding Atomic in a web server"
-sidebarTitle: "Web server"
-description: "Run Atomic sessions behind a Next.js App Router route and stream their output to a browser."
+title: "Embed Atomic in a web server"
+sidebarTitle: "Web server guide"
+description: "Run Atomic sessions behind a Next.js App Router endpoint and stream newline-delimited JSON output to a browser."
 ---
 
-# Embedding Atomic in a web server
+This guide puts an Atomic agent behind an HTTP endpoint using Next.js App Router. The same pattern works in any long-running Node.js server: keep one session per conversation, start a prompt per request, and stream session events back as newline-delimited JSON (NDJSON).
 
-This guide puts an Atomic agent behind an HTTP endpoint, using a Next.js App Router project as the example. The same pattern works in any long-running Node.js server: keep one session per conversation, start a prompt per request, and stream the session's events back as newline-delimited JSON (NDJSON).
-
-Read the [SDK](/sdk) page first for `createAgentSession()`, `AgentSession`, `AgentSessionRuntime`, and session events.
-
-The examples below use `createAgentSession()`, `ModelRuntime`, `SessionManager`, and `createTranscript()` from `@bastani/atomic`. For servers that release idle sessions and rehydrate them on later requests, wrap sessions with `createAgentSessionRuntime()` instead (see [Releasing idle sessions](/sdk#releasing-idle-sessions)).
+Read [TypeScript SDK](/sdk) first for `createAgentSession()`, `AgentSession`, `AgentSessionRuntime`, and session events. For servers that release idle sessions and rehydrate them on later requests, wrap sessions with `createAgentSessionRuntime()` instead (see [Releasing idle sessions](/sdk#releasing-idle-sessions)).
 
 ## Install
 
@@ -18,13 +14,15 @@ The examples below use `createAgentSession()`, `ModelRuntime`, `SessionManager`,
 npm install @bastani/atomic
 ```
 
-Atomic requires Node.js 22.19 or newer. Dependency install scripts are not required; if your package manager reports blocked scripts, leave them disabled.
+Atomic requires Node.js 22.19 or newer. Dependency install scripts are not required; if your package manager blocks install scripts, leave them disabled.
+
+On Node 22, pass `--experimental-async-context-frame` on the server's `node` command line (not in `NODE_OPTIONS`) to avoid `AsyncLocalStorage` promise-hook overhead across concurrent HTTP requests; see [Node 22 hosts](/sdk#node-22-hosts).
 
 ## Keep Atomic out of the server bundle
 
-Atomic finds its bundled resources and native modules relative to its installed package, so it must load from `node_modules` rather than from Next.js's server bundle. List it in `serverExternalPackages` (Next.js 15 and later):
+Atomic resolves its bundled resources and native modules relative to `node_modules`, so keep it outside Next.js's server bundle using `serverExternalPackages` (Next.js 15 and later):
 
-```ts
+```typescript
 // next.config.ts
 import type { NextConfig } from "next";
 
@@ -35,23 +33,23 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 ```
 
-Atomic's own dependencies load from `node_modules` once `@bastani/atomic` is external. The other entries cover packages your app may import directly. Add any other Atomic dependency you import yourself.
+Once `@bastani/atomic` is external, its dependencies load from `node_modules`. List any other Atomic packages your application imports directly.
 
-Import TypeBox for tool schemas from `@bastani/atomic/typebox` (and `@bastani/atomic/typebox/value`, `/compile`, `/format` and TypeBox's other subpaths) rather than from `typebox`. Atomic ships its own copy of TypeBox, and formats, settings or a locale your app registers reach Atomic's validation only through that copy.
+Import TypeBox for custom tool schemas from `@bastani/atomic/typebox` (and its subpaths such as `/value`, `/compile`, and `/format`) rather than `typebox` directly so custom formats and settings share Atomic's TypeBox registry.
 
-Every route that imports Atomic must use the Node.js runtime:
+Every route that imports Atomic must run on the Node.js runtime:
 
-```ts
+```typescript
 export const runtime = "nodejs";
 ```
 
-Import Atomic only from server code. Client components may use `import type` from `@bastani/atomic`, which adds nothing to the browser bundle.
+Import Atomic only from server code. Client components may use `import type` from `@bastani/atomic`, which adds zero bytes to the browser bundle.
 
 ## Keep one session per conversation
 
-An `AgentSession` holds the conversation's history, so create one per conversation and reuse it across requests. Keep sessions on `globalThis`: in `next dev`, module-level variables reset on every hot reload, but `globalThis` survives, so open conversations don't vanish and old sessions aren't leaked. Restart the dev server after changing session options; existing sessions keep the options they were created with.
+An `AgentSession` owns the conversation history, so create one per conversation and reuse it across requests. Store shared state on `globalThis` so `next dev` hot reloads preserve active sessions without leaking them. Restart the dev server after changing session options because existing sessions keep their creation options.
 
-```ts
+```typescript
 // lib/atomic.ts
 import "server-only";
 import { type AgentSession, createAgentSession, ModelRuntime, SessionManager } from "@bastani/atomic";
@@ -64,20 +62,31 @@ export interface Conversation {
 }
 
 interface AtomicState {
-  modelRuntime: Promise<ModelRuntime>;
+  modelRuntime?: Promise<ModelRuntime>;
   conversations: Map<string, Promise<Conversation>>;
+  shutdownRegistered?: boolean;
 }
 
 const shared = globalThis as typeof globalThis & { atomicState?: AtomicState };
 const state = (shared.atomicState ??= {
-  modelRuntime: ModelRuntime.create(),
   conversations: new Map(),
 });
+
+function getModelRuntime(): Promise<ModelRuntime> {
+  if (!state.modelRuntime) {
+    // Clear cached promise on startup failure so a later request can retry.
+    state.modelRuntime = ModelRuntime.create().catch((error) => {
+      state.modelRuntime = undefined;
+      throw error;
+    });
+  }
+  return state.modelRuntime;
+}
 
 export function getConversation(id: string): Promise<Conversation> {
   let conversation = state.conversations.get(id);
   if (!conversation) {
-    conversation = state.modelRuntime.then(async (modelRuntime) => {
+    conversation = getModelRuntime().then(async (modelRuntime) => {
       const { session } = await createAgentSession({
         cwd: WORKSPACE,
         sessionManager: SessionManager.inMemory(WORKSPACE),
@@ -94,21 +103,40 @@ export function getConversation(id: string): Promise<Conversation> {
 }
 
 export async function closeConversation(id: string): Promise<void> {
-  const conversation = state.conversations.get(id);
+  const pending = state.conversations.get(id);
   state.conversations.delete(id);
-  if (conversation) await (await conversation).session.dispose();
+  if (!pending) return;
+  const conversation = await pending.catch(() => undefined);
+  if (!conversation) return;
+  // Abort active work with pauseQueuedMessages so dispose() does not wait for a running turn.
+  await conversation.session.abort({ pauseQueuedMessages: true });
+  await conversation.session.dispose();
+}
+
+export async function closeAllConversations(): Promise<void> {
+  const ids = [...state.conversations.keys()];
+  await Promise.allSettled(ids.map((id) => closeConversation(id)));
+}
+
+if (!state.shutdownRegistered) {
+  state.shutdownRegistered = true;
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => {
+      void closeAllConversations().finally(() => process.exit(0));
+    });
+  }
 }
 ```
 
-`SessionManager.inMemory()` keeps history in process memory. To keep conversations across restarts, pass a file-backed `SessionManager` instead; see [Sessions](/sessions). Call `closeConversation()` when a conversation ends or has been idle for a while, because each open session holds resources until it is disposed.
+`SessionManager.inMemory()` keeps history in process memory. To persist conversations across restarts, pass a SQLite, JSONL, or database-backed `SessionManager` or `sessionStore` (see [Sessions](/sessions)). Call `closeConversation()` when a conversation finishes or goes idle, and run `closeAllConversations()` on `SIGTERM`/`SIGINT` so session stores and child processes close cleanly.
 
-Sessions on `globalThis` live in one server process. Run this on a long-lived Node.js server, and route each conversation to the same instance if you run several. Short-lived serverless functions lose the session between requests.
+Sessions on `globalThis` live in one server process. Run this on a long-lived Node.js server with sticky routing per conversation if you scale to multiple instances; short-lived serverless functions discard process memory between requests.
 
 ## Stream a prompt
 
-The route below starts one prompt and streams the assistant's output as NDJSON. `createTranscript()` turns session events into ordered, JSON-serializable parts (text, thinking, and tool calls joined to their results), so each line carries the complete output so far and the client simply replaces what it shows.
+This route starts one prompt and streams the assistant's output as NDJSON. `createTranscript()` converts session events into ordered JSON-serializable parts (`text`, `thinking`, and `toolCall` paired with its `result`). Tool calls appear in `message_end` before execution begins and gain their `result` as `tool_execution_update` and `tool_execution_end` arrive, so each line carries the full output so far and the browser replaces its rendered list.
 
-```ts
+```typescript
 // app/api/chat/route.ts
 import { createTranscript, type TranscriptPart } from "@bastani/atomic";
 import { getConversation } from "@/lib/atomic";
@@ -161,7 +189,11 @@ export async function POST(request: Request): Promise<Response> {
       session
         .prompt(message)
         .then(() => send({ type: "done" }))
-        .catch((error: Error) => send({ type: "error", message: error.message }))
+        .catch((error: unknown) => {
+          console.error("Prompt failed:", error);
+          // Sanitize errors in production instead of exposing internal paths or stack details.
+          send({ type: "error", message: "The request could not be completed." });
+        })
         .finally(() => {
           unsubscribe();
           request.signal.removeEventListener("abort", stop);
@@ -184,13 +216,14 @@ export async function POST(request: Request): Promise<Response> {
 }
 ```
 
-A few details matter here:
+Key behaviors:
 
-- **One prompt at a time.** `session.prompt()` rejects while the session is already streaming. The route answers `409` instead. `busy` is set synchronously, so two requests that arrive together can't both start a prompt. To queue a message instead of rejecting it, call `session.prompt(message, { streamingBehavior: "followUp" })`.
-- **Stop on disconnect.** When the browser disconnects or aborts its `fetch`, `request.signal` aborts and the stream is cancelled. Both call `session.abort()`, which stops the current turn and its tools but keeps the session usable.
-- **Payload size.** Each line repeats the whole output so far. For long answers, send lines on a timer instead of on every event, or send only the parts that changed.
+- **One prompt at a time:** `session.prompt()` rejects while streaming, so the route returns `409` and flips `busy` synchronously to prevent races. To queue prompts instead of rejecting, call `session.prompt(message, { streamingBehavior: "followUp" })`.
+- **Stop on disconnect:** When the browser disconnects or aborts `fetch`, `request.signal` and `cancel()` call `session.abort()`, stopping the current turn and tools while keeping the session reusable.
+- **Payload throttling:** Each line emits the complete transcript so far. For long responses, throttle updates on a short timer or send incremental diffs.
+- **Error sanitization:** Log raw errors server-side and send sanitized user-safe error messages to the browser.
 
-`createTranscript()` reports a tool result's text by default. To send a tool's structured `details` instead, pass `createTranscript({ toolResult: (toolName) => (toolName === "todo" ? "details" : "content") })`.
+`createTranscript()` returns a tool result's text by default. To send structured `details` for specific tools instead, pass `createTranscript({ toolResult: (toolName) => (toolName === "todo" ? "details" : "content") })`.
 
 ## Read the stream in the browser
 
@@ -231,22 +264,22 @@ export async function sendMessage(
 }
 ```
 
-Render each part by `type`: `text` and `thinking` are strings, and a `toolCall` part has `name`, `arguments`, and, once the tool reports progress or finishes, a `result` with `content`, `isError`, and `isPartial`. Pass an `AbortController`'s signal to stop the agent from the page.
+Render each part by `type`: `text` and `thinking` hold strings, and a `toolCall` part has `name`, `arguments`, and (once progress or completion arrives) `result` (`content`, `isError`, `isPartial`). Pass an `AbortController` signal to cancel from the UI.
 
 ## Secure the endpoint
 
-A route that drives an agent session lets whoever calls it run tools on your server with the server process's permissions. Atomic has [no built-in sandbox](/security#no-built-in-sandbox).
+Any route driving an agent session lets callers run tools with the server process's OS permissions. Atomic has [no built-in sandbox](/security#no-built-in-sandbox).
 
-- **Require authentication** on every route that creates sessions or sends prompts, and scope conversation ids to the authenticated user, as `getConversation()` does above.
-- **Allow only the tools you need.** `tools` is an allowlist; the examples allow only the read-only `read`, `find`, and `search`. Leave out `bash`, `edit`, and `write` unless the agent must change files or run commands. `excludedTools` removes tools, and `noTools: "all"` exposes none. `ask_user_question` needs a person to answer, so leave it out of headless sessions. See [Tools](/sdk/reference#tools).
-- **Disable builtins you don't use.** `builtins` turns off the shipped subagents, MCP, web access, and Intercom packages, along with their tools.
-- **Choose the working directory deliberately.** `cwd` sets the starting directory for tool paths and controls which project settings, context files, and extensions Atomic discovers. It does not restrict file access: tools can use absolute paths and paths outside `cwd`. Point it at a directory you control, never at an upload or a user-supplied path.
-- **Isolate the process** in a container, VM, or restricted OS account when callers must not access other server files, even with read-only tools, or when the agent can write files or run commands. See [Containerization](/containerization).
-- **Keep credentials on the server.** Provider keys come from the server's `ModelRuntime`. Never send them to the browser or accept them from requests.
+- **Require authentication** on every route that creates sessions or sends prompts, and scope conversation IDs to the authenticated user.
+- **Allow only needed tools.** `tools` is an allowlist; the example enables only read-only `read`, `find`, and `search`. Omit `bash`, `edit`, and `write` unless the agent must mutate files or run commands. `excludedTools` removes tools, and `noTools: "all"` exposes none. Omit `ask_user_question` in headless sessions. See [Tools](/sdk/reference#tools).
+- **Disable unused builtins.** Turn off `subagents`, `mcp`, `web-access`, and `intercom` via `builtins` when not required.
+- **Choose `cwd` deliberately.** `cwd` sets the starting directory for relative tool paths and project discovery, but does not jail file access (tools can read absolute paths outside `cwd`). Point `cwd` at a controlled directory, never user input.
+- **Isolate the process** in a container, VM, or restricted OS account whenever callers must not reach other server files or when write/shell tools are enabled. See [Containerization](/containerization).
+- **Keep credentials server-side.** Provider keys live in the server's `ModelRuntime`. Never forward them to browsers or accept raw keys from untrusted clients.
 
 ## Next steps
 
-- [SDK](/sdk) for sessions, prompting, and events.
-- [SDK API reference](/sdk/reference) for every `createAgentSession()` option.
-- [Orchestration](/orchestration) for running multi-step tasks with codemode and subagents.
-- [Migrating workflows](/orchestration/migrating-workflows) for replacing earlier workflow definitions.
+- [TypeScript SDK](/sdk): sessions, prompting, storage, and events.
+- [SDK API reference](/sdk/reference): every `createAgentSession()` option and export.
+- [Orchestration](/orchestration): multi-step workflows with codemode and subagents.
+- [Migrating workflows](/orchestration/migrating-workflows): replacing older workflow definitions.

@@ -1,39 +1,10 @@
 ---
-title: Register a provider
-description: Register provider aliases, add or remove custom providers, and choose a streaming API type.
+title: "Register a custom provider"
+sidebarTitle: "Register provider"
+description: "Add custom providers, choose a streaming API, set up multi-account aliases, and unregister providers."
 ---
 
-# Register a provider
-
-## Multiple accounts for one provider
-
-Use `atomic.registerProviderAlias()` to reuse an existing provider's models, OAuth flows, and transport under separate logins. Register aliases inside the extension factory so they are available at startup:
-
-```typescript
-import type { ExtensionAPI } from "@bastani/atomic";
-
-export default async function (atomic: ExtensionAPI) {
-  for (let account = 1; account <= 7; account++) {
-    await atomic.registerProviderAlias({
-      id: `openai-${account}`,
-      name: `OpenAI account ${account}`,
-      provider: "openai",
-    });
-  }
-}
-```
-
-Run `/login openai-1`, choose **Sign in with ChatGPT**, and select an `openai-1` model in `/model`. Repeat for each alias. The source `openai` uses OpenAI ChatGPT sign-in rather than `openai-codex`.
-
-Each alias stores and refreshes its own credentials without borrowing the source's stored login or ambient environment keys. Keeping the same alias ID preserves saved credentials. Confirm the intended account in your browser during login; an alias name does not select an account or increase quota.
-
-Aliases work with OAuth logins and non-empty stored API keys. For ambient-only authentication (such as an AWS profile or environment-based service account), use the original provider or register a full custom provider instead.
-
-Aliases inherit the source's endpoint, shared headers, models, derived Fast variants, OAuth callbacks, and request handling. Do not hard-code account secrets in source headers; supply per-account credentials through `/login`. Saved messages and callbacks keep the alias ID. Source catalog updates are shared while availability filters run against each alias's credential; aliases do not run separate per-account catalog discovery.
-
-The source provider must already be registered and cannot be an alias itself. Alias IDs cannot replace an existing provider. Configure endpoints, headers, and `models.json` overrides on the source provider rather than the alias. Call `atomic.unregisterProvider("openai-1")` to remove an alias without deleting its saved credentials.
-
-## Register new provider
+## Register a new provider {#register-new-provider}
 
 Specify `models` alongside the provider endpoint and API to register a new provider. For remote model discovery, fetch and register inside an async extension factory so startup waits for the models to load:
 
@@ -73,7 +44,7 @@ Or register static models directly:
 ```typescript
 await atomic.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
-  apiKey: "$MY_LLM_API_KEY", // env var reference; omit $ for a literal value
+  apiKey: "$MY_LLM_API_KEY", // supports $ENV_VAR, ${ENV_VAR}, !command, or literal values
   api: "openai-completions", // streaming API implementation
   models: [
     {
@@ -98,37 +69,9 @@ Providing `models` replaces all existing chat, image, and classifier models for 
 
 Registered providers appear in `/login` like built-in providers: `/login my-llm` prompts for an API key and stores it in `auth.json`, and the selector shows configured status (such as `✓ env: MY_LLM_API_KEY`). Once configured, `/model` lists its models; without credentials, selecting one reports `No API key found for my-llm` with the `/login` hint.
 
-## Unregister provider
+### API types
 
-Call `atomic.unregisterProvider(name)` to remove a provider registered with `atomic.registerProvider(name, ...)`:
-
-```typescript
-await atomic.registerProvider("my-llm", {
-  baseUrl: "https://api.my-llm.com/v1",
-  apiKey: "$MY_LLM_API_KEY",
-  api: "openai-completions",
-  models: [
-    {
-      id: "my-llm-large",
-      name: "My LLM Large",
-      reasoning: true,
-      input: ["text", "image"],
-      cost: { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
-      contextWindow: 200000,
-      maxTokens: 16384
-    }
-  ]
-});
-
-// Remove later without needing /reload
-await atomic.unregisterProvider("my-llm");
-```
-
-Unregistering removes the provider's dynamic models, API key fallback, OAuth registration, and custom stream handlers, restoring any overridden built-in provider behavior. Calls made after initial extension loading take effect immediately without `/reload`.
-
-### API Types
-
-The `api` field selects the built-in streaming implementation:
+The `api` field selects the built-in chat streaming implementation:
 
 | API | Use for |
 | --- | --- |
@@ -141,6 +84,9 @@ The `api` field selects the built-in streaming implementation:
 | `google-generative-ai` | Google Generative AI API |
 | `google-vertex` | Google Vertex AI API |
 | `bedrock-converse-stream` | Amazon Bedrock Converse API |
+| `pi-messages` | Custom gateways speaking the `pi-messages` protocol |
+
+Image (`images`) and classifier (`classifiers`) handlers use their own operation-specific `api` keys independent of this chat streaming table.
 
 Most OpenAI-compatible servers use `openai-completions`. Configure model-specific thinking controls with `thinkingLevelMap` and endpoint quirks with `compat`:
 
@@ -174,7 +120,7 @@ models: [{
 
 See [Compatibility fields](/models-configuration#compatibility) for every `compat` option (`thinkingFormat`, `cacheControlFormat`, session affinity, and tool flags). Use `mistral-conversations` for native Mistral endpoints; if routing a Mistral-compatible endpoint through `openai-completions`, configure `compat` flags explicitly.
 
-### Auth Header
+### Auth header
 
 Set `authHeader: true` when an endpoint expects `Authorization: Bearer <key>` using the resolved `apiKey`:
 
@@ -187,3 +133,67 @@ await atomic.registerProvider("custom-api", {
   models: []
 });
 ```
+
+If `authHeader: true` is set and the provider resolves no API key (for example, `$MY_API_KEY` is unset and no key is saved in `auth.json`), requests fail with a missing API key error (`authHeader requires a resolved API key`).
+
+## Multiple accounts for one provider
+
+Use `atomic.registerProviderAlias()` to reuse an existing provider's models, OAuth flows, and transport under separate logins. Register aliases inside the extension factory so they are available at startup:
+
+```typescript
+import type { ExtensionAPI } from "@bastani/atomic";
+
+export default async function (atomic: ExtensionAPI) {
+  for (let account = 1; account <= 7; account++) {
+    await atomic.registerProviderAlias({
+      id: `openai-${account}`,
+      name: `OpenAI account ${account}`,
+      provider: "openai",
+    });
+  }
+}
+```
+
+Run `/login openai-1`, choose **Sign in with ChatGPT**, and select an `openai-1` model in `/model`. Repeat for each alias. The source `openai` uses OpenAI ChatGPT sign-in rather than `openai-codex`.
+
+Each alias stores and refreshes its own credentials without borrowing the source's stored login or ambient environment keys. Keeping the same alias ID preserves saved credentials. Confirm the intended account in your browser during login; an alias name does not select an account or increase quota.
+
+Aliases work with OAuth logins and non-empty stored API keys. For ambient-only authentication (such as an AWS profile or environment-based service account), use the original provider or register a full custom provider instead.
+
+Aliases inherit the source's endpoint, shared headers, models, derived Fast variants, OAuth callbacks, and request handling. Do not hard-code account secrets in source headers; supply per-account credentials through `/login`. Saved messages and callbacks keep the alias ID. Source catalog updates are shared while availability filters run against each alias's credential; aliases do not run separate per-account catalog discovery, except `github-copilot` aliases, which refresh their own account's model list independently.
+
+Validation rules for `registerProviderAlias()`:
+
+- `id` and `provider` must be distinct, non-empty strings.
+- `id` cannot match any built-in provider, `models.json` provider, or existing non-alias extension provider (throws `Provider alias <id> cannot replace an existing provider.`).
+- `provider` must already be registered and cannot itself be an alias (throws `Provider aliases must refer directly to a source provider, not another alias.`).
+- `registerProviderAlias({ id, name, provider })` is shorthand for `registerProvider(id, { aliasOf: provider, name })`. No other fields (such as `baseUrl` or `headers`) are allowed on an alias; configure endpoints, headers, and `models.json` overrides on the source provider instead.
+- Call `atomic.unregisterProvider("openai-1")` to remove an alias without deleting its saved credentials.
+
+## Unregister a provider {#unregister-provider}
+
+Call `atomic.unregisterProvider(name)` to remove a provider registered with `atomic.registerProvider()` or `atomic.registerProviderAlias()`:
+
+```typescript
+await atomic.registerProvider("my-llm", {
+  baseUrl: "https://api.my-llm.com/v1",
+  apiKey: "$MY_LLM_API_KEY",
+  api: "openai-completions",
+  models: [
+    {
+      id: "my-llm-large",
+      name: "My LLM Large",
+      reasoning: true,
+      input: ["text", "image"],
+      cost: { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
+      contextWindow: 200000,
+      maxTokens: 16384
+    }
+  ]
+});
+
+// Remove later without needing /reload
+await atomic.unregisterProvider("my-llm");
+```
+
+Unregistering removes the provider's dynamic models, API key fallback, OAuth registration, and custom stream handlers, restoring any overridden built-in provider behavior. Calls made after initial extension loading take effect immediately without `/reload`. If the current session is using a model from the unregistered provider, Atomic refreshes the active model immediately. Calling `unregisterProvider()` for a provider that is not registered is a safe no-op.

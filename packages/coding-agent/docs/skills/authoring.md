@@ -1,24 +1,27 @@
 ---
-title: Writing skills
-description: Skill directory structure and a complete worked example.
+title: "Write a custom skill"
+sidebarTitle: "Write a skill"
+description: "Structure a skill directory or standalone file, write SKILL.md instructions, and follow a complete worked example."
 ---
-
-# Writing skills
 
 ## Skill structure
 
-A skill is a directory with a `SKILL.md` file. Everything else is freeform.
+A skill is usually a directory containing a `SKILL.md` file plus any scripts, references, or assets it needs.
 
-```
+```text
 my-skill/
 ├── SKILL.md              # Required: frontmatter + instructions
 ├── scripts/              # Helper scripts
 │   └── process.sh
-├── references/           # Detailed docs loaded on-demand
+├── references/           # Detailed docs loaded on demand
 │   └── api-reference.md
 └── assets/
     └── template.json
 ```
+
+Once a directory contains `SKILL.md`, Atomic stops recursing inside it. Supporting Markdown files under `references/` are never mistaken for nested skills, and nested subdirectories cannot define separate skills.
+
+You can also create a single-file skill directly inside `~/.atomic/agent/skills/<name>.md` or `.atomic/skills/<name>.md` (not `.agents/skills/`, which requires subdirectories with `SKILL.md`). For standalone root `.md` files, always set `name:` in frontmatter; omitting `name:` falls back to the parent directory name (`skills`), which causes all nameless root files to collide.
 
 ### SKILL.md format
 
@@ -44,11 +47,15 @@ cd /path/to/skill && npm install
 ```
 ````
 
-Use relative file paths from the skill directory (these are bundled skill files, not docs routes):
+Quote any `description` value that contains a YAML colon followed by a space (for example `description: "Search docs: fast local lookup"`). An unquoted colon causes a YAML parse error and prevents the skill from loading.
+
+Use relative paths from the skill directory:
 
 ```markdown
 See the API reference at `references/api-reference.md` for details.
 ```
+
+Atomic tells the model to resolve relative paths against the skill's directory (the parent of `SKILL.md`) and pass absolute paths to tools. Make helper scripts executable (`chmod +x scripts/process.sh`) or document running them with an explicit interpreter such as `node`, `bash`, or `python3`.
 
 Keep instructions concise and lead with the intended outcome:
 
@@ -60,7 +67,7 @@ Keep instructions concise and lead with the intended outcome:
 
 ## Example
 
-```
+```text
 brave-search/
 ├── SKILL.md
 ├── search.js
@@ -68,6 +75,7 @@ brave-search/
 ```
 
 **SKILL.md:**
+
 ````markdown
 ---
 name: brave-search

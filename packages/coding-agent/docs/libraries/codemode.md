@@ -1,10 +1,26 @@
 ---
 title: "@bastani/atomic-codemode"
-sidebarTitle: "Codemode"
-description: "Sandboxed JavaScript execution where the only capability is calling injected tools."
+sidebarTitle: "@bastani/atomic-codemode"
+description: "Run model-written JavaScript in a QuickJS WebAssembly sandbox whose only capability is calling injected tools."
 ---
 
 Runs model-written JavaScript in a QuickJS VM (compiled to WebAssembly) where the only capability is calling injected tools. Nested tool calls never enter the LLM context; only the script's output and return value do.
+
+## Installation
+
+```bash
+npm install @bastani/atomic-codemode
+```
+
+Requires Node.js 22.19+ (or Bun / Cloudflare Workers via the portable subpaths). Available package entry points:
+
+- `@bastani/atomic-codemode`: `CodemodeSandbox`, `loadQuickJSWasm`, `parseCodemodeSource`, `renderDeclarations`, and worker runtime for Node and Bun.
+- `@bastani/atomic-codemode/portable`: `RemoteCodemodeSandbox` and `InlineCodemodeSandbox` with zero Node.js imports.
+- `@bastani/atomic-codemode/cloudflare`: `CodemodeSandboxDurableObject` and `createInlineCodemodeSandbox` for Cloudflare Workers.
+- `@bastani/atomic-codemode/declarations`: lightweight `renderDeclarations()` without worker or WebAssembly dependencies.
+- `@bastani/atomic-codemode/source`: lightweight `parseCodemodeSource()`, `CodemodeSourceError`, and `CODEMODE_SOURCE_GRAMMAR`.
+- `@bastani/atomic-codemode/node-options`: Node worker option helpers.
+- `@bastani/atomic-codemode/worker`: worker entrypoint for bundled hosts.
 
 Scripts use `tools`, `ALL_TOOLS`, `text`, `image`, `exit`, `store`, and `load`, and may start with a `// @options:` line. Atomic uses it for its built-in [`codemode` tool](/codemode). It has no dependency on the other Atomic packages and can be used on its own to expose any functions (remote APIs, MCP servers, application services) to model-written scripts.
 
@@ -50,16 +66,17 @@ await sandbox.close();
 
 `code` is the body of an async function, so `return` and top-level `await` work. Inside the script, every sandbox provides:
 
-- `tools.<name>(args)` returns a promise. Arguments and results go through a JSON round trip, and a tool that throws rejects with an `Error` carrying the same message. Tool names are also exposed as identifiers with invalid characters replaced by `_` via `toCodemodeIdentifier`, so `my-tool` is available as both `tools.my_tool` and `tools["my-tool"]`.
+- `tools.<name>(args)` returns a promise. Arguments and results go through a JSON round trip. When a tool rejects with an `Error`, the script catches an `Error` with the same message plus any extra JSON-serializable own properties from that error (such as `code`, excluding `name`, `message`, and `stack`). Tool names are also exposed as identifiers with invalid characters replaced by `_` via `toCodemodeIdentifier`, so `my-tool` is available as both `tools.my_tool` and `tools["my-tool"]`.
 - `ALL_TOOLS` lists `{ name, description }` for every tool, using the identifier form for `name`.
 - `text(value)` appends a text item to `result.output`, JSON-stringifying non-string values. `console.log`, `info`, `warn`, `error`, and `debug` append text items with `console: true`.
 - `image(urlOrItem)` appends an image item. It accepts a base64 `data:` URL, `{ image_url }`, or an image block (`{ type: "image", data, mimeType }`, as MCP tools and `@bastani/atomic-ai` produce). Remote URLs are rejected.
 - `exit()` ends the script immediately with a successful result, keeping its output and store writes.
-- `globals` passed to the sandbox are callable as top-level functions, such as a host helper `image(ref)`. They behave like tools but are not recorded in `result.calls`. A dotted name like `models.classify` places the function on a frozen `models` object. With `spread: true`, `execute` receives all call arguments as an array instead of only the first argument, and `signature` replaces the declaration generated from the schemas.
+- `globals` passed to the sandbox are callable as top-level functions, such as a host helper `image(ref)`. They behave like tools but are not recorded in `result.calls`. Global names must be valid JavaScript identifiers (or dotted `namespace.member` forms, placing the function on a frozen namespace object) and cannot collide with reserved names: `tools`, `ALL_TOOLS`, `console`, `text`, `image`, `exit`, `globalThis`, `store`, or `load`. With `spread: true`, `execute` receives all call arguments as an array instead of only the first argument, and `signature` replaces the declaration generated from the schemas.
 - `store(key, value)` and `load(key)` read and write JSON values synchronously. See [Store](#store).
+- **Frozen built-in prototypes:** Before running scripts, the VM freezes built-in prototypes (`Object.prototype`, `Array.prototype`, and others, while still allowing instance overrides of `constructor`, `name`, `message`, `toString`, `toLocaleString`, `valueOf`, and `toJSON`). Scripts that attempt to monkey-patch built-in prototypes throw a `TypeError`.
 - Nothing else is available. There are no timers, `fetch`, `process`, `require`, modules, or `WebAssembly`. `eval` and `Function` work, but they only evaluate code inside the same VM.
 
-Setting `timeoutMs: Infinity` disables the deadline so the script runs until it settles or `signal` aborts it. A script that awaits a promise nothing can settle (with no tool call pending and no timers or I/O in the VM) fails immediately instead of hanging.
+When `timeoutMs` is omitted, `CodemodeSandbox` uses `DEFAULT_TIMEOUT_MS` (`300_000` ms, or 5 minutes). Setting `timeoutMs: Infinity` disables the deadline so the script runs until it settles or `signal` aborts it. A script that awaits a promise nothing can settle (with no tool call pending and no timers or I/O in the VM) fails immediately instead of hanging.
 
 `memoryLimitBytes` caps the VM heap. Allocations beyond that limit fail inside the script with `InternalError: out of memory`.
 
@@ -107,7 +124,12 @@ const source = await tools.read({ path: "package.json" });
 text(JSON.parse(source).name);
 ```
 
-Supported fields are `max_output_tokens` (an output token budget) and `timeout_ms` (a hard deadline). The sandbox does not enforce them; the caller decides how to apply them. The options line is replaced by an empty line so line numbers in stack traces still match the input.
+Supported JSON fields on the `// @options:` header line are snake_case:
+
+- `max_output_tokens`: non-negative safe integer (`>= 0`; `0` is valid), returned as `options.maxOutputTokens`.
+- `timeout_ms`: positive safe integer from `1` to `2,147,483,647`, returned as `options.timeoutMs`.
+
+`parseCodemodeSource()` returns `{ code, options: { maxOutputTokens?, timeoutMs? } }`. The sandbox does not enforce these limits itself; the caller decides how to apply them. The options line is replaced by a blank line so line numbers in stack traces still match the input.
 
 Empty input, invalid JSON, unknown fields, an options line without code, or an options line after line 1 throw `CodemodeSourceError`. `CODEMODE_SOURCE_GRAMMAR` is a Lark grammar for providers that support grammar-constrained tool input. Both exports are also available from the lightweight `@bastani/atomic-codemode/source` entry.
 

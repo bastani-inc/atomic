@@ -1,25 +1,26 @@
 ---
-title: Structured decisions
-description: Make a schema-validated structured decision without starting an agent session.
+title: "Structured decisions API"
+sidebarTitle: "Structured decisions"
+description: "Make typed, schema-validated classifier or chat model decisions with decide() and generateStructuredOutput() without starting an agent session."
 ---
 
-# Structured decisions
+Atomic provides one decision service across three entry points:
 
-Atomic provides one decision service. [`decide()`](#decide) asks the configured [`decisionModel`](/settings#decisionmodel) typed questions and returns typed answers with optional probabilities. The `structured_output` tool uses the same decision model and raises `DecisionError` subclasses on failure. `generateStructuredOutput()` from `@bastani/atomic` makes one schema-validated decision on the models you name through the same engine.
+- [`decide()`](#decide) asks the configured [`decisionModel`](/settings#decisionmodel) typed `choice`, `bool`, and `score` questions and returns typed answers with optional probabilities.
+- The `structured_output` tool uses the same decision model and raises `DecisionError` subclasses on failure.
+- `generateStructuredOutput()` from `@bastani/atomic` makes one schema-validated decision on the models you pass through the same runtime.
 
-None of these APIs starts a child agent, executes other tools, authorizes an action, or changes the selected chat model.
+None of these APIs starts a child agent, invokes other tools, authorizes an action, or changes the selected chat model.
 
-## decide
+## Make typed decisions with `decide()` {#decide}
 
-`decide({ state, questions, deadline })` asks independent questions about one state in one request:
+`decide({ state, questions, settings, modelRegistry, currentModel, ... })` evaluates one or more independent named questions against one `state` object in a single request:
 
-- `choice`: pick one option. `criteria` maps each option to its meaning.
-- `bool`: a yes/no question (a Noul). `criteria` defines what `true` and `false` mean.
-- `score`: grade on ordered levels. `criteria` lists at least two levels, lowest first.
+- `choice`: pick one option. `criteria` maps each option name to its meaning.
+- `bool`: a yes/no question. `criteria` defines what `true` and `false` mean.
+- `score`: grade on ordered levels. `criteria` lists at least two level descriptions, lowest first.
 
-`decide()` resolves `decisionModel` once. When a classifier answers, it returns each Choice option's probability and confidence, the probability of `true` for a `bool`, and the score's confidence for a `score`.
-
-If the classifier fails, the current chat model answers without probabilities, sets `source: "chat"`, and includes a `fallback` object. An empty or `"auto"` `decisionModel` uses the current chat model directly. Pass `requireProbabilities: true` when your code requires probabilities: only a classifier may answer, and a chat decision model or classifier failure rejects instead of falling back.
+`decide()` resolves `decisionModel` once. When a classifier answers, `source` is `"classifier"` and answers include probabilities and confidence scores. If the classifier fails, the current chat model answers without probabilities, sets `source: "chat"`, and populates `result.fallback`. An empty or `"auto"` `decisionModel` uses `currentModel` directly. Pass `requireProbabilities: true` to restrict answers to classifiers so chat models or classifier failures reject instead of falling back.
 
 ```typescript
 import { decide, isDecisionError } from "@bastani/atomic";
@@ -46,61 +47,92 @@ const result = await decide({
 });
 const approve = result.answers.intent.probabilities?.approve ?? 0;
 if (approve >= 0.9 && (result.answers.complete.probability ?? 0) >= 0.8) {
-  // Code decides what to do at each threshold.
+  // Application code decides what to do at each threshold.
 }
 ```
 
-Keep control in application code. Compare each option's probability against a threshold per action, require a higher bar for irreversible actions, and route low-confidence cases to a person or a slower step. A `choice` question always selects one option even when none fits, so pair it with a `bool` question that checks applicability.
+### Request options
 
-`decide()` never caches; cache results in your code when needed. Extensions read the setting with `ctx.getDecisionModel()`. Import `decide` from `@bastani/atomic`.
+- `state`: non-empty plain JSON object containing the facts to evaluate.
+- `questions`: non-empty record mapping caller-chosen IDs to `choice`, `bool`, or `score` question definitions.
+- `instructions`: optional top-level context shared across all questions. Defaults to ``"Answer each question about `state`."`` and must be non-blank if supplied.
+- `deadline`: optional positive integer wall-clock limit in milliseconds covering credential screening, requests, retries, repairs, and fallbacks. Defaults to [`httpIdleTimeoutMs`](/settings#http).
+- `retry`: optional `RetryPolicy` overriding default chat retries (`{ enabled: true, maxRetries: 3, baseDelayMs: 2000 }`).
+- `signal`: optional `AbortSignal`; cancellation rejects immediately with the signal's reason.
+- `model`: optional exact `provider/model` ID to use instead of `decisionModel`.
+- `requireProbabilities`: when `true`, only a classifier may answer.
 
-- `deadline`: wall-clock limit in milliseconds for the entire decision, including credential screening, requests, retries, repairs, and fallbacks. Defaults to [`httpIdleTimeoutMs`](/settings#http).
-- `signal`: cancels the decision and rejects with the signal's reason.
-- `model`: names an exact `provider/model` ID to use instead of `decisionModel`.
-- Credential screening: Atomic refuses `state` containing an environment credential, key-shaped text, or a saved credential known to `modelRegistry` before sending any model request. Atomic copies `state` before asynchronous screening, so mutating the caller's object later does not alter an in-flight decision.
+### Return value (`DecisionResult`)
+
+`decide()` resolves with:
+
+```typescript
+interface DecisionResult<Q> {
+  answers: Record<keyof Q, DecisionAnswer>;
+  source: "classifier" | "chat";
+  model: string;
+  responseModel: string;
+  usage: { inputTokens: number; outputTokens: number };
+  fallback?: { from: string; to: string; reason: string };
+}
+```
+
+Each entry in `result.answers.<id>` matches its question type:
+
+- **`choice`:** `{ type: "choice", choice: string, probabilities?: Record<string, number>, confidence?: number }`.
+- **`bool`:** `{ type: "bool", value: boolean, probability?: number }`. When a classifier answers, `value` is `probability >= 0.5`.
+- **`score`:** `{ type: "score", score: number, confidence?: number }`. Levels are 0-indexed from `0` to `criteria.length - 1`: chat models return an integer index, while classifiers return a numeric score (rounded during validation).
+
+Keep action logic in application code. Compare probabilities against per-action thresholds, require stricter thresholds for irreversible actions, and pair `choice` questions with a `bool` applicability check (because `choice` always picks one option). `decide()` never caches results; cache them yourself if needed.
+
+### Credential screening boundary
+
+`decide()` actively screens `state` before sending any request. It snapshots `state` (so later caller mutations cannot alter an in-flight call) and rejects with `DecisionRequestError` (`reason: "credential-in-state"`) if `state` contains:
+
+- any known environment credential,
+- `Bearer` tokens, PEM private keys, or `sk-`, `ghp_`, or `github_pat_` key patterns, or
+- a credential configured in `modelRegistry`.
+
+`generateStructuredOutput()` does **not** run automatic credential screening. Always strip secrets from `state` and `instructions` yourself before calling `generateStructuredOutput()`.
 
 ### Errors
 
-Every failure rejects with a `DecisionError`. Branch on the error class or `code`, never on the message text.
+Every failure from `decide()` rejects with a `DecisionError`. Branch on the error class or `code`, never on message text.
 
-Each error carries `hint`, `retryable`, and the underlying `cause`. `isDecisionError(error)` and the per-class guards also recognize errors that crossed a process boundary. Use `serializeDecisionError()` and `rehydrateDecisionError()` to transport errors across boundaries, and `findDecisionError(error)` or `isRetryableDecisionError(error)` to search a cause chain.
+Each error includes `hint`, `retryable`, and `cause`. `isDecisionError(error)` and the per-class guards recognize errors across process boundaries. Use `serializeDecisionError()` and `rehydrateDecisionError()` to transport errors between processes, and `findDecisionError(error)` or `isRetryableDecisionError(error)` to walk a `cause` chain. Validate untrusted serialized payloads with `parseSerializedDecisionError()` before calling `rehydrateDecisionError()` (returns `undefined` when malformed).
 
-For untrusted error data from another process, validate with `parseSerializedDecisionError()` before calling `rehydrateDecisionError()`. It returns `undefined` when a known error's code or fields are malformed.
+Legacy `routerModel` settings migrate to `decisionModel` automatically. An existing `decisionModel` takes precedence, and invalid legacy values are ignored with a one-time warning. See [decisionModel](/settings#decisionmodel).
 
-Legacy `routerModel` settings migrate to `decisionModel` automatically without raising a configuration error. An existing `decisionModel` takes precedence, and invalid legacy values are ignored with a one-time warning. See [decisionModel](/settings#decisionmodel).
-
-| Class | Code | When | Fields | What to do |
+| Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
-| `DecisionConfigError` | `invalid-setting` | `decisionModel` is not a string or has surrounding whitespace | `source`, `field` | Set an exact `provider/model`, `auto` or `""`. |
-| `DecisionRequestError` | `invalid-request` | Empty or non-JSON `state`, credential in `state`, no questions, a malformed question, blank `instructions`, a bad `deadline` or `model` | `field`, `reason` | Fix the request; nothing was sent. |
-| `DecisionModelUnavailableError` | `model-unavailable` | `decisionModel` is not a registered chat or classifier model (`not-in-catalog`), no chat model is selected (`no-chat-model`), probabilities are required from a chat model (`no-probabilities`), or the extension host provides no decision model or model registry (`host-unsupported`) | `reason`, `model` | Choose another decision model or select a chat model; for `host-unsupported`, run in an Atomic session. |
-| `DecisionTimeoutError` | `timeout` | The deadline passed | `timeoutMs`, `elapsedMs`, `phase`, `attempts` | Retry, or allow a longer deadline. Retryable. |
-| `DecisionOutputError` | `invalid-output` | The model answered, but no answer satisfied the questions after repairs | `model`, `detail` | Make the questions unambiguous or choose another model. |
-| `DecisionProviderError` | `provider-failure` | The model's request failed | `model`, `providerStatus`, `providerCode`, `retryAfterMs`, `detail` | Retryable for a rate limit or exhausted quota (`providerCode`); otherwise check the provider. |
+| `DecisionConfigError` | `invalid-setting` (or legacy decode-only `renamed-setting`) | `decisionModel` is not a string or has surrounding whitespace | `source`, `field`, optional `scope` (`"global" \| "project"`) | Set an exact `provider/model`, `"auto"`, or `""`. |
+| `DecisionRequestError` | `invalid-request` | Empty or non-JSON `state`, credential in `state`, no questions, malformed question, blank `instructions`, invalid `deadline`, or invalid `model` | `field`, `reason` | Fix the request; nothing was sent. |
+| `DecisionModelUnavailableError` | `model-unavailable` | `decisionModel` is not a registered chat or classifier model (`not-in-catalog`), no chat model is selected (`no-chat-model`), probabilities are required from a chat model (`no-probabilities`), or the host provides no decision model or registry (`host-unsupported`) | `reason`, `model` | Choose another decision model or select a chat model. |
+| `DecisionTimeoutError` | `timeout` | The wall-clock deadline expired | `timeoutMs`, `elapsedMs`, `phase`, `attempts` | Retry, or raise `deadline` / `timeoutMs`. Retryable. |
+| `DecisionOutputError` | `invalid-output` | The model responded, but output failed schema validation after repairs | `model`, `detail` | Clarify questions or pick another model. |
+| `DecisionProviderError` | `provider-failure` | The provider request failed | `model`, `providerStatus`, `providerCode`, `retryAfterMs`, `detail` | Retryable on rate limits or quota exhaustion (`providerCode`); otherwise check provider status and auth. |
 
-## Where the decision model decides
+## How `decisionModel` applies across APIs
 
-- **The `structured_output` tool** (when called without its own `model`) starts on `decisionModel`, resolved the same way as `decide()`. A classifier answers when the result schema is a finite Choice; otherwise the call tries `fallbackModels` and then the current chat model. An unregistered or invalid `decisionModel` rejects with `DecisionModelUnavailableError` or `DecisionConfigError`, and an unanswered call rejects with `DecisionOutputError` or `DecisionProviderError`.
-- **`generateStructuredOutput()`** uses only the models you pass and the current chat model. Pass `settings` to start on `decisionModel` as the tool does.
+- **The `structured_output` tool** (when called without its own `model`) starts on `decisionModel`. A classifier answers when the schema is a finite Choice; otherwise Atomic tries `fallbackModels` and then `currentModel`. Failures always reject with a `DecisionError`.
+- **`generateStructuredOutput()`** uses only the models you pass (`model`, `fallbackModels`, `currentModel`) unless you pass `settings`, in which case omitting `model` starts on `decisionModel` like the tool. Note: calling `generateStructuredOutput()` **without `settings`** throws plain `Error` instances rather than `DecisionError` subclasses; `DecisionError` wrapping applies whenever `settings` is passed or when calling `decide()` or `structured_output`.
 
 ## Select the inference model
 
-Pass an optional exact `provider/model` string, not a model object and not `"auto"`:
+Pass an optional exact `provider/model` string (not a `Model` object and not `"auto"`):
 
-- `model` is the primary candidate. It may be a chat language model or a classifier registered in `modelRegistry`. `typesafe/jev-latest` is one example classifier, not a separate request type.
-- `fallbackModels` is an ordered list of exact `provider/model` IDs.
-- Omit `model` to start on `decisionModel` when `settings` is passed (the `structured_output` tool always passes `settings`), or on the current chat model otherwise.
+- `model`: primary candidate (chat model or registered classifier such as `typesafe/jev-latest`).
+- `fallbackModels`: ordered list of exact `provider/model` IDs.
+- Omit `model` to start on `decisionModel` when `settings` is passed, or on `currentModel` otherwise.
 - After `model` and `fallbackModels`, Atomic tries `currentModel` if it has not already been tried.
 
-Image-generation models, model patterns, reasoning suffixes, surrounding whitespace, and unregistered IDs cannot be used. Atomic skips those IDs, records each error in `modelAttempts`, and continues through the remaining candidates including `currentModel`. The call fails with the first ID's error only when no candidate resolves.
-
-A catalog entry does not guarantee that the provider can classify, that credentials work, or that quota remains. When `model` is omitted and `settings` is passed, `decisionModel` is never skipped: an unregistered or invalid `decisionModel` fails immediately with a [`DecisionError`](#errors).
+Image-generation models, wildcard patterns, reasoning suffixes, surrounding whitespace, and unregistered IDs are invalid. Atomic skips invalid `model`/`fallbackModels` entries, records each error in `modelAttempts`, and advances to the remaining candidates including `currentModel` (failing with the first error only when no candidate resolves). When `model` is omitted and `settings` is provided, an invalid or unregistered `decisionModel` fails immediately with a [`DecisionError`](#errors) instead of skipping.
 
 ### Choice-compatible schemas
 
-A classifier can answer a finite Choice: literal unions, enums, booleans, and flat objects whose required fields all use those types. Free-form text, unconstrained numbers, arrays, optional fields, and nested objects are not Choice-compatible. Atomic compiles compatible schemas into choice questions and skips incompatible classifiers, recording each skip in `modelAttempts`. A request whose entire candidate chain is incompatible fails without inventing a decoder.
+Classifiers answer finite Choice schemas: literal unions, enums, booleans, and flat closed objects (`additionalProperties: false`) whose required fields all use those types. Free-form text, unconstrained numbers, arrays, optional fields, and nested objects are incompatible; Atomic skips classifier candidates for those schemas, records each skip in `modelAttempts`, and advances to chat fallbacks.
 
-Pass the session `modelRegistry`. Classifier credentials come from that registry's provider login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. Never copy a resolved key into `state`.
+Pass the session `modelRegistry` so classifier credentials resolve from its login store (such as `/login typesafe` or `TYPESAFE_API_KEY`). Never copy API keys into `state`.
 
 ```typescript
 import { Type } from "@bastani/atomic/typebox";
@@ -127,42 +159,40 @@ const result = await generateStructuredOutput({
 console.log(result.value.category, result.model);
 ```
 
-`result.value` holds the schema-validated decision, and `result.model` names the candidate that produced it. `result.modelAttempts` records skipped and failed candidates when a fallback chain ran.
+`result.value` holds the schema-validated result, `result.model` identifies the candidate that answered, and `result.modelAttempts` records skipped and failed candidates when a fallback chain ran.
 
-This API reports chat token usage when a chat candidate produces the accepted result. Classifier-produced `usage` is not a classifier bill; the lower-level classifier operation may report usage and cost separately. A valid schema shape does not prove the judgment is correct, so re-check policy before taking action.
+`result.usage` reports chat token usage when a chat candidate produced the result (classifier billing is reported separately by the classifier operation). A schema-valid result does not guarantee policy compliance, so validate invariants before acting.
 
-The `structured_output` tool accepts required `instructions`, nonempty named `state`, and optional `model` and `fallbackModels` from the calling model. `createStructuredOutputTool({ schema })` fixes the schema. Omitting `model` starts on the session's `decisionModel`, which defaults to the current chat model. The calling model cannot set a deadline; configure it with the tool's [`timeoutMs`](#cancellation-and-failures) option. See [Structured output final results](/sdk/reference#structured-output-final-results).
+The `structured_output` tool accepts required `instructions`, non-empty named `state`, and optional `model` and `fallbackModels` from the calling model. `createStructuredOutputTool({ schema })` fixes the output schema. The calling model cannot override the deadline; set it with `timeoutMs`. See [Structured output final results](/sdk/reference#structured-output-final-results).
 
 ## Prepare a decision
 
-`instructions` describes the judgment. Named `state` fields hold the task, relevant conversation, explicit constraints, and reference text. Paths and URLs can identify a source, but do not replace its content. Exclude secrets from both `state` and `instructions`.
+Put the task criteria in `instructions` and all relevant facts, constraints, and text snippets in named `state` fields. File paths and URLs identify sources, but do not substitute for their contents. Exclude secrets from both `state` and `instructions`.
 
-For `generateStructuredOutput()`, supply `instructions`, `state`, and `schema`. Atomic derives choice questions from a compatible schema and skips classifiers for other schemas. Keep numeric thresholds in code, and include an explicit no-match option in the schema when abstention is valid.
+For `generateStructuredOutput()`, supply `instructions`, `state`, and `schema` (prefer `{ additionalProperties: false }` on object schemas). Keep numeric thresholds in application code, and add an explicit abstention option when no choice may fit.
 
 ## Provider behavior and limits
 
-Chat candidates receive one internal result tool whose parameters match `schema`. Atomic serializes schemas per provider, requests strict sampling where supported, and validates returned arguments without coercing values or stripping extra fields. Set `additionalProperties: false` on closed objects. A prose-only response, extra tool call, truncated response, or invalid payload fails that candidate and advances the chain.
+Chat candidates receive one internal result tool matching `schema`. Atomic serializes schemas per provider, enables strict sampling where supported, and validates returned arguments without type coercion or stripping extra keys. Always set `additionalProperties: false` on closed objects. Prose-only replies, extra tool calls, truncated output, or invalid payloads trigger up to 3 repair attempts (1 initial attempt plus 3 repairs) before advancing to the next fallback candidate.
 
-The public `structured_output` tool is separate: its parameters are `instructions`, `state`, and optional model selectors, and its result is the inferred value.
+Use `Type.Optional(...)` for fields that may be omitted. When a strict provider encodes an omitted optional field as `null`, Atomic strips that `null` placeholder if the property schema rejects `null` (including inside nested objects and array items). Allow `null` explicitly in the schema if `null` is a valid answer.
 
-Use `Type.Optional(...)` for fields that may be omitted. When a strict provider encodes an omitted optional property as `null`, Atomic strips that placeholder if the property schema rejects `null`, including inside nested objects and array items. If `null` is a valid answer, allow it explicitly in the schema so Atomic preserves it. Required properties and undeclared fields always follow the original schema.
+Chat decisions use HTTP/SSE transport (not WebSocket fallback) and disable configured Anthropic server-side fallbacks. Transient chat transport errors follow `retry` (default `{ enabled: true, maxRetries: 3, baseDelayMs: 2000 }`). Classifier calls invoke the provider's `classify` method with the retry limit and abort signal; provider implementations own transport retries.
 
-Chat decisions use HTTP/SSE rather than WebSocket transport fallback and disable configured Anthropic server-side fallbacks for that request. Transient chat failures follow the request's retry settings. Classifier calls invoke the registered provider's `classify` operation with the retry limit and cancellation signal; provider implementations own transport retries.
+Registered classifiers (such as [TypeSafe Jev](/providers#typesafe-jev)) receive `state` and derived choice questions in one `classify` call without trimming `state`. If a classifier rejects the size or context, or cannot represent the schema, Atomic skips or advances to the next candidate without retrying the rejected request.
 
-A registered classifier, such as [TypeSafe Jev](/providers#typesafe-jev), receives shared `state` and choice questions in one `classify` request. Atomic never trims `state`. If a classifier rejects the request size or context, or is incompatible with the schema, that candidate fails or is skipped and the chain advances to the next fallback without retrying the rejected request. Supply concise context or select a chat model with enough capacity.
-
-Atomic validates that every classifier answer selects a known option. Reported model names, probabilities, and confidence values are advisory and never reject an otherwise valid decision.
+Atomic verifies that every classifier answer chooses a valid option. Reported model names, probabilities, and confidence values are advisory and never reject an otherwise valid answer.
 
 ## Cancellation and failures
 
-One wall-clock deadline covers the entire call: every repair attempt, transport retry, and fallback candidate together. Set it with `timeoutMs` as a positive integer in milliseconds. `generateStructuredOutput()` and `structured_output` check this deadline before dispatching retries so an overdue backoff never starts another provider request.
+One wall-clock deadline covers the entire call: every repair attempt, transport retry, and fallback candidate combined. Configure it with `timeoutMs` (or `deadline` in `decide()`) as a positive safe integer in milliseconds. Atomic checks the deadline before every retry so overdue backoffs never start another request.
 
-When `timeoutMs` is omitted, `structured_output` uses the session's [`httpIdleTimeoutMs`](/settings#http) setting and other calls use the 10-minute default. Disabling the idle timeout (`0` or `"disabled"`) leaves only the maximum JavaScript timer delay, about 24.8 days. Raise the deadline for slow reasoning models or large `state`.
+When omitted, `structured_output` uses the session's [`httpIdleTimeoutMs`](/settings#http) setting and standalone calls default to 10 minutes. Disabling the idle timeout (`0` or `"disabled"`) leaves only the JavaScript timer limit (~24.8 days). Increase the deadline for slow reasoning models or large `state` payloads.
 
-When the deadline expires, Atomic stops the in-flight generation (even if the provider ignores its abort signal) and rejects with `DecisionTimeoutError`. The error message names the deadline, phase, hint, and per-attempt timing (for example, `Attempts: 1) stopReason=stop 25m02s; 2) still generating 4m58s.`). Timeout failures are final and do not trigger more repairs or fallback candidates. Errors for exhausted repairs include the same attempt summary. Provider transport, credential preparation, and enclosing tool-request limits remain independent of this deadline.
+When the deadline expires, Atomic aborts the in-flight request (even if the provider ignores abort signals) and rejects with `DecisionTimeoutError`, including the deadline, phase, hint, and per-attempt timings (for example, `Attempts: 1) stopReason=stop 25m02s; 2) still generating 4m58s.`). Timeouts are final and do not trigger further repairs or fallbacks.
 
-Pass an `AbortSignal` (such as `AbortSignal.timeout(milliseconds)`) to cancel sooner. Cancellation rejects immediately, even if a provider ignores its signal, and stops the fallback chain. Output has no fixed token cap; pass a positive integer `maxTokens` only to cap output below the model's limit.
+Pass an `AbortSignal` (such as `AbortSignal.timeout(ms)`) to cancel sooner; cancellation rejects immediately and halts the fallback chain.
 
-Missing state, invalid configuration, unrepaired invalid output, or unrecovered provider failures return no result. Calls started on `decisionModel` reject with a [`DecisionError`](#errors) naming that model. Re-check cancellation and admission rules after awaiting the decision.
+`generateStructuredOutput()` sets no default output token cap; pass optional `maxTokens` as a positive safe integer up to `2,147,483,647` to cap output below the model's limit.
 
-Provider errors report static reasons without raw response bodies or credentials. Classifier failures (including refusals or unrecognized or missing options) and chat provider errors advance to the next candidate. Ordinary text without a valid tool call gets up to three repairs before advancing; Atomic does not inspect text wording to guess whether it is a refusal.
+Provider errors report static reasons without raw response bodies or credentials. Classifier failures and chat provider errors advance to the next fallback candidate; ordinary chat text without a valid tool call gets up to 3 repair attempts before advancing.

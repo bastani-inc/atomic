@@ -1,11 +1,8 @@
 ---
-title: Writing extensions
-description: Write an extension, manage its state, and register custom tools.
+title: "Write an extension"
+sidebarTitle: "Write an extension"
+description: "Structure an extension, persist state across reloads and restarts, register custom tools, and customize terminal rendering."
 ---
-
-# Writing extensions
-
-## Writing an extension
 
 An extension exports a default factory function that receives `ExtensionAPI`. The parameter can have any name; older extensions and examples call it `pi`. The factory can be synchronous or asynchronous:
 
@@ -15,11 +12,10 @@ import type { ExtensionAPI } from "@bastani/atomic";
 export default function (atomic: ExtensionAPI) {
   // Subscribe to events
   atomic.on("event_name", async (event, ctx) => {
-    // ctx.ui for user interaction
     const ok = await ctx.ui.confirm("Title", "Are you sure?");
     ctx.ui.notify("Done!", "info");
-    ctx.ui.setStatus("my-ext", "Processing...");  // Footer status
-    ctx.ui.setWidget("my-ext", ["Line 1", "Line 2"]);  // Widget above editor (default)
+    ctx.ui.setStatus("my-ext", "Processing...");      // Footer status
+    ctx.ui.setWidget("my-ext", ["Line 1", "Line 2"]); // Widget above editor (default)
   });
 
   // Register tools, commands, shortcuts, flags
@@ -30,17 +26,17 @@ export default function (atomic: ExtensionAPI) {
 }
 ```
 
-Editable extensions support TypeScript without compilation. `/reload` picks up edits to an extension or its imported helpers; unchanged modules may retain module-scoped state.
+Editable extensions support TypeScript without a separate build step. Running `/reload` picks up edits to your extension and local modules it imports; unchanged modules may retain module-scoped state.
 
-Imports from Atomic's supplied core packages keep the running host's classes and shared state across `/reload`, including on Windows. The supported `@earendil-works/pi-coding-agent` compatibility import shares those exports with `@bastani/atomic`, so class comparisons and `instanceof` checks work across both names after reload. Edits to your extension and its imported local helpers still take effect; restart Atomic after updating Atomic itself.
+Imports from Atomic's bundled core packages keep the running host's classes and shared state across `/reload`, including on Windows. The `@earendil-works/pi-coding-agent` compatibility import shares those exports with `@bastani/atomic`, so `instanceof` checks work across both names after reload. Restart Atomic after updating Atomic itself.
 
-In Bun single-file builds, installed builtin bundles retain module-scoped state across `/reload`. Restart Atomic to reload shipped code.
+In Bun single-file builds, bundled built-in packages keep their module-scoped state across `/reload`. Restart Atomic to reload shipped code.
 
-If the factory returns a `Promise`, Atomic awaits it before continuing startup. That means async initialization completes before `session_start`, before `resources_discover`, and before provider registrations queued via `atomic.registerProvider()` are flushed.
+If your factory returns a `Promise`, Atomic awaits it before continuing startup. Async initialization completes before `session_start`, before `resources_discover`, and before provider registrations queued with `atomic.registerProvider()` are flushed.
 
-### Async factory functions
+## Async factory functions
 
-Use an async factory for one-time startup work such as fetching remote configuration or dynamically discovering available models.
+Use an async factory for one-time startup work such as fetching remote configuration or discovering available models:
 
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
@@ -73,26 +69,26 @@ export default async function (atomic: ExtensionAPI) {
 }
 ```
 
-This pattern makes the fetched models available during normal startup and to `atomic --list-models`.
+Models registered here become available during normal startup and in `atomic --list-models`.
 
-### Long-lived resources and shutdown
+## Long-lived resources and shutdown
 
-Extension factories may run in invocations that never start a session, such as metadata commands or early configuration checks. Do not start background resources such as processes, sockets, file watchers, or timers from the factory.
+Extension factories can run during commands that never start a full session, such as metadata commands or early configuration checks. Do not start child processes, sockets, file watchers, or timers directly inside the factory function.
 
-Defer background resource startup until `session_start` or the command/tool/event that needs the resource. Register an idempotent `session_shutdown` handler to close any session-scoped resources you start.
+Start background resources inside `session_start` or inside the command, tool, or event handler that needs them. Register an idempotent `session_shutdown` handler to close every resource you open.
 
-### Extension styles
+## Extension layouts
 
-**Single file.** Simplest layout for small extensions:
+**Single file.** Best for small extensions:
 
-```
+```text
 ~/.atomic/agent/extensions/
 └── my-extension.ts
 ```
 
-**Directory with `index.ts`.** Multi-file extensions:
+**Directory with `index.ts`.** Best for multi-file extensions:
 
-```
+```text
 ~/.atomic/agent/extensions/
 └── my-extension/
     ├── index.ts        # Entry point (exports default function)
@@ -100,9 +96,9 @@ Defer background resource startup until `session_start` or the command/tool/even
     └── utils.ts        # Helper module
 ```
 
-**Package with dependencies.** Extensions that need npm packages:
+**Package with dependencies.** Best for extensions that need npm packages:
 
-```
+```text
 ~/.atomic/agent/extensions/
 └── my-extension/
     ├── package.json    # Declares dependencies and entry points
@@ -113,7 +109,6 @@ Defer background resource startup until `session_start` or the command/tool/even
 ```
 
 ```json
-// package.json
 {
   "name": "my-extension",
   "dependencies": {
@@ -126,25 +121,25 @@ Defer background resource startup until `session_start` or the command/tool/even
 }
 ```
 
-The manifest key is the configured Atomic app name (`atomic`), not the extension package's own `"name"` field. The legacy `pi` key is still accepted as a compatibility shim. Run `npm install` (or your package manager's install command) in the extension directory, and imports from `node_modules/` resolve automatically.
+Use `"atomic"` as the manifest key (legacy `"pi"` is also accepted). Run `npm install` (or your package manager's install command) in the extension directory so imports from `node_modules/` resolve automatically.
 
 ## State management
 
 Choose the store that matches the lifetime you need:
 
-- **Tool result `details`.** Reconstructs across `/branch` and `/resume` from the transcript.
-- **`atomic.appendEntry()`.** Durable custom entries that survive process restart. They do not enter model context.
-- **`sessionScopedExtensionState()`.** In-memory objects that survive `/reload` for the current process. They do not survive process restart.
+- **Tool result `details`.** Rebuilds state across `/branch`, `/tree`, and `/resume` from the conversation transcript.
+- **`atomic.appendEntry()`.** Stores durable custom entries that survive process restarts without entering model context.
+- **`sessionScopedExtensionState()`.** Keeps live in-memory objects alive across `/reload` within the current process (lost on process restart).
 
-In Bun single-file builds, an editable file extension whose imported graph is unchanged can reuse its evaluated factory, so its module-scoped variables may survive `/reload`. An edit anywhere in that graph re-evaluates its modules and resets those singletons. Installed built-in bundles keep their evaluated module state across `/reload`; restart Atomic to reload shipped code.
+In Bun single-file builds, an editable file extension whose imported files have not changed can reuse its evaluated factory and keep module-scoped variables across `/reload`. Editing any file in that import graph re-evaluates its modules and resets those variables.
 
-Extensions with state that must follow conversation branches should store it in tool result `details`:
+Extensions whose state must follow conversation branches should store a snapshot in tool result `details`:
 
 ```typescript
 export default function (atomic: ExtensionAPI) {
   let items: string[] = [];
 
-  // Reconstruct state from session
+  // Reconstruct state from the active branch
   atomic.on("session_start", async (_event, ctx) => {
     items = [];
     for (const entry of ctx.sessionManager.getBranch()) {
@@ -159,11 +154,11 @@ export default function (atomic: ExtensionAPI) {
   atomic.registerTool({
     name: "my_tool",
     // ...
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
+    async execute(_toolCallId, _params) {
       items.push("new item");
       return {
         content: [{ type: "text", text: "Added" }],
-        details: { items: [...items] },  // Store for reconstruction
+        details: { items: [...items] },
       };
     },
   });
@@ -172,7 +167,7 @@ export default function (atomic: ExtensionAPI) {
 
 ### Session-scoped in-memory state
 
-Import `sessionScopedExtensionState` from `@bastani/atomic` when an extension must keep a live object across `/reload`, such as a registry, abort controller, connection pool, or another handle that cannot be rebuilt from the transcript.
+Import `sessionScopedExtensionState` from `@bastani/atomic` when an extension must keep a live object across `/reload`, such as a registry, abort controller, connection pool, or handle that cannot be rebuilt from the transcript:
 
 ```typescript
 import { sessionScopedExtensionState, type ExtensionAPI } from "@bastani/atomic";
@@ -182,7 +177,7 @@ interface CounterState {
 }
 
 export default function (atomic: ExtensionAPI) {
-  const state = sessionScopedExtensionState(atomic.events, "my-extension:counter:v1", () => ({
+  const state = sessionScopedExtensionState<CounterState>(atomic.events, "my-extension:counter:v1", () => ({
     count: 0,
   }));
 
@@ -196,37 +191,33 @@ export default function (atomic: ExtensionAPI) {
 }
 ```
 
-**Required scope.** Pass the extension's `atomic.events` facade (or the session `EventBus` itself). The host resolves that facade to the canonical session bus, so every load generation of one session re-binds to the same object. Two in-process sessions with distinct buses stay isolated. Do not pass an arbitrary object: an unregistered scope is treated as its own bus and will not re-bind after reload.
-
-**Session-wide key namespace.** Keys are not automatically namespaced by extension. Two extensions that pass the same key on the same session receive the first extension's object, and the later factory is not called. Prefix every key with a stable extension identity.
-
-**Key versioning.** Append a version suffix and bump it when the stored shape changes, for example from `"my-extension:counter:v1"` to `"my-extension:counter:v2"`. The new key ignores the incompatible predecessor instead of reusing it under a new type.
-
-**Reload behavior.** `/reload` builds a new `atomic.events` facade that still forwards to the same bus. Calling `sessionScopedExtensionState` again with the same namespaced key returns the existing object without invoking `create`.
-
-The reload transaction does not clone this object or roll back mutations made in factory code. Keep factory setup idempotent, and mutate durable state only after the new generation starts when failed reloads must not affect it. Entries live as long as that bus and are not written to the session store; use `atomic.appendEntry()` when data must survive process restart.
-
-**Shutdown.** `session_shutdown` still runs for resources you opened. Close sockets, watchers, or timers there; the next `session_start` or first use can recreate them inside the same session-scoped object.
+- **Required scope.** Pass the extension's `atomic.events` object (or the session `EventBus` directly). Every `/reload` of the same session reconnects to the same stored object, while separate sessions stay independent. Do not pass a random object; an unregistered scope will not reconnect after reload.
+- **Session-wide key namespace.** Keys are shared across all extensions in the session. Two extensions passing the same key receive the first extension's object, and the second factory does not run. Prefix every key with a unique extension identifier.
+- **Key versioning.** Append a version suffix and bump it when the stored shape changes (for example `"my-extension:counter:v1"` to `"my-extension:counter:v2"`). The new key ignores older incompatible state.
+- **Reload behavior.** `/reload` creates a new `atomic.events` wrapper backed by the same session bus. Calling `sessionScopedExtensionState()` with the same key returns the existing object without running `create` again. Failed reloads do not undo mutations made to this object during factory setup. Keep factory setup idempotent and avoid mutating shared state until `session_start`. Use `atomic.appendEntry()` when data must survive a full restart.
+- **Shutdown.** `session_shutdown` still runs for resources you opened. Close sockets, watchers, or timers there; the next `session_start` or first use can recreate them inside the same session-scoped object.
 
 ## Custom tools
 
-Register tools the LLM can call via `atomic.registerTool()`. Tools appear in the system prompt and can define custom rendering.
+Register tools the model can call with `atomic.registerTool()`. Use the `defineTool(tool)` helper from `@bastani/atomic` when storing tool definitions in variables or arrays so TypeScript preserves parameter type inference.
 
-Use `promptSnippet` for a short one-line entry in the `Available tools` section of the default system prompt. If omitted, custom tools are left out of that section.
+Tool name collisions follow two rules:
 
-Use `promptGuidelines` to add tool-specific bullets to the default system prompt `Guidelines` section. These bullets are included only while the tool is active (for example, after `atomic.setActiveTools([...])`).
+- Within a single extension, registering the same tool name twice keeps the last registration and emits a warning.
+- Across multiple extensions, the **first** loaded extension wins. The mandatory bundled `intercom` tool cannot be shadowed.
 
-**Important:** `promptGuidelines` bullets are appended flat to the `Guidelines` section with no tool name prefix or grouping. Each guideline must name the tool it refers to. Avoid "Use this tool when..." because the LLM cannot tell which tool "this" means; write "Use my_tool when..." instead.
+Prompt metadata options:
 
-Some models include the @ prefix in tool path arguments. Built-in tools strip a leading @ before resolving paths. If your custom tool accepts a path, normalize a leading @ as well.
+- **`promptSnippet`:** Adds a short one-line entry in the `Available tools` section of the default system prompt. If omitted, the tool is left out of that list.
+- **`promptGuidelines`:** Adds tool-specific bullets to the default system prompt `Guidelines` section while the tool is active. Because guidelines are appended flat without grouping, always name the tool explicitly (write `"Use my_tool when..."`, not `"Use this tool when..."`).
 
-If your custom tool mutates files, use `withFileMutationQueue()` so it participates in the same per-file queue as built-in `edit` and `write`. This matters because tool calls run in parallel by default. Without the queue, two tools can read the same old file contents, compute different updates, and then whichever write lands last overwrites the other.
+Some models include a leading `@` prefix in file path arguments. Built-in tools strip a leading `@` before resolving paths; normalize it in your custom path-taking tools as well.
 
-Example failure case: your custom tool edits `foo.ts` while built-in `edit` also changes `foo.ts` in the same assistant turn. If your tool does not participate in the queue, both can read the original `foo.ts`, apply separate changes, and one of those changes is lost.
+### Serializing file mutations
 
-Pass the real target file path to `withFileMutationQueue()`, not the raw user argument. Resolve it to an absolute path first, relative to `ctx.cwd` or your tool's working directory. For existing files, the helper canonicalizes through `realpath()`, so symlink aliases for the same file share one queue. For new files, it falls back to the resolved absolute path because there is nothing to `realpath()` yet.
+If your tool edits files, wrap the full read-modify-write operation in `withFileMutationQueue()` so it shares the same per-file lock as built-in `edit` and `write`. Because tool calls run concurrently by default, unqueued tools can read stale contents and overwrite each other's changes.
 
-Queue the entire mutation window on that target path. That includes read-modify-write logic, not just the final write.
+Resolve the target path to an absolute path relative to `ctx.cwd` before calling `withFileMutationQueue()`. For existing files, Atomic canonicalizes the path with `realpath()` so symlinks share the same queue; for new files, it uses the resolved absolute path. If your callback throws, the queue releases automatically so waiting mutations can proceed.
 
 ```typescript
 import { withFileMutationQueue } from "@bastani/atomic";
@@ -252,25 +243,27 @@ async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 
 ### Tool definition
 
-`parameters` is required, including for no-argument tools (use `Type.Object({})`). Registration rejects missing, null, array, and primitive schema values before they can break a provider request. This checks the schema container, not its JSON Schema `type`: object-valued union and non-object-type schemas remain accepted and unchanged.
+`parameters` is required, including for no-argument tools (`Type.Object({})`). Registration rejects missing, null, array, and primitive values before they can break provider requests.
 
-Registration is not provider validation. If a root schema is an `anyOf` or `oneOf` union, give every branch an explicit `type: "object"`; xAI rejects a non-object root branch with `tool parameter root must be an object type` before the model can call the tool. Prefer a plain `Type.Object` root with optional properties when a union is not needed.
+If a root schema is an `anyOf` or `oneOf` union, give every branch an explicit `type: "object"` (xAI rejects non-object root branches with `tool parameter root must be an object type`). Prefer a plain `Type.Object` root with optional properties when a union is unnecessary.
+
+Use `StringEnum` from `@bastani/atomic` (also exported from `@bastani/atomic-ai`) for string enums instead of `Type.Union` with `Type.Literal`, which Google's API rejects.
 
 ```typescript
 import { Type } from "typebox";
-import { StringEnum } from "@bastani/atomic";
-import { Text } from "@bastani/atomic-tui";
+import { defineTool, StringEnum } from "@bastani/atomic";
 
-atomic.registerTool({
+const myTool = defineTool({
   name: "my_tool",
   label: "My Tool",
-  description: "What this tool does (shown to LLM)",
+  description: "What this tool does (shown to the model)",
   promptSnippet: "List or add items in the project todo list",
   promptGuidelines: [
-    "Use my_tool for todo planning instead of direct file edits when the user asks for a task list."
+    "Use my_tool for todo planning instead of direct file edits when the user asks for a task list.",
   ],
+  maxResultSizeChars: 40_000, // Per-tool cap for persisted model-visible output (Infinity opts out)
   parameters: Type.Object({
-    action: StringEnum(["list", "add"] as const),  // Google-compatible TypeBox string enum
+    action: StringEnum(["list", "add"] as const),
     text: Type.Optional(Type.String()),
   }),
   prepareArguments(args) {
@@ -282,50 +275,43 @@ atomic.registerTool({
     return args;
   },
 
-  async execute(toolCallId, params, signal, onUpdate, ctx) {
-    // Check for cancellation
+  async execute(_toolCallId, params, signal, onUpdate) {
     if (signal?.aborted) {
       return { content: [{ type: "text", text: "Cancelled" }] };
     }
 
-    // Stream progress updates
     onUpdate?.({
       content: [{ type: "text", text: "Working..." }],
       details: { progress: 50 },
     });
 
-    // Run commands via atomic.exec (captured from extension closure)
     const result = await atomic.exec("some-command", [], { signal });
 
-    // Return result
     return {
-      content: [{ type: "text", text: "Done" }],  // Sent to LLM
-      details: { data: result },                   // For rendering & state
-      // Optional: stop after this tool batch when every finalized tool result
-      // in the batch also returns terminate: true.
+      content: [{ type: "text", text: "Done" }], // Sent to model
+      details: { data: result },                  // For rendering and state
+      // Optional: end the turn without a follow-up model call when every
+      // finalized tool result in the batch also returns terminate: true.
       terminate: true,
     };
   },
 
-  // Optional: Custom rendering
-  renderCall(args, theme, context) { ... },
-  renderResult(result, options, theme, context) { ... },
+  renderCall(args, theme, context) { /* optional */ },
+  renderResult(result, options, theme, context) { /* optional */ },
 });
+
+atomic.registerTool(myTool);
 ```
 
-**Signaling errors.** Throw from `execute` to report an execution failure. When a failure also carries useful data, return an error result with `isError: true`, `content`, and optional `structuredContent`.
+Additional `ToolDefinition` fields:
 
-Return `terminate: true` from `execute()` to skip the automatic follow-up model call when every finalized result in the tool batch also terminates.
-
-For a schema-backed decision, use `createStructuredOutputTool({ schema, name })`. Atomic does not register `structured_output` in normal sessions by default. The calling model supplies `instructions`, nonempty named `state`, and optional `model` and `fallbackModels`. The tool resolves those exact IDs through the session model registry, infers a value matching `schema`, and returns that value as terminating JSON rather than treating the calling model's arguments as the result.
-
-Omit `model` to use the current session chat model; explicit fallbacks run next, and the current chat model is the terminal fallback. A registered classifier runs only for a finite Choice schema and is skipped for incompatible schemas.
-
-Provider errors (including refusals) advance to the next model, and plain-text responses without the required result are repaired up to three times before advancing. Cancellation stops the call, and a wall-clock deadline covering every repair attempt, retry, and fallback defaults to `httpIdleTimeoutMs` (`createStructuredOutputTool({ timeoutMs })` overrides it). Include a custom name such as `final_decision` in any explicit tool allowlist.
+- **`maxResultSizeChars?: number`:** Sets a per-tool character cap for model-visible result persistence. Pass `Infinity` to opt out for self-bounded tools.
+- **`prepareArguments(args)`:** Optional normalizer that runs before schema validation and `execute()`. Keep the public schema clean instead of advertising deprecated fields.
+- **`terminate: true`:** Return on a tool result to skip the automatic follow-up model call when every finalized result in the batch also sets `terminate: true`.
+- **Signaling errors:** Throw an `Error` from `execute()` to report a failure. When a failure also carries structured data, return `{ isError: true, content, structuredContent }`.
 
 ```typescript
-// Correct: throw to signal an error
-async execute(toolCallId, params) {
+async execute(_toolCallId, params) {
   if (!isValid(params.input)) {
     throw new Error(`Invalid input: ${params.input}`);
   }
@@ -333,11 +319,23 @@ async execute(toolCallId, params) {
 }
 ```
 
-**Important:** Use `StringEnum` from `@bastani/atomic` (also exported from `@bastani/atomic-ai`) for string enums. It produces a Google-compatible schema that composes with Atomic's TypeBox types; `Type.Union` with `Type.Literal` does not work with Google's API.
+#### Structured output tool helper
+
+For a schema-backed decision, use `createStructuredOutputTool({ schema, name?, capture?, output?, timeoutMs? })`. Atomic does not register `structured_output` in normal sessions by default. Include any custom `name` (such as `"final_decision"`) in explicit tool allowlists.
+
+- **`capture`:** Pass `createStructuredOutputCapture()` to inspect `{ called, value }` in memory after the call finishes.
+- **`output`:** Pass `{ outputPath }` to write the validated JSON result to disk with `0o600` file permissions.
+- **`timeoutMs`:** Overrides the default wall-clock deadline (`httpIdleTimeoutMs`) covering every repair attempt, transport retry, and model fallback.
+
+When the model calls the tool, it supplies `instructions`, nonempty named `state`, and optional `model` and `fallbackModels`:
+
+- Omitting `model` uses the session's configured **`decisionModel`** (via `ctx.getDecisionModel()`, which defaults to the current chat model when unset or `""`), then any explicit `fallbackModels`, and finally the current chat model as the terminal fallback.
+- A registered classifier runs only for a finite Choice schema and is skipped for incompatible schemas.
+- Provider errors (including refusals) advance to the next model. Plain-text responses without a valid structured value are repaired up to three times before advancing. Cancellation stops the call immediately.
 
 #### Constrained sampling
 
-`ToolDefinition.constrainedSampling` is preserved for extension tools, SDK `customTools`, wrappers, and isolated execution. It accepts `false` or the exported `ConstrainedSamplingConfig`:
+`ToolDefinition.constrainedSampling` is preserved for extension tools, SDK `customTools`, wrappers, and default interactive mode. It accepts `false` or a `ConstrainedSamplingConfig`:
 
 ```typescript
 atomic.registerTool({
@@ -352,53 +350,27 @@ atomic.registerTool({
 });
 ```
 
-Exact modes:
+Supported values:
 
-- `{ type: "json_schema", strict: "prefer" }` requests strict provider enforcement and falls back to ordinary tool calling when unavailable.
-- `{ type: "json_schema", strict: "require" }` fails the request rather than silently weakening the constraint.
-- `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }` requests an OpenAI custom grammar tool; Lark wins when both non-empty variants are present.
-- `false` explicitly opts out. Its runtime effect matches omission, while public tool inspection preserves `false` as an explicit opt-out value.
+- `{ type: "json_schema", strict: "prefer" }`: requests strict provider enforcement and falls back to ordinary tool calling when unavailable.
+- `{ type: "json_schema", strict: "require" }`: fails the request instead of weakening the constraint.
+- `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }`: requests an OpenAI custom grammar tool (Lark wins when both non-empty variants are set).
+- `false`: explicitly opts out while preserving `false` during public tool inspection.
 
-If Anthropic rejects a request because strict tools exceed its grammar-size, tool-count, or union-parameter limits, Atomic retries once with `prefer` tools using their ordinary schemas. Tools marked `require` remain strict. A response that has already started streaming is not retried this way.
+If Anthropic rejects a request because strict tools exceed its grammar-size, tool-count, or union-parameter limits, Atomic retries once with `prefer` tools using ordinary schemas while keeping `require` tools strict (never retried after streaming starts).
 
-Built-in `read`, `edit`, `write`, `bash`, and its Windows PowerShell variant request strict JSON-schema sampling with `prefer` by default. This is a provider hint, not a schema rewrite or a sandbox; unsupported providers keep ordinary tool calling. Other experimental tool hints still follow the experimental environment flag.
+Built-in `read`, `edit`, `write`, `bash`, and `powershell` default to `{ type: "json_schema", strict: "prefer" }`. Grammar tools require an object schema with one required string property and apply only when model metadata advertises `supportsOpenAIGrammarTools` (alias `supportsGrammarTools`). See [Custom models](/models/reference#constrained-tool-sampling) and [RPC](/rpc/protocol#get_available_models).
 
-Grammar tools require an object schema with exactly one required string property. They are emitted only when model metadata advertises `supportsOpenAIGrammarTools` (also exposed as `supportsGrammarTools`); otherwise provider handling falls back to the normal JSON-schema path. Older OpenAI models and gateways that rewrite schemas cannot honor custom grammar tools. Typed RPC clients receive these claims through optional `ModelInfo.compat`. See [Custom models](/models/reference#constrained-tool-sampling) and [RPC](/rpc/protocol#get_available_models).
+#### Concurrency, sequential execution, and detachable waits
 
-**Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it only when a custom tool must normalize arguments before validation. Return the object you want validated against `parameters`, keep the public schema strict, and avoid advertising deprecated fields.
+When one assistant message contains multiple tool calls, Atomic runs them concurrently by default unless configured otherwise:
 
-```typescript
-atomic.registerTool({
-  name: "deploy_plan",
-  label: "Deploy Plan",
-  description: "Create a deployment plan for one target environment",
-  parameters: Type.Object({
-    environment: Type.String(),
-    dryRun: Type.Optional(Type.Boolean()),
-  }),
-  prepareArguments(args) {
-    if (!args || typeof args !== "object") return args;
-    const input = args as { env?: unknown; environment?: unknown; dryRun?: unknown };
-    if (typeof input.environment === "string") return args;
-    if (typeof input.env !== "string") return args;
-    return { environment: input.env, dryRun: input.dryRun };
-  },
-  async execute(toolCallId, params) {
-    return {
-      content: [{ type: "text", text: `Planning deploy to ${params.environment}` }],
-      details: {},
-    };
-  },
-});
-```
+- **`concurrency: "shared"` (default):** May overlap other shared calls, starting only after any earlier `"exclusive"` call finishes.
+- **`concurrency: "exclusive"`:** Waits for every earlier call in the message to finish, and blocks later calls until it completes.
+- **`concurrency: (args) => "shared" | "exclusive"`:** Decides per call. If the function throws, the call runs exclusively.
+- **`executionMode: "sequential" | "parallel"`:** Setting `executionMode: "sequential"` forces every call in the message to execute strictly one at a time in order (see `examples/extensions/tic-tac-toe.ts`).
 
-**Call ordering:** when one assistant message contains several tool calls, Atomic starts them in message order and runs them concurrently unless a tool declares `concurrency`:
-
-- `"shared"` (default): may overlap other shared calls, but starts only after the latest earlier `"exclusive"` call finishes.
-- `"exclusive"`: starts only after every earlier call in the message finishes, and later calls wait for it.
-- A function `(args) => "shared" | "exclusive"` decides per call. If it throws, the call runs exclusively.
-
-Built-in `edit`, `write`, `todo`, and `ask_user_question` are exclusive, and `bash` is exclusive when it runs with `pty: true`. Other `bash` calls are shared, so a later call in the same message can run before a shell command's file changes land. Declare `"exclusive"` for a tool that changes state later calls depend on. `executionMode: "sequential"` still runs the whole message one call at a time.
+Built-in `edit`, `write`, `todo`, and `ask_user_question` are exclusive, and `bash` is exclusive when `pty: true`. Other `bash` calls are shared, so declare `"exclusive"` on custom tools that modify state later calls depend on:
 
 ```typescript
 atomic.registerTool({
@@ -407,29 +379,31 @@ atomic.registerTool({
   description: "Apply one database migration",
   parameters: Type.Object({ name: Type.String(), dryRun: Type.Optional(Type.Boolean()) }),
   concurrency: (args) => (args.dryRun === true ? "shared" : "exclusive"),
-  async execute(toolCallId, params) {
+  async execute(_toolCallId, params) {
     return { content: [{ type: "text", text: `Applied ${params.name}` }], details: {} };
   },
 });
 ```
 
-**Long waits:** a tool whose calls only wait for something outside the session, such as a CI run or a deployment, can declare `detachable: true`, or a function `(args) => boolean` that decides per call. In a session whose host releases waiting agents, such as a background subagent, a call still running after the host's delay continues without the session, the session is released, and the call's result wakes it later.
+**Detachable long waits:** A tool that only waits on external work (such as a CI job or deployment) can set `detachable: true` or `(args) => boolean`, plus optional `detachmentRequiresReady?: boolean`. When running inside a background subagent that suspends while waiting, a call still running after the delay continues independently, releases the subagent, and wakes it when the result arrives.
 
-After a restart such a call may start again with the same ID and arguments, so declare `detachable` only when that is safe. Built-in `bash` detaches only `{ action: "wait" }` calls without a `budgetMs`.
+Once a call detaches, `onUpdate` progress updates are dropped and `ctx` only answers `cwd`. Because a restarted session can re-run a detached call with the same ID and arguments, mark a tool `detachable` only when re-running it is safe. Built-in `bash` detaches only `{ action: "wait" }` calls without `budgetMs`.
 
 ### Structured results and nested tools
 
-Declare `outputSchema` when a tool returns machine-readable data, and return a matching `structuredContent` alongside model-facing `content`. Script callers receive the structured value; tools without an output schema return text to scripts. A `tool_result` handler that redacts text must also replace `structuredContent`; replacing only `content` drops the structured value to prevent it leaking through another path.
+Declare `outputSchema` when a tool returns machine-readable data, and return a matching `structuredContent` alongside model-facing `content`. Script callers receive `structuredContent`; tools without an `outputSchema` return text to scripts. A `tool_result` handler that redacts text must also replace `structuredContent`; replacing only `content` drops `structuredContent` so redacted data cannot leak.
 
-Inside `execute`, the context is an `ExtensionToolContext`. `ctx.tools` lists permitted callable tools, and `ctx.executeTool(name, args, { signal, onUpdate })` returns an `AgentToolCallOutcome`. Nested calls use the ordinary argument preparation, schema validation, permission hooks, and result hooks. They cannot bypass session allowlists, exclusions, or `model-only` exposure.
+Inside `execute()`, `ctx` is an `ExtensionToolContext`:
 
-If your orchestrator invokes a tool with `concurrency: "exclusive"`, give the orchestrator `concurrency: "exclusive"` too. A shared orchestrator cannot safely upgrade its nested call to exclusive access and receives an error before that target executes. File mutation queues remain required for read-modify-write operations.
+- `ctx.tools` lists callable tools allowed by the session.
+- `ctx.executeTool(name, args, { signal, onUpdate })` invokes another tool through the normal argument preparation, validation, permission hooks, and result hooks, returning an `AgentToolCallOutcome`. Nested calls cannot bypass session allowlists, exclusions, or `model-only` exposure.
+- If your orchestrator calls a tool with `concurrency: "exclusive"`, mark the orchestrator `concurrency: "exclusive"` as well. A shared tool cannot upgrade a nested call to exclusive access and receives an error before the target runs.
 
-Nested execution events and the nested tool's `ctx` include `parentToolCallId`. Nested calls do not create separate conversation messages; the parent reports their results. Its final result may carry bounded `nestedCalls` metadata for exports and file-operation tracking. Report only the parent's own usage: nested usage is aggregated automatically, including deeper calls.
+Nested execution events and the nested tool's `ctx` include `parentToolCallId`. Nested calls do not create separate transcript messages; the parent reports their outcomes and may attach bounded `nestedCalls` metadata. Report only the parent's own usage because nested usage aggregates automatically.
 
 ### Tool exposure
 
-`ToolDefinition.exposure` controls whether a tool is declared to the model or callable by another tool. Omission means `direct`:
+`ToolDefinition.exposure` controls whether a tool is declared to the model or callable from another tool. Omitting it defaults to `"direct"`:
 
 | Exposure | Model declaration | Callable from another tool |
 | --- | --- | --- |
@@ -439,76 +413,62 @@ Nested execution events and the nested tool's `ctx` include `parentToolCallId`. 
 | `deferred` | Only if explicitly activated | When registered and permitted by the session |
 | `hidden` | Never | Never |
 
-Use `model-only` for interactive or orchestration tools that should not be called from scripts. `codemode` tools are advertised in the codemode tool's catalog; `deferred` tools are discoverable without occupying that inline catalog. Session allowlists and exclusions remain authoritative. Exposure cannot restore a suppressed tool.
+- Use `model-only` for interactive or orchestration tools that scripts should not invoke freely. You can expose a restricted subset to scripts with `scriptAccess: { description, outputSchema?, refuse(params) }`. `refuse` runs after validation and before permission hooks, returning an error reason string or `undefined` to allow execution. Direct model calls are unaffected.
+- `codemode` tools appear in the codemode tool catalog; `deferred` tools stay discoverable without occupying the inline catalog. Session allowlists and exclusions always take precedence.
+- `direct` and `model-only` tools activate by default. Set `defaultActive: false` to keep a tool inactive until activated with `atomic.setActiveTools()`.
+- `namespace: { name, description, instructions? }` groups related tools and optional namespace-level guidance.
+- Optional `annotations` carry advisory hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) that do not enforce permissions.
+- Set `writesFiles: true` on tools that modify files so turns calling them record a [worktree snapshot](/worktree-snapshots) like `bash`, `edit`, and `write`.
+- An active orchestrator tool can implement `prepareLoadout(loadout)` to adjust how tools are described or hidden from the model (returning `descriptions` or `hiddenDeclarations`). This changes model presentation only, not authorization.
 
-Scripts can launch and control their session's subagents and send exact-target Intercom messages. They cannot edit agent definitions, ask questions of other sessions, or request interactive input. Use `model-only` for tools or actions that require the model to interact directly.
-
-A `model-only` tool can offer scripts part of its actions with `scriptAccess: { description, outputSchema?, refuse(params) }`. While the tool is active, scripts see it with `description` and receive its `structuredContent` as described by `outputSchema`. `refuse` runs after schema validation and before permission hooks, and returns why a script may not make the call, or `undefined` to run the tool's own `execute`. Direct calls are unaffected. Intercom uses it to let scripts list sessions and send to exact targets.
-
-`direct` and `model-only` tools activate by default. Set `defaultActive: false` to keep a registered tool inactive until you select it with `atomic.setActiveTools()`. `namespace: { name, description }` groups related tools. Optional `annotations` carry `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; these are advisory hints, not permission checks or verified guarantees. Set `writesFiles: true` on a tool that changes files, so a turn that calls it records a [worktree snapshot](/worktree-snapshots) as `bash`, `edit`, and `write` do.
-
-An active orchestrator may implement `prepareLoadout(loadout)`. The loadout lists `declared`, `callable`, and `registered` tools and provides `getExposure(name)`, `getNamespace(name)`, and `getPromptGuidelines(name)`. Return `descriptions` to replace model-facing descriptions or `hiddenDeclarations` to hide declarations while retaining permitted nested access. This changes presentation, not authorization.
-
-### Fireworks deferred tool loading
-
-Extensions making requests directly through `@bastani/atomic-ai` can use native deferred tool loading with Fireworks `anthropic-messages` models. Keep the discovery tool in `context.tools`. After the discovery tool result, append a chronological system message with `toolsAdded` (and `toolsRemoved` if needed) containing the newly loaded tool definitions. The provider serializes deferred definitions with `defer_loading` and inserts `tool_reference` content at the load point.
-
-Name the loader `ToolSearch` or `tool_search` to keep deferred schemas out of the initial prompt prefix. Other names work, but Fireworks includes the schemas in the prefix and loses that cache benefit. Fireworks GLM models and Kimi K3 still use Chat Completions; this feature does not change their routing.
-
-This is an AI SDK capability. Atomic's `atomic.setActiveTools()` updates the active tool list and records chronological system-message tool deltas for the next request; it does not attach tool names to a tool result. See the [AI SDK deferred tool-loading guide](https://github.com/bastani-inc/atomic/blob/main/packages/ai/README.md#fireworks-deferred-tools) for details.
+**Fireworks deferred tool loading:** Extensions calling `@bastani/atomic-ai` directly can use native deferred tool loading on Fireworks `anthropic-messages` models. See [Libraries: AI](/libraries/ai) and the [AI SDK deferred tool-loading guide](https://github.com/bastani-inc/atomic/blob/main/packages/ai/README.md#fireworks-deferred-tools).
 
 ### Overriding built-in tools
 
-Extensions can override built-in tools (`read`, `bash`, `powershell`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`) by registering a tool with the same name. Interactive mode displays a warning when this happens.
+Extensions can override built-in tools (`read`, `bash`, `powershell`, `kill`, `edit`, `write`, `find`, `search`, `ls`, `ask_user_question`, `todo`) by registering a tool with the same name. Interactive mode displays a warning when a built-in tool is overridden:
 
 ```bash
 # Extension's read tool replaces built-in read
 atomic -e ./tool-override.ts
 ```
 
-Alternatively, use `--no-builtin-tools` to start without any built-in tools while keeping extension tools enabled:
+Use `--no-builtin-tools` (short flag `-nbt`) to start with no built-in tools while keeping extension tools enabled:
 
 ```bash
-# No built-in tools, only extension tools
 atomic --no-builtin-tools -e ./my-extension.ts
 ```
 
-See [examples/extensions/tool-override.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tool-override.ts) for a complete example that overrides `read` with logging and access control.
+See [examples/extensions/tool-override.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tool-override.ts) for a complete override example.
 
-**Rendering.** Built-in renderer inheritance is resolved per slot. Execution override and rendering override are independent. If your override omits `renderCall`, the built-in `renderCall` is used. If your override omits `renderResult`, the built-in `renderResult` is used. If your override omits both, the built-in renderer is used automatically for syntax highlighting, diffs, and status framing. This lets you wrap built-in tools for logging or access control without reimplementing the UI.
-
-**Prompt metadata.** `promptSnippet` and `promptGuidelines` are not inherited from the built-in tool. If your override should keep those prompt instructions, define them on the override explicitly (or reuse the exported `*ToolSystemPromptContribution` constants from `@bastani/atomic`).
-
-**Matching result shapes.** Your implementation must match the built-in tool's `details` shape because the UI and session logic depend on these fields for rendering and state tracking. Import the detail types and tool factories from `@bastani/atomic`:
-
-- `read`: `ReadToolDetails` (`createReadToolDefinition`)
-- `bash`: `BashToolDetails` (`createBashToolDefinition`)
-- `powershell`: `PowerShellToolDetails` (`createPowerShellToolDefinition`)
-- `edit`: `EditToolDetails` (`createEditToolDefinition`)
-- `find`: `FindToolDetails` (`createFindToolDefinition`)
-- `search`: `SearchToolDetails` (`createSearchToolDefinition`)
-- `ls`: `LsToolDetails` (`createLsToolDefinition`)
-- `write`, `kill`, `ask_user_question`, `todo`: `createWriteToolDefinition`, `createKillToolDefinition`, `createAskUserQuestionToolDefinition`, `createTodoToolDefinition`
+- **Renderer inheritance:** Execution and rendering overrides are independent per slot. If your override omits `renderCall` or `renderResult`, Atomic keeps the built-in renderer for that slot (syntax highlighting, diffs, and framing).
+- **Prompt metadata:** `promptSnippet` and `promptGuidelines` are not inherited from the built-in tool. Set them explicitly or reuse the exported `*ToolSystemPromptContribution` constants from `@bastani/atomic`.
+- **Matching `details` shapes:** Match the built-in tool's `details` type so built-in renderers and session logic work. Import detail types and factories from `@bastani/atomic`:
+  - `read`: `ReadToolDetails` (`createReadToolDefinition`)
+  - `bash`: `BashToolDetails` (`createBashToolDefinition`)
+  - `powershell`: `PowerShellToolDetails` (`createPowerShellToolDefinition`)
+  - `edit`: `EditToolDetails` (`createEditToolDefinition`)
+  - `find`: `FindToolDetails` (`createFindToolDefinition`)
+  - `search`: `SearchToolDetails` (`createSearchToolDefinition`)
+  - `ls`: `LsToolDetails` (`createLsToolDefinition`)
+  - `write`, `kill`, `ask_user_question`, `todo`: `createWriteToolDefinition`, `createKillToolDefinition`, `createAskUserQuestionToolDefinition`, `createTodoToolDefinition`
 
 ### Remote execution
 
-Built-in tools support pluggable operations for delegating to remote systems (SSH, containers, and sandboxes):
+Built-in tools accept pluggable operations objects for SSH, containers, and sandboxes:
 
 ```typescript
-import { createReadTool, createBashTool, type ReadOperations } from "@bastani/atomic";
+import { createReadTool, type ReadOperations } from "@bastani/atomic";
 
-// Create tool with custom operations
 const remoteRead = createReadTool(cwd, {
   operations: {
     readFile: (path) => sshExec(remote, `cat ${path}`),
     access: (path) => sshExec(remote, `test -r ${path}`).then(() => {}),
-  }
+  },
 });
 
-// Register, checking flag at execution time
 atomic.registerTool({
   ...remoteRead,
-  async execute(id, params, signal, onUpdate, _ctx) {
+  async execute(id, params, signal, onUpdate) {
     const ssh = getSshConfig();
     if (ssh) {
       const tool = createReadTool(cwd, { operations: createRemoteOps(ssh) });
@@ -519,17 +479,11 @@ atomic.registerTool({
 });
 ```
 
-`ReadOperations` may also provide `stat` and `listDir` to keep directory-tree reads on the injected filesystem. A custom read backend without both members keeps file-only remote behavior. Archive, SQLite, internal-resource, notebook, and path-variant helpers still use Atomic's local filesystem unless the tool gains dedicated remote hooks.
-
-`ReadOperations.createReadStream` is optional. When it returns the file as an async iterable of `Uint8Array` chunks (a Node `Readable` without an encoding works), `read` keeps only the lines it shows in memory, so a line range of a large file stays small, and stops consuming the stream when the call is cancelled. Without it, `read` loads the whole file through `readFile`. `:conflicts` views and notebooks still read the whole file.
-
-**Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `PowerShellOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
-
-`GrepOperations` only uses the directory check because search always scans the local filesystem with native search or `rg`. The optional `readFile` callback is deprecated and ignored, including for context lines. Existing integrations can leave it in place, but to search a remote system, override `execute()` instead.
-
-For `user_bash`, extensions can reuse Atomic's local shell backend via `createLocalBashOperations()` instead of reimplementing local process spawning, shell resolution, and process-tree termination.
-
-The bash tool also supports a spawn hook to adjust the command, cwd, or env before execution:
+- `ReadOperations` can provide `stat` and `listDir` for remote directory reads, and optional `createReadStream` (returning an async iterable of `Uint8Array` chunks, such as a Node `Readable` without encoding) so line ranges of large files stream without reading the whole file into memory. `:conflicts` views and notebooks still read the full file. Archive, SQLite, internal-resource, and notebook helpers stay local.
+- **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `PowerShellOperations`, `LsOperations`, `GrepOperations`, `FindOperations`.
+- `GrepOperations` checks only directories because search scans the local filesystem with native search or `rg`; its optional `readFile` callback is deprecated and ignored. Override `execute()` to search a remote host.
+- For `user_bash` handlers, call `createLocalBashOperations()` to reuse Atomic's local shell spawning and process-tree cleanup.
+- `createBashTool()` supports `spawnHook` to modify `command`, `cwd`, or `env` before launch:
 
 ```typescript
 import { createBashTool } from "@bastani/atomic";
@@ -543,43 +497,32 @@ const bashTool = createBashTool(cwd, {
 });
 ```
 
-See [examples/extensions/ssh.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/ssh.ts) for a complete SSH example with `--ssh` flag.
+See [examples/extensions/ssh.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/ssh.ts) for a full SSH example.
 
 ### Output truncation
 
-**Tools MUST truncate their output** to avoid overwhelming the LLM context. Large outputs can cause:
-- Context overflow errors (prompt too long)
-- Compaction failures
-- Degraded model performance
-
-The built-in limit is **50KB** (~10k tokens) and **2000 lines**, whichever is hit first. Use the exported truncation utilities:
+**Tools must truncate large output** to avoid context overflow errors, compaction failures, and degraded responses. The built-in limit is **50 KB** (~10k tokens) and **2,000 lines**, whichever comes first:
 
 ```typescript
 import {
-  truncateHead,      // Keep first N lines/bytes (good for file reads, search results)
-  truncateTail,      // Keep last N lines/bytes (good for logs, command output)
+  truncateHead,      // Keep first N lines/bytes (file reads, search results)
+  truncateTail,      // Keep last N lines/bytes (logs, command output)
   truncateLine,      // Truncate a single line to maxBytes with ellipsis
-  formatSize,        // Human-readable size (e.g., "50KB", "1.5MB")
+  formatSize,        // Human-readable size ("50KB", "1.5MB")
   DEFAULT_MAX_BYTES, // 50KB
   DEFAULT_MAX_LINES, // 2000
 } from "@bastani/atomic";
 
-async execute(toolCallId, params, signal, onUpdate, ctx) {
+async execute() {
   const output = await runCommand();
-
-  // Apply truncation
   const truncation = truncateHead(output, {
     maxLines: DEFAULT_MAX_LINES,
     maxBytes: DEFAULT_MAX_BYTES,
   });
 
   let result = truncation.content;
-
   if (truncation.truncated) {
-    // Write full output to temp file
     const tempFile = writeTempFile(output);
-
-    // Inform the LLM where to find complete output
     result += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines`;
     result += ` (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}).`;
     result += ` Full output saved to: ${tempFile}]`;
@@ -589,28 +532,23 @@ async execute(toolCallId, params, signal, onUpdate, ctx) {
 }
 ```
 
-**Key points:**
-- Use `truncateHead` for content where the beginning matters (search results, file reads)
-- Use `truncateTail` for content where the end matters (logs, command output)
-- Always inform the LLM when output is truncated and where to find the full version
-- Document the truncation limits in your tool's description
-
-See [examples/extensions/truncated-tool.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/truncated-tool.ts) for a complete example wrapping `rg` (ripgrep) with proper truncation.
+Use `truncateHead` when the beginning matters, `truncateTail` when the end matters, inform the model where full output was saved, and document truncation limits in the tool description. See [examples/extensions/truncated-tool.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/truncated-tool.ts).
 
 ### Multiple tools
 
-One extension can register multiple tools with shared state:
+One extension can register multiple tools sharing one resource and release it on `session_shutdown`:
 
 ```typescript
 export default function (atomic: ExtensionAPI) {
-  let connection = null;
+  let connection: DbConnection | null = null;
 
-  atomic.registerTool({ name: "db_connect", ... });
-  atomic.registerTool({ name: "db_query", ... });
-  atomic.registerTool({ name: "db_close", ... });
+  atomic.registerTool({ name: "db_connect", /* ... */ });
+  atomic.registerTool({ name: "db_query", /* ... */ });
+  atomic.registerTool({ name: "db_close", /* ... */ });
 
   atomic.on("session_shutdown", async () => {
     connection?.close();
+    connection = null;
   });
 }
 ```
@@ -619,13 +557,11 @@ export default function (atomic: ExtensionAPI) {
 
 Tools can provide `renderCall` and `renderResult` for custom display in the interactive transcript and HTML exports. See [TUI components](/tui) for the full component API.
 
-To choose renderers dynamically for any tool, including MCP tools in resumed sessions before their server connects, register a resolver with `atomic.registerToolRenderer((toolName, next) => renderers)`. Resolvers run in extension load order. `next()` returns the remaining resolvers' choice and then the registered tool's renderers, so `next() ?? mine` fills in only when no renderer exists. See [`atomic.registerToolRenderer()`](/extensions/api-reference#atomic-registertoolrenderer-resolver).
+To select renderers dynamically for any tool (including MCP tools in resumed sessions before their server connects), register a resolver with `atomic.registerToolRenderer((toolName, next) => renderers)`. Resolvers run in extension load order; `next()` returns the remaining resolvers' choice and then the tool's own renderers, so `next() ?? mine` acts as a fallback. See [`atomic.registerToolRenderer()`](/extensions/api-reference#atomic-registertoolrenderer-resolver).
 
-Extension `Image` components render JPEG, GIF, and WebP images on Kitty-protocol terminals automatically, just like tool result images.
+Extension `Image` components render JPEG, GIF, and WebP images on Kitty-protocol terminals automatically.
 
-By default, tool output is wrapped in a `Box` that handles padding and background. A defined `renderCall` or `renderResult` must return a `Component`. If a slot renderer is omitted, Atomic uses its fallback renderer for that slot.
-
-Set `renderShell: "self"` when the tool should draw its own shell instead of using the default `Box`. This is useful for tools that need complete control over framing or background behavior, for example large previews that must stay visually stable after the tool settles.
+By default, tool output wraps in a `Box` handling padding and background. Each defined `renderCall` or `renderResult` must return a `Component`; an omitted slot falls back to Atomic's default renderer. Set `renderShell: "self"` when the tool draws its own outer framing and background:
 
 ```typescript
 atomic.registerTool({
@@ -637,28 +573,27 @@ atomic.registerTool({
   async execute() {
     return { content: [{ type: "text", text: "ok" }], details: undefined };
   },
-  renderCall(args, theme, context) {
+  renderCall(_args, theme) {
     return new Text(theme.fg("accent", "my custom shell"), 0, 0);
   },
 });
 ```
 
-`renderCall` and `renderResult` each receive a `context` object with:
+`renderCall` and `renderResult` receive a `ToolRenderContext` object with:
 
-- `args`. The current tool call arguments.
-- `state`. Shared row-local state across `renderCall` and `renderResult`.
-- `lastComponent`. The previously returned component for that slot, if any.
-- `invalidate()`. Request a rerender of this tool row.
-- `toolCallId`, `cwd`, `executionStarted`, `argsComplete`, `isPartial`, `expanded`, `showImages`, `isError`.
-- `durationMs`. Recorded execution time of the final result; `undefined` while running, when the tool did not run, or for older saved results.
-- `outputPad`. Configured horizontal padding; renderers with `renderShell: "self"` apply it themselves.
-- `keyText()`, `keyHint()`. Format the user's configured keybindings; see [Keybinding hints](#keybinding-hints).
-
-Use `context.state` for cross-slot shared state. Keep slot-local caches on the returned component instance when you want to reuse and mutate the same component across renders.
+- `args`: current tool call arguments
+- `state`: shared row-local state across `renderCall` and `renderResult`
+- `lastComponent`: previously returned component for that slot, if any
+- `invalidate()`: request a rerender of this tool row
+- `toolCallId`, `cwd`, `executionStarted`, `argsComplete`, `isPartial`, `expanded`, `showImages`, `isError`
+- `durationMs`: recorded execution time of the final result (`undefined` while running, when skipped, or on older saved results)
+- `outputPad`: configured horizontal padding (apply it yourself when `renderShell: "self"`)
+- `keyText()`, `keyHint()`: format the user's configured keybindings (see [Keybinding hints](#keybinding-hints))
+- Optional helpers `getTaskRecord?()`, `getElapsedMs?()`, and `getToolDefinition?()` when exposed by the host
 
 #### renderCall
 
-Renders the tool call or header:
+Renders the tool call header:
 
 ```typescript
 import { Text } from "@bastani/atomic-tui";
@@ -677,10 +612,10 @@ renderCall(args, theme, context) {
 
 #### renderResult
 
-Renders the tool result or output:
+Renders the tool output:
 
 ```typescript
-renderResult(result, { expanded, isPartial }, theme, context) {
+renderResult(result, { expanded, isPartial }, theme) {
   if (isPartial) {
     return new Text(theme.fg("warning", "Processing..."), 0, 0);
   }
@@ -699,11 +634,11 @@ renderResult(result, { expanded, isPartial }, theme, context) {
 }
 ```
 
-If a slot intentionally has no visible content, return an empty `Component` such as an empty `Container`.
+Return an empty `Container` when a slot intentionally displays nothing.
 
 #### Keybinding hints
 
-Use `keyHint()` and `keyText()` from the render context to display keybinding hints that respect the user's keybinding configuration. Test `keyText()` for an empty string when a hint should disappear if the action has no effective keybinding, and add surrounding punctuation only when there is text:
+Use `context.keyHint()` and `context.keyText()` (or `options.keyHint()` and `options.keyText()` in message and entry renderers) so hints match the user's `keybindings.json`. Test `keyText()` for an empty string before adding punctuation when a keybinding may be unbound:
 
 ```typescript
 renderResult(result, { expanded }, theme, context) {
@@ -715,47 +650,29 @@ renderResult(result, { expanded }, theme, context) {
 }
 ```
 
-The same functions are available as `options.keyHint()` and `options.keyText()` in message and entry renderers:
+Do not import `keyHint()`, `keyHintIfBound()`, or `keyText()` from `@bastani/atomic` inside renderers; use the injected context methods so they read Atomic's active keybinding config. `rawKeyHint(key, description)` formats a literal key string and is safe to import.
 
-- `keyHint(keybinding, description)`. Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`, followed by the description.
-- `keyText(keybinding)`. Returns the raw configured key text for a keybinding id, or `""` if the id has no keys.
+In fullscreen mode, clicking a hint from `keyHint()` or `rawKeyHint()` sends the named key (except `app.tools.expand` inside an expandable block, which toggles that block alone). Hints embed zero-width markers that the renderer strips before writing to the terminal; use `keyText()` for plain text such as notifications or logs.
 
-In renderers, use these context methods instead of importing `keyHint()`, `keyHintIfBound()`, or `keyText()` from `@bastani/atomic`. An extension can resolve its own copy of the package (for example from its own `node_modules`), and that copy does not see Atomic's configured keybindings, so `app.*` ids format as `""`. `rawKeyHint(key, description)` formats a literal key string and is safe to import.
+To make a plain-text hint clickable, pass it through `clickableHintText()` from `@bastani/atomic-tui` (for example `clickableHintText("↑↓ select · enter choose · esc cancel")`), or use `clickableKeysHint([{ text: "a", key: "a" }], "\u00a0accept")` for bare keys. When a label contains `/`, pass extra bare keys in the second argument (for example `clickableHintText("1/2 / esc pick", ["1", "2"])`).
 
-In fullscreen mode, clicking a hint from `keyHint()` or `rawKeyHint()` presses the key it names. A hint for `app.tools.expand` drawn inside a block that a click expands (such as your tool's result or message) is the exception: clicking it toggles that block alone, as clicking anywhere else on the block does. The hint carries zero-width marks that the renderer strips before writing to the terminal; use `keyText()` for key names in plain text such as notifications or log lines.
-
-To make a plain-text hint clickable, pass it through `clickableHintText()` from `@bastani/atomic-tui`, for example `clickableHintText("↑↓ select · enter choose · esc cancel")`. Named or modified keys can be separated from their label by a tab or Unicode space; for bare keys with that spacing, use `clickableKeysHint([{ text: "a", key: "a" }], "\u00a0accept")`.
-
-In `clickableHintText("esc / a destination")`, the slash and its label run `/`. Pass `["a"]` as the second argument if `a` is another key instead (`clickableHintText("1/2 / esc pick", ["1", "2"])` marks all three keys, while a plain ratio like `1 / 2` stays text).
-
-Use namespaced keybinding ids:
-
-- Coding-agent ids use the `app.*` namespace, for example `app.tools.expand`, `app.editor.external`, `app.session.rename`.
-- Shared TUI ids use the `tui.*` namespace, for example `tui.select.confirm`, `tui.select.cancel`, `tui.input.tab`.
-
-For the complete list of keybinding ids and defaults, see [Keybindings](/keybindings). `keybindings.json` uses those same namespaced ids.
-
-Custom editors and `ctx.ui.custom()` components receive `keybindings: KeybindingsManager` as an injected argument. Use that injected manager directly instead of calling `getKeybindings()` or `setKeybindings()`.
+Use namespaced keybinding IDs (`app.*` for coding-agent actions and `tui.*` for shared TUI actions; see [Keybindings](/keybindings)). Custom editors and `ctx.ui.custom()` components receive `keybindings: KeybindingsManager` as an argument; use it directly instead of calling `getKeybindings()` or `setKeybindings()`.
 
 #### Best practices
 
-- Use `Text` with padding `(0, 0)` because the default `Box` handles padding.
-- Use `\n` for multi-line content.
-- Handle `isPartial` for streaming progress.
-- Support `expanded` for detail on demand. Ctrl+O sets it for every block, and a click on your block toggles it for that block alone.
-- Keep the default view compact.
-- Read `context.args` in `renderResult` instead of copying args into `context.state`.
-- Use `context.state` only for data that must be shared across call and result slots.
-- Reuse `context.lastComponent` when the same component instance can be updated in place.
-- Use `renderShell: "self"` only when the default boxed shell gets in the way. In self-shell mode the tool is responsible for its own framing, padding, and background.
+- Use `Text` with padding `(0, 0)` because the default `Box` adds padding.
+- Handle `isPartial` for streaming progress and `expanded` for details on demand (`Ctrl+O` toggles all blocks; clicking toggles one block).
+- Read `context.args` in `renderResult` instead of copying arguments into `context.state`.
+- Reuse `context.lastComponent` when updating the same component across renders.
+- Use `renderShell: "self"` only when you need custom outer framing, padding, and background.
 
 #### Fallback
 
-If a slot renderer is not defined or throws:
+If a slot renderer is omitted or throws:
 
 - `renderCall`: shows the tool name
 - `renderResult`: shows raw text from `content`
 
 ## Next steps
 
-Continue with [extension events](/extensions/events) to hook into the session lifecycle. Use the [Extension API reference](/extensions/api-reference) to look up context properties and registration methods.
+Continue with [Extension events](/extensions/events) to hook into the session lifecycle, or look up context properties and registration methods in the [Extension API reference](/extensions/api-reference).

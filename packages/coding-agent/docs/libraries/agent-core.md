@@ -1,10 +1,10 @@
 ---
 title: "@bastani/atomic-agent-core"
-sidebarTitle: "Agent core"
-description: "Stateful agent loop with tool execution, event streaming, steering and follow-up messages."
+sidebarTitle: "@bastani/atomic-agent-core"
+description: "Stateful agent loop with tool execution, event streaming, steering, and follow-up messages."
 ---
 
-Stateful agent with tool execution and event streaming, built on [`@bastani/atomic-ai`](/libraries/ai). Atomic's sessions run on this agent loop, and you can use it directly to build your own agent. Atomic's [SDK](/sdk) wraps it with sessions, tools, extensions, and compaction, so prefer the SDK when you want Atomic's built-in behavior.
+Stateful agent with tool execution and event streaming, built on [`@bastani/atomic-ai`](/libraries/ai) (requires Node.js 22.19+). Atomic's sessions run on this agent loop, and you can use it directly to build your own agent. Atomic's [TypeScript SDK](/sdk) wraps it with sessions, tools, extensions, and compaction, so prefer the SDK when you want Atomic's built-in behavior.
 
 ## Installation
 
@@ -71,7 +71,7 @@ The agent emits events as turns run so your interface can update incrementally.
 
 When you call `prompt("Hello")`:
 
-```
+```text
 prompt("Hello")
 ├─ agent_start
 ├─ turn_start
@@ -121,6 +121,8 @@ In parallel mode, `tool_execution_end` events follow tool completion order, whil
 Set the mode globally through `toolExecution` in `AgentOptions`, or per tool through `executionMode` on `AgentTool`. If any tool call in a batch targets a tool with `executionMode: "sequential"`, the entire batch runs sequentially regardless of the global setting.
 
 `beforeToolCall` runs after `tool_execution_start` and argument validation. It can block execution and attach `terminate: true` to the blocked result. `afterToolCall` runs after tool execution finishes and before `tool_execution_end` and the final tool result message events are emitted.
+
+**`afterToolCall` merge rules:** Overrides merge field-by-field (`content`, `details`, `structuredContent`, `isError`, `usage`, `terminate`) with no deep merge. Importantly, returning `content` **without** `structuredContent` drops the original `structuredContent` so the two cannot go out of sync; pass `structuredContent` alongside `content` if you want to keep it.
 
 Tools, blocked `beforeToolCall` results, and `afterToolCall` overrides can return `terminate: true` to skip the automatic follow-up LLM call. The loop stops early only when every finalized tool result in that batch sets `terminate: true`. Mixed batches continue normally.
 
@@ -204,7 +206,7 @@ await agent.continue(); // Uses the queued message only because the tail is assi
 | `tool_execution_update` | Tool streams progress |
 | `tool_execution_end` | Tool completes |
 
-`Agent.subscribe()` listeners are awaited in registration order. `agent_end` means no more loop events will be emitted, but `await agent.waitForIdle()` and `await agent.prompt(...)` only settle after awaited `agent_end` listeners finish.
+`Agent.subscribe()` listeners receive `(event, signal)` and are awaited in registration order. If a listener throws or rejects, the error propagates to the caller awaiting `prompt()` or `continue()`. `agent_end` means no more loop events will be emitted, and `await agent.waitForIdle()` and `await agent.prompt(...)` settle only after awaited `agent_end` listeners finish.
 
 ## Agent options
 
@@ -220,7 +222,7 @@ const agent = new Agent({
     messages: AgentMessage[],
   },
 
-  // Convert AgentMessage[] to LLM Message[] (required for custom message types)
+  // Convert AgentMessage[] to LLM Message[] (required for custom message types; must not throw or reject)
   convertToLlm: (messages) => messages.filter(...),
 
   // Transform context before convertToLlm (for pruning, compaction)
@@ -247,8 +249,18 @@ const agent = new Agent({
   // Dynamic API key resolution (for expiring OAuth tokens)
   getApiKey: async (provider) => refreshToken(),
 
+  // Optional provider transport, retry cap, and request/response inspection hooks
+  transport: "sse",
+  maxRetryDelayMs: 60_000,
+  onPayload: (payload, model) => payload,
+  onResponse: (response) => {},
+  onProviderStreamEvent: (event) => {},
+
   // Tool execution mode: "parallel" (default) or "sequential"
   toolExecution: "parallel",
+
+  // Custom error text when the model calls an unregistered tool name
+  unknownToolMessage: (toolName) => `Tool "${toolName}" is not available.`,
 
   // Preflight each tool call after args are validated. Can block execution.
   beforeToolCall: async ({ toolCall, args, context }) => {
@@ -272,6 +284,10 @@ const agent = new Agent({
     return { context: { ...context, messages: await loadCanonicalMessages(signal) } };
   },
 
+  // Optional turn-boundary hooks that update model, tools, or system messages between turns.
+  prepareNextTurn: async (signal) => undefined,
+  prepareNextTurnWithContext: async (context, signal) => undefined,
+
   // Finalize a completed turn before turn_end is emitted.
   // `continue` ensures one next request; existing tool/queue scheduling can satisfy it.
   // `end` ends this run after turn_end without polling queues.
@@ -288,6 +304,12 @@ const agent = new Agent({
   },
 });
 ```
+
+### `StreamFn`, `setDefaultStreamFn()`, and `convertToLlm` contracts
+
+- **`StreamFn` must never throw or reject** for request, model, or runtime failures. Always return an `AssistantMessageEventStream` and encode failures via stream `error` events and a final `AssistantMessage` with `stopReason: "error"` or `"aborted"` and `errorMessage`.
+- **`convertToLlm` must never throw or reject**; filter or normalize custom messages deterministically.
+- **`setDefaultStreamFn(streamFn | undefined)`:** Sets a process-wide fallback `StreamFn` used when `Agent` or `agentLoop()` callers do not supply an explicit `streamFn`.
 
 ## Agent state
 
@@ -479,6 +501,8 @@ const readFileTool: AgentTool<typeof readFileParameters> = {
   label: "Read File",  // For UI display
   description: "Read a file's contents",
   parameters: readFileParameters,
+  // Optional JSON Schema describing structuredContent returned to programmatic/codemode callers
+  outputSchema: obj({ path: str(), content: str() }),
   // Override execution mode for this tool (optional).
   // "sequential" forces the entire batch to run one at a time.
   // "parallel" allows concurrent execution with other tool calls.
@@ -494,6 +518,7 @@ const readFileTool: AgentTool<typeof readFileParameters> = {
     // when every finalized tool result in the batch does the same.
     return {
       content: [{ type: "text", text: content }],
+      structuredContent: { path: params.path, content },
       details: { path: params.path, size: content.length },
     };
   },
@@ -520,9 +545,25 @@ The agent catches thrown errors and reports them to the LLM as tool errors with 
 
 Return `terminate: true` from `execute()`, a blocked `beforeToolCall`, or `afterToolCall` to skip the follow-up LLM call after the current tool batch. This takes effect only when every finalized tool result in the batch sets `terminate: true`. The hint is runtime-only, so emitted `toolResult` transcript messages remain standard LLM tool results.
 
-### MCP and Codemode
+### MCP, Codemode, and `runToolCall()`
 
-[`@bastani/atomic-codemode`](/libraries/codemode) runs model-written JavaScript that calls tools. Wrap it as an `AgentTool` named `codemode` whose scripts call the agent's tools through `runToolCall()` so `beforeToolCall` and `afterToolCall` apply to nested calls too. See [Using with agent-core](/libraries/codemode#using-with-agent-core). Tools that wrap an MCP server's tools work the same way. Atomic's own MCP support lives in the [MCP servers](/mcp-servers) extension.
+[`@bastani/atomic-codemode`](/libraries/codemode) runs model-written JavaScript that calls tools. Wrap it as an `AgentTool` named `codemode` whose scripts invoke the agent's tools through `runToolCall(toolCall, options)` so argument validation, `beforeToolCall`, and `afterToolCall` apply to nested calls too.
+
+```typescript
+import { type AgentToolCall, type AgentToolCallOutcome, type RunToolCallOptions, runToolCall } from "@bastani/atomic-agent-core";
+
+const outcome: AgentToolCallOutcome = await runToolCall(toolCall, {
+  tools,
+  assistantMessage,
+  context,
+  beforeToolCall: agent.beforeToolCall,
+  afterToolCall: agent.afterToolCall,
+  signal,
+});
+// outcome: { result: AgentToolResult<unknown>, isError: boolean, durationMs?: number }
+```
+
+`runToolCall()` returns `{ result, isError, durationMs? }` (returning tool failures as `isError: true` rather than throwing). See [Using with agent-core](/libraries/codemode#using-with-agent-core). Tools that wrap an MCP server's tools work the same way. Atomic's own MCP support lives in the [MCP servers](/mcp-servers) extension.
 
 ## Proxy usage
 

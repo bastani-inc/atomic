@@ -1,29 +1,28 @@
 ---
-title: Session format
-description: Format-4 JSONL session schema, message and entry types, context projection, and the SessionManager API.
+title: "Session file format"
+sidebarTitle: "Session format"
+description: "Format-4 JSONL session schema, message and entry types, context rebuilding rules, and the SessionManager API."
 ---
 
-# Session file format
-
-This page describes format-4 JSONL files used by explicit JSONL stores and session exports. Sessions default to SQLite; see [Session storage](/sessions#session-storage) to choose a store.
+This reference describes format-4 JSONL files used by explicit JSONL stores and session exports. Sessions default to local SQLite; see [Session storage](/sessions#session-storage) to choose a store.
 
 In JSONL, each line is a JSON object with a `type` field. Session entries form a tree through `id` and `parentId`.
 
 ## File location
 
 ```text
-<selected-jsonl-directory>/<timestamp>_<session-id-hash>.jsonl
+<selected-jsonl-directory>/--<encoded-cwd>--/<timestamp>_<sha256-of-id>.jsonl
 ```
 
-`sessions.storage.dir` and `--session-dir` select the directory that holds JSONL files. Resume and fork selection match by session ID rather than file path. Local artifacts and tool-result files stay on the filesystem even when a session is stored in a database.
+`sessions.storage.dir` and `--session-dir` choose the root directory for JSONL files. Unless opened with `exactDirectory: true`, Atomic groups files into a per-project subdirectory named `--<encoded-cwd>--` (falling back to `--<sha256-of-cwd>--` when the encoded directory name exceeds 180 UTF-8 bytes), and names each file with its timestamp and the 64-character hex SHA-256 hash of the session ID.
+
+Resume and fork selection match by session ID rather than file path. Local artifacts and tool-result files stay on the filesystem even when a session is stored in a database.
 
 ## Deleting sessions
 
 In an explicit JSONL store, you can remove a session by deleting its `.jsonl` file. Do not delete the shared SQLite database to remove a single session.
 
 To delete individual sessions from `/resume`, select a session, press `Ctrl+D`, and confirm. Database stores delete the session record, and JSONL stores use the `trash` CLI when available.
-
-Entries in the active window keep their exact `id` and `parentId` strings. Very large IDs count toward that window's memory even when the message is short or referenced only by a compaction boundary. Atomic does not shorten IDs when copying or importing a session.
 
 ## Session version
 
@@ -37,13 +36,13 @@ Future versions, unrecognized version numbers, and structurally invalid entries 
 
 Inspect the exported TypeScript declarations in your installed packages:
 
-- `@bastani/atomic`: `SessionManager`, `SessionHeader`, `SessionEntry`, `BashExecutionMessage`, `CustomMessage`, and `BranchSummaryMessage`.
+- `@bastani/atomic`: `SessionManager`, `SessionHeader`, `SessionEntry`, `UsageEntry`, `BashExecutionMessage`, `CustomMessage`, and `BranchSummaryMessage`.
 - `@bastani/atomic-ai`: `SystemMessage`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`, `Usage`, and `StopReason`.
 - `@bastani/atomic-agent-core`: `AgentMessage`.
 
 ## Message types
 
-Session entries store `AgentMessage` objects. Understanding these shapes helps when parsing exports or building extensions.
+Session entries store `AgentMessage` objects (and `SystemMessage` checkpoints). Understanding these shapes helps when parsing exports or building extensions.
 
 ### Content blocks
 
@@ -192,6 +191,8 @@ type AgentMessage =
 // compactionSummary appears only in older session files and is not part of the active union.
 ```
 
+`SystemMessage` objects are saved inside `SessionMessageEntry` entries to track prompt and tool changes on each branch, but they are replayed into the session's system prompt and tool set separately rather than appearing in `AgentMessage`.
+
 ## Entry base
 
 All entries except `SessionHeader` extend `SessionEntryBase`:
@@ -204,6 +205,8 @@ interface SessionEntryBase {
   timestamp: string;       // ISO timestamp
 }
 ```
+
+Entries loaded in the active context window keep their exact `id` and `parentId` strings. Very large IDs count toward memory even when the message is short or referenced only by a compaction boundary. Atomic does not shorten IDs when copying or importing a session.
 
 ## Entry types
 
@@ -221,6 +224,8 @@ Sessions created from another session through `/fork`, `/clone`, or `newSession(
 {"type":"session","version":4,"id":"uuid","createdAt":"2024-12-03T14:00:00.000Z","cwd":"/path/to/project","parentSessionId":"original-session-id"}
 ```
 
+When a fork crosses into a different storage backend, Atomic also sets `parentInOtherStore: true` on the header and prints `Parent history is in its original store or is no longer available.` when the forked session reopens.
+
 Any session with `internal: true` in its header is excluded from `/resume`, `atomic -r`, `-c`, and `history://sessions`, while remaining openable by exact ID. Fresh subagent sessions and `newSession({ internal: true })` set this flag:
 
 ```json
@@ -231,7 +236,7 @@ Older workflow-stage sessions also carried `workflow` metadata (`runId`, `stageI
 
 ### SessionMessageEntry
 
-A conversation message whose `message` field holds an `AgentMessage`:
+A conversation message whose `message` field holds an `AgentMessage` or `SystemMessage`. Queued messages also store an optional `queuedMessageId` receipt ID:
 
 ```json
 {"type":"message","id":"a1b2c3d4","parentId":"prev1234","timestamp":"2024-12-03T14:00:01.000Z","message":{"role":"user","content":"Hello"}}
@@ -262,6 +267,16 @@ Recorded when the thinking or reasoning level changes:
 {"type":"thinking_level_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","thinkingLevel":"high"}
 ```
 
+### UsageEntry
+
+Records auxiliary model usage (such as prompt cache warming with `kind: "cache_warm"`) toward session totals without adding anything to LLM context:
+
+```json
+{"type":"usage","id":"u1v2w3x4","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:06:10.000Z","kind":"cache_warm","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":1200,"output":0,"cacheRead":0,"cacheWrite":1200,"totalTokens":1200,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0.0045,"total":0.0045}}}
+```
+
+Fields: `kind` (string category), `provider`, `model`, `usage` (`Usage`), and optional `note`.
+
 ### CompactionEntry
 
 Created by `/compact`, RPC `compact`, and automatic compaction. The `summary` field holds the boundary message the model sees next, either a `Context cleared` message or a `Context compacted` message with compacted text, followed by recovery instructions. `firstKeptEntryId` is `null` because no earlier message stays in context.
@@ -274,6 +289,8 @@ An entry is active only when `details.strategy` is `"verbatim-lines"`:
 
 Rebuilt context contains one visible `custom` message with `customType: "compaction"` holding `summary`. Messages appended after the boundary stay ordinary messages, and resuming requires no model request.
 
+Optional top-level fields on `CompactionEntry` include `usage` (compactor usage), `fromHook` (`true` when an extension supplied compacted text), `systemMessage` (replayed system prompt and tool checkpoint), `coveredThroughEntryId` (legacy mid-tool-call boundaries), and `recallSessionId` (legacy fork history link source).
+
 Key `details` fields include:
 
 - `form`: `"cleared"` or `"compacted"`.
@@ -281,7 +298,7 @@ Key `details` fields include:
 - `fallbackReason`: present when a configured compactor was not used and Atomic cleared context instead.
 - `history`: locates the boundary in `history://sessions/<sessionId>` with `rangeUnit: "entries"`, `entriesBefore`, `boundaryEntry`, and `totalEntries`.
 - `historyAccess`: `"read-search"` or `"session-history-tool"`.
-- `backupPath`: optional pre-compaction backup path.
+- `backupPath`: optional pre-compaction backup path (JSONL stores only).
 
 See [Persistence and resume](/compaction/reference#persistence-and-resume) for every field.
 
@@ -331,9 +348,9 @@ Extension state persistence that does not enter LLM context:
 {"type":"custom","id":"h8i9j0k1","parentId":"g7h8i9j0","timestamp":"2024-12-03T14:20:00.000Z","customType":"my-extension","data":{"count":42}}
 ```
 
-Use `customType` to identify your extension's entries on reload. Atomic also writes three built-in custom entry types:
+Use a unique `customType` to identify your extension's entries on reload. Atomic also writes built-in custom entry types for internal state, including:
 
-- `atomic.tool-output`: written before a tool result that points to `tool-output://<sha256>` when oversized output from a released subagent is stored with the session. `data` holds `{ toolCallId, hash, bytes }`. Exported JSONL files also include `base64` once per blob; import and fork verify each blob against `hash`, store it, and drop `base64`.
+- `atomic.tool-output`: written before a tool result pointing to `tool-output://<sha256>` when oversized output from an unloaded subagent is stored with the session. `data` holds `{ toolCallId, hash, bytes }`. Exported JSONL files also include `base64` once per blob; import and fork verify each blob against `hash`, store it, and drop `base64`.
 
 ```json
 {"type":"custom","id":"i9j0k1l2","parentId":"h8i9j0k1","timestamp":"2024-12-03T14:21:00.000Z","customType":"atomic.tool-output","data":{"toolCallId":"call_1","hash":"9c56...","bytes":1048576}}
@@ -351,6 +368,8 @@ Use `customType` to identify your extension's entries on reload. Atomic also wri
 {"type":"custom","id":"k1l2m3n4","parentId":"j0k1l2m3","timestamp":"2024-12-03T14:23:00.000Z","customType":"resume_timings","data":{"version":1,"startedAt":"2024-12-03T14:22:00.000Z","restores":[{"root":"/home/me/project","mode":"fresh","fetch":"full","ms":18520,"phases":{"fetch":9900,"materialize":1400,"verify":210,"publish":12}}],"blueprint":[{"section":"maintenance","name":"npm install","ms":8600,"exit":"ok"}],"firstPromptReadyMs":28400,"blueprintReadyMs":28300}}
 ```
 
+- `workspace_binding`: records a session's bound worktree path (`{ kind: "bound-workspace", worktree }`) when opened against a specific workspace binding. Atomic also uses additional reserved `customType` keys for Intercom memberships, tool deactivation, web search results, and task completion tracking.
+
 ### CustomMessageEntry
 
 Extension messages that enter LLM context unless `excludeFromContext` is `true`:
@@ -363,14 +382,6 @@ Extension messages that enter LLM context unless `excludeFromContext` is `true`:
 - `display`: `true` displays in the TUI with distinct styling; `false` hides the message.
 - `details`: optional extension metadata, never sent to the LLM.
 - `excludeFromContext`: `true` marks a display-only message excluded from model requests.
-
-### Reader-only chat records
-
-Built-in stores save turn-ending diagnostic lines, such as cancelled retry errors, separately from session entries so reopening a session can display them in place. Each saved line is capped at 4,096 UTF-8 bytes and ends with `... [diagnostic truncated]` if trimmed, while the live terminal error stays intact.
-
-These records are not session entries. `/tree`, model requests, compaction, token totals, conversation exports, and continuation logic ignore them. Copying a JSONL file or importing a session does not transfer them, and local libSQL `file:` databases do not store them.
-
-Cache-miss and dropped-thinking notices are derived from saved assistant replies. When a compacted session opens on its active window, Atomic does not reload discarded history to reconstruct earlier notice counts.
 
 ### LabelEntry
 
@@ -400,7 +411,7 @@ Generated one-line session summary written when the agent goes idle and shown in
 {"type":"session_summary","id":"l2m3n4o5","parentId":"k1l2m3n4","timestamp":"2024-12-03T14:36:00.000Z","summary":"Refactored auth module token refresh and added retry tests","summarizedThroughId":"j0k1l2m3","usage":{"input":812,"output":21}}
 ```
 
-- `summary`: stored one-line text with collapsed whitespace and bounded length.
+- `summary`: stored one-line text with collapsed whitespace and bounded length (up to 160 characters).
 - `summarizedThroughId`: entry ID of the latest user or assistant message covered by the summary. Tool results do not invalidate it, but any newer user or assistant message or a later `branch_summary` retires it.
 - `usage`: optional token usage from the summary request, counted toward session totals.
 
@@ -415,11 +426,20 @@ Repository state of one checkout at the end of a turn that ran a file-writing to
 - `snapshot`: present when the state changed; an entry without `snapshot` references an earlier entry with the same `snapshotId`.
 - `restore`: present when a resume restored the snapshot into a new worktree (`{ from, to, snapshotId, tree, restoredAt }`). Later resumes map `from` to `to`.
 - `restore.degraded`: present when a resume restored less than the full snapshot (`{ stage, head, tree, basis?, missingLinks, missingPaths, missingCommits, cause, causeReason?, hint }`). `stage` is `"partial-changes"` or `"closest-commit"`, and `basis` (`"pushed-base"`, `"earlier-snapshot"`, or `"branch-tip"`) identifies the commit source for a closest-commit restore.
+- `degradedFrom`: present on entries captured in a partly restored worktree to pin the original snapshot ID as the checkout's restore target until a full restore succeeds, `discardDegradedRestore()` releases it, or 30 days pass. On a full restore that carried over edits from a partly restored worktree, `degradedFrom` names the snapshot of those carried-over edits until the merged worktree is recorded or released.
 - `unrestored`: present instead of `restore` when a resume continued without restoring `root` (`{ snapshotId, continuedIn, place, from?, cause, causeReason?, detail, hint, at }`). `place` is `"recorded"` or `"launch"`. When `from` is set on the active checkout, file tools map paths under `from` to `continuedIn` until a later resume restores the checkout.
 - `restoreWarnings`: optional host warnings paired with `restore`, such as `{ code: "lfs-objects-unavailable", paths }` or `{ code: "stale-restore-retained", path, kind }`. Fresh-worktree LFS downloads run after the restore entry is written, so their warnings appear in resume notices instead.
 - `captureMs`: capture duration in milliseconds for a turn capture.
 - `capturedAt`: recording timestamp when a resume adopts a subagent's newer snapshot for a checkout.
 - `blobs`: present only in exported JSONL files, holding base64 patch and bundle payloads keyed by SHA-256. Import verifies and stores them, then drops `blobs`.
+
+## Saved diagnostic notices
+
+Built-in stores save turn-ending diagnostic lines, such as cancelled retry errors, separately from session entries so reopening a session can display them in place. Each saved line is capped at 4,096 UTF-8 bytes and ends with `... [diagnostic truncated]` if trimmed, while the live terminal error stays intact.
+
+These records are not session entries. `/tree`, model requests, compaction, token totals, conversation exports, and continuation logic ignore them. Copying a JSONL file or importing a session does not transfer them, and local libSQL `file:` databases do not store them.
+
+Cache-miss and dropped-thinking notices are derived from saved assistant replies. When a compacted session opens on its active context window, Atomic does not reload discarded history to reconstruct earlier notice counts.
 
 ## Tree structure
 
@@ -433,7 +453,7 @@ Entries form a tree rooted at the first entry (`parentId: null`). Each subsequen
 
 ## Context building
 
-`buildSessionProjection()` walks the active branch from root to leaf, replays model, thinking-level, and context-window changes, selects the latest `compaction` entry with `details.strategy === "verbatim-lines"`, and applies the latest `context_edit` for each target.
+`buildSessionProjection()` walks the active branch from root to leaf, replays model and thinking-level changes, selects the latest `compaction` entry with `details.strategy === "verbatim-lines"`, and applies the latest `context_edit` for each target.
 
 It returns model-visible messages paired with their source entries (`entries[].sourceEntry` and `entries[].messages`). Omitted targets emit no message, content replacements preserve the source entry's role and metadata, and raw entries stay untouched. `buildSessionContext()` returns just the messages, thinking level, and model used for provider requests.
 
@@ -446,7 +466,7 @@ It returns model-visible messages paired with their source entries (`entries[].s
 ## Parsing example
 
 ```typescript
-import { readFileSync } from "fs";
+import { readFileSync } from "node:fs";
 
 const lines = readFileSync("session.jsonl", "utf8").trim().split("\n");
 
@@ -460,6 +480,15 @@ for (const line of lines) {
     case "message":
       console.log(`[${entry.id}] ${entry.message.role}: ${JSON.stringify(entry.message.content)}`);
       break;
+    case "model_change":
+      console.log(`[${entry.id}] Model: ${entry.provider}/${entry.modelId}`);
+      break;
+    case "thinking_level_change":
+      console.log(`[${entry.id}] Thinking: ${entry.thinkingLevel}`);
+      break;
+    case "usage":
+      console.log(`[${entry.id}] Usage (${entry.kind}): ${entry.provider}/${entry.model} ${entry.usage.totalTokens} tokens`);
+      break;
     case "compaction":
       if (entry.details?.strategy === "verbatim-lines") {
         console.log(`[${entry.id}] Compaction boundary: ${entry.details.form ?? "compacted"}, ${entry.tokensBefore} tokens before`);
@@ -469,6 +498,9 @@ for (const line of lines) {
       break;
     case "context_compaction":
       console.log(`[${entry.id}] Retired logical-deletion compaction record`);
+      break;
+    case "context_edit":
+      console.log(`[${entry.id}] Context edit on ${entry.targetId}: ${entry.replacement === null ? "omitted" : "replaced"}`);
       break;
     case "branch_summary":
       console.log(`[${entry.id}] Branch from ${entry.fromId}`);
@@ -482,11 +514,14 @@ for (const line of lines) {
     case "label":
       console.log(`[${entry.id}] Label "${entry.label}" on ${entry.targetId}`);
       break;
-    case "model_change":
-      console.log(`[${entry.id}] Model: ${entry.provider}/${entry.modelId}`);
+    case "session_info":
+      console.log(`[${entry.id}] Session name: ${entry.name ?? "(cleared)"}`);
       break;
-    case "thinking_level_change":
-      console.log(`[${entry.id}] Thinking: ${entry.thinkingLevel}`);
+    case "session_summary":
+      console.log(`[${entry.id}] Summary: ${entry.summary}`);
+      break;
+    case "worktree_snapshot":
+      console.log(`[${entry.id}] Snapshot ${entry.snapshotId} for ${entry.root}`);
       break;
   }
 }
@@ -498,16 +533,18 @@ Await `create`, `open`, `continueRecent`, `forkFrom`, and every session mutation
 
 `inMemory()` selects memory storage explicitly without filesystem I/O. Factories without an explicit store or directory resolve configured storage, defaulting to the shared local SQLite database. Passing a directory selects JSONL explicitly. Store-open failures never fall back to memory.
 
+By default, opening an existing session loads only the active tail window (entries from the latest compaction boundary onward, plus required branch metadata) into memory rather than the entire history. Methods below note whether they inspect only entries loaded in memory or read older entries from storage on demand.
+
 ### Static creation methods
 
 - `SessionManager.create(cwd, sessionDir?, options?)`: create a new session in configured storage, or in JSONL when `sessionDir` is provided.
 - `SessionManager.create(store, cwd, options?)`: create a new session in a supplied `SessionStore`.
-- `SessionManager.open(store, sessionId, cwdOverride?, options?)`: open an existing session by exact ID, raising `SessionNotFoundError` if missing. Defaults to `{ history: "tail" }`, loading from the latest compaction window; pass `{ history: "full" }` only when every stored entry must stay resident in memory. `openSessionById(id, cwd?, sessionDir?, options?)` and `continueRecent(store, cwd, options?)` share the same window behavior.
+- `SessionManager.open(store, sessionId, cwdOverride?, options?)`: open an existing session by exact ID, raising `SessionNotFoundError` if missing. Defaults to `{ history: "tail" }`, loading from the latest compaction window; pass `{ history: "full" }` only when every stored entry must be loaded into memory. `openSessionById(id, cwd?, sessionDir?, options?)` and `continueRecent(store, cwd, options?)` share the same behavior.
 - `SessionManager.open(path, sessionDir?, cwdOverride?)`: open a JSONL file directly, creating it if missing. This is a file API rather than the CLI session selector.
 - `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)`: continue the most recent regular session or create a new one. Pass `{ includeInternal: true }` to include internal sessions.
 - `SessionManager.inMemory(cwd?, options?)`: create an empty memory-only session synchronously. To seed entries, await `SessionManager.inMemory(cwd, options, entries)` without mutating the supplied array until it resolves.
 - `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)`: fork a JSONL file into the target store. For database sessions, open the session by ID and await `manager.forkTo(targetCwd, targetStore?, options?)`.
-- `SessionManager.importFromJsonl(inputPath, cwd, targetStoreOrDir?)`: import a JSONL export preserving its ID and upgrading older supported formats. Raises `SessionExistsError` if the ID already exists, and opens at the current context window.
+- `SessionManager.importFromJsonl(inputPath, cwd, targetStoreOrDir?)`: import a JSONL export preserving its ID and upgrading older supported formats. Raises `SessionExistsError` if the ID already exists, and opens at the active context window.
 
 ### Static listing methods
 
@@ -526,21 +563,21 @@ Select sessions by `SessionInfo.id`. `SessionInfo.path` holds a JSONL path when 
 
 ### Appending methods
 
-Every append method returns a promise resolving to the new entry ID:
+All append methods below return `Promise<string>` resolving to the new entry ID, except `appendUsage()`, which returns `Promise<UsageEntry>`:
 
-| Method | Action |
-| --- | --- |
-| `appendMessage(message)` | Append a message entry |
-| `appendThinkingLevelChange(level)` | Record a thinking-level change |
-| `appendContextWindowChange(contextWindow)` | Record a context-window selection in tokens |
-| `appendModelChange(provider, modelId)` | Record a model change |
-| `appendCompaction(compactedText, firstKeptEntryId, tokensBefore, details)` | Append a durable compaction boundary (`null` for `firstKeptEntryId` on current boundaries) |
-| `appendCustomEntry(customType, data?)` | Append extension state (excluded from LLM context) |
-| `appendSessionInfo(name)` | Set the session display name (empty string clears it) |
-| `appendSessionSummary(summary, summarizedThroughId, usage?)` | Store a generated resume-picker summary anchored to a message |
-| `appendCustomMessageEntry(customType, content, display, details?)` | Append an extension message |
-| `appendLabelChange(targetId, label)` | Set or clear an entry bookmark label |
-| `appendContextEdit(targetId, replacement)` | Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content) |
+| Method | Returns | Action |
+| --- | --- | --- |
+| `appendMessage(message, options?)` | `Promise<string>` | Append a message entry (optional `{ queuedMessageId?: string }`) |
+| `appendThinkingLevelChange(level)` | `Promise<string>` | Record a thinking-level change |
+| `appendModelChange(provider, modelId, fallback?)` | `Promise<string>` | Record a model change (optional `ModelFallbackRecord`) |
+| `appendUsage(kind, provider, model, usage, note?)` | `Promise<UsageEntry>` | Record auxiliary model usage without adding it to LLM context |
+| `appendCompaction(compactedText, firstKeptEntryId, tokensBefore, details)` | `Promise<string>` | Append a durable compaction boundary (`null` for `firstKeptEntryId` on current boundaries) |
+| `appendCustomEntry(customType, data?)` | `Promise<string>` | Append extension state (excluded from LLM context) |
+| `appendSessionInfo(name)` | `Promise<string>` | Set the session display name (empty string clears it) |
+| `appendSessionSummary(summary, summarizedThroughId, usage?)` | `Promise<string>` | Store a generated resume-picker summary anchored to a message |
+| `appendCustomMessageEntry(customType, content, display, details?)` | `Promise<string>` | Append an extension message |
+| `appendLabelChange(targetId, label)` | `Promise<string>` | Set or clear an entry bookmark label |
+| `appendContextEdit(targetId, replacement)` | `Promise<string>` | Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content) |
 
 ### Tree navigation methods
 
@@ -548,10 +585,10 @@ Every append method returns a promise resolving to the new entry ID:
 | --- | --- |
 | `getLeafId()` | Return the current leaf entry ID |
 | `getLeafEntry()` | Return the current leaf entry |
-| `getEntry(id)` | Return a resident entry by ID |
+| `getEntry(id)` | Return an entry loaded in memory by ID |
 | `getBranch(fromId?)` | Walk from an entry to the root |
-| `getTree()` | Return the tree of resident entries in the manager's current window; use `readHistory()` or `loadFullHistory()` for older entries outside the window |
-| `getChildren(parentId)` | Return direct resident children of an entry |
+| `getTree()` | Return the tree of entries loaded in memory; use `readHistory()` or `loadFullHistory()` for older entries |
+| `getChildren(parentId)` | Return direct child entries currently loaded in memory |
 | `getLabel(id)` | Return the label for an entry |
 | `branch(entryId)` | Move the leaf to an earlier entry in memory only (the session reopens at its last saved entry) |
 | `resetLeaf()` | Reset the leaf to `null` in memory only |
@@ -563,21 +600,21 @@ Every append method returns a promise resolving to the new entry ID:
 - `buildSessionProjection(mode?)`: return the context-edited projection (`entries` with source entries and model-visible messages, plus `thinkingLevel` and `model`). Pass `"transcript"` for saved chat rows that keep original displayed content for edited or omitted entries while hiding non-displayed custom messages. For a live session, `session.transcriptMessages` also includes unsaved live messages.
 - `buildSessionContext()`: return messages, thinking level, and model for the LLM.
 - `buildContextEntries()`: return active-branch entries after the latest compaction boundary.
-- `getEntries()`: return raw entries in the manager's current window, excluding the header. System tool-change messages and `atomic.appendEntry()` extension entries on the active branch stay resident here; use `readHistory()` or `readEntry(id)` for older retired entries.
-- `hasFullHistory()`: return whether every stored entry is resident in memory.
+- `getEntries()`: return raw entries loaded in memory, excluding the header. System tool-change messages and `atomic.appendEntry()` extension entries on the active branch stay loaded here; use `readHistory()` or `readEntry(id)` for older retired entries.
+- `hasFullHistory()`: return whether every stored entry is loaded in memory.
 - `loadFullHistory()`: load every stored entry on every branch into memory. Prefer `readHistory()` so large sessions stay bounded; Atomic itself never calls `loadFullHistory()`.
 - `readHistory({ fromSeq?, toSeq?, direction?, signal? }?)`: iterate pages of `{ seq, entry }` between inclusive bounds. Use `direction: "backward"` to start from the latest page while keeping entries inside each page in append order. Resume with `{ cursor: page.nextCursor }` without new bounds. Entries over 1 MiB appear as `{ kind: "oversized", seq, bytes }` references instead of truncated objects. Replaced or recreated sessions reject rather than mixing generations.
 - `readHistoryChunks(reference, { offset?, signal? }?)`: read an oversized entry's encoded UTF-8 bytes in chunks of at most 64 KiB. Track consumed bytes to resume at an offset and decode with a streaming UTF-8 decoder.
 - `readSessionHistory(store, sessionId, options?)` and `readSessionHistoryChunks(store, reference, options?)`: imported from `@bastani/atomic/storage` for read-only paged and chunked access directly from a `SessionStore` without opening a `SessionManager`.
-- `readEntry(id)`: read one entry by ID, including entries outside the active window, or return `undefined` if absent.
-- `getOmittedHistoryTotals()`: return usage and message counts omitted by a tail window, or `undefined` when full history is held.
-- `getLastSeq()`: return the session's last stored sequence number, including entries not held in memory.
-- `getEntrySeq(id)` and `findEntrySeq(id)`: return a resident entry's sequence synchronously (`getEntrySeq`) or look up any entry's sequence in the store without loading earlier transcript entries (`findEntrySeq`).
+- `readEntry(id)`: read one entry by ID, including entries outside the loaded window, or return `undefined` if absent.
+- `getOmittedHistoryTotals()`: return usage and message counts omitted by a tail window, or `undefined` when full history is loaded.
+- `getLastSeq()`: return the session's last stored sequence number, including entries not loaded in memory.
+- `getEntrySeq(id)` and `findEntrySeq(id)`: return a loaded entry's sequence synchronously (`getEntrySeq`) or look up any entry's sequence in the store without loading earlier transcript entries (`findEntrySeq`).
 - `forEachStoredEntry(fromSeq, visit)`: visit every stored entry from `fromSeq` in store order, paging older entries without holding them in memory, and resolve to the last visited sequence.
-- `getWorktreeSnapshotRecords()` and `getLatestWorktreeSnapshots()`: return held snapshot records (`getWorktreeSnapshotRecords`) or the latest snapshot per checkout root on the active branch (`getLatestWorktreeSnapshots`).
-- `loadWorktreeSnapshotRecords(ids, { signal? }?)`: resolve snapshot records by ID across any branch, reading the store for records outside the window and omitting unknown IDs.
+- `getWorktreeSnapshotRecords()` and `getLatestWorktreeSnapshots()`: return loaded snapshot records (`getWorktreeSnapshotRecords`) or the latest snapshot per checkout root on the active branch (`getLatestWorktreeSnapshots`).
+- `loadWorktreeSnapshotRecords(ids, { signal? }?)`: resolve snapshot records by ID across any branch, reading the store for records outside the loaded window and omitting unknown IDs.
 - `readWorktreeSnapshotPages({ branch?, direction?, signal? }?)`: iterate `worktree_snapshot` entries in pages of `{ seq, entry }` across all branches or the active branch (`branch: true`) without retaining them in memory.
-- `getAdmissionKeys().has(key)`: test synchronously whether an admission key has already been persisted to prevent duplicate admission after resume.
+- `getAdmissionKeys().has(key)`: test synchronously whether a deduplication key (admission key) has already been persisted to prevent duplicate event or message admission after resume.
 - `getSessionRecoveryState()`: return persisted recovery state (admission keys and delivered Intercom message IDs) used to prevent duplicate deliveries after resume.
 - `getHeader()`: return the session header metadata.
 - `getSessionName()` and `getSessionNameState()`: return the display name (`undefined` if unset or cleared), or the durable name state (`{ hasName: false }`, `{ hasName: true }`, or `{ hasName: true, name }`).

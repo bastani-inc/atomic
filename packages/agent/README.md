@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/bastani-inc/atomic">
-    <img alt="Atomic" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
+    <img alt="Atomic logo" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
   </a>
 </p>
 
@@ -17,23 +17,25 @@
 
 ---
 
-The agent loop Atomic's sessions run on, built on `@bastani/atomic-ai`: tool execution with before and after hooks, event streaming, steering and follow-up messages, and custom message types.
+`@bastani/atomic-agent-core` provides the stateful agent loop behind Atomic sessions, built on `@bastani/atomic-ai`. It handles tool execution with before and after hooks, event streaming, steering and follow-up message queues, and custom message types.
 
-[Atomic](https://github.com/bastani-inc/atomic), the verifiable coding agent runtime, is built on it, and it is published with every Atomic release at Atomic's version.
+[Atomic](https://github.com/bastani-inc/atomic) runs on this package and publishes it with every release at the same version.
 
 ## Install
 
 ```bash
-npm install @bastani/atomic-agent-core
+npm install @bastani/atomic-agent-core @bastani/atomic-ai
 ```
 
-Inside an Atomic extension, import it without installing it: the running Atomic provides it. See [Libraries](https://docs.bastani.ai/libraries).
+Inside an Atomic extension, you can import both packages without installing them because the running Atomic process provides them. See [Libraries](https://docs.bastani.ai/libraries).
 
 ## Quick start
 
+Export `ANTHROPIC_API_KEY` before running this example:
+
 ```typescript
-import { Agent } from "@bastani/atomic-agent-core";
-import { createModels } from "@bastani/atomic-ai";
+import { Agent, type AgentTool } from "@bastani/atomic-agent-core";
+import { createModels, Type } from "@bastani/atomic-ai";
 import { anthropicProvider } from "@bastani/atomic-ai/providers/anthropic";
 
 const models = createModels();
@@ -41,22 +43,46 @@ models.setProvider(anthropicProvider());
 const model = models.getModel("anthropic", "claude-sonnet-4-6");
 if (!model) throw new Error("Model not found");
 
+const clockParams = Type.Object({
+	timeZone: Type.Optional(Type.String({ description: "IANA time zone, such as UTC" })),
+});
+
+const getTimeTool: AgentTool<typeof clockParams> = {
+	name: "get_time",
+	label: "Get time",
+	description: "Return the current date and time.",
+	parameters: clockParams,
+	execute: async (_toolCallId, params) => ({
+		content: [
+			{
+				type: "text",
+				text: new Date().toLocaleString("en-US", {
+					timeZone: params.timeZone ?? "UTC",
+					dateStyle: "full",
+					timeStyle: "long",
+				}),
+			},
+		],
+		details: undefined,
+	}),
+};
+
 const agent = new Agent({
-  initialState: {
-    systemPrompt: "You are a helpful assistant.",
-    model,
-  },
-  streamFn: models.streamSimple.bind(models),
+	initialState: {
+		systemPrompt: "You are a helpful assistant.",
+		model,
+		tools: [getTimeTool],
+	},
+	streamFn: models.streamSimple.bind(models),
 });
 
 agent.subscribe((event) => {
-  if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-    // Stream just the new text chunk
-    process.stdout.write(event.assistantMessageEvent.delta);
-  }
+	if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+		process.stdout.write(event.assistantMessageEvent.delta);
+	}
 });
 
-await agent.prompt("Hello!");
+await agent.prompt("What time is it in UTC?");
 ```
 
 ## Documentation

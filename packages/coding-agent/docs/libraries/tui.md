@@ -1,10 +1,16 @@
 ---
 title: "@bastani/atomic-tui"
-sidebarTitle: "TUI"
-description: "Terminal UI framework with differential rendering, components, overlays, key handling and images."
+sidebarTitle: "@bastani/atomic-tui"
+description: "Terminal UI framework with differential rendering, alternate-screen viewports, components, overlays, key handling, and images."
 ---
 
-Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications.
+Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications (requires Node.js 22.19+).
+
+## Installation
+
+```bash
+npm install @bastani/atomic-tui
+```
 
 ## Features
 
@@ -13,9 +19,9 @@ Minimal terminal UI framework with differential rendering and synchronized outpu
 - **Application-owned scrolling.** Alternate-screen viewport supports mouse, trackpad, and keyboard navigation.
 - **Synchronized output.** Uses CSI 2026 for atomic, flicker-free screen updates.
 - **Bracketed paste mode.** Handles large pastes with compact markers for pastes over 10 lines.
-- **Component-based.** Simple `Component` interface with a `render(width)` method.
+- **Component-based.** Simple `Component` interface with `render(width)` and optional `renderSized(width, height)`.
 - **Theme support.** Components accept theme interfaces for styling.
-- **Built-in components.** `Text`, `TruncatedText`, `Input`, `Editor`, `Markdown`, `Loader`, `CancellableLoader`, `SelectList`, `SettingsList`, `MouseRegion`, `Spacer`, `Image`, `Box`, `Container`, `VStack`, `HStack`, and `ScrollView`.
+- **Built-in components.** `Text`, `TruncatedText`, `Input`, `Editor`, `Markdown`, `Loader`, `CancellableLoader`, `SelectList`, `SettingsList`, `MouseRegion`, `Spacer`, `Image`, `Box`, `Container`, `WindowedContainer`, `VStack`, `HStack`, and `ScrollView`.
 - **Inline images.** Renders images in terminals supporting Kitty or iTerm2 graphics protocols.
 - **Autocomplete support.** File paths and slash commands.
 
@@ -187,6 +193,21 @@ Press `Ctrl+Shift+F` to open or close the primary scroll view's bordered search 
 
 `TuiAltScreenOptions.scrollToEndIndicator` renders a clickable label centered on the last row of a `follow: "end"` primary scroll view while scrolled away from the end. Clicking it resumes end-following.
 
+**`TuiAltScreenOptions` summary:**
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `wheelScrollLines` | `number \| "auto"` | Logical lines moved per wheel event (default `1`; `"auto"` accelerates fast spins; Alt+wheel moves 5x). |
+| `mouse` | `boolean` | Capture mouse events for scrolling and application-owned text selection. |
+| `copyOnSelect` | `boolean` | Automatically copy dragged selections on mouse release (default `true`). |
+| `copySelection` | `(text: string) => Promise<boolean \| string>` | Custom system clipboard writer; falls back to OSC 52 when omitted. |
+| `openUrl` | `(url: string) => void` | Handler invoked when clicking an OSC 8 hyperlink. |
+| `onRightClickPaste` | `() => void` | Secondary-button paste handler (currently Windows only). |
+| `searchMatchStyle` / `searchCurrentMatchStyle` | `(text: string) => string` | Highlighters for transcript search matches and the active match. |
+| `searchNavigationButtonStyle` | `(text: string, hovered: boolean) => string` | Styling callback for the search panel's previous/next buttons. |
+| `scrollToEndIndicator` | `() => string` | Clickable jump-to-end indicator shown when scrolled away from the bottom. |
+| `scrollPinnedPrompt` | `{ isPrompt, render }` | Pins matching prompt rows at the top of the scroll viewport. |
+
 Layout geometry is rebuilt for each requested frame. Stateful components are retained, and their existing rendered-line caches remain effective. Calling `render(width)` directly on these layout components produces an unbounded document, which is also used when alt mode restores the main screen.
 
 ### Overlays
@@ -275,21 +296,29 @@ All components implement:
 ```typescript
 interface Component {
   render(width: number): string[];
+  renderSized?(width: number, height: number): string[];
   handleInput?(data: string): void;
   handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
-  capturesViewportInput?: boolean;
+  paintedRowKey?(row: number): string | undefined;
   readonly selectionTextMayChangeOnReplay?: boolean;
+  readonly historyReplayable?: boolean;
+  wantsKeyRelease?: boolean;
+  capturesViewportInput?: boolean;
   invalidate(): void;
 }
 ```
 
-| Method | Description |
-|--------|-------------|
+| Member | Description |
+| --- | --- |
 | `render(width)` | Returns an array of strings, one per line. Each line **must not exceed `width`** or the TUI throws an error. Use `truncateToWidth()` or manual wrapping. |
+| `renderSized?(width, height)` | Optional sized renderer invoked instead of `render()` when a layout slot allocates a fixed row height. |
 | `handleInput?(data)` | Called when the component has focus and receives keyboard input. The `data` string contains raw terminal input, which may include ANSI escape sequences. |
 | `handleMouse?(event)` | Called by `TuiAltScreen` for normalized pointer input targeted at the component. |
-| `capturesViewportInput?` | When `true` on the focused component, `TuiAltScreen` forwards viewport scrolling and prompt-jump keys (`tui.altScreen.*` except search) to the component instead of scrolling the viewport, matching focused overlays. `SelectList`, `SettingsList`, and `Editor` (while autocomplete is open) set this so PageUp and PageDown move selection. Only the focused component is checked, so a wrapper forwarding input to a list must mirror this flag. Use `getSelectPageIndex(keybindings, data, selectedIndex, itemCount, pageSize)` to compute page movement. |
-| `selectionTextMayChangeOnReplay` | Set to `true` on a `WindowedContainer` component whose text cannot be recreated from saved input. Fullscreen selection then keeps the selected fragments in memory until dismissed or replaced. While the component remains on screen, copying uses its latest painted text; if evicted and recreated, repeated copies keep the original selection. Leave unset for deterministic rows. |
+| `paintedRowKey?(row)` | Optional stable identity for what the last render drew on `row`, so press and release become a click only when both target the same item across repaints. |
+| `selectionTextMayChangeOnReplay` | Set to `true` on a `WindowedContainer` component whose text cannot be recreated from saved input. Fullscreen selection then keeps the selected fragments in memory until dismissed or replaced. Leave unset for deterministic rows. |
+| `historyReplayable` | Set to `true` on a chat-rendered component that can be discarded offscreen and recreated from saved input without losing state. |
+| `wantsKeyRelease` | When `true`, receives Kitty key release events in `handleInput()`. Default: `false`. |
+| `capturesViewportInput` | When `true` on the focused component, `TuiAltScreen` forwards viewport scrolling and prompt-jump keys (`tui.altScreen.*` except search) to the component instead of scrolling the viewport, matching focused overlays. `SelectList`, `SettingsList`, and `Editor` (while autocomplete is open) set this so PageUp and PageDown move selection. Use `getSelectPageIndex(keybindings, data, selectedIndex, itemCount, pageSize)` to compute page movement. |
 | `invalidate()` | Required. Clears cached render state so the next `render()` rebuilds from scratch. Stateless components can leave the body empty. |
 
 The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered line, so styles do not carry across lines. Reapply styles per line or use `wrapTextWithAnsi()` to preserve styling across wrapped lines.
@@ -403,13 +432,17 @@ Without this propagation, typing with an IME (Chinese, Japanese, Korean, etc.) w
 
 ### Container
 
-Groups child components.
+Groups child components vertically.
 
 ```typescript
 const container = new Container();
 container.addChild(component);
 container.removeChild(component);
 ```
+
+### WindowedContainer
+
+Virtualized vertical container for large transcripts inside `ScrollView`. Keeps only visible children mounted in memory and materializes or evicts off-screen rows on demand (respecting `historyReplayable` and `selectionTextMayChangeOnReplay` for fullscreen text selection).
 
 ### Box
 
@@ -824,8 +857,13 @@ The TUI works with any object implementing the `Terminal` interface:
 interface Terminal {
   start(onInput: (data: string) => void, onResize: () => void): void;
   stop(): void;
+  handOff?(held?: readonly string[]): void;
+  readonly continuedFromHandOff?: boolean;
+  restoreOnExit?(before: string, after: string): void;
   drainInput(maxMs?: number, idleMs?: number): Promise<void>;
   write(data: string): void;
+  flush?(): Promise<void>;
+  readonly colorDepth?: number;
   get columns(): number;
   get rows(): number;
   get kittyProtocolActive(): boolean;
@@ -851,7 +889,7 @@ import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic
 // Get visible width of string (ignoring ANSI codes)
 const width = visibleWidth("\x1b[31mHello\x1b[0m"); // 5
 
-// Truncate string to width (preserving ANSI codes, adds ellipsis)
+// Truncate string to width (preserving ANSI codes and closing active styles)
 const truncated = truncateToWidth("Hello World", 8); // "Hello..."
 
 // Truncate without ellipsis
@@ -862,30 +900,42 @@ const lines = wrapTextWithAnsi("This is a long line that needs wrapping", 20);
 // ["This is a long line", "that needs wrapping"]
 ```
 
+Additional exported helpers:
+
+| Export | Purpose |
+| --- | --- |
+| `fuzzyFilter` / `fuzzyMatch` | Fuzzy matching and ranked filtering for pickers and search inputs. |
+| `KeybindingsManager` / `TUI_KEYBINDINGS` | Configurable TUI keybinding definitions and lookup. |
+| `decodePrintableKey` | Decode printable Kitty CSI-u and `modifyOtherKeys` sequences. |
+| `normalizePastedText` | Normalize bracketed paste text (CRLF/CR, tmux control bytes, tabs, C0 control filtering). |
+| `stripTerminalSequences` / `sliceByColumn` | Strip ANSI/OSC sequences or slice styled strings by display column range. |
+| `hyperlink` / `clickableHint` | Format OSC 8 clickable terminal links and clickable hint badges. |
+| `renderLatex` | Render inline or block LaTeX math into Unicode text for terminals. |
+| `formatProgramStatus` | Encode OSC 7501 program-status escape sequences. |
+| `getNativeClipboard` | Access the native clipboard integration when available. |
+
 ## Creating custom components
 
-When creating custom components, **each line returned by `render()` must not exceed the `width` parameter**. The TUI throws an error if any line is wider than the terminal.
-
-### Handling input
-
-Use `matchesKey()` with the `Key` helper for keyboard input:
+When building a custom `Component`, keep every line returned by `render(width)` within `width` columns using `truncateToWidth()`, `wrapTextWithAnsi()`, or `visibleWidth()`, handle keys via `matchesKey()` (see [Key detection](#key-detection)), and cache rendered output by width until `invalidate()` runs:
 
 ```typescript
-import { matchesKey, Key, truncateToWidth } from "@bastani/atomic-tui";
-import type { Component } from "@bastani/atomic-tui";
+import { Key, matchesKey, truncateToWidth, type Component } from "@bastani/atomic-tui";
 
-class MyInteractiveComponent implements Component {
+class CachedList implements Component {
   private selectedIndex = 0;
   private items = ["Option 1", "Option 2", "Option 3"];
-  
+  private cachedWidth?: number;
+  private cachedLines?: string[];
   public onSelect?: (index: number) => void;
   public onCancel?: () => void;
 
   handleInput(data: string): void {
     if (matchesKey(data, Key.up)) {
       this.selectedIndex = Math.max(0, this.selectedIndex - 1);
+      this.invalidate();
     } else if (matchesKey(data, Key.down)) {
       this.selectedIndex = Math.min(this.items.length - 1, this.selectedIndex + 1);
+      this.invalidate();
     } else if (matchesKey(data, Key.enter)) {
       this.onSelect?.(this.selectedIndex);
     } else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
@@ -894,84 +944,14 @@ class MyInteractiveComponent implements Component {
   }
 
   render(width: number): string[] {
-    return this.items.map((item, i) => {
-      const prefix = i === this.selectedIndex ? "> " : "  ";
-      return truncateToWidth(prefix + item, width);
-    });
-  }
-
-  invalidate(): void {}
-}
-```
-
-### Handling line width
-
-Use the provided utilities so lines stay within `width`:
-
-```typescript
-import { visibleWidth, truncateToWidth } from "@bastani/atomic-tui";
-import type { Component } from "@bastani/atomic-tui";
-
-class MyComponent implements Component {
-  private text: string;
-
-  constructor(text: string) {
-    this.text = text;
-  }
-
-  render(width: number): string[] {
-    // Option 1: Truncate long lines
-    return [truncateToWidth(this.text, width)];
-
-    // Option 2: Check and pad to exact width
-    const line = this.text;
-    const visible = visibleWidth(line);
-    if (visible > width) {
-      return [truncateToWidth(line, width)];
-    }
-    // Pad to exact width (optional, for backgrounds)
-    return [line + " ".repeat(width - visible)];
-  }
-
-  invalidate(): void {}
-}
-```
-
-### ANSI code considerations
-
-Both `visibleWidth()` and `truncateToWidth()` handle ANSI escape codes:
-
-- `visibleWidth()` ignores ANSI codes when calculating display width.
-- `truncateToWidth()` preserves ANSI codes and closes active styles when truncating.
-
-```typescript
-import chalk from "chalk";
-
-const styled = chalk.red("Hello") + " " + chalk.blue("World");
-const width = visibleWidth(styled); // 11 (not counting ANSI codes)
-const truncated = truncateToWidth(styled, 8); // Red "Hello" + " W..." with proper reset
-```
-
-### Caching
-
-Cache rendered lines and rebuild only when `width` changes or `invalidate()` runs:
-
-```typescript
-class CachedComponent implements Component {
-  private text: string;
-  private cachedWidth?: number;
-  private cachedLines?: string[];
-
-  render(width: number): string[] {
     if (this.cachedLines && this.cachedWidth === width) {
       return this.cachedLines;
     }
-
-    const lines = [truncateToWidth(this.text, width)];
-
     this.cachedWidth = width;
-    this.cachedLines = lines;
-    return lines;
+    this.cachedLines = this.items.map((item, i) =>
+      truncateToWidth(`${i === this.selectedIndex ? "> " : "  "}${item}`, width),
+    );
+    return this.cachedLines;
   }
 
   invalidate(): void {

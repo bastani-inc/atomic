@@ -1,10 +1,8 @@
 ---
-title: Compaction reference
-sidebarTitle: "Compaction internals"
-description: Compaction parameters, saved boundaries, extension hooks, exports, formats, and settings.
+title: "Compaction reference"
+sidebarTitle: "Compaction"
+description: "Reference for compaction parameters, saved boundary fields, extension hooks, SDK concurrency, exports, branch summary format, and settings."
 ---
-
-# Compaction reference
 
 ## Parameters
 
@@ -12,7 +10,7 @@ Extension events and compaction results carry one parameter:
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `query` | Latest user request | Your `/compact` instructions when provided, otherwise the text of the latest user request. A compactor model receives it as its query. |
+| `query` | Latest user request | Your `/compact` instructions when provided, otherwise the text of the latest user request (or `"the latest user request"` when no user message exists on the active branch). A compactor model receives it as its query. |
 
 Instructions passed to `/compact`, `session.compact({ query })`, `ctx.compact({ query })`, or RPC `compact` are also appended to the boundary message after the recovery steps. Automatic compaction passes no custom instructions.
 
@@ -22,9 +20,9 @@ Instructions passed to `/compact`, `session.compact({ query })`, `ctx.compact({ 
 | --- | --- | --- |
 | `0.5` | `COMPACTOR_COMPRESSION_RATIO` | Share of the conversation the compactor is asked to keep |
 | `120000` | `COMPACTOR_REQUEST_TIMEOUT_MS` | Wall-clock limit on one compactor request, in milliseconds |
-| `32000` | `COMPACTED_OUTPUT_MAX_TOKENS` | Largest allowed compacted text in estimated tokens (or half of the automatic trigger budget on small context windows) |
+| `32000` | `COMPACTED_OUTPUT_MAX_TOKENS` | Largest allowed compacted text in estimated tokens (or 50% of the automatic trigger budget on small context windows) |
 
-Compaction resets Claude's signed reasoning chain, so `thinking` and `redacted_thinking` blocks do not survive a boundary. See [Preserved thinking and model switches](/models/reference#preserved-thinking-and-model-switches) for behavior between boundaries.
+Long lines sent to a compactor wrap at 2,000 characters. Compaction resets Claude's signed reasoning chain, so `thinking` and `redacted_thinking` blocks do not survive a boundary. See [Preserved thinking and model switches](/models/reference#preserved-thinking-and-model-switches) for behavior between boundaries.
 
 ## Persistence and resume
 
@@ -57,6 +55,8 @@ A successful compaction appends a `type: "compaction"` entry:
 | `tokensBefore` | Provider-aware whole-context token count before the boundary, used for budgeting and the chat boundary line |
 | `coveredThroughEntryId` | Written only by earlier versions while a tool call waited for its result; new boundaries are never written while a call waits |
 | `usage` | Compactor endpoint usage when reported |
+| `fromHook` | `true` when an extension supplied compacted text from `session_before_compact` |
+| `systemMessage` | Optional replayed system prompt and tool state checkpoint at this boundary |
 | `details.form` | `"cleared"` (no model call) or `"compacted"` (compactor or extension supplied replacement text) |
 | `details.backend` | `"compactor"` or `"extension"`, present only on `"compacted"` boundaries |
 | `details.model` | Compactor ID as `provider/model` when a compactor produced the text |
@@ -64,7 +64,7 @@ A successful compaction appends a `type: "compaction"` entry:
 | `details.history` | Boundary location in `history://sessions/<sessionId>`: `rangeUnit: "entries"`, `entriesBefore`, `boundaryEntry`, and `totalEntries` |
 | `details.historyAccess` | `"read-search"` or `"session-history-tool"`. Resumed sessions receive `session_history` whenever `read` or `search` is absent from resumed tools |
 | `details.stats` | Heuristic estimates: `tokensAfter` counts the system prompt and boundary message, `linesBefore` counts replaced context lines, `linesKept` counts compacted lines (`0` on a clear), and `rangeCount` is `0` |
-| `details.backupPath` | Path to the pre-compaction backup when written |
+| `details.backupPath` | Path to the pre-compaction backup (`<sessionFile>.<timestamp>.<label>.bak`, never auto-deleted). Populated only for JSONL stores, never SQLite, libSQL, PostgreSQL, or memory stores. |
 
 Only `compaction` entries with `details.strategy: "verbatim-lines"` affect active context. Resuming uses the saved boundary text directly without another model request, and messages appended after the boundary stay ordinary messages. Inactive legacy formats do not reapply historical omissions, so content they previously hid may reappear on resume.
 
@@ -87,11 +87,11 @@ atomic.on("session_before_compact", async (event) => {
 });
 ```
 
-`preparation` is a deep-frozen clone. `preparation.region.lines` holds the entire active context since the last boundary serialized as role-tagged lines (`[User]: `, `[Assistant]: `, `[Assistant tool calls]: `, `[Tool result]: `), starting with any previous boundary text. `firstKeptEntryId` is `null`, `keptTailMessageCount` is `0`, and `parameters.query` holds the `/compact` instructions or latest user request.
+`preparation` is a deep-frozen clone (attempting to mutate it throws a `TypeError`). `preparation.region.lines` holds the entire active context since the last boundary serialized as role-tagged lines (`[User]: `, `[Assistant]: `, `[Assistant tool calls]: `, `[Tool result]: `), starting with any previous boundary text. `firstKeptEntryId` is `null`, `keptTailMessageCount` is `0`, and `parameters.query` holds the `/compact` instructions or latest user request.
 
 Return `{ cancel: true }` to cancel compaction. Return `{ compactedText }` to write a `Context compacted` boundary offline without provider credentials; the model sees your text in a `<compacted-context>` block followed by recovery instructions.
 
-Empty or whitespace-only text counts as no replacement, so the configured compaction form runs normally. Replacement text exceeding the compactor output cap or automatic trigger budget is rejected and falls back to context clearing with fallback reason `extension failed: output too long (...)`.
+Empty or whitespace-only text counts as no replacement, so the configured compaction form runs normally. If `compactedText` exceeds the compactor output cap or makes `systemPrompt + boundary >= trigger`, Atomic rejects it, falls back to clearing the context with `fallbackReason` starting with `extension failed: output too long`, and emits `session_compact` with `fromExtension: false`.
 
 ### `session_compact`
 
@@ -122,6 +122,15 @@ atomic.on("session_compact_failed", async (event) => {
 
 `errorMessage` is absent when cancelled. `fromExtension` marks failures after a `session_before_compact` handler supplied replacement text, and no boundary is saved. A compactor failure is not a compaction failure because Atomic falls back to clearing context and reports `fallbackReason` on `session_compact`.
 
+## SDK concurrency and message queuing
+
+- **Shared manual runs.** Concurrent manual SDK `session.compact()` calls share one run and resolve to the same result. Calling `abortCompaction()` cancels the run for all waiters, or falls back to clearing context if a compactor request is already in flight.
+- **Manual takeover.** A manual compaction request arriving during automatic compaction cancels the automatic work and its continuation, then runs once the active work settles (or follows the automatic boundary if it already committed).
+- **Automatic continuations.** Automatic continuations, including output-cap continuations, belong to the original prompt. Both the `prompt()` promise and `agent_settled` finish only after the full continuation chain completes.
+- **Waiting messages.** User messages arriving during compaction (from typed input, prompt templates, skills, SDK `prompt()`, RPC `prompt`, or extension `sendUserMessage()`) wait in arrival order until compaction ends, then run once. If an earlier waiting message has already started a turn, later messages without `streamingBehavior` or `deliverAs` queue behind it as steering.
+- **Inspecting and clearing queued input.** Waiting messages appear in `getSteeringMessages()`, `getFollowUpMessages()`, and `queue_update` events, and `clearQueue()` returns them without sending them. Before the TUI runs an extension command during compaction, it hands already-typed messages to the session so messages sent by the command run after them.
+- **Turn hooks.** SDK `prepareNextTurn` and `prepareNextTurnWithContext` callbacks receive the rebuilt context after mid-turn compaction. Returning `{ action: "end" }` from `finishTurn` keeps queued input pending until an explicit prompt or continuation, while mid-turn compaction resumes streaming automatically.
+
 ## Package exports
 
 `@bastani/atomic` exports these compaction helpers and types:
@@ -138,7 +147,7 @@ The types `CompactionForm`, `CompactionBackend`, `CompactionHistoryLocation`, `C
 
 ## Branch summary format
 
-Branch summarization writes structured Markdown:
+Built-in branch summarization prepends the preamble `"The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n"` and writes structured Markdown with these sections:
 
 ```markdown
 ## Goal
@@ -162,9 +171,6 @@ Branch summarization writes structured Markdown:
 
 ## Next Steps
 1. [What should happen next]
-
-## Critical Context
-- [Data needed to continue]
 
 <read-files>
 path/to/file1.ts
@@ -211,7 +217,7 @@ Branch-summary prompts serialize conversation messages with role labels so the m
 [Tool result]: Output from tool
 ```
 
-Thinking blocks are omitted. Tool results longer than 2,000 characters are truncated with a marker stating how many characters were removed.
+Thinking blocks are omitted. Built-in branch summarization truncates every tool result to **500 characters** before serialization (with a marker stating how many characters were removed). Calling `serializeConversation()` directly on unshortened messages truncates tool results at 2,000 characters.
 
 ## Extension hooks for branch summarization
 

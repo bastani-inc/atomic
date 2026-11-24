@@ -1,33 +1,56 @@
 ---
 title: "JSON event stream"
-description: "Run one prompt and parse Atomic's output as newline-delimited events."
+sidebarTitle: "JSON event stream"
+description: "Run one or more prompts and parse Atomic session output as newline-delimited JSON events."
 ---
-
-# JSON event stream mode
 
 ```bash
 atomic --mode json "Your prompt"
 ```
 
-Outputs all session events as JSON lines to stdout. Use this mode to integrate Atomic into scripts, pipelines, or custom UIs.
+JSON mode runs one or more positional prompts in sequence (`atomic --mode json "First prompt" "Second prompt"`), writes every session event as a JSON line to stdout, and exits. Use it for scripts, CI pipelines, and batch processors that do not need interactive follow-up commands.
 
-If a complete saved provider/model default names a provider that remains unsupported after provider registration, JSON mode writes a configuration diagnostic to stderr and exits nonzero before sending the prompt. It writes no diagnostic text to stdout, so stdout remains valid JSONL. Supported-provider model or authentication fallback still uses automatic model selection.
+Need to send follow-up commands to a live process or embed Atomic directly in Node.js? Compare JSON mode, [RPC mode](/rpc), and the [TypeScript SDK](/sdk) on [Programmatic integration](/programmatic).
 
-## Choosing an integration mode
+If a saved default `provider/model` names a provider that stays unsupported after startup, JSON mode writes a configuration diagnostic to stderr and exits with code `1` before sending any prompt. Stdout stays empty so downstream parsers never receive non-JSON text. Supported providers with an unknown model or missing credentials still fall back through normal model selection.
 
-JSON mode is one of three ways to drive Atomic from your software. Pick the smallest one that fits.
+## Output format
 
-| You want | Use | Why |
-| --- | --- | --- |
-| One prompt, structured output, then exit | **JSON event stream mode** (this page) | One process, one prompt, newline-delimited events on stdout. Nothing to keep alive. |
-| A long-lived process you send more input to | [RPC mode](/rpc) | Send further prompts, interrupt, switch models, and answer extension UI dialogs and OAuth prompts on a live process. |
-| Atomic embedded inside a Node.js application | [SDK](/sdk) | The same engine as a library, with programmatic control over extensions, skills, tools, and session storage. |
+Each line on stdout is a single JSON object terminated by `\n`. The first line is always the session header (including when `--no-session` is passed, which emits the in-memory session header):
 
-If you need the full protocol contract rather than an overview, read the [RPC protocol](/rpc/protocol) or the [SDK API reference](/sdk/reference). [Programmatic use](/programmatic) compares all three modes side by side.
+```json
+{"type":"session","version":4,"id":"uuid","createdAt":"2026-01-01T00:00:00.000Z","cwd":"/path"}
+```
+
+Session events follow as they occur:
+
+```json
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[]}}
+{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]},"toolResults":[]}
+{"type":"agent_end","messages":[]}
+```
+
+Unlike RPC mode, JSON mode does not add `entryId` or `seq` fields to `message_end`.
+
+### Streaming `message_update` wire format
+
+On the wire, `message_update` omits large cumulative snapshots to keep streaming lines compact:
+
+- The top-level `message` property is **stripped** on the wire (unlike the in-memory `AgentSessionEvent` delivered to SDK subscribers). Read final message content from `message_end`.
+- `assistantMessageEvent.partial` is **stripped**.
+- When `assistantMessageEvent.type` is `"toolcall_start"`, Atomic injects `id` and `toolName` directly on `assistantMessageEvent`.
+- Top-level `usage` carries the latest cumulative provider-reported token usage (which may stay zero until completion if the provider reports usage only at the end).
+- Top-level `endTurn` is included only when the provider reported an explicit end-of-turn signal (`AssistantMessage.endTurn` from `@bastani/atomic-ai`, such as OpenAI Codex `end_turn`).
+
+A non-assistant message on `message_update` is treated as a protocol violation; Atomic throws an error instead of emitting fabricated usage.
 
 ## Event types
 
-Events follow the `AgentSessionEvent` type exported from `@bastani/atomic`:
+Events follow the `AgentSessionEvent` union exported from `@bastani/atomic`, with the wire adjustments on `message_update` described above:
 
 ```typescript
 type AgentSessionEvent =
@@ -61,92 +84,69 @@ type AgentSessionEvent =
   | { type: "worktree_snapshot_unavailable"; reason: SerializedWorkspaceError };
 ```
 
-A resumed session whose blueprint build runs behind its first turn (see [Start the first turn while the build runs](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)) also gets one line when that build ends:
-
-```json
-{"type": "blueprint_build_finished", "sessionId": "...", "roots": ["/home/u/.atomic/agent/worktree-snapshots/worktrees/..."], "notices": [{"type": "warning", "message": "Partial build: ..."}]}
-```
-
-While a resume waits for another Atomic process's build of the same worktree, Atomic emits `{"type": "blueprint_build_waiting", "root": "...", "message": "Waiting for ..."}` once. This line can arrive before the session header. `notices` holds the warnings that a waiting resume prints, and is empty when the build finished cleanly. In text mode (`-p`), the same warnings go to stderr as `Warning: ...` lines.
-
-### Key session events
-
-- `queue_update`: emits the full pending steering and follow-up queues whenever they change.
-- `session_info_changed`, `model_changed`, and `thinking_level_changed`: report session metadata changes.
-- `compaction_start` and `compaction_end`: cover manual and automatic compaction. `compaction_end.result.form` is `cleared` when the context window was cleared and `compacted` when a compactor model or an extension replaced it.
-- `compaction_usage`: reports the usage of the compactor model's request when it returns, including for a run that later fails. A clear makes no model call.
-- `child_session_usage`: reports one model call of a child session created by this session, such as a subagent, or of that child's own children.
-- `agent_end` and `agent_settled`: `agent_end` closes one low-level agent run while retries, compaction recovery, or queued work may still continue. `agent_settled` means no automatic work remains for the session-level run, and `aborted` is `true` when the run was cancelled.
-
-For automatic compaction, `compaction_end.willRetry === true` means the interrupted turn will retry, and `AgentSession.prompt()` waits for that continuation. This includes overflow and retry-worthy threshold recovery, such as output-token truncation or OpenAI Responses output-budget underflow. Generic `invalid_request_body` failures use `willRetry: false` when threshold compaction is warranted.
-
-If the compact-and-retry attempt for an overflow is exhausted, `unresolvedOverflow: true` and `errorMessage` let integrations choose another model instead of treating the prompt as successful. Check `result` and `errorMessage` independently: both can be present when the boundary was saved but the follow-up request exceeded the provider's hard input limit.
-
-Branch summaries reuse the configured retry policy for transient provider failures. Their `summarization_retry_*` events report scheduling, each restarted request, and retry-loop completion to JSON, RPC, SDK, and interactive consumers. Compaction does not retry its compactor request; a failure clears the context instead.
-
-Base events come from `AgentEvent` in `@bastani/atomic-agent-core` (installed as an Atomic dependency):
+Base events come from `AgentEvent` in `@bastani/atomic-agent-core`:
 
 ```typescript
 type AgentEvent =
-  // Agent lifecycle
   | { type: "agent_start" }
   | { type: "agent_end"; messages: AgentMessage[] }
-  // Turn lifecycle
   | { type: "turn_start" }
   | { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[] }
-  // Message lifecycle
   | { type: "message_start"; message: AgentMessage }
   | { type: "message_update"; message: AgentMessage; assistantMessageEvent: AssistantMessageEvent }
   | { type: "message_end"; message: AgentMessage }
-  // Tool execution
-  | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
-  | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean; durationMs?: number };
+  | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
+  | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: unknown; partialResult: unknown }
+  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number };
 ```
 
-Final assistant and tool-result messages include optional `durationMs` timing. On `tool_execution_end`, `durationMs` records how long the tool's `execute()` took using a monotonic clock, and is absent when the tool did not run.
+Final assistant messages and tool results include optional `durationMs` timing. On `tool_execution_end`, `durationMs` records how long the tool's `execute()` ran using a monotonic clock and is omitted when the tool did not execute.
 
-On the wire, each `message_update` record carries:
+### Key session events
 
-- The streaming delta in `assistantMessageEvent`, with its cumulative `partial` field stripped.
-- The latest cumulative provider-reported `usage`. This may remain zero until completion if the provider reports usage only at the end.
-- `endTurn`, only when the provider reported it. This is the provider's explicit end-of-turn signal (`AssistantMessage.endTurn` from `@bastani/atomic-ai`), for example OpenAI Codex `end_turn`.
+- `queue_update`: reports the full pending steering and follow-up queues whenever they change.
+- `session_info_changed`, `model_changed`, and `thinking_level_changed`: report session metadata updates.
+- `compaction_start` and `compaction_end`: bracket manual and automatic compaction. `compaction_end.result.form` is `"cleared"` when the context window was cleared and `"compacted"` when a compactor model or extension replaced it.
+- `compaction_usage`: reports compactor model token usage when the request returns, even if the run later fails. Clearing context makes no model call.
+- `child_session_usage`: reports one model call made by a child session (such as a subagent or nested subagent).
+- `agent_end` and `agent_settled`: `agent_end` finishes one low-level agent loop while retries, compaction recovery, or queued messages may still continue. `agent_settled` fires once no automatic work remains, with `aborted: true` if cancelled.
+- `blueprint_build_waiting` and `blueprint_build_finished`: emitted when resuming a session whose worktree blueprint build is running in the background (see [Start the first turn while the build runs](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)).
 
-A non-assistant message on `message_update` is a protocol violation. Atomic throws rather than emitting invented zeroed usage.
+```json
+{"type":"blueprint_build_waiting","root":"...","message":"Waiting for ..."}
+{"type":"blueprint_build_finished","sessionId":"...","roots":["/home/u/.atomic/agent/worktree-snapshots/worktrees/..."],"notices":[{"type":"warning","message":"Partial build: ..."}]}
+```
+
+`blueprint_build_waiting` can arrive before the session header when waiting on another process's build of the same worktree. `notices` is empty when the build completes cleanly (in `-p` text mode, those warnings go to stderr as `Warning: ...`).
+
+For automatic compaction, `compaction_end.willRetry: true` indicates Atomic will automatically retry the interrupted turn (such as after context overflow or recoverable output truncation). When a non-retryable request error triggers threshold compaction, `willRetry` is `false`. If overflow recovery is exhausted, `unresolvedOverflow: true` and `errorMessage` are set; check `result` and `errorMessage` independently because both can be present when a compaction boundary was saved before the follow-up request still exceeded the provider's input limit.
+
+Branch summaries use the configured retry policy for transient provider errors and emit `summarization_retry_*` events. Compaction does not retry its compactor call and clears context instead if it fails.
 
 ## Message types
 
-Base messages come from `@bastani/atomic-ai` (installed as an Atomic dependency):
+Base messages come from `@bastani/atomic-ai`:
+
 - `UserMessage`
 - `AssistantMessage`
 - `ToolResultMessage`
 
-Importing `@bastani/atomic` augments `AgentMessage` from `@bastani/atomic-agent-core` with Atomic's extended message roles (documented in [RPC protocol types](/rpc/protocol#types)):
+Importing `@bastani/atomic` augments `AgentMessage` with Atomic's extended roles (documented in [RPC protocol types](/rpc/protocol#types)):
+
 - `BashExecutionMessage`
 - `CustomMessage`
 - `BranchSummaryMessage`
 
-## Output format
+## Exit codes and signals
 
-Each line is a JSON object. The first line is the session header:
-
-```json
-{"type":"session","version":4,"id":"uuid","timestamp":"...","cwd":"/path"}
-```
-
-Followed by events as they occur:
-
-```json
-{"type":"agent_start"}
-{"type":"turn_start"}
-{"type":"message_start","message":{"role":"assistant","content":[],...}}
-{"type":"message_update","usage":{...},"assistantMessageEvent":{"type":"text_delta","delta":"Hello",...}}
-{"type":"message_end","message":{...}}
-{"type":"turn_end","message":{...},"toolResults":[]}
-{"type":"agent_end","messages":[...]}
-```
+- **Exit `0`**: all prompts finished without fatal errors. Unlike `-p` text mode, an assistant response ending with `stopReason: "length"` still exits `0` in JSON mode.
+- **Exit `1`**: configuration diagnostic for an unsupported provider, extension command failure, session persistence or claim conflict, final assistant `stopReason` of `"error"` or `"aborted"`, or an uncaught error.
+- **Signals**: `SIGINT` exits with `130`, `SIGTERM` exits with `143`, and `SIGHUP` exits with `129` (skipped on Windows and when started with `SIGHUP` ignored, such as under `nohup`). A second signal forces immediate exit.
+- **Background worktree builds**: JSON mode waits for in-progress blueprint builds to settle before exiting.
 
 ## Example
+
+Filter completed messages with `jq`:
 
 ```bash
 atomic --mode json "List files" 2>/dev/null | jq -c 'select(.type == "message_end")'

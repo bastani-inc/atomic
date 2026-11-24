@@ -1,14 +1,12 @@
 ---
-title: Models Configuration
+title: models.json field reference
 sidebarTitle: "models.json fields"
-description: Every provider, model, override, and compatibility field accepted in models.json, generated from the schema.
+description: Complete field reference for providers, models, overrides, and API compatibility in models.json.
 ---
-
-# Models Configuration
 
 {/* This file is generated from TypeScript source. Do not edit it manually; run npm run generate:references --workspace=@bastani/atomic. */}
 
-This reference lists the fields of `models.json`. See [Custom Models](/models) for examples and the file location (normally `~/.atomic/agent/models.json`).
+This reference lists every field accepted in `models.json`. See [Configure custom models](/models) for examples and file locations (normally `~/.atomic/agent/models.json`).
 
 Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json"` to `models.json` for editor validation and completion.
 
@@ -93,7 +91,7 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 
 ## Input limits
 
-See [Image Input Limits](/models/reference#image-input-limits).
+See [Image input limits](/models/reference#image-input-limits).
 
 | Field | Type | Default | Description |
 |---|---|---|---|

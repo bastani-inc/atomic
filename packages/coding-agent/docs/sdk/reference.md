@@ -1,10 +1,8 @@
 ---
-title: SDK API reference
+title: "SDK API reference"
 sidebarTitle: "SDK API"
-description: SDK options, resource loaders, return values, run modes, and exports.
+description: "Complete API reference for Atomic SDK session options, model scoping, session stores, resource loaders, run modes, task supervision, and exports."
 ---
-
-# SDK API reference
 
 ## Options reference
 
@@ -118,15 +116,37 @@ if (auto) {
 }
 ```
 
+#### Resolving scoped models
+
+`resolveModelScopeFromModels(patterns, models)` and `resolveModelScopeWithDiagnostics(patterns, modelRuntime)` expand `--models` / `enabledModels` pattern arrays into `{ scopedModels, diagnostics }`. Each pattern resolves in three stages:
+
+1. Exact literal reference without a thinking suffix (matches `provider/id` or `id`).
+2. If the pattern contains `*`, `?`, or `[`: strips a valid trailing `:<thinking>` suffix, retries an exact literal match first (so bracketed model IDs like `model[1m]` stay literal), then runs case-insensitive `minimatch` against both `provider/id` and `id`.
+3. Fuzzy substring matching with lenient `:<thinking>` suffix parsing.
+
+Matches are deduplicated in order (first match wins). `diagnostics` lists warnings with `code: "no-match" | "invalid-thinking-level" | "ambiguous"`.
+
+```typescript
+import { resolveModelScopeWithDiagnostics } from "@bastani/atomic";
+
+const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(
+  ["anthropic/*sonnet*:high", "openai/o3"],
+  modelRuntime,
+);
+```
+
 #### Model catalog persistence and refresh
 
-`ModelRuntime.create()` restores cached catalogs from local persistence and does not download the models.dev catalog unless you opt in. Pass `catalogBaseUrl` (or set `ATOMIC_MODEL_CATALOG_URL`) to read `<url>/api.json` from your own models.dev mirror instead of https://models.dev.
+`ModelRuntime.create()` restores cached catalogs from local persistence and does not download the models.dev catalog unless you opt in. Pass `catalogBaseUrl` (or set `ATOMIC_MODEL_CATALOG_URL`) to read `<url>/api.json` from your own models.dev mirror instead of `https://models.dev`.
 
-- `allowModelNetwork` (default `false`): enables a create-time network refresh.
-- `modelRefreshTimeoutMs` (default `15_000`): bounds how long that refresh may run before it is aborted.
+- `allowModelNetwork` (tri-state):
+  - **Omitted (`undefined`):** skips create-time network refresh, but still allows a first-prompt GitHub Copilot lookup when no cached Copilot catalog or fallback model exists.
+  - **`false`:** disables **both** create-time network refresh and first-prompt GitHub Copilot lookup.
+  - **`true`:** enables create-time network refresh (bounded by `modelRefreshTimeoutMs`).
+- `modelRefreshTimeoutMs` (default `15_000`): bounds how long the create-time refresh may run before aborting.
 - `refreshOnCreate: false`: skips the initial catalog and availability refresh entirely; built-in models remain available.
 
-`createAgentSession()` does not fetch an account model list at startup. If its cache restore found no GitHub Copilot catalog and its first prompt has no usable model or fallback, the session can look up the exact saved Copilot model. A supplied `model`, a working preset or fallback, and a cached catalog need no lookup. Only that session uses the result; `models-store.json`, credentials, and model listings do not change.
+`createAgentSession()` does not fetch an account model list at startup. If cache restore found no GitHub Copilot catalog and the first prompt has no usable model or fallback, the session can look up the exact saved Copilot model unless `allowModelNetwork: false` was passed to `ModelRuntime.create()`. A supplied `model`, a working preset or fallback, and a cached catalog need no lookup. Only that session uses the result; `models-store.json`, credentials, and model listings do not change.
 
 The `modelFallbackMessage` returned by `createAgentSession()` describes startup. If the account confirms the model is absent, the first prompt's error says so; a refused, offline, or cancelled lookup keeps the usual error. Pass `signal` to `createAgentSession()` to cancel the lookup, or pass `allowModelNetwork: false` to `ModelRuntime.create()` to disable it. Custom asynchronous-only credential stores keep normal local selection; discovery never waits on their read queue.
 
@@ -220,11 +240,12 @@ Specify which tools to expose by name:
 - `find` discovers filesystem paths by glob; `search` searches file contents with regex patterns across files, directories, globs, and internal URLs.
 - `builtins` selects shipped packages independently of tools: keys are `subagents`, `mcp`, `web-access`, and `intercom`. Omitted, `{}`, and omitted keys enable packages. A `false` value removes that package's extensions and resources, including on reload; `true` enables it.
 - The `subagents` builtin ships all 21 bundled subagent skills: `agent-browser`, `agent-desktop`, `bro`, `create-spec`, `feedback`, `herdr`, `how`, `impeccable`, `liteparse`, `prompt-engineer`, `qlty`, `research-codebase`, `show-me`, `skill-creator`, `subagent`, `tdd`, `teach`, `tmux`, `unslop`, `why`, and `workflow-files`. If you want these skills without the delegation tool, keep `subagents` enabled and pass `excludedTools: ["subagent"]`. If you disable the package, install independent copies of the skills you need in your [skills directory](/skills#locations).
-- `tools` accepts an allowlist of coding, extension, and custom tool names or `*` patterns. `tools: []` exposes no tools, including Intercom. A list containing only `+name`/`-name` entries modifies resolved defaults (for example `tools: ["+codemode", "-write"]`). Modifiers require exact names, cannot mix with plain entries, and apply across reloads. Invalid lists throw.
-- `excludedTools` removes matching names from the registry and active selection. Exclusions win over `tools`; unknown names are ignored.
+- `tools` accepts an allowlist of coding, extension, and custom tool names or `*` patterns. Pattern matching is **case-sensitive** and treats only `*` as a wildcard (matching any characters); `?`, `[]`, and `{}` are matched literally. `tools: []` exposes no tools, including Intercom. A list containing only `+name`/`-name` entries modifies resolved defaults (for example `tools: ["+codemode", "-write"]`). Modifiers require exact names (no `*`), cannot mix with plain entries, and apply across reloads. Invalid lists throw.
+- **MCP retention with allowlists:** When `tools` is a non-empty allowlist with no `mcp__*` entry, MCP tools remain registered for `codemode` and `tool_search`. Adding any `mcp__*` entry switches MCP tools to explicit allowlisting too.
+- `excludedTools` removes matching names (using the same case-sensitive `*`-only matching) from the registry and active selection. Exclusions win over `tools`; unknown names are ignored.
 - `noTools: "all"` exposes no tools, even with a nonempty `tools` list. It does not remove package resources or authorize services.
 - `noTools: "builtin"` suppresses the built-in selection, including `codemode`, when `tools` is omitted. Other extension and custom tools keep their default activation unless excluded. An explicit `tools` list wins over this mode.
-- Configured `defaultTools` selects initial coding tools when `tools` and `noTools` are omitted. Plain names replace defaults; modifier-only lists such as `["-bash", "+ls"]` modify defaults, and project modifier-only lists layer over global settings. See [defaultTools](/settings#tools).
+- Configured `defaultTools` narrows only the initial built-in coding selection when `tools` and `noTools` are omitted (it never disables extension or custom tools). Plain names replace defaults; modifier-only lists such as `["-bash", "+ls"]` modify defaults, and project modifier-only lists layer over global settings. See [defaultTools](/settings#tools).
 
 Subagent children inherit these restrictions. Child allowlists intersect with parent selections, including during model fallback, and a child cannot restore a parent-disabled package or excluded tool. See [child configuration](/sdk#subagent-children) for model, auth, host callback, and working-directory inheritance.
 
@@ -383,7 +404,7 @@ Do not mix wait arguments with launch fields. Unknown IDs, foreign IDs, and unbo
 
 PowerShell tools and local operations accept a trusted `taskOwner` binding and the same `wait` observation policy as `bash`. Owned native Windows runs auto-yield after the owner's command budget (normally 10000 ms); explicit per-call budgets override it, while execution timeout stays separate. Without a supported owner, explicit background requests reject and foreground execution waits for completion.
 
-On native Windows, an unowned `bash` or `powershell` command runs in its own job object so a timeout or abort terminates child processes even after the shell exits. Processes that break away (`CREATE_BREAKAWAY_FROM_JOB`), including commands started by Git Bash, are terminated on timeout or abort only while still under the running shell; detached children left behind by a finished command continue running.
+On native Windows, a `bash` or `powershell` tool call without a `taskOwner` binding runs in its own job object so a timeout or abort terminates child processes even after the shell exits. Processes that break away (`CREATE_BREAKAWAY_FROM_JOB`), including commands started by Git Bash, are terminated on timeout or abort only while still under the running shell; detached children left behind by a finished command continue running.
 
 ```typescript
 import { createPowerShellTool } from "@bastani/atomic";
@@ -446,7 +467,7 @@ Use `defineTool()` for standalone definitions and arrays like `customTools: [myT
 
 Custom tools passed via `customTools` combine with extension-registered tools. When you pass a plain-name `tools` allowlist, include each custom or extension tool you want active (for example `tools: ["read", "bash", "my_tool"]`). Modifier-only lists keep default activation and can enable inactive tools with `+name`. `excludedTools` removes any matching tool from the active set.
 
-`ToolDefinition.constrainedSampling` survives `defineTool()`, `customTools`, tool wrappers, inspection, and isolated execution:
+`ToolDefinition.constrainedSampling` survives `defineTool()`, `customTools`, tool wrappers, inspection, and interactive terminal execution:
 
 - `{ type: "json_schema", strict: "prefer" | "require" }`: `prefer` may fall back; `require` fails if the active model cannot enforce strict JSON Schema.
 - `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }`: requires one required string parameter and capable model metadata.
@@ -454,7 +475,7 @@ Custom tools passed via `customTools` combine with extension-registered tools. W
 
 Inspection preserves optional-property identity (`undefined` stays present when explicitly set). See `ConstrainedSamplingConfig`, [Constrained sampling](/extensions/authoring#constrained-sampling), and `ModelInfo.compat` in [RPC](/rpc/protocol#get_available_models).
 
-Factory-created `createBashTool()` instances receive the same execution-time `ATOMIC_SESSION_*` and `PI_SESSION_*` snapshot as the built-in `bash` tool unless you pass `exposeSessionEnvironment: false`. `MessageRenderOptions.outputPad` is also forwarded to normal and isolated custom message renderers.
+Factory-created `createBashTool()` instances receive the same execution-time `ATOMIC_SESSION_*` and `PI_SESSION_*` snapshot as the built-in `bash` tool unless you pass `exposeSessionEnvironment: false`. `MessageRenderOptions.outputPad` is forwarded to all custom message renderers.
 
 Normal sessions expose `kill({ id: taskId })` for owned `bash` and `powershell` background tasks. Include `kill` in any explicit `tools` allowlist if the agent should be able to stop tasks. `createKillTool` and `createKillToolDefinition` accept `KillToolOptions.taskOwner` (the same trusted binding used by shell launches) and reject without one. Result details carry the supervisor's `CancelReceipt`. See [Stop a shell task from a tool call](/background-tasks#stop-a-shell-task-from-a-tool-call).
 
@@ -477,12 +498,12 @@ const waitForCi = defineTool({
 
 A detachable call follows its message's `concurrency` ordering before starting. If a tool must save a durable handoff first, set `detachmentRequiresReady: true`: check `toolCallNeedsDetachmentHandoff(signal)` while running, then call `markToolCallReadyForDetachment(signal)` once saved. The call detaches only after both that signal and the host's delay (or returns inline if it finishes sooner).
 
-Without a detachment policy, detachable calls run inline. A host using persistent storage enables detachment with `session.setToolDetachment({ afterMs })`, where `afterMs` is `0` to `MAX_TOOL_DETACHMENT_AFTER_MS` (`2,147,483,647`):
+Without a detachment policy, detachable calls run inline. A host using persistent storage enables detachment with `session.setToolDetachment({ afterMs })`, where `afterMs` is any finite number from `0` to `MAX_TOOL_DETACHMENT_AFTER_MS` (`2,147,483,647`):
 
 - **Inline vs. detached:** Calls finishing within `afterMs` complete inline. Calls still running detach: the turn's other results save, the detached call remains pending, and `prompt()` resolves so the host can release or dispose of the session.
 - **Interrupts:** Once a turn is interrupted, inline calls no longer detach (even if marked ready in the same tick). They keep their result if they stop within `ATOMIC_TOOL_ABORT_GRACE_MS` (default 10 s); otherwise they record `Operation aborted` and later outcomes are discarded. Queued calls fail immediately with `Operation aborted`. Calls that detached before the interrupt are unaffected and remain available from `takeDetachedToolCalls()`.
 - **`session.takeDetachedToolCalls()`:** Returns each detached call once as a `DetachedToolCall` (`toolCallId`, `toolName`, non-rejecting `result` promise, `abort(reason)`). Calls whose turn the transcript has moved past are cancelled, dropped, and logged as `stale-detached-call`. Thrown errors become `isError` results; errors with a string `code` populate `details.error` via `toJSON()` (or a fallback object with `serialization: "fallback"` if `toJSON()` throws). Unrecordable payloads record a call error instead, while session-store failures still reject resume.
-- **`session.resumeDetachedTurn(results)`:** On a reopened session, records each result after its call and continues the turn (without a new user message) once every detachable call of that turn has a result. You can supply results across multiple calls; until the last arrives, `hasPendingDetachedTurn()` stays `true`. Duplicate, already-answered, or stale results are ignored (stale ones log `stale-detached-call`), while results for nonexistent calls throw `unknown-tool-call`. Calling with no new results continues a turn whose calls already have results.
+- **`session.resumeDetachedTurn(results, onRecorded?)`:** On a reopened session, records each result after its call (invoking optional `onRecorded(toolCallIds)` once recorded) and continues the turn without a new user message once every detachable call of that turn has a result. You can supply results across multiple calls; until the last arrives, `hasPendingDetachedTurn()` stays `true`. Duplicate, already-answered, or stale results are ignored (stale ones log `stale-detached-call`), while results for nonexistent calls throw `unknown-tool-call`. Calling with no new results continues a turn whose calls already have results.
 - **`session.isWaitingOnDetachedResults()`:** Reports whether the transcript still awaits a detached result. While waiting under a detachment policy, nothing starts a turn on the idle session (including subagent notices, steering, follow-ups, and post-compaction continuations); held custom messages are persisted and replayed after `resumeDetachedTurn()` continues the turn. Do not call `prompt()` while waiting on results.
 - **`session.hasPendingDetachedTurn()` and `session.redispatchDetachedToolCalls()`:** `hasPendingDetachedTurn()` reports whether a reopened transcript ends on a detached turn; continue it with `redispatchDetachedToolCalls()` and `resumeDetachedTurn()` instead of prompting again. `redispatchDetachedToolCalls()` restarts unanswered detachable calls with their original IDs and arguments and emits `tool_execution_start` before returning.
 
@@ -541,12 +562,17 @@ The tool infers the answer through the session's model registry rather than capt
 
 Each call shares one wall-clock deadline covering repairs, retries, and fallbacks. It defaults to the session's [`httpIdleTimeoutMs`](/settings#http) setting; pass `timeoutMs` (a positive integer in milliseconds) to `createStructuredOutputTool()` to override it. See [Structured decisions](/sdk/structured-decisions#cancellation-and-failures).
 
-To register under a custom name, pass `name` and include it in any explicit `tools` allowlist:
+To register under a custom name or capture the validated value in memory or to a private file (`0600`), pass `name`, `capture`, or `output`:
 
 ```typescript
+import { createStructuredOutputCapture, createStructuredOutputTool } from "@bastani/atomic";
+
+const capture = createStructuredOutputCapture<{ category: "question" | "statement" }>();
 const finalDecision = createStructuredOutputTool({
   name: "final_decision",
   schema: DecisionSchema,
+  capture, // sets capture.value and capture.called = true on success
+  output: { outputPath: "/tmp/decision.json" }, // writes JSON with mode 0600
 });
 
 await createAgentSession({
@@ -583,8 +609,25 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 - **Synthetic builtin factories:** Named `extensionFactories` descriptors may set `builtin: true` to expose a `builtin:<name>` resource and `replaceable: true` to yield if another extension registers the same tool, command, or flag. Pass `additionalExtensionPaths: ["builtin:codemode"]` for explicit loading even with `noExtensions: true`. See [built-in extension resources](/extensions#built-in-extension-resources).
 - **Inline built-in extensions:** `DefaultResourceLoader` includes `codemode`, `tool-search`, and `llama.cpp` as `builtin:<name>` paths. `codemode` is active by default (opt out with `tools: ["-codemode"]`), while `tool_search` is opt-in. Turn off an inline builtin with `noExtensions: true`, `disabledBuiltinExtensions: ["codemode"]`, or `extensions: ["-builtin:codemode"]`.
-- **Bindings and startup:** Pass `extensionBindings` to `createAgentSession()` to install `uiContext`, `mode`, `commandContextActions`, `shutdownHandler`, or `onError` before `session_start` runs. Creation awaits startup and resource discovery, shutting down a partial session if startup fails. Pass `reportStartupErrors: true` to report `session_start` and `resources_discover` errors to `onError` while keeping the session open. Later `bindExtensions()` calls update bindings without replaying `session_start`.
+- **Bindings and startup (`ExtensionBindings`):** Pass `extensionBindings` to `createAgentSession()` to install bindings before `session_start` runs: `humanInput`, `onDiagnostic`, `onUIPrompt`, `uiContext`, `onStatus` (receives extension `setStatus` writes when no `uiContext` is bound), `isPresentationOnly`, `mode`, `commandContextActions`, `shutdownHandler`, `onError`, and `reportStartupErrors` (when `true`, forwards `session_start` and `resources_discover` errors to `onError` and keeps the session open instead of rolling back). Later `bindExtensions()` calls update bindings without replaying `session_start`.
 - **Strict reloads:** `failOnExtensionErrors: true` requires transactional `prepareReload()` support (`DefaultResourceLoader` implements it). Custom loaders without `prepareReload()` work for ordinary reloads, while strict reload fails before calling their mutating `reload()`.
+
+#### Reload lifecycle and resource ownership
+
+- **Transactional vs. ordinary reload:** Failed transactional reloads keep the previous extension generation active; failed ordinary reloads do not. Both clean up newly acquired resources and report cleanup failures through an `AggregateError` tagged with `code: "ShutdownFailed"`.
+- **Lifecycle effects:** Acquire shared resources in `session_start` (or register `session_shutdown` immediately if acquired earlier). Use `publishExtensionContextEffect(ctx, effect)` (default `"start"` phase after retirement, or synchronous `"commit"` phase before revocation) to publish shared state only on commit, and `registerExtensionContextRetirementEffect(ctx, dispose)` for synchronous pre-revocation cleanup. Never cache `ctx.ui` across reloads.
+
+```typescript
+import { publishExtensionContextEffect, type ExtensionFactory } from "@bastani/atomic";
+
+const extension: ExtensionFactory = (atomic) => {
+  atomic.on("session_start", (_event, ctx) =>
+    publishExtensionContextEffect(ctx, () => {
+      atomic.events.emit("example:session-ready", { sessionId: ctx.sessionManager.getSessionId() });
+    }),
+  );
+};
+```
 
 #### Session disposal and lifecycle
 
@@ -593,13 +636,13 @@ Always `await session.dispose()`. Disposal seals new admission immediately and w
 Once `dispose()` resolves, nothing the session started is still writing to its session store or extension transpile cache, so deleting `agentDir` or a caller-owned store directory right afterward will not race. (Transpile-cache writes still unfinished after 5 seconds are logged to debug output and left to finish asynchronously.)
 
 - Concurrent `dispose()` calls share one promise.
-- Catch `ShutdownFailed` to inspect component `errors`; a failed close still leaves the session closed.
+- Disposal failures reject with an `AggregateError` tagged with `code: "ShutdownFailed"` (not an exported class); inspect `error.errors` for individual component failures. A failed close still leaves the session closed.
 - Settings persistence failures can reject disposal; repair storage and repeat the write before closing (`dispose()` does not drain `SettingsManager.drainErrors()`).
 - Caller-supplied settings, storage, and model runtimes remain caller-owned. Do not add manual MCP or Intercom teardown.
 - `AgentSessionRuntime` uses the same awaited close during session replacement and transfers bindings before the replacement starts. Reload invalidates stale input requests and subscriptions so late replies cannot authorize new work.
 - Duplicate `executeBash()` IDs act as correlation IDs: `abortBash(id)` cancels every active call with that ID.
 
-For reload, replacement, and resource ownership patterns, see [Finishing admitted work](/sdk#finishing-admitted-work).
+For reload, replacement, and resource ownership patterns, see [Draining work on reload and shutdown](/sdk#finishing-admitted-work).
 
 #### Prompting options
 
@@ -608,7 +651,7 @@ For reload, replacement, and resource ownership patterns, see [Finishing admitte
 - `expandPromptTemplates` (default `true`): expands file-based prompt templates, skill commands, and extension commands.
 - `images`: optional `ImageContent[]` attachments.
 - `streamingBehavior`: `"steer"` or `"followUp"` when sending while a turn is active; omitting it while streaming rejects with `AgentSessionBusyError`.
-- `startTurnOnly`: when `true`, starts a turn only if the session is idle and queued messages are not paused. When a turn is already running or queued input is paused, nothing is sent or queued and `prompt()` resolves as `"handled"`.
+- `startTurnOnly`: when `true`, starts a turn only if the session is idle and queued messages are not paused. When a turn is already running or queued input is paused, nothing is sent or queued, `preflightResult` is called with `(true, "handled")`, and `prompt()` resolves with `undefined`.
 - `source`: `InputSource` metadata for `input` hooks.
 - `preflightResult`: callback `(success, disposition?)` invoked once preflight accepts (`"handled"`, `"queued"`, or `"started"`) or rejects the prompt.
 
@@ -729,10 +772,12 @@ const { session } = await createAgentSession({
   sessionManager: SessionManager.inMemory(),
 });
 
-// New persistent session
+// New persistent session (default resolved store, or pass an explicit SessionStore)
 const { session: persisted } = await createAgentSession({
   sessionManager: await SessionManager.create(process.cwd()),
 });
+// Or with a caller-owned store:
+// await SessionManager.create(store, process.cwd())
 
 // Continue most recent
 const { session: continued, modelFallbackMessage } = await createAgentSession({
@@ -784,7 +829,7 @@ await runtime.fork("entry-id");
 await runtime.fork("entry-id", { position: "at" });
 ```
 
-`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window, so `getEntries()` and `getTree()` return only the resident window.
+`runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window, so `getEntries()` and `getTree()` return only the loaded context window.
 
 To visit older entries without loading them into memory, iterate `for await (const page of sessionManager.readHistory({ fromSeq, toSeq, signal }))`:
 
@@ -807,7 +852,28 @@ for await (const page of sessionManager.readHistory()) {
 const entry = await sessionManager.readEntry("entry-id");
 ```
 
-`sessionManager.loadFullHistory()` and `{ history: "full" }` on `SessionManager.open()`, `openSessionById()`, `continueRecent()`, `switchSession()`, and `rehydrate()` load every stored entry across every branch into memory so `getEntries()` and `getTree()` cover the whole session. Use them only when you need all entries resident at once.
+`sessionManager.loadFullHistory()` and `{ history: "full" }` on `SessionManager.open()`, `openSessionById()`, `continueRecent()`, `switchSession()`, and `rehydrate()` load every stored entry across every branch into memory so `getEntries()` and `getTree()` cover the whole session. Use them only when you need all entries loaded in memory at once.
+
+#### Session stores and claims
+
+Construct or open concrete `SessionStore` implementations directly when you manage store lifetimes yourself:
+
+- **`SqlSessionStore.open(database, { prefix?, cwdMatcher? })`:** Opens a SQL-backed session store on a caller-owned `SqliteDatabase` or storage adapter handle.
+- **`JsonlSessionStore.open(directory, { exactDirectory?, scanExisting?, lockFs?, createDirectory? })`:** Opens a JSONL session directory store (creates `directory` unless `createDirectory: false`).
+- **`new MemorySessionStore(cwdMatcher?, historyFiles?)`:** Creates a caller-owned in-memory store that preserves history across `session.release()` and `runtime.rehydrate()`.
+
+Coordinate single-writer session ownership across processes with session claims (stored at `<agentDir>/session-claims/<sessionId>.json`, refreshed on a 15-second heartbeat, with a 60-second staleness window for remote hosts and automatic dead-claim takeover):
+
+- **`await prepareSessionClaim(sessionId, { agentDir })`:** Awaits any in-flight asynchronous claim release in this process and prepares stale-claim takeover locking. Always await `prepareSessionClaim()` before `claimSession()` when re-claiming a session right after closing or releasing it.
+- **`claimSession(sessionId, { agentDir })`:** Synchronously acquires the claim and returns a `release()` function (throws `SessionAlreadyOpenError` if another live process holds the session or if a prior release in this process is still pending).
+- **`attachSessionClaim(sessionId)`:** Transfers an active claim to the opened session's lifetime marker, returning a `() => Promise<void>` disposer (after attaching, the earlier `release()` callback becomes a no-op).
+
+#### Session services (`createAgentSessionServices` and `createAgentSessionFromServices`)
+
+When managing multiple sessions that share a working directory (or inside `createAgentSessionRuntime()`), split directory-scoped service initialization from session creation:
+
+- **`createAgentSessionServices({ cwd, agentDir?, settingsManager?, modelRuntime?, ... })`:** Builds shared `AgentSessionServices` (`cwd`, `agentDir`, `modelRuntime`, `settingsManager`, `resourceLoader`, `diagnostics`).
+- **`createAgentSessionFromServices({ services, sessionManager, sessionStartEvent?, ... })`:** Creates an `AgentSession` backed by those shared services without re-discovering extensions, skills, or models.
 
 `SessionManager.create()`, `open()`, `continueRecent()`, `forkFrom()`, and all mutations are asynchronous. `SessionManager.inMemory()` with no entries is synchronous; when supplying entries, await `SessionManager.inMemory(cwd, options, entries)` and keep the input array stable until it resolves. A resolved write is committed (there is no `flush()` method), and a failed write rejects with the store's typed error without publishing the entry. Reads remain synchronous.
 
@@ -978,7 +1044,7 @@ const loader = new DefaultResourceLoader({
 });
 ```
 
-During interactive startup, deferred resource loading can run discovery twice. Both calls run, but if the same registration reports the same error, the terminal shows it once. A later `/reload` reports the failure again.
+During interactive startup, Atomic can run resource discovery twice (before and after optional extensions finish loading). Both calls run, and if the same registration reports the same error, the terminal shows it once. A later `/reload` reports the failure again.
 
 Creating `(...args) => handler(...args)` on every load registers a new callback each time, so you can see two startup errors. Keep separate callbacks when your override changes the handler, adds a step that can fail, or forwards on behalf of separate installations. Don't cache a previous load's handler or share a forwarder by extension name.
 
@@ -990,12 +1056,15 @@ Creating `(...args) => handler(...args)` on every load registers a new callback 
 interface CreateAgentSessionResult {
   // The session
   session: AgentSession;
-  
+
   // Extensions result (for runner setup)
   extensionsResult: LoadExtensionsResult;
-  
+
   // Warning if session model couldn't be restored
   modelFallbackMessage?: string;
+
+  // Machine-readable fallback reason when startup fell back from a requested or saved model
+  modelFallbackReason?: ModelFallbackReason;
 
   // The resolved binding when the session was created with `workspace`
   workspace?: BoundWorkspace;
@@ -1052,13 +1121,13 @@ const mode = new InteractiveMode(runtime, {
 await mode.run();
 ```
 
-If you quit the host or call `session.dispose()` during the initial interactive extension bind, `await mode.init()` or `await mode.run()` returns normally. The disposed session does not enter the input loop. This also applies when an incoming event or a pending provider retry started the UI. Track your own shutdown request instead of catching `SessionClosed` to detect it.
+If you quit the host or call `session.dispose()` during the initial interactive extension bind, `await mode.init()` or `await mode.run()` returns normally. The disposed session does not enter the input loop. This also applies when an incoming event or a pending provider retry started the UI. Track your own shutdown request instead of checking for `code: "SessionClosed"` errors to detect it.
 
-Replacing the session during the initial bind is not a quit: the interrupted startup still rejects. If you dispose only the session and then create a replacement with `await runtime.newSession()`, call `mode.run()` again to accept input for the replacement. Direct `session.bindExtensions()` and `mode.handleEvent(event)` calls still reject on close, so custom handlers can catch startup failures and report errors from their recovery work.
+Replacing the session during the initial bind is not a quit: the interrupted startup still rejects. If you dispose only the session and then create a replacement with `await runtime.newSession()`, call `mode.run()` again to accept input for the replacement. Direct `session.bindExtensions()` and `mode.handleEvent(event)` calls still reject on close (with an `Error` tagged `code: "SessionClosed"`), so custom handlers can catch startup failures and report errors from their recovery work.
 
 ### runPrintMode
 
-Single-shot mode: send prompts, output result, exit:
+Single-shot mode: send prompts, output text or JSONL events, and return the exit code (`Promise<number>`, `0` on success or `1` on fatal error):
 
 ```typescript
 import {
@@ -1085,7 +1154,7 @@ const runtime = await createAgentSessionRuntime(createRuntime, {
   sessionManager: await SessionManager.create(process.cwd()),
 });
 
-await runPrintMode(runtime, {
+const exitCode = await runPrintMode(runtime, {
   mode: "text",
   initialMessage: "Hello",
   initialImages: [],
@@ -1176,7 +1245,7 @@ try {
 
 ## Session start errors
 
-An in-process subagent that does not start within its start budget fails with a `SessionStartTimeoutError`; see [Subagent start timeouts](/subagents#subagent-start-timeouts) for the budget and how to change it. The child's result carries it serialized as `startError`, and its `error` text is the error's `message`. Every error in this family extends `SessionStartError`. Branch on the class, a guard, or `code`, never on the message:
+A subagent that does not start within its start budget fails with a `SessionStartTimeoutError`; see [Subagent start timeouts](/subagents#subagent-start-timeouts) for the budget and how to change it. The child's result carries it serialized as `startError`, and its `error` text is the error's `message`. Every error in this family extends `SessionStartError`. Branch on the class, a guard, or `code`, never on the message:
 
 | Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
@@ -1201,9 +1270,9 @@ if (startError && isRetryableSessionStartError(startError)) {
 These helpers let extensions and SDK code follow [debug mode](/development#debugging):
 
 - `isDebugEnabled(area?, env?)` returns whether debug mode is on. The same setting applies to every area. `env` defaults to `process.env`.
-- `reportDebug(area, event, fields, ownOutput?, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null` or lists of strings and numbers, never objects. The optional `ownOutput` callback is not used by any current area.
-- `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file. It and `reportDebug()` retain their synchronous write and immediate failure-reporting behavior.
-- `appendDebugRecordAsync(path, record)` and `reportDebugAsync(area, event, fields, ownOutput?, env?)` provide the same redaction and reporting without blocking the host. Await their promises to observe the completed write, or call `flushDebugLog()` to wait for all queued debug records.
+- `reportDebug(area, event, fields, env?)` records one event. In debug mode it appends a JSON line to the debug log, with credentials redacted and long text cut to 2,000 characters. `fields` holds strings, numbers, booleans, `null`, or lists of strings and numbers, never objects.
+- `appendDebugRecord(path, record)` appends one redacted JSON line to another debug file, such as a trace file. Both `appendDebugRecord()` and `reportDebug()` write synchronously and report failures immediately.
+- `appendDebugRecordAsync(path, record)` and `reportDebugAsync(area, event, fields, env?)` provide the same redaction and reporting without blocking the host. Await their promises to observe the completed write, or call `flushDebugLog()` to wait for all queued debug records.
 - `DEBUG_AREA_VARIABLES` lists `decision`, `storage` and `engine`. All have value `undefined`: there are no separate environment switches for these areas.
 - `getDebugLogFailure()` returns the first `DebugLogUnwritableError` of this process, if writing a debug log ever failed.
 - `setDebugSetting(enabled)` turns debug mode on or off for this process and for child processes it starts afterwards. It does not save the `debug` setting.
@@ -1218,7 +1287,7 @@ These helpers let extensions and SDK code follow [debug mode](/development#debug
 
 Both extend `DebugError`, whose `code` is a `DebugErrorCode` and whose `fields()` returns the fields above. Branch on the class or `code`, not the message. `isDebugError`, `isDebugLogUnwritableError` and `isDebugConfigError` recognize them, including an error that crossed a process boundary as a plain object with the same `name` and `code`.
 
-To pass one between processes, `serializeDebugError(error)` turns it into a `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, and a cause chain of at most eight errors), and `rehydrateDebugError(serialized)` rebuilds the same class with the same fields. An unknown `name` comes back as a `DebugError` that keeps its `name`, `code`, `fields` and `retryable`. The RPC client does this for you: when the engine refuses `set_debug`, `setDebug()` rejects with the `DebugConfigError`.
+To pass one between processes, `serializeDebugError(error)` turns it into a `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, and a cause chain of at most eight errors), and `rehydrateDebugError(serialized)` rebuilds the same class with the same fields. An unknown `name` comes back as a `DebugError` that keeps its `name`, `code`, `fields` and `retryable`. The RPC client does this for you: when Atomic refuses `set_debug`, `setDebug()` rejects with the `DebugConfigError`.
 
 ## Nonblocking helpers
 
@@ -1258,20 +1327,49 @@ On Windows, the native module reads directory ownership and access lists directl
 The main entry point exports:
 
 ```typescript
-// Factory
+// Session factories and runtime
 createAgentSession
+createAgentSessionServices
+createAgentSessionFromServices
 createAgentSessionRuntime
+AgentSession
 AgentSessionRuntime
+AgentSessionBusyError, isAgentSessionBusyError
+NativeModuleUnavailableError
 
 // Auth and Models
+ModelRuntime
+type CreateModelRuntimeOptions
+type ModelRuntimeAuthOverrides
+CredentialSynchronizationError
 AuthStorage
+readStoredCredential
 ModelRegistry
 resolveAutoModel
+resolveRestoredModelReference
 resolveModelScopeFromModels
 resolveModelScopeWithDiagnostics
 type ResolveModelScopeResult
 type ModelScopeDiagnostic
 OAuthLoginTransactionError
+GitHubCopilotError, GitHubCopilotAuthenticationError, GitHubCopilotContentFilterError
+GitHubCopilotEmptyResponseError, GitHubCopilotInvalidRequestError, GitHubCopilotModelUnavailableError
+GitHubCopilotPromptTooLargeError, GitHubCopilotQuotaExhaustedError, GitHubCopilotRateLimitError
+GitHubCopilotServiceUnavailableError, GitHubCopilotStreamEndedEarlyError, GitHubCopilotUnrecognizedResponseError
+LlamaServerError, LlamaServerRequestError, LlamaServerUnreachableError
+
+// Workspaces and Intercom policy
+workspace
+bindSessionWorkspace
+resolveWorkspace
+restoreWorkspace
+workspaceChangeSet
+publishPullRequest
+WorkspaceError, WorkspaceConfigError, WorkspaceBindingError, WorkspaceGitError
+WorkspaceSnapshotError, WorkspaceRestoreError, WorkspaceDriftError, WorkspacePublicationError
+isWorkspaceError, findWorkspaceError, isRetryableWorkspaceError, serializeWorkspaceError, rehydrateWorkspaceError
+IntercomPolicyError
+MAX_INTERCOM_REACHABLE_GROUPS
 
 // Resource loading
 DefaultResourceLoader
@@ -1332,7 +1430,7 @@ type Transcript
 type TranscriptOptions
 type TranscriptPart
 
-// Session management
+// Session management and resume
 SessionManager
 SettingsManager
 JsonlSessionStore
@@ -1363,6 +1461,10 @@ SettingsFileChangedError
 JsonlStoragePoisonedError
 StorageTransferError
 StorageImportIncompleteError
+ResumeError, ResumeNotFoundError, ResumePreconditionError, ResumeCatalogUnavailableError, ResumeCatalogTimeoutError
+isResumeError, findResumeError, isRetryableResumeError, serializeResumeError, rehydrateResumeError
+BlueprintError, BlueprintInvalidError, BlueprintStepFailedError, BlueprintStepTimedOutError, BlueprintUsesUnsupportedError, BlueprintBuildFailedError
+isBlueprintError, findBlueprintError, serializeBlueprintError, rehydrateBlueprintError
 type SessionJsonValue
 type SessionTextField
 type SessionTimestampField
@@ -1380,7 +1482,7 @@ DecisionTimeoutError, DecisionOutputError, DecisionProviderError
 type DecisionErrorCode, DecisionConfigErrorCode, DecisionRequestErrorReason, DecisionModelUnavailableReason
 isDecisionError, isDecisionConfigError, isDecisionRequestError, isDecisionModelUnavailableError
 isDecisionTimeoutError, isDecisionOutputError, isDecisionProviderError
-findDecisionError, isRetryableDecisionError, serializeDecisionError, rehydrateDecisionError
+findDecisionError, isRetryableDecisionError, serializeDecisionError, parseSerializedDecisionError, rehydrateDecisionError
 
 // Session start errors
 SessionStartError
@@ -1405,19 +1507,27 @@ type SessionStartConfigSource
 type SessionStartConfigReason
 type SerializedSessionStartError
 type SerializedSessionStartCause
+
 // Finished task retention (see "Owner-bound task supervisor")
 FINISHED_TASK_RETENTION
 TaskEvictedError, isTaskEvictedError, findTaskEvictedError, rehydrateTaskEvictedError
 type TaskEvictedErrorCode, type TaskEvictedErrorFields
 TaskToolError, isTaskToolError, rehydrateTaskToolError
 type TaskToolFailureCode, type TaskToolErrorFields, type SerializedTaskToolError
+
 // Messages typed into a task's transcript (see "Task transcript references")
 TaskMessageError, TaskMessageTimeoutError, isTaskMessageError, isTaskMessageTimeoutError
 findTaskMessageError, isRetryableTaskMessageError, rehydrateTaskMessageError
 type TaskMessageErrorCode, type TaskMessageErrorFields, type TaskMessageTimeoutErrorFields
 type TaskMessageTimeoutPhase, type SerializedTaskMessageError
-// Detached tool call failures (see "Detachable tool calls")
+
+// Detachable tool calls (see "Detachable tool calls")
+ToolDetachmentError, isToolDetachmentError, findToolDetachmentError, deserializeToolDetachmentError
+MAX_TOOL_DETACHMENT_AFTER_MS
+markToolCallReadyForDetachment, toolCallNeedsDetachmentHandoff
+type ToolDetachmentErrorCode, type ToolDetachmentErrorFields, type SerializedToolDetachmentError
 type DetachedCallFailure, type DetachedCallFailureCause
+
 // Git resolution (see "Resolving git")
 resolveGit, resolveGitSync, resolveInstalledGit, getGitStatus, getGitStatusAsync, GIT_MINIMUM_VERSION
 GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionConfigError
@@ -1436,7 +1546,10 @@ type ManagedToolName, type ManagedToolRequestPhase, type ManagedToolErrorCode, t
 // Debug output
 isDebugEnabled
 reportDebug
+reportDebugAsync
 appendDebugRecord
+appendDebugRecordAsync
+flushDebugLog
 DEBUG_AREA_VARIABLES
 getDebugLogFailure
 setDebugSetting
@@ -1489,13 +1602,12 @@ isSubscriptionSetupError, isSubscriptionSubscriberUnavailableError, isSubscripti
 isRetryableSubscriptionError, serializeSubscriptionError, deserializeSubscriptionError
 type SubscriptionErrorCode, type SubscriptionConfigReason, type SubscriptionSetupMissing, type SubscriberUnavailableReason, type SubscriptionRecordKind, type SubscriptionTimeoutPhase, type WebhookRequestFailures
 
-// Tool factories
+// Tool factories and shell/file tool errors
 createCodingTools
 createReadOnlyTools
 createReadTool, createBashTool, createPowerShellTool, createKillTool
 createEditTool, createWriteTool, createSearchTool, createFindTool, createLsTool
-
-// Edit and write errors (see Built-in tools: Edit and write errors)
+ShellToolError, ShellTimeoutError, isShellToolError, isShellTimeoutError, rehydrateShellToolError
 EditToolError, EditInputError, EditMatchError, EditTargetError, WriteSelectorError, FileToolAbortedError
 isEditToolError, isEditInputError, isEditMatchError, isEditTargetError, isWriteSelectorError, isFileToolAbortedError
 serializeFileToolError, rehydrateEditToolError, rehydrateWriteSelectorError
@@ -1516,8 +1628,6 @@ type Tool
 ```
 
 For extension types, see [Extensions](/extensions) for the full API.
-
-<a id="owner-bound-task-supervisor-s1" />
 
 ## Owner-bound task supervisor
 

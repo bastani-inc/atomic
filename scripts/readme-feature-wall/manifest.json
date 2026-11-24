@@ -477,7 +477,7 @@
       "lesson": "3.4 Write a skill",
       "anchor": "#34-write-a-skill",
       "title": "Write a skill",
-      "blurb": "A <code>SKILL.md</code> file teaches the agent a procedure it loads on demand - the same format Claude Code and Codex use.",
+      "blurb": "A <code>SKILL.md</code> file teaches the agent a procedure it loads on demand, in the same format Claude Code and Codex use.",
       "alt": "Atomic discovering a project-local SKILL.md and following the procedure it describes",
       "interactions": [
         "create .atomic/skills/repo-stats/SKILL.md",
@@ -614,8 +614,8 @@
       "part": "Part 2 - Session mastery",
       "lesson": "2.3 Sessions are just JSONL",
       "anchor": "#23-sessions-are-just-jsonl",
-      "title": "Sessions are just JSONL",
-      "blurb": "Every session is an append-only JSONL file on disk, so you can grep it, diff it, and script against it.",
+      "title": "SQLite and JSONL sessions",
+      "blurb": "Sessions save to local SQLite by default and export or run as append-only JSONL files you can grep, diff, and script against.",
       "alt": "Atomic walking its own session JSONL one event per line, showing each event's type, id, and parent id",
       "interactions": [
         "/name Atomic crash course",

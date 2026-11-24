@@ -53,11 +53,11 @@ const formatList = (items: readonly string[]) =>
 const referenceArtifacts: readonly ReferenceArtifact[] = [
 	{
 		path: "docs/models-configuration.md",
-		title: "Models Configuration",
+		title: "models.json field reference",
 		sidebarTitle: "models.json fields",
-		description: "Every provider, model, override, and compatibility field accepted in models.json, generated from the schema.",
+		description: "Complete field reference for providers, models, overrides, and API compatibility in models.json.",
 		intro: [
-			"This reference lists the fields of `models.json`. See [Custom Models](/models) for examples and the file location (normally `~/.atomic/agent/models.json`).",
+			"This reference lists every field accepted in `models.json`. See [Configure custom models](/models) for examples and file locations (normally `~/.atomic/agent/models.json`).",
 			'Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json"` to `models.json` for editor validation and completion.',
 		].join("\n\n"),
 		sections: [
@@ -81,7 +81,7 @@ const referenceArtifacts: readonly ReferenceArtifact[] = [
 			},
 			{
 				heading: "Input limits",
-				intro: "See [Image Input Limits](/models/reference#image-input-limits).",
+				intro: "See [Image input limits](/models/reference#image-input-limits).",
 				schema: ModelInputLimitsSchema,
 			},
 			{
@@ -160,7 +160,7 @@ function renderReference(artifact: ReferenceArtifact): string {
 		`description: ${artifact.description}`,
 		"---",
 	].join("\n");
-	const blocks = [frontmatter, `# ${artifact.title}`, `{/* ${generatedComment} */}`, artifact.intro];
+	const blocks = [frontmatter, `{/* ${generatedComment} */}`, artifact.intro];
 	for (const section of artifact.sections) {
 		blocks.push(section.heading.startsWith("#") ? section.heading : `## ${section.heading}`);
 		if (section.intro) blocks.push(section.intro);

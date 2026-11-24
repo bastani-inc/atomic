@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/bastani-inc/atomic">
-    <img alt="Atomic" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
+    <img alt="Atomic logo" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
   </a>
 </p>
 
@@ -17,9 +17,9 @@
 
 ---
 
-The terminal UI framework Atomic's interactive mode is built with: main-screen and alternate-screen renderers, differential rendering with synchronized output, components, overlays, key and mouse input, and inline images.
+`@bastani/atomic-tui` is the terminal UI framework behind Atomic's interactive mode. It provides main-screen and alternate-screen renderers, differential rendering with synchronized output, reusable components, overlays, keyboard and mouse input, and inline image support.
 
-[Atomic](https://github.com/bastani-inc/atomic), the verifiable coding agent runtime, is built on it, and it is published with every Atomic release at Atomic's version.
+[Atomic](https://github.com/bastani-inc/atomic) runs on this package and publishes it with every release at the same version.
 
 ## Install
 
@@ -27,42 +27,55 @@ The terminal UI framework Atomic's interactive mode is built with: main-screen a
 npm install @bastani/atomic-tui
 ```
 
-Inside an Atomic extension, import it without installing it: the running Atomic provides it. See [Libraries](https://docs.bastani.ai/libraries).
+Inside an Atomic extension, you can import it without installing it because the running Atomic process provides it. See [Libraries](https://docs.bastani.ai/libraries).
 
 ## Quick start
 
 ```typescript
-import { type TUI, Text, Editor, ProcessTerminal, TuiMainScreen, matchesKey } from "@bastani/atomic-tui";
+import {
+	Editor,
+	type EditorTheme,
+	Key,
+	matchesKey,
+	ProcessTerminal,
+	Text,
+	type TUI,
+	TuiMainScreen,
+} from "@bastani/atomic-tui";
 
-// Create terminal
 const terminal = new ProcessTerminal();
-
-// Create the default main-screen renderer through the shared TUI interface
 const tui: TUI = new TuiMainScreen(terminal);
 
-// Add components
 tui.addChild(new Text("Welcome to my app!"));
 
-import { defaultEditorTheme as editorTheme } from './test/test-themes.ts';
+const editorTheme: EditorTheme = {
+	borderColor: (s) => `\x1b[90m${s}\x1b[0m`,
+	selectList: {
+		selectedPrefix: (s) => `\x1b[36m${s}\x1b[0m`,
+		selectedText: (s) => `\x1b[1m${s}\x1b[0m`,
+		description: (s) => `\x1b[90m${s}\x1b[0m`,
+		scrollInfo: (s) => `\x1b[90m${s}\x1b[0m`,
+		noMatch: (s) => `\x1b[90m${s}\x1b[0m`,
+	},
+};
+
 const editor = new Editor(tui, editorTheme);
 editor.onSubmit = (text) => {
-  console.log("Submitted:", text);
-  tui.addChild(new Text(`You said: ${text}`));
+	tui.addChild(new Text(`You said: ${text}`));
 };
 tui.addChild(editor);
 
 // Focus the editor so it receives keyboard input
 tui.setFocus(editor);
 
-// In raw mode Ctrl+C doesn't send SIGINT — intercept it here to allow exit
+// In raw mode Ctrl+C does not send SIGINT, so intercept it here to exit
 tui.addInputListener((data) => {
-  if (matchesKey(data, 'ctrl+c')) {
-    tui.stop();
-    process.exit(0);
-  }
+	if (matchesKey(data, Key.ctrl("c"))) {
+		tui.stop();
+		process.exit(0);
+	}
 });
 
-// Start
 tui.start();
 ```
 

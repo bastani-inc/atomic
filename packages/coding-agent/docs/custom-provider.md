@@ -1,49 +1,34 @@
 ---
-title: "Custom providers"
-description: "Implement a provider API or OAuth flow Atomic does not ship."
+title: "Build custom providers"
+sidebarTitle: "Custom providers"
+description: "Register custom model providers, proxies, OAuth login flows, and streaming APIs from an Atomic extension."
 ---
 
-# Custom providers
-
-Extensions can register custom model providers with `atomic.registerProvider()`:
+Extensions can register custom model providers with `atomic.registerProvider()`, create multi-account aliases with `atomic.registerProviderAlias()`, and remove overrides with `atomic.unregisterProvider()`:
 
 - **Proxies:** Route requests through corporate proxies or API gateways.
 - **Custom endpoints:** Connect self-hosted or private model deployments.
 - **OAuth and SSO:** Add custom login flows for enterprise providers.
 - **Custom APIs:** Implement streaming, image generation, or classification for non-standard APIs.
 
+If you only need to add models for an API Atomic already supports, use [Configure custom models](/models) instead.
+
 ## Where to go next
 
-Start here for a first working provider extension, then use the focused guides below:
+Start with the quick reference below, then use the focused guides for your scenario:
 
-- [Override an existing provider](/custom-provider/override): change `baseUrl` or headers for a built-in provider.
-- [Multiple accounts for one provider](/custom-provider/registration#multiple-accounts-for-one-provider): inherit provider behavior with separate logins.
-- [Register a provider](/custom-provider/registration): register, unregister, and choose a streaming API type.
-- [Provider OAuth](/custom-provider/oauth): login callbacks, credential storage, rejected logins, and dynamic catalog refresh.
-- [Provider streaming API](/custom-provider/streaming): stream events, content blocks, tool calls, stop reasons, and cost calculation.
-- [Provider API reference](/custom-provider/api-reference): TypeScript interfaces for `ProviderConfig` and `ProviderModelConfig`.
-
-If you only need to add models for an API Atomic already supports, use [Custom models](/models) instead.
+- [Override a built-in provider](/custom-provider/override): change `baseUrl` or headers for a built-in provider while keeping its models.
+- [Register a custom provider](/custom-provider/registration): add static or dynamically discovered models, choose a streaming API, set up [multi-account aliases](/custom-provider/registration#multiple-accounts-for-one-provider), or unregister providers.
+- [Add OAuth login to a provider](/custom-provider/oauth): implement login callbacks, credential storage, rejected-login handling, and dynamic catalog refresh.
+- [Implement provider streaming](/custom-provider/streaming): build a custom `streamSimple` handler with stream events, tool calls, stop reasons, and cost calculation.
+- [Custom provider API reference](/custom-provider/api-reference): TypeScript interfaces for `ProviderConfig`, `ProviderModelConfig`, `ProviderAliasConfig`, `RefreshModelsContext`, and native `Provider` registrations.
 
 ## Example extensions
 
-See these complete provider examples:
+See these complete provider examples in the repository:
 
 - [`examples/extensions/custom-provider-anthropic/`](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-anthropic)
 - [`examples/extensions/custom-provider-gitlab-duo/`](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/custom-provider-gitlab-duo)
-
-## Contents
-
-- [Example extensions](#example-extensions)
-- [Quick reference](#quick-reference)
-- [Override existing provider](/custom-provider/override#override-existing-provider)
-- [Register new provider](/custom-provider/registration#register-new-provider)
-- [Unregister provider](/custom-provider/registration#unregister-provider)
-- [OAuth support](/custom-provider/oauth#oauth-support)
-- [Custom streaming API](/custom-provider/streaming#custom-streaming-api)
-- [Testing your implementation](#testing-your-implementation)
-- [Config reference](/custom-provider/api-reference#config-reference)
-- [Model definition reference](/custom-provider/api-reference#model-definition-reference)
 
 ## Quick reference
 
@@ -77,9 +62,18 @@ export default async function (atomic: ExtensionAPI) {
 }
 ```
 
-Await provider registration and unregistration. For dynamic model discovery, fetch and register models inside the async extension factory rather than `session_start`. Atomic waits for the factory before startup completes, making the provider available at interactive startup and in `atomic --list-models`.
+### Registration and merge rules
 
-Passing only `baseUrl` or `headers` for an existing provider keeps its built-in models. Supplying `models` replaces that provider's models across chat, image, and classifier operations. An omitted `type` defaults to `"chat"`; image and classifier entries require explicit `type` discriminants and matching handlers in `images` or `classifiers` keyed by each model's `api`:
+- **Await registration inside the extension factory.** For dynamic model discovery, fetch and register models inside the async extension factory rather than `session_start`. Atomic waits for the factory before startup completes, making the provider available at interactive startup and in `atomic --list-models`.
+- **Two `registerProvider` overloads.** Pass `(id, config)` for config-object registration, or pass a native `Provider` instance from `@bastani/atomic-ai` (`await atomic.registerProvider(provider)`) for full control over auth, filtering, and catalog persistence. See [Custom provider API reference](/custom-provider/api-reference).
+- **Repeated registrations merge defined fields.** Calling `atomic.registerProvider(id, config)` again for the same `id` merges defined fields over the previous registration while keeping `undefined` fields intact, except when registering or replacing an alias (`aliasOf`), which resets the previous registration.
+- **Interaction with `models.json`.** Extension `headers` merge over `models.json` `headers` (extension values win on key collision). `models.json` `modelOverrides` still apply on top of extension-registered chat models.
+- **Partial vs full model registration.** Passing only `baseUrl` or `headers` for an existing provider keeps its built-in models. Supplying `models` replaces that provider's models across chat, image, and classifier operations.
+- **Required fields.** When defining `models`, `baseUrl` is required at provider or model level (unless overriding a built-in provider that already has one), and `api` is required at model level (or provider level for chat models) unless overriding a built-in provider that supplies defaults. When supplying `streamSimple`, `api` is required at provider level. Every model requires `id`, `name`, `input`, and `cost`; chat and classifier models require `contextWindow`; chat models also require `maxTokens` and `reasoning`; image models require `output`.
+
+### Mixed-operation providers
+
+An omitted `type` defaults to `"chat"`. Image and classifier entries require explicit `type` discriminants and matching handlers in `images` or `classifiers` keyed by each model's `api`:
 
 ```typescript
 await atomic.registerProvider("media-tools", {
@@ -115,7 +109,7 @@ await atomic.registerProvider("media-tools", {
 });
 ```
 
-Model-level `baseUrl` overrides the provider endpoint. Equal model IDs across different operations (chat, image, classifier) stay distinct, including model-specific headers. Every model requires `id`, `name`, `input`, and `cost`; chat and classifier models require `contextWindow`; chat models also require `maxTokens` and `reasoning`; image models require `output`.
+Model-level `baseUrl` overrides the provider endpoint. Equal model IDs across different operations (chat, image, classifier) stay distinct, including model-specific headers.
 
 ## Testing your implementation
 
@@ -134,33 +128,3 @@ Verify your provider and model pairs against these scenarios (filenames are sugg
 | `image-tool-result.test.ts` | Images returned in tool results |
 | `total-tokens.test.ts` | Total token calculation |
 | `cross-provider-handoff.test.ts` | Conversation handoff across providers |
-
-## Moved sections
-
-<a id="override-existing-provider" />
-<a id="register-new-provider" />
-<a id="unregister-provider" />
-<a id="api-types" />
-<a id="auth-header" />
-<a id="oauth-support" />
-<a id="dynamic-model-catalog-refresh" />
-<a id="oauthlogincallbacks" />
-<a id="oauthcredentials" />
-<a id="custom-streaming-api" />
-<a id="stream-pattern" />
-<a id="event-types" />
-<a id="stop-reasons" />
-<a id="content-blocks" />
-<a id="tool-calls" />
-<a id="usage-and-cost" />
-<a id="registration" />
-<a id="config-reference" />
-<a id="model-definition-reference" />
-
-Detailed sections moved to child pages:
-
-- [Override an existing provider](/custom-provider/override#override-existing-provider)
-- [Register a provider](/custom-provider/registration#register-new-provider): [Unregister provider](/custom-provider/registration#unregister-provider), [API types](/custom-provider/registration#api-types), and [Auth header](/custom-provider/registration#auth-header)
-- [Provider OAuth](/custom-provider/oauth#oauth-support): [Dynamic model catalog refresh](/custom-provider/oauth#dynamic-model-catalog-refresh), [OAuthLoginCallbacks](/custom-provider/oauth#oauthlogincallbacks), and [OAuthCredentials](/custom-provider/oauth#oauthcredentials)
-- [Provider streaming API](/custom-provider/streaming#custom-streaming-api): [Stream pattern](/custom-provider/streaming#stream-pattern), [Event types](/custom-provider/streaming#event-types), [Stop reasons](/custom-provider/streaming#stop-reasons), [Content blocks](/custom-provider/streaming#content-blocks), [Tool calls](/custom-provider/streaming#tool-calls), [Usage and cost](/custom-provider/streaming#usage-and-cost), and [Registration](/custom-provider/streaming#registration)
-- [Provider API reference](/custom-provider/api-reference#config-reference): [Config reference](/custom-provider/api-reference#config-reference) and [Model definition reference](/custom-provider/api-reference#model-definition-reference)

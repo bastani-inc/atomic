@@ -1,20 +1,19 @@
 ---
-title: TUI API reference
+title: "TUI API reference"
 sidebarTitle: "TUI API"
-description: Component and focusable interfaces, keyboard input, line width, invalidation, logging, and performance contracts.
+description: "Reference for Atomic TUI component, focusable, keyboard, theme invalidation, debug logging, and host-native UI contracts."
 ---
-
-# TUI API reference
 
 ## Tool blocks
 
 Use `ToolBlock` from `@bastani/atomic` for a transcript item with a state glyph, one header row, and connected result rows. It accepts `status`, `title`, and optional `args`, `meta`, `details`, `body`, and `outputPad` (default `1`).
 
-Supported `ToolBlockStatus` values:
-- General tool states: `running` (`∀`), `success`, `failure`, `stopped` (interrupted or not run, muted `◼`), `warning`, `paused` (warning-colored `‖`), `waiting` (dim `◌`, wakes automatically when what it waits on finishes), and `info`.
+Supported `ToolBlockStatus` (aliases `NoticeStatus`) values:
+
+- General states: `running` (`∀`), `success`, `failure`, `stopped` (interrupted or not run, muted `◼`), `warning`, `paused` (warning-colored `‖`), `waiting` (dim `◌`, wakes automatically when what it waits on finishes), `heartbeat` (muted `♥`), and `info`.
 - Subagent and background-task states (shared with the agent panel and `/tasks`): `agent-running` (grey `◯`), `shell-running` (`⧗`), `input` (`◆`, waiting for an answer), `task-queued` (dim `○`), `task-stopping` (warning-colored `◼`), and `task-stopped` (red `◯`).
 
-`TASK_MARKS` from `@bastani/atomic` exports these glyphs for custom rendering. Code switching on `ToolBlockStatus` or `NoticeStatus` should handle `waiting`, `agent-running`, `shell-running`, `input`, `task-queued`, `task-stopping`, and `task-stopped`.
+`TASK_MARKS` from `@bastani/atomic` exports these glyphs for custom rendering. Exhaustive switches on `ToolBlockStatus` or `NoticeStatus` must handle all general states (including `waiting` and `heartbeat`) plus all six subagent and background-task states.
 
 A `NoticeLine` reports a task, drawing `running` as a grey `◯`, `stopped` as a red `◯`, and `paused` as warning-colored `‖`. With `NO_COLOR`, running and stopped notices (like `agent-running` and `task-stopped` blocks) both show plain `◯`, distinguished by their text.
 
@@ -33,7 +32,7 @@ A block does not add a leading blank line; its container controls spacing betwee
 
 In ordinary tool renderers, return only the call title from `renderCall` and unframed result content from `renderResult`; Atomic supplies the state glyph and connectors. Return `ToolBlockRecords` when several results need separate connectors.
 
-When embedding `ChatSessionHost`, forward the complete `ctx.ui.getChatRenderSettings()` result. Its optional component factories preserve remote tool renderers and the embedded chat's repaint and expansion settings. Do not copy only `getToolDefinition`. Custom message renderers can use `options.cwd` for the receiving chat's working directory instead of assuming `process.cwd()` matches it.
+When embedding `ChatSessionHost` (an experimental embedded-chat host exported from `@bastani/atomic`; not yet a guaranteed stable extension API), forward the complete `ctx.ui.getChatRenderSettings()` result. Its optional component factories preserve tool renderers and the embedded chat's repaint and expansion settings. Do not copy only `getToolDefinition`. Custom message renderers can use `options.cwd` for the receiving chat's working directory instead of assuming `process.cwd()` matches it.
 
 `host.replaceMessages(messages)` starts a fresh unread baseline. Use `host.replaceMessages(messages, { preserveUnread: true })` for a new snapshot of the same conversation; arrivals that have not painted yet remain unread.
 
@@ -45,25 +44,43 @@ The `Markdown` component from `@bastani/atomic-tui` also accepts per-instance `h
 
 ## Component interface
 
-All components implement:
+`@bastani/atomic-tui` defines the base `Component` interface, and Atomic extends it with `ExtensionCustomComponent` for components returned by `ctx.ui.custom()`:
 
 ```typescript
+// Base component interface from @bastani/atomic-tui
 interface Component {
   render(width: number): string[];
-  handleInput?(data: string): boolean | void;
+  renderSized?(width: number, height: number): string[];
+  handleInput?(data: string): void;
+  handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
+  paintedRowKey?(row: number): string | undefined;
+  readonly selectionTextMayChangeOnReplay?: boolean;
+  readonly historyReplayable?: boolean;
   wantsKeyRelease?: boolean;
   capturesViewportInput?: boolean;
   invalidate(): void;
 }
+
+// Returned by ctx.ui.custom() in @bastani/atomic
+type ExtensionCustomComponent = Omit<Component, "handleInput"> & {
+  handleInput?: (data: string) => boolean | undefined | Promise<boolean | undefined>;
+  dispose?(): void;
+};
 ```
 
-| Method | Description |
-|--------|-------------|
-| `render(width)` | Return array of strings (one per line). Each line **must not exceed `width`**. |
-| `handleInput?(data)` | Receive keyboard input when focused (a focused overlay also receives mouse input before the fullscreen viewport). Return `true` when consuming input; return `false`, `undefined`, or `void` so matching fullscreen viewport keys or overlay mouse events fall through to the viewport. Non-overlay focused components leave mouse input with `@bastani/atomic-tui` so transcript scrolling, scrollbar dragging, and text selection remain available. |
+| Member | Description |
+| --- | --- |
+| `render(width)` | Return an array of lines; each line **must not exceed `width`**. |
+| `renderSized?(width, height)` | Optional sized renderer called instead of `render()` when a layout allocates a fixed row count. |
+| `handleInput?(data)` | Receive keyboard input when focused (a focused overlay also receives mouse input before the fullscreen viewport). On `ExtensionCustomComponent`, return `true` (or a promise resolving to `true`) when consuming input; return `false`, `undefined`, or reject to let matching fullscreen viewport keys or overlay mouse events fall through to the viewport. Non-overlay focused components leave mouse input with `@bastani/atomic-tui` so transcript scrolling, scrollbar dragging, and text selection remain available. |
+| `handleMouse?(event)` | Optional normalized mouse event handler on base `@bastani/atomic-tui` components. |
+| `paintedRowKey?(row)` | Optional stable identity for what the last render drew on `row` so click press/release pairs match the same item across repaints. |
+| `selectionTextMayChangeOnReplay?` | Set `true` when rendered text depends on private state that cannot be replayed from history. |
+| `historyReplayable?` | Set `true` as an own data property on chat render components that can be discarded and recreated from saved entries without losing state. |
 | `wantsKeyRelease?` | If `true`, component receives key release events (Kitty protocol). Default: `false`. |
 | `capturesViewportInput?` | If `true` while focused, fullscreen viewport keys such as PageUp/PageDown go to the component instead of scrolling the transcript, as they do for a focused overlay. `SelectList`, `SettingsList`, and the editor with open autocomplete set it; wrappers can forward it. Default: `false`. |
 | `invalidate()` | Clear cached render state. Called on theme changes. |
+| `dispose?()` | Optional cleanup hook on `ExtensionCustomComponent`, invoked when `ctx.ui.custom()` closes or dismisses the component. |
 
 The `@bastani/atomic-tui` `Component` type permits handlers returning `void`; Atomic treats a missing or `undefined` return as unhandled only for matching fullscreen viewport keys or mouse events deferred to a focused overlay. Components that mutate state for such inputs must return `true` so the viewport does not apply them a second time.
 
@@ -190,9 +207,9 @@ Utilities:
 
 When the theme changes, the TUI calls `invalidate()` on all components. Clear cached render state there so the new theme takes effect.
 
-### The problem
+### Why pre-baked theme strings go stale
 
-If a component pre-bakes theme colors into strings (via `theme.fg()`, `theme.bg()`, etc.) and caches them, the cached strings contain ANSI escape codes from the old theme. Simply clearing the render cache isn't enough if the component stores the themed content separately.
+If a component pre-bakes theme colors into strings (via `theme.fg()`, `theme.bg()`, etc.) and caches them, the cached strings contain ANSI escape codes from the old theme. Clearing the render cache alone does not update pre-baked strings stored separately.
 
 **Wrong approach** (theme colors won't update):
 
@@ -206,12 +223,12 @@ class BadComponent extends Container {
     this.content = new Text(theme.fg("accent", message), 1, 0);
     this.addChild(this.content);
   }
-  // No invalidate override - parent's invalidate only clears
+  // No invalidate override: parent invalidate only clears
   // child render caches, not the pre-baked content
 }
 ```
 
-### The solution
+### Rebuilding themed content on invalidate
 
 Components that build content with theme colors must rebuild that content when `invalidate()` is called:
 
@@ -274,7 +291,7 @@ class ComplexComponent extends Container {
 }
 ```
 
-### When this matters
+### When to rebuild on invalidate
 
 This pattern is needed when:
 
@@ -290,13 +307,19 @@ This pattern is not needed when:
 
 ## Debug logging
 
-Set `ATOMIC_TUI_WRITE_LOG` (legacy `PI_TUI_WRITE_LOG`) to capture the raw ANSI stream written to stdout. A directory path writes one `tui-<timestamp>-<pid>.log` file per process. Review logs for sensitive content before sharing.
+Three environment variables capture TUI rendering diagnostics (legacy `PI_*` aliases are also accepted when the `ATOMIC_*` variable is unset):
+
+- **`ATOMIC_TUI_WRITE_LOG`** (legacy `PI_TUI_WRITE_LOG`): captures the raw ANSI byte stream written to stdout. Pass a file path, or a directory path to write one `tui-<timestamp>-<pid>.log` file per process.
+- **`ATOMIC_TUI_DEBUG=1`** (legacy `PI_TUI_DEBUG=1`): writes main-screen render snapshots to `/tmp/tui/render-<timestamp>-<random>.log`.
+- **`ATOMIC_TUI_DEBUG_REDRAW=1`** (legacy `PI_TUI_DEBUG_REDRAW=1`): logs full-redraw triggers to `pi-tui-debug.log` in the TUI log directory.
+
+Review all captured logs for sensitive content before sharing.
 
 ```bash
 ATOMIC_TUI_WRITE_LOG=/tmp/tui-ansi.log atomic
 ```
 
-Use this capture when reporting a terminal-rendering problem.
+Use these captures when reporting a terminal-rendering bug.
 
 ## Performance
 
@@ -328,11 +351,11 @@ Call `invalidate()` when state changes, then `ctx.ui.requestRender()` from the e
 
 ## Host integration
 
-These runtime contracts moved here from the [TUI components guide](/tui), which keeps the runnable `ctx.ui.custom()` example and the common interaction patterns.
+These runtime contracts pair with [Build TUI components](/tui), which provides runnable `ctx.ui.custom()` examples and common interaction patterns.
 
-### Host terminal modes from an isolated component
+### Controlling terminal autowrap
 
-In isolated mode, writing escape sequences to `process.stdout` does not control the host terminal. Use the optional `tui.terminal.setAutowrap` setter when a Windows overlay needs to change autowrap:
+When running inside Atomic's terminal UI, components do not write escape sequences directly to `process.stdout`. Use the optional `tui.terminal.setAutowrap` setter when a Windows overlay needs to toggle autowrap:
 
 ```typescript
 await ctx.ui.custom((tui, theme, keybindings, done) => {
@@ -341,19 +364,19 @@ await ctx.ui.custom((tui, theme, keybindings, done) => {
 }, { overlay: true });
 ```
 
-Only autowrap control is exposed. Atomic restores the mode when the component hides, closes, or is disposed, and after an engine crash or restart. Fullscreen mode retains its baseline mouse and autowrap behavior. On non-isolated hosts the setter may be absent; only write escape sequences directly when your component owns the real terminal.
+Only autowrap control is exposed. Atomic restores the previous mode when the component hides, closes, or disposes, or if the terminal host recovers from a crash or restart. Fullscreen mode retains its baseline mouse and autowrap behavior. In custom standalone hosts, `setAutowrap` may be absent; write escape sequences directly only when your component owns the terminal directly.
 
-### Renderer mode in an isolated component
+### Detecting fullscreen vs. main-screen mode
 
 `tui.mode` is `"fullscreen"` when Atomic paints on the alternate screen and `"regular"` on the main-screen fallback (used under `TERM=dumb`, in CI, or without a TTY).
 
-In isolated mode, a `ctx.ui.custom()` component or component-factory widget runs in the engine child and `tui.mode` reflects the host's renderer: each frame carries its mode, and Atomic invalidates the component when the mode changes. Before the host requests the first frame, `tui.mode` is `"regular"`, so read it inside `render()` rather than only inside the factory.
+Each rendered frame updates `tui.mode` to match the active terminal renderer, and Atomic invalidates the component whenever the mode changes. Before the first frame renders, `tui.mode` starts as `"regular"`, so read `tui.mode` inside `render()` rather than caching it inside the factory.
 
 ### Host-native session picker
 
-Use `ctx.ui.hostSessionPicker(request)` for responsive session-list navigation and search, including when an extension is busy. Send JSON-safe rows, update or close the picker, and handle selection, cancellation, and confirmed Ctrl+D deletion through the API.
+Use `ctx.ui.hostSessionPicker(request)` for responsive session-list navigation and search, even while an extension is busy. Pass JSON-safe rows, update or close the picker, and handle selection, cancellation, and confirmed `Ctrl+D` deletion through the API.
 
-The API is available in interactive modes, not headless RPC or print. Report that limitation rather than building a fallback picker. Callers do not need to branch on engine isolation.
+This API is available in interactive terminal sessions and absent in headless RPC or print mode; report that limitation instead of building a fallback picker.
 
 ```typescript
 const picker = ctx.ui.hostSessionPicker?.({
@@ -379,14 +402,23 @@ Set `canDelete: false` on a row to disable deletion even when `onDelete` is pres
 
 ### Host-native input form
 
-Use `ctx.ui.hostInputForm(request)` for a structured inline form in the editor slot. It supports Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C, including under engine isolation. The promise rejects if the host cannot read the form, with "The host could not read this input form."
+Use `ctx.ui.hostInputForm(request)` for a structured inline form in the editor slot. It supports `Tab`/`Shift+Tab`, arrow keys, text editing, configured keybindings, `Enter`, `Escape`, and `Ctrl+C`. The promise rejects with `"The host could not read this input form."` if the host cannot read the form.
 
 ```typescript
 try {
   const values = await ctx.ui.hostInputForm?.({
     title: "Release",
+    heading: "Prepare release",    // optional panel heading label
+    submitLabel: "Publish",        // optional submit button label
     fields: [
-      { name: "version", type: "string", required: true, initialValue: "" },
+      {
+        name: "version",
+        type: "string",
+        description: "Semantic version tag",
+        placeholder: "1.2.3",
+        required: true,
+        initialValue: "",
+      },
       { name: "channel", type: "select", choices: ["stable", "beta"], initialValue: "stable" },
     ],
   });
@@ -396,7 +428,7 @@ try {
 }
 ```
 
-Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion.
+`HostInputFormRequest` accepts `title`, `fields`, optional `heading`, and optional `submitLabel`. Each `HostInputFormField` accepts `name`, `type` (`"string"`, `"text"`, `"number"`, `"integer"`, `"boolean"`, or `"select"`), `initialValue` (raw string), and optional `description`, `placeholder`, `required`, and `choices`. Returned values are raw strings; your extension owns parsing and domain coercion.
 
 Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
 

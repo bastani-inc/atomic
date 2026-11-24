@@ -1,12 +1,12 @@
 <p align="center">
   <a href="https://github.com/bastani-inc/atomic">
-    <img alt="Atomic" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
+    <img alt="Atomic logo" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
   </a>
 </p>
 
 <p align="center">
   <b>@bastani/atomic-telemetry</b><br>
-  Vendor-neutral telemetry contracts, typed schemas and reference contexts.
+  Vendor-neutral telemetry contracts, typed schemas, and reference contexts.
 </p>
 
 <p align="center">
@@ -17,9 +17,9 @@
 
 ---
 
-An explicit, callback-based `TelemetryContext` and `TelemetrySpan` contract, a no-op context, an in-memory reference context, metrics, propagation and typed schemas. It has no exporter and sends nothing on its own: you connect it to OpenTelemetry, Sentry, logs or another backend through an adapter.
+`@bastani/atomic-telemetry` defines an explicit, callback-based `TelemetryContext` and `TelemetrySpan` contract alongside a no-op context, an in-memory reference context, metrics, context propagation, and typed schemas. It ships no built-in exporter and sends nothing on its own; connect it to OpenTelemetry, Sentry, logs, or another backend through an adapter.
 
-[Atomic](https://github.com/bastani-inc/atomic), the verifiable coding agent runtime, is built on it, and it is published with every Atomic release at Atomic's version.
+[Atomic](https://github.com/bastani-inc/atomic) runs on this package and publishes it with every release at the same version.
 
 ## Install
 
@@ -27,33 +27,46 @@ An explicit, callback-based `TelemetryContext` and `TelemetrySpan` contract, a n
 npm install @bastani/atomic-telemetry
 ```
 
-Inside an Atomic extension, import it without installing it: the running Atomic provides it. See [Libraries](https://docs.bastani.ai/libraries).
+Inside an Atomic extension, you can import it without installing it because the running Atomic process provides it. See [Libraries](https://docs.bastani.ai/libraries).
 
 ## Quick start
 
 ```typescript
 import {
-  NOOP_TELEMETRY_CONTEXT,
-  type TelemetryContext,
-} from '@bastani/atomic-telemetry';
+	InMemoryTelemetryContext,
+	NOOP_TELEMETRY_CONTEXT,
+	type TelemetryContext,
+} from "@bastani/atomic-telemetry";
+import { renderTrace } from "@bastani/atomic-telemetry/render";
 
-async function loadAccount(
-  accountId: string,
-  telemetryContext: TelemetryContext = NOOP_TELEMETRY_CONTEXT,
-) {
-  return telemetryContext.startSpan(
-    {
-      name: 'example.account.load',
-      attributes: { 'example.account.id': accountId },
-    },
-    async (span) => {
-      const account = await readAccount(accountId);
-      span.setAttributes({ 'example.account.found': account !== undefined });
-      return account;
-    },
-  );
+const accounts = new Map<string, { id: string; plan: string }>([["acct-1", { id: "acct-1", plan: "pro" }]]);
+
+async function loadAccount(accountId: string, telemetry: TelemetryContext = NOOP_TELEMETRY_CONTEXT) {
+	return telemetry.startSpan(
+		{
+			name: "example.account.load",
+			attributes: { "example.account.id": accountId },
+		},
+		async (span) => {
+			const account = accounts.get(accountId);
+			span.setAttributes({ "example.account.found": account !== undefined });
+			return account;
+		},
+	);
 }
+
+const recorder = new InMemoryTelemetryContext();
+await loadAccount("acct-1", recorder);
+
+const { traces } = await recorder.findTraces();
+if (traces[0]) console.log(renderTrace(traces[0].spans));
 ```
+
+## Subpath exports
+
+- `@bastani/atomic-telemetry`: Core interfaces, `NOOP_TELEMETRY_CONTEXT`, `InMemoryTelemetryContext`, and typed span schemas.
+- `@bastani/atomic-telemetry/render`: `renderTrace()` to format stored traces as readable terminal text.
+- `@bastani/atomic-telemetry/testing`: `createTelemetryAdapterConformance()` to test custom telemetry adapters against the contract.
 
 ## Documentation
 

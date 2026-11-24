@@ -1,7 +1,7 @@
 ---
 title: "@bastani/atomic-telemetry"
-sidebarTitle: "Telemetry"
-description: "Vendor-neutral telemetry contracts, a no-op and an in-memory context, metrics and typed schemas."
+sidebarTitle: "@bastani/atomic-telemetry"
+description: "Vendor-neutral telemetry contracts, no-op and in-memory contexts, metrics, trace rendering, and typed telemetry schemas."
 ---
 
 Vendor-neutral telemetry contracts and typed schema utilities for Atomic's libraries. This package contains no exporter and sends nothing on its own; you supply the adapter.
@@ -273,13 +273,13 @@ Storage in `InMemoryTelemetryContext` is unbounded and process-local. Create a f
 
 `TelemetryStore` separates querying from recording. `InMemoryTelemetryContext` implements it, and persistent adapters can implement it too:
 
-- `findTraces(query?)` returns locally stored traces, newest trace start first. Filters include the earliest stored span's `name`, inclusive `startMin` and `startMax`, `errors: true`, and scalar `attributes` (all requested attributes must match one span anywhere in the trace). Pages default to 20 traces; pass the returned opaque `cursor` with the same filters to continue. Equal start times order by trace ID.
-- `getTrace(traceId)` returns a trace or `undefined`.
-- `findMetrics({ name, startMin?, startMax?, attributes? })` returns metric rows with count, sum, minimum, and maximum. Time bounds are inclusive interval-start times. `InMemoryTelemetryContext` maps each raw measurement to a count-one row in its 10-second interval, while persistent stores can aggregate measurements per series and interval.
+- `findTraces(query?)` returns `Promise<{ traces: readonly StoredTrace[]; cursor?: string }>`, newest trace start first, where each `StoredTrace` is `{ traceId, spans }`. `TraceQuery` filters include the earliest stored span's `name`, inclusive `startMin` and `startMax`, `errors: true`, `attributes` (scalar equalities that must all match one span anywhere in the trace), `limit` (default `20`), and opaque `cursor` (pass with the same filters to fetch the next page). Equal start times order by `traceId`.
+- `getTrace(traceId)` returns `Promise<StoredTrace | undefined>`.
+- `findMetrics({ name, startMin?, startMax?, attributes? })` returns `Promise<readonly StoredMetric[]>`, where each `StoredMetric` has `{ intervalMs, name, kind, unit?, attributes, count, sum, min, max }`. Time bounds are inclusive interval-start times. `InMemoryTelemetryContext` maps each raw measurement to a count-one row in its 10-second interval, while persistent stores can aggregate measurements per series and interval.
 
 Only settled spans are returned. A trace ID propagates from the root span with the parent identity. Stores return the spans available locally, so remote or expired parents may be absent and a child can appear before its parent settles. Pagination is not a frozen snapshot across requests because late settlements and retention can change a trace's earliest stored span.
 
-`StoredSpan` includes epoch-millisecond `startedMs` and `endedMs`, event offsets in `timeMs`, and links carrying both target `traceId` and `spanId`. Durations use a monotonic clock because wall clocks across processes may disagree. Merge spans from multiple stores by trace ID; parent relationships, not timestamp containment, define the tree.
+`StoredSpan` has `{ id, traceId, parentId?, name, startedMs, endedMs, attributes, events: [{ name, timeMs, attributes }], links: [{ traceId, spanId, attributes? }], status }`. `startedMs` and `endedMs` are epoch milliseconds (`telemetryNow()`), and event `timeMs` values are offsets relative to span start. Durations use a monotonic clock because wall clocks across processes may disagree. Merge spans from multiple stores by `traceId`; parent relationships, not timestamp containment, define the tree.
 
 Trace formatting lives in `@bastani/atomic-telemetry/render`:
 
@@ -383,7 +383,7 @@ const startSpan = createTypedSpanStarter(
 );
 ```
 
-The starter exposes one overload per span and checks names and attributes at compile time. Union-valued names must be narrowed before a call, preserving the relationship between each runtime name and its attribute schema. Its callback receives a child starter over the same schemas, already bound to the callback span:
+The starter exposes one overload per span and checks names and attributes at compile time. Union-valued names must be narrowed before a call, preserving the relationship between each runtime name and its attribute schema. Always pass the second `attributes` argument (pass `{}` when a span declares `startAttributes: {}`), unlike `span.addEvent()` where `attributes` is optional when no attributes are required. Its callback receives a child starter over the same schemas, already bound to the callback span:
 
 ```typescript
 await startSpan(

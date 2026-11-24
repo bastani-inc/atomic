@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/bastani-inc/atomic">
-    <img alt="Atomic" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
+    <img alt="Atomic logo" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
   </a>
 </p>
 
@@ -17,9 +17,9 @@
 
 ---
 
-Runs model-written JavaScript in a QuickJS VM compiled to WebAssembly. Scripts call your tools; nested tool calls never enter the model's context, only the script's output and return value do. Atomic uses it for its built-in `codemode` tool, and it runs on Node, Bun and Cloudflare Workers.
+`@bastani/atomic-codemode` runs model-written JavaScript inside a QuickJS WebAssembly sandbox. Scripts call only the tools you inject, so intermediate tool calls stay out of the model's context while the script's output and return value come back cleanly. Atomic uses it for its built-in `codemode` tool, and the package supports Node.js, Bun, and Cloudflare Workers.
 
-[Atomic](https://github.com/bastani-inc/atomic), the verifiable coding agent runtime, is built on it, and it is published with every Atomic release at Atomic's version.
+[Atomic](https://github.com/bastani-inc/atomic) runs on this package and publishes it with every release at the same version.
 
 ## Install
 
@@ -27,11 +27,14 @@ Runs model-written JavaScript in a QuickJS VM compiled to WebAssembly. Scripts c
 npm install @bastani/atomic-codemode
 ```
 
-Inside an Atomic extension, import it without installing it: the running Atomic provides it. See [Libraries](https://docs.bastani.ai/libraries).
+Inside an Atomic extension, you can import it without installing it because the running Atomic process provides it. See [Libraries](https://docs.bastani.ai/libraries).
 
 ## Quick start
 
-```ts
+Sandboxed scripts have access to `tools` (your injected tool functions), `text()` and `image()` (for structured output), `store()` and `load()` (for passing values between steps), `exit()`, and `ALL_TOOLS`:
+
+```typescript
+import { readFile } from "node:fs/promises";
 import { CodemodeSandbox } from "@bastani/atomic-codemode";
 
 const sandbox = new CodemodeSandbox({
@@ -41,7 +44,7 @@ const sandbox = new CodemodeSandbox({
 			name: "read",
 			execute: async (args, { signal }) => {
 				const { path } = args as { path: string };
-				return await readFile(path, "utf8");
+				return await readFile(path, { encoding: "utf8", signal });
 			},
 		},
 	],
@@ -59,6 +62,15 @@ else console.error(result.error.kind, result.error.message);
 
 await sandbox.close();
 ```
+
+## Subpath exports
+
+- `@bastani/atomic-codemode`: `CodemodeSandbox` for Node.js and Bun (runs QuickJS in a worker thread).
+- `@bastani/atomic-codemode/portable`: `RemoteCodemodeSandbox` and runtime-neutral helpers without Node.js worker threads.
+- `@bastani/atomic-codemode/cloudflare`: Durable Object sandbox bindings for Cloudflare Workers.
+- `@bastani/atomic-codemode/declarations`: TypeScript declaration generation for injected tool catalogs.
+- `@bastani/atomic-codemode/source`: Source-analysis helpers for inspecting model-written scripts.
+- `@bastani/atomic-codemode/node-options` and `@bastani/atomic-codemode/worker`: Worker-thread launch options and worker entrypoint.
 
 ## Documentation
 

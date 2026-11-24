@@ -1,12 +1,12 @@
 <p align="center">
   <a href="https://github.com/bastani-inc/atomic">
-    <img alt="Atomic" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
+    <img alt="Atomic logo" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
   </a>
 </p>
 
 <p align="center">
   <b>@bastani/atomic-ai</b><br>
-  One API for every LLM provider: models, auth, streaming, tools, images, classification and thinking.
+  One API for every LLM provider: models, auth, streaming, tools, images, classification, and thinking.
 </p>
 
 <p align="center">
@@ -17,9 +17,9 @@
 
 ---
 
-The LLM library Atomic runs on. Build a `Models` collection of providers and stream, complete, generate images or classify through it, with token and cost tracking, automatic auth resolution, and contexts that can be handed between models mid-session.
+`@bastani/atomic-ai` is the LLM client library that powers Atomic. Build a `Models` collection of providers to stream, complete, generate images, or classify with token and cost tracking, automatic credential resolution, and portable conversation contexts you can move between models mid-session.
 
-[Atomic](https://github.com/bastani-inc/atomic), the verifiable coding agent runtime, is built on it, and it is published with every Atomic release at Atomic's version.
+[Atomic](https://github.com/bastani-inc/atomic) runs on this package and publishes it with every release at the same version.
 
 ## Install
 
@@ -27,132 +27,125 @@ The LLM library Atomic runs on. Build a `Models` collection of providers and str
 npm install @bastani/atomic-ai
 ```
 
-Inside an Atomic extension, import it without installing it: the running Atomic provides it. See [Libraries](https://docs.bastani.ai/libraries).
+Inside an Atomic extension, you can import it without installing it because the running Atomic process provides it. See [Libraries](https://docs.bastani.ai/libraries).
 
 ## Quick start
 
+Export `OPENAI_API_KEY` before running these examples. Import a single provider (such as `@bastani/atomic-ai/providers/openai`) in production bundles to avoid pulling in every built-in provider, or use `builtinModels()` to load the full catalog.
+
+### Streaming with tool calls
+
 ```typescript
-import { Type, type Context, type Tool } from '@bastani/atomic-ai';
-import { builtinModels } from '@bastani/atomic-ai/providers/all';
+import { type Context, createModels, type Tool, Type } from "@bastani/atomic-ai";
+import { openaiProvider } from "@bastani/atomic-ai/providers/openai";
 
-// A Models collection with every built-in provider registered
-const models = builtinModels();
+const models = createModels();
+models.setProvider(openaiProvider());
 
-// Sync lookup against the collection
-const model = models.getModel('openai', 'gpt-4o-mini')!;
+const model = models.getModel("openai", "gpt-4o-mini");
+if (!model) throw new Error("Model not found");
 
-// Define tools with TypeBox schemas for type safety and validation
-const tools: Tool[] = [{
-  name: 'get_time',
-  description: 'Get the current time',
-  parameters: Type.Object({
-    timezone: Type.Optional(Type.String({ description: 'Optional timezone (e.g., America/New_York)' }))
-  })
-}];
+const tools: Tool[] = [
+	{
+		name: "get_time",
+		description: "Get the current time.",
+		parameters: Type.Object({
+			timezone: Type.Optional(Type.String({ description: "Optional IANA timezone, such as America/New_York" })),
+		}),
+	},
+];
 
-// Build a conversation context (easily serializable and transferable between models)
 const context: Context = {
-  systemPrompt: 'You are a helpful assistant.',
-  messages: [{ role: 'user', content: 'What time is it?', timestamp: Date.now() }],
-  tools
+	systemPrompt: "You are a helpful assistant.",
+	messages: [{ role: "user", content: "What time is it in UTC?", timestamp: Date.now() }],
+	tools,
 };
 
-// Option 1: Streaming with all event types.
-// Auth resolves through the provider (OPENAI_API_KEY from the environment here).
-const s = models.stream(model, context);
+const stream = models.stream(model, context);
 
-for await (const event of s) {
-  switch (event.type) {
-    case 'start':
-      console.log(`Starting with ${event.partial.model}`);
-      break;
-    case 'text_start':
-      console.log('\n[Text started]');
-      break;
-    case 'text_delta':
-      process.stdout.write(event.delta);
-      break;
-    case 'text_end':
-      console.log('\n[Text ended]');
-      break;
-    case 'thinking_start':
-      console.log('[Model is thinking...]');
-      break;
-    case 'thinking_delta':
-      process.stdout.write(event.delta);
-      break;
-    case 'thinking_end':
-      console.log('[Thinking complete]');
-      break;
-    case 'toolcall_start':
-      console.log(`\n[Tool call started: index ${event.contentIndex}]`);
-      break;
-    case 'toolcall_delta':
-      // Partial tool arguments are being streamed
-      const partialCall = event.partial.content[event.contentIndex];
-      if (partialCall.type === 'toolCall') {
-        console.log(`[Streaming args for ${partialCall.name}]`);
-      }
-      break;
-    case 'toolcall_end':
-      console.log(`\nTool called: ${event.toolCall.name}`);
-      console.log(`Arguments: ${JSON.stringify(event.toolCall.arguments)}`);
-      break;
-    case 'done':
-      console.log(`\nFinished: ${event.reason}`);
-      break;
-    case 'error':
-      console.error(`Error: ${event.error.errorMessage}`);
-      break;
-  }
+for await (const event of stream) {
+	switch (event.type) {
+		case "text_delta":
+			process.stdout.write(event.delta);
+			break;
+		case "thinking_delta":
+			process.stdout.write(event.delta);
+			break;
+		case "toolcall_delta": {
+			const partialCall = event.partial.content[event.contentIndex];
+			if (partialCall?.type === "toolCall") {
+				console.log(`[Streaming args for ${partialCall.name}]`);
+			}
+			break;
+		}
+		case "toolcall_end":
+			console.log(`\nTool called: ${event.toolCall.name}(${JSON.stringify(event.toolCall.arguments)})`);
+			break;
+		case "error":
+			console.error(`Error: ${event.error.errorMessage}`);
+			break;
+	}
 }
 
-// Get the final message after streaming, add it to the context
-const finalMessage = await s.result();
+const finalMessage = await stream.result();
 context.messages.push(finalMessage);
 
-// Handle tool calls if any
-const toolCalls = finalMessage.content.filter(b => b.type === 'toolCall');
+const toolCalls = finalMessage.content.filter((block) => block.type === "toolCall");
 for (const call of toolCalls) {
-  const result = call.name === 'get_time'
-    ? new Date().toLocaleString('en-US', {
-        timeZone: call.arguments.timezone || 'UTC',
-        dateStyle: 'full',
-        timeStyle: 'long'
-      })
-    : 'Unknown tool';
+	const timeZone = typeof call.arguments.timezone === "string" ? call.arguments.timezone : "UTC";
+	const result =
+		call.name === "get_time"
+			? new Date().toLocaleString("en-US", { timeZone, dateStyle: "full", timeStyle: "long" })
+			: "Unknown tool";
 
-  // Add tool result to context (supports text and images)
-  context.messages.push({
-    role: 'toolResult',
-    toolCallId: call.id,
-    toolName: call.name,
-    content: [{ type: 'text', text: result }],
-    isError: false,
-    timestamp: Date.now()
-  });
+	context.messages.push({
+		role: "toolResult",
+		toolCallId: call.id,
+		toolName: call.name,
+		content: [{ type: "text", text: result }],
+		isError: false,
+		timestamp: Date.now(),
+	});
 }
 
-// Continue if there were tool calls
 if (toolCalls.length > 0) {
-  const continuation = await models.complete(model, context);
-  context.messages.push(continuation);
-  console.log('After tool execution:', continuation.content);
+	const continuation = await models.complete(model, context);
+	context.messages.push(continuation);
+	console.log("After tool execution:", continuation.content);
 }
 
-console.log(`Total tokens: ${finalMessage.usage.input} in, ${finalMessage.usage.output} out`);
+console.log(`Tokens: ${finalMessage.usage.input} in, ${finalMessage.usage.output} out`);
 console.log(`Cost: $${finalMessage.usage.cost.total.toFixed(4)}`);
+```
 
-// Option 2: Get complete response without streaming
+### Non-streaming completion
+
+```typescript
+import { type Context, createModels } from "@bastani/atomic-ai";
+import { openaiProvider } from "@bastani/atomic-ai/providers/openai";
+
+const models = createModels();
+models.setProvider(openaiProvider());
+const model = models.getModel("openai", "gpt-4o-mini");
+if (!model) throw new Error("Model not found");
+
+const context: Context = {
+	systemPrompt: "You are a concise assistant.",
+	messages: [{ role: "user", content: "Summarize HTTP 429 in one sentence.", timestamp: Date.now() }],
+};
+
 const response = await models.complete(model, context);
-
 for (const block of response.content) {
-  if (block.type === 'text') {
-    console.log(block.text);
-  } else if (block.type === 'toolCall') {
-    console.log(`Tool: ${block.name}(${JSON.stringify(block.arguments)})`);
-  }
+	if (block.type === "text") console.log(block.text);
 }
+```
+
+## OAuth helper CLI
+
+The package exposes an `atomic-ai` binary (with `pi-ai` kept as a legacy alias) for interactive OAuth login that saves credentials to `auth.json`:
+
+```bash
+npx atomic-ai login
 ```
 
 ## Documentation

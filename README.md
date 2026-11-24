@@ -57,7 +57,7 @@
 
 **Users are reporting:**
 
-- ⚡ A 1–1.5 hour reduction in manual verification per task compared to traditional coding agents, not including time saved from fewer follow-up fixes and reverts
+- ⚡ A 1 to 1.5 hour reduction in manual verification per task compared to traditional coding agents, not including time saved from fewer follow-up fixes and reverts
 - 🔀 ~95% merge rate on Atomic-generated PRs, with reduced follow-ups and a 0% revert rate
 - 🛡️ Production incidents caught that CI did not cover
 
@@ -271,9 +271,9 @@ The model-family badges are representative open families, not a closed allowlist
 
 ### Prerequisites
 
-- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.2+ for Bun installs.
+- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.5+ for Bun installs.
 - **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`. Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
-- **Model-provider access** — use a supported subscription login or API key.
+- **Model-provider access:** Use a supported subscription login or API key.
 
 ### Install
 
@@ -313,27 +313,30 @@ irm https://raw.githubusercontent.com/bastani-inc/atomic/main/install.ps1 | iex
 
 The archive installer verifies `SHA256SUMS`, keeps versioned payloads, and links its launcher from `~/.local/bin/atomic` on macOS/Linux or `%LOCALAPPDATA%\atomic\bin\atomic.cmd` on Windows, printing PATH guidance when needed. It accepts a few environment variables:
 
-- `ATOMIC_VERSION` — pin an exact release tag.
-- `ATOMIC_FORCE_INSTALL=1` (or `--force` / `-Force`) — reinstall even when that release is already installed. By default the installer skips the download for a healthy install of the requested or latest release.
-- `ATOMIC_INSTALL_DIR` / `ATOMIC_BIN_DIR` — change the install and launcher locations. On macOS/Linux, relative directories resolve against the physical directory where the installer starts.
-- `GITHUB_TOKEN` / `GH_TOKEN` — optional; raises GitHub API limits on shared networks.
-- `NO_COLOR` — plain output with no colours, progress bar, or logo; the installer also switches to plain output when its output is not a terminal or `CI` is set.
+- `ATOMIC_VERSION`: Pin an exact release tag.
+- `ATOMIC_FORCE_INSTALL=1` (or `--force` / `-Force`): Reinstall even when that release is already installed. By default, the installer skips the download for a healthy install of the requested or latest release.
+- `ATOMIC_INSTALL_DIR` / `ATOMIC_BIN_DIR`: Change the install and launcher locations. On macOS/Linux, relative directories resolve against the physical directory where the installer starts.
+- `ATOMIC_INSTALL_LOCK_TIMEOUT`: Override the default 30-minute lock wait timeout in seconds when another installer runs against the same install directory.
+- `GITHUB_TOKEN` / `GH_TOKEN`: Optional. Raises GitHub API limits on shared networks.
+- `NO_COLOR`: Plain output with no colors, progress bar, or logo. The installer also switches to plain output when stdout is not a terminal or `CI` is set.
 
-The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step; Android and Termux remain unsupported. See the [Quickstart](https://docs.bastani.ai/quickstart) for path-resolution and Windows `PATHEXT` details.
+The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step. Android and Termux are not supported by the release archive installer (see the [Termux guide](./packages/coding-agent/docs/termux.md) for package-manager setup). See [Installation](https://docs.bastani.ai/getting-started/installation) and [Windows](https://docs.bastani.ai/windows) for path-resolution and Windows `PATHEXT` details.
 
 ### Authenticate and run
 
 Start Atomic:
+
 ```bash
 atomic
 ```
-Login. Atomic supports subscription login for Codex, Claude, GitHub Copilot, xAI, as well as API-key providers such as OpenRouter:
+
+Sign in. Atomic supports browser and subscription logins for OpenRouter, ChatGPT Plus/Pro (Codex), OpenAI ChatGPT sign-in, Claude Pro/Max, GitHub Copilot, Kimi Code, Meta (Muse subscription), and xAI, as well as API-key providers:
 
 ```bash
 /login   # then select your provider
 ```
 
-Claude login from a third-party harness uses Anthropic extra usage billed per token rather than Claude plan limits. See [Providers & Models](./packages/coding-agent/README.md#providers--models) for integration details.
+Claude login from a third-party client uses Anthropic extra usage billed per token rather than Claude plan limits. See [Providers and models](./packages/coding-agent/README.md#providers-and-models) for integration details.
 
 Missing a provider? [Open an issue](https://github.com/bastani-inc/atomic/issues/new) or contribute an integration.
 
@@ -348,14 +351,14 @@ Atomic stores provider credentials in `~/.atomic/agent/auth.json` and creates th
 
 After authenticating, type a message. To try parallel work, ask Atomic to delegate a review and report what each child found.
 
-> ⚠️ Atomic has no built-in sandbox or command-level shell permission gate. Tools and extensions run with your user permissions. Run autonomous work inside a devcontainer, VM, or remote development machine—not on a host with sensitive data or credentials.
+> **Security warning:** Atomic has no built-in sandbox or command-level shell permission gate. Tools and extensions run with your user permissions. Run autonomous work inside a devcontainer, VM, or remote development machine, not on a host with sensitive data or credentials.
 
 <details>
 <summary><b>Devcontainer, terminal, and SDK references</b></summary>
 
 Atomic runs in a standard devcontainer or VM. Use the release-archive installer for an image without Node.js or npm, or install Node.js 22.19+ and use a package manager. Pass provider credentials through environment variables.
 
-See [Terminal setup](./packages/coding-agent/docs/terminal-setup.md), [Security](./packages/coding-agent/docs/security.md), and [Programmatic Usage](./packages/coding-agent/README.md#programmatic-usage) for the SDK and RPC entry points.
+See [Terminal setup](./packages/coding-agent/docs/terminal-setup.md), [Security](./packages/coding-agent/docs/security.md), and [Programmatic usage](./packages/coding-agent/README.md#programmatic-usage) for the SDK and RPC entry points.
 
 </details>
 
@@ -479,7 +482,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <tr>
 <td width="42%" valign="top">
 <h4>Write a skill</h4>
-<p>A <code>SKILL.md</code> file teaches the agent a procedure it loads on demand - the same format Claude Code and Codex use.</p>
+<p>A <code>SKILL.md</code> file teaches the agent a procedure it loads on demand, in the same format Claude Code and Codex use.</p>
 <p><a href="https://docs.bastani.ai/skills"><sub>Atomic docs · Skills</sub></a></p>
 <p><a href="https://github.com/bastani-inc/atomic-crash-course#34-write-a-skill"><sub>Crash course · 3.4 Write a skill</sub></a></p>
 </td>
@@ -542,8 +545,8 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 </tr>
 <tr>
 <td width="42%" valign="top">
-<h4>Sessions are just JSONL</h4>
-<p>Every session is an append-only JSONL file on disk, so you can grep it, diff it, and script against it.</p>
+<h4>SQLite and JSONL sessions</h4>
+<p>Sessions save to local SQLite by default and export or run as append-only JSONL files you can grep, diff, and script against.</p>
 <p><a href="https://docs.bastani.ai/session-format"><sub>Atomic docs · Session format</sub></a></p>
 <p><a href="https://github.com/bastani-inc/atomic-crash-course#23-sessions-are-just-jsonl"><sub>Crash course · 2.3 Sessions are just JSONL</sub></a></p>
 </td>
@@ -700,11 +703,11 @@ Use direct chat for a small task. For a larger one, tell the parent the scope, h
 
 Atomic can support:
 
-- **Engineering runs** — research, plan, implement, test, review, and release.
-- **Debugging and migrations** — reproduce, diagnose, patch, migrate in waves, and verify.
-- **Research and triage** — gather context, fan out analysis, classify issues, and synthesize findings.
-- **QA, docs, and compliance** — run repeatable checks with evidence and approval points.
-- **Custom agent products** — build on Atomic's runtime, SDK, tools, and skills.
+- **Engineering runs:** Research, plan, implement, test, review, and release.
+- **Debugging and migrations:** Reproduce, diagnose, patch, migrate in waves, and verify.
+- **Research and triage:** Gather context, fan out analysis, classify issues, and synthesize findings.
+- **QA, docs, and compliance:** Run repeatable checks with evidence and approval points.
+- **Custom agent products:** Build on Atomic's runtime, SDK, tools, and skills.
 
 ### Examples
 
@@ -738,22 +741,30 @@ The parent can split a task across agents, collect their results, and decide the
 
 Skills are reusable expert instructions and process modules. Atomic can select one from its description, or you can call it with `/skill:<name>`.
 
-| Skill               | Purpose                                                                                      |
-| ------------------- | -------------------------------------------------------------------------------------------- |
-| `research-codebase` | Analyze a focused area and write a dated research document.                                  |
-| `create-spec`       | Produce a technical execution spec grounded in research and engineer feedback.               |
-| `subagent`          | Delegate work through single agents, parallel groups, or forked context.                     |
-| `intercom`          | Coordinate parent, child, and peer sessions on the same machine.                             |
-| `prompt-engineer`   | Refine prompts, research questions, and skill inputs.                                     |
-| `skill-creator`     | Create, improve, and evaluate reusable skills.                                               |
-| `tdd`               | Apply a red-green-refactor loop and testing guidance.                                        |
-| `tmux`              | Drive and verify terminal applications.                                                      |
-| `agent-browser`     | Automate browser interactions and end-to-end UI checks.                                      |
-| `agent-desktop`     | Drive native desktop apps through their accessibility trees with agent-desktop (vercel-labs/agent-desktop, Apache-2.0). |
-| `qlty`              | Lint, auto-format, and measure code quality across 70+ linters via the qlty CLI.              |
-| `liteparse`         | Extract text, tables, and values from documents and images.                                  |
-| `impeccable`        | Design, audit, and refine frontend interfaces.                                               |
-| `show-me`           | Explain topics visually with concise diagrams, code-shape sketches, and focused HTML artifacts (HumanLayer, MIT). |
+| Skill | Purpose |
+| --- | --- |
+| `research-codebase` | Analyze a focused area and write a dated research document. |
+| `create-spec` | Produce a technical execution spec grounded in research and engineer feedback. |
+| `subagent` | Delegate work through single agents, parallel groups, or forked context. |
+| `intercom` | Coordinate parent, child, and peer sessions on the same machine. |
+| `prompt-engineer` | Refine prompts, research questions, and skill inputs. |
+| `skill-creator` | Create, improve, and evaluate reusable skills. |
+| `tdd` | Apply a red-green-refactor loop and testing guidance. |
+| `herdr` | Control Herdr panes, tabs, workspaces, and agents when running inside Herdr (`HERDR_ENV=1`). |
+| `tmux` | Drive and verify terminal applications. |
+| `agent-browser` | Automate browser interactions and end-to-end UI checks. |
+| `agent-desktop` | Drive native desktop apps through their accessibility trees with agent-desktop (vercel-labs/agent-desktop, Apache-2.0). |
+| `qlty` | Lint, auto-format, and measure code quality across 70+ linters via the qlty CLI. |
+| `liteparse` | Extract text, tables, and values from documents and images. |
+| `impeccable` | Design, audit, and refine frontend interfaces. |
+| `show-me` | Explain topics visually with concise diagrams, code-shape sketches, and focused HTML artifacts (HumanLayer, MIT). |
+| `how` | Explore a codebase to explain subsystem architecture, runtime flow, and code placement. |
+| `why` | Investigate design rationale, trade-offs, and history across source control, issues, and docs. |
+| `teach` | Combine `how` and `why` to explain a change or subsystem plainly at your pace. |
+| `bro` | Restate the last message in plain human language without jargon. |
+| `unslop` | Rewrite prose to remove AI filler, hype, and stock phrasing. |
+| `feedback` | Draft, scrub, and submit Atomic bug reports or enhancement requests. |
+| `workflow-files` | Convert an earlier Atomic workflow file into a reusable skill. |
 
 ### 3. Specialized subagents
 
@@ -806,7 +817,7 @@ A skill is Markdown the model can follow. It can also include scripts for checks
 
 ### Why not LangGraph or a generic agent framework?
 
-Atomic is repo-native and focused on software engineering work: issues, research, specs, branches, diffs, tests, lint, artifacts, reviewers, approvals, and handoffs. It provides a coding-agent runtime rather than a set of generic application primitives.
+Atomic is repo-native and focused on software engineering work: issues, research, specs, branches, diffs, tests, lint, artifacts, reviewers, approvals, and handoffs. It provides a coding-agent runtime rather than generic application building blocks.
 
 ### Where do artifacts live?
 
@@ -818,7 +829,7 @@ Choose project paths for deliverables you want to keep. Research commonly lives 
 
 Read [Orchestration with codemode and subagents](./packages/coding-agent/docs/orchestration.md) to plan independent work, recover after interruption, and verify results.
 
-## Support & ideas
+## Support and ideas
 
 Join the [Atomic Discord community](https://discord.gg/9CvdXUGXR4) for questions, help, feedback, feature ideas, and examples of what you have built.
 
@@ -830,7 +841,7 @@ To share a reusable procedure, see [Writing skills](./packages/coding-agent/docs
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 ## Sponsors
 
