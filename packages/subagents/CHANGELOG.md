@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-11-24
+
+### Changed
+
+- Updated the bundled `agent-browser` skill to v0.44.0, replacing the `protected-vercel-deployments` specialized skill entry with `vercel` (protected Vercel deployments and flag overrides) ([#6530](https://github.com/bastani-inc/atomic/pull/6530)).
+- Subagents now respect the session's active `enabledModels` / `--models` / `/scoped-models` scope: `subagent({ action: "models" })` filters the returned catalog to allowed models, single and parallel launches skip disallowed fallback candidates and reject disallowed explicit models with a clear reason, `model: "auto"` selects only in-scope models, and child mid-run model fallbacks enforce the same allowlist. Behavior is unchanged when no model scope is configured ([#6532](https://github.com/bastani-inc/atomic/pull/6532)).
+
+### Fixed
+
+- Expanded running subagent cards now memoize static Prompt, Result, and completed nested tool-call sections (and keep transcript detail references stable when periodic refreshes detect no changes) so working-clock animation ticks only re-render the active status line and any currently running nested tool call instead of re-rendering every nested tool block ([#6528](https://github.com/bastani-inc/atomic/issues/6528), [#6529](https://github.com/bastani-inc/atomic/pull/6529)).
+
 ## [0.10.7-alpha.1] - 2026-11-24
 
 ### Changed

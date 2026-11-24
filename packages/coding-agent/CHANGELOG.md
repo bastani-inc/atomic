@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-11-24
+
+Atomic fixes render-engine CPU starvation on expanded running subagent cards, scopes subagents to the session's `enabledModels` allowlist, and updates the bundled `agent-browser` skill.
+
+**Subagents and rendering**
+
+- **No more CPU starvation on expanded running subagent cards.** Static Prompt, Result, and completed nested tool-call sections are now memoized and `ToolBlockRecords` caches unchanged prefixed rows, while `BackgroundRenderLane` yields a bounded cooldown after slow renders so working-clock animation ticks never starve subsequent model turns ([#6528](https://github.com/bastani-inc/atomic/issues/6528), [#6529](https://github.com/bastani-inc/atomic/pull/6529))
+- **Subagents respect `enabledModels` / `--models`.** `subagent({ action: "models" })`, `model: "auto"`, explicit launches, and child mid-run fallbacks now follow the parent session's active `scopedModels` allowlist ([#6532](https://github.com/bastani-inc/atomic/pull/6532))
+
+**Bundled skills**
+
+- **Synced `agent-browser` to v0.44.0.** Updates the bundled `agent-browser` skill to replace `protected-vercel-deployments` with `vercel` ([#6530](https://github.com/bastani-inc/atomic/pull/6530))
+
+### Changed
+
+- Child sessions created from a parent session now inherit the parent's active `scopedModels` (`enabledModels` / `--models` / `/scoped-models`) and enforce that allowlist during child mid-run model fallback ([#6532](https://github.com/bastani-inc/atomic/pull/6532)).
+
+### Fixed
+
+- Expanded running subagent cards no longer saturate the engine CPU or block subsequent model turns: `ToolBlockRecords` caches prefixed rows for unchanged static sections and reuses per-line formatting for unchanged lines, `BackgroundRenderLane` yields a bounded cooldown after slow renders, and `ToolExecutionComponent.setOutputPad()` is now idempotent ([#6528](https://github.com/bastani-inc/atomic/issues/6528), [#6529](https://github.com/bastani-inc/atomic/pull/6529)).
+
 ## [0.10.7-alpha.1] - 2026-11-24
 
 Atomic fixes render-engine CPU starvation on expanded running subagent cards, scopes subagents to the session's `enabledModels` allowlist, and updates the bundled `agent-browser` skill.
