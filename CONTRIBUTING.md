@@ -1,85 +1,46 @@
 # Contributing to Atomic
 
-Thanks for your interest in contributing to Atomic. This guide explains how to prepare a local checkout, make changes, and submit them for review.
-
 ## Current status: P0 bugs only
 
-We're making large changes to Atomic that impact all parts of the codebase. Until they're done:
+We're accepting P0 fixes only. A P0 bug has no reasonable workaround and crashes Atomic, loses or corrupts data or session history, causes a security problem, or makes Atomic unusable.
 
-- **P0 bugs are open for reports and fixes.** A P0 bug crashes Atomic, loses or corrupts data or session history, creates a security problem, or keeps you from using Atomic at all, with no reasonable workaround. The issue-first approval process below still applies to fixes.
-- **New features and enhancements are paused.** Please don't open feature or enhancement PRs. You can still propose an idea with the Contribution issue template. We'll review it case by case, but in general we won't add features until these changes are done.
-- **Existing PRs are paused**, except P0 fixes. Once these changes land we'll review paused PRs one at a time; we can't guarantee each will be carried over.
+Other bug reports are welcome. Follow the [security policy](SECURITY.md) to report vulnerabilities privately.
 
-See [#3331](https://github.com/bastani-inc/atomic/issues/3331) for details. This section will be removed when these changes are done.
-
-## Getting started
-
-1. Fork and clone the repository.
-2. Install dependencies with npm:
-
-   ```bash
-   npm ci --ignore-scripts
-   ```
-
-   The committed `.npmrc` pins exact versions and sets no minimum release age.
-
-3. Read [`DEV_SETUP.md`](DEV_SETUP.md) for the full development setup, local CLI workflow, testing notes, and repository layout.
-
-## Development guidelines
-
-- Use **npm** for installs, builds, checks, and tests. **Bun** compiles the release binaries and runs `scripts/*.ts`. Do not use yarn or pnpm, and do not run `bun install` — see the Tech Stack table in [`AGENTS.md`](AGENTS.md) for the full split.
-- Keep changes focused and small enough to review.
-- Follow the existing TypeScript style and package conventions.
-- Add or update tests when changing behavior.
-- Do not add build output, generated artifacts, or unrelated formatting changes.
+Don't open feature or enhancement PRs. We're pausing existing PRs other than P0 fixes. You can still propose ideas with the Contribution issue template. See [#3331](https://github.com/bastani-inc/atomic/issues/3331).
 
 ## Claiming an issue
 
-For every external contribution, first open a proposal issue for a new idea or discuss an existing issue with your intended approach. Wait for explicit maintainer approval of the proposed scope before implementing it and opening a pull request. This applies to all changes, including small fixes and documentation-only changes, and to draft pull requests.
+If you're an external contributor, open a proposal issue or describe your approach on an existing issue. Wait for a maintainer to explicitly approve the scope before starting work or opening a PR. This includes small fixes, docs changes, and draft PRs. Assignment alone is neither scope approval nor a promise to merge.
 
-Opening an issue, expressing interest, silence, or assignment alone does not constitute scope approval. A maintainer will respond as soon as possible. An expression of interest alone does not reserve an issue.
+Assignments usually last seven days. Post an update if you need more time. Maintainers may release inactive assignments. If someone else is assigned, coordinate with them and a maintainer before opening a competing PR. Maintainers do not need approval or assignment.
 
-Assignments are normally held for seven days. Post a progress update if you need more time. Maintainers may release an assignment when there has been no activity.
+## Getting started
 
-Avoid competing pull requests for assigned issues. Coordinate with the assignee and a maintainer first; uncoordinated duplicate pull requests may be closed.
+Fork and clone the repository, then run `npm ci --ignore-scripts` from the root. See [DEV_SETUP.md](DEV_SETUP.md) for prerequisites, build steps, and how to run Atomic locally.
 
-Assignment reserves the opportunity to work on an issue but does not guarantee merge. Maintainers are exempt from this issue-first approval process and may work on issues and open pull requests without being assigned.
+## Development guidelines
+
+- Use npm for installs, builds, checks, and tests. Bun compiles release binaries and runs `scripts/*.ts`. Do not use Yarn, pnpm, or `bun install`.
+- Keep changes focused and follow the existing TypeScript and package conventions. Leave out build output, generated files, and unrelated formatting.
+- Add or update tests when behavior changes.
 
 ## Testing and checks
 
-Before opening a pull request, run the most relevant checks for your change:
-
-```bash
-npm run check
-npm run test:unit
-```
-
-For broader changes, use:
-
-```bash
-npm run test:all
-```
+Run the checks that cover your change before opening a PR. Start with `npm run check` and `npm run test:unit`. For broader changes, run `npm run test:all` for the root unit and integration suites.
 
 ### Per-test timeouts
 
-Every suite runs with a shared **30000 ms** per-test budget, declared once as `TEST_TIMEOUT_MS` in the root `vitest.config.ts` and applied to all three projects. That single value is the whole policy:
-
-- Do not restate the budget in a package script, in `bunfig.toml` (Bun ignores `[test] timeout`), or only in the CI workflow (CI and local runs would drift apart), and do not make it platform-specific.
-- Pass an explicit third-argument timeout only when a test is structurally heavy — it reloads the full builtin package graph, spawns a real CLI child, runs `tsc`, or installs a built package. Otherwise rely on the shared default; never restate it.
-- The CI wrapper runs each suite once and warns when a test uses at least 40 % of its effective timeout. Headroom warnings are advisory; Vitest enforces the actual timeout. The full duration table is uploaded as a `.ci-diagnostics/` artifact, including on successful runs. Do not raise a test's budget merely to silence a warning.
-- Headroom reporting reads Vitest's JSON reporter, which the CI wrapper requests alongside the human one so the step log stays readable. A run that executes tests without producing durations fails the step instead of reporting no slow tests.
+The root Vitest projects share the 30-second `TEST_TIMEOUT_MS` in [`test/helpers/test-timeout.ts`](test/helpers/test-timeout.ts). Do not duplicate it or set a platform-specific default. Only override it for tests that must do expensive work, such as launching the CLI. Pass a named constant as the third argument. Do not raise a timeout just to silence a CI warning.
 
 ### Tests run in parallel
 
-vitest runs test files concurrently and this repository sets no pool or worker limits, matching upstream pi. A test that only passes on an idle machine is a bug in that test: give the real work headroom and derive the assertion from a named constant. Do not skip it, serialize the suite, or shard.
+If a test fails under load, fix the test and give the work enough time to finish. Base timing assertions on a named constant. Do not skip the test, serialize the suite, or use sharding to hide the failure.
 
 ### Provider credentials and live provider tests
 
-Every test run strips ambient provider credentials and endpoints (for example `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COPILOT_GITHUB_TOKEN`, AWS, Azure and Vertex variables) before any test worker starts. This covers the unit, integration and ci projects and the `packages/coding-agent` and `packages/ai` suites. A key in your shell would otherwise make its provider available to tests that expect only their fixtures' providers. The full list is `test/helpers/provider-credential-env.ts`, and `test/global-setup-provider-credential-isolation.ts` applies it. A test that needs a credential sets it itself.
+Tests clear inherited [provider credentials and endpoints](test/helpers/provider-credential-env.ts) by default. Set any credentials your test needs in the test itself. If it needs debug output, use `withDebugLog` from [`test/helpers/debug-mode.ts`](test/helpers/debug-mode.ts).
 
-Debug output is cleared the same way: `test/global-setup-debug-isolation.ts` removes the variables listed in `test/helpers/debug-env.ts` (`ATOMIC_DEBUG`, the per-area debug variables, and the `ATOMIC_DEBUG_SETTING` that an Atomic session passes to its child processes), so a suite started from Atomic or with debug mode on starts with it off. A test that needs debug mode turns it on itself, for example with `withDebugLog` from `test/helpers/debug-mode.ts`.
-
-Live provider tests, which skip when their key is unset, therefore skip in a default run even if you exported the key. To run them against real providers, opt back in to your shell's credentials:
+Live provider tests skip without credentials. To run them against a real provider, opt in with your key:
 
 ```bash
 OPENAI_API_KEY=sk-... ATOMIC_TEST_KEEP_PROVIDER_CREDENTIALS=1 npm run test --workspace=@bastani/atomic-ai
@@ -87,20 +48,22 @@ OPENAI_API_KEY=sk-... ATOMIC_TEST_KEEP_PROVIDER_CREDENTIALS=1 npm run test --wor
 
 ## Pull requests
 
-External contributors must complete the issue discussion and explicit scope approval process above before opening any PR. PRs opened without prior approval may be closed pending discussion.
+External contributors need [scope approval](#claiming-an-issue) before opening a PR. Maintainers may close PRs without approval.
 
-When opening a PR:
-
-- Describe the problem and the solution clearly.
-- External contributors must link the approved issue with `Closes #<issue-number>` or `Related: #<issue-number>`.
-- Include test output or explain why tests were not run.
-- Call out breaking changes, migration steps, or follow-up work.
-- Open the PR as a draft while it is still changing. A draft runs no test jobs; mark it ready for review when it is done, and the full test run starts then.
+- Describe the problem and the fix.
+- If you're an external contributor, link the approved issue with `Closes #<issue-number>` or `Related: #<issue-number>`.
+- Include test results or explain why you did not run tests.
+- Call out breaking changes, migration steps, and follow-up work.
+- Keep the PR in draft while you work. Mark it ready for review to start the full [Tests workflow](.github/workflows/test.yml), including the `test (all platforms)` check.
 
 ## Skills and orchestration patterns
 
-Use [skills](packages/coding-agent/docs/skills.md) to describe reusable procedures, with [codemode](packages/coding-agent/docs/codemode.md) and [subagents](packages/coding-agent/docs/subagents.md) for orchestration. The release procedures live in [`.agents/skills/`](.agents/skills): use `/skill:publish-release` for a release and `/skill:release-docs` for a hosted docs refresh. When changing a procedure, update its `SKILL.md`, and put deterministic Git, GitHub or docs checks in [`scripts/release/`](scripts/release) with tests. Test against existing refs; do not merge, tag or publish to verify a change.
+Write reusable procedures as [skills](packages/coding-agent/docs/skills.md). Use [codemode](packages/coding-agent/docs/codemode.md) and [subagents](packages/coding-agent/docs/subagents.md) to coordinate work.
+
+The release procedures are in [`.agents/skills/`](.agents/skills). Use `/skill:publish-release` to publish and `/skill:release-docs` to refresh the hosted docs.
+
+When changing a procedure, update its `SKILL.md`. Put deterministic Git, GitHub, or docs checks in [`scripts/release/`](scripts/release) with tests. Test against existing refs. Do not merge, tag, or publish to verify a change.
 
 ## Questions
 
-For questions, help, feedback, or feature ideas, join the [Atomic Discord community](https://discord.gg/9CvdXUGXR4).
+Ask questions or share feedback in the [Atomic Discord community](https://discord.gg/9CvdXUGXR4).

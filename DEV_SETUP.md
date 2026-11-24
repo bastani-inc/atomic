@@ -1,302 +1,76 @@
-# Atomic Monorepo — Development Setup
+# Atomic development setup
 
-This document covers setup, the local dev loop, testing patterns, and project layout for working on the Atomic Bun workspace. The Atomic-branded coding-agent fork lives at [`packages/coding-agent`](./packages/coding-agent/README.md).
-
----
+Set up a checkout to build, run, and test Atomic locally.
 
 ## Prerequisites
 
-- **[Node.js](https://nodejs.org) ≥ 22.13** — runs installs, checks, and the vitest suites (`node:sqlite` is unflagged from 22.13)
-- **[Bun](https://bun.sh) ≥ 1.4.5** — type-checks the workspace (`bun check`), compiles release binaries, runs `scripts/*.ts`, and hosts the Bun-based test fixtures
-- **[Rust](https://rustup.rs)** (stable, with `cargo`) — builds the `@bastani/atomic-natives` N-API module
+- [Node.js](https://nodejs.org) 22.19.0 or later for npm and most tests. Use Node 22 to match CI.
+- [Bun](https://bun.sh) 1.4.5 or later to run the CLI from source, typecheck, and run TypeScript scripts.
+- Stable [Rust](https://rustup.rs) with `cargo` on your `PATH` to build the native bindings.
 
-This repo runs a hybrid toolchain matching upstream `earendil-works/pi`: **npm** installs, builds, checks, and runs the vitest suites; **Bun** compiles the release binaries, runs `scripts/*.ts`, and hosts the test fixtures that need it. `AGENTS.md` carries the full table.
+## Install
 
----
-
-## Setup
+Clone the repository, or clone your fork if you're contributing from one. Run the rest of this guide from the workspace root.
 
 ```bash
 git clone git@github.com:bastani-inc/atomic.git
 cd atomic
 npm ci --ignore-scripts
+```
+
+Use `npm install` to add dependencies. Keep `package-lock.json` as the only lockfile. Do not use Yarn, pnpm, or `bun install`.
+
+`npm ci --ignore-scripts` skips Git hook setup. Run `npm run hooks:install` to install the hooks from [`prek.toml`](prek.toml).
+
+## Build
+
+```bash
 npm run build
 ```
 
-`npm run build` is a required one-time step (and again after pulling changes to
-`packages/ai`, `packages/tui`, `packages/agent`, `packages/codemode`,
-`packages/schema`, `packages/telemetry`, `packages/coding-agent`, `crates/`, or
-`packages/natives/`). It compiles Atomic's forks of pi's packages in dependency
-order (`@bastani/atomic-schema`, `@bastani/atomic-telemetry`, `@bastani/atomic-ai`
-including a models.dev catalog refresh, then `@bastani/atomic-tui`,
-`@bastani/atomic-agent-core` and `@bastani/atomic-codemode`), builds the native
-N-API module, and builds `@bastani/atomic` with its bundled
-package assets. The build is incremental: a step whose inputs (sources, lockfile,
-toolchain version and relevant environment) and outputs are unchanged since its
-last successful run is skipped, so a rebuild with nothing changed takes well under
-a second. The models.dev catalog is therefore refreshed only when `packages/ai`
-changes or the fetched snapshot is older than 24 hours; run
-`npm run build -- --force` (or set `ATOMIC_BUILD_FORCE=1`) for a full rebuild
-with a fresh catalog. CI (`CI` set) always builds in full. Step stamps and
-TypeScript build info live in `node_modules/.cache/atomic-build`. `npm ci --ignore-scripts`
-deliberately skips lifecycle scripts, and the workspace packages have no install
-hooks anyway — only published releases ship prebuilt artifacts. Without the
-build, running the CLI from source fails with `Cannot find module '@bastani/atomic-ai'`.
+This builds the CLI, its compiled dependencies, and the native bindings. It fetches model catalogs as needed. Run it before starting the CLI or running tests, and again after pulling package or Rust changes.
 
-**`vitest` now builds it for you when it is missing.** The `globalSetup` in
-`test/global-setup-natives.ts` checks for `packages/natives/native/*.node`
-before collecting any file: present and current, it returns after one stat and
-costs nothing; missing, it prints what it is doing and runs the build; older
-than the Rust sources, it warns and runs anyway, because `git checkout` rewrites
-mtimes and blocking a suite on that evidence is worse than one build too few.
-You still need a Rust toolchain — without cargo it fails with that prerequisite
-rather than a compile error.
+If a workspace package or native binding is missing, rerun `npm run build` rather than reinstalling dependencies. Use `npm run build -- --force` to rebuild every step.
 
-Running the CLI is not covered by that, so build it yourself before using the
-agent from a fresh checkout. Without the compiled binding, `pty:true` bash falls
-back to pipes and native grep/find fall back to slower JS paths.
+## Run from source
 
-What is **not** a graceful degradation is the test suites. Since the in-process
-subagent runner landed, `packages/subagents` reaches the Rust control plane
-through a *static* import, so a missing binding throws while the module graph is
-still loading and takes roughly twenty root unit and integration files with it —
-not just `bash-pty-native` and `search-tool-*`. The errors
-name whatever imported the extension, such as `workflow-stage-bundled-resources`,
-so the failure reads like a regression in an unrelated subsystem. CI builds the
-module explicitly for the same reason (see `.github/workflows/test.yml`).
-
-Note that the generated napi-rs loader's own miss message suggests removing
-`package-lock.json` and `node_modules` and re-running `npm i`. That advice does
-not apply here: with `--ignore-scripts`, reinstalling never produces the
-binding. `npm run build` (or `npm run build --workspace=@bastani/atomic-natives`) is the fix.
-
-The committed `.npmrc` applies a three-day minimum release age to anything you add with
-`npm install`, and pins exact versions. `package-lock.json` is the only lockfile.
-
-`npm install` runs the root `prepare` script, which installs Git hooks with [`prek`](https://prek.j178.dev/) from [`prek.toml`](./prek.toml). The hook shims installed by default come from `default_install_hook_types`; currently that is `pre-commit`. To reinstall hooks manually, run `npm run hooks:install`. Set `PREK_DISABLE_INSTALL=1` to skip hook installation for a local install; CI skips it automatically.
-
-The root `package.json` is a private workspace package named `atomic-monorepo`. The only publishable package is `packages/coding-agent` (`@bastani/atomic`); other `packages/*` workspaces are bundled or internal.
-
----
-
-## Running the Atomic coding-agent from source
-
-The `packages/coding-agent` package is the Atomic-branded fork of pi's coding-agent CLI. In this repo its CLI name is `atomic`, its config directory is `~/.atomic/agent`, and its environment variable prefix is `ATOMIC_`.
-
-For most local development, run the TypeScript entrypoint directly with Bun from the workspace root:
+Start Atomic with Bun:
 
 ```bash
-bun packages/coding-agent/src/cli.ts --help
 bun packages/coding-agent/src/cli.ts
 ```
 
-For a one-shot non-interactive prompt:
+Add `--help` to see the options or `-p "List files in this repo"` for a single prompt. To try the compiled CLI after a build, run `node packages/coding-agent/dist/cli.js`.
+
+## Test
+
+Pick the suite that covers your change:
+
+- `npm run test:unit` runs the root unit tests.
+- `npm run test:integration` runs the root integration tests.
+- `npm run test:all` runs both of those suites.
+- `npm run test:ci-contracts` runs the CI and release contract tests.
+- `npm run test --workspace=@bastani/atomic` runs the coding agent suite under Node.
+- `npm run test:scripts` runs the tests for repository scripts.
+
+To run one root test file, pass its path after `--`:
 
 ```bash
-bun packages/coding-agent/src/cli.ts -p "List files in this repo"
+npm run test:unit -- test/unit/config-package-identity.test.ts
 ```
 
-The direct source command is the recommended dev loop because it avoids generating `dist/` and resolves package assets from `src/`.
+Finish builds and typechecks before starting tests so they don't rewrite files the tests are loading. See [Testing in AGENTS.md](AGENTS.md#testing) for test conventions.
 
-If you need to exercise the compiled package layout, use the coding-agent watch script in one terminal:
+## Lint and format
 
-```bash
-bun run --cwd packages/coding-agent dev
-```
+Run `npm run check` before submitting a change. It runs Biome, the type checks, and the interactive event loop check.
 
-After the first emit, run the compiled CLI from another terminal. The published
-`atomic` bin runs under `#!/usr/bin/env node`, so `node` is the faithful way to
-exercise the compiled layout; `bun` works too:
+Use `npm run typecheck` to run just the type checks and `npm run format` to apply Biome formatting.
 
-```bash
-node packages/coding-agent/dist/cli.js --help
-node packages/coding-agent/dist/cli.js
-```
+## Where to read next
 
-To run the development CLI against a different working directory while keeping source in this checkout:
-
-```bash
-cd /path/to/target/project
-bun /path/to/atomic/packages/coding-agent/src/cli.ts
-```
-
-For a production-style build, run:
-
-```bash
-bun run --cwd packages/coding-agent build
-node packages/coding-agent/dist/cli.js --version
-```
-
-Both the source and dist entrypoints pick up the native module from
-`packages/natives/native/`; if you skipped the natives build in Setup, PTY and
-native search quietly fall back to slower JS paths.
-
----
-
-## Local extension development
-
-Use `-e` to load a source extension without writing settings, then `/reload` after editing it. For example:
-
-```bash
-atomic -e "$PWD/packages/coding-agent/examples/extensions/hello.ts"
-```
-
-For repository procedures, edit the corresponding `.agents/skills/<name>/SKILL.md` instead; in a trusted checkout, `/skill:<name>` invokes it.
-
----
-
-## Commands
-
-Run these from the workspace root:
-
-| Command                    | Description                                                      |
-| -------------------------- | ---------------------------------------------------------------- |
-| `npm ci --ignore-scripts`   | Install from `package-lock.json`                                 |
-| `npm run build`             | Compile the forked `@bastani/atomic-*` pi packages (refreshing `@bastani/atomic-ai`'s model catalog), build the native N-API module, and build `@bastani/atomic` with bundled assets (requires cargo and network); skips unchanged steps, `-- --force` rebuilds everything |
-| `npm run build --workspace=@bastani/atomic-natives` | Build only the native N-API module              |
-| `npm run check`             | Biome, the typecheck and the interactive event-loop check        |
-| `npm run typecheck`         | Type-check the workspace                                         |
-| `npm run test:unit`         | Run unit tests                                                   |
-| `npm run test:integration`  | Run integration tests                                            |
-| `npm run test:ci-contracts` | Run the CI and release contract suite                            |
-| `npm run test:all`          | Run both unit + integration                                      |
-| `npm run test:scripts`      | `node --test scripts/*.test.mjs`                                 |
-| `npm run test --workspace=@bastani/atomic`     | The coding-agent suite, under Node              |
-| `npm run test:bun --workspace=@bastani/atomic` | Its Bun-hosted half; both are required          |
-| `npm run hooks:install`     | Install `prek.toml` Git hooks using `default_install_hook_types` |
-| `npm run hooks:run`         | Run all `prek.toml` hooks across the repository                  |
-
-`check` runs `biome check --error-on-warnings`, then `bun check` on the root tsconfig, then the
-coding-agent package's own typecheck (`tsconfig.build.json` — a second pass under a stricter
-config, including `erasableSyntaxOnly`, because the root tsconfig excludes
-`packages/coding-agent` — plus its type tests), then the interactive event-loop check; `lint`
-is an alias for `check`, and `npm run format` applies Biome's formatter. Biome is configured in
-[`biome.json`](./biome.json) with upstream pi's rule set.
-Git hook configuration lives in [`prek.toml`](./prek.toml), not `.pre-commit-config.yaml`.
-
----
-
-## Testing patterns
-
-All suites run under **vitest** with `node:assert/strict` assertions.
-
-Because the suites run under Node, `Bun.*` and `import.meta.dir` are unavailable in tests.
-`test/helpers/runtime.ts` provides the replacements (`sleep`, `readText`, `readJson`,
-`fileExists`, `writeFileEnsuringDir`, `spawnSyncCollect`, `spawnProcess`, `moduleDir`,
-`bunExecutable`); several close traps a direct port would not, so use them rather than
-reaching for `node:fs` or `node:child_process`. See `AGENTS.md` for the table.
-
-One exception: four files in `packages/coding-agent/test` are collected by a **Bun-hosted**
-vitest project (`agent-bun`) and run by `npm run test:bun --workspace=@bastani/atomic`. They
-test `src/core/tools/resource-selectors.ts`, which loads `bun:sqlite` and throws without it,
-so under Node they do not fail — they stop asserting. Do not add a runtime guard that returns
-early; add the file to `BUN_HOSTED_TESTS` in `packages/coding-agent/vitest.config.ts`
-instead. `test/ci/ci-workflow-contracts.test.ts` enforces both halves.
-
-### Unit tests (`test/unit/*.test.ts`)
-
-These exercise workspace modules, extension behavior and repository tooling, including the release gates.
-
-Run: `npm run test:unit`.
-
-### Integration tests (`test/integration/*.test.ts`)
-
-Higher-fidelity tests that compose multiple modules (runtime, wiring, overlay) and exercise the extension factory against a structural mock of `ExtensionAPI`. Still no real pi process — but they cover end-to-end registration, lifecycle, and overlay paths.
-
-Run: `npm run test:integration`.
-
-### Improved coverage with pi's SDK
-
-pi exposes `DefaultResourceLoader.extensionFactories` for in-process extension injection:
-
-```ts
-import {
-    createAgentSession,
-    DefaultResourceLoader,
-    SessionManager,
-    getAgentDir,
-} from "@bastani/atomic";
-import factory from "./packages/coding-agent/examples/extensions/hello.ts";
-
-const resourceLoader = new DefaultResourceLoader({
-    cwd: process.cwd(),
-    agentDir: getAgentDir(),
-    extensionFactories: [factory],
-});
-await resourceLoader.reload();
-
-const { session } = await createAgentSession({
-    resourceLoader,
-    sessionManager: SessionManager.inMemory(),
-});
-```
-
----
-
-## Running examples
-
-```bash
-bun packages/coding-agent/examples/sdk/01-minimal.ts
-bun packages/coding-agent/examples/sdk/04-skills.ts
-```
-
-See the [SDK examples](packages/coding-agent/examples/sdk/README.md) for setup and provider requirements.
-
----
-
-## Project layout
-
-```text
-.
-├── package.json                         # private workspace root: atomic-monorepo
-├── packages/
-│   ├── coding-agent/                    # @bastani/atomic CLI fork
-│   └── subagents/                       # subagent extension and agent definitions
-├── .agents/skills/                      # repository skills, including releases
-├── test/
-│   ├── unit/
-│   ├── integration/
-│   └── support/
-├── docs/
-├── scripts/
-├── vitest.config.ts
-├── vitest.base.ts
-├── .npmrc
-├── bunfig.toml
-└── tsconfig.json
-```
-
----
-
-## Best practices
-
-- **Source files use `.js` import extensions** (TypeScript ESM convention). The repo ships as `.ts` files; Bun resolves `.js` specifiers to `.ts` sources directly.
-- **Avoid `any` and `unknown`.** Use specific types. The codebase compiles with `strict`, `noUnusedLocals`, and `noUnusedParameters`.
-- **Keep the root package private.** The release payload is defined in `.github/workflows/publish.yml`.
-- **Track in-progress fixes in `issues.md`.** Delete the file once issues are resolved.
-
----
-
-## Releasing
-
-Atomic uses a **versionless release-base** flow: `main` and supported workstreams stay at the `0.0.0` placeholder, while the real version is materialized only on a throwaway `Release <version>` commit whose parent is the selected exact remote branch SHA. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) directly starts `.github/workflows/publish.yml`. Its lightweight integrity job checks the tag/package version and `Release <version>` subject before same-run native and archive builds, draft GitHub Release staging, OIDC npm publication, and final undrafting. See [Direct release trigger and recovery](./docs/ci.md#direct-release-trigger-and-recovery).
-
-### Workflow
-
-1. Land the CHANGELOG move on the selected versionless base like any other change: move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` into a new `## [<version>] - <YYYY-MM-DD>` section (CI builds the release notes from it). Open the new section with a short human-readable summary before its first `###` heading, as described in the AGENTS.md Changelog rules; the release page shows it first and folds the detailed entries under "Full changelog". **Do not bump any `package.json` version.**
-2. From a clean selected base, cut the release. This resolves the exact remote branch, stamps the version onto a detached `Release <version>` commit, records `Release-base-ref` and `Release-base-sha`, tags it, and pushes only the tag:
-    ```sh
-    bun run scripts/cut-release.ts <version> --base main --push
-    ```
-    The selected branch is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`. A non-main base must be protected with the repository's required CI checks before it is used.
-3. The tag push starts `.github/workflows/publish.yml` directly. It validates the tag identity, rebuilds all native bindings and release archives, stages a verified draft GitHub Release, publishes npm packages through OIDC, and undrafts the GitHub Release only after npm succeeds. Configure npm trusted publishers with workflow filename `publish.yml` and environment `npm-publish`.
-
-For the guarded release-notes PR, tag cut and publish monitoring, use the repository's [publish-release skill](.agents/skills/publish-release/SKILL.md) (`/skill:publish-release`) instead of the manual steps above.
-
-Bun is the development/test/runtime path. **npm is still the registry publication tool** because npm's provenance flow signs the published tarball via OIDC. CI uses trusted publishing without a static npm credential.
-
----
-
-## CI
-
-CI runs static checks, the root unit/integration suites, the coding-agent suite, and release-archive smoke tests as concurrent jobs behind a fail-closed result gate, on Linux and Windows. It builds `@bastani/atomic-natives` explicitly before the suites. See [docs/ci.md](./docs/ci.md) and `.github/workflows/test.yml`.
+- [CONTRIBUTING.md](CONTRIBUTING.md) for issue approval and pull requests.
+- [AGENTS.md](AGENTS.md) for repository commands and development rules.
+- [Atomic CLI docs](packages/coding-agent/docs/) and [SDK examples](packages/coding-agent/examples/sdk/README.md) for CLI and SDK usage.
+- [CI guide](docs/ci.md) for the [Tests workflow](.github/workflows/test.yml) and its required `test (all platforms)` check.
+- [Release skill](.agents/skills/publish-release/SKILL.md) for cutting a release tag and following the [Publish workflow](.github/workflows/publish.yml). Keep package versions at `0.0.0` on `main` and other release bases.

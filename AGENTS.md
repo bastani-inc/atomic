@@ -1,354 +1,150 @@
-# Development Rules
+# Development rules
 
-## Overview
+## Package layout
 
-This repo is the private `atomic-monorepo` npm workspace. It currently houses:
+In the `atomic-monorepo` npm workspace:
 
-- `@bastani/atomic` in `packages/coding-agent` — the Atomic-branded fork of pi's coding-agent CLI, and the package users install.
-- `@bastani/subagents` in `packages/subagents` — builtin subagent orchestration, reusable agent definitions, skills, prompts, and foreground/background execution.
-- `@bastani/mcp` in `packages/mcp` — builtin MCP adapter extension that exposes MCP servers as agent tools.
-- `@bastani/web-access` in `packages/web-access` — builtin web search, URL fetching, GitHub repository, PDF, and video extraction tools.
-- `@bastani/intercom` in `packages/intercom` — builtin coordination channel for parent/child and cross-session agent communication.
-- `@bastani/atomic-ai`, `@bastani/atomic-tui`, `@bastani/atomic-agent-core`, `@bastani/atomic-codemode`, `@bastani/atomic-schema` and `@bastani/atomic-telemetry` in `packages/ai`, `packages/tui`, `packages/agent`, `packages/codemode`, `packages/schema` and `packages/telemetry` — Atomic's hard forks of pi's packages (forked at pi 1.5.2; Atomic does not sync upstream changes). Each compiles with `tsc` like upstream pi, is published separately by `publish.yml` in lockstep with `@bastani/atomic`, which depends on each at the exact release version. The extension loader also resolves their legacy `@earendil-works/pi-*`, `@mariozechner/pi-*` and `@bastani/pi-ai` names to them.
-- `@bastani/atomic-storage-libsql` in `packages/storage-libsql` — the libSQL / Turso storage adapter. It is a separate package that users install with `atomic install npm:@bastani/atomic-storage-libsql`; `publish.yml` publishes it with the other npm packages, and it is never a dependency of `@bastani/atomic` or in `dist/builtin`.
-- `@bastani/atomic-storage-postgres` in `packages/storage-postgres` — the PostgreSQL storage adapter, packaged and published exactly like the libSQL adapter (`atomic install npm:@bastani/atomic-storage-postgres`); it is never a dependency of `@bastani/atomic` or in `dist/builtin`.
+- `packages/coding-agent` builds the `@bastani/atomic` CLI and SDK.
+- `packages/subagents` handles orchestration, agent definitions, skills, and prompts. `packages/mcp` exposes MCP tools.
+  `packages/web-access` handles search and content fetching. `packages/intercom` connects agents and sessions.
+  These TypeScript packages have no standalone build or publish step. The CLI build bundles them into `dist/builtin`.
+- `packages/ai`, `packages/tui`, `packages/agent`, `packages/codemode`, `packages/schema`, and `packages/telemetry` are Atomic's pi forks.
+  They compile with `tsc` and publish as `@bastani/atomic-*`, with `packages/agent` publishing as `@bastani/atomic-agent-core`.
+  The CLI pins them to its release version. The loader resolves `@earendil-works/pi-*`, `@mariozechner/pi-*`, and `@bastani/pi-ai` aliases.
+- `packages/natives` builds the `@bastani/atomic-natives` N-API module from Rust code in `crates/`.
+- `packages/storage-libsql` and `packages/storage-postgres` publish separately as JSDoc-checked ESM with type declarations.
+  They have no compile step. Keep them out of the CLI's dependencies and `dist/builtin`.
+  Install with `atomic install npm:@bastani/atomic-storage-libsql` or `atomic install npm:@bastani/atomic-storage-postgres`.
 
-Companion packages under `packages/*` ship as **raw TypeScript** (no compile step). They are bundled into `@bastani/atomic` at build time rather than published independently, except the forked pi packages above, which compile and publish like the coding-agent package, and the storage adapters (`@bastani/atomic-storage-libsql`, `@bastani/atomic-storage-postgres`), which are published on their own as JSDoc-checked plain ESM JavaScript with a declaration file so plain Node SDK imports work. They also have no compile step. The coding-agent package follows upstream pi's compiled-package layout.
+## Tech stack
 
-## Tech Stack
+- Install with `npm ci --ignore-scripts`. Add dependencies with `npm install <pkg>`. Never use `yarn install`, `pnpm install`, or `bun install`.
+  Keep `package-lock.json` as the only lockfile. Use exact versions for dependencies of published packages and keep `.npmrc` at `save-exact=true`.
+  Keep `.npmrc`'s `min-release-age=0` in sync with `.github/dependabot.yml`'s `cooldown.default-days: 0`.
+- Run `npm run build` after installing in a fresh checkout or pulling changes to the CLI, the pi forks, `packages/natives`, or `crates/`.
+  Force a full rebuild with `npm run build -- --force` or `ATOMIC_BUILD_FORCE=1`. For a missing native binding alone, run `npm run build --workspace=@bastani/atomic-natives`.
+- Run `npm run check` regularly. It runs Biome, the typechecks, and the interactive event-loop check. Format with `npm run format`.
+  Use `tsc` for compilation. Run `npm run typecheck` for the `bun check` passes, including the coding-agent build config and type tests.
+- Use Node for Vitest and npm package smoke tests. Use `bun run scripts/<name>.ts` for TypeScript repository scripts,
+  `bun build --compile` for release binaries, and Bun for fixtures that need it.
+  Keep the Bun runtime and CI pin at `1.4.5`, in sync with `@types/bun` and `bun-types`. Rerun typechecks when changing the types.
+- The `npm install` prepare hook installs `default_install_hook_types` from `prek.toml`.
+  Reinstall with `npm run hooks:install`. Run all hooks with `npm run hooks:run`. See [Development setup](DEV_SETUP.md) for local CLI commands.
 
-This repo runs a **hybrid toolchain, matching upstream `earendil-works/pi` task for task**.
-Each tool is used where it is actually better, rather than one runtime being mandated
-everywhere. Where the split differs from pi, the reason is written down.
+## Code quality
 
-| Task | Tool | Why |
-| --- | --- | --- |
-| Dependency install | `npm ci --ignore-scripts` | `package-lock.json` is the single verified lockfile. `npm ci` refuses to install when it and `package.json` disagree; nothing enforced that while two lockfiles coexisted |
-| Install policy | committed `.npmrc` | `save-exact=true` matches pi. **`min-release-age=0` deliberately diverges** from pi's 2: Atomic adopts pi releases the same day they publish, which a nonzero cooldown blocks by construction. `.github/dependabot.yml` carries the matching `cooldown: 0`; the two must move together |
-| Build | `npm run build` | TypeScript 7 `tsc`, not Bun; no behaviour change |
-| Lint / format | `biome check` (`npm run check`, `npm run format`) | pi's rule set exactly: recommended preset plus the same six overrides. Tab indent width 3, line width 120 |
-| Typecheck / check | `npm run check` (biome + `bun check` on the root tsconfig + the coding-agent package's `tsconfig.build.json` and type tests + the interactive event-loop check) | **Deliberately diverges** from pi, which runs TypeScript 7 `tsc` here. `bun check` (Bun ≥ 1.4.5) is a port of typescript-go that matches TypeScript 7.0.2's errors and runs these passes about 2.5× faster. `tsc` stays for builds, because `bun check` emits nothing. The scripts call `node scripts/bun-typecheck.mjs`, not `bun check`: the root `check` script would otherwise shadow the type checker. The script predates the `--no-script` flag that Bun 1.4.4 added. The second pass covers `packages/coding-agent`, which the root tsconfig excludes, under its own stricter build config (including `erasableSyntaxOnly`) |
-| Root test suites | `vitest --run --project {unit,integration,ci}` | pi uses vitest for its workspace tests, with a shared `vitest.base.ts` setting only `resolve.alias` |
-| `packages/coding-agent` suite | `vitest --run` | already parity; it now runs under Node rather than `bun --bun`, SQLite selectors included |
-| Script tests | `node --test scripts/*.test.mjs` | pi parity. Scripts Node can run are tested with Node's own runner |
-| Repository scripts | `bun run scripts/*.ts` | Bun executes `.ts` directly and resolves `.js` specifiers to `.ts` source with no loader hook. Bare `node` cannot; scripts meant for `node --test` are `.mjs` |
-| Binary compilation | `bun build --compile` | Cross-compiles the single-file executables; upstream pi uses Bun for exactly this step too. Bun pinned to 1.4.5 |
-| npm-package smoke tests | Node (`node-version: 22` in CI, matching pi) | `test/integration/installed-package-node-extensions.test.ts` verifies the shipped `atomic` bin under `#!/usr/bin/env node`, which is how npm installs run it |
-| Registry publish | `npm publish --provenance` | npm's OIDC-signed provenance lives in the npm CLI. npm trusted publishing and provenance accept only cloud-hosted runners, so `publish.yml`'s `publish-npm` job must stay GitHub-hosted (`ubuntu-latest`): Namespace runners report `runner_environment=self-hosted` |
-
-**Where this repository deliberately declines pi's shape:** pi's CI is one `ubuntu-latest`
-job with no matrix and no `timeout-minutes`. Do not copy it. This workflow preserves
-full Windows coverage, runs on Namespace runners, and carries per-job timeout budgets.
-Adopting pi's topology would delete Windows coverage and orphan the required
-`test (all platforms)` check. Parity is
-a *toolchain* goal, not a CI-topology goal.
-
-**CI runners:** pull-request-capable workflows (`test.yml`, `codeql.yml`) run every job on a
-repository Namespace runner profile (`namespace-profile-atomic-ci-*`) whose Access Level must be
-Restricted, so fork runs of the committed workflows get no usable Namespace workload token. A fork
-pull request that edits `.github/workflows` runs its own `runs-on`, so maintainer approval is the
-only barrier there: before approving a fork run, check the diff for `.github/` changes (see
-`docs/ci.md`, "Approving fork workflow runs"). The release path
-uses inline labels (`nscloud-*`) except the dedicated macOS release cache profile and
-`publish-npm` on GitHub-hosted Linux (`ubuntu-latest`, required by npm trusted publishing
-and provenance). Both macOS targets build on Namespace Apple Silicon; Intel artifacts
-are cross-compiled and smoke-tested under Rosetta, not on native Intel hardware.
-The required `test (all platforms)` gate aggregates every platform's work jobs.
-`docs/ci.md` ("Runners") has the mapping, the profiles and their dashboard-only settings, the
-checkout/cache trust model, and the follow-ups.
-
-Validate CI configuration through YAML parsing, actionlint, review, and actual hosted runs.
-Do not add tests that duplicate workflow YAML, including runners, matrices, cache settings,
-action pins, permissions, and required checks. Keep product and executable release-tooling tests.
-
-- TypeScript ≥ 5.x (strict, `noUnusedLocals`, `noUnusedParameters`)
-- `@sinclair/typebox` for schema definitions
-- `jiti` for runtime TS loading where needed
-
-## Quick Reference
-
-### Commands
-
-- `npm ci --ignore-scripts` — install dependencies from `package-lock.json`
-- `npm run build` — one-time per checkout (and after pulling changes to `packages/ai`, `packages/tui`, `packages/agent`, `packages/codemode`, `packages/schema`, `packages/telemetry`, `packages/coding-agent`, `crates/`, or `packages/natives/`): builds `@bastani/atomic-schema` and `@bastani/atomic-telemetry`, then `@bastani/atomic-ai` (fetches models.dev and writes `src/providers/data/`, then compiles), then `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and `@bastani/atomic-codemode`, builds the native N-API module, and builds `@bastani/atomic` with its bundled package assets. `npm ci --ignore-scripts` skips the `prepare` hook, so nothing else runs these. The build is incremental (`scripts/build.mjs`): each step is skipped while its inputs and outputs match its content-hash stamp in `node_modules/.cache/atomic-build`, so models.dev and the other provider catalogs are refetched only when `packages/ai` changes or the fetched snapshot is older than 24 hours (`MODEL_CATALOG_MAX_AGE_MS`; the build prints a line when it refreshes a stale snapshot). `npm run build -- --force` or `ATOMIC_BUILD_FORCE=1` rebuilds everything; CI (`CI` set) always does. Package-level `build` scripts stay full builds
-- `npm install <pkg>` — add a dependency; `.npmrc` applies `save-exact`. There is no release-age gate: `min-release-age=0`
-- `npm run check` — `bun check` on the root tsconfig, then the coding-agent package typecheck (`tsconfig.build.json` plus type tests), plus the interactive event-loop check. `npm run typecheck` runs the typecheck passes alone. Both need Bun ≥ 1.4.5 on `PATH`
-- `npm run test:unit`, `npm run test:integration`, `npm run test:ci-contracts`, `npm run test:all`
-- `npm run test --workspace=@bastani/atomic` — the coding-agent vitest suite, under Node
-- `npm run test:scripts` — `node --test scripts/*.test.mjs`
-- `npm run hooks:install`, `npm run hooks:run`
-- `bun run scripts/<name>.ts` — repository scripts stay on Bun; see the Tech Stack table
-- Git hooks are configured in `prek.toml`; `npm install` runs the root `prepare` script to install hooks with `prek install --prepare-hooks` using `default_install_hook_types`.
-
-**Do not run `yarn install` or `pnpm install`,** and do not reintroduce `bun install`: each
-writes a competing lockfile that `npm ci` neither reads nor verifies, and bypasses the
-`.npmrc` `save-exact` pin. `bun.lock` and `packageManager: bun@…` were removed for this
-reason. Bun remains a declared engine and is still the right tool for the rows above that
-name it.
-
-## Best Practices
-
-- Avoid ambiguous types like `any` and `unknown`. Use specific types instead.
-- The Bun runtime/CI pin and its types are both 1.4.5 (`@types/bun` 1.4.5, which depends on `bun-types` 1.4.5). Move the runtime and types together, and verify with `npm run typecheck` when bumping types. If `bun check` reports an error that TypeScript 7 `tsc` does not, it is a Bun bug: add an explicit type annotation at the reported site rather than loosening the code, and report it upstream.
-- Source files use `.js` import extensions (TypeScript ESM convention). The repo ships as `.ts` files; Bun resolves `.js` specifiers to the underlying `.ts` source directly — no loader hook required. atomic's loader follows the same convention as pi.
-- When using skills, if you see a frontmatter of `metadata: internal` set to `true` (if missing assume `false`), that means the skill is for internal developers of this package. If this flag is omitted, the skill is meant for consumers/everyday users.
-
-## Design Context
-
-Refer to `DESIGN.md` and `PRODUCT.md`.
-
-## Issues and pull requests
-
-Follow [`CONTRIBUTING.md`](CONTRIBUTING.md) for external-contributor coordination, issue assignment, and pull request guidance.
+- Use strict TypeScript and specific types instead of `any` or `unknown`. Keep `noUnusedLocals` and `noUnusedParameters` enabled.
+  If Bun reports a type error that TypeScript does not, add an explicit annotation instead of loosening the type. Report it upstream.
+- Use `.js` extensions in TypeScript ESM imports. Follow [Biome's config](biome.json): tabs, indent width 3, line width 120.
+- Keep code modular and reuse library or SDK features. Use TypeBox for schemas and `jiti` for runtime TypeScript loading where needed.
+  Follow [the extension and SDK conventions](packages/coding-agent/docs/extensions.md) when editing extensions.
+- Resolve coding-agent package assets with helpers in `packages/coding-agent/src/config.ts`, not `__dirname`.
+- Consult [DESIGN.md](DESIGN.md) and [PRODUCT.md](PRODUCT.md) for design decisions. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for issue assignment and pull requests.
+- Use relevant skills and ask when intent is unclear. Skills with `internal: true` under `metadata` are for Atomic developers. Other skills are for users.
 
 ## Testing
 
-Use `npm run test:unit` (or `test:integration`, `test:all`) and make use of your tdd skill to write high quality tests. The suites run under **vitest**; the assertion style stays `node:assert/strict`:
-
-```ts#test/unit/index.test.ts
-import { test } from "vitest";
-import assert from "node:assert/strict";
-
-test("hello world", () => {
-  assert.equal(1, 1);
-});
-```
-
-For regression tests that fix a GitHub issue, put the issue number in the test name (for example `test("keeps cwd on resume (#123)", …)`) rather than in a comment.
-
-Test runs strip ambient provider credentials and endpoints (`test/helpers/provider-credential-env.ts`), so a key in your shell never makes its provider available to a test. A test that needs one sets it itself. Live provider tests skip without their key; run them with `ATOMIC_TEST_KEEP_PROVIDER_CREDENTIALS=1` (see CONTRIBUTING.md, "Provider credentials and live provider tests").
+- Use `npm run test:unit` for unit tests, `npm run test:integration` for integration tests, and `npm run test:all` for both. Use `npm run test:ci-contracts` for CI and release contracts.
+- Run `npm run test --workspace=@bastani/atomic` for the CLI suite. Run `npm run test:scripts` for the Node tests in `scripts/*.test.mjs`.
+- Use the `tdd` skill, Vitest, and `node:assert/strict`. Put a GitHub issue number in its regression test name, for example `test("keeps cwd on resume (#123)", ...)`.
+- Use `beforeAll` and `afterAll` for suite hooks. Use `beforeEach` and `afterEach` for per-test hooks. Do not use `before` or `after`.
+- Set provider credentials or endpoints in the test itself. `test/helpers/provider-credential-env.ts` strips ambient values.
+  To [run live provider tests](CONTRIBUTING.md#provider-credentials-and-live-provider-tests) with shell credentials, set `ATOMIC_TEST_KEEP_PROVIDER_CREDENTIALS=1`.
 
 ### Replacing Bun globals in tests
 
-Root suites run under Node, so `Bun.*` and `import.meta.dir` are unavailable. Use
-`test/helpers/runtime.ts` rather than reaching for `node:fs`/`node:child_process` directly —
-several of the replacements differ in ways that fail silently:
+Use these replacements from `test/helpers/runtime.ts` in Node tests, not direct `node:fs` or `node:child_process` ports:
 
-| Bun | Helper | Trap it closes |
-| --- | --- | --- |
-| `Bun.sleep` | `sleep` | — |
-| `import.meta.dir` | `moduleDir(import.meta.url)` | — |
-| `Bun.file(p).text()/.json()/.exists()` | `readText` / `readJson` / `fileExists` | `readJson<T>()` returns `unknown` by default; `Bun.file().json()` returned `any` |
-| `Bun.write` | `writeFileEnsuringDir` | `Bun.write` creates parent directories; `fs.writeFile` throws ENOENT |
-| `Bun.spawnSync` | `spawnSyncCollect` | Node returns `status`, not `exitCode`; a raw port makes every `assert.equal(r.exitCode, 0)` compare against `undefined` |
-| `Bun.spawn` | `spawnProcess` | Node has no `.exited` promise and no web-stream stdio, and reports a missing binary asynchronously rather than throwing |
-| `process.execPath` **when spawning Bun** | `bunExecutable()` | Under vitest `process.execPath` is Node, so a `.ts` child, `bun run`, or a Bun-specific `-e` script silently runs under the wrong runtime |
+- `Bun.sleep`: `sleep`
+- `import.meta.dir`: `moduleDir(import.meta.url)`
+- `Bun.file(p).text()`, `.json()`, `.exists()`: `readText`, `readJson<T>`, `fileExists`
+- `Bun.write`: `writeFileEnsuringDir`
+- `Bun.spawnSync`: `spawnSyncCollect`
+- `Bun.spawn`: `spawnProcess`
+- `process.execPath` when spawning Bun: `bunExecutable()`
 
-Shipped `packages/` code that uses `Bun.*` behind `isBunBinary`/`isBundledBuild` is **out of
-scope** and must not be edited to suit the test runner. One shipped module —
-`packages/web-access/subprocess.ts` — calls `Bun.spawn`/`Bun.sleep` *unguarded*, because it
-only ever runs inside the Bun-compiled binary. `test/unit/web-access-subprocess.test.ts`
-therefore calls `installBunGlobal()`, which substitutes the helpers above for those two
-globals. All five test names and their assertions survive, and what they cover — bounded
-draining, the byte cap, the timeout, the kill path — is unchanged. **What they no longer
-cover is Bun's own spawn implementation, which is what the shipped binary runs on.** The
-alternative, re-execing the file under Bun, would collapse five names into one wrapper
-assertion; that is a worse trade, but the gap is real and is stated here rather than only in
-the helper.
+Do not change shipped Bun-only code to suit Node tests. Keep `isBunBinary` and `isBundledBuild` guards.
+For `packages/web-access/subprocess.ts`, use `installBunGlobal()` in `test/unit/web-access-subprocess.test.ts`.
 
-### SQLite selectors use node:sqlite on either runtime
+### SQLite selectors
 
-`src/core/tools/resource-selectors.ts` loads `node:sqlite`, which Node ≥ 22.13 and
-Bun ≥ 1.4.2 (this repository's Bun floor) both ship. Bun introduced it in 1.4.0
-(oven-sh/bun#32498), when the `bun:sqlite` fallback for older Bun binaries was
-removed; do not reintroduce it.
-
-`better-sqlite3` was evaluated and rejected: it segfaults Bun 1.3.14 on construction, which is
-worse than a catchable missing-module error.
-
-Test fixtures go through `packages/coding-agent/test/helpers/sqlite.ts`, which wraps
-`node:sqlite` behind the `bun:sqlite`-shaped API the suites were written against. Never
-reintroduce a soft guard (`if (!sqlite) return`, or a `? it : it.skip`) — that is how one test
-skipped and eleven kept passing with every assertion dead. `test/ci/ci-workflow-contracts.test.ts`
-enforces the node:sqlite-only loader and rejects those guards.
-
+Use `node:sqlite` in `packages/coding-agent/src/core/tools/sqlite-selector-connection.ts` on both runtimes, not `bun:sqlite` or `better-sqlite3`.
+Use `packages/coding-agent/test/helpers/sqlite.ts` for fixtures. Do not skip tests or return early when SQLite is missing.
 
 ### Per-test timeout policy
 
-- The global per-test timeout is **30000 ms**, declared once as `TEST_TIMEOUT_MS` in `test/helpers/test-timeout.ts` and applied by the root `vitest.config.ts` to all three projects. Vitest enforces this timeout; explicit per-test budgets override it.
-- Do **not** restate the budget in a package script, in `.github/workflows/test.yml`, or in `bunfig.toml`.
-- One platform-neutral value, never a Windows-only branch. A Windows-only bump would leave Linux as the only place the budget is enforced and hide Windows regressions until they were far worse. (`packages/coding-agent/vitest.config.ts` keeps its own pre-existing 90 s Windows branch, local to that project.)
-- Add an explicit third-argument timeout only for a test whose cost is *structural* (a full builtin-package loader reload, a real CLI child process, a real `vitest` child, a `tsc` invocation, a built-package install). **Name the constant and keep it at the call site** — `REAL_VITEST_SUITE_TIMEOUT_MS` in `test/unit/test-suite-runner.test.ts` is the pattern; a bare `120_000` says nothing about why the cost is structural rather than a slow test nobody fixed. Never restate the default value — an explicit timeout that merely repeats it silently lowers that test's budget when the default rises.
-- `scripts/run-test-suite.ts` runs each CI suite exactly once and propagates test failures, including actual Vitest timeouts. Duration headroom is **warning-only** at 40% of each test's effective budget: there is no separate 70% failure threshold. Keep whole-job timeouts for hangs outside individual tests.
-- The wrapper always writes `.ci-diagnostics/<suite>-durations.md`, including on successful runs. It reads Vitest's JSON reporter alongside the readable default reporter. Missing, unreadable, or duration-less reports when tests ran remain harness failures, not passing runs.
-- Budget resolution follows the selected Vitest project and explicit per-test overrides. Unsupported commands leave headroom warnings disabled. Explicit budgets are matched by fully qualified `scope > name`.
-- Keep `WARN_RATIO` at 40% so slow tests remain visible. Warnings are diagnostic, not a reason to increase budgets merely to silence them.
-
-### Load sensitivity
-
-vitest runs test *files* in parallel by default, and this repository deliberately sets no
-`pool`, `maxWorkers`, `poolOptions`, or `fileParallelism` — pi sets none either. A test that
-only passes on an idle machine is a bug in that test. Fix it where it lives: give the real
-work headroom and derive the assertion from a named constant (see `STALLED_ATTEMPT_CAP_MS` in
-`test/unit/subagents-attempt-watchdog-helpers.ts`). Do not skip it, do not serialize the
-suite, and do not shard to hide load-sensitive failures.
-
-### Hook name compatibility
-
-Use `beforeAll`/`afterAll` for once-per-suite setup/teardown and `beforeEach`/`afterEach` for
-per-test hooks. `before`/`after` are not exported.
-
-### Code Quality
-
-- Frequently run `npm run check` (Biome, the typecheck and the event-loop check). `npm run typecheck` is the typecheck alone.
-- Avoid `any` and `unknown` types.
-- Modularize code and avoid re-inventing the wheel. Use functionality of libraries and SDKs whenever possible.
-- In `packages/coding-agent`, resolve package assets through helpers in `src/config.ts`. Do not use `__dirname` directly; the helpers account for source checkouts, npm installations, and standalone binaries.
+- Set the root Vitest default only in `test/helpers/test-timeout.ts`: `TEST_TIMEOUT_MS` is `30_000` ms for every platform.
+  Do not repeat it in scripts, `.github/workflows/test.yml`, or `bunfig.toml`. Keep the separate Windows budget local to `packages/coding-agent/vitest.config.ts`.
+- Override only for inherently costly tests. Pass a named constant as the third argument. Do not repeat the default as an override.
+- Fix tests that fail under load at the test site. Give real work headroom and derive timing assertions from a named constant.
+  Do not skip, serialize, or shard tests to hide failures. Do not set `pool`, `maxWorkers`, `poolOptions`, or `fileParallelism`.
+- Keep whole-job timeouts. `scripts/run-test-suite.ts` must run each suite once, propagate failures, and write `.ci-diagnostics/<suite>-durations.md`
+  even on success. Treat missing or unusable duration reports as harness failures when tests ran. Resolve budgets from the chosen project and
+  overrides keyed by `scope > name`. Leave warnings off for unsupported commands. Keep `WARN_RATIO` at 40% and advisory. Do not raise timeouts to hide warnings.
 
 ## Debugging
 
-You are bound to run into errors when testing. As you test and run into issues/edge cases, address issues in a file you create called `issues.md` to track progress and support future iterations. Delegate to the debugging sub-agent for support. Delete the file when all issues are resolved to keep the repository clean.
+Track test failures and edge cases in `issues.md`. Use a debugging subagent for support and delete the file once the issues are resolved. Use the `agent-browser` skill when local docs do not answer a question about external tools.
 
 ## Docs
 
-Relevant resources (use your `agent-browser` skill if the information is not available in the local docs):
-
-1. Bun (runtime + test runner): `oven-sh/bun`
-    1. [`bun:test`](https://bun.sh/docs/cli/test)
-    2. [Bun + TypeScript](https://bun.sh/docs/runtime/typescript)
-    3. [`bunfig.toml`](https://bun.sh/docs/runtime/bunfig)
-2. Pi: `earendil-works/pi`
-    1. [`docs/`](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/docs)
-3. TypeScript: `microsoft/TypeScript`
-    1. [Module resolution](https://www.typescriptlang.org/docs/handbook/module-resolution.html)
-    2. [`paths`](https://www.typescriptlang.org/tsconfig#paths)
-4. Schema tooling:
-    1. `@sinclair/typebox` for runtime-validated schemas
-    2. `jiti` for on-demand TS loading
-
-### Coding Agent Configuration Location
-
-atomic:
-
-- global:
-    - Linux/MacOS: `~/.atomic/agent/`
-    - Windows: `%HOMEPATH%\.atomic\agent\\`
-- extensions: `~/.atomic/agent/extensions/<name>/`
-- local: `.atomic/` in the project directory
-
-## Releasing
-
-Atomic uses a **versionless release-base** flow: supported bases keep `packages/*/package.json` at `0.0.0`; `scripts/cut-release.ts` materializes the real version only on a tagged detached `Release <version>` commit with harmless immutable `Release-base-ref`/`Release-base-sha` trailers. Pushing the version tag directly starts `publish.yml`. Its lightweight integrity job checks that the source resolves to the tag commit, `packages/coding-agent/package.json` equals the tag, and the subject is `Release <version>`. Build jobs check out that verified commit SHA, produce and smoke-test native modules and archives; a draft GitHub Release is staged before OIDC-only npm publication and undrafted only after npm succeeds. `publish-npm` and `register-published-version` receive `id-token: write`; release staging, undrafting, and failed-draft cleanup alone receive `contents: write`. Configure npm trusted publishers with filename `publish.yml` and environment `npm-publish`.
-
-Cut and publish a release with:
-
-```sh
-bun run scripts/cut-release.ts 0.8.31 --base main --push
-```
-
-The selected base is never advanced by the version stamp. The script resolves its exact `refs/heads/...` ref on `origin`, creates the release commit in a detached git worktree, records the base trailers, tags it, and abandons the worktree. The tag push is the publication signal. The publisher deliberately does not validate or allowlist those trailers; its integrity boundary is the tag/package-version/commit-subject match.
-
-### Agent publishing requests
-
-When asked to publish a release or prerelease, follow the repository-local [publish-release skill](.agents/skills/publish-release/SKILL.md) (`/skill:publish-release`). Ask for a missing version; infer release versus prerelease from a valid version and clarify ambiguity. Default the release base to `main`. Require non-main bases to be protected with the repository's required CI checks.
-
-Use `validate`, `inspect-preparation`, `check-changelog-diff`, `wait-required-checks`, `merge-exact-head` and `wait-publish-run` in `scripts/release/publish-release.ts` as the skill directs. Never substitute a green PR badge, bypass a gate, or repeat a push after losing its response. Use `--dry-run` to verify without merging; an actual merge, push or tag requires an explicit request to publish. The skill requires a clean checkout, prepares or reuses one exact changelog-only PR, gates its verified head for up to 45 minutes, and only then merges, fast-forwards the versionless base and cuts the detached tag. The tag starts `publish.yml`. Wait up to 60 minutes for its exact push run; never reset, force-push, move a tag or dispatch a duplicate publication.
-
-## Docs
-
-- ALWAYS keep the user-facing docs in `packages/coding-agent/docs` up-to-date with the latest changes after you make changes. Prefer to keep other docs up-to-date as well, but the coding-agent docs are the most important since they are user-facing and often consulted by users and other agents.
-- `packages/coding-agent/docs` is user-facing documentation. Explain how to use, configure, and troubleshoot Atomic. Do not include internal implementation details, test infrastructure, debugging histories, verification evidence, or maintainer-only design notes. Keep those in repository-level docs or PR descriptions. Keep user guides concise and focused on what users need to know.
-- For multi-step agent work, refer readers to [Orchestration](packages/coding-agent/docs/orchestration.md). For requests to run or migrate an earlier workflow file, link to [conversion to skills](packages/coding-agent/docs/orchestration/migrating-workflows.md), not the retired TypeScript API.
-- Update user guides only when a change affects how users use, configure, or troubleshoot Atomic. An internal optimization does not require a guide edit merely to say that something is faster, uses less CPU, or needs no configuration. If there is no actionable user guidance, leave the guide unchanged. Put user-visible performance improvements in the package changelog and measurements or implementation rationale in repository-level notes or the PR description.
-- For a thorough refresh, use the repository-local [release-docs skill](.agents/skills/release-docs/SKILL.md) (`/skill:release-docs`) on a clean feature branch. For a focused fix you can edit the relevant Markdown directly.
+- Update [user guides](packages/coding-agent/docs) when a change affects how people use, configure, or troubleshoot Atomic.
+  Put internal design, debugging, tests, and verification notes in repository docs or the PR. Put user-visible performance changes in the package changelog.
+- Link to [Orchestration](packages/coding-agent/docs/orchestration.md) for multi-step agent work.
+  Link to [conversion to skills](packages/coding-agent/docs/orchestration/migrating-workflows.md) for old workflow files, not the retired TypeScript API.
+- Edit targeted Markdown fixes directly. For a broad refresh, use the [release-docs skill](.agents/skills/release-docs/SKILL.md) on a clean feature branch.
+- The global config is `~/.atomic/agent/` or `%USERPROFILE%\.atomic\agent\` on Windows. Global extensions live in `~/.atomic/agent/extensions/<name>/`. Project config lives in `.atomic/`.
 
 ## Changelog
 
-Location: `packages/*/CHANGELOG.md` (each package has its own)
+Keep one changelog per package at `packages/*/CHANGELOG.md`. Record only changes to shipped behavior, not version bumps.
+Leave out CI, publishing, automation, maintainer scripts, and agent instructions unless they change what users get.
 
-### Format
+Read the whole `## [Unreleased]` section before appending an entry to the right subsection. Do not duplicate subsections. Use this order:
 
-Use these sections under `## [Unreleased]`:
+- `### Breaking Changes`: API changes that require migration.
+- `### Added`: New features.
+- `### Changed`: Changes to existing behavior.
+- `### Fixed`: Bug fixes.
+- `### Removed`: Removed features.
 
-- `### Breaking Changes` - API changes requiring migration
-- `### Added` - New features
-- `### Changed` - Changes to existing functionality
-- `### Fixed` - Bug fixes
-- `### Removed` - Removed features
+Never edit, append to, or delete a released section. A stable release section must stand alone and include all entries from its preceding prereleases under the same standard subsections.
 
-### Rules
+Write one brief summary per release in `packages/coding-agent/CHANGELOG.md` only. Put it between the version heading and the first `###`,
+never under `## [Unreleased]`. Cover all packages without repeating changes. Open with one sentence naming the theme.
+Group bullets by theme, with one bullet per change. Give each a bold lead, the user benefit, and links to the main PRs or issues at the end.
+Add a `**Breaking change:**` line if `### Breaking Changes` is not empty. Do not add a prerelease preamble or send users to earlier notes.
 
-- Changelogs are user-facing release notes. Record only changes to shipped package
-  behavior: APIs, features, user-visible fixes. CI, release/publish pipelines,
-  repository automation, maintainer scripts, and agent instructions are infrastructure
-  and get no entry unless they also change what users get.
-- New entries go under `## [Unreleased]`, appended to the existing subsection for their
-  kind. Read the whole section first; do not create a second `### Fixed`.
-- A released section (`## [0.12.2]`) is immutable. Do not edit, append to, or delete
-  one. `test/unit/changelog.test.ts` compares each against its tag.
-- A release section (`## [0.9.19]`) lists every entry from the prereleases that led to
-  it (`0.9.19-alpha.1` through `0.9.19-alpha.12`), grouped under the standard
-  subsections. It must stand alone: the GitHub release page shows only that section.
-- A release section opens with a human-readable summary: the prose between the
-  `## [x.y.z]` heading and its first `###` section. Write it when preparing the
-  release (see the `publish-release` skill), never under `## [Unreleased]`.
-  Write one summary per release, in `packages/coding-agent/CHANGELOG.md` only, covering
-  every package; never repeat a change across packages' summaries, and keep it brief.
-  Use one theme-title sentence, then one short bullet per change grouped by theme, each
-  with a bold lead, the benefit to the user, and links to the core PRs or issues at the
-  end, plus a `**Breaking change:**` line when `### Breaking Changes` is non-empty. The
-  GitHub Release page shows the summary first with the merged `###` sections folded
-  under "Full changelog", and the startup What's New banner shows the coding-agent
-  summary with a pointer to `/changelog`. A section without a summary keeps the flat merged output
-  and the full banner.
-- Do not open a section with a preamble that names the prereleases it covers and
-  redirects the reader, e.g. "Cumulative release of the `0.9.19-alpha.1` through
-  `0.9.19-alpha.12` prereleases. Per-change details remain in the prerelease sections
-  below." `scripts/build-release-notes.ts` merges one preamble per package, so this
-  stacks eight redirections above the first real entry. The summary above is the only
-  prose a version heading should carry.
-- Each entry says what changed for the user. "Bumped package version for the Atomic
-  prerelease" is not an entry.
+Attribute issues and external contributions like this:
 
-### Attribution
+- `Fixed foo bar ([#123](https://github.com/bastani-inc/atomic/issues/123))`
+- `Added feature X ([#456](https://github.com/bastani-inc/atomic/pull/456) by [@username](https://github.com/username))`
 
-- **From an issue**: `Fixed foo bar ([#123](https://github.com/bastani-inc/atomic/issues/123))`
-- **External contribution**: `Added feature X ([#456](https://github.com/bastani-inc/atomic/pull/456) by [@username](https://github.com/username))`
+## Releasing
 
-## Versionless release bases & bumping
+Keep `main` and other release bases at `0.0.0`. This covers workspace manifests and lockfile entries, the `@bastani/atomic-natives` pin,
+`packages/natives/native/index.js`, `PI_AI_VERSION` in `packages/ai/src/utils/version.ts`, and the Cargo manifests and lockfile.
 
-`main` and supported workstream bases are versionless: every `packages/*/package.json` (plus `package-lock.json` workspace entries, the `@bastani/atomic-natives` dependency pin, `packages/natives/native/index.js` checks, the `PI_AI_VERSION` constant in `packages/ai/src/utils/version.ts`, and the Cargo manifests/lock) stays at the `0.0.0` placeholder. **Do not bump the version on a release base.**
+`scripts/cut-release.ts` tags a detached `Release <version>` commit from the exact remote base. Pushing the tag starts `.github/workflows/publish.yml`.
+Only run the version stamper directly to restore a drifted placeholder: `bun run scripts/bump-version.ts 0.0.0 && npm install --package-lock-only --ignore-scripts`.
 
-`scripts/bump-version.ts` is the low-level stamper that rewrites every versioned manifest. It is invoked by `scripts/cut-release.ts` inside a throwaway worktree at the exact remote base SHA to materialize the real version on the tagged release commit. You normally never run it directly against a release base; the only direct use is resetting the placeholder if it ever drifts:
+### Agent publishing requests
 
-```sh
-# stamp a real version onto the off-base tag commit (preferred; explicit base shown)
-bun run scripts/cut-release.ts 0.1.0 --base main
-bun run scripts/cut-release.ts 0.1.0-alpha.1 --base main
+Follow the [publish-release skill](.agents/skills/publish-release/SKILL.md) (`/skill:publish-release`) from a clean checkout.
+Ask for a missing version. Infer release or prerelease from the version and clarify ambiguity. Default to `main`.
+Other bases must be protected by the required CI checks. Use `scripts/release/publish-release.ts` for the exact PR, head, and tag gates, not the PR badge.
 
-# low-level: reset main back to the versionless placeholder
-bun run scripts/bump-version.ts 0.0.0 && npm install --package-lock-only --ignore-scripts
-```
+Use `--dry-run` on the release gate commands to verify without changes. Do not merge, push, or tag without an explicit publish request.
+After the pre-cut gates pass, run `bun run scripts/cut-release.ts <version> --base <base> --push --yes` and verify the exact publish run.
+If a release action fails or its result is unclear, stop and inspect Git and GitHub before resuming. Never bypass a gate, repeat a push
+with an unclear result, reset, force-push, move a tag, or dispatch a duplicate publication. See [release recovery](docs/ci.md#recovering-a-failed-publication).
 
 ## CI
 
-An overview of CI is described here: [CI Docs](docs/ci.md).
-
-Note: npm provenance publishing uses GitHub OIDC trusted publishing and must not configure a static npm credential.
-
-## Tips
-
-1. Rely on agent skills to provide information on best practices during implementation. Here is a short list of Agent Skills that are incredibly relevant to this project that you should try to use when applicable:
-    - bun
-    - gh-commit
-    - gh-create-pr
-    - prek
-    - typescript-advanced-types
-    - typescript-expert
-2. Ask for clarity if you are unsure about a change. The developer is your best friend and oftentimes can clarify intent.
-3. When modifying extensions, follow pi's extension and SDK conventions.
-
-<EXTREMELY_IMPORTANT>
-Install with `npm ci --ignore-scripts`, and add dependencies with `npm install`. Never run
-`yarn install` or `pnpm install`, and do not bring back `bun install`: each writes a competing
-lockfile that `npm ci` neither reads nor verifies, and bypasses the `save-exact` pin in the
-committed `.npmrc`. `package-lock.json` is the only lockfile. `@bastani/atomic` publishes no
-shrinkwrap: a user's install resolves each published dependency range itself, so every
-dependency of a published package must be an exact version (`save-exact`), and a transitive
-dependency can reach users at a newer version than the lockfile has. Note that
-`min-release-age=0`: nothing delays a freshly published version from entering that lockfile.
-
-Bun is still required, and still correct, for three things: compiling release binaries with
-`bun build --compile`, running `scripts/*.ts`, and running the Bun-hosted test fixtures. See
-the Tech Stack table for the full split.
-</EXTREMELY_IMPORTANT>
+- Keep Windows coverage, per-job timeouts, and the required `test (all platforms)` gate in `.github/workflows/test.yml`.
+- Keep pull-request jobs in `test.yml` and `codeql.yml` on Restricted `namespace-profile-atomic-ci-*` profiles.
+  [Check `.github/` changes before approving a fork run](docs/ci.md#approving-fork-workflow-runs). See [release runner settings](docs/ci.md#runners).
+- Validate workflow changes with YAML parsing, actionlint, review, and hosted runs. Test product and release tooling, not workflow YAML.
+- Keep `publish-npm` on GitHub-hosted `ubuntu-latest` for `npm publish --provenance`. Configure npm trusted publishing for `publish.yml`
+  and `npm-publish`, not a static npm credential. Limit `id-token: write` to `publish-npm` and `register-published-version`.
+  Limit `contents: write` to release staging, undrafting, and draft cleanup. Build from the commit verified by `integrity`.

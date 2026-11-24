@@ -703,7 +703,7 @@ jobs:
             timeout_minutes: 7
       fail-fast: false
     runs-on: ${{ matrix.runner }}
-    # Linux: censored build + remaining packaging/smoke + 50%; September 11 repair in docs/ci.md.
+    # Linux: censored build + remaining packaging/smoke + 50%.
     # Windows: run 34035777039 was cancelled at 244s after successful steps; ceil(244 * 1.5 / 60) = 7.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
