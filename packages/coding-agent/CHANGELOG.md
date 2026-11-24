@@ -2,30 +2,62 @@
 
 ## [Unreleased]
 
+## [0.10.10-alpha.1] - 2026-11-24
+
+Atomic adds configurable remote compaction models with live switching and typed compaction errors, remembers your last selected row in the agent panel, drops redundant multi-provider scope warnings, and fixes dozens of CLI, tool, subagent, Intercom, TUI, and Web Access bugs found during a full docs audit.
+
+**Compaction and model switching**
+
+- **Configurable remote compactor models.** Configure built-in Morph or custom remote compaction endpoints per model in `~/.atomic/agent/models.json` or via `atomic.registerProvider()` (`type: "compactor"`, `compactionParams`, `endpointPath`, `timeoutMs`, `maxTokens`, and resolved `headers` with auth-header redaction), auto-discovered in `/settings` under **Compaction model** with **Automatic** fallback on every failure ([#6553](https://github.com/bastani-inc/atomic/pull/6553))
+- **Live compaction and decision model switching.** Switching **Compaction model** or **Decision model** in `/settings`, via `session.setCompactionModel()` / `session.setDecisionModel()`, or via RPC `set_compaction_model` / `set_decision_model` takes effect immediately without `/reload` or restarting ([#6553](https://github.com/bastani-inc/atomic/pull/6553))
+- **Typed `CompactionError` SDK family.** Import `CompactionError`, `CompactionConfigError`, `CompactionCancelledError`, `CompactionStateError`, `CompactorFailure`, type guards, and cross-process serialization/rehydration helpers from `@bastani/atomic`, with automatic RPC `compaction_error` rehydration ([#6553](https://github.com/bastani-inc/atomic/pull/6553))
+
+**Agent panel, subagents, and Intercom**
+
+- **Sticky agent-panel selection.** Pressing down into the agent panel now restores your most recently selected subagent row and scroll position instead of always jumping back to the top ([#6552](https://github.com/bastani-inc/atomic/pull/6552))
+- **Subagent scope parity and YAML frontmatter.** Subagents share `@bastani/atomic`'s `resolveModelScopeFromModels` matcher, accept YAML list syntax in agent frontmatter, deduplicate user-scope agent discovery consistently, and bare `--models` / `enabledModels` patterns matching multiple providers no longer emit a redundant ambiguity warning ([#6552](https://github.com/bastani-inc/atomic/pull/6552), [#6553](https://github.com/bastani-inc/atomic/pull/6553))
+- **Intercom leave-group fallback.** Leaving a session's last named Intercom group now returns to its resolved registration group (such as `project:<owner>/<repo>`) instead of silently joining `"default"` ([#6552](https://github.com/bastani-inc/atomic/pull/6552))
+
+**CLI, tools, TUI, Web Access, and docs**
+
+- **Docs-audit bug fixes across packages.** Fixed piped stdin concatenation, `ATOMIC_*` vs `PI_*` env precedence, invalid CLI storage flag handling, case-insensitive `:thinking` suffixes, `.sqlite3`/`.db3` selectors in `read`/`search`, `/export` quote handling, Herdr `/reload` pane release, async skill loading, theme hot-reload and truecolor detection, OSC 7501 exit cleanup in `@bastani/atomic-tui`, Web Access Gemini/YouTube/shortcut fixes, and exposed `atomic-ai` as a CLI bin on `@bastani/atomic-ai` ([#6552](https://github.com/bastani-inc/atomic/pull/6552))
+- **Human-readable docs and SDK storage guides.** Audited all user-facing guides and package READMEs for readability and Mintlify accessibility, and expanded the SDK guide with SQLite, JSONL, libSQL, and PostgreSQL integration examples ([#6551](https://github.com/bastani-inc/atomic/pull/6551), [#6553](https://github.com/bastani-inc/atomic/pull/6553))
+
+**Breaking change:** `CompactorRequest.baseUrl` is now required, custom compactor models must declare an explicit `api` at the provider or model level (built-in Morph defines `"morph-compact"`), and `requestCompactorOutput()` no longer injects hard-coded Morph body defaults (`compression_ratio`, `preserve_recent`, `include_markers`, `include_line_ranges`)—omit `compactionParams` to use the remote API's own defaults or set `compactionParams` on the compactor model in `models.json`. `CompactorApi` in `@bastani/atomic-ai` is now an open `string` (removed `KnownCompactorApi`), and `COMPACTOR_COMPRESSION_RATIO` is deprecated.
+
+### Breaking Changes
+
+- `CompactorRequest.baseUrl` is now required (no default Morph URL is injected), custom compactor models in `models.json` or `atomic.registerProvider()` now require an explicit `api` at the provider or model level unless overriding an existing compactor model (`morph/morph-compactor` continues to define `"morph-compact"`), and `requestCompactorOutput()` no longer injects hard-coded Morph body defaults (`compression_ratio`, `preserve_recent`, `include_markers`, `include_line_ranges`). Omit `compactionParams` to use the remote API's own defaults, or configure `compactionParams` per compactor model. `COMPACTOR_COMPRESSION_RATIO` is deprecated (kept only as a root export for 0.10.x in-place update compatibility) ([#6553](https://github.com/bastani-inc/atomic/pull/6553)).
+
 ### Added
 
-- Exported `NativeModuleUnavailableError` from `@bastani/atomic` for SDK callers, and added `promptCache` and `samplingParamsByThinkingLevel` to `ProviderChatModelConfig` and `compat` to `ProviderClassifierModelConfig` in public extension provider types.
+- Per-model configuration for built-in Morph and custom remote compactor endpoints in `~/.atomic/agent/models.json` (`"type": "compactor"`, `compactionParams`, `endpointPath`, `timeoutMs`, `maxTokens`, and resolved `headers` with sensitive auth-header redaction) and via `atomic.registerProvider()` (`ProviderCompactorModelConfig`), auto-discovered in `/settings` under **Compaction model** across both in-process and isolated interactive modes ([#6553](https://github.com/bastani-inc/atomic/pull/6553)).
+- Live switching for `compactionModel` and `decisionModel` without `/reload` or restart via `/settings`, `session.setCompactionModel()`, `session.setDecisionModel()`, and RPC `set_compaction_model` / `set_decision_model` ([#6553](https://github.com/bastani-inc/atomic/pull/6553)).
+- Typed `CompactionError` SDK error family (`CompactionError`, `CompactionConfigError`, `CompactionCancelledError`, `CompactionStateError`, and `CompactorFailure` extending `CompactionError`), cross-realm guards (`isCompactionError`, `isCompactionConfigError`, `isCompactionCancelledError`, `isCompactionStateError`, `isCompactorFailure`, `findCompactionError`, `isRetryableCompactionError`), serialization/rehydration (`serializeCompactionError`, `parseSerializedCompactionError`, `rehydrateCompactionError`), RPC `compaction_error` rehydration, and root exports for `CompactorModel`, `CompactorApi`, `ProviderCompactorModelConfig` (plus chat/image/classifier variants), `COMPACTOR_LINE_WIDTH`, `COMPACTED_OUTPUT_MAX_TRIGGER_SHARE`, `compactedOutputTokenCap`, `classifyCompactionModel`, `estimateTextTokens`, and `wrapLongLines` ([#6553](https://github.com/bastani-inc/atomic/pull/6553)).
+- Exported `NativeModuleUnavailableError` from `@bastani/atomic` for SDK callers, and added `promptCache` and `samplingParamsByThinkingLevel` to `ProviderChatModelConfig` and `compat` to `ProviderClassifierModelConfig` in public extension provider types ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
 
 ### Changed
 
-- Returning to the focused agent panel with the down-arrow key now restores the most recently selected subagent row and scroll position (falling back to the nearest surviving row if it left, and resetting to the top row once the panel empties).
-- Audited and refreshed all bundled user-facing documentation pages and package READMEs for human readability, Mintlify navigation and accessibility compliance, and complete coverage of settings such as `enabledModels` exact, glob, and fuzzy pattern matching ([#6551](https://github.com/bastani-inc/atomic/pull/6551)).
+- Standardized the default `/settings` **Compaction model** picker label to **Automatic** (matching **Decision model**), sorted authenticated compactor providers first with per-provider `requires /login <provider>` hints, and ensured every compactor failure mode falls back cleanly to **Automatic** (context cleared) ([#6553](https://github.com/bastani-inc/atomic/pull/6553)).
+- `resolveModelScopeFromModels()` (`--models` / `enabledModels`) no longer emits a redundant `"ambiguous"` warning when a bare ID or pattern matches multiple authenticated providers ([#6553](https://github.com/bastani-inc/atomic/pull/6553)).
+- Returning to the focused agent panel with the down-arrow key now restores the most recently selected subagent row and scroll position (falling back to the nearest surviving row if it left, and resetting to the top row once the panel empties) ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Audited and refreshed all bundled user-facing documentation pages and package READMEs for human readability, Mintlify navigation and accessibility compliance, and complete coverage of settings such as `enabledModels` pattern matching and SDK SQLite/JSONL/libSQL/PostgreSQL storage integration ([#6551](https://github.com/bastani-inc/atomic/pull/6551), [#6553](https://github.com/bastani-inc/atomic/pull/6553)).
 
 ### Fixed
 
-- Piped stdin is now separated from CLI prompt text by a blank line when neither side already ends or starts with whitespace instead of concatenating them together.
-- `ATOMIC_NO_PTY` and `ATOMIC_EXPERIMENTAL` now take precedence over legacy `PI_NO_PTY` and `PI_EXPERIMENTAL` when explicitly set to `0`, and `ATOMIC_OFFLINE=0`/`false` and `ATOMIC_SKIP_VERSION_CHECK=0`/`false` no longer disable update checks or telemetry.
-- Invalid CLI storage flags now print a clean error and exit with code 1 instead of crashing with an unhandled `StorageConfigError` stack trace.
-- Thinking-level suffixes on `--model`, `--models`, `enabledModels`, and `fallbackModels` now match case-insensitively (for example `:HIGH` resolves to `high`).
-- Non-string `compactionModel` values now throw a validation error when read instead of silently falling back to `"auto"`, and compaction overflow diagnostics report `>=` consistently with the boundary check.
-- `read` and `search` resource selectors now recognize `.sqlite3` and `.db3` files (including Windows drive-letter paths in `search`).
-- `/export` now reports an error on unclosed quotes instead of silently falling back to HTML export and matches `.jsonl` extensions case-insensitively.
-- RPC `set_thinking_level` and `set_scoped_models` now validate inputs and return structured RPC errors instead of clamping invalid thinking levels or writing malformed `enabledModels` entries.
-- Disabling `herdr.enabled` and running `/reload` now releases any retired Herdr pane registration instead of leaving a stale entry after exit.
-- Async skill loading now matches sync skill loading by ignoring non-skill `.md` files (such as `README.md`) without spurious warnings and guarding non-string YAML frontmatter fields.
-- Theme hot-reload now watches the active theme's actual file path (supporting project, package, `--theme`, and renamed themes), restored legacy theme symbol sharing, and `hexColorAnsi()` now honors terminal color mode detection and `terminal.trueColor` / `ATOMIC_TRUE_COLOR`.
-- Truncated MCP tool results now direct models to read the output file with a line range selector (`:1-200`) instead of unsupported `offset`/`limit` parameters, and CLI `--help` and `/debug` descriptions now match parser and log-file behavior.
-- Lazy Web Access shortcut loading now uses Atomic's user config path resolution and returns defaults without falling back to legacy `.pi/web-search.json` when `~/.atomic/web-search.json` is malformed.
+- Piped stdin is now separated from CLI prompt text by a blank line when neither side already ends or starts with whitespace instead of concatenating them together ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- `ATOMIC_NO_PTY` and `ATOMIC_EXPERIMENTAL` now take precedence over legacy `PI_NO_PTY` and `PI_EXPERIMENTAL` when explicitly set to `0`, and `ATOMIC_OFFLINE=0`/`false` and `ATOMIC_SKIP_VERSION_CHECK=0`/`false` no longer disable update checks or telemetry ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Invalid CLI storage flags now print a clean error and exit with code 1 instead of crashing with an unhandled `StorageConfigError` stack trace ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Thinking-level suffixes on `--model`, `--models`, `enabledModels`, and `fallbackModels` now match case-insensitively (for example `:HIGH` resolves to `high`) ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Non-string `compactionModel` values now throw a validation error when read instead of silently falling back to `"auto"`, and compaction overflow diagnostics report `>=` consistently with the boundary check ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- `read` and `search` resource selectors now recognize `.sqlite3` and `.db3` files (including Windows drive-letter paths in `search`) ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- `/export` now reports an error on unclosed quotes instead of silently falling back to HTML export and matches `.jsonl` extensions case-insensitively ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- RPC `set_thinking_level` and `set_scoped_models` now validate inputs and return structured RPC errors instead of clamping invalid thinking levels or writing malformed `enabledModels` entries ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Disabling `herdr.enabled` and running `/reload` now releases any retired Herdr pane registration instead of leaving a stale entry after exit ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Async skill loading now matches sync skill loading by ignoring non-skill `.md` files (such as `README.md`) without spurious warnings and guarding non-string YAML frontmatter fields ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Theme hot-reload now watches the active theme's actual file path (supporting project, package, `--theme`, and renamed themes), restored legacy theme symbol sharing, and `hexColorAnsi()` now honors terminal color mode detection and `terminal.trueColor` / `ATOMIC_TRUE_COLOR` ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Truncated MCP tool results now direct models to read the output file with a line range selector (`:1-200`) instead of unsupported `offset`/`limit` parameters, and CLI `--help` and `/debug` descriptions now match parser and log-file behavior ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Lazy Web Access shortcut loading now uses Atomic's user config path resolution and returns defaults without falling back to legacy `.pi/web-search.json` when `~/.atomic/web-search.json` is malformed ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
 
 ## [0.10.9] - 2026-11-24
 
