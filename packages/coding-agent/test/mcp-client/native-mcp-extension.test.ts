@@ -60,7 +60,7 @@ describe("MCP config", () => {
 	});
 
 	function setup(global: unknown, project: unknown) {
-		const root = mkdtempSync(join(tmpdir(), "pi-mcp-config-"));
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-mcp-config-")));
 		dirs.push(root);
 		const agentDir = join(root, "agent");
 		const cwd = join(root, "project");
