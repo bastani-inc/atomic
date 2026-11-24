@@ -53,11 +53,6 @@ export {
 	takeTakeoverMutexAsync,
 } from "./core/lock-takeover.js";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
-export {
-	type ModelScopeDiagnostic,
-	type ResolveModelScopeResult,
-	resolveModelScopeFromModels,
-} from "./core/model-resolver-scope.ts";
 export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
 export { resolveSessionStore } from "./core/session-storage.js";

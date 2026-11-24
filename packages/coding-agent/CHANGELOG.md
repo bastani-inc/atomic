@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Child sessions created from a parent session now inherit the parent's active `scopedModels` (`enabledModels` / `--models` / `/scoped-models`) and enforce that allowlist during child mid-run model fallback; `resolveModelScopeFromModels` is also exported from `@bastani/atomic`.
+- Child sessions created from a parent session now inherit the parent's active `scopedModels` (`enabledModels` / `--models` / `/scoped-models`) and enforce that allowlist during child mid-run model fallback.
 
 ### Fixed
 
