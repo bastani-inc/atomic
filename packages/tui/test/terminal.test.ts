@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, mock } from "node:test";
@@ -368,6 +368,45 @@ describe("ProcessTerminal Kitty keyboard protocol negotiation", () => {
 					harness.cleanup();
 				}
 			});
+		});
+
+		it("clears the status on restoreOnExit when supported and active", () => {
+			const dir = mkdtempSync(join(tmpdir(), "tui-restore-exit-"));
+			const captureRestore = (terminal: ProcessTerminal, fileName: string): string => {
+				const outPath = join(dir, fileName);
+				const fd = openSync(outPath, "w");
+				const previousDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "fd");
+				Object.defineProperty(process.stdout, "fd", { value: fd, configurable: true });
+				try {
+					terminal.restoreOnExit("[before]", "[after]");
+				} finally {
+					if (previousDescriptor) Object.defineProperty(process.stdout, "fd", previousDescriptor);
+					closeSync(fd);
+				}
+				return readFileSync(outPath, "utf8");
+			};
+			try {
+				withOverride(undefined, () => {
+					const harness = setupNegotiation();
+					try {
+						harness.terminal.setProgramStatus({ state: "working", app: "pi" });
+						assert.equal(captureRestore(harness.terminal, "unsupported.txt").includes(clear), false);
+
+						harness.send("\x1b]7501;?\x1b\\");
+						const supportedOutput = captureRestore(harness.terminal, "supported.txt");
+						assert.ok(supportedOutput.startsWith("[before]"));
+						assert.ok(supportedOutput.endsWith("[after]"));
+						assert.ok(supportedOutput.includes(clear));
+
+						harness.terminal.setProgramStatus({ state: "clear" });
+						assert.equal(captureRestore(harness.terminal, "cleared.txt").includes(clear), false);
+					} finally {
+						harness.cleanup();
+					}
+				});
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
 		});
 	});
 

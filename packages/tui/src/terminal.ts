@@ -650,6 +650,7 @@ export class ProcessTerminal implements Terminal {
 	restoreOnExit(before: string, after: string): void {
 		let sequence = before;
 		if (this.progressInterval) sequence += TERMINAL_PROGRESS_CLEAR_SEQUENCE;
+		if (this.programStatusSupported && this.programStatus) sequence += formatProgramStatus({ state: "clear" });
 		sequence += "\x1b[?2004l";
 		if (this.keyboardProtocolPushed || this._kittyProtocolActive) sequence += "\x1b[<u";
 		if (this._modifyOtherKeysActive) sequence += "\x1b[>4;0m";

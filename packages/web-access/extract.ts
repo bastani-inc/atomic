@@ -10,6 +10,7 @@ import { extractPDFToMarkdown, isPDF } from "./pdf-extract.js";
 import { extractGitHub } from "./github-extract.js";
 import { isYouTubeURL, isYouTubeEnabled, extractYouTube } from "./youtube-extract.js";
 import { extractWithUrlContext, extractWithGeminiWeb } from "./gemini-url-context.js";
+import { ALLOW_BROWSER_COOKIES_ENV } from "./gemini-web-config.ts";
 import { isVideoFile, extractVideo } from "./video-extract.js";
 import { extractRequestedFrames } from "./extract-frames.js";
 
@@ -241,8 +242,17 @@ export async function extractContent(
 	if (localVideo.error) {
 		return { url, title: "", content: "", error: localVideo.error };
 	}
+	const ytInfo = isYouTubeURL(url);
+	let youtubeEnabled = false;
+	if (ytInfo.isYouTube) {
+		try {
+			youtubeEnabled = await isYouTubeEnabled();
+		} catch (err) {
+			return { url, title: "", content: "", error: errorMessage(err) };
+		}
+	}
 	// Batch options apply per input: stray video options must not block ordinary URLs.
-	if (localVideo.info || isYouTubeURL(url).isYouTube) {
+	if (localVideo.info || (ytInfo.isYouTube && youtubeEnabled)) {
 		const frameResult = await extractRequestedFrames(url, options, signal);
 		if (frameResult) return frameResult;
 	}
@@ -250,7 +260,15 @@ export async function extractContent(
 		try {
 			const result = await extractVideo(localVideo.info, signal, options);
 			if (signal?.aborted) return abortedResult(url);
-			return result ?? { url, title: "", content: "", error: `Video analysis requires Gemini access. Either:\n  1. Sign into gemini.google.com in Chrome (free, uses cookies)\n  2. Set GEMINI_API_KEY in ~/${CONFIG_DIR_NAME}/web-search.json` };
+			return result ?? {
+				url,
+				title: "",
+				content: "",
+				error:
+					"Video analysis requires Gemini access. Either:\n" +
+					`  1. Set GEMINI_API_KEY in the environment or "geminiApiKey" in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
+					`  2. Sign into gemini.google.com in Chrome and enable "allowBrowserCookies": true in ~/${CONFIG_DIR_NAME}/web-search.json (or ${ALLOW_BROWSER_COOKIES_ENV}=1)`,
+			};
 		} catch (err) {
 			if (isAbortError(err)) return abortedResult(url);
 			return { url, title: "", content: "", error: errorMessage(err) };
@@ -279,13 +297,6 @@ export async function extractContent(
 		}
 	}
 
-	const ytInfo = isYouTubeURL(url);
-	let youtubeEnabled = false;
-	try {
-		youtubeEnabled = await isYouTubeEnabled();
-	} catch (err) {
-		return { url, title: "", content: "", error: errorMessage(err) };
-	}
 	if (ytInfo.isYouTube && youtubeEnabled) {
 		try {
 			const ytResult = await extractYouTube(url, signal, options?.prompt, options?.model);
@@ -302,7 +313,7 @@ export async function extractContent(
 			url,
 			title: "",
 			content: "",
-			error: "Could not extract YouTube video content. Sign into Google in Chrome for automatic access, or set GEMINI_API_KEY.",
+			error: `Could not extract YouTube video content. Set GEMINI_API_KEY in the environment or "geminiApiKey" in ~/${CONFIG_DIR_NAME}/web-search.json, or sign into Google in Chrome and enable "allowBrowserCookies": true in ~/${CONFIG_DIR_NAME}/web-search.json (or ${ALLOW_BROWSER_COOKIES_ENV}=1).`,
 		};
 	}
 
@@ -339,8 +350,8 @@ export async function extractContent(
 		httpResult.error,
 		"",
 		"Fallback options:",
-		`  \u2022 Set GEMINI_API_KEY in ~/${CONFIG_DIR_NAME}/web-search.json`,
-		"  \u2022 Sign into gemini.google.com in Chrome",
+		`  \u2022 Set GEMINI_API_KEY in the environment or "geminiApiKey" in ~/${CONFIG_DIR_NAME}/web-search.json`,
+		`  \u2022 Sign into gemini.google.com in Chrome and enable "allowBrowserCookies": true in ~/${CONFIG_DIR_NAME}/web-search.json (or ${ALLOW_BROWSER_COOKIES_ENV}=1)`,
 		"  \u2022 Use web_search to find content about this topic",
 	].join("\n");
 	return { ...httpResult, error: guidance };

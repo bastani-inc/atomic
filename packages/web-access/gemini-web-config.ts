@@ -3,23 +3,37 @@ import { APP_NAME, getUserConfigPaths } from "@bastani/atomic";
 import { findReadableConfigPath } from "./config-paths.ts";
 import { createOwnerState } from "./owner-state.js";
 
-const ALLOW_BROWSER_COOKIES_ENV = `${APP_NAME.toUpperCase()}_ALLOW_BROWSER_COOKIES`;
+export const ALLOW_BROWSER_COOKIES_ENV = `${APP_NAME.toUpperCase()}_ALLOW_BROWSER_COOKIES`;
 
 interface GeminiWebConfig {
 	chromeProfile?: string;
 	allowBrowserCookies?: boolean;
 }
 
-export function createAsyncOwnerState<T>(load: () => Promise<T>): () => Promise<T> {
-	const state = createOwnerState<{ promise?: Promise<T> }>(() => ({}));
-	return () => {
+export interface AsyncOwnerState<T> {
+	(): Promise<T>;
+	reset(): void;
+}
+
+export function createAsyncOwnerState<T>(load: () => Promise<T>): AsyncOwnerState<T> {
+	const state = createOwnerState<{ generation: number; promise?: Promise<T> }>(() => ({ generation: 0 }));
+	const get = (() => {
 		const holder = state();
-		holder.promise ??= load().catch((err) => {
-			holder.promise = undefined;
+		if (holder.promise) return holder.promise;
+		const generation = holder.generation;
+		const pending = load().catch((err) => {
+			if (holder.generation === generation) holder.promise = undefined;
 			throw err;
 		});
-		return holder.promise;
+		holder.promise = pending;
+		return pending;
+	}) as AsyncOwnerState<T>;
+	get.reset = () => {
+		const holder = state();
+		holder.generation += 1;
+		holder.promise = undefined;
 	};
+	return get;
 }
 
 export async function readWebSearchConfigFile<T extends object>(): Promise<T | null> {
