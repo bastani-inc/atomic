@@ -31,6 +31,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import semver from "semver";
 
 /** Subsection headings in the order AGENTS.md documents them. */
 const CANONICAL_SECTIONS: readonly string[] = ["Breaking Changes", "Added", "Changed", "Fixed", "Removed"];
@@ -63,14 +64,38 @@ function trimBlankEdges(lines: readonly string[]): string[] {
 	return lines.slice(start, end);
 }
 
+function extractHeadingLabel(line: string): string | null {
+	if (!line.startsWith("## [")) return null;
+	const close = line.indexOf("]", 4);
+	return close > 4 ? line.slice(4, close) : null;
+}
+
 /**
- * Extracts one version's body, or null when the file has no such section. The
- * closing bracket in the heading keeps `0.9.1` from matching `0.9.15`.
+ * Extracts one version's body, or null when the file has no such section in its
+ * current descending release stream. Stopping when the descending semver stream
+ * passes `version` or jumps upward into older pre-monorepo / pre-fork history
+ * prevents collisions with standalone package versions (such as web-access's
+ * May 2026 `0.10.7` below `0.8.15`).
  */
 export function extractVersionSection(content: string, version: string): VersionSection | null {
 	const lines = content.split("\n");
-	const heading = `## [${version}]`;
-	const start = lines.findIndex((line) => line.startsWith(heading));
+	const targetSemver = semver.valid(version);
+	let previousSemver: string | null = null;
+	let start = -1;
+	for (let index = 0; index < lines.length; index += 1) {
+		const label = extractHeadingLabel(lines[index]);
+		if (label === null) continue;
+		if (label === version) {
+			start = index;
+			break;
+		}
+		if (label === "Unreleased" || targetSemver === null) continue;
+		const headingSemver = semver.valid(label);
+		if (headingSemver === null) continue;
+		if (previousSemver !== null && semver.gt(headingSemver, previousSemver)) return null;
+		if (semver.lt(headingSemver, targetSemver)) return null;
+		previousSemver = headingSemver;
+	}
 	if (start < 0) return null;
 
 	const body: string[] = [];
