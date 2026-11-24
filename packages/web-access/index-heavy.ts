@@ -38,7 +38,7 @@ export default async function (atomic: ExtensionAPI) {
 			} else if (arg === "none" || arg === "summary-review") {
 				newWorkflow = arg;
 			} else {
-				ctx.ui.notify(`Unknown option: ${arg}. Use on, off, or summary-review.`, "error");
+				ctx.ui.notify(`Unknown option: ${arg}. Use on, off, none, or summary-review.`, "error");
 				return;
 			}
 
@@ -71,7 +71,7 @@ export default async function (atomic: ExtensionAPI) {
 					content: [{ type: "text", text: `Gemini Web browser cookie access is disabled. Set allowBrowserCookies: true in ~/${CONFIG_DIR_NAME}/web-search.json to enable it.` }],
 					display: true,
 					details: { available: false, cookieAccessAllowed: false },
-				}, { triggerTurn: true, deliverAs: "followUp" });
+				}, { triggerTurn: false, deliverAs: "followUp" });
 				return;
 			}
 
@@ -82,7 +82,7 @@ export default async function (atomic: ExtensionAPI) {
 					content: [{ type: "text", text: "Gemini Web is unavailable. Sign into gemini.google.com in a supported Chromium-based browser." }],
 					display: true,
 					details: { available: false, cookieAccessAllowed: true },
-				}, { triggerTurn: true, deliverAs: "followUp" });
+				}, { triggerTurn: false, deliverAs: "followUp" });
 				return;
 			}
 
@@ -96,7 +96,7 @@ export default async function (atomic: ExtensionAPI) {
 				content: [{ type: "text", text }],
 				display: true,
 				details: { available: true, email: email ?? null },
-			}, { triggerTurn: true, deliverAs: "followUp" });
+			}, { triggerTurn: false, deliverAs: "followUp" });
 		},
 	});
 

@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { isModelType } from "@bastani/atomic-ai";
 import { getCapabilities, type SettingItem } from "@bastani/atomic-tui";
+import { CONFIG_DIR_NAME } from "../../../config.js";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import type { Settings } from "../../../core/settings-schema.ts";
@@ -279,7 +280,7 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 		{
 			id: "debug",
 			label: "Debug mode",
-			description: "Turn on every debug output and write it to the debug log that /debug shows",
+			description: `Turn on every debug output and write it to ~/${CONFIG_DIR_NAME}/agent/atomic-debug.log (where /debug writes its render and message dump)`,
 			currentValue: config.debug ? "true" : "false",
 			values: ["true", "false"],
 		},

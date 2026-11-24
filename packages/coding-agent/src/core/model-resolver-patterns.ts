@@ -56,7 +56,7 @@ type ResolvedOrAmbiguous = Exclude<ModelReferenceResult, { status: "not-found" }
 
 function splitThinkingSuffix(text: string): { base: string; thinkingLevel: ThinkingLevel } | undefined {
 	const colonIndex = text.lastIndexOf(":");
-	const suffix = text.substring(colonIndex + 1);
+	const suffix = text.substring(colonIndex + 1).toLowerCase();
 	if (colonIndex <= 0 || !isValidThinkingLevel(suffix)) return undefined;
 	return { base: text.substring(0, colonIndex), thinkingLevel: suffix };
 }

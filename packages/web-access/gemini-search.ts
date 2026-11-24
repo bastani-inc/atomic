@@ -2,7 +2,7 @@ import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import { getApiKey, API_BASE, DEFAULT_MODEL } from "./gemini-api.js";
 import { isGeminiWebAvailable, queryWithCookies } from "./gemini-web.js";
-import { createAsyncOwnerState, readWebSearchConfigFile } from "./gemini-web-config.ts";
+import { ALLOW_BROWSER_COOKIES_ENV, createAsyncOwnerState, readWebSearchConfigFile } from "./gemini-web-config.ts";
 import { isPerplexityAvailable, searchWithPerplexity, type SearchResult, type SearchResponse, type SearchOptions } from "./perplexity.js";
 import { hasExaApiKey, isExaAvailable, searchWithExa } from "./exa.js";
 
@@ -22,10 +22,14 @@ const getSearchConfig = createAsyncOwnerState<{ searchProvider: SearchProvider; 
 	if (!raw) return { searchProvider: "auto" };
 
 	return {
-		searchProvider: normalizeSearchProvider(raw.searchProvider ?? raw.provider),
+		searchProvider: normalizeSearchProvider(raw.provider ?? raw.searchProvider),
 		searchModel: normalizeSearchModel(raw.searchModel),
 	};
 });
+
+export function resetSearchConfig(): void {
+	getSearchConfig.reset();
+}
 
 function normalizeSearchModel(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
@@ -109,8 +113,8 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 		if (result) return { ...result, provider: "gemini" };
 		throw new Error(
 			"Gemini search unavailable. Either:\n" +
-			`  1. Set GEMINI_API_KEY in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
-			"  2. Sign into gemini.google.com in a supported Chromium-based browser"
+			`  1. Set GEMINI_API_KEY in the environment or "geminiApiKey" in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
+			`  2. Sign into gemini.google.com in a supported Chromium-based browser and enable "allowBrowserCookies": true in ~/${CONFIG_DIR_NAME}/web-search.json (or ${ALLOW_BROWSER_COOKIES_ENV}=1)`
 		);
 	}
 

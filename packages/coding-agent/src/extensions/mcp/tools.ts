@@ -192,7 +192,7 @@ export async function limitMcpContent(
 	let where: string;
 	try {
 		fullOutputPath = await saveOutput(combined, ".txt");
-		where = `[Full output: ${fullOutputPath} (read it with offset/limit)]`;
+		where = `[Full output: ${fullOutputPath} (read it with a line range selector like :1-200)]`;
 	} catch (error) {
 		where = `[Could not save the full output: ${redactOAuthErrorText(error instanceof Error ? error.message : String(error))}]`;
 	}

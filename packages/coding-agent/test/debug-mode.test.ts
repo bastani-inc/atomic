@@ -86,7 +86,8 @@ describe("debug setting (#4360)", () => {
 				},
 				{
 					label: "Debug mode",
-					description: "Turn on every debug output and write it to the debug log that /debug shows",
+					description:
+						"Turn on every debug output and write it to ~/.atomic/agent/atomic-debug.log (where /debug writes its render and message dump)",
 					currentValue: String(debug),
 					values: ["true", "false"],
 				},
@@ -112,7 +113,7 @@ describe("--debug (#4360)", () => {
 		assert.match(help, /--debug\s+Turn on debug mode for this run \(same as ATOMIC_DEBUG=1\)/);
 		assert.match(
 			help,
-			/ATOMIC_DEBUG\s+- Turn on debug mode when set to 1 \(writes debug output to the \/debug log\)/,
+			/ATOMIC_DEBUG\s+- Turn on debug mode when set to 1 \(writes debug output to ~\/\.atomic\/agent\/atomic-debug\.log, where \/debug writes its render and message dump\)/,
 		);
 	});
 });

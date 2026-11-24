@@ -5,7 +5,7 @@ import { resolve as resolvePath } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { Container, Text } from "@bastani/atomic-tui";
-import { APP_NAME } from "../../config.js";
+import { APP_NAME, getEnvValue } from "../../config.js";
 import { slashCommandHint } from "../../modes/interactive/components/nav-keys.ts";
 import { TASK_MARKS } from "../../modes/interactive/components/task-marks.ts";
 import { theme } from "../../modes/interactive/theme/theme.js";
@@ -200,7 +200,7 @@ export function createLocalBashOperations(options?: {
 		exec: async (command, cwd, { onData, signal, timeout, wait, env, pty, heartbeatMs }) => {
 			validateBashWait(wait, !!options?.taskOwner);
 			if (timeout !== undefined) validateExplicitTimeoutSeconds(timeout);
-			if (pty && process.env.PI_NO_PTY !== "1" && process.env.ATOMIC_NO_PTY !== "1") {
+			if (pty && getEnvValue(`${APP_NAME.toUpperCase()}_NO_PTY`) !== "1") {
 				try {
 					return await executeNativePty(command, cwd, {
 						onData: (data) => onData(data, "stdout"),

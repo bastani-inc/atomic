@@ -74,11 +74,15 @@ export function addGroup(groups: GroupMemberships, value: unknown): Set<string> 
 	return next;
 }
 
-/** Remove one normalized group while retaining default membership when none remain. */
-export function removeGroup(groups: GroupMemberships, value?: string | null): Set<string> {
+/** Remove one normalized group while retaining the fallback (or default) membership when none remain. */
+export function removeGroup(
+	groups: GroupMemberships,
+	value?: string | null,
+	fallback?: string | null,
+): Set<string> {
 	const next = normalizeGroups(groups);
 	next.delete(normalizeGroup(value));
-	return normalizeGroups(next);
+	return next.size > 0 ? next : normalizeGroups(undefined, fallback);
 }
 
 /** Test a normalized group membership. */

@@ -29,7 +29,7 @@ function parseGlobThinkingLevel(pattern: string): { globPattern: string; thinkin
 		return { globPattern: pattern };
 	}
 
-	const suffix = pattern.substring(colonIdx + 1);
+	const suffix = pattern.substring(colonIdx + 1).toLowerCase();
 	if (!isValidThinkingLevel(suffix)) {
 		return { globPattern: pattern };
 	}

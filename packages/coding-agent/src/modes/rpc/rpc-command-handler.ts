@@ -419,9 +419,36 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_available_models", createRpcModelCatalog(session));
 
 			case "set_scoped_models": {
+				if (!Array.isArray(command.models)) {
+					return createRpcErrorResponse(id, "set_scoped_models", "Invalid models: expected an array");
+				}
+				if (
+					command.enabledModels !== undefined &&
+					command.enabledModels !== null &&
+					(!Array.isArray(command.enabledModels) ||
+						!command.enabledModels.every((value) => typeof value === "string"))
+				) {
+					return createRpcErrorResponse(
+						id,
+						"set_scoped_models",
+						"Invalid enabledModels: expected an array of strings or null",
+					);
+				}
 				const models = await session.modelRuntime.getAvailableSnapshot();
 				const scopedModels: Array<{ model: Model<Api>; thinkingLevel?: (typeof THINKING_LEVELS)[number] }> = [];
 				for (const entry of command.models) {
+					if (
+						!entry ||
+						typeof entry !== "object" ||
+						typeof entry.provider !== "string" ||
+						typeof entry.modelId !== "string"
+					) {
+						return createRpcErrorResponse(
+							id,
+							"set_scoped_models",
+							"Invalid models entry: expected { provider, modelId, thinkingLevel? }",
+						);
+					}
 					if (entry.thinkingLevel !== undefined && !THINKING_LEVELS.includes(entry.thinkingLevel)) {
 						return createRpcErrorResponse(
 							id,
@@ -517,6 +544,13 @@ export function createRpcCommandHandler({
 			}
 
 			case "set_thinking_level": {
+				if (typeof command.level !== "string" || !THINKING_LEVELS.includes(command.level)) {
+					return createRpcErrorResponse(
+						id,
+						"set_thinking_level",
+						`Invalid level: expected one of ${THINKING_LEVELS.join(", ")}`,
+					);
+				}
 				await session.setThinkingLevel(command.level, command.persist === true ? { persist: true } : {});
 				const model = session.model;
 				return createRpcSuccessResponse(id, "set_thinking_level", {

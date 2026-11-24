@@ -598,4 +598,4 @@ Migrate deprecated `thinking` frontmatter by folding the effort into the model s
 
 ## License
 
-MIT. See the repository [LICENSE](../../LICENSE).
+MIT. See the repository [LICENSE](https://github.com/bastani-inc/atomic/blob/main/LICENSE).

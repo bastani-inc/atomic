@@ -1,6 +1,7 @@
 import type {
 	AnyModel,
 	ClassifierApi,
+	ClassifierModel,
 	CompactorApi,
 	ImageApi,
 	ImageModelCapabilities,
@@ -63,10 +64,10 @@ export interface ProviderConfig {
 		/** Run the login flow, return credentials to persist. */
 		login(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials>;
 		/**
-		 * Refresh expired credentials, return updated credentials to persist.
-		 * `signal` bounds the rotation to 60 seconds; forward it into network calls.
-		 * Once started, rotation is independent of caller cancellation so updated
-		 * credentials can be persisted even after the caller stops waiting.
+		 * Refresh expired credentials. Pass `signal` to the network call, but add no timeout or abort of your own: Atomic
+		 * never aborts it on a timeout, because once the request is sent the provider may already have rotated the
+		 * refresh token. The caller stops waiting after 60 seconds; a later result is still saved, and a graceful exit
+		 * waits briefly for it. It is a required parameter so the contract is stated in the type.
 		 * When the provider rejects the stored login (for example `invalid_grant`),
 		 * throw `OAuthRefreshRejectedError` so the user is told to run `/login <provider>`.
 		 */
@@ -99,12 +100,14 @@ export interface ProviderChatModelConfig extends ProviderModelConfigBase {
 	reasoning: boolean;
 	/** Maps pi thinking levels to provider/model-specific values; null marks a level unsupported. */
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
+	promptCache?: Model<Api>["promptCache"];
 	/** Default/effective context window size in tokens. */
 	contextWindow: number;
 	/** Maximum output tokens. */
 	maxTokens: number;
 	/** Default sampling parameters merged into OpenAI-compatible request bodies. */
 	samplingParams?: Record<string, unknown>;
+	samplingParamsByThinkingLevel?: Model<Api>["samplingParamsByThinkingLevel"];
 	/** Provider capability settings, including Atomic's `supportsGrammarTools` alias. */
 	compat?: AtomicProviderCompat;
 }
@@ -121,6 +124,7 @@ export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
 	type: "classifier";
 	api?: ClassifierApi;
 	contextWindow: number;
+	compat?: ClassifierModel<ClassifierApi>["compat"];
 }
 
 export interface ProviderCompactorModelConfig extends ProviderModelConfigBase {

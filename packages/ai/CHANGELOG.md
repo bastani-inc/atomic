@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Added
+
+- Exposed `atomic-ai` as a CLI bin entry in `package.json` alongside legacy `pi-ai`.
+
 ## [0.10.6] - 2026-11-23
 
 ### Fixed

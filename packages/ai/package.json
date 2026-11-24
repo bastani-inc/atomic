@@ -89,6 +89,7 @@
 		}
 	},
 	"bin": {
+		"atomic-ai": "dist/cli.js",
 		"pi-ai": "dist/cli.js"
 	},
 	"files": [
