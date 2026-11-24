@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Expanded running subagent cards no longer saturate the engine CPU or block subsequent model turns: `ToolBlockRecords` caches prefixed rows for unchanged static sections and reuses per-line formatting for unchanged lines, the shared working clock self-reschedules instead of bursting catch-up frames, `BackgroundRenderLane` yields a bounded cooldown after slow renders, and `ToolExecutionComponent.setOutputPad()` is now idempotent ([#6528](https://github.com/bastani-inc/atomic/issues/6528)).
+- Expanded running subagent cards no longer saturate the engine CPU or block subsequent model turns: `ToolBlockRecords` caches prefixed rows for unchanged static sections and reuses per-line formatting for unchanged lines, `BackgroundRenderLane` yields a bounded cooldown after slow renders, and `ToolExecutionComponent.setOutputPad()` is now idempotent ([#6528](https://github.com/bastani-inc/atomic/issues/6528)).
 
 ## [0.10.6] - 2026-11-23
 
