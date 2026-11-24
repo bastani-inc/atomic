@@ -24,8 +24,8 @@ atomic --print -- "- leading-dash prompt"
 | Flag | Description |
 | --- | --- |
 | *(default)* | Interactive mode (fullscreen TUI) when both stdin and stdout are a TTY |
-| `-p`, `--print` | Print response and exit |
-| `--mode text\|json\|rpc` | Choose output or protocol mode (`json` streams JSON lines, see [JSON mode](/json); `rpc` runs stdin/stdout RPC, see [RPC mode](/rpc)) |
+| `-p`, `--print` | Print response and exit (see [Non-interactive mode](/guides/non-interactive)) |
+| `--mode text\|json\|rpc` | Choose output or protocol mode (`json` streams JSON lines, see [JSON mode](/json); `rpc` runs stdin/stdout RPC, see [RPC mode](/rpc)). For TypeScript hosts, use the [SDK](/sdk) |
 | `--export <in> [out]` | Export a session to HTML (defaults to `<stem>.html` next to `<in>`), print `Exported to: <path>`, and exit `0` |
 
 **`--mode text` vs. automatic print mode:** Passing `--mode text` alone in an interactive terminal still launches interactive mode; it selects plain-text output for print mode (or overrides an earlier `--mode json`). Conversely, if stdin or stdout is not a TTY (such as piping into `atomic` or redirecting `atomic > out.txt`), Atomic automatically switches to print mode even without `-p`. Both print mode and `--mode json` automatically exclude `ask_user_question`.
@@ -43,6 +43,8 @@ Once piped input starts arriving, Atomic waits until EOF. If a pipe sends nothin
 **Fullscreen interactive options:** Interactive sessions run fullscreen with a scrolling transcript above the docked editor and status area. Adjust **Fullscreen wheel scroll lines** in `/settings` (or `fullscreenWheelScrollLines`: `"auto"` or `1` to `100`). Text selection copies automatically unless `fullscreenCopyOnSelect` is `false`. `Ctrl+X` does not copy; followed by `Ctrl+K` it stops all background work (see [Keybindings](/keybindings#navigation)), and `/scoped-models` uses it to clear selections. On exit, `fullscreenExitOutput: "transcript"` prints the final transcript and resume hint, while `"resume-hint"` restores the previous screen and prints only the hint. See [Settings](/settings) and [Terminal setup](/terminal-setup).
 
 ## Model options
+
+Configure provider logins and API keys in [Model providers](/providers), or add custom models and overrides in [Configure custom models](/models).
 
 | Option | Description |
 | --- | --- |
@@ -103,7 +105,8 @@ In print mode, all fallback notices go to **stderr** (keeping stdout clean for s
 - `--session-id` cannot combine with `--session`, `--continue`, or `--resume`. IDs must start and end with an ASCII letter or digit and contain only ASCII letters, digits, `.`, `_`, or `-`.
 - `--session-store` cannot combine with `--session-dir` or `--no-session`.
 - `--session-prefix` requires `--session-store`.
-- `--storage` cannot combine with `--storage-file`.
+- `--storage` cannot combine with `--storage-file`, and neither accepts `{ "dir": "..." }`.
+- `--storage` and `--storage-file` cannot combine with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` (startup fails with `StorageConfigError` and `conflicting-overrides`; unset the variable or pass an explicit session flag). See [Storage and team variables](/environment-variables#storage-and-team-variables).
 - Invalid CLI storage flags exit cleanly with `Error: ...` and exit code `1`.
 
 See [Choosing a store](/sessions#choosing-a-store) for full precedence and conflict details.
@@ -267,7 +270,9 @@ atomic auth print-api-key --model <model> [--provider <p>]
 atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <dur>]
 ```
 
-`atomic auth login <provider>` signs in to a provider in an interactive terminal and exits without starting a session. It opens the browser for account sign-in like `/login <provider>`, or prints instructions for another sign-in method when available. Providers without account sign-in prompt for an API key.
+`atomic auth login <provider>` signs in to a provider in an interactive terminal and exits without starting a session. It opens the browser for account sign-in like `/login <provider>`, or prints instructions for another sign-in method when available. Providers without account sign-in prompt for an API key. See [Subscriptions](/providers#subscriptions) and [Credential resolution order](/providers/reference#resolution-order).
+
+`atomic auth login` does not load extensions. For extension-registered providers (including bundled [`llama.cpp`](/llama-cpp)), sign in inside an interactive session with `/login <provider>`.
 
 `<provider>` accepts a provider ID or display name such as `openai` or `OpenAI`. An ambiguous name (such as a `models.json` provider sharing a built-in display name) is rejected with the matching IDs; an exact provider ID always matches that provider. After sign-in, Atomic refreshes that provider's model catalog. If the refresh fails, times out after 15 seconds, or is interrupted with `Ctrl+C`, the login stays saved and refreshes on the next start.
 
@@ -278,7 +283,7 @@ atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <d
 
 `atomic auth logout <provider>` removes credentials saved by `atomic auth login` or `/login` while leaving environment variables and `models.json` unchanged. For built-in or `models.json` providers, it exits `0` even when nothing is stored. Extensions are not loaded; remove an extension provider's credentials by its provider ID (once none remain stored, that ID exits `1` as an unknown provider).
 
-`atomic auth check` verifies the effective credential for a provider or model before starting a session. Pass at least one of `--provider` or `--model`. It prints `ready`, `not_ready`, or `invalid` to stdout and exits `0`, `1`, or `2`. `--json` adds the resolved provider, credential kind, and any failure reason. By default, checks never print credential material.
+`atomic auth check` verifies the effective credential for a provider or model before starting a session (see [Verify readiness before a session](/providers#verify-readiness-before-a-session)). Pass at least one of `--provider` or `--model`. It prints `ready`, `not_ready`, or `invalid` to stdout and exits `0`, `1`, or `2`. `--json` adds the resolved provider, credential kind, and any failure reason. By default, checks never print credential material.
 
 `--credentials` opts in to credential export from `atomic auth check`. It requires `--provider` or an exact `--model` target. A fuzzy model match on a ready provider returns `invalid` (exit `2`) instead of exporting a credential you did not name; on a non-ready provider it stays `not_ready` (exit `1`).
 

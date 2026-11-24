@@ -13,7 +13,7 @@ Atomic packages bundle extensions, skills, [subagents](/packages/authoring#subag
 
 ## Install and manage
 
-> **Security:** Atomic packages run with full system access. Extensions execute arbitrary code and skills instruct the agent. Review source code before installing third-party packages.
+> **Security:** Atomic packages run with full system access. Extensions execute arbitrary code and skills instruct the agent. Review source code before installing third-party packages. See [Security](/security) for project trust rules and [Package CLI commands](/reference/cli#package-commands) for the full command list.
 
 ```bash
 atomic install npm:@foo/bar@1.0.0
@@ -37,8 +37,8 @@ atomic update npm:@foo/bar                         # Update one package (or --ex
 
 Install, trust, and update behavior:
 
-- **Global and project scope.** `install` and `remove` edit `~/.atomic/agent/settings.json` by default. Pass `-l` or `--local` to write to `.atomic/settings.json` (legacy `.pi/settings.json` is also read). Missing project packages install automatically on startup once you trust the project.
-- **Project trust gate.** In an untrusted project, `atomic install -l` and `atomic remove -l` exit with code 1 (`Project is not trusted. Use --approve to modify local package config.`) unless you trust the project first or pass `-a` / `--approve`. Both `-a` / `--approve` and `-na` / `--no-approve` are accepted on `install`, `remove`, `update`, `list`, and `config`.
+- **Global and project scope.** `install` and `remove` edit `~/.atomic/agent/settings.json` by default ([Settings](/settings)). Pass `-l` or `--local` to write to `.atomic/settings.json` (legacy `.pi/settings.json` is also read). Missing project packages install automatically on startup once you trust the project.
+- **Project trust gate.** In an untrusted project, `atomic install -l` and `atomic remove -l` exit with code 1 (`Project is not trusted. Use --approve to modify local package config.`) unless you trust the project first ([Security](/security)) or pass `-a` / `--approve`. Both `-a` / `--approve` and `-na` / `--no-approve` are accepted on `install`, `remove`, `update`, `list`, and `config`.
 - **Update output.** Atomic lists each updated npm version or git commit (for example `npm:@foo/bar 1.2.0 -> 1.3.0`), prints `Packages are already up to date` when nothing changed, prints warnings when no package upgraded, and reports skipped updates in offline mode.
 - **Offline mode.** Pass `--offline` or set `ATOMIC_OFFLINE=1` to skip automatic startup installs and package updates.
 - **Self-update safety.** Atomic installs the exact advertised version (showing any release note first) and only modifies installations managed and writable by the detected global package manager. On Windows, automatic self-update supports `npm` and `pnpm` installs only unless you override the command. Override auto-detection with `selfUpdateCommand` in global `settings.json` or the `ATOMIC_SELF_UPDATE_COMMAND` environment variable; otherwise Atomic prints the manual update command. To uninstall Atomic itself, see [Uninstall](/getting-started/installation#uninstall).
@@ -120,3 +120,5 @@ Run `atomic config` to toggle extensions, skills, prompt templates, and themes i
 
 - [Create and publish packages](/packages/authoring#creating-an-atomic-package). Review manifest fields, [subagents](/packages/authoring#subagents), [MCP servers](/packages/authoring#mcp-servers), [storage adapters](/packages/authoring#storage-adapters), [gallery metadata](/packages/authoring#gallery-metadata), [convention directories](/packages/authoring#convention-directories), and [dependencies](/packages/authoring#dependencies).
 - [Package reference](/packages/reference). Review [package filtering](/packages/reference#package-filtering) and [scope and deduplication](/packages/reference#scope-and-deduplication).
+- [SDK extensions](/sdk/reference#extensions). Load local packages and extensions programmatically with `DefaultResourceLoader({ additionalExtensionPaths })`.
+- [Package CLI commands](/reference/cli#package-commands), [Settings](/settings), and [Security](/security). Review CLI subcommands, `settings.json` keys, and project trust gates.

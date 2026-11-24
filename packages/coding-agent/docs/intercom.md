@@ -4,7 +4,9 @@ sidebarTitle: "Intercom guide"
 description: "Send messages, ask non-blocking questions, and escalate subagent decisions between Atomic sessions."
 ---
 
-Intercom provides direct and broadcast messaging between Atomic sessions on the same machine, or across multiple machines that share a storage database. You can send context, findings, or requests yourself, or let agents coordinate directly. No separate install is required.
+Intercom provides direct and broadcast messaging between Atomic sessions on the same machine, or across multiple machines that share a [storage database](/storage#sharing-storage-across-hosts). You can send context, findings, or requests yourself, or let agents coordinate directly. No separate install is required.
+
+New to Intercom? Start with [Intercom overview](/guides/intercom). For multi-machine setup, broker upgrades, and recovery, see [Operate Intercom](/intercom/operations). For the tool schema, settings, and SDK errors, see [Intercom reference](/intercom/reference). For programmatic group and reach control, see [Intercom group and reach in the SDK](/sdk#intercom-group-and-reach).
 
 The `/intercom` command, `Alt+M` shortcut, and `intercom` tool are available as soon as Atomic starts. An interactive session joins Intercom automatically in the background 3 seconds after startup, so other sessions in its group can list and message it before it uses Intercom itself. Startup never waits for this connection.
 
@@ -20,7 +22,7 @@ Print (`-p`), JSON, RPC, and SDK sessions connect on first Intercom use or when 
 - **Subagent escalation.** Subagents receive `contact_supervisor` for decisions, structured interviews, and progress updates.
 - **Run notifications.** Subagents deliver run results and activity notices to their launching session over Intercom.
 - **Bundled skill.** Run `/skill:intercom` for planner-worker, group, broadcast, and escalation patterns.
-- **Programmatic reach policies.** Embedded SDK hosts can constrain a session's reachable groups via [Reach policies](/intercom/reference#reach-policies).
+- **Programmatic reach policies.** Embedded SDK hosts can constrain a session's reachable groups via [Intercom group and reach](/sdk#intercom-group-and-reach) and [Reach policies](/intercom/reference#reach-policies).
 
 **Common use cases:**
 
@@ -35,8 +37,9 @@ Print (`-p`), JSON, RPC, and SDK sessions connect on first Intercom use or when 
 Read this page for the quick start, coordination patterns, and supervisor escalation. Then continue to:
 
 - [Operate Intercom](/intercom/operations) for connection lifecycles, delivery recovery, broker upgrades, and troubleshooting.
-- [Running Intercom across machines](/intercom/operations#running-intercom-across-machines) for multi-machine messaging through shared storage.
+- [Running Intercom across machines](/intercom/operations#running-intercom-across-machines), [Sharing storage across hosts](/storage#sharing-storage-across-hosts), and [Set up teams and CI](/guides/team-setup) for multi-machine messaging through shared storage.
 - [Intercom reference](/intercom/reference) for the `intercom` tool contract, targeting rules, error classes, and every Intercom setting.
+- [Intercom group and reach in the SDK](/sdk#intercom-group-and-reach) and [SDK tools](/sdk/reference#tools) for programmatic reach policies and `builtins.intercom`.
 
 ## Quick start
 
@@ -142,7 +145,7 @@ Queued messages survive broker restarts and deliver once in order. If delivery b
 
 A busy non-interactive recipient other than a running subagent can refuse a message without interrupting its work. A `delivered` receipt means the recipient saved the message, not that its model accepted it. Refusals keep the reply thread: an `ask` receives a failed-ask message (or an inline error while waiting), and a `send` delivers an **Intercom delivery failed** notice with a `Sent:` timestamp without triggering a standalone turn.
 
-Atomic enables `intercom` by default, subject to tool allowlists, exclusions, and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when you need it. An interactive session whose tool selection omits `intercom` does not join at startup. Print, JSON, RPC, and SDK sessions with `builtins: { intercom: false }` disable Intercom completely, and `/reload` does not restore it. `contact_supervisor` remains subagent-only.
+Atomic enables `intercom` by default, subject to tool allowlists, exclusions, and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when you need it. An interactive session whose tool selection omits `intercom` does not join at startup. Print, JSON, RPC, and SDK sessions with `builtins: { intercom: false }` disable Intercom completely, and `/reload` does not restore it. See [SDK tools](/sdk/reference#tools) and [Reach policies](/intercom/reference#reach-policies) for programmatic setup, `session.intercom.setReachable()`, and `IntercomPolicyError`. `contact_supervisor` remains subagent-only.
 
 ## Coordination patterns
 
@@ -208,7 +211,7 @@ Coordinate with other local Atomic sessions on related codebases. Use `/skill:in
 
 ## Escalate subagent decisions with `contact_supervisor`
 
-By default (`intercomBridge.mode: "always"` in `~/.atomic/agent/extensions/subagent/config.json`), every subagent launched by a session with Intercom active receives the subagent-only `contact_supervisor` tool alongside `intercom`. Atomic wires up the supervisor target automatically with no manual configuration. Normal sessions never see `contact_supervisor`.
+By default (`intercomBridge.mode: "always"` in `~/.atomic/agent/extensions/subagent/config.json`, documented in [Subagent config.json reference](/subagents/reference#subagent-config-json-reference)), every subagent launched by a session with Intercom active receives the subagent-only `contact_supervisor` tool alongside `intercom`. Atomic wires up the supervisor target automatically with no manual configuration. Normal sessions never see `contact_supervisor`.
 
 Setting `intercomBridge.mode` to `"off"` (or `"fork-only"` for fresh subagents) limits `contact_supervisor` to agents that explicitly include it in their frontmatter tools list.
 
@@ -318,6 +321,11 @@ Use Intercom for coordinating your own sessions and for peer-to-peer agent swarm
 
 ## Related docs
 
+- [Operate Intercom](/intercom/operations) for broker lifecycles, upgrades, recovery, and multi-machine routing.
+- [Intercom reference](/intercom/reference) for tool parameters, targeting rules, reach policies, and error classes.
+- [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Set up teams and CI](/guides/team-setup) for shared PostgreSQL and libSQL databases.
+- [Intercom group and reach in the SDK](/sdk#intercom-group-and-reach) and [SDK tools](/sdk/reference#tools) for programmatic Intercom policies and `builtins.intercom`.
+- [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for `atomic intercom` and `atomic storage` subcommands.
 - [Run subagents](/subagents) for delegated subagent runs, supervisor coordination, and result delivery.
 - [Orchestrate with codemode and subagents](/orchestration) for multi-step tasks and completion notices.
 - [Skills](/skills) for reusable instructions like `/skill:intercom`.

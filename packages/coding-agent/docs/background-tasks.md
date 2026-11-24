@@ -34,7 +34,7 @@ subagent({
 
 Parallel tasks get independent IDs, and tasks beyond the concurrency limit wait in the queue. Run `/agents` to browse bundled and custom specialists before choosing one.
 
-Intercom messaging never cancels a parallel batch. An `intercom` `ask` returns as soon as it is delivered and delivers late replies as messages, while a blocking `contact_supervisor` decision waits only inside the requesting subagent and continues that subagent once answered. Sends and progress updates never block. A parent's `subagent({ action: "wait", id })` yields so the parent can reply while keeping running subagents, concurrency slots, and queued siblings intact.
+[Intercom](/intercom) messaging never cancels a parallel batch. An `intercom` `ask` returns as soon as it is delivered and delivers late replies as messages, while a blocking `contact_supervisor` decision waits only inside the requesting subagent and continues that subagent once answered. Sends and progress updates never block. A parent's `subagent({ action: "wait", id })` yields so the parent can reply while keeping running subagents, concurrency slots, and queued siblings intact.
 
 A launch result says **Launched in background**. That records that the subagent started, not its live state. Check the agent panel or `/tasks` for current status.
 
@@ -85,7 +85,7 @@ Main chat and subagent views render the same notice format. Long titles shorten 
 
 ## Background shells
 
-Model `bash` calls on POSIX and native Windows, and `powershell` calls on native Windows, run under your session's background task manager. Subagent shells are managed by the launching main session; see [Shells started by subagents](#shells-started-by-subagents). A command that runs past its foreground observation budget returns a task ID and keeps running in the background while its execution timeout keeps counting.
+Model [`bash`](/tools#bash) calls on POSIX and native Windows, and `powershell` calls on native Windows, run under your session's background task manager. Subagent shells are managed by the launching main session; see [Shells started by subagents](#shells-started-by-subagents). A command that runs past its foreground observation budget returns a task ID and keeps running in the background while its execution timeout keeps counting.
 
 ```ts
 // Ordinary commands wait for the session's default observation budget (10 seconds).
@@ -165,7 +165,7 @@ Keep immediately blocking work inline unless specialist focus, isolated context,
 
 If a task finishes during observation, the call returns its final result directly. Automatic backgrounding means the observation budget elapsed, not a timeout failure, restart, or second run. If a wait for a dependency ends early, wait for actual completion before using the result.
 
-Shell `budgetMs` accepts finite non-negative milliseconds, where `0` returns immediately without cancelling the task. On command launches, put `budgetMs` inside a foreground `wait`; on existing-task `action: "wait"` calls, pass `budgetMs` at the top level. Custom SDK sessions can override default budgets or set `tasks.wait.kind: "until-settled"` so omitted foreground budgets wait until completion, while explicit per-call budgets still take precedence.
+Shell `budgetMs` accepts finite non-negative milliseconds, where `0` returns immediately without cancelling the task. On command launches, put `budgetMs` inside a foreground `wait`; on existing-task `action: "wait"` calls, pass `budgetMs` at the top level. Custom SDK sessions can override default budgets or set `tasks.wait.kind: "until-settled"` so omitted foreground budgets wait until completion, while explicit per-call budgets still take precedence (see [Supervised command SDK](/sdk/reference#supervised-command-sdk)).
 
 ## The agent panel
 
@@ -380,11 +380,14 @@ Background means independent of the current wait, not independent of the launchi
 - **Task retention.** Each session keeps its 256 most recently finished tasks in `/tasks`, along with all running, queued, stopping, and pending-cleanup tasks. When newer tasks finish, the oldest finished task leaves `/tasks` once its completion notice has been delivered. Its result stays in its completion notice or tool result, and subagent transcripts stay in their saved sessions (`subagent({ action: "resume", id })` still works). Evicted shell full output is deleted, and waiting on, stopping, or reading an evicted task reports `Task "<id>" finished and is no longer kept in this session` (code `TaskEvicted`).
 - **Temporary worktree cleanup on close.** A temporary-worktree subagent can finish its session while Atomic is still saving or releasing its Git worktree. Closing or switching sessions waits for execution, output, and recovery notices, while remaining batch Git cleanup continues in the background. Check [temporary worktrees](/subagents#temporary-worktrees) before removing any worktree directory manually.
 - **Shell process-tree cleanup.** On Linux and macOS, each shell runs in its own session so cleanup stops child processes across process groups, while leaving detached processes (such as `setsid`) alone once they close output. On Linux with a user-owned cgroup v2 hierarchy, Atomic also uses cgroups for tighter process-tree containment; set `ATOMIC_TASK_CGROUP=0` to disable cgroup containment. On Windows, Job objects clean up process trees. If Atomic terminates unexpectedly, remaining shell process trees are cleaned up automatically.
-- **Unconfirmed shell cleanup and SDK errors.** If a shell finishes while a descendant still holds its output open, Atomic keeps the command's exit code and output (discarding any later writes) and waits up to 15 seconds in the background (and up to 15 seconds more on session close) to confirm teardown. While waiting for cleanup confirmation, that shell keeps its process slot; new launches blocked only by pending-cleanup slots wait up to 5 seconds before failing with `TaskCleanupAdmissionTimeoutError` (a subclass of `TaskCleanupError`). If cleanup remains unconfirmed on session close, Atomic reports a retryable `TaskCleanupError` (`code: "task_cleanup_unconfirmed"`) naming the affected tasks and process groups, and `isRetryableTaskError(error)` from `@bastani/atomic` returns `true`.
-- **Bounded previews.** UI previews are bounded and do not replace retained output. Gaps and truncation are labelled, and unavailable history is reported instead of reconstructed. Custom SDK shell adapters receive `wait` and implement observation themselves.
+- **Unconfirmed shell cleanup and SDK errors.** If a shell finishes while a descendant still holds its output open, Atomic keeps the command's exit code and output (discarding any later writes) and waits up to 15 seconds in the background (and up to 15 seconds more on session close) to confirm teardown. While waiting for cleanup confirmation, that shell keeps its process slot; new launches blocked only by pending-cleanup slots wait up to 5 seconds before failing with `TaskCleanupAdmissionTimeoutError` (a subclass of `TaskCleanupError`). If cleanup remains unconfirmed on session close, Atomic reports a retryable `TaskCleanupError` (`code: "task_cleanup_unconfirmed"`) naming the affected tasks and process groups, and `isRetryableTaskError(error)` from `@bastani/atomic` returns `true`. See [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor) and [Finished task retention and eviction](/sdk/reference#finished-task-retention-and-eviction).
+- **Bounded previews.** UI previews are bounded and do not replace retained output. Gaps and truncation are labelled, and unavailable history is reported instead of reconstructed. Custom SDK shell adapters receive `wait` and implement observation themselves ([Supervised command SDK](/sdk/reference#supervised-command-sdk)).
 
 ## Related documentation
 
 - [Run subagents](/subagents) covers bundled agents, models, context, worktrees, and delegation boundaries.
+- [Coordinate sessions with Intercom](/intercom) covers cross-session messaging, steering, and supervisor escalation.
+- [`bash` in Built-in tools](/tools#bash) covers `bash`, `powershell`, and `kill` parameters and output limits.
+- [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor), [Finished task retention and eviction](/sdk/reference#finished-task-retention-and-eviction), and [Supervised command SDK](/sdk/reference#supervised-command-sdk) cover SDK task supervision and shell factories.
 - [Keybindings](/keybindings) covers task-action remapping.
 - [Orchestrate with codemode and subagents](/orchestration) explains how the main session coordinates multi-step work from results.

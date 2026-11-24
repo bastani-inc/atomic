@@ -1,16 +1,23 @@
 ---
 title: "Configure custom models"
 sidebarTitle: "Custom models"
-description: "Add local or proxied models in models.json, override built-in providers, and use built-in classifier models."
+description: "Add local or proxied models and remote compactors in models.json, override built-in providers, and use classifier models."
 ---
 
-Add custom providers and models (such as Ollama, vLLM, LM Studio, and API proxies) through `~/.atomic/agent/models.json`. Set `ATOMIC_CODING_AGENT_DIR` (or legacy `PI_CODING_AGENT_DIR`) to use another directory.
+Add custom providers, chat models, and remote compactors (such as Ollama, vLLM, LM Studio, and API proxies) through `~/.atomic/agent/models.json`. Set `ATOMIC_CODING_AGENT_DIR` (or legacy `PI_CODING_AGENT_DIR`) to use another directory.
+
+| If you want to | Edit or use | Read |
+| --- | --- | --- |
+| Add custom chat or compactor models, proxy endpoints, headers, or `modelOverrides` | `~/.atomic/agent/models.json` | This page and [Model configuration reference](/models/reference) |
+| Choose default models, model scopes (`enabledModels`), `fallbackModels`, `decisionModel`, or `compactionModel` | `settings.json` or CLI flags (`--model`, `--models`) | [Settings reference](/settings#models-and-thinking) and [CLI model options](/reference/cli#model-options) |
+| Configure subscriptions, API keys, or cloud credentials | `/login`, `~/.atomic/agent/auth.json`, or env vars | [Model providers](/providers) |
+| Register custom streaming, image, classifier, or compactor APIs, OAuth flows, dynamic discovery, or account aliases | Extension calling `atomic.registerProvider()` | [Build custom providers](/custom-provider) |
 
 - **Single file, no merging.** Atomic reads only `models.json` from the active agent directory. It does not read project-scoped `.atomic/models.json`, fall back to `~/.pi/agent/models.json`, or merge `.pi` and `.atomic` model files (unlike files that fall back to `~/.pi/agent/`, such as `settings.json` and `auth.json`).
 - **Syntax and schema.** `models.json` allows `//` line comments, trailing commas, and leading UTF-8 BOMs (`/* */` block comments are not supported). Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json"` for editor completion and validation.
 - **Reloading and errors.** Open `/model`, open `/scoped-models`, or run `/reload` after saving `models.json` to reload changes without restarting. If `models.json` has a JSON or schema error, Atomic ignores the file, keeps built-in providers working, and shows the error banner in `/model`.
 
-This page gives minimal and full `models.json` examples. For every schema field, see [`models.json` schema reference](/models-configuration). For compatibility rules, value resolution, overrides, pricing tiers, and derived fast variants, see [Model configuration reference](/models/reference).
+This page gives minimal and full `models.json` examples. For every schema field, see [`models.json` field reference](/models-configuration). For compatibility rules, value resolution, overrides, pricing tiers, and derived fast variants, see [Model configuration reference](/models/reference). For SDK catalog persistence and `modelsPath`, see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh).
 
 ## Minimal example
 
@@ -34,7 +41,7 @@ For local servers (Ollama, LM Studio, vLLM), only `id` is required per model:
 ```
 
 - **`apiKey` is optional in `models.schema.json`.** You can omit `apiKey` on a custom provider and save a key later via `/login <provider>` in `auth.json`. However, Atomic lists a provider's models as available only when some credential is configured, which is why local servers like Ollama use a placeholder such as `"apiKey": "ollama"`.
-- **Non-empty provider entries.** Every provider object in `models.json` must include at least one of `baseUrl`, `headers`, `compat`, `modelOverrides`, `models`, `apiKey`, or `authHeader`; an empty `{}` entry fails validation.
+- **Non-empty provider entries.** Every provider object in `models.json` must include at least one of `baseUrl`, `headers`, `compat`, non-empty `models` or `modelOverrides`, `apiKey`, or `authHeader`. An empty `{}` entry, or an entry with only `"models": []` or `"modelOverrides": {}`, fails validation.
 
 ### Proxy a built-in provider
 
@@ -130,7 +137,7 @@ Any custom provider that defines `models` requires a `baseUrl` (unless overridin
 
 ## Catalog refresh and startup defaults
 
-`/model` and `/scoped-models` show the cached authenticated catalog immediately while refreshing network-backed catalogs in the background for up to 15 seconds. Closing either selector cancels the refresh.
+`/model` and `/scoped-models` show the cached authenticated catalog immediately while refreshing network-backed catalogs in the background for up to 15 seconds. Closing either selector cancels the refresh. From the shell, use [`--model`, `--models`, `--list-models`](/reference/cli#model-options), and `atomic update --models` to inspect or refresh catalogs; SDK hosts can configure `ModelRuntime` and `modelsPath` (see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh)).
 
 - **Direct `/model <model_name>`:** When no model scope (`enabledModels` / `--models`) is active, `/model <model_name>` checks the cache first and waits for refresh only on a miss. When a model scope is active, `/model <model_name>` searches only the scoped models and does not trigger a refresh.
 - **Failed or slow refreshes:** If a refresh times out or fails, the selector reports that it is using cached models; you do not need to reset `auth.json` or `~/.atomic`. Login and logout changes stay in effect even if an earlier refresh finishes afterward.
@@ -178,7 +185,7 @@ Every custom compactor requires `"api"` at the provider or model level (just lik
 
 ## Use classifier models
 
-Classifier models answer typed questions about JSON state instead of chatting and do not appear in `/model`. In [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")` and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
+Classifier models answer typed questions about JSON state instead of chatting and do not appear in `/model`. Configure one for `structured_output` and `decide()` with [`decisionModel`](/settings#decisionmodel) (see [Structured decisions](/sdk/structured-decisions)), or call classifiers from [codemode](/tools#codemode) using `models.getAvailableOfType("classifier")` and `models.classify(model, { state, questions })` (see [Codemode](/codemode#classify)).
 
 Built-in classifiers:
 
@@ -197,9 +204,12 @@ A model chain starts with a pinned model followed by `fallbackModels` in a sessi
 - A provider that rejects credentials (HTTP 401 or an invalid, expired, revoked, or restricted key/token) is skipped for the rest of that chain. A model-scoped HTTP 403 skips only that model.
 - A chain with no usable candidate fails immediately and names each skipped model and provider. A single pinned model with no fallbacks is never replaced.
 
-For full fallback rules, see [`fallbackModels`](/settings#fallbackmodels).
+For full fallback, model-scope, and subagent selection rules, see [`fallbackModels`](/settings#fallbackmodels), [`enabledModels`](/settings#enabledmodels), [CLI model options](/reference/cli#model-options), and [Automatic model selection](/subagents/reference#automatic-model-selection).
 
 ## Related reference
 
-- [`models.json` schema reference](/models-configuration): every provider, model, override, and compatibility field.
+- [`models.json` field reference](/models-configuration): every provider, model, override, and compatibility field.
 - [Model configuration reference](/models/reference): supported APIs, value resolution, custom headers, OpenAI built-in models, image limits, sampling parameters, cost tiers, thinking level maps, overrides, fast variants, and API compatibility rules.
+- [Model providers](/providers): subscription sign-ins, API keys, `auth.json`, and credential precedence.
+- [Build custom providers](/custom-provider): register custom streaming, image, classifier, or compactor APIs and OAuth flows in an extension.
+- [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh): programmatic `ModelRuntime` and `modelsPath` configuration.

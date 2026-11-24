@@ -754,7 +754,7 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 ### Session management
 
-Sessions use a tree structure with `id`/`parentId` linking, enabling in-place branching.
+Sessions use a tree structure with `id`/`parentId` linking, enabling in-place branching. See the **[SDK storage guide](/sdk/storage)** for full recipes across all five storage backends, `createAgentSessionRuntime()` store wiring, ownership rules, and error handling, and [Storage errors](/storage#storage-errors) for `StorageError` subclasses.
 
 ```typescript
 import {
@@ -764,6 +764,7 @@ import {
   createAgentSessionRuntime,
   createAgentSessionServices,
   getAgentDir,
+  resolveSessionStore,
   SessionManager,
 } from "@bastani/atomic";
 
@@ -772,33 +773,52 @@ const { session } = await createAgentSession({
   sessionManager: SessionManager.inMemory(),
 });
 
-// New persistent session (default resolved store, or pass an explicit SessionStore)
-const { session: persisted } = await createAgentSession({
-  sessionManager: await SessionManager.create(process.cwd()),
-});
-// Or with a caller-owned store:
-// await SessionManager.create(store, process.cwd())
+// New persistent session in a caller-managed store (close the store in finally)
+const store = await resolveSessionStore(process.cwd());
+try {
+  const { session: persisted } = await createAgentSession({
+    sessionManager: await SessionManager.create(store, process.cwd()),
+  });
+  await persisted.dispose();
 
-// Continue most recent
-const { session: continued, modelFallbackMessage } = await createAgentSession({
-  sessionManager: await SessionManager.continueRecent(process.cwd()),
-});
-if (modelFallbackMessage) {
-  console.log("Note:", modelFallbackMessage);
+  // Open an existing session by exact ID from a store
+  const { session: reopened } = await createAgentSession({
+    sessionManager: await SessionManager.open(store, savedSessionId),
+  });
+  await reopened.dispose();
+
+  // Continue the most recent session in a store
+  const { session: continued, modelFallbackMessage } = await createAgentSession({
+    sessionManager: await SessionManager.continueRecent(store, process.cwd()),
+  });
+  if (modelFallbackMessage) {
+    console.log("Note:", modelFallbackMessage);
+  }
+  await continued.dispose();
+
+  // List sessions in an explicit store
+  const storeProjectSessions = await SessionManager.list(process.cwd(), store);
+  const storeAllSessions = await SessionManager.listAll(store);
+} finally {
+  await store.close();
 }
 
-// Open specific file
-const { session: opened } = await createAgentSession({
-  sessionManager: await SessionManager.open("/path/to/session.jsonl"),
-});
+// Open a specific JSONL file directly
+const fileManager = await SessionManager.open("/path/to/session.jsonl");
+try {
+  const { session: opened } = await createAgentSession({ sessionManager: fileManager });
+  await opened.dispose();
+} finally {
+  await fileManager.getSessionStore().close();
+}
 
-// List sessions
+// List sessions in the active resolved store (passing a string to listAll() scans that path as a JSONL directory)
 const currentProjectSessions = await SessionManager.list(process.cwd());
-const allSessions = await SessionManager.listAll(process.cwd());
+const allSessions = await SessionManager.listAll();
 
 // Session replacement API for /new, /resume, /fork, /clone, and import flows.
-const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
-  const services = await createAgentSessionServices({ cwd });
+const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent, services: incoming }) => {
+  const services = incoming ?? (await createAgentSessionServices({ cwd }));
   return {
     ...(await createAgentSessionFromServices({
       services,
@@ -810,10 +830,11 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
   };
 };
 
+const runtimeStore = await resolveSessionStore(process.cwd());
 const runtime = await createAgentSessionRuntime(createRuntime, {
   cwd: process.cwd(),
   agentDir: getAgentDir(),
-  sessionManager: await SessionManager.create(process.cwd()),
+  sessionManager: await SessionManager.create(runtimeStore, process.cwd()),
 });
 
 // Replace the active session with a fresh one
@@ -828,6 +849,10 @@ await runtime.fork("entry-id");
 // Clone the active path through a specific entry
 await runtime.fork("entry-id", { position: "at" });
 ```
+
+**Store-closing ownership.** Calling `SessionManager.create(cwd)`, `SessionManager.continueRecent(cwd)`, or `SessionManager.open("/path/to/session.jsonl")` opens a `SessionStore` internally. Passing a caller-created `sessionManager` to `createAgentSession({ sessionManager })` or `createAgentSessionRuntime()` does not transfer store ownership to `dispose()`, so close `sessionManager.getSessionStore().close()` (or the explicit `store` you passed) in `finally` after disposing the session or runtime. When you omit `sessionManager` and pass a selection object such as `sessionStore: { kind: "sqlite", path }` to `createAgentSession()`, `session.dispose()` closes the store it opened automatically.
+
+**`SessionManager.listAll()` arguments.** Call `SessionManager.listAll()` with no path to list across the active configured store (SQLite by default), or pass a `SessionStore` (`SessionManager.listAll(store)`). Passing a string path such as `process.cwd()` scans that directory as JSONL files instead of querying SQLite or a configured database.
 
 `runtime.switchSession(id, options?)` and `runtime.rehydrate(id, options?)` resume at the current context window, so `getEntries()` and `getTree()` return only the loaded context window.
 
@@ -856,11 +881,11 @@ const entry = await sessionManager.readEntry("entry-id");
 
 #### Session stores and claims
 
-Construct or open concrete `SessionStore` implementations directly when you manage store lifetimes yourself:
+Construct or open concrete `SessionStore` implementations directly when you manage store lifetimes yourself (see [SDK storage guide](/sdk/storage) and [Storage errors](/storage#storage-errors)):
 
-- **`SqlSessionStore.open(database, { prefix?, cwdMatcher? })`:** Opens a SQL-backed session store on a caller-owned `SqliteDatabase` or storage adapter handle.
-- **`JsonlSessionStore.open(directory, { exactDirectory?, scanExisting?, lockFs?, createDirectory? })`:** Opens a JSONL session directory store (creates `directory` unless `createDirectory: false`).
-- **`new MemorySessionStore(cwdMatcher?, historyFiles?)`:** Creates a caller-owned in-memory store that preserves history across `session.release()` and `runtime.rehydrate()`.
+- **`SqlSessionStore.open(database, { prefix?, cwdMatcher? })`:** Opens a SQL-backed session store on a caller-owned `SqliteDatabase` or storage adapter handle. Close the store, then close the database handle.
+- **`JsonlSessionStore.open(directory, { exactDirectory?, scanExisting?, lockFs?, createDirectory? })`:** Opens a JSONL session directory store (creates `directory` unless `createDirectory: false`). `exactDirectory` defaults to `false` and creates per-`cwd` `--<encoded-cwd>--` subdirectories under `directory`. By contrast, `sessionStore: { kind: "jsonl", dir }` opens `JsonlSessionStore.open(dir, { exactDirectory: true })` and writes `.jsonl` files directly in `dir`. Pass `{ exactDirectory: true }` when opening the same flat layout directly.
+- **`new MemorySessionStore(cwdMatcher?, historyFiles?)`:** Creates a caller-owned in-memory store that preserves history in RAM across `session.release()` and `runtime.rehydrate()`. To enable disk spilling of released history under `<agentDir>/released-history/`, open the memory store via `resolveSessionStore(cwd, { agentDir, sessionStore: { kind: "memory" } })`.
 
 Coordinate single-writer session ownership across processes with session claims (stored at `<agentDir>/session-claims/<sessionId>.json`, refreshed on a 15-second heartbeat, with a 60-second staleness window for remote hosts and automatic dead-claim takeover):
 
@@ -882,14 +907,15 @@ When managing multiple sessions that share a working directory (or inside `creat
 ```typescript
 const sm = await SessionManager.open("/path/to/session.jsonl");
 
-// Session listing
+// Session listing (pass a SessionStore to listAll(store), or omit arguments for the active resolved store;
+// passing a string scans that directory as JSONL files)
 const currentProjectSessions = await SessionManager.list(process.cwd());
-const allSessions = await SessionManager.listAll(process.cwd());
+const allSessions = await SessionManager.listAll();
 
 // Tree traversal
 const entries = sm.getEntries();        // Entries in the current window, without the header
 const tree = sm.getTree();              // Tree structure for the current window
-const path = sm.getPath();              // Path from root to current leaf
+const branch = sm.getBranch();          // Path from root to current leaf
 const leaf = sm.getLeafEntry();         // Current leaf entry
 const entry = sm.getEntry(id);          // Get entry by ID
 const children = sm.getChildren(id);    // Direct children of entry
@@ -934,7 +960,7 @@ An unrebuildable snapshot produces a `WorkspaceDriftError` carrying the restore 
 
 | Class | `code` | When | Fields | What to do |
 |---|---|---|---|---|
-| `MissingSessionCwdError` | `session-cwd-missing` | The session's working directory does not exist (`retryable: false`). | `sessionCwd`, `fallbackCwd`, `sessionFile` (JSONL only), `hint` | Retry with `{ cwdOverride }` (`switchSession`) or `importFromJsonl(path, cwdOverride)`, or fork there with `SessionManager.forkTo(cwd, store)`. |
+| `MissingSessionCwdError` | `session-cwd-missing` | The session's working directory does not exist (`retryable: false`). | `sessionCwd`, `fallbackCwd`, `sessionFile` (JSONL only), `hint` | Retry with `{ cwdOverride }` (`switchSession`) or `importFromJsonl(path, cwdOverride)`, or fork there with `sessionManager.forkTo(cwd, store)`. |
 
 Use `isMissingSessionCwdError(error)`, `serializeMissingSessionCwdError(error)`, `isSerializedMissingSessionCwdError(value)`, and `rehydrateMissingSessionCwdError(serialized)` across process boundaries. `RpcClient` rehydrates this error for `switch_session` and `import_session`. Interactive mode prompts to continue in the current directory, fork there, or cancel (see [Sessions](/sessions#resuming-and-deleting-sessions)).
 
@@ -1014,6 +1040,8 @@ import {
 const loader = new DefaultResourceLoader({
   cwd,
   agentDir: getAgentDir(),
+  additionalSkillPaths: ["/path/to/extra-skills"],
+  noSkills: false,
 });
 await loader.reload();
 
@@ -1024,7 +1052,14 @@ const themes = loader.getThemes();
 const contextFiles = loader.getAgentsFiles().agentsFiles;
 ```
 
-Package MCP servers discovered by `DefaultResourceLoader` connect through the bundled MCP client extension and register their tools as `mcp__<server>__<tool>` (defaulting to `codemode` exposure). Custom loaders can provide `getMcpServerContributions()` returning `McpServerContribution[]`; return only contributions allowed by your loader's trust policy. Normal MCP configuration overrides still apply. See [MCP servers](/mcp-servers) for connection and tool invocation.
+Key `DefaultResourceLoader` discovery options:
+
+- `additionalSkillPaths`: extra directories or `SKILL.md` paths loaded in addition to default user, project, and package skill discovery.
+- `noSkills`: set `true` to disable automatic skill discovery (paths in `additionalSkillPaths` still load).
+- `additionalExtensionPaths`, `noExtensions`, `disabledBuiltinExtensions`, `extensionFactories`: control extension loading and inline builtin extensions.
+- `additionalPromptTemplatePaths`, `noPromptTemplates`, `additionalThemePaths`, `noThemes`, `noContextFiles`: add or disable prompt templates, themes, and `AGENTS.md` context files.
+
+Package MCP servers discovered by `DefaultResourceLoader` connect through the bundled MCP client extension and register their tools as `mcp__<server>__<tool>` (defaulting to `codemode` exposure). Extensions can also register MCP servers dynamically with `atomic.registerMcpServer(name, config)` and inspect the merged package and extension list via `atomic.getMcpServerContributions()` (or subscribe with `atomic.onMcpServerContributionsChanged(listener)`). Custom `ResourceLoader` implementations can provide `getMcpServerContributions()` returning `McpServerContribution[]`; return only contributions allowed by your loader's trust policy. Normal MCP configuration overrides still apply. See [MCP servers](/mcp-servers) for connection and tool invocation.
 
 ### Copying extension handlers in `extensionsOverride`
 
@@ -1198,7 +1233,7 @@ See [RPC documentation](/rpc) for the JSON protocol.
 
 ## Session and storage errors
 
-SDK callers working with `SessionManager`, `SessionStore`, `AgentSessionRuntime`, `SettingsManager`, or `ModelRuntime.login()` can branch directly on exported error classes:
+SDK callers working with `SessionManager`, `SessionStore`, `AgentSessionRuntime`, `SettingsManager`, or `ModelRuntime.login()` can branch directly on exported error classes. For backend, adapter, lock, payload, spill, and team-profile errors (`StorageError` and its subclasses, exported from both `@bastani/atomic` and `@bastani/atomic/storage`), see [Storage errors](/storage#storage-errors) and the [SDK storage guide](/sdk/storage).
 
 | Class | When | Key fields |
 |---|---|---|
@@ -1347,8 +1382,13 @@ type CreateModelRuntimeOptions
 type ModelRuntimeAuthOverrides
 CredentialSynchronizationError
 AuthStorage
+type AuthStorageBackend
+FileAuthStorageBackend
+InMemoryAuthStorageBackend
 readStoredCredential
 ModelRegistry
+NoUsableModelError, partitionByCredentials
+createGatewayBindingFetch
 resolveAutoModel
 resolveRestoredModelReference
 resolveModelScopeFromModels
@@ -1356,28 +1396,49 @@ resolveModelScopeWithDiagnostics
 type ResolveModelScopeResult
 type ModelScopeDiagnostic
 OAuthLoginTransactionError
+OAuthRefreshRejectedError, isOAuthRefreshRejectedError
 GitHubCopilotError, GitHubCopilotAuthenticationError, GitHubCopilotContentFilterError
 GitHubCopilotEmptyResponseError, GitHubCopilotInvalidRequestError, GitHubCopilotModelUnavailableError
 GitHubCopilotPromptTooLargeError, GitHubCopilotQuotaExhaustedError, GitHubCopilotRateLimitError
 GitHubCopilotServiceUnavailableError, GitHubCopilotStreamEndedEarlyError, GitHubCopilotUnrecognizedResponseError
 LlamaServerError, LlamaServerRequestError, LlamaServerUnreachableError
 
-// Workspaces and Intercom policy
+// Workspaces and Intercom policy / errors
 workspace
 bindSessionWorkspace
 resolveWorkspace
 restoreWorkspace
 workspaceChangeSet
 publishPullRequest
+acquireWorkspaceWriterLease
+inheritWorkspace
+isWorkspace, isBoundWorkspace, assertWorkspace
+workspaceSessionCwd, workspaceSessionCwdAsync
 WorkspaceError, WorkspaceConfigError, WorkspaceBindingError, WorkspaceGitError
 WorkspaceSnapshotError, WorkspaceRestoreError, WorkspaceDriftError, WorkspacePublicationError
+WorkspaceSandboxError, WorkspaceTimeoutError, WorkspaceCollectionError
 isWorkspaceError, findWorkspaceError, isRetryableWorkspaceError, serializeWorkspaceError, rehydrateWorkspaceError
-IntercomPolicyError
-MAX_INTERCOM_REACHABLE_GROUPS
+isWorkspaceConfigError, isWorkspaceBindingError, isWorkspacePublicationError, isWorkspaceRestoreError
+isWorkspaceSandboxError, isWorkspaceTimeoutError, isWorkspaceCollectionError
+isWorkspaceDriftError, isWorkspaceGitError, isWorkspaceSnapshotError
+IntercomPolicyError, MAX_INTERCOM_REACHABLE_GROUPS
+confinedIntercomChildGroup, readRuntimeIntercomGroup, RUNTIME_INTERCOM_GROUP_ENV
+type IntercomSessionOptions, type SessionIntercom
+IntercomBrokerError, IntercomBrokerProtocolError, IntercomBrokerStopTimeoutError
+IntercomBrokerSuccessorTimeoutError, IntercomBrokerUpgradeError
+isIntercomBrokerError, isIntercomBrokerProtocolError, isIntercomBrokerStopTimeoutError
+isIntercomBrokerSuccessorTimeoutError, isIntercomBrokerUpgradeError, isRetryableIntercomBrokerError
+serializeIntercomBrokerError, rehydrateIntercomBrokerError, type SerializedIntercomBrokerError
+IntercomRoutingError, IntercomRoutingChangedError, IntercomRoutingMismatchError
+IntercomRoutingTimeoutError, IntercomRoutingUnavailableError
+isIntercomRoutingError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError
+isIntercomRoutingTimeoutError, isIntercomRoutingUnavailableError, isRetryableIntercomRoutingError
+ProjectGroupError, isProjectGroupError, type ProjectGroupErrorCode
 
-// Resource loading
+// Resource loading and MCP configuration
 DefaultResourceLoader
 type ResourceLoader
+type McpServerConfig, type McpServerContribution
 createEventBus
 
 // Constants and helpers
@@ -1433,6 +1494,43 @@ createTranscript
 type Transcript
 type TranscriptOptions
 type TranscriptPart
+
+// Storage, adapters, team profiles, history, blobs, and StorageError family
+// (re-exported from @bastani/atomic/storage, plus root process-selection and blob-copy helpers)
+openNodeSqliteDatabase, wrapNodeSqliteDatabase, sqliteFilePath
+getWriterQueueStats, getWriterQueueDegradation, DEFAULT_GROUP_COMMIT_HOLD_MS, type WriterQueueStats
+StorageProvider, type StorageSelection, type StorageOpenContext, type StorageAdapterModule
+type AdapterOptions, type SecretRef, type SessionStorageOption, type SessionStore
+loadStorageAdapter, resolveAdapterOptions, adapterOpenContext, storageSelectionKey
+secretFilePath, secretFilePathAsync
+LIBSQL_ADAPTER_PACKAGE, POSTGRES_ADAPTER_PACKAGE, LOCAL_SESSIONS_STORAGE, REDACTED_SECRET
+inMemorySecret, type InMemorySecretRef
+teamProfileSelection, type TeamProfileSelectionOptions, type TeamStorageSelection
+joinTeam, leaveTeam, getTeamProfile, isPostgresUrl
+selectStorage, selectStorageAsync, type StorageInputSelection, type StorageSettingsSelection
+selectProcessStorage, selectProcessStorageAsync, type ProcessStorageChoice, type StorageDomain
+processSharedStorageSelection, processSharedStorageSelectionAsync
+processStorageEnvironment, processStorageEnvironmentAsync
+createSqliteDatabase, configuredSecretRedactor, redactSecrets, switchToWriteAheadLog
+validateStoragePrefix, storageMigrationTable, assertStorageSchemaVersion, assertStoredSchemaVersion
+type SqliteDatabase, type SqliteDriver, type StorageDescriptor
+readSessionHistory, readSessionHistoryChunks, findInSessionHistory
+readSessionChildCatalog, readExpandedChildDetails, readSavedChildLaunch
+copySessionBlobs, assertSessionBlobStore, sessionBlobHashes, toolOutputUrl
+SqlSnapshotBlobStore, MemorySnapshotBlobStore, type SnapshotBlobStore
+StorageError, StorageUnavailableError, StoreClosedError, StorageTransactionClosedError
+StorageRollbackError, StorageInvalidTextError, StorageSchemaVersionError, StoragePrefixError
+StorageConfigError, StorageAdapterLoadError, StorageOutcomeUnknownError, StoragePayloadTooLargeError
+StorageWriteLockTimeoutError, StorageUnsupportedOperationError, StorageWriterQueueDegradedError
+StorageWriterQueueUnusableError, StorageTransientError, SessionBlobError, SessionSpillError
+TeamProfileError, TeamProfileTimeoutError, TeamProfileConfigError
+isStorageError, isStorageConfigError, isStorageWriteLockTimeoutError, isStorageUnsupportedOperationError
+isStorageWriterQueueDegradedError, isStorageWriterQueueUnusableError, isStorageTransientError
+isSessionBlobError, isSessionSpillError, isStorageResponseRefusal
+findStorageWriteLockTimeoutError, isRetryableStorageError
+isTeamProfileError, isTeamProfileTimeoutError, isTeamProfileConfigError, isRetryableTeamProfileError
+serializeStorageError, rehydrateStorageError, serializeTeamError, rehydrateTeamError
+describeStorageError, describeStorageFailure, type SerializedStorageError, type SerializedTeamError
 
 // Session management and resume
 SessionManager
@@ -1512,7 +1610,15 @@ type SessionStartConfigReason
 type SerializedSessionStartError
 type SerializedSessionStartCause
 
-// Finished task retention (see "Owner-bound task supervisor")
+// Owner-bound task supervisor, cleanup errors, and finished task retention
+AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory
+OwnerTaskStore, bindOwnerTaskStore, getOwnerTaskStore, getOwnerTaskSession
+scopedBackgroundTasks, sessionTasks, belongsToSession, ownerTaskViewSource, bindTaskResumer, type TaskViewSource
+heldPrompts, watchHeldPromptAttention, isHeldPromptInput, isPresentationHostInput, routeNamesPrompt
+type HeldPrompt, type HeldPrompts
+TaskCleanupError, TaskCleanupAdmissionTimeoutError
+isTaskCleanupError, isTaskCleanupAdmissionTimeoutError, isRetryableTaskError, rehydrateTaskCleanupError
+type TaskCleanupErrorCode, type TaskCleanupFailure, type TaskCleanupPhase, type TaskCleanupAdmissionTiming
 FINISHED_TASK_RETENTION
 TaskEvictedError, isTaskEvictedError, findTaskEvictedError, rehydrateTaskEvictedError
 type TaskEvictedErrorCode, type TaskEvictedErrorFields

@@ -4,7 +4,9 @@ sidebarTitle: "Model overrides"
 description: "Supported APIs, value resolution, overrides, pricing tiers, thinking maps, derived fast variants, and API compatibility rules."
 ---
 
-This page covers provider and model behavior, compatibility rules, and built-in model details. For the complete schema-generated field list for `models.json`, see [`models.json` schema reference](/models-configuration).
+This page covers provider and model behavior, compatibility rules, and built-in model details. For the complete schema-generated field list for `models.json`, see [`models.json` field reference](/models-configuration). For custom streaming APIs or OAuth flows, see [Build custom providers](/custom-provider).
+
+Jump to: [Supported APIs](#supported-apis) · [Provider configuration](#provider-configuration) · [Model configuration](#model-configuration) · [Overriding built-in providers](#overriding-built-in-providers) · [Per-model overrides](#per-model-overrides) · [Derived fast model variants](#derived-fast-model-variants) · [Anthropic messages compatibility](#anthropic-messages-compatibility) · [OpenAI compatibility](#openai-compatibility) · [Catalog freshness and precedence](#catalog-freshness-and-precedence).
 
 ## Supported APIs
 
@@ -15,9 +17,11 @@ This page covers provider and model behavior, compatibility rules, and built-in 
 | `anthropic-messages` | Anthropic Messages API |
 | `google-generative-ai` | Google Generative AI |
 
-Set `api` at provider level (default for all models) or model level (override per model).
+Set `api` at provider level (default for chat and compactor models) or model level (override per model).
 
-Built-in providers also use provider-specific APIs (`mistral-conversations`, `azure-openai-responses`, `openai-codex-responses`, `bedrock-converse-stream`, `google-vertex`, and `pi-messages`). These are built-in only and are not supported as generic custom provider APIs in `models.json`.
+Atomic also registers six provider-specific chat APIs (`mistral-conversations`, `azure-openai-responses`, `openai-codex-responses`, `bedrock-converse-stream`, `google-vertex`, and `pi-messages`). You can use them in `models.json` when connecting to a compatible gateway or proxy, such as `"api": "pi-messages"` for a gateway speaking the `pi-messages` protocol or `"api": "mistral-conversations"` for a native Mistral endpoint.
+
+Models with `"type": "compactor"` declare their own compactor `api` string (such as `"custom-compact"` or `"morph-compact"`). See [Customize Morph or add a remote compactor](/compaction#customize-morph-or-add-a-remote-compactor).
 
 ## Provider configuration
 
@@ -71,11 +75,11 @@ In `models.json`, every header value must be a string. A `null` header value sup
 
 ## Model configuration
 
-See [Models fields](/models-configuration#models) for the complete schema table (`id`, `name`, `api`, `baseUrl`, `reasoning`, `thinkingLevelMap`, `input`, `inputLimits`, `cost`, `promptCache`, `contextWindow`, `maxTokens`, `samplingParams`, `samplingParamsByThinkingLevel`, `headers`, and `compat`).
+See [Models fields](/models-configuration#models) for the complete schema table (`id`, `name`, `type`, `api`, `baseUrl`, `endpointPath`, `reasoning`, `thinkingLevelMap`, `input`, `inputLimits`, `cost`, `promptCache`, `contextWindow`, `maxTokens`, `timeoutMs`, `samplingParams`, `samplingParamsByThinkingLevel`, `compactionParams`, `headers`, and `compat`).
 
 Key display and modality rules:
 
-- `/model`, `--list-models`, the footer, fallback notices, and subagent labels show the raw `provider/id` (or `id` when the provider is clear) followed by the active thinking level, such as `anthropic/claude-sonnet-4-5 high`. That is the exact value `--model provider/id:level` accepts.
+- `/model`, [`--list-models`](/reference/cli#model-options), the footer, fallback notices, and subagent labels show the raw `provider/id` (or `id` when the provider is clear) followed by the active thinking level, such as `anthropic/claude-sonnet-4-5 high`. That is the exact value `--model provider/id:level` accepts.
 - `name` is used for `--model` and `enabledModels` fuzzy matching and secondary text in `/model`; it never replaces `id`.
 - `input` declares the modalities Atomic sends: `["text"]`, `["text", "image"]`, or `["text", "image", "pdf"]`.
 
@@ -367,7 +371,7 @@ Merge rules:
 
 ## Per-model overrides
 
-Use `modelOverrides` to patch specific built-in, custom, or extension-registered chat models without replacing the provider's model list. See [Model overrides fields](/models-configuration#model-overrides) for all supported fields.
+Use `modelOverrides` to patch specific built-in, custom, or extension-registered chat and compactor models without replacing the provider's model list. See [Model overrides fields](/models-configuration#model-overrides) for all supported fields.
 
 ```json
 {
@@ -392,8 +396,8 @@ Override rules:
 
 - Atomic reads a single `models.json` from the active agent directory and never merges `.pi` and `.atomic` model files.
 - Atomic retains parsed `modelOverrides` for models registered later by extensions through `atomic.registerProvider()`; unknown IDs are ignored otherwise.
-- `modelOverrides` runs after `models` and extension registrations, so it applies to built-in, extension-registered, and same-ID custom chat models (as well as derived `-fast` and `-ultrafast` variants).
-- Nested objects merge per key rather than wiping siblings: `compat` (including `openRouterRouting`, `vercelGatewayRouting`, `chatTemplateKwargs`, and `chatTemplateArgs`), `inputLimits` (including `images` and `images.resize`), `promptCache`, `thinkingLevelMap`, `samplingParams`, and `samplingParamsByThinkingLevel` (per level).
+- `modelOverrides` runs after `models` and extension registrations, so it applies to built-in, extension-registered, and same-ID custom chat and compactor models (as well as derived `-fast` and `-ultrafast` variants). Image and classifier models are unaffected.
+- Nested objects merge per key rather than wiping siblings: `compat` (including `openRouterRouting`, `vercelGatewayRouting`, `chatTemplateKwargs`, and `chatTemplateArgs`), `inputLimits` (including `images` and `images.resize`), `promptCache`, `thinkingLevelMap`, `samplingParams`, `samplingParamsByThinkingLevel` (per level), and `compactionParams` (on compactor models).
 - `headers` shallow-merges (when both a custom `models` entry and `modelOverrides` set the same header key, the custom `models` entry's header wins). Provider-level headers stay separate and combine at request time.
 - Scalar `cost` overrides preserve inherited `tiers`; providing `cost.tiers` replaces the entire array (`[]` clears it).
 
@@ -612,6 +616,6 @@ Atomic checks explicit model capability metadata rather than guessing from provi
 
 ### Catalog freshness and precedence
 
-Atomic caches remote catalogs in `~/.atomic/agent/models-store.json`, keeps each provider's last usable snapshot on refresh failure, and prefers newer built-in data over stale remote caches. Final resolution layers built-in catalogs, fresh persisted/remote data, the active agent directory's single `models.json`, and extension provider registrations/overrides. Project `.atomic`/`.pi` model files and legacy agent-directory model files are never merged.
+Atomic caches remote catalogs in `~/.atomic/agent/models-store.json`, keeps each provider's last usable snapshot on refresh failure, and prefers newer built-in data over stale remote caches. Final resolution layers built-in catalogs, fresh persisted or remote data, the active agent directory's single `models.json`, and extension provider registrations and overrides. Project `.atomic`/`.pi` model files and legacy agent-directory model files are never merged. For catalog URL and offline variables, see [Environment variables](/environment-variables); for programmatic catalog control, see [SDK](/sdk) and [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh).
 
 Built-in Claude Opus 5 entries on Anthropic and Amazon Bedrock carry adaptive-thinking, prompt-caching, strict-tool, and `xhigh` metadata where advertised. Custom entries for similar models must declare matching `compat` capabilities explicitly rather than relying on the display name.

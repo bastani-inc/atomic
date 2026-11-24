@@ -8,6 +8,8 @@ Describe the outcome you want and how to verify it. For example: "Review the ins
 
 Your main session decides whether to answer directly, run checks in [codemode](/codemode), or split work across [subagents](/subagents).
 
+Delegating in plain language without codemode scripts? See [Plan multi-step work](/guides/orchestration). For seven concrete recipes, see [Orchestration patterns](/orchestration/patterns). For exact subagent parameters and `config.json`, see [Subagent reference](/subagents/reference).
+
 ## Launch now, use the result later
 
 The snippet below is JavaScript that your main session runs inside `codemode`, not a file you install. Run `/tools` if your session uses a custom tool list to confirm `codemode` and `subagent` are active.
@@ -23,7 +25,7 @@ store("guide-review", launch.tasks);
 return launch.tasks;
 ```
 
-- **Launch, not completion.** `await` resolves as soon as subagents start or enter the queue. Started or queued slots return `{ taskId, childId, agent, state: "admitted" | "queued", intercomTarget? }` (`intercomTarget` is included when Intercom is enabled for the subagent). Refused slots return `{ agent, state: "refused", reason }` with no running subagent. Your main session can continue working or end its turn while completion notices return results automatically, and `/tasks` lets you inspect subagents directly.
+- **Launch, not completion.** `await` resolves as soon as subagents start or enter the queue. Started or queued slots return `{ taskId, childId, agent, state: "admitted" | "queued", intercomTarget? }` (`intercomTarget` is included when Intercom is enabled for the subagent). Refused slots return `{ agent, state: "refused", reason }` with no running subagent. Your main session can continue working or end its turn while completion notices return results automatically, and `/tasks` lets you inspect subagents directly ([Manage background tasks](/background-tasks)).
 - **Explicit parallel batches.** Separate `tools.subagent()` calls inside codemode are not merged into one burst. Pass `tasks: [...]` when you want a parallel batch.
 - **Explicit wait.** When a later step needs a result immediately, wait briefly without launching a second subagent. The `// @options` comment sets per-script [codemode options](/codemode) such as `timeout_ms` (codemode scripts have a 256 MiB memory limit and no default timeout):
 
@@ -37,13 +39,13 @@ return await tools.subagent({ action: "wait", id: task.taskId, budgetMs: 2000 })
   Inside codemode, `tools.subagent({ action: "wait" })` defaults to a 30-second budget even when a host configures unlimited foreground waits.
 - **Cancellation and evidence.** Hitting `budgetMs`, returning early, or interrupting the script never stops an already-launched subagent (unawaited tool calls are cancelled when the script returns, while already-launched background subagents keep running). Use `tools.subagent({ action: "quit", id: childId })` to stop one. Treat actual subagent results and status, not launch receipts, as evidence, and account for every required subagent in joint reviews.
 - **One-level delegation.** Only the main session launches subagents. If a subagent uncovers follow-up work, it reports back so the main session can launch the next batch.
-- **Peer messaging.** Pass `group: true` to create a unique shared Intercom group for that batch, or pass a shared named `group`. Peer isolation keeps unrelated sessions out while `contact_supervisor` still reaches the main session across groups. Address subagents with the exact `intercomTarget` from the launch result ([Intercom from codemode](/intercom/reference#from-codemode-scripts)). A delivery acknowledgement is not a task result.
+- **Peer messaging.** Pass `group: true` to create a unique shared [Intercom](/intercom) group for that batch, or pass a shared named `group`. Peer isolation keeps unrelated sessions out while `contact_supervisor` still reaches the main session across groups. Address subagents with the exact `intercomTarget` from the launch result ([Intercom from codemode](/intercom/reference#from-codemode-scripts)). A delivery acknowledgement is not a task result.
 
 ## What survives interruption
 
 Subagents are persisted sessions; codemode scripts are not checkpointed programs.
 
-- Reopening the original main session automatically restores running subagents. Paused or quit subagents resume from `/tasks` or `tools.subagent({ action: "resume", id: childId })`.
+- Reopening the original main session automatically restores running subagents. Paused or quit subagents resume from [`/tasks`](/background-tasks) or `tools.subagent({ action: "resume", id: childId })`.
 - Your main session resumes in chat from completion notices, saved results, and decisions instead of re-entering an old JavaScript loop.
 - Save small handoff state, such as task IDs, round count, and next checks, with [the codemode store](/codemode#store-values), which persists per branch only when a script succeeds. If a script throws or times out, all `store()` writes from that script are discarded, even though any `tools.subagent()` launches already started. Inspect `/tasks`, chat, and changed files before retrying.
 - On recovery, call `await tools.subagent({ action: "status" })` and reconcile `children` against stored `childId` values. Collect finished results, resume paused work that is still needed, and relaunch missing subagents only after checking what they left behind.

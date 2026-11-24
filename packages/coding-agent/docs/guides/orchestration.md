@@ -6,14 +6,16 @@ description: "Delegate multi-step work in plain language, monitor background sub
 
 Give Atomic a goal, a way to verify completion, and any limits on edits, cost, or time. You do not need to write JavaScript to split work across agents.
 
+This page covers plain-language delegation. For codemode JavaScript orchestration and interruption recovery APIs, see [Orchestrate with codemode and subagents](/orchestration).
+
 > Review the installation guide for Linux and Windows. Give each platform to a separate read-only agent. Check disputed commands against the CLI, then report discrepancies by platform. Do not edit files.
 
-Your main session launches the subagents in the background and continues as each subagent reports back. To check which subagents are queued, running, or finished, run `/tasks` or focus the agent panel below the prompt (press `↓` on an empty prompt, or click a row in fullscreen mode). Select any subagent to read its live transcript or send it a message on the same screen without interrupting the others.
+Your main session launches the subagents in the background and continues as each subagent reports back. To check which subagents are queued, running, or finished, run `/tasks` or focus the agent panel below the prompt (press `↓` on an empty prompt, or click a row in fullscreen mode; see [Manage background tasks](/background-tasks)). Select any subagent to read its live transcript or send it a message on the same screen without interrupting the others.
 
 If you close Atomic while subagents are running, reopen the same main session to restore them and collect their results:
 
 - Running subagents relaunch automatically when you reopen the session.
-- Paused and quit subagents stay awaiting manual resume unless you set `resumeInFlight` to `"ask"` or `"auto"` in `~/.atomic/agent/extensions/subagent/config.json`.
+- Paused and quit subagents stay awaiting manual resume unless you set `resumeInFlight` to `"ask"` or `"auto"` in `~/.atomic/agent/extensions/subagent/config.json` ([Subagent config.json reference](/subagents/reference#subagent-config-json-reference)).
 - Forking a session (`/fork` or `--fork`) never restores the original session's subagents.
 - Sessions started with `--no-session` are not saved, so their subagents cannot be restored after Atomic closes.
 

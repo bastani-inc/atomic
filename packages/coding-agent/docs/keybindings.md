@@ -4,7 +4,7 @@ sidebarTitle: "Keybindings"
 description: "Default keyboard shortcuts and custom ~/.atomic/agent/keybindings.json configuration rules."
 ---
 
-Customize keyboard shortcuts in `~/.atomic/agent/keybindings.json`. Run `/reload` after editing the file to apply changes without restarting. Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/keybindings.schema.json"` for editor completion and validation (Atomic ignores `$schema` at load time).
+Customize keyboard shortcuts in `~/.atomic/agent/keybindings.json` (relocated by `ATOMIC_CODING_AGENT_DIR`; see [Environment variables](/environment-variables)). Run `/reload` after editing the file to apply changes without restarting. Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/keybindings.schema.json"` for editor completion and validation (Atomic ignores `$schema` at load time). See [Interactive mode](/usage) for editor and queue workflows, and [tmux setup](/tmux) if `Shift+Enter` or `Escape` behaves unexpectedly inside tmux.
 
 ## Key format
 
@@ -145,7 +145,7 @@ Interactive sessions run in fullscreen with a scrollable transcript above the do
 
 Rebind these like any other action: for example `"tui.altScreen.pageUp": "ctrl+pageUp"` keeps `pageUp` in the editor and moves transcript paging to `ctrl+pageUp`, and `[]` unbinds a shortcut. Focused custom components may consume viewport keys first; see the [input handling contract](/extensions/ui#custom-components).
 
-**`ask_user_question` controls:** Transcript scroll keys also work while the bottom-pinned `ask_user_question` dialog or Notes is open. Inside `ask_user_question`, use `↑`/`↓` to move between options, `Enter` to pick (`Enter` or `Space` to toggle multi-select boxes), type on **Type something.** for a custom answer, `n` to add a note, `Tab` or `←`/`→` to switch questions, and `Esc` to cancel.
+**[`ask_user_question`](/tools) controls:** Transcript scroll keys also work while the bottom-pinned `ask_user_question` dialog or Notes is open. Inside `ask_user_question`, use `↑`/`↓` to move between options, `Enter` to pick (`Enter` or `Space` to toggle multi-select boxes), type on **Type something.** for a custom answer, `n` to add a note, `Tab` or `←`/`→` to switch questions, and `Esc` to cancel.
 
 | Keybinding id | Default | Description |
 | --- | --- | --- |
@@ -181,8 +181,9 @@ Atomic does not ship a find-in-transcript shortcut. The four `tui.altScreen.sear
 
 **`Ctrl+C`, `Esc`, and `Ctrl+X` routing:**
 
-- `Ctrl+X` does not copy text; paired with `Ctrl+K` it stops all background work ([Navigation](#navigation)), on OAuth sign-in screens it copies the sign-in URL (`app.auth.copyUrl`), and in `/scoped-models` it clears selections. Use `/copy` to copy the viewed agent's last assistant message.
-- Physical `Esc` always requests cooperative cancellation without restarting the session. Physical `Ctrl+C` closes stuck custom dialogs (dialogs that handle `Ctrl+C` receive the first press and close on the second) and restarts an unresponsive background session process, even if you remap `app.clear`. See [Message queue](/usage#message-queue) for full interrupt and recovery rules.
+- `Ctrl+X` does not copy text; paired with `Ctrl+K` it stops all background work ([Navigation](#navigation)), on [OAuth sign-in screens](/providers) it copies the sign-in URL (`app.auth.copyUrl`), and in `/scoped-models` it clears selections. Use `/copy` to copy the viewed agent's last assistant message.
+- Physical `Esc` always requests cooperative cancellation without restarting the session. Pressing `Escape` twice within 500 ms on an empty, idle editor triggers `doubleEscapeAction`: `/tree` (`"tree"`, default), `/fork` (`"fork"`), or nothing (`"none"`). Configure it in [Interface and display settings](/settings#interface-and-display).
+- Physical `Ctrl+C` closes stuck custom dialogs (dialogs that handle `Ctrl+C` receive the first press and close on the second) and restarts an unresponsive background session process, even if you remap `app.clear`. See [Message queue](/usage#message-queue) for full interrupt and recovery rules.
 
 ### Sessions
 
@@ -274,6 +275,18 @@ Used inside `/scoped-models`. `Enter` toggles the selected model, typing filters
 | `app.models.toggleProvider` | `ctrl+p` | Toggle all models for the current provider |
 | `app.models.reorderUp` | `alt+up` (`alt+q` on Windows and WSL) | Move the selected model up in the cycle order |
 | `app.models.reorderDown` | `alt+down` | Move the selected model down in the cycle order |
+
+### Non-configurable and bundled extension shortcuts
+
+These shortcuts are not configured through `keybindings.json`:
+
+| Shortcut | Scope | Action |
+| --- | --- | --- |
+| `Shift+Ctrl+D` | Global (non-configurable) | Append a TUI render and unredacted session-message snapshot to `~/.atomic/agent/atomic-debug.log` ([Diagnostics and debugging](/development#debugging)) |
+| `Cmd+V` (macOS) | Global (non-configurable) | Paste clipboard images in terminals that forward empty bracketed paste or Kitty `super+v` |
+| `Alt+M` | Bundled [Intercom](/intercom) extension | Open the Intercom session list overlay |
+| `Ctrl+Shift+S` | Bundled [Web access](/web-access#slash-commands-and-shortcuts) extension | Open the browser search curator while a search runs (configure via `shortcuts.curate` in `~/.atomic/web-search.json`) |
+| `Ctrl+Shift+W` | Bundled [Web access](/web-access#slash-commands-and-shortcuts) extension | Toggle the live web-search activity monitor (configure via `shortcuts.activity` in `~/.atomic/web-search.json`) |
 
 ## Preset examples
 

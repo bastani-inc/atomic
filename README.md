@@ -784,12 +784,38 @@ Subagents are purpose-built agents with scoped context, tools, and termination c
 
 Large, mixed, or growing contexts can make attention harder. Specialized agents reduce that risk through isolation, focus, tool scoping, and deliberate handoffs. Independent tasks can also run in parallel.
 
+### 4. Platform capabilities
+
+- **Shared storage (PostgreSQL & libSQL/Turso):** Persist sessions and multi-node Intercom across machines and CI runners with [Storage backends](https://docs.bastani.ai/storage) and [SDK storage backends](https://docs.bastani.ai/sdk/storage).
+- **Worktree snapshots, cross-machine resume, and blueprints:** Capture repository state alongside session history and rebuild dependencies automatically with `.atomic/blueprint.yaml` ([Worktree snapshots](https://docs.bastani.ai/worktree-snapshots), [Resume anywhere & blueprints](https://docs.bastani.ai/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint)).
+- **MCP servers:** Connect external tools and data sources over Model Context Protocol ([MCP servers](https://docs.bastani.ai/mcp-servers)).
+- **Structured decisions:** Run typed classifier or chat decisions with `decide()` and `generateStructuredOutput()` without starting a full agent turn ([Structured decisions](https://docs.bastani.ai/sdk/structured-decisions)).
+- **Compaction and custom compactors:** Clear context without a model call by default, or register custom remote `type: "compactor"` endpoints ([Compaction](https://docs.bastani.ai/compaction#customize-morph-or-add-a-remote-compactor), [Remote compaction models](https://docs.bastani.ai/models#remote-compaction-models)).
+- **Programmatic integration:** Embed Atomic through the [TypeScript SDK](https://docs.bastani.ai/sdk), drive long-lived subprocesses over [RPC mode](https://docs.bastani.ai/rpc), or stream structured events in [JSON mode](https://docs.bastani.ai/json).
+
+## Published packages
+
+All public packages publish on npm under `@bastani/atomic*` (Node.js 22.19+):
+
+| Package | Purpose | Docs |
+| --- | --- | --- |
+| `@bastani/atomic` | CLI, TUI, bundled extensions, and TypeScript SDK | [Docs](https://docs.bastani.ai/) / [SDK](https://docs.bastani.ai/sdk) |
+| `@bastani/atomic-ai` | Unified LLM client across providers, auth, streaming, tools, and classifiers | [Library docs](https://docs.bastani.ai/libraries/ai) |
+| `@bastani/atomic-agent-core` | Stateful agent loop with tool execution, steering, and follow-up queues | [Library docs](https://docs.bastani.ai/libraries/agent-core) |
+| `@bastani/atomic-tui` | Differential terminal UI framework with components, overlays, and key handling | [Library docs](https://docs.bastani.ai/libraries/tui) |
+| `@bastani/atomic-codemode` | Sandboxed JavaScript execution for tool scripting | [Library docs](https://docs.bastani.ai/libraries/codemode) |
+| `@bastani/atomic-schema` | Zero-`eval` JSON Schema builders and validators | [Library docs](https://docs.bastani.ai/libraries/schema) |
+| `@bastani/atomic-telemetry` | Vendor-neutral telemetry contracts, metrics, and trace renderers | [Library docs](https://docs.bastani.ai/libraries/telemetry) |
+| `@bastani/atomic-storage-postgres` | Optional PostgreSQL 16+ storage adapter for shared sessions and Intercom | [Library docs](https://docs.bastani.ai/libraries/storage-postgres) |
+| `@bastani/atomic-storage-libsql` | Optional Turso / libSQL storage adapter for shared sessions and Intercom | [Library docs](https://docs.bastani.ai/libraries/storage-libsql) |
+
+`@bastani/atomic-natives` is an internal N-API native module installed automatically with `@bastani/atomic`. See [Standalone libraries](https://docs.bastani.ai/libraries).
 
 ---
 
 ## Documentation
 
-Full documentation lives at **[docs.bastani.ai](https://docs.bastani.ai/)**. It covers the CLI and SDK, security, containerized execution, codemode orchestration, session management, configuration, troubleshooting, and provider setup.
+Full documentation lives at **[docs.bastani.ai](https://docs.bastani.ai/)**. It covers the CLI and [TypeScript SDK](https://docs.bastani.ai/sdk), [storage backends](https://docs.bastani.ai/storage), [worktree snapshots](https://docs.bastani.ai/worktree-snapshots), [blueprints](https://docs.bastani.ai/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint), [MCP servers](https://docs.bastani.ai/mcp-servers), [structured decisions](https://docs.bastani.ai/sdk/structured-decisions), security, containerized execution, codemode orchestration, configuration, [diagnostics](https://docs.bastani.ai/development), and provider setup.
 
 The docs live in this repository under [`packages/coding-agent/docs`](./packages/coding-agent/docs). Open a pull request to suggest a change.
 

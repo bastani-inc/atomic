@@ -17,7 +17,7 @@ Follow these four pages in order for full setup instructions, or use the quick c
 
 ## Prerequisites
 
-- **Package install:** Node.js 22.19 or newer with npm or pnpm, or Bun 1.4.2+ for Bun installs.
+- **Package install:** Node.js 22.19 or newer with npm or pnpm, or Bun 1.4.5+ for Bun installs.
 - **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`; Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
 - **Model provider:** A supported subscription login (`/login`) or API key.
 
@@ -155,13 +155,15 @@ Piped stdin is separated from CLI prompt text by a newline. Use `--mode json` fo
 ## Next steps
 
 - **[Interactive mode](/usage).** Learn slash commands, shortcuts, and message queueing.
-- **[Orchestration](/orchestration).** Combine codemode, subagents, and skills for multi-step work.
-- **[Skills](/skills).** Run reusable procedures with `/skill:<name>`.
-- **[Providers](/providers).** Configure provider logins, API keys, and cloud endpoints.
-- **[Settings](/settings).** Configure global and project preferences.
-- **[Keybindings](/keybindings).** Review default shortcuts and remap keys.
-- **[Atomic packages](/packages).** Install shared extensions, skills, prompts, and themes.
-- **[Security](/security).** Read project trust, tool permissions, and credential export rules before trusting a project or installing third-party packages.
-- **[Containerization](/containerization).** Run Atomic inside a container or sandbox.
+- **[Sessions](/sessions) and [Worktree snapshots](/worktree-snapshots).** Branch conversations, restore repository checkouts, and [resume on any machine with blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint).
+- **[Storage backends](/storage).** Keep local SQLite or switch to shared PostgreSQL or Turso/libSQL (or see [SDK storage backends](/sdk/storage) for embedded apps).
+- **[Compaction](/compaction).** Manage long sessions and configure [custom remote compactors](/compaction#customize-morph-or-add-a-remote-compactor).
+- **[MCP servers](/mcp-servers).** Connect external tools and data sources over Model Context Protocol.
+- **[Subagents](/subagents), [Intercom](/intercom), and [Orchestration](/orchestration).** Delegate independent tasks, coordinate live sessions, and verify multi-step work.
+- **[Skills](/skills) and [Atomic packages](/packages).** Run reusable procedures with `/skill:<name>` and share extensions, skills, prompts, and themes.
+- **[Providers](/providers), [Settings](/settings), and [Keybindings](/keybindings).** Configure models, preferences, and keyboard shortcuts.
+- **[Programmatic modes](/programmatic) and [Structured decisions](/sdk/structured-decisions).** Embed Atomic via the TypeScript SDK, `decide()`, RPC, or JSON mode.
+- **[Security](/security) and [Containerization](/containerization).** Review project trust, tool permissions, and container isolation before trusting third-party projects or packages.
+- **[Diagnostics and debugging](/development).** Capture debug snapshots, trace stalls, and file bug reports.
 
-Platform guides: [Windows](/windows), [Termux](/termux), [tmux](/tmux), [Terminal setup](/terminal-setup), and [Shell aliases](/shell-aliases).
+Platform guides: [Windows](/windows), [Termux](/termux), [tmux](/tmux), [Herdr](/herdr), [Terminal setup](/terminal-setup), and [Shell aliases](/shell-aliases).

@@ -15,7 +15,7 @@ The interface has four main areas:
 - **Startup header.** Shortcuts plus named lists of loaded context files, prompt templates, skills, and extensions. Press the expand-tools shortcut (`Ctrl+O` by default) to switch those lists to source paths.
 - **Messages.** User messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI.
 - **Editor.** The prompt box where you type. Its border color shows the current thinking level.
-- **Footer.** Token usage, cache usage, cost, and context usage sit above the editor. Below it, Atomic shows the current model, reasoning level, working directory, Git branch, and session name while idle, or the bound interrupt key while working (`esc to interrupt` on `main`, `esc to pause` while viewing a subagent). When background subagents run, the [agent panel](/background-tasks#the-agent-panel) appears below the footer; selecting a subagent swaps the transcript and points the prompt at it. Press `?` on an empty prompt for the key overview.
+- **Footer.** Token usage, cache usage, cost, and context usage sit above the editor. Below it, Atomic shows the current model, reasoning level, working directory, Git branch, and session name while idle, or the bound interrupt key while working (`esc to interrupt` on `main`, `esc to pause` while viewing a subagent). When background subagents run, the [agent panel](/background-tasks#the-agent-panel) appears below the footer; selecting a subagent swaps the transcript and points the prompt at it. Press `↓` on an empty prompt to focus the agent panel, `←` on an empty prompt while viewing a subagent to return to `main`, `Ctrl+X Ctrl+K` (twice within 3 seconds) to stop all background work, and `?` on an empty prompt for the key overview.
 
 Built-in views such as `/settings` or custom extension UI can temporarily replace the editor.
 
@@ -29,6 +29,14 @@ While the agent works, `∀` pulses beside a status message with the current run
 
 Compaction shows a still `∀` mark with elapsed time and the cancel key. Opening a chat during compaction displays how long compaction has been running. Afterwards, one line marks the boundary: `⚛ Context cleared · 182.0k tokens`, or `⚛ Context compacted · morph/morph-compactor · 182.0k → 21.4k tokens` when a compactor model ran. Press `Ctrl+O` to inspect where the earlier conversation lives in session history, what the agent recovers first, and any compacted text.
 
+### Transcript interaction
+
+- **Clickable blocks.** Single-click any expandable block (tool calls, grouped summaries, `!` shell blocks, finished-agent cards, compaction boundaries) to open or fold that block without affecting others. `Ctrl+O` resets all blocks together.
+- **Clickable key hints.** Click key hints under the prompt, in dialogs, or in `/tasks` to run that key or command while keeping your prompt draft.
+- **Scrolling and jump to bottom.** Scroll the transcript with the mouse wheel, or hold `Alt+wheel` to scroll five times as far when your terminal forwards Alt with wheel events. While scrolled up, the current turn's opening prompt stays pinned at the top and a `↓ jump to bottom · ctrl+end` pill appears above the editor.
+
+See [Transcript scrolling and mouse](/keybindings#tui-fullscreen-viewport) for selection, auto-copy, and paging shortcuts.
+
 ### Editor features
 
 | Feature | How |
@@ -37,7 +45,7 @@ Compaction shows a still `∀` mark with elapsed time and the cancel key. Openin
 | Path completion | Press `Tab` to complete paths |
 | Prompt history | `↑` and `↓` walk past prompts; `Ctrl+R` searches them and places the chosen prompt in the editor without sending |
 | Multi-line input | `Shift+Enter` or `Ctrl+J` |
-| Images | Paste with `Ctrl+V` (`Alt+V` or `Ctrl+V` on Windows and WSL), or drag into the terminal |
+| Images | Paste with `Ctrl+V` (`Alt+V` or `Ctrl+V` on Windows and WSL), or drag into the terminal ([Terminal setup](/terminal-setup)) |
 | Shell command | `!command` runs a command and includes output in model context |
 | Hidden shell command | `!!command` runs a command without sending output to model context |
 | External editor | `Ctrl+G` opens `externalEditor`, `$VISUAL`, or `$EDITOR` (falling back to `notepad` on Windows or `nano` on macOS and Linux) |
@@ -46,7 +54,9 @@ Compaction shows a still `∀` mark with elapsed time and the cancel key. Openin
 
 **Prompt history:** Editor `↑` and `↓` keep up to 100 recent adjacent-deduplicated prompts typed during the current run (per viewed agent: `main` or the selected subagent; retrieve queued messages with `Alt+Up` or `Alt+Q` instead). `Ctrl+R` searches the viewed agent's recorded prompts newest first, including prompts expanded from templates or skills and prompts transformed by an `input` hook. When an `input` hook transforms a prompt, Atomic saves and searches the transformed text in `Ctrl+R`, while editor `↑` and `↓` walk the raw text you typed. `Esc` clears search text and then closes search without touching your draft or interrupting the agent. Avoid typing secrets directly into prompts.
 
-**Interactive shell commands (`!` and `!!`):** Only one interactive `!` or `!!` command can run at a time; submitting another warns that a command is already running and restores your text. On native Windows, `!` and `!!` run PowerShell (preferring PowerShell 7 `pwsh.exe`, then Windows PowerShell `powershell.exe`; see [Windows](/windows)). Linux, macOS, and WSL use Bash. Extension-provided execution hooks take precedence. `shellCommandPrefix` is prepended to each command, so match the active shell's syntax (`shellPath` configures Bash, not Windows interactive PowerShell). `Esc` or `Ctrl+C` cancels a running command. While viewing a subagent, `!` and `!!` commands are refused; switch to `main` to run them.
+**Interactive shell commands (`!` and `!!`):** Only one interactive `!` or `!!` command can run at a time; submitting another warns that a command is already running and restores your text. On native Windows, `!` and `!!` run PowerShell (preferring PowerShell 7 `pwsh.exe`, then Windows PowerShell `powershell.exe`; see [Windows](/windows)). Linux, macOS, and WSL use Bash. Extension-provided execution hooks take precedence. [`shellCommandPrefix`](/shell-aliases) is prepended to each command, so match the active shell's syntax (`shellPath` in [Shell settings](/settings#shell) configures Bash, not Windows interactive PowerShell). `Esc` or `Ctrl+C` cancels a running command. While viewing a subagent, `!` and `!!` commands are refused; switch to `main` to run them.
+
+**Double-Escape (`doubleEscapeAction`):** Pressing `Escape` twice within 500 ms on an empty, idle editor opens `/tree` by default. Set `doubleEscapeAction` to `"tree"`, `"fork"`, or `"none"` in [Settings](/settings#interface-and-display).
 
 **Suspend and subshell:** On native Windows, `Alt+Z` opens an interactive PowerShell subshell; type `exit` to return to the same Atomic session while background tasks keep running, and `Ctrl+Z` stays editor undo. On POSIX systems and WSL, `Ctrl+Z` suspends Atomic and `fg` resumes it.
 
@@ -84,7 +94,7 @@ When a startup screen appears (project trust, first-run setup, resume picker, or
 
 ## Slash commands
 
-Type `/` in the editor to open command completion. Extensions can register custom commands, skills run as `/skill:name`, and prompt templates expand via `/templatename`. While viewing a subagent, built-in commands target `main` (confirming commands that replace or rewrite the main chat, refusing `/model` and `/thinking`, and using `/copy` for the viewed subagent's last message), while skills, prompt templates, and user or project extension commands target the viewed subagent; see [Commands while viewing a subagent](/background-tasks#commands-while-viewing-a-subagent).
+Type `/` in the editor to open command completion. [Extensions](/extensions) can register custom commands, [skills](/skills) run as `/skill:name`, and [prompt templates](/prompt-templates) expand via `/templatename`. While viewing a subagent, built-in commands target `main` (confirming commands that replace or rewrite the main chat, refusing `/model` and `/thinking`, and using `/copy` for the viewed subagent's last message), while skills, prompt templates, and user or project extension commands target the viewed subagent; see [Commands while viewing a subagent](/background-tasks#commands-while-viewing-a-subagent).
 
 Commands that take no arguments (such as `/new`, `/tools`, `/reload`, `/tree`, `/fork`, `/clone`, `/settings`, and `/session` with anything other than `snapshot`) match only when entered bare. Appending extra text sends that text to the model as a normal prompt.
 
@@ -92,18 +102,18 @@ Commands that take no arguments (such as `/new`, `/tools`, `/reload`, `/tree`, `
 
 | Command | Description |
 | --- | --- |
-| `/login [provider]` | Sign in with an OAuth subscription or save an API key. Accepts an optional provider ID or display name |
-| `/logout [provider]` | Remove stored credentials from `~/.atomic/agent/auth.json` (leaves environment variables and `models.json` unchanged) |
-| `/model [provider/model]` | Switch models and save the startup default. An exact case-insensitive match (`provider/id` or bare `id`, no `:thinking` suffix) switches immediately; other text opens the picker pre-filtered. Searches scoped models when active, otherwise all available models |
+| `/login [provider]` | Sign in with an OAuth subscription or save an API key. Accepts an optional provider ID or display name ([Authentication](/getting-started/authentication), [Providers](/providers)) |
+| `/logout [provider]` | Remove stored credentials from `~/.atomic/agent/auth.json` (leaves environment variables and `models.json` unchanged; see [Authentication](/getting-started/authentication)) |
+| `/model [provider/model]` | Switch models and save the startup default ([Models](/models)). An exact case-insensitive match (`provider/id` or bare `id`, no `:thinking` suffix) switches immediately; other text opens the picker pre-filtered. Searches scoped models when active, otherwise all available models |
 | `/thinking [level]` | Set the thinking level (case-insensitive) and save the startup default. Rejects levels unsupported by the current model with an error listing available levels |
-| `/scoped-models` | Enable, disable, and reorder models for `Ctrl+P` cycling |
-| `/settings` | Change theme, message delivery, transport, and other preferences |
+| `/scoped-models` | Enable, disable, and reorder models for `Ctrl+P` cycling ([`enabledModels`](/settings#enabledmodels)) |
+| `/settings` | Change [theme](/themes) (Atomic has no `/theme` command), message delivery, transport, and other [settings](/settings) |
 | `/resume [id\|prefix]` | Open a session directly by full ID or unique 8-hex prefix, or browse previous sessions when called with no argument |
 | `/new` | Start a new session |
 | `/name [name]` | Set the session display name, or print the current name when called with no argument |
-| `/session [snapshot]` | Show session location, ID, messages, tokens, and cost; `snapshot` shows worktree snapshots and diffs |
-| `/tools` | Show active tools, why other tools are off, and unregistered names in `defaultTools` |
-| `/tasks [taskId]` | Inspect background subagents and shells, or open a specific task directly by task ID |
+| `/session [snapshot]` | Show session location, ID, messages, tokens, and cost; `snapshot` shows [worktree snapshots](/worktree-snapshots) and diffs |
+| `/tools` | Show active [tools](/tools), why other tools are off, and unregistered names in `defaultTools` |
+| `/tasks [taskId]` | Inspect [background tasks](/background-tasks) (subagents and shells), or open a specific task directly by task ID |
 | `/tree` | Jump to any point in the session tree and continue from there |
 | `/fork` | Create a new session from an earlier user message |
 | `/clone` | Duplicate the current active branch into a new session |
@@ -112,14 +122,14 @@ Commands that take no arguments (such as `/new`, `/tools`, `/reload`, `/tree`, `
 | `/export [file]` | Export the session to HTML (default) or to a JSONL export when `file` ends in `.jsonl` (case-insensitive). Accepts quoted paths with spaces and rejects unclosed quotes |
 | `/import <file>` | Import an exported `.jsonl` session (accepts quoted paths; asks for confirmation before replacing the current session) |
 | `/share` | Upload a private GitHub gist with a shareable HTML link. Requires `gh` installed and authenticated (`gh auth login`); strips worktree snapshot contents and large tool-output blobs from the uploaded copy |
-| `/trust` | Save a project trust decision for future sessions |
+| `/trust` | Save a [project trust](/security) decision for future sessions |
 | `/reload` | Reload keybindings, extensions, skills, prompts, themes, context files, system prompt files, `settings.json`, and `models.json` (refused while the agent is streaming or compaction is active) |
 | `/hotkeys` | Show all keyboard shortcuts |
 | `/changelog` | Display the full version history |
 | `/debug` | Unlisted diagnostic command that appends a UI and message snapshot to `~/.atomic/agent/atomic-debug.log` and prints the file path (see [Debugging](/development#debugging)) |
 | `/exit`, `/quit` | Exit Atomic |
 
-**Bundled extension commands:** Atomic's bundled extensions also register `/agents` (subagents), `/mcp` (MCP servers), `/intercom` (Intercom overlay), `/llama` (load, unload, or download local `llama.cpp` router models from Hugging Face; see [Local models](/llama-cpp)), and `/curator`, `/websearch`, `/search`, `/google-account` ([Web access](/web-access)).
+**Bundled extension commands:** Atomic's bundled extensions also register `/agents` ([subagents](/subagents)), `/mcp` ([MCP servers](/mcp-servers)), `/intercom` ([Intercom](/intercom)), `/llama` (load, unload, or download local `llama.cpp` router models from Hugging Face; see [Local models](/llama-cpp)), and `/curator`, `/websearch`, `/search`, `/google-account` ([Web access](/web-access)).
 
 ## Message queue
 
@@ -194,7 +204,7 @@ Use `/export [file]` to write a session to HTML (default) or to a JSONL export w
 
 `atomic --export <session.jsonl> [file]` renders a single subagent launch on the selected branch as an `Agent(...)` card showing its prompt, tool calls, and final answer. Parallel launches and other extension tools keep their normal export format.
 
-Use `/share` to upload a private GitHub gist with a shareable link that opens in `https://bastani.ai/session/` (override with `ATOMIC_SHARE_VIEWER_URL`). `/share` requires the GitHub CLI (`gh`) installed and authenticated, and strips worktree snapshot contents and large tool-output blobs before uploading.
+Use `/share` to upload a private GitHub gist with a shareable link that opens in `https://bastani.ai/session/` (override with [`ATOMIC_SHARE_VIEWER_URL`](/environment-variables)). `/share` requires the GitHub CLI (`gh`) installed and authenticated, and strips worktree snapshot contents and large tool-output blobs before uploading.
 
 Treat exported and shared sessions as sensitive. Transcripts can contain source code, file paths, and credentials; review a session before sharing it with anyone who has the link.
 

@@ -45,7 +45,7 @@ For settings tuned to a specific NVIDIA GPU and model, see [NVIDIA RTX recipes](
 
 ## Configure Atomic
 
-Run `/login llama.cpp` and enter the router URL and optional API key. The default URL is `http://127.0.0.1:9931` (trailing slashes and `/v1` are normalized automatically). When the router runs with `--no-models-autoload`, login saves only the connection; load a model with `/llama`, then select it with `/model`.
+Run `/login llama.cpp` inside an interactive session and enter the router URL and optional API key. The default URL is `http://127.0.0.1:9931` (trailing slashes and `/v1` are normalized automatically). Shell `atomic auth login` does not load extension providers, so use `/login llama.cpp` or environment variables below instead (see [CLI reference](/reference/cli#credential-commands) and [Model providers](/providers)). When the router runs with `--no-models-autoload`, login saves only the connection; load a model with `/llama`, then select it with `/model`.
 
 You can configure the same values with environment variables instead of `/login`:
 
@@ -82,7 +82,7 @@ Each llama.cpp model sets both `contextWindow` and `maxTokens` from the router-r
 
 ## Classification
 
-Classifier models answer typed `choice`, `bool`, and `score` questions about JSON state, letting a local model serve `decide()` and `structured_output` decisions as your [`decisionModel`](/settings#decisionmodel). Extensions can call `ctx.modelRegistry.classify()` and codemode scripts can call `models.classify()`; see [Classifier models](/models#use-classifier-models).
+Classifier models answer typed `choice`, `bool`, and `score` questions about JSON state, letting a local model serve `decide()` and `structured_output` decisions as your [`decisionModel`](/settings#decisionmodel) (see [Structured decisions](/sdk/structured-decisions)). Extensions can call `ctx.modelRegistry.classify()` and codemode scripts can call `models.classify()`; see [Classifier models](/models#use-classifier-models).
 
 Atomic exposes llama.cpp models as classifiers in two ways:
 

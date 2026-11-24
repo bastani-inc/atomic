@@ -1,6 +1,6 @@
 ---
 title: "Extensions overview"
-sidebarTitle: "Overview"
+sidebarTitle: "Extensions overview"
 description: "Build TypeScript extensions that add tools, slash commands, lifecycle hooks, and custom terminal UI to Atomic."
 ---
 
@@ -28,6 +28,7 @@ Read this overview for a working first extension, discovery locations, imports, 
 - [Extension UI](/extensions/ui). Build dialogs, widgets, host-native pickers and forms, custom components, and message renderers.
 - [Extension API reference](/extensions/api-reference). Reference `ExtensionContext`, `ExtensionToolContext`, `ExtensionCommandContext`, `ExtensionAPI` methods, and error handling.
 - [Extension examples](/extensions/examples). Browse runnable extensions shipped with Atomic.
+- [SDK extensions](/sdk/reference#extensions) and [Structured decisions](/sdk/structured-decisions). Load extensions programmatically with `DefaultResourceLoader`, pass standalone `customTools`, or run schema-validated decisions.
 - [Security](/security). Review the project-trust boundary that controls whether a project's extensions load.
 
 If an extension is heavier than you need, compare lighter options on [Build with Atomic](/build).
@@ -85,6 +86,42 @@ Test it for one run with `-e` (or `--extension`):
 atomic -e ./my-extension.ts
 ```
 
+### Loading in the SDK
+
+Embedded apps can load extension files, pass inline factories through `DefaultResourceLoader`, or register standalone tools directly with `createAgentSession({ customTools })`:
+
+```typescript
+import { createAgentSession, DefaultResourceLoader, defineTool } from "@bastani/atomic";
+import { Type } from "@bastani/atomic/typebox";
+
+const loader = new DefaultResourceLoader({
+  additionalExtensionPaths: ["./my-extension.ts"],
+  extensionFactories: [
+    (atomic) => {
+      atomic.on("agent_start", () => console.log("Starting run"));
+    },
+  ],
+});
+await loader.reload();
+
+const pingTool = defineTool({
+  name: "ping",
+  label: "Ping",
+  description: "Return pong",
+  parameters: Type.Object({}),
+  async execute() {
+    return { content: [{ type: "text", text: "pong" }], details: {} };
+  },
+});
+
+const { session } = await createAgentSession({
+  resourceLoader: loader,
+  customTools: [pingTool],
+});
+```
+
+See [SDK extensions](/sdk/reference#extensions) and [SDK custom tools](/sdk/reference#custom-tools).
+
 ## Extension locations
 
 > **Security:** Extensions run with your full system permissions and can execute arbitrary code. Install only from sources you trust.
@@ -125,7 +162,7 @@ To distribute extensions over npm or git, see [Install and manage packages](/pac
 
 ### Built-in extension resources
 
-Atomic exposes `builtin:llama.cpp`, `builtin:codemode`, and `builtin:tool-search` (which registers the `tool_search` tool) as built-in extension resources rather than filesystem paths. Toggle them interactively in `atomic config`, or disable one in `settings.json`:
+Atomic exposes `builtin:llama.cpp` ([llama.cpp](/llama-cpp)), `builtin:codemode` ([Codemode](/codemode)), and `builtin:tool-search` (which registers the [`tool_search`](/tools#tool_search) tool) as built-in extension resources rather than filesystem paths. Toggle them interactively in `atomic config`, or disable one in `settings.json`:
 
 ```json
 { "extensions": ["-builtin:codemode"] }
@@ -149,8 +186,8 @@ Extensions can import Atomic's bundled packages without installing them in `node
 
 | Package | Purpose |
 | --- | --- |
-| `@bastani/atomic` | Extension types (`ExtensionAPI`, `ExtensionContext`, events), helpers (`StringEnum`, `defineTool`), and built-in tool factories |
-| `@bastani/atomic/storage` | Storage adapter interfaces, `createSqliteDatabase()`, and storage errors |
+| [`@bastani/atomic`](/sdk) | Extension types (`ExtensionAPI`, `ExtensionContext`, events), helpers (`StringEnum`, `defineTool`), and built-in tool factories |
+| [`@bastani/atomic/storage`](/sdk/storage) | Storage adapter interfaces, `createSqliteDatabase()`, and storage errors |
 | `@bastani/atomic/typebox` | Atomic's copy of TypeBox plus subpaths (`/compile`, `/error`, `/format`, `/guard`, `/schema`, `/system`, `/type`, `/value`) |
 | `typebox` and `@sinclair/typebox` | Direct schema imports (including `typebox/*`, `@sinclair/typebox/compile`, and `@sinclair/typebox/value`) resolve to Atomic's copy so formats registered with `Format.Set()` apply to tool validation |
 | [`@bastani/atomic-ai`](/libraries/ai) | AI utilities, provider APIs, image generation, and subpaths (`/oauth`, `/models`, `/providers/all`) |
@@ -164,7 +201,7 @@ Atomic maintains these packages directly; [Libraries](/libraries) documents each
 
 Node.js built-ins (`node:fs`, `node:path`, and the rest of `node:*`) are always available.
 
-**Sharing TypeBox from dependencies and SDK apps.** Direct `typebox` imports inside an extension file map to Atomic's copy automatically. If a separate dependency or SDK app registers custom TypeBox formats, settings, or locales that must reach Atomic's tool validation, import from `@bastani/atomic/typebox` and its subpaths rather than from a separate `typebox` dependency.
+**Sharing TypeBox from dependencies and SDK apps.** Direct `typebox` imports inside an extension file map to Atomic's copy automatically. If a separate dependency or SDK app registers custom TypeBox formats, settings, or locales that must reach Atomic's tool validation, import from `@bastani/atomic/typebox` and its subpaths rather than from a separate `typebox` dependency. See [Sharing Atomic's TypeBox registry](/sdk#sharing-atomics-typebox-registry).
 
 **Third-party npm dependencies.** Add a `package.json` next to your extension (or in a parent directory) and install dependencies with npm, pnpm, or Bun:
 
@@ -205,7 +242,7 @@ Auto-discovered extensions hot-reload when you run `/reload`. Atomic transpiles 
 
 ## Startup and lazy discovery
 
-Built-in MCP, subagent, web-access, and Intercom commands are available immediately at startup. Their first call may wait for background discovery or connection to finish:
+Built-in [MCP](/mcp-servers), [subagent](/subagents), [web-access](/web-access), and [Intercom](/intercom) commands are available immediately at startup. Their first call may wait for background discovery or connection to finish:
 
 - Enabled MCP servers connect in the background at startup. Your first prompt waits up to 10 seconds for servers that expose direct tools.
 - Codemode waits for the MCP namespaces a script names; `searchTools()` and `ALL_TOOLS` wait for all enabled servers. Tool search and resource tools wait for discovery too.

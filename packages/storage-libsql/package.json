@@ -16,7 +16,7 @@
     "url": "git+https://github.com/bastani-inc/atomic.git",
     "directory": "packages/storage-libsql"
   },
-  "homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/storage-libsql#readme",
+  "homepage": "https://docs.bastani.ai/libraries/storage-libsql",
   "bugs": { "url": "https://github.com/bastani-inc/atomic/issues" },
   "keywords": ["atomic", "storage", "libsql", "turso", "sqlite", "bastani"],
   "atomic": { "storageAdapters": ["./libsql.js"] },

@@ -8,7 +8,7 @@ Atomic is a terminal coding agent with built-in file, shell, search, codemode, s
 
 ## Quick start
 
-Install with a package manager (requires Node.js 22.19+, or Bun 1.4.2+ for Bun installs):
+Install with a package manager (requires Node.js 22.19+, or Bun 1.4.5+ for Bun installs):
 
 ```bash
 npm install -g @bastani/atomic
@@ -49,8 +49,16 @@ Authenticate with `/login`, run `atomic auth login <provider>` in your shell, or
 5. [Use interactive mode](/usage).
 6. [Manage sessions](/sessions) and [compaction](/compaction).
 
+## Explore by capability
+
+- **Sessions, snapshots, and resume:** Save and branch in [Sessions](/sessions), capture repository state with [Worktree snapshots](/worktree-snapshots), resume across machines with [Environment blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint), and share state over PostgreSQL or Turso/libSQL in [Storage backends](/storage).
+- **Multi-agent work:** Delegate focused tasks with [Subagents](/subagents), coordinate live sessions with [Intercom](/intercom), and script multi-step checks with [Orchestration](/orchestration).
+- **Tools and context:** Connect external tools through [MCP servers](/mcp-servers), keep long runs within budget with [Compaction and custom compactors](/compaction#customize-morph-or-add-a-remote-compactor), and inspect terminal integrations like [Herdr](/herdr).
+- **Embed and extend:** Drive Atomic from Node.js with the [TypeScript SDK](/sdk), [SDK storage backends](/sdk/storage), [Structured decisions (`decide()`)](/sdk/structured-decisions), [RPC mode](/rpc), and [Standalone libraries](/libraries).
+- **Troubleshoot:** Capture logs, stalls, and snapshots with [Diagnostics and debugging](/development).
+
 ## Documentation paths
 
-- **[Learn](/guides).** Install Atomic, run interactive and non-interactive sessions, manage context and snapshots, delegate work with subagents and Intercom, connect providers, and review security and containerization.
-- **[Build](/build).** Customize Atomic with skills, prompt templates, themes, extensions, and packages, orchestrate agents, define custom providers, or embed Atomic through the [SDK, RPC, or JSON mode](/programmatic).
-- **[Reference](/reference).** Look up CLI commands and flags, settings, environment variables, keybindings, tools, storage, customization schemas, API protocols, and platform setup.
+- **[Learn](/guides).** Install Atomic, run interactive and non-interactive sessions, manage context and [worktree snapshots](/worktree-snapshots), delegate work with [subagents](/subagents) and [Intercom](/intercom), connect providers, and review security and containerization.
+- **[Build](/build).** Customize Atomic with skills, prompt templates, themes, extensions, [MCP servers](/mcp-servers), and packages, orchestrate agents, define custom providers and compactors, or embed Atomic through the [SDK, RPC, or JSON mode](/programmatic).
+- **[Reference](/reference).** Look up CLI commands and flags, settings, environment variables, keybindings, tools, [storage](/storage), customization schemas, API protocols, [platform setup](/herdr), and [diagnostics](/development).

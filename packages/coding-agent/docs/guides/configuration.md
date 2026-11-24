@@ -1,12 +1,27 @@
 ---
 title: "Configure Atomic"
 sidebarTitle: "Configuration"
-description: "Set up global preferences in settings.json and override settings per project."
+description: "Choose the right configuration file, set global preferences in settings.json, and override settings per project."
 ---
 
 After your [first session](/getting-started/first-session), save global preferences in `~/.atomic/agent/settings.json`. Use `.atomic/settings.json` for overrides that apply only to the current project.
 
 You can edit either file directly or run `/settings` inside an interactive session to change common options. Both files use strict JSON (no `//` comments or trailing commas).
+
+## Where to configure what
+
+Atomic splits configuration by scope and purpose:
+
+| What you want to configure | Where to put it | Guide |
+| --- | --- | --- |
+| Subscriptions, API keys, and cloud credentials | `/login`, `~/.atomic/agent/auth.json`, or provider env vars | [Model providers](/providers) |
+| Custom models, local servers, proxies, overrides, and remote compactors | `~/.atomic/agent/models.json` | [Configure custom models](/models) |
+| Custom provider APIs, OAuth flows, dynamic catalogs, and account aliases | Extension calling `atomic.registerProvider()` | [Build custom providers](/custom-provider) |
+| Persistent defaults, `enabledModels`, `fallbackModels`, `decisionModel`, `compactionModel`, tools, and storage | `~/.atomic/agent/settings.json` and `.atomic/settings.json` | [Settings reference](/settings) |
+| Local SQLite, JSONL, PostgreSQL, or libSQL/Turso session and Intercom backends | `storage` / `sessions.storage`, `atomic storage join`, or SDK storage options | [Storage](/storage) and [SDK storage](/sdk/storage) |
+| One-run overrides for a single command | CLI flags (`--model`, `--models`, `--tools`, `--storage`) | [CLI reference](/reference/cli) |
+| Process, CI, terminal, and diagnostic overrides | `ATOMIC_*` environment variables | [Environment variables](/environment-variables) |
+| Programmatic session setup in TypeScript | `createAgentSession()` and `SettingsManager` options | [SDK](/sdk) |
 
 ## Create a global settings file {#example}
 
@@ -35,6 +50,8 @@ Add `"$schema"` for editor autocomplete and validation, then set the provider, m
   "packages": ["npm:@example/atomic-tools"]
 }
 ```
+
+In this example, `enabledModels` restricts startup fallback, `Ctrl+P` cycling, `/model`, and child subagents to authenticated models matching `"claude-*"` or `"gpt-5*"`. Omit it or set `[]` to leave all authenticated models active. See [Model scope (`enabledModels`)](/settings#enabledmodels).
 
 ## Project overrides
 
@@ -89,3 +106,6 @@ Effective settings for the project:
 
 - Review every supported key and default in the [Settings reference](/settings).
 - Connect subscription logins or API keys in [Model providers](/providers).
+- Add local servers, proxies, overrides, or remote compactors in [Configure custom models](/models), or register custom APIs and OAuth in [Build custom providers](/custom-provider).
+- Choose local or shared databases in [Storage](/storage) and [SDK storage](/sdk/storage).
+- Override settings for one run with [CLI reference](/reference/cli) flags or [Environment variables](/environment-variables), or configure hosts programmatically with the [SDK](/sdk).

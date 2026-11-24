@@ -6,7 +6,7 @@ description: "Handle extension dialogs, notifications, status bars, widgets, que
 
 <div id="extension-ui-protocol" />
 
-Extensions request user interaction through `ctx.ui.select()`, `ctx.ui.confirm()`, and related methods. Provider OAuth logins started with `login_provider` use the same `extension_ui_request` and `extension_ui_response` sub-protocol.
+Extensions request user interaction through `ctx.ui.select()`, `ctx.ui.confirm()`, and related methods. Provider OAuth logins started with `login_provider` use the same `extension_ui_request` and `extension_ui_response` sub-protocol. For process startup, framing, and typed client code, see [RPC mode](/rpc), [RPC protocol reference](/rpc/protocol), and [RPC client examples](/rpc/examples).
 
 Extension UI requests fall into three categories:
 
@@ -280,3 +280,9 @@ Dismiss any dialog method. The extension receives `undefined` (for `select`, `in
 ```json
 {"type": "extension_ui_response", "id": "uuid-3", "cancelled": true}
 ```
+
+## See also
+
+- [RPC mode](/rpc): startup flags, JSONL framing, and shutdown signals.
+- [RPC protocol reference](/rpc/protocol): all commands, events, and structured error codes.
+- [RPC client examples](/rpc/examples): `RpcClient` extension UI handling and standalone Node.js examples.

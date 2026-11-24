@@ -35,13 +35,13 @@ A compaction boundary never lands mid-stream or between a tool call and its resu
 
 When nothing new has entered context since the last boundary, compaction does nothing and `/compact` reports `Nothing to compact`. Automatic compaction also skips when the system prompt and boundary message together would reach or exceed the automatic trigger (`systemPrompt + boundary >= trigger`), letting [`fallbackModels`](/settings#fallbackmodels) handle any provider overflow.
 
-**Pre-compaction backups (JSONL stores only).** Before writing a boundary in a JSONL session store, Atomic saves a best-effort backup alongside the session file at `<sessionFile>.<timestamp>.<label>.bak`. These backup files are not deleted automatically. If a backup cannot be written (for example on a full disk), Atomic still writes the boundary without `backupPath`. SQLite, libSQL, PostgreSQL, and in-memory stores do not write separate backup files.
+**Pre-compaction backups (JSONL stores only).** Before writing a boundary in a JSONL session store, Atomic saves a best-effort backup alongside the session file at `<sessionFile>.<timestamp>.<label>.bak`. These backup files are not deleted automatically. If a backup cannot be written (for example on a full disk), Atomic still writes the boundary without `backupPath`. SQLite, libSQL, PostgreSQL, and in-memory stores do not write separate backup files (see [Storage backends](/storage)).
 
 **Cancellation and queuing.** Pressing `Escape` cancels compaction before the boundary commits and leaves the session unchanged. If a compactor request is already running, `Escape` stops that request and clears the context instead. Queued user messages wait in arrival order and resume automatically once compaction ends.
 
 Automatic continuations remain part of the original prompt until the chain finishes, so status monitors such as [Herdr](/herdr) stay active across continuations. In the TUI, `/compact` takes over automatic compaction, refuses a second manual compaction or branch summary, lets non-prompt commands (`/settings`, `/tasks`) run immediately, and lets session-switching commands (`/new`) cancel compaction immediately.
 
-For SDK concurrency, `abortCompaction()`, message queuing callbacks, and turn hooks during compaction, see [SDK concurrency and message queuing](/compaction/reference#sdk-concurrency-and-message-queuing).
+For SDK compaction calls, concurrency, `abortCompaction()`, message queuing callbacks, and turn hooks during compaction, see [Compaction and tree navigation](/sdk#compaction-and-tree-navigation) and [SDK concurrency and message queuing](/compaction/reference#sdk-concurrency-and-message-queuing).
 
 ### Compaction instructions
 
@@ -233,7 +233,7 @@ Omitted entries do not count toward compaction or token estimates, and usage fro
 
 ## Branch summaries
 
-When `/tree` switches away from a branch, Atomic can optionally summarize the abandoned branch and attach that summary at the new position. This preserves work from the path you left without replaying the entire branch.
+When [`/tree`](/sessions#branching-with-tree) switches away from a branch, Atomic can optionally summarize the abandoned branch and attach that summary at the new position. This preserves work from the path you left without replaying the entire branch.
 
 When prompted, choose one of three options:
 

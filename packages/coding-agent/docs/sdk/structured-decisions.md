@@ -22,13 +22,20 @@ None of these APIs starts a child agent, invokes other tools, authorizes an acti
 
 `decide()` resolves `decisionModel` once. When a classifier answers, `source` is `"classifier"` and answers include probabilities and confidence scores. If the classifier fails, the current chat model answers without probabilities, sets `source: "chat"`, and populates `result.fallback`. An empty or `"auto"` `decisionModel` uses `currentModel` directly. Pass `requireProbabilities: true` to restrict answers to classifiers so chat models or classifier failures reject instead of falling back.
 
+Standalone SDK usage with `ModelRuntime`, `ModelRegistry`, and `SettingsManager`:
+
 ```typescript
-import { decide, isDecisionError } from "@bastani/atomic";
+import { decide, ModelRegistry, ModelRuntime, SettingsManager } from "@bastani/atomic";
+
+const modelRuntime = await ModelRuntime.create();
+const modelRegistry = new ModelRegistry(modelRuntime);
+const settings = await SettingsManager.createAsync(process.cwd());
+const currentModel = modelRegistry.getAvailable()[0];
 
 const result = await decide({
-  settings: { getDecisionModel: () => ctx.getDecisionModel() },
-  modelRegistry: ctx.modelRegistry,
-  currentModel: ctx.model,
+  settings,
+  modelRegistry,
+  currentModel,
   state: { message: "Ship it once the tests pass." },
   questions: {
     intent: {
@@ -45,11 +52,14 @@ const result = await decide({
   deadline: 30_000,
   requireProbabilities: true,
 });
+
 const approve = result.answers.intent.probabilities?.approve ?? 0;
 if (approve >= 0.9 && (result.answers.complete.probability ?? 0) >= 0.8) {
   // Application code decides what to do at each threshold.
 }
 ```
+
+Inside an extension handler, pass `settings: { getDecisionModel: () => ctx.getDecisionModel() }`, `modelRegistry: ctx.modelRegistry`, and `currentModel: ctx.model`. To override `decisionModel` without reading settings files, pass `SettingsManager.inMemory({ decisionModel: "typesafe/jev-latest" })` or pass `model: "typesafe/jev-latest"` directly on the request.
 
 ### Request options
 
@@ -112,10 +122,73 @@ Legacy `routerModel` settings migrate to `decisionModel` automatically. An exist
 | `DecisionOutputError` | `invalid-output` | The model responded, but output failed schema validation after repairs | `model`, `detail` | Clarify questions or pick another model. |
 | `DecisionProviderError` | `provider-failure` | The provider request failed | `model`, `providerStatus`, `providerCode`, `retryAfterMs`, `detail` | Retryable on rate limits or quota exhaustion (`providerCode`); otherwise check provider status and auth. |
 
+```typescript
+import { decide, isDecisionError, isDecisionProviderError, isDecisionTimeoutError } from "@bastani/atomic";
+
+try {
+  const result = await decide({
+    settings,
+    modelRegistry,
+    currentModel,
+    state: { message: "Ship it once the tests pass." },
+    questions: {
+      ready: {
+        type: "bool",
+        instructions: "Is this an explicit approval to ship?",
+        criteria: { true: "Explicit approval to proceed.", false: "Not an approval or requests changes." },
+      },
+    },
+    deadline: 30_000,
+  });
+  console.log(result.answers.ready.value, result.source);
+} catch (error) {
+  if (!isDecisionError(error)) throw error;
+
+  switch (error.code) {
+    case "timeout":
+      if (isDecisionTimeoutError(error)) {
+        console.error(`Timed out after ${error.elapsedMs}ms in ${error.phase}. ${error.hint}`);
+      }
+      break;
+    case "provider-failure":
+      if (isDecisionProviderError(error) && error.retryable) {
+        console.error(`Retryable provider error (${error.providerCode ?? "transient"}); wait ${error.retryAfterMs ?? 0}ms.`);
+      } else {
+        console.error(error.hint);
+      }
+      break;
+    case "model-unavailable":
+    case "invalid-setting":
+    case "invalid-request":
+    case "invalid-output":
+    case "renamed-setting":
+      console.error(`${error.code}: ${error.hint}`);
+      break;
+  }
+}
+```
+
 ## How `decisionModel` applies across APIs
 
 - **The `structured_output` tool** (when called without its own `model`) starts on `decisionModel`. A classifier answers when the schema is a finite Choice; otherwise Atomic tries `fallbackModels` and then `currentModel`. Failures always reject with a `DecisionError`.
 - **`generateStructuredOutput()`** uses only the models you pass (`model`, `fallbackModels`, `currentModel`) unless you pass `settings`, in which case omitting `model` starts on `decisionModel` like the tool. Note: calling `generateStructuredOutput()` **without `settings`** throws plain `Error` instances rather than `DecisionError` subclasses; `DecisionError` wrapping applies whenever `settings` is passed or when calling `decide()` or `structured_output`.
+
+### Switch `decisionModel` on a live session
+
+Call `session.setDecisionModel(model, scope?, options?)` on an `AgentSession` to update `decisionModel` immediately without restarting or reloading:
+
+```typescript
+// Persist to global settings (default scope: "global")
+session.setDecisionModel("typesafe/jev-latest", "global");
+
+// Update only in-memory state for the current session without writing settings.json
+session.setDecisionModel("auto", "project", { persist: false });
+```
+
+- Pass `""` or `"auto"` to use the active chat model, or an exact registered classifier or chat `provider/model` ID.
+- `scope` accepts `"global"` (default) or `"project"`. Pass `{ persist: false }` to update only the in-memory settings layer.
+- Passing a non-string value or a string with leading or trailing whitespace throws `DecisionConfigError` (`code: "invalid-setting"`) synchronously.
+- RPC clients can call `set_decision_model` (`client.setDecisionModel(model, scope?, options?)`); see [RPC protocol](/rpc/protocol#set_decision_model).
 
 ## Select the inference model
 

@@ -11,7 +11,7 @@ Atomic reads JSON settings from two scopes, with trusted project settings overri
 | `~/.atomic/agent/settings.json` | Global (all projects; legacy `~/.pi/agent/settings.json` is a fallback) |
 | `.atomic/settings.json` | Project override (requires project trust; legacy `.pi/settings.json` is a fallback) |
 
-Edit these files directly or run `/settings` to change common options interactively. For a starter file and project-override walkthrough, see [Configure Atomic](/guides/configuration).
+Edit these files directly or run `/settings` to change common options interactively. For a starter file and project-override walkthrough, see [Configure Atomic](/guides/configuration). For programmatic access through `SettingsManager` and `createAgentSession()`, see [SDK](/sdk) and [Settings management](/sdk/reference#settings-management).
 
 ## How settings load and save
 
@@ -22,8 +22,8 @@ Edit these files directly or run `/settings` to change common options interactiv
 - **Invalid values.** For most settings, a wrong-typed value is ignored with a one-time warning without rewriting your file, and wrong-typed entries in list settings are dropped while keeping valid entries. The settings below behave more strictly:
   - **Stops startup (or `/reload`) with an error:** an invalid `httpIdleTimeoutMs`, or an invalid active `storage` or `sessions.storage` selection (`StorageConfigError`).
   - **Stops the first model request with an error:** an invalid `websocketConnectTimeoutMs` or `streamDeadlineMs`.
-  - **Stops the feature with an error:** an invalid `decisionModel` throws `DecisionConfigError` (wrong type or whitespace-padded string) or `DecisionModelUnavailableError` (unregistered ID, bare ID without `provider/`, or image model) when calling `decide()`, `structured_output`, or opening `/settings`. An invalid `snapshots` block throws `WorkspaceConfigError` at session creation, resume, or `atomic blueprint` (except `snapshots.pool.maxIdlePerRepository`, which falls back to `2`). A negative or non-integer `compaction.reserveTokens` throws when compaction settings are read.
-  - **Special handling for `compactionModel`:** a non-string value throws an error when compaction settings are read instead of silently falling back to `"auto"`. Saved chat or classifier IDs reset to `"auto"` on startup (rewriting trusted `settings.json`). Unknown string IDs stay in the file and clear context with a notice on compaction.
+  - **Stops the feature with an error:** an invalid `decisionModel` throws `DecisionConfigError` (wrong type or whitespace-padded string) when `getDecisionModel()` runs during `decide()`, `structured_output`, or opening `/settings`. An unregistered ID, bare ID without `provider/`, image model, or compactor model throws `DecisionModelUnavailableError` when calling `decide()` or `structured_output` with no explicit `model` (opening `/settings` shows it as unavailable without throwing). An invalid `snapshots` block throws `WorkspaceConfigError` at session creation, resume, or `atomic blueprint` (except `snapshots.pool.maxIdlePerRepository`, which falls back to `2`). A negative or non-integer `compaction.reserveTokens` throws a plain `Error` when compaction settings are read.
+  - **Special handling for `compactionModel`:** a non-string value throws a plain `Error` when compaction runs or `/settings` opens instead of falling back to `"auto"`. Leading or trailing whitespace in `settings.json` is trimmed on read, while `setCompactionModel()` and RPC `set_compaction_model` reject whitespace-padded strings with `CompactionConfigError`. Saved non-compactor model IDs (chat, classifier, or image) reset to `"auto"` on startup (rewriting trusted `settings.json`). Unknown string IDs stay in the file and clear context with a notice on compaction.
 
 ## Project trust
 
@@ -39,6 +39,8 @@ See [Project trust](/security#project-trust) for the full list of trust-gated in
 
 ### Models and thinking
 
+Set up provider credentials in [Model providers](/providers) and define custom endpoints or overrides in [Configure custom models](/models).
+
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
 | `defaultProvider` | string | unset | Startup provider, saved automatically on interactive model switch |
@@ -53,7 +55,8 @@ See [Project trust](/security#project-trust) for the full list of trust-gated in
 | `showCacheMissNotices` | boolean | `false` | Show notices for significant prompt-cache misses, billed compaction or branch summaries, and provider recovery diagnostics (such as dropped Anthropic thinking blocks), including on resume |
 | `cacheWarming` | `"off" \| "streaming" \| "idle"` | `"idle"` | Keep eligible prompt caches warm during runs (`"streaming"`, up to 60 min after the starting request) or up to 30 min between runs (`"idle"`). `"off"` disables. Refreshes incur provider cost. Global setting only. |
 
-- **Cache warming.** Runs only when the model declares `promptCache` ([`models.json` schema reference](/models-configuration)) and estimated avoided miss cost is at least $0.05. Recorded in usage and never added to context; extensions can intercept via `cache_warming_decision`.
+- **Cache warming.** Runs only when the model declares `promptCache` ([`models.json` field reference](/models-configuration)) and estimated avoided miss cost is at least $0.05. Recorded in usage and never added to context; extensions can intercept via `cache_warming_decision`.
+- **Compaction model (`compactionModel`).** Compaction is configured under [Compaction](#compaction) (default `""`, equivalent to `"auto"`, or a registered compactor ID such as `morph/morph-compactor`). See [Remote compaction models](/models#remote-compaction-models).
 - **Unsupported saved default provider.** If `defaultProvider` and `defaultModel` name a provider that is still unsupported after extensions load, Atomic does not switch providers silently. Interactive mode warns, print and JSON modes warn on stderr and exit nonzero (stdout stays valid JSONL), and RPC rejects `prompt` until an explicit `set_model` or model cycle succeeds. If the provider is supported but the model is unknown or unauthenticated, normal auto-selection applies.
 - **Subagents (`model: "auto"`).** Subagents use `defaultProvider`/`defaultModel` when authenticated (at agent `thinking`, else `modelThinkingLevels`, else `defaultThinkingLevel`, else `medium`), falling back to the launching session's model. When `enabledModels` or `--models` is active, subagent model selection must stay inside that scope. Built-in agent overrides can also be configured under `subagents.agentOverrides` in `settings.json`; see [Subagent reference](/subagents/reference#automatic-model-selection).
 
@@ -98,7 +101,7 @@ When a scope is active, it governs five areas across your session:
 - **`Ctrl+P` model cycling.** Cycles only through your scoped models in order.
 - **`/model` picker and `/model <name>`.** `/model` opens filtered to your scoped models (press `Tab` to toggle between scoped models and all models; press `←`/`→` on a reasoning model row to set thinking effort before selecting). Direct `/model <name>` searches only your scoped models.
 - **Subagent allowlist.** Child subagents inherit the active `enabledModels` / `--models` scope using the same matching rules. Any subagent start model (including `model: "auto"`, agent frontmatter `model`, or per-call `model` overrides) and any child fallback candidate outside scope is rejected with an error. If your `enabledModels` patterns match zero available models, subagent launches are blocked rather than widening to all models.
-- **Extensions.** Extensions read the active resolved scope through `ctx.scopedModels` (read-only).
+- **Extensions and SDK.** Extensions read the active resolved scope through [`ctx.scopedModels`](/extensions/api-reference#ctx-modelregistry-ctx-model-ctx-scopedmodels) (read-only). SDK hosts can resolve patterns with `resolveModelScopeFromModels()`; see [Resolving scoped models](/sdk/reference#resolving-scoped-models).
 
 **What stays independent:** Main-chat `fallbackModels` is independent of `enabledModels`, so you can keep an out-of-scope emergency fallback for main-chat turns. Child subagent fallback chains remain bound by the parent session's `enabledModels` scope.
 
@@ -112,7 +115,7 @@ When a scope is active, it governs five areas across your session:
 
 | Mechanism | Matching rules | Globs (`*`, `?`, `[`) | Fuzzy match | `:thinking` suffix | Ambiguous bare ID |
 | --- | --- | --- | --- | --- | --- |
-| `enabledModels` / `--models` | Exact, then glob, then fuzzy (authenticated models only) | Yes (case-insensitive) | Yes | Lenient (case-insensitive; invalid warns and drops) | Adds all matching providers and warns |
+| `enabledModels` / `--models` | Exact, then glob, then fuzzy (authenticated models only) | Yes (case-insensitive) | Yes | Lenient (case-insensitive; invalid warns and drops) | Adds all matching authenticated providers (no warning) |
 | `fallbackModels` / `--fallback-models` | Exact, then fuzzy (skips unauthenticated at runtime) | No | Yes | Strict (case-insensitive; invalid fails match) | Prefers current or default provider; else skips |
 | `--model` (CLI) | Exact, then fuzzy (searches all models; synthesizes unknown ID if provider known) | No | Yes | Strict (case-insensitive; invalid kept literally) | Breaks tie by sole authenticated provider; else errors |
 | `/model <name>` | Exact `provider/id` or bare `id` (scoped models only when scoped; opens picker on miss) | No | No | No (use `←`/`→` or `/thinking`) | Opens picker instead of switching |
@@ -152,11 +155,11 @@ Ordered fallback chain for main-chat turns after same-model retries exhaust on a
 Controls which model answers `structured_output` calls (when no `model` is passed; classifiers answer finite `Choice` schemas, otherwise Atomic tries `fallbackModels` and then the current chat model) and extension [`decide()`](/sdk/structured-decisions#decide) calls. It does not change your chat model or subagent execution model.
 
 - **Configure.** Set in JSON, open `/settings` and select **Decision model** (edits project override if present, otherwise global), or call `session.setDecisionModel(model, scope?)` / RPC `set_decision_model`. Selections made through `/settings`, the SDK, or RPC take effect immediately in the active session without running `/reload` or restarting. `""` or `"auto"` uses the current chat model. To pin a model, specify an exact case-sensitive `provider/model` of a registered classifier (such as `typesafe/jev-latest`, `vercel-ai-gateway/typesafe-ai/jev`, `opencode/jev-1.13`, or `opencode/jev-1.13-free`) or chat model (classifiers are checked before chat models). Run `/reload` only if you edited `settings.json` directly outside Atomic.
-- **Errors and fallback.** A wrong JSON type or whitespace-padded string throws `DecisionConfigError` when read; an unregistered ID, bare ID without `provider/`, or image model throws `DecisionModelUnavailableError` instead of falling back. Once a registered classifier is selected, runtime failures (missing credentials, context error, refusal, or malformed output) fall back silently to the current chat model and log in [debug mode](#debug-mode). Chat models get 1 initial attempt plus 3 corrective retries within [`httpIdleTimeoutMs`](#http) (default 10 minutes). Cancellation does not fall back.
+- **Errors and fallback.** A wrong JSON type or whitespace-padded string throws `DecisionConfigError` when `getDecisionModel()` runs during `decide()`, `structured_output`, or opening `/settings`. An unregistered ID, bare ID without `provider/`, image model, or compactor model throws `DecisionModelUnavailableError` during `decide()` or `structured_output` with no explicit `model` instead of falling back (opening `/settings` shows the ID as unavailable without throwing). Once a registered classifier is selected, runtime failures (missing credentials, context error, refusal, or malformed output) fall back silently to the current chat model and log in [debug mode](#debug-mode). Chat models get 1 initial attempt plus 3 corrective retries within [`httpIdleTimeoutMs`](#http) (default 10 minutes). Cancellation does not fall back.
 - **Provider, credentials, and cost.** The decision model's provider receives the decision context, so choose a permitted provider. Authenticate a pinned classifier with its provider login (for example `/login typesafe` or `TYPESAFE_API_KEY`). Classifiers do not appear in `/model`. An explicit empty project value overrides a global selection and restores the current chat model. Falling back to the current chat model can incur chat-provider charges.
 - **Legacy migration.** Valid legacy `routerModel` values migrate automatically when `decisionModel` is absent without rewriting the file. Removed `modelRouting` and built-in override `modelConstraints`/`taskNeeds` keys are removed automatically on startup from writable `.atomic` settings with a one-time notice.
 
-See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
+See [Structured decisions](/sdk/structured-decisions), [Classifier models](/models#use-classifier-models), [Local classification](/llama-cpp#classification), and [TypeSafe Jev](/providers#typesafe-jev).
 
 #### thinkingBudgets
 
@@ -175,7 +178,7 @@ A changed budget applies to new sessions. A resumed session keeps the budget it 
 
 ### Fast models
 
-Fast inference uses canonical `<model-id>-fast` model IDs (not a separate setting) anywhere models are configured (`/model`, `fallbackModels`, `enabledModels`, and subagents). Reasoning suffixes work normally (`openai-codex/gpt-5.6-sol-fast:medium`), and fast and normal IDs act as separate candidates:
+Fast and Ultrafast inference use canonical `<model-id>-fast` and `<model-id>-ultrafast` model IDs (not a separate setting) anywhere models are configured (`/model`, `fallbackModels`, `enabledModels`, and subagents). Reasoning suffixes work normally (`openai-codex/gpt-5.6-sol-fast:medium`, `openai/gpt-6.2-astra-ultrafast:high`), and standard, fast, and ultrafast IDs act as separate candidates:
 
 ```json
 {
@@ -186,7 +189,7 @@ Fast inference uses canonical `<model-id>-fast` model IDs (not a separate settin
 }
 ```
 
-See [Fast models](/providers#fast-models) for supported providers and precedence over custom `-fast` IDs.
+See [Fast models](/providers#fast-models) and [Fast and Ultrafast tiers](/providers#fast-and-ultrafast-tiers) for supported providers, eligibility, and precedence over custom `-fast` or `-ultrafast` IDs.
 
 ### Interface and display
 
@@ -278,7 +281,7 @@ For the global HTTP idle timeout, see [HTTP](#http) (`httpIdleTimeoutMs`).
 | --- | --- | --- | --- |
 | `compaction.enabled` | boolean | `true` | Enable automatic compaction |
 | `compaction.reserveTokens` | number | `16384` | Non-negative safe integer; triggers auto-compaction when usage exceeds `contextWindow - reserveTokens` |
-| `compactionModel` | string | `"auto"` | `"auto"` or `""` clears context so the agent recovers from history; an exact registered compactor ID (such as `morph/morph-compactor`) compacts via that model. Selecting **Compaction model** in `/settings` edits the project override if set, otherwise global. Saved chat or classifier IDs reset to `"auto"` on startup. See [Compaction model](/compaction#compaction-model). |
+| `compactionModel` | string | `""` | `""` (equivalent to `"auto"`) clears context so the agent recovers from history; an exact registered compactor ID (such as `morph/morph-compactor`) compacts via that model. Selecting **Compaction model** in `/settings` edits the project override if set, otherwise global (saving `""` for Automatic). Whitespace in `settings.json` is trimmed on read, while `setCompactionModel()` and RPC `set_compaction_model` reject whitespace-padded strings with `CompactionConfigError`. Non-string values throw a plain `Error` when compaction runs or `/settings` opens. Saved non-compactor IDs (chat, classifier, or image) reset to `"auto"` on startup. See [Compaction model](/compaction#compaction-model), [Remote compaction models](/models#remote-compaction-models), and [Compactor request contract](/compaction/reference#compactor-request-contract). |
 
 ```json
 {
@@ -409,12 +412,12 @@ On Windows, write JSON paths with forward slashes or escaped backslashes:
 ```
 
 - **Default.** `~/.atomic/workflows/journal.sqlite` (`session_` tables; under `<agentDir>/workflows/` when `ATOMIC_CODING_AGENT_DIR` is set unless it adopted a parent store; see [Storage home](/storage#storage-home)). JSONL is opt-in via `dir`, `--session-dir`, or `ATOMIC_CODING_AGENT_SESSION_DIR` (legacy `sessionDir` was removed).
-- **Precedence.** Highest to lowest: SDK `sessionStore`, `--no-session`, `--session-dir` or `--session-store`, `--storage` or `--storage-file`, `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`, `ATOMIC_STORAGE`, `ATOMIC_PROFILE=ci`, `sessions.storage`, `storage`, and default SQLite. Project selections replace global objects whole rather than merging; an explicit `{}` on `sessions.storage` selects default SQLite rather than inheriting `storage`. Relative paths in settings and JSON flags or env vars resolve from [storage home](/storage#storage-home); `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve from `cwd`.
-- **Errors.** Only the winning setting (plus set `ATOMIC_STORAGE` and `ATOMIC_SESSIONS_STORAGE`) is validated. Invalid config throws `StorageConfigError` (`source`, `field`, `reason`), and open failures throw typed errors without falling back to memory. See [Choosing a store](/sessions#choosing-a-store), [Selecting storage per process](/storage#selecting-storage-per-process), and [Storage errors](/storage#storage-errors).
+- **Precedence.** Highest to lowest: SDK `sessionStore`, SDK `storage` (`createAgentSession({ storage })`, see [SDK storage](/sdk/storage)), `--no-session`, `--session-dir`, or `--session-store`, `--storage` or `--storage-file`, `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`, `ATOMIC_STORAGE`, `ATOMIC_PROFILE=ci`, `sessions.storage`, `storage`, and default SQLite. Project selections replace global objects whole rather than merging; an explicit `{}` on `sessions.storage` selects default SQLite rather than inheriting `storage`. Relative paths in settings and JSON flags or env vars resolve from [storage home](/storage#storage-home); `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve from `cwd`. See [Storage and team variables](/environment-variables#storage-and-team-variables).
+- **Errors.** Only the winning setting is validated from `settings.json`, whereas process-level selections (`--storage`, `--storage-file`, `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, and `ATOMIC_PROFILE=ci` with `ATOMIC_TEAM_*`) are validated unconditionally even when outranked. Invalid config throws `StorageConfigError` (`source`, `field`, `reason`) or `TeamProfileConfigError`, and open failures throw typed errors without falling back to memory. See [Choosing a store](/sessions#choosing-a-store), [Selecting storage per process](/storage#selecting-storage-per-process), and [Storage errors](/storage#storage-errors).
 
 #### Storage adapters
 
-Install an adapter [Atomic package](/storage#adapters-from-atomic-packages) (or pass its directory via `--extension` or SDK `additionalExtensionPaths`, which takes precedence over settings) and reference it in `storage` or `sessions.storage`:
+Install an adapter [Atomic package](/storage#adapters-from-atomic-packages) (such as [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) or [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql)), or pass its directory via `--extension` or SDK `additionalExtensionPaths` (which takes precedence over settings), and reference it in `storage` or `sessions.storage`:
 
 ```json
 {

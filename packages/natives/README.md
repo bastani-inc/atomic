@@ -2,7 +2,38 @@
 
 Native Rust bindings for [Atomic](https://github.com/bastani-inc/atomic) exposed through N-API.
 
-This package is installed automatically as an optional platform dependency of `@bastani/atomic`; most users do not need to install it directly. The Rust source lives in `crates/atomic-natives`, while this package publishes the generated NAPI-RS loader (`native/index.js`), TypeScript declarations (`native/index.d.ts`), and per-platform binary packages.
+This package is a required dependency of `@bastani/atomic`, while its eight per-platform binary subpackages (`@bastani/atomic-natives-<platform>`) are installed as `optionalDependencies` of `@bastani/atomic-natives`. Most users do not need to install it directly. The Rust source lives in `crates/atomic-natives`, while this package publishes the generated NAPI-RS loader (`native/index.js`), TypeScript declarations (`native/index.d.ts`), and per-platform binary packages.
+
+See Atomic's docs for [package manager troubleshooting](https://docs.bastani.ai/getting-started/installation#package-manager-troubleshooting), [Termux setup](https://docs.bastani.ai/termux), [environment variables](https://docs.bastani.ai/environment-variables), and the [SDK](https://docs.bastani.ai/sdk).
+
+## Install
+
+`@bastani/atomic` installs `@bastani/atomic-natives` automatically. Do not pass `--omit=optional` when installing in a project, because npm skips the platform binary subpackages and Atomic exits or throws `NativeModuleUnavailableError`.
+
+To install directly for diagnostics or standalone tooling:
+
+```bash
+npm install @bastani/atomic-natives
+```
+
+## Quick start
+
+```typescript
+import { grep, nativeVersion } from "@bastani/atomic-natives";
+
+console.log("Native addon version:", nativeVersion());
+
+const result = await grep({
+	pattern: "TODO",
+	path: ".",
+	glob: "*.ts",
+	maxCount: 20,
+});
+
+for (const match of result.matches) {
+	console.log(`${match.path}:${match.lineNumber}: ${match.line}`);
+}
+```
 
 ## What it provides
 
@@ -23,11 +54,11 @@ Prebuilt binaries are published for eight targets:
 - **Linux (musl):** `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`
 - **Windows:** `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 
-Android and Termux do not have prebuilt binaries and require a local build or running without native acceleration.
+Android and Termux do not have prebuilt binaries. Atomic requires `@bastani/atomic-natives` to start any session and exits or throws `NativeModuleUnavailableError` without a compatible binary, so Android and Termux users must build the addon locally and set `NAPI_RS_NATIVE_LIBRARY_PATH` ([Termux setup](https://docs.bastani.ai/termux)).
 
 ## Overriding the native binary
 
-At startup, Atomic compares `nativeVersion()` against the installed Atomic release version and refuses a mismatched binary. To load a locally built `.node` file (which bypasses the release version check), set `NAPI_RS_NATIVE_LIBRARY_PATH`:
+At startup, Atomic compares `nativeVersion()` against the installed Atomic release version and refuses a mismatched binary. To load a locally built `.node` file (which bypasses the release version check), set `NAPI_RS_NATIVE_LIBRARY_PATH` ([Environment variables](https://docs.bastani.ai/environment-variables#diagnostics-and-performance)):
 
 ```bash
 export NAPI_RS_NATIVE_LIBRARY_PATH=/path/to/atomic_natives.node

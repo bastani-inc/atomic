@@ -6,7 +6,19 @@ description: "Sign in with subscriptions, configure API keys, verify credentials
 
 Atomic connects to subscription providers through OAuth and to API-key providers through `~/.atomic/agent/auth.json` or environment variables. Built-in catalogs ship with Atomic; configured providers refresh newer catalogs independently and cache them in `~/.atomic/agent/models-store.json` for offline use.
 
-For credential precedence, terminal stop reasons, and GitHub Copilot SDK error classes, see the [Provider reference](/providers/reference). For streaming transport modes (`auto`, `websocket-cached`, `websocket`, `sse`), see [Message delivery settings](/settings#message-delivery).
+For first-time login steps, see [Authentication](/getting-started/authentication). For credential precedence, terminal stop reasons, and GitHub Copilot SDK error classes, see the [Provider reference](/providers/reference). For streaming transport modes (`auto`, `websocket-cached`, `websocket`, `sse`), see [Message delivery settings](/settings#message-delivery).
+
+## Where to look on this page
+
+| Topic | Section or page |
+| --- | --- |
+| OAuth subscriptions, `/login`, token refresh, and `atomic auth check` | [Subscriptions](#subscriptions) |
+| Provider environment variables, `auth.json`, and `!command` / `$VAR` key resolution | [API keys](#api-keys) and [Auth file](#auth-file) |
+| Cloud and gateway providers (NVIDIA NIM, Azure, Bedrock, Cloudflare, Vertex AI) | [Cloud and gateway providers](#cloud-and-gateway-providers) |
+| Local GGUF router server (`llama.cpp`) | [llama.cpp](#llama-cpp) and [Local models with llama.cpp](/llama-cpp) |
+| Specialized providers (OpenAI Decisions and Images, TypeSafe Jev, Morph compaction) | [OpenAI Decisions and Images](#subscription-and-api-key-at-the-same-time), [TypeSafe Jev](#typesafe-jev), [Morph compaction](#morph-compaction) |
+| Custom endpoints, proxies, OAuth flows, and custom streaming APIs | [Custom providers](#custom-providers), [Configure custom models](/models), [Build custom providers](/custom-provider) |
+| Credential precedence, stop reasons, and Copilot SDK error helpers | [Provider reference](/providers/reference) and [SDK API keys and OAuth](/sdk/reference#api-keys-and-oauth) |
 
 ## Subscriptions
 
@@ -67,7 +79,7 @@ Run `/login openai`, then choose **API key** or **Sign in with ChatGPT**. ChatGP
 
 Complete the browser callback, or paste the final callback URL into the login dialog on a remote machine. If your browser cannot reach `127.0.0.1:1455`, copy the full address-bar URL (including `code`, `state`, and `client_id`) and paste it into Atomic. Atomic creates a global device identity on first use that project settings do not override. A saved login does not verify model entitlement or quota.
 
-For SDK-level `models.login()` options such as `agentName`, see [Provider reference](/providers/reference#sdk-login-options).
+For SDK-level `models.login()` options such as `agentName`, see [Provider reference](/providers/reference#sdk-login-options), [SDK API keys and OAuth](/sdk/reference#api-keys-and-oauth), and [`@bastani/atomic-ai`](/libraries/ai).
 
 ### Subscription and API key at the same time
 
@@ -81,7 +93,7 @@ The GPT-6 Luna Decisions classifier (`openai-decisions`) has no login of its own
 
 OpenAI image models (`openai-images`, such as `openai-images/gpt-image-2.6-flare`) follow the same key order and also skip ChatGPT sign-in. If you only signed in with ChatGPT, save a key via `/login openai-api` or set `OPENAI_API_KEY` to enable image generation.
 
-GPT Image 2.6 models (`gpt-image-2.6-flare` and `gpt-image-2.6-sunburst`) support SVG (`outputFormat: "svg"`) and animated GIF (`outputFormat: "gif"`, 2 to 16 frames). SVG needs no extra option: when your account requires `svg.model` and the request omits it, Atomic retries once with `gpt-6.1-sol`. Pass `svg: { model }` to select a specific authoring model, which Atomic always sends as given. SVG generation takes tens of seconds, so avoid a short `timeoutMs`. Use these models from [codemode](/codemode#generate-images) or an [extension](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels).
+GPT Image 2.6 models (`gpt-image-2.6-flare` and `gpt-image-2.6-sunburst`) support SVG (`outputFormat: "svg"`) and animated GIF (`outputFormat: "gif"`, 2 to 16 frames). SVG needs no extra option: when your account requires `svg.model` and the request omits it, Atomic retries once with `gpt-6.1-sol`. Pass `svg: { model }` to select a specific authoring model, which Atomic always sends as given. SVG generation takes tens of seconds, so avoid a short `timeoutMs`. Use these models from [codemode](/codemode#generate-images) or an [extension](/extensions/api-reference#ctx-modelregistry-ctx-model-ctx-scopedmodels).
 
 ### OpenAI Codex
 
@@ -196,7 +208,7 @@ If an SDK session or `atomic -p` run has no cached Copilot catalog and cannot fi
 
 #### Which models are shown
 
-After Atomic reads your account's `/models` list with an OAuth login or saved API key, built-in Copilot models absent from that list are hidden across `/model`, `--list-models`, scoped models, and cycling. Discovered models stay visible.
+After Atomic reads your account's `/models` list with an OAuth login or saved API key, built-in Copilot models absent from that list are hidden across `/model`, `--list-models`, [scoped models](/settings#enabledmodels), and cycling. Discovered models stay visible.
 
 Each credential keeps its own saved list (stored beside the key in `auth.json`), and provider aliases created with `registerProviderAlias` filter by their own credential's list. Saving a new API key with `/login` clears the previous list until the next network refresh.
 
@@ -233,7 +245,7 @@ Run `/login` again or `atomic update --models` after plan changes.
 
 #### Errors
 
-Atomic classifies every failed Copilot request into a typed error class so retries and [model fallback](/settings#retry) react to the failure cause rather than error text:
+Atomic classifies every failed Copilot request into a typed error class so [retries](/settings#retry) and [model fallback](/settings#fallbackmodels) react to the failure cause rather than error text:
 
 - **Immediate fallback (no retry):** unavailable model, exhausted quota, invalid request, or authentication failure.
 - **Retry, then fallback:** rate limit (honors `Retry-After`), service unavailable (408/5xx/529), cut stream, empty response, or unrecognized response.
@@ -253,7 +265,7 @@ GitHub Copilot response stream ended early: claude-opus-5.5 (stream-ended-early)
 Streams cut during long thinking or very large tool calls often fail at the same point on retry. Atomic treats any attempt that ran **5 minutes or more** before cutting off as a long attempt:
 
 - A long cut gets at most one more retry on the same model; shorter cuts keep the normal [`retry.maxRetries`](/settings#retry) budget.
-- A second consecutive long cut stops retrying that model and moves to `fallbackModels` (which can include the same model at a lower effort, such as `github-copilot/claude-opus-5.5:medium`), or ends with the error.
+- A second consecutive long cut stops retrying that model and moves to [`fallbackModels`](/settings#fallbackmodels) (which can include the same model at a lower effort, such as `github-copilot/claude-opus-5.5:medium`), or ends with the error.
 - Partial output from a cut stream is never replayed; every retry restarts the turn.
 
 Messages stream error events follow their provider error type (`invalid_request_error` is non-retryable; `rate_limit_error`, `overloaded_error`, and `api_error` are retryable; unknown event types become `unrecognized-response`). Cancelled requests and pre-response connection failures use Atomic's standard network handling.
@@ -332,7 +344,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 atomic
 ```
 
-For the full precedence order (`--api-key` > `auth.json` > extension or `models.json` `apiKey` > built-in environment variable), see [Credential resolution order](/providers/reference#resolution-order).
+For the full precedence order (`--api-key` > `auth.json` > extension or `models.json` `apiKey` > built-in environment variable), see [Credential resolution order](/providers/reference#resolution-order). For non-provider environment variables, see [Environment variables](/environment-variables).
 
 After login, `/model` uses the cached catalog immediately while a background refresh runs with a 15-second deadline. If a provider is slow or offline, Atomic keeps the last usable snapshot; see [Catalog freshness and precedence](/models/reference#catalog-freshness-and-precedence).
 
@@ -392,7 +404,7 @@ Provider notes:
 - **Xiaomi MiMo:** Reasoning models on `xiaomi` and `xiaomi-token-plan-*` support only `off` and `high`.
 - **Kimi For Coding:** Uses OpenAI Chat Completions at `https://api.kimi.com/coding/v1`. Include `/v1` when overriding `baseUrl` in `models.json`. Kimi Code models always think, so `off` is not selectable.
 
-Use `--list-models` to check the latest catalog entries for any provider.
+Use [`--list-models`](/reference/cli#model-options) to check the latest catalog entries for any provider.
 
 #### Auth file
 
@@ -621,7 +633,7 @@ binding = "AI"
 CLOUDFLARE_GATEWAY_ID = "your-gateway-slug"
 ```
 
-Register an inline provider override where `env` is in scope so `streamSimple` uses the binding transport:
+Register an inline provider override where `env` is in scope so `streamSimple` uses the binding transport (see [SDK](/sdk) and [`@bastani/atomic-ai`](/libraries/ai)):
 
 ```typescript
 import {
@@ -715,7 +727,7 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 export GOOGLE_CLOUD_API_KEY=your-api-key
 ```
 
-## llama.cpp
+## llama.cpp {#llama-cpp}
 
 For router-mode discovery, load/unload management, and Hugging Face downloads with a local llama.cpp server, see [Local models with llama.cpp](/llama-cpp). Configure the server with `/login llama.cpp` or `LLAMA_BASE_URL` and manage models with `/llama`.
 

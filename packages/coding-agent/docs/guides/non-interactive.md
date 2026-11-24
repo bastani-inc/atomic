@@ -18,9 +18,10 @@ You can run Atomic without the terminal UI in three ways, or embed it directly i
 `atomic --print "..."` (or `-p`) runs prompts without launching the terminal UI and exits when done.
 
 - **Automatic print mode on pipes and redirects:** If standard input or standard output is not a TTY (for example piping text into `atomic` or redirecting `atomic > out.txt`), Atomic enters print mode automatically even without `-p`.
-- **Piped stdin and prompt merging:** Atomic reads piped stdin and separates it from CLI prompt text with a newline, so it composes cleanly with shell pipelines. When a prompt argument or `@file` is present, Atomic waits up to 2 seconds for the first piped byte before continuing without stdin (override with `ATOMIC_STDIN_TIMEOUT_MS`, or set `0` to always wait for EOF).
+- **Piped stdin and prompt merging:** Atomic reads piped stdin and separates it from CLI prompt text with a newline, so it composes cleanly with shell pipelines. When a prompt argument or `@file` is present, Atomic waits up to 2 seconds for the first piped byte before continuing without stdin (override with [`ATOMIC_STDIN_TIMEOUT_MS`](/environment-variables#diagnostics-and-performance), or set `0` to always wait for EOF).
 - **Multiple prompts:** Passing multiple positional prompts (such as `atomic -p "step 1" "step 2"`) runs them sequentially in the same session. Plain-text print mode prints only the final prompt's answer to stdout, while `--mode json` emits events for every turn.
-- **Disabled interactive tools and project trust:** Both print mode and `--mode json` automatically disable `ask_user_question` because no interactive terminal UI is available. Non-interactive runs never show project trust prompts; untrusted projects ignore project settings, extensions, and context files unless you pass `--approve` (`-a`) or set global `defaultProjectTrust` to `"always"`.
+- **Disabled interactive tools and project trust:** Both print mode and `--mode json` automatically disable `ask_user_question` because no interactive terminal UI is available. Non-interactive runs never show project trust prompts; untrusted projects ignore project settings, extensions, and context files unless you pass `--approve` (`-a`) or set global `defaultProjectTrust` to `"always"`. See [Project trust](/settings#project-trust).
+- **Pre-flight checks and structured output:** Before starting an automated run, verify provider credentials with `atomic auth check` ([Verify readiness before a session](/providers#verify-readiness-before-a-session)). For typed classification or terminating structured-output payloads in scripts and SDK hosts, see [Structured decisions](/sdk/structured-decisions).
 - **Truncated responses:** If a text response hits the model's output token limit, print mode keeps the partial text on stdout, writes a truncation warning to stderr, and exits with code `1`. Check the exit code before treating redirected output as complete.
 - **Extension commands as prompts:** Running `atomic --session <id> -p "/curator off"` prints the command's reply. If the command sends a message or starts a turn, print mode waits for that response and prints it before running the next prompt or exiting.
 
@@ -48,5 +49,6 @@ Use `--mode rpc` to keep a session alive so another process can send prompts, an
 ## Next steps
 
 - [CLI reference](/reference/cli) for every flag, model-matching rule, and exit code.
+- [Environment variables](/environment-variables) for `ATOMIC_STDIN_TIMEOUT_MS`, `ATOMIC_STORAGE`, `ATOMIC_PROFILE=ci`, and CI overrides.
 - [Programmatic use](/programmatic) to choose between the SDK, RPC, and the JSON event stream.
 - [Background tasks](/background-tasks) when work should continue while you keep chatting interactively.

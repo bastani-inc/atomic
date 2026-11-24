@@ -8,7 +8,7 @@ Embed Atomic in Node.js applications (Node.js 22.19 or newer) to build custom UI
 
 - **Full options and exports:** [SDK API reference](/sdk/reference) (includes [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor), [Supervised command SDK](/sdk/reference#supervised-command-sdk), and [Task transcript references](/sdk/reference#task-transcript-references)).
 - **Typed decisions:** [Structured decisions API](/sdk/structured-decisions).
-- **SQLite and custom storage adapters:** [SQLite storage API](/storage).
+- **Session storage:** [SDK storage guide](/sdk/storage) and [Storage backends](/storage).
 - **HTTP streaming servers:** [Embed Atomic in a web server](/sdk/web-server) (Next.js App Router guide).
 - **Compare modes:** [Programmatic integration](/programmatic).
 
@@ -53,7 +53,7 @@ try {
 - **Exact model restoration:** Call `await resolveRestoredModelReference(provider, modelId, modelRuntime)` to resolve an authenticated saved model (including custom or dynamic IDs) or receive `undefined` without falling back to a default.
 - **Context helpers:** Root exports include `InlineExtension`, `buildContextEntries`, `sessionEntryToContextMessages`, `CompactionEntry`, and `sessionManager.buildContextEntries()`.
 
-### Sharing Atomic's TypeBox registry
+### Sharing Atomic's TypeBox registry {#sharing-atomics-typebox-registry}
 
 Atomic ships its own TypeBox instance. If your app imports `typebox` directly, custom formats, settings, or locales will not reach Atomic's tool validation. Import from `@bastani/atomic/typebox` and its subpaths instead:
 
@@ -139,61 +139,39 @@ const { session } = await createAgentSession({ resourceAdmission });
 
 ### Session storage
 
-Sessions default to local SQLite at `~/.atomic/workflows/journal.sqlite` (`session_` table prefix). Override storage per session with `sessionStore`, `storage`, or an explicit `sessionManager`:
+Sessions default to local SQLite at `~/.atomic/workflows/journal.sqlite` with the `session_` table prefix. Override storage per session with `sessionStore`, `storage`, or an explicit `sessionManager`. Read the **[SDK storage guide](/sdk/storage)** for complete recipes across all five backends, `createAgentSessionRuntime()` wiring, `SessionManager` CRUD, `JsonlSessionStore` `exactDirectory` behavior, `npm install` vs `atomic install` adapter resolution, ownership and close rules, and `StorageError` handling.
 
 | Backend | Package | How to pass it to `createAgentSession()` |
 | --- | --- | --- |
-| Local SQLite (default) | Built into `@bastani/atomic` (`@bastani/atomic/storage`) | `{ kind: "sqlite", path, prefix? }` or caller-owned `openNodeSqliteDatabase()` / `SqlSessionStore.open()` |
+| Local SQLite (default) | Built into `@bastani/atomic` (`@bastani/atomic/storage`) | `{ kind: "sqlite", path, prefix? }` or caller-owned `openNodeSqliteDatabase()` and `SqlSessionStore.open()` |
 | JSONL directory | Built into `@bastani/atomic` | `{ kind: "jsonl", dir }` or caller-owned `JsonlSessionStore.open()` |
 | In-memory | Built into `@bastani/atomic` | `new MemorySessionStore()` (caller-owned) or `{ kind: "memory" }` (discarded on `dispose()`) |
-| libSQL / Turso | `@bastani/atomic-storage-libsql` | `{ kind: "adapter", module: LIBSQL_ADAPTER_PACKAGE, ... }` or caller-owned `openLibsqlDatabase()` |
-| PostgreSQL (16+ for sessions) | `@bastani/atomic-storage-postgres` | `{ kind: "adapter", module: POSTGRES_ADAPTER_PACKAGE, ... }` or caller-owned `openPostgresDatabase()` |
+| libSQL / Turso | [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql) | `{ kind: "adapter", module: LIBSQL_ADAPTER_PACKAGE, ... }` or caller-owned `openLibsqlDatabase()` |
+| PostgreSQL (16+ for sessions) | [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) | `{ kind: "adapter", module: POSTGRES_ADAPTER_PACKAGE, ... }` or caller-owned `openPostgresDatabase()` |
 
-#### Built-in backends (SQLite, JSONL, in-memory)
+Quick local SQLite session. Atomic opens the store and closes it in `dispose()`:
 
 ```typescript
-import {
-  createAgentSession,
-  JsonlSessionStore,
-  MemorySessionStore,
-  SqlSessionStore,
-} from "@bastani/atomic";
-import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
+import { createAgentSession } from "@bastani/atomic";
 
-// 1. Local SQLite file (session-owned: Atomic opens and closes it on dispose())
-const sqlite = await createAgentSession({
+const { session } = await createAgentSession({
   sessionStore: { kind: "sqlite", path: "./sessions.sqlite", prefix: "project_" },
 });
-
-// 2. JSONL directory (one JSONL file per session; session-owned)
-const jsonl = await createAgentSession({
-  sessionStore: { kind: "jsonl", dir: "./sessions" },
-});
-
-// 3. Caller-owned in-memory store (preserves history across session.release() / runtime.rehydrate())
-const memoryStore = new MemorySessionStore();
-const mem = await createAgentSession({ sessionStore: memoryStore });
-
-// 4. Caller-owned SQLite or JSONL store (share across sessions; close it yourself)
-const db = await openNodeSqliteDatabase("./shared.sqlite");
-const sqlStore = await SqlSessionStore.open(db, { prefix: "project_" });
-const jsonlStore = await JsonlSessionStore.open("./shared-jsonl");
+try {
+  await session.prompt("Summarize recent commits");
+} finally {
+  await session.dispose();
+}
 ```
 
-#### Remote SQL packages (`@bastani/atomic-storage-postgres` and `@bastani/atomic-storage-libsql`)
-
-Install the adapter package alongside `@bastani/atomic` in your application (`npm install @bastani/atomic-storage-postgres` or `npm install @bastani/atomic-storage-libsql`). For CLI-resolved `{ kind: "adapter" }` loading outside `node_modules`, install in user scope with `atomic install npm:@bastani/atomic-storage-postgres` or `atomic install npm:@bastani/atomic-storage-libsql`. Both packages ship plain ESM with TypeScript declarations.
-
-**Option A — Pass a caller-owned database handle directly (recommended for SDK hosts sharing one pool):**
+Quick PostgreSQL session with a caller-owned database pool (`npm install @bastani/atomic-storage-postgres`):
 
 ```typescript
 import { readFile } from "node:fs/promises";
 import { createAgentSession } from "@bastani/atomic";
 import { openPostgresDatabase } from "@bastani/atomic-storage-postgres";
-import { openLibsqlDatabase } from "@bastani/atomic-storage-libsql";
 
-// PostgreSQL: pass a username-only URL (embedded passwords are rejected with credential-in-url).
-// `password` accepts a string or an async callback invoked per new connection for secret rotation.
+// Pass a username-only URL (embedded passwords reject with credential-in-url).
 const pgDb = await openPostgresDatabase({
   url: "postgresql://atomic_runtime@db.example.com:5432/atomic",
   password: async () => (await readFile("/run/secrets/postgres-password", "utf8")).trim(),
@@ -210,83 +188,13 @@ try {
 } finally {
   await pgDb.close();
 }
-
-// libSQL / Turso:
-const libsqlDb = await openLibsqlDatabase({
-  url: "libsql://<db>.turso.io",
-  authToken: process.env.TURSO_AUTH_TOKEN,
-});
-try {
-  const { session } = await createAgentSession({
-    sessionStore: { kind: "database", database: libsqlDb, prefix: "project_" },
-  });
-  await session.dispose();
-} finally {
-  await libsqlDb.close();
-}
 ```
 
-**Option B — Let Atomic open and close the adapter per session via `{ kind: "adapter" }`:**
+- **`sessionStore` vs. `storage`:** `sessionStore` accepts a `SessionStore` instance (`SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`) or a tagged selection (`{ kind: "sqlite" | "jsonl" | "memory" | "database" | "adapter", ... }`). `storage` uses the `settings.json` shape returned by `teamProfileSelection()` (`{ path, prefix? }`, `{ database, prefix? }`, `{ memory: true }`, or `{ adapter, options?, secrets?, prefix? }`) and does not support JSONL.
+- **Precedence:** Atomic resolves storage in order from `sessionManager`, `sessionStore`, `storage`, process flags and variables (`ATOMIC_SESSIONS_STORAGE` and `ATOMIC_STORAGE`), settings (`sessions.storage` before `storage`), and default SQLite. Memory is never an automatic fallback.
+- **Ownership and mutations:** Atomic closes stores it opened from selection objects during `dispose()`, while leaving caller-owned `SessionStore`, `SessionManager`, and `database` instances open. Await every `SessionManager` write and every `atomic.appendEntry`, `setSessionName`, `setLabel`, `setThinkingLevel`, and `cycleThinkingLevel` call; there is no `flush()` method. `ExtensionContext.sessionSignal` aborts when reload or shutdown starts so extensions can cancel waits while finishing in-flight writes.
 
-```typescript
-import {
-  createAgentSession,
-  LIBSQL_ADAPTER_PACKAGE,
-  POSTGRES_ADAPTER_PACKAGE,
-} from "@bastani/atomic";
-
-// PostgreSQL via adapter selection (pass credentials through `secrets`, never inside `url`)
-const pg = await createAgentSession({
-  sessionStore: {
-    kind: "adapter",
-    module: POSTGRES_ADAPTER_PACKAGE,
-    options: { url: "postgresql://atomic_runtime@db.example.com:5432/atomic" },
-    secrets: { password: { env: "PGPASSWORD" } },
-    prefix: "project_",
-  },
-});
-
-// libSQL / Turso via adapter selection
-const libsql = await createAgentSession({
-  sessionStore: {
-    kind: "adapter",
-    module: LIBSQL_ADAPTER_PACKAGE,
-    options: { url: "libsql://<db>.turso.io" },
-    secrets: { authToken: { env: "TURSO_AUTH_TOKEN" } },
-    prefix: "project_",
-  },
-});
-```
-
-For cloud IAM authentication on PostgreSQL (`auth: "azure-entra" | "aws-iam" | "gcp-iam"`), omit `secrets.password` / `password`. Run `atomic storage migrate` as the database owner role before connecting with a least-privilege runtime role. See [Storage](/storage) for TLS, proxies, connection poolers, schema migrations, and wrapping custom drivers.
-
-- **`sessionStore` vs. `storage` shapes:**
-  - `sessionStore` accepts a `SessionStore` instance (`SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`) or a tagged selection object: `{ kind: "sqlite", path, prefix? }`, `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, or `{ kind: "adapter", module, options?, secrets?, prefix? }`.
-  - `storage` uses the `settings.json` shape (also returned by `teamProfileSelection()`, see [Team and CI setup](/guides/team-setup#from-the-sdk)): `{ path, prefix? }`, `{ database, prefix? }`, `{ memory: true }`, or `{ adapter, options?, secrets?, prefix? }`. `storage` does not support JSONL; use `sessionStore: { kind: "jsonl", dir }` for JSONL directories.
-  - Legacy `sessionDir` was removed.
-- **Precedence:** Resolved in order from `sessionManager`, `sessionStore`, `storage`, process environment/flags (`ATOMIC_SESSIONS_STORAGE` and `ATOMIC_STORAGE`; see [Selecting storage per process](/storage#selecting-storage-per-process)), settings (`sessions.storage` before `storage`; see [Session settings](/settings#sessions)), and finally default SQLite. Memory is never an automatic fallback.
-- **Ownership and resume:** Atomic closes stores it opened from selection objects (`sqlite`, `jsonl`, `adapter`, `memory`) during `dispose()`, while leaving caller-owned `SessionStore`, `SessionManager`, and `database` instances open. Because session-owned `{ kind: "memory" }` and `storage: { memory: true }` stores are closed and discarded on `dispose()`, pass a caller-owned `new MemorySessionStore()` if you plan to call `session.release()` and later `runtime.rehydrate()`.
-- **Package adapters:** Pass `additionalExtensionPaths: [packageRoot]` on `DefaultResourceLoader` before opening storage to select an embedded package adapter by name ([Adapters from Atomic packages](/storage#adapters-from-atomic-packages)).
-- **Await mutations:** Await every `SessionManager` write and every `atomic.appendEntry`, `setSessionName`, `setLabel`, `setThinkingLevel`, and `cycleThinkingLevel` call (there is no `flush()`; see [Storage errors](/storage#storage-errors)):
-
-```typescript
-import { createAgentSession, resolveSessionStore, SessionManager } from "@bastani/atomic";
-
-const store = await resolveSessionStore(process.cwd());
-try {
-  const manager = await SessionManager.open(store, savedSessionId);
-  const { session } = await createAgentSession({ sessionManager: manager });
-  try {
-    await session.prompt("Continue the task");
-  } finally {
-    await session.dispose();
-  }
-} finally {
-  await store.close();
-}
-```
-
-`ExtensionContext.sessionSignal` aborts when reload or shutdown starts so extensions can cancel waits while finishing in-flight writes.
+See the **[SDK storage guide](/sdk/storage)** for all five backends, `createAgentSessionRuntime()` wiring, `SessionManager` CRUD, `JsonlSessionStore` `exactDirectory` behavior, `npm install` vs `atomic install` adapter resolution, ownership and close rules, and `StorageError` handling. For CLI session commands, the full `SessionManager` method list, operator setup, and cross-machine resume, see [Sessions](/sessions), [SessionManager API](/session-format#sessionmanager-api), [Storage backends](/storage), and [Resume on any machine](/guides/resume-on-any-machine).
 
 ### Human input without a terminal
 
@@ -388,6 +296,8 @@ interface AgentSession {
   setThinkingLevel(level: ThinkingLevel, options?: { persist?: boolean }): Promise<void>;
   cycleModel(direction?: "forward" | "backward", options?: { persist?: boolean }): Promise<ModelCycleResult | undefined>;
   cycleThinkingLevel(options?: { persist?: boolean }): Promise<ThinkingLevel | undefined>;
+  setCompactionModel(model: string, scope?: "global" | "project", options?: { persist?: boolean }): void;
+  setDecisionModel(model: string, scope?: "global" | "project", options?: { persist?: boolean }): void;
 
   agent: Agent;
   sessionManager: SessionManager;
@@ -420,6 +330,7 @@ try {
 ```
 
 - `setModel(model, { thinkingLevel: "high", persist: true })` clamps unsupported thinking levels and optionally writes global defaults (project overrides still win at startup).
+- `setCompactionModel(model, scope?, options?)` and `setDecisionModel(model, scope?, options?)` update the active session's compaction or decision model immediately without restarting or reloading. They save to `"global"` (default) or `"project"` settings unless `{ persist: false }` is passed. Pass `""` or `"auto"` for automatic selection, or an exact `provider/model` ID. Invalid values throw `CompactionConfigError` or `DecisionConfigError` synchronously. See [Compaction](/compaction) and [Structured decisions API](/sdk/structured-decisions).
 - Extension APIs reject new actions with an `Error` tagged with `code: "SessionClosed"` once close or reload starts. Give `atomic.exec()` calls timeouts or abort signals. Custom messages with `persistWhenStreaming: true` survive reload.
 
 #### Event subscriptions
@@ -453,7 +364,7 @@ Disposal and reload drain admitted callbacks, model refreshes, and `atomic.exec(
 
 #### Compaction and tree navigation
 
-`session.compact({ query?, compactionModel? })` stops active runs, clears context (or summarizes with a configured compactor model such as `morph/morph-compactor`), appends a `verbatim-lines` `compaction` entry, and returns `VerbatimCompactionResult` (`form: "cleared" | "compacted"`). Rejects with `Nothing to compact` when nothing new entered context; concurrent calls coalesce. A chat, classifier, or unknown `compactionModel` ID clears the context with a notice instead of failing. See [Compaction](/compaction) and [Session format](/session-format#compactionentry).
+`session.compact({ query?, compactionModel? })` stops active runs, clears context or replaces it with output from a configured compactor model such as `morph/morph-compactor`, appends a `verbatim-lines` `compaction` entry, and returns `VerbatimCompactionResult` (`form: "cleared" | "compacted"`). It rejects with `CompactionStateError` (`code: "nothing-to-compact"`) when nothing new has entered context since the last boundary; concurrent calls coalesce. Call `session.setCompactionModel(model, scope?, options?)` to change the configured compactor live. A chat, classifier, or unknown `compactionModel` ID clears the context with a notice instead of failing. See [Compaction errors](/compaction/reference#compaction-errors), [Compaction](/compaction), and [Session format](/session-format#compactionentry).
 
 ```typescript
 const result = await session.compact({ query: "keep the auth decisions" });
@@ -507,7 +418,7 @@ await live.release();
 
 - **Auto-release:** Pass `releaseWhenIdle: { afterMs }` (`0` to `2,147,483,647` ms; invalid values throw `AgentReleaseConfigError`) to `createAgentSession()` or `createAgentSessionFromServices()`. If the session is still busy when the timer fires, Atomic reschedules for another `afterMs` instead of failing. Managed by the process-wide `agentWakeDispatcher()` (`handle`, `deliver`, `onUnobservedFailure`, `whenIdle`, `stats()`).
 - **Lifecycle:** Emits `session_released` before closing. Rejects with retryable `session-busy` if streaming, compacting, running shells or background tasks, or holding queued messages. `rehydrate()` opens at the current context window (`readHistory()` and `readEntry()` fetch older entries), shares matching-cwd `services`, runs alongside `runtime.session` without replacing it, deduplicates concurrent calls, and closes on `runtime.dispose()`.
-- **In-memory store spilling:** Releasing a session stored in a caller-owned `MemorySessionStore` spills history to private owner-only files (`0700`/`0600`) under `<agentDir>/released-history/` with integrity verification (`SessionSpillError` on missing or corrupt files; see [Storage errors](/storage#storage-errors)). Files clean up on exit and sweep on restart after crashes; worker-only hosts must close stores before `worker.terminate()`. Custom stores can implement `releaseSession(id)`, `readEntryRange(id, query)`, and `readForkWindow(id, entryId)`.
+- **In-memory store spilling:** A directly constructed `new MemorySessionStore()` has no spill directory and keeps released session history in RAM. Opening a memory store through `resolveSessionStore(cwd, { agentDir, sessionStore: { kind: "memory" } })` enables disk spilling to private owner-only files (`0700`/`0600`) under `<agentDir>/released-history/` with integrity verification (`SessionSpillError` on missing or corrupt files; see [Storage errors](/storage#storage-errors)). Spill files clean up on exit and sweep on restart after crashes; worker-only hosts must close stores before `worker.terminate()`. Custom stores can implement `releaseSession(id)`, `readEntryRange(id, query)`, and `readForkWindow(id, entryId)`.
 
 Release and wake errors throw `AgentRehydrateError` (guards `isAgentRehydrateError`, `isAgentReleaseConfigError`, `isRetryableAgentRehydrateError`; cross-process `serializeAgentRehydrateError` and `rehydrateAgentRehydrateError`):
 
@@ -545,7 +456,7 @@ interface PromptOptions {
 
 Access the underlying [`@bastani/atomic-agent-core`](/libraries/agent-core) `Agent` through `session.agent` (`state.messages`, `model`, `thinkingLevel`, `systemPrompt`, `tools`, `streamingMessage`, `errorMessage`, and `waitForIdle()`).
 
-`session.sessionManager` is the source of truth for model context. Never mutate `session.agent.state.messages` directly to restore history. Instead, pass entries to `SessionManager.inMemory(cwd, { id }, entries)` before `createAgentSession()`, call `session.navigateTree()`, or append via `session.sessionManager.appendMessage()` followed by `session.refreshContext()`.
+`session.sessionManager` is the source of truth for model context (see [SessionManager API](/session-format#sessionmanager-api)). Never mutate `session.agent.state.messages` directly to restore history. Instead, pass entries to `SessionManager.inMemory(cwd, { id }, entries)` before `createAgentSession()`, call `session.navigateTree()`, or append via `session.sessionManager.appendMessage()` followed by `session.refreshContext()`.
 
 ### Events and transcript collection
 

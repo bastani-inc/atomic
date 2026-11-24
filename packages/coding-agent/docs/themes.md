@@ -25,8 +25,8 @@ Atomic ships seven built-in themes:
 Atomic loads custom themes from these sources:
 
 - **Global:** `~/.atomic/agent/themes/*.json` (legacy `~/.pi/agent/themes/*.json`)
-- **Project** (only after you trust the project): `.atomic/themes/*.json` (legacy `.pi/themes/*.json`)
-- **Packages:** `themes/` directories, `atomic.themes`, or legacy `pi.themes` entries in `package.json`
+- **Project** (only after you grant [project trust](/security#project-trust)): `.atomic/themes/*.json` (legacy `.pi/themes/*.json`)
+- **Packages:** `themes/` directories, `atomic.themes`, or legacy `pi.themes` entries in `package.json` ([Authoring packages](/packages/authoring))
 - **Settings:** `themes` array in global or project `settings.json`, which accepts files, directories, and filter patterns (`!glob`, `+path`, `-path` with `~` expansion; see [Package filtering](/packages/reference#package-filtering))
 - **CLI:** `--theme <path>` (repeatable) loads a theme file; `--use-theme <name>` (see [Initial theme](#initial-theme)) selects an already-loaded theme for one run without saving it
 
@@ -46,7 +46,7 @@ Discovery rules:
 
 ## Selecting a theme
 
-Atomic does not have a `/theme` slash command. Select a theme through `/settings`, `--use-theme`, or `settings.json`:
+Atomic does not have a `/theme` slash command. Select a theme through `/settings`, `--use-theme`, or `settings.json` ([Interface and display settings](/settings#interface-and-display)):
 
 ```json
 {
@@ -64,6 +64,8 @@ Use `"theme": "light-theme/dark-theme"` for automatic mode. Specify exactly one 
 A malformed auto value with extra `/` characters or an empty side falls back to the terminal default (`dark` or `light`). On first run, Atomic detects your terminal background and defaults to `dark` or `light`.
 
 The main chat uses the terminal's default background, including transparency. Headers, footers, and tool cards keep their theme colors.
+
+Setting `NO_COLOR` (to any value) or `FORCE_COLOR=0` disables all theme colors and text styles. Setting `FORCE_COLOR=1` or `2` caps truecolor themes at the 256-color palette, and `NO_COLOR` always takes precedence over `FORCE_COLOR` ([Terminal compatibility](/themes/reference#terminal-compatibility), [Environment variables](/environment-variables#terminal-and-display-variables)).
 
 ### Initial theme
 

@@ -39,7 +39,7 @@ Long lines sent to a compactor wrap at 2,000 characters. Compaction resets Claud
 
 ## Persistence and resume
 
-A successful compaction appends a `type: "compaction"` entry:
+A successful compaction appends a `type: "compaction"` entry (see [`CompactionEntry`](/session-format#compactionentry)):
 
 ```json
 {
@@ -77,7 +77,7 @@ A successful compaction appends a `type: "compaction"` entry:
 | `details.history` | Boundary location in `history://sessions/<sessionId>`: `rangeUnit: "entries"`, `entriesBefore`, `boundaryEntry`, and `totalEntries` |
 | `details.historyAccess` | `"read-search"` or `"session-history-tool"`. Resumed sessions receive `session_history` whenever `read` or `search` is absent from resumed tools |
 | `details.stats` | Heuristic estimates: `tokensAfter` counts the system prompt and boundary message, `linesBefore` counts replaced context lines, `linesKept` counts compacted lines (`0` on a clear), and `rangeCount` is `0` |
-| `details.backupPath` | Path to the pre-compaction backup (`<sessionFile>.<timestamp>.<label>.bak`, never auto-deleted). Populated only for JSONL stores, never SQLite, libSQL, PostgreSQL, or memory stores. |
+| `details.backupPath` | Path to the pre-compaction backup (`<sessionFile>.<timestamp>.<label>.bak`, never auto-deleted). Populated only for JSONL stores, never SQLite, libSQL, PostgreSQL, or memory stores (see [Storage backends](/storage)). |
 
 Only `compaction` entries with `details.strategy: "verbatim-lines"` affect active context. Resuming uses the saved boundary text directly without another model request, and messages appended after the boundary stay ordinary messages. Inactive legacy formats do not reapply historical omissions, so content they previously hid may reappear on resume.
 
@@ -137,6 +137,8 @@ atomic.on("session_compact_failed", async (event) => {
 
 ## SDK concurrency and message queuing
 
+For `session.compact()` usage and return types, see [Compaction and tree navigation](/sdk#compaction-and-tree-navigation).
+
 - **Shared manual runs.** Concurrent manual SDK `session.compact()` calls share one run and resolve to the same result. Calling `abortCompaction()` cancels the run for all waiters, or falls back to clearing context if a compactor request is already in flight.
 - **Manual takeover.** A manual compaction request arriving during automatic compaction cancels the automatic work and its continuation, then runs once the active work settles (or follows the automatic boundary if it already committed).
 - **Automatic continuations.** Automatic continuations, including output-cap continuations, belong to the original prompt. Both the `prompt()` promise and `agent_settled` finish only after the full continuation chain completes.
@@ -146,7 +148,7 @@ atomic.on("session_compact_failed", async (event) => {
 
 ## Compaction errors
 
-Compaction settings, session compaction calls, and direct `requestCompactorOutput()` calls throw subclasses of `CompactionError`. Branch on the class or `error.code` (never on the message string):
+`setCompactionModel()`, RPC `set_compaction_model`, session compaction calls, and direct `requestCompactorOutput()` calls throw subclasses of `CompactionError`. Branch on the class or `error.code`, not on the message string. Reading an invalid `compactionModel` or `compaction.reserveTokens` value from `settings.json` throws a plain `Error` instead of `CompactionConfigError`.
 
 | Class | `code` | `retryable` | When |
 | --- | --- | --- | --- |
@@ -215,7 +217,7 @@ path/to/changed.ts
 
 ### `BranchSummaryEntry` structure
 
-`BranchSummaryEntry` is exported from `@bastani/atomic`. Default branch summarization stores cumulative file lists in `details`, while extensions can store custom metadata:
+`BranchSummaryEntry` is exported from `@bastani/atomic` (see [`BranchSummaryEntry`](/session-format#branchsummaryentry)). Default branch summarization stores cumulative file lists in `details`, while extensions can store custom metadata:
 
 ```typescript
 interface BranchSummaryEntry<T = unknown> {

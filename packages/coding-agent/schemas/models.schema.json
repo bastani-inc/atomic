@@ -103,7 +103,7 @@
                   "reasoning": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Whether the model supports thinking."
+                    "description": "Whether the model supports thinking. Applies only to chat models."
                   },
                   "thinkingLevelMap": {
                     "$ref": "#/$defs/ThinkingLevelMap",
@@ -136,13 +136,13 @@
                     "type": "number",
                     "exclusiveMinimum": 0,
                     "default": 128000,
-                    "description": "Context window in tokens."
+                    "description": "Context window in tokens. Applies only to chat models."
                   },
                   "maxTokens": {
                     "type": "number",
                     "exclusiveMinimum": 0,
                     "default": 16384,
-                    "description": "Maximum output tokens."
+                    "description": "Maximum output tokens. Defaults to 16384 for chat models. When omitted on compactor models, defaults to 32000 estimated tokens, capped at 50% of the automatic trigger."
                   },
                   "timeoutMs": {
                     "type": "number",
@@ -249,7 +249,7 @@
                     },
                     "reasoning": {
                       "type": "boolean",
-                      "description": "Whether the model supports thinking."
+                      "description": "Whether the model supports thinking. Applies only to chat models."
                     },
                     "thinkingLevelMap": {
                       "$ref": "#/$defs/ThinkingLevelMap",
@@ -332,12 +332,12 @@
                     "contextWindow": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "description": "Context window in tokens."
+                      "description": "Context window in tokens. Applies only to chat models."
                     },
                     "maxTokens": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "description": "Maximum output tokens."
+                      "description": "Maximum output tokens. On compactor models, sets the upper bound on compacted output in estimated tokens, capped at 50% of the automatic trigger."
                     },
                     "timeoutMs": {
                       "type": "number",
@@ -1215,7 +1215,7 @@
               "const": "state-image-urls"
             }
           ],
-          "description": "How the service takes classifier images. \"assets\" sends TypeSafe's assets map (PNG and JPEG) and references the images from the state, as TypeSafe and Jev on Workers AI expect. \"images\" sends Clef's images list of data URLs (PNG, JPEG, and WebP, at most four), as Clef on Workers AI expects. \"state-image-urls\" places image_url parts before the state, as OpenRouter expects; OpenRouter drops assets without an error. Auto-detected from the provider, baseUrl, and model ID. Classifier models read it from the provider-level compat; models and modelOverrides entries apply to chat models only."
+          "description": "How the service takes classifier images. \"assets\" sends TypeSafe's assets map (PNG and JPEG) and references the images from the state, as TypeSafe and Jev on Workers AI expect. \"images\" sends Clef's images list of data URLs (PNG, JPEG, and WebP, at most four), as Clef on Workers AI expects. \"state-image-urls\" places image_url parts before the state, as OpenRouter expects; OpenRouter drops assets without an error. Auto-detected from the provider, baseUrl, and model ID. Classifier models read it from the provider-level compat; models and modelOverrides entries apply to chat and compactor models."
         },
         "sendImageOptInHeader": {
           "type": "boolean",

@@ -143,8 +143,15 @@
             "group": "Embed and integrate",
             "pages": [
               "programmatic",
-              "sdk",
-              "sdk/web-server",
+              {
+                "group": "TypeScript SDK",
+                "pages": [
+                  "sdk",
+                  "sdk/storage",
+                  "sdk/structured-decisions",
+                  "sdk/web-server"
+                ]
+              },
               "rpc",
               "rpc/extension-ui",
               "rpc/examples",
@@ -159,7 +166,9 @@
                   "libraries/agent-core",
                   "libraries/codemode",
                   "libraries/schema",
-                  "libraries/telemetry"
+                  "libraries/telemetry",
+                  "libraries/storage-postgres",
+                  "libraries/storage-libsql"
                 ]
               }
             ]
@@ -210,7 +219,6 @@
               "extensions/api-reference",
               "custom-provider/api-reference",
               "sdk/reference",
-              "sdk/structured-decisions",
               "rpc/protocol",
               "tui/reference"
             ]
@@ -301,6 +309,14 @@
     {
       "source": "/models/model-selection",
       "destination": "/models"
-    }
+    },
+    { "source": "/postgres", "destination": "/storage#postgresql" },
+    { "source": "/postgresql", "destination": "/storage#postgresql" },
+    { "source": "/libsql", "destination": "/storage#turso-and-libsql" },
+    { "source": "/turso", "destination": "/storage#turso-and-libsql" },
+    { "source": "/decisions", "destination": "/sdk/structured-decisions" },
+    { "source": "/structured-decisions", "destination": "/sdk/structured-decisions" },
+    { "source": "/compactors", "destination": "/compaction#customize-morph-or-add-a-remote-compactor" },
+    { "source": "/blueprints", "destination": "/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint" }
   ]
 }

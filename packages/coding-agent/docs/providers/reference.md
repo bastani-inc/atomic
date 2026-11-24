@@ -4,16 +4,16 @@ sidebarTitle: "Providers"
 description: "Credential resolution order, provider stop reasons, and GitHub Copilot error classes and helpers."
 ---
 
-This reference covers credential precedence, terminal stop reasons, and GitHub Copilot's typed error classes. For setup steps, subscriptions, and API keys, see [Model providers](/providers).
+This reference covers credential precedence, terminal stop reasons, and GitHub Copilot's typed error classes. For setup steps, subscriptions, and API keys, see [Authentication](/getting-started/authentication) and [Model providers](/providers).
 
 ## Credential resolution order {#resolution-order}
 
 Atomic resolves provider credentials from highest to lowest priority:
 
-1. **CLI `--api-key` flag** (or SDK runtime API key override).
+1. **CLI [`--api-key`](/reference/cli#model-options) flag** (or [SDK runtime API key override](/sdk/reference#api-keys-and-oauth)).
 2. **Stored credential in `~/.atomic/agent/auth.json`** (API key or OAuth token; falls back to legacy `~/.pi/agent/auth.json`).
-3. **Provider configuration `apiKey`** from an extension's `registerProvider()` call, then from `~/.atomic/agent/models.json`.
-4. **Built-in environment variable or ambient credentials** (such as `ANTHROPIC_API_KEY`, AWS profiles/IAM/IRSA, Google Application Default Credentials, or Anthropic Workload Identity Federation).
+3. **Provider configuration `apiKey`** from an extension's [`registerProvider()`](/custom-provider) call, then from [`~/.atomic/agent/models.json`](/models).
+4. **Built-in [environment variable](/environment-variables#provider-credentials) or ambient credentials** (such as `ANTHROPIC_API_KEY`, AWS profiles/IAM/IRSA, Google Application Default Credentials, or Anthropic Workload Identity Federation).
 
 Watch out for two precedence rules:
 
@@ -22,7 +22,7 @@ Watch out for two precedence rules:
 
 ### SDK login options
 
-Applications calling `@bastani/atomic-ai` directly can pass `{ agentName: "my-app" }` as the fourth argument to `models.login()` to set the OpenAI ChatGPT sign-in name hint or Codex login originator. ChatGPT sign-in defaults to `Atomic`.
+Applications calling [`@bastani/atomic-ai`](/libraries/ai) directly can pass `{ agentName: "my-app" }` as the fourth argument to `models.login()` to set the OpenAI ChatGPT sign-in name hint or Codex login originator. ChatGPT sign-in defaults to `Atomic`. For host session authentication helpers, see [SDK API keys and OAuth](/sdk/reference#api-keys-and-oauth).
 
 ## Stop reasons
 
@@ -34,7 +34,7 @@ A streaming partial message carries `pending` until a terminal reason replaces i
 
 ## GitHub Copilot errors
 
-Atomic classifies failed GitHub Copilot requests into typed error classes so retries and [model fallback](/settings#retry) react to the failure cause rather than message text. Each message states what failed, the model, the error code, the next step, and Copilot's response excerpt.
+Atomic classifies failed GitHub Copilot requests into typed error classes so [retries](/settings#retry) and [model fallback](/settings#fallbackmodels) react to the failure cause rather than message text. Each message states what failed, the model, the error code, the next step, and Copilot's response excerpt.
 
 Every `GitHubCopilotError` carries `code`, `retryable`, `hint`, `modelId`, `api`, `status`, `providerCode` (Copilot's error code), `requestId` (Copilot's `x-request-id`), `detail` (a response excerpt truncated to 300 characters, which may quote parts of the request), and `cause`.
 
@@ -56,7 +56,7 @@ All 11 classes extend `GitHubCopilotError`. The same retry and fallback rules ap
 
 ### GitHub Copilot error helpers
 
-SDK callers can inspect, classify, and serialize Copilot errors using functions exported from `@bastani/atomic` and `@bastani/atomic-ai`:
+SDK callers can inspect, classify, and serialize Copilot errors using functions exported from [`@bastani/atomic`](/sdk) and [`@bastani/atomic-ai`](/libraries/ai):
 
 - **Extract or classify errors:**
   - `getGitHubCopilotError(message)`: reads the typed error from a failed assistant message's `diagnostics`.

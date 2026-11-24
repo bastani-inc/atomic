@@ -19,7 +19,7 @@ Containerization is the outer boundary, not the only one. Read [Security and pro
 | Docker | Whole `atomic` process in a local container | Simple local isolation | Provider API keys enter the container. |
 | NVIDIA OpenShell | Whole `atomic` process in a policy-controlled sandbox | Local or remote managed sandboxes with upstream credential injection | Requires an OpenShell gateway. |
 
-Extensions run wherever the `atomic` process runs. If you run host `atomic` with a tool-routing extension, other loaded extensions still run on your host unless they also route their work into the VM.
+Extensions run wherever the `atomic` process runs. If you run host `atomic` with a tool-routing extension, other loaded extensions still run on your host unless they also route their work into the VM. To route built-in file tools and `!` commands to a remote machine over SSH instead of a local micro-VM, see `examples/extensions/ssh.ts` in [Extension examples](/extensions/examples#remote-execution-and-sandboxes).
 
 ## Gondolin micro-VM
 
@@ -56,7 +56,7 @@ To expose only the routed built-in tools in a session:
 atomic --tools read,write,edit,bash,find,ls -e ~/.local/share/atomic-gondolin
 ```
 
-`ls` is a built-in tool that is off by default unless listed. Restricting `--tools` to this allowlist also disables `intercom`, `subagent`, and other extension tools; MCP tools stay hidden unless a `mcp__*` pattern is listed. Other loaded host extensions can still run code on the host, so use whole-process isolation when host filesystem access must be prevented completely.
+`ls` is a built-in tool that is off by default unless listed. Restricting [`--tools`](/reference/cli#tool-options) to this allowlist also disables `intercom`, `subagent`, and other extension tools; MCP tools stay hidden unless a `mcp__*` pattern is listed. Other loaded host extensions can still run code on the host, so use whole-process isolation when host filesystem access must be prevented completely.
 
 **Requirements:** npm to install dependencies, Node.js 23.6.0 or newer for `@earendil-works/gondolin`, and QEMU installed through your system package manager.
 
@@ -95,6 +95,8 @@ ENTRYPOINT ["atomic"]
 
 The archive installer unpacks a self-contained bundle with no JavaScript runtime required. If you adapt this Dockerfile to a smaller base image, make sure `install.sh` has `uname`, `tar` with `gzip`, core file utilities (`mkdir`, `mv`, `chmod`, `ln`, `rm`, `rmdir`), `curl` or `wget`, `sha256sum` (or `shasum` or `openssl`), and `ldd` on non-Alpine Linux. `debian:bookworm-slim` already includes these tools.
 
+For Alpine Linux (`musl`), `install.sh` detects `/etc/alpine-release` and downloads the musl release archive (`atomic-linux-x64-musl.tar.gz` or `atomic-linux-arm64-musl.tar.gz`). Those archives bundle `libgcc` and `libstdc++`, so stock Alpine needs no extra C++ runtime libraries; install `bash`, `ca-certificates`, `curl`, `git`, and `ripgrep` for the installer and built-in tools. See [Alpine and musl Linux archives](/getting-started/installation#alpine-and-musl-linux-archives).
+
 Build and run the container:
 
 ```bash
@@ -117,11 +119,17 @@ If you mount only `/root/.atomic/agent`, setting `ATOMIC_CODING_AGENT_DIR=/root/
 
 When mounting only `/root/.atomic/agent`, persist sessions with one of these options:
 
-- Pass `--session-store /root/.atomic/agent/journal.sqlite` (or configure `ATOMIC_STORAGE` or `ATOMIC_SESSIONS_STORAGE` to point inside `/root/.atomic/agent`).
-- Set `ATOMIC_CODING_AGENT_DIR` to a non-default subdirectory inside the volume, such as `/root/.atomic/agent/state`, so Atomic stores sessions at `/root/.atomic/agent/state/workflows/journal.sqlite`.
+- Pass `--session-store /root/.atomic/agent/journal.sqlite`, or set `ATOMIC_STORAGE` or `ATOMIC_SESSIONS_STORAGE` to point inside `/root/.atomic/agent` ([Selecting storage per process](/storage#selecting-storage-per-process)).
+- Set [`ATOMIC_CODING_AGENT_DIR`](/environment-variables) to a non-default subdirectory inside the volume, such as `/root/.atomic/agent/state`, so Atomic stores sessions at `/root/.atomic/agent/state/workflows/journal.sqlite`.
 - Mount `/root/.atomic` instead of only `/root/.atomic/agent`.
 
-Avoid mounting your host `~/.atomic` or `~/.atomic/agent` directory unless the container should have access to your host credentials, settings, and sessions.
+Do not bind-mount your host `~/.atomic` or `~/.atomic/agent` into a running container. Beyond exposing host credentials, settings, and sessions, OS file locks on `settings.json`, `auth.json`, `trust.json`, and session claims do not coordinate safely across a host path and a container mount of the same directory ([Locks in the agent directory](/storage#locks-in-the-agent-directory)). Give each container its own agent directory and share sessions through a remote database instead ([Sharing storage across hosts](/storage#sharing-storage-across-hosts), [SDK storage](/sdk/storage)).
+
+### Container runtime, network, and CI options
+
+- **Memory and cgroup controls.** For npm and Node.js installs, Atomic sizes the Node.js heap automatically to half of the container's cgroup memory limit when that exceeds Node's default; override with `ATOMIC_HEAP_MB` (`0` keeps Node's default). On Linux with a user-owned cgroup v2 hierarchy, Atomic also uses cgroups to contain background shell process trees; set `ATOMIC_TASK_CGROUP=0` if container cgroup policies block it ([Background tasks](/background-tasks#lifetime-retention-and-cleanup), [Environment variables](/environment-variables#diagnostics-and-performance)).
+- **Restricted networks, proxies, and private CAs.** Pass `--offline` or set `ATOMIC_OFFLINE=1` in restricted-egress containers to disable automatic update checks, telemetry, and binary downloads. Configure `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` (or `httpProxy` in [Network proxy settings](/settings#network-proxy)), point `NODE_EXTRA_CA_CERTS` at private CA bundles ([Environment variables](/environment-variables#tls-certificates)), and set `ATOMIC_ALLOW_PRIVATE_URL_READS=1` only if `read` needs to reach container-local services. For PostgreSQL over an HTTP `CONNECT` proxy, see [Through an HTTP proxy](/storage#through-an-http-proxy).
+- **Unattended and CI containers.** For headless runs without `-it`, use print mode (`-p`), `--mode json`, or `--mode rpc`, and combine `--no-session` (or shared storage) with explicit `--approve` or `--no-approve` trust flags ([Non-interactive usage](/guides/non-interactive)). In CI or multi-container runs, set `ATOMIC_PROFILE=ci` with `ATOMIC_TEAM_*` variables ([Team and CI setup](/guides/team-setup#ci-and-swarms)), and use `.atomic/blueprint.yaml` with `atomic blueprint prebuild` to pre-install project dependencies and warm caches ([Resume on any machine](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint)).
 
 ## NVIDIA OpenShell
 

@@ -30,7 +30,9 @@ Common startup options:
 - `--session <id>` / `--continue` (`-c`) / `--resume` (`-r`): open or resume a stored session.
 - `--name <name>` / `-n <name>`: set the session display name at startup.
 - `--no-session`: run without a resumable session (released idle history may still page to disk; see [Sessions](/sessions)).
-- `--session-dir <path>`: custom session storage directory.
+- `--session-dir <path>`: select a JSONL session storage and lookup directory.
+- `--session-store <path>`: select a SQLite session database file (cannot be combined with `--session-dir` or `--no-session`).
+- `--session-prefix <prefix>`: table prefix for `--session-store` (requires `--session-store`; defaults to empty).
 - `--storage '<json>'` / `--storage-file <path>`: select storage for this process's sessions.
 - `--tools <list>` / `--no-tools` / `--exclude-tools <list>`: control which tools are active.
 

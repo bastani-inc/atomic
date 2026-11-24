@@ -8,13 +8,17 @@ When several machines share one storage database, you can start a session on one
 
 ## Join each machine
 
-Every machine must use the same shared database, either PostgreSQL or Turso / libSQL.
+Every machine must use the same shared database, either PostgreSQL or Turso / libSQL. Do not embed passwords or auth tokens in the database URL; pass credentials through `--password-file`, `--token-file`, or `--auth` (`credential-in-url`).
 
-**PostgreSQL:**
+**PostgreSQL (PostgreSQL 16 or newer for sessions):**
+
+In two-role deployments, run `atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password` once as the owner role (and after Atomic upgrades), then grant the runtime role its privileges before joining machines as `atomic_runtime`. See [Set up the database](/storage#set-up-the-database).
 
 ```bash
 atomic install npm:@bastani/atomic-storage-postgres
 atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+atomic intercom restart
+atomic storage status
 ```
 
 See [PostgreSQL](/storage#postgresql) for database roles, TLS, and cloud identities.
@@ -24,9 +28,11 @@ See [PostgreSQL](/storage#postgresql) for database roles, TLS, and cloud identit
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql
 atomic storage join libsql://<db>.turso.io --token-file ~/turso-token
+atomic intercom restart
+atomic storage status
 ```
 
-`atomic storage join` stores sessions in the shared database so they resume on any joined machine. By contrast, `atomic team join` shares Intercom while keeping personal sessions local. To share sessions on a machine joined with `atomic team join`, run `atomic team leave` and then `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens, and `atomic storage status`.
+`atomic storage join` stores sessions in the shared database so they resume on any joined machine. By contrast, `atomic team join` ([Set up teams and CI](/guides/team-setup)) shares Intercom while keeping personal sessions local. To share sessions on a machine joined with `atomic team join`, run `atomic team leave` and then `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens, and `atomic storage status`.
 
 Keep worktree snapshots enabled (`snapshots.enabled`, on by default). At the end of each turn that modifies files, Atomic saves uncommitted edits, untracked files, and unpushed commits in the shared database. If `snapshots.enabled` is set to `false`, no snapshots are captured, cross-machine resume cannot restore repository files, and `atomic blueprint prebuild` fails with `snapshots are disabled`.
 
@@ -34,7 +40,7 @@ Work inside submodules and untracked nested repositories is not recorded, and re
 
 ## Resume a session
 
-Resume as usual with `atomic --session <id>`, `atomic --resume`, or `/resume`.
+Resume as usual with `atomic --session <id>`, `atomic --resume`, or `/resume` (see [Resuming and deleting sessions](/sessions#resuming-and-deleting-sessions)).
 
 - **Matching local checkout.** If you start Atomic inside a checkout of the same repository whose files match the snapshot (or where the recorded edits were committed), the session continues there directly.
 - **Restored worktree.** Otherwise, Atomic restores the recorded state into a worktree under `~/.atomic/agent/worktree-snapshots` without modifying your local checkouts, and prints the restored path. Atomic reuses a clean idle worktree of the same repository when available so existing dependencies and build output stay intact. See [Restored worktrees](/worktree-snapshots#restored-worktrees).
@@ -45,7 +51,7 @@ Resume as usual with `atomic --session <id>`, `atomic --resume`, or `/resume`.
 
 Absolute paths from the earlier machine keep working in built-in file tools because Atomic maps paths under the old checkout to the restored worktree. Shell commands run as written, so commands containing old absolute paths need the new worktree path.
 
-Passing `--session <id>` for a session whose recorded directory does not exist on this machine opens directly instead of offering to fork the session. SDK callers using `createAgentSession({ sessionManager })` get the same restore behavior unless they pass `cwd` or `workspace`, even when the recorded path exists on this machine with different files (such as runners built from the same container image).
+Passing `--session <id>` for a session whose recorded directory does not exist on this machine opens directly instead of offering to fork the session. SDK callers using `createAgentSession({ sessionManager })` get the same restore behavior unless they pass `cwd` or `workspace`, even when the recorded path exists on this machine with different files (such as runners built from the same container image). See [Worktree snapshots in the SDK](/sdk#worktree-snapshots) and [SDK session storage](/sdk/storage).
 
 If shared storage does not answer, `atomic --session`, `--resume`, `--continue`, and `/resume` stop after 15 seconds with a retryable `ResumeCatalogTimeoutError`. Nothing is modified; resume again once `atomic storage status` connects.
 
@@ -277,7 +283,7 @@ For session resumes, missing Git never blocks opening the session. Instead, the 
 | Windows worktree path exceeds Git for Windows limits | Set `ATOMIC_CODING_AGENT_DIR` to a shorter path ([Long paths on Windows](#long-paths-on-windows)). Nothing is written. | `WorkspaceRestoreError` (`path-too-long`) |
 | Snapshot fails security validation (credentials in remote URL, `ext::` remote helper, or malformed hashes) | Resume only sessions from trusted storage, or re-export from the source machine. Nothing is fetched or run. | `WorkspaceRestoreError` (`invalid-snapshot`) |
 
-Secret values never appear in error messages; errors name only the file or environment variable. SDK error classes, codes, and `isResume*Error` guards are exported from `@bastani/atomic`.
+Secret values never appear in error messages; errors name only the file or environment variable. SDK error classes, codes, and `isResume*Error` guards are exported from `@bastani/atomic`; see [Resuming on another machine](/sdk/reference#resuming-on-another-machine).
 
 ## Windows
 

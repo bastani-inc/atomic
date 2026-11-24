@@ -6,7 +6,7 @@ description: "Use Atomic's built-in Herdr status indicators, session restore, tr
 
 Atomic reports its status to [Herdr](https://herdr.dev) automatically when you start it inside a Herdr pane. No extra extension is needed, and the pane identifies the agent as `atomic`.
 
-For interactive terminal automation, pane isolation, and fallbacks, see [Computer use](/computer-use#terminal-automation-with-herdr). This page covers Atomic's built-in status and session-restore integration.
+For interactive terminal automation, pane isolation, and fallbacks, see [Computer use](/computer-use#terminal-automation-with-herdr). To let Atomic inspect or control Herdr panes, tabs, workspaces, worktrees, and commands from inside a Herdr pane (`HERDR_ENV=1`), invoke the bundled `/skill:herdr` skill ([Bundled skills](/skills#bundled-skills)). This page covers Atomic's built-in status and session-restore integration.
 
 ## Setup
 
@@ -26,13 +26,13 @@ Use Herdr 0.8.2 or newer and launch Atomic inside a Herdr pane. Herdr sets the p
 
 Quiet periods such as provider waits, retries, and tool execution still count as Working. Active background work keeps the pane Working after Atomic finishes its response.
 
-All Blocked states report the fixed message `"Waiting for approval"`, even for non-approval questions or prompts. Unlike [OSC 7501 program status](/terminal-setup#program-status), Herdr also reports project trust prompts (`/trust` or resumed-folder trust) as Blocked when no background tasks are running.
+All Blocked states report the fixed message `"Waiting for approval"`, even for non-approval questions or prompts. Unlike [OSC 7501 program status](/terminal-setup#program-status), Herdr also reports [project trust](/security) prompts (`/trust` or resumed-folder trust) as Blocked when no background tasks are running.
 
-Opening `/tasks` or `/agents` does not mark the pane Blocked, and neither does a subagent asking its supervisor for guidance. Check `/tasks` for pass or fail outcomes; the pane status shows activity, not a verdict.
+Opening [`/tasks`](/background-tasks) or [`/agents`](/subagents) does not mark the pane Blocked, and neither does a [subagent](/subagents) asking its supervisor for guidance. Check `/tasks` for pass or fail outcomes; the pane status shows activity, not a verdict.
 
 ## Restore after a Herdr restart
 
-With Herdr 0.9.2 or newer, Atomic also reports a resume command so Herdr can reopen the same conversation in the pane after a Herdr server restart. Atomic does not restart panes itself. To disable automatic agent restore in Herdr, set `[session] resume_agents_on_restore = false` in Herdr's config.
+With Herdr 0.9.2 or newer, Atomic also reports a resume command so Herdr can reopen the same conversation in the pane after a Herdr server restart ([Sessions](/sessions), [Storage](/storage)). Atomic does not restart panes itself. To disable automatic agent restore in Herdr, set `[session] resume_agents_on_restore = false` in Herdr's config.
 
 - **Local SQLite sessions (default):** Atomic reports `atomic --session-store <path> --session <id>` (plus `--session-prefix <prefix>` when a table prefix is configured).
 - **JSONL directory sessions:** Atomic reports `atomic --session-dir <dir> --session <id>`. Session IDs ending in `.jsonl` still use `--session <id>`.

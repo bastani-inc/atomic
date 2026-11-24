@@ -48,8 +48,8 @@ Trusting a project lets Atomic load:
 - Project-local `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, and `CLAUDE.MD`, plus project `.agents/skills`
 - Project subagent definitions and agent overrides (`.atomic/agents`, `.pi/agents`, and `.agents`)
 - Earlier workflow files for on-demand [conversion to skills](/orchestration/migrating-workflows) (read as text only, never executed, modified, or deleted)
-- Project MCP server config (`.atomic/mcp.json`) and blueprint builds (`.atomic/blueprint.yaml`)
-- Project-configured packages, automatic installation of missing project packages, and package-managed extensions
+- Project MCP server config ([`.atomic/mcp.json`](/mcp-servers); `auth.provider` is forbidden in project configs and package manifests, and `!command` values run shell commands) and blueprint builds ([`.atomic/blueprint.yaml`](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint))
+- Project-configured [packages](/packages) (`atomic install -l` requires project trust or `--approve`), automatic installation of missing project packages, and package-managed extensions
 
 Declining trust skips all of these project inputs. Global instructions, global skills, global settings, and explicit CLI resources remain available. Interactive sessions in an untrusted project display a warning; run `/trust` to save a decision, then restart Atomic.
 
@@ -57,7 +57,7 @@ Declining trust skips all of these project inputs. Global instructions, global s
 
 - **Per-folder trust:** Trust belongs to the folder a session works in, not the directory you started Atomic from. Resuming a session (`--resume`, `--continue`, `--session`, or `/resume`) applies that folder's trust decision and prompts if none is saved. Session-only choices last until Atomic exits and are never written to `trust.json`.
 - **Git worktrees:** A worktree outside its main repository folder has its own trust decision because it can check out different `.atomic` content. Choose **Trust parent folder** (at the prompt or in `/trust`) to trust sibling worktrees under one parent directory.
-- **Extension `project_trust` hooks:** Global extensions and explicit CLI `-e` extensions can handle the `project_trust` event ahead of `trust.json` and `defaultProjectTrust`. When such extensions are installed, Atomic waits for them before applying project settings, resources, or a project-configured session store. Handlers run in extension load order: returning `{ trusted: "undecided" }` passes to the next handler, and the first `{ trusted: "yes" }` or `{ trusted: "no" }` wins (and writes to `trust.json` when `remember: true`). If a handler throws an error, Atomic logs a warning and continues to the next handler, or falls back to `trust.json`, `defaultProjectTrust`, and the prompt. Hooks do not run when a folder has no trust-gated inputs or when `--approve` or `--no-approve` overrides trust. Switching to a resumed session in another folder shuts down the previous folder's extensions (waiting up to 5 seconds before continuing) before loading the resumed folder's extensions.
+- **Extension `project_trust` hooks:** Global extensions and explicit CLI `-e` extensions can handle the [`project_trust`](/extensions/events#project_trust) event ahead of `trust.json` and `defaultProjectTrust` (see `project-trust.ts` in [Extension examples](/extensions/examples#events-and-gates)). When such extensions are installed, Atomic waits for them before applying project settings, resources, or a project-configured session store. Handlers run in extension load order: returning `{ trusted: "undecided" }` passes to the next handler, and the first `{ trusted: "yes" }` or `{ trusted: "no" }` wins (and writes to `trust.json` when `remember: true`). If a handler throws an error, Atomic logs a warning and continues to the next handler, or falls back to `trust.json`, `defaultProjectTrust`, and the prompt. Hooks do not run when a folder has no trust-gated inputs or when `--approve` or `--no-approve` overrides trust. Switching to a resumed session in another folder shuts down the previous folder's extensions (waiting up to 5 seconds before continuing) before loading the resumed folder's extensions.
 - **Borrowed `-e` sources:** If `-e <dir>` discovers resources from that directory's `.atomic`, legacy `.pi`, or `.agents/skills`, Atomic checks `trust.json` under that source's canonical path (cached for the session) before loading them, because borrowed extensions run with your user permissions. Passing `--approve` (`-a`) or `--no-approve` (`-na`) also overrides trust for borrowed `-e` sources.
 - **Non-interactive runs:** Print mode (`-p`), `--mode json`, and `--mode rpc` never open a trust prompt. Without a saved decision, `defaultProjectTrust: "ask"` and `"never"` leave the project untrusted and skip project resources, while `"always"` trusts the project. Pass `--approve` (`-a`) or `--no-approve` (`-na`) to override trust for one run.
 
@@ -75,15 +75,25 @@ You can narrow which tools a session exposes:
 
 - **CLI flags:** Pass `--tools` (`-t`) to set an allowlist or apply `+name`/`-name` modifiers, `--exclude-tools` (`-xt`) to remove specific tools, `--no-builtin-tools` (`-nbt`) to omit default coding tools, or `--no-tools` (`-nt`) to disable every tool (including extension tools such as `intercom`).
 - **Settings:** Configure `defaultTools` in [Settings](/settings#tools) globally or in a trusted project.
-- **SDK:** Pass `tools`, `excludedTools`, or `noTools` when creating a session.
+- **SDK:** Pass `tools`, `excludedTools`, or `noTools` when creating a session ([SDK tools reference](/sdk/reference#tools)).
 
-On native Windows, Atomic enables the `powershell` tool alongside `bash` whenever PowerShell is installed. Excluding `bash` alone still leaves `powershell` enabled. Exclude both when you want no shell execution:
+On native Windows, Atomic enables the [`powershell` tool](/windows#powershell-tool) alongside `bash` whenever PowerShell is installed. Excluding `bash` alone still leaves `powershell` enabled. Exclude both when you want no shell execution:
 
 ```bash
 atomic --exclude-tools bash,powershell
 ```
 
-Use a container, VM, remote sandbox, restricted OS account, or custom tool wrapper when you need command allowlisting or filesystem isolation.
+Use a container, VM, remote sandbox, restricted OS account, or custom extension gate when you need command allowlisting or filesystem isolation. Extensions can inspect and block calls in [`tool_call` hooks](/extensions/events#tool_call); see `permission-gate.ts` and `protected-paths.ts` in [Extension examples](/extensions/examples#events-and-gates).
+
+## Built-in data and network protections
+
+Atomic enforces several local guardrails by default:
+
+- **SSRF blocking on URL reads.** `read` blocks `localhost`, `.localhost`, private IP ranges, cloud metadata endpoints, and redirects to them ([Documents and URLs](/tools#documents-and-urls)). Set `ATOMIC_ALLOW_PRIVATE_URL_READS=1` only when a workflow must read private URLs ([Environment variables](/environment-variables)). Bundled `@bastani/web-access` also keeps local or intranet hosts and credentialed URLs out of remote fallbacks ([Web access](/web-access)).
+- **Opt-in browser cookies.** Gemini Web cookie lookup is disabled by default and activates only when you set `allowBrowserCookies: true` in `~/.atomic/web-search.json` or `ATOMIC_ALLOW_BROWSER_COOKIES=1` ([Web access](/web-access)).
+- **Worktree snapshot secret deny list.** [Worktree snapshots](/worktree-snapshots) exclude `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `credentials`, `credentials.json`, `.netrc`, `_netrc`, `.git-credentials`, `.pgpass`, and private SSH key files before `.atomic/snapshot-ignore` or Git staging. This deny list cannot be overridden ([What is left out](/worktree-snapshots#what-is-left-out)).
+- **Storage credentials and process overrides.** Shared storage rejects credentials embedded in URLs and saves static tokens in mode-`600` files. Process-level storage overrides (`--storage`, `--storage-file`, `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, `ATOMIC_PROFILE=ci`) come from the launching host and bypass project trust ([Selecting storage per process](/storage#selecting-storage-per-process)).
+- **Session sharing and debug snapshots.** `/share` uploads a private GitHub gist and strips worktree snapshots and large tool-output blobs, while keeping the rest of the transcript ([Exporting and sharing sessions](/usage#exporting-and-sharing-sessions)). `/debug` writes all current session messages unredacted to `~/.atomic/agent/atomic-debug.log` ([Diagnostics and debugging](/development#debugging)).
 
 ## Running untrusted or unattended work
 
@@ -103,7 +113,7 @@ If you bind-mount a host directory read/write, writes inside the container or VM
 
 ## Credential export
 
-`atomic auth print-api-key`, `atomic auth print-bearer-token`, and `atomic auth check --credentials` export a resolved credential to stdout so external clients can reuse your Atomic authentication without reading `auth.json`. `atomic auth check` without `--credentials` stays status-only and never prints a secret.
+`atomic auth print-api-key`, `atomic auth print-bearer-token`, and `atomic auth check --credentials` export a resolved credential to stdout so external clients can reuse your Atomic authentication without reading `auth.json`. `atomic auth check` without `--credentials` stays status-only and never prints a secret. See [CLI credential commands](/reference/cli#credential-commands) and [Providers](/providers) for full command flags and provider auth setup.
 
 ```bash
 TOKEN=$(atomic auth print-bearer-token --provider openai-codex --model gpt-5.4 --min-expiry 45m)

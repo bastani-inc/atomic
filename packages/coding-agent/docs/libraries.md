@@ -1,10 +1,14 @@
 ---
 title: "Standalone libraries"
-sidebarTitle: "Overview"
-description: "Explore the six standalone @bastani/atomic-* TypeScript libraries you can use in extensions, SDK apps, or independently on Node.js 22.19+."
+sidebarTitle: "All libraries"
+description: "Explore Atomic's six core @bastani/atomic-* TypeScript libraries and two optional storage adapter packages for extensions, SDK apps, and standalone Node.js 22.19+ projects."
 ---
 
-Atomic is built on six TypeScript libraries (requiring Node.js 22.19 or newer). Each package is published on npm at Atomic's version with every release, and each works independently outside Atomic.
+Atomic publishes six core TypeScript libraries and two optional storage adapter packages (all requiring Node.js 22.19 or newer). Each package publishes on npm at Atomic's version with every release and works independently outside Atomic.
+
+## Core libraries
+
+The six core libraries are bundled inside `@bastani/atomic` and provided to extensions automatically:
 
 | Package | What it does |
 | --- | --- |
@@ -15,17 +19,30 @@ Atomic is built on six TypeScript libraries (requiring Node.js 22.19 or newer). 
 | [`@bastani/atomic-schema`](/libraries/schema) | JSON Schema builders and validation without `eval` |
 | [`@bastani/atomic-telemetry`](/libraries/telemetry) | Vendor-neutral telemetry contracts and reference contexts that send nothing on their own |
 
+## Storage adapter packages
+
+Remote SQL storage adapters are **not** bundled into `@bastani/atomic` and must be installed separately when you use PostgreSQL or libSQL/Turso:
+
+| Package | What it does |
+| --- | --- |
+| [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) | PostgreSQL 16+ storage adapter (`openPostgresDatabase()`, cloud IAM, proxies, poolers) for shared sessions and Intercom |
+| [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql) | libSQL and Turso storage adapter (`openLibsqlDatabase()`, namespaces, WAL/sqld retries) for shared sessions and Intercom |
+
+For CLI usage, install storage adapters in user scope with `atomic install npm:@bastani/atomic-storage-postgres` or `atomic install npm:@bastani/atomic-storage-libsql`. For TypeScript SDK applications, install them with `npm install` alongside `@bastani/atomic` (see [SDK storage backends](/sdk/storage)).
+
+> **Native bindings:** `@bastani/atomic-natives` is an internal N-API native module installed automatically as a runtime dependency of `@bastani/atomic` (with per-platform binary packages in its `optionalDependencies`) and is not intended as a standalone user library.
+
 ## Install
 
-Install a library on its own with npm:
+Install a core library on its own with npm:
 
 ```bash
 npm install @bastani/atomic-ai
 ```
 
-Inside an Atomic [extension](/extensions), import the libraries without installing them. The running Atomic process provides them, so your extension shares its instances. If you publish an [Atomic package](/packages/authoring) that imports them, list them in `peerDependencies` with a `"*"` range.
+Inside an Atomic [extension](/extensions), import the six core libraries without installing them. The running Atomic process provides them, so your extension shares its instances. If you publish an [Atomic package](/packages/authoring) that imports them, list them in `peerDependencies` with a `"*"` range.
 
-To build on Atomic's sessions, tools, and extensions rather than the bare libraries, use the [SDK](/sdk) instead. For custom extension UI, start with [TUI components](/tui).
+To build on Atomic's sessions, tools, and extensions rather than the bare libraries, use the [SDK](/sdk) and [SDK storage backends](/sdk/storage). For custom extension UI, start with [TUI components](/tui).
 
 ## Older package names
 

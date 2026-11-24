@@ -14,6 +14,28 @@ Read this page to install, organize, and invoke skills, then continue:
 
 - [Write a custom skill](/skills/authoring). Learn the directory structure and follow a complete worked example.
 - [Skill format reference](/skills/reference). Check `SKILL.md` frontmatter fields, naming rules, and validation behavior.
+- [SDK skills reference](/sdk/reference#skills). Load or override skills programmatically from `@bastani/atomic`.
+
+## Quick start
+
+Invoke a bundled skill directly in chat:
+
+```text
+/skill:tdd Write a failing regression test before fixing the parser bug.
+```
+
+Create a project skill in `.atomic/skills/my-skill/SKILL.md`:
+
+```markdown
+---
+name: my-skill
+description: Check release readiness before tagging
+---
+
+Run `npm run check` and report any failing checks with file paths.
+```
+
+Run `/reload` in an active session, then invoke `/skill:my-skill`. See [Write a custom skill](/skills/authoring) for directory layout, scripts, and reference files.
 
 ## Locations
 
@@ -30,8 +52,8 @@ Atomic loads skills from these sources:
   - `.atomic/skills/` (legacy `.pi/skills/`)
   - `.agents/skills/` in `cwd` and ancestor directories up to the Git repository root, or the filesystem root when outside a repository
 - **Packages:** `skills/` directories, `atomic.skills`, or legacy `pi.skills` entries in `package.json`
-- **Settings:** `skills` array in global or project `settings.json`, which accepts files, directories, and filter patterns (`!glob`, `+path`, `-path` with `~` expansion; see [Package filtering](/packages/reference#package-filtering))
-- **CLI:** `--skill <path>` (repeatable; still loads even with `--no-skills` / `-ns`)
+- **Settings:** `skills` array in global or project [`settings.json`](/settings), which accepts files, directories, and filter patterns (`!glob`, `+path`, `-path` with `~` expansion; see [Package filtering](/packages/reference#package-filtering))
+- **CLI:** `--skill <path>` (repeatable; still loads even with `--no-skills` / `-ns`; see [CLI resource options](/reference/cli#resource-options))
 
 ### Discovery rules
 
@@ -81,6 +103,28 @@ For project-level shared skill directories, add a relative path to `.atomic/sett
   "skills": ["../.claude/skills"]
 }
 ```
+
+### Using skills from the SDK
+
+Configure skill discovery programmatically with `DefaultResourceLoader` and pass it to `createAgentSession()`:
+
+```typescript
+import { createAgentSession, DefaultResourceLoader } from "@bastani/atomic";
+
+const loader = new DefaultResourceLoader({
+  additionalSkillPaths: ["/path/to/extra-skills"],
+  noSkills: false,
+  skillsOverride: (current) => ({
+    skills: current.skills.filter((skill) => skill.name !== "unwanted"),
+    diagnostics: current.diagnostics,
+  }),
+});
+await loader.reload();
+
+const { session } = await createAgentSession({ resourceLoader: loader });
+```
+
+Setting `builtins: { subagents: false }` on `createAgentSession()` removes the 21 bundled skills shipped by `@bastani/subagents`. Keep those 21 skills without exposing the `subagent` tool by leaving `builtins.subagents` enabled and passing `excludedTools: ["subagent"]`. See [SDK skills](/sdk/reference#skills) and [SDK tools](/sdk/reference#tools).
 
 ## How skills work
 
@@ -177,7 +221,7 @@ References are relative to /path/to/brave-search.
 
 Any arguments after the command are trimmed and appended after the closing `</skill>` tag separated by a blank line, without a `User:` prefix.
 
-Toggle `/skill:` autocomplete suggestions via `/settings` in interactive mode or in `settings.json` (default `true`):
+Toggle `/skill:` autocomplete suggestions via `/settings` in interactive mode or in [`settings.json`](/settings) (default `true`):
 
 ```json
 {

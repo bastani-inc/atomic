@@ -6,6 +6,8 @@ description: "Declare Atomic package manifests for extensions, skills, subagents
 
 <div id="creating-an-atomic-package" />
 
+To install and update packages, see [Install and manage packages](/packages) and [Package CLI commands](/reference/cli#package-commands). For filtering and precedence rules, see [Package reference](/packages/reference) and [Settings](/settings). For project trust requirements, see [Security](/security).
+
 Declare package resources under the `atomic` key in `package.json` (legacy `pi` is also supported), and include `"atomic-package"` in `keywords`:
 
 ```json
@@ -110,7 +112,7 @@ Expose [storage adapters](/storage#selecting-an-adapter) via `storageAdapters` (
 
 - Select an adapter by package name (`"storage": { "adapter": "@example/atomic-libsql" }`), which selects the first entry in `storageAdapters` when a package lists multiple adapters.
 - Select a specific adapter from a multi-adapter package with `<package>/<file-stem>`, where `<file-stem>` is the filename without its extension (for example `"@example/atomic-libsql/libsql-adapter"`).
-- Storage adapters load only from user-settings packages or explicit extension paths (`--extension <dir>` or `additionalExtensionPaths`, which take precedence over settings). Project-installed packages cannot supply storage adapters, and global npm adapter lookup checks `~/.atomic/agent/npm/` only (not the system global npm root). See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
+- Storage adapters load only from user-settings packages or explicit extension paths (`--extension <dir>` in [CLI resource options](/reference/cli#resource-options) or [`DefaultResourceLoader({ additionalExtensionPaths })`](/sdk/reference#extensions), which take precedence over settings). Project-installed packages cannot supply storage adapters, and global npm adapter lookup checks `~/.atomic/agent/npm/` only (not the system global npm root). See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
 
 ## Gallery metadata
 

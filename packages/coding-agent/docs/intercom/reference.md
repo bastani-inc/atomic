@@ -4,6 +4,8 @@ sidebarTitle: "Intercom"
 description: "Complete specification of the intercom tool, targeting rules, groups, delivery limits, SDK errors, and config.json."
 ---
 
+This page is the exact reference for the `intercom` tool, group rules, `config.json`, wake queues, and SDK error classes. For concepts, see [Intercom overview](/guides/intercom). For quick-start patterns and `contact_supervisor`, see [Coordinate sessions with Intercom](/intercom). For multi-machine setup, broker upgrades, and troubleshooting, see [Operate Intercom](/intercom/operations). For programmatic setup, see [Intercom group and reach in the SDK](/sdk#intercom-group-and-reach).
+
 ## The `intercom` tool {#the-intercom-tool}
 
 | Parameter | Type | Description |
@@ -59,7 +61,7 @@ Ambiguous prefixes list only authorized candidates and require the full UUID. Is
 
 Reopened sessions and restored background subagents reclaim their previous Intercom session ID so peers can keep using the ID printed by `intercom list`. The session persists this ID as an `intercom_session_identity` entry. While a live session holds an ID, another registration receives a fresh ID instead; once released, only that same Atomic session can reclaim it while the broker remembers its previous holder.
 
-With [multi-node routing](/intercom/operations#running-intercom-across-machines), session ID reclaim works across machines once the shared database has the current schema (on PostgreSQL, run `atomic storage migrate` as the schema owner role):
+With [multi-node routing](/intercom/operations#running-intercom-across-machines), session ID reclaim works across machines once the shared database has the current schema (on [PostgreSQL storage](/storage#postgresql), run `atomic storage migrate` as the schema owner role):
 
 - A session that disconnects cleanly reclaims its ID immediately on any machine.
 - A session whose broker crashed reclaims its ID immediately on the same machine, or on another machine after the crashed broker's 30-second lease expires (until then it receives a fresh ID and automatically rebinds once the lease lapses).
@@ -270,7 +272,7 @@ Messages for paused subagents have no wait limit while the launching session sta
 
 #### Across restarts
 
-Queued messages for finished or paused subagents are persisted before the broker reports `queued`: locally in `ended-child-queue.sqlite` (owner-only, inside the Intercom directory), or in the shared database under the configured `prefix` when [multi-node routing](/intercom/operations#running-intercom-across-machines) is on.
+Queued messages for finished or paused subagents are persisted before the broker reports `queued`: locally in `ended-child-queue.sqlite` (owner-only, inside the Intercom directory), or in the [shared database](/storage#sharing-storage-across-hosts) under the configured `prefix` when [multi-node routing](/intercom/operations#running-intercom-across-machines) is on.
 
 After a broker restart, crash, or reboot, the next broker restores queued messages in order:
 
@@ -317,7 +319,27 @@ return Promise.all(
 
 ### Reach policies
 
-An SDK host can assign a reach policy via [`createAgentSession({ intercom: { group, reachable } })`](/sdk#intercom-group-and-reach) and update `reachable` dynamically with `session.intercom.setReachable(groups)`:
+An SDK host can assign a reach policy via [`createAgentSession({ intercom: { group, reachable } })`](/sdk#intercom-group-and-reach) and update `reachable` dynamically with `session.intercom.setReachable(groups)`. To disable Intercom completely in an SDK session, pass `builtins: { intercom: false }` ([SDK tools](/sdk/reference#tools)). Invalid group names or calling `setReachable()` on a session created without an `intercom` policy throw `IntercomPolicyError` from `@bastani/atomic`:
+
+```typescript
+import { createAgentSession, IntercomPolicyError } from "@bastani/atomic";
+
+try {
+  const { session } = await createAgentSession({
+    intercom: { group: "team-api", reachable: ["team-shared"] },
+  });
+  await session.intercom.setReachable(["team-shared", "team-qa"]);
+} catch (error) {
+  if (error instanceof IntercomPolicyError) {
+    console.error("Invalid Intercom policy:", error.message);
+  }
+}
+
+// Disable the bundled Intercom package entirely for this session
+const isolated = await createAgentSession({
+  builtins: { intercom: false },
+});
+```
 
 - The session can list, send to, and ask only sessions in its home group, its `reachable` groups, or subgroups under its home group (`<group>/...`, where its subagents run). Out-of-policy targets fail with `Target session is outside this session's Intercom reach (...)` (or `Session not found` for unseen names) and are never queued or held.
 - Reach is one-way: reaching group B does not let group B initiate messages back unless B's own memberships or policy allow it. Replies to asks received by B are always allowed.

@@ -4,6 +4,8 @@ sidebarTitle: "Subagents"
 description: "Discovery precedence, model selection, fallback rules, reasoning levels, configuration keys, and SDK integration."
 ---
 
+This page is the exact reference for subagent discovery, model resolution, `config.json`, tool parameters, and SDK contracts. For concepts, see [Subagents overview](/guides/subagents). For day-to-day usage, worktrees, and run control, see [Run subagents](/subagents). For writing custom agent files, see [Create custom subagents](/subagents/authoring). For programmatic child configuration, see [Subagent children in the SDK](/sdk#subagent-children).
+
 ## Agent discovery
 
 Atomic loads agent definitions recursively (`**/*.md`, sorted lexicographically, following symlinks) from four sources. When two definitions share the same full name, the later source wins:
@@ -160,9 +162,13 @@ Global subagent runtime configuration lives at `~/.atomic/agent/extensions/subag
 
 ## SDK integration and errors
 
+For programmatic child inheritance, startup timeout errors, and task supervision in embedded hosts, see [Subagent children in the SDK](/sdk#subagent-children), [Session start errors](/sdk/reference#session-start-errors), and [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor).
+
+Import `OwnerTaskStore`, `bindOwnerTaskStore`, `SessionStartError`, and `SessionStartTimeoutError` from `@bastani/atomic`.
+
 ### `ReleasedChildError` codes
 
-When tracking or waking a [released subagent](/subagents#released-subagents) fails, `status` and notices report a typed `ReleasedChildError`:
+When tracking or waking a [released subagent](/subagents#released-subagents) fails, the built-in subagents extension reports a typed `ReleasedChildError` in `status` output and failure notices. `ReleasedChildError` is not exported as a top-level class from `@bastani/atomic`; inspect its serialized `name` (`"ReleasedChildError"`), `code`, `subject`, `hint`, `retryable`, and `fields` in reported results and notices:
 
 | Code | Cause | Action |
 | --- | --- | --- |
@@ -180,7 +186,7 @@ Extension authors integrating with `worktree: true` cleanup can subscribe to `at
 
 ### Owner-bound task projection
 
-This section describes an SDK host integration API for custom frontends. SDK host adapters bind task observation to a live session in three steps:
+This section describes an SDK host integration API for custom frontends. Import `OwnerTaskStore` and `bindOwnerTaskStore` from `@bastani/atomic`, and see [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor) for creating the host and lease. SDK host adapters bind task observation to a live session in three steps:
 
 1. Construct an `OwnerTaskStore` from the supervisor and owner lease.
 2. Check `store.connect()`.

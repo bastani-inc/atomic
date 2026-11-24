@@ -4,7 +4,7 @@ sidebarTitle: "@bastani/atomic-telemetry"
 description: "Vendor-neutral telemetry contracts, no-op and in-memory contexts, metrics, trace rendering, and typed telemetry schemas."
 ---
 
-Vendor-neutral telemetry contracts and typed schema utilities for Atomic's libraries. This package contains no exporter and sends nothing on its own; you supply the adapter.
+Vendor-neutral telemetry contracts and typed schema utilities for Atomic's libraries. This package contains no exporter and sends nothing on its own; you supply the adapter. See [Standalone libraries](/libraries) for all standalone packages.
 
 This package provides:
 
@@ -22,6 +22,39 @@ Applications can use the in-memory reference or supply an adapter for OpenTeleme
 
 ```bash
 npm install @bastani/atomic-telemetry
+```
+
+## Quick start
+
+```typescript
+import {
+	InMemoryTelemetryContext,
+	NOOP_TELEMETRY_CONTEXT,
+	type TelemetryContext,
+} from "@bastani/atomic-telemetry";
+import { renderTrace } from "@bastani/atomic-telemetry/render";
+
+const accounts = new Map<string, { id: string; plan: string }>([["acct-1", { id: "acct-1", plan: "pro" }]]);
+
+async function loadAccount(accountId: string, telemetry: TelemetryContext = NOOP_TELEMETRY_CONTEXT) {
+	return telemetry.startSpan(
+		{
+			name: "example.account.load",
+			attributes: { "example.account.id": accountId },
+		},
+		async (span) => {
+			const account = accounts.get(accountId);
+			span.setAttributes({ "example.account.found": account !== undefined });
+			return account;
+		},
+	);
+}
+
+const recorder = new InMemoryTelemetryContext();
+await loadAccount("acct-1", recorder);
+
+const { traces } = await recorder.findTraces();
+if (traces[0]) console.log(renderTrace(traces[0].spans));
 ```
 
 ## Telemetry concepts
@@ -481,7 +514,7 @@ Adapters do not need to understand schema objects. Instrumentation helpers and t
 
 ## Using with `@bastani/atomic-ai`
 
-Pass a parent `TelemetryContext` to `@bastani/atomic-ai` through `telemetryContext` in request options:
+Pass a parent `TelemetryContext` to [`@bastani/atomic-ai`](/libraries/ai) through `telemetryContext` in request options:
 
 ```typescript
 import { InMemoryTelemetryContext } from '@bastani/atomic-telemetry';

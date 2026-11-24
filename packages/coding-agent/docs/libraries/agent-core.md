@@ -4,15 +4,17 @@ sidebarTitle: "@bastani/atomic-agent-core"
 description: "Stateful agent loop with tool execution, event streaming, steering, and follow-up messages."
 ---
 
-Stateful agent with tool execution and event streaming, built on [`@bastani/atomic-ai`](/libraries/ai) (requires Node.js 22.19+). Atomic's sessions run on this agent loop, and you can use it directly to build your own agent. Atomic's [TypeScript SDK](/sdk) wraps it with sessions, tools, extensions, and compaction, so prefer the SDK when you want Atomic's built-in behavior.
+Stateful agent with tool execution and event streaming, built on [`@bastani/atomic-ai`](/libraries/ai) (requires Node.js 22.19+). Atomic's sessions run on this agent loop, and you can use it directly to build your own agent. Atomic's [TypeScript SDK](/sdk) wraps it with sessions, tools, extensions, and compaction, so prefer the SDK when you want Atomic's built-in behavior. See [Standalone libraries](/libraries) for all standalone packages.
 
 ## Installation
 
 ```bash
-npm install @bastani/atomic-agent-core
+npm install @bastani/atomic-agent-core @bastani/atomic-ai
 ```
 
 ## Quick start
+
+Export `ANTHROPIC_API_KEY` before running this example:
 
 ```typescript
 import { Agent } from "@bastani/atomic-agent-core";

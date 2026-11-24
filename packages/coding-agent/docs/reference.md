@@ -21,10 +21,12 @@ Look up exact commands, settings, configuration schemas, tool behaviors, and API
 
 - [Provider reference](/providers/reference) covers stop reasons and credential resolution order.
 - [Model configuration reference](/models/reference) covers provider and model overrides, variants, and API compatibility.
-- [Models configuration](/models-configuration) lists the generated `models.json` field reference.
+- [Models configuration](/models-configuration) lists the generated `models.json` field reference (including [remote compaction models](/models#remote-compaction-models)).
 - [Session format](/session-format) specifies the JSONL format, entry types, and `SessionManager` API.
-- [Compaction reference](/compaction/reference) covers parameters, saved boundaries, hooks, exports, settings, and historical formats.
-- [Storage](/storage) covers local SQLite, shared libSQL and PostgreSQL databases, adapters, and CLI commands.
+- [Compaction reference](/compaction/reference) covers parameters, saved boundaries, custom compactor contracts, hooks, exports, settings, and historical formats.
+- [Storage](/storage) covers local SQLite, shared libSQL ([`@bastani/atomic-storage-libsql`](/libraries/storage-libsql)) and PostgreSQL ([`@bastani/atomic-storage-postgres`](/libraries/storage-postgres)) databases, adapters, CLI commands, and typed storage errors. For programmatic backend recipes, see [SDK storage backends](/sdk/storage).
+- [Worktree snapshots SDK & errors](/worktree-snapshots#sdk) documents snapshot capture/restore functions, garbage collection, and `WorkspaceError` classes.
+- [Environment blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint) documents `.atomic/blueprint.yaml`, `atomic blueprint cache-key`, and `atomic blueprint prebuild`.
 
 ## Customization reference
 
@@ -40,8 +42,10 @@ Look up exact commands, settings, configuration schemas, tool behaviors, and API
 - [Extension events](/extensions/events) lists every extension event and its payload.
 - [Provider API reference](/custom-provider/api-reference) specifies custom provider configuration and model definition options.
 - [SDK API reference](/sdk/reference) covers options, loaders, return values, run modes, and exports.
+- [SDK storage backends](/sdk/storage) documents `sessionStore`, `storage`, `resolveSessionStore()`, `StorageProvider`, and `createAgentSessionRuntime()` storage wiring.
 - [Structured decisions](/sdk/structured-decisions) documents `decide()`, structured output tools, and provider limits.
-- [RPC protocol](/rpc/protocol) documents RPC commands, events, types, and errors.
+- [RPC protocol](/rpc/protocol) and [RPC extension UI](/rpc/extension-ui) document RPC commands, events, UI dialogs, types, and errors.
+- [JSON event stream](/json) documents `--mode json` event output.
 - [TUI API reference](/tui/reference) specifies component, focusable, input, and rendering interfaces.
 
 ## Platform setup
