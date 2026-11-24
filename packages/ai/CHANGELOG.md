@@ -4,6 +4,12 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.10-alpha.2] - 2026-11-24
+
+### Changed
+
+- Clarified `SystemOneCompatSchema.imageInput` schema description to note that `models` and `modelOverrides` entries apply to chat and compactor models, and fixed the CLI login command in `README.md` to `npx @bastani/atomic-ai login` ([#6555](https://github.com/bastani-inc/atomic/pull/6555)).
+
 ## [0.10.10-alpha.1] - 2026-11-24
 
 ### Breaking Changes

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.10-alpha.2] - 2026-11-24
+
+### Changed
+
+- Updated `package.json` `homepage` to `https://docs.bastani.ai/libraries/storage-libsql`, documented both `atomic install` (CLI) and `npm install` (SDK) flows with complete `createAgentSession()` + `database.close()` examples, and updated `README.md` to list `http://` and `ws://` support for `atomic storage join`, credential-in-URL rejection, and `prefix` rules ([#6555](https://github.com/bastani-inc/atomic/pull/6555)).
+
 ## [0.10.4] - 2026-11-22
 
 ### Fixed
