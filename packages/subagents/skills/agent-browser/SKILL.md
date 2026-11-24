@@ -4,9 +4,9 @@ description: Browser automation CLI for AI agents. Use when the user needs to in
 hidden: true
 metadata:
     github-path: skills/agent-browser
-    github-ref: refs/tags/v0.43.0
+    github-ref: refs/tags/v0.44.0
     github-repo: https://github.com/vercel-labs/agent-browser
-    github-tree-sha: cd4185523189fb04c1d24bea0100b6aa2ce7421e
+    github-tree-sha: d75a393c9a371295c6d6be46c34938e76ef21184
 name: agent-browser
 ---
 # agent-browser
@@ -39,7 +39,7 @@ agent-browser skills get derive-client     # Record a HAR, derive a standalone A
 agent-browser skills get webmcp-gen        # Build and validate WebMCP tools for a page
 agent-browser skills get modern-web-guidance  # Apply Modern Web Guidance, then verify the page
 agent-browser skills get vercel-sandbox    # agent-browser inside Vercel Sandbox microVMs
-agent-browser skills get protected-vercel-deployments  # Access protected Vercel deployments
+agent-browser skills get vercel  # Protected Vercel deployments and flag overrides
 agent-browser skills get agentcore         # AWS Bedrock AgentCore cloud browsers
 ```
 

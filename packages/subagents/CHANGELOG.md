@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled `agent-browser` skill to v0.44.0, replacing the `protected-vercel-deployments` specialized skill entry with `vercel` (protected Vercel deployments and flag overrides).
+
 ### Fixed
 
 - Expanded running subagent cards now memoize static Prompt, Result, and completed nested tool-call sections (and keep transcript detail references stable when periodic refreshes detect no changes) so working-clock animation ticks only re-render the active status line and any currently running nested tool call instead of re-rendering every nested tool block ([#6528](https://github.com/bastani-inc/atomic/issues/6528)).
