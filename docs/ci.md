@@ -702,17 +702,19 @@ versioned subdirectory `$HOME/.cache/cargo-xwin/v1-17` inside that mount, and
 the same literal path is used in `publish.yml` and in the warmer. Each release
 leg sets `XWIN_ARCH` to the one architecture it links, and it hits when the
 first line of `DONE` names that architecture. The warmer populates both
-architectures in one call (`XWIN_ARCH=x86_64,aarch64`). cargo-xwin 0.23.0
-rewrites `DONE` with only the current call's architectures, and xwin 0.9.0
+architectures in one call (`XWIN_ARCH=x86_64,aarch64`). cargo-xwin 0.23.1
+rewrites `DONE` with only the current call's architectures, and xwin 0.10.0
 deletes `crt/` and `sdk/` before each splat, so one call per architecture
 into the same directory would keep only the last one.
 
-cargo-xwin is built from crates.io (`cargo install cargo-xwin --version 0.23.0
+cargo-xwin is built from crates.io (`cargo install cargo-xwin --version 0.23.1
 --locked`), which links it against glibc, rather than installed as the upstream
 musl release binary. The musl binary spends a cold fetch in allocator system
 calls: on a Namespace amd64 4x16 runner it took 9m56s to populate the arm64
 CRT, past the 8-minute bound, where the glibc build (36s to compile) took 35s.
 Keep the glibc build when bumping cargo-xwin; a cold warmer run is the check.
+
+Don't go below cargo-xwin 0.23.1: older versions can't read the current Visual Studio manifest, so cold populates fail.
 
 `XWIN_SDK_VERSION` and `XWIN_CRT_VERSION` default to `latest`, so the path
 cannot express the content version: a hit pins the leg to whichever SDK was
@@ -731,7 +733,7 @@ Studio major version.
 missing contents ("Applications using Cache Volumes should not assume that
 the cache contents match exactly the last committed version"), so the
 populate-on-miss step (`cargo-xwin xwin cache xwin`, 8-minute bound) stays the
-fallback on both a miss and a partial hit. cargo-xwin 0.23.0's own
+fallback on both a miss and a partial hit. cargo-xwin 0.23.1's own
 `setup_msvc_crt` trusts a `DONE` marker that names an architecture without
 re-checking the splat files it lists, so a volume fork that was interrupted
 mid-populate would otherwise look complete. A `Detect partial MSVC CRT cache`
@@ -820,7 +822,7 @@ maintains both the pins and the comments.
 
 `taiki-e/install-action` installs `cargo-zigbuild@0.23.0` rather than resolving
 `@latest`. The Windows legs build `cargo-xwin` with
-`cargo install cargo-xwin --version 0.23.0 --locked`. Both pins prevent an
+`cargo install cargo-xwin --version 0.23.1 --locked`. Both pins prevent an
 unreviewed build-tool update in a published, provenance-signed native artifact.
 `test.yml` pins `bun-version: 1.4.5` to match `publish.yml`; `latest` cannot be
 cached by `setup-bun` and left the suite testing a different Bun from the one

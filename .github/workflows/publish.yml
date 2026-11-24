@@ -361,7 +361,7 @@ jobs:
       - name: Install cargo-xwin
         if: matrix.platform == 'win32'
         timeout-minutes: 3
-        run: cargo install cargo-xwin --version 0.23.0 --locked
+        run: cargo install cargo-xwin --version 0.23.1 --locked
       # Pinned to a versioned subdirectory of the mounted cache volume so the
       # populate step and the build step agree regardless of XDG_CACHE_HOME.
       # Bump the `v1-17` epoch here and in warm-toolchain-cache.yml together to
@@ -381,7 +381,7 @@ jobs:
         with:
           spacectl-version: 0.12.3
           path: ~/.cache/cargo-xwin
-      # cargo-xwin 0.23.0 trusts a DONE marker that names this arch without
+      # cargo-xwin 0.23.1 trusts a DONE marker that names this arch without
       # re-checking the splat files it lists, and a cache volume can serve a
       # stale or partial fork (docs/ci.md, "MSVC CRT cache epoch"). Treat a DONE hit
       # over a directory missing its splat output as a miss and start clean.
