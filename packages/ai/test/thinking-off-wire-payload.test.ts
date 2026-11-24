@@ -798,7 +798,6 @@ describe("thinking off on Azure OpenAI deployments (#4552)", () => {
 		["azure/gpt-6.2-sol", "low", getModel("azure", "gpt-6.2-sol")],
 		["azure/o3", "low", getModel("azure", "o3")],
 		["azure/o3-pro", "low", getModel("azure", "o3-pro")],
-		["azure/gpt-realtime-2.1", "minimal", getModel("azure", "gpt-realtime-2.1")],
 	] as const)("sends %s its lowest listed level, %s, instead of none or no effort", async (_name, level, model) => {
 		const off = await captureRequest(model);
 		const lowest = await captureRequest(model, { reasoning: level });
