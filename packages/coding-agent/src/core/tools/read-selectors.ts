@@ -13,7 +13,18 @@ export interface ReadLineSelector {
 }
 
 const ARCHIVE_SELECTOR_EXTENSIONS = [".tar.gz", ".zip", ".jar", ".tar", ".tgz", ".gz"];
-const RESOURCE_SELECTOR_EXTENSIONS = [".tar.gz", ".sqlite", ".zip", ".jar", ".tar", ".tgz", ".gz", ".db"];
+const RESOURCE_SELECTOR_EXTENSIONS = [
+	".tar.gz",
+	".sqlite3",
+	".sqlite",
+	".zip",
+	".jar",
+	".tar",
+	".tgz",
+	".gz",
+	".db3",
+	".db",
+];
 
 function isAsciiDigit(char: string | undefined): boolean {
 	return char !== undefined && char >= "0" && char <= "9";

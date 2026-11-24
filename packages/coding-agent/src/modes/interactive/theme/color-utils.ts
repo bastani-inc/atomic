@@ -16,6 +16,7 @@ export interface ColorEnvironmentListener {
 
 type ColorEnvironmentState = {
 	environment: ColorEnvironment;
+	colorMode?: ColorMode;
 	readonly listeners: Set<WeakRef<ColorEnvironmentListener>>;
 };
 
@@ -24,7 +25,7 @@ function colorEnvironmentState(): ColorEnvironmentState {
 	const store = globalThis as Record<symbol, ColorEnvironmentState | undefined>;
 	let state = store[COLOR_ENVIRONMENT_KEY];
 	if (!state) {
-		state = { environment: readColorEnvironment(), listeners: new Set() };
+		state = { environment: readColorEnvironment(), colorMode: resolveColorMode(undefined), listeners: new Set() };
 		store[COLOR_ENVIRONMENT_KEY] = state;
 	}
 	return state;
@@ -56,10 +57,11 @@ export function onColorEnvironmentChange(listener: ColorEnvironmentListener): vo
 }
 
 /** Read NO_COLOR and FORCE_COLOR again and apply them to every theme; tests that change them call it too. */
-export function refreshColorEnvironment(env: NodeJS.ProcessEnv = process.env): ColorEnvironment {
+export function refreshColorEnvironment(env: NodeJS.ProcessEnv = process.env, mode?: ColorMode): ColorEnvironment {
 	const state = colorEnvironmentState();
 	const next = readColorEnvironment(env);
 	state.environment = next;
+	state.colorMode = mode ?? resolveColorMode(undefined, env);
 	for (const reference of state.listeners) {
 		const listener = reference.deref();
 		if (listener === undefined) state.listeners.delete(reference);
@@ -73,22 +75,22 @@ export function themeStyleLevel(mode: ColorMode, environment: ColorEnvironment):
 	return environment.forced ?? (mode === "truecolor" ? 3 : 2);
 }
 
-export function detectColorMode(): ColorMode {
-	const colorterm = process.env.COLORTERM;
+export function detectColorMode(env: NodeJS.ProcessEnv = process.env): ColorMode {
+	const colorterm = env.COLORTERM;
 	if (colorterm === "truecolor" || colorterm === "24bit") {
 		return "truecolor";
 	}
 	// Windows Terminal supports truecolor
-	if (process.env.WT_SESSION) {
+	if (env.WT_SESSION) {
 		return "truecolor";
 	}
-	const term = process.env.TERM || "";
+	const term = env.TERM || "";
 	// Fall back to 256color for truly limited terminals
 	if (term === "dumb" || term === "" || term === "linux") {
 		return "256color";
 	}
 	// Terminal.app also doesn't support truecolor
-	if (process.env.TERM_PROGRAM === "Apple_Terminal") {
+	if (env.TERM_PROGRAM === "Apple_Terminal") {
 		return "256color";
 	}
 	// GNU screen doesn't support truecolor unless explicitly opted in via COLORTERM=truecolor.
@@ -104,10 +106,13 @@ export function detectColorMode(): ColorMode {
  * Resolve the color mode for a theme from an explicit `terminal.trueColor` setting, then
  * `ATOMIC_TRUE_COLOR=1|0` (legacy `PI_TRUE_COLOR`), then terminal detection.
  */
-export function resolveColorMode(trueColorSetting: boolean | undefined): ColorMode {
-	const envOverride = process.env.ATOMIC_TRUE_COLOR ?? process.env.PI_TRUE_COLOR;
+export function resolveColorMode(
+	trueColorSetting: boolean | undefined,
+	env: NodeJS.ProcessEnv = process.env,
+): ColorMode {
+	const envOverride = env.ATOMIC_TRUE_COLOR ?? env.PI_TRUE_COLOR;
 	const trueColor = trueColorSetting ?? (envOverride === "1" ? true : envOverride === "0" ? false : undefined);
-	if (trueColor === undefined) return detectColorMode();
+	if (trueColor === undefined) return detectColorMode(env);
 	return trueColor ? "truecolor" : "256color";
 }
 
@@ -258,6 +263,7 @@ export function fgAnsi(color: string | number, mode: ColorMode): string {
 const HEX_COLOR_SEQUENCE_CACHE_LIMIT = 1024;
 const hexColorSequences = {
 	environment: undefined as ColorEnvironment | undefined,
+	mode: undefined as ColorMode | undefined,
 	fg: new Map<string, string>(),
 	bg: new Map<string, string>(),
 };
@@ -265,21 +271,28 @@ const hexColorSequences = {
 /**
  * The escape sequence that sets the `#rrggbb` color `hex` as the foreground or background, in the color environment
  * themes paint with: none when NO_COLOR or FORCE_COLOR=0 turns color off, the nearest 256-color entry under
- * FORCE_COLOR=1 or 2, and true color otherwise. Code that builds its own colors uses it to follow NO_COLOR and
- * FORCE_COLOR like the theme does; it never reads the environment itself.
+ * FORCE_COLOR=1 or 2 or a 256-color mode, and true color otherwise. Code that builds its own colors uses it to follow
+ * NO_COLOR, FORCE_COLOR, and the active color mode like the theme does; it never reads the environment itself.
  */
 export function hexColorAnsi(hex: string, layer: "fg" | "bg"): string {
-	const environment = colorEnvironment();
+	const state = colorEnvironmentState();
+	const environment = state.environment;
 	if (environment.off) return "";
-	if (hexColorSequences.environment !== environment) {
+	const mode: ColorMode =
+		environment.forced === 1 || environment.forced === 2
+			? "256color"
+			: environment.forced === 3
+				? "truecolor"
+				: (state.colorMode ?? resolveColorMode(undefined));
+	if (hexColorSequences.environment !== environment || hexColorSequences.mode !== mode) {
 		hexColorSequences.environment = environment;
+		hexColorSequences.mode = mode;
 		hexColorSequences.fg.clear();
 		hexColorSequences.bg.clear();
 	}
 	const cache = hexColorSequences[layer];
 	let sequence = cache.get(hex);
 	if (sequence === undefined) {
-		const mode: ColorMode = environment.forced === 1 || environment.forced === 2 ? "256color" : "truecolor";
 		sequence = layer === "fg" ? fgAnsi(hex, mode) : bgAnsi(hex, mode);
 		if (cache.size >= HEX_COLOR_SEQUENCE_CACHE_LIMIT) cache.clear();
 		cache.set(hex, sequence);

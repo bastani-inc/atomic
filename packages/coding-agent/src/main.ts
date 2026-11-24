@@ -315,7 +315,14 @@ export async function main(argv: string[], options?: MainOptions) {
 		await exitAfterCommand();
 		return;
 	}
-	const parsed = parseArgs(args);
+	let parsed: Args;
+	try {
+		parsed = parseArgs(args);
+	} catch (error) {
+		if (!(error instanceof StorageConfigError)) throw error;
+		console.error(chalk.red(`Error: ${error.message}`));
+		process.exit(1);
+	}
 	if (parsed.debug) setEnvValue(ENV_DEBUG, "1");
 	if (engineEnv.child === "1" && engineEnv.apiKey) parsed.apiKey = engineEnv.apiKey;
 	if (parsed.diagnostics.length > 0) {

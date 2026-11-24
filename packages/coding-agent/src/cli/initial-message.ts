@@ -36,8 +36,20 @@ export function buildInitialMessage({
 		parsed.messages.shift();
 	}
 
+	let initialMessage: string | undefined;
+	if (parts.length > 0) {
+		const needsStdinSeparator =
+			stdinContent !== undefined &&
+			stdinContent.length > 0 &&
+			parts.length > 1 &&
+			!/\s$/.test(stdinContent) &&
+			parts[1]!.length > 0 &&
+			!/^\s/.test(parts[1]!);
+		initialMessage = needsStdinSeparator ? `${parts[0]}\n\n${parts.slice(1).join("")}` : parts.join("");
+	}
+
 	return {
-		initialMessage: parts.length > 0 ? parts.join("") : undefined,
+		initialMessage,
 		initialImages: fileImages && fileImages.length > 0 ? fileImages : undefined,
 	};
 }

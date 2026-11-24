@@ -123,14 +123,32 @@ InteractiveModeBase.prototype.handleReloadCommand = async function (this: Intera
 	}
 };
 
+function findUnclosedPathQuote(text: string, command: "/export" | "/import"): '"' | "'" | undefined {
+	const { name, args } = parseSlashCommand(text);
+	if (`/${name}` !== command) return undefined;
+	const argsString = args.trimStart();
+	const firstChar = argsString[0];
+	if ((firstChar === '"' || firstChar === "'") && argsString.indexOf(firstChar, 1) < 0) {
+		return firstChar;
+	}
+	return undefined;
+}
+
 InteractiveModeBase.prototype.handleExportCommand = async function (
 	this: InteractiveModeBase,
 	text: string,
 ): Promise<void> {
 	const outputPath = this.getPathCommandArgument(text, "/export");
+	if (outputPath === undefined) {
+		const unclosedQuote = findUnclosedPathQuote(text, "/export");
+		if (unclosedQuote) {
+			this.showError(`Failed to export session: Unclosed ${unclosedQuote} quote in path argument`);
+			return;
+		}
+	}
 
 	try {
-		if (outputPath?.endsWith(".jsonl")) {
+		if (outputPath?.toLowerCase().endsWith(".jsonl")) {
 			const filePath = await this.session.exportToJsonl(outputPath);
 			this.showStatus(`Session exported to: ${filePath}`);
 			// A session holding only its window states what the file carries from the file (#5554).

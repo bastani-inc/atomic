@@ -360,3 +360,12 @@ test("encoded PowerShell commands carry the suffix for powershell.exe only (#461
 		expect(call.description).toBe("git push 2>&1");
 	}
 });
+
+test("ATOMIC_NO_PTY=0 overrides PI_NO_PTY=1 for PowerShell PTY execution", async () => {
+	vi.stubEnv("PI_NO_PTY", "1");
+	vi.stubEnv("ATOMIC_NO_PTY", "0");
+	shellOverride.path = join("C:\\tools", "pwsh.exe");
+	ptyCalls.length = 0;
+	await createLocalPowerShellOperations().exec("Write-Output ok", process.cwd(), { onData: () => {}, pty: true });
+	expect(ptyCalls).toHaveLength(1);
+});

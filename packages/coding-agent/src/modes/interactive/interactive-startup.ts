@@ -44,7 +44,6 @@ import {
 	configureHttpDispatcher,
 	DefaultPackageManager,
 	DynamicBorder,
-	ENV_OFFLINE,
 	ensureTool,
 	getAgentDir,
 	getCachedChangelog,
@@ -52,7 +51,6 @@ import {
 	getChangelogPath,
 	getCwdRelativePath,
 	getEntriesForVersion,
-	getEnvValue,
 	getMarkdownTheme,
 	getNewEntries,
 	getPiUserAgent,
@@ -716,7 +714,7 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 };
 
 InteractiveModeBase.prototype.checkForPackageUpdates = async function (this: InteractiveModeBase): Promise<string[]> {
-	if (getEnvValue(ENV_OFFLINE)) {
+	if (isOfflineModeEnabled()) {
 		return [];
 	}
 
@@ -822,7 +820,7 @@ InteractiveModeBase.prototype.getChangelogForDisplay = function (this: Interacti
 };
 
 InteractiveModeBase.prototype.reportInstallTelemetry = function (this: InteractiveModeBase, version: string): void {
-	if (getEnvValue(ENV_OFFLINE)) {
+	if (isOfflineModeEnabled()) {
 		return;
 	}
 

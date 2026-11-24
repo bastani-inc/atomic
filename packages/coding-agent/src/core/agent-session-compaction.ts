@@ -235,7 +235,7 @@ function overflowingBoundary(
 ): string | undefined {
 	const after = contextAfterBoundary(session, planned);
 	return after.trigger !== undefined && after.tokens >= after.trigger
-		? `output too long for the context (${after.tokens} > ${after.trigger} tokens)`
+		? `output too long for the context (${after.tokens} >= ${after.trigger} tokens)`
 		: undefined;
 }
 
