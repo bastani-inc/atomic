@@ -714,12 +714,7 @@ calls: on a Namespace amd64 4x16 runner it took 9m56s to populate the arm64
 CRT, past the 8-minute bound, where the glibc build (36s to compile) took 35s.
 Keep the glibc build when bumping cargo-xwin; a cold warmer run is the check.
 
-cargo-xwin 0.23.1 is the floor. 0.23.0 uses xwin 0.9.0, which cannot read the
-current Visual Studio manifest: every cold populate fails with
-`unable to find x86_64 headers for Win11SDK_10.0.26100` (and the same for
-aarch64), so a release leg that lands on a node without the cache generation
-fails instead of fetching the CRT. 0.23.1 uses xwin 0.10.0, which reads it.
-The `0.10.9-alpha.1` publish hit this on both win32 legs.
+Don't go below cargo-xwin 0.23.1: older versions can't read the current Visual Studio manifest, so cold populates fail.
 
 `XWIN_SDK_VERSION` and `XWIN_CRT_VERSION` default to `latest`, so the path
 cannot express the content version: a hit pins the leg to whichever SDK was
