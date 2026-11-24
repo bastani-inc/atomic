@@ -1,6 +1,4 @@
-import type { ExtensionContext, ScopedModel, Settings } from "@bastani/atomic";
-import type { ThinkingLevel } from "@bastani/atomic-agent-core";
-import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { type ExtensionContext, resolveModelScopeFromModels, type ScopedModel, type Settings } from "@bastani/atomic";
 import { splitKnownThinkingSuffix, splitUnknownThinkingSuffix } from "../../shared/model-info.js";
 import { type AvailableModelInfo, resolveModelCandidate } from "./model-fallback.js";
 
@@ -42,93 +40,6 @@ function buildScope(scopedModels: readonly ScopedModel[]): ResolvedModelScope {
  *
  * Returns `undefined` when neither `scopedModels` nor `enabledModels` is configured, leaving all models allowed.
  */
-function hasGlobCharacters(pattern: string): boolean {
-	return pattern.includes("*") || pattern.includes("?") || pattern.includes("[");
-}
-
-function globMatches(text: string, pattern: string): boolean {
-	const t = text.toLowerCase();
-	const p = pattern.toLowerCase();
-	let ti = 0;
-	let pi = 0;
-	let starIdx = -1;
-	let matchIdx = 0;
-	while (ti < t.length) {
-		if (pi < p.length && (p[pi] === "?" || p[pi] === t[ti])) {
-			ti++;
-			pi++;
-		} else if (pi < p.length && p[pi] === "*") {
-			starIdx = pi;
-			matchIdx = ti;
-			pi++;
-		} else if (starIdx !== -1) {
-			pi = starIdx + 1;
-			matchIdx++;
-			ti = matchIdx;
-		} else {
-			return false;
-		}
-	}
-	while (pi < p.length && p[pi] === "*") pi++;
-	return pi === p.length;
-}
-
-function matchExactModel(text: string, models: readonly Model<Api>[]): Model<Api>[] {
-	const normalized = text.trim().toLowerCase();
-	if (!normalized) return [];
-	if (normalized.includes("/")) {
-		return models.filter((model) => modelKey(model.provider, model.id) === normalized);
-	}
-	return models.filter((model) => model.id.toLowerCase() === normalized);
-}
-
-function resolveEnabledModelPatterns(patterns: readonly string[], models: readonly Model<Api>[]): ScopedModel[] {
-	const scopedModels: ScopedModel[] = [];
-	const seen = new Set<string>();
-	const add = (model: Model<Api>, thinkingLevel: ThinkingLevel | undefined) => {
-		const key = modelKey(model.provider, model.id);
-		if (seen.has(key)) return;
-		seen.add(key);
-		scopedModels.push({ model, thinkingLevel });
-	};
-
-	for (const rawPattern of patterns) {
-		const trimmed = rawPattern.trim();
-		if (!trimmed) continue;
-		const exactNoSuffix = matchExactModel(trimmed, models);
-		if (exactNoSuffix.length > 0) {
-			for (const model of exactNoSuffix) add(model, undefined);
-			continue;
-		}
-
-		const { baseModel, thinkingSuffix } = splitKnownThinkingSuffix(trimmed);
-		const thinkingLevel = thinkingSuffix ? (thinkingSuffix.slice(1) as ThinkingLevel) : undefined;
-		const exactWithSuffix = matchExactModel(baseModel, models);
-		if (exactWithSuffix.length > 0) {
-			for (const model of exactWithSuffix) add(model, thinkingLevel);
-			continue;
-		}
-
-		if (hasGlobCharacters(baseModel)) {
-			for (const model of models) {
-				if (globMatches(`${model.provider}/${model.id}`, baseModel) || globMatches(model.id, baseModel)) {
-					add(model, thinkingLevel);
-				}
-			}
-			continue;
-		}
-
-		const needle = baseModel.toLowerCase();
-		for (const model of models) {
-			if (modelKey(model.provider, model.id).includes(needle) || model.id.toLowerCase().includes(needle)) {
-				add(model, thinkingLevel);
-			}
-		}
-	}
-
-	return scopedModels;
-}
-
 export function resolveSessionModelScope(
 	ctx: ModelScopeContext,
 	settings?: Pick<Settings, "enabledModels">,
@@ -139,7 +50,7 @@ export function resolveSessionModelScope(
 	const patterns = settings?.enabledModels;
 	if (!patterns || patterns.length === 0) return undefined;
 	const available = ctx.modelRegistry?.getAvailable() ?? [];
-	return buildScope(resolveEnabledModelPatterns(patterns, available));
+	return buildScope(resolveModelScopeFromModels([...patterns], available).scopedModels);
 }
 
 /** Filter a model list to the active scope, or return all models unchanged when `scope` is undefined. */

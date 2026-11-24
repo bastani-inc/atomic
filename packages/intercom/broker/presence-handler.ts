@@ -127,7 +127,7 @@ export function handleBrokerPresence(
 			} else {
 				if (typeof clientMessage.group !== "string") return void fail("Invalid presence group");
 				const group = validateRuntimeGroup(clientMessage.group);
-				nextGroups = removeGroup(previousGroups, group);
+				nextGroups = removeGroup(previousGroups, group, session.registrationGroup);
 				if (legacyGroup === group) legacyGroup = undefined;
 			}
 		} else {
