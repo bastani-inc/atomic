@@ -1023,8 +1023,12 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		 * them) or the tool_search tool (it declares them). Either reaches every such tool. Activate the
 		 * one the tools' exposure asks for: codemode for `codemode` unless `autoEnableCodemode` is false,
 		 * tool_search for `deferred`.
+		 *
+		 * A `provisional` check may run before the final extension set is loaded: with deferred project
+		 * trust, MCP starts with the pre-trust set and the built-in discovery tools load afterwards. It
+		 * leaves a missing discovery tool to the next `settled` check, such as the next prompt's.
 		 */
-		const ensureDiscoveryActive = (ctx: ExtensionContext) => {
+		const ensureDiscoveryActive = (ctx: ExtensionContext, check: "provisional" | "settled" = "settled") => {
 			// From the config, so the tool is active before the servers connect. Resource tools share
 			// their server's exposure.
 			const exposures = new Set<McpExposure>();
@@ -1057,6 +1061,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const reachable = [...active, ...activate];
 			if (hasCodemode && reachable.includes(CODEMODE_TOOL_NAME)) return;
 			if (hasToolSearch && reachable.includes(TOOL_SEARCH_TOOL_NAME)) return;
+			if (check === "provisional" && !hasCodemode && !hasToolSearch) return;
 			if (warnedUnreachable) return;
 			warnedUnreachable = true;
 			const reason =
@@ -1508,7 +1513,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const finish = (message: string | undefined) => {
 				if (signal.aborted || server.attempt !== attempt || !servers.includes(server)) return;
 				server.message = message;
-				ensureDiscoveryActive(ctx);
+				ensureDiscoveryActive(ctx, "provisional");
 				emitChange();
 			};
 			void track(ready.then(finish, (error) => finish(errorMessage(error))));
@@ -1690,7 +1695,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			emitChange();
 			// Codemode or tool_search is activated from the config: the first prompt does not wait for
 			// servers whose tools are not declared to the model, and scripts or searches wait for them.
-			ensureDiscoveryActive(ctx);
+			ensureDiscoveryActive(ctx, "provisional");
 			const enabled = servers.filter(isEnabled);
 			if (enabled.length === 0) {
 				reportProblems(ctx);
@@ -1741,6 +1746,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 		// Every prompt lists the servers in the `mcp_servers` section as they are when it starts. Pi
 		// appends the section to the conversation when it changed, for example after a server connected.
 		atomic.on("before_agent_start", async (event, ctx) => {
+			ensureDiscoveryActive(ctx);
 			await waitForDirectServers(ctx);
 			const { sections } = event.systemPromptOptions;
 			const section = layOutServersSection(
@@ -1871,7 +1877,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 			const added = registered.servers.filter((server) => !findServer(server.entry.name));
 			servers.push(...added);
 			emitChange();
-			if (latestContext) ensureDiscoveryActive(latestContext);
+			if (latestContext) ensureDiscoveryActive(latestContext, "provisional");
 			void Promise.all(removed.map((server) => server.connection?.close())).then(async () => {
 				const connecting = added.filter(isEnabled);
 				if (signal.aborted || connecting.length === 0) return;
@@ -1943,6 +1949,7 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 				return items.length > 0 ? items : null;
 			},
 			handler: async (args, ctx) => {
+				ensureDiscoveryActive(ctx);
 				const [action, name, ...extra] = args.trim().split(/\s+/).filter(Boolean);
 				if (action === undefined) {
 					if (ctx.mode === "tui") await showMcpManager(ctx, (ui) => manage(ui, ctx));

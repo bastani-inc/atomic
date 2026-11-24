@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a false "MCP tools are only reachable from the codemode or tool_search tool, but neither is active" warning when starting in a project with its own resources (such as `.atomic/mcp.json`). MCP started with the pre-trust extension set and checked for the built-in discovery tools before they loaded. MCP now leaves a missing discovery tool to the next prompt or `/mcp` command, and activates codemode there when `autoEnableCodemode` asks for it ([#6542](https://github.com/bastani-inc/atomic/issues/6542)).
+
 ## [0.10.8] - 2026-11-24
 
 Atomic fixes deferred startup dropping the built-in Herdr reporter on plain `atomic` launches and expands SDK exports with session, storage, settings, and OAuth error classes, session stores, claim helpers, and model-scope utilities.
