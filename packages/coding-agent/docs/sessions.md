@@ -6,6 +6,11 @@ description: "Resume, search, name, branch, fork, share, and export conversation
 
 Atomic saves every conversation as an append-only tree in a local SQLite database (`~/.atomic/workflows/journal.sqlite` by default). You can resume past work, jump back to earlier turns, and branch without losing history. For branch summaries and context clearing, see [Context and compaction](/compaction#branch-summarization).
 
+- To configure SQLite, PostgreSQL, Turso/libSQL, or custom adapters, see [Storage backends](/storage).
+- To resume sessions across machines with worktree snapshots and blueprints, see [Resume sessions on any machine](/guides/resume-on-any-machine).
+- To open and pass session stores from Node.js or TypeScript, see [SDK session storage](/sdk/storage).
+- For JSONL schemas, entry types, and the `SessionManager` API, see [Session file format](/session-format).
+
 ## Session commands
 
 Start, resume, fork, or import sessions from the command line:
@@ -118,7 +123,7 @@ atomic --name "Refactor auth module"
 atomic --name "CI audit" -p "Review this build failure"
 ```
 
-## Branching with `/tree`
+## Branching with `/tree` {#branching-with-tree}
 
 Every session entry carries `id` and `parentId`. Run `/tree` to jump to any earlier entry and start a new branch in place:
 
@@ -225,22 +230,23 @@ Supported store objects:
 - `{ "dir": "sessions" }`: JSONL directory store. Allowed **only** in `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. Passing `"dir"` in top-level `storage`, `--storage`, `--storage-file`, or `ATOMIC_STORAGE` fails with `StorageConfigError`.
 - `{ "memory": true }`: ephemeral in-memory store.
 - `{}` (empty object): selects the default session SQLite file (`<storageHome>/workflows/journal.sqlite`) in `sessions.storage` (overriding any shared `storage`), or `<storageHome>/storage.sqlite` in top-level `storage`.
-- Database [adapter](/storage#selecting-an-adapter): PostgreSQL, Turso/libSQL, or a custom adapter module.
+- Database adapter: [PostgreSQL](/storage#postgresql), [Turso and libSQL](/storage#turso-and-libsql), or a [custom adapter](/storage#selecting-an-adapter).
 
 Legacy `sessionDir` has been removed.
 
 Store selection follows this precedence order, from highest to lowest:
 
-1. SDK `sessionStore`
-2. SDK `createAgentSession({ storage })`
-3. `--session-store`, `--no-session`, or `--session-dir`
-4. `--storage` or `--storage-file`
-5. `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`
-6. `ATOMIC_STORAGE`
-7. `ATOMIC_PROFILE=ci`
-8. `sessions.storage` in `settings.json`
-9. `storage` in `settings.json`
-10. Default local SQLite (`~/.atomic/workflows/journal.sqlite`)
+1. Explicit SDK `sessionManager` (bypasses store selection)
+2. SDK `sessionStore`
+3. SDK `createAgentSession({ storage })`
+4. `--session-store`, `--no-session`, or `--session-dir`
+5. `--storage` or `--storage-file`
+6. `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`
+7. `ATOMIC_STORAGE`
+8. `ATOMIC_PROFILE=ci`
+9. `sessions.storage` in `settings.json`
+10. `storage` in `settings.json`
+11. Default local SQLite (`~/.atomic/workflows/journal.sqlite`)
 
 Each selection replaces lower-precedence settings as a whole object rather than merging fields. Settings, JSON flags, and JSON environment variables resolve relative paths from [storage home](/storage#storage-home). `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve relative paths from `cwd`.
 
@@ -248,10 +254,10 @@ Flag validation rules:
 
 - `--session-store` conflicts with `--session-dir` and `--no-session`.
 - Combining a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` with `ATOMIC_SESSIONS_STORAGE`, `--storage`, or `--storage-file` fails startup with `StorageConfigError` (`conflicting-overrides`).
-- `--session-prefix` requires `--session-store` and must match `[A-Za-z_][A-Za-z0-9_]*` without starting with `sqlite_` (case-insensitive, so `SQLITE_` is also rejected). On PostgreSQL, prefixes must be lowercase ASCII and at most 24 characters.
+- `--session-prefix` requires `--session-store` (local SQLite only) and must match `[A-Za-z_][A-Za-z0-9_]*` without starting with `sqlite_` (case-insensitive, so `SQLITE_` is also rejected). Shared databases use `storage.prefix` or `atomic storage join --prefix` with the same pattern; PostgreSQL also requires lowercase ASCII and at most 24 characters.
 - Invalid CLI storage flags exit cleanly with `Error: ...` (exit code `1`). Invalid or unavailable stores always raise a typed error instead of falling back to memory. See [Selecting storage per process](/storage#selecting-storage-per-process).
 
-From the SDK, pass `sessionStore` with `{ kind: "sqlite", path }`, `{ kind: "jsonl", dir }`, or `{ kind: "memory" }`. Passing an explicit `sessionManager` bypasses store selection:
+From the SDK, `sessionStore` accepts all five selection kinds (`{ kind: "sqlite", path, prefix? }`, `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, and `{ kind: "adapter", module, options?, secrets?, prefix? }`) or a concrete `SessionStore` instance (`SqlSessionStore`, `JsonlSessionStore`, or `MemorySessionStore`). Passing an explicit `sessionManager` bypasses store selection:
 
 ```typescript
 const { session } = await createAgentSession({
@@ -259,4 +265,4 @@ const { session } = await createAgentSession({
 });
 ```
 
-See [Session file format](/session-format) for JSONL schemas, entry types, and the `SessionManager` API.
+See [SDK session storage](/sdk/storage) for PostgreSQL, libSQL, direct `SessionStore`, and store-closing recipes, [SDK and local SQLite API](/storage#sdk-and-local-sqlite-api) for low-level SQLite handles, and [Session file format](/session-format) for JSONL schemas, entry types, and the `SessionManager` API.

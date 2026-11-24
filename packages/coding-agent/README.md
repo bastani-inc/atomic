@@ -17,9 +17,9 @@
 
 ---
 
-Atomic is a terminal coding-agent runtime. Use built-in tools for file edits and shell commands, codemode to script multi-step checks, and subagents to delegate work to isolated contexts. Extend Atomic with TypeScript [extensions](#extensions), [skills](#skills), [prompt templates](#prompt-templates), and [themes](#themes), or share them as [Atomic packages](#atomic-packages) via npm or git.
+Atomic is a terminal coding-agent runtime. Use built-in tools for file edits and shell commands, [codemode](docs/codemode.md) to script multi-step checks, and [subagents](docs/subagents.md) to delegate work to isolated contexts. Extend Atomic with TypeScript [extensions](#extensions), [skills](#skills), [prompt templates](#prompt-templates), and [themes](#themes), or share them as [Atomic packages](#atomic-packages) via npm or git.
 
-Atomic bundles first-party integrations for subagents, MCP, web access, and Intercom. See [Orchestration](docs/orchestration.md) for multi-step tasks and [Migrating workflows](docs/orchestration/migrating-workflows.md) to convert an earlier workflow file to a skill.
+Atomic bundles first-party integrations for [subagents](docs/subagents.md), [MCP servers](docs/mcp-servers.md), [web access](docs/web-access.md), and [Intercom](docs/intercom.md). Sessions save to local SQLite by default or share state across machines over PostgreSQL or libSQL/Turso ([Storage](docs/storage.md)), with [worktree snapshots](docs/worktree-snapshots.md) and [environment blueprints](docs/guides/resume-on-any-machine.md#set-the-environment-up-with-a-blueprint) for cross-machine resume. See [Orchestration](docs/orchestration.md) for multi-step tasks and [Migrating workflows](docs/orchestration/migrating-workflows.md) to convert an earlier workflow file to a skill.
 
 Run Atomic interactively, in print or JSON mode, over RPC for process integration, or embedded through the TypeScript SDK.
 
@@ -85,7 +85,7 @@ atomic
 
 By default, Atomic provides built-in coding tools (`read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, `codemode`, plus `powershell` on native Windows when available). `edit` performs exact-text replacement without requiring an earlier `read`. See [docs/tools.md](docs/tools.md).
 
-**Platform guides:** [Windows](docs/windows.md) | [Alpine/musl Linux](docs/getting-started/installation.md#alpine-and-musl-linux-archives) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
+**Platform guides:** [Windows](docs/windows.md) | [Alpine/musl Linux](docs/getting-started/installation.md#alpine-and-musl-linux-archives) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Herdr](docs/herdr.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
 ---
 
@@ -177,7 +177,7 @@ Type `/` in the editor to browse commands. [Extensions](#extensions) register cu
 | `/changelog` | Show version history |
 | `/exit`, `/quit` | Exit Atomic |
 
-**Bundled extension commands:** `/agents` (browse subagents), `/mcp` (manage MCP servers), `/intercom` (open session Intercom overlay), `/websearch` (open search curator), `/curator` (toggle or configure the search curator workflow), `/search` (browse stored web search results), `/google-account` (show the active Google account for Gemini Web), and `/llama` (manage `llama.cpp` router models).
+**Bundled extension commands:** `/agents` ([subagents](docs/subagents.md)), `/mcp` ([MCP servers](docs/mcp-servers.md)), `/intercom` ([Intercom](docs/intercom.md)), `/websearch`, `/curator`, `/search`, `/google-account` ([web access](docs/web-access.md)), and `/llama` ([`llama.cpp`](docs/llama-cpp.md) router models).
 
 ### Keyboard shortcuts
 
@@ -211,11 +211,11 @@ Configure `steeringMode` and `followUpMode` (`"one-at-a-time"` default, or `"all
 
 ## Sessions
 
-Sessions store an append-only tree of entries (`id` and `parentId`), enabling in-place branching in one session. See [docs/session-format.md](docs/session-format.md).
+Sessions store an append-only tree of entries (`id` and `parentId`), enabling in-place branching in one session. See [docs/session-format.md](docs/session-format.md), [docs/storage.md](docs/storage.md), [docs/worktree-snapshots.md](docs/worktree-snapshots.md), and [Resume on any machine & blueprints](docs/guides/resume-on-any-machine.md#set-the-environment-up-with-a-blueprint).
 
 ### Management
 
-Sessions auto-save per working directory in the default local SQLite store (`~/.atomic/workflows/journal.sqlite`). Legacy `~/.atomic/agent/sessions/` and `~/.pi/agent/sessions/` JSONL files remain readable.
+Sessions auto-save per working directory in the default local SQLite store (`~/.atomic/workflows/journal.sqlite`), or in a shared PostgreSQL or Turso/libSQL database via [Storage backends](docs/storage.md). Legacy `~/.atomic/agent/sessions/` and `~/.pi/agent/sessions/` JSONL files remain readable.
 
 ```bash
 atomic -c                    # Continue the most recent session
@@ -244,7 +244,7 @@ Run `/session` interactively to copy the current session ID for `--session`, `--
 
 ### Compaction
 
-When a session approaches the context limit, compaction clears the active context window without a model call by default. Atomic leaves a recovery pointer telling the agent where earlier history lives and what to recover first (`<keepContext>` spans, requests, and constraints) using `read` and `search`. Setting `compactionModel` (such as `morph/morph-compactor`) replaces the context with that model's summary instead.
+When a session approaches the context limit, compaction clears the active context window without a model call by default. Atomic leaves a recovery pointer telling the agent where earlier history lives and what to recover first (`<keepContext>` spans, requests, and constraints) using `read` and `search`. Setting `compactionModel` (such as `morph/morph-compactor` or a [custom remote compactor](docs/compaction.md#customize-morph-or-add-a-remote-compactor)) replaces the context with that model's summary instead.
 
 - **Manual:** Run `/compact [instructions]` (instructions guide what the agent recovers first).
 - **Automatic:** Enabled by default on context overflow (compacts and retries once) or near the limit. Configure in `/settings` or `settings.json`.
@@ -425,17 +425,24 @@ See [docs/packages.md](docs/packages.md).
 ### SDK
 
 ```typescript
-import { createAgentSession, SessionManager } from "@bastani/atomic";
+import { createAgentSession } from "@bastani/atomic";
 
 // Builds a ModelRuntime from the active agent directory's auth.json and models.json by default.
+// Pass `sessionStore` for SQLite, JSONL, in-memory, libSQL/Turso, or PostgreSQL persistence.
 const { session } = await createAgentSession({
-  sessionManager: SessionManager.inMemory(),
+  sessionStore: { kind: "sqlite", path: "./sessions.sqlite" },
 });
 
-await session.prompt("What files are in the current directory?");
+try {
+  await session.prompt("What files are in the current directory?");
+} finally {
+  await session.dispose();
+}
 ```
 
-For multi-session runtime replacement, use `createAgentSessionRuntime()` and `AgentSessionRuntime`. See [docs/sdk.md](docs/sdk.md) and [examples/sdk/](examples/sdk/).
+- **Storage backends:** Configure SQLite, JSONL, in-memory, libSQL/Turso (`@bastani/atomic-storage-libsql`), and PostgreSQL 16+ (`@bastani/atomic-storage-postgres`) with `createAgentSession()` or `createAgentSessionRuntime()`. See [SDK storage backends](docs/sdk/storage.md) ([docs.bastani.ai/sdk/storage](https://docs.bastani.ai/sdk/storage)).
+- **Structured decisions:** Make typed, schema-validated classifier or chat decisions without starting a session using `decide()` and `generateStructuredOutput()`. See [Structured decisions](docs/sdk/structured-decisions.md).
+- **Multi-session runtimes and guides:** See [docs/sdk.md](docs/sdk.md), [docs/sdk/web-server.md](docs/sdk/web-server.md), and [examples/sdk/](examples/sdk/).
 
 ### RPC mode
 
@@ -488,7 +495,7 @@ atomic mcp <add|remove|list|login|logout>
 atomic storage <status|join|migrate|move-snapshot-chunks|search-session|export|import>
 atomic team <join|status|leave>
 atomic intercom <status|restart|upgrade>
-atomic blueprint <cache-key|prebuild>
+atomic blueprint <cache-key|prebuild>   # Environment blueprint cache keys and worktree prebuilds
 ```
 
 Run `atomic <command> --help` for full subcommand options, or see [docs/reference/cli.md](docs/reference/cli.md).
@@ -658,6 +665,6 @@ MIT
 - [@bastani/atomic-tui](https://www.npmjs.com/package/@bastani/atomic-tui): Differential terminal UI library
 - [@bastani/atomic-codemode](https://www.npmjs.com/package/@bastani/atomic-codemode): Sandboxed JavaScript execution for tool scripting
 - [@bastani/atomic-schema](https://www.npmjs.com/package/@bastani/atomic-schema): TypeScript-first JSON Schema builder and validator
-- [@bastani/atomic-telemetry](https://www.npmjs.com/package/@bastani/atomic-telemetry): Typed OpenTelemetry span helpers and renderers
-- [@bastani/atomic-storage-libsql](https://www.npmjs.com/package/@bastani/atomic-storage-libsql): Optional Turso / libSQL storage adapter
-- [@bastani/atomic-storage-postgres](https://www.npmjs.com/package/@bastani/atomic-storage-postgres): Optional PostgreSQL storage adapter
+- [@bastani/atomic-telemetry](https://www.npmjs.com/package/@bastani/atomic-telemetry): Vendor-neutral telemetry contracts, metrics, and trace renderers ([docs](docs/libraries/telemetry.md))
+- [@bastani/atomic-storage-libsql](https://www.npmjs.com/package/@bastani/atomic-storage-libsql): Optional Turso / libSQL storage adapter ([docs](docs/libraries/storage-libsql.md))
+- [@bastani/atomic-storage-postgres](https://www.npmjs.com/package/@bastani/atomic-storage-postgres): Optional PostgreSQL 16+ storage adapter ([docs](docs/libraries/storage-postgres.md))

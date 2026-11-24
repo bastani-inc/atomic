@@ -57,7 +57,7 @@ await atomic.registerProvider("corporate-ai", {
       return credentials.access;
     },
 
-    // Optional: adjust chat models based on the user's token (image and classifier models pass through unchanged)
+    // Optional: adjust chat models based on the user's token (image, classifier, and compactor models pass through unchanged)
     modifyModels(models, credentials) {
       const region = decodeRegionFromToken(credentials.access);
       return models.map((model) => ({
@@ -69,9 +69,9 @@ await atomic.registerProvider("corporate-ai", {
 });
 ```
 
-Users can then sign in with `/login corporate-ai`.
+Users can then sign in with `/login corporate-ai`. Note that shell [`atomic auth login`](/reference/cli#credential-commands) does not load extensions; use interactive `/login` for extension providers.
 
-Refresh and callback behavior:
+Refresh and callback behavior (see also [Token refresh](/providers#token-refresh) and [Credential resolution order](/providers/reference#resolution-order)):
 
 - **Refresh timing and locking.** Atomic refreshes stored OAuth tokens when fewer than **5 minutes** of validity remain and serializes concurrent refreshes across sessions under a credential lock held for up to **2 minutes**. Catalog refreshes wait up to **60 seconds**, while chat requests allow **15 seconds** for pre-request authentication preparation. Atomic never aborts the `signal` passed to `refreshToken` on caller timeout because the provider may have already rotated the refresh token; a late response still saves, and normal exit waits up to **3 seconds** for it. Do not add a shorter abort timeout to your token refresh call.
 - **Callback isolation.** Always use the provided callbacks for user prompts and notices instead of reading stdin or writing directly to stdout or stderr, because login callbacks may run in a separate background process.
@@ -141,7 +141,7 @@ await atomic.registerProvider("corporate-ai", {
 });
 ```
 
-- **Config-object registration (`registerProvider(id, config)`):** `refreshModels(context)` returns `ProviderModelConfig[]` definitions (chat, image, or classifier) that replace that registration's live models. When `allowNetwork` is `false` (offline or cache-only startup restore), return cached models to populate initial availability without making network requests.
+- **Config-object registration (`registerProvider(id, config)`):** `refreshModels(context)` returns `ProviderModelConfig[]` definitions (chat, image, classifier, or compactor) that replace that registration's live models. When `allowNetwork` is `false` (offline or cache-only startup restore), return cached models to populate initial availability without making network requests.
 - **Native `Provider` registration (`registerProvider(provider)`):** `refreshModels(context)` calls `await context.publish({ persist, update })` to persist an optional `ModelsStoreEntry` in `models-store.json` and install provider-owned state, then exposes the latest models from `getModels()` (or `getAllModels()` for mixed-operation providers).
 
 The existing catalog stays usable while a refresh runs. Each provider's refresh settles independently; if one fails, times out, or sees an aborted `signal`, it keeps its previous list. For all `RefreshModelsContext` fields (`credential`, `stored`, `publish`, `allowNetwork`, `force`, `signal`, `baseUrl`, and `updateCredential`), see [`RefreshModelsContext`](/custom-provider/api-reference#refreshmodelscontext).

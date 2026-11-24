@@ -15,10 +15,10 @@ Use prompt templates when you repeat the same instructions and want a slash comm
 Atomic loads prompt templates from these sources:
 
 - **Global:** `~/.atomic/agent/prompts/*.md` (legacy `~/.pi/agent/prompts/*.md`)
-- **Project** (only after you trust the project): `.atomic/prompts/*.md` (legacy `.pi/prompts/*.md`)
+- **Project** (only after you grant [project trust](/security#project-trust)): `.atomic/prompts/*.md` (legacy `.pi/prompts/*.md`)
 - **Packages:** `prompts/` directories, `atomic.prompts`, or legacy `pi.prompts` entries in `package.json`
-- **Settings:** `prompts` array in global or project `settings.json`, which accepts files, directories, and filter patterns (`!glob`, `+path`, `-path` with `~` expansion; see [Package filtering](/packages/reference#package-filtering))
-- **CLI:** `--prompt-template <path>` (repeatable; accepts either a `.md` file or a directory, and still loads with `--no-prompt-templates`)
+- **Settings:** `prompts` array in global or project `settings.json` ([Resource settings](/settings#resources)), which accepts files, directories, and filter patterns (`!glob`, `+path`, `-path` with `~` expansion; see [Package filtering](/packages/reference#package-filtering))
+- **CLI:** `--prompt-template <path>` (repeatable; accepts either a `.md` file or a directory, and still loads with `--no-prompt-templates`; see [CLI resource options](/reference/cli#resource-options))
 
 Disable default discovery with `--no-prompt-templates` (short flag `-np`). Explicit `--prompt-template` paths and `-e` package prompts still load.
 
@@ -86,6 +86,8 @@ Type `/` followed by the template name in the editor. Autocomplete shows availab
 ```
 
 The template name ends at the first space, tab, or line break, so arguments can also start on a new line with Shift+Enter. Line breaks inside the arguments are preserved. The same rule applies to extension commands and `/skill:name` commands.
+
+Run `/reload` after adding or editing `.md` template files to pick up changes without restarting Atomic. While viewing a subagent, invoking a prompt template expands and sends the prompt to that viewed subagent rather than `main` ([Commands while viewing a subagent](/background-tasks#commands-while-viewing-a-subagent)).
 
 ## Arguments and placeholders
 

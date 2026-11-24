@@ -12,7 +12,7 @@ JSON Schema builders and validation without `eval`. Each schema compiles once in
 - Schemas are never mutated, so frozen schemas work.
 - Format checks live in an optional subpath import.
 
-Atomic validates tool arguments with `@bastani/atomic-schema`. See [Tool parameter schemas](/extensions#tool-parameter-schemas). Extensions can import `@bastani/atomic-schema` from the host without installing it.
+Atomic validates tool arguments with `@bastani/atomic-schema`. See [Tool parameter schemas](/extensions#tool-parameter-schemas) and [Standalone libraries](/libraries). Extensions can import `@bastani/atomic-schema` from the host without installing it.
 
 ## Installation
 
@@ -33,7 +33,10 @@ const Read = obj({
 type Read = Static<typeof Read>; // { path: string; mode: "text" | "binary"; offset?: number }
 
 const read = compile(Read);
-if (read.check(value)) value.path; // value: Read
+const value: unknown = { path: "README.md", mode: "text" };
+if (read.check(value)) {
+	console.log(value.path); // value is narrowed to Read
+}
 
 read.errors({ offset: 0, extra: true });
 // [

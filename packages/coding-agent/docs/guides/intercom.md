@@ -6,6 +6,8 @@ description: "Coordinate multiple Atomic sessions on one machine or across a sha
 
 Intercom is a message channel between Atomic sessions running on the same machine, or across several machines that share a storage database ([Running Intercom across machines](/intercom/operations#running-intercom-across-machines)). Sessions in the same group send messages, ask questions, and coordinate directly without routing everything through you.
 
+This page introduces Intercom at a high level. For quick-start commands, patterns, and `contact_supervisor`, see [Coordinate sessions with Intercom](/intercom). For multi-machine setup, broker upgrades, and troubleshooting, see [Operate Intercom](/intercom/operations). For the tool schema, `config.json`, and error classes, see [Intercom reference](/intercom/reference). For team databases or embedded apps, see [Set up teams and CI](/guides/team-setup) and [Intercom group and reach in the SDK](/sdk#intercom-group-and-reach).
+
 ## When to use Intercom
 
 Use Intercom when two or more sessions work on related tasks and need to share context: a planner handing work to a worker, a long-running session reporting a finding, or an orchestrator steering a subagent while it runs. You do not need Intercom for a single session working alone.
@@ -25,4 +27,6 @@ Interactive sessions connect to Intercom automatically 3 seconds after startup. 
 - [Coordinate sessions with Intercom](/intercom) covers the quick start, coordination patterns, and supervisor escalation.
 - [Operate Intercom](/intercom/operations) covers connection lifecycles, multi-machine routing, upgrades, and recovery.
 - [Intercom reference](/intercom/reference) documents every `intercom` tool action, targeting rule, error class, and setting.
+- [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Set up teams and CI](/guides/team-setup) explain how to share a database across machines or CI fleets.
+- [Intercom group and reach in the SDK](/sdk#intercom-group-and-reach) shows how to configure groups and reach policies from `@bastani/atomic`.
 - [Subagents overview](/guides/subagents) explains when delegation fits better than session-to-session coordination.

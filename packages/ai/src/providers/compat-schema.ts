@@ -593,7 +593,7 @@ export const SystemOneCompatSchema = Type.Object(
 		imageInput: Type.Optional(
 			Type.Union([Type.Literal("assets"), Type.Literal("images"), Type.Literal("state-image-urls")], {
 				description:
-					'How the service takes classifier images. "assets" sends TypeSafe\'s assets map (PNG and JPEG) and references the images from the state, as TypeSafe and Jev on Workers AI expect. "images" sends Clef\'s images list of data URLs (PNG, JPEG, and WebP, at most four), as Clef on Workers AI expects. "state-image-urls" places image_url parts before the state, as OpenRouter expects; OpenRouter drops assets without an error. Auto-detected from the provider, baseUrl, and model ID. Classifier models read it from the provider-level compat; models and modelOverrides entries apply to chat models only.',
+					'How the service takes classifier images. "assets" sends TypeSafe\'s assets map (PNG and JPEG) and references the images from the state, as TypeSafe and Jev on Workers AI expect. "images" sends Clef\'s images list of data URLs (PNG, JPEG, and WebP, at most four), as Clef on Workers AI expects. "state-image-urls" places image_url parts before the state, as OpenRouter expects; OpenRouter drops assets without an error. Auto-detected from the provider, baseUrl, and model ID. Classifier models read it from the provider-level compat; models and modelOverrides entries apply to chat and compactor models.',
 			}),
 		),
 		sendImageOptInHeader: optionalCompatBoolean({

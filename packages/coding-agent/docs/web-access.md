@@ -6,6 +6,12 @@ description: "Search the web, fetch webpages, PDFs, GitHub repos, and videos, qu
 
 Atomic bundles four web-access tools: `web_search` for searching the web, `fetch_content` for reading pages and media, `get_search_content` for retrieving full stored results, and `code_search` for querying public GitHub repositories. Both `web_search` and `code_search` work out of the box with no API key setup.
 
+## Quick start
+
+- **Zero-config defaults.** Ask Atomic to search the web (`web_search` uses keyless Exa by default), read a URL or PDF (`fetch_content`), or query a public GitHub repository (`code_search` via DeepWiki).
+- **Optional API keys.** Set `EXA_API_KEY`, `PERPLEXITY_API_KEY`, or `GEMINI_API_KEY`, or store camelCase keys in `~/.atomic/web-search.json` to raise limits or pick a specific provider.
+- **Interactive commands.** Run `/websearch <query>` to search directly, `/curator on` to review results in your browser before the agent sees them, or `/search` to inspect stored session results.
+
 ## Searching with `web_search`
 
 Pass `query` for a single search, or `queries` (an array of 2 to 4 varied angles) for broader research. If both `query` and `queries` are supplied, `queries` wins and `query` is ignored. Multiple queries run sequentially (with a 60-second timeout per query on Exa and Gemini API).
@@ -198,6 +204,35 @@ Example configuration:
 }
 ```
 
+## Enabling and disabling
+
+Web access is enabled by default in both the CLI and the SDK.
+
+- **CLI.** Remove web-access tools for one run with `--exclude-tools`:
+
+```bash
+atomic --exclude-tools web_search,fetch_content,get_search_content,code_search
+```
+
+- **SDK.** Disable the bundled `web-access` package completely in `createAgentSession()`:
+
+```typescript
+import { createAgentSession } from "@bastani/atomic";
+
+const { session } = await createAgentSession({
+  builtins: { "web-access": false },
+});
+```
+
+See [CLI tool options](/reference/cli#tool-options) and [SDK tools](/sdk/reference#tools).
+
 ## Helper binary lookup
 
 Helper binaries (`gh`, `git`, `ffmpeg`, `ffprobe`, `yt-dlp`, `npm`, browser openers, and OS keychain helpers) are resolved only from absolute directories in `PATH`. The current project directory is searched only when `PATH` explicitly lists it.
+
+## Related docs
+
+- [Built-in tools](/tools) covers `read` URL fetching, `code_search`, and tool selection.
+- [SDK tools](/sdk/reference#tools) covers `builtins`, `tools`, and `excludedTools`.
+- [CLI reference](/reference/cli) covers `--tools`, `--exclude-tools`, and `--no-tools`.
+- [Environment variables](/environment-variables) lists `EXA_API_KEY`, `PERPLEXITY_API_KEY`, `GEMINI_API_KEY`, and `ATOMIC_ALLOW_BROWSER_COOKIES`.

@@ -38,7 +38,7 @@ Each `models` entry adds a model to the provider. An entry whose `id` matches an
 | `api` | string |  | Overrides the provider api. |
 | `baseUrl` | string |  | Overrides the provider baseUrl. |
 | `endpointPath` | string |  | Endpoint path appended to baseUrl for compactor requests (default "/compact"). Set to "" to POST directly to baseUrl. Applies only to compactor models. |
-| `reasoning` | boolean | `false` | Whether the model supports thinking. |
+| `reasoning` | boolean | `false` | Whether the model supports thinking. Applies only to chat models. |
 | `thinkingLevelMap` | object |  | Provider value sent for each thinking level. null marks a level unsupported. Levels the model does not map use the provider's default value through high; xhigh and max are unsupported. |
 | `input` | `("text" \| "image" \| "pdf")[]` | `["text"]` |  |
 | `inputLimits` | [object](#input-limits) |  |  |
@@ -54,8 +54,8 @@ Each `models` entry adds a model to the provider. An entry whose `id` matches an
 | `cost.tiers[].cacheRead` | number |  | Required. Cache-read cost in USD per million tokens. |
 | `cost.tiers[].cacheWrite` | number |  | Required. Cache-write cost in USD per million tokens. |
 | `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Atomic warms only tiers with a known lifetime. |
-| `contextWindow` | number | `128000` | Context window in tokens. |
-| `maxTokens` | number | `16384` | Maximum output tokens. |
+| `contextWindow` | number | `128000` | Context window in tokens. Applies only to chat models. |
+| `maxTokens` | number | `16384` | Maximum output tokens. Defaults to 16384 for chat models. When omitted on compactor models, defaults to 32000 estimated tokens, capped at 50% of the automatic trigger. |
 | `timeoutMs` | number |  | Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |
@@ -72,7 +72,7 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 | `name` | string |  | Display name, also matched by --model patterns. |
 | `baseUrl` | string |  | Overrides the model baseUrl. |
 | `endpointPath` | string |  | Endpoint path appended to baseUrl for compactor requests (default "/compact"). Set to "" to POST directly to baseUrl. Applies only to compactor models. |
-| `reasoning` | boolean |  | Whether the model supports thinking. |
+| `reasoning` | boolean |  | Whether the model supports thinking. Applies only to chat models. |
 | `thinkingLevelMap` | object |  | Provider value sent for each thinking level. null marks a level unsupported. Levels the model does not map use the provider's default value through high; xhigh and max are unsupported. |
 | `input` | `("text" \| "image" \| "pdf")[]` |  |  |
 | `inputLimits` | [object](#input-limits) |  |  |
@@ -88,8 +88,8 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 | `cost.tiers[].cacheRead` | number |  | Required. Cache-read cost in USD per million tokens. |
 | `cost.tiers[].cacheWrite` | number |  | Required. Cache-write cost in USD per million tokens. |
 | `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Atomic warms only tiers with a known lifetime. |
-| `contextWindow` | number |  | Context window in tokens. |
-| `maxTokens` | number |  | Maximum output tokens. |
+| `contextWindow` | number |  | Context window in tokens. Applies only to chat models. |
+| `maxTokens` | number |  | Maximum output tokens. On compactor models, sets the upper bound on compacted output in estimated tokens, capped at 50% of the automatic trigger. |
 | `timeoutMs` | number |  | Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |
@@ -215,7 +215,7 @@ Also applies to `cloudflare-workers-ai-system-one`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `imageInput` | `"assets" \| "images" \| "state-image-urls"` |  | How the service takes classifier images. "assets" sends TypeSafe's assets map (PNG and JPEG) and references the images from the state, as TypeSafe and Jev on Workers AI expect. "images" sends Clef's images list of data URLs (PNG, JPEG, and WebP, at most four), as Clef on Workers AI expects. "state-image-urls" places image_url parts before the state, as OpenRouter expects; OpenRouter drops assets without an error. Auto-detected from the provider, baseUrl, and model ID. Classifier models read it from the provider-level compat; models and modelOverrides entries apply to chat models only. |
+| `imageInput` | `"assets" \| "images" \| "state-image-urls"` |  | How the service takes classifier images. "assets" sends TypeSafe's assets map (PNG and JPEG) and references the images from the state, as TypeSafe and Jev on Workers AI expect. "images" sends Clef's images list of data URLs (PNG, JPEG, and WebP, at most four), as Clef on Workers AI expects. "state-image-urls" places image_url parts before the state, as OpenRouter expects; OpenRouter drops assets without an error. Auto-detected from the provider, baseUrl, and model ID. Classifier models read it from the provider-level compat; models and modelOverrides entries apply to chat and compactor models. |
 | `sendImageOptInHeader` | boolean |  | Whether requests with images send the TypeSafe-Danger-Zone-Images: true header, which TypeSafe's own API requires for its experimental image input. Defaults to true for the typesafe-system-one API unless the model is detected as OpenRouter. |
 
 ### Atomic compatibility aliases

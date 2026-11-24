@@ -6,6 +6,8 @@ description: "Learn what subagents do, when to delegate tasks, and how backgroun
 
 A subagent is a separate agent session that your main session launches for a focused task. It runs in its own context window, so a long code search or debugging trace does not crowd out your main conversation.
 
+This page introduces subagents at a high level. For day-to-day usage, worktrees, and run control, see [Run subagents](/subagents). For custom agent files, see [Create custom subagents](/subagents/authoring). For exact parameters, fallback rules, and `config.json`, see [Subagent reference](/subagents/reference). For programmatic child configuration, see [Subagent children in the SDK](/sdk#subagent-children).
+
 Ask Atomic to delegate in plain language:
 
 ```text
@@ -29,5 +31,7 @@ Delegate bounded, independent work. Good fits include searching an unfamiliar ar
 
 - [Run subagents](/subagents) covers bundled agents, worktrees, run control, and coordination.
 - [Create custom subagents](/subagents/authoring) explains how to write Markdown agent definitions and override built-in agents.
+- [Subagent reference](/subagents/reference) covers discovery precedence, fallback models, `config.json`, tool parameters, and SDK error codes.
+- [Subagent children in the SDK](/sdk#subagent-children) covers child inheritance and programmatic configuration from `@bastani/atomic`.
 - [Manage background tasks](/background-tasks) covers the agent panel, `/tasks`, steering, and stopping running work.
 - [Orchestrate with codemode and subagents](/orchestration) shows how to combine codemode scripts with subagents for multi-step work.

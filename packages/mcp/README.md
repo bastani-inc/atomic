@@ -14,7 +14,7 @@ atomic mcp list
 atomic
 ```
 
-Commands write `~/.atomic/agent/mcp.json` by default. Add `--local` (`-l`) to use `.atomic/mcp.json` in the current project. Project servers are read only after project trust is granted. A project entry defining `command`, `url`, or `type` replaces a user-level entry of the same name. A project entry without `command`, `url`, or `type` overrides only `enabled`, `exposure`, and `toolExposure` while inheriting the user-level server's connection and credentials.
+Commands write `~/.atomic/agent/mcp.json` by default. Add `--local` (`-l`) to use `.atomic/mcp.json` in the current project. Project servers are read only after [project trust](https://docs.bastani.ai/security) is granted. A project entry defining `command`, `url`, or `type` replaces a user-level entry of the same name. A project entry without `command`, `url`, or `type` overrides only `enabled`, `exposure`, and `toolExposure` while inheriting the user-level server's connection and credentials.
 
 Both files use this shape:
 
@@ -67,7 +67,7 @@ Common `atomic mcp add` options include `-l`/`--local`, `--env KEY=VALUE`, `--cw
 
 Stdio servers use `command`, `args`, `env`, and `cwd`. HTTP servers use `url`, `headers`, and `oauth`. Set optional `type` to `"stdio"`, `"http"`, or `"streamable-http"` when you want to make the transport explicit.
 
-URLs support `${NAME}` and `$env:NAME` environment references, resolved in memory before validation without rewriting files. `env`, `headers`, and `oauth.clientSecret` support `${NAME}` references and whole-value `!command` expressions. Escape literal `$` as `$$` and a leading literal `!` as `$!`. Only use `!command` expressions in configuration you trust.
+URLs support `${NAME}` and `$env:NAME` environment references, resolved in memory before validation without rewriting files. `env`, `headers`, and `oauth.clientSecret` support `${NAME}` references and whole-value `!command` expressions. Escape literal `$` as `$$` and a leading literal `!` as `$!`. Only use `!command` expressions in configuration you trust ([Security](https://docs.bastani.ai/security)).
 
 | Setting | Meaning |
 | --- | --- |
@@ -80,13 +80,37 @@ URLs support `${NAME}` and `$env:NAME` environment references, resolved in memor
 
 Package and extension contributions use the same server shape and sit below file-configured servers. `ATOMIC_CODING_AGENT_DIR` relocates the Atomic agent directory.
 
+Extensions can register runtime-computed servers with [`atomic.registerMcpServer()`](https://docs.bastani.ai/extensions/api-reference#atomic-registermcpserver-name-config):
+
+```typescript
+import type { ExtensionAPI } from "@bastani/atomic";
+
+export default function (atomic: ExtensionAPI) {
+	atomic.registerMcpServer("local-docs", {
+		url: "http://127.0.0.1:4321/mcp",
+		exposure: "codemode",
+		description: "Local documentation server",
+	});
+}
+```
+
 ## Tools and resources
 
 Tools use names such as `mcp__github__search_code`. Collisions after identifier normalization receive deterministic hash suffixes. Call names returned by discovery instead of constructing them manually.
 
-The default exposure is `codemode`: scripts discover tools through `searchTools()`, `describeTool()`, and `ALL_TOOLS`, then call them. `deferred` tools become declared after `tool_search` loads a match (`codemode-deferred` is accepted as an alias). `direct` tools are declared immediately; `hidden` tools are unreachable. `toolExposure` overrides the server's default. Exact names win over patterns, and among patterns the first match wins.
+The default exposure is [`codemode`](https://docs.bastani.ai/codemode): scripts discover tools through `searchTools()`, `describeTool()`, and `ALL_TOOLS`, then call them. `deferred` tools become declared after `tool_search` loads a match (`codemode-deferred` is accepted as an alias). `direct` tools are declared immediately; `hidden` tools are unreachable. `toolExposure` overrides the server's default. Exact names win over patterns, and among patterns the first match wins.
 
-Atomic activates `codemode` automatically for codemode servers and `tool_search` for deferred servers. An explicit `-codemode` in `defaultTools` or `--tools` prevents MCP from activating codemode; omission from a plain `defaultTools` list does not. Set `"autoEnableCodemode": false` beside `mcpServers` to disable automatic activation without removing codemode from the defaults. A project value overrides the user-level value. Scripts read server instructions with `describeNamespace("mcp__github")`.
+Atomic activates `codemode` automatically for codemode servers and `tool_search` for deferred servers. An explicit `-codemode` in `defaultTools` or `--tools` prevents MCP from activating codemode; omission from a plain `defaultTools` list does not. Set `"autoEnableCodemode": false` beside `mcpServers` to disable automatic activation without removing codemode from the defaults. A project value overrides the user-level value. Scripts read server instructions with `describeNamespace("mcp__github")`:
+
+```typescript
+const server = await describeNamespace("mcp__github");
+const matches = await searchTools("search code", { namespace: "mcp__github", limit: 5 });
+
+if (server && matches.length > 0) {
+	const result = await tools.mcp__github__search_code({ q: "registerMcpServer" });
+	text(result);
+}
+```
 
 Enabled servers connect in the background. The first prompt waits up to 10 seconds for direct-tool servers. Discovery and calls wait for the servers they need. Dropped connections reconnect on the next call, and tool-list notifications refresh registrations automatically.
 

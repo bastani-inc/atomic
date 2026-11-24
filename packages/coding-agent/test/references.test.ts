@@ -22,8 +22,14 @@ describe("generated reference pages", () => {
 		const reference = renderReferences().get("docs/models-configuration.md")!;
 		const models = reference.split("## Models\n")[1].split("## Model overrides\n")[0];
 		const overrides = reference.split("## Model overrides\n")[1].split("## Input limits\n")[0];
-		assert.ok(models.includes("| `contextWindow` | number | `128000` | Context window in tokens. |"));
-		assert.ok(overrides.includes("| `contextWindow` | number |  | Context window in tokens. |"));
+		assert.ok(
+			models.includes(
+				"| `contextWindow` | number | `128000` | Context window in tokens. Applies only to chat models. |",
+			),
+		);
+		assert.ok(
+			overrides.includes("| `contextWindow` | number |  | Context window in tokens. Applies only to chat models. |"),
+		);
 		assert.ok(reference.includes("Also applies to `azure-openai-responses` and `openai-codex-responses`."));
 		assert.ok(reference.includes("| `supportsGrammarTools` | boolean |  | Atomic alias"));
 	});

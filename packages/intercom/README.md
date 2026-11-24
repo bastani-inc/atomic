@@ -181,7 +181,7 @@ To coordinate two chat sessions privately without changing startup settings, hav
 
 ## Subagent escalation with `contact_supervisor`
 
-When a subagent is launched with supervisor coordination, it receives the `contact_supervisor` tool alongside `intercom`. Regular sessions never see `contact_supervisor`.
+When a [subagent](https://docs.bastani.ai/subagents) is launched with supervisor coordination, it receives the `contact_supervisor` tool alongside `intercom`. Regular sessions never see `contact_supervisor`.
 
 In interactive and standard sessions, blocking `contact_supervisor` requests wait inside the requesting child and continue that same child once the supervisor replies. Active and queued siblings keep running with their original identities and worktrees. In custom SDK sessions without background task support, a blocking request ends the child with a `[TASK_CONTEXT]` handoff.
 
@@ -379,7 +379,7 @@ graph TB
     B2 <-->|Local Socket/Pipe| B3
 ```
 
-The broker is a standalone process that manages session registration and message routing over length-prefixed JSON frames on a Unix domain socket (macOS and Linux) or named pipe (Windows). When shared storage is configured through `@bastani/atomic-storage-libsql` or `@bastani/atomic-storage-postgres`, brokers also enable multi-node routing so sessions on different machines can list and message each other, and ungrouped sessions default to their repository's `project:<owner>/<repo>` group instead of `default`.
+The broker is a standalone process that manages session registration and message routing over length-prefixed JSON frames on a Unix domain socket (macOS and Linux) or named pipe (Windows). When [shared storage](https://docs.bastani.ai/storage) is configured through [`@bastani/atomic-storage-libsql`](https://docs.bastani.ai/libraries/storage-libsql) or [`@bastani/atomic-storage-postgres`](https://docs.bastani.ai/libraries/storage-postgres), brokers also enable multi-node routing so sessions on different machines can list and message each other, and ungrouped sessions default to their repository's `project:<owner>/<repo>` group instead of `default`.
 
 ### Broker lifecycle and recovery
 
@@ -392,7 +392,7 @@ The broker is a standalone process that manages session registration and message
 
 ### Runtime files
 
-Runtime files live in `~/.atomic/agent/intercom/`. Setting `ATOMIC_CODING_AGENT_DIR` (or legacy `PI_CODING_AGENT_DIR` when unset) relocates this directory.
+Runtime files live in `~/.atomic/agent/intercom/`. Setting [`ATOMIC_CODING_AGENT_DIR`](https://docs.bastani.ai/environment-variables) (or legacy `PI_CODING_AGENT_DIR` when unset) relocates this directory.
 
 - `broker.sock` holds the Unix domain socket on macOS and Linux (Windows uses a named pipe). If the path exceeds the platform Unix socket limit (107 bytes on Linux, 103 bytes on macOS), the broker creates an owner-only `atomic-intercom-<uid>/<digest>.sock` socket under `$XDG_RUNTIME_DIR` or the system temp directory and records its path in `broker.sock.path`.
 - `broker.pid`, `broker.starting`, `broker.spawn.lock`, and `broker.sock.replace.lock` coordinate broker startup and lock ownership.
@@ -404,7 +404,7 @@ Runtime files live in `~/.atomic/agent/intercom/`. Setting `ATOMIC_CODING_AGENT_
 
 ## Limitations
 
-- **Local IPC by default:** Without shared storage, Intercom connects sessions on the same machine only. Cross-machine messaging requires configuring a shared storage adapter (`@bastani/atomic-storage-libsql` or `@bastani/atomic-storage-postgres`).
+- **Local IPC by default:** Without [shared storage](https://docs.bastani.ai/storage), Intercom connects sessions on the same machine only. Cross-machine messaging requires configuring a shared storage adapter ([`@bastani/atomic-storage-libsql`](https://docs.bastani.ai/libraries/storage-libsql) or [`@bastani/atomic-storage-postgres`](https://docs.bastani.ai/libraries/storage-postgres)).
 - **No separate transcript file:** Messages are stored in Atomic session history rather than a dedicated Intercom inbox file.
 - **No attachments UI:** The `intercom` tool supports `file`, `snippet`, and `context` attachments, while the `Alt+M` compose overlay sends plain text only.
 - **Connected sessions only:** `intercom list` shows sessions currently registered with the broker, not disconnected or offline Atomic processes.

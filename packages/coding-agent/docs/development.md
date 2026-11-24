@@ -6,9 +6,13 @@ description: "Enable debug logs, capture UI snapshots, profile event-loop stalls
 
 Use these tools to inspect failures, diagnose slow startup or UI stalls, and gather bug-report diagnostics. To build extensions, custom providers, or SDK integrations, start with [Build with Atomic](/build). To install the CLI, see [Installation](/getting-started/installation).
 
+<Note>
+Building Atomic from source or contributing to the repository? See [DEV_SETUP.md](https://github.com/bastani-inc/atomic/blob/main/DEV_SETUP.md) and [CONTRIBUTING.md](https://github.com/bastani-inc/atomic/blob/main/CONTRIBUTING.md).
+</Note>
+
 ## Debugging
 
-Enable debug mode from **Debug mode** in `/settings` (the global [`debug` setting](/settings#debug-mode)), by passing `--debug`, or by setting `ATOMIC_DEBUG=1` (legacy `PI_DEBUG=1`). The footer displays a `debug` badge while debug mode is active.
+Enable debug mode from **Debug mode** in `/settings` (the global [`debug` setting](/settings#debug-mode)), by passing `--debug`, by setting `ATOMIC_DEBUG=1` (legacy `PI_DEBUG=1`; see [Environment variables](/environment-variables#diagnostics-and-performance)), or over RPC with [`set_debug`](/rpc/protocol#set_debug) (`{"type": "set_debug", "enabled": true}`, which leaves saved settings unchanged). The footer displays a `debug` badge while debug mode is active.
 
 Only the exact value `"1"` enables debug mode via environment variable (`true` and `yes` are ignored). If `"debug": true` is saved in `~/.atomic/agent/settings.json`, setting `ATOMIC_DEBUG=0` does not turn debug mode off for that run; toggle **Debug mode** in `/settings` or edit `settings.json` instead.
 
@@ -70,6 +74,35 @@ ATOMIC_EVENT_LOOP_BLOCK_MS=100 ATOMIC_EVENT_LOOP_BLOCK_STACKS=0 atomic
 
 In delay-only mode, `start` records report `stacks: "disabled"` and `block` records have zero samples, while every stall duration and delay summary is still recorded.
 
+## Terminal rendering diagnostics
+
+Capture raw TUI output and redraw logs with three environment variables (legacy `PI_*` aliases work when the `ATOMIC_*` variable is unset; see [TUI debug logging](/tui/reference#debug-logging) and [Environment variables](/environment-variables#diagnostics-and-performance)):
+
+- **`ATOMIC_TUI_WRITE_LOG`** writes the raw ANSI stdout stream to a file path, or to one `tui-<timestamp>-<pid>.log` file per process inside a directory path.
+- **`ATOMIC_TUI_DEBUG=1`** writes main-screen render snapshots to `/tmp/tui/render-<timestamp>-<random>.log`.
+- **`ATOMIC_TUI_DEBUG_REDRAW=1`** logs full-redraw triggers to `pi-tui-debug.log` in the TUI log directory.
+
+```bash
+ATOMIC_TUI_WRITE_LOG=/tmp/tui-ansi.log atomic
+```
+
+Review captured terminal logs for sensitive content before sharing them.
+
+## Subsystem status and native troubleshooting
+
+Check subsystem health and logs before collecting full traces:
+
+- **`atomic storage status`** verifies active storage selection, adapter loading, database connectivity, and peer brokers ([Checking the selected storage](/storage#checking-the-selected-storage)).
+- **`atomic intercom status`** inspects the local Intercom broker; broker logs live at `~/.atomic/agent/intercom/broker.log` and `broker-watchdog.log` ([Intercom operations](/intercom/operations#local-files-logs-and-locks)).
+- **`atomic mcp list`** validates MCP configuration and tests enabled server connections ([MCP servers](/mcp-servers#shell-commands)).
+- **`/tools`** lists active and inactive tools plus which `git` binary Atomic selected ([Tools](/tools)).
+- **`/session snapshot`** shows [worktree snapshots](/worktree-snapshots) and the `Last resume` timing breakdown ([Inspecting snapshots](/worktree-snapshots#inspecting-snapshots)).
+
+For process-spawning or native-addon errors:
+
+- Set `ATOMIC_HOST_SPAWN=child-process` to launch helper processes (Git snapshots, `rg`, `fd`, worktree setup, and standalone shell commands) through standard Node child spawning instead of Atomic's native spawner ([Environment variables](/environment-variables#diagnostics-and-performance)).
+- If startup fails with `NativeModuleUnavailableError`, check [Package manager troubleshooting](/getting-started/installation#package-manager-troubleshooting) or point `NAPI_RS_NATIVE_LIBRARY_PATH` at a locally built `.node` binary (which bypasses Atomic's exact release version check).
+
 ## Document conversion diagnostics
 
 Diagnostics from document conversion (`.pdf`, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx`, `.rtf`, and `.epub`) and background session workers appear as status messages in interactive sessions and on stderr or console output in other modes. Conversion failures also include diagnostic details in the tool error result.
@@ -78,15 +111,17 @@ Long or noisy diagnostics may truncate, and interactive sessions keep only recen
 
 ## Startup timing and bug reports
 
-To profile slow startup or session resume:
+To profile slow startup or session resume (see [Environment variables](/environment-variables#diagnostics-and-performance)):
 
-- Set `ATOMIC_TIMING=1` (legacy `PI_TIMING=1`) to print startup timings and `atomic --session` resume timings to stderr.
+- Set `ATOMIC_TIMING=1` (legacy `PI_TIMING=1`) to print startup timings and `atomic --session` resume timings to stderr ([Inspecting snapshots](/worktree-snapshots#inspecting-snapshots)).
 - Set `ATOMIC_STARTUP_TRACE=/tmp/atomic-startup.jsonl` (legacy `PI_STARTUP_TRACE`) to append JSONL startup milestones with wall-clock timestamps.
 
-When reporting a bug or startup problem, include:
+To draft a bug report from inside Atomic, run `/skill:feedback <summary>`. It runs a debugger investigation, privacy-scrubs the Markdown draft, and lets you review it before posting to GitHub through your authenticated `gh` CLI ([Bundled skills](/skills#setup-notes-for-specific-bundled-skills)).
+
+When reporting a bug or startup problem manually, include:
 
 - Your OS and version
-- Your terminal emulator (and tmux or Herdr version if applicable)
+- Your [terminal emulator](/terminal-setup) (and [tmux](/tmux) or [Herdr](/herdr) version if applicable)
 - Your installation method (npm/package manager, self-contained release archive, or standalone binary)
 - Output of `atomic --version`
 - Relevant redacted diagnostic logs

@@ -10,24 +10,23 @@ Atomic reads environment variables for configuration, provider credentials, term
 
 Variables use different parsing rules depending on their category:
 
-- **Exact `"1"` only** (`"true"` and `"yes"` do not enable): `ATOMIC_DEBUG`, `ATOMIC_TIMING`, `ATOMIC_REDUCED_MOTION`, `ATOMIC_EXPERIMENTAL`, `ATOMIC_NO_PTY`, `ATOMIC_HARDWARE_CURSOR`, `ATOMIC_CLEAR_ON_SHRINK`, `ATOMIC_CLIPBOARD_OSC52`, `ATOMIC_ALLOW_BROWSER_COOKIES`, `ATOMIC_ALLOW_PRIVATE_URL_READS`, `ATOMIC_TUI_DEBUG`, and `ATOMIC_TUI_DEBUG_REDRAW`.
-- **`"1"`, `"true"`, or `"yes"` (case-insensitive):** `ATOMIC_OFFLINE` (`"0"` and `"false"` keep Atomic online) and `ATOMIC_TELEMETRY` (any other defined value, including `"0"`, `"false"`, `"no"`, or `""`, disables version-adoption pings and disables provider attribution headers for OpenRouter, NVIDIA, and OpenCode).
+- **Exact `"1"` only** (`"true"` and `"yes"` do not enable): `ATOMIC_DEBUG`, `ATOMIC_TIMING`, `ATOMIC_REDUCED_MOTION`, `ATOMIC_EXPERIMENTAL`, `ATOMIC_NO_PTY`, `ATOMIC_HARDWARE_CURSOR`, `ATOMIC_CLEAR_ON_SHRINK`, `ATOMIC_CLIPBOARD_OSC52`, `ATOMIC_ALLOW_BROWSER_COOKIES`, `ATOMIC_ALLOW_PRIVATE_URL_READS`, `ATOMIC_TUI_DEBUG`, `ATOMIC_TUI_DEBUG_REDRAW`, and `HERDR_ENV`.
+- **`"1"`, `"true"`, or `"yes"` (case-insensitive):** `ATOMIC_OFFLINE` (`"0"` and `"false"` keep Atomic online), `ATOMIC_SKIP_VERSION_CHECK` (`"0"` and `"false"` keep startup version checks enabled), and `ATOMIC_TELEMETRY` (any other defined value, including `"0"`, `"false"`, `"no"`, or `""`, disables version-adoption pings and disables provider attribution headers for OpenRouter, NVIDIA, and OpenCode).
 - **`"1"`/`"true"` or `"0"`/`"false"` (case-insensitive, trimmed):** `ATOMIC_INTERCOM_JOIN_AT_STARTUP` (other values are ignored).
-- **Any non-empty string (including `"0"` or `"false"`):** `ATOMIC_SKIP_VERSION_CHECK` and `NODE_DISABLE_COMPILE_CACHE`. Unset these variables instead of setting them to `"0"`.
-- **Any defined value (including empty string `""`):** `NO_COLOR`.
-- **Exact `"0"` (trimmed):** `ATOMIC_EVENT_LOOP_BLOCK_STACKS`.
+- **Any defined value (including empty string `""`):** `NO_COLOR` and `NODE_DISABLE_COMPILE_CACHE`. Unset these variables instead of setting them to `"0"`.
+- **Exact `"0"`:** `ATOMIC_EVENT_LOOP_BLOCK_STACKS` (trimmed) and `ATOMIC_TASK_CGROUP` (exact `"0"`, not trimmed).
 - **Numeric values:** Invalid or negative values silently fall back to the default (or disable stall logging for `ATOMIC_EVENT_LOOP_BLOCK_MS`).
 
 ## Core and session variables
 
 | Atomic variable | Legacy alias | Accepted values and behavior |
 | --- | --- | --- |
-| `ATOMIC_CODING_AGENT_DIR` | `PI_CODING_AGENT_DIR` | Path to the agent and config directory (default `~/.atomic/agent`). Read each time a session or extension load starts, so caches follow the active value. An SDK session's `agentDir` option takes precedence |
+| `ATOMIC_CODING_AGENT_DIR` | `PI_CODING_AGENT_DIR` | Path to the agent and config directory (default `~/.atomic/agent`). Read each time a session or extension load starts, so caches follow the active value. An [SDK](/sdk) session's `agentDir` option ([SDK directories](/sdk/reference#directories)) takes precedence |
 | `ATOMIC_OFFLINE` | `PI_OFFLINE` | `1`, `true`, or `yes` (case-insensitive) disables automatic network activity: update checks, package updates, telemetry, model catalog refreshes, and downloads of `fd`, `rg`, and [Git](/getting-started/installation#git). `0` and `false` keep Atomic online |
-| `ATOMIC_CACHE_RETENTION` | `PI_CACHE_RETENTION` | Case-sensitive `long` (default), `short`, or `none`. Unrecognized non-empty values silently fall back to `short`. See [Prompt-cache retention](#prompt-cache-retention) |
-| `ATOMIC_MODEL_CATALOG_URL` | `PI_MODEL_CATALOG_URL` | Base URL for `<url>/api.json` model catalog refreshes (default `https://models.dev`). Refreshes run at most once every four hours per provider (or on `atomic update --models`), keeping the bundled catalog if download fails |
+| `ATOMIC_CACHE_RETENTION` | `PI_CACHE_RETENTION` | Case-sensitive `long` (default in Atomic CLI and SDK sessions), `short`, or `none`. Unrecognized non-empty values fall back to `short`. Standalone [`@bastani/atomic-ai`](/libraries/ai) defaults to `short`. See [Prompt-cache retention](#prompt-cache-retention) |
+| `ATOMIC_MODEL_CATALOG_URL` | `PI_MODEL_CATALOG_URL` | Base URL for `<url>/api.json` model catalog refreshes (default `https://models.dev`). Refreshes run at most once every four hours per provider (or on `atomic update --models`), keeping the bundled catalog if download fails. See [Configure custom models](/models) |
 | `ATOMIC_SHARE_VIEWER_URL` | `PI_SHARE_VIEWER_URL` | Base URL of the viewer that `/share` links open (default `https://bastani.ai/session/`; the gist ID is appended after `#`) |
-| `ATOMIC_SKIP_VERSION_CHECK` | `PI_SKIP_VERSION_CHECK` | Any non-empty string (including `0` or `false`) skips automatic startup version checks; explicit self-update still checks |
+| `ATOMIC_SKIP_VERSION_CHECK` | `PI_SKIP_VERSION_CHECK` | `1`, `true`, or `yes` (case-insensitive) skips automatic startup version checks; `0` and `false` keep checks enabled. Explicit self-update still checks |
 | `ATOMIC_SELF_UPDATE_COMMAND` | `PI_SELF_UPDATE_COMMAND` | Command `atomic update` runs to update Atomic itself, split on whitespace, with `{packageName}`, `{version}`, and `{installSpec}` placeholders. Takes precedence over `selfUpdateCommand`. See [Custom update command](/reference/cli#custom-update-command) |
 | `ATOMIC_TELEMETRY` | `PI_TELEMETRY` | `1`/`true`/`yes` enables version-adoption pings; any other defined value (including `0`, `false`, `no`, or `""`) disables pings and disables provider attribution headers for OpenRouter, NVIDIA, and OpenCode. Does not disable update checks |
 | `ATOMIC_OAUTH_CALLBACK_HOST` | `PI_OAUTH_CALLBACK_HOST` | Bind host for the local OAuth callback server during `/login` (default `127.0.0.1`) |
@@ -42,9 +41,9 @@ Variables use different parsing rules depending on their category:
 
 | Atomic variable | Legacy alias | Accepted values and behavior |
 | --- | --- | --- |
-| `ATOMIC_CODING_AGENT_SESSION_DIR` | None | Non-empty path selects a JSONL session directory (`--session-dir` and `--no-session` take precedence). Relative paths resolve from the working directory; empty values leave settings in effect |
-| `ATOMIC_STORAGE` | None | Shared storage selection JSON for sessions without their own selection and for Intercom. Overrides settings but not `--storage`, session flags, or session-specific env vars. See [Selecting storage per process](/storage#selecting-storage-per-process) |
-| `ATOMIC_SESSIONS_STORAGE` | None | Session-only storage selection JSON in the same form as `sessions.storage`. Conflicts with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` |
+| `ATOMIC_CODING_AGENT_SESSION_DIR` | None | Non-empty path selects a JSONL session directory (`--session-dir` and `--no-session` take precedence; see [CLI session options](/reference/cli#session-options)). Relative paths resolve from the working directory; empty values leave [session settings](/settings#sessions) in effect. Combining a non-empty value with `--storage`, `--storage-file`, or `ATOMIC_SESSIONS_STORAGE` fails startup with `StorageConfigError` (`conflicting-overrides`) |
+| `ATOMIC_STORAGE` | None | Shared storage selection JSON for sessions without their own selection and for Intercom (`{ "dir": "..." }` is forbidden here). Overrides [settings](/settings#sessions) but not `--storage`, session flags, or session-specific env vars. See [Selecting storage per process](/storage#selecting-storage-per-process) and [SDK storage](/sdk/storage) |
+| `ATOMIC_SESSIONS_STORAGE` | None | Session-only storage selection JSON in the same form as [`sessions.storage`](/settings#sessions) (accepts `{ "dir": "..." }`). Conflicts with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` |
 | `ATOMIC_PROFILE` | None | `ci` selects the team database for sessions and Intercom from `ATOMIC_TEAM_*` without writing settings. See [Team and CI setup](/guides/team-setup#ci-and-swarms) |
 | `ATOMIC_TEAM_URL`, `ATOMIC_TEAM_TOKEN`, `ATOMIC_TEAM_TOKEN_FILE`, `ATOMIC_TEAM_PREFIX` | None | Team database settings for `ATOMIC_PROFILE=ci`. Setting any without `ATOMIC_PROFILE=ci` fails startup. `ATOMIC_TEAM_TOKEN_FILE` must be an absolute path, and `ATOMIC_TEAM_TOKEN` cannot be combined with `ATOMIC_TEAM_TOKEN_FILE` |
 | `ATOMIC_INTERCOM_GROUP` | `PI_INTERCOM_GROUP` | Static home Intercom group for this session. See [Intercom reference](/intercom/reference#configuration) |
@@ -65,6 +64,8 @@ Variables use different parsing rules depending on their category:
 | `ATOMIC_TRUE_COLOR` | `PI_TRUE_COLOR` | `1`, `0`, or `auto` overrides 24-bit color detection; explicit `terminal.trueColor` in settings takes precedence |
 | `ATOMIC_IMAGE_PROTOCOL` | `PI_IMAGE_PROTOCOL` | Case-insensitive `kitty`, `iterm2`, `none` (or `0`), or `auto` overrides inline image detection; explicit `terminal.images` in settings takes precedence |
 | `ATOMIC_PROGRAM_STATUS` | `PI_PROGRAM_STATUS` | Exact `1` forces OSC 7501 program-status reports; exact `0` disables them; any other value or unset reports only after terminal confirmation ([Program status](/terminal-setup#program-status)) |
+| `COLORFGBG` | None | Fallback terminal background hint when OSC 11 background queries are unavailable. Uses the last `;`-separated integer. Indices `0` to `6` and `8` map to dark, and other integers map to light. See [Themes](/themes) |
+| `HERDR_ENV`, `HERDR_BIN_PATH`, `HERDR_PANE_ID`, `HERDR_SOCKET_PATH` | None | Set by Herdr inside managed panes. Exact `HERDR_ENV=1` with non-empty `HERDR_BIN_PATH`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH` enables built-in pane status reporting; `HERDR_ENV=1` is also required for Herdr automation. See [Herdr](/herdr) |
 
 ## Diagnostics and performance
 
@@ -85,8 +86,9 @@ Variables use different parsing rules depending on their category:
 | `ATOMIC_TOOL_ABORT_GRACE_MS` | None | Milliseconds (digits only) an interrupted tool call may keep running before the turn moves on with `Operation aborted` (default `10000`, max `2147483647`, `0` stops waiting immediately; invalid values fall back to `10000`). See [Message queue](/usage#message-queue) |
 | `ATOMIC_CODEMODE_MAX_WORKERS` | `PI_CODEMODE_MAX_WORKERS` | Positive integer maximum live codemode workers per Atomic process (default `2`, each capped at 256 MiB; invalid values fall back to `2`). Extra scripts queue until a slot opens. See [Codemode](/codemode) |
 | `ATOMIC_HOST_SPAWN` | None | Set to `child-process` to launch helper processes (Git snapshots, `rg`, `fd`, worktree setup, and standalone shell commands) through standard Node child spawning instead of Atomic's native spawner. Useful for troubleshooting process-spawning issues on Linux or Windows |
+| `ATOMIC_TASK_CGROUP` | None | Exact `0` disables Linux cgroup v2 process-tree containment for background shell tasks. See [Lifetime, retention, and cleanup](/background-tasks#lifetime-retention-and-cleanup) |
 | `NODE_COMPILE_CACHE` | None | Override the directory for Node's persistent compile cache, enabled automatically on Node 22.8+ to speed up startup. On Windows, a cold default cache warms in a background helper during interactive runs; setting `NODE_COMPILE_CACHE` lets Node write it on exit instead |
-| `NODE_DISABLE_COMPILE_CACHE` | None | Any non-empty value prevents Node from enabling the compile cache |
+| `NODE_DISABLE_COMPILE_CACHE` | None | Any defined value (including empty string `""`) prevents Node from enabling the compile cache |
 | `NAPI_RS_NATIVE_LIBRARY_PATH` | None | Path to a custom `@bastani/atomic-natives` `.node` addon binary; bypasses the release version check |
 
 ## Retired workflow variables
@@ -97,9 +99,9 @@ Unset `ATOMIC_WORKFLOWS_JOURNAL`, `ATOMIC_WORKFLOW_JOURNAL_PATH`, and `ATOMIC_WO
 
 Sessions default to `~/.atomic/workflows/journal.sqlite`. With a custom `ATOMIC_CODING_AGENT_DIR`, they default to `<agentDir>/workflows/journal.sqlite` (unless an eligible custom directory adopted an existing parent store; see [Storage home](/storage#storage-home)).
 
-`ATOMIC_CODING_AGENT_SESSION_DIR` selects JSONL session files. Relative paths resolve against the working directory, and an empty value leaves settings in effect.
+`ATOMIC_CODING_AGENT_SESSION_DIR` selects JSONL session files. Relative paths resolve against the working directory, and an empty value leaves settings in effect. Combining a non-empty value with `--storage`, `--storage-file`, or `ATOMIC_SESSIONS_STORAGE` fails startup with `StorageConfigError` (`conflicting-overrides`).
 
-`ATOMIC_STORAGE` and `ATOMIC_SESSIONS_STORAGE` accept the same JSON selections as `storage` and `sessions.storage`, including adapters, with relative paths resolving from the storage home. Use `{ "memory": true }` for process-local memory (never selected automatically after a storage failure). See [Selecting storage per process](/storage#selecting-storage-per-process).
+`ATOMIC_STORAGE` and `ATOMIC_SESSIONS_STORAGE` accept the same JSON selections as [`storage` and `sessions.storage`](/settings#sessions), including adapters, with relative paths resolving from the storage home (`{ "dir": "..." }` is allowed in `ATOMIC_SESSIONS_STORAGE` and forbidden in `ATOMIC_STORAGE`). Use `{ "memory": true }` for process-local memory (never selected automatically after a storage failure). See [Selecting storage per process](/storage#selecting-storage-per-process), [CLI session options](/reference/cli#session-options), and [SDK storage](/sdk/storage).
 
 ## Prompt-cache retention
 
@@ -113,9 +115,9 @@ Values are **case-sensitive** (`"long"`, `"short"`, or `"none"`). Any unrecogniz
 
 Use `short` for shorter caching (five minutes on Anthropic), `none` to disable Atomic's optional cache controls where supported, or `long` to request extended retention (one hour on Anthropic). Providers can still apply automatic caching depending on the model.
 
-When unset, OpenAI models without known extended-retention support (such as GPT-4o) use ordinary caching, and Bedrock Claude models without known one-hour support (such as Claude 3.7) use five-minute caching. Supported OpenAI models and Bedrock Claude 4.5+ keep extended caching. For Bedrock application inference profiles, set an accurate model name in `models.json` so Atomic recognizes its capabilities. Custom OpenAI-compatible models can set `compat.supportsLongCacheRetention` in `models.json`.
+When unset, OpenAI models without known extended-retention support (such as GPT-4o) use ordinary caching, and Bedrock Claude models without known one-hour support (such as Claude 3.7) use five-minute caching. Supported OpenAI models and Bedrock Claude 4.5+ keep extended caching. For Bedrock application inference profiles, set an accurate model name in [`models.json`](/models) so Atomic recognizes its capabilities. Custom OpenAI-compatible models can set `compat.supportsLongCacheRetention` in `models.json` (see [`models.json` field reference](/models-configuration)).
 
-In SDK requests, explicit `cacheRetention` takes precedence over `ATOMIC_CACHE_RETENTION`, and request-scoped `env` overrides credential-scoped and process environments. Requests that disable caching (such as branch summaries) stay uncached.
+In [SDK](/sdk) requests, explicit `cacheRetention` takes precedence over `ATOMIC_CACHE_RETENTION`, and request-scoped `env` overrides credential-scoped and process environments. Requests that disable caching (such as branch summaries) stay uncached. Direct calls to standalone [`@bastani/atomic-ai`](/libraries/ai) APIs default an unset `ATOMIC_CACHE_RETENTION` to `short` and enable `long` only when set to `"long"`, so disabling caching there requires passing `cacheRetention: "none"` explicitly.
 
 [Anthropic's prompt-caching pricing](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing) charges **2x base input price for one-hour writes** versus **1.25x for five-minute writes**. Extended retention helps when prompts are reused after five minutes; `short` can cost less when cache hits happen within five minutes or prompts are rarely reused.
 
@@ -150,6 +152,6 @@ Every `bash` and `powershell` tool call (including in subagents, RPC, and SDK se
 
 Before overlaying those eight current snapshot values, Atomic clears all ten reserved names: the eight names in the table above plus the two retired session-file names `ATOMIC_SESSION_FILE` and `PI_SESSION_FILE`. Clearing all ten guarantees stale metadata from another session never leaks into a shell command. Unrelated inherited and caller-supplied variables remain intact.
 
-`ATOMIC_SESSION_FILE` and `PI_SESSION_FILE` are no longer populated because session IDs identify records inside the active store rather than assuming a file path. The snapshot is captured when each command runs, so resumed sessions and model changes are always reflected. SDK `createBashTool()` and `createPowerShellTool()` expose these variables by default; pass `exposeSessionEnvironment: false` to omit them.
+`ATOMIC_SESSION_FILE` and `PI_SESSION_FILE` are no longer populated because session IDs identify records inside the active store rather than assuming a file path. The snapshot is captured when each command runs, so resumed sessions and model changes are always reflected. SDK [`createBashTool()` and `createPowerShellTool()`](/sdk/reference#tools) expose these variables by default; pass `exposeSessionEnvironment: false` to omit them.
 
 See [CLI environment variables](/reference/cli#environment-variables) and [RPC direct bash](/rpc/protocol#bash) for execution and streaming behavior.

@@ -65,9 +65,9 @@ await atomic.registerProvider("my-llm", {
 });
 ```
 
-Providing `models` replaces all existing chat, image, and classifier models for that provider. Omitting `type` registers a chat model; image and classifier models require `type: "image"` or `type: "classifier"` plus handlers in `images` or `classifiers`. See the [mixed-operation provider example](/custom-provider#quick-reference).
+Providing `models` replaces all existing chat, image, classifier, and compactor models for that provider. Omitting `type` registers a chat model; image and classifier models require `type: "image"` or `type: "classifier"` plus handlers in `images` or `classifiers`; compactor models use `type: "compactor"` (`ProviderCompactorModelConfig`, see [Compactor request contract](/compaction/reference#compactor-request-contract)). See the [mixed-operation provider example](/custom-provider#mixed-operation-providers).
 
-Registered providers appear in `/login` like built-in providers: `/login my-llm` prompts for an API key and stores it in `auth.json`, and the selector shows configured status (such as `✓ env: MY_LLM_API_KEY`). Once configured, `/model` lists its models; without credentials, selecting one reports `No API key found for my-llm` with the `/login` hint.
+Registered providers appear in `/login` like built-in providers: `/login my-llm` prompts for an API key and stores it in `auth.json`, and the selector shows configured status (such as `✓ env: MY_LLM_API_KEY`). See [Credential resolution order](/providers/reference#resolution-order) for how stored keys, extension `apiKey`, and environment variables interact. Once configured, `/model` lists its models; without credentials, selecting one reports `No API key found for my-llm` with the `/login` hint.
 
 ### API types
 
@@ -86,7 +86,7 @@ The `api` field selects the built-in chat streaming implementation:
 | `bedrock-converse-stream` | Amazon Bedrock Converse API |
 | `pi-messages` | Custom gateways speaking the `pi-messages` protocol |
 
-Image (`images`) and classifier (`classifiers`) handlers use their own operation-specific `api` keys independent of this chat streaming table.
+Image (`images`) and classifier (`classifiers`) handlers use their own operation-specific `api` keys independent of this chat streaming table. Compactor models (`type: "compactor"`) declare a compactor `api` string at model or provider level and follow the [Compactor request contract](/compaction/reference#compactor-request-contract).
 
 Most OpenAI-compatible servers use `openai-completions`. Configure model-specific thinking controls with `thinkingLevelMap` and endpoint quirks with `compat`:
 

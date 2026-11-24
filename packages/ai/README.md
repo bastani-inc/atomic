@@ -145,7 +145,7 @@ for (const block of response.content) {
 The package exposes an `atomic-ai` binary (with `pi-ai` kept as a legacy alias) for interactive OAuth login that saves credentials to `auth.json`:
 
 ```bash
-npx atomic-ai login
+npx @bastani/atomic-ai login
 ```
 
 ## Documentation

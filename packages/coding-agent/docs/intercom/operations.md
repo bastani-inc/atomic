@@ -6,6 +6,14 @@ description: "Configure Intercom connections, multi-machine routing, broker upgr
 
 This guide explains how Atomic sessions connect to the local Intercom broker, how delivery and multi-machine routing work, and how to diagnose connection or upgrade issues.
 
+Looking for another Intercom page? See [Intercom overview](/guides/intercom) for concepts, [Coordinate sessions with Intercom](/intercom) for quick-start patterns and `contact_supervisor`, [Intercom reference](/intercom/reference) for tool parameters and settings, or [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for broker subcommands.
+
+Common operational tasks on this page:
+
+- [Running Intercom across machines](#running-intercom-across-machines) for shared-database setup, project groups, and multi-node troubleshooting.
+- [Upgrading Atomic with sessions running](#upgrading-atomic-with-sessions-running) for broker handover, `atomic intercom upgrade`, and `atomic intercom restart`.
+- [Connection states and recovery](#connection-states-and-recovery) for diagnosing disconnects, holds, and queued deliveries.
+
 ## How connection works
 
 An interactive session connects to Intercom in the background 3 seconds after startup, including new, resumed, or forked terminal sessions. Neither the initial render nor your first prompt waits for this connection. Once connected, other sessions in its group can list and message it immediately.
@@ -114,7 +122,21 @@ By default, each machine's broker serves only sessions on that machine. With mul
 
 For a team, run `atomic team join <url> --token-file <path>` to configure the team database for Intercom while keeping session transcripts local and restarting the broker. CI runners use `ATOMIC_PROFILE=ci` instead. See [Team and CI setup](/guides/team-setup).
 
-To configure multi-node routing manually, give every machine the same top-level `storage` selection and `prefix`, using a database-backed [storage adapter](/storage#selecting-an-adapter) (such as SQLite, libSQL, or PostgreSQL) connected to a shared database ([Sharing storage across hosts](/storage#sharing-storage-across-hosts)). Install the adapter on every machine, for example as an [Atomic package](/storage#adapters-from-atomic-packages). Both npm installations and standalone binaries support multi-node routing.
+To configure multi-node routing with a shared database for both sessions and Intercom, install either `@bastani/atomic-storage-libsql` ([Turso and libSQL](/storage#turso-and-libsql), [libSQL adapter library](/libraries/storage-libsql)) or `@bastani/atomic-storage-postgres` ([PostgreSQL](/storage#postgresql), [PostgreSQL adapter library](/libraries/storage-postgres)) on every machine and run `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for all flags and options.
+
+```bash
+# Turso / libSQL
+atomic install npm:@bastani/atomic-storage-libsql
+atomic storage join libsql://<db>.turso.io --token-file ~/turso-token --prefix team_
+atomic intercom restart
+
+# PostgreSQL
+atomic install npm:@bastani/atomic-storage-postgres
+atomic storage join postgres://atomic@db.example.com:5432/atomic?sslmode=verify-full --password-file ~/pg-password --prefix team_
+atomic intercom restart
+```
+
+You can also give every machine the same top-level `storage` selection and `prefix` manually, using any database-backed [storage adapter](/storage#selecting-an-adapter) installed as an [Atomic package](/storage#adapters-from-atomic-packages). Both npm installations and standalone binaries support multi-node routing.
 
 The broker reads its storage selection from:
 
@@ -124,9 +146,9 @@ The broker reads its storage selection from:
 ```json
 {
   "storage": {
-    "adapter": "@example/atomic-sqlite",
-    "options": { "url": "libsql://team.example" },
-    "secrets": { "authToken": { "env": "TEAM_DB_TOKEN" } },
+    "adapter": "@bastani/atomic-storage-libsql",
+    "options": { "url": "libsql://<db>.turso.io" },
+    "secrets": { "authToken": { "env": "TURSO_TOKEN" } },
     "prefix": "team_"
   }
 }

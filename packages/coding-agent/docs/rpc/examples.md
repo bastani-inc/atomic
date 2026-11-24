@@ -94,6 +94,53 @@ const unsubscribeUi = client.onExtensionUIRequest((request) => {
 
 More TypeScript examples live in the repository under [`examples/rpc-client.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/rpc-client.ts), [`examples/rpc-extension-ui.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/rpc-extension-ui.ts), and [`examples/extensions/rpc-demo.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/rpc-demo.ts).
 
+### Isolating subprocess storage
+
+Pass `--storage-file <path>`, `--session-store <path>`, or `ATOMIC_STORAGE` in `RpcClientOptions` to give each RPC subprocess its own session store without editing user settings (see [Selecting storage per process](/storage#selecting-storage-per-process) and [SDK storage guide](/sdk/storage)):
+
+```typescript
+import { fileURLToPath } from "node:url";
+import { RpcClient } from "@bastani/atomic";
+
+const client = new RpcClient({
+  runtimeExecutable: process.execPath,
+  cliPath: fileURLToPath(import.meta.resolve("@bastani/atomic/rpc-entry")),
+  args: ["--session-store", "./rpc-sessions.sqlite", "--session-prefix", "job_"],
+  // Or select shared storage via env (or args: ["--storage-file", "/etc/atomic/storage.json"]):
+  // env: { ...process.env, ATOMIC_STORAGE: JSON.stringify({ path: "./rpc-sessions.sqlite" }) },
+});
+```
+
+Invalid storage flags or environment values fail subprocess startup with `StorageConfigError` before RPC commands are accepted.
+
+### Catching rehydrated typed errors
+
+`RpcClient` automatically rehydrates structured `errorCode` responses (`"compaction_error"`, `"missing_session_cwd"`, `"debug_error"`, and `"credential_synchronization"`; see [Error handling](/rpc/protocol#error-handling)) back into their exported error classes:
+
+```typescript
+import {
+  CredentialSynchronizationError,
+  isCompactionError,
+  isDebugError,
+  isMissingSessionCwdError,
+} from "@bastani/atomic";
+
+try {
+  await client.switchSession(savedSessionId);
+  await client.compact();
+} catch (error) {
+  if (isCompactionError(error) && error.code === "nothing-to-compact") {
+    console.log("Nothing new to compact.");
+  } else if (isMissingSessionCwdError(error)) {
+    await client.switchSession(savedSessionId, error.issue.fallbackCwd);
+  } else if (isDebugError(error) || error instanceof CredentialSynchronizationError) {
+    console.error(error.message);
+  } else {
+    throw error;
+  }
+}
+```
+
 ## Standalone Node.js client
 
 This ESM script spawns an installed `atomic --mode rpc` binary without importing `@bastani/atomic`, parses stdout with strict LF-only JSONL framing (avoiding Node's `readline`, which splits on `U+2028` and `U+2029`), aborts on `SIGINT`, and closes stdin cleanly when the turn finishes:

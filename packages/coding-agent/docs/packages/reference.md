@@ -4,9 +4,11 @@ sidebarTitle: "Packages"
 description: "Reference for package resource filtering patterns, glob vs exact matching, autoload overrides, precedence, and deduplication."
 ---
 
+This page is the reference for package filtering, `autoload: false`, precedence, and deduplication. To install and manage packages, see [Install and manage packages](/packages) and [Package CLI commands](/reference/cli#package-commands). To publish a package, see [Create and publish packages](/packages/authoring). For project trust rules, see [Security](/security). To load local packages programmatically in the SDK, use [`DefaultResourceLoader({ additionalExtensionPaths })`](/sdk/reference#extensions).
+
 ## Package filtering
 
-Use the object form in `settings.json` to filter which resources load from a package:
+Use the object form in [`settings.json`](/settings) to filter which resources load from a package:
 
 ```json
 {

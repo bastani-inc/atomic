@@ -21,6 +21,17 @@ Bundled integrations also add [public repository search](#code_search), [web acc
 
 **Malformed tool arguments.** If a model produces invalid or truncated JSON tool arguments, Atomic rejects the call instead of executing a partial request and returns the original arguments so the model can retry.
 
+## Enabling and restricting tools
+
+Control which tools a session exposes from the CLI, settings, SDK, or extensions:
+
+| Where | How to configure | Reference |
+| --- | --- | --- |
+| CLI (single run) | `--tools`, `--exclude-tools`, `--no-builtin-tools`, `--no-tools` | [CLI tool options](/reference/cli#tool-options) |
+| Settings (persistent) | `defaultTools` in `~/.atomic/agent/settings.json` or trusted `.atomic/settings.json` | [Tool settings](/settings#tools) |
+| SDK (`createAgentSession`) | `tools`, `excludedTools`, `noTools`, `customTools`, and `builtins` (`subagents`, `mcp`, `web-access`, `intercom`) | [SDK tools](/sdk/reference#tools) and [Custom tools](/sdk/reference#custom-tools) |
+| Extensions | Register or override tools with `atomic.registerTool()` and `defineTool()` | [Authoring custom tools](/extensions/authoring#custom-tools) |
+
 ## `read` and path selectors
 
 `read` reads files, directories, images, documents, archives, SQLite databases, internal Atomic resources, and public HTTP(S) URLs through one `path` parameter.

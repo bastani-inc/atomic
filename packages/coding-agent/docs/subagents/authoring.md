@@ -6,6 +6,8 @@ description: "Define custom Markdown subagents, configure YAML frontmatter field
 
 Define a custom subagent as a Markdown file with YAML frontmatter and a self-contained system prompt body. Run `/reload` after adding or editing files on disk so Atomic picks up your changes.
 
+Looking for another subagents page? Start with [Subagents overview](/guides/subagents) for concepts, [Run subagents](/subagents) for launching, worktrees, and run control, [Subagent reference](/subagents/reference) for precedence and `config.json`, or [Subagent children in the SDK](/sdk#subagent-children) for programmatic setup.
+
 ## Where agent files live {#custom-agents}
 
 Atomic discovers `.md` files recursively (`**/*.md`, following symlinks and sorted lexicographically) across four scopes. Later scopes and later directories inside a scope override earlier ones on matching names. Project scopes resolve from the nearest ancestor directory containing `.atomic/`, `.pi/`, or `.agents/` (not necessarily the Git root). See [Agent discovery](/subagents/reference#agent-discovery) for complete rules.
@@ -166,7 +168,7 @@ Override or disable bundled agents in user (`~/.atomic/agent/settings.json`) or 
   - `systemPromptMode` (`"replace"` or `"append"`)
   - `inheritProjectContext` (boolean)
   - `inheritSkills` (boolean)
-  - `defaultContext` (`"fresh"` or `"fork"`)
+  - `defaultContext` (`"fresh"`, `"fork"`, or `false` to clear)
   - `disabled` (boolean)
   - `systemPrompt` (string)
   - `skills` (string array, or `false` to clear)

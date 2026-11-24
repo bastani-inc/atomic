@@ -4,7 +4,7 @@ sidebarTitle: "@bastani/atomic-codemode"
 description: "Run model-written JavaScript in a QuickJS WebAssembly sandbox whose only capability is calling injected tools."
 ---
 
-Runs model-written JavaScript in a QuickJS VM (compiled to WebAssembly) where the only capability is calling injected tools. Nested tool calls never enter the LLM context; only the script's output and return value do.
+Runs model-written JavaScript in a QuickJS VM (compiled to WebAssembly) where the only capability is calling injected tools. Nested tool calls never enter the LLM context; only the script's output and return value do. See [Standalone libraries](/libraries) for all standalone packages.
 
 ## Installation
 
@@ -36,6 +36,7 @@ See [Usage on Node and Bun](#usage-on-node-and-bun) and [Usage on Cloudflare Wor
 ## Usage on Node and Bun
 
 ```ts
+import { readFile } from "node:fs/promises";
 import { CodemodeSandbox } from "@bastani/atomic-codemode";
 
 const sandbox = new CodemodeSandbox({
@@ -45,7 +46,7 @@ const sandbox = new CodemodeSandbox({
 			name: "read",
 			execute: async (args, { signal }) => {
 				const { path } = args as { path: string };
-				return await readFile(path, "utf8");
+				return await readFile(path, { encoding: "utf8", signal });
 			},
 		},
 	],

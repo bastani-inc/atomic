@@ -8,7 +8,7 @@ See the [subagents guide](https://docs.bastani.ai/subagents), [custom subagents]
 
 ## Setup
 
-Atomic bundles `@bastani/subagents` with `@bastani/atomic`. No separate installation is required.
+Atomic bundles `@bastani/subagents` with `@bastani/atomic` ([Installation](https://docs.bastani.ai/getting-started/installation)). No separate installation is required.
 
 ## Try this first
 
@@ -151,7 +151,7 @@ Delegation is strictly one level deep. Child sessions may use `list`, `get`, `st
 
 ## Intercom coordination
 
-Atomic bundles `@bastani/intercom` alongside `@bastani/subagents`. No separate install is needed for parent-child or sibling coordination.
+Atomic bundles `@bastani/intercom` alongside `@bastani/subagents`. No separate install is needed for parent-child or sibling coordination. See the [Intercom guide](https://docs.bastani.ai/intercom) for full group and messaging rules.
 
 When Intercom is active, subagents receive a private route back to the parent session through `contact_supervisor`:
 
@@ -275,7 +275,7 @@ Examples:
 - Setting `tools: mcp:chrome-devtools` keeps normal built-in tools and adds direct tools from the `chrome-devtools` MCP server.
 - Setting `tools: read, bash, mcp:chrome-devtools` restricts built-in tools to `read` and `bash` and adds direct tools from the `chrome-devtools` MCP server.
 
-Direct `mcp:` selections work with servers configured in Atomic's bundled `@bastani/mcp` extension (`~/.atomic/agent/mcp.json` or trusted `.atomic/mcp.json`), promoting matching non-hidden server tools to direct exposure in that child session.
+Direct `mcp:` selections work with servers configured in Atomic's bundled `@bastani/mcp` extension (`~/.atomic/agent/mcp.json` or trusted `.atomic/mcp.json`; see [MCP servers](https://docs.bastani.ai/mcp-servers)), promoting matching non-hidden server tools to direct exposure in that child session.
 
 `extensions` controls child extension loading and takes precedence over extension paths implied by `tools`:
 

@@ -4,17 +4,26 @@ sidebarTitle: "Session format"
 description: "Format-4 JSONL session schema, message and entry types, context rebuilding rules, and the SessionManager API."
 ---
 
-This reference describes format-4 JSONL files used by explicit JSONL stores and session exports. Sessions default to local SQLite; see [Session storage](/sessions#session-storage) to choose a store.
+This reference describes format-4 JSONL files used by explicit JSONL stores and session exports. Sessions default to local SQLite; see [Session storage](/sessions#session-storage), [Storage backends](/storage), and [SDK session storage](/sdk/storage) to choose or open a store.
 
 In JSONL, each line is a JSON object with a `type` field. Session entries form a tree through `id` and `parentId`.
 
 ## File location
 
+JSONL stores use one of two directory layouts depending on `exactDirectory`:
+
 ```text
-<selected-jsonl-directory>/--<encoded-cwd>--/<timestamp>_<sha256-of-id>.jsonl
+# Flat layout (exactDirectory: true)
+<dir>/<timestamp>_<sha256-of-id>.jsonl
+
+# Nested per-project layout (exactDirectory: false)
+<dir>/--<encoded-cwd>--/<timestamp>_<sha256-of-id>.jsonl
 ```
 
-`sessions.storage.dir` and `--session-dir` choose the root directory for JSONL files. Unless opened with `exactDirectory: true`, Atomic groups files into a per-project subdirectory named `--<encoded-cwd>--` (falling back to `--<sha256-of-cwd>--` when the encoded directory name exceeds 180 UTF-8 bytes), and names each file with its timestamp and the 64-character hex SHA-256 hash of the session ID.
+- **Flat layout (`exactDirectory: true`).** `sessions.storage.dir`, `--session-dir`, `ATOMIC_SESSIONS_STORAGE`, SDK `{ kind: "jsonl", dir }`, `SessionManager` string-directory overloads, and `JsonlSessionStore.open(dir, { exactDirectory: true })` write files directly inside `<dir>` and do not scan subdirectories.
+- **Nested layout (`exactDirectory: false`).** Legacy `~/.atomic/agent/sessions` and direct `JsonlSessionStore.open(dir)` calls (where `exactDirectory` defaults to `false`) group files into a per-project subdirectory named `--<encoded-cwd>--`, falling back to `--<sha256-of-cwd>--` when the encoded directory name exceeds 180 UTF-8 bytes.
+
+Do not mix both layouts on the same directory. Files stored under `--<encoded-cwd>--` are invisible to `exactDirectory: true` stores. In both layouts, each filename combines the session creation timestamp and the 64-character hex SHA-256 hash of the session ID.
 
 Resume and fork selection match by session ID rather than file path. Local artifacts and tool-result files stay on the filesystem even when a session is stored in a database.
 
@@ -531,16 +540,18 @@ for (const line of lines) {
 
 Await `create`, `open`, `continueRecent`, `forkFrom`, and every session mutation. A resolved mutation has committed to its store, and a failed write rejects with a typed storage error without publishing the entry. There is no `flush` method.
 
-`inMemory()` selects memory storage explicitly without filesystem I/O. Factories without an explicit store or directory resolve configured storage, defaulting to the shared local SQLite database. Passing a directory selects JSONL explicitly. Store-open failures never fall back to memory.
+`inMemory()` selects memory storage explicitly without filesystem I/O. Factories without an explicit store or directory resolve configured storage, defaulting to the shared local SQLite database. Passing a directory selects JSONL explicitly. Store-open failures never fall back to memory. To open SQLite, PostgreSQL, libSQL, JSONL, or memory stores, see [SDK session storage](/sdk/storage), [Storage backends](/storage), and [Session management](/sdk/reference#session-management).
+
+**Store ownership and closing.** `SessionManager` has no `close()` method. Calling `SessionManager.create(cwd)`, `SessionManager.continueRecent(cwd)`, or `SessionManager.open(filePath)` without passing a `SessionStore` opens an internal store that `createAgentSession({ sessionManager })` does **not** close during `session.dispose()`. Close `sessionManager.getSessionStore().close()` when finished, or open and close a `SessionStore` explicitly and pass it to `SessionManager.create(store, cwd)` or `SessionManager.open(store, sessionId)`. Calling `close()` twice on a direct `SqlSessionStore`, `JsonlSessionStore`, or `MemorySessionStore` throws `StoreClosedError`, and `SqlSessionStore.close()` leaves a caller-owned `database` open. See [SDK session storage](/sdk/storage) for the ownership matrix.
 
 By default, opening an existing session loads only the active tail window (entries from the latest compaction boundary onward, plus required branch metadata) into memory rather than the entire history. Methods below note whether they inspect only entries loaded in memory or read older entries from storage on demand.
 
 ### Static creation methods
 
-- `SessionManager.create(cwd, sessionDir?, options?)`: create a new session in configured storage, or in JSONL when `sessionDir` is provided.
+- `SessionManager.create(cwd, sessionDir?, options?)`: create a new session in configured storage, or in flat-layout JSONL when `sessionDir` is provided.
 - `SessionManager.create(store, cwd, options?)`: create a new session in a supplied `SessionStore`.
-- `SessionManager.open(store, sessionId, cwdOverride?, options?)`: open an existing session by exact ID, raising `SessionNotFoundError` if missing. Defaults to `{ history: "tail" }`, loading from the latest compaction window; pass `{ history: "full" }` only when every stored entry must be loaded into memory. `openSessionById(id, cwd?, sessionDir?, options?)` and `continueRecent(store, cwd, options?)` share the same behavior.
-- `SessionManager.open(path, sessionDir?, cwdOverride?)`: open a JSONL file directly, creating it if missing. This is a file API rather than the CLI session selector.
+- `SessionManager.open(store, sessionId, cwdOverride?, options?)`: open an existing session by exact ID in any `SessionStore` (required for SQLite, PostgreSQL, and libSQL sessions), raising `SessionNotFoundError` if missing. Defaults to `{ history: "tail" }`, loading from the latest compaction window; pass `{ history: "full" }` only when every stored entry must be loaded into memory. `continueRecent(store, cwd, options?)` and instance method `openSessionById()` share the same behavior.
+- `SessionManager.open(path, sessionDir?, cwdOverride?, options?)`: open a JSONL file directly by filesystem path, creating it if missing. This is a JSONL file API only and cannot open a SQLite, PostgreSQL, or libSQL session ID.
 - `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)`: continue the most recent regular session or create a new one. Pass `{ includeInternal: true }` to include internal sessions.
 - `SessionManager.inMemory(cwd?, options?)`: create an empty memory-only session synchronously. To seed entries, await `SessionManager.inMemory(cwd, options, entries)` without mutating the supplied array until it resolves.
 - `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)`: fork a JSONL file into the target store. For database sessions, open the session by ID and await `manager.forkTo(targetCwd, targetStore?, options?)`.
@@ -548,15 +559,16 @@ By default, opening an existing session loads only the active tail window (entri
 
 ### Static listing methods
 
-- `SessionManager.list(cwd, storeOrDir?, onProgress?, options?)`: list sessions for one project, excluding internal sessions by default.
-- `SessionManager.listAll(storeOrDir?, onProgress?, options?)`: list sessions across all projects in the store. Both methods accept `{ includeInternal: true, signal }`.
+- `SessionManager.list(cwd, storeOrDir?, onProgress?, options?)`: list sessions for one project (`cwd` is always the first argument), excluding internal sessions by default. When `storeOrDir` is omitted, Atomic opens and closes configured storage automatically.
+- `SessionManager.listAll(storeOrDir?, onProgress?, options?)` or `SessionManager.listAll(onProgress?, signal?)`: list sessions across all projects in the store. The first argument is `storeOrDir` or `onProgress`, never `cwd`; passing a string scans that string as a JSONL directory instead of filtering by project. When `storeOrDir` is omitted, Atomic opens and closes configured storage automatically.
 
-Select sessions by `SessionInfo.id`. `SessionInfo.path` holds a JSONL path when available and otherwise the session ID; do not treat it as a filesystem path.
+Both methods accept `{ includeInternal: true, signal }`. Select sessions by `SessionInfo.id`. `SessionInfo.path` holds a JSONL path when available and otherwise the session ID; do not treat it as a filesystem path.
 
 ### Session management methods
 
 - `newSession(options?)`: start a new session. `NewSessionOptions` accepts `id`, `parentSession`, and `internal` (`internal: true` hides the session from `/resume`, `atomic -r`, `-c`, and `history://sessions` while keeping it openable by ID).
-- `setSessionFile(path)`: switch directly to a JSONL file. For ID-based loading, create a new manager with `SessionManager.open(store, sessionId)`.
+- `openSessionById(sessionId, cwdOverride?, sessionDirectory?, options?)`: open an existing session by exact ID from this manager's active store (or from a flat-layout JSONL directory when `sessionDirectory` is passed), returning a new `SessionManager`. Defaults to `{ history: "tail" }`; pass `{ history: "full" }` only when every stored entry must be loaded into memory.
+- `setSessionFile(path)`: switch directly to a JSONL file. For ID-based loading, create a new manager with `SessionManager.open(store, sessionId)` or `manager.openSessionById(sessionId)`.
 - `createBranchedSession(leafId)`: extract a branch into a new session in the same store.
 - `forkTo(cwd, targetStoreOrDir?, options?)`: copy the session into a new session at the destination.
 - `deleteSession(sessionId)`: delete another session and its entries from the active store. Deleting a missing ID is a no-op. Rejects for the currently open session, and raises `SessionOpenElsewhereError` if another live Atomic session holds it open (tracked by an active heartbeat that expires after 60 seconds on another host). A session deleted while running fails its next save once with `SessionDeletedError`. `SessionStore.delete(sessionId)` is the unguarded store-level operation underneath.
@@ -581,19 +593,21 @@ All append methods below return `Promise<string>` resolving to the new entry ID,
 
 ### Tree navigation methods
 
-| Method | Action |
-| --- | --- |
-| `getLeafId()` | Return the current leaf entry ID |
-| `getLeafEntry()` | Return the current leaf entry |
-| `getEntry(id)` | Return an entry loaded in memory by ID |
-| `getBranch(fromId?)` | Walk from an entry to the root |
-| `getTree()` | Return the tree of entries loaded in memory; use `readHistory()` or `loadFullHistory()` for older entries |
-| `getChildren(parentId)` | Return direct child entries currently loaded in memory |
-| `getLabel(id)` | Return the label for an entry |
-| `branch(entryId)` | Move the leaf to an earlier entry in memory only (the session reopens at its last saved entry) |
-| `resetLeaf()` | Reset the leaf to `null` in memory only |
-| `recordBranch(entryId \| null)` | Move the leaf like `branch()` or `resetLeaf()` and persist the move so the session reopens there |
-| `branchWithSummary(entryId, summary, details?, fromHook?)` | Branch with a context summary |
+Await `branch`, `resetLeaf`, `recordBranch`, and `branchWithSummary`. All read methods below are synchronous:
+
+| Method | Returns | Action |
+| --- | --- | --- |
+| `getLeafId()` | `string \| null` | Return the current leaf entry ID |
+| `getLeafEntry()` | `SessionEntry \| undefined` | Return the current leaf entry |
+| `getEntry(id)` | `SessionEntry \| undefined` | Return an entry loaded in memory by ID |
+| `getBranch(fromId?)` | `SessionEntry[]` | Walk from an entry to the root |
+| `getTree()` | `SessionTreeNode[]` | Return the tree of entries loaded in memory; use `readHistory()` or `loadFullHistory()` for older entries |
+| `getChildren(parentId)` | `SessionEntry[]` | Return direct child entries currently loaded in memory |
+| `getLabel(id)` | `string \| undefined` | Return the label for an entry |
+| `branch(entryId)` | `Promise<void>` (async) | Move the leaf to an earlier entry in memory only (the session reopens at its last saved entry) |
+| `resetLeaf()` | `Promise<void>` (async) | Reset the leaf to `null` in memory only |
+| `recordBranch(entryId \| null)` | `Promise<void>` (async) | Move the leaf like `branch()` or `resetLeaf()` and persist the move so the session reopens there |
+| `branchWithSummary(entryId, summary, details?, fromHook?, usage?, fromId?)` | `Promise<string>` (async) | Branch with a context summary and return the new entry ID |
 
 ### Context, history, and metadata methods
 

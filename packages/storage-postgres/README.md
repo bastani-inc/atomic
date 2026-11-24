@@ -4,15 +4,23 @@ A [PostgreSQL](https://www.postgresql.org) storage adapter for [Atomic](https://
 
 ## Install
 
-Install the adapter in user scope (without `-l`). Atomic searches only user-scope packages for storage adapters.
+Choose the installation method that matches how you use the adapter:
+
+- **CLI, `settings.json`, `ATOMIC_STORAGE`, and SDK `{ kind: "adapter" }` selections.** Install the adapter in user scope (without `-l`). Atomic searches user-scope packages, host extension directories, and the agent directory for adapter modules, not an embedding application's `node_modules`:
 
 ```bash
 atomic install npm:@bastani/atomic-storage-postgres
 ```
 
+- **Node.js and TypeScript SDK apps (`openPostgresDatabase()` with `{ kind: "database", database }`).** Install the package directly in your project alongside `@bastani/atomic`:
+
+```bash
+npm install @bastani/atomic-storage-postgres
+```
+
 ## Configure
 
-PostgreSQL 14 or newer is required.
+**PostgreSQL 16 or newer is required for Atomic sessions.** The adapter accepts PostgreSQL 14 or newer on connect for non-session tables and rejects servers older than PostgreSQL 14.
 
 ### Join with the CLI
 
@@ -28,8 +36,8 @@ atomic storage status
 
 `atomic storage join` verifies connectivity with `SELECT 1` before writing anything, then updates the `storage` block in `~/.atomic/agent/settings.json`. Pass one credential flag:
 
-- `--password-file <path>`: Copies the password into a private mode-`600` file under `~/.atomic/agent/`.
-- `--token-file <path>`: References an external rotated password file in place and rereads it on every new connection.
+- `--password-file <path>`: Trims surrounding whitespace and copies the password into a private mode-`600` file under `~/.atomic/agent/`.
+- `--token-file <path>`: References an external rotated password file in place and rereads it on every new connection, stripping only one trailing `\n` or `\r\n` (avoid extra trailing spaces or blank lines).
 - `--auth azure|aws|gcp`: Authenticates using a cloud identity instead of a password.
 
 ### Configure settings manually
@@ -54,15 +62,15 @@ chmod 600 ~/.atomic/postgres-password
 | Option | Required | Description |
 | --- | --- | --- |
 | `url` | Yes | A `postgres://` or `postgresql://` URL with a username and no embedded password. Any password in the URL or a `password=` query parameter is refused (`credential-in-url`). |
-| `password` | When using password auth | Pass through `secrets` (`{ "file": ... }` or `{ "env": ... }`). Atomic rereads the secret for every new connection so rotated password files take effect without a restart. |
+| `password` | When using password auth | Pass through `secrets.password` (`{ "file": ... }`, `{ "env": ... }`, or `inMemorySecret()` in SDK `{ kind: "adapter" }` selections). Because the adapter declares `liveSecrets: ["password"]`, Atomic rereads `secrets.password` for every new connection and ignores `options.password`, throwing `StorageConfigError` (`reason: "secret-missing"`) when `secrets.password` is omitted. |
 | `auth` | No | `"password"` (default), or `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` for [cloud IAM authentication](#cloud-iam-authentication). Omit `secrets.password` when using cloud `auth`; direct SDK calls to `openPostgresDatabase()` reject combining cloud `auth` with `password` (`conflicting-token`). |
 | `maxConnections` | No | Maximum open connections per Atomic process. Default `8`. |
 | `statementTimeoutMs` | No | Maximum runtime for one statement in milliseconds before the server cancels it. Default `30000`. |
-| `listenUrl` | No | Direct session-mode endpoint for wake-up notifications when `url` goes through a transaction pooler. Defaults to `url`. |
+| `listenUrl` | No | Direct session-mode endpoint for wake-up notifications when `url` goes through a transaction pooler. Defaults to `url`. Enforces the same URL, TLS, proxy, and no-embedded-password rules as `url` (`credential-in-url`). |
 | `schema` | No | Lowercase schema name for Atomic's tables. Default `atomic`. Databases with earlier tables in `public` and no `atomic` schema keep using `public` until `atomic storage migrate` moves them. Every transaction sets `SET LOCAL search_path`. |
 | `proxy` | No | An `http://` or `https://` proxy URL for `CONNECT` tunneling, or `"none"` to connect directly. Defaults to environment proxy settings. |
 
-Add a `prefix` to the `storage` block to isolate projects or teams inside one database. Atomic redacts passwords and tokens from error messages and diagnostics. See [Storage](https://docs.bastani.ai/storage) for selection precedence and additional storage options.
+Add a `prefix` to the `storage` block to isolate projects or teams inside one database. PostgreSQL prefixes must match `[a-z_][a-z0-9_]*` (lowercase ASCII only), cannot start with `sqlite_`, and must be at most 24 characters so generated identifiers stay within PostgreSQL's 63-byte limit; invalid prefixes throw `StoragePrefixError`. Atomic redacts passwords and tokens from error messages and diagnostics. See [Storage backends](https://docs.bastani.ai/storage) and [`@bastani/atomic-storage-postgres` docs](https://docs.bastani.ai/libraries/storage-postgres) for selection precedence and additional storage options.
 
 ### TLS and SSL modes
 
@@ -146,7 +154,7 @@ Cloud tokens require TLS; keep `sslmode=verify-full` (the remote default) or at 
 
 ### Least-privilege roles
 
-Atomic uses an owner role to own the database and `atomic` schema and run `atomic storage migrate`, plus a runtime role for hosts, roots, sessions, and brokers that runs no DDL. Grant the cloud identity runtime privileges after running `atomic storage migrate` as the owner role (see [Set up the database](https://docs.bastani.ai/storage#set-up-the-database)):
+Atomic uses an owner role to own the database and `atomic` schema and run `atomic storage migrate`, plus a runtime role for sessions and Intercom brokers that runs no DDL. Grant the cloud identity runtime privileges after running `atomic storage migrate` as the owner role (see [Set up the database](https://docs.bastani.ai/storage#set-up-the-database)):
 
 ```sql
 GRANT CONNECT ON DATABASE atomic TO "<identity>";
@@ -204,17 +212,34 @@ Compute Engine VMs require the `cloud-platform` access scope for metadata tokens
 
 ## Use from the SDK
 
+Install `@bastani/atomic` and `@bastani/atomic-storage-postgres` with `npm install`, open a `SqliteDatabase` with `openPostgresDatabase()`, and pass it to `createAgentSession()` via `sessionStore: { kind: "database", database, prefix? }`:
+
 ```typescript
 import { readFile } from "node:fs/promises";
+import { createAgentSession } from "@bastani/atomic";
 import { openPostgresDatabase } from "@bastani/atomic-storage-postgres";
 
 const database = await openPostgresDatabase({
-	url: "postgresql://atomic@db.example.com/atomic",
+	url: "postgresql://atomic_runtime@db.example.com:5432/atomic",
 	password: async () => (await readFile("/run/secrets/postgres-password", "utf8")).trim(),
 });
+try {
+	const { session } = await createAgentSession({
+		sessionStore: { kind: "database", database, prefix: "app_" },
+	});
+	try {
+		await session.prompt("Summarize the failing tests");
+	} finally {
+		await session.dispose();
+	}
+} finally {
+	await database.close();
+}
 ```
 
-`password` accepts a string or an async callback invoked for each new connection. Pass the returned `SqliteDatabase` to Atomic's SDK as `sessionStore: { kind: "database", database }`.
+`password` accepts a string or an async callback invoked for each new connection. When connecting as a low-privilege runtime role, run `atomic storage migrate --db 'postgresql://atomic_owner@...'` once as the owner role (and after Atomic upgrades) before opening sessions from the SDK.
+
+`session.dispose()` closes the `SqlSessionStore` wrapper opened for `{ kind: "database", database }` and leaves your caller-owned `database` open so multiple sessions can share one pool. Close `database` in a `finally` block after all sessions are disposed. If you open `SqlSessionStore.open(database, { prefix })` directly, close the store once before closing `database`.
 
 Additional SDK options and exports:
 
@@ -222,7 +247,7 @@ Additional SDK options and exports:
 - `socket`: Custom transport callback receiving `{ host, port }` (from `url`, or `PGHOST`/`PGPORT`) and returning a stream carrying the PostgreSQL protocol. Atomic negotiates TLS over it as over a normal socket. Cannot be combined with `proxy` (`conflicting-transport`), and socket directories still connect directly.
 - `numberPlaceholders(sql)` and `physicalIdentifiers(sql)`: Exported SQL rewrite helpers for converting positional `?` parameters to `$1, $2, ...` and shortening unquoted identifiers longer than 63 bytes.
 
-The package ships plain ESM JavaScript with TypeScript declarations and works directly in supported Node.js versions without a TypeScript loader.
+The package ships plain ESM JavaScript with TypeScript declarations and works directly in supported Node.js versions without a TypeScript loader. See [SDK session storage](https://docs.bastani.ai/sdk/storage) and [`@bastani/atomic-storage-postgres`](https://docs.bastani.ai/libraries/storage-postgres) for full SDK recipes, store ownership rules, and error handling.
 
 ## License
 

@@ -4,11 +4,19 @@ sidebarTitle: "Codemode"
 description: "Write JavaScript scripts inside Atomic's sandbox to compose tool calls, persist state across turns, and call classifier or image models."
 ---
 
-`codemode` lets the model run a JavaScript script that calls Atomic tools and non-LLM models (classifiers and image generators) and returns only the filtered result. It is enabled by default; see [`codemode` in Built-in tools](/tools#codemode) to toggle it. To embed the sandbox in your own application, see [`@bastani/atomic-codemode`](/libraries/codemode).
+`codemode` lets the model run a JavaScript script that calls Atomic tools and non-LLM models (classifiers and image generators) and returns only the filtered result. It is enabled by default. Toggle it from the CLI or settings ([`codemode` in Built-in tools](/tools#codemode)), or from the SDK with `tools: ["-codemode"]`, `noTools: "builtin"`, or `DefaultResourceLoader({ disabledBuiltinExtensions: ["codemode"] })` ([SDK extensions](/sdk/reference#extensions)). For multi-step subagent workflows in codemode, see [Orchestrate with codemode and subagents](/orchestration). To embed the sandbox in your own application, see [`@bastani/atomic-codemode`](/libraries/codemode).
 
 ## Scripts
 
 Pass raw JavaScript source with no JSON wrapper or markdown code fences. Code runs as an async function body inside a sandboxed JavaScript runtime, so top-level `await` and `return` work. The sandbox has no Node or Bun APIs, filesystem, network, or timers; all external access goes through `tools` and `models`.
+
+```javascript
+const [readme, pkg] = await Promise.all([
+  tools.read({ path: "README.md:1-40" }),
+  tools.read({ path: "package.json" }),
+]);
+return { name: JSON.parse(pkg).name, excerpt: readme.slice(0, 400) };
+```
 
 An optional first-line directive sets the output budget and timeout. It must be line 1 followed by JavaScript code; unknown keys or a script with no code after the directive fail immediately:
 
@@ -233,7 +241,7 @@ type ImageBlock = { type: "image"; data: string; mimeType: string; role?: "marku
 - **OpenAI option validation.** `outputCompression` accepts integers `0` to `100` and is valid only with `outputFormat: "jpeg"` or `"webp"`. `background: "transparent"` is valid only with `"png"`, `"webp"`, or the default format. `safetyIdentifier` has a 128-character limit. `complexity` (`"low"`, `"medium"`, or `"high"`, API default `"high"`) applies to GPT Image 2.6 only.
 - **GIF and SVG.** `outputFormat: "gif"` and `"svg"` require a GPT Image 2.6 model with text-only input. For GIF, `frameCount` (`2` to `16`, API default `9`) and `frameDurationMs` (`20` to `2000`, API default `200`, rounded to 10 ms) are rejected unless `outputFormat` is `"gif"`. For SVG, `n` must be `1` or omitted, and the `svg` option is rejected unless `outputFormat` is `"svg"`.
 - **SVG authoring model.** `{ outputFormat: "svg" }` works without extra options. If an account requires `svg.model` and you omitted `svg`, Atomic retries once with `gpt-6.1-sol` (reported in `result.svgModel`), and retries once without `svg` if rejected as unsupported. An explicit `svg: { model, reasoning }` is sent verbatim without automatic fallback. Allow at least `timeout_ms: 180000` for SVG requests (Atomic's own request timeout is at least 10 minutes).
-- **Structured errors.** Invalid options fail locally with `stopReason: "error"`, `error.code: "invalid-option"`, and `error.fields.field` (plus `error.fields.reason`: `required-by-api`, `rejected-by-api`, or `unsupported-by-api` for SVG). Other codes are `moderation-blocked`, `user-error`, `quota-exceeded`, `rate-limited`, `server-error`, `timeout`, and `api-error`. Branch on `error.code` and `error.retryable` (see [Image generation](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels)).
+- **Structured errors.** Invalid options fail locally with `stopReason: "error"`, `error.code: "invalid-option"`, and `error.fields.field` (plus `error.fields.reason`: `required-by-api`, `rejected-by-api`, or `unsupported-by-api` for SVG). Other codes are `moderation-blocked`, `user-error`, `quota-exceeded`, `rate-limited`, `server-error`, `timeout`, and `api-error`. Branch on `error.code` and `error.retryable` (see [Image generation](/libraries/ai#image-generation)).
 - **Displaying and saving output.** Call `image(block)` for PNG, JPEG, GIF, and WebP (never print base64 `data` via `text()` or `return`; scripts that generate images without showing any receive a note). `image()` also saves each image to a private temp file and prints its path. For SVG (`image/svg+xml`), Atomic automatically saves a private temp `.svg` file (`[SVG saved to <path> (image/svg+xml, <size>)]`), and scripts can inspect XML text via `atob(block.data)`.
 
 ```javascript

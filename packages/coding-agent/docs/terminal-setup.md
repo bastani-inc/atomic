@@ -171,7 +171,7 @@ Atomic detects terminal capabilities automatically:
 
 | Terminal | Inline images | OSC 8 hyperlinks | Color mode |
 | --- | --- | --- | --- |
-| Kitty, Ghostty, WezTerm, Warp, Herdr, Rex, Orca (`ORCA_IMAGE_PROTOCOL=kitty`) | Kitty protocol | Yes | Truecolor |
+| Kitty, Ghostty, WezTerm, Warp, [Herdr](/herdr), Rex, Orca (`ORCA_IMAGE_PROTOCOL=kitty`) | Kitty protocol | Yes | Truecolor |
 | iTerm2 | iTerm2 protocol | Yes | Truecolor |
 | Windows Terminal (`WT_SESSION`), Alacritty, VS Code, Zed | No | Yes | Truecolor |
 | IntelliJ IDEA (`JetBrains-JediTerm`), Windows consoles without `WT_SESSION` | No | No | Truecolor |

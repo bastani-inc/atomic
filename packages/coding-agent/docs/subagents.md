@@ -12,7 +12,7 @@ When to delegate:
 - Keep interactive, exploratory, or immediately blocking tasks in your main chat unless specialist focus or context isolation adds value.
 - Every subagent runs in the background. Let completion notices report back instead of polling, and call `subagent({ action: "wait", id })` only when the next step depends on a subagent's result.
 
-See [Manage background tasks](/background-tasks) for the agent panel, `/tasks`, shell output, cancellation, and completion notices. For defining custom agents, see [Create custom subagents](/subagents/authoring). For discovery precedence, fallback chains, and configuration keys, see [Subagent reference](/subagents/reference).
+New to subagents? Start with [Subagents overview](/guides/subagents). See [Manage background tasks](/background-tasks) for the agent panel, `/tasks`, shell output, cancellation, and completion notices. For defining custom agents, see [Create custom subagents](/subagents/authoring). For discovery precedence, fallback chains, and configuration keys, see [Subagent reference](/subagents/reference). For embedding subagents in an app, see [Subagent children in the SDK](/sdk#subagent-children).
 
 ## Start with natural language
 
@@ -90,7 +90,7 @@ Use `fork` when a subagent needs the main conversation's decisions and context. 
 
 In a fork, `inheritProjectContext` and `inheritSkills` do not hide what the main session already sent; those frontmatter flags apply to fresh subagents. The subagent's own tool allowlist still applies: calling a tool outside its allowed list fails with an error naming the allowed tools. Where the provider supports mid-conversation tool changes, removed or child-only tools are declared after the main conversation; otherwise child-only tools run through `codemode` restricted strictly to the subagent's own tools.
 
-Fresh subagents inherit the main session's model registry, authentication, and workspace discovery settings. A subagent's tool list can narrow permissions, but it cannot re-enable tools or packages excluded by the main session. See [SDK configuration](/sdk) for programmatic child configuration.
+Fresh subagents inherit the main session's model registry, authentication, and workspace discovery settings. A subagent's tool list can narrow permissions, but it cannot re-enable tools or packages excluded by the main session. See [Subagent children in the SDK](/sdk#subagent-children) for programmatic child configuration.
 
 ### Temporary worktrees
 
@@ -111,7 +111,7 @@ Key rules for `worktree: true`:
 - **Parallel mode only.** `worktree: true` creates temporary isolated worktrees only for parallel `tasks: [...]` runs (or multiple single-agent calls combined in one assistant message). On a standalone single-agent `{ agent, task }` call, `worktree: true` has no effect and the subagent runs in the main checkout; use `worktree: { branch }` for an isolated single-agent worktree.
 - **Clean tracked working tree required.** Launch fails before starting any subagent if tracked files have staged or unstaged edits (`git status --porcelain --untracked-files=no`). Untracked files do not block launch.
 - **Base branch.** Temporary worktrees branch from `origin/<default-branch>` (fetching if needed) and fall back to `HEAD` only if no origin default branch is found, rather than branching from your current local `HEAD`.
-- **Automatic post-creation setup.** After creating each temporary worktree, Atomic automatically copies `.atomic/settings.local.json` and any untracked `.atomic/settings.json`, configures Git `core.hooksPath` to share `.husky` or `.git/hooks`, symlinks (or creates a junction on Windows for) `node_modules`, copies gitignored files listed in `.worktreeinclude`, and runs `worktreeSetupHook` if configured in `config.json`.
+- **Automatic post-creation setup.** After creating each temporary worktree, Atomic automatically copies `.atomic/settings.local.json` and any untracked `.atomic/settings.json`, configures Git `core.hooksPath` to share `.husky` or `.git/hooks`, symlinks (or creates a junction on Windows for) `node_modules`, copies gitignored files listed in `.worktreeinclude`, and runs `worktreeSetupHook` if configured in [config.json](/subagents/reference#subagent-config-json-reference).
 - **No per-task `cwd` overrides.** All tasks in a `worktree: true` batch must share the same `cwd`; per-task `cwd` overrides that differ from the shared `cwd` are rejected.
 - **Patch capture and cleanup.** Once every subagent in the batch finishes, Atomic saves each subagent's changes as a patch under `worktree-diffs/<run-id>` and removes the temporary worktrees and branches. If capturing a worktree's patch fails, Atomic keeps that worktree on disk and reports it in the diff summary so changes are not lost.
 - **Paused, quit, and cancelled subagents.** Paused, quit, or session-closed subagents keep their temporary worktree only if it has uncommitted changes, untracked files, or new commits. Clean worktrees are removed; `resume` recreates them from base plus the saved patch and writes later patches as `task-<n>-<agent>.<execution>.patch`. Permanently cancelled subagents release their worktrees, and unresumed stopped worktrees with changes remain under `.atomic/worktrees/`.
@@ -222,9 +222,9 @@ If Atomic exits, crashes, or you switch sessions (`/new`, `/resume`, `/fork`), r
 
 Inbound Intercom messages wait while a subagent restores (see [Connection states and recovery](/intercom/operations#connection-states-and-recovery)). Finished, paused, quit, and permanently cancelled subagents do not auto-relaunch, and session forks (`/fork`, `--fork`) never relaunch the original session's subagents. If a subagent cannot be restored (for example, its session or agent definition is missing), Atomic posts one recovery notice with its IDs, worktree or branch, `git` inspection commands, and relaunch call, then marks it gone.
 
-A subagent stores its session in the launching session's storage backend: SQLite by default, or your configured libSQL or PostgreSQL database. Subagents resume, wake, and export wherever their launching session opens, including another machine sharing the same database.
+A subagent stores its session in the launching session's [storage backend](/storage). It uses SQLite by default, or your configured libSQL or PostgreSQL database. Subagents resume, wake, and export wherever their launching session opens, including [another machine sharing the same database](/guides/resume-on-any-machine).
 
-- **JSONL and custom directories.** A JSONL-backed session keeps each subagent's session file beside its own. Setting `sessionDir` (or `defaultSessionDir` in `config.json`) stores fresh subagents as JSONL files in that directory. Older sessions under `~/.atomic/agent/subagent-sessions/` remain readable in `/tasks` and restorable.
+- **JSONL and custom directories.** A JSONL-backed session keeps each subagent's session file beside its own. Setting `sessionDir` (or `defaultSessionDir` in [config.json](/subagents/reference#subagent-config-json-reference)) stores fresh subagents as JSONL files in that directory. Older sessions under `~/.atomic/agent/subagent-sessions/` remain readable in `/tasks` and restorable.
 - **Unsaved sessions.** A session started with `--no-session` or in-memory storage keeps subagent sessions in memory; a finished subagent's history moves to a temporary file that Atomic deletes on exit.
 - **Session list visibility.** Fresh subagent sessions are marked internal so `/resume`, `atomic -r`, `-c`, and `history://sessions` omit them, while `context: "fork"` sessions appear as forks of the main session. Each result names its session file or `history://sessions/<id>`.
 - **Worktree snapshots.** In a blob-capable store, subagents record [worktree snapshots](/worktree-snapshots) of checkouts they modify. Reopening the main session restores each shared checkout from the newest capture among the main session and its finished subagents, while named worktrees and restored active subagents continue from their own snapshots.
@@ -233,7 +233,7 @@ A subagent stores its session in the launching session's storage backend: SQLite
 
 ### Supervisor coordination
 
-By default (`intercomBridge.mode: "always"` in `config.json`), Atomic injects **both** `intercom` and `contact_supervisor` into **every** subagent whose launching session has Intercom active. Tool frontmatter declarations alone control Intercom tool availability only when `intercomBridge.mode` is `"off"` (or `"fork-only"` for fresh subagents). Main-session tool allowlists, exclusions, `noTools`, and disabled Intercom still apply. A subagent without `read` or `search` receives a read-only `session_history` tool after compaction so it can recover its own history (see [Agents without read or search](/compaction#agents-without-read-or-search)).
+By default (`intercomBridge.mode: "always"` in [config.json](/subagents/reference#subagent-config-json-reference)), Atomic injects **both** `intercom` and `contact_supervisor` into **every** subagent whose launching session has Intercom active. Tool frontmatter declarations alone control Intercom tool availability only when `intercomBridge.mode` is `"off"` (or `"fork-only"` for fresh subagents). Main-session tool allowlists, exclusions, `noTools`, and disabled Intercom still apply. A subagent without `read` or `search` receives a read-only `session_history` tool after compaction so it can recover its own history (see [Agents without read or search](/compaction#agents-without-read-or-search)).
 
 - **Supervisor decision waits vs. `intercom` `ask`.** `contact_supervisor({ reason: "need_decision", message })` and `interview_request` wait inside the requesting subagent and continue that same subagent when you reply via `intercom({ action: "reply", message: "..." })` (use `pending` and `replyTo` when multiple asks are open). Never relaunch the subagent to answer it. By contrast, `intercom` `ask` never blocks: it returns at delivery (after any `wait` budget) and delivers late replies as messages.
 - **Non-blocking updates.** `intercom` `send` and `contact_supervisor({ reason: "progress_update", message })` return immediately without cancelling or disrupting siblings or worktrees.
@@ -347,6 +347,35 @@ Exceeding the budget fails with `SessionStartTimeoutError` (shown in `status` an
 | `event-loop` | The main thread was saturated during startup. | Reduce concurrent load and retry. |
 
 For SDK error rehydration (`isSessionStartTimeoutError`, `rehydrateSessionStartError`), see [Session start errors](/sdk/reference#session-start-errors).
+
+### Using subagents from the SDK
+
+`createAgentSession()` enables the bundled subagents package by default. Control subagents and child host behavior directly from `@bastani/atomic`:
+
+```typescript
+import { createAgentSession } from "@bastani/atomic";
+
+// Disable the bundled subagents package (also removes its 21 bundled skills)
+const withoutPackage = await createAgentSession({
+  builtins: { subagents: false },
+});
+
+// Hide only the subagent tool while keeping the 21 bundled skills available
+const skillsOnly = await createAgentSession({
+  excludedTools: ["subagent"],
+});
+
+// Route subagent ask_user_question and extension dialogs without a terminal
+const headless = await createAgentSession({
+  extensionBindings: {
+    humanInput: myHostInput,
+  },
+});
+```
+
+- **Child inheritance.** Subagents inherit the parent session's `ModelRuntime`, settings, `agentDir`, `scopedModels`, `fallbackModels`, `customTools`, `resourceAdmission`, and `humanInput`. See [Subagent children in the SDK](/sdk#subagent-children).
+- **Human input.** Implement `extensionBindings.humanInput` so dialogs triggered inside a child session route cleanly by `sessionId`. See [Human input without a terminal](/sdk#human-input-without-a-terminal).
+- **Background task supervision.** Bind `AgentTaskHost` and `OwnerTaskStore` to observe and control background subagents in custom hosts. See [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor) and [Owner-bound task projection](/subagents/reference#owner-bound-task-projection).
 
 ## Delegation boundaries and migration
 

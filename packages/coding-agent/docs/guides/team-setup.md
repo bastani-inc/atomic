@@ -206,6 +206,10 @@ When the agent job resumes a session, Atomic fetches only the commits missing fr
 
 `@bastani/atomic/storage` exports async helpers `joinTeam()`, `leaveTeam()`, and `getTeamProfile()`, plus `teamProfileSelection()` (libSQL and Turso only).
 
+`teamProfileSelection()` returns an adapter selection for `@bastani/atomic-storage-libsql`. Because adapter selections resolve from user-scope packages, host extension directories, or the agent directory rather than an application's `node_modules`, install the adapter with `atomic install npm:@bastani/atomic-storage-libsql` (without `-l`), or register a local package directory with `DefaultResourceLoader({ additionalExtensionPaths })`.
+
+If you prefer managing `@bastani/atomic-storage-libsql` as an ordinary project dependency with `npm install`, call `openLibsqlDatabase()` directly and pass `sessionStore: { kind: "database", database, prefix? }` to `createAgentSession()`, closing `database` in a `finally` block. See [SDK session storage](/sdk/storage) for complete recipes and ownership rules.
+
 Use `teamProfileSelection({ profile: "ci", url, token })` to pass a storage selection to `createAgentSession({ storage })` without modifying settings:
 
 - `token` stays in memory, serializes as `[redacted]`, and cannot be reopened by child processes.
@@ -222,10 +226,15 @@ import { teamProfileSelection } from "@bastani/atomic/storage";
 const url = process.env.TEAM_DATABASE_URL!;
 const token = process.env.TEAM_DATABASE_TOKEN!;
 
-// Embedded SDK agent: sessions use the team database.
+// Embedded SDK agent: sessions use the team database (requires `atomic install npm:@bastani/atomic-storage-libsql`
+// or `DefaultResourceLoader({ additionalExtensionPaths })`).
 const storage = teamProfileSelection({ profile: "ci", url, token });
 const { session } = await createAgentSession({ storage });
-await session.prompt("Summarize the failing tests");
+try {
+  await session.prompt("Summarize the failing tests");
+} finally {
+  await session.dispose();
+}
 
 // Spawned agent process: sessions and Intercom both use the team database.
 const child = spawn("atomic", ["-p", "Fix the failing test"], {
@@ -247,5 +256,7 @@ Anyone with read access to the team database can read everything stored in it, i
 ## Related
 
 - [Storage backends](/storage) for storage setup, selections, precedence, and error reference.
+- [SDK session storage](/sdk/storage) for Node.js and TypeScript storage recipes, `openLibsqlDatabase()`, and store ownership rules.
+- [Resume sessions on any machine](/guides/resume-on-any-machine) for cross-machine worktree snapshots and environment blueprints.
 - [Running Intercom across machines](/intercom/operations#running-intercom-across-machines) for multi-node broker details.
 - [Intercom groups](/intercom/reference#groups) for how groups isolate sessions.

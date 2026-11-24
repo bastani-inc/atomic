@@ -28,7 +28,7 @@ Patches and bundles are stored once by content hash in the session's database (`
 
 ## When snapshots are taken
 
-Snapshots require a Git checkout with at least one commit and a SQL database store (local SQLite, PostgreSQL, or Turso/libSQL). Directories outside Git repositories, in-memory sessions, JSONL directory stores, and custom stores without blob tables record nothing. A new session in a blob-less store reports `blob-store-unsupported` once; a transient store failure reports `blob-store-failed` once without failing the turn.
+Snapshots require a Git checkout with at least one commit and a SQL database store (local SQLite, PostgreSQL, or Turso/libSQL; see [Storage backends](/storage)). Directories outside Git repositories, in-memory sessions, JSONL directory stores, and custom stores without blob tables record nothing. A new session in a blob-less store reports `blob-store-unsupported` once; a transient store failure reports `blob-store-failed` once without failing the turn.
 
 Atomic captures snapshots at the end of any turn that ran `bash`, `edit`, `write`, `powershell`, or an extension tool declaring `writesFiles: true`. It captures the session's working directory along with the directories of files targeted by `edit` and `write`.
 
@@ -166,7 +166,7 @@ Set `ATOMIC_TIMING=1` to print the same summary to stderr during `atomic --sessi
 
 ### Moving a session as a file
 
-`/export session.jsonl` embeds each snapshot patch and bundle inline once and reports the included size. `--import session.jsonl` and `/import` verify every blob hash and store the blobs in the target database before saving the session. `/share` omits snapshot blobs from the gist.
+[`/export`](/sessions#session-commands) `session.jsonl` embeds each snapshot patch and bundle inline once and reports the included size. `--import session.jsonl` and `/import` verify every blob hash and store the blobs in the target database before saving the session. `/share` omits snapshot blobs from the gist. For bulk multi-branch backups across stores, see [Exporting and importing sessions](/storage#exporting-and-importing-sessions).
 
 ## Snapshot refs in your repository
 
@@ -205,6 +205,8 @@ To trigger collection immediately from code, call `collectSnapshotGarbage()`. Fo
 
 ## SDK
 
+Open a `SqliteDatabase` handle with `openNodeSqliteDatabase()`, `openPostgresDatabase()`, or `openLibsqlDatabase()` (see [SDK session storage](/sdk/storage) and [SDK and local SQLite API](/storage#sdk-and-local-sqlite-api)), then open a `SqlSnapshotBlobStore` on that database:
+
 ```typescript
 import {
   captureWorktreeSnapshot,
@@ -213,15 +215,24 @@ import {
   SqlSnapshotBlobStore,
   type WorkspaceBinding,
 } from "@bastani/atomic";
+import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 
-const blobs = await SqlSnapshotBlobStore.open(database);
-const capture = await captureWorktreeSnapshot(process.cwd(), { blobs });
-if (capture.status === "captured" || capture.status === "unchanged") {
-  const binding: WorkspaceBinding = capture.binding; // { remotes, head, tree, envHash }
-  const path = await restoreWorktreeSnapshot(capture.snapshot, { blobs });
-  await verifyWorktree(binding, path);
+const database = await openNodeSqliteDatabase("./sessions.sqlite");
+try {
+  // Pass the same table prefix as your sessions when using a prefix (positional string).
+  const blobs = await SqlSnapshotBlobStore.open(database, "project_");
+  const capture = await captureWorktreeSnapshot(process.cwd(), { blobs });
+  if (capture.status === "captured" || capture.status === "unchanged") {
+    const binding: WorkspaceBinding = capture.binding; // { remotes, head, tree, envHash }
+    const path = await restoreWorktreeSnapshot(capture.snapshot, { blobs });
+    await verifyWorktree(binding, path);
+  }
+} finally {
+  await database.close();
 }
 ```
+
+`SqlSnapshotBlobStore.open(database, prefix?)` takes `prefix` as an optional positional string (unlike `SqlSessionStore.open(database, { prefix })`, which takes an options object). `SqlSnapshotBlobStore` does not own `database` and has no `close()` method; close your caller-owned `database` in a `finally` block after snapshot operations and any running garbage collection finish.
 
 ### Capture, restore, and verification
 
@@ -236,14 +247,14 @@ if (capture.status === "captured" || capture.status === "unchanged") {
 
 ### Session resume and partial restores
 
-- `openSessionInWorktree(sessionManager, { settings, storeDir?, signal?, beforeRecord?, pendingMappings?, keepInPlace?, cannotRestore?, fallbackCwd?, skipMissingRecords? })`: checks every recorded checkout and restores drifted or missing ones without running blueprints, resolving `{ sessionManager, notices, unrestored, missingRecords }`. `resumeSessionWorktree` performs the same restore without reopening the session. For standard SDK resume with blueprints, pass `sessionManager` directly to `createAgentSession({ sessionManager })`.
+- `openSessionInWorktree(sessionManager, { settings, storeDir?, signal?, beforeRecord?, pendingMappings?, keepInPlace?, cannotRestore?, fallbackCwd?, skipMissingRecords? })`: checks every recorded checkout and restores drifted or missing ones without running blueprints, resolving `{ sessionManager, notices, unrestored, missingRecords }`. `resumeSessionWorktree` performs the same restore without reopening the session. For standard SDK resume with blueprints, pass `sessionManager` directly to `createAgentSession({ sessionManager })` (see [Worktree snapshots in the SDK](/sdk#worktree-snapshots)).
 - `discardDegradedRestore(sessionManager, { settings, root?, signal? })`: records each partly restored worktree (or only `root`) without `degradedFrom` so it becomes the active restore target and releases the original snapshot on the next collection.
 - `degradedRestorePin(sessionManager, root)`: returns `{ snapshotId, since, base?, lapsed, work?, kept? }` for a checkout with an active partial-restore target, or `undefined` otherwise.
 - `withWorktreeRestoreNotices(notices, work)` and `currentWorktreeRestoreNotices()`: scope `worktree_restore` system prompt notices across sessions opened inside `work`.
 
 ### Reading older snapshots on demand
 
-Sessions opened at the default tail window load only the snapshot records needed for resume into memory. Use `sessionManager.readWorktreeSnapshotPages()` and `sessionManager.loadWorktreeSnapshotRecords()` to inspect older snapshots on demand:
+Sessions opened at the default tail window load only the snapshot records needed for resume into memory. Use `sessionManager.readWorktreeSnapshotPages()` and `sessionManager.loadWorktreeSnapshotRecords()` (see [SessionManager API](/session-format#sessionmanager-api)) to inspect older snapshots on demand:
 
 ```typescript
 const session = await SessionManager.open(store, sessionId);

@@ -6,7 +6,7 @@ description: "TypeScript interfaces and methods for registerProvider(), register
 
 ## Extension methods
 
-Extensions register, alias, and unregister providers through `ExtensionAPI`:
+Extensions register, alias, and unregister providers through `ExtensionAPI` (including inline `extensionFactories` in SDK hosts; see [SDK extensions](/sdk/reference#extensions)):
 
 ```typescript
 interface ExtensionAPI {
@@ -36,7 +36,7 @@ interface ProviderConfig {
   /** Optional API key literal or config value ("$ENV_VAR", "${ENV_VAR}", or "!command"). Omitting it lets users authenticate via /login <provider> in auth.json. */
   apiKey?: string;
 
-  /** Default streaming API for chat models. Required at provider level when supplying streamSimple, and at provider or model level when defining models. */
+  /** Default API for chat and compactor models. Required at provider level when supplying streamSimple, and at provider or model level when defining chat or compactor models. */
   api?: Api;
 
   /** Custom streaming implementation for non-standard chat APIs. */
@@ -58,7 +58,7 @@ interface ProviderConfig {
   /** When true, sends Authorization: Bearer <apiKey>. Fails if no API key resolves. */
   authHeader?: boolean;
 
-  /** Models to register. Replaces all existing chat, image, and classifier models for this provider. */
+  /** Models to register. Replaces all existing chat, image, classifier, and compactor models for this provider. */
   models?: ProviderModelConfig[];
 
   /** Refresh this provider's catalog. Returned definitions replace extension-provided models. */
@@ -72,7 +72,7 @@ interface ProviderConfig {
     login(callbacks: OAuthLoginCallbacks, signal: AbortSignal): Promise<OAuthCredentials>;
     refreshToken(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials>;
     getApiKey(credentials: OAuthCredentials): string;
-    /** Adjust chat models based on credentials (image and classifier models pass through unchanged). */
+    /** Adjust chat models based on credentials (image, classifier, and compactor models pass through unchanged). */
     modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
   };
 }
@@ -80,7 +80,7 @@ interface ProviderConfig {
 
 ## Model definition reference
 
-`ProviderModelConfig` is a discriminated union of chat (`type?: "chat"`), image (`type: "image"`), and classifier (`type: "classifier"`) model definitions:
+`ProviderModelConfig` is a discriminated union of chat (`type?: "chat"`), image (`type: "image"`), classifier (`type: "classifier"`), and compactor (`type: "compactor"`) model definitions:
 
 ```typescript
 interface ProviderModelConfigBase {
@@ -179,13 +179,15 @@ type ProviderModelConfig =
   | ProviderCompactorModelConfig;
 ```
 
+For how Atomic sends requests to `ProviderCompactorModelConfig` endpoints, see [Compactor request contract](/compaction/reference#compactor-request-contract).
+
 ### Cost and pricing tiers
 
 `cost` matches `Model<Api>["cost"]`. Base rates and every tier must specify all four fields (`input`, `output`, `cacheRead`, and `cacheWrite`). When multiple thresholds match `input + cacheRead + cacheWrite`, `calculateCost()` applies the highest matching tier to all four buckets.
 
 ### Compatibility and capability flags
 
-For the complete list of per-API `compat` fields (`thinkingFormat`, `chatTemplateKwargs`, `chatTemplateArgs`, `thinkingTokenBudgetField`, `vllmPriority`, `cacheControlFormat`, `supportsToolSearch`, `supportsAdditionalTools`, `supportsExplicitPromptCacheMode`, `supportsMidConvoEffort`, and more), see [`models.json` schema reference](/models-configuration#compatibility).
+For the complete list of per-API `compat` fields (`thinkingFormat`, `chatTemplateKwargs`, `chatTemplateArgs`, `thinkingTokenBudgetField`, `vllmPriority`, `cacheControlFormat`, `supportsToolSearch`, `supportsAdditionalTools`, `supportsExplicitPromptCacheMode`, `supportsMidConvoEffort`, and more), see [`models.json` field reference](/models-configuration#compatibility).
 
 Keep these rules in mind when declaring capabilities on custom providers:
 

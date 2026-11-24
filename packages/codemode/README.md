@@ -66,7 +66,7 @@ await sandbox.close();
 ## Subpath exports
 
 - `@bastani/atomic-codemode`: `CodemodeSandbox` for Node.js and Bun (runs QuickJS in a worker thread).
-- `@bastani/atomic-codemode/portable`: `RemoteCodemodeSandbox` and runtime-neutral helpers without Node.js worker threads.
+- `@bastani/atomic-codemode/portable`: `RemoteCodemodeSandbox`, `InlineCodemodeSandbox`, and runtime-neutral helpers without Node.js worker threads.
 - `@bastani/atomic-codemode/cloudflare`: Durable Object sandbox bindings for Cloudflare Workers.
 - `@bastani/atomic-codemode/declarations`: TypeScript declaration generation for injected tool catalogs.
 - `@bastani/atomic-codemode/source`: Source-analysis helpers for inspecting model-written scripts.

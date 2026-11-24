@@ -16,7 +16,7 @@
     "url": "git+https://github.com/bastani-inc/atomic.git",
     "directory": "packages/storage-postgres"
   },
-  "homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/storage-postgres#readme",
+  "homepage": "https://docs.bastani.ai/libraries/storage-postgres",
   "bugs": { "url": "https://github.com/bastani-inc/atomic/issues" },
   "keywords": ["atomic", "storage", "postgres", "postgresql", "bastani"],
   "atomic": { "storageAdapters": ["./postgres.js"] },

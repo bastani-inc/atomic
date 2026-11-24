@@ -199,7 +199,7 @@ export default function (atomic: ExtensionAPI) {
 
 ## Custom tools
 
-Register tools the model can call with `atomic.registerTool()`. Use the `defineTool(tool)` helper from `@bastani/atomic` when storing tool definitions in variables or arrays so TypeScript preserves parameter type inference.
+Register tools the model can call with `atomic.registerTool()`. Use the `defineTool(tool)` helper from `@bastani/atomic` when storing tool definitions in variables or arrays so TypeScript preserves parameter type inference. Standalone tools built with `defineTool()` can also be passed directly to `createAgentSession({ customTools })` without writing a full extension ([SDK custom tools](/sdk/reference#custom-tools)).
 
 Tool name collisions follow two rules:
 
@@ -321,7 +321,7 @@ async execute(_toolCallId, params) {
 
 #### Structured output tool helper
 
-For a schema-backed decision, use `createStructuredOutputTool({ schema, name?, capture?, output?, timeoutMs? })`. Atomic does not register `structured_output` in normal sessions by default. Include any custom `name` (such as `"final_decision"`) in explicit tool allowlists.
+For a schema-backed decision, use `createStructuredOutputTool({ schema, name?, capture?, output?, timeoutMs? })` (see [Structured decisions](/sdk/structured-decisions)). Atomic does not register `structured_output` in normal sessions by default. Include any custom `name` (such as `"final_decision"`) in explicit tool allowlists.
 
 - **`capture`:** Pass `createStructuredOutputCapture()` to inspect `{ called, value }` in memory after the call finishes.
 - **`output`:** Pass `{ outputPath }` to write the validated JSON result to disk with `0o600` file permissions.
@@ -335,7 +335,7 @@ When the model calls the tool, it supplies `instructions`, nonempty named `state
 
 #### Constrained sampling
 
-`ToolDefinition.constrainedSampling` is preserved for extension tools, SDK `customTools`, wrappers, and default interactive mode. It accepts `false` or a `ConstrainedSamplingConfig`:
+`ToolDefinition.constrainedSampling` is preserved for extension tools, [SDK `customTools`](/sdk/reference#custom-tools), wrappers, and default interactive mode. It accepts `false` or a `ConstrainedSamplingConfig`:
 
 ```typescript
 atomic.registerTool({
@@ -421,7 +421,7 @@ Nested execution events and the nested tool's `ctx` include `parentToolCallId`. 
 - Set `writesFiles: true` on tools that modify files so turns calling them record a [worktree snapshot](/worktree-snapshots) like `bash`, `edit`, and `write`.
 - An active orchestrator tool can implement `prepareLoadout(loadout)` to adjust how tools are described or hidden from the model (returning `descriptions` or `hiddenDeclarations`). This changes model presentation only, not authorization.
 
-**Fireworks deferred tool loading:** Extensions calling `@bastani/atomic-ai` directly can use native deferred tool loading on Fireworks `anthropic-messages` models. See [Libraries: AI](/libraries/ai) and the [AI SDK deferred tool-loading guide](https://github.com/bastani-inc/atomic/blob/main/packages/ai/README.md#fireworks-deferred-tools).
+**Fireworks deferred tool loading.** Extensions calling `@bastani/atomic-ai` directly can use native deferred tool loading on Fireworks `anthropic-messages` models. See [Fireworks deferred tools](/libraries/ai#fireworks-deferred-tools).
 
 ### Overriding built-in tools
 

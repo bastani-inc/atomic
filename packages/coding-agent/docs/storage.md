@@ -6,11 +6,15 @@ description: "Configure local SQLite, PostgreSQL, or Turso/libSQL storage, expor
 
 Atomic saves sessions in a local SQLite database (`~/.atomic/workflows/journal.sqlite`) by default. You can switch to another SQLite file, a JSONL directory, an in-memory store, PostgreSQL, Turso/libSQL, or a custom database adapter through [storage settings](/settings#sessions) or [per-process overrides](#selecting-storage-per-process).
 
+| Track | Start with |
+| --- | --- |
+| **CLI and operator setup** | [Which store to choose](#which-store-to-choose), [PostgreSQL](#postgresql), [Turso and libSQL](#turso-and-libsql), [Sharing storage across hosts](#sharing-storage-across-hosts) |
+| **Node.js and TypeScript SDK** | [SDK session storage](/sdk/storage), [SDK and local SQLite API](#sdk-and-local-sqlite-api), [SessionManager API](/session-format#sessionmanager-api) |
+| **Custom adapters and SQL drivers** | [Selecting an adapter](#selecting-an-adapter), [Bring your own driver](#bring-your-own-driver), [Adapter conformance](#adapter-conformance) |
+
 - A configured persistent store never silently falls back to memory when it fails to open.
 - A subagent keeps its session in its launching parent's store unless the launch specifies a `sessionDir` for a fresh subagent. Fresh subagent sessions are marked internal and hidden from normal session lists. See [Subagents](/subagents).
 - Workflow data written by releases before 0.10.0 stays untouched on disk. See [Workflow data from earlier releases](#workflow-data-from-earlier-releases).
-
-Sections through [Workflow data from earlier releases](#workflow-data-from-earlier-releases) cover user and operator setup. The later sections cover the SDK SQLite API, custom adapters, and typed errors.
 
 ## Which store to choose
 
@@ -162,7 +166,7 @@ atomic storage status
 }
 ```
 
-You can also edit this configuration directly. `secrets.password` accepts `{ "file": "..." }` or `{ "env": "<variable>" }` and is reread for each new connection.
+You can also edit this configuration directly. For password authentication in adapter configurations (including `settings.json`, `ATOMIC_STORAGE`, `--storage`, and SDK `{ kind: "adapter" }` selections), set `secrets.password` to `{ "file": "..." }` or `{ "env": "<variable>" }`. Because the adapter declares `liveSecrets: ["password"]`, Atomic rereads `secrets.password` for each new connection and ignores `options.password`, throwing `StorageConfigError` (`reason: "secret-missing"`) when `secrets.password` is omitted.
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -170,11 +174,11 @@ You can also edit this configuration directly. `secrets.password` accepts `{ "fi
 | `auth` | `"password"` | `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` for [cloud identities](#cloud-identities) |
 | `maxConnections` | `8` | Maximum pooled connections per Atomic process |
 | `statementTimeoutMs` | `30000` | Maximum runtime for one statement before server cancellation (client cancels the connection 5,000 ms later if the server stops answering; idle connections close after 10,000 ms, and connect/pool-wait timeout is 10,000 ms) |
-| `listenUrl` | `url` | Direct endpoint for [wake-ups](#wake-ups) when `url` uses a transaction pooler |
+| `listenUrl` | `url` | Direct endpoint for [wake-ups](#wake-ups) when `url` uses a transaction pooler. Enforces the same URL, TLS, proxy, and no-embedded-password rules as `url` (`credential-in-url`) |
 | `schema` | `"atomic"` | Schema name starting with a lowercase ASCII letter or `_`, followed by lowercase letters, digits, or `_` (1 to 63 characters) |
 | `proxy` | From environment | `http://` or `https://` proxy URL for all connections, or `"none"` to connect directly |
 
-`atomic team join` supports libSQL URLs only. Use `atomic storage join` for PostgreSQL. SDK callers can import `openPostgresDatabase` directly from `@bastani/atomic-storage-postgres`.
+`atomic team join` supports libSQL URLs only. Use `atomic storage join` for PostgreSQL. For Node.js and TypeScript SDK apps, install `@bastani/atomic-storage-postgres` with `npm install` and import `openPostgresDatabase` directly. See [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) and [SDK session storage](/sdk/storage).
 
 ### TLS
 
@@ -256,7 +260,7 @@ Map the cloud identity to a PostgreSQL role on your provider:
 - **AWS.** Enable IAM database authentication, run `CREATE USER atomic; GRANT rds_iam TO atomic;`, and grant the IAM identity `rds-db:connect` on `arn:aws:rds-db:<region>:<account>:dbuser:<DbiResourceId>/atomic`.
 - **Google Cloud.** Set `cloudsql.iam_authentication=on`, add the service account as an IAM database user, and grant `roles/cloudsql.instanceUser`. Use the service account email without `.gserviceaccount.com` as the URL username. Compute Engine VMs need the `cloud-platform` scope.
 
-Grant the mapped identity the runtime privileges from [Set up the database](#set-up-the-database), and run `atomic storage migrate` as the owner role. See the [`@bastani/atomic-storage-postgres` README](https://www.npmjs.com/package/@bastani/atomic-storage-postgres) for service-specific details.
+Grant the mapped identity the runtime privileges from [Set up the database](#set-up-the-database), and run `atomic storage migrate` as the owner role. See [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) for service-specific details and [SDK session storage](/sdk/storage) for SDK integration recipes.
 
 Running `atomic install npm:@azure/identity` (or the AWS or Google SDK) installs the package under `~/.atomic/agent/npm`. The PostgreSQL adapter searches both its own directory and `~/.atomic/agent/npm`, so adapters installed from local paths find the SDK too.
 
@@ -308,7 +312,7 @@ atomic install npm:@bastani/atomic-storage-libsql
 - **Tokens and local files.** Save a Turso token with `turso db tokens create <db> > turso-token && chmod 600 turso-token` (one trailing line ending is stripped when read from `secrets.authToken.file`, and relative paths resolve against [storage home](#storage-home)), or reference `{ "env": "TURSO_TOKEN" }`. Absolute `file:` URLs need no `secrets`. Add `prefix` to isolate projects or teams.
 - **Retries and WebSockets.** Transient outages, expired streams, and 30-second unanswered requests report `StorageTransientError`. Calls that failed before writing retry up to 5 times over about 4 seconds. Writes with an uncertain outcome fail immediately with `outcome: "unknown"` and are not retried automatically. Over `ws:` or `wss:`, a batch whose `COMMIT` does not run reports `StorageUnavailableError` (`TRANSACTION_CLOSED`).
 
-SDK callers can import `openLibsqlDatabase` directly from `@bastani/atomic-storage-libsql` as plain ESM with TypeScript declarations. To wrap another driver, see [Bring your own driver](#bring-your-own-driver).
+For Node.js and TypeScript SDK apps, install `@bastani/atomic-storage-libsql` with `npm install` and import `openLibsqlDatabase` directly as plain ESM with TypeScript declarations. See [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql) and [SDK session storage](/sdk/storage). To wrap another driver, see [Bring your own driver](#bring-your-own-driver).
 
 ## Sharing storage across hosts
 
@@ -331,11 +335,13 @@ atomic intercom restart
 atomic storage status
 ```
 
-**PostgreSQL:**
+**PostgreSQL (PostgreSQL 16 or newer for sessions):**
+
+In two-role deployments, run `atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password` once as the owner role, and after Atomic upgrades, before joining machines with the runtime role. See [Set up the database](#set-up-the-database).
 
 ```bash
 atomic install npm:@bastani/atomic-storage-postgres
-atomic storage join postgres://atomic@db.example.com:5432/atomic?sslmode=verify-full --password-file ~/pg-password
+atomic storage join postgresql://atomic_runtime@db.example.com:5432/atomic?sslmode=verify-full --password-file ~/pg-password
 atomic intercom restart
 atomic storage status
 ```
@@ -388,16 +394,17 @@ One Intercom broker serves every session in an agent directory and keeps the sto
 
 Precedence for sessions, highest first:
 
-1. SDK `sessionStore`
-2. SDK `createAgentSession({ storage })`
-3. `--session-store`, `--no-session`, or `--session-dir`
-4. `--storage` or `--storage-file`
-5. `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`
-6. `ATOMIC_STORAGE`
-7. `ATOMIC_PROFILE=ci`
-8. `sessions.storage` setting
-9. Shared `storage` setting
-10. Default local SQLite file (`~/.atomic/workflows/journal.sqlite`)
+1. Explicit SDK `sessionManager` (bypasses store selection)
+2. SDK `sessionStore`
+3. SDK `createAgentSession({ storage })`
+4. `--session-store`, `--no-session`, or `--session-dir`
+5. `--storage` or `--storage-file`
+6. `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`
+7. `ATOMIC_STORAGE`
+8. `ATOMIC_PROFILE=ci`
+9. `sessions.storage` setting
+10. Shared `storage` setting
+11. Default local SQLite file (`~/.atomic/workflows/journal.sqlite`)
 
 Override conflicts and path rules:
 
@@ -538,9 +545,9 @@ To run an older workflow definition with this release, see [Migrating workflows]
 
 ## SDK and local SQLite API
 
-The sections below are for SDK consumers embedding Atomic and developers writing custom storage adapters.
+For full SDK recipes covering `createAgentSession`, `createAgentSessionRuntime`, `SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`, `openPostgresDatabase`, `openLibsqlDatabase`, and store ownership rules, see [SDK session storage](/sdk/storage). For direct session reading, branching, and listing, see [SessionManager API](/session-format#sessionmanager-api).
 
-`@bastani/atomic` and `@bastani/atomic/storage` export an async SQLite API and storage path helpers:
+This section covers the low-level local SQLite API and storage path helpers exported from `@bastani/atomic` and `@bastani/atomic/storage`, followed by custom adapter and driver authoring:
 
 ```typescript
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
@@ -590,11 +597,18 @@ export default {
 } satisfies StorageAdapterModule;
 ```
 
-Select an adapter in `sessions.storage` or top-level `storage` in [settings](/settings#sessions), or pass `sessionStore: { kind: "adapter", module, options, secrets, prefix }` in the SDK. Relative module paths resolve from the agent directory (`~/.atomic/agent` by default), and package names resolve from installed [Atomic packages](#adapters-from-atomic-packages) or the agent directory. Project settings follow the project trust boundary, and adapter code runs with Atomic's privileges.
+Select an adapter in `sessions.storage` or top-level `storage` in [settings](/settings#sessions), or pass `sessionStore: { kind: "adapter", module, options, secrets, prefix }` in the SDK. Relative module paths resolve from the agent directory (`~/.atomic/agent` by default). Bare package names resolve from user-scope [Atomic packages](#adapters-from-atomic-packages), host extension directories, or the agent directory, never from an embedding application's `node_modules`. Project settings follow the project trust boundary, and adapter code runs with Atomic's privileges.
+
+Choose the installation method that matches how you open the adapter:
+
+- **Direct SDK database handles (`{ kind: "database", database }`).** Install the package in your project with `npm install`, call `openPostgresDatabase()` or `openLibsqlDatabase()`, and pass the handle to `sessionStore: { kind: "database", database, prefix? }` or `SqlSessionStore.open(database, { prefix? })`. See [SDK session storage](/sdk/storage).
+- **Adapter-resolved selections (`{ kind: "adapter", module }`, `settings.json`, `ATOMIC_STORAGE`, `ATOMIC_PROFILE=ci`).** Install the package in user scope with `atomic install npm:<package>` (without `-l`), or register a local package directory with `DefaultResourceLoader({ additionalExtensionPaths })` or `--extension`.
 
 Adapter modules can import `@bastani/atomic/storage` and `@bastani/atomic` directly in both npm installs and standalone binaries. This works for the adapter entry file and any ES module or TypeScript file it imports relatively (including `.mjs` files and `.js` files in `"type": "module"` packages). CommonJS files outside the entry file resolve from `node_modules` instead. List `@bastani/atomic` under `peerDependencies`, not `dependencies`.
 
-`options` holds SQLite scalar values or booleans. `secrets` maps option names to `{ env }` or `{ file }`, overriding same-named keys in `options`. Atomic strips one trailing `\n` or `\r\n` from `{ file }` secrets and keeps other whitespace intact. `context` provides `agentDir`, `domain: "sessions" | "intercom"`, and an optional `signal`.
+`options` holds SQLite scalar values or booleans. `secrets` maps secret names to `{ env }`, `{ file }`, or (in the SDK only) `inMemorySecret(value)` (`{ value }`), overriding same-named keys in `options`. Atomic strips one trailing `\n` or `\r\n` from `{ file }` secrets and keeps other whitespace intact. `inMemorySecret()` serializes as `[redacted]` and is refused outside the SDK (`in-memory-secret-unsupported`).
+
+`context` provides `agentDir`, `domain: "sessions" | "intercom"`, an optional `signal`, and `secret(name)` to reread `secrets[name]` on demand. An adapter that reads fresh credentials for each new connection (such as a rotated password file) declares `liveSecrets` on its `StorageAdapterModule` (for example `liveSecrets: ["password"]`). Atomic omits names listed in `liveSecrets` from `options` and expects the adapter to call `context.secret(name)`, which throws `StorageConfigError` (`reason: "secret-missing"`) when the secret is missing from `secrets`.
 
 Adapter hooks and lifecycle:
 
@@ -602,7 +616,7 @@ Adapter hooks and lifecycle:
 - Implement `openSessionStore(options, context, { prefix? })` for non-SQL session stores. When both hooks exist, `openSessionStore` takes priority for sessions.
 - Missing hooks raise `StorageConfigError` (`reason: "adapter-domain-unsupported"`). Load failures raise `StorageAdapterLoadError`, and driver open failures raise `StorageUnavailableError`.
 - `new StorageProvider().openSessionStore(selection, context)` opens stores programmatically (`kind`: `"memory"`, `"jsonl"`, `"sqlite"`, `"database"`, or `"adapter"`). `loadStorageAdapter(module, context, hostModules)` loads an adapter module.
-- One `StorageProvider` shares owned databases across matching selections and closes the database when the last returned store closes. Caller-owned `database` handles are never closed by the provider.
+- `StorageProvider` instances share one process-wide map of provider-owned databases across matching selections and close each owned database when its last returned store closes. Caller-owned `database` handles passed through `{ kind: "database", database }` are never closed by the provider.
 - If opening storage fails and closing its owned database also fails, Atomic throws the original opening error with a `cleanupCause` field holding the cleanup failure.
 
 ### Adapters from Atomic packages

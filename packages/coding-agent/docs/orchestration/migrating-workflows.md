@@ -37,7 +37,7 @@ After reviewing the generated skill and scripts, run `/reload`, then invoke `/sk
 | --- | --- |
 | `ctx.stage`, `ctx.task`, model and thinking | Codemode `tools.subagent()` launches in the main chat that keep prompts, inputs, and model pins. |
 | Stage `fallbackModels`, `tools`, `mcp` | Named [custom subagent](/subagents/authoring) launched without per-call `model` ([Pinned stages](#pinned-stages)). |
-| `ctx.parallel`, loops, retries | `tasks` batches, explicit round caps, and checks between notices (plus Intercom `group` for peers). |
+| `ctx.parallel`, loops, retries | `tasks` batches, explicit round caps, and checks between notices (plus [Intercom](/intercom) `group` for peers). |
 | `ctx.tool`, deterministic helpers | Reviewed scripts in `scripts/` with validated args, timeouts, and exit checks. |
 | Inputs, `ctx.ui`, approvals | Skill arguments and defaults plus `ask_user_question` steps (an unanswered approval is never a pass). |
 | Nested `ctx.workflow` | Separately converted skill called by name (the main session still owns all subagent launches). |
@@ -83,5 +83,5 @@ Old workflow data is safe to leave alone. To reclaim space, back it up and stop 
 - Safe to delete if unused: `runs/`, `pool/`, and `journal/`.
 
 <Warning>
-Do not delete `~/.atomic/workflows/journal.sqlite` or its sidecar files (they store your Atomic sessions), the entire `~/.atomic/workflows/` directory, shared databases, or your workflow source files. Custom storage paths may differ.
+Do not delete `~/.atomic/workflows/journal.sqlite` or its sidecar files (they store your Atomic sessions), the entire `~/.atomic/workflows/` directory, shared databases, or your workflow source files. Custom storage paths may differ. See [Workflow data from earlier releases](/storage#workflow-data-from-earlier-releases) for details on what Atomic keeps and ignores.
 </Warning>

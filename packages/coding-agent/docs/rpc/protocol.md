@@ -683,7 +683,7 @@ Response:
 
 #### compact
 
-Stop the active run and compact the session by clearing the context window or replacing it with the configured compactor model's output. Optional `instructions` is added to the boundary message and passed as the compactor query (like `/compact <instructions>`). Rejects with `Nothing to compact` if nothing has entered the context since the last boundary. See [Compaction](/compaction) for details.
+Stop the active run and compact the session by clearing the context window or replacing it with the configured compactor model's output. Optional `instructions` is added to the boundary message and passed as the compactor query (like `/compact <instructions>`). Failures return `errorCode: "compaction_error"` with a `SerializedCompactionError` (such as `CompactionStateError` with `code: "nothing-to-compact"` when nothing has entered the context since the last boundary), which `RpcClient` rehydrates automatically. See [Compaction](/compaction) and [Compaction errors](/compaction/reference#compaction-errors) for details.
 
 ```json
 {"type": "compact", "instructions": "keep the migration plan"}
@@ -752,7 +752,7 @@ Response:
 
 #### set_decision_model
 
-Switch the active decision model immediately without restarting or reloading, and persist it to global or project settings (pass `"persist": false` to update only in-memory session state). Pass `""` or `"auto"` for Automatic (current chat model), or an exact registered classifier or chat `provider/model` ID.
+Switch the active decision model immediately without restarting or reloading, and persist it to global or project settings (pass `"persist": false` to update only in-memory session state). Pass `""` or `"auto"` for Automatic (current chat model), or an exact registered classifier or chat `provider/model` ID. Unlike `set_compaction_model`, invalid values return a plain `{ success: false, error }` response without `errorCode`.
 
 ```json
 {"type": "set_decision_model", "model": "typesafe/jev-latest", "scope": "global"}
@@ -1960,6 +1960,7 @@ Some errors attach typed `errorCode` and `errorDetails` properties that `RpcClie
 
 | `errorCode` | `errorDetails` shape | When returned |
 | --- | --- | --- |
+| `"compaction_error"` | `SerializedCompactionError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, optional `cause`) | `compact` or `set_compaction_model` failed with a typed `CompactionError` (`CompactionStateError`, `CompactionCancelledError`, `CompactionConfigError`, or `CompactorFailure`). |
 | `"debug_error"` | `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`) | Invalid argument passed to `set_debug`. |
 | `"missing_session_cwd"` | `SerializedMissingSessionCwdError` (`sessionCwd`, `fallbackCwd`, optional `sessionFile`) | `switch_session` or `import_session` when the recorded `cwd` does not exist and `cwdOverride` was omitted. |
 | `"credential_synchronization"` | `{ providerId: string, operation: "save" \| "logout" \| "oauth" }` | Credential persistence could not synchronize with the active provider store. |

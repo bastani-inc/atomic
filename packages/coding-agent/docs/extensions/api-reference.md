@@ -4,6 +4,8 @@ sidebarTitle: "Extension API"
 description: "Reference for ExtensionContext, ExtensionToolContext, ExtensionCommandContext, ExtensionAPI methods, and typed errors."
 ---
 
+This page documents `ExtensionContext`, `ExtensionToolContext`, `ExtensionCommandContext`, `ExtensionAPI` methods, and typed errors. For setup and discovery, see [Extensions overview](/extensions). For patterns and custom tools, see [Write an extension](/extensions/authoring). For embedding Atomic and loading inline extension factories, see [SDK overview](/sdk), [SDK extensions](/sdk/reference#extensions), and [Structured decisions](/sdk/structured-decisions).
+
 ## ExtensionContext
 
 All event handlers, tool callbacks, and command handlers receive `ctx: ExtensionContext`.
@@ -81,7 +83,7 @@ To inspect older history without loading the entire session into memory:
 - `for await (const page of ctx.sessionManager.readHistory({ fromSeq, toSeq }))` iterates entries in append order. Oversized items (`kind: "oversized"`) stream via `ctx.sessionManager.readHistoryChunks(item)`.
 - `await ctx.sessionManager.loadFullHistory()` loads every stored entry into memory; prefer paged reads for large sessions.
 
-### ctx.modelRegistry / ctx.model / ctx.scopedModels
+### ctx.modelRegistry / ctx.model / ctx.scopedModels {#ctx-modelregistry-ctx-model-ctx-scopedmodels}
 
 Access models, authentication state, and provider-aware requests.
 
@@ -114,7 +116,7 @@ if (logo.stopReason !== "stop") throw new Error(logo.errorMessage);
 
 When image generation fails, rebuild `result.error` (`ImageGenerationErrorData`) with `imageGenerationErrorFromData()` from `@bastani/atomic-ai` and branch on its class, type guards (`isImageGenerationError`, `isImageGenerationConfigError`, `findImageGenerationError`, `isRetryableImageGenerationError`), or `code`. Cancelled requests resolve with `stopReason: "aborted"` and no `error`. See [Image generation](/libraries/ai#image-generation).
 
-Use `getApiKeyAndHeaders()` only when inspecting credentials before dispatch. `await ctx.modelRegistry.refresh(options)` returns `{ aborted, errors }` with per-provider errors. Calling `ModelRuntime.setRuntimeApiKey(providerId, apiKey, options)` stores a runtime credential without refreshing the catalog; call `refresh({ providers: [providerId], signal })` explicitly if needed.
+Use `getApiKeyAndHeaders()` only when inspecting credentials before dispatch. `await ctx.modelRegistry.refresh(options)` returns `{ aborted, errors }` with per-provider errors. Calling `ModelRuntime.setRuntimeApiKey(providerId, apiKey, options)` stores a runtime credential without refreshing the catalog; call `refresh({ providers: [providerId], signal })` explicitly if needed (see [API keys and OAuth in the SDK](/sdk/reference#api-keys-and-oauth)).
 
 OpenRouter Chat Completions and Anthropic Messages requests send `x-session-id` by default when `sessionId` is supplied and prompt caching is active; set `compat.sendSessionAffinityHeaders: false` or `cacheRetention: "none"` to opt out.
 
@@ -137,7 +139,7 @@ Current `ThinkingLevel` (`"off" | "minimal" | "low" | "medium" | "high" | "xhigh
 
 ### ctx.getDecisionModel()
 
-Returns the session's configured `decisionModel` (`"provider/model"`, `"auto"`, or `""`). Atomic uses this for `structured_output` calls that omit `model`, steer readiness checks, and `decide()`, without changing the chat model. Throws `DecisionModelUnavailableError` (`reason: "host-unsupported"`) if the host does not support decision models.
+Returns the session's configured `decisionModel` (`"provider/model"`, `"auto"`, or `""`). Atomic uses this for `structured_output` calls that omit `model`, steer readiness checks, and `decide()`, without changing the chat model (see [Structured decisions](/sdk/structured-decisions)). Throws `DecisionModelUnavailableError` (`reason: "host-unsupported"`) if the host does not support decision models.
 
 ### ctx.signal
 
@@ -694,7 +696,7 @@ unsubscribe();
 
 Do not retain `atomic.events` across `/reload` (calling `on()` or `emit()` on a retired handle throws). Pass `atomic.events` to [`sessionScopedExtensionState`](/extensions/authoring#session-scoped-in-memory-state) to preserve in-memory state across reloads.
 
-Embedded hosts implementing `ExtensionRuntime` must implement `trackEventBusSubscription(unsubscribe)` and return `markdownTransformers` (plus optional `renderLatex`, `fullscreenScrollbar`, `fullscreenWheelScrollLines`) from `ExtensionUIContext.getChatRenderSettings()`.
+Embedded hosts implementing `ExtensionRuntime` must implement `trackEventBusSubscription(unsubscribe)` and return `markdownTransformers` (plus optional `renderLatex`, `fullscreenScrollbar`, `fullscreenWheelScrollLines`) from `ExtensionUIContext.getChatRenderSettings()`. See [SDK extensions](/sdk/reference#extensions).
 
 ### Native providers
 
@@ -819,7 +821,7 @@ See [examples/extensions/provider-accounts.ts](https://github.com/bastani-inc/at
 
 Remove a previously registered provider and its models, restoring any built-in models it overrode. No-op for unknown names. Takes effect immediately without `/reload`.
 
-### atomic.registerMcpServer(name, config)
+### atomic.registerMcpServer(name, config) {#atomic-registermcpserver-name-config}
 
 Contribute an MCP server whose configuration is computed at runtime (for example, a dynamically bound local port). `name` must match `^[A-Za-z0-9_-]+$`, and `config` follows the [`mcp.json`](/mcp-servers#configure-servers) schema (`url`, `command`, `args`, `env`, `cwd`, `headers`, OAuth settings, `exposure`, positive `timeout` in seconds, `${VAR}` / `$env:VAR` URL interpolation). `type: "sse"` is rejected (use streamable HTTP).
 
@@ -848,7 +850,7 @@ Call from the extension factory or `session_start`; servers connect immediately 
 
 ### Typed errors from built-in tools and providers
 
-These error classes and type guards are exported from `@bastani/atomic`. Branch on the class, its type guard, or `code` rather than `message`. Each tool/provider error includes `hint`, `retryable`, and `toJSON()` for cross-process serialization (credentials in URLs are stripped). Use `rehydrateShellToolError()` and `rehydrateLlamaServerError()` to rebuild serialized instances.
+These error classes and type guards are exported from `@bastani/atomic` (see [Session and storage errors](/sdk/reference#session-and-storage-errors) for session, storage, and startup errors). Branch on the class, its type guard, or `code` rather than `message`. Each tool/provider error includes `hint`, `retryable`, and `toJSON()` for cross-process serialization (credentials in URLs are stripped). Use `rehydrateShellToolError()` and `rehydrateLlamaServerError()` to rebuild serialized instances.
 
 | Class | `code` | When | Key fields / notes |
 | --- | --- | --- | --- |

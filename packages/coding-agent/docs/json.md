@@ -14,6 +14,8 @@ Need to send follow-up commands to a live process or embed Atomic directly in No
 
 If a saved default `provider/model` names a provider that stays unsupported after startup, JSON mode writes a configuration diagnostic to stderr and exits with code `1` before sending any prompt. Stdout stays empty so downstream parsers never receive non-JSON text. Supported providers with an unknown model or missing credentials still fall back through normal model selection.
 
+To isolate session storage in scripts or CI runs without changing saved settings, pass `--storage '<json>'`, `--storage-file <path>`, or `--session-store <path>` (with optional `--session-prefix <prefix>`), or set `ATOMIC_STORAGE` or `ATOMIC_SESSIONS_STORAGE` in the environment. Invalid storage selections fail at startup with `StorageConfigError`. Atomic writes the error to stderr, leaves stdout empty, and exits with code `1`. See [Selecting storage per process](/storage#selecting-storage-per-process).
+
 ## Output format
 
 Each line on stdout is a single JSON object terminated by `\n`. The first line is always the session header (including when `--no-session` is passed, which emits the in-memory session header):

@@ -183,7 +183,7 @@ PDF URLs up to 20 MB are extracted as text (up to 100 pages) and saved to `~/Dow
 
 When Readability fails or returns only a cookie notice, the extension tries the Next.js RSC flight data parser, Jina Reader (server-side JS rendering with no API key), Gemini URL Context API, and then Gemini Web when browser cookies are enabled. Text responses are capped at 5 MB and 20 redirects.
 
-Only `http` and `https` URLs are fetched. URLs with embedded credentials, local or private addresses (including redirects to them), and intranet host names are never sent to remote fallbacks.
+Only `http` and `https` URLs are fetched. URLs with embedded credentials, local or private addresses (including redirects to them), and intranet host names are never sent to remote fallbacks ([Security](https://docs.bastani.ai/security), [Tools](https://docs.bastani.ai/tools#documents-and-urls)).
 
 ## Routing
 
@@ -299,7 +299,7 @@ Store settings in `~/.atomic/web-search.json`. Every field is optional. Environm
 | `searchModel` | `"gemini-3-flash-preview"` | Gemini API model used by `web_search` without changing URL, YouTube, or video extraction defaults. |
 | `summaryModel` | built-in preference list | Preferred model for curator summary drafts (must be available in your model registry). |
 | `curatorTimeoutSeconds` | `20` | Initial curator idle timeout in seconds (max `600`). |
-| `allowBrowserCookies` | `false` | Enable Chromium cookie extraction for Gemini Web (also controllable per process with `ATOMIC_ALLOW_BROWSER_COOKIES=1`). |
+| `allowBrowserCookies` | `false` | Enable Chromium cookie extraction for Gemini Web (also controllable per process with `ATOMIC_ALLOW_BROWSER_COOKIES=1`; see [Environment variables](https://docs.bastani.ai/environment-variables)). |
 | `chromeProfile` | auto-detected | Override Chromium profile directory for Gemini Web cookie lookup. |
 | `githubClone.enabled` | `true` | Enable local GitHub repository cloning in `fetch_content`. |
 | `githubClone.maxRepoSizeMB` | `350` | Size threshold above which `fetch_content` falls back to the GitHub API unless `forceClone: true`. |

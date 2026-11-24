@@ -79,7 +79,7 @@ For example, to turn off a user-level server in one project:
 
 ### Servers from packages and extensions
 
-Installed [packages](/packages/authoring#mcp-servers) and extensions can contribute MCP servers using the same configuration shape. File-configured servers take precedence over package or extension contributions with the same normalized name. Project packages load only after project trust is granted.
+Installed [packages](/packages/authoring#mcp-servers) and [extensions](/extensions/api-reference#atomic-registermcpserver-name-config) can contribute MCP servers using the same configuration shape. File-configured servers take precedence over package or extension contributions with the same normalized name. Project packages load only after project trust is granted.
 
 `/mcp` shows each server's source. Enabled-state and exposure changes to file-configured servers save back to `mcp.json` while preserving formatting and unrelated settings (setting a full entry back to the defaults `enabled: true` or `exposure: "codemode"` omits those default keys on disk, while project overrides keep explicit keys). In a trusted project, **Enable in this project** and **Disable in this project** create or update a project override for a user-level server, and `atomic mcp list` displays the override. Changes to extension-contributed servers apply to the current session only.
 
@@ -104,7 +104,7 @@ When you resume a session, its previously used MCP tools remain available and ke
 
 ### Shell commands
 
-CLI subcommands operate on file-configured servers and do not load extensions:
+CLI subcommands operate on file-configured servers and do not load extensions (see [MCP CLI commands](/reference/cli#mcp-commands)):
 
 ```bash
 atomic mcp add <server> [options] -- <command> [args...]
@@ -131,8 +131,8 @@ MCP tools register as `mcp__<server>__<tool>` with punctuation replaced by `_`. 
 
 | Exposure | Behavior |
 | --- | --- |
-| `codemode` (default) | Callable from codemode scripts, but not declared directly to the model or listed in codemode's inline catalog. Discover with `await searchTools()`, `await describeTool()`, or `ALL_TOOLS`. |
-| `deferred` | Not declared until `tool_search` activates matching tools for the next model turn. |
+| `codemode` (default) | Callable from [codemode](/codemode) scripts, but not declared directly to the model or listed in codemode's inline catalog. Discover with `await searchTools()`, `await describeTool()`, or `ALL_TOOLS`. |
+| `deferred` | Not declared until [`tool_search`](/tools#tool_search) activates matching tools for the next model turn. |
 | `direct` | Declared like a built-in tool and also callable from codemode. |
 | `hidden` | Unreachable. |
 
@@ -252,6 +252,44 @@ Provider-token authentication enforces these restrictions:
 - Requires HTTPS, except for HTTP on `localhost`, `127.0.0.1`, or `[::1]`.
 - Sends tokens only to the server's configured origin. Atomic follows same-origin `301`, `302`, `303`, `307`, and `308` redirects up to 10 hops (rewriting `POST` to `GET` on `301` and `302`, and non-`HEAD` requests to `GET` on `303`). Cross-origin redirects are rejected.
 
+## Using MCP from the SDK
+
+`createAgentSession()` enables built-in MCP support by default and loads servers from `mcp.json`, installed packages, and extensions. Control MCP behavior programmatically from `@bastani/atomic`:
+
+```typescript
+import { createAgentSession, DefaultResourceLoader } from "@bastani/atomic";
+
+// Disable built-in MCP support completely
+const noMcp = await createAgentSession({
+  builtins: { mcp: false },
+});
+
+// Allow only specific MCP tools, or exclude a server's tools
+const filtered = await createAgentSession({
+  tools: ["read", "codemode", "mcp__docs__*"],
+  excludedTools: ["mcp__docs__delete_*"],
+});
+
+// Register an MCP server dynamically at runtime via an inline extension factory
+const loader = new DefaultResourceLoader({
+  extensionFactories: [
+    (atomic) => {
+      atomic.registerMcpServer("local-service", {
+        url: "http://127.0.0.1:4321/mcp",
+        exposure: "direct",
+      });
+    },
+  ],
+});
+await loader.reload();
+
+const { session } = await createAgentSession({ resourceLoader: loader });
+```
+
+- **Tool filtering.** When `tools` is a non-empty allowlist with no `mcp__*` entry, MCP tools stay registered for `codemode` and `tool_search`. Adding any `mcp__*` entry switches MCP tools to explicit allowlisting. See [SDK tools](/sdk/reference#tools).
+- **Dynamic registration.** Call [`atomic.registerMcpServer()`](/extensions/api-reference#atomic-registermcpserver-name-config) inside an inline extension factory when a server URL or port is computed at runtime.
+- **Custom resource loaders.** Implement `getMcpServerContributions()` on a custom `ResourceLoader` to supply `McpServerContribution[]` directly under your own trust policy. See [ResourceLoader](/sdk/reference#resourceloader).
+
 ## Supported configuration and limits
 
 - Atomic reads only `~/.atomic/agent/mcp.json`, trusted `.atomic/mcp.json`, and package or extension contributions. External MCP client config files and third-party credential stores are not imported.
@@ -267,3 +305,11 @@ Provider-token authentication enforces these restrictions:
 - **Temporary authorization server outage.** Stored tokens stay intact and Atomic retries automatically; run `/mcp reconnect my-server` once the authorization server recovers. You are asked to sign in again only when credentials are rejected or revoked.
 - **Issuer mismatch.** Verify the authorization server's metadata and callback configuration before retrying rather than bypassing issuer validation.
 - **Slow tool calls.** Increase `timeout` (in seconds). Server progress notifications reset this inactivity timer.
+
+## Related docs
+
+- [SDK tools](/sdk/reference#tools) and [ResourceLoader](/sdk/reference#resourceloader) cover `builtins.mcp`, `tools`, `excludedTools`, and `getMcpServerContributions()`.
+- [Extensions API reference](/extensions/api-reference#atomic-registermcpserver-name-config) documents `atomic.registerMcpServer()`.
+- [Codemode reference](/codemode) and [`tool_search`](/tools#tool_search) cover discovering and calling `codemode` and `deferred` MCP tools.
+- [Tool and MCP allowlists](/subagents/authoring#tool-and-mcp-allowlists) explains `mcp:<server>` and `mcp:<server>/<tool>` syntax in custom subagents.
+- [CLI reference](/reference/cli#mcp-commands) lists all `atomic mcp` subcommands and `--no-mcp`.

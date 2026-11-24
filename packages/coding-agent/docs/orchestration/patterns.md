@@ -6,7 +6,7 @@ description: "Seven reusable patterns for splitting work across subagents, isola
 
 Give each subagent one concrete deliverable, explicit inputs, clear edit rules, and a verification check. Put conflicting edits in separate worktrees, and run final verification in your main session. A subagent claiming "done" is not proof.
 
-Each snippet below is a short codemode call from the main chat, not a long-lived script. After any restart, reconcile `status` with [saved task IDs](/orchestration#what-survives-interruption) before launching more subagents.
+Each snippet below is a short [codemode](/codemode) call from the main chat, not a long-lived script. After any restart, reconcile `status` with [saved task IDs](/orchestration#what-survives-interruption) persisted via [the codemode store](/codemode#store-values) before launching more subagents. For background and mechanics behind these patterns, see [Orchestrate with codemode and subagents](/orchestration), [Run subagents](/subagents), and [Manage background tasks](/background-tasks).
 
 ## Prompt anatomy
 
@@ -73,7 +73,7 @@ Synthesize only after every required subagent settles, and reconcile contradicti
 
 ## Adversarial verification
 
-Give a fresh read-only subagent the acceptance criteria and candidate, without the author's conclusion, and ask for a failing input:
+Give a [fresh](/subagents#fresh-vs-forked-context) read-only subagent the acceptance criteria and candidate, without the author's conclusion, and ask for a failing input:
 
 ```js
 const r = await tools.subagent({
@@ -85,11 +85,11 @@ store("date:review", r.tasks);
 return r.tasks;
 ```
 
-Verify reported failures in the main session by checking real exit codes before requesting repairs. With multiple reviewers, collect independent verdicts first, then allow one bounded Intercom debate. A reproducible failing case beats a majority vote. For user interfaces, [exercise the real interface](/computer-use).
+Verify reported failures in the main session by checking real exit codes before requesting repairs. With multiple reviewers, collect independent verdicts first, then allow one bounded [Intercom](/intercom) debate. A reproducible failing case beats a majority vote. For user interfaces, [exercise the real interface](/computer-use).
 
 ## Generate-and-filter
 
-Ask subagents for concrete candidates, then filter all of them with one deterministic check in codemode. Pass `context: "fresh"` (or use a read-only agent) so generators do not inherit the main chat's history (`worker` defaults to forked context and edit tools):
+Ask subagents for concrete candidates, then filter all of them with one deterministic check in codemode. Pass `context: "fresh"` (or use a read-only agent) so generators do not inherit the main chat's history (`worker` defaults to [forked context](/subagents#fresh-vs-forked-context) and edit tools):
 
 ```js
 const r = await tools.subagent({
@@ -107,7 +107,7 @@ Parse each result as data, drop malformed or duplicate entries, and keep only va
 
 ## Tournament
 
-Compare competing approaches on identical fixtures with pre-agreed scoring and tie-breaking rules, and isolate edits in named worktrees:
+Compare competing approaches on identical fixtures with pre-agreed scoring and tie-breaking rules, and isolate edits in [named worktrees](/subagents#named-worktrees):
 
 ```js
 const r = await tools.subagent({
@@ -124,14 +124,14 @@ return r.tasks;
 
 Note two details when running `worker` in named worktrees:
 
-- `worker` defaults to `context: "fork"`, so pass `context: "fresh"` when you want independent attempts without the main chat's prior reasoning.
+- `worker` defaults to `context: "fork"`, so pass `context: "fresh"` when you want independent attempts without the main chat's prior reasoning ([Fresh vs. forked context](/subagents#fresh-vs-forked-context)).
 - Named worktrees (`worktree: { branch }`) are never deleted automatically and do not symlink `node_modules`. Have each competitor install dependencies if its test command needs them, or remove finished branches and worktrees manually when the tournament ends.
 
 Record scores, commit SHAs, and round numbers so restarts never double-advance a candidate. Never pick a winner that fails a required check.
 
 ## Loop-until-done
 
-Run the project's verification command in the main session between bounded repair rounds. Pass a foreground `wait` budget suited to your test suite, and handle the string return value in case the command yields to the background:
+Run the project's verification command in the main session between bounded repair rounds. Pass a foreground `wait` budget suited to your test suite, and handle the string return value in case the command yields to a [background shell](/background-tasks#background-shells):
 
 ```js
 const check = await tools.bash({
@@ -174,4 +174,4 @@ store("cli-slice", r.tasks);
 return r.tasks;
 ```
 
-Because `worker` defaults to `context: "fork"`, each slice sees the main chat's verified decisions unless you pass `context: "fresh"`. Named worktrees keep their branches and do not symlink `node_modules`. Verify each slice against its base and run full integration checks at the tip. Run independent slices in parallel instead.
+Because `worker` defaults to `context: "fork"`, each slice sees the main chat's verified decisions unless you pass `context: "fresh"` ([Fresh vs. forked context](/subagents#fresh-vs-forked-context)). [Named worktrees](/subagents#named-worktrees) keep their branches and do not symlink `node_modules`. Verify each slice against its base and run full integration checks at the tip. Run independent slices in parallel instead.
