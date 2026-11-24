@@ -166,7 +166,7 @@ test("startPtyProgram scrubs inherited Vitest NODE_ENV=test and VITEST markers b
 	const root = makeTempDirectory("pty-env-scrub-");
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 	const script =
-		'console.log("ENV_JSON=" + JSON.stringify({ nodeEnv: process.env.NODE_ENV ?? null, vitest: process.env.VITEST ?? null }));';
+		'process.stdout.write("ENV_JSON=" + JSON.stringify({ nodeEnv: process.env.NODE_ENV ?? null, vitest: process.env.VITEST ?? null }) + "\\nENV_END\\n"); process.stdin.resume(); process.stdin.once("data", () => process.exit(0));';
 
 	// 1. Caller omits NODE_ENV and VITEST -> inherited Vitest NODE_ENV=test and VITEST=true must be cleared.
 	const defaultPty = startPtyProgram({
@@ -179,7 +179,8 @@ test("startPtyProgram scrubs inherited Vitest NODE_ENV=test and VITEST markers b
 		rows: 24,
 	});
 	try {
-		await defaultPty.waitForScreen((s) => s.includes("ENV_JSON="), 15_000, "child env json");
+		await defaultPty.waitForScreen((s) => s.includes("ENV_JSON=") && s.includes("ENV_END"), 15_000, "child env json");
+		defaultPty.write("q\n");
 		await defaultPty.exited;
 		const match = defaultPty.screen().match(/ENV_JSON=(\{[^\n]+\})/);
 		assert.ok(match, `expected ENV_JSON line, got:\n${defaultPty.screen()}`);
@@ -202,7 +203,12 @@ test("startPtyProgram scrubs inherited Vitest NODE_ENV=test and VITEST markers b
 		rows: 24,
 	});
 	try {
-		await explicitPty.waitForScreen((s) => s.includes("ENV_JSON="), 15_000, "explicit child env json");
+		await explicitPty.waitForScreen(
+			(s) => s.includes("ENV_JSON=") && s.includes("ENV_END"),
+			15_000,
+			"explicit child env json",
+		);
+		explicitPty.write("q\n");
 		await explicitPty.exited;
 		const match = explicitPty.screen().match(/ENV_JSON=(\{[^\n]+\})/);
 		assert.ok(match, `expected ENV_JSON line, got:\n${explicitPty.screen()}`);
