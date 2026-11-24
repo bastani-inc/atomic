@@ -369,7 +369,7 @@ describe(".sqlite3 and .db3 selectors in read and search", () => {
 		}
 
 		const searchTool = createSearchToolDefinition(dir);
-		for (const target of ["store.sqlite3:notes", "store.db3:notes"]) {
+		for (const target of ["store.sqlite3:notes", "store.db3:notes", `${join(dir, "store.sqlite3")}:notes`]) {
 			const result = await searchTool.execute(
 				`search-${target}`,
 				{ pattern: "needle-value", paths: target },
@@ -381,8 +381,14 @@ describe(".sqlite3 and .db3 selectors in read and search", () => {
 			assert.match(text, /needle-value/);
 		}
 
+		const customBackendSearchTool = createSearchToolDefinition(dir, {
+			operations: {
+				isDirectory: async () => false,
+				readFile: async () => "",
+			},
+		});
 		await assert.rejects(
-			searchTool.execute(
+			customBackendSearchTool.execute(
 				"missing-win-sqlite3",
 				{ pattern: "needle", paths: "C:\\missing\\app.sqlite3:notes" },
 				undefined,

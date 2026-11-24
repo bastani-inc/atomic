@@ -82,16 +82,10 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
 			const environment = captureHerdrEnvironment(options.env ?? process.env);
 			if (!environment || ctx.mode !== "tui" || !ctx.hasUI || ctx.subagentPolicy) return;
-			const enabledResult = (options.enabled ?? enabled)(ctx);
-			let isEnabled: boolean;
-			if (typeof enabledResult !== "boolean") {
-				const stopped = stops.get(runner);
-				isEnabled = await enabledResult;
-				if (stops.get(runner) !== stopped || retiredRunners.has(runner)) return;
-				if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
-			} else {
-				isEnabled = enabledResult;
-			}
+			const stopped = stops.get(runner);
+			const isEnabled = await (options.enabled ?? enabled)(ctx);
+			if (stops.get(runner) !== stopped || retiredRunners.has(runner)) return;
+			if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
 			if (!isEnabled) {
 				if (boundRunner && boundRunner !== runner) retiredRunners.add(boundRunner);
 				await releaseRetiredPaneReporting(environment, { ...options, diagnostic });
