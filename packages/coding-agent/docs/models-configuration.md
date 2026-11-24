@@ -34,8 +34,10 @@ Each `models` entry adds a model to the provider. An entry whose `id` matches an
 |---|---|---|---|
 | `id` | string |  | Required. Model ID sent to the API. |
 | `name` | string |  | Display name, also matched by --model patterns. |
+| `type` | `"chat" \| "compactor"` | `"chat"` | Model kind: "chat" (default) or "compactor" for a dedicated remote compaction endpoint. |
 | `api` | string |  | Overrides the provider api. |
 | `baseUrl` | string |  | Overrides the provider baseUrl. |
+| `endpointPath` | string |  | Endpoint path appended to baseUrl for compactor requests (default "/compact"). Set to "" to POST directly to baseUrl. Applies only to compactor models. |
 | `reasoning` | boolean | `false` | Whether the model supports thinking. |
 | `thinkingLevelMap` | object |  | Provider value sent for each thinking level. null marks a level unsupported. Levels the model does not map use the provider's default value through high; xhigh and max are unsupported. |
 | `input` | `("text" \| "image" \| "pdf")[]` | `["text"]` |  |
@@ -54,8 +56,10 @@ Each `models` entry adds a model to the provider. An entry whose `id` matches an
 | `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Atomic warms only tiers with a known lifetime. |
 | `contextWindow` | number | `128000` | Context window in tokens. |
 | `maxTokens` | number | `16384` | Maximum output tokens. |
+| `timeoutMs` | number |  | Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |
+| `compactionParams` | object |  | API-specific request-body parameters merged into { messages, query, model } for compactor requests. Omit to let the remote API use its own defaults. Applies only to compactor models. |
 | `headers` | object |  | Request headers. Values resolve like apiKey. |
 | `compat` | [object](#compatibility) |  | Provider and model compatibility overrides. |
 
@@ -66,6 +70,8 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `name` | string |  | Display name, also matched by --model patterns. |
+| `baseUrl` | string |  | Overrides the model baseUrl. |
+| `endpointPath` | string |  | Endpoint path appended to baseUrl for compactor requests (default "/compact"). Set to "" to POST directly to baseUrl. Applies only to compactor models. |
 | `reasoning` | boolean |  | Whether the model supports thinking. |
 | `thinkingLevelMap` | object |  | Provider value sent for each thinking level. null marks a level unsupported. Levels the model does not map use the provider's default value through high; xhigh and max are unsupported. |
 | `input` | `("text" \| "image" \| "pdf")[]` |  |  |
@@ -84,8 +90,10 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 | `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Atomic warms only tiers with a known lifetime. |
 | `contextWindow` | number |  | Context window in tokens. |
 | `maxTokens` | number |  | Maximum output tokens. |
+| `timeoutMs` | number |  | Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |
+| `compactionParams` | object |  | API-specific request-body parameters merged into { messages, query, model } for compactor requests. Omit to let the remote API use its own defaults. Applies only to compactor models. |
 | `headers` | object |  | Request headers. Values resolve like apiKey. |
 | `compat` | [object](#compatibility) |  | Provider and model compatibility overrides. |
 

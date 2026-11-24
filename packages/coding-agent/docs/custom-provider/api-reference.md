@@ -158,10 +158,25 @@ interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
   compat?: ClassifierCompat;
 }
 
+interface ProviderCompactorModelConfig extends ProviderModelConfigBase {
+  type: "compactor";
+  /** Compactor API identifier. Required at model or provider level unless overriding an existing compactor model. */
+  api?: CompactorApi;
+  /** Endpoint path appended to `baseUrl` (default `"/compact"`). Set `""` to POST directly to `baseUrl`. */
+  endpointPath?: string;
+  /** API-specific request-body parameters merged into `{ messages, query, model }`. Omitted by default so the remote API uses its own defaults. */
+  compactionParams?: Record<string, unknown>;
+  /** Wall-clock request timeout in milliseconds (default `120000`). */
+  timeoutMs?: number;
+  /** Upper bound on compacted output in estimated tokens (default `32000`; still capped at 50% of automatic trigger budget). */
+  maxTokens?: number;
+}
+
 type ProviderModelConfig =
   | ProviderChatModelConfig
   | ProviderImageModelConfig
-  | ProviderClassifierModelConfig;
+  | ProviderClassifierModelConfig
+  | ProviderCompactorModelConfig;
 ```
 
 ### Cost and pricing tiers

@@ -1,4 +1,4 @@
-import { type ModelsRefreshResult, normalizeProviderId } from "@bastani/atomic-ai";
+import { type CompactorModel, type ModelsRefreshResult, type ModelType, normalizeProviderId } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { AgentSession } from "../../core/agent-session.js";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../../core/model-refresh-timeout.ts";
@@ -10,7 +10,7 @@ import type { RpcModelCatalog } from "../rpc/rpc-types.ts";
 /** The host runtime's own auth answers, captured before the first patch replaces them. */
 const localRuntimeAuth = new WeakMap<
 	ModelRuntime,
-	Pick<ModelRuntime, "getProviderAuthStatus" | "getApiKeyLoginProviderMetadata">
+	Pick<ModelRuntime, "getProviderAuthStatus" | "getApiKeyLoginProviderMetadata" | "getModelsOfType">
 >();
 
 interface ScopeSnapshot {
@@ -29,6 +29,7 @@ export class RemoteModelCatalog {
 	private readonly client: RpcClient;
 	private models: Model<Api>[] = [];
 	private scopedModels: Array<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }> = [];
+	private compactorModels: CompactorModel[] | undefined;
 	private oauthProviders: NonNullable<RpcModelCatalog["oauthProviders"]> = [];
 	/** Extension providers live only in the engine; the host learns their API-key login and auth status from it. */
 	private apiKeyLoginProviders: RpcModelCatalog["customAuthProviders"] = [];
@@ -64,6 +65,7 @@ export class RemoteModelCatalog {
 
 	apply(catalog: RpcModelCatalog, scope = this.getScopeSnapshot()): void {
 		this.applyModels(catalog, scope);
+		if (catalog.compactorModels) this.compactorModels = catalog.compactorModels;
 		if (catalog.oauthProviders) this.oauthProviders = catalog.oauthProviders;
 		if (catalog.customAuthProviders) this.apiKeyLoginProviders = catalog.customAuthProviders;
 		if (catalog.providerAuthStatuses) {
@@ -102,11 +104,15 @@ export class RemoteModelCatalog {
 			local = {
 				getProviderAuthStatus: runtime.getProviderAuthStatus.bind(runtime),
 				getApiKeyLoginProviderMetadata: runtime.getApiKeyLoginProviderMetadata.bind(runtime),
+				getModelsOfType: runtime.getModelsOfType.bind(runtime),
 			};
 			localRuntimeAuth.set(runtime, local);
 		}
-		const { getProviderAuthStatus: localAuthStatus, getApiKeyLoginProviderMetadata: localApiKeyLoginProviders } =
-			local;
+		const {
+			getProviderAuthStatus: localAuthStatus,
+			getApiKeyLoginProviderMetadata: localApiKeyLoginProviders,
+			getModelsOfType: localModelsOfType,
+		} = local;
 		Object.defineProperties(runtime, {
 			refresh: { configurable: true, value: (options = {}) => this.refresh(options) },
 			getAvailableSnapshot: { configurable: true, value: () => [...this.models] },
@@ -119,6 +125,13 @@ export class RemoteModelCatalog {
 				configurable: true,
 				value: (provider: string, modelId: string) =>
 					this.models.find((model) => model.provider === provider && model.id === modelId),
+			},
+			getModelsOfType: {
+				configurable: true,
+				value: <T extends ModelType>(type: T) =>
+					type === "compactor" && this.compactorModels !== undefined
+						? ([...this.compactorModels] as ReturnType<ModelRuntime["getModelsOfType"]>)
+						: localModelsOfType(type),
 			},
 			getProviderAuthStatus: {
 				configurable: true,

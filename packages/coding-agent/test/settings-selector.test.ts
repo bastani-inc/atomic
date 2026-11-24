@@ -461,7 +461,7 @@ test("compaction picker offers Auto and compactor models only, without changing 
 	const selected: string[] = [];
 	const menu = openCompactionSubmenu(config, (value) => selected.push(value));
 	const output = render(menu);
-	for (const label of ["Auto (clear and recover)", "morph/morph-compactor", "requires /login morph"]) {
+	for (const label of ["Automatic", "morph/morph-compactor", "requires /login morph"]) {
 		assert.ok(output.includes(label), label);
 	}
 	for (const label of ["test/chat", "judge/score"]) assert.ok(!output.includes(label), label);

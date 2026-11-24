@@ -2,6 +2,7 @@ import type {
 	AnyModel,
 	ClassifierApi,
 	ClassifierModel,
+	CompactorApi,
 	ImageApi,
 	ImageModelCapabilities,
 	ProviderClassifier,
@@ -126,8 +127,22 @@ export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
 	compat?: ClassifierModel<ClassifierApi>["compat"];
 }
 
+export interface ProviderCompactorModelConfig extends ProviderModelConfigBase {
+	type: "compactor";
+	/** Compactor API identifier. Required at model or provider level unless overriding an existing compactor model. */
+	api?: CompactorApi;
+	endpointPath?: string;
+	compactionParams?: Record<string, unknown>;
+	timeoutMs?: number;
+	maxTokens?: number;
+}
+
 /** Models for all supported operations in a provider registration. */
-export type ProviderModelConfig = ProviderChatModelConfig | ProviderImageModelConfig | ProviderClassifierModelConfig;
+export type ProviderModelConfig =
+	| ProviderChatModelConfig
+	| ProviderImageModelConfig
+	| ProviderClassifierModelConfig
+	| ProviderCompactorModelConfig;
 
 /** Extension factory function type. Supports both sync and async initialization. */
 export type ExtensionFactory = (atomic: ExtensionAPI) => void | Promise<void>;

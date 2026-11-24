@@ -1114,6 +1114,7 @@ export class SettingsManager {
 	private touchSplitAccessorMethods(): void {
 		void this.markModified;
 		void this.markProjectModified;
+		void this.mergeEffectiveSettings;
 		void this.save;
 		void this.saveProjectSettings;
 	}

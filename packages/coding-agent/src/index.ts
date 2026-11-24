@@ -312,6 +312,8 @@ export {
 
 // Core session management
 
+// Compaction
+export type { CompactorApi, CompactorModel } from "@bastani/atomic-ai";
 // GitHub Copilot request failures, typed at the provider; see docs/providers.md.
 export {
 	classifyGitHubCopilotFailure,
@@ -481,37 +483,74 @@ export {
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
 } from "./core/cloudflare-gateway-binding.ts";
-// Compaction
+/**
+ * @deprecated No longer injected into compactor requests; kept only so running 0.10.x processes survive an in-place
+ * update without an ESM missing-export error.
+ */
+export const COMPACTOR_COMPRESSION_RATIO = 0.5;
+
 export {
 	type BranchPreparation,
 	type BranchSummaryResult,
 	buildBoundaryText,
 	buildCompactorMessages,
 	COMPACTED_OUTPUT_MAX_TOKENS,
-	COMPACTOR_COMPRESSION_RATIO,
+	COMPACTED_OUTPUT_MAX_TRIGGER_SHARE,
+	COMPACTOR_LINE_WIDTH,
 	COMPACTOR_REQUEST_TIMEOUT_MS,
 	type CollectEntriesResult,
 	type CompactionBackend,
+	CompactionCancelledError,
+	type CompactionCancelledErrorFields,
+	type CompactionCancelReason,
+	CompactionConfigError,
+	type CompactionConfigErrorCode,
+	type CompactionConfigErrorFields,
+	type CompactionConfigSource,
+	CompactionError,
+	type CompactionErrorCode,
+	type CompactionErrorFieldValue,
 	type CompactionForm,
 	type CompactionHistoryLocation,
+	type CompactionModelKind,
 	type CompactionModelSelection,
+	type CompactionSettingsScope,
+	CompactionStateError,
+	type CompactionStateErrorCode,
+	type CompactionStateErrorFields,
 	CompactorFailure,
+	type CompactorFailureCode,
+	type CompactorFailureOptions,
 	type CompactorMessage,
 	type CompactorRequest,
 	calculateContextTokens,
+	classifyCompactionModel,
 	collectEntriesForBranchSummary,
+	compactedOutputTokenCap,
 	DEFAULT_COMPACTION_SETTINGS,
+	estimateTextTokens,
 	estimateTokens,
 	type FileOperations,
+	findCompactionError,
 	type GenerateBranchSummaryOptions,
 	generateBranchSummary,
 	getLastAssistantUsage,
+	isCompactionCancelledError,
+	isCompactionConfigError,
+	isCompactionError,
+	isCompactionStateError,
+	isCompactorFailure,
+	isRetryableCompactionError,
 	type LineRange,
+	parseSerializedCompactionError,
 	prepareBranchEntries,
 	prepareCompactionBoundary,
+	rehydrateCompactionError,
 	requestCompactorOutput,
 	resolveCompactionModel,
 	SESSION_HISTORY_TOOL_NAME,
+	type SerializedCompactionError,
+	serializeCompactionError,
 	serializeConversation,
 	serializeConversationForCompaction,
 	shouldCompact,
@@ -519,6 +558,7 @@ export {
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 	type VerbatimCompactionResult,
+	wrapLongLines,
 } from "./core/compaction/index.ts";
 export {
 	appendDebugRecord,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { CompactionConfigError, CompactionError } from "../src/core/compaction/errors.js";
 import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.js";
 
 test("persists compactionModel independently at global and project scope (#3470)", async () => {
@@ -24,5 +25,15 @@ test("accepts project Morph compaction selections on write and load", async () =
 	storage.withLock("project", () => JSON.stringify({ compactionModel: "morph/morph-compactor" }));
 	assert.equal(SettingsManager.fromStorage(storage).getCompactionModel(), "morph/morph-compactor");
 	assert.equal(SettingsManager.fromStorage(storage, { projectTrusted: false }).getCompactionModel(), "");
-	assert.throws(() => settings.setCompactionModel(" auto"), /compactionModel/);
+	assert.throws(
+		() => settings.setCompactionModel(" auto"),
+		(error: unknown) => {
+			assert.ok(error instanceof CompactionConfigError);
+			assert.ok(error instanceof CompactionError);
+			assert.equal(error.code, "invalid-setting");
+			assert.equal(error.field, "compactionModel");
+			assert.match(error.message, /compactionModel/);
+			return true;
+		},
+	);
 });

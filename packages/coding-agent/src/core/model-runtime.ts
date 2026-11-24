@@ -782,7 +782,7 @@ export class ModelRuntime implements Models {
 			this.extensionProviders.get(model.provider),
 		);
 	}
-	getCompatibilityRequestConfigAsync(model: Model<Api>): Promise<CompatibilityRequestConfig> {
+	getCompatibilityRequestConfigAsync(model: AnyModel): Promise<CompatibilityRequestConfig> {
 		model = normalizeModelProvider(model);
 		return resolveCompatibilityRequestConfigAsync(
 			model,

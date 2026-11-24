@@ -6,6 +6,7 @@ import type { AgentSession } from "../../core/agent-session.js";
 import { type AgentSessionRuntime, HOST_STARTED_SESSION } from "../../core/agent-session-runtime.ts";
 import { THINKING_LEVELS } from "../../core/agent-session-types.js";
 import { runCallback } from "../../core/callback-activity.ts";
+import { CompactionConfigError } from "../../core/compaction/errors.js";
 import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { SessionTrustDecisions } from "../../core/project-trust-state.ts";
@@ -133,6 +134,8 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "pause_queued_messages":
 		case "resume_queued_messages":
 		case "set_auto_compaction":
+		case "set_compaction_model":
+		case "set_decision_model":
 		case "set_auto_retry":
 		case "set_debug":
 		case "set_extension_ui_capabilities":
@@ -599,6 +602,47 @@ export function createRpcCommandHandler({
 			case "set_auto_compaction":
 				session.setAutoCompactionEnabled(command.enabled);
 				return createRpcSuccessResponse(id, "set_auto_compaction");
+			case "set_compaction_model": {
+				if (typeof command.model !== "string" || command.model.trim() !== command.model) {
+					const error = new CompactionConfigError({
+						source: "rpc",
+						field: "compactionModel",
+						...(command.scope === "global" || command.scope === "project" ? { scope: command.scope } : {}),
+					});
+					return createRpcErrorResponse(id, "set_compaction_model", error.message, error);
+				}
+				if (command.scope !== undefined && command.scope !== "global" && command.scope !== "project") {
+					const error = new CompactionConfigError({ source: "rpc", field: "scope" });
+					return createRpcErrorResponse(id, "set_compaction_model", error.message, error);
+				}
+				if (command.persist !== undefined && typeof command.persist !== "boolean") {
+					const error = new CompactionConfigError({ source: "rpc", field: "persist" });
+					return createRpcErrorResponse(id, "set_compaction_model", error.message, error);
+				}
+				session.setCompactionModel(
+					command.model,
+					command.scope,
+					command.persist === undefined ? undefined : { persist: command.persist },
+				);
+				return createRpcSuccessResponse(id, "set_compaction_model");
+			}
+			case "set_decision_model": {
+				if (typeof command.model !== "string") {
+					return createRpcErrorResponse(id, "set_decision_model", "model must be a string");
+				}
+				if (command.scope !== undefined && command.scope !== "global" && command.scope !== "project") {
+					return createRpcErrorResponse(id, "set_decision_model", 'scope must be "global" or "project"');
+				}
+				if (command.persist !== undefined && typeof command.persist !== "boolean") {
+					return createRpcErrorResponse(id, "set_decision_model", "persist must be a boolean");
+				}
+				session.setDecisionModel(
+					command.model,
+					command.scope,
+					command.persist === undefined ? undefined : { persist: command.persist },
+				);
+				return createRpcSuccessResponse(id, "set_decision_model");
+			}
 			case "abort_compaction":
 				session.abortCompaction();
 				return createRpcSuccessResponse(id, "abort_compaction");

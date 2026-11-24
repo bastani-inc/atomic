@@ -72,6 +72,20 @@
                     "minLength": 1,
                     "description": "Display name, also matched by --model patterns."
                   },
+                  "type": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "chat"
+                      },
+                      {
+                        "type": "string",
+                        "const": "compactor"
+                      }
+                    ],
+                    "default": "chat",
+                    "description": "Model kind: \"chat\" (default) or \"compactor\" for a dedicated remote compaction endpoint."
+                  },
                   "api": {
                     "type": "string",
                     "minLength": 1,
@@ -81,6 +95,10 @@
                     "type": "string",
                     "minLength": 1,
                     "description": "Overrides the provider baseUrl."
+                  },
+                  "endpointPath": {
+                    "type": "string",
+                    "description": "Endpoint path appended to baseUrl for compactor requests (default \"/compact\"). Set to \"\" to POST directly to baseUrl. Applies only to compactor models."
                   },
                   "reasoning": {
                     "type": "boolean",
@@ -125,6 +143,11 @@
                     "exclusiveMinimum": 0,
                     "default": 16384,
                     "description": "Maximum output tokens."
+                  },
+                  "timeoutMs": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models."
                   },
                   "samplingParams": {
                     "type": "object",
@@ -181,6 +204,13 @@
                     },
                     "description": "samplingParams per thinking level, merged over samplingParams."
                   },
+                  "compactionParams": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^.*$": {}
+                    },
+                    "description": "API-specific request-body parameters merged into { messages, query, model } for compactor requests. Omit to let the remote API use its own defaults. Applies only to compactor models."
+                  },
                   "headers": {
                     "type": "object",
                     "patternProperties": {
@@ -207,6 +237,15 @@
                       "type": "string",
                       "minLength": 1,
                       "description": "Display name, also matched by --model patterns."
+                    },
+                    "baseUrl": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Overrides the model baseUrl."
+                    },
+                    "endpointPath": {
+                      "type": "string",
+                      "description": "Endpoint path appended to baseUrl for compactor requests (default \"/compact\"). Set to \"\" to POST directly to baseUrl. Applies only to compactor models."
                     },
                     "reasoning": {
                       "type": "boolean",
@@ -300,6 +339,11 @@
                       "exclusiveMinimum": 0,
                       "description": "Maximum output tokens."
                     },
+                    "timeoutMs": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "description": "Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models."
+                    },
                     "samplingParams": {
                       "type": "object",
                       "patternProperties": {
@@ -354,6 +398,13 @@
                         }
                       },
                       "description": "samplingParams per thinking level, merged over samplingParams."
+                    },
+                    "compactionParams": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^.*$": {}
+                      },
+                      "description": "API-specific request-body parameters merged into { messages, query, model } for compactor requests. Omit to let the remote API use its own defaults. Applies only to compactor models."
                     },
                     "headers": {
                       "type": "object",

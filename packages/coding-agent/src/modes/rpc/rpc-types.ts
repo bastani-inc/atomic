@@ -8,6 +8,7 @@
 import type { AgentMessage, ThinkingLevel } from "@bastani/atomic-agent-core";
 import type {
 	AuthInfoLink,
+	CompactorModel,
 	Credential,
 	OAuthAuthInfo,
 	OAuthDeviceCodeInfo,
@@ -24,7 +25,7 @@ import type {
 	SessionStats,
 } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
-import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
+import type { SerializedCompactionError, VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SerializedDebugError } from "../../core/debug-errors.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { SessionRecoveryReason } from "../../core/extensions/index.js";
@@ -62,6 +63,8 @@ export interface RpcResumeNotice {
 export interface RpcModelCatalog {
 	models: Model<Api>[];
 	scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	/** Dedicated compactor models registered in the engine (built-in, `models.json`, and extensions). */
+	compactorModels?: CompactorModel[];
 	/** Extension-registered providers that offer API-key login (`login_provider`). */
 	customAuthProviders: Array<{ id: string; name: string }>;
 	oauthProviders?: OAuthProviderMetadata[];
@@ -199,6 +202,8 @@ export type RpcCommand =
 	// Compaction
 	| { id?: string; type: "compact"; instructions?: string }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
+	| { id?: string; type: "set_compaction_model"; model: string; scope?: "global" | "project"; persist?: boolean }
+	| { id?: string; type: "set_decision_model"; model: string; scope?: "global" | "project"; persist?: boolean }
 	| { id?: string; type: "abort_compaction" }
 	| { id?: string; type: "abort_branch_summary" }
 
@@ -525,6 +530,8 @@ export type RpcResponse =
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: VerbatimCompactionResult }
 	| { id?: string; type: "response"; command: "set_auto_compaction"; success: true }
+	| { id?: string; type: "response"; command: "set_compaction_model"; success: true }
+	| { id?: string; type: "response"; command: "set_decision_model"; success: true }
 	| { id?: string; type: "response"; command: "abort_compaction"; success: true }
 	| { id?: string; type: "response"; command: "abort_branch_summary"; success: true }
 
@@ -684,6 +691,7 @@ export type RpcErrorDetails =
 			errorCode: "credential_synchronization";
 			errorDetails: { providerId: string; operation: CredentialSynchronizationOperation };
 	  }
+	| { errorCode: "compaction_error"; errorDetails: SerializedCompactionError }
 	| { errorCode: "debug_error"; errorDetails: SerializedDebugError }
 	// A resume or import whose session's working directory is gone keeps its typed error, so the host can offer
 	// to continue or fork instead of reporting a failure

@@ -1,34 +1,29 @@
 import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { CompactorApi } from "@bastani/atomic-ai";
 import type { Usage } from "@bastani/atomic-ai/compat";
 import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import { messageIsLlmVisible } from "../messages.ts";
+import { CompactionCancelledError, CompactorFailure } from "./errors.js";
 
-/** Share of the conversation the compactor keeps. A constant, not a setting. */
-export const COMPACTOR_COMPRESSION_RATIO = 0.5;
-/** Wall-clock bound on one compactor request; past it the context is cleared instead. */
+export { CompactorFailure };
+
+/** Default wall-clock bound on one compactor request unless overridden by model `timeoutMs`; past it the context is cleared instead. */
 export const COMPACTOR_REQUEST_TIMEOUT_MS = 120_000;
 /** Lines longer than this are wrapped before they are sent, so the compactor can keep or drop parts of them. */
 export const COMPACTOR_LINE_WIDTH = 2_000;
-/** Upper bound on compacted text, in estimated tokens. Longer output is a failure and the context is cleared. */
+/** Default upper bound on compacted text, in estimated tokens, unless overridden by model `maxTokens`. Longer output is a failure and the context is cleared. */
 export const COMPACTED_OUTPUT_MAX_TOKENS = 32_000;
 /** Compacted text never fills more than this share of the context the automatic trigger allows. */
 export const COMPACTED_OUTPUT_MAX_TRIGGER_SHARE = 0.5;
 
-const DEFAULT_COMPACTOR_BASE_URL = "https://api.morphllm.com/v1";
+const DEFAULT_COMPACTOR_ENDPOINT_PATH = "/compact";
 const HTTP_ERROR_EXCERPT_MAX_CHARS = 500;
 const HTTP_ERROR_BODY_MAX_BYTES = 8192;
+const SENSITIVE_HEADER_NAMES = new Set(["authorization", "proxy-authorization", "x-api-key", "api-key"]);
 
 export interface CompactorMessage {
 	role: "user" | "assistant";
 	content: string;
-}
-
-/** Why a compactor request produced no usable text. The context is cleared instead. */
-export class CompactorFailure extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "CompactorFailure";
-	}
 }
 
 /** Splits every line longer than `width` characters into parts of at most `width` characters. */
@@ -140,11 +135,10 @@ export function buildCompactorMessages(
 }
 
 /** Largest compacted text, in estimated tokens, for a model whose automatic trigger fires above `triggerTokens`. */
-export function compactedOutputTokenCap(triggerTokens: number): number {
-	return Math.max(
-		0,
-		Math.min(COMPACTED_OUTPUT_MAX_TOKENS, Math.floor(triggerTokens * COMPACTED_OUTPUT_MAX_TRIGGER_SHARE)),
-	);
+export function compactedOutputTokenCap(triggerTokens: number, maxOutputTokens = COMPACTED_OUTPUT_MAX_TOKENS): number {
+	const limit =
+		Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : COMPACTED_OUTPUT_MAX_TOKENS;
+	return Math.max(0, Math.min(limit, Math.floor(triggerTokens * COMPACTED_OUTPUT_MAX_TRIGGER_SHARE)));
 }
 
 /** A conservative token estimate for text: four characters per token, one per character outside ASCII. */
@@ -154,8 +148,31 @@ export function estimateTextTokens(text: string): number {
 	return Math.ceil((text.length - dense) / 4) + dense;
 }
 
-function redact(text: string, apiKey: string): string {
-	return redactCredentialShapes(apiKey ? text.replaceAll(apiKey, "[redacted]") : text);
+function collectSecrets(apiKey: string | undefined, headers: Record<string, string> | undefined): string[] {
+	const secrets: string[] = [];
+	if (apiKey) secrets.push(apiKey);
+	if (headers) {
+		for (const [name, value] of Object.entries(headers)) {
+			if (!value) continue;
+			if (SENSITIVE_HEADER_NAMES.has(name.toLowerCase())) {
+				secrets.push(value);
+				const trimmed = value.trim();
+				if (trimmed.slice(0, 7).toLowerCase() === "bearer ") {
+					const token = trimmed.slice(7).trim();
+					if (token) secrets.push(token);
+				}
+			}
+		}
+	}
+	return [...new Set(secrets)].sort((a, b) => b.length - a.length);
+}
+
+function redact(text: string, secrets: readonly string[]): string {
+	let cleaned = text;
+	for (const secret of secrets) {
+		if (secret) cleaned = cleaned.replaceAll(secret, "[redacted]");
+	}
+	return redactCredentialShapes(cleaned);
 }
 
 async function readHttpErrorBody(response: Response): Promise<string> {
@@ -182,9 +199,9 @@ async function readHttpErrorBody(response: Response): Promise<string> {
 	}
 }
 
-async function httpErrorMessage(response: Response, apiKey: string): Promise<string> {
+async function httpErrorMessage(response: Response, secrets: readonly string[]): Promise<string> {
 	const body = await readHttpErrorBody(response);
-	const excerpt = redact(body, apiKey)
+	const excerpt = redact(body, secrets)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/\s+/g, " ")
 		.trim()
@@ -223,10 +240,18 @@ function responseText(body: CompactorResponse): string {
 
 export interface CompactorRequest {
 	readonly apiKey: string | undefined;
+	/** Compactor API identifier. */
+	readonly api?: CompactorApi;
 	/** The compactor model's id, sent as `model`. */
 	readonly modelId: string;
-	/** The compactor model's base URL; the request goes to `<baseUrl>/compact`. */
-	readonly baseUrl?: string;
+	/** The compactor model's base URL; the request goes to `<baseUrl><endpointPath>`. */
+	readonly baseUrl: string;
+	/** Path appended to `baseUrl` (default `"/compact"`). Pass `""` to POST directly to `baseUrl`. */
+	readonly endpointPath?: string;
+	/** Additional or overridden API-specific request body parameters. */
+	readonly params?: Record<string, unknown>;
+	/** Optional resolved headers merged into the request (supporting custom auth headers or metadata). */
+	readonly headers?: Record<string, string>;
 	readonly messages: readonly CompactorMessage[];
 	readonly query: string;
 	/** Aborts when the compaction itself is cancelled; that is a cancel, not a failure. */
@@ -243,58 +268,119 @@ function trimTrailingSlashes(url: string): string {
 	return url.slice(0, end);
 }
 
+function resolveCompactorUrl(baseUrl: string, endpointPath: string | undefined): string {
+	const base = trimTrailingSlashes(baseUrl);
+	const path = endpointPath === undefined ? DEFAULT_COMPACTOR_ENDPOINT_PATH : endpointPath.trim();
+	if (!path) return base;
+	return path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
+}
+
+function hasHeaderCaseInsensitive(headers: Record<string, string>, target: string): boolean {
+	const lower = target.toLowerCase();
+	return Object.keys(headers).some((key) => key.toLowerCase() === lower);
+}
+
+function buildCompactorPayload(request: CompactorRequest): Record<string, unknown> {
+	const payload: Record<string, unknown> = {};
+	if (request.params) {
+		for (const [key, value] of Object.entries(request.params)) {
+			if (value !== undefined) payload[key] = value;
+		}
+	}
+	payload.messages = request.messages;
+	payload.query = request.query;
+	payload.model = request.modelId;
+	return payload;
+}
+
 /**
- * Send the framed conversation to a compactor endpoint and return its text. Throws `CompactorFailure` naming the
- * reason for every failure (no credentials, HTTP error, malformed or empty output, timeout), and `Compaction cancelled`
- * when `signal` aborts. The API key never appears in a thrown message.
+ * Send the framed conversation to a compactor endpoint and return its text. Throws {@link CompactorFailure} (a
+ * {@link CompactionError}) naming the reason for every failure (missing baseUrl, no credentials, HTTP error, malformed
+ * or empty output, timeout), and {@link CompactionCancelledError} when `signal` aborts. Credentials never appear in a
+ * thrown message.
  */
 export async function requestCompactorOutput(request: CompactorRequest): Promise<{ text: string; usage?: Usage }> {
-	if (request.signal.aborted) throw new Error("Compaction cancelled");
+	if (request.signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
+	const baseUrl = request.baseUrl?.trim();
+	if (!baseUrl) {
+		throw new CompactorFailure("no baseUrl configured for compactor model", {
+			code: "missing-base-url",
+			model: request.modelId,
+		});
+	}
 	const apiKey = request.apiKey;
-	if (!apiKey) throw new CompactorFailure("no credentials (use /login or the provider's API key variable)");
-	const timeoutMs = request.timeoutMs ?? COMPACTOR_REQUEST_TIMEOUT_MS;
+	const customHeaders = request.headers;
+	const hasCustomHeaders = customHeaders !== undefined && Object.keys(customHeaders).length > 0;
+	if (!apiKey && !hasCustomHeaders) {
+		throw new CompactorFailure("no credentials (use /login or the provider's API key variable)", {
+			code: "missing-credentials",
+			model: request.modelId,
+		});
+	}
+	const secrets = collectSecrets(apiKey, customHeaders);
+	const timeoutMs =
+		request.timeoutMs !== undefined && Number.isFinite(request.timeoutMs) && request.timeoutMs > 0
+			? request.timeoutMs
+			: COMPACTOR_REQUEST_TIMEOUT_MS;
 	const timeout = AbortSignal.timeout(timeoutMs);
 	const signal = AbortSignal.any([request.signal, timeout, ...(request.stop ? [request.stop] : [])]);
-	const failure = (error: Error | string): never => {
-		if (request.signal.aborted) throw new Error("Compaction cancelled");
-		if (request.stop?.aborted) throw new CompactorFailure("request aborted");
-		if (timeout.aborted) throw new CompactorFailure(`timed out after ${timeoutMs} ms`);
+	const failure = (
+		error: Error | string,
+		options?: { code?: "http-error" | "network-error"; status?: number },
+	): never => {
+		if (request.signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
+		if (request.stop?.aborted) {
+			throw new CompactorFailure("request aborted", { code: "request-aborted", model: request.modelId });
+		}
+		if (timeout.aborted) {
+			throw new CompactorFailure(`timed out after ${timeoutMs} ms`, {
+				code: "timeout",
+				timeoutMs,
+				model: request.modelId,
+			});
+		}
 		const message = typeof error === "string" ? error : error.message || error.name;
-		throw new CompactorFailure(redact(message, apiKey));
+		throw new CompactorFailure(redact(message, secrets), {
+			code: options?.code ?? "network-error",
+			...(options?.status !== undefined ? { status: options.status } : {}),
+			model: request.modelId,
+		});
 	};
-	const baseUrl = trimTrailingSlashes(request.baseUrl ?? DEFAULT_COMPACTOR_BASE_URL);
+	const url = resolveCompactorUrl(baseUrl, request.endpointPath);
+	const headers: Record<string, string> = { "Content-Type": "application/json", ...customHeaders };
+	if (apiKey && !hasHeaderCaseInsensitive(headers, "authorization")) {
+		headers.Authorization = `Bearer ${apiKey}`;
+	}
 	let response: Response;
 	try {
-		response = await (request.fetchFn ?? fetch)(`${baseUrl}/compact`, {
+		response = await (request.fetchFn ?? fetch)(url, {
 			method: "POST",
-			headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-			body: JSON.stringify({
-				messages: request.messages,
-				query: request.query,
-				compression_ratio: COMPACTOR_COMPRESSION_RATIO,
-				preserve_recent: 0,
-				include_markers: true,
-				include_line_ranges: false,
-				model: request.modelId,
-			}),
+			headers,
+			body: JSON.stringify(buildCompactorPayload(request)),
 			signal,
 		});
 	} catch (error) {
-		return failure(error instanceof Error ? error : String(error));
+		return failure(error instanceof Error ? error : String(error), { code: "network-error" });
 	}
-	if (!response.ok) return failure(await httpErrorMessage(response, apiKey));
+	if (!response.ok) {
+		return failure(await httpErrorMessage(response, secrets), { code: "http-error", status: response.status });
+	}
 	let body: CompactorResponse;
 	try {
 		body = (await response.json()) as CompactorResponse;
 	} catch (error) {
 		if (request.signal.aborted || timeout.aborted) return failure(error instanceof Error ? error : String(error));
-		throw new CompactorFailure("malformed response");
+		throw new CompactorFailure("malformed response", { code: "malformed-response", model: request.modelId });
 	}
-	if (request.signal.aborted) throw new Error("Compaction cancelled");
-	if (typeof body !== "object" || body === null) throw new CompactorFailure("malformed response");
-	// The output becomes context and history, so a credential the endpoint echoed back must not survive in it.
-	const text = responseText(body).replaceAll(apiKey, "[redacted]");
-	if (!text) throw new CompactorFailure("empty output");
+	if (request.signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
+	if (typeof body !== "object" || body === null) {
+		throw new CompactorFailure("malformed response", { code: "malformed-response", model: request.modelId });
+	}
+	let text = responseText(body);
+	for (const secret of secrets) {
+		if (secret) text = text.replaceAll(secret, "[redacted]");
+	}
+	if (!text) throw new CompactorFailure("empty output", { code: "empty-output", model: request.modelId });
 	const usage = compactorUsage(body.usage);
 	return { text, ...(usage ? { usage } : {}) };
 }

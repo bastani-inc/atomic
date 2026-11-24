@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type Model, normalizeProviderId } from "@bastani/atomic-ai";
+import { CompactionConfigError } from "./compaction/errors.js";
 import { DecisionConfigError } from "./decision/errors.js";
 import { parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
@@ -51,8 +52,8 @@ interface SettingsManagerBasicAccessors {
 	getDefaultModel(): string | undefined;
 	getDecisionModel(): string;
 	getCompactionModel(): string;
-	setCompactionModel(model: string, scope?: "global" | "project"): void;
-	setDecisionModel(model: string, scope?: "global" | "project"): void;
+	setCompactionModel(model: string, scope?: "global" | "project", options?: { persist?: boolean }): void;
+	setDecisionModel(model: string, scope?: "global" | "project", options?: { persist?: boolean }): void;
 	setDefaultProvider(provider: string): void;
 	setDefaultModel(modelId: string): void;
 	setDefaultModelAndProvider(provider: string, modelId: string): void;
@@ -236,11 +237,20 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		return value.trim();
 	},
 
-	setCompactionModel(model, scope = "global") {
+	setCompactionModel(model, scope = "global", options) {
 		if (typeof model !== "string" || model.trim() !== model) {
-			throw new Error("Invalid compactionModel: expected auto, an empty string, or an exact compactor model ID.");
+			throw new CompactionConfigError({ source: "sdk", field: "compactionModel", scope });
 		}
 		const state = settingsInternals(this);
+		if (options?.persist === false) {
+			if (scope === "project") {
+				state.projectSettings = { ...state.projectSettings, compactionModel: model };
+			} else {
+				state.globalSettings.compactionModel = model;
+			}
+			state.settings = state.mergeEffectiveSettings();
+			return;
+		}
 		if (scope === "project") {
 			state.markProjectModified("compactionModel");
 			state.saveProjectSettings({ ...state.projectSettings, compactionModel: model });
@@ -251,11 +261,25 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.save();
 	},
 
-	setDecisionModel(model, scope) {
+	setDecisionModel(model, scope, options) {
 		if (typeof model !== "string" || model.trim() !== model) {
-			throw new DecisionConfigError({ code: "invalid-setting", source: "sdk", field: "decisionModel" });
+			throw new DecisionConfigError({
+				code: "invalid-setting",
+				source: "sdk",
+				field: "decisionModel",
+				...(scope ? { scope } : {}),
+			});
 		}
 		const state = settingsInternals(this);
+		if (options?.persist === false) {
+			if (scope === "project") {
+				state.projectSettings = { ...state.projectSettings, decisionModel: model };
+			} else {
+				state.globalSettings.decisionModel = model;
+			}
+			state.settings = state.mergeEffectiveSettings();
+			return;
+		}
 		if (scope === "project") {
 			const projectSettings = { ...state.projectSettings, decisionModel: model };
 			state.markProjectModified("decisionModel");

@@ -116,13 +116,14 @@ describe("interactive engine command lane during a manual compaction", () => {
 
 		releaseCompaction();
 		await waitFor("the compact response", () => input.response("compact") !== undefined);
-		assert.deepEqual(input.response("compact"), {
-			id: "compact",
-			type: "response",
-			command: "compact",
-			success: false,
-			error: "Nothing to compact: the context holds nothing new since the last boundary",
-		});
+		const compactResponse = input.response("compact");
+		assert.ok(compactResponse && !compactResponse.success);
+		assert.equal(compactResponse.id, "compact");
+		assert.equal(compactResponse.command, "compact");
+		assert.equal(compactResponse.error, "Nothing to compact: the context holds nothing new since the last boundary");
+		assert.equal(compactResponse.errorCode, "compaction_error");
+		assert.equal(compactResponse.errorDetails.name, "CompactionStateError");
+		assert.equal(compactResponse.errorDetails.code, "nothing-to-compact");
 	});
 
 	test("plain RPC keeps later commands behind a pending compact (#4251)", async () => {

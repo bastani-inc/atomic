@@ -7,6 +7,8 @@ import type {
 	AuthResult,
 	ClassifierApi,
 	ClassifierModel,
+	CompactorApi,
+	CompactorModel,
 	ImageApi,
 	ImageModelCapabilities,
 	Model,
@@ -92,7 +94,20 @@ export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
 	compat?: ClassifierModel<ClassifierApi>["compat"];
 }
 
-export type ProviderModelConfig = ProviderChatModelConfig | ProviderImageModelConfig | ProviderClassifierModelConfig;
+export interface ProviderCompactorModelConfig extends ProviderModelConfigBase {
+	type: "compactor";
+	api?: CompactorApi;
+	endpointPath?: string;
+	compactionParams?: Record<string, unknown>;
+	timeoutMs?: number;
+	maxTokens?: number;
+}
+
+export type ProviderModelConfig =
+	| ProviderChatModelConfig
+	| ProviderImageModelConfig
+	| ProviderClassifierModelConfig
+	| ProviderCompactorModelConfig;
 
 /** Input type for the extension registerProvider API. */
 export interface ProviderConfigInput {
@@ -181,6 +196,7 @@ function mergeSamplingParamsByThinkingLevel(
 export function applyModelOverride(model: Model<Api>, override: ModelsJsonModelOverride): Model<Api> {
 	return {
 		...model,
+		baseUrl: override.baseUrl ?? model.baseUrl,
 		promptCache: override.promptCache ? { ...model.promptCache, ...override.promptCache } : model.promptCache,
 		name: override.name ?? model.name,
 		reasoning: override.reasoning ?? model.reasoning,
@@ -208,6 +224,79 @@ export function applyModelOverride(model: Model<Api>, override: ModelsJsonModelO
 			override.samplingParamsByThinkingLevel,
 		),
 		compat: mergeCompat(model.compat, override.compat),
+	};
+}
+
+export function applyCompactorModelOverride(model: CompactorModel, override: ModelsJsonModelOverride): CompactorModel {
+	if (override.maxTokens !== undefined && override.maxTokens <= 0) {
+		throw new Error(`Provider ${model.provider}, model ${model.id}: invalid maxTokens`);
+	}
+	if (override.timeoutMs !== undefined && override.timeoutMs <= 0) {
+		throw new Error(`Provider ${model.provider}, model ${model.id}: invalid timeoutMs`);
+	}
+	return {
+		...model,
+		name: override.name ?? model.name,
+		baseUrl: override.baseUrl ?? model.baseUrl,
+		endpointPath: override.endpointPath ?? model.endpointPath,
+		cost: override.cost
+			? {
+					input: override.cost.input ?? model.cost.input,
+					output: override.cost.output ?? model.cost.output,
+					cacheRead: override.cost.cacheRead ?? model.cost.cacheRead,
+					cacheWrite: override.cost.cacheWrite ?? model.cost.cacheWrite,
+					tiers: override.cost.tiers ?? model.cost.tiers,
+				}
+			: model.cost,
+		compactionParams: override.compactionParams
+			? { ...model.compactionParams, ...override.compactionParams }
+			: model.compactionParams,
+		timeoutMs: override.timeoutMs ?? model.timeoutMs,
+		maxTokens: override.maxTokens ?? model.maxTokens,
+	};
+}
+
+function isCompactorDefinition(definition: ModelsJsonModel, existingModels: readonly AnyModel[]): boolean {
+	if (definition.type === "compactor") return true;
+	if (definition.type !== undefined) return false;
+	return existingModels.some((model) => isModelType(model, "compactor") && model.id === definition.id);
+}
+
+function compactorModelFromJson(
+	providerId: string,
+	definition: ModelsJsonModel,
+	providerConfig: ModelsJsonProvider,
+	defaults: CompactorModel | undefined,
+): CompactorModel {
+	const api = (definition.api ?? providerConfig.api ?? defaults?.api) as CompactorApi | undefined;
+	if (!api) {
+		throw new Error(
+			`Provider ${providerId}, model ${definition.id}: no "api" specified. Set at provider or model level.`,
+		);
+	}
+	const baseUrl = definition.baseUrl ?? providerConfig.baseUrl ?? defaults?.baseUrl;
+	if (!baseUrl) throw new Error(`Provider ${providerId}: "baseUrl" is required when defining custom models.`);
+	if (definition.maxTokens !== undefined && definition.maxTokens <= 0) {
+		throw new Error(`Provider ${providerId}, model ${definition.id}: invalid maxTokens`);
+	}
+	if (definition.timeoutMs !== undefined && definition.timeoutMs <= 0) {
+		throw new Error(`Provider ${providerId}, model ${definition.id}: invalid timeoutMs`);
+	}
+	return {
+		id: definition.id,
+		name: definition.name ?? definition.id,
+		type: "compactor",
+		api,
+		provider: providerId,
+		baseUrl,
+		...(definition.endpointPath !== undefined ? { endpointPath: definition.endpointPath } : {}),
+		input: (definition.input ?? ["text"]) as CompactorModel["input"],
+		inputLimits: definition.inputLimits,
+		cost: definition.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		...(definition.compactionParams ? { compactionParams: definition.compactionParams } : {}),
+		...(definition.timeoutMs !== undefined ? { timeoutMs: definition.timeoutMs } : {}),
+		...(definition.maxTokens !== undefined ? { maxTokens: definition.maxTokens } : {}),
+		headers: undefined,
 	};
 }
 
@@ -291,6 +380,20 @@ export function applyModelsJson(
 		return { ...model, baseUrl };
 	});
 	for (const definition of config.models ?? []) {
+		if (isCompactorDefinition(definition, models)) {
+			const existingIndex = models.findIndex(
+				(model) => isModelType(model, "compactor") && model.id === definition.id,
+			);
+			const existingCompactors = models.filter((model) => isModelType(model, "compactor"));
+			const defaults =
+				existingCompactors.find((model) => model.id === definition.id) ??
+				(definition.api ? existingCompactors.find((model) => model.api === definition.api) : undefined) ??
+				existingCompactors[0];
+			const model = compactorModelFromJson(providerId, definition, config, defaults);
+			if (existingIndex >= 0) models[existingIndex] = model;
+			else models.push(model);
+			continue;
+		}
 		const existingIndex = models.findIndex((model) => isModelType(model, "chat") && model.id === definition.id);
 		const defaults = findModelDefaults(
 			models.filter((model) => isModelType(model, "chat")),
@@ -324,10 +427,10 @@ export function applyExtension(
 				: undefined) ??
 			(type === "chat" ? candidates.find((model) => model.api === "openai-completions") : undefined) ??
 			candidates[0];
-		const api = definition.api ?? (type === "chat" ? config.api : undefined) ?? defaults?.api;
+		const api = definition.api ?? (type === "chat" || type === "compactor" ? config.api : undefined) ?? defaults?.api;
 		if (!api) {
 			throw new Error(
-				`Provider ${providerId}, model ${definition.id}: no "api" specified. Set it at model level${type === "chat" ? " or provider level" : ""}.`,
+				`Provider ${providerId}, model ${definition.id}: no "api" specified. Set it at model level${type === "chat" || type === "compactor" ? " or provider level" : ""}.`,
 			);
 		}
 		const baseUrl = definition.baseUrl ?? config.baseUrl ?? defaults?.baseUrl;
@@ -509,13 +612,23 @@ export function rawModelHeaders(
 	config: ModelsJsonProvider | undefined,
 	extension: ProviderConfigInput | undefined,
 ): Record<string, string> | undefined {
-	const definition = isModelType(model, "chat") ? config?.models?.find((entry) => entry.id === model.id) : undefined;
+	const jsonMatch =
+		isModelType(model, "chat") || isModelType(model, "compactor")
+			? config?.models?.find((entry) => {
+					const entryType = isCompactorDefinition(entry, [model]) ? "compactor" : "chat";
+					return entryType === (model.type ?? "chat") && entry.id === model.id;
+				})
+			: undefined;
+	const overrideHeaders =
+		isModelType(model, "chat") || isModelType(model, "compactor")
+			? config?.modelOverrides?.[model.id]?.headers
+			: undefined;
 	const extensionModel = extension?.models?.find(
 		(entry) => (entry.type ?? "chat") === (model.type ?? "chat") && entry.id === model.id,
 	);
 	const headers = {
-		...(isModelType(model, "chat") ? config?.modelOverrides?.[model.id]?.headers : undefined),
-		...definition?.headers,
+		...overrideHeaders,
+		...jsonMatch?.headers,
 		...extensionModel?.headers,
 	};
 	return Object.keys(headers).length > 0 ? headers : undefined;

@@ -9,7 +9,7 @@ import type { ModelRuntime } from "./model-runtime.js";
 
 export interface ModelScopeDiagnostic {
 	type: "warning";
-	code: "no-match" | "invalid-thinking-level" | "ambiguous";
+	code: "no-match" | "invalid-thinking-level";
 	message: string;
 	pattern: string;
 }
@@ -45,9 +45,9 @@ function resolveExactReference(text: string, models: readonly Model<Api>[]): Mod
  * Resolve scope patterns (`--models`, `enabledModels`) to models with optional thinking levels.
  *
  * A complete literal reference is tried first, then glob patterns, then fuzzy matching with an
- * optional `:<thinking>` suffix. Every model in `models` is usable, so credentials cannot choose
- * between providers offering the same id. All of them are added, with a warning so the user can pick
- * one with `provider/id`.
+ * optional `:<thinking>` suffix. Every model in `models` is usable, so a bare ID or pattern
+ * matching multiple providers adds all matching providers to the scope; use `provider/id` to
+ * restrict to a single provider.
  */
 export function resolveModelScopeFromModels(
 	patterns: string[],
@@ -62,22 +62,8 @@ export function resolveModelScopeFromModels(
 	};
 	const noMatch = (pattern: string) =>
 		diagnostics.push({ type: "warning", code: "no-match", message: `No models match pattern "${pattern}"`, pattern });
-	const ambiguous = (pattern: string, candidates: readonly Model<Api>[]) => {
-		const providers = [...new Set(candidates.map((model) => model.provider))].sort((a, b) => a.localeCompare(b));
-		diagnostics.push({
-			type: "warning",
-			code: "ambiguous",
-			message: `Pattern "${pattern}" matches several providers: ${providers.join(", ")}. Use provider/id to choose one.`,
-			pattern,
-		});
-	};
-	const addResult = (
-		pattern: string,
-		result: ModelReferenceResult,
-		thinkingLevel: ThinkingLevel | undefined,
-	): boolean => {
+	const addResult = (result: ModelReferenceResult, thinkingLevel: ThinkingLevel | undefined): boolean => {
 		if (result.status === "not-found") return false;
-		if (result.status === "ambiguous") ambiguous(pattern, result.candidates);
 		const matches = result.status === "resolved" ? [result.model] : result.candidates;
 		for (const model of matches) add(model, thinkingLevel);
 		return true;
@@ -85,12 +71,12 @@ export function resolveModelScopeFromModels(
 
 	for (const rawPattern of patterns) {
 		const pattern = normalizeModelReference(rawPattern);
-		if (addResult(pattern, resolveExactReference(pattern, models), undefined)) continue;
+		if (addResult(resolveExactReference(pattern, models), undefined)) continue;
 
 		if (hasGlobCharacters(pattern)) {
 			const { globPattern, thinkingLevel } = parseGlobThinkingLevel(pattern);
 			// Ids such as `bracketed-model[1m]` are not globs
-			if (addResult(pattern, resolveExactReference(globPattern, models), thinkingLevel)) continue;
+			if (addResult(resolveExactReference(globPattern, models), thinkingLevel)) continue;
 
 			// Match against "provider/modelId" format OR just model ID
 			// This allows "*sonnet*" to match without requiring "anthropic/*sonnet*"
@@ -116,7 +102,7 @@ export function resolveModelScopeFromModels(
 		if (result.warning) {
 			diagnostics.push({ type: "warning", code: "invalid-thinking-level", message: result.warning, pattern });
 		}
-		addResult(pattern, result, result.thinkingLevel);
+		addResult(result, result.thinkingLevel);
 	}
 
 	return { scopedModels, diagnostics };

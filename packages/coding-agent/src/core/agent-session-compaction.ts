@@ -14,6 +14,8 @@ import {
 	buildBoundaryTextWithLocation,
 	buildCompactorMessages,
 	type CompactionBackend,
+	CompactionCancelledError,
+	CompactionStateError,
 	CompactorFailure,
 	compactedOutputTokenCap,
 	estimateTextTokens,
@@ -171,31 +173,50 @@ function fallbackReasonText(error: Error | string, apiKey: string | undefined): 
  * Run the configured compactor model once over the current context window. Returns its text, or the reason it could
  * not be used; a cancel of the compaction itself throws.
  */
+function toStringHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {
+	if (!headers) return undefined;
+	const entries = Object.entries(headers).filter((entry): entry is [string, string] => typeof entry[1] === "string");
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 async function runCompactor(
 	session: AgentSession,
-	selection: { fullId: string; model: { provider: string; id: string; baseUrl?: string } },
+	selection: {
+		fullId: string;
+		model: import("@bastani/atomic-ai").CompactorModel;
+	},
 	pathEntries: SessionEntry[],
 	preparation: VerbatimCompactionPreparation,
 	signal: AbortSignal,
 	reason: VerbatimCompactionApplyOptions["reason"],
 ): Promise<{ compacted: CompactedReplacement; usage?: Usage } | { fallbackReason: string }> {
 	let apiKey: string | undefined;
+	let resolvedHeaders: Record<string, string> | undefined;
 	// Stopping the request (Escape, `abortCompaction()`) clears the context instead; a cancel of the compaction itself
 	// (a takeover, closing the session) still cancels.
 	const stop = new AbortController();
 	session._compactorAbortController = stop;
 	try {
-		apiKey = (
-			await session._modelRuntime.getAuth(selection.model.provider, {
-				signal: AbortSignal.any([signal, stop.signal]),
-			})
-		)?.auth.apiKey;
+		const authSignal = AbortSignal.any([signal, stop.signal]);
+		const authResult = await session._modelRuntime.getAuth(selection.model, { signal: authSignal });
 		stop.signal.throwIfAborted();
+		apiKey = authResult?.auth.apiKey;
+		resolvedHeaders = toStringHeaders(authResult?.auth.headers);
+		if (!apiKey && !resolvedHeaders) {
+			const compat = await session._modelRuntime.getCompatibilityRequestConfigAsync(selection.model);
+			stop.signal.throwIfAborted();
+			resolvedHeaders = toStringHeaders(compat.headers);
+		}
 		const messages: AgentMessage[] = buildSessionProjection(pathEntries).messages;
 		const output = await requestCompactorOutput({
 			apiKey,
+			api: selection.model.api,
 			modelId: selection.model.id,
-			...(selection.model.baseUrl ? { baseUrl: selection.model.baseUrl } : {}),
+			baseUrl: selection.model.baseUrl,
+			...(selection.model.endpointPath !== undefined ? { endpointPath: selection.model.endpointPath } : {}),
+			...(selection.model.compactionParams ? { params: selection.model.compactionParams } : {}),
+			...(selection.model.timeoutMs !== undefined ? { timeoutMs: selection.model.timeoutMs } : {}),
+			...(resolvedHeaders ? { headers: resolvedHeaders } : {}),
 			messages: buildCompactorMessages(
 				messages,
 				(message) => message.role === "custom" && isVerbatimCompactionMessage(message),
@@ -205,14 +226,14 @@ async function runCompactor(
 			stop: stop.signal,
 		});
 		if (output.usage) session._emit({ type: "compaction_usage", reason, usage: output.usage });
-		const oversized = oversizedCompactedText(session, output.text);
+		const oversized = oversizedCompactedText(session, output.text, selection.model.maxTokens);
 		if (oversized !== undefined) return { fallbackReason: oversized };
 		return {
 			compacted: { text: output.text, backend: "compactor", model: selection.fullId },
 			...(output.usage ? { usage: output.usage } : {}),
 		};
 	} catch (error) {
-		if (signal.aborted) throw new Error("Compaction cancelled");
+		if (signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
 		if (stop.signal.aborted) return { fallbackReason: "request aborted" };
 		if (error instanceof CompactorFailure) return { fallbackReason: error.message };
 		return { fallbackReason: fallbackReasonText(error instanceof Error ? error : String(error), apiKey) };
@@ -221,10 +242,10 @@ async function runCompactor(
 	}
 }
 
-function oversizedCompactedText(session: AgentSession, text: string): string | undefined {
+function oversizedCompactedText(session: AgentSession, text: string, maxOutputTokens?: number): string | undefined {
 	const model = session.model;
 	const trigger = model ? model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens : 0;
-	const cap = compactedOutputTokenCap(trigger);
+	const cap = compactedOutputTokenCap(trigger, maxOutputTokens);
 	const tokens = estimateTextTokens(text);
 	return tokens > cap ? `output too long (${tokens} > ${cap} tokens)` : undefined;
 }
@@ -304,9 +325,11 @@ export async function planVerbatimCompaction(
 	pathEntries: SessionEntry[],
 ): Promise<PlannedVerbatimCompaction | undefined> {
 	assertCompactionOpen(this);
-	if (!this.model) throw new Error(formatNoModelSelectedMessage());
+	if (!this.model) {
+		throw new CompactionStateError({ code: "no-model-selected", message: formatNoModelSelectedMessage() });
+	}
 	const signal = options.abortController.signal;
-	signal.throwIfAborted();
+	if (signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
 	const settings = this.settingsManager.getCompactionSettings(this.model);
 	const instructions = options.query?.trim() || undefined;
 	const preparation = prepareCompactionBoundary(
@@ -334,8 +357,10 @@ export async function planVerbatimCompaction(
 		try {
 			snapshot = deepFreeze(structuredClone(preparation));
 		} catch (error) {
-			throw new Error(
-				`Failed to snapshot transcript for compaction extensions: ${error instanceof Error ? error.message : String(error)}`,
+			const detail = error instanceof Error ? error.message : String(error);
+			throw new CompactionStateError(
+				{ code: "snapshot-failed", detail },
+				error instanceof Error ? { cause: error } : undefined,
 			);
 		}
 		const hookResult = (await this._extensionRunner.emit({
@@ -347,10 +372,10 @@ export async function planVerbatimCompaction(
 			signal,
 		} satisfies SessionBeforeCompactEvent)) as SessionBeforeCompactResult | undefined;
 		assertCompactionOpen(this);
-		if (signal.aborted) throw new Error("Compaction cancelled");
+		if (signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
 		if (hookResult?.cancel) {
 			options.abortController.abort();
-			throw new Error("Compaction cancelled");
+			throw new CompactionCancelledError({ reason: "extension" });
 		}
 		// Empty or whitespace text is no override: the configured form runs instead (#4977).
 		if (hookResult?.compactedText !== undefined && hookResult.compactedText.trim().length > 0) {
@@ -379,7 +404,7 @@ export async function planVerbatimCompaction(
 	}
 	const outcome = await runCompactor(this, selection, pathEntries, preparation, signal, options.reason);
 	assertCompactionOpen(this);
-	if (signal.aborted) throw new Error("Compaction cancelled");
+	if (signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
 	if ("fallbackReason" in outcome) {
 		return { ...base, fallbackReason: `${selection.fullId} failed: ${outcome.fallbackReason}`, fromExtension: false };
 	}
@@ -454,11 +479,11 @@ export async function appendVerbatimBoundary(
 		planned.coveredThroughEntryId,
 		signal
 			? () => {
-					if (signal.aborted) throw new Error("Compaction cancelled");
+					if (signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
 				}
 			: undefined,
 	);
-	if (!built) throw new Error("Compaction boundary was not built");
+	if (!built) throw new CompactionStateError({ code: "boundary-not-built" });
 	return { entryId, text: built.text, details: built.details, backupPath };
 }
 
@@ -517,7 +542,9 @@ export async function _applyVerbatimCompaction(
 	// for its result (a detached call's, #4580), no boundary is written. The continuation that records the result
 	// clears the context instead, before its request.
 	if (findUnansweredToolCall(branch, awaitedToolTurnEntryId(this)) !== undefined) {
-		if (options.reason === "manual") throw new Error(PENDING_TOOL_CALL_MESSAGE);
+		if (options.reason === "manual") {
+			throw new CompactionStateError({ code: "pending-tool-call", message: PENDING_TOOL_CALL_MESSAGE });
+		}
 		return undefined;
 	}
 	const covered = options.coveredThroughEntryId
@@ -590,8 +617,10 @@ async function runOwnedManualCompaction(
 	this._emit({ type: "compaction_start", reason: "manual" });
 	let fromExtension = false;
 	try {
-		controller.signal.throwIfAborted();
-		if (!this.model) throw new Error(formatNoModelSelectedMessage());
+		if (controller.signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
+		if (!this.model) {
+			throw new CompactionStateError({ code: "no-model-selected", message: formatNoModelSelectedMessage() });
+		}
 		const result = await this._applyVerbatimCompaction({
 			// Caller parameters are projected explicitly, so no extra runtime property survives. Removed options
 			// such as `compression_ratio` and `preserve_recent` are accepted and ignored.
@@ -604,7 +633,7 @@ async function runOwnedManualCompaction(
 				fromExtension = value;
 			},
 		});
-		if (!result) throw new Error("Nothing to compact: the context holds nothing new since the last boundary");
+		if (!result) throw new CompactionStateError({ code: "nothing-to-compact" });
 		// compaction_end listeners synchronously flush queued prompts, so they must
 		// observe an idle session before dispatching the next user turn.
 		clearOwnedManualCompactionState.call(this, controller);
@@ -700,6 +729,14 @@ export function _enableSessionHistoryTool(this: AgentSession): void {
 export function setAutoCompactionEnabled(this: AgentSession, enabled: boolean): void {
 	this.settingsManager.setCompactionEnabled(enabled);
 }
+export function setCompactionModel(
+	this: AgentSession,
+	model: string,
+	scope?: "global" | "project",
+	options?: { persist?: boolean },
+): void {
+	this.settingsManager.setCompactionModel(model, scope, options);
+}
 
 export const agentSessionCompactionMethods = {
 	_applyVerbatimCompaction,
@@ -708,4 +745,5 @@ export const agentSessionCompactionMethods = {
 	abortCompaction,
 	abortBranchSummary,
 	setAutoCompactionEnabled,
+	setCompactionModel,
 };

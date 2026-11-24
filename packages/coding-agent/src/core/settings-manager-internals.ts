@@ -8,6 +8,7 @@ export interface SettingsManagerInternals {
 	legacyWorkflowPaths: Partial<Record<SettingsScope, string[]>>;
 	markModified(field: keyof Settings, nestedKey?: string): void;
 	markProjectModified(field: keyof Settings, nestedKey?: string): void;
+	mergeEffectiveSettings(): Settings;
 	save(): void;
 	saveProjectSettings(settings: Settings): void;
 }

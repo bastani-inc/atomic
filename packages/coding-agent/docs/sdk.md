@@ -139,42 +139,133 @@ const { session } = await createAgentSession({ resourceAdmission });
 
 ### Session storage
 
-Sessions default to `~/.atomic/workflows/journal.sqlite` (`session_` table prefix). Override storage with `sessionStore`, `storage`, or an explicit `sessionManager`:
+Sessions default to local SQLite at `~/.atomic/workflows/journal.sqlite` (`session_` table prefix). Override storage per session with `sessionStore`, `storage`, or an explicit `sessionManager`:
+
+| Backend | Package | How to pass it to `createAgentSession()` |
+| --- | --- | --- |
+| Local SQLite (default) | Built into `@bastani/atomic` (`@bastani/atomic/storage`) | `{ kind: "sqlite", path, prefix? }` or caller-owned `openNodeSqliteDatabase()` / `SqlSessionStore.open()` |
+| JSONL directory | Built into `@bastani/atomic` | `{ kind: "jsonl", dir }` or caller-owned `JsonlSessionStore.open()` |
+| In-memory | Built into `@bastani/atomic` | `new MemorySessionStore()` (caller-owned) or `{ kind: "memory" }` (discarded on `dispose()`) |
+| libSQL / Turso | `@bastani/atomic-storage-libsql` | `{ kind: "adapter", module: LIBSQL_ADAPTER_PACKAGE, ... }` or caller-owned `openLibsqlDatabase()` |
+| PostgreSQL (16+ for sessions) | `@bastani/atomic-storage-postgres` | `{ kind: "adapter", module: POSTGRES_ADAPTER_PACKAGE, ... }` or caller-owned `openPostgresDatabase()` |
+
+#### Built-in backends (SQLite, JSONL, in-memory)
 
 ```typescript
-import { createAgentSession, MemorySessionStore, POSTGRES_ADAPTER_PACKAGE } from "@bastani/atomic";
+import {
+  createAgentSession,
+  JsonlSessionStore,
+  MemorySessionStore,
+  SqlSessionStore,
+} from "@bastani/atomic";
+import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 
-// Caller-owned in-memory store (preserves history across session.release() / runtime.rehydrate())
-const memoryStore = new MemorySessionStore();
-const mem = await createAgentSession({ sessionStore: memoryStore });
-
-// JSONL directory
-const jsonl = await createAgentSession({
-  sessionStore: { kind: "jsonl", dir: "./sessions" },
-});
-
-// SQLite file
+// 1. Local SQLite file (session-owned: Atomic opens and closes it on dispose())
 const sqlite = await createAgentSession({
   sessionStore: { kind: "sqlite", path: "./sessions.sqlite", prefix: "project_" },
 });
 
-// PostgreSQL (install @bastani/atomic-storage-postgres)
+// 2. JSONL directory (one JSONL file per session; session-owned)
+const jsonl = await createAgentSession({
+  sessionStore: { kind: "jsonl", dir: "./sessions" },
+});
+
+// 3. Caller-owned in-memory store (preserves history across session.release() / runtime.rehydrate())
+const memoryStore = new MemorySessionStore();
+const mem = await createAgentSession({ sessionStore: memoryStore });
+
+// 4. Caller-owned SQLite or JSONL store (share across sessions; close it yourself)
+const db = await openNodeSqliteDatabase("./shared.sqlite");
+const sqlStore = await SqlSessionStore.open(db, { prefix: "project_" });
+const jsonlStore = await JsonlSessionStore.open("./shared-jsonl");
+```
+
+#### Remote SQL packages (`@bastani/atomic-storage-postgres` and `@bastani/atomic-storage-libsql`)
+
+Install the adapter package alongside `@bastani/atomic` in your application (`npm install @bastani/atomic-storage-postgres` or `npm install @bastani/atomic-storage-libsql`). For CLI-resolved `{ kind: "adapter" }` loading outside `node_modules`, install in user scope with `atomic install npm:@bastani/atomic-storage-postgres` or `atomic install npm:@bastani/atomic-storage-libsql`. Both packages ship plain ESM with TypeScript declarations.
+
+**Option A — Pass a caller-owned database handle directly (recommended for SDK hosts sharing one pool):**
+
+```typescript
+import { readFile } from "node:fs/promises";
+import { createAgentSession } from "@bastani/atomic";
+import { openPostgresDatabase } from "@bastani/atomic-storage-postgres";
+import { openLibsqlDatabase } from "@bastani/atomic-storage-libsql";
+
+// PostgreSQL: pass a username-only URL (embedded passwords are rejected with credential-in-url).
+// `password` accepts a string or an async callback invoked per new connection for secret rotation.
+const pgDb = await openPostgresDatabase({
+  url: "postgresql://atomic_runtime@db.example.com:5432/atomic",
+  password: async () => (await readFile("/run/secrets/postgres-password", "utf8")).trim(),
+});
+try {
+  const { session } = await createAgentSession({
+    sessionStore: { kind: "database", database: pgDb, prefix: "project_" },
+  });
+  try {
+    await session.prompt("Summarize recent commits");
+  } finally {
+    await session.dispose();
+  }
+} finally {
+  await pgDb.close();
+}
+
+// libSQL / Turso:
+const libsqlDb = await openLibsqlDatabase({
+  url: "libsql://<db>.turso.io",
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+try {
+  const { session } = await createAgentSession({
+    sessionStore: { kind: "database", database: libsqlDb, prefix: "project_" },
+  });
+  await session.dispose();
+} finally {
+  await libsqlDb.close();
+}
+```
+
+**Option B — Let Atomic open and close the adapter per session via `{ kind: "adapter" }`:**
+
+```typescript
+import {
+  createAgentSession,
+  LIBSQL_ADAPTER_PACKAGE,
+  POSTGRES_ADAPTER_PACKAGE,
+} from "@bastani/atomic";
+
+// PostgreSQL via adapter selection (pass credentials through `secrets`, never inside `url`)
 const pg = await createAgentSession({
   sessionStore: {
     kind: "adapter",
     module: POSTGRES_ADAPTER_PACKAGE,
-    options: { url: process.env.DATABASE_URL },
+    options: { url: "postgresql://atomic_runtime@db.example.com:5432/atomic" },
+    secrets: { password: { env: "PGPASSWORD" } },
+    prefix: "project_",
+  },
+});
+
+// libSQL / Turso via adapter selection
+const libsql = await createAgentSession({
+  sessionStore: {
+    kind: "adapter",
+    module: LIBSQL_ADAPTER_PACKAGE,
+    options: { url: "libsql://<db>.turso.io" },
+    secrets: { authToken: { env: "TURSO_AUTH_TOKEN" } },
     prefix: "project_",
   },
 });
 ```
+
+For cloud IAM authentication on PostgreSQL (`auth: "azure-entra" | "aws-iam" | "gcp-iam"`), omit `secrets.password` / `password`. Run `atomic storage migrate` as the database owner role before connecting with a least-privilege runtime role. See [Storage](/storage) for TLS, proxies, connection poolers, schema migrations, and wrapping custom drivers.
 
 - **`sessionStore` vs. `storage` shapes:**
   - `sessionStore` accepts a `SessionStore` instance (`SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`) or a tagged selection object: `{ kind: "sqlite", path, prefix? }`, `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, or `{ kind: "adapter", module, options?, secrets?, prefix? }`.
   - `storage` uses the `settings.json` shape (also returned by `teamProfileSelection()`, see [Team and CI setup](/guides/team-setup#from-the-sdk)): `{ path, prefix? }`, `{ database, prefix? }`, `{ memory: true }`, or `{ adapter, options?, secrets?, prefix? }`. `storage` does not support JSONL; use `sessionStore: { kind: "jsonl", dir }` for JSONL directories.
   - Legacy `sessionDir` was removed.
 - **Precedence:** Resolved in order from `sessionManager`, `sessionStore`, `storage`, process environment/flags (`ATOMIC_SESSIONS_STORAGE` and `ATOMIC_STORAGE`; see [Selecting storage per process](/storage#selecting-storage-per-process)), settings (`sessions.storage` before `storage`; see [Session settings](/settings#sessions)), and finally default SQLite. Memory is never an automatic fallback.
-- **Ownership and resume:** Atomic closes stores it opened from selection objects during `dispose()`, while leaving caller-owned `SessionStore`, `SessionManager`, and `database` instances open. Because session-owned `{ kind: "memory" }` and `storage: { memory: true }` stores are closed and discarded on `dispose()`, pass a caller-owned `new MemorySessionStore()` if you plan to call `session.release()` and later `runtime.rehydrate()`.
+- **Ownership and resume:** Atomic closes stores it opened from selection objects (`sqlite`, `jsonl`, `adapter`, `memory`) during `dispose()`, while leaving caller-owned `SessionStore`, `SessionManager`, and `database` instances open. Because session-owned `{ kind: "memory" }` and `storage: { memory: true }` stores are closed and discarded on `dispose()`, pass a caller-owned `new MemorySessionStore()` if you plan to call `session.release()` and later `runtime.rehydrate()`.
 - **Package adapters:** Pass `additionalExtensionPaths: [packageRoot]` on `DefaultResourceLoader` before opening storage to select an embedded package adapter by name ([Adapters from Atomic packages](/storage#adapters-from-atomic-packages)).
 - **Await mutations:** Await every `SessionManager` write and every `atomic.appendEntry`, `setSessionName`, `setLabel`, `setThinkingLevel`, and `cycleThinkingLevel` call (there is no `flush()`; see [Storage errors](/storage#storage-errors)):
 

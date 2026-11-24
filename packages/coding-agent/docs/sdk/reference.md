@@ -124,7 +124,7 @@ if (auto) {
 2. If the pattern contains `*`, `?`, or `[`: strips a valid trailing `:<thinking>` suffix, retries an exact literal match first (so bracketed model IDs like `model[1m]` stay literal), then runs case-insensitive `minimatch` against both `provider/id` and `id`.
 3. Fuzzy substring matching with lenient `:<thinking>` suffix parsing.
 
-Matches are deduplicated in order (first match wins). `diagnostics` lists warnings with `code: "no-match" | "invalid-thinking-level" | "ambiguous"`.
+Matches are deduplicated in order (first match wins). `diagnostics` lists warnings with `code: "no-match" | "invalid-thinking-level"`.
 
 ```typescript
 import { resolveModelScopeWithDiagnostics } from "@bastani/atomic";
@@ -1289,6 +1289,10 @@ Both extend `DebugError`, whose `code` is a `DebugErrorCode` and whose `fields()
 
 To pass one between processes, `serializeDebugError(error)` turns it into a `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, and a cause chain of at most eight errors), and `rehydrateDebugError(serialized)` rebuilds the same class with the same fields. An unknown `name` comes back as a `DebugError` that keeps its `name`, `code`, `fields` and `retryable`. The RPC client does this for you: when Atomic refuses `set_debug`, `setDebug()` rejects with the `DebugConfigError`.
 
+### Compaction errors
+
+Compaction settings, session compaction calls, and direct `requestCompactorOutput()` calls throw subclasses of `CompactionError` (`CompactionConfigError`, `CompactionCancelledError`, `CompactionStateError`, and `CompactorFailure`). Branch on the class or `code`, not the message. Every `CompactionError` exposes `code`, `hint`, `retryable`, and `fields()`, and comes with cross-realm guards (`isCompactionError`, `isCompactionConfigError`, `isCompactionCancelledError`, `isCompactionStateError`, `isCompactorFailure`, `findCompactionError`, `isRetryableCompactionError`) plus `serializeCompactionError()`, `parseSerializedCompactionError()`, and `rehydrateCompactionError()`. The RPC client automatically rehydrates `compaction_error` responses (for example when `set_compaction_model` or `compact` rejects). See [Compaction errors](/compaction/reference#compaction-errors).
+
 ## Nonblocking helpers
 
 Use the asynchronous helpers in a host that must keep accepting input while it reads files, checks trust or resolves tools. Existing synchronous SDK forms remain available.
@@ -1611,6 +1615,22 @@ ShellToolError, ShellTimeoutError, isShellToolError, isShellTimeoutError, rehydr
 EditToolError, EditInputError, EditMatchError, EditTargetError, WriteSelectorError, FileToolAbortedError
 isEditToolError, isEditInputError, isEditMatchError, isEditTargetError, isWriteSelectorError, isFileToolAbortedError
 serializeFileToolError, rehydrateEditToolError, rehydrateWriteSelectorError
+
+// Compaction, errors, and custom compactor models
+type CompactorModel, type CompactorApi
+type ProviderCompactorModelConfig, type ProviderChatModelConfig, type ProviderClassifierModelConfig, type ProviderImageModelConfig
+type CompactorRequest, type CompactorMessage, type CompactionModelSelection, type CompactionModelKind
+CompactionError, CompactionConfigError, CompactionCancelledError, CompactionStateError, CompactorFailure
+type CompactionErrorCode, type CompactionConfigErrorCode, type CompactionStateErrorCode, type CompactorFailureCode
+type CompactionConfigSource, type CompactionSettingsScope, type CompactionCancelReason, type CompactionErrorFieldValue
+type CompactionConfigErrorFields, type CompactionCancelledErrorFields, type CompactionStateErrorFields, type CompactorFailureOptions
+type SerializedCompactionError
+isCompactionError, isCompactionConfigError, isCompactionCancelledError, isCompactionStateError, isCompactorFailure
+findCompactionError, isRetryableCompactionError, serializeCompactionError, parseSerializedCompactionError, rehydrateCompactionError
+requestCompactorOutput, buildCompactorMessages, compactedOutputTokenCap, classifyCompactionModel, resolveCompactionModel
+estimateTextTokens, wrapLongLines
+COMPACTOR_REQUEST_TIMEOUT_MS, COMPACTOR_LINE_WIDTH
+COMPACTED_OUTPUT_MAX_TOKENS, COMPACTED_OUTPUT_MAX_TRIGGER_SHARE
 
 // Types
 type CreateAgentSessionOptions

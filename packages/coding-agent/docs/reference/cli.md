@@ -65,7 +65,7 @@ These three flags use different matching and credential rules:
 | Exact and fuzzy substring match | Yes (case-insensitive) | Yes (case-insensitive, after exact and glob) | Yes (case-insensitive) |
 | Searches unauthenticated models | Yes (so `--api-key` works) | No (authenticated models only) | No (authenticated models only) |
 | `:<thinking>` suffix | Strict, case-insensitive (invalid suffix fails) | Lenient on fuzzy matches, case-insensitive (invalid suffix warns and uses default) | Strict, case-insensitive (invalid suffix warns and skips entry) |
-| Ambiguous bare model ID | Prefers an authenticated provider (unless `--api-key` is passed); asks for `--provider` if still ambiguous | Adds every matching authenticated provider with a warning | Prefers the active or default provider; warns if still ambiguous |
+| Ambiguous bare model ID | Prefers an authenticated provider (unless `--api-key` is passed); asks for `--provider` if still ambiguous | Adds every matching authenticated provider | Prefers the active or default provider; warns if still ambiguous |
 | Unknown model on a known provider | Synthesizes a custom model from that provider's defaults with a warning | Warns and skips the pattern | Warns and skips the entry |
 
 Key details for each flag:

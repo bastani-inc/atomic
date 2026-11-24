@@ -35,6 +35,23 @@ const SamplingParamsByThinkingLevelSchema = Type.Object(
 const SamplingParamsFieldSchema = Type.Record(Type.String(), Type.Unknown(), {
 	description: "Fields merged into every request body. Applies only to OpenAI-compatible APIs.",
 });
+const CompactionParamsFieldSchema = Type.Record(Type.String(), Type.Unknown(), {
+	description:
+		"API-specific request-body parameters merged into { messages, query, model } for compactor requests. Omit to let the remote API use its own defaults. Applies only to compactor models.",
+});
+const EndpointPathFieldSchema = Type.String({
+	description:
+		'Endpoint path appended to baseUrl for compactor requests (default "/compact"). Set to "" to POST directly to baseUrl. Applies only to compactor models.',
+});
+const CompactorTimeoutFieldSchema = Type.Number({
+	exclusiveMinimum: 0,
+	description:
+		"Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models.",
+});
+const ModelTypeFieldSchema = Type.Union([Type.Literal("chat"), Type.Literal("compactor")], {
+	default: "chat",
+	description: 'Model kind: "chat" (default) or "compactor" for a dedicated remote compaction endpoint.',
+});
 const HeadersSchema = Type.Record(Type.String(), Type.String(), {
 	description: "Request headers. Values resolve like apiKey.",
 });
@@ -62,8 +79,10 @@ export const ModelsJsonCompatSchema = Type.Object(
 const ModelDefinitionSchema = Type.Object({
 	id: Type.String({ minLength: 1, description: "Model ID sent to the API." }),
 	name: Type.Optional(Type.String({ minLength: 1, description: ModelFieldDescriptions.name })),
+	type: Type.Optional(ModelTypeFieldSchema),
 	api: Type.Optional(Type.String({ minLength: 1, description: "Overrides the provider api." })),
 	baseUrl: Type.Optional(Type.String({ minLength: 1, description: "Overrides the provider baseUrl." })),
+	endpointPath: Type.Optional(EndpointPathFieldSchema),
 	reasoning: Type.Optional(Type.Boolean({ default: false, description: ModelFieldDescriptions.reasoning })),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(ModelInputModalitySchema, { default: ["text"] })),
@@ -76,14 +95,18 @@ const ModelDefinitionSchema = Type.Object({
 	maxTokens: Type.Optional(
 		Type.Number({ exclusiveMinimum: 0, default: 16384, description: ModelFieldDescriptions.maxTokens }),
 	),
+	timeoutMs: Type.Optional(CompactorTimeoutFieldSchema),
 	samplingParams: Type.Optional(SamplingParamsFieldSchema),
 	samplingParamsByThinkingLevel: Type.Optional(SamplingParamsByThinkingLevelSchema),
+	compactionParams: Type.Optional(CompactionParamsFieldSchema),
 	headers: Type.Optional(HeadersSchema),
 	compat: Type.Optional(ModelsJsonCompatSchema),
 });
 
 const ModelOverrideSchema = Type.Object({
 	name: Type.Optional(Type.String({ minLength: 1, description: ModelFieldDescriptions.name })),
+	baseUrl: Type.Optional(Type.String({ minLength: 1, description: "Overrides the model baseUrl." })),
+	endpointPath: Type.Optional(EndpointPathFieldSchema),
 	reasoning: Type.Optional(Type.Boolean({ description: ModelFieldDescriptions.reasoning })),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(ModelInputModalitySchema)),
@@ -94,8 +117,10 @@ const ModelOverrideSchema = Type.Object({
 		Type.Number({ exclusiveMinimum: 0, description: ModelFieldDescriptions.contextWindow }),
 	),
 	maxTokens: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: ModelFieldDescriptions.maxTokens })),
+	timeoutMs: Type.Optional(CompactorTimeoutFieldSchema),
 	samplingParams: Type.Optional(SamplingParamsFieldSchema),
 	samplingParamsByThinkingLevel: Type.Optional(SamplingParamsByThinkingLevelSchema),
+	compactionParams: Type.Optional(CompactionParamsFieldSchema),
 	headers: Type.Optional(HeadersSchema),
 	compat: Type.Optional(ModelsJsonCompatSchema),
 });

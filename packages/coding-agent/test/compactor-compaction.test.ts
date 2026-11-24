@@ -5,7 +5,8 @@ import { afterEach, describe, it, vi } from "vitest";
 import { COMPACTOR_REQUEST_TIMEOUT_MS } from "../src/core/compaction/compactor.ts";
 import {
 	buildCompactorMessages,
-	COMPACTOR_COMPRESSION_RATIO,
+	CompactionCancelledError,
+	CompactionError,
 	CompactorFailure,
 	estimateContextTokens,
 	requestCompactorOutput,
@@ -180,7 +181,7 @@ describe("compactor request framing", () => {
 });
 
 describe("compactor endpoint", () => {
-	it("sends the framed messages, query, ratio, preserve_recent 0 and markers, and returns the output", async () => {
+	it("sends the framed messages, query, and model without hard-coded API params unless configured, and returns the output", async () => {
 		const fake = endpoint(() => json({ output: "compacted text", usage: { input_tokens: 900, output_tokens: 300 } }));
 		const result = await requestCompactorOutput({
 			apiKey: API_KEY,
@@ -196,13 +197,34 @@ describe("compactor endpoint", () => {
 		const [request] = fake.requests;
 		assert.equal(request.url, "https://api.morphllm.com/v1/compact");
 		assert.equal(request.authorization, `Bearer ${API_KEY}`);
-		assert.deepEqual(request.body.messages, [{ role: "user", content: "hello" }]);
-		assert.equal(request.body.query, "fix the parser");
-		assert.equal(request.body.compression_ratio, COMPACTOR_COMPRESSION_RATIO);
-		assert.equal(request.body.compression_ratio, 0.5);
-		assert.equal(request.body.preserve_recent, 0);
-		assert.equal(request.body.include_markers, true);
-		assert.equal(request.body.model, "morph-compactor");
+		assert.deepEqual(request.body, {
+			messages: [{ role: "user", content: "hello" }],
+			query: "fix the parser",
+			model: "morph-compactor",
+		});
+	});
+
+	it("merges configured compactionParams into the request body", async () => {
+		const fake = endpoint(() => json({ output: "compacted text" }));
+		await requestCompactorOutput({
+			apiKey: API_KEY,
+			modelId: "morph-compactor",
+			baseUrl: "https://api.morphllm.com/v1",
+			params: { compression_ratio: 0.5, preserve_recent: 2, include_markers: true },
+			messages: [{ role: "user", content: "hello" }],
+			query: "fix the parser",
+			signal: new AbortController().signal,
+			fetchFn: fake.fetch,
+		});
+		const [request] = fake.requests;
+		assert.deepEqual(request.body, {
+			compression_ratio: 0.5,
+			preserve_recent: 2,
+			include_markers: true,
+			messages: [{ role: "user", content: "hello" }],
+			query: "fix the parser",
+			model: "morph-compactor",
+		});
 	});
 
 	it("trims trailing slashes from the base URL in linear time", async () => {
@@ -236,6 +258,7 @@ describe("compactor endpoint", () => {
 		const result = await requestCompactorOutput({
 			apiKey: API_KEY,
 			modelId: "morph-compactor",
+			baseUrl: "https://api.morphllm.com/v1",
 			messages: [],
 			query: "q",
 			signal: new AbortController().signal,
@@ -244,24 +267,39 @@ describe("compactor endpoint", () => {
 		assert.equal(result.text, "one\n\ntwo");
 	});
 
-	const failures: Array<[string, () => Response | Promise<Response>, RegExp, string | undefined]> = [
-		["an HTTP error", () => json({ error: { message: `bad key ${API_KEY}` } }, 401), /^HTTP 401/u, API_KEY],
-		["empty output", () => json({ output: "   " }), /^empty output$/u, API_KEY],
-		["a malformed response", () => new Response("not json", { status: 200 }), /^malformed response$/u, API_KEY],
-		["no credentials", () => json({ output: "x" }), /^no credentials/u, undefined],
+	const failures: Array<[string, () => Response | Promise<Response>, RegExp, string | undefined, string]> = [
+		[
+			"an HTTP error",
+			() => json({ error: { message: `bad key ${API_KEY}` } }, 401),
+			/^HTTP 401/u,
+			API_KEY,
+			"http-error",
+		],
+		["empty output", () => json({ output: "   " }), /^empty output$/u, API_KEY, "empty-output"],
+		[
+			"a malformed response",
+			() => new Response("not json", { status: 200 }),
+			/^malformed response$/u,
+			API_KEY,
+			"malformed-response",
+		],
+		["no credentials", () => json({ output: "x" }), /^no credentials/u, undefined, "missing-credentials"],
 	];
-	for (const [name, respond, reason, key] of failures) {
+	for (const [name, respond, reason, key, expectedCode] of failures) {
 		it(`reports ${name} as a failure that never contains the key`, async () => {
 			const fake = endpoint(respond);
 			const error = await requestCompactorOutput({
 				apiKey: key,
 				modelId: "morph-compactor",
+				baseUrl: "https://api.morphllm.com/v1",
 				messages: [],
 				query: "q",
 				signal: new AbortController().signal,
 				fetchFn: fake.fetch,
 			}).catch((caught: Error) => caught);
 			assert.ok(error instanceof CompactorFailure, String(error));
+			assert.ok(error instanceof CompactionError);
+			assert.equal(error.code, expectedCode);
 			assert.match(error.message, reason);
 			assert.ok(!error.message.includes(API_KEY));
 		});
@@ -277,6 +315,7 @@ describe("compactor endpoint", () => {
 		const error = await requestCompactorOutput({
 			apiKey: API_KEY,
 			modelId: "morph-compactor",
+			baseUrl: "https://api.morphllm.com/v1",
 			messages: [],
 			query: "q",
 			signal: new AbortController().signal,
@@ -284,23 +323,29 @@ describe("compactor endpoint", () => {
 			fetchFn: hanging,
 		}).catch((caught: Error) => caught);
 		assert.ok(error instanceof CompactorFailure);
+		assert.ok(error instanceof CompactionError);
+		assert.equal(error.code, "timeout");
+		assert.equal(error.retryable, true);
+		assert.equal(error.timeoutMs, 20);
 		assert.equal(error.message, "timed out after 20 ms");
 	});
 
 	it("an abort of the compaction itself is a cancel, not a failure", async () => {
 		const controller = new AbortController();
 		controller.abort();
-		await assert.rejects(
-			requestCompactorOutput({
-				apiKey: API_KEY,
-				modelId: "morph-compactor",
-				messages: [],
-				query: "q",
-				signal: controller.signal,
-				fetchFn: endpoint(() => json({ output: "x" })).fetch,
-			}),
-			/Compaction cancelled/u,
-		);
+		const error = await requestCompactorOutput({
+			apiKey: API_KEY,
+			modelId: "morph-compactor",
+			baseUrl: "https://api.morphllm.com/v1",
+			messages: [],
+			query: "q",
+			signal: controller.signal,
+			fetchFn: endpoint(() => json({ output: "x" })).fetch,
+		}).catch((caught: unknown) => caught);
+		assert.ok(error instanceof CompactionCancelledError);
+		assert.ok(error instanceof CompactionError);
+		assert.equal(error.code, "cancelled");
+		assert.match(error.message, /Compaction cancelled/u);
 	});
 });
 

@@ -747,7 +747,7 @@ HTTP 401 indicates an invalid key (`TYPESAFE_API_KEY` or `/login typesafe`), HTT
 
 Run `/login morph` to store a Morph API key in `~/.atomic/agent/auth.json`, or set `MORPH_API_KEY` (stored credentials take precedence). Do not place keys in prompts or `settings.json`.
 
-Select `morph/morph-compactor` in `/settings` under **Compaction model**, or set `"compactionModel": "morph/morph-compactor"` in global settings. Without credentials, the selector marks it as `requires /login morph`.
+Select `morph/morph-compactor` (or any custom remote compactor configured in `models.json` or an extension) in `/settings` under **Compaction model** (switches live with no `/reload`), or set `"compactionModel": "morph/morph-compactor"` in `settings.json`. Without credentials, the selector marks it as `requires /login morph`. Customize Morph parameters such as `compression_ratio` or `preserve_recent` via `modelOverrides` in `~/.atomic/agent/models.json`; see [Customize Morph or add a remote compactor](/compaction#customize-morph-or-add-a-remote-compactor).
 
 During compaction, Morph receives the conversation without thinking blocks and returns a replacement summary; the agent can recover omitted details from session history. Use Morph only if your policy permits sending conversation content to Morph.
 
