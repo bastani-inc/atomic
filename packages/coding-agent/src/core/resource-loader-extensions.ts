@@ -136,8 +136,10 @@ export async function loadFinalExtensionSet(
 	}
 
 	const inlineExtensions = preTrustExtensions.extensions.filter((extension) => extension.path.startsWith("<inline:"));
-	// Inline extensions the pre-trust load left out load now, each in its place among the others.
-	const omitted = omittedInlineFactories.get(preTrustExtensions);
+	// Inline extensions the pre-trust or deferred-startup load left out load now, each in its place among the others.
+	const omitted =
+		omittedInlineFactories.get(preTrustExtensions) ??
+		missingInlineFactories(loader, inlineExtensions, preTrustExtensions.errors);
 	const lateInline = omitted
 		? await loadExtensionFactories(
 				loader,
@@ -186,6 +188,24 @@ export function bundledInlineFactories(loader: DefaultResourceLoader): Set<numbe
 		if (typeof input !== "function" && input.bundled === true && input.builtin !== true) indices.add(index);
 	}
 	return indices;
+}
+
+/** Inline non-builtin factories neither present in `loaded` nor already failed in `errors`. */
+function missingInlineFactories(
+	loader: DefaultResourceLoader,
+	loaded: readonly Extension[],
+	errors: ReadonlyArray<{ readonly path: string }>,
+): ReadonlySet<number> | undefined {
+	const present = new Set(loaded.map((extension) => inlineFactoryIndex.get(extension)));
+	const failedPaths = new Set(errors.map((error) => error.path));
+	const indices = new Set<number>();
+	for (const [index, input] of resourceInternals(loader).extensionFactories.entries()) {
+		const descriptor = typeof input === "function" ? undefined : input;
+		if (descriptor?.builtin) continue;
+		const extensionPath = `<inline:${descriptor?.name ?? index + 1}>`;
+		if (!present.has(index) && !failedPaths.has(extensionPath)) indices.add(index);
+	}
+	return indices.size > 0 ? indices : undefined;
 }
 
 export async function loadExtensionFactories(

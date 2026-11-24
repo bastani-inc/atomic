@@ -16,6 +16,7 @@ import type { ResourceLoader } from "../src/core/resource-loader-types.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { builtInExtensions } from "../src/extensions/index.ts";
 import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 const tempDirs: string[] = [];
@@ -624,6 +625,37 @@ describe("deferred startup reload", () => {
 				session.extensionRunner.getCommand("never-committed"),
 				undefined,
 				"Strict startup rollback must leave failing candidate uncommitted",
+			);
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("loads bundled inline Herdr reporter during deferred startup completion (#6536)", async () => {
+		const { cwd, agentDir } = createFixture("herdr-deferred-inline");
+		const services = await createAgentSessionServices({
+			cwd,
+			agentDir,
+			resourceLoaderOptions: { extensionFactories: builtInExtensions },
+			resourceLoaderReloadOptions: { deferExtensions: true, deferResources: true },
+		});
+		const { session } = await createUnstartedAgentSessionFromServices({
+			services,
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+		try {
+			await session.bindExtensions({ mode: "tui", reportStartupErrors: true });
+			assert.equal(
+				session.resourceLoader.getExtensions().extensions.some((extension) => extension.path === "<inline:Herdr>"),
+				false,
+				"Phase 1 deferred startup holds only mandatory extensions before completion",
+			);
+
+			await session.reload({ reason: "startup" });
+			assert.equal(
+				session.resourceLoader.getExtensions().extensions.some((extension) => extension.path === "<inline:Herdr>"),
+				true,
+				"Deferred startup completion must load the bundled inline Herdr reporter (#6536)",
 			);
 		} finally {
 			await session.dispose();
