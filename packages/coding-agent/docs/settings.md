@@ -86,7 +86,7 @@ Atomic resolves `enabledModels` and `--models` patterns against **authenticated,
 
 Additional matching rules:
 
-- **Provider-qualified vs bare IDs.** Prefer `provider/id` when more than one provider offers the same model ID. A bare ID or pattern matching multiple authenticated providers adds **every** matching provider to the scope and prints a warning.
+- **Provider-qualified vs bare IDs.** Use `provider/id` to pin a single provider. A bare ID or pattern matching multiple authenticated providers adds **every** matching provider to the scope.
 - **Order and deduplication.** Results keep the order of your patterns. Duplicate `(provider, id)` matches are removed while preserving the first occurrence (and its `:thinking` suffix, if any).
 - **Project overrides.** Setting `"enabledModels": []` in `.atomic/settings.json` clears a global `enabledModels` list for that project.
 

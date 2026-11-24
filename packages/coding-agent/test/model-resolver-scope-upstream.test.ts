@@ -65,7 +65,7 @@ describe("upstream model scope resolution", () => {
 		expect(result.diagnostics).toEqual([]);
 	});
 
-	test("adds every provider for an ambiguous bare literal ID, with a warning", async () => {
+	test("adds every provider for a bare literal ID matching multiple providers without a warning", async () => {
 		const unique = model("literal[free]:high", "p");
 		const uniqueResult = await resolve(["literal[free]:high"], [unique]);
 		expect(uniqueResult.scopedModels).toEqual([{ model: unique, thinkingLevel: undefined }]);
@@ -73,22 +73,15 @@ describe("upstream model scope resolution", () => {
 
 		const first = model("literal[free]", "q");
 		const second = model("literal[free]", "p");
-		const ambiguousResult = await resolve(["literal[free]"], [first, second]);
-		expect(ambiguousResult.scopedModels).toEqual([
+		const multiProviderResult = await resolve(["literal[free]"], [first, second]);
+		expect(multiProviderResult.scopedModels).toEqual([
 			{ model: first, thinkingLevel: undefined },
 			{ model: second, thinkingLevel: undefined },
 		]);
-		expect(ambiguousResult.diagnostics).toEqual([
-			{
-				type: "warning",
-				code: "ambiguous",
-				message: 'Pattern "literal[free]" matches several providers: p, q. Use provider/id to choose one.',
-				pattern: "literal[free]",
-			},
-		]);
+		expect(multiProviderResult.diagnostics).toEqual([]);
 	});
 
-	test("adds every provider for a pattern matching the same id on several providers, with a warning (#10160)", async () => {
+	test("adds every provider for a pattern matching the same id on several providers without a warning (#10160)", async () => {
 		const openai = model("gpt-4o", "openai");
 		const azure = model("gpt-4o", "azure");
 		const codexMini = model("gpt-4o-mini", "openai-codex");
@@ -111,14 +104,7 @@ describe("upstream model scope resolution", () => {
 					["azure/gpt-4o", thinkingLevel],
 					["openai/gpt-4o", thinkingLevel],
 				]);
-				expect(result.diagnostics).toEqual([
-					{
-						type: "warning",
-						code: "ambiguous",
-						message: `Pattern "${pattern}" matches several providers: azure, openai. Use provider/id to choose one.`,
-						pattern,
-					},
-				]);
+				expect(result.diagnostics).toEqual([]);
 			}
 		}
 	});
@@ -176,7 +162,7 @@ describe("upstream model scope resolution", () => {
 		]);
 	});
 
-	test("returns unmatched, invalid-thinking, and ambiguous warnings as diagnostics without console writes (#4694)", async () => {
+	test("returns unmatched and invalid-thinking warnings as diagnostics without console writes (#4694)", async () => {
 		assert.equal("resolveModelScope" in modelResolver, false);
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -190,7 +176,7 @@ describe("upstream model scope resolution", () => {
 			assert.equal(error.mock.calls.length, 0);
 			assert.deepEqual(
 				result.diagnostics.map((diagnostic) => diagnostic.code),
-				["no-match", "invalid-thinking-level", "ambiguous"],
+				["no-match", "invalid-thinking-level"],
 			);
 		} finally {
 			warn.mockRestore();

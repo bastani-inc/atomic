@@ -483,6 +483,12 @@ export {
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
 } from "./core/cloudflare-gateway-binding.ts";
+/**
+ * @deprecated No longer injected into compactor requests; kept only so running 0.10.x processes survive an in-place
+ * update without an ESM missing-export error.
+ */
+export const COMPACTOR_COMPRESSION_RATIO = 0.5;
+
 export {
 	type BranchPreparation,
 	type BranchSummaryResult,

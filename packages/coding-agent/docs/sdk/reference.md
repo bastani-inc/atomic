@@ -124,7 +124,7 @@ if (auto) {
 2. If the pattern contains `*`, `?`, or `[`: strips a valid trailing `:<thinking>` suffix, retries an exact literal match first (so bracketed model IDs like `model[1m]` stay literal), then runs case-insensitive `minimatch` against both `provider/id` and `id`.
 3. Fuzzy substring matching with lenient `:<thinking>` suffix parsing.
 
-Matches are deduplicated in order (first match wins). `diagnostics` lists warnings with `code: "no-match" | "invalid-thinking-level" | "ambiguous"`.
+Matches are deduplicated in order (first match wins). `diagnostics` lists warnings with `code: "no-match" | "invalid-thinking-level"`.
 
 ```typescript
 import { resolveModelScopeWithDiagnostics } from "@bastani/atomic";
