@@ -1127,6 +1127,53 @@ await runRpcMode(runtime);
 
 See [RPC documentation](/rpc) for the JSON protocol.
 
+## Session and storage errors
+
+SDK callers working with `SessionManager`, `SessionStore`, `AgentSessionRuntime`, `SettingsManager`, or `ModelRuntime.login()` can branch directly on exported error classes:
+
+| Class | When | Key fields |
+|---|---|---|
+| `SessionAlreadyOpenError` | Resuming a session claimed by another live process (CLI exit code `SESSION_ALREADY_OPEN_EXIT_CODE = 75`) | `sessionId`, `pid`, `host`, `exitCode` |
+| `SessionOpenElsewhereError` | Attempting to delete a session currently open in another live process | `sessionId`, `pid`, `host` |
+| `SessionConflictError` | Optimistic concurrency (`expectSeq`) mismatch after another process appended to the session | `sessionId`, `expectedSeq`, `actualSeq` |
+| `SessionDeletedError` | Mutating a session that was deleted from its store | `sessionId` |
+| `SessionNotFoundError` | Opening, reading, or appending a session ID that does not exist in the store | `sessionId` |
+| `SessionExistsError` | Creating a session with an ID that already exists in the store | `sessionId` |
+| `SessionFormatVersionError` | Opening a session written by an unsupported format version | `path`, `found`, `supported` |
+| `SessionIdMismatchError` | Entry session ID disagrees with the target session | `requested`, `found` |
+| `SessionInvalidTextError` | Session entry contains NUL or ill-formed Unicode text | `field`, `reason` |
+| `SessionInvalidTimestampError` | Session entry contains an unparseable or out-of-range timestamp | `field`, `value`, `reason` |
+| `SessionImportFileNotFoundError` | `AgentSessionRuntime.importFromJsonl()` target file does not exist | `filePath` |
+| `SessionWorkUnsettledError` | Session close/shutdown hit its drain deadline while work remained active | `code`, `step`, `pending`, `waitedMs` |
+| `JsonlStoragePoisonedError` | JSONL append and rollback both failed | `location`, `cause`, `rollbackCause` |
+| `SettingsFileChangedError` | Concurrent modification of `settings.json` detected while saving | `path` |
+| `StorageTransferError` / `StorageImportIncompleteError` | Session export/import validation failure or partial import failure | `path`, `reason` / `written`, `notWritten` |
+| `OAuthLoginTransactionError` | Credential persistence failed after OAuth token acquisition | `cause` |
+
+```typescript
+import {
+  claimSession,
+  SessionAlreadyOpenError,
+  SessionConflictError,
+  SessionNotFoundError,
+} from "@bastani/atomic";
+
+try {
+  const releaseClaim = claimSession(sessionId, { agentDir });
+  // open sessionManager & createAgentSession(...)
+} catch (error) {
+  if (error instanceof SessionAlreadyOpenError) {
+    console.error(`Open in pid ${error.pid} on ${error.host}`);
+  } else if (error instanceof SessionConflictError) {
+    console.error(`Concurrent write: expected seq ${error.expectedSeq}, found ${error.actualSeq}`);
+  } else if (error instanceof SessionNotFoundError) {
+    console.error(`Session ${error.sessionId} does not exist`);
+  } else {
+    throw error;
+  }
+}
+```
+
 ## Session start errors
 
 An in-process subagent that does not start within its start budget fails with a `SessionStartTimeoutError`; see [Subagent start timeouts](/subagents#subagent-start-timeouts) for the budget and how to change it. The child's result carries it serialized as `startError`, and its `error` text is the error's `message`. Every error in this family extends `SessionStartError`. Branch on the class, a guard, or `code`, never on the message:
@@ -1220,6 +1267,11 @@ AgentSessionRuntime
 AuthStorage
 ModelRegistry
 resolveAutoModel
+resolveModelScopeFromModels
+resolveModelScopeWithDiagnostics
+type ResolveModelScopeResult
+type ModelScopeDiagnostic
+OAuthLoginTransactionError
 
 // Resource loading
 DefaultResourceLoader
@@ -1283,6 +1335,39 @@ type TranscriptPart
 // Session management
 SessionManager
 SettingsManager
+JsonlSessionStore
+MemorySessionStore
+SqlSessionStore
+resolveSessionStore
+type SessionStorageOptions
+claimSession
+prepareSessionClaim
+attachSessionClaim
+SESSION_ALREADY_OPEN_EXIT_CODE
+SessionAlreadyOpenError
+SessionConflictError
+SessionDeletedError
+SessionEntryError
+SessionExistsError
+SessionFormatVersionError
+SessionHistoryNotLoadedError
+SessionIdError
+SessionIdMismatchError
+SessionImportFileNotFoundError
+SessionInvalidTextError
+SessionInvalidTimestampError
+SessionNotFoundError
+SessionOpenElsewhereError
+SessionWorkUnsettledError
+SettingsFileChangedError
+JsonlStoragePoisonedError
+StorageTransferError
+StorageImportIncompleteError
+type SessionJsonValue
+type SessionTextField
+type SessionTimestampField
+type StorageTransferErrorInit
+type TransferredIds
 
 // Decision service
 decide

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Exported session, storage, settings, and OAuth error classes, stores, claims, and companion types from `@bastani/atomic` for SDK callers: `SessionAlreadyOpenError`, `SESSION_ALREADY_OPEN_EXIT_CODE`, `SessionDeletedError`, `SessionOpenElsewhereError`, `SessionConflictError`, `SessionNotFoundError`, `SessionExistsError`, `SessionFormatVersionError`, `SessionIdMismatchError`, `SessionInvalidTextError`, `SessionInvalidTimestampError`, `SessionImportFileNotFoundError`, `SessionWorkUnsettledError`, `JsonlStoragePoisonedError`, `SettingsFileChangedError`, `StorageTransferError`, `StorageImportIncompleteError`, `OAuthLoginTransactionError`, `MemorySessionStore`, `SqlSessionStore`, `SessionStorageOptions`, `claimSession`, `prepareSessionClaim`, `attachSessionClaim`, and companion types (`SessionJsonValue`, `SessionTextField`, `SessionTimestampField`, `StorageTransferErrorInit`, `TransferredIds`), along with model-scope helpers `resolveModelScopeFromModels`, `resolveModelScopeWithDiagnostics`, `ResolveModelScopeResult`, and `ModelScopeDiagnostic`.
+
 ## [0.10.7] - 2026-11-24
 
 Atomic fixes render-engine CPU starvation on expanded running subagent cards, scopes subagents to the session's `enabledModels` allowlist, and updates the bundled `agent-browser` skill.
