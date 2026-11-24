@@ -122,7 +122,7 @@ jobs:
       # took 9m56s to populate arm64 on this spec; the glibc build takes 35s.
       - name: Install cargo-xwin
         timeout-minutes: 3
-        run: cargo install cargo-xwin --version 0.23.0 --locked
+        run: cargo install cargo-xwin --version 0.23.1 --locked
       # Pinned to a versioned subdirectory; the same literal path must appear
       # in publish.yml. Bump `v1-17` in both files together to force a refresh.
       - name: Resolve MSVC CRT cache directory
@@ -135,7 +135,7 @@ jobs:
         with:
           spacectl-version: 0.12.3
           path: ~/.cache/cargo-xwin
-      # Probe both arches before writing anything. cargo-xwin 0.23.0 trusts a
+      # Probe both arches before writing anything. cargo-xwin 0.23.1 trusts a
       # DONE marker without re-checking the files it lists, so a partial tree
       # from an earlier interrupted run must be detected and wiped here, or the
       # populate step would accept it as a hit.
@@ -164,8 +164,8 @@ jobs:
               fi
             done
           fi
-      # One populate for both arches. cargo-xwin 0.23.0 rewrites DONE with only
-      # the arches of the current call and xwin 0.9.0 deletes crt/ and sdk/
+      # One populate for both arches. cargo-xwin 0.23.1 rewrites DONE with only
+      # the arches of the current call and xwin 0.10.0 deletes crt/ and sdk/
       # before each splat, so one call per arch would leave only the last one.
       - name: Populate MSVC CRT cache on miss
         timeout-minutes: 8
