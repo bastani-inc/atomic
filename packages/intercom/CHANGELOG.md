@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Fixed
+
+- Targeted `intercom({ action: "leave", group })` on a session's last membership now falls back to the session's resolved registration group (such as `project:<owner>/<repo>` under multi-node routing) instead of silently moving the session into `"default"`.
+
 ## [0.10.6] - 2026-11-23
 
 ### Changed
