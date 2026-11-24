@@ -25,7 +25,7 @@ import type {
 	SessionStats,
 } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.ts";
-import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
+import type { SerializedCompactionError, VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SerializedDebugError } from "../../core/debug-errors.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { SessionRecoveryReason } from "../../core/extensions/index.js";
@@ -202,8 +202,8 @@ export type RpcCommand =
 	// Compaction
 	| { id?: string; type: "compact"; instructions?: string }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
-	| { id?: string; type: "set_compaction_model"; model: string; scope?: "global" | "project" }
-	| { id?: string; type: "set_decision_model"; model: string; scope?: "global" | "project" }
+	| { id?: string; type: "set_compaction_model"; model: string; scope?: "global" | "project"; persist?: boolean }
+	| { id?: string; type: "set_decision_model"; model: string; scope?: "global" | "project"; persist?: boolean }
 	| { id?: string; type: "abort_compaction" }
 	| { id?: string; type: "abort_branch_summary" }
 
@@ -691,6 +691,7 @@ export type RpcErrorDetails =
 			errorCode: "credential_synchronization";
 			errorDetails: { providerId: string; operation: CredentialSynchronizationOperation };
 	  }
+	| { errorCode: "compaction_error"; errorDetails: SerializedCompactionError }
 	| { errorCode: "debug_error"; errorDetails: SerializedDebugError }
 	// A resume or import whose session's working directory is gone keeps its typed error, so the host can offer
 	// to continue or fork instead of reporting a failure

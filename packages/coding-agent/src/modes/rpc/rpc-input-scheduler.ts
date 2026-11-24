@@ -16,6 +16,8 @@ const CONCURRENT_COMMANDS: ReadonlySet<string> = new Set([
 	"bash",
 	"user_bash",
 	"refresh_models",
+	"set_compaction_model",
+	"set_decision_model",
 	"start_pending_recovery",
 	"start_pending_recovery_restore",
 	"stop_all_background",

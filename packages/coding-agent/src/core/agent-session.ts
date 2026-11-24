@@ -341,8 +341,8 @@ class AgentSessionBase {
 		this.settingsManager.setCacheWarmingMode(mode);
 		this._cacheWarmer?.onModeChanged();
 	}
-	setDecisionModel(model: string, scope?: "global" | "project"): void {
-		this.settingsManager.setDecisionModel(model, scope);
+	setDecisionModel(model: string, scope?: "global" | "project", options?: { persist?: boolean }): void {
+		this.settingsManager.setDecisionModel(model, scope, options);
 	}
 	/**
 	 * The save receipt of a message this session emitted: the sequence its entry was stored at, read while the entry is

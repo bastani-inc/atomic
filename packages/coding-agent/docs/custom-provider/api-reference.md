@@ -160,11 +160,11 @@ interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
 
 interface ProviderCompactorModelConfig extends ProviderModelConfigBase {
   type: "compactor";
-  /** Compactor API dialect (defaults to `"morph-compact"`). Non-Morph API names omit Morph defaults unless set in `compactionParams`. */
+  /** Compactor API identifier. Required at model or provider level unless overriding an existing compactor model. */
   api?: CompactorApi;
   /** Endpoint path appended to `baseUrl` (default `"/compact"`). Set `""` to POST directly to `baseUrl`. */
   endpointPath?: string;
-  /** API-specific request-body parameters merged into compactor requests. */
+  /** API-specific request-body parameters merged into `{ messages, query, model }`. Omitted by default so the remote API uses its own defaults. */
   compactionParams?: Record<string, unknown>;
   /** Wall-clock request timeout in milliseconds (default `120000`). */
   timeoutMs?: number;

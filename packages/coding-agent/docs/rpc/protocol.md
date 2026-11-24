@@ -738,7 +738,7 @@ Response:
 
 #### set_compaction_model
 
-Switch the active compaction model immediately without restarting or reloading, and persist it to global or project settings. Pass `""` or `"auto"` for Automatic (clear and recover), or an exact compactor `provider/model` ID.
+Switch the active compaction model immediately without restarting or reloading, and persist it to global or project settings (pass `"persist": false` to update only in-memory session state). Pass `""` or `"auto"` for Automatic (clear and recover), or an exact compactor `provider/model` ID. Invalid values return `errorCode: "compaction_error"` with a serialized `CompactionConfigError` that `RpcClient` rehydrates automatically.
 
 ```json
 {"type": "set_compaction_model", "model": "my-compactor/compact-v2", "scope": "global"}
@@ -752,7 +752,7 @@ Response:
 
 #### set_decision_model
 
-Switch the active decision model immediately without restarting or reloading, and persist it to global or project settings. Pass `""` or `"auto"` for Automatic (current chat model), or an exact registered classifier or chat `provider/model` ID.
+Switch the active decision model immediately without restarting or reloading, and persist it to global or project settings (pass `"persist": false` to update only in-memory session state). Pass `""` or `"auto"` for Automatic (current chat model), or an exact registered classifier or chat `provider/model` ID.
 
 ```json
 {"type": "set_decision_model", "model": "typesafe/jev-latest", "scope": "global"}

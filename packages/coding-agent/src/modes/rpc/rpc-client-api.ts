@@ -222,11 +222,29 @@ export abstract class RpcClientApi {
 	async setAutoCompaction(enabled: boolean): Promise<void> {
 		await this.request({ type: "set_auto_compaction", enabled });
 	}
-	async setCompactionModel(model: string, scope?: "global" | "project"): Promise<void> {
-		await this.request({ type: "set_compaction_model", model, ...(scope ? { scope } : {}) });
+	async setCompactionModel(
+		model: string,
+		scope?: "global" | "project",
+		options?: { persist?: boolean },
+	): Promise<void> {
+		this.data<void>(
+			await this.request({
+				type: "set_compaction_model",
+				model,
+				...(scope ? { scope } : {}),
+				...(options?.persist === undefined ? {} : { persist: options.persist }),
+			}),
+		);
 	}
-	async setDecisionModel(model: string, scope?: "global" | "project"): Promise<void> {
-		await this.request({ type: "set_decision_model", model, ...(scope ? { scope } : {}) });
+	async setDecisionModel(model: string, scope?: "global" | "project", options?: { persist?: boolean }): Promise<void> {
+		this.data<void>(
+			await this.request({
+				type: "set_decision_model",
+				model,
+				...(scope ? { scope } : {}),
+				...(options?.persist === undefined ? {} : { persist: options.persist }),
+			}),
+		);
 	}
 	/**
 	 * Say what extension UI this client can show. With `questionnaire`, `ask_user_question` arrives as one

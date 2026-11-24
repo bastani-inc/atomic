@@ -37,7 +37,7 @@ const SamplingParamsFieldSchema = Type.Record(Type.String(), Type.Unknown(), {
 });
 const CompactionParamsFieldSchema = Type.Record(Type.String(), Type.Unknown(), {
 	description:
-		"API-specific request-body fields merged into compactor requests (for example compression_ratio, preserve_recent, include_markers, include_line_ranges, or custom parameters). Applies only to compactor models.",
+		"API-specific request-body parameters merged into { messages, query, model } for compactor requests. Omit to let the remote API use its own defaults. Applies only to compactor models.",
 });
 const EndpointPathFieldSchema = Type.String({
 	description:

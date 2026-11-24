@@ -174,7 +174,7 @@ Add a custom remote compaction endpoint by setting `"type": "compactor"` on a mo
 }
 ```
 
-Use `"api": "morph-compact"` (the default when `api` is omitted on a compactor) for Morph-compatible endpoints, or any custom `api` name to send only `{ messages, query, model, ...compactionParams }` without Morph defaults. See [Customize Morph or add a remote compactor](/compaction#customize-morph-or-add-a-remote-compactor) and [Compaction reference](/compaction/reference#compactor-request-contract).
+Every custom compactor requires `"api"` at the provider or model level (just like custom chat models; built-in Morph defines its own `"api": "morph-compact"`). Atomic sends `{ messages, query, model }` plus any keys in `compactionParams` (omitting `compactionParams` lets the remote API use its own defaults). See [Customize Morph or add a remote compactor](/compaction#customize-morph-or-add-a-remote-compactor) and [Compaction reference](/compaction/reference#compactor-request-contract).
 
 ## Use classifier models
 

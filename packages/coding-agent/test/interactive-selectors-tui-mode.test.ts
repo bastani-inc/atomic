@@ -50,6 +50,9 @@ async function openSettingsSelector(opened: (selector: SettingsSelectorComponent
 		settingsManager,
 		model: chatModel,
 		setModel: () => assert.fail("compaction settings must not change the chat model"),
+		setCompactionModel: (model: string, scope?: "global" | "project") =>
+			settingsManager.setCompactionModel(model, scope),
+		setDecisionModel: (model: string, scope?: "global" | "project") => settingsManager.setDecisionModel(model, scope),
 		autoCompactionEnabled: true,
 		steeringMode: "one-at-a-time",
 		followUpMode: "one-at-a-time",
@@ -141,10 +144,7 @@ test("settings selector searches and saves the compaction model without changing
 	try {
 		const list = selector.getSettingsList();
 		for (const character of "Compaction model") list.handleInput(character);
-		assert.match(
-			stripTerminalSequences(list.render(120).join("\n")),
-			/Compaction model\s+Auto \(clear and recover\)/,
-		);
+		assert.match(stripTerminalSequences(list.render(120).join("\n")), /Compaction model\s+Automatic/);
 		list.handleInput("\r");
 		for (const character of "morph/morph-compactor") list.handleInput(character);
 		assert.match(stripTerminalSequences(list.render(120).join("\n")), /morph\/morph-compactor/);

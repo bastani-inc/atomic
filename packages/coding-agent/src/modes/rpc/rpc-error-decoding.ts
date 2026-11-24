@@ -1,3 +1,4 @@
+import { parseSerializedCompactionError, rehydrateCompactionError } from "../../core/compaction/errors.js";
 import { rehydrateDebugError } from "../../core/debug-errors.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import { isSerializedMissingSessionCwdError, rehydrateMissingSessionCwdError } from "../../core/session-cwd.ts";
@@ -9,6 +10,10 @@ import type { RpcResponse } from "./rpc-types.ts";
  */
 export function assertRpcSuccess(response: RpcResponse): void {
 	if (response.success) return;
+	if (response.errorCode === "compaction_error") {
+		const parsed = parseSerializedCompactionError(response.errorDetails);
+		if (parsed) throw rehydrateCompactionError(parsed);
+	}
 	if (response.errorCode === "debug_error") throw rehydrateDebugError(response.errorDetails);
 	if (response.errorCode === "credential_synchronization" && response.errorDetails) {
 		throw new CredentialSynchronizationError(

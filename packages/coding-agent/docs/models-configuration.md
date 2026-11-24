@@ -59,7 +59,7 @@ Each `models` entry adds a model to the provider. An entry whose `id` matches an
 | `timeoutMs` | number |  | Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |
-| `compactionParams` | object |  | API-specific request-body fields merged into compactor requests (for example compression_ratio, preserve_recent, include_markers, include_line_ranges, or custom parameters). Applies only to compactor models. |
+| `compactionParams` | object |  | API-specific request-body parameters merged into { messages, query, model } for compactor requests. Omit to let the remote API use its own defaults. Applies only to compactor models. |
 | `headers` | object |  | Request headers. Values resolve like apiKey. |
 | `compat` | [object](#compatibility) |  | Provider and model compatibility overrides. |
 
@@ -93,7 +93,7 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 | `timeoutMs` | number |  | Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |
-| `compactionParams` | object |  | API-specific request-body fields merged into compactor requests (for example compression_ratio, preserve_recent, include_markers, include_line_ranges, or custom parameters). Applies only to compactor models. |
+| `compactionParams` | object |  | API-specific request-body parameters merged into { messages, query, model } for compactor requests. Omit to let the remote API use its own defaults. Applies only to compactor models. |
 | `headers` | object |  | Request headers. Values resolve like apiKey. |
 | `compat` | [object](#compatibility) |  | Provider and model compatibility overrides. |
 

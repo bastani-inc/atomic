@@ -1,12 +1,13 @@
 import type {
+	CompactionErrorCode,
 	CompactionForm,
 	CompactionModelKind,
 	CompactOptions,
 	CompactorApi,
 	CompactorModel,
 	CompactorRequest,
-	KnownCompactorApi,
 	ProviderCompactorModelConfig,
+	SerializedCompactionError,
 	SessionBeforeCompactResult,
 	SessionCompactOptions,
 	VerbatimCompactionParameters,
@@ -15,9 +16,24 @@ import type {
 import {
 	COMPACTED_OUTPUT_MAX_TRIGGER_SHARE,
 	COMPACTOR_LINE_WIDTH,
+	CompactionCancelledError,
+	CompactionConfigError,
+	CompactionError,
+	CompactionStateError,
+	CompactorFailure,
 	classifyCompactionModel,
 	compactedOutputTokenCap,
 	estimateTextTokens,
+	findCompactionError,
+	isCompactionCancelledError,
+	isCompactionConfigError,
+	isCompactionError,
+	isCompactionStateError,
+	isCompactorFailure,
+	isRetryableCompactionError,
+	parseSerializedCompactionError,
+	rehydrateCompactionError,
+	serializeCompactionError,
 	wrapLongLines,
 } from "../../src/index.ts";
 
@@ -32,7 +48,7 @@ export type ResultBackend = Expect<Equal<VerbatimCompactionResult["backend"], "c
 export type CompactionModelKinds = Expect<
 	Equal<CompactionModelKind, "auto" | "compactor" | "chat" | "classifier" | "unknown">
 >;
-export type KnownCompactorApis = Expect<Equal<KnownCompactorApi, "morph-compact">>;
+export type CompactorApiType = Expect<Equal<CompactorApi, string>>;
 
 export const customCompactorModel: CompactorModel = {
 	id: "compact-v2",
@@ -79,11 +95,31 @@ export const compactorRequestShape: CompactorRequest = {
 export const compactorHelpers = {
 	COMPACTED_OUTPUT_MAX_TRIGGER_SHARE,
 	COMPACTOR_LINE_WIDTH,
+	CompactionError,
+	CompactionConfigError,
+	CompactionCancelledError,
+	CompactionStateError,
+	CompactorFailure,
+	isCompactionError,
+	isCompactionConfigError,
+	isCompactionCancelledError,
+	isCompactionStateError,
+	isCompactorFailure,
+	findCompactionError,
+	isRetryableCompactionError,
+	serializeCompactionError,
+	parseSerializedCompactionError,
+	rehydrateCompactionError,
 	classifyCompactionModel,
 	compactedOutputTokenCap,
 	estimateTextTokens,
 	wrapLongLines,
 };
+
+export type CompactionErrorCodeCheck = Expect<
+	"invalid-setting" extends CompactionErrorCode ? ("timeout" extends CompactionErrorCode ? true : false) : false
+>;
+export type SerializedErrorType = SerializedCompactionError;
 
 export const sessionOptions: SessionCompactOptions = { query: "keep the parser decisions", compactionModel: "auto" };
 export const extensionOptions: CompactOptions = { query: "focus", compactionModel: "morph/morph-compactor" };

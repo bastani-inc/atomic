@@ -125,6 +125,7 @@ export interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
 
 export interface ProviderCompactorModelConfig extends ProviderModelConfigBase {
 	type: "compactor";
+	/** Compactor API identifier. Required at model or provider level unless overriding an existing compactor model. */
 	api?: CompactorApi;
 	endpointPath?: string;
 	compactionParams?: Record<string, unknown>;

@@ -1642,15 +1642,21 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			setCompactionModel: {
 				configurable: true,
 				value: (model: string, scope?: "global" | "project") => {
-					session.settingsManager.applyOverrides({ compactionModel: model });
-					this.dispatchBestEffort("set compaction model", this.client.setCompactionModel(model, scope));
+					session.settingsManager.setCompactionModel(model, scope);
+					this.dispatchBestEffort(
+						"set compaction model",
+						this.client.setCompactionModel(model, scope, { persist: false }),
+					);
 				},
 			},
 			setDecisionModel: {
 				configurable: true,
 				value: (model: string, scope?: "global" | "project") => {
-					session.settingsManager.applyOverrides({ decisionModel: model });
-					this.dispatchBestEffort("set decision model", this.client.setDecisionModel(model, scope));
+					session.settingsManager.setDecisionModel(model, scope);
+					this.dispatchBestEffort(
+						"set decision model",
+						this.client.setDecisionModel(model, scope, { persist: false }),
+					);
 				},
 			},
 			setAutoRetryEnabled: {

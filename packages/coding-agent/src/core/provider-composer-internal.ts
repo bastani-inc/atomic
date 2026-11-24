@@ -256,8 +256,10 @@ export function applyCompactorModelOverride(model: CompactorModel, override: Mod
 	};
 }
 
-function isCompactorDefinition(definition: ModelsJsonModel, providerConfig: ModelsJsonProvider): boolean {
-	return definition.type === "compactor" || (definition.api ?? providerConfig.api) === "morph-compact";
+function isCompactorDefinition(definition: ModelsJsonModel, existingModels: readonly AnyModel[]): boolean {
+	if (definition.type === "compactor") return true;
+	if (definition.type !== undefined) return false;
+	return existingModels.some((model) => isModelType(model, "compactor") && model.id === definition.id);
 }
 
 function compactorModelFromJson(
@@ -266,7 +268,12 @@ function compactorModelFromJson(
 	providerConfig: ModelsJsonProvider,
 	defaults: CompactorModel | undefined,
 ): CompactorModel {
-	const api = (definition.api ?? providerConfig.api ?? defaults?.api ?? "morph-compact") as CompactorApi;
+	const api = (definition.api ?? providerConfig.api ?? defaults?.api) as CompactorApi | undefined;
+	if (!api) {
+		throw new Error(
+			`Provider ${providerId}, model ${definition.id}: no "api" specified. Set at provider or model level.`,
+		);
+	}
 	const baseUrl = definition.baseUrl ?? providerConfig.baseUrl ?? defaults?.baseUrl;
 	if (!baseUrl) throw new Error(`Provider ${providerId}: "baseUrl" is required when defining custom models.`);
 	if (definition.maxTokens !== undefined && definition.maxTokens <= 0) {
@@ -373,7 +380,7 @@ export function applyModelsJson(
 		return { ...model, baseUrl };
 	});
 	for (const definition of config.models ?? []) {
-		if (isCompactorDefinition(definition, config)) {
+		if (isCompactorDefinition(definition, models)) {
 			const existingIndex = models.findIndex(
 				(model) => isModelType(model, "compactor") && model.id === definition.id,
 			);
@@ -420,14 +427,10 @@ export function applyExtension(
 				: undefined) ??
 			(type === "chat" ? candidates.find((model) => model.api === "openai-completions") : undefined) ??
 			candidates[0];
-		const api =
-			definition.api ??
-			(type === "chat" ? config.api : undefined) ??
-			defaults?.api ??
-			(type === "compactor" ? "morph-compact" : undefined);
+		const api = definition.api ?? (type === "chat" || type === "compactor" ? config.api : undefined) ?? defaults?.api;
 		if (!api) {
 			throw new Error(
-				`Provider ${providerId}, model ${definition.id}: no "api" specified. Set it at model level${type === "chat" ? " or provider level" : ""}.`,
+				`Provider ${providerId}, model ${definition.id}: no "api" specified. Set it at model level${type === "chat" || type === "compactor" ? " or provider level" : ""}.`,
 			);
 		}
 		const baseUrl = definition.baseUrl ?? config.baseUrl ?? defaults?.baseUrl;
@@ -612,7 +615,7 @@ export function rawModelHeaders(
 	const jsonMatch =
 		isModelType(model, "chat") || isModelType(model, "compactor")
 			? config?.models?.find((entry) => {
-					const entryType = isCompactorDefinition(entry, config) ? "compactor" : "chat";
+					const entryType = isCompactorDefinition(entry, [model]) ? "compactor" : "chat";
 					return entryType === (model.type ?? "chat") && entry.id === model.id;
 				})
 			: undefined;

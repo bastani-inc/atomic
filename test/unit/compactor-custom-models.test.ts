@@ -7,15 +7,29 @@ import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime
 import {
 	AuthStorage,
 	COMPACTED_OUTPUT_MAX_TOKENS,
-	COMPACTOR_COMPRESSION_RATIO,
+	CompactionCancelledError,
+	CompactionConfigError,
+	CompactionError,
+	CompactionStateError,
+	CompactorFailure,
 	type CompactorModel,
 	compactedOutputTokenCap,
 	createAgentSession,
 	DefaultResourceLoader,
+	findCompactionError,
+	isCompactionCancelledError,
+	isCompactionConfigError,
+	isCompactionError,
+	isCompactionStateError,
+	isCompactorFailure,
+	isRetryableCompactionError,
 	type ProviderCompactorModelConfig,
+	parseSerializedCompactionError,
+	rehydrateCompactionError,
 	requestCompactorOutput,
 	SessionManager,
 	SettingsManager,
+	serializeCompactionError,
 } from "../../packages/coding-agent/src/index.js";
 import { buildSettingsItems } from "../../packages/coding-agent/src/modes/interactive/components/settings-selector-items.js";
 import type {
@@ -25,6 +39,7 @@ import type {
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { RemoteModelCatalog } from "../../packages/coding-agent/src/modes/interactive-engine/remote-model-catalog.js";
 import { createRpcCommandHandler } from "../../packages/coding-agent/src/modes/rpc/rpc-command-handler.js";
+import { assertRpcSuccess } from "../../packages/coding-agent/src/modes/rpc/rpc-error-decoding.js";
 import { createRpcModelCatalog } from "../../packages/coding-agent/src/modes/rpc/rpc-model-catalog.js";
 import { stripVTControlCharacters } from "../helpers/visible-text.js";
 
@@ -149,7 +164,7 @@ describe("custom remote compactor models", () => {
 		}
 	});
 
-	test("requestCompactorOutput merges Morph defaults for morph-compact and omits them for custom APIs", async () => {
+	test("requestCompactorOutput sends only configured params plus messages, query, and model without injecting hard-coded Morph defaults", async () => {
 		const captured: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = [];
 		const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
 			captured.push({
@@ -168,7 +183,6 @@ describe("custom remote compactor models", () => {
 			api: "morph-compact",
 			modelId: "morph-compactor",
 			baseUrl: "https://api.morphllm.com/v1/",
-			params: { compression_ratio: 0.3, custom_option: true },
 			headers: { "X-Custom": "abc" },
 			messages: [{ role: "user", content: "hi" }],
 			query: "keep decisions",
@@ -179,12 +193,11 @@ describe("custom remote compactor models", () => {
 		assert.equal(captured[0]!.url, "https://api.morphllm.com/v1/compact");
 		assert.equal(captured[0]!.headers.Authorization, "Bearer sk-morph-123");
 		assert.equal(captured[0]!.headers["X-Custom"], "abc");
-		assert.equal(captured[0]!.body.compression_ratio, 0.3);
-		assert.equal(captured[0]!.body.preserve_recent, 0);
-		assert.equal(captured[0]!.body.include_markers, true);
-		assert.equal(captured[0]!.body.include_line_ranges, false);
-		assert.equal(captured[0]!.body.custom_option, true);
-		assert.equal(captured[0]!.body.model, "morph-compactor");
+		assert.deepEqual(captured[0]!.body, {
+			messages: [{ role: "user", content: "hi" }],
+			query: "keep decisions",
+			model: "morph-compactor",
+		});
 
 		await requestCompactorOutput({
 			apiKey: undefined,
@@ -210,8 +223,104 @@ describe("custom remote compactor models", () => {
 			query: "focus",
 			model: "compress-v2",
 		});
+	});
 
-		assert.equal(COMPACTOR_COMPRESSION_RATIO, 0.5);
+	test("custom compactors require an explicit api identifier while built-in morph defines morph-compact", async () => {
+		const dir = tempDir("atomic-compactor-api-required-");
+		try {
+			const modelsPath = join(dir, "models.json");
+			writeFileSync(
+				modelsPath,
+				JSON.stringify({
+					providers: {
+						"no-api-comp": {
+							baseUrl: "https://compact.example.com/v1",
+							apiKey: "sk-test",
+							models: [{ id: "m1", type: "compactor" }],
+						},
+					},
+				}),
+			);
+			const runtime = await ModelRuntime.create({
+				credentials: AuthStorage.inMemory(),
+				modelsPath,
+				allowModelNetwork: false,
+			});
+			assert.equal(
+				runtime.getModelsOfType("compactor").some((m) => m.provider === "no-api-comp"),
+				false,
+				"compactor model without api must not register with a default api",
+			);
+			const morph = runtime
+				.getModelsOfType("compactor")
+				.find((m) => m.provider === "morph" && m.id === "morph-compactor");
+			assert.ok(morph);
+			assert.equal(morph.api, "morph-compact");
+			assert.equal(morph.baseUrl, "https://api.morphllm.com/v1");
+
+			assert.throws(
+				() =>
+					runtime.registerProvider("ext-no-api", {
+						baseUrl: "https://ext.example.com",
+						apiKey: "sk-ext",
+						models: [
+							{
+								id: "m1",
+								name: "No API",
+								type: "compactor",
+								input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+						],
+					}),
+				/no "api" specified/,
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("CompactionError family supports typed codes, guards, serialization, rehydration, and RPC decoding", async () => {
+		const missingUrlErr = await requestCompactorOutput({
+			apiKey: "sk-test",
+			modelId: "m1",
+			baseUrl: "",
+			messages: [],
+			query: "q",
+			signal: new AbortController().signal,
+		}).catch((caught: unknown) => caught);
+		assert.ok(missingUrlErr instanceof CompactorFailure);
+		assert.ok(missingUrlErr instanceof CompactionError);
+		assert.equal(missingUrlErr.code, "missing-base-url");
+		assert.equal(missingUrlErr.retryable, false);
+
+		const samples: CompactionError[] = [
+			new CompactionConfigError({ source: "rpc", field: "compactionModel", scope: "global" }),
+			new CompactionCancelledError({ reason: "extension" }),
+			new CompactionStateError({ code: "nothing-to-compact" }),
+			new CompactorFailure("HTTP 503: upstream busy", { code: "http-error", status: 503, model: "acme/c1" }),
+			new CompactorFailure("timed out after 500 ms", { code: "timeout", timeoutMs: 500, model: "acme/c1" }),
+		];
+		for (const sample of samples) {
+			const serialized = serializeCompactionError(sample);
+			const parsed = parseSerializedCompactionError(serialized);
+			assert.ok(parsed, `failed to parse ${sample.name}`);
+			const restored = rehydrateCompactionError(parsed);
+			assert.equal(restored.name, sample.name);
+			assert.equal(restored.code, sample.code);
+			assert.equal(restored.message, sample.message);
+			assert.equal(restored.hint, sample.hint);
+			assert.equal(restored.retryable, sample.retryable);
+			assert.deepEqual(restored.fields(), sample.fields());
+			assert.equal(isCompactionError(restored), true);
+		}
+		assert.equal(isCompactionConfigError(samples[0]), true);
+		assert.equal(isCompactionCancelledError(samples[1]), true);
+		assert.equal(isCompactionStateError(samples[2]), true);
+		assert.equal(isCompactorFailure(samples[3]), true);
+		assert.equal(isRetryableCompactionError(new Error("wrapped", { cause: samples[3] })), true);
+		assert.equal(isRetryableCompactionError(samples[0]), false);
+		assert.equal(findCompactionError(new Error("outer", { cause: samples[4] })), samples[4]);
 	});
 
 	test("requestCompactorOutput redacts custom auth header secrets in errors and output", async () => {
@@ -533,14 +642,36 @@ describe("custom remote compactor models", () => {
 				assert.equal(result.form, "cleared");
 				assert.ok(result.fallbackReason?.includes("broken-comp/failing-v1 failed"));
 
-				// Invalid RPC payloads are rejected cleanly
+				// Invalid RPC payloads return serialized CompactionConfigError and rehydrate cleanly
 				const badScope = await handle({
 					id: "c2",
 					type: "set_compaction_model",
 					model: "morph/morph-compactor",
 					scope: "workspace" as never,
 				});
-				assert.equal(badScope?.success, false);
+				assert.ok(badScope && !badScope.success);
+				assert.equal(badScope.errorCode, "compaction_error");
+				assert.throws(
+					() => assertRpcSuccess(badScope),
+					(error: unknown) => {
+						assert.ok(error instanceof CompactionConfigError);
+						assert.ok(error instanceof CompactionError);
+						assert.equal(error.code, "invalid-setting");
+						assert.equal(error.field, "scope");
+						return true;
+					},
+				);
+
+				// persist: false updates live in-memory settings without modifying disk or masking project scope
+				const inMemoryRes = await handle({
+					id: "c3",
+					type: "set_compaction_model",
+					model: "morph/morph-compactor",
+					scope: "global",
+					persist: false,
+				});
+				assert.equal(inMemoryRes?.success, true);
+				assert.equal(session.settingsManager.getCompactionModel(), "morph/morph-compactor");
 			} finally {
 				await session.dispose();
 			}

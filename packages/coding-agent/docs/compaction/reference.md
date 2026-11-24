@@ -14,25 +14,26 @@ Extension events and compaction results carry one parameter:
 
 Instructions passed to `/compact`, `session.compact({ query })`, `ctx.compact({ query })`, or RPC `compact` are also appended to the boundary message after the recovery steps. Automatic compaction passes no custom instructions.
 
-`compression_ratio` and `preserve_recent` are not top-level `session.compact()` or `settings.json` compaction options and are ignored if supplied there, keeping default context-clearing compaction free of endpoint knobs. Configure endpoint-specific parameters directly on each compactor model in [`models.json`](/models#remote-compaction-models) (`compactionParams`, `endpointPath`, `timeoutMs`, `maxTokens`, `headers`) or via [`atomic.registerProvider()`](/custom-provider/api-reference) (`ProviderCompactorModelConfig`).
+`compression_ratio` and `preserve_recent` are not top-level `session.compact()` or `settings.json` compaction options and are ignored if supplied there, keeping default context-clearing compaction free of endpoint knobs. Configure API-specific parameters directly on each compactor model in [`models.json`](/models#remote-compaction-models) (`compactionParams`, `endpointPath`, `timeoutMs`, `maxTokens`, `headers`) or via [`atomic.registerProvider()`](/custom-provider/api-reference) (`ProviderCompactorModelConfig`). When `compactionParams` is omitted, Atomic does not inject provider-specific body fields so the remote API applies its own defaults.
 
-Default values used when a compactor model omits an override are exported from `@bastani/atomic`:
+Safety bounds used when a compactor model omits an override are exported from `@bastani/atomic`:
 
 | Default | Export | Model override field | Meaning |
 | --- | --- | --- | --- |
-| `0.5` | `COMPACTOR_COMPRESSION_RATIO` | `compactionParams.compression_ratio` | Default share of the conversation requested for `api: "morph-compact"` |
 | `120000` | `COMPACTOR_REQUEST_TIMEOUT_MS` | `timeoutMs` | Wall-clock limit on one compactor request, in milliseconds |
 | `32000` | `COMPACTED_OUTPUT_MAX_TOKENS` | `maxTokens` | Largest allowed compacted text in estimated tokens (always also capped at `COMPACTED_OUTPUT_MAX_TRIGGER_SHARE` = 50% of the automatic trigger budget) |
 | `2000` | `COMPACTOR_LINE_WIDTH` | None | Character width at which long lines wrap before framing |
 
 ### Compactor request contract
 
+Each compactor provider defines its own `api` identifier and `baseUrl` (for example, built-in `morph/morph-compactor` defines `api: "morph-compact"` and `baseUrl: "https://api.morphllm.com/v1"`). Custom compactors in `models.json` or `atomic.registerProvider()` must declare `api` at the provider or model level unless overriding an existing compactor model.
+
 Atomic POSTs JSON to `<baseUrl><endpointPath>` (`endpointPath` defaults to `"/compact"`; `""` POSTs directly to `baseUrl`):
 
-- **Payload for `api: "morph-compact"`:** sends `{ compression_ratio: 0.5, preserve_recent: 0, include_markers: true, include_line_ranges: false, ...compactionParams, messages, query, model }`. Any field in `compactionParams` overrides the default or adds custom endpoint fields.
-- **Payload for any other `api` string (such as `"custom-compact"`):** sends `{ ...compactionParams, messages, query, model }` without injecting Morph-specific defaults.
+- **Payload:** sends `{ ...compactionParams, messages, query, model }`. Atomic never injects hard-coded Morph parameters; any API-specific options come solely from the model's `compactionParams`.
 - **Headers and authentication:** sends `Content-Type: application/json`, merges resolved provider and model `headers`, and adds `Authorization: Bearer <apiKey>` when `apiKey` is present and no explicit `Authorization` header was set. The API key and sensitive auth headers (`Authorization`, `Proxy-Authorization`, `X-API-Key`, `API-Key`) are redacted from HTTP error excerpts and compacted output.
 - **Response parsing:** reads joined non-empty `messages[].content` entries when present, otherwise `output`, plus optional `usage.input_tokens` and `usage.output_tokens`.
+- **Automatic fallback:** any failure (missing `baseUrl`, missing credentials, network/HTTP error, timeout, malformed/empty output, output exceeding `maxTokens` or 50% of the automatic trigger, boundary overflowing the trigger, or pressing `Escape` / `abortCompaction()`) falls back automatically to clearing the context (`form: "cleared"`) with `fallbackReason` set.
 
 Long lines sent to a compactor wrap at 2,000 characters. Compaction resets Claude's signed reasoning chain, so `thinking` and `redacted_thinking` blocks do not survive a boundary. See [Preserved thinking and model switches](/models/reference#preserved-thinking-and-model-switches) for behavior between boundaries.
 
@@ -143,19 +144,37 @@ atomic.on("session_compact_failed", async (event) => {
 - **Inspecting and clearing queued input.** Waiting messages appear in `getSteeringMessages()`, `getFollowUpMessages()`, and `queue_update` events, and `clearQueue()` returns them without sending them. Before the TUI runs an extension command during compaction, it hands already-typed messages to the session so messages sent by the command run after them.
 - **Turn hooks.** SDK `prepareNextTurn` and `prepareNextTurnWithContext` callbacks receive the rebuilt context after mid-turn compaction. Returning `{ action: "end" }` from `finishTurn` keeps queued input pending until an explicit prompt or continuation, while mid-turn compaction resumes streaming automatically.
 
+## Compaction errors
+
+Compaction settings, session compaction calls, and direct `requestCompactorOutput()` calls throw subclasses of `CompactionError`. Branch on the class or `error.code` (never on the message string):
+
+| Class | `code` | `retryable` | When |
+| --- | --- | --- | --- |
+| `CompactionConfigError` | `invalid-setting` | `false` | `setCompactionModel()` or RPC `set_compaction_model` receives a non-string, whitespace-padded string, or invalid `scope`/`persist` |
+| `CompactionCancelledError` | `cancelled` | `false` | Compaction is cancelled via abort signal or `session_before_compact` returning `{ cancel: true }` |
+| `CompactionStateError` | `nothing-to-compact`, `pending-tool-call`, `no-model-selected`, `snapshot-failed`, `boundary-not-built` | `false` | `session.compact()` cannot proceed in the current session state |
+| `CompactorFailure` | `missing-base-url`, `missing-credentials`, `request-aborted`, `timeout`, `http-error`, `network-error`, `malformed-response`, `empty-output`, `compactor-failed` | `true` for `timeout`, `network-error`, and HTTP `408`/`429`/`5xx`; `false` otherwise | Direct `requestCompactorOutput()` fails (during `session.compact()`, Atomic catches `CompactorFailure` and falls back to clearing context) |
+
+Every `CompactionError` carries `code`, `hint`, `retryable`, and `fields()`. Use `isCompactionError`, `isCompactionConfigError`, `isCompactionCancelledError`, `isCompactionStateError`, `isCompactorFailure`, `findCompactionError`, and `isRetryableCompactionError` to match errors across realms or cause chains. Use `serializeCompactionError`, `parseSerializedCompactionError`, and `rehydrateCompactionError` to preserve the typed class across worker or RPC boundaries (the RPC client rehydrates `compaction_error` responses automatically).
+
 ## Package exports
 
-`@bastani/atomic` exports these compaction helpers and types:
+`@bastani/atomic` exports these compaction helpers, errors, and types:
 
 | Export | Use |
 | --- | --- |
+| `CompactionError`, `CompactionConfigError`, `CompactionCancelledError`, `CompactionStateError`, `CompactorFailure` | Typed compaction error family, matching the SDK error convention (`code`, `hint`, `retryable`, `fields()`) |
+| `isCompactionError`, `isCompactionConfigError`, `isCompactionCancelledError`, `isCompactionStateError`, `isCompactorFailure`, `findCompactionError`, `isRetryableCompactionError` | Type guards and cause-chain helpers for compaction errors |
+| `serializeCompactionError`, `parseSerializedCompactionError`, `rehydrateCompactionError` | Cross-process serialization and rehydration for `CompactionError` |
 | `buildBoundaryText(input, totalEntries)` | Build the boundary message for a session, history location, and optional instructions or compacted text |
 | `buildCompactorMessages(messages, isBoundary)` | Frame active context messages in the format sent to a compactor |
-| `requestCompactorOutput(request)` | Send one `CompactorRequest` to a compactor endpoint; resolves `{ text, usage? }` or throws `CompactorFailure` |
+| `requestCompactorOutput(request)` | Send one `CompactorRequest` to a compactor endpoint; resolves `{ text, usage? }` or throws `CompactorFailure` / `CompactionCancelledError` |
 | `resolveCompactionModel(configured, models)` | Resolve `compactionModel` to a `CompactionModelSelection` (`auto` with any fallback reason, or a compactor) |
+| `classifyCompactionModel(configured, models)` | Classify a `compactionModel` string as `"auto"`, `"compactor"`, `"chat"`, `"classifier"`, or `"unknown"` |
+| `compactedOutputTokenCap(triggerTokens, maxOutputTokens?)` | Compute the effective compacted output cap in estimated tokens |
 | `SESSION_HISTORY_TOOL_NAME` | `"session_history"`, the read-only history tool granted after clearing when `read` or `search` is absent |
 
-The types `CompactionForm`, `CompactionBackend`, `CompactionHistoryLocation`, `CompactionModelSelection`, `CompactorMessage`, `CompactorRequest`, and `BranchSummaryEntry` are exported alongside them.
+The types `CompactorModel`, `CompactorApi`, `ProviderCompactorModelConfig`, `CompactionForm`, `CompactionBackend`, `CompactionHistoryLocation`, `CompactionModelKind`, `CompactionModelSelection`, `CompactorMessage`, `CompactorRequest`, `CompactionErrorCode`, `SerializedCompactionError`, and `BranchSummaryEntry` are exported alongside them.
 
 ## Branch summary format
 

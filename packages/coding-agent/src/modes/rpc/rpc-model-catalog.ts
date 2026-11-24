@@ -12,7 +12,7 @@ export function createRpcModelCatalog(session: Pick<AgentSession, "modelRuntime"
 	return {
 		models: [...runtime.getAvailableSnapshot()],
 		scopedModels: [...session.scopedModels],
-		compactorModels: [...runtime.getModelsOfType("compactor")],
+		compactorModels: typeof runtime.getModelsOfType === "function" ? [...runtime.getModelsOfType("compactor")] : [],
 		customAuthProviders: runtime.getApiKeyLoginProviderMetadata().filter((provider) => registered.has(provider.id)),
 		oauthProviders: runtime.getOAuthProviderMetadata(),
 		providerAuthStatuses: [...registered]

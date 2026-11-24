@@ -92,7 +92,7 @@ When `compactionModel` names a registered compactor model (built-in `morph/morph
 
 Images are replaced with an omission marker, thinking blocks are omitted, long lines wrap at 2,000 characters, and role headers are wrapped in `<keepContext>` tags automatically. Messages excluded from model context, such as `!!` shell commands and extension messages with `excludeFromContext`, are not sent.
 
-The request uses your `/compact` instructions as its query, or your latest user request if none were given. By default, a Morph-compatible compactor (`api: "morph-compact"`) keeps about half of the conversation (`compression_ratio: 0.5`, `preserve_recent: 0`, `include_markers: true`, `include_line_ranges: false`) and times out after 120 seconds. You can customize those endpoint parameters, the request path, timeout, headers, and output token cap per compactor model in `models.json` or an extension.
+The request uses your `/compact` instructions as its query, or your latest user request if none were given. Atomic sends `{ messages, query, model }` plus any optional `compactionParams` configured on that compactor model, letting the remote API apply its own server defaults when `compactionParams` is omitted. You can customize endpoint parameters (`compactionParams`), request path (`endpointPath`), timeout (`timeoutMs`, default 120 seconds), headers (`headers`), and output token cap (`maxTokens`, default 32,000) per compactor model in `models.json` or an extension.
 
 The compactor's output replaces the context inside a `<compacted-context>` block, followed by the same recovery instructions used by context clearing so the agent can retrieve omitted details from history.
 
@@ -100,9 +100,22 @@ By default, output longer than 32,000 estimated tokens fails (estimated at 4 ASC
 
 ### When the compactor fails
 
-Any compactor failure falls back to clearing the context instead. This covers missing credentials, HTTP errors, empty or malformed output, timeouts, and oversized output.
+Every compactor failure falls back automatically to **Automatic** (clearing the context instead) so a broken, unauthenticated, or slow remote compactor never blocks compaction:
 
-Atomic prints a one-line notice (`Compaction model not used (<reason>); context cleared instead`) without exposing your API key. Pressing `Escape` or calling `abortCompaction()` during a compactor request also clears the context with reason `request aborted`. A takeover by `/compact`, closing the session, or an extension returning `{ cancel: true }` cancels compaction completely.
+```text
+Compaction starts
+  ├─ session_before_compact returns { cancel: true } or session closes -> Cancelled (context unchanged)
+  ├─ session_before_compact returns valid { compactedText }            -> Context compacted (extension)
+  │    └─ oversized or overflows trigger                               -> Automatic fallback (Context cleared)
+  ├─ compactionModel is "" / "auto"                                    -> Automatic (Context cleared)
+  ├─ compactionModel is unknown / chat / classifier                    -> Automatic fallback (Context cleared)
+  └─ compactionModel is a registered compactor
+       ├─ success and fits within maxTokens and trigger budget         -> Context compacted (compactor)
+       └─ missing auth / HTTP or network error / timeout / Esc /
+          malformed or empty output / oversized / overflows trigger    -> Automatic fallback (Context cleared)
+```
+
+Atomic prints a one-line notice (`Compaction model not used (<reason>); context cleared instead`) without exposing your API key or sensitive headers. Pressing `Escape` or calling `abortCompaction()` during a compactor request also clears the context with reason `request aborted`. A takeover by `/compact`, closing the session, or an extension returning `{ cancel: true }` cancels compaction completely.
 
 ## Compaction model
 
@@ -173,7 +186,8 @@ Keep default compaction clean in `settings.json` and configure endpoint-specific
 ```
 
 - Set `"type": "compactor"` so Atomic treats the entry as a compaction model (and exposes it automatically in `/settings` under **Compaction model** instead of `/model`).
-- Use `"api": "morph-compact"` (the default when `api` is omitted on a compactor) for Morph-compatible endpoints that expect Morph's defaults (`compression_ratio`, `preserve_recent`, `include_markers`, `include_line_ranges`), merged with your `compactionParams`. Use any other `api` string (such as `"custom-compact"`) to send only `{ messages, query, model, ...compactionParams }` without Morph-specific defaults.
+- Set `"api"` on the provider or model (for example `"custom-compact"`). Custom compactors do not inherit a default `"api"` string; each provider defines its own (built-in Morph defines `"api": "morph-compact"`). Overriding an existing compactor model under `modelOverrides` inherits its provider's `api` and `baseUrl` automatically.
+- Omit `compactionParams` to send only `{ messages, query, model }` and use the remote API's own defaults. Add `compactionParams` to pass any API-specific parameters (such as `compression_ratio`, `preserve_recent`, `include_markers`, `include_line_ranges`, or custom fields) directly in the JSON request body.
 - `endpointPath` appends to `baseUrl` and defaults to `"/compact"`. Set `"endpointPath": ""` to POST directly to `baseUrl`.
 - Set `headers` on the provider or model for custom auth headers (such as `"X-API-Key": "$MY_KEY"`). Values support `$ENV`, `${ENV}`, and `!command`, and sensitive auth headers are redacted automatically from errors and output.
 
