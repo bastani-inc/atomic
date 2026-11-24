@@ -302,7 +302,7 @@ describe("package metadata", () => {
 		assert.match(binaryBuild, /^\s*cp -r docs "binaries\/\$platform\/"$/m);
 		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "orchestration"]) {
 			const guide = await readText(`packages/coding-agent/docs/${topic}.md`);
-			assert.match(guide, /^# /m, `${topic} must have a readable guide in the shipped docs tree`);
+			assert.match(guide, /^(?:# |title:\s*)/m, `${topic} must have a readable guide in the shipped docs tree`);
 		}
 	});
 

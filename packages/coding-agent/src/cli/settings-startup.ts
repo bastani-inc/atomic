@@ -1,9 +1,12 @@
 import chalk from "chalk";
 import { isDecisionConfigError } from "../core/decision/errors.js";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "../core/session-manager-errors.js";
-import { isStorageConfigError } from "../core/storage/errors.js";
 import { SessionConflictError } from "../core/storage/session/errors.js";
 import { isRpcTransportFailure } from "../modes/rpc/rpc-transport-error.ts";
+
+function isStorageConfigErrorLike(error: unknown): error is Error {
+	return error instanceof Error && error.name === "StorageConfigError";
+}
 
 export interface StartupFailureIo {
 	readonly error: (text: string) => void;
@@ -35,7 +38,7 @@ export function exitOnDecisionConfigError(error: unknown, io: StartupFailureIo =
 		io.error(chalk.red(sessionConflictMessage(error)));
 		return io.exit(1);
 	}
-	if (!isDecisionConfigError(error) && !isRpcTransportFailure(error) && !isStorageConfigError(error)) throw error;
+	if (!isDecisionConfigError(error) && !isRpcTransportFailure(error) && !isStorageConfigErrorLike(error)) throw error;
 	io.error(chalk.red(`Error: ${error.message}`));
 	return io.exit(1);
 }

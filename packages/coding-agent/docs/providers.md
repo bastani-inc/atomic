@@ -289,7 +289,7 @@ Business and enterprise tokens sent to the individual host return `421 Misdirect
 
 Run `/login xai`, then select **Use a subscription**. `XAI_API_KEY` remains available through **Use an API key**.
 
-Atomic defaults xAI sessions to `grok-4.7`. GitHub Copilot also exposes Grok 4.7 when account policy enables it. Network catalogs refresh and cache newer entries independently of the bundled snapshot.
+Atomic defaults xAI sessions to `grok-4.7`. Builtin subagents default to `model: "auto"`, running your saved default chat model (or the launching session's model) unless overridden. GitHub Copilot also exposes Grok 4.7 when account policy enables it. Network catalogs refresh and cache newer entries independently of the bundled snapshot.
 
 `xai/grok-4.7-fast` and other `xai/*-fast` choices request xAI Priority Processing for faster time-to-first-token and streaming. xAI bills priority at twice standard token rates only when the response confirms the priority tier; fallback to default processing is priced at standard rates.
 
