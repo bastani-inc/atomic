@@ -376,6 +376,7 @@ export class ToolExecutionComponent extends Container {
 
 	setOutputPad(outputPad: number): void {
 		if (this.disposed) return;
+		if (this.outputPad === outputPad) return;
 		this.outputPad = outputPad;
 		this.updateDisplay();
 	}

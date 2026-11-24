@@ -9,6 +9,7 @@ import {
 	visibleWidth,
 } from "@bastani/atomic-tui";
 import { terminalDisplayText } from "../../../utils/terminal-text.ts";
+import { getGlobalTheme } from "../theme/global-theme.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { atomicWorkingGlyph } from "./atomic-working-status.ts";
 import { keyHintIfBound } from "./keybinding-hints.js";
@@ -104,6 +105,15 @@ export class ToolBlockRecords implements Component {
 	readonly toolBlockKind = "records";
 	private readonly records: readonly (string | Component)[];
 	private readonly options: { preserveConnectors?: boolean };
+	private cachedEnv: { width: number; noColor: boolean; theme: ReturnType<typeof getGlobalTheme> } | undefined;
+	private cachedRecords: Array<
+		| {
+				lines: readonly string[];
+				prefixed: readonly string[];
+				lineCache: Map<string, string>;
+		  }
+		| undefined
+	> = [];
 	isWorking(): boolean {
 		return this.records.some((record) => typeof record !== "string" && componentNeedsWorkingClock(record));
 	}
@@ -112,26 +122,76 @@ export class ToolBlockRecords implements Component {
 		this.options = options;
 	}
 	invalidate(): void {
+		this.cachedEnv = undefined;
+		this.cachedRecords = [];
 		for (const record of this.records) if (typeof record !== "string") record.invalidate();
 	}
 	render(width: number): string[] {
 		if (width < 1) return [];
+		const currentNoColor = noColor();
+		const currentTheme = getGlobalTheme();
+		if (
+			!this.cachedEnv ||
+			this.cachedEnv.width !== width ||
+			this.cachedEnv.noColor !== currentNoColor ||
+			this.cachedEnv.theme !== currentTheme
+		) {
+			this.cachedEnv = { width, noColor: currentNoColor, theme: currentTheme };
+			this.cachedRecords = [];
+		}
 		const contentWidth = Math.max(1, width - DETAIL_PREFIX.length);
-		return this.records.flatMap((record) => {
-			const component = typeof record === "string" ? new Text(theme.fg("toolOutput", record), 0, 0) : record;
-			const lines = component.render(contentWidth);
+		const out: string[] = [];
+		for (let recordIndex = 0; recordIndex < this.records.length; recordIndex++) {
+			const record = this.records[recordIndex]!;
+			const prev = this.cachedRecords[recordIndex];
+			if (typeof record === "string") {
+				if (prev) {
+					for (const line of prev.prefixed) out.push(line);
+					continue;
+				}
+				const lines = new Text(theme.fg("toolOutput", record), 0, 0).render(contentWidth);
+				const prefixed = lines.map((line, index) => {
+					const prefix = index === 0 ? DETAIL_FIRST_PREFIX : DETAIL_PREFIX;
+					return truncateToWidth(`${theme.fg("dim", prefix)}${line.trimEnd()}`, width, "…");
+				});
+				this.cachedRecords[recordIndex] = { lines, prefixed, lineCache: new Map() };
+				for (const line of prefixed) out.push(line);
+				continue;
+			}
+			const lines = record.render(contentWidth);
+			if (prev && prev.lines === lines) {
+				for (const line of prev.prefixed) out.push(line);
+				continue;
+			}
 			if (
 				this.options.preserveConnectors &&
-				typeof record !== "string" &&
 				stripTerminalSequences(lines[0] ?? "").startsWith(DETAIL_FIRST_PREFIX) &&
 				lines.slice(1).every((line) => line.trim() === "" || stripTerminalSequences(line).startsWith(DETAIL_PREFIX))
-			)
-				return component.render(width).map((line) => truncateToWidth(line, width, "…"));
-			return lines.map((line, index) => {
-				const prefix = index === 0 ? DETAIL_FIRST_PREFIX : DETAIL_PREFIX;
-				return truncateToWidth(`${theme.fg("dim", prefix)}${line.trimEnd()}`, width, "…");
+			) {
+				const prefixed = record.render(width).map((line) => truncateToWidth(line, width, "…"));
+				this.cachedRecords[recordIndex] = { lines, prefixed, lineCache: new Map() };
+				for (const line of prefixed) out.push(line);
+				continue;
+			}
+			const prevLineCache = prev?.lineCache;
+			const nextLineCache = new Map<string, string>();
+			const dimFirst = theme.fg("dim", DETAIL_FIRST_PREFIX);
+			const dimCont = theme.fg("dim", DETAIL_PREFIX);
+			const prefixed = lines.map((line, index) => {
+				if (index === 0) {
+					return truncateToWidth(`${dimFirst}${line.trimEnd()}`, width, "…");
+				}
+				let formatted = prevLineCache?.get(line);
+				if (formatted === undefined) {
+					formatted = truncateToWidth(`${dimCont}${line.trimEnd()}`, width, "…");
+				}
+				nextLineCache.set(line, formatted);
+				return formatted;
 			});
-		});
+			this.cachedRecords[recordIndex] = { lines, prefixed, lineCache: nextLineCache };
+			for (const line of prefixed) out.push(line);
+		}
+		return out;
 	}
 }
 
