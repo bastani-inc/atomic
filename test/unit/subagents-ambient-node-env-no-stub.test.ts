@@ -14,7 +14,7 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { startPtyProgram, withoutInheritedTestRunnerEnv } from "../helpers/pty-program.js";
-import { makeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
@@ -164,9 +164,9 @@ test("explicit options.testSession still runs the in-process stub regardless of 
 
 test("startPtyProgram scrubs inherited Vitest NODE_ENV=test and VITEST markers by default while preserving explicit caller overrides", async () => {
 	const root = makeTempDirectory("pty-env-scrub-");
-	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+	cleanups.push(() => removeTempDirectory(root));
 	const script =
-		'process.stdout.write("ENV_JSON=" + JSON.stringify({ nodeEnv: process.env.NODE_ENV ?? null, vitest: process.env.VITEST ?? null }) + "\\nENV_END\\n"); process.stdin.resume(); process.stdin.once("data", () => process.exit(0));';
+		'process.stdout.write("ENV_JSON=" + JSON.stringify({ nodeEnv: process.env.NODE_ENV ?? null, vitest: process.env.VITEST ?? null }) + "\\nENV_END\\n"); setTimeout(() => process.exit(0), 10_000);';
 
 	// 1. Caller omits NODE_ENV and VITEST -> inherited Vitest NODE_ENV=test and VITEST=true must be cleared.
 	const defaultPty = startPtyProgram({
@@ -180,8 +180,6 @@ test("startPtyProgram scrubs inherited Vitest NODE_ENV=test and VITEST markers b
 	});
 	try {
 		await defaultPty.waitForScreen((s) => s.includes("ENV_JSON=") && s.includes("ENV_END"), 15_000, "child env json");
-		defaultPty.write("q\n");
-		await defaultPty.exited;
 		const match = defaultPty.screen().match(/ENV_JSON=(\{[^\n]+\})/);
 		assert.ok(match, `expected ENV_JSON line, got:\n${defaultPty.screen()}`);
 		const parsed = JSON.parse(match[1]!) as { nodeEnv: string | null; vitest: string | null };
@@ -208,8 +206,6 @@ test("startPtyProgram scrubs inherited Vitest NODE_ENV=test and VITEST markers b
 			15_000,
 			"explicit child env json",
 		);
-		explicitPty.write("q\n");
-		await explicitPty.exited;
 		const match = explicitPty.screen().match(/ENV_JSON=(\{[^\n]+\})/);
 		assert.ok(match, `expected ENV_JSON line, got:\n${explicitPty.screen()}`);
 		const parsed = JSON.parse(match[1]!) as { nodeEnv: string | null; vitest: string | null };
