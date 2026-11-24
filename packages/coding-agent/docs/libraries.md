@@ -1,10 +1,10 @@
 ---
-title: "Libraries"
-sidebarTitle: "Libraries"
-description: "The TypeScript libraries Atomic is built on, published as @bastani/atomic-* packages you can use in extensions, SDK apps, or on their own."
+title: "Standalone libraries"
+sidebarTitle: "Overview"
+description: "Explore the six standalone @bastani/atomic-* TypeScript libraries you can use in extensions, SDK apps, or independently on Node.js 22.19+."
 ---
 
-Atomic is built on six TypeScript libraries. Each one is published on npm at Atomic's version with every release, and each works on its own outside Atomic.
+Atomic is built on six TypeScript libraries (requiring Node.js 22.19 or newer). Each package is published on npm at Atomic's version with every release, and each works independently outside Atomic.
 
 | Package | What it does |
 | --- | --- |
@@ -29,6 +29,6 @@ To build on Atomic's sessions, tools, and extensions rather than the bare librar
 
 ## Older package names
 
-These libraries began as forks of pi's packages. Extensions written for pi still work inside Atomic. Imports of `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-schema`, `@earendil-works/pi-telemetry`, their `@mariozechner/pi-*` equivalents, and `@bastani/pi-ai`, along with their subpaths, resolve to the matching `@bastani/atomic-*` package.
+These libraries began as forks of pi's packages. Extensions written for pi still work inside Atomic: imports of `@earendil-works/pi-coding-agent` and `@mariozechner/pi-coding-agent` map to `@bastani/atomic`, while `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-schema`, `@earendil-works/pi-telemetry`, their `@mariozechner/pi-*` equivalents, and `@bastani/pi-ai` (plus subpaths) map to the matching `@bastani/atomic-*` package.
 
 Use the `@bastani/atomic-*` names in new code. The older names resolve only inside Atomic. Outside Atomic, install the `@bastani/atomic-*` packages.

@@ -1,7 +1,7 @@
 ---
 title: "@bastani/atomic-schema"
-sidebarTitle: "Schema"
-description: "JSON Schema builders and validation without eval, for drafts 2020-12 and 7."
+sidebarTitle: "@bastani/atomic-schema"
+description: "Build and validate JSON Schema drafts 2020-12 and 7 without eval, with zero runtime dependencies and optional coercion."
 ---
 
 JSON Schema builders and validation without `eval`. Each schema compiles once into plain closures, so validation runs without code generation, works under a strict Content Security Policy, and needs no runtime dependencies.
@@ -48,7 +48,7 @@ read.errors({ offset: 0, extra: true });
 
 `check(value)` is the fast boolean path. It is a standalone function you can pass around, and it avoids allocations for most schemas.
 
-`errors(value)` explains failures and returns `[]` for valid values. The error explainer is built on the first failure and reused, so schemas whose inputs always pass never pay for it. `validate(value)` runs both without modifying the input and returns `{ ok: true, value }` or `{ ok: false, errors }`.
+`errors(value)` explains failures and returns `ValidationError[]` (`{ path: string; keyword: string; message: string }`), or `[]` for valid values. The error explainer is built on the first failure and reused, so schemas whose inputs always pass never pay for it. `validate(value)` runs both without modifying the input and returns `ParseResult<T>` (`{ ok: true; value: T } | { ok: false; errors: ValidationError[] }`).
 
 ### Builders
 
@@ -59,7 +59,7 @@ read.errors({ offset: 0, extra: true });
 | `bool()`, `nul()`, `unknown()` | `{ type: "boolean" }`, `{ type: "null" }`, `{}` | `boolean`, `null`, `unknown` |
 | `lit(value)` | `{ const: value }` | the literal |
 | `oneOf(["a", "b"])` | `{ enum: [...] }` | `"a" \| "b"` |
-| `obj({ a: str(), b: opt(num()) }, { open })` | closed object; `open: true` allows other properties | `{ a: string; b?: number }` |
+| `obj({ a: str(), b: opt(num()) }, { open })` | closed object (`additionalProperties: false`); `open: true` omits `additionalProperties` | `{ a: string; b?: number }` |
 | `arr(items, { minItems, maxItems, uniqueItems })` | `{ type: "array", items }` | `T[]` |
 | `tuple([str(), num()])` | `prefixItems`, no additional items | `[string, number]` |
 | `map(value)` | `{ type: "object", additionalProperties: value }` | `Record<string, T>` |
@@ -105,16 +105,16 @@ const validator = compile(schema, {
 });
 ```
 
-`formats` includes every format defined in JSON Schema 2020-12 (`date-time`, `email`, `uri`, `uuid`, `ipv6`, and the rest), plus `url` and `json-pointer-uri-fragment`. Pass your own record to check a subset of formats or add custom checks.
+`formats` includes all 21 supported format keys: `date`, `date-time`, `duration`, `email`, `hostname`, `idn-email`, `idn-hostname`, `ipv4`, `ipv6`, `iri`, `iri-reference`, `json-pointer`, `json-pointer-uri-fragment`, `regex`, `relative-json-pointer`, `time`, `uri`, `uri-reference`, `uri-template`, `url`, and `uuid`. Pass your own record to check a subset of formats or add custom checks.
 
 By default, an unresolved `$ref` (a missing definition or a document not in `schemas`) throws during `compile()`. With `unresolvedRefs: "reject"`, that reference compiles as `false` instead. Only values at that position fail, with the error `unresolved reference <ref>`, while the rest of the schema continues to validate. Use this option for external schemas such as MCP tool schemas whose references may dangle.
 
 ### TypeBox schemas
 
-TypeBox 1.x schemas are JSON Schema objects, so they compile directly:
+TypeBox 1.x schemas are JSON Schema objects, so they compile directly. Inside Atomic extensions and SDK apps, import `Type` from `@bastani/atomic/typebox`; in standalone apps using `@bastani/atomic-schema` alone, import from `typebox` directly:
 
 ```typescript
-import Type from "typebox";
+import Type from "typebox"; // standalone app; inside Atomic use: import { Type } from "@bastani/atomic/typebox"
 
 const user = compile(Type.Object({ name: Type.String(), tags: Type.Array(Type.String()) }));
 ```

@@ -1,32 +1,33 @@
 ---
-title: Programmatic use
-description: Choose between JSON event stream mode, RPC mode, the SDK, and the TUI component APIs, then follow one minimal integration.
+title: "Programmatic integration"
+sidebarTitle: "Overview"
+description: "Choose between JSON event stream mode, RPC mode, the TypeScript SDK, and TUI component APIs, then follow a minimal integration."
 ---
 
-# Programmatic use
+Atomic provides three programmatic integration modes plus a component API for interactive extension interfaces. Choose the smallest mode that fits your integration, run its minimal example, and continue to its reference.
 
-Atomic exposes three integration modes plus a component API for interactive extension interfaces. Pick one mode, complete its minimal example, then continue to its reference.
+## Choose an integration mode
 
-## Choose a mode
-
-| You want | Use | Start at |
+| Goal | Mode | Entry point |
 | --- | --- | --- |
-| A one-shot run whose output you parse as structured events | [JSON event stream mode](/json) | `atomic --mode json` |
-| A long-lived process you drive with commands and read events from | [RPC mode](/rpc) | `atomic --mode rpc` |
-| Atomic embedded inside a Node.js application, with its resources and lifecycle in-process | [SDK](/sdk) | `@bastani/atomic` |
+| Run one or more prompts and parse structured output as JSON lines | [JSON event stream](/json) | `atomic --mode json` |
+| Drive a long-lived process with commands, interrupts, and extension UI prompts | [RPC mode](/rpc) | `atomic --mode rpc` |
+| Embed Atomic directly inside a Node.js application (Node.js 22.19+) | [TypeScript SDK](/sdk) | `@bastani/atomic` |
 
-- JSON mode runs one process with one prompt, streams newline-delimited events, then exits.
-- RPC mode keeps the process alive so you can send more input, interrupt, switch models, and answer extension UI dialogs and OAuth prompts (see [RPC extension UI protocol](/rpc/extension-ui)).
-- The SDK provides the same engine as a library, with programmatic control over extensions, skills, tools, and session storage.
+- **JSON event stream** executes one or more positional prompts in sequence, writes newline-delimited session events to stdout, and exits.
+- **RPC mode** keeps an Atomic subprocess running over stdin/stdout JSON Lines so you can send follow-up prompts, steer or abort turns, switch models, and answer extension dialogs and OAuth prompts.
+- **TypeScript SDK** runs the same agent runtime as a library inside your Node.js application, with direct control over extensions, skills, tools, models, workspaces, and session storage.
 
-## Then continue to the contracts
+## Protocol and API references
 
-- [RPC protocol](/rpc/protocol): every command, event, and type.
-- [RPC extension UI protocol](/rpc/extension-ui): drive extension-rendered UI and OAuth prompts over RPC.
-- [RPC client examples](/rpc/examples): additional client implementations.
-- [SDK API reference](/sdk/reference): options, loaders, return values, run modes, and exports.
+- [RPC protocol reference](/rpc/protocol): every RPC command, streamed event, error shape, and JSON type.
+- [RPC extension UI protocol](/rpc/extension-ui): handle extension dialogs, widgets, questionnaires, and OAuth flows over RPC.
+- [RPC client examples](/rpc/examples): connect with the typed `RpcClient` or a standalone Node.js script.
+- [SDK API reference](/sdk/reference): complete session options, loaders, tool status, task supervision, run modes, and exports.
+- [Structured decisions API](/sdk/structured-decisions): run typed classifier or chat decisions with `decide()` and `generateStructuredOutput()`.
+- [Embed Atomic in a web server](/sdk/web-server): build a streaming HTTP API with Next.js App Router and `createAgentSession()`.
 
-## Build interactive interfaces and use standalone libraries
+## Terminal UI and standalone libraries
 
-- [TUI components](/tui) covers writing a first component and common interaction patterns. [TUI API reference](/tui/reference) holds the component, focusable, input, and rendering contracts.
-- [Libraries](/libraries) documents the standalone `@bastani/atomic-*` packages (`ai`, `agent-core`, `tui`, `codemode`, `schema`, and `telemetry`).
+- [Build TUI components](/tui) walks through custom interactive components and common patterns, and [TUI API reference](/tui/reference) documents the component, focus, input, and rendering contracts.
+- [Standalone libraries](/libraries) covers the six `@bastani/atomic-*` packages (`ai`, `agent-core`, `tui`, `codemode`, `schema`, and `telemetry`) that you can install independently of the CLI.

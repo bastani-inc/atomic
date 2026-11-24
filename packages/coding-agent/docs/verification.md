@@ -1,13 +1,10 @@
 ---
-title: "Verification and evidence"
-description: "Choose checks that exercise the change, reproduce a result, and show reviewers what passed and what remains unverified."
+title: "Verify changes with evidence"
+sidebarTitle: "Verification"
+description: "Choose real checks for code, terminal, browser, and desktop changes, capture reproducible evidence, and attach it to pull requests."
 ---
 
-# Verification and evidence
-
 Good verification tests the exact behavior that changed. A unit test and its output may be enough for a library fix. When a change affects what a user sees or does, exercise that interaction directly. A recording helps when motion or timing matters, though it does not replace a required test.
-
-<a id="select-the-verification-environment" />
 
 ## Choose checks that answer the question
 
@@ -22,7 +19,7 @@ Start with the project's required tests, build, typecheck, and lint. Then ask wh
 
 ### Reuse past verification
 
-Past sessions, commits, and pull requests can suggest useful checks, but they do not prove the current revision works. See [Computer use](/computer-use) for tool setup, operating-system permissions, and coverage limits.
+Past sessions, commits, and pull requests can suggest useful checks, but they do not prove the current revision works. See [Automate browsers, desktops, and terminals](/computer-use) for tool setup, operating-system permissions, and coverage limits.
 
 ## Define a reproducible scenario
 
@@ -33,9 +30,6 @@ State the action and expected outcome before running the check. For example, "Wi
 Wait for an observable result with a deadline instead of a fixed sleep, and save failure output before cleanup. After a fix, rerun the affected checks against the new candidate and label before and after evidence so reviewers can tell which revision produced each file.
 
 ## Capture evidence appropriate to the change
-
-<a id="terminal-contracts" />
-<a id="reproduce-stage-skill-terminal-evidence" />
 
 ### Terminal changes
 
@@ -49,7 +43,7 @@ Use [agent-browser](/computer-use#browser-automation-with-agent-browser) for sup
 
 Keep a screenshot for layout checks or a short recording for multi-step motion. For example, in a dedicated session named `pr-check`:
 
-```sh
+```bash
 agent-browser --session pr-check snapshot > after.yaml
 agent-browser --session pr-check screenshot after.png
 ```
@@ -60,25 +54,21 @@ For motion, run `agent-browser --session pr-check record start flow.webm` before
 
 For Mobile Safari, run `agent-browser -p ios` against a real iOS Simulator (`set device` in Chromium changes the viewport, not the WebKit engine), and record with `xcrun simctl`. For a native mobile app, use device or emulator tooling such as XCUITest or UI Automator instead of browser captures.
 
-<a id="desktop-safety" />
-
 ### Native desktop changes
 
 Use [agent-desktop](/computer-use#desktop-automation-with-agent-desktop) in a dedicated graphical session after verifying `agent-desktop status`. Observe the app, act on a ref from that snapshot, wait for the intended postcondition with a timeout, and read it back.
 
-Keep the snapshot, action, and wait JSON together with before and after screenshots. A partial accessibility tree (`data.complete: false`) requires another observation before acting. If a click or save times out, inspect the app and saved files before retrying because the action may already have landed. Always let the human user grant OS consent dialogs directly.
-
-<a id="use-evidence-in-a-workflow" />
+Keep the snapshot, action, and wait JSON together with before and after screenshots. A partial accessibility tree (`data.complete: false`) requires another observation before acting. If a click or save times out, inspect the app and saved files before retrying because the action may already have landed. Grant OS consent dialogs yourself when prompted; Atomic pauses for your approval instead of trying to click through system permission dialogs.
 
 ## Verify delegated work
 
-When delegating verification to [subagents](/subagents), give them the same scenario and acceptance criteria you plan to check in the parent session. Ask for the tested revision, commands, observed results, and artifact paths.
+When you delegate verification to [subagents](/subagents), give them the same scenario and acceptance criteria you want checked directly. Ask for the tested revision, exact commands, observed results, and saved artifact paths.
 
-After a child completes, inspect its evidence or rerun key checks from the parent session through codemode. A launch receipt, a filename, or agreement between reviewers does not replace the actual check result. Pass real failures into a bounded repair round and verify the new candidate before accepting it. Approving a change stays separate from permission to publish it.
+After a subagent finishes, inspect its evidence or have Atomic rerun key checks directly through [codemode](/codemode). A task confirmation, a filename, or agreement between reviewers does not replace an actual check result. Fix real failures and rerun the checks against the updated revision before accepting the change. Approving a change stays separate from permission to publish it, which Atomic confirms separately (for example via [`ask_user_question`](/tools#ask_user_question)).
 
 ### Switching between delegated and direct execution
 
-Apply the same verification rules when working directly in the parent session. If you switch from delegated work to direct execution, reconcile running children, modified files, and any in-flight side effects before repeating a command.
+Apply the same verification rules when running checks directly in your main session. If you switch from subagent verification to direct execution, finish or stop running subagents and check modified files and background tasks before repeating a command.
 
 ## When a tool or environment is unavailable
 
@@ -86,11 +76,21 @@ Check installed tools and cached runtimes first, and install missing dependencie
 
 For example, a passing headless-browser test does not verify a native file dialog. Report skipped or simulated scenarios clearly instead of counting them as real-platform passes.
 
-### qlty setup and fallback
+### Code quality checks with `qlty`
 
-When a repository uses `qlty`, keep its existing `.qlty/qlty.toml` intact and run the relevant `qlty check`. Avoid adding a competing formatter or initializing config during a read-only review. If config changes are in scope and no config exists, run `qlty init --no` and review the output, or follow the bundled `qlty` skill's manual setup guide.
+[`qlty`](https://qlty.sh) coordinates repository linters, formatters, and built-in static analysis (Atomic ships a bundled `qlty` skill; see [Skills](/skills)). Repository scripts and CI checks remain authoritative, so use `qlty` alongside them rather than replacing project tooling.
 
-Cached plugins and built-in metrics such as `qlty metrics` work offline, while uncached plugins may need downloads. Valid TOML does not prove a linter ran. Record which checks actually executed, continue with available repository checks, and flag any required check that stayed blocked.
+- **Install.** On macOS and Linux, install with `curl https://qlty.sh | sh` after reviewing the installer (default binary path is `~/.qlty/bin`; override with `QLTY_NO_MODIFY_PATH=1` or `QLTY_INSTALL_BIN_PATH`). If you verify release attestations before installing, use `gh` 2.67.0 or later so missing attestations are not accepted as valid (CVE-2025-25204).
+- **Run scoped checks.** `qlty check` and `qlty fmt` inspect changed files by default. Pass `--all` to cover the whole repository, `--upstream origin/main` to compare against a branch, or `--filter` and `--skip` with plugin names (or `plugin:rule` entries on `check`) to narrow scope. Built-in `qlty metrics` and `qlty smells` run offline once `qlty` is installed:
+
+```bash
+qlty check
+qlty check --upstream origin/main
+qlty metrics --functions path/to/file.ts
+qlty smells path/to/file.ts
+```
+
+- **Config and offline fallback.** Keep an existing `.qlty/qlty.toml` intact rather than re-initializing over it or adding competing formatters during a read-only review. If config changes are in scope and no `.qlty/qlty.toml` exists, run `qlty init --no` and review the generated file. Cached plugins and built-in metrics work offline, while uncached plugins need network downloads. Valid TOML does not prove a linter ran; record which checks executed, continue with available repository checks, and flag any required check that stayed blocked.
 
 ## Include evidence in a PR
 
@@ -100,9 +100,9 @@ State the tested revision and environment, actions taken, expected and actual ou
 
 Upload evidence only to an authorized repository after reviewing and redacting personal data, credentials, private source, and unrelated windows. Local capture does not authorize publication.
 
-On a supported GitHub host, check `gh --version` and `gh pr create --help` for [attachment support](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli) (`gh` 2.99.0 or newer). In a POSIX shell:
+On a supported GitHub host, check `gh --version` and `gh pr create --help` for GitHub CLI [attachment support](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli) (`gh` 2.99.0 or newer). In a POSIX shell:
 
-```sh
+```bash
 gh pr create --title "Fix settings save" --body-file body.md \
   --attach 'before.png#Settings before saving' \
   --attach 'after.png#Settings after reopening' \
@@ -111,4 +111,4 @@ gh pr create --title "Fix settings save" --body-file body.md \
 
 Use a single line or PowerShell continuation syntax on Windows. To add evidence to an existing pull request, use `gh pr edit` or an authorized `gh pr comment` with `--body-file` and `--attach`. The `#text` suffix sets image alt text; omit it for video.
 
-Read back the pull request or comment to confirm the hosted links render before reporting an upload. If the CLI, host, permissions, or file size prevent attachment, keep the artifacts local, explain the limitation, and offer the normal manual upload path instead of uploading to an unrelated service.
+Read back the pull request or comment to confirm the hosted links render before reporting an upload. If the CLI, host, permissions, or file size prevent attachment, keep the artifacts local, explain the limitation, and use the manual upload path instead of uploading to an unrelated service.

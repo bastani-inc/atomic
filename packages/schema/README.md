@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/bastani-inc/atomic">
-    <img alt="Atomic" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
+    <img alt="Atomic logo" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
   </a>
 </p>
 
@@ -17,9 +17,9 @@
 
 ---
 
-Builders that return plain JSON Schema typed with the values it accepts, and a validator that compiles a schema once into plain closures: drafts 2020-12 and 7, no `eval`, so it works under a strict Content Security Policy. Atomic validates tool arguments with it.
+`@bastani/atomic-schema` provides typed JSON Schema builders and a validator that compiles Draft 2020-12 and Draft 7 schemas into plain JavaScript closures without `eval`, so it works under strict Content Security Policies. Atomic uses it to validate tool arguments.
 
-[Atomic](https://github.com/bastani-inc/atomic), the verifiable coding agent runtime, is built on it, and it is published with every Atomic release at Atomic's version.
+[Atomic](https://github.com/bastani-inc/atomic) runs on this package and publishes it with every release at the same version.
 
 ## Install
 
@@ -27,7 +27,7 @@ Builders that return plain JSON Schema typed with the values it accepts, and a v
 npm install @bastani/atomic-schema
 ```
 
-Inside an Atomic extension, import it without installing it: the running Atomic provides it. See [Libraries](https://docs.bastani.ai/libraries).
+Inside an Atomic extension, you can import it without installing it because the running Atomic process provides it. See [Libraries](https://docs.bastani.ai/libraries).
 
 ## Quick start
 
@@ -42,9 +42,12 @@ const Read = obj({
 type Read = Static<typeof Read>; // { path: string; mode: "text" | "binary"; offset?: number }
 
 const read = compile(Read);
-if (read.check(value)) value.path; // value: Read
+const value: unknown = { path: "README.md", mode: "text" };
+if (read.check(value)) {
+	console.log(value.path); // value is narrowed to Read
+}
 
-read.errors({ offset: 0, extra: true });
+console.log(read.errors({ offset: 0, extra: true }));
 // [
 //   { path: "/path", keyword: "required", message: "missing" },
 //   { path: "/mode", keyword: "required", message: "missing" },
@@ -52,6 +55,8 @@ read.errors({ offset: 0, extra: true });
 //   { path: "/extra", keyword: "additionalProperties", message: "unknown field" },
 // ]
 ```
+
+Pass `{ coerce: true }` to `compile()` to get a coercing validator with `parse()` for lenient string-to-number or string-to-boolean inputs. Import optional JSON Schema string format validators (`email`, `uri`, `date-time`, `uuid`, and more) from `@bastani/atomic-schema/formats`.
 
 ## Documentation
 

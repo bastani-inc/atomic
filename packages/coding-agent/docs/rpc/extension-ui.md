@@ -1,39 +1,49 @@
 ---
-title: RPC extension UI protocol
-description: Drive extension-rendered UI over the RPC transport.
+title: "RPC extension UI protocol"
+sidebarTitle: "RPC UI protocol"
+description: "Handle extension dialogs, notifications, status bars, widgets, questionnaires, and OAuth prompts over the RPC transport."
 ---
 
-# RPC extension UI protocol
-
-## Extension UI protocol
+<div id="extension-ui-protocol" />
 
 Extensions request user interaction through `ctx.ui.select()`, `ctx.ui.confirm()`, and related methods. Provider OAuth logins started with `login_provider` use the same `extension_ui_request` and `extension_ui_response` sub-protocol.
 
-There are three categories of extension UI requests:
+Extension UI requests fall into three categories:
 
 - **Dialog methods** (`select`, `confirm`, `input`, `editor`, and `questionnaire` when the client [opted in](/rpc/protocol#set_extension_ui_capabilities)): emit an `extension_ui_request` on stdout and wait until the client sends an `extension_ui_response` on stdin with the matching `id`.
-- **Fire-and-forget UI methods** (`cancel`, `notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`): emit an `extension_ui_request` on stdout and expect no response. Handle `cancel` by closing its matching dialog; other methods update the client display.
+- **Fire-and-forget UI methods** (`cancel`, `notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`): emit an `extension_ui_request` on stdout and expect no response. Handle `cancel` by closing its matching dialog; other methods update your display.
 - **OAuth login methods** (`oauth_auth`, `oauth_device_code`, `oauth_progress`, `oauth_info`, `oauth_prompt`, `oauth_select`, `oauth_manual_code`, `oauth_manual_code_cancel`): drive interactive OAuth sign-in during `login_provider`. `oauth_prompt`, `oauth_select`, and `oauth_manual_code` expect an `extension_ui_response` with `value` or `cancelled: true`; the other OAuth methods are fire-and-forget.
 
-When a dialog request includes `timeout` (milliseconds), Atomic auto-resolves with a default value when the timeout expires; clients do not need to track timeouts. For `select`, `confirm`, `input`, and `editor`, Atomic sends `cancel` when a request times out or its caller aborts it.
+When a dialog request carries a `timeout` (in milliseconds) or an `AbortSignal`, Atomic resolves it automatically with its default value (`undefined` for `select`/`input`/`editor`, `false` for `confirm`, `{ answers: [], cancelled: true }` for `questionnaire`) if the timeout expires or the signal aborts. Clients do not need to run their own timers. For `select`, `confirm`, `input`, `editor`, and `questionnaire`, Atomic sends a matching `cancel` notification when the request times out or aborts. Note that `editor` does not serialize `timeout` on the wire request, even though Atomic still enforces `opts.timeout` locally and emits `cancel` if it expires.
 
-Some `ExtensionUIContext` methods are unsupported or degraded in RPC mode because they require direct TUI access:
-- `custom()` returns `undefined`.
-- `setWorkingMessage()`, `setWorkingIndicator()`, `setFooter()`, `setHeader()`, and `setEditorComponent()` are no-ops.
-- `getEditorText()` returns `""`.
-- `setToolsExpanded()` and `getToolsExpanded()` maintain context-local expansion state, matching `getChatRenderSettings().toolOutputExpanded` (not sent over the extension UI protocol). `getChatRenderSettings().hideThinkingBlock` is `false` unless Atomic's own interactive host drives the session.
-- `pasteToEditor()` delegates to `setEditorText()` without paste or collapse handling.
-- `getAllThemes()` returns `[]`, `getTheme()` returns `undefined`, and `setTheme()` returns `{ success: false, error: "..." }`.
+## Unsupported and degraded methods in plain RPC mode
 
-In RPC mode, `ctx.mode` is `"rpc"` and `ctx.hasUI` is `true` because dialog and fire-and-forget methods work through this protocol. Guard terminal-only features like `custom()` with `ctx.mode === "tui"`.
+In RPC mode, `ctx.mode` is `"rpc"` and `ctx.hasUI` is `true` because dialog and fire-and-forget methods work through this protocol. Guard terminal-only features such as `ctx.ui.custom()` with `ctx.mode === "tui"`.
 
-### Extension UI requests (stdout)
+The following `ExtensionUIContext` methods are unsupported or degraded in plain RPC mode:
 
-All requests have `type: "extension_ui_request"`, an `id`, and a `method` field. Each dialog has a unique `id`; a later `cancel` request repeats that dialog's `id`. Requests can overlap. If your client displays one dialog at a time, queue later requests instead of replacing the current dialog. Remove a queued dialog on a matching `cancel` without showing it or sending a response.
+- `setWidget(key, factory)`: passing a component factory function throws `Error("Component-factory widgets are unavailable in this RPC host.")`. Only string arrays (or `undefined` to clear) work over plain RPC.
+- `custom()`: resolves to `undefined`.
+- `hostSessionPicker` and `hostInputForm`: omitted (`undefined`).
+- `setWorkingMessage()`, `setWorkingVisible()`, `setWorkingIndicator()`, `setHiddenThinkingLabel()`, `setFooter()`, `setHeader()`, `setEditorComponent()`, `addAutocompleteProvider()`, and `requestRender()`: no-ops.
+- `onTerminalInput()`, `onHostCustomUiStateChange()`, and `onWidgetRelease()`: return a no-op unsubscribe function.
+- `getEditorText()`: returns `""`.
+- `getEditorComponent()`: returns `undefined`.
+- `pasteToEditor(text)`: delegates to `setEditorText(text)` without paste-collapse handling.
+- `getFooterDataProvider()`: returns a stub where `getGitBranch()` returns `null`, `getExtensionStatuses()` returns an empty `Map`, `getAvailableProviderCount()` returns `1`, and `onBranchChange()` returns a no-op unsubscribe function.
+- `getHostCustomUiState()`: returns `{ blockingInlineCustomUiDepth: 0, blockingInlineCustomUiActive: false }`; `focusHostInlineCustomUi()` returns `false`.
+- `setToolsExpanded()` and `getToolsExpanded()`: store expansion state locally for the session, matching `getChatRenderSettings().toolOutputExpanded` (not sent over the wire). `getChatRenderSettings().hideThinkingBlock` is `false`.
+- `getAllThemes()` returns `[]`, `getTheme()` returns `undefined`, and `setTheme()` returns `{ success: false, error: "Theme switching not supported in RPC mode" }`.
 
-#### select
+## Extension UI requests (stdout)
 
-Prompt the user to choose from a list. Dialog methods with a `timeout` field include the timeout in milliseconds; the agent auto-resolves with `undefined` if the client doesn't respond in time.
+Every request includes `type: "extension_ui_request"`, a unique `id`, and a `method`. A later `cancel` request repeats the `id` of the dialog it cancels.
+
+Requests can overlap. If your client shows one dialog at a time, queue incoming dialogs instead of replacing the active one. When a `cancel` arrives for a queued dialog, remove it without showing it or sending a response.
+
+### select
+
+Prompt the user to pick one option from a list. If `timeout` expires, Atomic resolves with `undefined` and sends `cancel`.
 
 ```json
 {
@@ -48,7 +58,7 @@ Prompt the user to choose from a list. Dialog methods with a `timeout` field inc
 
 Expected response: `extension_ui_response` with `value` (the selected option string) or `cancelled: true`.
 
-#### confirm
+### confirm
 
 Prompt the user for yes/no confirmation.
 
@@ -63,11 +73,11 @@ Prompt the user for yes/no confirmation.
 }
 ```
 
-Expected response: `extension_ui_response` with `confirmed: true/false` or `cancelled: true`.
+Expected response: `extension_ui_response` with `confirmed: true` or `false`, or `cancelled: true`.
 
-#### input
+### input
 
-Prompt the user for free-form text.
+Prompt the user for single-line text.
 
 ```json
 {
@@ -79,11 +89,11 @@ Prompt the user for free-form text.
 }
 ```
 
-Expected response: `extension_ui_response` with `value` (the entered text) or `cancelled: true`.
+Expected response: `extension_ui_response` with `value` (the entered string) or `cancelled: true`.
 
-#### editor
+### editor
 
-Open a multi-line text editor with optional prefilled content.
+Open a multi-line text editor with optional prefilled text.
 
 ```json
 {
@@ -95,11 +105,11 @@ Open a multi-line text editor with optional prefilled content.
 }
 ```
 
-Expected response: `extension_ui_response` with `value` (the edited text) or `cancelled: true`.
+Expected response: `extension_ui_response` with `value` (the edited string) or `cancelled: true`.
 
-#### cancel
+### cancel
 
-Close the dialog with the matching `id` and stop reading its input. The request has already ended on the agent side, so do not send a response. Ignore a cancellation for a dialog that is already closed.
+Close the dialog (`select`, `confirm`, `input`, `editor`, or `questionnaire`) with the matching `id` and stop reading input for it. The request has already ended on the agent side, so do not send a response. Ignore a `cancel` for a dialog that is already closed.
 
 ```json
 {
@@ -109,9 +119,9 @@ Close the dialog with the matching `id` and stop reading its input. The request 
 }
 ```
 
-#### questionnaire
+### questionnaire
 
-A whole `ask_user_question` call: one to four questions, each with a short `header`, its options (`label`, `description`, optional markdown `preview`) and `multiSelect`. Sent only to a client that turned the `questionnaire` capability on with [`set_extension_ui_capabilities`](/rpc/protocol#set_extension_ui_capabilities); otherwise `ask_user_question` fails in RPC mode, because it needs a terminal.
+Represents one `ask_user_question` tool call: one to four questions, each with a short `header`, `options` (`label`, `description`, optional markdown `preview`), and optional `multiSelect`. Sent only when the client enabled the `questionnaire` capability through [`set_extension_ui_capabilities`](/rpc/protocol#set_extension_ui_capabilities); otherwise `ask_user_question` fails in RPC mode because no terminal is attached.
 
 ```json
 {
@@ -131,12 +141,12 @@ A whole `ask_user_question` call: one to four questions, each with a short `head
 }
 ```
 
-Expected response: `extension_ui_response` with `answers`, one per answered question, or `cancelled: true`. Each answer names its `questionIndex` and repeats its `question`, and its `kind` says what the user chose:
+Expected response: `extension_ui_response` with `answers` (one entry per answered question) or `cancelled: true`. Each answer specifies `questionIndex`, repeats `question`, and sets `kind`:
 
-- `option`: one of the question's options; `answer` is its label.
+- `option`: one of the question's options; `answer` is its `label`.
 - `multi`: for a `multiSelect` question; `answer` is `null` and `selected` lists the chosen labels.
 - `custom`: free text typed instead of an option (single-select questions without previews); `answer` is the text.
-- `chat`: the user wants to talk it over instead; `answer` is their text or `null`.
+- `chat`: the user chose to discuss instead; `answer` is their text or `null`.
 
 ```json
 {
@@ -146,48 +156,48 @@ Expected response: `extension_ui_response` with `answers`, one per answered ques
 }
 ```
 
-Answers that don't match the questions, such as an unknown label, are rejected and the tool call fails.
+Answers that do not match the questions (such as an unknown option label) are rejected and fail the `ask_user_question` tool call.
 
-#### notify
+### notify
 
-Display a notification. Fire-and-forget, no response expected.
+Display a notification. Fire-and-forget; send no response.
 
 ```json
 {
   "type": "extension_ui_request",
-  "id": "uuid-5",
+  "id": "uuid-6",
   "method": "notify",
   "message": "Command blocked by user",
   "notifyType": "warning"
 }
 ```
 
-The `notifyType` field is `"info"`, `"warning"`, or `"error"`. Defaults to `"info"` if omitted.
+`notifyType` is `"info"`, `"warning"`, or `"error"` (defaults to `"info"` when omitted).
 
-#### setStatus
+### setStatus
 
-Set or clear a status entry in the footer/status bar. Fire-and-forget.
+Set or clear a status entry in the status bar. Fire-and-forget.
 
 ```json
 {
   "type": "extension_ui_request",
-  "id": "uuid-6",
+  "id": "uuid-7",
   "method": "setStatus",
   "statusKey": "my-ext",
   "statusText": "Turn 3 running..."
 }
 ```
 
-Send `statusText: undefined` (or omit it) to clear the status entry for that key.
+Omit `statusText` (or pass `undefined`) to clear the entry for `statusKey`.
 
-#### setWidget
+### setWidget
 
-Set or clear a widget (block of text lines) displayed above or below the editor. Fire-and-forget.
+Set or clear a text widget displayed above or below the editor. Fire-and-forget.
 
 ```json
 {
   "type": "extension_ui_request",
-  "id": "uuid-7",
+  "id": "uuid-8",
   "method": "setWidget",
   "widgetKey": "my-ext",
   "widgetLines": ["--- My Widget ---", "Line 1", "Line 2"],
@@ -195,37 +205,37 @@ Set or clear a widget (block of text lines) displayed above or below the editor.
 }
 ```
 
-Send `widgetLines: undefined` (or omit it) to clear the widget. `widgetPlacement` is `"aboveEditor"` (default) or `"belowEditor"`. Optional `widgetScroll` (`{ maxHeight: number, maxHeightFraction?: number }`) passes scroll-bound hints when a widget requests scrolling. Only string arrays are supported in RPC mode; component factories are ignored.
+Omit `widgetLines` (or pass `undefined`) to clear the widget. `widgetPlacement` is `"aboveEditor"` (default) or `"belowEditor"`. Optional `widgetScroll` (`{ maxHeight: number, maxHeightFraction?: number }`) passes scroll bounds when requested. Plain RPC supports only string arrays; passing a component factory throws `Error("Component-factory widgets are unavailable in this RPC host.")`.
 
-#### setTitle
+### setTitle
 
-Set the terminal window/tab title. Fire-and-forget.
-
-```json
-{
-  "type": "extension_ui_request",
-  "id": "uuid-8",
-  "method": "setTitle",
-  "title": "atomic - my project"
-}
-```
-
-#### set_editor_text
-
-Set the text in the input editor. Fire-and-forget.
+Set the window or tab title. Fire-and-forget.
 
 ```json
 {
   "type": "extension_ui_request",
   "id": "uuid-9",
+  "method": "setTitle",
+  "title": "atomic - my project"
+}
+```
+
+### set_editor_text
+
+Replace the text in the input editor. Fire-and-forget.
+
+```json
+{
+  "type": "extension_ui_request",
+  "id": "uuid-10",
   "method": "set_editor_text",
   "text": "prefilled text for the user"
 }
 ```
 
-#### OAuth login methods
+### OAuth login methods
 
-During `login_provider`, Atomic emits OAuth UI requests carrying `type: "extension_ui_request"`, `id`, `provider`, `loginId`, and `method`:
+During `login_provider`, Atomic emits OAuth UI requests containing `type: "extension_ui_request"`, `id`, `provider`, `loginId`, and `method`:
 
 | Method | Additional fields | Response expected |
 | --- | --- | --- |
@@ -238,11 +248,18 @@ During `login_provider`, Atomic emits OAuth UI requests carrying `type: "extensi
 | `oauth_manual_code` | None | `extension_ui_response` with `value` or `cancelled: true` |
 | `oauth_manual_code_cancel` | None | None (close pending manual-code prompt) |
 
-### Extension UI responses (stdin)
+## Extension UI responses (stdin)
 
-Responses are sent for dialog methods (`select`, `confirm`, `input`, `editor`, `questionnaire`) and interactive OAuth methods (`oauth_prompt`, `oauth_select`, `oauth_manual_code`). The `id` must match the request. Answer `questionnaire` with `answers` (see [questionnaire](#questionnaire)).
+Send responses for dialog methods (`select`, `confirm`, `input`, `editor`, `questionnaire`) and interactive OAuth methods (`oauth_prompt`, `oauth_select`, `oauth_manual_code`). The `id` must match the request.
 
-#### Value response (select, input, editor)
+**Response handling rules:**
+
+- Responses with an unknown or already-resolved `id` are silently ignored.
+- For `select`, `input`, and `editor`, a non-cancelled response without `value` resolves to `undefined`. `select` does not validate `value` against the original `options` list, so clients should send one of the offered options.
+- For `confirm`, a non-cancelled response without `confirmed` resolves to `false`.
+- For `questionnaire`, see [questionnaire](#questionnaire) for answer validation.
+
+### Value response (`select`, `input`, `editor`)
 
 Also used for `oauth_prompt`, `oauth_select`, and `oauth_manual_code`:
 
@@ -250,15 +267,15 @@ Also used for `oauth_prompt`, `oauth_select`, and `oauth_manual_code`:
 {"type": "extension_ui_response", "id": "uuid-1", "value": "Allow"}
 ```
 
-#### Confirmation response (confirm)
+### Confirmation response (`confirm`)
 
 ```json
 {"type": "extension_ui_response", "id": "uuid-2", "confirmed": true}
 ```
 
-#### Cancellation response (any dialog)
+### Cancellation response (any dialog)
 
-Dismiss any dialog method. The extension receives `undefined` (for select/input/editor) or `false` (for confirm).
+Dismiss any dialog method. The extension receives `undefined` (for `select`, `input`, `editor`), `false` (for `confirm`), or `{ answers: [], cancelled: true }` (for `questionnaire`).
 
 ```json
 {"type": "extension_ui_response", "id": "uuid-3", "cancelled": true}

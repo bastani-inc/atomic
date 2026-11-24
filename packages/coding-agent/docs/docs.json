@@ -5,9 +5,9 @@
   "logo": "/logo.svg",
   "favicon": "/favicon.svg",
   "colors": {
-    "primary": "#2563EB",
+    "primary": "#1E40AF",
     "light": "#60A5FA",
-    "dark": "#1D4ED8"
+    "dark": "#2563EB"
   },
   "navigation": {
     "tabs": [
@@ -15,41 +15,31 @@
         "tab": "Learn",
         "groups": [
           {
-            "group": "Overview",
+            "group": "Get started",
             "pages": [
-              "index"
-            ]
-          },
-          {
-            "group": "Quickstart",
-            "pages": [
+              "index",
               "quickstart",
               "getting-started/installation",
               "getting-started/authentication",
               "getting-started/first-session",
-              "getting-started/project-instructions"
-            ]
-          },
-          {
-            "group": "Start here",
-            "pages": [
+              "getting-started/project-instructions",
               "guides"
             ]
           },
           {
-            "group": "Everyday use",
+            "group": "Use Atomic daily",
             "pages": [
               "usage",
               "guides/non-interactive",
+              "guides/configuration",
               "sessions",
               "worktree-snapshots",
               "guides/resume-on-any-machine",
-              "compaction",
-              "guides/configuration"
+              "compaction"
             ]
           },
           {
-            "group": "Running work for you",
+            "group": "Delegate and automate",
             "pages": [
               "guides/orchestration",
               "guides/subagents",
@@ -68,7 +58,7 @@
             ]
           },
           {
-            "group": "Safety and isolation",
+            "group": "Security and isolation",
             "pages": [
               "security",
               "containerization"
@@ -80,13 +70,13 @@
         "tab": "Build",
         "groups": [
           {
-            "group": "Build with Atomic",
+            "group": "Overview",
             "pages": [
               "build"
             ]
           },
           {
-            "group": "Extend a session",
+            "group": "Customize Atomic",
             "pages": [
               {
                 "group": "Skills",
@@ -110,7 +100,7 @@
             ]
           },
           {
-            "group": "Orchestrate work",
+            "group": "Orchestrate agents",
             "pages": [
               "orchestration",
               "orchestration/patterns",
@@ -132,14 +122,14 @@
             ]
           },
           {
-            "group": "Distribute",
+            "group": "Share packages",
             "pages": [
               "packages",
               "packages/authoring"
             ]
           },
           {
-            "group": "Models and providers",
+            "group": "Custom models and providers",
             "pages": [
               "models",
               "custom-provider",
@@ -150,7 +140,7 @@
             ]
           },
           {
-            "group": "Programmatic use",
+            "group": "Embed and integrate",
             "pages": [
               "programmatic",
               "sdk",
@@ -180,7 +170,7 @@
         "tab": "Reference",
         "groups": [
           {
-            "group": "Reference",
+            "group": "Core reference",
             "pages": [
               "reference",
               "reference/cli",
@@ -190,26 +180,36 @@
               "tools",
               "codemode",
               "mcp-servers",
-              "web-access",
-              "session-format"
+              "web-access"
             ]
           },
           {
-            "group": "Domain reference",
+            "group": "Models, sessions, and storage",
             "pages": [
               "providers/reference",
               "models/reference",
               "models-configuration",
+              "session-format",
               "compaction/reference",
+              "storage"
+            ]
+          },
+          {
+            "group": "Customization reference",
+            "pages": [
               "skills/reference",
               "subagents/reference",
               "intercom/reference",
               "packages/reference",
-              "themes/reference",
+              "themes/reference"
+            ]
+          },
+          {
+            "group": "API and protocol reference",
+            "pages": [
               "extensions/api-reference",
               "custom-provider/api-reference",
               "sdk/reference",
-              "storage",
               "sdk/structured-decisions",
               "rpc/protocol",
               "tui/reference"
@@ -227,7 +227,7 @@
             ]
           },
           {
-            "group": "Project",
+            "group": "Diagnostics and changelog",
             "pages": [
               "development",
               "changelog"

@@ -1,13 +1,12 @@
 ---
-title: Worktree snapshots
-description: Capture and restore Git repository state so sessions resume cleanly on any machine.
+title: "Worktree snapshots"
+sidebarTitle: "Worktree snapshots"
+description: "How Atomic automatically saves and restores Git checkout state, handles exclusions and partial restores, and cleans up old worktrees."
 ---
-
-# Worktree snapshots
 
 Atomic records the state of each Git checkout a session modifies. You can resume a session on another machine, or after a local checkout is deleted or reset, with the same repository files.
 
-For cross-machine setup, shared storage, and environment blueprints, see [Resume on any machine](/guides/resume-on-any-machine).
+For cross-machine setup, shared storage, and environment blueprints, see [Resume sessions on any machine](/guides/resume-on-any-machine).
 
 ## What a snapshot holds
 
@@ -16,52 +15,41 @@ For each repository root a session changes, a snapshot records:
 - `root`: the checkout path on the recording machine (informational).
 - `remotes`: configured remote fetch URLs with embedded credentials stripped.
 - `branch` and `head`: the active branch name (or `null` when detached) and `HEAD` commit.
-- `tree`: the Git tree of the working copy, built through a private index so your own index, branch, and files are untouched.
-- A patch chain: a binary delta against `head`, followed by incremental deltas against earlier snapshots, restarting from `head` every `snapshots.fullEvery` snapshots or when `HEAD` changes.
+- `tree`: the Git tree of the working copy, built through a private index so your own index, branch, and files stay untouched.
+- A patch chain: a binary delta against `head`, followed by incremental deltas against earlier snapshots, restarting from `head` every `snapshots.fullEvery` snapshots (default `10`) or when `HEAD` changes.
 - A bundle of commits reachable from `HEAD` but not from any remote-tracking ref, so unpushed commits travel with the session.
 - `omitted`: paths or commits left out of the snapshot and why.
 - `filters`: conversion settings on the recording host (`core.autocrlf`, `core.eol`, and `.gitattributes` filter drivers such as Git LFS).
-- `envHash`: a SHA-256 hash of root lockfiles and toolchain files (`package-lock.json`, `Cargo.lock`, `.devcontainer/devcontainer.json`, `.nvmrc`, and similar) to detect when dependencies need rebuilding.
+- `envHash`: a SHA-256 hash of these 24 root-relative lockfiles and toolchain files to detect when dependencies need rebuilding: `.devcontainer.json`, `.devcontainer/Dockerfile`, `.devcontainer/devcontainer.json`, `.mise.toml`, `.node-version`, `.nvmrc`, `.python-version`, `.tool-versions`, `Cargo.lock`, `Gemfile.lock`, `Pipfile.lock`, `bun.lock`, `bun.lockb`, `composer.lock`, `flake.lock`, `go.sum`, `mise.toml`, `npm-shrinkwrap.json`, `package-lock.json`, `pnpm-lock.yaml`, `poetry.lock`, `rust-toolchain`, `rust-toolchain.toml`, `uv.lock`, and `yarn.lock`. Other files such as `requirements.txt`, `build.gradle`, and `pom.xml` are not included in `envHash`.
 
-Patches and bundles are stored once by content hash in the session's database (`snapshot_blobs` table). Payloads over 1 MiB split into rows of at most 1 MiB, so every backend supports files up to `snapshots.maxFileBytes`. Machines sharing one database read the same blobs automatically.
+Patches and bundles are stored once by content hash in the session's database (`snapshot_blobs` table). Payloads over 1 MiB split into rows of at most 1 MiB, so every SQL backend supports files up to `snapshots.maxFileBytes` (default 5 MiB). Machines sharing one database read the same blobs automatically.
 
 **What "the same tree" means.** A restore reproduces the repository's Git content so the restored worktree's Git tree ID matches `tree` and every file blob matches. Host-specific worktree encodings are not copied. For example, a source checkout with `core.autocrlf=true` and CRLF files restores with LF files and identical Git content, accompanied by a filter warning.
 
 ## When snapshots are taken
 
+Snapshots require a Git checkout with at least one commit and a SQL database store (local SQLite, PostgreSQL, or Turso/libSQL). Directories outside Git repositories, in-memory sessions, JSONL directory stores, and custom stores without blob tables record nothing. A new session in a blob-less store reports `blob-store-unsupported` once; a transient store failure reports `blob-store-failed` once without failing the turn.
+
 Atomic captures snapshots at the end of any turn that ran `bash`, `edit`, `write`, `powershell`, or an extension tool declaring `writesFiles: true`. It captures the session's working directory along with the directories of files targeted by `edit` and `write`.
 
-If `HEAD`, the working tree, and the omitted-file list are all unchanged, Atomic records a reference to the previous snapshot instead of creating a new one. Adding a newly omitted file, such as a new `.env.local`, writes a new snapshot listing it in `omitted` so restores warn about it.
-
-### Unpushed-commit omission caching
-
-When unpushed commits are left out of a snapshot (because a commit modifies a deny-listed path or the bundle exceeds `snapshots.maxSnapshotBytes`), Atomic remembers that omission per checkout for the lifetime of the running process so repeated turns do not re-bundle large unpushed histories.
-
-Atomic re-bundles unpushed commits and re-checks them against the deny list when any of these happen:
-
-- The list of unpushed commits changes, including after pushing commits or when a remote branch moves back (such as a force push) and exposes newly unpushed commits.
-- A new Atomic process starts.
-- The repository is repacked with `git gc` or `git repack`.
-- Git packing settings (`core.compression`, `core.bigFileThreshold`, `pack.*`, `core.attributesFile`, or `attr.tree`) or delta-compression rules (such as `-delta` in `.gitattributes` or Git attributes files) change.
-- `snapshots.maxSnapshotBytes` is raised above the bundle size.
-
-### Subagents, storage, and capture edge cases
-
+- **Unchanged trees.** If `HEAD`, the working tree, and the omitted-file list are all unchanged, Atomic records a reference to the previous snapshot instead of creating a new one. Adding a newly omitted file, such as a new `.env.local`, writes a new snapshot listing it in `omitted` so restores warn about it.
 - **Subagent snapshots.** A subagent's session lives in its parent's store and captures snapshots of its own when backed by a database. When multiple subagents finish file-writing turns in the same checkout while a capture is already running, they share the next snapshot.
+- **Unpushed-commit omission reuse.** When unpushed commits are omitted because a commit touches a deny-listed secret or the bundle exceeds `snapshots.maxSnapshotBytes` (default 50 MiB), Atomic caches that omission for the running process so later turns avoid re-bundling large unpushed histories. Atomic re-checks and re-bundles automatically if the set of unpushed commits changes (including after pushing or a force push), a new Atomic process starts, the repository is repacked (`git gc` or `git repack`), Git packing or attributes settings change, or `snapshots.maxSnapshotBytes` is raised above the bundle size.
 - **Private capture index.** Captures share a private Git index per checkout under `~/.atomic/agent/worktree-snapshots/capture-index/` so unchanged files are not re-read on later turns. Deleting that directory is safe; the next capture rebuilds it automatically.
-- **Git and storage requirements.** Captures use Atomic's resolved Git binary (including a provisioned portable copy). Directories outside Git repositories, in-memory sessions, and stores without blob tables (such as JSONL directories or database-less adapters) record nothing. A new session in a blob-less store reports `blob-store-unsupported` once; a transient store failure reports `blob-store-failed` once without failing the turn.
 - **Unreadable paths.** If a path cannot be read because of permissions or a looping symlink, capture skips that checkout and reports `unreadable-path` without failing the turn. Fix the path or add it to `.atomic/snapshot-ignore` to resume capturing.
 
 ## What is left out
 
 Atomic excludes the following from snapshots:
 
-- **Git-ignored files.** Files matched by `.gitignore`, `.git/info/exclude`, or global excludes are skipped unless explicitly staged with `git add -f`.
-- **Project snapshot excludes.** Rules in `.atomic/snapshot-ignore` at the repository root match using `.gitignore` syntax and respect the repository's `core.ignorecase` setting.
-- **Built-in secret deny list.** `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `credentials`, `credentials.json`, `.netrc`, `_netrc`, `.git-credentials`, `.pgpass`, plus SSH key files: any extensionless `id_*` file and any file starting with `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`, `id_mldsa`, or `id_xmss` regardless of suffix (such as `id_rsa.bak`), except `.pub` public keys and certificates. Other `id_*` files with extensions, such as `id_utils.ts`, are kept unless they carry a denied extension like `.pem` or `.key`.
-- **Untracked and oversized files.** Untracked files when `snapshots.includeUntracked` is `false`, files larger than `snapshots.maxFileBytes`, and files pushing the snapshot past `snapshots.maxSnapshotBytes`.
+- **Built-in secret deny list (cannot be overridden).** `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `credentials`, `credentials.json`, `.netrc`, `_netrc`, `.git-credentials`, `.pgpass`, plus SSH key files: any extensionless `id_*` file and any file starting with `id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`, `id_mldsa`, or `id_xmss` regardless of suffix (such as `id_rsa.bak`), except `.pub` public keys and certificates. Other `id_*` files with extensions, such as `id_utils.ts`, are kept unless they carry a denied extension like `.pem` or `.key`.
+  - Built-in deny rules match **case-insensitively at any directory depth** and run **before** `.atomic/snapshot-ignore` and Git staging. You cannot un-deny a built-in pattern with a `!` negation rule in `.atomic/snapshot-ignore` or with `git add -f`.
+  - Because `.env*` matches at any depth, non-secret template files such as `.env.example` or `.env.template` are also excluded and cannot be re-included with `!.env.example`.
+- **Git-ignored files.** Files matched by `.gitignore`, `.git/info/exclude`, or global excludes are skipped unless explicitly staged with `git add -f` (staging overrides `.gitignore`, not the built-in secret deny list).
+- **Project snapshot excludes.** Rules in `.atomic/snapshot-ignore` at the repository root use `.gitignore` syntax and respect the repository's `core.ignorecase` setting.
+- **Untracked and oversized files.** Untracked files when `snapshots.includeUntracked` is `false`, files larger than `snapshots.maxFileBytes` (default 5 MiB), and files pushing the snapshot past `snapshots.maxSnapshotBytes` (default 50 MiB).
 - **Nested repositories.** Untracked Git repositories inside the checkout appear in `omitted` as `nested-repository`.
-- **Submodule contents.** Snapshots record only each submodule's checked-out commit and do not check submodules out on restore. Uncommitted submodule changes appear as `submodule-changes`, unpushed submodule commits as `unpushed-submodule-commit`, and submodules that time out after 10 seconds as `submodule-unchecked`. Commit and push submodule work to preserve it.
+- **Submodule contents.** When `.gitmodules` is present, snapshots record only each submodule's checked-out commit and do not check submodules out on restore. Uncommitted submodule changes appear as `submodule-changes`, unpushed submodule commits as `unpushed-submodule-commit`, and submodules that time out after 10 seconds as `submodule-unchecked`. Commit and push submodule work to preserve it.
 
 Tracked files that are ignored or denied keep their `HEAD` content in the snapshot, and local edits to them are listed in `omitted`.
 
@@ -69,24 +57,36 @@ Tracked files that are ignored or denied keep their `HEAD` content in the snapsh
 
 ## Settings
 
-Configure `snapshots.*` options in `~/.atomic/agent/settings.json` or `.atomic/settings.json`. See [Snapshots settings](/settings#snapshots) for the full table of keys and defaults (`snapshots.enabled`, `includeUntracked`, `maxFileBytes`, `maxSnapshotBytes`, `fullEvery`, `autoCollect`, `collectIntervalSeconds`, `graceSeconds`, and `pool.maxIdlePerRepository`).
+Configure `snapshots.*` options in `~/.atomic/agent/settings.json` or `.atomic/settings.json`:
 
-In the SDK, pass `createAgentSession({ snapshots })` to override settings for one session. Invalid values fail fast with `WorkspaceConfigError` before running Git commands.
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `snapshots.enabled` | `true` | Capture worktree snapshots after file-writing turns |
+| `snapshots.includeUntracked` | `true` | Include non-ignored untracked files |
+| `snapshots.maxFileBytes` | `5242880` (5 MiB) | Largest individual file captured (positive integer) |
+| `snapshots.maxSnapshotBytes` | `52428800` (50 MiB) | Largest total snapshot or unpushed bundle size (positive integer) |
+| `snapshots.fullEvery` | `10` | Restart patch chain from `HEAD` after this many incremental snapshots |
+| `snapshots.autoCollect` | `true` | Run background snapshot garbage collection |
+| `snapshots.collectIntervalSeconds` | `3600` (1 hour) | Minimum interval between automatic garbage collection runs |
+| `snapshots.graceSeconds` | `3600` (1 hour) | Protect newly written blobs for this many seconds (`0` disables grace window) |
+| `snapshots.pool.maxIdlePerRepository` | `2` | Maximum clean idle restored worktrees kept per repository |
+
+See [Snapshots settings](/settings#snapshots) for full schema notes. In the SDK, pass `createAgentSession({ snapshots })` to override settings for one session. Invalid values fail immediately with `WorkspaceConfigError` before running Git commands.
 
 ## Resuming
 
 When you resume a session, Atomic checks every checkout the session recorded a snapshot for, not only its working directory.
 
-If a finished subagent stored in the same session store captured a checkout later than the parent session did, Atomic adopts that newer subagent capture as the checkout's latest snapshot. Captures compare by recording timestamp, with the parent session winning ties. Partly restored checkouts keep their pinned snapshot, and named subagent worktrees stay separate.
+If a finished subagent stored in the same session store captured a checkout later than the parent session did, Atomic adopts that newer subagent capture as the checkout's latest snapshot. Captures compare by recording timestamp, with the parent session winning ties. Partly restored checkouts keep their original restore target, and named subagent worktrees stay separate.
 
 For each checkout, Atomic applies these rules in order:
 
 - **In-place resume.** If the tree matches and `HEAD` is the recorded commit or a descendant of it, the session resumes in place. If the active checkout changed locally since its snapshot but is still the same checkout on this machine (holding the snapshot commit, the session's [snapshot ref](#snapshot-refs-in-your-repository), or a local Atomic restore), the session continues there without overwriting your files.
 - **Return to original checkout.** If an earlier resume moved the session into a restored worktree and no new work was saved there, Atomic returns to the original checkout once it is available again on this machine.
 - **Automatic restore.** If another checkout drifted, or the active checkout is missing, belongs to a different clone, or has no commits, Atomic restores the snapshot into a fresh worktree under `~/.atomic/agent/worktree-snapshots/worktrees/` and prints a one-line notice. Your existing checkouts are never modified.
-- **Non-blocking secondary checkouts.** A checkout outside the session's working directory never stops a resume. If it cannot be checked or restored, Atomic skips it with a warning and builds [blueprints](/guides/resume-on-any-machine) for every restored worktree.
+- **Non-blocking secondary checkouts.** Secondary checkouts outside the session's working directory restore concurrently (up to 4 at a time) and never stop a resume. If one cannot be checked or restored, Atomic skips it with a warning and builds [blueprints](/guides/resume-on-any-machine) for every restored worktree.
 
-### Degraded restores
+### Partial (degraded) restores
 
 A resume always opens the session with its full conversation. When a snapshot cannot be restored exactly (for example because unpushed commits touched denied files, a remote is unreachable, a blob is missing, or a patch fails to apply), Atomic restores the closest reachable state in order:
 
@@ -94,24 +94,26 @@ A resume always opens the session with its full conversation. When a snapshot ca
 2. Otherwise, the closest commit fetchable from recorded remotes: the pushed base of the unpushed bundle, then earlier snapshots of the same checkout (nearest first), then the tip of the recorded branch (or default branch when detached).
 3. Otherwise, Atomic skips the restore and continues in the session's recorded directory without writing to it, or in the directory where the resume started if the recorded directory is absent. Missing Git or a missing snapshot record also ends here.
 
-Each degraded or unrestored checkout emits one notice listing what was restored, what is missing, and how to fix it (such as pushing missing commits and resuming again). The outcome is stored on the session entry (`restore.degraded` or `unrestored`) and displayed by `/session snapshot`.
+Each partial or unrestored checkout emits one notice listing what was restored, what is missing, and how to fix it (such as pushing missing commits and resuming again). The outcome is stored on the session entry (`restore.degraded` or `unrestored`) and displayed by `/session snapshot`.
 
 Only three errors refuse a resume: an unreadable session, a snapshot failing security validation (`invalid-snapshot`), or a non-empty restore target (`unsafe-target`). Working directories reached through symlinks are matched by their resolved physical path.
 
-### Snapshots restored only partly
+<div id="snapshots-restored-only-partly" />
 
-A partly restored snapshot remains the checkout's restore target for 30 days, and garbage collection keeps its blobs and patch chain until one of three events occurs: a later resume restores it completely, you release it with `discardDegradedRestore` (see [SDK](#sdk)), or 30 days pass since the partial restore.
+### Recovering from a partial restore
 
-Each turn captured in a partly restored worktree records its actual tree and links back to the original snapshot via `degradedFrom`, so partial restores never overwrite the original target.
+When a snapshot restores only partly, Atomic keeps trying to restore the full original snapshot for 30 days, and garbage collection retains its blobs and patch chain until one of three things happens: a later resume restores it completely, you clear the target with `discardDegradedRestore()` (see [SDK](#sdk)), or 30 days pass since the partial restore.
 
-On a later resume, Atomic tries to restore the original snapshot again:
+Each turn captured in a partly restored worktree records its actual tree and links back to the original snapshot in `degradedFrom`, so work done in a partial restore never overwrites the original target.
 
-- **Full restore succeeds.** If you edited files in the partly restored worktree, Atomic applies those edits on top as a single patch, shows an info notice, and records a new snapshot immediately. Once that new snapshot saves, the pin ends.
+On a later resume, Atomic retries restoring the original snapshot:
+
+- **Full restore succeeds.** If you edited files in the partly restored worktree, Atomic applies those edits on top as a single patch, shows an info notice, and records a new snapshot immediately. Once saved, Atomic stops retrying the older target.
 - **Carried-over edits conflict.** Atomic leaves the restored worktree at the original snapshot, saves your conflicting edits under `refs/atomic/degraded-work/<snapshot>`, keeps them in snapshot storage until discarded or 30 days pass, and prints a `git diff ... | git apply --3way` command so you can merge them manually.
-- **Carried-over edits are unavailable.** If the partial-restore edits cannot be read on this machine (for example, unpushed commits made there), Atomic reports them, leaves them in the partial worktree, and clears the original pin.
-- **Full restore still fails.** Atomic restores the partly restored worktree's latest snapshot so your new work is preserved, warns that the original is still unreachable, and keeps the pin active.
+- **Carried-over edits are unavailable.** If the partial-restore edits cannot be read on this machine (for example, unpushed commits made there), Atomic reports them, leaves them in the partial worktree, and clears the original target.
+- **Full restore still fails.** Atomic restores the partly restored worktree's latest snapshot so your new work stays intact, warns that the original is still unreachable, and keeps retrying on later resumes.
 
-After 30 days, the next resume warns that the original snapshot is no longer retained, promotes the partial worktree's latest snapshot to the restore target, and drops `degradedFrom` on the next capture.
+After 30 days, the next resume warns that the original snapshot is no longer retained, promotes the partial worktree's latest snapshot to the active target, and clears `degradedFrom` on the next capture.
 
 ### Restored worktrees
 
@@ -121,17 +123,11 @@ Only checkouts sharing the same repository remotes share a pool. Checkouts witho
 
 A worktree stays associated with the session it was restored for after that session closes so resuming it again continues in the same directory. If another session later takes over that worktree, the original session gets a fresh worktree on its next resume.
 
-#### Leases and pool locks
+#### Worktree leases
 
-An open session refreshes its worktree lease every 10 seconds. If a process stops refreshing (for example after sleeping or stalling), it keeps the worktree for 90 seconds after its last refresh (30 seconds until stale, plus a 60-second grace window) before another machine sharing the pool can claim or remove it.
+An open session refreshes its worktree lease every 10 seconds. On the same host, a worktree held by a running session process is never reclaimed (Linux and Windows check both PID and process start time so reused PIDs after a reboot do not block reuse; macOS falls back to a 24-hour cap without a refresh). If a process stalls or stops refreshing on another host sharing the pool, the worktree remains reserved for 90 seconds after the last refresh before another machine can claim or remove it.
 
-On shared filesystems where host clocks may disagree, Atomic measures lease and lock ages against the filesystem's own clock using a short-lived probe file. On all platforms, Atomic advances the sampled filesystem time with monotonic elapsed time through probe cleanup and ignores wall-clock jumps.
-
-On the same host, a worktree held by a still-running session process is never reclaimed. Both Linux and Windows record the holder's process start time on leases (Linux through `/proc`, Windows through the native module with a PowerShell fallback), so a reused PID after a reboot or container restart never keeps a stale worktree on either OS. Only macOS and other platforms without a process start-time reader fall back to a 24-hour cap without a refresh.
-
-Before recording a snapshot or continuing in a pooled worktree, a session verifies it still holds the lease. If another session claimed the worktree meanwhile, Atomic skips the snapshot and warns with `pooled-worktree-lost` so you know to resume into a fresh worktree.
-
-On Windows, pool and seed lock acquisition retries temporary `EPERM` errors for up to 10 seconds before failing. Contended pool locks wait up to 60 seconds (120 seconds when parking a seed) and respond to cancellation.
+Before saving a snapshot or continuing in a pooled worktree, Atomic verifies that the session still holds the lease. If another session claimed the worktree meanwhile, Atomic skips the snapshot and warns with `pooled-worktree-lost` so you can stop editing there and run `/resume` to open a fresh worktree.
 
 #### Idle reuse, eviction, and set-aside worktrees
 
@@ -139,7 +135,7 @@ When restoring a repository, Atomic reuses an idle pooled worktree if one matche
 
 When idle worktrees for one repository exceed `snapshots.pool.maxIdlePerRepository`, Atomic removes the oldest clean idle ones. Any worktree with unrecorded edits or excluded files (such as `.env`) is preserved.
 
-If Atomic is killed mid-blueprint build, that worktree is marked set-aside under `~/.atomic/agent/worktree-snapshots/pool/set-aside/` so no session reuses it while build processes might still run (see [Start the first turn while the build runs](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)). Atomic deletes set-aside pooled worktrees on a later restore once no user process has an open file or working directory inside them (checked via `/proc` on Linux and `lsof` on macOS). When a non-dumpable process prevents verification, or for non-pooled worktrees, check with `lsof +D <path>` and delete the directory manually.
+If Atomic is killed mid-blueprint build, that worktree is marked set-aside under `~/.atomic/agent/worktree-snapshots/pool/set-aside/` so no session reuses it while build processes might still run (see [Start the first turn while the build runs](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)). Atomic deletes set-aside pooled worktrees on a later restore once no user process has an open file or working directory inside them. If another user's or protected process prevents checking open files, or for non-pooled worktrees, inspect with `lsof +D <path>` and delete the directory manually.
 
 #### Shared object stores, SSH, LFS, and interrupted restores
 
@@ -186,13 +182,13 @@ Snapshot refs sit outside `refs/heads` and `refs/tags`, so `git push`, `git push
 
 Snapshot commits appear in `git for-each-ref` and `git log --all` titled `Atomic worktree snapshot`. Exclude them from `git log --all` with:
 
-```sh
+```bash
 git log --exclude='refs/atomic/*' --all
 ```
 
 Sessions deleted on another machine or via `SessionStore.delete()` can leave local refs behind. Remove all Atomic snapshot refs in a repository with:
 
-```sh
+```bash
 git for-each-ref --format='delete %(refname)' refs/atomic/snapshots/ | git update-ref --stdin
 ```
 
@@ -200,12 +196,12 @@ git for-each-ref --format='delete %(refname)' refs/atomic/snapshots/ | git updat
 
 Snapshot blobs live in one shared table per database and are garbage-collected automatically when no retained session needs them:
 
-- **Retained snapshots.** For every branch of every session (including internal sessions), Atomic keeps the latest snapshot of each checkout on that branch. Deleting a session releases its snapshots. A partly restored snapshot remains retained for up to 30 days (see [Snapshots restored only partly](#snapshots-restored-only-partly)). Unfinished workflow runs kept in the database from earlier releases retain their snapshots until removed.
+- **Retained snapshots.** For every branch of every session (including internal sessions), Atomic keeps the latest snapshot of each checkout on that branch. Deleting a session releases its snapshots. A partly restored snapshot remains retained for up to 30 days (see [Recovering from a partial restore](#snapshots-restored-only-partly)). Unfinished workflow runs kept in the database from earlier releases retain their snapshots until removed.
 - **Background schedule.** When `snapshots.autoCollect` is `true`, Atomic runs collection in the background 10 seconds after an interactive or RPC session starts and 10 seconds after it closes, at most once per `snapshots.collectIntervalSeconds` per database (measured on the database clock). Collection runs in short batches so the UI stays responsive, aborts cleanly when the last store on the database closes, and resumes later if interrupted.
-- **Grace window.** Blobs stored or reused within `snapshots.graceSeconds` (default one hour) are never deleted, protecting captures in progress. Reusing an earlier patch resets its age; if a blob is collected before its snapshot commits, Atomic retries storing it or reports `blobs-collected` without recording a broken snapshot. Raise `snapshots.graceSeconds` if `blobs-collected` repeats.
+- **Grace window.** Blobs stored or reused within `snapshots.graceSeconds` (default 1 hour) are never deleted, protecting captures in progress. Reusing an earlier patch resets its age; if a blob is collected before its snapshot commits, Atomic retries storing it or reports `blobs-collected` without recording a broken snapshot. Raise `snapshots.graceSeconds` if `blobs-collected` repeats.
 - **Failures and disk space.** Collection errors never fail an active session; they are recorded in the `snapshot_collection` table (`finished_at`, `deleted`, `error_code`) and retried after the configured interval. SQLite reuses freed space internally without shrinking the file; run `VACUUM` while no Atomic process uses the database to reclaim disk space.
 
-To trigger collection immediately from code, call `collectSnapshotGarbage`. If a large legacy chunk-table migration was deferred for free-space checks, the result includes `pendingChunkMove`; see [Size limits](/storage#size-limits) for the offline migration command.
+To trigger collection immediately from code, call `collectSnapshotGarbage()`. For older local SQLite databases that need offline chunk-table migration, see [Size limits](/storage#size-limits).
 
 ## SDK
 
@@ -241,13 +237,13 @@ if (capture.status === "captured" || capture.status === "unchanged") {
 ### Session resume and partial restores
 
 - `openSessionInWorktree(sessionManager, { settings, storeDir?, signal?, beforeRecord?, pendingMappings?, keepInPlace?, cannotRestore?, fallbackCwd?, skipMissingRecords? })`: checks every recorded checkout and restores drifted or missing ones without running blueprints, resolving `{ sessionManager, notices, unrestored, missingRecords }`. `resumeSessionWorktree` performs the same restore without reopening the session. For standard SDK resume with blueprints, pass `sessionManager` directly to `createAgentSession({ sessionManager })`.
-- `discardDegradedRestore(sessionManager, { settings, root?, signal? })`: records each partly restored worktree (or only `root`) without `degradedFrom` so it becomes the active restore target and releases the pinned snapshot on the next collection.
-- `degradedRestorePin(sessionManager, root)`: returns `{ snapshotId, since, base?, lapsed, work?, kept? }` for a pinned checkout, or `undefined` when unpinned.
+- `discardDegradedRestore(sessionManager, { settings, root?, signal? })`: records each partly restored worktree (or only `root`) without `degradedFrom` so it becomes the active restore target and releases the original snapshot on the next collection.
+- `degradedRestorePin(sessionManager, root)`: returns `{ snapshotId, since, base?, lapsed, work?, kept? }` for a checkout with an active partial-restore target, or `undefined` otherwise.
 - `withWorktreeRestoreNotices(notices, work)` and `currentWorktreeRestoreNotices()`: scope `worktree_restore` system prompt notices across sessions opened inside `work`.
 
-### Reading snapshots from windowed sessions
+### Reading older snapshots on demand
 
-Sessions opened at the default tail window hold only the snapshot records needed for resume. Use `sessionManager.readWorktreeSnapshotPages()` and `sessionManager.loadWorktreeSnapshotRecords()` to inspect older snapshots on demand:
+Sessions opened at the default tail window load only the snapshot records needed for resume into memory. Use `sessionManager.readWorktreeSnapshotPages()` and `sessionManager.loadWorktreeSnapshotRecords()` to inspect older snapshots on demand:
 
 ```typescript
 const session = await SessionManager.open(store, sessionId);
@@ -261,7 +257,7 @@ const records = await session.loadWorktreeSnapshotRecords(ids);
 
 ### Garbage collection
 
-- `collectSnapshotGarbage(blobs, { graceSeconds?, signal? })`: deletes eligible unreferenced blobs from a `SqlSnapshotBlobStore` (default `graceSeconds` is `DEFAULT_BLOB_GRACE_SECONDS`, one hour) and resolves `{ deleted, pendingChunkMove? }`. Rejects non-SQL stores with `blob-store-unsupported`.
+- `collectSnapshotGarbage(blobs, { graceSeconds?, signal? })`: deletes eligible unreferenced blobs from a `SqlSnapshotBlobStore` (default `graceSeconds` is `DEFAULT_BLOB_GRACE_SECONDS`, 1 hour) and resolves `{ deleted, pendingChunkMove? }`. Rejects non-SQL stores with `blob-store-unsupported`.
 - `scheduleSnapshotCollection(blobs, settings, { onFailure?, delayMs? })`: starts background collection when `settings.autoCollect` is enabled and due (sessions pass `SNAPSHOT_COLLECTION_SESSION_DELAY_MS`). Never rejects after validating settings; resolves with `collected`, `skipped`, `interrupted`, or `failed`, and does not keep an idle process alive.
 - `runningSnapshotCollection(blobs)`: returns a promise settling when the current process's active collection finishes, or `undefined` if none is running.
 
@@ -291,6 +287,7 @@ Match errors by class or `code`, never by message text. Use `isRetryableWorkspac
 | `WorkspaceRestoreError` | `tree-mismatch` | The materialized worktree tree differs from the snapshot | `target`, `expectedTree`, `actualTree` | Check `.gitattributes` filters on this host, then retry |
 | `WorkspaceRestoreError` | `unsafe-target` | `into` is non-empty (`not-empty`), or `removeRestoredWorktree` received a non-restored path (`not-restored`) | `target`, `reason` | Pass a new or empty directory, or omit `into` |
 | `WorkspaceRestoreError` | `unwritable-path` | A restore or removal could not write a directory or file | `target`, `snapshotId`, `cause` | Free disk space or fix directory permissions, then retry |
+| `WorkspaceRestoreError` | `path-too-long` | On Windows, a restored worktree path or Git directory exceeds Git for Windows path limits. Nothing is written. | `snapshotId`, `target`, `limit`, `agentDir` | Set `ATOMIC_CODING_AGENT_DIR` to a shorter path ([Long paths on Windows](/guides/resume-on-any-machine#long-paths-on-windows)) |
 | `WorkspaceRestoreError` | `invalid-snapshot` | A snapshot record has unsafe remotes or malformed IDs or hashes | `snapshotId`, `field`, `reason` (`unsafe-remote`, `invalid-object-id`, `invalid-snapshot-id`, `invalid-blob-hash`) | Restore only trusted storage records or re-export on the recording machine |
 | `WorkspaceDriftError` | `tree-drift` | A checkout drifted from its snapshot and could not be restored | `root`, `expectedHead`, `actualHead`, `expectedTree`, `actualTree`, `snapshotId`, `reason?`, `restoreCode?`, `cause?` | Follow `hint` |
 | `WorkspaceCollectionError` | `collection-failed` | Database garbage collection failed (`retryable: true`; retained blobs are untouched) | `table`, `phase` (`claim`, `index`, `sweep`, `record`), `deleted`, `cause` | Check database permissions, disk space, and locks; drop broken triggers or views if hinted ([Size limits](/storage#size-limits)) |

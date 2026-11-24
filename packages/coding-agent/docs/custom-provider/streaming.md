@@ -1,30 +1,29 @@
 ---
-title: Provider streaming API
-description: "Implement a custom streaming API: events, content blocks, tool calls, stop reasons, and usage."
+title: "Implement provider streaming"
+sidebarTitle: "Streaming API"
+description: "Build a custom streamSimple handler with stream events, content blocks, tool calls, stop reasons, and cost calculation."
 ---
-
-# Provider streaming API
 
 ## Custom streaming API
 
-For providers with non-standard APIs, implement `streamSimple`. Study the existing API implementations before writing your own.
+For providers with non-standard APIs, implement `streamSimple`. Study Atomic's built-in streaming implementations in the [`@bastani/atomic-ai` API source directory](https://github.com/bastani-inc/atomic/tree/main/packages/ai/src/api) before writing your own:
 
-**Reference implementations:**
+- `anthropic-messages.ts`: Anthropic Messages API
+- `mistral-conversations.ts`: Mistral Conversations and Chat streaming
+- `openai-completions.ts`: OpenAI Chat Completions
+- `openai-responses.ts`: OpenAI Responses API
+- `google-generative-ai.ts`: Google Generative AI
+- `bedrock-converse-stream.ts`: Amazon Bedrock Converse API
 
-Atomic uses provider implementations from its installed `@bastani/atomic-ai` dependency. The streaming implementations behind the `api` field live under `node_modules/@bastani/atomic-ai/dist/api/`, including:
-- `anthropic-messages.d.ts` / `anthropic-messages.js` - Anthropic Messages API
-- `mistral-conversations.d.ts` / `mistral-conversations.js` - Mistral Conversations/Chat streaming
-- `openai-completions.d.ts` / `openai-completions.js` - OpenAI Chat Completions
-- `openai-responses.d.ts` / `openai-responses.js` - OpenAI Responses API
-- `google-generative-ai.d.ts` / `google-generative-ai.js` - Google Generative AI
-- `bedrock-converse-stream.d.ts` / `bedrock-converse-stream.js` - Amazon Bedrock Converse API
-Per-vendor provider configurations (base URLs, auth, model catalogs) live under `dist/providers/`, for example `anthropic.d.ts` / `anthropic.js` and `mistral.d.ts` / `mistral.js`.
+Built-in provider configurations (base URLs, auth, and model catalogs) live in [`packages/ai/src/providers`](https://github.com/bastani-inc/atomic/tree/main/packages/ai/src/providers). For general library usage, see the [AI library reference](/libraries/ai).
 
-### Stream Pattern
+### Stream pattern
 
 Return a stream from `createAssistantMessageEventStream()` or construct `AssistantMessageEventStream` directly. A plain `EventStream` subclass does not satisfy the response stream type.
 
-The stream records optional `durationMs` on the final assistant message using a monotonic clock. Set `timestamp` when the request starts. Existing durations stay intact, and messages whose timestamps predate the stream (such as fetched deferred results) remain untimed.
+`AssistantMessageEventStream` populates `output.durationMs` automatically using a monotonic clock when you push a `done` or `error` event. Set `timestamp` when the request starts. Existing durations stay intact, and messages whose timestamps predate the stream (such as fetched deferred results) remain untimed.
+
+Note on context types: `@bastani/atomic-ai` types the `context` argument as `TranscriptContext`, while `ProviderConfig.streamSimple` uses the compatible `Context` alias; both pass the normalized message transcript where `getCurrentSystemPrompt(context.messages)` and `getCurrentTools(context.messages)` read the active system prompt and tools.
 
 ```typescript
 import {
@@ -101,6 +100,20 @@ function streamMyProvider(
   return stream;
 }
 ```
+
+Common fields on `options` (`SimpleStreamOptions`):
+
+| Option | Purpose |
+| --- | --- |
+| `apiKey`, `headers`, `env` | Resolved request credentials, merged headers, and provider-scoped environment overrides |
+| `signal` | `AbortSignal` for user cancellation or deadlines; forward to `fetch()` |
+| `fetch` | Optional custom `fetch` implementation |
+| `reasoning`, `thinkingBudgets` | Requested thinking level (`off` through `max`) and optional per-level token budgets |
+| `toolChoice` | Provider-neutral tool selection preference |
+| `temperature`, `maxTokens`, `samplingParams` | Generation parameters and custom request-body sampling overrides |
+| `sessionId`, `cacheRetention`, `transport` | Session affinity ID, prompt-cache retention tier, and transport preference |
+| `timeoutMs`, `websocketConnectTimeoutMs`, `streamDeadlineMs`, `retryDeadline` | Request, handshake, idle-stream, and retry timeout bounds |
+| `onPayload`, `onResponse`, `onProviderStreamEvent` | Lifecycle hooks to inspect/modify request payloads, inspect HTTP responses, and observe raw parsed stream events before normalization |
 
 ### Event types
 
@@ -198,18 +211,28 @@ output.usage.totalTokens =
 calculateCost(model, output.usage);
 ```
 
-`calculateCost()` applies one rate set to the whole request. Aggregate input is `usage.input + usage.cacheRead + usage.cacheWrite`; a tier applies only when that total strictly exceeds `inputTokensAbove`, and the highest matching threshold wins. Every tier must define `input`, `output`, `cacheRead`, and `cacheWrite`. Extension-registered models keep these tiers, and `models.json` `modelOverrides` follow the rules in [Request-wide cost tiers](/models/reference#request-wide-cost-tiers).
+`calculateCost(model, output.usage)` mutates `output.usage.cost` in place and returns it. It applies one rate set to the whole request. Aggregate input is `usage.input + usage.cacheRead + usage.cacheWrite`; a tier applies only when that total strictly exceeds `inputTokensAbove`, and the highest matching threshold wins. Every tier must define `input`, `output`, `cacheRead`, and `cacheWrite`. Extension-registered models keep these tiers, and `models.json` `modelOverrides` follow the rules in [Request-wide cost tiers](/models/reference#request-wide-cost-tiers).
 
 ### Registration
 
-Register your stream handler with `atomic.registerProvider()`:
+Register your stream handler with `atomic.registerProvider()`. Providing `streamSimple` requires `api` at the provider level and suppresses derived `-fast` variants for that `api`:
 
 ```typescript
 await atomic.registerProvider("my-provider", {
   baseUrl: "https://api.example.com",
   apiKey: "$MY_API_KEY",
   api: "my-custom-api",
-  models: [],
+  models: [
+    {
+      id: "my-model-1",
+      name: "My Model 1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 8192
+    }
+  ],
   streamSimple: streamMyProvider
 });
 ```

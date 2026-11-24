@@ -1,57 +1,70 @@
 ---
-title: "Containerization"
-description: "Run Atomic or its tools inside Gondolin, Docker, or OpenShell containers."
+title: "Run Atomic in containers"
+sidebarTitle: "Containers"
+description: "Isolate Atomic or its built-in tools using Gondolin micro-VMs, Docker containers, or NVIDIA OpenShell sandboxes."
 ---
 
-# Containerization
+Atomic runs with all of your local user permissions by default. To restrict which directories it can access and modify, choose one of two isolation models:
 
-Atomic runs with all local permissions by default. To restrict which directories it can write to and what it can access, choose one of two approaches:
+1. Run the whole `atomic` process inside a container or managed sandbox.
+2. Run `atomic` on your host and route built-in file and shell tools into a micro-VM.
 
-1. Run the whole `atomic` process inside an isolated environment.
-2. Run `atomic` on the host and route tool execution into an isolated environment.
+Containerization is the outer boundary, not the only one. Read [Security and project trust](/security) alongside this page to see how project trust gates which project extensions, skills, and settings load before work starts.
 
-Containerization is the outer boundary, not the only one. Read [Security](/security) alongside this page to see how project trust gates which project-scoped extensions, skills, and settings load in the first place.
-
-## Choose a pattern
+## Choose an isolation pattern
 
 | Pattern | What is isolated | Best for | Notes |
 | --- | --- | --- | --- |
-| Gondolin extension | Selected file tools, shell execution, and `!` commands | Local micro-VM tool routing while keeping auth on the host | Other tools, including `search`, remain on the host. See [`examples/extensions/gondolin/`](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/gondolin). |
-| Plain Docker | Whole `atomic` process in a local container | Simple local isolation | Provider API keys enter the container. |
-| OpenShell | Whole `atomic` process in a policy-controlled sandbox | Local or remote managed sandbox | Requires an OpenShell gateway. |
+| Gondolin micro-VM | Selected file tools, `bash`, and `!` commands | Local VM tool routing while keeping credentials on the host | `search` and custom host extensions remain on the host. See [`examples/extensions/gondolin/`](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/gondolin). |
+| Docker | Whole `atomic` process in a local container | Simple local isolation | Provider API keys enter the container. |
+| NVIDIA OpenShell | Whole `atomic` process in a policy-controlled sandbox | Local or remote managed sandboxes with upstream credential injection | Requires an OpenShell gateway. |
 
-Extensions run wherever the `atomic` process runs. If you run host `atomic` with a tool-routing extension, other custom extension tools still run on the host unless they also delegate their operations.
+Extensions run wherever the `atomic` process runs. If you run host `atomic` with a tool-routing extension, other loaded extensions still run on your host unless they also route their work into the VM.
 
-## Gondolin
+## Gondolin micro-VM
 
-[Gondolin](https://github.com/earendil-works/gondolin) is a local Linux micro-VM. Use the [Gondolin example extension](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/gondolin) when you want `atomic` on the host with selected file tools and shell execution routed into the VM. This does not isolate the entire session.
+[Gondolin](https://github.com/earendil-works/gondolin) runs a local Linux micro-VM. Use the [Gondolin example extension](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/extensions/gondolin) when you want `atomic` on your host with selected file tools and shell execution routed into the VM. This does not isolate the entire session.
 
-Copy the `examples/extensions/gondolin` folder into `~/.atomic/agent/extensions/gondolin` from your installed `@bastani/atomic` package (or download it from the GitHub link above), then install its dependencies:
+Copy `examples/extensions/gondolin` to a directory **outside** `~/.atomic/agent/extensions/` (for example `~/.local/share/atomic-gondolin`) when you want opt-in per-session use with `-e`, then install its dependencies:
 
 ```bash
-cp -R "$(npm root -g)/@bastani/atomic/examples/extensions/gondolin" ~/.atomic/agent/extensions/gondolin
-cd ~/.atomic/agent/extensions/gondolin
+cp -R "$(npm root -g)/@bastani/atomic/examples/extensions/gondolin" ~/.local/share/atomic-gondolin
+cd ~/.local/share/atomic-gondolin
 npm ci --ignore-scripts
 ```
 
-Run Atomic from the project you want mounted:
+Launch Atomic with `-e` from the project directory you want mounted inside the VM:
 
 ```bash
 cd /path/to/project
-atomic -e ~/.atomic/agent/extensions/gondolin
+atomic -e ~/.local/share/atomic-gondolin
 ```
 
-The extension mounts your host working directory at `/workspace` in the VM and overrides `read`, `write`, `edit`, `bash`, `find`, and `ls`, along with interactive `!` commands. File changes under `/workspace` write through to the host.
+Do not copy the extension into `~/.atomic/agent/extensions/gondolin` unless you want **every** `atomic` session on your machine to boot a Gondolin VM automatically. Because that directory contains both `index.ts` and `package.json`, placing it inside `~/.atomic/agent/extensions/` causes Atomic to auto-load it globally even without `-e`.
 
-`search` remains a host tool and is not redirected into the VM. For guest-only content searches, run a shell command through the routed `bash` tool or `!`. To expose only the routed built-in tools, launch with `atomic --tools read,write,edit,bash,find,ls -e ~/.atomic/agent/extensions/gondolin`. Other loaded extensions can still supply host tools; use whole-process isolation when host filesystem access must be prevented.
+### What the Gondolin extension routes and omits
 
-Requirements: npm for installing dependencies, Node.js 23.6.0 or newer for `@earendil-works/gondolin`, and QEMU installed through your system package manager.
+- **Workspace mount:** Mounts your current host working directory at `/workspace` inside the VM. Edits under `/workspace` write through to your host files.
+- **Routed tools and status:** Overrides `read`, `write`, `edit`, `bash`, `find`, and `ls`, plus interactive `!` commands. Registers the `/gondolin` command (prints VM ID, host workspace, guest workspace, and guest shell) and a footer status item (`Gondolin: <id> (/workspace)`).
+- **Environment isolation:** Does not forward host shell environment variables into VM commands, keeping host API keys out of the VM.
+- **Guest shell and tool caveats:** Probes `bash` first inside the guest and falls back to `/bin/sh`. Routed `find` skips `.git` and `node_modules` only and does not apply `.gitignore`. Routed `read` detects images by filename extension (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), and routed `write` writes UTF-8 text.
+- **Unrouted tools:** `search` stays on the host and is not routed into the VM. Run searches inside the guest through `bash` or `!`.
 
-## Plain Docker
+To expose only the routed built-in tools in a session:
 
-Run the whole `atomic` process in Docker for a simple local container boundary.
+```bash
+atomic --tools read,write,edit,bash,find,ls -e ~/.local/share/atomic-gondolin
+```
 
-`Dockerfile.atomic`:
+`ls` is a built-in tool that is off by default unless listed. Restricting `--tools` to this allowlist also disables `intercom`, `subagent`, and other extension tools; MCP tools stay hidden unless a `mcp__*` pattern is listed. Other loaded host extensions can still run code on the host, so use whole-process isolation when host filesystem access must be prevented completely.
+
+**Requirements:** npm to install dependencies, Node.js 23.6.0 or newer for `@earendil-works/gondolin`, and QEMU installed through your system package manager.
+
+## Docker
+
+Run the whole `atomic` process inside Docker for a clean local container boundary.
+
+Create `Dockerfile.atomic` using Node.js and npm:
 
 ```dockerfile
 FROM node:24-bookworm-slim
@@ -80,9 +93,9 @@ WORKDIR /workspace
 ENTRYPOINT ["atomic"]
 ```
 
-The archive installer unpacks the self-contained payload and needs no JavaScript runtime or package manager. The extra apt packages support Atomic's shell and common coding tasks.
+The archive installer unpacks a self-contained bundle with no JavaScript runtime required. If you adapt this Dockerfile to a smaller base image, make sure `install.sh` has `uname`, `tar` with `gzip`, core file utilities (`mkdir`, `mv`, `chmod`, `ln`, `rm`, `rmdir`), `curl` or `wget`, `sha256sum` (or `shasum` or `openssl`), and `ldd` on non-Alpine Linux. `debian:bookworm-slim` already includes these tools.
 
-Build and run:
+Build and run the container:
 
 ```bash
 docker build -t atomic-sandbox -f Dockerfile.atomic .
@@ -94,11 +107,23 @@ docker run --rm -it \
   atomic-sandbox
 ```
 
-`-v "$PWD:/workspace"` mounts your current directory at `/workspace` inside the container, so edits under `/workspace` write directly to your host files.
+`-v "$PWD:/workspace"` mounts your current directory at `/workspace`, so edits under `/workspace` write directly to your host files.
 
-Mount a named volume on `/root/.atomic` to persist both container-local agent settings (`/root/.atomic/agent`) and default SQLite sessions (`/root/.atomic/workflows/journal.sqlite`). If you mount only `/root/.atomic/agent`, point `--session-store` or `ATOMIC_CODING_AGENT_DIR` inside that volume so sessions persist too. Avoid mounting your host `~/.atomic` or `~/.atomic/agent` unless the container should have access to host credentials and sessions.
+### Persisting settings and sessions in Docker
 
-## OpenShell
+Mount a named volume on `/root/.atomic` (`-v atomic-home:/root/.atomic`) to persist both container-local settings (`/root/.atomic/agent`) and the default SQLite session database (`/root/.atomic/workflows/journal.sqlite`).
+
+If you mount only `/root/.atomic/agent`, setting `ATOMIC_CODING_AGENT_DIR=/root/.atomic/agent` does **not** keep sessions inside that volume. Because `/root/.atomic/agent` matches the default agent directory, Atomic still places `journal.sqlite` outside the volume at `/root/.atomic/workflows/journal.sqlite`.
+
+When mounting only `/root/.atomic/agent`, persist sessions with one of these options:
+
+- Pass `--session-store /root/.atomic/agent/journal.sqlite` (or configure `ATOMIC_STORAGE` or `ATOMIC_SESSIONS_STORAGE` to point inside `/root/.atomic/agent`).
+- Set `ATOMIC_CODING_AGENT_DIR` to a non-default subdirectory inside the volume, such as `/root/.atomic/agent/state`, so Atomic stores sessions at `/root/.atomic/agent/state/workflows/journal.sqlite`.
+- Mount `/root/.atomic` instead of only `/root/.atomic/agent`.
+
+Avoid mounting your host `~/.atomic` or `~/.atomic/agent` directory unless the container should have access to your host credentials, settings, and sessions.
+
+## NVIDIA OpenShell
 
 Use [NVIDIA OpenShell](https://docs.nvidia.com/openshell/about/overview) for a policy-controlled sandbox with filesystem, process, network, credential, and inference controls. OpenShell runs sandboxes through a local gateway backed by Docker, Podman, or a VM runtime, or through a remote Kubernetes gateway.
 
@@ -115,7 +140,7 @@ Launch `atomic` inside an OpenShell sandbox:
 openshell sandbox create --name atomic-sandbox --from atomic -- atomic
 ```
 
-In this setup, the whole `atomic` process runs inside the sandbox, so built-in tools, `!` commands, and extension tools execute within the OpenShell boundary.
+The whole `atomic` process runs inside the sandbox, so built-in tools, `!` commands, and extension tools execute inside the OpenShell boundary.
 
 With a remote gateway, project files are not bind-mounted from the host, so writes in the sandbox do not modify your local checkout. Clone the repository inside the sandbox or transfer files with OpenShell:
 
@@ -124,4 +149,25 @@ openshell sandbox upload atomic-sandbox ./repo /workspace
 openshell sandbox download atomic-sandbox /workspace/repo ./repo-out
 ```
 
-OpenShell providers can keep raw model API keys outside the sandbox. When inference routing is configured, code inside the sandbox calls `https://inference.local` and the gateway injects provider credentials upstream. Configure Atomic with the matching OpenAI-compatible or Anthropic-compatible endpoint to route model traffic through the gateway.
+### Routing inference through OpenShell
+
+OpenShell providers can keep raw model API keys outside the sandbox. When inference routing is enabled, tools inside the sandbox call `https://inference.local` and the OpenShell gateway injects provider credentials upstream.
+
+Point Atomic at `https://inference.local` by adding a provider entry to `~/.atomic/agent/models.json` inside the sandbox. For example, to route an OpenAI-compatible gateway endpoint:
+
+```json
+{
+  "providers": {
+    "openshell": {
+      "baseUrl": "https://inference.local/v1",
+      "api": "openai-completions",
+      "apiKey": "openshell-managed",
+      "models": [
+        { "id": "your-model-id" }
+      ]
+    }
+  }
+}
+```
+
+Use `"api": "anthropic-messages"` when your OpenShell gateway exposes an Anthropic-compatible endpoint, or override `baseUrl` on a built-in provider entry. See [Custom models](/models) and [Custom providers](/custom-provider) for full `models.json` options.

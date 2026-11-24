@@ -1,17 +1,16 @@
 ---
 title: "Orchestration patterns"
-description: "Seven ways to split work, keep track of the children, and verify what they produced."
+sidebarTitle: "Patterns"
+description: "Seven reusable patterns for splitting work across subagents, isolating edits, and verifying results."
 ---
 
-# Orchestration patterns
+Give each subagent one concrete deliverable, explicit inputs, clear edit rules, and a verification check. Put conflicting edits in separate worktrees, and run final verification in your main session. A subagent claiming "done" is not proof.
 
-Give each subagent one concrete deliverable, explicit inputs, clear edit rules, and a verification check. Put conflicting edits in separate worktrees, and run final verification in the parent. A child claiming "done" is not proof.
-
-Each snippet below is a short codemode call from the parent chat, not a long-lived script. After any restart, reconcile `status` with [saved receipts](/orchestration#what-survives-interruption) before launching more children.
+Each snippet below is a short codemode call from the main chat, not a long-lived script. After any restart, reconcile `status` with [saved task IDs](/orchestration#what-survives-interruption) before launching more subagents.
 
 ## Prompt anatomy
 
-Make every child assignment self-contained so it does not rely on the parent's full history:
+Make every subagent assignment self-contained so it does not rely on the main chat's full history:
 
 - **Objective and why it matters.** Name the decision or change that depends on the output.
 - **Inputs and permissions.** List the exact files or paths to read, what may be edited, and what is out of scope.
@@ -26,7 +25,7 @@ Example prompt:
 Specify observable outcomes rather than effort:
 
 - For fixes, name the changed behavior, adjacent behavior that must remain unchanged, and checks proving both.
-- For reviews, distinguish "checked and found nothing" from "could not verify." Re-run key checks in the parent before acting on results. See [Verification and evidence](/verification).
+- For reviews, distinguish "checked and found nothing" from "could not verify." Re-run key checks in your main session before acting on results. See [Verification and evidence](/verification).
 
 ### Stop conditions
 
@@ -37,12 +36,12 @@ Define upfront when to halt, such as an attempt cap, a missing prerequisite, con
 - **Fit.** Check whether one direct command answers the question faster than delegation.
 - **Isolation.** Give each writer a distinct worktree or disjoint files, and launch dependent tasks only after prerequisites pass.
 - **Handoffs.** Pass file paths and output schemas rather than raw transcripts.
-- **Recovery.** Store child IDs, target commits, and next checks so restarts reconcile before re-running side effects.
+- **Recovery.** Store subagent IDs, target commits, and next checks so restarts reconcile before re-running side effects.
 - **Approval.** Keep permission to publish or merge separate from permission to implement.
 
 ## Classify-and-act
 
-Triage input with a read-only child, validate the returned label in the parent, then dispatch the right specialist:
+Triage input with a read-only subagent, validate the returned label in the main session, then dispatch the right specialist:
 
 ```js
 const { label, report } = load("triage");
@@ -52,7 +51,7 @@ store("triage:action", r.tasks);
 return r.tasks;
 ```
 
-On recovery, check `status` for an existing action child before launching another, and verify the fix against the original report.
+On recovery, check `status` for an existing action subagent before launching another, and verify the fix against the original report.
 
 ## Fan-out-and-synthesize
 
@@ -70,11 +69,11 @@ store("platforms", r.tasks);
 return r.tasks;
 ```
 
-Synthesize only after every required child settles, and reconcile contradictions against source code. On restart, recover results by task ID instead of repeating the whole batch.
+Synthesize only after every required subagent settles, and reconcile contradictions against source code. On restart, recover results by task ID instead of repeating the whole batch.
 
 ## Adversarial verification
 
-Give a fresh read-only child the acceptance criteria and candidate, without the author's conclusion, and ask for a failing input:
+Give a fresh read-only subagent the acceptance criteria and candidate, without the author's conclusion, and ask for a failing input:
 
 ```js
 const r = await tools.subagent({
@@ -86,16 +85,17 @@ store("date:review", r.tasks);
 return r.tasks;
 ```
 
-Verify reported failures in the parent by checking real exit codes before requesting repairs. With multiple reviewers, collect independent verdicts first, then allow one bounded Intercom debate. A reproducible failing case beats a majority vote. For user interfaces, [exercise the real interface](/computer-use).
+Verify reported failures in the main session by checking real exit codes before requesting repairs. With multiple reviewers, collect independent verdicts first, then allow one bounded Intercom debate. A reproducible failing case beats a majority vote. For user interfaces, [exercise the real interface](/computer-use).
 
 ## Generate-and-filter
 
-Ask children for concrete candidates, then filter all of them with one deterministic check in codemode:
+Ask subagents for concrete candidates, then filter all of them with one deterministic check in codemode. Pass `context: "fresh"` (or use a read-only agent) so generators do not inherit the main chat's history (`worker` defaults to forked context and edit tools):
 
 ```js
 const r = await tools.subagent({
+  context: "fresh",
   tasks: ["year boundary", "leap day"].map((topic) => ({
-    agent: "worker",
+    agent: "codebase-analyzer",
     task: `Return three distinct dates around a ${topic} as a JSON string array. Don't edit files.`,
   })),
 });
@@ -111,6 +111,7 @@ Compare competing approaches on identical fixtures with pre-agreed scoring and t
 
 ```js
 const r = await tools.subagent({
+  context: "fresh",
   tasks: ["lookup-table", "parser"].map((strategy) => ({
     agent: "worker",
     task: `Implement the ${strategy} approach on your own branch; return the commit and test command.`,
@@ -121,27 +122,41 @@ store("candidates:round1", r.tasks);
 return r.tasks;
 ```
 
+Note two details when running `worker` in named worktrees:
+
+- `worker` defaults to `context: "fork"`, so pass `context: "fresh"` when you want independent attempts without the main chat's prior reasoning.
+- Named worktrees (`worktree: { branch }`) are never deleted automatically and do not symlink `node_modules`. Have each competitor install dependencies if its test command needs them, or remove finished branches and worktrees manually when the tournament ends.
+
 Record scores, commit SHAs, and round numbers so restarts never double-advance a candidate. Never pick a winner that fails a required check.
 
 ## Loop-until-done
 
-Run the project's verification command in the parent between bounded repair rounds:
+Run the project's verification command in the main session between bounded repair rounds. Pass a foreground `wait` budget suited to your test suite, and handle the string return value in case the command yields to the background:
 
 ```js
-const check = await tools.bash({ command: "npm test" });
+const check = await tools.bash({
+  command: "npm test",
+  wait: { kind: "foreground", budgetMs: 60000 },
+});
+if (typeof check === "string") {
+  return `Test suite is still running in the background. Wait for completion before repairing.\n${check}`;
+}
 if (check.exit_code === 0) return "Passed";
 const round = load("repair:round") ?? 0;
 if (round >= 3) return "Still failing after three repair attempts.";
+const output = typeof check.output === "string" ? check.output.slice(-2000) : "";
 const r = await tools.subagent({
   agent: "debugger",
-  task: `Repair the test failure; don't suppress the test.\n${check.output.slice(-2000)}`,
+  task: `Repair the test failure; don't suppress the test.\n${output}`,
 });
 store("repair:round", round + 1);
 store("repair:last", r.tasks);
 return r.tasks;
 ```
 
-Run only after the previous child settles, and stop on refusal, missing prerequisites, or approval gates. On restart, inspect the checkout and rerun the check before spending another round.
+When `bash` exceeds its foreground observation budget (10 seconds by default), it yields to the background and returns a plain status string instead of structured output. Passing a larger `budgetMs` and checking `typeof check === "string"` avoids crashing on slower test suites.
+
+Run a new repair round only after the previous subagent settles, and stop on refusal, missing prerequisites, or approval gates. On restart, inspect the checkout and rerun the check before spending another round.
 
 ## Stacked slices
 
@@ -159,4 +174,4 @@ store("cli-slice", r.tasks);
 return r.tasks;
 ```
 
-Verify each slice against its base and run full integration checks at the tip. Run independent slices in parallel instead.
+Because `worker` defaults to `context: "fork"`, each slice sees the main chat's verified decisions unless you pass `context: "fresh"`. Named worktrees keep their branches and do not symlink `node_modules`. Verify each slice against its base and run full integration checks at the tip. Run independent slices in parallel instead.

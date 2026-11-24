@@ -2,13 +2,13 @@
 
 `@bastani/web-access` is Atomic's bundled extension for web search, webpage and PDF extraction, GitHub repository cloning, DeepWiki code search, and YouTube and local video analysis.
 
-See the [web access guide](https://docs.bastani.ai/web-access) for usage examples and fetch argument troubleshooting.
+See the [web access guide](https://docs.bastani.ai/web-access) for usage examples and fetch troubleshooting.
 
 ## Setup
 
 Atomic bundles `@bastani/web-access` with `@bastani/atomic`. No separate installation is required.
 
-`web_search` works with no API keys through Exa's keyless MCP endpoint. For direct API access or additional providers, set environment variables (`EXA_API_KEY`, `PERPLEXITY_API_KEY`, `GEMINI_API_KEY`) or add keys to `~/.atomic/web-search.json`:
+`web_search` works with no API keys through Exa's keyless MCP endpoint. For direct API access or additional providers, export environment variables (`EXA_API_KEY`, `PERPLEXITY_API_KEY`, `GEMINI_API_KEY`) or add keys to `~/.atomic/web-search.json`:
 
 ```json
 {
@@ -20,7 +20,7 @@ Atomic bundles `@bastani/web-access` with `@bastani/atomic`. No separate install
 
 When `~/.atomic/web-search.json` is absent, Atomic checks legacy `~/.pi/web-search.json` without merging the two files.
 
-In `auto` mode (the default), `web_search` tries Exa first (direct API if keyed, MCP if not), then Perplexity, then Gemini API, and then Gemini Web when browser cookie access is enabled.
+In `auto` mode (the default), `web_search` tries Exa first (direct API if keyed, keyless MCP if not), then Perplexity, then Gemini API, and then Gemini Web when browser cookie access is enabled.
 
 Optional binaries for video frame extraction:
 
@@ -55,11 +55,7 @@ fetch_content({ urls: ["/path/to/recording.mp4"], prompt: "What error appears on
 
 ## Tools
 
-The extension registers all four tools at startup and shares one lazy initialization attempt on first use. Tool calls wait for initialization and active-session replay before provider work starts. A failed initializer or replay can be retried by a later call.
-
-Initialization and replay are leased to the active session. Session shutdown retires the lease and cleans up its candidate, so calls spanning shutdown reject and a restarted session creates a fresh provider instance. An abort during the shared wait cancels only that invocation. Host cancellation after provider or curator work rejects with the host abort reason. An explicit user cancellation in the curator returns `{ cancelled: true, cancelReason: "user" }`. Resetting the initialization attempt does not re-evaluate an ESM module whose module evaluation threw.
-
-In batch search and fetch calls, partial success stays usable and retains item-level errors. A nonempty batch where every provider request or URL fetch fails reports through Atomic's tool-error channel with aggregate stage metadata while keeping per-item diagnostics in the result.
+All four tools register at startup and initialize on first use. In batch search and fetch calls, partial successes remain usable alongside per-item errors; if every item in a batch fails, the tool returns an error with diagnostics for each item. Cancelling inside the browser curator returns `{ cancelled: true, cancelReason: "user" }`.
 
 ### `web_search`
 
@@ -77,7 +73,7 @@ web_search({ query: "release notes", includeContent: true })
 | Parameter | Description |
 | --- | --- |
 | `query` / `queries` | Single query or array of queries searched in sequence. |
-| `numResults` | Results per query (default 5, max 20). |
+| `numResults` | Results per query (default `5`, max `20`). |
 | `recencyFilter` | `day`, `week`, `month`, or `year`. |
 | `domainFilter` | Limit to domains, or prefix a domain with `-` to exclude it. |
 | `provider` | `auto` (default), `exa`, `perplexity`, or `gemini`. |
@@ -96,15 +92,15 @@ code_search({ repoName: "expressjs/express", query: "How is middleware error han
 | --- | --- |
 | `repoName` | Required single public GitHub repository in `owner/repo` format, not a URL or list. |
 | `query` | Required nonempty question about that repository, sent verbatim to DeepWiki's `ask_question`. |
-| `maxTokens` | Optional best-effort local output bound, roughly four characters per token, with a truncation notice (default 5000, range 1000 to 50000). |
+| `maxTokens` | Optional best-effort local output bound, roughly four characters per token, with a truncation notice (default `5000`, range `1000` to `50000`). |
 
 Requests have a 60-second deadline and honor caller cancellation. Errors and empty responses are reported directly without falling back to `web_search`. Use `web_search` for broader discovery or unindexed repositories.
 
 ### `fetch_content`
 
-Fetch URLs or local video paths and return readable markdown. The tool detects GitHub repositories, YouTube videos, PDFs, local video files, and regular webpages automatically.
+Fetch URLs or local video paths and return readable Markdown. The tool detects GitHub repositories, YouTube videos, PDFs, local video files, and regular webpages automatically.
 
-Always pass the lowercase `urls` field as a nonempty array of strings, even for one target. Legacy `{ url: "..." }` calls, empty arrays, empty strings, object entries, and unrecognized fields are rejected before fetching. Atomic's argument normalization can convert a scalar `urls` string into a one-item array, so prompts and integrations should send the documented array form.
+Always pass the lowercase `urls` field as a nonempty array of strings, even for one target. Legacy `{ url: "..." }` calls, empty arrays, empty strings, object entries, and unrecognized fields are rejected before fetching.
 
 ```typescript
 fetch_content({ urls: ["https://example.com/article"] })
@@ -120,9 +116,9 @@ fetch_content({ urls: ["https://youtube.com/watch?v=abc"], timestamp: "23:41-25:
 | `urls` | Required nonempty array of URL or local video path strings. |
 | `prompt` | Question for YouTube or local video analysis. Ignored for webpages. |
 | `timestamp` | Video frame extraction time: seconds (`"85"`), a single time (`"23:41"`), or a range (`"23:41-25:00"`). Ignored for non-video inputs. |
-| `frames` | Number of video frames to extract (1 to 12). Alone, samples the whole video; with a range, defaults to 6 unless set; with a single timestamp, uses 5-second intervals. Ignored for non-video inputs. |
+| `frames` | Number of video frames to extract (`1` to `12`). Alone, samples the whole video; with a range, defaults to `6` unless set; with a single timestamp, uses 5-second intervals. Ignored for non-video inputs. |
 | `model` | Gemini model override for YouTube or local video analysis only. Does not change webpage extraction. |
-| `forceClone` | Allow cloning a GitHub repository that exceeds `githubClone.maxRepoSizeMB` (default 350 MB). |
+| `forceClone` | Allow cloning a GitHub repository that exceeds `githubClone.maxRepoSizeMB` (default `350` MB). |
 
 ### `get_search_content`
 
@@ -132,7 +128,16 @@ Retrieve stored content from earlier `web_search` or `fetch_content` calls. Inli
 get_search_content({ responseId: "abc123", urlIndex: 0 })
 get_search_content({ responseId: "abc123", url: "https://example.com/article" })
 get_search_content({ responseId: "abc123", query: "original query" })
+get_search_content({ responseId: "abc123", queryIndex: 0 })
 ```
+
+| Parameter | Description |
+| --- | --- |
+| `responseId` | Required response ID from a previous `web_search` or `fetch_content` result. |
+| `query` | Retrieve the stored result for a specific `web_search` query string. |
+| `queryIndex` | Retrieve the stored `web_search` query result by zero-based index. |
+| `url` | Retrieve the stored page content for a specific URL. |
+| `urlIndex` | Retrieve the stored page content by zero-based index. |
 
 ## Capabilities
 
@@ -146,7 +151,7 @@ By default, clones go to an owner-only `github-repos` directory under `$XDG_RUNT
 
 ### YouTube videos
 
-YouTube URLs use Gemini for visual descriptions, timestamped transcripts, and chapter markers. Pass `prompt` to ask a specific question about the video. Results include the video thumbnail when available.
+YouTube URLs use Gemini for visual descriptions, timestamped transcripts, and chapter markers. Pass `prompt` to ask a specific question about the video. Results include the video thumbnail when available. Setting `youtube.enabled: false` disables both YouTube analysis and YouTube frame extraction.
 
 Fallback order is Gemini Web (when browser cookies are enabled), then Gemini API, and then Perplexity (text summary only). Supported URL formats include `/watch?v=`, `youtu.be/`, `/shorts/`, `/live/`, `/embed/`, and `/v/`.
 
@@ -172,7 +177,7 @@ Frame extraction requires `ffmpeg`, plus `yt-dlp` for YouTube. Timestamps accept
 
 ### PDFs
 
-PDF URLs up to 20 MB are extracted as text (up to 100 pages) and saved to `~/Downloads/` as markdown files with unique names so concurrent fetches do not overwrite existing files. The agent can then inspect sections with `read` without loading the whole file into context. Extraction is text-only and does not perform OCR.
+PDF URLs up to 20 MB are extracted as text (up to 100 pages) and saved to `~/Downloads/` as Markdown files with unique names so concurrent fetches do not overwrite existing files. The agent can then inspect sections with `read` without loading the whole file into context. Extraction is text-only and does not perform OCR.
 
 ### Blocked pages
 
@@ -194,7 +199,7 @@ Only `http` and `https` URLs are fetched. URLs with embedded credentials, local 
 - Local video paths use Gemini API (Files API), then Gemini Web when browser cookies are enabled.
 - GitHub repository URLs clone locally, or use the GitHub API for large repositories and full commit SHAs.
 - YouTube URLs use Gemini Web when browser cookies are enabled, then Gemini API, and then Perplexity.
-- HTTP and HTTPS URLs branch by content type. PDFs extract text to markdown in `~/Downloads/`. HTML runs Readability, the RSC parser, Jina Reader, and then Gemini fallback. Plain text, JSON, and Markdown return directly.
+- HTTP and HTTPS URLs branch by content type. PDFs extract text to Markdown in `~/Downloads/`. HTML runs Readability, the RSC parser, Jina Reader, and then Gemini fallback. Plain text, JSON, and Markdown return directly.
 
 ## Commands
 
@@ -217,10 +222,11 @@ Toggle or configure the curator workflow at runtime:
 /curator
 /curator on
 /curator off
+/curator none
 /curator summary-review
 ```
 
-This command saves `workflow` to `~/.atomic/web-search.json` and takes effect on the next `web_search` call. When disabled (the default), `web_search` returns raw results without opening a browser window. Subagents and non-interactive sessions always skip the curator and return raw results.
+This command saves `workflow` to `~/.atomic/web-search.json` and takes effect on the next `web_search` call. When disabled (`none`, the default), `web_search` returns raw results without opening a browser window. Subagents and non-interactive sessions always skip the curator and return raw results.
 
 ### `/search`
 
@@ -228,11 +234,14 @@ Browse stored search and fetch results from the current session interactively, i
 
 ### `/google-account`
 
-Show the Google account currently authenticated for Gemini Web. This helps verify the active account when multiple Chromium profiles exist or `chromeProfile` is set.
+Show the Google account currently authenticated for Gemini Web locally without triggering a model turn. This helps verify the active account when multiple Chromium profiles exist or `chromeProfile` is set.
 
-## Activity monitor
+## Keyboard shortcuts and activity monitor
 
-Press `Ctrl+Shift+W` to toggle live request and response tracking:
+| Shortcut | Default | Action |
+| --- | --- | --- |
+| `shortcuts.curate` | `Ctrl+Shift+S` | Open the browser search curator while a search is running. |
+| `shortcuts.activity` | `Ctrl+Shift+W` | Toggle the live request and response activity monitor. |
 
 ```text
 ─── Web Search Activity ────────────────────────────────────
@@ -242,21 +251,23 @@ Press `Ctrl+Shift+W` to toggle live request and response tracking:
 ────────────────────────────────────────────────────────────
 ```
 
+Override shortcuts in `~/.atomic/web-search.json` using Atomic keybinding syntax (`ctrl+s`, `ctrl+shift+s`, `alt+r`). Shortcut changes take effect on the next Atomic restart.
+
 ## Configuration
 
-Store settings in `~/.atomic/web-search.json`. Every field is optional.
+Store settings in `~/.atomic/web-search.json`. Every field is optional. Environment variables (`EXA_API_KEY`, `PERPLEXITY_API_KEY`, `GEMINI_API_KEY`) take precedence over keys in the JSON file.
 
 ```json
 {
   "exaApiKey": "exa-...",
   "perplexityApiKey": "pplx-...",
   "geminiApiKey": "AIza...",
-  "provider": "exa",
+  "provider": "auto",
   "chromeProfile": "Profile 2",
   "allowBrowserCookies": false,
-  "searchModel": "gemini-2.5-flash",
+  "searchModel": "gemini-3-flash-preview",
   "summaryModel": "anthropic/claude-haiku-4-5",
-  "workflow": "summary-review",
+  "workflow": "none",
   "curatorTimeoutSeconds": 20,
   "githubClone": {
     "enabled": true,
@@ -280,32 +291,28 @@ Store settings in `~/.atomic/web-search.json`. Every field is optional.
 }
 ```
 
-- `EXA_API_KEY`, `PERPLEXITY_API_KEY`, and `GEMINI_API_KEY` environment variables take precedence over keys in `~/.atomic/web-search.json`.
-- `provider` sets the default search provider (`"auto"`, `"exa"`, `"perplexity"`, or `"gemini"`). Changing the provider in the curator UI updates this field automatically.
-- `workflow` sets the curator mode to `"none"` (default, raw results) or `"summary-review"` (opens the curator with a generated summary draft).
-- `chromeProfile` overrides the Chromium profile directory used for Gemini Web cookie lookup.
-- `allowBrowserCookies` enables Chromium cookie extraction for Gemini Web. It defaults to `false` to avoid unexpected macOS Keychain prompts. You can also enable it per process with `ATOMIC_ALLOW_BROWSER_COOKIES=1`.
-- `searchModel` overrides the Gemini API model used by `web_search` without changing URL, YouTube, or video extraction defaults.
-- `summaryModel` sets the preferred model for summary drafts in the curator UI, such as `"anthropic/claude-haiku-4-5"`. Only models available in your model registry are eligible; if the configured model is unavailable, the curator falls back to its built-in preference list.
-- `curatorTimeoutSeconds` sets the initial curator idle timeout in seconds (default `20`, max `600`). You can adjust the timer inside the curator UI.
-- Set `"enabled": false` under `githubClone`, `youtube`, or `video` to disable that feature.
+| Setting | Default | Description |
+| --- | --- | --- |
+| `exaApiKey`, `perplexityApiKey`, `geminiApiKey` | unset | Provider API keys. Matching environment variables take precedence. |
+| `provider` | `"auto"` | Default search provider (`"auto"`, `"exa"`, `"perplexity"`, or `"gemini"`). Switching the provider in the curator UI updates the active config immediately. |
+| `workflow` | `"none"` | Curator mode: `"none"` (raw results) or `"summary-review"` (opens the curator with a generated summary draft). |
+| `searchModel` | `"gemini-3-flash-preview"` | Gemini API model used by `web_search` without changing URL, YouTube, or video extraction defaults. |
+| `summaryModel` | built-in preference list | Preferred model for curator summary drafts (must be available in your model registry). |
+| `curatorTimeoutSeconds` | `20` | Initial curator idle timeout in seconds (max `600`). |
+| `allowBrowserCookies` | `false` | Enable Chromium cookie extraction for Gemini Web (also controllable per process with `ATOMIC_ALLOW_BROWSER_COOKIES=1`). |
+| `chromeProfile` | auto-detected | Override Chromium profile directory for Gemini Web cookie lookup. |
+| `githubClone.enabled` | `true` | Enable local GitHub repository cloning in `fetch_content`. |
+| `githubClone.maxRepoSizeMB` | `350` | Size threshold above which `fetch_content` falls back to the GitHub API unless `forceClone: true`. |
+| `githubClone.cloneTimeoutSeconds` | `30` | Timeout in seconds for `git clone`. |
+| `githubClone.clonePath` | system cache dir | Override directory for cloned repositories. |
+| `youtube.enabled` | `true` | Enable YouTube analysis and frame extraction. |
+| `youtube.preferredModel` | `"gemini-3-flash-preview"` | Preferred Gemini model for YouTube analysis. |
+| `video.enabled` | `true` | Enable local video analysis. |
+| `video.preferredModel` | `"gemini-3-flash-preview"` | Preferred Gemini model for local video analysis. |
+| `video.maxSizeMB` | `50` | Maximum local video file size in MB. |
+| `shortcuts.curate` / `shortcuts.activity` | `ctrl+shift+s` / `ctrl+shift+w` | Keyboard shortcuts for curator and activity monitor. |
 
-Most config file edits require restarting Atomic to take effect.
-
-### Shortcuts
-
-Override keyboard shortcuts in `~/.atomic/web-search.json`:
-
-```json
-{
-  "shortcuts": {
-    "curate": "ctrl+shift+s",
-    "activity": "ctrl+shift+w"
-  }
-}
-```
-
-Values use Atomic keybinding syntax, such as `ctrl+s`, `ctrl+shift+s`, or `alt+r`. Changes take effect on the next Atomic restart.
+Most config file edits require restarting Atomic to take effect (switching provider or `/curator` in a running session updates active config immediately).
 
 ### Rate limits and concurrency
 
@@ -320,40 +327,6 @@ Perplexity requests are rate-limited on the client to 10 requests per minute. `f
 - GitHub branch names containing slashes may misresolve file paths inside `/tree/` or `/blob/` URLs. The local clone still works and the agent can inspect files directly.
 - Non-code GitHub URLs (issues, pull requests, discussions, releases, and wikis) fall through to regular webpage extraction.
 
-<details>
-<summary>Package files</summary>
+## License
 
-| File | Purpose |
-| --- | --- |
-| `index.ts` | Lazy extension entry point, tool schemas, commands, and shortcut registration. |
-| `index-heavy.ts` | Heavy feature wiring and `/curator`, `/google-account`, and `/search` commands. |
-| `config-paths.ts` | User config file resolution (`~/.atomic/web-search.json` with legacy fallback). |
-| `web-search-tool.ts` | `web_search` tool execution and curator integration. |
-| `web-search-command.ts` | `/websearch` command handler. |
-| `web-search-config.ts` | Search config loading, saving, and provider selection. |
-| `content-tools.ts` | `fetch_content`, `code_search`, and `get_search_content` execution. |
-| `curator-page.ts` | HTML, CSS, and client script assembly for the curator UI. |
-| `curator-server.ts` | Local HTTP server with SSE streaming for the curator UI. |
-| `summary-review.ts` | Summary prompt construction, model draft generation, and deterministic fallback. |
-| `exa.ts` | Exa direct API and keyless MCP client with usage tracking. |
-| `code-search.ts` | Repository question answering through DeepWiki MCP. |
-| `extract.ts` | URL and local path routing, HTTP fetching, and fallback orchestration. |
-| `extract-frames.ts` | Video frame extraction through `ffmpeg` and `yt-dlp`. |
-| `gemini-search.ts` | Search routing across Exa, Perplexity, Gemini API, and Gemini Web. |
-| `gemini-url-context.ts` | Gemini URL Context and Gemini Web extraction fallbacks. |
-| `gemini-web.ts` | Gemini Web client using Chromium cookies. |
-| `gemini-web-config.ts` | Gemini Web profile and browser-cookie opt-in config. |
-| `gemini-api.ts` | Gemini REST API client. |
-| `chrome-cookies.ts` | macOS and Linux Chromium cookie extraction. |
-| `youtube-extract.ts` | YouTube URL detection and extraction fallback chain. |
-| `video-extract.ts` | Local video detection, Files API upload, and Gemini analysis. |
-| `github-config.ts` | GitHub URL validation and clone cache configuration. |
-| `github-extract.ts` | GitHub repository cloning, caching, and tree or file rendering. |
-| `github-api.ts` | GitHub API fallback for large repositories and commit SHAs. |
-| `perplexity.ts` | Perplexity API client with client-side rate limiting. |
-| `pdf-extract.ts` | PDF text extraction and markdown saving to `~/Downloads/`. |
-| `rsc-extract.ts` | Next.js RSC flight data parser. |
-| `storage.ts` | Session-aware stored result cache. |
-| `activity.ts` | Request and response tracking for the activity widget. |
-
-</details>
+MIT. See [LICENSE](LICENSE).

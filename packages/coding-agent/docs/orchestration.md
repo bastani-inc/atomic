@@ -1,17 +1,16 @@
 ---
-title: "Orchestration with codemode and subagents"
-description: "Run multi-step work in chat, keep track of background children, and convert an earlier workflow file into a reusable skill."
+title: "Orchestrate with codemode and subagents"
+sidebarTitle: "Orchestration"
+description: "Coordinate parallel subagents from codemode, handle results as they finish, and recover after interruptions."
 ---
-
-# Orchestration with codemode and subagents
 
 Describe the outcome you want and how to verify it. For example: "Review the installation guide for Linux and Windows in parallel. Report any commands that do not match the CLI. Do not edit files."
 
-The parent chat decides whether to answer directly, run checks in [codemode](/codemode), or split work across [subagents](/subagents).
+Your main session decides whether to answer directly, run checks in [codemode](/codemode), or split work across [subagents](/subagents).
 
 ## Launch now, use the result later
 
-The snippet below is JavaScript that the parent model runs inside `codemode`, not a file you install. Run `/tools` if your session uses a custom tool list to confirm `codemode` and `subagent` are active.
+The snippet below is JavaScript that your main session runs inside `codemode`, not a file you install. Run `/tools` if your session uses a custom tool list to confirm `codemode` and `subagent` are active.
 
 ```js
 const launch = await tools.subagent({
@@ -24,37 +23,39 @@ store("guide-review", launch.tasks);
 return launch.tasks;
 ```
 
-- **Admission, not completion.** `await` resolves once children are admitted. Admitted or queued slots return `{ taskId, childId }`; refused slots return `{ reason }` with no running child. The parent can continue working or end its turn. Completion notices return results automatically, and `/tasks` lets you inspect children directly.
-- **Explicit wait.** When a later step needs a result immediately, wait briefly without launching a second child:
+- **Launch, not completion.** `await` resolves as soon as subagents start or enter the queue. Started or queued slots return `{ taskId, childId, agent, state: "admitted" | "queued", intercomTarget? }` (`intercomTarget` is included when Intercom is enabled for the subagent). Refused slots return `{ agent, state: "refused", reason }` with no running subagent. Your main session can continue working or end its turn while completion notices return results automatically, and `/tasks` lets you inspect subagents directly.
+- **Explicit parallel batches.** Separate `tools.subagent()` calls inside codemode are not merged into one burst. Pass `tasks: [...]` when you want a parallel batch.
+- **Explicit wait.** When a later step needs a result immediately, wait briefly without launching a second subagent. The `// @options` comment sets per-script [codemode options](/codemode) such as `timeout_ms` (codemode scripts have a 256 MiB memory limit and no default timeout):
 
 ```js
 // @options: {"timeout_ms": 10000}
 const task = load("guide-review").find((t) => t.taskId);
-if (!task) return "No review was admitted.";
+if (!task) return "No review was started.";
 return await tools.subagent({ action: "wait", id: task.taskId, budgetMs: 2000 });
 ```
 
-- **Cancellation and evidence.** Hitting `budgetMs` or interrupting the script never stops an admitted child. Use `tools.subagent({ action: "quit", id: childId })` to stop it. Treat actual child results and status, not launch receipts, as evidence, and account for every required child in joint reviews.
-- **Flat delegation.** Only the parent launches subagents. If a child uncovers follow-up work, it reports back so the parent can launch the next batch.
-- **Peer messaging.** Pass `group: true` or a shared named `group` so children can coordinate over Intercom. Address them with the exact `intercomTarget` from the launch receipt ([Intercom from codemode](/intercom/reference#from-codemode-scripts)). A delivery acknowledgement is not a task result.
+  Inside codemode, `tools.subagent({ action: "wait" })` defaults to a 30-second budget even when a host configures unlimited foreground waits.
+- **Cancellation and evidence.** Hitting `budgetMs`, returning early, or interrupting the script never stops an already-launched subagent (unawaited tool calls are cancelled when the script returns, while already-launched background subagents keep running). Use `tools.subagent({ action: "quit", id: childId })` to stop one. Treat actual subagent results and status, not launch receipts, as evidence, and account for every required subagent in joint reviews.
+- **One-level delegation.** Only the main session launches subagents. If a subagent uncovers follow-up work, it reports back so the main session can launch the next batch.
+- **Peer messaging.** Pass `group: true` to create a unique shared Intercom group for that batch, or pass a shared named `group`. Peer isolation keeps unrelated sessions out while `contact_supervisor` still reaches the main session across groups. Address subagents with the exact `intercomTarget` from the launch result ([Intercom from codemode](/intercom/reference#from-codemode-scripts)). A delivery acknowledgement is not a task result.
 
-## What survives interruption?
+## What survives interruption
 
-Children are persisted sessions; codemode scripts are not checkpointed programs.
+Subagents are persisted sessions; codemode scripts are not checkpointed programs.
 
-- Reopening the original parent session automatically restores unfinished children. Paused or quit children resume from `/tasks` or `tools.subagent({ action: "resume", id: childId })`.
-- The parent resumes in chat from notices, saved results, and decisions instead of re-entering an old JavaScript loop.
-- Save small handoff state, such as task IDs, round count, and next checks, with [the codemode store](/codemode#store-values), which persists per branch when a script succeeds. Tool side effects happen even if a script later fails, so inspect `/tasks`, chat, and changed files before retrying.
-- On recovery, call `await tools.subagent({ action: "status" })` and reconcile `children` against stored `childId` values. Collect finished results, resume paused work that is still needed, and relaunch missing children only after checking what they left behind.
+- Reopening the original main session automatically restores running subagents. Paused or quit subagents resume from `/tasks` or `tools.subagent({ action: "resume", id: childId })`.
+- Your main session resumes in chat from completion notices, saved results, and decisions instead of re-entering an old JavaScript loop.
+- Save small handoff state, such as task IDs, round count, and next checks, with [the codemode store](/codemode#store-values), which persists per branch only when a script succeeds. If a script throws or times out, all `store()` writes from that script are discarded, even though any `tools.subagent()` launches already started. Inspect `/tasks`, chat, and changed files before retrying.
+- On recovery, call `await tools.subagent({ action: "status" })` and reconcile `children` against stored `childId` values. Collect finished results, resume paused work that is still needed, and relaunch missing subagents only after checking what they left behind.
 
 ## Choose a pattern
 
 - [Classify-and-act](/orchestration/patterns#classify-and-act) triages input first, then dispatches the matching specialist.
-- [Fan-out-and-synthesize](/orchestration/patterns#fan-out-and-synthesize) splits an analysis across parallel children and reconciles their findings.
-- [Adversarial verification](/orchestration/patterns#adversarial-verification) asks an independent child to break a candidate.
+- [Fan-out-and-synthesize](/orchestration/patterns#fan-out-and-synthesize) splits an analysis across parallel subagents and reconciles their findings.
+- [Adversarial verification](/orchestration/patterns#adversarial-verification) asks an independent subagent to break a candidate.
 - [Generate-and-filter](/orchestration/patterns#generate-and-filter) collects candidates and keeps only those passing a deterministic check.
 - [Tournament](/orchestration/patterns#tournament) compares competing implementations on shared fixtures.
 - [Loop-until-done](/orchestration/patterns#loop-until-done) runs verification checks between bounded repair rounds.
 - [Stacked slices](/orchestration/patterns#stacked-slices) branches each dependent slice from the verified prior commit.
 
-To migrate an earlier workflow file or built-in name, see [Convert an earlier workflow into a skill](/orchestration/migrating-workflows). To save new repeatable procedures, use a [skill](/skills#skills-as-workflows).
+To migrate an earlier workflow file or built-in name, see [Migrate an earlier workflow to a skill](/orchestration/migrating-workflows). To save new repeatable procedures, use a [skill](/skills#skills-as-workflows).

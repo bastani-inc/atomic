@@ -1,16 +1,16 @@
 ---
 title: "@bastani/atomic-ai"
-sidebarTitle: "AI"
-description: "Unified LLM API: providers, models, auth, streaming, tools, images, classification and thinking."
+sidebarTitle: "@bastani/atomic-ai"
+description: "Unified LLM API for providers, models, auth, streaming, tool calling, images, classification, and thinking."
 ---
 
-`@bastani/atomic-ai` is the LLM library Atomic itself runs on. It ships in every Atomic release at Atomic's version, and you can install it on its own:
+`@bastani/atomic-ai` is the LLM library Atomic runs on (requires Node.js 22.19+). It ships in every Atomic release at Atomic's version, and you can install it independently:
 
 ```bash
 npm install @bastani/atomic-ai
 ```
 
-Inside an Atomic extension, import it without installing it because the host provides it. See [Libraries](/libraries) for how the packages fit together and for legacy package names that still resolve inside Atomic.
+Inside an Atomic extension, import it without installing it because the host provides it. See [Standalone libraries](/libraries) for how the packages fit together and for legacy package names that still resolve inside Atomic.
 
 `@bastani/atomic-ai` provides one LLM API across providers with provider collections, automatic auth resolution, token and cost tracking, and JSON-serializable contexts for mid-session model handoffs.
 
@@ -18,14 +18,14 @@ Inside an Atomic extension, import it without installing it because the host pro
 
 ## Supported providers
 
-- **OpenAI** (API key or Sign in with ChatGPT; separate `openai-images` and `openai-decisions` providers share OpenAI API keys)
+- **OpenAI** (`openai`: API key or Sign in with ChatGPT OAuth; `openai-api` via `openaiApiProvider()`: dedicated API-key-only provider so API billing stays separate from ChatGPT OAuth; separate `openai-images` and `openai-decisions` providers share OpenAI API keys)
 - **Ant Ling**
 - **Azure** (Azure OpenAI Responses and Microsoft Foundry Chat Completions)
 - **OpenAI Codex** (ChatGPT subscription via OAuth)
 - **TypeSafe** (System One classifier API)
 - **DeepSeek**
 - **NVIDIA NIM**
-- **Anthropic** (API key, bearer token, workload identity federation, or Claude Pro/Max OAuth)
+- **Anthropic** (`anthropic`: API key, bearer token, workload identity federation, or Claude Pro/Max OAuth; `anthropic-api` via `anthropicApiProvider()`: dedicated API-key-only provider so API billing stays separate from Claude Pro/Max OAuth)
 - **Google**
 - **Vertex AI** (Gemini via Google Cloud Vertex AI)
 - **Mistral**
@@ -60,7 +60,12 @@ Inside an Atomic extension, import it without installing it because the host pro
 npm install @bastani/atomic-ai
 ```
 
-`@bastani/atomic-ai` re-exports TypeBox's `Type`, `Static`, and `TSchema`.
+Requires Node.js 22.19 or newer.
+
+Key root and subpath exports:
+
+- Root `@bastani/atomic-ai`: `createModels`, `createProvider`, `Type`/`Static`/`TSchema` (re-exported from TypeBox), thinking helpers (`DEFAULT_THINKING_BUDGETS`, `fittedThinkingBudget`, `thinkingBudgetForLevel`, `getSupportedThinkingLevels`, `clampThinkingLevel`), `OAuthRefreshRejectedError`, `GitHubCopilot*Error`, `cleanupSessionResources`, and `PI_AI_VERSION`.
+- Subpaths: `@bastani/atomic-ai/providers/<provider>`, `@bastani/atomic-ai/providers/all`, `@bastani/atomic-ai/api/<api-id>`, `@bastani/atomic-ai/session-resources`, `@bastani/atomic-ai/bun-oauth`, `@bastani/atomic-ai/oauth`, and `@bastani/atomic-ai/compat`.
 
 ## Quick start
 
@@ -1774,6 +1779,8 @@ Rules:
 
 Avoid `@bastani/atomic-ai/compat` in new bundled apps because it preserves the legacy global API and pulls in the full built-in catalog.
 
+### Bundler troubleshooting
+
 For single-file Node ESM bundles, some SDK dependencies may still use dynamic CommonJS `require()` internally. If you see errors such as `Dynamic require of "child_process" is not supported`, add a Node `require` shim to the bundle. With esbuild:
 
 ```bash
@@ -1913,15 +1920,17 @@ Official docs: [Application Default Credentials](https://cloud.google.com/docs/a
 
 ### CLI login
 
-The quickest way to authenticate:
+`@bastani/atomic-ai` ships the `atomic-ai` binary (with `pi-ai` kept as a legacy alias) to log into built-in **OAuth** providers:
 
 ```bash
-npx @bastani/atomic-ai login              # interactive provider selection
-npx @bastani/atomic-ai login anthropic    # login to specific provider
-npx @bastani/atomic-ai list               # list available providers
+npx @bastani/atomic-ai login              # interactive OAuth provider selection
+npx @bastani/atomic-ai login anthropic    # log into a specific OAuth provider
+npx @bastani/atomic-ai list               # list OAuth-enabled providers
+# Or when installed locally/globally:
+atomic-ai login anthropic
 ```
 
-Credentials are saved to `auth.json` in the current directory.
+The CLI lists only providers that support OAuth (`provider.auth.oauth`), and writes credentials to `auth.json` in the current working directory with owner-only permissions (`0600`).
 
 ### Programmatic OAuth
 

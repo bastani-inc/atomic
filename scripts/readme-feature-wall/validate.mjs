@@ -42,7 +42,7 @@ const FEATURED_REQUIRED = [
 	["5.4", "Escalating to a human supervisor", "Intercom", "/intercom"],
 	["5.5", "Intercom context handoff", "Intercom", "/intercom"],
 	["5.1", "Delegating to bundled specialists", "Subagents", "/subagents"],
-	["2.2", "Context compaction", "Compaction", "/compaction"],
+	["2.2", "Context compaction", "Compaction", "/compaction", "Verbatim compaction"],
 ];
 const REMAINING_REQUIRED = [
 	["1.3", "The agent interviews you", "Built-in tools", "/tools"],
@@ -55,7 +55,7 @@ const REMAINING_REQUIRED = [
 	["4.2", "Local models via models.json", "Custom models", "/models"],
 	["4.1", "Headless print and JSON mode", "JSON event stream", "/json"],
 	["2.1", "Branching with tree, fork, clone", "Sessions", "/sessions"],
-	["2.3", "Sessions are just JSONL", "Session format", "/session-format"],
+	["2.3", "SQLite and JSONL sessions", "Session format", "/session-format", "Sessions are just JSONL"],
 	["1.1", "Your first session", "Using Atomic", "/usage"],
 	["1.4", "File-based todos", "Built-in tools", "/tools"],
 	["5.6", "A handoff command of your own", "Prompt templates", "/prompt-templates"],
@@ -316,7 +316,7 @@ const has = (bin) => {
 	const orders = new Set();
 	const sources = new Set();
 	const media = new Set();
-	REQUIRED.forEach(([id, title, docsLabel, docsPath], i) => {
+	REQUIRED.forEach(([id, title, docsLabel, docsPath, lessonTitle = title], i) => {
 		const l = lessons[i];
 		if (!l) {
 			fail("lessons", `missing lesson at position ${i + 1} (${id})`);
@@ -324,8 +324,8 @@ const has = (bin) => {
 		}
 		if (l.id !== id) fail("lessons", `position ${i + 1}: expected ${id}, found ${l.id}`);
 		if (l.order !== i + 1) fail("lessons", `${l.id}: order is ${l.order}, expected ${i + 1}`);
-		if (l.lesson !== `${id} ${title}`)
-			fail("lessons", `${id}: expected exact lesson label "${id} ${title}", found "${l.lesson}"`);
+		if (l.lesson !== `${id} ${lessonTitle}`)
+			fail("lessons", `${id}: expected exact lesson label "${id} ${lessonTitle}", found "${l.lesson}"`);
 		if (l.title !== title) fail("lessons", `${id}: course title must remain "${title}", found "${l.title}"`);
 		if (l.display_title !== undefined) fail("lessons", `${id}: unexpected display_title`);
 		const expectedDocsUrl = `${DOCS_URL}${docsPath}`;
@@ -502,7 +502,7 @@ const has = (bin) => {
 			"bun add -g @bastani/atomic",
 			"Atomic stores provider credentials in `~/.atomic/agent/auth.json`",
 			"<summary><b>Devcontainer, terminal, and SDK references</b></summary>",
-			"Inspect the existing skill `<skill-name-or-path>`",
+			"Atomic implements the Agent Skills standard",
 			"Install and set up Atomic by following https://docs.bastani.ai/llms.txt.",
 		]) {
 			if (!setup.includes(snippet)) fail("readme", `Get started is missing detailed setup copy: ${snippet}`);

@@ -1,15 +1,14 @@
 ---
-title: First session
-description: Start Atomic, run a first task, and inspect background work.
+title: "Run your first session"
+sidebarTitle: "First session"
+description: "Start Atomic in a repository, run your first task, inspect background work, and verify saved sessions."
 ---
-
-# First session
 
 **Outcome:** You complete one interactive task and verify its saved session.
 
-**Prerequisites:** [Authentication](/getting-started/authentication) is complete.
+**Prerequisites:** [Authenticate a provider](/getting-started/authentication) is complete.
 
-## First session
+## Start Atomic
 
 Start Atomic in a repository directory:
 
@@ -18,7 +17,7 @@ cd /path/to/project
 atomic
 ```
 
-On a fresh install with no prior startup state, Atomic displays a one-time overview above the input box (after any What's New notes). Returning users skip it automatically; stored credentials alone do not skip it.
+The first time you open an empty interactive session with no initial prompt on the command line, Atomic displays a one-time overview above the input box (after any What's New notes). Returning users skip it automatically; stored credentials alone do not skip it.
 
 The prompt is ready immediately. Type a request, run `/login` to connect a provider, or run `/agents` to browse available subagents.
 
@@ -30,7 +29,7 @@ Run a bounded task in a repository you know:
 List the top-level directories in this repository and say what each one holds.
 ```
 
-Expected result: Atomic streams a response, calls `read` on a directory, `find`, or `bash` at least once — each tool call is shown inline as it runs — and finishes with a summary naming directories that actually exist in your checkout. If it names nothing from your repository, quit, `cd` into the repository, and start Atomic again.
+Expected result: Atomic streams a response and calls `read`, `find`, or `bash` at least once, showing each tool call inline as it runs. It finishes with a summary naming directories that exist in your checkout. If it names nothing from your repository, quit, `cd` into the repository, and start Atomic again.
 
 Exit Atomic (`/exit`) and verify the session was saved:
 
@@ -40,7 +39,7 @@ atomic -r
 
 Expected result: the session picker lists the run you just finished. Run `atomic -c` to resume it.
 
-## Go further
+## Explore built-in capabilities
 
 Once your first session works, reach for these capabilities as needed.
 
@@ -55,11 +54,11 @@ Ask one subagent to trace the retry logic and another to find its tests. Compare
 - Run `/tasks` to inspect background subagents and read their output.
 - Run `/resume` to return to a saved session.
 
-**Converting older workflows.** Workflows are now skills. Give Atomic an older workflow file path and ask it to convert the file into a skill. In a trusted project, Atomic reads the file as text and writes a skill under `.atomic/skills/<name>/` (project) or `~/.atomic/agent/skills/<name>/` (global). The original file stays untouched, and existing skills are never overwritten. See [Migrating workflows](/orchestration/migrating-workflows).
+Converting an older Atomic workflow file? Give Atomic its path in a trusted project and ask it to convert the file into a skill. See [Migrating workflows](/orchestration/migrating-workflows).
 
 ### Top skills to invoke directly
 
-Skills are reusable expert instructions invoked with `/skill:<name>`:
+Skills are reusable instructions invoked with `/skill:<name>`:
 
 | Skill | When to use | Example |
 | --- | --- | --- |
@@ -74,7 +73,7 @@ Skills are reusable expert instructions invoked with `/skill:<name>`:
 | `liteparse` | Extract text, tables, or values from PDF, DOCX, PPTX, XLSX, and images locally. | `/skill:liteparse` |
 | `show-me` | Explain topics visually with diagrams, code sketches, or focused HTML views (HumanLayer, MIT). | `/skill:show-me` |
 
-Atomic bundles these skills with every release, and you can also add your own project or user skills. See [Skills](/skills) for skill discovery, built-in skill requirements, and authoring details.
+Atomic bundles these skills with every release, and you can also add your own project or user skills. Note that `agent-browser`, `agent-desktop`, `qlty`, and `liteparse` require their external CLI binaries to be installed on your machine. See [Skills](/skills) for skill discovery, requirements, and authoring details.
 
 ### Default tools and prompts
 
@@ -84,23 +83,23 @@ Type any plain request and press Enter:
 Summarize this repository and tell me how to run its checks.
 ```
 
-By default, Atomic gives the model these tools:
+By default, Atomic gives the model these built-in coding tools:
 
-- `read` - read files
-- `bash` - run shell commands
-- `kill` - cancel owned background shell tasks by task ID
-- `edit` - patch files
-- `write` - create or overwrite files
-- `find` - discover files by glob pattern
-- `search` - search file contents
-- `ask_user_question` - ask structured questions in the TUI
-- `todo` - manage file-based todos
-- `codemode` - compose permitted tool calls in a script
+- **`read`:** Read files, directories, images, archives, URLs, and SQLite selectors.
+- **`bash`:** Run shell commands.
+- **`kill`:** Cancel background shell tasks by task ID.
+- **`edit`:** Patch files with exact text replacement.
+- **`write`:** Create or overwrite files.
+- **`find`:** Discover files by glob pattern.
+- **`search`:** Search file contents with regular expressions.
+- **`ask_user_question`:** Ask structured questions in the terminal UI.
+- **`todo`:** Manage file-based todos.
+- **`codemode`:** Compose permitted tool calls in a sandboxed script.
 
-On native Windows, `powershell` is also enabled when a PowerShell executable is available.
+On native Windows, `powershell` is also enabled when a PowerShell executable is available. Bundled integration tools such as `subagent`, `intercom`, `web_search`, and `fetch_content` are enabled alongside the coding tools by default; run `/tools` to inspect every active tool.
 
-Normal coding sessions include file discovery and content search through `find` and `search` in addition to `read`, `bash`, `edit`, and `write`. Atomic runs in your current working directory and can modify files there, so use git or another checkpointing flow for easy rollback.
+Atomic runs in your current working directory and can modify files there, so use Git or another checkpointing workflow for easy rollback.
 
 ## Next step
 
-Continue to [Project instructions](/getting-started/project-instructions).
+Continue to [Add project instructions](/getting-started/project-instructions).

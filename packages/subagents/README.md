@@ -34,41 +34,13 @@ Run parallel reviewers on this diff: codebase-analyzer for correctness, debugger
 
 Atomic is the parent session, and each subagent is a focused child Atomic session with its own task and context.
 
-Atomic starts the child once with its assigned task. Every launch runs in the background, returns after admission, and later delivers its result to the owning session as a completion notice. To use a child's output in the same turn, wait for its task ID explicitly.
+Every launch runs in the background, returns immediately after starting, and later delivers its result to the parent session as a completion notice. When the next step depends on a child's output in the same turn, wait for its task ID explicitly with `subagent({ action: "wait", id })`.
 
 Subagents do not trigger automatic reviews on their own. The extension gives Atomic the `subagent` tool. If you want every implementation reviewed, say so in your prompt or add that instruction to your project's `AGENTS.md`:
 
 ```text
 When you finish implementing, run codebase-analyzer over the diff before summarizing.
 ```
-
-## Example prompts
-
-```text
-Use codebase-analyzer to explain how this behaves before we change it.
-```
-
-```text
-Use debugger to investigate this failure and propose the smallest fix before editing anything.
-```
-
-```text
-Run parallel reviewers on this diff. Focus one on correctness, one on failure modes, and one on unnecessary complexity.
-```
-
-```text
-Have worker implement this approved plan. Afterward, run parallel reviewers, summarize their feedback, and apply the fixes that make sense.
-```
-
-```text
-Run a review loop on this change until reviewers stop finding fixes worth doing, with a max of 3 rounds.
-```
-
-```text
-Use codebase-locator to map the auth flow, then codebase-analyzer to explain how it works today.
-```
-
-Atomic decides whether to call `subagent`, which specialist to pick, and whether a single or parallel run fits.
 
 ## Common workflows
 
@@ -87,7 +59,7 @@ Atomic decides whether to call `subagent`, which specialist to pick, and whether
 | Browse agents | "Show me the available subagents." |
 | Check running children | "Show the current subagent status." |
 
-## Builtin agents
+## Built-in agents
 
 | Agent | Purpose |
 | --- | --- |
@@ -97,30 +69,32 @@ Atomic decides whether to call `subagent`, which specialist to pick, and whether
 | `codebase-research-locator` | Discover prior notes, tickets, and specs under `research/` and `specs/`. |
 | `codebase-research-analyzer` | Extract decisions, constraints, and trade-offs from local research documents. |
 | `codebase-online-researcher` | Gather official docs, specs, release notes, and upstream source through Atomic's bundled `@bastani/web-access` tools (`web_search`, `fetch_content`, and `get_search_content`). |
-| `worker` | Implement bounded tasks and approved orchestrator handoffs, validate changes, and escalate unapproved decisions. |
+| `worker` | Implement bounded tasks and approved orchestrator handoffs, validate changes, and escalate unapproved decisions. Defaults to `defaultContext: fork`, `inheritProjectContext: true`, and `defaultProgress: true`. |
 | `debugger` | Reproduce failures, isolate root cause, apply the smallest fix, and rerun the failing scenario. |
 | `code-simplifier` | Refine and simplify recent changes without altering behavior. |
 
-There is no generic `reviewer` or `planner` builtin. Pick the specialist whose angle matches the question.
+There is no generic `reviewer` or `planner` built-in. Pick the specialist whose angle matches the question.
 
-## Changing a builtin agent's model
+## Changing a built-in agent's model
 
-Every builtin agent defaults to `model: "auto"`, with no pinned fallback chain. `auto` runs your configured default model (the model last picked with `/model`) at its default thinking level, or the launching session's model when no default model is configured. See [automatic model selection](https://docs.bastani.ai/subagents/reference#automatic-model-selection).
+Every built-in agent defaults to `model: "auto"`, with no pinned fallback chain. `auto` runs your configured default model (the model last picked with `/model`) at its default thinking level, or the launching session's model when no default model is configured. See [automatic model selection](https://docs.bastani.ai/subagents/reference#automatic-model-selection).
+
+When `enabledModels` is configured, subagent model selection uses the same matching rules as the main session (exact matches, `*`/`?`/`[...]` globs, fuzzy matching, and case-insensitive `:thinking` suffixes).
 
 For a single call, pass `model`:
 
 ```typescript
-subagent({ agent: "codebase-analyzer", task: "Review this diff", model: "anthropic/claude-sonnet-4:high" })
+subagent({ agent: "codebase-analyzer", task: "Review this diff", model: "anthropic/claude-sonnet-4-6:high" })
 ```
 
-For a persistent override, edit `~/.atomic/agent/settings.json` (user) or `.atomic/settings.json` (project).
+For a persistent override, edit `~/.atomic/agent/settings.json` (user) or `.atomic/settings.json` (project):
 
 ```json
 {
   "subagents": {
     "agentOverrides": {
       "codebase-analyzer": {
-        "model": "anthropic/claude-sonnet-4:high",
+        "model": "anthropic/claude-sonnet-4-6:high",
         "fallbackModels": ["openai/gpt-5-mini"]
       }
     }
@@ -128,7 +102,7 @@ For a persistent override, edit `~/.atomic/agent/settings.json` (user) or `.atom
 }
 ```
 
-The `agentOverrides` block can also override `tools`, `skills`, `systemPromptMode`, `inheritProjectContext`, `inheritSkills`, `defaultContext`, `systemPrompt`, or `disabled`. For normal tweaks, use overrides instead of copying the bundled markdown file.
+The `agentOverrides` block can also override `tools`, `skills`, `systemPromptMode`, `inheritProjectContext`, `inheritSkills`, `defaultContext`, `systemPrompt`, or `disabled`. Use overrides instead of copying the bundled markdown file.
 
 ### Orchestrator model and group defaults
 
@@ -140,9 +114,9 @@ Children inherit the launching session's Intercom group unless `group` is specif
 
 ## Viewing and controlling running subagents
 
-Background agents appear in the compact count below the prompt in the parent chat. Run `/tasks` to open the grouped inspector; background updates do not open `/tasks` automatically. Parallel receipts identify individual siblings. Completion produces one unshaded notice line with an outcome glyph and task title, followed by the first result line. Ctrl+O expands the full retained result. The notice does not depend on a model reply. Run `/agents` to browse agent definitions, or call `subagent({ action: "list" })` from the model.
+Background agents appear in the compact count below the prompt in the parent chat. Run `/tasks` to open the grouped inspector; background updates do not open `/tasks` automatically. Parallel receipts identify individual siblings. Completion posts one unshaded notice line with an outcome glyph and task title, followed by the first result line. Press `Ctrl+O` to expand the full retained result. Run `/agents` to browse agent definitions, or call `subagent({ action: "list" })` from the model.
 
-To stop a task, select it in `/tasks` and press `x` twice within 3 seconds. A stopped subagent stays resumable. Once termination is confirmed, the owning chat receives a `quit · awaiting resume` notice line and the parent model receives the quit context, even when the child produced no final response. Repeated stop requests do not duplicate the notice or alter an already-settled result. Closing the owner suppresses late notifications.
+To stop a task, select it in `/tasks` and press `x` twice within 3 seconds. A stopped subagent stays resumable. Once termination finishes, the owning chat receives a `quit · awaiting resume` notice line and the parent model receives the quit context, even when the child produced no final response. Repeated stop requests do not duplicate the notice or alter an already-settled result. Closing the parent session suppresses late notifications.
 
 ### Launch, then wait when needed
 
@@ -157,13 +131,13 @@ subagent({ action: "resume", id: taskId, message: "Focus on the failing test." }
 subagent({ action: "quit", id: taskId })
 ```
 
-`action: "wait"` uses the owner's agent wait budget (default 30 seconds) unless `budgetMs` overrides it, and pressing `Esc` ends the wait immediately. Ending a wait releases the caller without stopping the child. Legacy calls that pass `wait` on a launch still run in the background. SDK callers without a task owner keep their direct execution path, which waits for the child.
+`action: "wait"` uses the session's agent wait budget (default 30 seconds) unless `budgetMs` overrides it, and pressing `Esc` ends the wait immediately without stopping the child. Legacy calls that pass `wait` on a launch still run in the background. Custom SDK sessions without background task support wait for the child directly.
 
 See [background tasks](https://docs.bastani.ai/background-tasks) for shell examples, output retention, keyboard controls, and session lifetimes.
 
 ## Recommended orchestration loop
 
-Orchestration is parent-agent guidance rather than a separate workflow runtime. A standard implementation loop runs in five steps:
+A standard implementation loop runs in five steps:
 
 1. Clarify requirements in the parent chat.
 2. Gather context with read-only specialists.
@@ -171,25 +145,25 @@ Orchestration is parent-agent guidance rather than a separate workflow runtime. 
 4. Run fresh-context reviewers on the diff.
 5. Apply needed fixes with `worker`.
 
-Packaged `worker` defaults to forked context when a launch omits `context`. Every other builtin runs with fresh context. Pass `context: "fresh"` when you want a fresh `worker` run.
+Packaged `worker` defaults to forked context when a launch omits `context`. Every other built-in runs with fresh context. Pass `context: "fresh"` when you want a fresh `worker` run.
 
-Typed admission policy enforces child boundaries at runtime. Admitted children may use `list`, `get`, `status`, and `wait`, while launches and run control (`pause`, `resume`, and `quit`) are refused for every child. Management-restricted children are also refused `create`, `update`, and `delete`. The bundled `subagent` skill stays parent-only and is stripped from every child prompt. Children receive boundary instructions stating that they are not the parent orchestrator and must complete their assigned task directly.
+Delegation is strictly one level deep. Child sessions may use `list`, `get`, `status`, and `wait`, while launches and run control (`pause`, `resume`, and `quit`) are refused for every child. Management-restricted children are also refused `create`, `update`, and `delete`. The parent-only `subagent` skill is stripped from every child prompt.
 
 ## Intercom coordination
 
 Atomic bundles `@bastani/intercom` alongside `@bastani/subagents`. No separate install is needed for parent-child or sibling coordination.
 
-When Intercom is active, subagents receive a private coordination route back to the parent session through `contact_supervisor`:
+When Intercom is active, subagents receive a private route back to the parent session through `contact_supervisor`:
 
-- `reason: "need_decision"` asks the supervisor for a blocking decision when the child is blocked or faces an unapproved scope or API choice.
+- `reason: "need_decision"` asks the supervisor for a blocking decision when the child is blocked or faces an unapproved scope or API choice (include a clear `message` explaining the decision).
 - `reason: "interview_request"` sends structured questions to the supervisor and waits for a JSON reply.
 - `reason: "progress_update"` sends a short non-blocking update when a discovery changes the plan.
 
 Do not ask for clarification when the only conflict is review-only/no-edit versus progress-writing or artifact-writing instructions; no-edit wins. Do not use `contact_supervisor` for routine completion handoffs; return the child's normal final result instead.
 
-In parallel runs, blocking `contact_supervisor` requests wait only in the requesting child. The supervisor replies through `intercom({ action: "reply", message: "..." })`, and that same child continues with its original context and run identity while siblings keep working. A parent's `subagent({ action: "wait" })` yields when a child asks so the parent can respond without cancelling any child or worktree. Only a single child run directly by an SDK host without a task owner ends with a terminal `[TASK_CONTEXT]` fresh-child handoff when its blocking parent ask is claimed.
+In interactive and standard sessions, blocking `contact_supervisor` requests wait only in the requesting child. The supervisor replies through `intercom({ action: "reply", message: "..." })`, and that same child continues with its original context and run identity while siblings keep working. A parent's `subagent({ action: "wait" })` yields when a child asks so the parent can respond without cancelling any child or worktree. In custom SDK sessions without background task support, a blocking supervisor request ends the child with a `[TASK_CONTEXT]` handoff.
 
-Children launched in one parallel set (or with the same explicit `group`) also share an Intercom group and coordinate peer-to-peer as the default topology. Siblings call `intercom({ action: "list" })` and use `send` or `ask` directly to pass file paths, claim files or test suites, reuse reproductions, or challenge findings with evidence. Each sibling still returns its own result. For large parallel runs, organize swarms into named team groups; see [scaling a swarm](https://docs.bastani.ai/subagents#scaling-a-swarm).
+Children launched in one parallel set (or with the same explicit `group`) also share an Intercom group and coordinate peer-to-peer. Siblings call `intercom({ action: "list" })` and use `send` or `ask` directly to pass file paths, claim files or test suites, reuse reproductions, or challenge findings with evidence. Each sibling still returns its own result. For large parallel runs, organize swarms into named team groups; see [scaling a swarm](https://docs.bastani.ai/subagents#scaling-a-swarm).
 
 Parent-side Atomic can also deliver grouped completion results and needs-attention notices over Intercom. Check connection status with `intercom({ action: "status" })`, or customize bridge behavior under `intercomBridge` in configuration below.
 
@@ -199,23 +173,23 @@ Every subagent launch starts immediately without opening a preview prompt or wai
 
 ## Agents
 
-Agents are markdown files with YAML frontmatter and a system prompt body. They define the specialist that runs in a child Atomic session.
+Agents are Markdown files with YAML frontmatter and a system prompt body. They define the specialist that runs in a child Atomic session.
 
 Discovery precedence, from lowest to highest:
 
 | Scope | Path |
 | --- | --- |
-| Builtin | Bundled with `@bastani/atomic` (`packages/subagents/agents/`) |
+| Built-in | Bundled with `@bastani/atomic` |
 | User | `~/.atomic/agent/agents/**/*.md` |
 | Project | `.atomic/agents/**/*.md` |
 
-Installed Atomic packages can also contribute read-only agents declared under `agents` in `package.json`, registered as `<namespace>.<name>`. Package agents never replace builtin, user, or project agents with the same full name.
+Installed Atomic packages can also contribute read-only agents declared under `agents` in `package.json`, registered as `<namespace>.<name>`. Package agents never replace built-in, user, or project agents with the same full name.
 
-Project discovery also checks `.agents/**/*.md` and legacy `.pi/agents/**/*.md` recursively, with `.atomic/agents/` winning project-scope name conflicts. User discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set, with `~/.atomic/agent/agents/` (or the `agents` folder of the directory `ATOMIC_CODING_AGENT_DIR` or `PI_CODING_AGENT_DIR` names) winning user-scope name conflicts. Pass `agentScope: "user" | "project" | "both"` to control discovery (`both` is the default, and project definitions win collisions).
+Project discovery also checks `.agents/**/*.md` and legacy `.pi/agents/**/*.md` recursively, with `.atomic/agents/` winning project-scope name conflicts. User discovery also checks `~/.agents/**/*.md`, plus legacy `~/.pi/agent/agents/**/*.md` when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set, with `~/.atomic/agent/agents/` (or the `agents` folder of `ATOMIC_CODING_AGENT_DIR` / `PI_CODING_AGENT_DIR`) winning user-scope name conflicts across execution, `list`, `update`, and `delete`. Pass `agentScope: "user" | "project" | "both"` to control discovery (`both` is the default, and project definitions win collisions).
 
-### Builtin overrides
+### Built-in overrides
 
-Override selected builtin fields in `~/.atomic/agent/settings.json` (user) or `.atomic/settings.json` (project) without copying the bundled agent file. Legacy `~/.pi/agent/settings.json` (when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set) and `.pi/settings.json` files are also read for compatibility, with `.atomic` taking precedence.
+Override selected built-in fields in `~/.atomic/agent/settings.json` (user) or `.atomic/settings.json` (project) without copying the bundled agent file. Legacy `~/.pi/agent/settings.json` (when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set) and `.pi/settings.json` files are also read for compatibility, with `.atomic` taking precedence.
 
 ```json
 {
@@ -231,7 +205,7 @@ Override selected builtin fields in `~/.atomic/agent/settings.json` (user) or `.
 
 Supported override fields are `model`, `fallbackModels`, `fallbackThinkingLevels`, `thinking`, `systemPromptMode`, `inheritProjectContext`, `inheritSkills`, `defaultContext`, `disabled`, `skills`, `tools`, and `systemPrompt`. Set `defaultContext: false` to clear an inherited context default. Project overrides beat user overrides.
 
-Set `disabled: true` on one agent to hide it from discovery and `subagent({ action: "list" })`, or set `subagents.disableBuiltins: true` to disable all builtins.
+Set `disabled: true` on one agent to hide it from discovery and `subagent({ action: "list" })`, or set `subagents.disableBuiltins: true` to disable all built-ins.
 
 ### Prompt assembly
 
@@ -244,7 +218,7 @@ Custom agents start with a focused system prompt and only the context you opt in
 | `inheritSkills: true` | Include Atomic's discovered skills catalog. |
 | `defaultContext: fork` | Default to forked session context when a launch omits `context` (explicit `context: "fresh"` still wins). |
 
-`inheritProjectContext` and `inheritSkills` shape fresh children. A forked child continues the parent's conversation as the parent sent it, including project context and skills, so its first request reads from the parent's prompt cache while still respecting the child's own tool policy. The packaged `worker` sets `inheritProjectContext: true`; other builtins leave project instruction files out of fresh runs.
+`inheritProjectContext` and `inheritSkills` shape fresh children. A forked child continues the parent's conversation as the parent sent it, including project context and skills, so its first request reads from the parent's prompt cache while still respecting the child's own tool policy. Packaged `worker` sets `defaultContext: fork`, `inheritProjectContext: true`, and `defaultProgress: true`; other built-ins leave project instruction files out of fresh runs.
 
 ### Agent frontmatter
 
@@ -257,7 +231,7 @@ description: Fast codebase recon
 tools: read, search, find, ls, bash, mcp:chrome-devtools
 extensions:
 model: anthropic/claude-haiku-4-5
-fallbackModels: openai/gpt-5-mini, anthropic/claude-sonnet-4:high
+fallbackModels: openai/gpt-5-mini, anthropic/claude-sonnet-4-6:high
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
@@ -265,19 +239,18 @@ skills: safe-bash, chrome-devtools
 output: context.md
 defaultReads: context.md
 defaultProgress: true
-interactive: true
 ---
 
 Your system prompt goes here.
 ```
 
-Frontmatter is parsed with a strict YAML parser. Invalid YAML (such as an unquoted colon-space inside a value, duplicate keys, or tab-indented lists) causes the file to be skipped with a recorded diagnostic message.
+Frontmatter is parsed with a strict YAML parser. Invalid YAML (such as an unquoted colon-space inside a value, duplicate keys, or tab-indented lists) skips the file with a recorded diagnostic message. List fields (`tools`, `fallbackModels`, `fallbackThinkingLevels`, `skills`/`skill`, `defaultReads`, and `extensions`) accept both comma-separated strings and YAML arrays (`[a, b]` or block lists).
 
 | Field | Description |
 | --- | --- |
 | `package` | Optional namespace prefix. A file with `name: api-auditor` and `package: code-analysis` registers as `code-analysis.api-auditor`. |
-| `tools` | Tool allowlist as a comma-separated string (`tools: read, bash`) or YAML array (`tools: [read, bash]`). `mcp:<server>` and `mcp:<server>/<tool>` entries expose direct tools from Atomic's bundled MCP integration. |
-| `extensions` | Omitted loads normal extensions; empty disables optional extensions; comma-separated paths allowlist specific optional extensions. |
+| `tools` | Tool allowlist as a comma-separated string or YAML list. `mcp:<server>` and `mcp:<server>/<tool>` entries expose direct tools from Atomic's bundled MCP integration. |
+| `extensions` | Omitted loads normal extensions; empty disables optional extensions; comma-separated paths or a YAML list allowlist specific optional extensions. |
 | `model` | Default model (`provider/id[:effort]` or `auto`). When omitted with no `fallbackModels` and no per-call override, the child inherits the parent session's model and thinking level. |
 | `fallbackModels` | Ordered backup models for retryable provider errors (quota, auth, timeouts, 5xx, content-filter refusals, or incompatible payloads). A concrete pinned model falls back only through these entries. For unpinned and `auto` children, the current user-selected model is appended as the final fallback. Ordinary task failures never trigger fallback. |
 | `thinking` | Deprecated default thinking level used only when a model candidate carries no `:effort` suffix. |
@@ -318,7 +291,7 @@ extensions: /abs/path/to/ext-a.ts, /abs/path/to/ext-b.ts
 
 ## Skills
 
-Skills are `SKILL.md` files injected into a child's system prompt. Children resolve skill names from the same skill catalog as the parent session, including qualified selectors such as `review@project`. Atomic discovers skills from `.atomic/skills/`, `.agents/skills/`, `~/.atomic/agent/skills/`, `~/.agents/skills/`, settings `skills` entries, and installed packages declaring `atomic.skills` or legacy `pi.skills`. Legacy `.pi/skills/` and `~/.pi/agent/skills/` (when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set) directories are also read for compatibility, with `.atomic` taking precedence. See [skills](https://docs.bastani.ai/skills) for discovery and project-trust rules.
+Skills are `SKILL.md` files injected into a child's system prompt. Children resolve skill names from the same skill catalog as the parent session, including qualified selectors such as `review@project`. Atomic discovers skills from `.atomic/skills/`, `.agents/skills/`, `~/.atomic/agent/skills/`, `~/.agents/skills/`, settings `skills` entries, and installed packages declaring `atomic.skills` or legacy `pi.skills`. Legacy `.pi/skills/` and `~/.pi/agent/skills/` (when neither `ATOMIC_CODING_AGENT_DIR` nor `PI_CODING_AGENT_DIR` is set) are also read for compatibility, with `.atomic` taking precedence. See [skills](https://docs.bastani.ai/skills) for discovery and project-trust rules.
 
 Override or disable skills per launch:
 
@@ -330,9 +303,9 @@ Override or disable skills per launch:
 
 Injected skills appear inside `<skill name="...">...</skill>` blocks with frontmatter stripped. Missing skills emit a warning in the result summary without failing the launch.
 
-### Bundled `subagent` skill
+### Bundled skills
 
-The package ships a parent-only `subagent` skill (`skills/subagent/SKILL.md`) that covers delegation patterns, role prompting guidance, child boundaries, Intercom conventions, and run control. It is stripped from every child prompt.
+This package ships 21 of Atomic's 22 bundled skills (covering research, specs, TDD, browser and desktop automation, terminal control, code quality, visual explanations, and workflow migration; `@bastani/intercom` ships the `intercom` skill). The bundled `subagent` skill stays parent-only and is stripped from every child prompt.
 
 ## Programmatic tool usage
 
@@ -355,7 +328,7 @@ The package ships a parent-only `subagent` skill (`skills/subagent/SKILL.md`) th
 { tasks: [{ agent: "codebase-locator", task: "Audit endpoints", count: 3 }] }
 { tasks: [{ agent: "codebase-locator", task: "Audit frontend" }, { agent: "codebase-analyzer", task: "Audit backend" }], context: "fork" }
 
-// Temporary git worktree isolation
+// Temporary git worktree isolation (parallel tasks only)
 { tasks: [
   { agent: "worker", task: "Implement auth" },
   { agent: "worker", task: "Implement API" }
@@ -388,7 +361,7 @@ Agent definitions are loaded on demand through management actions:
   systemPromptMode: "replace",
   inheritProjectContext: false,
   inheritSkills: false,
-  model: "anthropic/claude-sonnet-4:high",
+  model: "anthropic/claude-sonnet-4-6:high",
   fallbackModels: ["openai/gpt-5-mini", "anthropic/claude-haiku-4-5"],
   tools: "read, bash, mcp:github/search_repositories",
   extensions: "",
@@ -413,7 +386,7 @@ Agent definitions are loaded on demand through management actions:
 | `action` | string | none | `models`, `list`, `get`, `create`, `update`, `delete`, `status`, `wait`, `pause`, `resume`, or `quit`. Removed actions `kill` and `interrupt` are rejected with an error naming `quit`. |
 | `config` | object or JSON string | none | Agent definition for `create` or `update`. |
 | `id` | string | none | Target ID for `wait` (task ID), `status` (run ID or child ID), or `pause`, `resume`, and `quit` (child ID `<runId>:<index>`, task ID, Intercom name, or single-child run ID). `runId` remains a legacy alias. |
-| `budgetMs` | number | owner wait budget | Observation budget in milliseconds for `action: "wait"`; not a child execution deadline. |
+| `budgetMs` | number | session wait budget | Observation budget in milliseconds for `action: "wait"`; not a child execution deadline. |
 | `heartbeatMs` | number | `900000` (15 min) | Heartbeat cadence in milliseconds while a child runs (`0` disables, minimum `60000`). |
 | `message` | string | none | Optional prompt steer for `action: "resume"`. |
 | `all` | boolean | `false` | With `pause` or `quit`, target every running child this session launched (`quit` also covers paused children). |
@@ -426,8 +399,8 @@ Agent definitions are loaded on demand through management actions:
 | `group` | `string \| boolean` | parent group | Intercom group name, or `true` for a fresh shared UUID group per parallel set. |
 | `tasks` | array | none | Parallel tasks supporting `agent`, `task`, `cwd`, `worktree` (named), `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, `group`, and `heartbeatMs`. |
 | `concurrency` | number | config or `1000` | Maximum concurrent tasks in parallel mode. |
-| `worktree` | `boolean \| { branch, base?, path? }` | `false` | `true` creates temporary git worktrees for parallel tasks. `{ branch, base?, path? }` checks out a named worktree; see [named worktrees](#named-worktrees). |
-| `context` | `"fresh" \| "fork"` | agent default or `"fresh"` | `fork` branches from the parent's current leaf. Packaged `worker` defaults to `fork`; every other builtin defaults to `fresh`. |
+| `worktree` | `boolean \| { branch, base?, path? }` | `false` | `true` creates temporary git worktrees for parallel `tasks` (or coalesced bursts; ignored on a standalone single-agent call, so use `worktree: { branch }` for single-agent isolation). `{ branch, base?, path? }` checks out a named worktree; see [named worktrees](#named-worktrees). |
+| `context` | `"fresh" \| "fork"` | agent default or `"fresh"` | `fork` branches from the parent's current leaf. Packaged `worker` defaults to `fork`; every other built-in defaults to `fresh`. |
 | `agentScope` | `"user" \| "project" \| "both"` | `"both"` | Agent discovery scope. Project wins on name collisions. |
 | `cwd` | string | runtime cwd | Working directory override. |
 | `maxOutput` | `{ bytes?, lines? }` | 200 KB, 5000 lines | Truncation limits for returned output. |
@@ -452,17 +425,13 @@ subagent({ action: "quit", id: "<child-id>" })
 subagent({ action: "quit", all: true })
 ```
 
-`status` lists the children this session launched that remain in this process, formatted as `<run-id>/<agent>_<n> — <state> (loaded|cold) · id <child-id>`, followed by the failure or interruption cause when applicable. Children launched by other sessions are not listed. A child that fails to start within `sessionStartTimeoutMs` (default 5 minutes) fails with a `SessionStartTimeoutError` whose `phase` names what blocked it (`admission`, `setup`, `dispatch`, or `event-loop`); see [subagent start timeouts](https://docs.bastani.ai/subagents#subagent-start-timeouts).
+`status` lists the children this session launched that remain active in this process, formatted as `<run-id>/<agent>_<n> — <state> (loaded|cold) · id <child-id>`, followed by the failure or interruption cause when applicable. Children launched by other sessions are not listed. A child that fails to start within `sessionStartTimeoutMs` (default 5 minutes) fails with a `SessionStartTimeoutError` whose `phase` names what blocked it (`admission`, `setup`, `dispatch`, or `event-loop`); see [subagent start timeouts](https://docs.bastani.ai/subagents#subagent-start-timeouts).
 
-`pause` stops a child and holds its queued messages until `resume`. `quit` stops a running or paused child gracefully while keeping it resumable. `resume` reopens the child's saved session under the same ID and Intercom name. Paused, quit, and interrupted children receive `message` once as their next prompt before continuing; completed and failed children receive `message` as a fresh turn. Omitting `message` prompts any resumable child to continue where it left off. Permanently cancelled children and children reported gone after a restart cannot be resumed and require a fresh launch. Calling removed `kill` or `interrupt` returns:
-
-```text
-The subagent action "kill" was removed. Use { action: "quit", id } to stop a child gracefully; it stays resumable with { action: "resume", id, message? }.
-```
+`pause` stops a child and holds its queued messages until `resume`. `quit` stops a running or paused child gracefully while keeping it resumable. `resume` reopens the child's saved session under the same ID and Intercom name. Paused, quit, and interrupted children receive `message` once as their next prompt before continuing; completed and failed children receive `message` as a fresh turn. Omitting `message` prompts any resumable child to continue where it left off. Permanently cancelled children and children reported gone after a restart cannot be resumed and require a fresh launch.
 
 ## Worktree isolation
 
-`worktree: true` gives each parallel task an isolated git worktree under `<main-root>/.atomic/worktrees/<flattened-name>` on branch `worktree-<flattened-name>` (`/` flattened to `+`), anchored at the canonical main repository root even when launched inside another linked worktree. The base ref is `origin/<default-branch>` when available, else `HEAD`.
+`worktree: true` gives each parallel task an isolated git worktree under `<main-root>/.atomic/worktrees/<flattened-name>` on branch `worktree-<flattened-name>` (`/` flattened to `+`), anchored at the canonical main repository root even when launched inside another linked worktree. The base ref is `origin/<default-branch>` when available, else `HEAD`. In single-agent mode, pass `worktree: { branch }` instead of `worktree: true`.
 
 ```typescript
 { tasks: [
@@ -509,6 +478,23 @@ Optional JSON configuration lives at `~/.atomic/agent/extensions/subagent/config
 - `concurrency` defaults to `1000` and limits simultaneous dispatches (per-call `concurrency` overrides it).
 - `runningCapacity` defaults to `1000` and limits simultaneously running child turns per parent. To exceed 1,000 concurrent children, raise all three values together and restart Atomic.
 
+### `control`
+
+```json
+{
+  "control": {
+    "enabled": true,
+    "needsAttentionAfterMs": 120000,
+    "activeNoticeAfterMs": 300000,
+    "failedToolAttemptsBeforeAttention": 3,
+    "notifyOn": ["needs_attention", "active_long_running"],
+    "notifyChannels": ["event", "intercom"]
+  }
+}
+```
+
+Sets default attention-tracking thresholds and notification channels (`"event"`, `"intercom"`) for runs that do not override `control` per call. Also supports `activeNoticeAfterTurns`, `activeNoticeAfterTokens`, and `progressScores`.
+
 ### `resumeInFlight`
 
 ```json
@@ -553,7 +539,7 @@ Stores fresh (not forked) child sessions as JSONL files in `params.sessionDir` i
 Controls runtime Intercom coordination guidance injected into child prompts and whether the bridge adds `intercom` and `contact_supervisor` to child tool allowlists. Setting `mode` to `"off"` disables both.
 
 - `mode` accepts `"always"` (default), `"fork-only"`, or `"off"`.
-- `instructionFile` points to an optional markdown template that replaces the default instructions. Atomic interpolates `{orchestratorTarget}`, and relative paths resolve from `~/.atomic/agent/extensions/subagent/`.
+- `instructionFile` points to an optional Markdown template that replaces the default instructions. Atomic interpolates `{orchestratorTarget}`, and relative paths resolve from `~/.atomic/agent/extensions/subagent/`.
 
 ### `worktreeSetupHook`
 
@@ -574,7 +560,7 @@ stdin receives a JSON object containing `repoRoot`, `worktreePath`, `agentCwd`, 
 
 `syntheticPaths` entries must be relative to the worktree root and must not name tracked files; they are removed before diff capture so setup helpers do not pollute patches.
 
-## Artifacts, sessions, and observability
+## Artifacts, sessions, and live progress
 
 Debug artifacts are written under `{parent-session-dir}/subagent-artifacts/` (or a user-scoped temp artifact directory):
 
@@ -582,65 +568,23 @@ Debug artifacts are written under `{parent-session-dir}/subagent-artifacts/` (or
 {parent-session-dir}/subagent-artifacts/
   {runId}_{agent}_input.md
   {runId}_{agent}_output.md
-  {runId}_{agent}.jsonl          # only when includeJsonl: true; max 50 MiB
   {runId}_{agent}_meta.json
   run-history.jsonl
 ```
 
 Metadata records timing, usage, status, termination cause, final model, attempted models, and fallback outcomes.
 
-Fresh child sessions stored in the parent's database are hidden from `/resume` and `history://sessions`; forked child sessions branch from the parent's current leaf and stay visible. Owner-bound completions post an unshaded notice line with an outcome glyph and task title, followed by the first result line. Ctrl+O expands the full retained result (up to 8,000 characters), and `/tasks` opens the inspector. Completion notices keep model and reasoning metadata in saved details without showing a model line.
+Fresh child sessions stored in the parent's database are hidden from `/resume` and `history://sessions`; forked child sessions branch from the parent's current leaf and stay visible. Completions post an unshaded notice line with an outcome glyph and task title, followed by the first result line. Press `Ctrl+O` to expand the full retained result (up to 8,000 characters), or open `/tasks`.
 
-## Completion and output
+Subagents report live progress for single and parallel runs, including current tool, recent output, token counts, duration, and artifact paths. File-based tracking (`progress: true`, creating a run-scoped `progress.md` under isolated artifact storage) and returned runtime telemetry (`includeProgress: true`) are independent.
 
-Subagent runs preserve child output as returned. Atomic does not inject acceptance gate prompts, infer task policies from text, parse `acceptance-report` blocks, or reject finished children for missing gate blocks.
-
-If older calls or agent files still set removed fields:
-
-- Remove `acceptance` from `subagent()` calls and task entries.
-- Remove `completionGuard: false` from agent frontmatter.
-- Put required test commands, checks, and evidence requirements directly in the task prompt.
-
-## Live progress
-
-Subagents report live progress for single and parallel runs, including the current tool, recent output, token counts, duration, activity freshness, current-tool duration, and artifact paths.
-
-File-based tracking and returned telemetry are separate. Setting `progress: true` creates a run-scoped `progress.md` under isolated artifact storage (shared across parallel tasks, never written into the child's working directory). `progress: false` disables an agent's `defaultProgress`. `includeProgress: true` adds runtime telemetry to the final waited result without creating `progress.md`. Press `Ctrl+O` to expand full streaming output.
-
-## Delegation boundary
-
-Delegation is strictly one level deep with no setting to override it. Top-level sessions may call `subagent`. Admitted child sessions cannot launch or control other children (`pause`, `resume`, `quit`), enforced both by the subagent executor and by the Rust `SubagentControl` admission door. Children can still call `list`, `get`, `status`, and `wait`.
-
-Event channels emitted on the extension event bus:
-
-- `subagent:complete`
-- `subagent:control-intercom`
-- `subagent:result-intercom`
-
-## Prompt-template event bridge
-
-External extensions that delegate through the `prompt-template:subagent:request` event and need requests to settle cleanly across reloads should register a rejection callback before emitting:
-
-```typescript
-import { registerPromptTemplateBridgeRequestSettlement } from "@bastani/subagents";
-
-const unregister = registerPromptTemplateBridgeRequestSettlement(request.requestId, reject);
-try {
-	api.events.emit("prompt-template:subagent:request", request);
-} catch (error) {
-	unregister();
-	reject(error);
-}
-// Call unregister() from your response, cancellation, or abort path.
-```
-
-The callback rejects only if Atomic drops a bridge event because the captured extension runtime is stale. Listen on `prompt-template:subagent:response` for normal completion.
+Subagent runs preserve child output as returned; put required test commands, checks, and evidence requirements directly in the task prompt.
 
 ## Suffix-first reasoning levels
 
-Configure reasoning effort directly on `model` and `fallbackModels` entries with `model_name:effort` syntax, such as `anthropic/claude-sonnet-4:high` or `openai/gpt-5-mini:low`. Valid efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
+Configure reasoning effort directly on `model` and `fallbackModels` entries with `model_name:effort` syntax, such as `anthropic/claude-sonnet-4-6:high` or `openai/gpt-5-mini:low`. Valid efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` (case-insensitive).
 
-A child runs at the exact requested effort when the model supports it. When the model does not support that effort (or the suffix is unknown), the child runs at that model's default effort (`modelThinkingLevels`, else `defaultThinkingLevel`). If the base model before an unknown suffix does not exist, launch fails with `Unknown model "<model>"`.
+A child runs at the requested effort when the model supports it. When the model does not support that effort (or the suffix is unknown), the child runs at that model's default effort (`modelThinkingLevels`, else `defaultThinkingLevel`). If the base model before an unknown suffix does not exist, launch fails with `Unknown model "<model>"`.
 
 Migrate deprecated `thinking` frontmatter by folding the effort into the model string:
 
@@ -652,17 +596,6 @@ Migrate deprecated `thinking` frontmatter by folding the effort into the model s
 +fallbackModels: anthropic/claude-opus-4-8:xhigh
 ```
 
-## Runtime files
+## License
 
-| File | Purpose |
-| --- | --- |
-| `src/extension/index.ts` | Extension registration, tool wiring, and message rendering. |
-| `src/agents/agents.ts` | Agent discovery and frontmatter parsing. |
-| `src/runs/foreground/subagent-executor.ts` | Execution routing for single, parallel, management, status, and control actions. |
-| `src/runs/foreground/execution.ts` | Core foreground `runSync` entry point. |
-| `src/runs/foreground/notify.ts` | Completion notification delivery for detached Intercom children. |
-| `src/runs/foreground/completion-notification.ts` | Local completion acknowledgement and ordering barrier. |
-| `src/shared/settings.ts` | Shared task behavior, instructions, and config helpers. |
-| `src/runs/shared/worktree.ts` | Temporary git worktree isolation. |
-| `src/intercom/intercom-bridge.ts` | Runtime Intercom bridge instructions. |
-| `src/extension/schemas.ts` / `src/shared/types.ts` | Tool schemas, shared types, and event constants. |
+MIT. See the repository [LICENSE](../../LICENSE).

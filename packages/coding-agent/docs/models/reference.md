@@ -1,12 +1,10 @@
 ---
-title: Model configuration reference
-sidebarTitle: "Model configuration"
-description: Provider and model behavior, overrides, derived fast variants, and API compatibility contracts.
+title: "Model configuration reference"
+sidebarTitle: "Model overrides"
+description: "Supported APIs, value resolution, overrides, pricing tiers, thinking maps, derived fast variants, and API compatibility rules."
 ---
 
-# Model configuration reference
-
-This page covers provider and model behavior, compatibility rules, and built-in model details. For the complete schema-generated field list for `models.json`, see [Models Configuration](/models-configuration).
+This page covers provider and model behavior, compatibility rules, and built-in model details. For the complete schema-generated field list for `models.json`, see [`models.json` schema reference](/models-configuration).
 
 ## Supported APIs
 
@@ -19,7 +17,7 @@ This page covers provider and model behavior, compatibility rules, and built-in 
 
 Set `api` at provider level (default for all models) or model level (override per model).
 
-These four values are the generic custom-provider APIs supported in `models.json`. Atomic's built-in provider runtime also uses provider-specific APIs (`mistral-conversations`, `azure-openai-responses`, `openai-codex-responses`, `bedrock-converse-stream`, `google-vertex`, and `pi-messages`), which are not guaranteed as generic `models.json` contracts.
+Built-in providers also use provider-specific APIs (`mistral-conversations`, `azure-openai-responses`, `openai-codex-responses`, `bedrock-converse-stream`, `google-vertex`, and `pi-messages`). These are built-in only and are not supported as generic custom provider APIs in `models.json`.
 
 ## Provider configuration
 
@@ -29,23 +27,26 @@ See [Providers fields](/models-configuration#providers) for the full list of pro
 
 `apiKey` and `headers` values accept three formats:
 
-- **Shell command:** `"!command"` executes the command and uses stdout.
+- **Shell command:** `"!command"` executes the command and uses trimmed stdout (10-second timeout, 1 MiB stdout limit; non-zero exit or empty stdout fails resolution). On Windows, Atomic runs commands through your configured shell (`shellPath` or Git Bash) first and falls back to the default shell if unavailable.
   ```json
   "apiKey": "!security find-generic-password -ws 'anthropic'"
   "apiKey": "!op read 'op://vault/item/credential'"
   ```
-- **Environment variable:** `"$MY_API_KEY"` or `"${MY_API_KEY}"` interpolates the variable from the environment.
+- **Environment variable:** `"$MY_API_KEY"` or `"${MY_API_KEY}"` interpolates the variable from the environment. Empty environment variables (`MY_API_KEY=""`) count as unset. If any variable in a composite string (`"${A}_${B}"`) is unset or empty, the entire value fails to resolve.
   ```json
   "apiKey": "$MY_API_KEY"
   ```
-- **Literal value:** Used directly when neither syntax matches. Use `$$` for a literal `$` and `$!` for a literal `!`.
+- **Literal value:** Used directly when neither syntax matches. In non-command values, use `$$` for a literal `$` and `$!` for a literal `!`.
   ```json
   "apiKey": "sk-..."
   ```
 
 Legacy bare uppercase names such as `MY_API_KEY` migrate to `$MY_API_KEY` on startup only when that variable is set in the environment; otherwise Atomic keeps them as literals. Use explicit `${ENV_VAR}` or `$ENV_VAR` syntax in new configs. When resolution fails, Atomic omits `!command` text; braced `${NAME}` references always report the unset variable name, whereas unbraced `$NAME` references report the name only when it reads like a POSIX environment variable name so literal secrets containing `$` do not leak fragments.
 
-In `models.json`, shell commands run at request time without built-in TTL caching or stale reuse. If a command is slow, rate-limited, or needs fallback caching, wrap that logic in a local script. `/model` availability checks verify auth presence without running shell commands.
+Important runtime differences:
+
+- **Uncached `!command` in `models.json` vs cached in `auth.json`:** In `models.json`, shell commands run uncached on every request. If a command is slow, rate-limited, or needs caching, wrap that logic in a local script. By contrast, `auth.json` caches `!command` results (including failures) for the lifetime of the process. `/model` availability checks verify auth presence without running shell commands.
+- **Built-in provider `apiKey` precedence:** Setting `apiKey` on a built-in provider in `models.json` takes precedence over that provider's built-in environment variable. If you set `"apiKey": "$UNSET_VAR"` and `UNSET_VAR` is unset or empty, resolution stops and returns no credential instead of falling back to the built-in environment variable. See [Credential resolution order](/providers/reference#resolution-order).
 
 ### Custom headers
 
@@ -75,23 +76,36 @@ See [Models fields](/models-configuration#models) for the complete schema table 
 Key display and modality rules:
 
 - `/model`, `--list-models`, the footer, fallback notices, and subagent labels show the raw `provider/id` (or `id` when the provider is clear) followed by the active thinking level, such as `anthropic/claude-sonnet-4-5 high`. That is the exact value `--model provider/id:level` accepts.
-- `name` is used for `--model` pattern matching and secondary text in `/model`; it never replaces `id`.
+- `name` is used for `--model` and `enabledModels` fuzzy matching and secondary text in `/model`; it never replaces `id`.
 - `input` declares the modalities Atomic sends: `["text"]`, `["text", "image"]`, or `["text", "image", "pdf"]`.
 
-Anthropic documents that [all active Claude models support PDF input](https://platform.claude.com/docs/en/build-with-claude/pdf-support). Atomic advertises `"pdf"` only where its runtime serializes document blocks (Anthropic Messages and Amazon Bedrock Converse); Claude mirrors on other providers stay at `["text", "image"]` and turn attached PDFs into a visible placeholder rather than dropping them silently. Bedrock Converse needs citations enabled for visual PDF processing and otherwise extracts text. Only `application/pdf` is accepted for `"pdf"`.
+Anthropic documents that [all active Claude models support PDF input](https://platform.claude.com/docs/en/build-with-claude/pdf-support). Atomic advertises `"pdf"` only where it serializes document blocks (Anthropic Messages and Amazon Bedrock Converse); Claude mirrors on other providers stay at `["text", "image"]` and turn attached PDFs into a visible placeholder rather than dropping them silently. Bedrock Converse needs citations enabled for visual PDF processing and otherwise extracts text. Only `application/pdf` is accepted for `"pdf"`.
 
 ### OpenAI built-in models
 
 Prices are in USD per million tokens as `input / cached input / cache write / output`. An empty cell means the tier does not apply or has no published rate.
 
-| Model | Provider IDs | Context window | Standard (up to 272,000 input) | Standard (above 272,000 input) | Fast | Ultrafast | Reasoning levels | `off` | `minimal` | Tool search | Additional tools | Mid-conversation effort |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| GPT-6.2 Astra | `openai/gpt-6.2-astra`, `openai-api/gpt-6.2-astra`, `openai-codex/gpt-6.2-astra`, `azure/gpt-6.2-astra`, `github-copilot/gpt-6.2-astra` | 272,000 on `openai`, `openai-api`, and `openai-codex`; 1,050,000 on `azure` and `github-copilot` | $8 / $0.40 / $10 / $40 | $16 / $0.80 / $20 / $60 | `-fast` on `openai`, `openai-api`, `openai-codex`: $16 / $0.80 / $20 / $80 (above 272K: $32 / $1.60 / $40 / $120) | `-ultrafast` on `openai`, `openai-api`, `openai-codex`: $24 / $1.20 / $30 / $120 (above 272K: $48 / $2.40 / $60 / $180) | `low`, `medium`, `high`, `xhigh`, `max` | No | No | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
-| GPT-6.2 Sol | `openai/gpt-6.2-sol`, `openai-api/gpt-6.2-sol`, `openai-codex/gpt-6.2-sol`, `azure/gpt-6.2-sol`, `github-copilot/gpt-6.2-sol` | 500,000 on `openai-codex` and `openai` (ChatGPT sign-in); 272,000 on `openai` and `openai-api` (API key); 1,050,000 on `azure` and `github-copilot` | $2 / $0.10 / $2.50 / $10 | $4 / $0.20 / $5 / $15 (including Codex) | `-fast` on `openai`, `openai-api`, `openai-codex`: $4 / $0.20 / $5 / $20 (above 272K: $8 / $0.40 / $10 / $30) | `-ultrafast` on `openai`, `openai-api`, `openai-codex`: $6 / $0.30 / $7.50 / $30 (above 272K: $12 / $0.60 / $15 / $45) | `low`, `medium`, `high`, `xhigh`, `max` | No | No | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
-| GPT-6 Astra | `openai/gpt-6-astra`, `openai-api/gpt-6-astra`, `openai-codex/gpt-6-astra`, `github-copilot/gpt-6-astra` | 272,000 on `openai`, `openai-api`, and `openai-codex`; 1,000,000 on `github-copilot` | $10 / $1 / $12.50 / $50 | $20 / $2 / $25 / $75 | `-fast` on `openai`, `openai-api`, `openai-codex`: $20 / $2 / $25 / $100 (above 272K: $40 / $4 / $50 / $150) | `-ultrafast` on `openai`, `openai-api`, `openai-codex`: $60 / $6 / $75 / $300 (above 272K: $120 / $12 / $150 / $450) | `low`, `medium`, `high`, `xhigh`, `max` | No | No | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
-| GPT-6 Astra (Bedrock) | `amazon-bedrock/openai.gpt-6-astra`, `amazon-bedrock/global.openai.gpt-6-astra`, `amazon-bedrock/us.openai.gpt-6-astra` | 1,050,000 | `global.`: $10 / $1 / $12.50 / $50; `openai.`, `us.`: $11 / $1.10 / $13.75 / $55 | `global.`: $20 / $2 / $25 / $75; `openai.`, `us.`: $22 / $2.20 / $27.50 / $82.50 | | | `low`, `medium`, `high`, `xhigh`, `max` | No | No | No | No | No |
-| GPT-6.1 Sol | `openai/gpt-6.1-sol`, `openai-api/gpt-6.1-sol`, `openai-codex/gpt-6.1-sol`, `azure/gpt-6.1-sol`, `github-copilot/gpt-6.1-sol` | 500,000 on `openai-codex` and `openai` (ChatGPT sign-in); 272,000 on `openai` and `openai-api` (API key); 1,050,000 on `azure` and `github-copilot` | $2 / $0.10 / $2.50 / $10 | $4 / $0.20 / $5 / $15 with API key; none with ChatGPT sign-in | `-fast` on `openai`, `openai-api`, `openai-codex`: $4 / $0.20 / $5 / $20 (above 272K with API key: $8 / $0.40 / $10 / $30) | `-ultrafast` on `openai`, `openai-api`, `openai-codex`: $12 / $0.60 / $15 / $60 (above 272K with API key: $24 / $1.20 / $30 / $90) | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias sending `low`; no elsewhere | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
-| GPT-6.1 Terra | `openai/gpt-6.1-terra`, `openai-api/gpt-6.1-terra`, `openai-codex/gpt-6.1-terra`, `azure/gpt-6.1-terra`, `github-copilot/gpt-6.1-terra` | 500,000 on `openai-codex`; 272,000 on `openai` and `openai-api`; 1,050,000 on `azure` and `github-copilot` | $1 / $0.05 / $1.25 / $5 | $2 / $0.10 / $2.50 / $7.50 (including Codex) | `-fast` on `openai` and `openai-api`: $2 / $0.10 / $2.50 / $10 (above 272K: $4 / $0.20 / $5 / $15) | | `off`, `low`, `medium`, `high`, `xhigh`, `max` | Yes (sends `none`) | Codex UI alias sending `low`; no elsewhere | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
+#### Context windows and pricing
+
+| Model | Provider IDs | Context window | Standard (up to 272,000 input) | Standard (above 272,000 input) | Fast | Ultrafast |
+| --- | --- | --- | --- | --- | --- | --- |
+| GPT-6.2 Astra | `openai/gpt-6.2-astra`, `openai-api/gpt-6.2-astra`, `openai-codex/gpt-6.2-astra`, `azure/gpt-6.2-astra`, `github-copilot/gpt-6.2-astra` | 272,000 on `openai`, `openai-api`, `openai-codex`; 1,050,000 on `azure`, `github-copilot` | $8 / $0.40 / $10 / $40 | $16 / $0.80 / $20 / $60 | `-fast` on `openai`, `openai-api`, `openai-codex`: $16 / $0.80 / $20 / $80 (above 272K: $32 / $1.60 / $40 / $120) | `-ultrafast` on `openai`, `openai-api`, `openai-codex`: $24 / $1.20 / $30 / $120 (above 272K: $48 / $2.40 / $60 / $180) |
+| GPT-6.2 Sol | `openai/gpt-6.2-sol`, `openai-api/gpt-6.2-sol`, `openai-codex/gpt-6.2-sol`, `azure/gpt-6.2-sol`, `github-copilot/gpt-6.2-sol` | 500,000 on `openai-codex` and `openai` (ChatGPT sign-in); 272,000 on `openai` and `openai-api` (API key); 1,050,000 on `azure`, `github-copilot` | $2 / $0.10 / $2.50 / $10 | $4 / $0.20 / $5 / $15 (including Codex) | `-fast` on `openai`, `openai-api`, `openai-codex`: $4 / $0.20 / $5 / $20 (above 272K: $8 / $0.40 / $10 / $30) | `-ultrafast` on `openai`, `openai-api`, `openai-codex`: $6 / $0.30 / $7.50 / $30 (above 272K: $12 / $0.60 / $15 / $45) |
+| GPT-6 Astra | `openai/gpt-6-astra`, `openai-api/gpt-6-astra`, `openai-codex/gpt-6-astra`, `github-copilot/gpt-6-astra` | 272,000 on `openai`, `openai-api`, `openai-codex`; 1,000,000 on `github-copilot` | $10 / $1 / $12.50 / $50 | $20 / $2 / $25 / $75 | `-fast` on `openai`, `openai-api`, `openai-codex`: $20 / $2 / $25 / $100 (above 272K: $40 / $4 / $50 / $150) | `-ultrafast` on `openai`, `openai-api`, `openai-codex`: $60 / $6 / $75 / $300 (above 272K: $120 / $12 / $150 / $450) |
+| GPT-6 Astra (Bedrock) | `amazon-bedrock/openai.gpt-6-astra`, `amazon-bedrock/global.openai.gpt-6-astra`, `amazon-bedrock/us.openai.gpt-6-astra` | 1,050,000 | `global.`: $10 / $1 / $12.50 / $50; `openai.`, `us.`: $11 / $1.10 / $13.75 / $55 | `global.`: $20 / $2 / $25 / $75; `openai.`, `us.`: $22 / $2.20 / $27.50 / $82.50 | | |
+| GPT-6.1 Sol | `openai/gpt-6.1-sol`, `openai-api/gpt-6.1-sol`, `openai-codex/gpt-6.1-sol`, `azure/gpt-6.1-sol`, `github-copilot/gpt-6.1-sol` | 500,000 on `openai-codex` and `openai` (ChatGPT sign-in); 272,000 on `openai` and `openai-api` (API key); 1,050,000 on `azure`, `github-copilot` | $2 / $0.10 / $2.50 / $10 | $4 / $0.20 / $5 / $15 with API key; none with ChatGPT sign-in | `-fast` on `openai`, `openai-api`, `openai-codex`: $4 / $0.20 / $5 / $20 (above 272K with API key: $8 / $0.40 / $10 / $30) | `-ultrafast` on `openai`, `openai-api`, `openai-codex`: $12 / $0.60 / $15 / $60 (above 272K with API key: $24 / $1.20 / $30 / $90) |
+| GPT-6.1 Terra | `openai/gpt-6.1-terra`, `openai-api/gpt-6.1-terra`, `openai-codex/gpt-6.1-terra`, `azure/gpt-6.1-terra`, `github-copilot/gpt-6.1-terra` | 500,000 on `openai-codex`; 272,000 on `openai` and `openai-api`; 1,050,000 on `azure`, `github-copilot` | $1 / $0.05 / $1.25 / $5 | $2 / $0.10 / $2.50 / $7.50 (including Codex) | `-fast` on `openai` and `openai-api`: $2 / $0.10 / $2.50 / $10 (above 272K: $4 / $0.20 / $5 / $15) | |
+
+#### Reasoning levels and capabilities
+
+| Model | Reasoning levels | `off` | `minimal` | Tool search | Additional tools | Mid-conversation effort |
+| --- | --- | --- | --- | --- | --- | --- |
+| GPT-6.2 Astra | `low`, `medium`, `high`, `xhigh`, `max` | No | No | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
+| GPT-6.2 Sol | `low`, `medium`, `high`, `xhigh`, `max` | No | No | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
+| GPT-6 Astra | `low`, `medium`, `high`, `xhigh`, `max` | No | No | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
+| GPT-6 Astra (Bedrock) | `low`, `medium`, `high`, `xhigh`, `max` | No | No | No | No | No |
+| GPT-6.1 Sol | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias sending `low`; no elsewhere | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
+| GPT-6.1 Terra | `off`, `low`, `medium`, `high`, `xhigh`, `max` | Yes (sends `none`) | Codex UI alias sending `low`; no elsewhere | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with API key |
 
 Notes for every row:
 
@@ -179,8 +193,6 @@ Atomic clamps unsupported thinking levels to the nearest supported level, then m
 
 For OpenAI-compatible servers that share reasoning and answer budgets (vLLM, Qwen/DashScope/SGLang, llama.cpp), set `compat.thinkingTokenBudgetField` (or its vLLM alias `compat.supportsThinkingTokenBudget: true`). Atomic sends the capped thinking budget and reserves at least 1024 tokens for the answer. Atomic's default budgets are 1024 (`minimal`), 2048 (`low`), 8192 (`medium`), and 16384 (`high`), overridable via `thinkingBudgets`; `xhigh` and `max` use the `high` budget, and the field is omitted if no positive budget remains. Avoid putting a fixed thinking-token cap in `samplingParams`, because it ignores `thinkingBudgets` and answer reservation.
 
-Model references check for an exact unmodified ID before interpreting thinking suffixes or glob characters. If a catalog contains `provider/literal[free]:high`, that literal ID matches first without stripping `:high` or treating `[free]` as a glob. Only when the literal ID is absent does Atomic parse a thinking suffix and then apply glob or fuzzy matching.
-
 ### Request-wide cost tiers
 
 Declare request-wide long-context pricing in `cost.tiers`. Both base `cost` and every tier require all four USD-per-million-token rates (`input`, `output`, `cacheRead`, `cacheWrite`); each tier also requires `inputTokensAbove`:
@@ -229,7 +241,7 @@ In `modelOverrides`, scalar cost fields merge individually and preserve inherite
 
 ### Thinking level map
 
-Use `thinkingLevelMap` to map Atomic thinking levels (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) to provider values. Levels are selectable only when the active model supports them.
+Use `thinkingLevelMap` to map Atomic thinking levels (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) to provider values. Levels are selectable only when the active model supports them. In `modelOverrides`, `thinkingLevelMap` merges per key with the base model's map, so you only need to specify the keys you want to change or hide with `null`.
 
 | Value | Meaning |
 | --- | --- |
@@ -268,11 +280,11 @@ Model where thinking cannot be disabled:
 
 Requesting `off` on a model with `"off": null` runs it at its lowest supported level rather than leaving effort to the provider's default. Sessions, `:off` subagents, and branch summaries select the lowest supported level in the map, so mark unsupported levels `null`.
 
-SDK requests arriving without a reasoning level fall back inside the provider adapter. OpenAI Responses, OpenAI Completions, and Mistral send the lowest mapped string value (or keep the provider default if none is mapped); `thinkingFormat: "openrouter"` sends the lowest supported level even without an explicit string value; budget-based Gemini models use that level's `thinkingBudgets` value. The response records `thinking_off_fallback` in `diagnostics`.
+SDK requests arriving without a reasoning level fall back automatically. OpenAI Responses, OpenAI Completions, and Mistral send the lowest mapped string value (or keep the provider default if none is mapped); `thinkingFormat: "openrouter"` sends the lowest supported level even without an explicit string value; budget-based Gemini models use that level's `thinkingBudgets` value. The response records `thinking_off_fallback` in `diagnostics`.
 
 Move older `compat.reasoningEffortMap` entries to model-level `thinkingLevelMap`.
 
-Running `/thinking` opens the thinking-level selector, and `/thinking <level>` selects a level directly. Choosing a level applies it immediately and saves it as the startup default in both `settings.modelThinkingLevels` (for the active model) and `settings.defaultThinkingLevel`. Open `/settings` and select **Default thinking level per model** to review saved per-model levels.
+Running `/thinking` opens the thinking-level selector, and `/thinking <level>` selects a level directly (case-insensitive, matching `:level` suffixes in `--model`, `enabledModels`, and `fallbackModels`). Choosing a level applies it immediately and saves it as the startup default in both `settings.modelThinkingLevels` (for the active model) and `settings.defaultThinkingLevel`. Open `/settings` and select **Default thinking level per model** to review saved per-model levels.
 
 ### Context window
 
@@ -286,7 +298,7 @@ Running `/thinking` opens the thinking-level selector, and `/thinking <level>` s
 }
 ```
 
-Built-in models inherit `contextWindow` from Atomic's built-in `@bastani/atomic-ai` catalog, and discovered GitHub Copilot models read it from your account's `/models` list. Override one with `modelOverrides`:
+Built-in models inherit `contextWindow` from Atomic's built-in model catalog, and discovered GitHub Copilot models read it from your account's `/models` list. Override one with `modelOverrides`:
 
 ```json
 {
@@ -355,7 +367,7 @@ Merge rules:
 
 ## Per-model overrides
 
-Use `modelOverrides` to patch specific built-in or extension-registered models without replacing the provider's model list. See [Model overrides fields](/models-configuration#model-overrides) for all supported fields.
+Use `modelOverrides` to patch specific built-in, custom, or extension-registered chat models without replacing the provider's model list. See [Model overrides fields](/models-configuration#model-overrides) for all supported fields.
 
 ```json
 {
@@ -380,18 +392,19 @@ Override rules:
 
 - Atomic reads a single `models.json` from the active agent directory and never merges `.pi` and `.atomic` model files.
 - Atomic retains parsed `modelOverrides` for models registered later by extensions through `atomic.registerProvider()`; unknown IDs are ignored otherwise.
-- `modelOverrides` composes over built-in and extension models, with override fields winning and headers shallow-merged. A same-ID custom entry in `models` replaces the overridden built-in entry (including its headers) and is not modified by `modelOverrides`.
-- Provider-level headers stay separate and combine at request time.
+- `modelOverrides` runs after `models` and extension registrations, so it applies to built-in, extension-registered, and same-ID custom chat models (as well as derived `-fast` and `-ultrafast` variants).
+- Nested objects merge per key rather than wiping siblings: `compat` (including `openRouterRouting`, `vercelGatewayRouting`, `chatTemplateKwargs`, and `chatTemplateArgs`), `inputLimits` (including `images` and `images.resize`), `promptCache`, `thinkingLevelMap`, `samplingParams`, and `samplingParamsByThinkingLevel` (per level).
+- `headers` shallow-merges (when both a custom `models` entry and `modelOverrides` set the same header key, the custom `models` entry's header wins). Provider-level headers stay separate and combine at request time.
 - Scalar `cost` overrides preserve inherited `tiers`; providing `cost.tiers` replaces the entire array (`[]` clears it).
 
 ## Derived fast model variants
 
-For providers that enable fast mode via a request parameter (OpenAI and xAI `service_tier`, Anthropic `speed`), Atomic derives `<id>-fast` variants after composing built-in catalogs, `models.json` entries, extension models, and base `modelOverrides`. Any `modelOverrides` entry keyed on the derived `-fast` ID then applies to that derived entry. GitHub Copilot publishes its own fast IDs without derivation. See [Fast models](/providers#fast-models) for eligibility.
+For providers that enable fast mode via a request parameter (OpenAI and xAI `service_tier`, Anthropic `speed`), Atomic derives `<id>-fast` (and eligible `<id>-ultrafast`) variants after composing built-in catalogs, `models.json` entries, extension models, and base `modelOverrides`. Any `modelOverrides` entry keyed on the derived `-fast` or `-ultrafast` ID then applies to that derived entry. GitHub Copilot publishes its own fast IDs without derivation. See [Fast models](/providers#fast-models) for eligibility.
 
 Rules for `models.json`:
 
-- **Custom entries in `models` never get derived fast variants**, even when replacing a built-in model ID. Use `modelOverrides` instead of `models` to customize a built-in model while keeping its derived fast sibling.
-- **Exact IDs win.** If a provider, `models.json`, or an extension defines the exact `<base>-fast` ID, Atomic keeps that entry without deriving a duplicate and warns at startup. The `-fast` suffix alone never adds fast routing.
+- **Custom entries in `models` never get derived fast or ultrafast variants**, even when replacing a built-in model ID. Use `modelOverrides` instead of `models` to customize a built-in model while keeping its derived sibling.
+- **Exact IDs win.** If a provider, `models.json`, or an extension defines the exact `<base>-fast` or `<base>-ultrafast` ID, Atomic keeps that entry without deriving a duplicate and warns at startup. The `-fast` or `-ultrafast` suffix alone never adds fast routing.
 - **`modelOverrides` works on derived IDs.** Overriding the base model flows down to its derived sibling; overriding the derived ID (such as `modelOverrides["gpt-5.6-sol-fast"]`) wins while keeping fast-route metadata intact.
 
 Derived `-fast` variants inherit the base model's `cost` because the adapter applies the priority/speed multiplier at request time. Do not pre-multiply costs in overrides. Ultrafast variants carry their published Ultrafast rates directly and can be overridden by their own ID.

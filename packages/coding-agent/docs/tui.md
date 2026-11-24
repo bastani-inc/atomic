@@ -1,21 +1,14 @@
 ---
-title: "TUI components"
-description: "Build custom terminal UI for extensions."
+title: "Build TUI components"
+sidebarTitle: "TUI components"
+description: "Build custom interactive terminal UI components, overlays, selectors, widgets, and editors for Atomic extensions."
 ---
 
-# TUI components
-
-Extensions and custom tools can render custom TUI components for interactive user interfaces. This page covers the component system and common interaction patterns.
-
-**Source:** TUI components come from Atomic's `@bastani/atomic-tui` runtime dependency. The [`@bastani/atomic-tui` library page](/libraries/tui) documents its full API, including standalone use outside Atomic.
-
-## On this page and its reference
-
-This page covers writing your first component and common interaction patterns. The component and focusable interfaces, host terminal modes, the host-native session picker and input form, keyboard input, line width, invalidation, debug logging, and performance contracts live in the [TUI API reference](/tui/reference).
+Extensions and custom tools can render custom terminal UI (TUI) components for interactive workflows. This guide covers `ctx.ui.custom()`, overlays, built-in components, theming, and common patterns. For the full `Component`, `ExtensionCustomComponent`, `Focusable`, keyboard, invalidation, debug logging, and host-native UI contracts, see [TUI API reference](/tui/reference) and [`@bastani/atomic-tui`](/libraries/tui).
 
 ## Using components
 
-Use `ctx.ui.custom()` with a component factory. The factory receives `done(result)`, and `ctx.ui.custom()` resolves with that result when the component finishes:
+Use `ctx.ui.custom()` with a synchronous or `async` component factory (`ExtensionCustomComponent | Promise<ExtensionCustomComponent>`). The factory receives `done(result)`, and `ctx.ui.custom()` resolves with that value when the component calls `done()`. Components may also implement `dispose?(): void` for cleanup when dismissed.
 
 ```typescript
 atomic.on("session_start", async (_event, ctx) => {
@@ -26,23 +19,20 @@ atomic.on("session_start", async (_event, ctx) => {
 });
 ```
 
-Pass `{ signal }` to `ctx.ui.custom()` when the UI belongs to an abortable operation. Aborting a mounted custom UI dismisses it and releases its input ownership. In-process mode rejects the returned promise with the signal reason; isolated mode resolves it with `undefined`, like host-side cancellation. For overlays, use `options.onHandle` to receive an overlay handle for programmatic visibility control.
+Key options for `ctx.ui.custom(factory, options?)`:
 
-For inspection or navigation, pass `{ purpose: "navigation" }` so Atomic mounts the component without emitting `ui_prompt_start` or `ui_prompt_end` (preventing persistent viewers from reporting the session as blocked). Inline navigation temporarily hides all `ctx.ui.setWidget()` widgets above and below the editor, including the agent panel, plus queued-message and pending-shell previews, restoring them when the last inline navigation view closes. Overlays do not hide them. The default purpose is `"prompt"` (for approvals and required user decisions); prompts opened during navigation still emit their own lifecycle events.
+- **`handlesCtrlC?: boolean`:** By default (`false`), Atomic closes a custom component on the first `Ctrl+C` so a wedged component cannot trap the keyboard. Set `handlesCtrlC: true` only when your component handles `Ctrl+C` itself (for example to cancel, skip, or close cleanly).
+- **`handlesInternalUiAction?: boolean`:** Set `true` when the component claims internal UI actions such as clicking the jump-to-bottom URL.
+- **`signal?: AbortSignal`:** Dismisses the component and releases input ownership when aborted. Inside Atomic's CLI terminal UI, aborting resolves with `undefined` (matching user cancellation); in an embedded SDK TUI host, aborting rejects with `signal.reason`.
+- **`purpose?: "prompt" | "navigation"`:** Defaults to `"prompt"` (for approvals and required user decisions). Pass `{ purpose: "navigation" }` for inspection or browsing views so Atomic mounts the component without emitting `ui_prompt_start`/`ui_prompt_end`. Inline navigation temporarily hides `ctx.ui.setWidget()` widgets, the agent panel, and queued previews until the last inline navigation view closes (overlays do not hide them). In `getHostCustomUiState()`, `blockingInlineCustomUiActive` counts all inline mounts while `blockingInlineCustomUiNeedsInput` distinguishes required prompts from navigation views.
+- **`blocked?: { kind: "question" | "permission" | "auth", message: string }`:** Reports Atomic as waiting for user input through [program status](/terminal-setup#program-status). Inline components report blocked while visible; overlays report blocked from mount until `done()` or `signal` abort, even while hidden with `setHidden()` or covered by another overlay. When several blocking prompts are open, the most recently shown one supplies `kind` and `message`.
+- **`overlay?: boolean`, `overlayOptions?: OverlayOptions | (() => OverlayOptions)`, `onHandle?: (handle: OverlayHandle) => void`:** Mounts the component as a floating overlay (see [Overlays](#overlays)). `overlayOptions` may be a static object or a callback evaluated dynamically on render.
+- **`deferInlineCustomUiFocus?: boolean`:** Overlay option that keeps pending inline custom UI deferred in the background while the overlay holds focus.
+- **`reserveTranscriptRows?: boolean`:** Overlay-only option for blocking bottom-anchored dialogs (such as `ask_user_question`). Requires a bottom anchor (`bottom-left`, `bottom-center`, or `bottom-right`), rejects `row` and nonzero `offsetY`, leaves at least 6 transcript rows visible above the overlay, and extends transcript scrollback so every line can scroll into view. On short terminals, embed `OVERLAY_ACTIVE_ROW_MARKER` (exported from `@bastani/atomic`) once per frame in your selected row so Atomic windows the cropped overlay around that row instead of clipping it from the top.
 
-Navigation still owns keyboard focus. In `getHostCustomUiState()` and its change listener, `blockingInlineCustomUiActive` counts all inline mounts, while `blockingInlineCustomUiNeedsInput` distinguishes real pending prompts from navigation-only mounts (preserved across the isolated-engine bridge).
+Main-chat inline custom UIs share the editor slot. Completing an older mount leaves the current one visible; closing the current mount restores the most recent pending inline UI, and the main editor returns only after the last inline owner closes. Reserving bottom prompts (`reserveTranscriptRows`) wait out of view while inline navigation or an overlay with `deferInlineCustomUiFocus` owns input, and `Escape` belongs to the active navigation view until it closes.
 
-Custom components do not report Atomic as waiting through [program status](/terminal-setup#program-status) by default, because `ctx.ui.custom()` also hosts loaders and non-blocking UI. When a component waits for an answer, pass `blocked: { kind, message }` (`kind` is `"question"`, `"permission"`, or `"auth"`):
-
-- Inline components report blocked while visible; a newer dialog shown in their place reports its own status.
-- Overlays report blocked from mount until `done()` or `signal` abort, even while hidden with `setHidden()` or covered by another overlay.
-- When several blocking prompts are open, the most recently shown one supplies `kind` and `message`.
-
-Main-chat inline custom UIs share the editor slot. Completing an older mount leaves the current one visible; closing the current mount restores the most recent pending inline UI, and the main editor returns only after the last inline owner closes.
-
-Reserving bottom prompts (`reserveTranscriptRows`, including `ask_user_question`) wait out of view while inline navigation or an overlay with `deferInlineCustomUiFocus` owns input. Leaving navigation restores the same pending prompt, and `Escape` belongs exclusively to the active navigation view until then.
-
-In isolated interactive mode, do not access host process objects from `render()` or `handleInput()`. Return JSON-safe values to `done()`. Return `true` for consumed viewport keys or overlay mouse events and `false` to let the transcript handle them. Set `wantsKeyRelease = true` only when your component needs release events. Non-overlay components leave mouse scrolling and selection with the transcript.
+Do not rely on host process globals from `render()` or `handleInput()`, and pass only JSON-safe values to `done()`. Return `true` for consumed viewport keys or overlay mouse events and `false` to let the transcript handle them. Set `wantsKeyRelease = true` only when your component needs key release events. Non-overlay components leave mouse scrolling and selection with the transcript.
 
 ## Overlays
 
@@ -55,7 +45,7 @@ const result = await ctx.ui.custom<string | null>(
 );
 ```
 
-For positioning and sizing, use `overlayOptions`:
+For positioning and sizing, pass `overlayOptions` as a static object or a `() => OverlayOptions` function for dynamic updates:
 
 ```typescript
 const result = await ctx.ui.custom<string | null>(
@@ -309,8 +299,8 @@ renderResult(result, options, theme, context) {
 **Foreground colors** (`theme.fg(color, text)`):
 
 | Category | Colors |
-|----------|--------|
-| General | `text`, `accent`, `muted`, `dim` |
+| --- | --- |
+| General | `text`, `accent`, `muted`, `dim`, `searchMatchText` |
 | Status | `success`, `error`, `warning` |
 | Borders | `border`, `borderAccent`, `borderMuted` |
 | Messages | `userMessageText`, `customMessageText`, `customMessageLabel` |
@@ -318,12 +308,12 @@ renderResult(result, options, theme, context) {
 | Diffs | `toolDiffAdded`, `toolDiffRemoved`, `toolDiffContext` |
 | Markdown | `mdHeading`, `mdLink`, `mdLinkUrl`, `mdCode`, `mdCodeBlock`, `mdCodeBlockBorder`, `mdQuote`, `mdQuoteBorder`, `mdHr`, `mdListBullet` |
 | Syntax | `syntaxComment`, `syntaxKeyword`, `syntaxFunction`, `syntaxVariable`, `syntaxString`, `syntaxNumber`, `syntaxType`, `syntaxOperator`, `syntaxPunctuation` |
-| Thinking | `thinkingOff`, `thinkingMinimal`, `thinkingLow`, `thinkingMedium`, `thinkingHigh`, `thinkingXhigh` |
+| Thinking | `thinkingText`, `thinkingOff`, `thinkingMinimal`, `thinkingLow`, `thinkingMedium`, `thinkingHigh`, `thinkingXhigh` |
 | Modes | `bashMode` |
 
 **Background colors** (`theme.bg(color, text)`):
 
-`selectedBg`, `userMessageBg`, `customMessageBg`, `toolPendingBg`, `toolSuccessBg`, `toolErrorBg`
+`selectedBg`, `userMessageBg`, `customMessageBg`, `toolPendingBg`, `toolSuccessBg`, `toolErrorBg`, `scrollbarThumb`, `searchMatchBg`
 
 **For Markdown**, use `getMarkdownTheme()`:
 
@@ -481,7 +471,7 @@ atomic.registerCommand("pick", {
 
 **Examples:** [preset.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/preset.ts), [tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts)
 
-### Pattern 2: Async Operation with Cancel (BorderedLoader)
+### Pattern 2: Async operation with cancel (`BorderedLoader`)
 
 For operations that take time and should be cancellable. `BorderedLoader` shows a spinner and handles escape to cancel.
 
@@ -513,7 +503,7 @@ atomic.registerCommand("fetch", {
 
 **Examples:** [qna.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/qna.ts), [handoff.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/handoff.ts)
 
-### Pattern 3: Settings/Toggles (SettingsList)
+### Pattern 3: Settings and toggles (`SettingsList`)
 
 For toggling multiple settings. Use `SettingsList` from `@bastani/atomic-tui` with `getSettingsListTheme()`.
 
@@ -560,7 +550,7 @@ atomic.registerCommand("settings", {
 
 **Examples:** [tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/tools.ts)
 
-### Pattern 4: Persistent Status Indicator
+### Pattern 4: Persistent status indicator
 
 Show status in the footer that persists across renders. Good for mode indicators.
 
@@ -610,7 +600,7 @@ Compaction and retry loaders use their own factual text and the built-in indicat
 
 **Examples:** [working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts)
 
-### Pattern 5: Widgets Above/Below Editor
+### Pattern 5: Widgets above or below the editor
 
 Show persistent content above or below the input editor. Good for todo lists, progress.
 
@@ -645,7 +635,7 @@ The listener runs after the host removes that key, so the extension can reset lo
 
 Opt in with `scroll: { maxHeight: 6 }` to give a widget its own fullscreen viewport. The host may allocate fewer rows when the editor or other widgets need space. Render the full content, not a pre-clipped slice. Wheel input over the widget scrolls only that widget, including at either end. A one-column scrollbar appears only while content overflows. Scrolling does not take editor focus or register keyboard shortcuts.
 
-For a cap that follows terminal resizing, use `scroll: { maxHeight: 10, maxHeightFraction: 1 / 3 }`. The fraction is applied to live terminal rows, rounded down with a one-row minimum, then limited by `maxHeight`. Actual allocation may still be zero when other dock content uses all available rows. Omitting the fraction retains the fixed cap. The same options work for isolated-engine widgets.
+For a cap that follows terminal resizing, use `scroll: { maxHeight: 10, maxHeightFraction: 1 / 3 }`. The fraction applies to live terminal rows, rounded down with a one-row minimum, then capped at `maxHeight`. Actual allocation may still be zero when other dock content uses all available rows. Omitting the fraction keeps the fixed cap.
 
 ```typescript
 import type { ScrollableWidgetComponent, WidgetScrollRequest } from "@bastani/atomic";
@@ -673,11 +663,11 @@ ctx.ui.requestRender();
 
 `getScrollRequest` and `onScroll` are optional. Keep the request version unchanged during ordinary updates so they do not reset wheel scrolling. New positions are clamped to the actual viewport. Requests with older versions are ignored. Unmounting starts a fresh viewport. Keep item identity and insertion/deletion anchors in your extension; positions here count rendered rows.
 
-`installReactiveWidget` accepts the same `scroll`, `getScrollRequest`, and `onScroll` options. Existing widgets remain unscrolled unless they opt in. Factory widgets work in both in-process and isolated-engine sessions. Native wheel input requires the fullscreen renderer and a terminal that forwards mouse events; the guarded main-screen fallback does not provide a native viewport. No Option/Alt key setup is required for wheel input.
+`installReactiveWidget` accepts the same `scroll`, `getScrollRequest`, and `onScroll` options. Existing widgets remain unscrolled unless they opt in. Native wheel input requires fullscreen mode and a terminal that forwards mouse events; the main-screen fallback (such as `TERM=dumb` or non-TTY sessions) does not provide a native viewport. No Option/Alt key setup is required for wheel input.
 
 **Examples:** [plan-mode/index.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/plan-mode/index.ts)
 
-### Pattern 6: Custom Footer
+### Pattern 6: Custom footer
 
 Replace the footer. `footerData` exposes data not otherwise accessible to extensions.
 
@@ -695,7 +685,7 @@ ctx.ui.setFooter((tui, theme, footerData) => ({
 ctx.ui.setFooter(undefined); // restore default
 ```
 
-`ctx.ui.getFooterDataProvider()` exposes the same read-only status and Git-branch provider to embedded extension UIs, including isolated interactive sessions.
+`ctx.ui.getFooterDataProvider()` exposes the same read-only status and Git-branch provider to embedded extension UIs in Atomic's terminal UI.
 
 For a viewer with a different cwd, subscribe with that cwd to retain its branch watcher, and read the live branch during each render using the same raw cwd string:
 
@@ -718,7 +708,7 @@ Token stats available via `ctx.sessionManager.getBranch()` and `ctx.model`.
 
 **Examples:** [custom-footer.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/custom-footer.ts)
 
-### Pattern 7: Custom Editor (vim mode, etc.)
+### Pattern 7: Custom editor (vim mode)
 
 Replace the main input editor with a custom implementation. Useful for modal editing (vim), different keybindings (emacs), or specialized input handling.
 
@@ -787,14 +777,14 @@ export default function (atomic: ExtensionAPI) {
 
 - **Extend `CustomEditor`** (not base `Editor`) to get app keybindings (escape to abort, ctrl+d to exit, model switching, etc.)
 - **Call `super.handleInput(data)`** for keys you don't handle
-- **Working status**: editors keep the standalone working row by default. Pass `{ embedWorkingStatus: true }` as the fourth `CustomEditor` constructor argument to opt into the editor-border spinner.
-- **Factory pattern**: `setEditorComponent` receives a factory function that gets `tui`, `theme`, and `keybindings`
-- **Autocomplete limit**: custom editors installed through `setEditorComponent()` that expose `setAutocompleteMaxVisible()` inherit the active `autocompleteMaxVisible` setting
-- **Pass `undefined`** to restore the default editor: `ctx.ui.setEditorComponent(undefined)`
+- **`CustomEditorOptions`**: The optional fourth argument to `new CustomEditor(tui, theme, keybindings, options?)` accepts `{ promptPrefix?, placeholder?, embedWorkingStatus?, topRuleLabel?, paddingX?, autocompleteMaxVisible? }`. Editors keep the standalone working row by default; pass `{ embedWorkingStatus: true }` to render the working spinner in the editor's top border.
+- **Factory pattern**: `setEditorComponent` receives a factory function that gets `tui`, `theme`, and `keybindings`.
+- **Autocomplete limit**: Custom editors installed through `setEditorComponent()` that expose `setAutocompleteMaxVisible()` inherit the active `autocompleteMaxVisible` setting.
+- **Pass `undefined`** to restore the default editor: `ctx.ui.setEditorComponent(undefined)`.
 
 **Examples:** [modal-editor.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/modal-editor.ts)
 
-### Pattern 7b: Attached Composer
+### Pattern 7b: Attached composer
 
 When an extension or custom SDK host embeds a secondary chat editor, `applyAttachedComposer(style, label, placeholder, lines)` distinguishes it from the main prompt: accent-coloured rules above and below the prompt, the top rule ending in a bold `label`, and a dim `placeholder` after the cursor while nothing is typed.
 
@@ -831,7 +821,7 @@ export default function (atomic: ExtensionAPI) {
 }
 ```
 
-It replaces only a plain editor rule or one that reads `↑ N more` or `↓ N more`: a first or last line that is not a rule, such as one your editor draws itself, is left as it is. A long label is cut with `…` to fit. Below `INPUT_LABEL_MIN_COLUMNS` (40) columns, the rules stay heavy without the label. Pass `undefined` for `label` or `placeholder` to leave either out.
+It replaces only a plain editor rule or one that reads `↑ N more` or `↓ N more`: a first or last line that is not a rule, such as one your editor draws itself, is left unchanged. Composer rules draw with the light box-drawing glyph (`─`). A long label truncates with `…` to fit, and below `INPUT_LABEL_MIN_COLUMNS` (40) columns, the light `─` rules render without the label. Pass `undefined` for `label` or `placeholder` to omit either.
 
 ## Key rules
 
@@ -841,7 +831,7 @@ It replaces only a plain editor rule or one that reads `↑ N more` or `↓ N mo
 
 3. **Call `tui.requestRender()` after state changes.** In `handleInput`, call `tui.requestRender()` after updating state.
 
-4. **Return the three-method object.** Custom components need `{ render, invalidate, handleInput }`.
+4. **Return the component object.** Custom components implement `{ render, invalidate, handleInput?, dispose? }`.
 
 5. **Use existing components.** `Selector`, `SelectList`, `SettingsList`, and `BorderedLoader` cover most interactive UI cases.
 
@@ -857,22 +847,4 @@ It replaces only a plain editor rule or one that reads `↑ N more` or `↓ N mo
 - **Snake game**: [examples/extensions/snake.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/snake.ts): game with keyboard input and game loop.
 - **Custom tool rendering**: [examples/extensions/todo.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/todo.ts): `renderCall` and `renderResult`.
 
-## Moved sections
-
-<a id="component-interface" />
-<a id="focusable-interface-ime-support" />
-<a id="container-components-with-embedded-inputs" />
-<a id="host-terminal-modes-from-an-isolated-component" />
-<a id="host-native-session-picker" />
-<a id="host-native-input-form" />
-<a id="keyboard-input" />
-<a id="line-width" />
-<a id="debug-logging" />
-<a id="performance" />
-<a id="invalidation-and-theme-changes" />
-<a id="the-problem" />
-<a id="the-solution" />
-<a id="pattern-rebuild-on-invalidate" />
-<a id="when-this-matters" />
-
-These component, input, invalidation, logging, performance, and host-integration contracts moved to [TUI API reference](/tui/reference).
+For component, focusable, keyboard input, invalidation, debug logging, and host-native UI contracts, continue to [TUI API reference](/tui/reference).
