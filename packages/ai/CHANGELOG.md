@@ -4,9 +4,16 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.10-alpha.1] - 2026-11-24
+
+### Breaking Changes
+
+- Removed `KnownCompactorApi` and made `CompactorApi` an open `string` so custom compactor providers define their own API identifiers rather than special-casing `"morph-compact"` ([#6553](https://github.com/bastani-inc/atomic/pull/6553)).
+
 ### Added
 
-- Exposed `atomic-ai` as a CLI bin entry in `package.json` alongside legacy `pi-ai`.
+- Exposed `atomic-ai` as a CLI bin entry in `package.json` alongside legacy `pi-ai` ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Extended `CompactorModel` with optional `endpointPath`, `compactionParams`, `timeoutMs`, and `maxTokens` fields for per-model remote compactor configuration ([#6553](https://github.com/bastani-inc/atomic/pull/6553)).
 
 ## [0.10.6] - 2026-11-23
 
