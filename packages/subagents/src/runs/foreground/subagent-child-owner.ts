@@ -4,7 +4,8 @@ import { type ExtensionAPI, type ExtensionContext, registerExtensionContextRetir
 export type ChildOwnerAPI = Pick<
 	ExtensionAPI,
 	"appendEntry" | "events" | "getSessionName" | "getResourceLoaderInheritanceSnapshot"
->;
+> &
+	Partial<Pick<ExtensionAPI, "getSettings">>;
 
 type Manager = ExtensionContext["sessionManager"];
 type Writer = Pick<ExtensionAPI, "appendEntry">;

@@ -220,6 +220,11 @@ export interface RunSyncOptions {
 	/** Providers known to the registry before auth filtering */
 	knownModelProviders?: string[];
 	/**
+	 * When defined, restricts candidate selection, explicit launches, and child mid-run fallback to these
+	 * canonical `provider/id` models (resolved from the session's `enabledModels` / `--models` scope).
+	 */
+	allowedModels?: readonly string[];
+	/**
 	 * Resolve the selected `provider/model[:thinking]` candidate to a concrete
 	 * registry model. Without it the child session receives no model and a
 	 * fork-context child silently runs on the model restored from the parent's

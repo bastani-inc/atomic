@@ -8,6 +8,7 @@ import {
 	clampThinkingLevel,
 	type Message,
 	type Model,
+	modelsAreEqual,
 	type ProviderHeaders,
 	streamSimple,
 	type Usage,
@@ -1050,41 +1051,54 @@ async function constructAgentSession(
 							"snapshots",
 							settingsManager.getWorktreeSnapshotSettings(),
 						),
-			childSessionOptions: (child) => ({
-				...inheritChildSessionOptionsWithDefaults(
-					{
-						cwd,
-						agentDir,
-						modelRuntime,
-						settingsManager,
-						model: session.model,
-						thinkingLevel: session.thinkingLevel,
-						fallbackModels: options.fallbackModels ?? settingsManager.getFallbackModels(),
-						isFallbackModelAllowed: options.isFallbackModelAllowed,
-						builtins: childBuiltins,
-						tools: allowedToolNames,
-						noTools: options.noTools,
-						excludedTools: childExcludedTools,
-						customTools: options.customTools,
-						extensionBindings: session.extensionRunner.getChildHostBindings(),
-						parentCommandTaskOwner: childCommandTaskOwner,
-						inheritedHistory: childHistory,
-						resourceAdmission: options.resourceAdmission,
-						workspace,
-						parentUsageSink: reportChildUsage,
-						...(intercomPolicy === undefined ? {} : { parentIntercomPolicy: intercomPolicy }),
-					},
-					child,
-					session.getAllTools().map((tool) => tool.name),
-					builtinDefaultToolNames,
-				),
-				parentHiddenTools: session
-					.getActiveToolNames()
-					.filter((name) => isToolDeclarationHidden(session as unknown as AgentSessionInternalSurface, name)),
-				parentToolNames: session
-					.getActiveToolNames()
-					.filter((name) => !isToolDeclarationHidden(session as unknown as AgentSessionInternalSurface, name)),
-			}),
+			childSessionOptions: (child) => {
+				const parentScopedModels = session.scopedModels;
+				const scopeGate =
+					parentScopedModels.length > 0
+						? (model: Model<Api>) => parentScopedModels.some((scoped) => modelsAreEqual(scoped.model, model))
+						: undefined;
+				const parentFallbackGate =
+					options.isFallbackModelAllowed && scopeGate
+						? (model: Model<Api>, effort: string | undefined) =>
+								options.isFallbackModelAllowed!(model, effort) && scopeGate(model)
+						: (options.isFallbackModelAllowed ?? scopeGate);
+				return {
+					...inheritChildSessionOptionsWithDefaults(
+						{
+							cwd,
+							agentDir,
+							modelRuntime,
+							settingsManager,
+							model: session.model,
+							thinkingLevel: session.thinkingLevel,
+							...(parentScopedModels.length > 0 ? { scopedModels: [...parentScopedModels] } : {}),
+							fallbackModels: options.fallbackModels ?? settingsManager.getFallbackModels(),
+							isFallbackModelAllowed: parentFallbackGate,
+							builtins: childBuiltins,
+							tools: allowedToolNames,
+							noTools: options.noTools,
+							excludedTools: childExcludedTools,
+							customTools: options.customTools,
+							extensionBindings: session.extensionRunner.getChildHostBindings(),
+							parentCommandTaskOwner: childCommandTaskOwner,
+							inheritedHistory: childHistory,
+							resourceAdmission: options.resourceAdmission,
+							workspace,
+							parentUsageSink: reportChildUsage,
+							...(intercomPolicy === undefined ? {} : { parentIntercomPolicy: intercomPolicy }),
+						},
+						child,
+						session.getAllTools().map((tool) => tool.name),
+						builtinDefaultToolNames,
+					),
+					parentHiddenTools: session
+						.getActiveToolNames()
+						.filter((name) => isToolDeclarationHidden(session as unknown as AgentSessionInternalSurface, name)),
+					parentToolNames: session
+						.getActiveToolNames()
+						.filter((name) => !isToolDeclarationHidden(session as unknown as AgentSessionInternalSurface, name)),
+				};
+			},
 			scopedModels: options.scopedModels,
 			// Undefined follows the settings' current `fallbackModels`, also once a project is trusted later.
 			fallbackModels: options.fallbackModels,

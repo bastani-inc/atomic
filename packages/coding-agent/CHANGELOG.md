@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Child sessions created from a parent session now inherit the parent's active `scopedModels` (`enabledModels` / `--models` / `/scoped-models`) and enforce that allowlist during child mid-run model fallback; `resolveModelScopeFromModels` is also exported from `@bastani/atomic`.
+
 ### Fixed
 
 - Expanded running subagent cards no longer saturate the engine CPU or block subsequent model turns: `ToolBlockRecords` caches prefixed rows for unchanged static sections and reuses per-line formatting for unchanged lines, `BackgroundRenderLane` yields a bounded cooldown after slow renders, and `ToolExecutionComponent.setOutputPad()` is now idempotent ([#6528](https://github.com/bastani-inc/atomic/issues/6528)).

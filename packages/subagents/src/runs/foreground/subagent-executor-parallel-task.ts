@@ -57,6 +57,7 @@ interface ForegroundParallelRunInput {
 	parentDepth?: number;
 	availableModels: ModelInfo[];
 	knownModelProviders: string[];
+	allowedModels?: readonly string[];
 	resolveCandidateModel: CandidateModelResolver;
 	modelOverrides: (string | undefined)[];
 	/** Which tasks run `model: "auto"`, whose `modelOverrides` entry is the model it stood for, not one they named. */
@@ -273,6 +274,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			...(input.autoModels?.[index] ? { runsNamedModel: false as const } : {}),
 			availableModels: input.availableModels,
 			knownModelProviders: input.knownModelProviders,
+			...(input.allowedModels === undefined ? {} : { allowedModels: input.allowedModels }),
 			resolveCandidateModel: input.resolveCandidateModel,
 			preferredModelProvider: input.ctx.model?.provider,
 			currentModel: currentModelFullId(input.ctx.model),

@@ -35,6 +35,7 @@ import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { finishElapsedSpan } from "../shared/elapsed.js";
 import { filterSpawnableModelCandidates, skippedModelAttempt } from "../shared/model-candidate-filter.js";
 import { buildModelCandidates, launchRequestedModel, resolveModelCandidate } from "../shared/model-fallback.js";
+import { isModelCandidateAllowed } from "../shared/model-scope.js";
 import {
 	captureSingleOutputSnapshot,
 	formatSavedOutputReference,
@@ -209,10 +210,24 @@ function refusedResult(agent: string, task: string, reason: string, options: Run
 	};
 }
 
-function noSpawnableCandidatesMessage(skippedModels: readonly SkippedModel[]): string {
-	return `No spawnable subagent model candidates after pre-spawn filtering. ${
-		skippedModels.length > 0 ? formatNoUsableModelMessage(skippedModels) : ""
-	}`.trim();
+function noSpawnableCandidatesMessage(
+	skippedModels: readonly SkippedModel[],
+	skippedAttempts: readonly ModelAttempt[],
+): string {
+	const parts: string[] = ["No spawnable subagent model candidates after pre-spawn filtering."];
+	if (skippedModels.length > 0) {
+		parts.push(formatNoUsableModelMessage(skippedModels));
+	}
+	const extraReasons = skippedAttempts
+		.map((attempt) => attempt.error)
+		.filter(
+			(reason): reason is string =>
+				reason !== undefined && (skippedModels.length === 0 || !reason.includes("no configured API key/auth")),
+		);
+	if (extraReasons.length > 0) {
+		parts.push(extraReasons.join(" "));
+	}
+	return parts.join(" ").trim();
 }
 
 /** A launch that named a model none of whose candidates, the model and its agent's fallbacks, is available (#4188). */
@@ -317,6 +332,7 @@ async function launchSingleInProcess(
 		availableModels: options.availableModels,
 		knownModelProviders: options.knownModelProviders,
 		currentModel: options.currentModel,
+		allowedModels: options.allowedModels,
 	});
 	const resolveCandidate = options.resolveCandidateModel;
 	if (namesModel && resolveCandidate) {
@@ -343,7 +359,10 @@ async function launchSingleInProcess(
 			);
 	}
 	if (rawCandidates.length > 0 && filteredCandidates.candidates.length === 0)
-		return refuse(noSpawnableCandidatesMessage(filteredCandidates.skippedModels), filteredCandidates.skippedAttempts);
+		return refuse(
+			noSpawnableCandidatesMessage(filteredCandidates.skippedModels, filteredCandidates.skippedAttempts),
+			filteredCandidates.skippedAttempts,
+		);
 	const listedCandidate = filteredCandidates.candidates[0];
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
 	// Upstream pi #7897: a subagent that pins no model of its own inherits the
@@ -489,6 +508,13 @@ async function launchSingleInProcess(
 		artifactJsonlPath: options.artifactConfig?.includeJsonl === true ? artifactPaths?.jsonlPath : undefined,
 		// A named model's own chain, even an empty one, replaces any chain the child session would otherwise take up.
 		...(fallbackCandidates.length || namesModel ? { fallbackModels: fallbackCandidates } : {}),
+		...(options.allowedModels === undefined
+			? {}
+			: {
+					allowedModels: options.allowedModels,
+					isFallbackModelAllowed: (model) =>
+						isModelCandidateAllowed(`${model.provider}/${model.id}`, options.allowedModels!),
+				}),
 		...(namedModel === undefined ? {} : { namedModel }),
 		...(requestedModel ? { requestedModel } : {}),
 		onProgress: options.onUpdate
