@@ -178,8 +178,30 @@ const { session } = await createAgentSession({ resourceAdmission });
 Sessions default to `~/.atomic/workflows/journal.sqlite` (`session_` prefix). Override with `sessionStore`, `storage` (same shape as `settings.json` `storage` or `teamProfileSelection()`, see [Team and CI setup](/guides/team-setup#from-the-sdk)), or an explicit `sessionManager`:
 
 ```typescript
-const { session } = await createAgentSession({
+import { createAgentSession, MemorySessionStore, POSTGRES_ADAPTER_PACKAGE } from "@bastani/atomic";
+
+// In-memory (pass a MemorySessionStore instance to keep history across session.release() / runtime.rehydrate())
+const memoryStore = new MemorySessionStore();
+const mem = await createAgentSession({ sessionStore: memoryStore });
+
+// JSONL directory
+const jsonl = await createAgentSession({
+  sessionStore: { kind: "jsonl", dir: "./sessions" },
+});
+
+// SQLite file
+const sqlite = await createAgentSession({
   sessionStore: { kind: "sqlite", path: "./sessions.sqlite", prefix: "project_" },
+});
+
+// PostgreSQL (install @bastani/atomic-storage-postgres)
+const pg = await createAgentSession({
+  sessionStore: {
+    kind: "adapter",
+    module: POSTGRES_ADAPTER_PACKAGE,
+    options: { url: process.env.DATABASE_URL },
+    prefix: "project_",
+  },
 });
 ```
 

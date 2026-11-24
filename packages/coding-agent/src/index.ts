@@ -1,3 +1,4 @@
+export { SessionImportFileNotFoundError } from "./core/agent-session-runtime.ts";
 export type { ExtensionBindings } from "./core/agent-session-types.js";
 export {
 	CacheWarmer,
@@ -52,10 +53,19 @@ export {
 	takeTakeoverMutex,
 	takeTakeoverMutexAsync,
 } from "./core/lock-takeover.js";
+export {
+	type ModelScopeDiagnostic,
+	type ResolveModelScopeResult,
+	resolveModelScopeFromModels,
+	resolveModelScopeWithDiagnostics,
+} from "./core/model-resolver.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
+export { OAuthLoginTransactionError } from "./core/oauth-login.ts";
 export * from "./core/resume/index.ts";
+export { attachSessionClaim, claimSession, prepareSessionClaim } from "./core/session-claims.js";
+export { SessionWorkUnsettledError } from "./core/session-lifecycle-work.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
-export { resolveSessionStore } from "./core/session-storage.js";
+export { resolveSessionStore, type SessionStorageOptions } from "./core/session-storage.js";
 export {
 	assertSessionBlobStore,
 	type BlobCopyOptions,
@@ -67,6 +77,7 @@ export {
 	toolOutputUrl,
 } from "./core/session-tool-output.ts";
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
+export { SettingsFileChangedError } from "./core/settings-storage.ts";
 export { type ParsedSlashCommand, parseSlashCommand } from "./core/slash-commands.js";
 export * from "./core/storage/index.js";
 // Process-level storage selection is separate from the storage adapter entry point.
@@ -80,7 +91,27 @@ export {
 	selectProcessStorage,
 	selectProcessStorageAsync,
 } from "./core/storage/process-selection.js";
-export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
+export {
+	SessionConflictError,
+	SessionExistsError,
+	SessionFormatVersionError,
+	SessionIdMismatchError,
+	SessionInvalidTextError,
+	SessionInvalidTimestampError,
+	type SessionJsonValue,
+	SessionNotFoundError,
+	type SessionTextField,
+	type SessionTimestampField,
+} from "./core/storage/session/errors.js";
+export { JsonlSessionStore, JsonlStoragePoisonedError } from "./core/storage/session/jsonl-session-store.js";
+export { MemorySessionStore } from "./core/storage/session/memory-session-store.js";
+export { SqlSessionStore } from "./core/storage/session/sql-session-store.js";
+export {
+	StorageImportIncompleteError,
+	StorageTransferError,
+	type StorageTransferErrorInit,
+	type TransferredIds,
+} from "./core/storage/transfer-files.js";
 // Internal trusted-host task integration (not model authority).
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
 export {
@@ -848,7 +879,10 @@ export {
 	type NewSessionOptions,
 	type ProjectedSessionEntry,
 	parseSessionEntries,
+	SESSION_ALREADY_OPEN_EXIT_CODE,
+	SessionAlreadyOpenError,
 	type SessionContext,
+	SessionDeletedError,
 	type SessionEntry,
 	type SessionEntryBase,
 	SessionEntryError,
@@ -860,6 +894,7 @@ export {
 	SessionManager,
 	type SessionMessageEntry,
 	type SessionNameState,
+	SessionOpenElsewhereError,
 	type SessionOpenOptions,
 	type SessionProjection,
 	type SessionSummaryEntry,
