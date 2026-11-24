@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Gemini search and extraction error messages now reference `GEMINI_API_KEY` in the environment or `"geminiApiKey"` in `~/.atomic/web-search.json` and note enabling `"allowBrowserCookies": true` (or `ATOMIC_ALLOW_BROWSER_COOKIES=1`).
+- `youtube.enabled: false` now also prevents `fetch_content` frame and timestamp extraction on YouTube URLs.
+- `/google-account` no longer triggers an unintended LLM response turn, and `/curator` invalid-option errors now list `none`.
+- Saving a new `provider` in `~/.atomic/web-search.json` now clears legacy `searchProvider`, resets the memoized search config cache immediately, and creates `dirname(WEB_SEARCH_CONFIG_PATH)` directly; initial shortcut loading now uses Atomic's config path helper without falling back to legacy `.pi/web-search.json` on malformed JSON.
+
 ## [0.10.4] - 2026-11-22
 
 ### Changed

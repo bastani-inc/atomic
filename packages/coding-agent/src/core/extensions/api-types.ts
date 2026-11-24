@@ -223,7 +223,7 @@ export interface ExtensionAPI {
 	 * Contribute an MCP server to this session, using the same schema as an `mcpServers` entry in `mcp.json`.
 	 * Call it from the factory or from `session_start`; registering a name again replaces the earlier entry.
 	 * Contributed servers are the lowest-precedence MCP layer: a same-named server in a user or project MCP
-	 * config replaces this one, and `{ "disabled": true }` there turns it off.
+	 * config replaces this one, and `{ "enabled": false }` there turns it off.
 	 */
 	registerMcpServer(name: string, config: McpServerConfig): void;
 

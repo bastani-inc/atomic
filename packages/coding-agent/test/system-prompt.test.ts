@@ -269,7 +269,7 @@ describe("buildSystemPrompt", () => {
 		assert.ok(prompt.includes(`Additional docs: ${getDocsPath()}`));
 		for (const topic of ["mcp-servers", "intercom", "web-access", "subagents", "orchestration"]) {
 			assert.ok(prompt.includes(`docs/${topic}.md`), `Missing documentation route for ${topic}`);
-			assert.match(readFileSync(join(getDocsPath(), `${topic}.md`), "utf8"), /^# /m);
+			assert.match(readFileSync(join(getDocsPath(), `${topic}.md`), "utf8"), /^(?:# |title:\s*)/m);
 		}
 	});
 

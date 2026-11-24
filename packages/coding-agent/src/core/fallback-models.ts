@@ -29,7 +29,7 @@ export function splitFallbackModel(value: string): { modelId: string; thinkingLe
 	const trimmed = value.trim();
 	const index = trimmed.lastIndexOf(":");
 	if (index < 0) return { modelId: trimmed };
-	const suffix = trimmed.slice(index + 1);
+	const suffix = trimmed.slice(index + 1).toLowerCase();
 	if (!isValidThinkingLevel(suffix)) return { modelId: trimmed };
 	return { modelId: trimmed.slice(0, index), thinkingLevel: suffix };
 }

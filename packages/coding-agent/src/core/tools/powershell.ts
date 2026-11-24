@@ -1,5 +1,5 @@
 import { win32 } from "node:path";
-import { APP_NAME } from "../../config.js";
+import { APP_NAME, getEnvValue } from "../../config.js";
 import { createChildProcessEnvironment, waitForChildProcess } from "../../utils/child-process.ts";
 import { getPowerShellConfigAsync, getShellEnvAsync, spawnShellProcess } from "../../utils/shell.ts";
 import {
@@ -59,7 +59,7 @@ export function createLocalPowerShellOperations(binding?: {
 			if (options.signal?.aborted) throw new Error("aborted");
 			const { shell, args } = await getPowerShellConfigAsync();
 			const script = `${UTF8_OUTPUT_PREFIX}${command}${windowsPowerShellExitSuffix(shell, command)}`;
-			const pty = !!options.pty && process.env.PI_NO_PTY !== "1" && process.env.ATOMIC_NO_PTY !== "1";
+			const pty = !!options.pty && getEnvValue(`${APP_NAME.toUpperCase()}_NO_PTY`) !== "1";
 			if (binding?.taskOwner || pty) {
 				// EncodedCommand avoids native argument parsing differences between PowerShell 5 and 7.
 				const encoded = Buffer.from(script, "utf16le").toString("base64");

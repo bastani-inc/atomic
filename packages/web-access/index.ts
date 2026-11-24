@@ -1,16 +1,15 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
-import type {
-	ExtensionAPI,
-	ExtensionCommandContext,
-	ExtensionContext,
-	ExtensionHandler,
-	MessageRenderer,
-	RegisteredCommand,
-	ToolDefinition,
+import {
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	type ExtensionContext,
+	type ExtensionHandler,
+	getUserConfigPaths,
+	type MessageRenderer,
+	type RegisteredCommand,
+	type ToolDefinition,
 } from "@bastani/atomic";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { type KeyId, Text } from "@bastani/atomic-tui";
 import { Type } from "@bastani/atomic-ai";
 import { renderWebAccessToolResult } from "./result-renderers.js";
@@ -142,16 +141,24 @@ function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, 
 
 function getInitialShortcutConfig(): { curate: string; activity: string } {
 	const defaults = { curate: "ctrl+shift+s", activity: "ctrl+shift+w" };
-	for (const configPath of [join(homedir(), ".atomic", "web-search.json"), join(homedir(), ".pi", "web-search.json")]) {
+	for (const configPath of getUserConfigPaths("web-search.json")) {
+		let raw: string;
 		try {
-			if (!existsSync(configPath)) continue;
-			const parsed = JSON.parse(readFileSync(configPath, "utf8")) as { shortcuts?: { curate?: string; activity?: string } };
+			raw = readFileSync(configPath, "utf8");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			if (!reportOwnedWebDiagnostic()) console.error(`[pi-web-access] Failed to inspect shortcuts in ${configPath}:`, error);
+			return defaults;
+		}
+		try {
+			const parsed = JSON.parse(raw) as { shortcuts?: { curate?: string; activity?: string } };
 			return {
 				curate: parsed.shortcuts?.curate?.trim() || defaults.curate,
 				activity: parsed.shortcuts?.activity?.trim() || defaults.activity,
 			};
 		} catch (error) {
 			if (!reportOwnedWebDiagnostic()) console.error(`[pi-web-access] Failed to inspect shortcuts in ${configPath}:`, error);
+			return defaults;
 		}
 	}
 	return defaults;

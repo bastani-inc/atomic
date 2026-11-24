@@ -186,8 +186,13 @@ export async function discoverAgentsAll(
 		userSettingsPath,
 		projectSettingsPath,
 	);
-	const user: AgentConfig[] = [];
-	for (const dir of [...userDirOld, userDirNew]) user.push(...(await loadDir(dir, "user")));
+	const userMap = new Map<string, AgentConfig>();
+	for (const dir of getUserAgentReadDirs()) {
+		for (const agent of await loadDir(dir, "user")) {
+			userMap.set(agent.name, agent);
+		}
+	}
+	const user = Array.from(userMap.values());
 	const projectMap = new Map<string, AgentConfig>();
 	for (const dir of projectDirs) {
 		for (const agent of await loadDir(dir, "project")) {

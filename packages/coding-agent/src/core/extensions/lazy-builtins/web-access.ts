@@ -1,8 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { Type } from "@bastani/atomic-ai";
 import { type KeyId, Text } from "@bastani/atomic-tui";
+import { getUserConfigPaths } from "../../../config.js";
 import { DORMANT_WEB_ACCESS_MESSAGE_RENDERERS } from "../../../modes/interactive/components/dormant-builtin-messages.js";
 import type { SessionEntry } from "../../session-manager.ts";
 import type { LazyBuiltinController, LazyBuiltinSpec } from "../lazy-builtin.js";
@@ -29,20 +28,24 @@ function hasWebAccessHistory(entries: readonly SessionEntry[]): boolean {
 
 async function getInitialShortcutConfig(): Promise<{ curate: string; activity: string }> {
 	const defaults = { curate: "ctrl+shift+s", activity: "ctrl+shift+w" };
-	for (const configPath of [
-		join(homedir(), ".atomic", "web-search.json"),
-		join(homedir(), ".pi", "web-search.json"),
-	]) {
+	for (const configPath of getUserConfigPaths("web-search.json")) {
+		let raw: string;
 		try {
-			const raw = await readFile(configPath, "utf8");
+			raw = await readFile(configPath, "utf8");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			console.error(`[pi-web-access] Failed to inspect shortcuts in ${configPath}:`, error);
+			return defaults;
+		}
+		try {
 			const parsed = JSON.parse(raw) as { shortcuts?: { curate?: string; activity?: string } };
 			return {
 				curate: parsed.shortcuts?.curate?.trim() || defaults.curate,
 				activity: parsed.shortcuts?.activity?.trim() || defaults.activity,
 			};
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
 			console.error(`[pi-web-access] Failed to inspect shortcuts in ${configPath}:`, error);
+			return defaults;
 		}
 	}
 	return defaults;

@@ -140,7 +140,7 @@ async function normalizePaths(pathsValue: string | string[] | undefined, cwd: st
 			expanded.push(".");
 			continue;
 		}
-		const resourceLike = /^[a-z]+:\/\//i.test(raw) || /^[^:]+\.(?:zip|jar|tar|tgz|gz|sqlite|db):/i.test(raw);
+		const resourceLike = isResourceSelector(raw);
 		if (
 			(await pathExists(await resolveToCwdAsync(splitLineRangeSelector(raw).path, cwd))) ||
 			(await delimiterInExistingSearchGlobRoot(raw, cwd)) ||
@@ -221,7 +221,7 @@ function hasFileLimit(details: unknown): boolean {
 
 function isResourceSelector(value: string): boolean {
 	return (
-		/^[^:]+\.(zip|jar|tar|tgz|gz|sqlite|db):/i.test(value) ||
+		/^(?:[A-Za-z]:)?[^:]+\.(?:zip|jar|tar|tgz|gz|sqlite3?|db3?):/i.test(value) ||
 		/^[a-z]+:\/\//i.test(value) ||
 		value.startsWith("skill://")
 	);

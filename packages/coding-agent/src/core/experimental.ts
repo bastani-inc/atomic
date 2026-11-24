@@ -1,11 +1,8 @@
 import type { ConstrainedSamplingConfig } from "@bastani/atomic-ai/compat";
-import { APP_NAME, LEGACY_ENV_PREFIX } from "../config.js";
+import { APP_NAME, getEnvValue } from "../config.js";
 
 export function areExperimentalFeaturesEnabled(): boolean {
-	return (
-		process.env[`${APP_NAME.toUpperCase()}_EXPERIMENTAL`] === "1" ||
-		process.env[`${LEGACY_ENV_PREFIX}_EXPERIMENTAL`] === "1"
-	);
+	return getEnvValue(`${APP_NAME.toUpperCase()}_EXPERIMENTAL`) === "1";
 }
 
 const PREFER_STRICT_TOOL_SAMPLING = { type: "json_schema", strict: "prefer" } as const;

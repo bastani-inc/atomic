@@ -1,13 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getCustomThemesDir } from "../../../config.js";
 import { closeWatcher, isSafeFsWatchPathError, watchWithErrorHandlerAsync } from "../../../utils/fs-watch.ts";
 import { refreshColorEnvironment } from "./color-utils.ts";
 import { getDefaultTheme } from "./terminal-detection.ts";
 import type { Theme } from "./theme-class.ts";
 import {
 	getBuiltinThemes,
-	hasCustomThemeFile,
+	getThemeWatchPath,
 	loadTheme,
 	loadThemeFromContent,
 	readThemeFiles,
@@ -16,7 +15,7 @@ import {
 
 // Use globalThis to share theme across module loaders (node + jiti in dev mode)
 const THEME_KEY = Symbol.for("@bastani/atomic:theme");
-const THEME_KEY_OLD = Symbol.for("@bastani/atomic:theme");
+const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme");
 
 // Export theme as a getter that reads from globalThis
 // This ensures all module instances (node, jiti) see the same theme
@@ -34,7 +33,7 @@ export function getGlobalTheme(): Theme | undefined {
 
 function setGlobalTheme(t: Theme): void {
 	// Loading or switching a theme is when NO_COLOR and FORCE_COLOR are read; painting never reads them.
-	refreshColorEnvironment();
+	refreshColorEnvironment(process.env, t.getColorMode());
 	(globalThis as Record<symbol, Theme>)[THEME_KEY] = t;
 	(globalThis as Record<symbol, Theme>)[THEME_KEY_OLD] = t;
 }
@@ -112,16 +111,14 @@ function startThemeWatcher(): void {
 		return;
 	}
 
-	const customThemesDir = getCustomThemesDir();
 	const watchedThemeName = currentThemeName;
-	const watchedFileName = `${watchedThemeName}.json`;
-	const themeFile = path.join(customThemesDir, watchedFileName);
-	const generation = themeWatcherGeneration;
-
-	// Only watch if the file exists
-	if (!hasCustomThemeFile(watchedThemeName)) {
+	const themeFile = getThemeWatchPath(watchedThemeName);
+	if (!themeFile) {
 		return;
 	}
+	const watchDir = path.dirname(themeFile);
+	const watchedFileName = path.basename(themeFile);
+	const generation = themeWatcherGeneration;
 
 	const reload = async () => {
 		let content: string;
@@ -184,7 +181,7 @@ function startThemeWatcher(): void {
 
 	let failed = false;
 	void watchWithErrorHandlerAsync(
-		customThemesDir,
+		watchDir,
 		(_eventType, filename) => {
 			if (currentThemeName !== watchedThemeName) {
 				return;

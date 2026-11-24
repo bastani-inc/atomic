@@ -12,6 +12,7 @@ import {
 	type PaneOwner,
 	type PaneReportingOptions,
 	releasePaneReporting,
+	releaseRetiredPaneReporting,
 	reportPaneActivity,
 	retirePaneReporting,
 } from "./pane-owner.js";
@@ -81,12 +82,15 @@ export function createHerdrExtension(options: HerdrExtensionOptions = {}): Exten
 			if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
 			const environment = captureHerdrEnvironment(options.env ?? process.env);
 			if (!environment || ctx.mode !== "tui" || !ctx.hasUI || ctx.subagentPolicy) return;
-			const isEnabled = (options.enabled ?? enabled)(ctx);
-			if (typeof isEnabled !== "boolean") {
-				const stopped = stops.get(runner);
-				if (!(await isEnabled) || stops.get(runner) !== stopped || retiredRunners.has(runner)) return;
-				if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
-			} else if (!isEnabled) return;
+			const stopped = stops.get(runner);
+			const isEnabled = await (options.enabled ?? enabled)(ctx);
+			if (stops.get(runner) !== stopped || retiredRunners.has(runner)) return;
+			if (boundSessionManager && ctx.sessionManager !== boundSessionManager) return;
+			if (!isEnabled) {
+				if (boundRunner && boundRunner !== runner) retiredRunners.add(boundRunner);
+				await releaseRetiredPaneReporting(environment, { ...options, diagnostic });
+				return;
+			}
 			if (boundRunner && boundRunner !== runner) retiredRunners.add(boundRunner);
 			boundRunner = runner;
 			boundSessionManager = ctx.sessionManager;

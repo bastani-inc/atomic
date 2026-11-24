@@ -2,13 +2,13 @@ import { reportOwnedWebDiagnostic } from "./diagnostics.js";
 import { CONFIG_DIR_NAME, getUserConfigPaths } from "@bastani/atomic";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { isExaAvailable } from "./exa.js";
 import { isGeminiApiAvailable } from "./gemini-api.js";
 import { isGeminiWebAvailable } from "./gemini-web.js";
 import { readWebSearchConfigFile } from "./gemini-web-config.ts";
 import { isPerplexityAvailable } from "./perplexity.js";
-import type { SearchProvider, ResolvedSearchProvider } from "./gemini-search.js";
+import { resetSearchConfig, type ResolvedSearchProvider, type SearchProvider } from "./gemini-search.js";
 
 const WEB_SEARCH_CONFIG_PATH = getUserConfigPaths("web-search.json")[0] ?? join(homedir(), CONFIG_DIR_NAME, "web-search.json");
 const MAX_CURATOR_TIMEOUT_SECONDS = 600;
@@ -56,9 +56,12 @@ export function saveConfig(updates: Partial<WebSearchConfig>): Promise<void> {
 		const config: Record<string, unknown> = existing ? { ...existing } : {};
 
 		Object.assign(config, updates);
-		const dir = join(homedir(), CONFIG_DIR_NAME);
-		await mkdir(dir, { recursive: true });
+		if (updates.provider !== undefined) {
+			delete config.searchProvider;
+		}
+		await mkdir(dirname(WEB_SEARCH_CONFIG_PATH), { recursive: true });
 		await writeFile(WEB_SEARCH_CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+		resetSearchConfig();
 	};
 	const next = saveConfigQueue.then(run, run);
 	saveConfigQueue = next.then(

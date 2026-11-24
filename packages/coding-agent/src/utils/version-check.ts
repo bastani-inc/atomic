@@ -1,6 +1,7 @@
 import { compare, valid } from "semver";
 import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, getEnvValue, PACKAGE_NAME } from "../config.js";
 import { fetchWithRetry } from "./management-http.ts";
+import { isTruthyEnvFlag } from "./startup-environment.js";
 
 const LATEST_VERSION_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
@@ -64,7 +65,7 @@ export function isNewerPackageVersion(candidateVersion: string, currentVersion: 
 export async function getLatestPiRelease(
 	options: { timeoutMs?: number; retry?: boolean } = {},
 ): Promise<LatestPiRelease | undefined> {
-	if (getEnvValue(ENV_OFFLINE)) return undefined;
+	if (isTruthyEnvFlag(getEnvValue(ENV_OFFLINE))) return undefined;
 
 	const response = await fetchWithRetry(
 		LATEST_VERSION_URL,
@@ -94,7 +95,7 @@ export async function getLatestPiVersion(
 }
 
 export async function checkForNewPiVersion(currentVersion: string): Promise<string | undefined> {
-	if (getEnvValue(ENV_SKIP_VERSION_CHECK)) return undefined;
+	if (isTruthyEnvFlag(getEnvValue(ENV_SKIP_VERSION_CHECK))) return undefined;
 	// Dev builds always read the versionless `0.0.0` placeholder, which is older
 	// than any published release, so the registry check would always nag. Skip it
 	// (and the network call) for source-tree/dev runs.

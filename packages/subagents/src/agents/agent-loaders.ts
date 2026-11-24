@@ -39,14 +39,6 @@ async function listFilesRecursive(dir: string, predicate: (fileName: string) => 
 	return files;
 }
 
-function parseCommaSeparatedList(value: string | undefined): string[] | undefined {
-	const parsed = value
-		?.split(",")
-		.map((item) => item.trim())
-		.filter(Boolean);
-	return parsed && parsed.length > 0 ? parsed : undefined;
-}
-
 /**
  * Narrow a frontmatter value to its scalar spelling. A YAML sequence where a
  * scalar belongs (`model: [anthropic, x]`) reads as undefined rather than a
@@ -69,28 +61,19 @@ function frontmatterBoolean(value: FrontmatterValue | undefined): boolean | unde
 	return undefined;
 }
 
-/**
- * Normalize a frontmatter `tools` value to a list of tool names.
- *
- * Both spellings are valid YAML and both are in use (upstream pi #7598):
- *
- *     tools: read, bash        # string, comma-separated
- *     tools: [read, bash]      # flow sequence
- *     tools:                   # block sequence
- *       - read
- *       - bash
- *
- * so accept either. Anything else yields no tools rather than throwing: this
- * runs inside agent discovery, where a single bad file must not take down
- * every other agent in the same directory.
- */
-function parseToolList(value: FrontmatterValue | undefined): string[] | undefined {
+function parseFrontmatterList(value: FrontmatterValue | undefined): string[] | undefined {
 	const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
-	const tools = raw
-		.filter((tool): tool is string => typeof tool === "string")
-		.map((tool) => tool.trim())
+	const items = raw
+		.filter((item): item is string => typeof item === "string")
+		.map((item) => item.trim())
 		.filter(Boolean);
-	return tools.length > 0 ? tools : undefined;
+	return items.length > 0 ? items : undefined;
+}
+
+function parseExtensionsFrontmatter(value: FrontmatterValue | undefined): string[] | undefined {
+	if (value === null) return [];
+	if (!Array.isArray(value) && typeof value !== "string") return undefined;
+	return parseFrontmatterList(value) ?? [];
 }
 
 export interface AgentLoadDiagnostic {
@@ -150,18 +133,16 @@ function parseAgentFile(
 	}
 	const runtimeName = buildRuntimeName(localName, packageName);
 
-	const rawTools = parseToolList(frontmatter.tools);
+	const rawTools = parseFrontmatterList(frontmatter.tools);
 	const parsedTools = splitToolList(rawTools);
 	const inheritProjectContextRaw = frontmatterBoolean(frontmatter.inheritProjectContext);
 	const inheritSkillsRaw = frontmatterBoolean(frontmatter.inheritSkills);
 	const defaultContextRaw = frontmatterString(frontmatter.defaultContext);
-	const extensionsRaw = frontmatterString(frontmatter.extensions);
 	const systemPromptModeRaw = frontmatterString(frontmatter.systemPromptMode);
-	const defaultReads = parseCommaSeparatedList(frontmatterString(frontmatter.defaultReads));
-	const skillStr = frontmatterString(frontmatter.skill) || frontmatterString(frontmatter.skills) || undefined;
-	const skills = parseCommaSeparatedList(skillStr);
-	const fallbackModels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackModels));
-	const fallbackThinkingLevels = parseCommaSeparatedList(frontmatterString(frontmatter.fallbackThinkingLevels));
+	const defaultReads = parseFrontmatterList(frontmatter.defaultReads);
+	const skills = parseFrontmatterList(frontmatter.skill) ?? parseFrontmatterList(frontmatter.skills);
+	const fallbackModels = parseFrontmatterList(frontmatter.fallbackModels);
+	const fallbackThinkingLevels = parseFrontmatterList(frontmatter.fallbackThinkingLevels);
 	const inheritProjectContext = inheritProjectContextRaw ?? defaultInheritProjectContext(localName);
 	const inheritSkills = inheritSkillsRaw ?? defaultInheritSkills();
 	const systemPromptMode =
@@ -172,13 +153,7 @@ function parseAgentFile(
 				: defaultSystemPromptMode(localName);
 	const defaultContext =
 		defaultContextRaw === "fork" ? ("fork" as const) : defaultContextRaw === "fresh" ? ("fresh" as const) : undefined;
-	let extensions: string[] | undefined;
-	if (extensionsRaw !== undefined) {
-		extensions = extensionsRaw
-			.split(",")
-			.map((extension) => extension.trim())
-			.filter(Boolean);
-	}
+	const extensions = parseExtensionsFrontmatter(frontmatter.extensions);
 
 	const extraFields: Record<string, FrontmatterValue> = {};
 	for (const [key, value] of Object.entries(frontmatter)) {

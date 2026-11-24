@@ -634,7 +634,9 @@ describe("MCP tools", () => {
 			),
 		);
 		assert.match(text, /…\d+ chars truncated…/);
-		assert.ok(text.endsWith("line 3000\n\n[Full output: /tmp/full.txt (read it with offset/limit)]"));
+		assert.ok(
+			text.endsWith("line 3000\n\n[Full output: /tmp/full.txt (read it with a line range selector like :1-200)]"),
+		);
 		assert.ok(Buffer.byteLength(text) < 21 * 1024);
 		assert.deepEqual(converted.content[1], image);
 		assert.deepEqual(converted.details, { server: "docs", tool: "snapshot", fullOutputPath: "/tmp/full.txt" });

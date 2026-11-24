@@ -106,6 +106,12 @@ export function hasCustomThemeFile(name: string): boolean {
 	return registeredThemes.get(name)?.sourcePath === path.join(getCustomThemesDir(), fileName);
 }
 
+export function getThemeWatchPath(name: string): string | undefined {
+	const registered = registeredThemes.get(name);
+	if (registered) return registered.sourcePath;
+	return getCustomThemeFiles().get(`${name}.json`)?.path;
+}
+
 export function getAvailableThemes(): string[] {
 	return getAvailableThemesWithPaths().map(({ name }) => name);
 }

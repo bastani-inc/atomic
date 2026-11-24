@@ -689,3 +689,73 @@ test("a session shut down while its settings are read leaves the pane to the nex
 		await fake.dispose();
 	}
 });
+
+test("reloading with herdr.enabled: false releases the retired pane owner", async () => {
+	const fake = await fakeHerdr();
+	try {
+		let isEnabled = true;
+		const sessionManager = SessionManager.inMemory(fake.dir);
+		const makeRunner = async () => {
+			const loaded = await createTestExtensionsResult(
+				[createHerdrExtension({ env: fake.env, enabled: () => isEnabled })],
+				fake.dir,
+			);
+			const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, fake.dir, sessionManager, {} as never);
+			runner.setUIContext({ ...noOpUIContext }, "tui");
+			return runner;
+		};
+
+		const first = await makeRunner();
+		const second = await makeRunner();
+		try {
+			await first.emit({ type: "session_start" });
+			await fake.waitFor(1);
+
+			await first.emit({ type: "session_shutdown", reason: "reload" });
+			isEnabled = false;
+			await second.emit({ type: "session_start", reason: "reload" });
+			await fake.waitFor(2);
+
+			const starts = (await fake.calls()).filter((call) => call.phase === "start");
+			assert.deepEqual(
+				starts.map((call) => call.args[1]),
+				["report-agent", "release-agent"],
+			);
+			assert.ok(Number(arg(starts[1]!.args, "--seq")) > Number(arg(starts[0]!.args, "--seq")));
+		} finally {
+			await first.emit({ type: "session_shutdown", reason: "quit" });
+			await second.emit({ type: "session_shutdown", reason: "quit" });
+			first.invalidate();
+			second.invalidate();
+		}
+	} finally {
+		await fake.dispose();
+	}
+});
+
+test("fresh start with herdr.enabled: false sends no Herdr commands", async () => {
+	const fake = await fakeHerdr();
+	try {
+		const loaded = await createTestExtensionsResult(
+			[createHerdrExtension({ env: fake.env, enabled: () => false })],
+			fake.dir,
+		);
+		const runner = new ExtensionRunner(
+			loaded.extensions,
+			loaded.runtime,
+			fake.dir,
+			SessionManager.inMemory(fake.dir),
+			{} as never,
+		);
+		runner.setUIContext({ ...noOpUIContext }, "tui");
+		try {
+			await runner.emit({ type: "session_start" });
+			await runner.emit({ type: "session_shutdown", reason: "quit" });
+			assert.deepEqual(await fake.calls(), []);
+		} finally {
+			runner.invalidate();
+		}
+	} finally {
+		await fake.dispose();
+	}
+});

@@ -72,8 +72,8 @@ function validateName(name: string): string[] {
 	return errors;
 }
 
-function validateDescription(description: string | undefined): string[] {
-	if (!description || description.trim() === "") return ["description is required"];
+function validateDescription(description: SkillFrontmatter["description"]): string[] {
+	if (typeof description !== "string" || description.trim() === "") return ["description is required"];
 	if (description.length > MAX_DESCRIPTION_LENGTH) {
 		return [`description exceeds ${MAX_DESCRIPTION_LENGTH} characters (${description.length})`];
 	}
@@ -85,31 +85,52 @@ async function loadSkillFromFile(
 	source: string,
 ): Promise<{ skill: Skill | null; diagnostics: ResourceDiagnostic[] }> {
 	const diagnostics: ResourceDiagnostic[] = [];
+	const isDeclaredSkill = basename(filePath) === "SKILL.md";
+
+	let rawContent: string;
 	try {
-		const rawContent = await readFile(filePath, "utf-8");
-		const { frontmatter } = parseFrontmatter<SkillFrontmatter>(rawContent);
-		const skillDir = dirname(filePath);
-		for (const error of validateDescription(frontmatter.description))
-			diagnostics.push({ type: "warning", message: error, path: filePath });
-		const name = frontmatter.name || basename(skillDir);
-		for (const error of validateName(name)) diagnostics.push({ type: "warning", message: error, path: filePath });
-		if (!frontmatter.description || frontmatter.description.trim() === "") return { skill: null, diagnostics };
-		return {
-			skill: {
-				name,
-				description: frontmatter.description,
-				filePath,
-				baseDir: skillDir,
-				sourceInfo: createSkillSourceInfo(filePath, skillDir, source),
-				disableModelInvocation: frontmatter["disable-model-invocation"] === true,
-			},
-			diagnostics,
-		};
+		rawContent = await readFile(filePath, "utf-8");
 	} catch (error) {
-		const message = error instanceof Error ? error.message : "failed to parse skill file";
+		const message = error instanceof Error ? error.message : "failed to read skill file";
 		diagnostics.push({ type: "warning", message, path: filePath });
 		return { skill: null, diagnostics };
 	}
+
+	let frontmatter: SkillFrontmatter;
+	try {
+		({ frontmatter } = parseFrontmatter<SkillFrontmatter>(rawContent));
+	} catch (error) {
+		if (isDeclaredSkill) {
+			const message = error instanceof Error ? error.message : "failed to parse skill file";
+			diagnostics.push({ type: "warning", message, path: filePath });
+		}
+		return { skill: null, diagnostics };
+	}
+
+	const description = frontmatter.description;
+	const hasDescription = typeof description === "string" && description.trim() !== "";
+	if (!isDeclaredSkill && !hasDescription) {
+		return { skill: null, diagnostics };
+	}
+
+	const skillDir = dirname(filePath);
+	for (const error of validateDescription(description))
+		diagnostics.push({ type: "warning", message: error, path: filePath });
+	const frontmatterName = typeof frontmatter.name === "string" ? frontmatter.name : undefined;
+	const name = frontmatterName || basename(skillDir);
+	for (const error of validateName(name)) diagnostics.push({ type: "warning", message: error, path: filePath });
+	if (!hasDescription) return { skill: null, diagnostics };
+	return {
+		skill: {
+			name,
+			description,
+			filePath,
+			baseDir: skillDir,
+			sourceInfo: createSkillSourceInfo(filePath, skillDir, source),
+			disableModelInvocation: frontmatter["disable-model-invocation"] === true,
+		},
+		diagnostics,
+	};
 }
 
 async function loadSkillsFromDirInternal(

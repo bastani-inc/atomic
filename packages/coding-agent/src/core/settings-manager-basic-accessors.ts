@@ -229,7 +229,11 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	getCompactionModel() {
 		const value = settingsInternals(this).settings.compactionModel;
-		return typeof value === "string" ? value.trim() : "";
+		if (value === undefined) return "";
+		if (typeof value !== "string") {
+			throw new Error("Invalid compactionModel: expected auto, an empty string, or an exact compactor model ID.");
+		}
+		return value.trim();
 	},
 
 	setCompactionModel(model, scope = "global") {

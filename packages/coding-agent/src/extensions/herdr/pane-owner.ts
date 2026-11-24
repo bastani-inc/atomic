@@ -195,6 +195,34 @@ export function releasePaneReporting(owner: PaneOwner): Promise<void> {
 	return stopPaneReporting(owner, true);
 }
 
+export async function releaseRetiredPaneReporting(
+	environment: HerdrEnvironment,
+	options: PaneReportingOptions = {},
+): Promise<void> {
+	const previous = owners.get(environment.paneId);
+	if (!previous || previous.status === "active") return;
+	await previous.release;
+	if (owners.get(environment.paneId) !== previous) return;
+	if (previous.seq === 0) {
+		owners.delete(environment.paneId);
+		return;
+	}
+	const owner: PaneOwner = {
+		environment,
+		identity: previous.identity,
+		options: { ...previous.options, ...options },
+		status: "active",
+		seq: previous.seq,
+		identitySent: previous.identitySent,
+		resumeUnsupported: previous.resumeUnsupported,
+		async flush() {
+			await this.flight;
+		},
+	};
+	owners.set(environment.paneId, owner);
+	await releasePaneReporting(owner);
+}
+
 function stopPaneReporting(owner: PaneOwner, releaseRegistration: boolean): Promise<void> {
 	if (owner.release) return owner.release;
 	if (owners.get(owner.environment.paneId) !== owner || owner.status !== "active") {

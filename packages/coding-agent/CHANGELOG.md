@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- Exported `NativeModuleUnavailableError` from `@bastani/atomic` for SDK callers, and added `promptCache` and `samplingParamsByThinkingLevel` to `ProviderChatModelConfig` and `compat` to `ProviderClassifierModelConfig` in public extension provider types.
+
+### Changed
+
+- Returning to the focused agent panel with the down-arrow key now restores the most recently selected subagent row and scroll position (falling back to the nearest surviving row if it left, and resetting to the top row once the panel empties).
+- Audited and refreshed all bundled user-facing documentation pages and package READMEs for human readability, Mintlify navigation and accessibility compliance, and complete coverage of settings such as `enabledModels` exact, glob, and fuzzy pattern matching ([#6551](https://github.com/bastani-inc/atomic/pull/6551)).
+
+### Fixed
+
+- Piped stdin is now separated from CLI prompt text by a blank line when neither side already ends or starts with whitespace instead of concatenating them together.
+- `ATOMIC_NO_PTY` and `ATOMIC_EXPERIMENTAL` now take precedence over legacy `PI_NO_PTY` and `PI_EXPERIMENTAL` when explicitly set to `0`, and `ATOMIC_OFFLINE=0`/`false` and `ATOMIC_SKIP_VERSION_CHECK=0`/`false` no longer disable update checks or telemetry.
+- Invalid CLI storage flags now print a clean error and exit with code 1 instead of crashing with an unhandled `StorageConfigError` stack trace.
+- Thinking-level suffixes on `--model`, `--models`, `enabledModels`, and `fallbackModels` now match case-insensitively (for example `:HIGH` resolves to `high`).
+- Non-string `compactionModel` values now throw a validation error when read instead of silently falling back to `"auto"`, and compaction overflow diagnostics report `>=` consistently with the boundary check.
+- `read` and `search` resource selectors now recognize `.sqlite3` and `.db3` files (including Windows drive-letter paths in `search`).
+- `/export` now reports an error on unclosed quotes instead of silently falling back to HTML export and matches `.jsonl` extensions case-insensitively.
+- RPC `set_thinking_level` and `set_scoped_models` now validate inputs and return structured RPC errors instead of clamping invalid thinking levels or writing malformed `enabledModels` entries.
+- Disabling `herdr.enabled` and running `/reload` now releases any retired Herdr pane registration instead of leaving a stale entry after exit.
+- Async skill loading now matches sync skill loading by ignoring non-skill `.md` files (such as `README.md`) without spurious warnings and guarding non-string YAML frontmatter fields.
+- Theme hot-reload now watches the active theme's actual file path (supporting project, package, `--theme`, and renamed themes), restored legacy theme symbol sharing, and `hexColorAnsi()` now honors terminal color mode detection and `terminal.trueColor` / `ATOMIC_TRUE_COLOR`.
+- Truncated MCP tool results now direct models to read the output file with a line range selector (`:1-200`) instead of unsupported `offset`/`limit` parameters, and CLI `--help` and `/debug` descriptions now match parser and log-file behavior.
+- Lazy Web Access shortcut loading now uses Atomic's user config path resolution and returns defaults without falling back to legacy `.pi/web-search.json` when `~/.atomic/web-search.json` is malformed.
+
 ## [0.10.9] - 2026-11-24
 
 Atomic no longer warns that MCP tools are unreachable when a project with its own resources starts up.

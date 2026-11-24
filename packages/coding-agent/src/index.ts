@@ -1448,6 +1448,7 @@ export {
 	type ManagedToolTimeoutFields,
 } from "./utils/managed-tool-errors.ts";
 export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
+export { NativeModuleUnavailableError } from "./utils/native-module.ts";
 export { isPathInside, type PathInsideApi } from "./utils/path-inside.ts";
 export {
 	getPowerShellConfig,

@@ -197,7 +197,7 @@ When `ask_user_question` is enabled, the agent displays interactive multiple-cho
 
 - **Limits and validation.** Each call accepts 1 to 4 questions with 2 to 4 options per question, `header` up to 16 characters, and option `label` up to 60 characters. Duplicate questions and duplicate option labels are rejected. Reserved labels (`"Other"`, `"Type something."`, `"Chat about this"`, and multi-select navigation labels) are rejected even on `multiSelect: true`.
 - **Multi-select and previews.** Pass `multiSelect: true` to let the user choose multiple options (this hides the custom `"Type something."` choice). On single-select questions, options can include a markdown `preview` rendered side by side (which also hides `"Type something."` while keeping `"Chat about this"`). See [Keybindings](/keybindings#tui-fullscreen-viewport) for dialog controls.
-- **Scoped approvals.** A confirmation question should name the exact action and target resources and offer explicit proceed and decline choices:
+- **Scoped approvals.** A confirmation question should name the exact action, identify the target PRs or resources, and offer explicit proceed and decline choices:
 
 ```json
 {
