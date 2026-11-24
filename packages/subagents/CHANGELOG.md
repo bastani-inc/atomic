@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Expanded running subagent cards now memoize static Prompt, Result, and completed nested tool-call sections (and keep transcript detail references stable when periodic refreshes detect no changes) so working-clock animation ticks only re-render the active status line and any currently running nested tool call instead of re-rendering every nested tool block ([#6528](https://github.com/bastani-inc/atomic/issues/6528)).
+
 ## [0.10.6] - 2026-11-23
 
 ### Fixed

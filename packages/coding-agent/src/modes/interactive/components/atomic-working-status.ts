@@ -154,13 +154,33 @@ export interface AtomicWorkingStatusOptions {
 }
 
 let sharedClockFrame = 0;
-let sharedClockTimer: ReturnType<typeof setInterval> | undefined;
+let sharedClockTimer: ReturnType<typeof setTimeout> | undefined;
 const sharedClockListeners = new Set<() => void>();
+
+function scheduleAtomicWorkingClockTick(): void {
+	if (sharedClockTimer !== undefined || sharedClockListeners.size === 0 || process.env.ATOMIC_REDUCED_MOTION === "1") {
+		return;
+	}
+	const timer = setTimeout(() => {
+		if (sharedClockTimer !== timer) return;
+		sharedClockTimer = undefined;
+		if (sharedClockListeners.size === 0 || process.env.ATOMIC_REDUCED_MOTION === "1") {
+			return;
+		}
+		sharedClockFrame = (sharedClockFrame + 1) % ATOMIC_WORKING_FRAMES.length;
+		for (const listener of [...sharedClockListeners]) {
+			if (sharedClockListeners.has(listener)) listener();
+		}
+		scheduleAtomicWorkingClockTick();
+	}, ATOMIC_WORKING_FRAME_MS);
+	sharedClockTimer = timer;
+	sharedClockTimer.unref?.();
+}
 
 function syncAtomicWorkingClock(): void {
 	if (sharedClockListeners.size === 0 || process.env.ATOMIC_REDUCED_MOTION === "1") {
 		if (sharedClockTimer !== undefined) {
-			clearInterval(sharedClockTimer);
+			clearTimeout(sharedClockTimer);
 			sharedClockTimer = undefined;
 		}
 		if (sharedClockListeners.size === 0) {
@@ -168,18 +188,7 @@ function syncAtomicWorkingClock(): void {
 		}
 		return;
 	}
-	if (sharedClockTimer !== undefined) return;
-	const timer = setInterval(() => {
-		if (sharedClockTimer !== timer || sharedClockListeners.size === 0 || process.env.ATOMIC_REDUCED_MOTION === "1") {
-			return;
-		}
-		sharedClockFrame = (sharedClockFrame + 1) % ATOMIC_WORKING_FRAMES.length;
-		for (const listener of [...sharedClockListeners]) {
-			if (sharedClockListeners.has(listener)) listener();
-		}
-	}, ATOMIC_WORKING_FRAME_MS);
-	sharedClockTimer = timer;
-	sharedClockTimer.unref?.();
+	scheduleAtomicWorkingClockTick();
 }
 
 export function watchAtomicWorkingClock(listener: () => void): () => void {
@@ -198,7 +207,7 @@ export function watchAtomicWorkingClock(listener: () => void): () => void {
 export function resetAtomicWorkingClock(): void {
 	sharedClockFrame = 0;
 	if (sharedClockTimer !== undefined) {
-		clearInterval(sharedClockTimer);
+		clearTimeout(sharedClockTimer);
 		sharedClockTimer = undefined;
 	}
 	syncAtomicWorkingClock();

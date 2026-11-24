@@ -16,13 +16,40 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
  * Jobs run one per event-loop turn. Terminal input that arrives behind a burst of background renders therefore
  * waits for at most one of them, however many are queued.
  */
+const SLOW_RENDER_THRESHOLD_MS = 16;
+const MAX_SLOW_RENDER_COOLDOWN_MS = 100;
+
+function waitTimerCooldown(ms: number): Promise<void> {
+	return new Promise<void>((resolve) => {
+		const timer = setTimeout(resolve, ms);
+		timer.unref?.();
+	});
+}
+
+export interface BackgroundRenderLaneOptions {
+	readonly slowThresholdMs?: number;
+	readonly maxCooldownMs?: number;
+	readonly waitCooldown?: (ms: number) => Promise<void>;
+	readonly now?: () => number;
+}
+
 export class BackgroundRenderLane {
 	private readonly pending = new Map<string, () => void>();
 	private draining = false;
+	private cooldownUntil = 0;
 	private readonly yieldTurn: () => Promise<void>;
+	private readonly slowThresholdMs: number;
+	private readonly maxCooldownMs: number;
+	private readonly waitCooldown: (ms: number) => Promise<void>;
+	private readonly now: () => number;
 
-	constructor(yieldTurn: () => Promise<void> = yieldToEventLoop) {
+	constructor(yieldTurn: () => Promise<void> = yieldToEventLoop, options: BackgroundRenderLaneOptions = {}) {
 		this.yieldTurn = yieldTurn;
+		this.slowThresholdMs = options.slowThresholdMs ?? SLOW_RENDER_THRESHOLD_MS;
+		this.maxCooldownMs = options.maxCooldownMs ?? MAX_SLOW_RENDER_COOLDOWN_MS;
+		this.waitCooldown =
+			options.waitCooldown ?? (yieldTurn === yieldToEventLoop ? waitTimerCooldown : () => yieldTurn());
+		this.now = options.now ?? (() => performance.now());
 	}
 
 	/**
@@ -49,14 +76,25 @@ export class BackgroundRenderLane {
 	private async drain(): Promise<void> {
 		try {
 			while (this.pending.size > 0) {
-				await this.yieldTurn();
+				const remainingCooldown = this.cooldownUntil - this.now();
+				if (remainingCooldown > 0) {
+					await this.waitCooldown(Math.ceil(remainingCooldown));
+				} else {
+					await this.yieldTurn();
+				}
 				const next = this.pending.entries().next();
 				if (next.done === true) return;
 				const [key, job] = next.value;
 				this.pending.delete(key);
+				const startedAt = this.now();
 				try {
 					job();
 				} catch {}
+				const finishedAt = this.now();
+				const elapsedMs = finishedAt - startedAt;
+				if (elapsedMs >= this.slowThresholdMs) {
+					this.cooldownUntil = finishedAt + Math.min(this.maxCooldownMs, Math.ceil(elapsedMs));
+				}
 			}
 		} finally {
 			this.draining = false;

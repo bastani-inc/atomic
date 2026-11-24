@@ -93,10 +93,75 @@ interface TaskElapsedBaseline {
 	readonly sampledAt: number;
 }
 
+interface CachedCompletedToolBlock {
+	readonly signature: string;
+	readonly component: Component;
+}
+
 interface CachedExpandedSections {
 	readonly key: string;
 	readonly hydratedRef: unknown;
-	readonly sections: readonly Component[];
+	readonly statusLineHolder: { current: string | (() => string) };
+	readonly records: ToolBlockRecords;
+	readonly completedToolBlocks: Map<string, CachedCompletedToolBlock>;
+}
+
+function currentThemeInstance(): unknown {
+	return (globalThis as Record<symbol, unknown>)[GLOBAL_THEME_KEY];
+}
+
+function noColorEnabled(): boolean {
+	return process.env.NO_COLOR !== undefined;
+}
+
+function isWorkingComponent(component: Component): boolean {
+	return "isWorking" in component && typeof component.isWorking === "function" && component.isWorking() === true;
+}
+
+class MemoizedComponent implements Component {
+	private cachedWidth: number | undefined;
+	private cachedNoColor: boolean | undefined;
+	private cachedTheme: unknown;
+	private cachedLines: string[] | undefined;
+
+	constructor(private readonly inner: Component) {}
+
+	isWorking(): boolean {
+		return isWorkingComponent(this.inner);
+	}
+
+	invalidate(): void {
+		this.cachedLines = undefined;
+		this.cachedWidth = undefined;
+		this.inner.invalidate();
+	}
+
+	render(width: number): string[] {
+		if (this.isWorking()) {
+			this.cachedLines = undefined;
+			return this.inner.render(width);
+		}
+		const currentNoColor = noColorEnabled();
+		const currentTheme = currentThemeInstance();
+		if (
+			this.cachedLines !== undefined &&
+			this.cachedWidth === width &&
+			this.cachedNoColor === currentNoColor &&
+			this.cachedTheme === currentTheme
+		) {
+			return this.cachedLines;
+		}
+		const lines = this.inner.render(width);
+		this.cachedWidth = width;
+		this.cachedNoColor = currentNoColor;
+		this.cachedTheme = currentTheme;
+		this.cachedLines = lines;
+		return lines;
+	}
+}
+
+function completedToolCallSignature(entry: SubagentChildToolCallEntry): string {
+	return `${entry.name}\u0000${entry.isError ? "1" : "0"}\u0000${entry.durationMs ?? ""}\u0000${entry.resultText ?? ""}`;
 }
 
 const taskElapsedBaselines = new WeakMap<object, Map<string, TaskElapsedBaseline>>();
@@ -289,6 +354,9 @@ function summarizeToolArgs(name: string, args: Record<string, unknown>): string 
 
 class ComponentList implements Component {
 	constructor(private readonly items: readonly Component[]) {}
+	isWorking(): boolean {
+		return this.items.some((item) => isWorkingComponent(item));
+	}
 	invalidate(): void {
 		for (const item of this.items) item.invalidate();
 	}
@@ -571,6 +639,9 @@ class SectionRecord implements Component {
 		private readonly heading: string,
 		private readonly content: Component,
 	) {}
+	isWorking(): boolean {
+		return isWorkingComponent(this.content);
+	}
 	invalidate(): void {
 		this.content.invalidate();
 	}
@@ -607,7 +678,10 @@ function buildExpandedDetails(input: {
 	/** The child is running: its unfinished tool calls are still working, and an empty result reads `Running…`. */
 	readonly running: boolean;
 	readonly promptText: string;
-	readonly buildToolBlocks: () => readonly Component[];
+	readonly buildToolBlocks: (
+		previousCompleted?: ReadonlyMap<string, CachedCompletedToolBlock>,
+		nextCompleted?: Map<string, CachedCompletedToolBlock>,
+	) => readonly Component[];
 	readonly toolCallsUnavailable?: string;
 	readonly resultText?: string;
 	readonly failureText?: string;
@@ -629,28 +703,22 @@ function buildExpandedDetails(input: {
 	const cleanPrompt = unwrapSubagentPrompt(promptText);
 	const runningKey = running ? "1" : "0";
 	const key = `${runningKey}\u0000${cleanPrompt}\u0000${toolCallsUnavailable ?? ""}\u0000${resultText ?? ""}\u0000${failureText ?? ""}`;
-	if (state && cacheId) {
-		let cache = expandedSectionCaches.get(state);
-		if (!cache) {
-			cache = new Map();
-			expandedSectionCaches.set(state, cache);
-		}
-		const existing = cache.get(cacheId);
-		if (existing && existing.key === key && existing.hydratedRef === hydratedRef) {
-			return new ToolBlockRecords([new OneLine(statusLine), ...existing.sections]);
-		}
-		const toolBlocks = buildToolBlocks();
-		const sections: readonly Component[] = [
+	const makeSections = (toolBlocks: readonly Component[]): readonly Component[] => [
+		new MemoizedComponent(
 			new SectionRecord(
 				theme.bold("Prompt"),
 				cleanPrompt ? new ToolBlockMarkdown(cleanPrompt) : new Text(theme.fg("dim", "(none)"), 0, 0),
 			),
+		),
+		new MemoizedComponent(
 			new SectionRecord(
 				theme.bold("Tool calls"),
 				toolBlocks.length > 0
 					? new ComponentList(toolBlocks)
 					: new Text(theme.fg("dim", toolCallsUnavailable || "(none)"), 0, 0),
 			),
+		),
+		new MemoizedComponent(
 			new SectionRecord(
 				theme.bold("Result"),
 				resultText
@@ -659,32 +727,31 @@ function buildExpandedDetails(input: {
 						? new Text(theme.fg("error", displayText(failureText)), 0, 0)
 						: new Text(theme.fg("dim", running ? "Running…" : "(no output)"), 0, 0),
 			),
-		];
-		cache.set(cacheId, { key, hydratedRef, sections });
-		return new ToolBlockRecords([new OneLine(statusLine), ...sections]);
+		),
+	];
+	if (state && cacheId) {
+		let cache = expandedSectionCaches.get(state);
+		if (!cache) {
+			cache = new Map();
+			expandedSectionCaches.set(state, cache);
+		}
+		const existing = cache.get(cacheId);
+		if (existing && existing.key === key && existing.hydratedRef === hydratedRef) {
+			existing.statusLineHolder.current = statusLine;
+			return existing.records;
+		}
+		const nextCompleted = new Map<string, CachedCompletedToolBlock>();
+		const toolBlocks = buildToolBlocks(existing?.completedToolBlocks, nextCompleted);
+		const statusLineHolder = { current: statusLine };
+		const statusComponent = new OneLine(() =>
+			typeof statusLineHolder.current === "function" ? statusLineHolder.current() : statusLineHolder.current,
+		);
+		const records = new ToolBlockRecords([statusComponent, ...makeSections(toolBlocks)]);
+		cache.set(cacheId, { key, hydratedRef, statusLineHolder, records, completedToolBlocks: nextCompleted });
+		return records;
 	}
 	const toolBlocks = buildToolBlocks();
-	return new ToolBlockRecords([
-		new OneLine(statusLine),
-		new SectionRecord(
-			theme.bold("Prompt"),
-			cleanPrompt ? new ToolBlockMarkdown(cleanPrompt) : new Text(theme.fg("dim", "(none)"), 0, 0),
-		),
-		new SectionRecord(
-			theme.bold("Tool calls"),
-			toolBlocks.length > 0
-				? new ComponentList(toolBlocks)
-				: new Text(theme.fg("dim", toolCallsUnavailable || "(none)"), 0, 0),
-		),
-		new SectionRecord(
-			theme.bold("Result"),
-			resultText
-				? new ToolBlockMarkdown(resultText)
-				: failureText
-					? new Text(theme.fg("error", displayText(failureText)), 0, 0)
-					: new Text(theme.fg("dim", running ? "Running…" : "(no output)"), 0, 0),
-		),
-	]);
+	return new ToolBlockRecords([new OneLine(statusLine), ...makeSections(toolBlocks)]);
 }
 
 /** A released child's status words: what it waits on, by tool name, as `/tasks` and the agent panel name it. */
@@ -1006,8 +1073,24 @@ function buildOutcomeToolBlock(input: {
 					statusLine,
 					running: working,
 					promptText,
-					buildToolBlocks: () =>
-						(hydrated?.toolCalls ?? []).map((entry) => innerToolBlockFromEntry(entry, working, theme, context)),
+					buildToolBlocks: (previousCompleted, nextCompleted) =>
+						(hydrated?.toolCalls ?? []).map((entry) => {
+							if (entry.completed && entry.id) {
+								const signature = completedToolCallSignature(entry);
+								const cached = previousCompleted?.get(entry.id);
+								if (cached && cached.signature === signature) {
+									nextCompleted?.set(entry.id, cached);
+									return cached.component;
+								}
+								const component = new MemoizedComponent(
+									innerToolBlockFromEntry(entry, working, theme, context),
+								);
+								nextCompleted?.set(entry.id, { signature, component });
+								return component;
+							}
+							const block = innerToolBlockFromEntry(entry, working, theme, context);
+							return entry.completed ? new MemoizedComponent(block) : block;
+						}),
 					toolCallsUnavailable,
 					resultText,
 					failureText: failure,
@@ -1131,8 +1214,13 @@ function buildForegroundChildToolBlock(input: {
 	const messageEntries = toolEntriesFromMessages(child?.messages);
 	const toolBlocks: readonly Component[] =
 		messageEntries.length > 0
-			? messageEntries.map((entry) => innerToolBlockFromEntry(entry, live, theme, context))
-			: toolBlocksFromSummaries(child?.toolCalls, activeProgress);
+			? messageEntries.map((entry) => {
+					const block = innerToolBlockFromEntry(entry, live, theme, context);
+					return entry.completed ? new MemoizedComponent(block) : block;
+				})
+			: toolBlocksFromSummaries(child?.toolCalls, activeProgress).map((block) =>
+					block.isWorking() ? block : new MemoizedComponent(block),
+				);
 
 	return new ToolBlock({
 		status,

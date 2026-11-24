@@ -1178,9 +1178,11 @@ export function subagentChildTranscriptDetails(
 			)
 				return;
 			const changed = !sameDetails(entry.details, details);
-			entry.lines = details.lines;
-			entry.details = details;
-			if (changed) notify(record.childId);
+			if (changed) {
+				entry.lines = details.lines;
+				entry.details = details;
+				notify(record.childId);
+			}
 			if (running)
 				setTimeout(() => {
 					if (!entry.cancel.signal.aborted && weak.deref()) notify(record.childId);
