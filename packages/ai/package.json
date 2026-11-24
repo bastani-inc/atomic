@@ -1,172 +1,172 @@
 {
-	"name": "@bastani/atomic-ai",
-	"version": "0.0.0",
-	"description": "Atomic's unified LLM API: providers, models, auth, streaming, tools, images and classification",
-	"type": "module",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"sideEffects": [
-		"./dist/compat.js",
-		"./dist/images.js",
-		"./dist/providers/images/register-builtins.js",
-		"./dist/_modules/compat.js",
-		"./dist/_modules/images.js",
-		"./dist/_modules/providers/images/register-builtins.js"
-	],
-	"exports": {
-		".": {
-			"types": "./dist/index.d.ts",
-			"module": "./dist/_modules/index.js",
-			"browser": "./dist/_modules/index.js",
-			"import": "./dist/index.js"
-		},
-		"./models": {
-			"types": "./dist/models.d.ts",
-			"module": "./dist/_modules/models.js",
-			"browser": "./dist/_modules/models.js",
-			"import": "./dist/models.js"
-		},
-		"./session-resources": {
-			"types": "./dist/session-resources.d.ts",
-			"module": "./dist/_modules/session-resources.js",
-			"browser": "./dist/_modules/session-resources.js",
-			"import": "./dist/session-resources.js"
-		},
-		"./compat": {
-			"types": "./dist/compat.d.ts",
-			"module": "./dist/_modules/compat.js",
-			"browser": "./dist/_modules/compat.js",
-			"import": "./dist/compat.js"
-		},
-		"./providers/*": {
-			"types": "./dist/providers/*.d.ts",
-			"module": "./dist/_modules/providers/*.js",
-			"browser": "./dist/_modules/providers/*.js",
-			"import": "./dist/providers/*.js"
-		},
-		"./api/*": {
-			"types": "./dist/api/*.d.ts",
-			"module": "./dist/_modules/api/*.js",
-			"browser": "./dist/_modules/api/*.js",
-			"import": "./dist/api/*.js"
-		},
-		"./utils/*": {
-			"types": "./dist/utils/*.d.ts",
-			"module": "./dist/_modules/utils/*.js",
-			"browser": "./dist/_modules/utils/*.js",
-			"import": "./dist/utils/*.js",
-			"default": "./dist/utils/*.js"
-		},
-		"./oauth": {
-			"types": "./dist/oauth.d.ts",
-			"module": "./dist/_modules/oauth.js",
-			"browser": "./dist/_modules/oauth.js",
-			"import": "./dist/oauth.js"
-		},
-		"./bedrock-provider": {
-			"types": "./dist/bedrock-provider.d.ts",
-			"module": "./dist/_modules/bedrock-provider.js",
-			"browser": "./dist/_modules/bedrock-provider.js",
-			"import": "./dist/bedrock-provider.js"
-		},
-		"./bun-oauth": {
-			"types": "./dist/bun-oauth.d.ts",
-			"module": "./dist/_modules/bun-oauth.js",
-			"browser": "./dist/_modules/bun-oauth.js",
-			"import": "./dist/bun-oauth.js"
-		},
-		"./lazy-bedrock-provider": {
-			"types": "./dist/lazy-bedrock-provider.d.ts",
-			"module": "./dist/_modules/lazy-bedrock-provider.js",
-			"browser": "./dist/_modules/lazy-bedrock-provider.js",
-			"import": "./dist/lazy-bedrock-provider.js"
-		},
-		"./lazy-oauth": {
-			"types": "./dist/lazy-oauth.d.ts",
-			"module": "./dist/_modules/lazy-oauth.js",
-			"browser": "./dist/_modules/lazy-oauth.js",
-			"import": "./dist/lazy-oauth.js"
-		}
-	},
-	"bin": {
-		"pi-ai": "dist/cli.js"
-	},
-	"files": [
-		"dist",
-		"!dist/**/*.d.ts.map",
-		"README.md",
-		"LICENSE",
-		"NOTICE.md",
-		"THIRD_PARTY_NOTICES",
-		"CHANGELOG.md"
-	],
-	"scripts": {
-		"clean": "node ../../scripts/package-files.mjs clean dist",
-		"generate-models": "node scripts/generate-models.ts --strict",
-		"hydrate-model-data": "node scripts/generate-models.ts --strict --data-only",
-		"generate-decision-models": "node scripts/generate-decision-models.ts --strict",
-		"check:model-data": "node scripts/check-model-data.ts",
-		"build": "npm run generate-models && npm run build:offline",
-		"build:offline": "npm run check:model-data && npm run build:tsc && npm run build:model-data",
-		"build:tsc": "tsc -p tsconfig.build.json",
-		"build:model-data": "node ../../scripts/package-files.mjs clean dist/providers/data && node ../../scripts/package-files.mjs copy src/providers/data dist/providers",
-		"test": "vitest --run",
-		"typecheck": "node ../../scripts/bun-typecheck.mjs -p tsconfig.json",
-		"check": "biome check --error-on-warnings . && npm run typecheck",
-		"format": "biome check --write .",
-		"prepublishOnly": "npm run clean && npm run build",
-		"build:bundle": "node ../../scripts/bundle-package-dist.mjs --no-strict-execution-order --isolate=api/openai-codex-responses.js --inline=typebox,openai,@anthropic-ai/sdk,partial-json,standardwebhooks,@stablelib/base64,fast-sha256 --compat-noop-exports=_lazy-33R5T6YA.js:init_node --compat-noop-exports=_lazy-344MRX5C.js:init_fs_util,init_memories,init_node,init_skills --compat-namespace-exports=_lazy-33R5T6YA.js:node_exports --compat-aliases=_lazy-344MRX5C.js:_lazy-e23a319f.js --compat-aliases=_lazy-33R5T6YA.js:_lazy-e492435e.js",
-		"prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\"",
-		"build:catalog": "npm run generate-models && npm run build:offline"
-	},
-	"dependencies": {
-		"@anthropic-ai/sdk": "0.129.0",
-		"@aws-sdk/client-bedrock-runtime": "3.1127.0",
-		"@bastani/atomic-schema": "0.0.0",
-		"@bastani/atomic-telemetry": "0.0.0",
-		"@google/genai": "2.32.0",
-		"@smithy/node-http-handler": "4.13.0",
-		"http-proxy-agent": "9.1.0",
-		"https-proxy-agent": "9.1.0",
-		"openai": "7.19.0",
-		"partial-json": "0.1.7",
-		"typebox": "1.3.27"
-	},
-	"devDependencies": {
-		"@types/node": "24.12.4",
-		"canvas": "3.2.3",
-		"typescript": "7.0.2",
-		"vitest": "4.1.12"
-	},
-	"keywords": [
-		"ai",
-		"llm",
-		"openai",
-		"anthropic",
-		"gemini",
-		"bedrock",
-		"unified",
-		"api",
-		"atomic"
-	],
-	"author": "Mario Zechner",
-	"contributors": [
-		"Bastani, Inc."
-	],
-	"license": "MIT",
-	"publishConfig": {
-		"access": "public"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/bastani-inc/atomic.git",
-		"directory": "packages/ai"
-	},
-	"homepage": "https://docs.bastani.ai/libraries/ai",
-	"bugs": {
-		"url": "https://github.com/bastani-inc/atomic/issues"
-	},
-	"engines": {
-		"node": ">=22.19.0"
-	}
+  "name": "@bastani/atomic-ai",
+  "version": "0.10.9-alpha.1",
+  "description": "Atomic's unified LLM API: providers, models, auth, streaming, tools, images and classification",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": [
+    "./dist/compat.js",
+    "./dist/images.js",
+    "./dist/providers/images/register-builtins.js",
+    "./dist/_modules/compat.js",
+    "./dist/_modules/images.js",
+    "./dist/_modules/providers/images/register-builtins.js"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "module": "./dist/_modules/index.js",
+      "browser": "./dist/_modules/index.js",
+      "import": "./dist/index.js"
+    },
+    "./models": {
+      "types": "./dist/models.d.ts",
+      "module": "./dist/_modules/models.js",
+      "browser": "./dist/_modules/models.js",
+      "import": "./dist/models.js"
+    },
+    "./session-resources": {
+      "types": "./dist/session-resources.d.ts",
+      "module": "./dist/_modules/session-resources.js",
+      "browser": "./dist/_modules/session-resources.js",
+      "import": "./dist/session-resources.js"
+    },
+    "./compat": {
+      "types": "./dist/compat.d.ts",
+      "module": "./dist/_modules/compat.js",
+      "browser": "./dist/_modules/compat.js",
+      "import": "./dist/compat.js"
+    },
+    "./providers/*": {
+      "types": "./dist/providers/*.d.ts",
+      "module": "./dist/_modules/providers/*.js",
+      "browser": "./dist/_modules/providers/*.js",
+      "import": "./dist/providers/*.js"
+    },
+    "./api/*": {
+      "types": "./dist/api/*.d.ts",
+      "module": "./dist/_modules/api/*.js",
+      "browser": "./dist/_modules/api/*.js",
+      "import": "./dist/api/*.js"
+    },
+    "./utils/*": {
+      "types": "./dist/utils/*.d.ts",
+      "module": "./dist/_modules/utils/*.js",
+      "browser": "./dist/_modules/utils/*.js",
+      "import": "./dist/utils/*.js",
+      "default": "./dist/utils/*.js"
+    },
+    "./oauth": {
+      "types": "./dist/oauth.d.ts",
+      "module": "./dist/_modules/oauth.js",
+      "browser": "./dist/_modules/oauth.js",
+      "import": "./dist/oauth.js"
+    },
+    "./bedrock-provider": {
+      "types": "./dist/bedrock-provider.d.ts",
+      "module": "./dist/_modules/bedrock-provider.js",
+      "browser": "./dist/_modules/bedrock-provider.js",
+      "import": "./dist/bedrock-provider.js"
+    },
+    "./bun-oauth": {
+      "types": "./dist/bun-oauth.d.ts",
+      "module": "./dist/_modules/bun-oauth.js",
+      "browser": "./dist/_modules/bun-oauth.js",
+      "import": "./dist/bun-oauth.js"
+    },
+    "./lazy-bedrock-provider": {
+      "types": "./dist/lazy-bedrock-provider.d.ts",
+      "module": "./dist/_modules/lazy-bedrock-provider.js",
+      "browser": "./dist/_modules/lazy-bedrock-provider.js",
+      "import": "./dist/lazy-bedrock-provider.js"
+    },
+    "./lazy-oauth": {
+      "types": "./dist/lazy-oauth.d.ts",
+      "module": "./dist/_modules/lazy-oauth.js",
+      "browser": "./dist/_modules/lazy-oauth.js",
+      "import": "./dist/lazy-oauth.js"
+    }
+  },
+  "bin": {
+    "pi-ai": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.d.ts.map",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md",
+    "THIRD_PARTY_NOTICES",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "clean": "node ../../scripts/package-files.mjs clean dist",
+    "generate-models": "node scripts/generate-models.ts --strict",
+    "hydrate-model-data": "node scripts/generate-models.ts --strict --data-only",
+    "generate-decision-models": "node scripts/generate-decision-models.ts --strict",
+    "check:model-data": "node scripts/check-model-data.ts",
+    "build": "npm run generate-models && npm run build:offline",
+    "build:offline": "npm run check:model-data && npm run build:tsc && npm run build:model-data",
+    "build:tsc": "tsc -p tsconfig.build.json",
+    "build:model-data": "node ../../scripts/package-files.mjs clean dist/providers/data && node ../../scripts/package-files.mjs copy src/providers/data dist/providers",
+    "test": "vitest --run",
+    "typecheck": "node ../../scripts/bun-typecheck.mjs -p tsconfig.json",
+    "check": "biome check --error-on-warnings . && npm run typecheck",
+    "format": "biome check --write .",
+    "prepublishOnly": "npm run clean && npm run build",
+    "build:bundle": "node ../../scripts/bundle-package-dist.mjs --no-strict-execution-order --isolate=api/openai-codex-responses.js --inline=typebox,openai,@anthropic-ai/sdk,partial-json,standardwebhooks,@stablelib/base64,fast-sha256 --compat-noop-exports=_lazy-33R5T6YA.js:init_node --compat-noop-exports=_lazy-344MRX5C.js:init_fs_util,init_memories,init_node,init_skills --compat-namespace-exports=_lazy-33R5T6YA.js:node_exports --compat-aliases=_lazy-344MRX5C.js:_lazy-e23a319f.js --compat-aliases=_lazy-33R5T6YA.js:_lazy-e492435e.js",
+    "prepack": "node -e \"require('node:fs').existsSync('../../scripts/bundle-package-dist.mjs') && require('node:child_process').execSync('npm run build:bundle', { stdio: 'inherit' })\"",
+    "build:catalog": "npm run generate-models && npm run build:offline"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.129.0",
+    "@aws-sdk/client-bedrock-runtime": "3.1127.0",
+    "@bastani/atomic-schema": "0.10.9-alpha.1",
+    "@bastani/atomic-telemetry": "0.10.9-alpha.1",
+    "@google/genai": "2.32.0",
+    "@smithy/node-http-handler": "4.13.0",
+    "http-proxy-agent": "9.1.0",
+    "https-proxy-agent": "9.1.0",
+    "openai": "7.19.0",
+    "partial-json": "0.1.7",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.4",
+    "canvas": "3.2.3",
+    "typescript": "7.0.2",
+    "vitest": "4.1.12"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "bedrock",
+    "unified",
+    "api",
+    "atomic"
+  ],
+  "author": "Mario Zechner",
+  "contributors": [
+    "Bastani, Inc."
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bastani-inc/atomic.git",
+    "directory": "packages/ai"
+  },
+  "homepage": "https://docs.bastani.ai/libraries/ai",
+  "bugs": {
+    "url": "https://github.com/bastani-inc/atomic/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }

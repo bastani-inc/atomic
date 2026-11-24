@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic",
-  "version": "0.0.0",
+  "version": "0.10.9-alpha.1",
   "description": "Atomic coding agent CLI with read, bash, edit, write tools and session management",
   "type": "module",
   "atomicConfig": {
@@ -118,13 +118,13 @@
     "prepack": "node -e \"require('node:fs').existsSync('scripts/split-dist.mjs') && import('./scripts/split-dist.mjs').then(() => import('./scripts/write-startup-files.mjs')).then(() => import('./scripts/write-startup-stages.mjs'))\""
   },
   "dependencies": {
-    "@bastani/atomic-natives": "0.0.0",
-    "@bastani/atomic-ai": "0.0.0",
-    "@bastani/atomic-agent-core": "0.0.0",
-    "@bastani/atomic-codemode": "0.0.0",
-    "@bastani/atomic-tui": "0.0.0",
-    "@bastani/atomic-schema": "0.0.0",
-    "@bastani/atomic-telemetry": "0.0.0",
+    "@bastani/atomic-natives": "0.10.9-alpha.1",
+    "@bastani/atomic-ai": "0.10.9-alpha.1",
+    "@bastani/atomic-agent-core": "0.10.9-alpha.1",
+    "@bastani/atomic-codemode": "0.10.9-alpha.1",
+    "@bastani/atomic-tui": "0.10.9-alpha.1",
+    "@bastani/atomic-schema": "0.10.9-alpha.1",
+    "@bastani/atomic-telemetry": "0.10.9-alpha.1",
     "@silvia-odwyer/photon-node": "0.3.4",
     "chalk": "6.0.0",
     "glob": "14.0.6",
