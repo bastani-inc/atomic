@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
-import { buildReleaseNotes, type ChangelogSource } from "../../scripts/build-release-notes.js";
+import {
+	buildReleaseNotes,
+	type ChangelogSource,
+	extractVersionSection,
+	readChangelogSources,
+} from "../../scripts/build-release-notes.js";
 import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
 interface NotesResult {
@@ -461,5 +466,47 @@ describe("release-note deduplication keeps every distinct change (#4835)", () =>
 			const reversed = buildReleaseNotes(fixedSources([...packages].reverse()), "1.0.0");
 			assert.deepEqual(new Set(bulletsOf(reversed)), new Set(kept), `order-dependent\n${context}`);
 		}
+	});
+
+	test("ignores pre-monorepo historical sections that collide with a newer release version", () => {
+		const webAccessChangelog = [
+			"# Changelog",
+			"",
+			"## [Unreleased]",
+			"",
+			"## [0.10.5] - 2026-11-23",
+			"",
+			"### Fixed",
+			"",
+			"- Recent unified monorepo fix.",
+			"",
+			"## [0.8.15] - 2026-05-26",
+			"",
+			"### Changed",
+			"",
+			"- Promoted 0.8.15.",
+			"",
+			"## [0.10.7] - 2026-05-02",
+			"",
+			"### Fixed",
+			"",
+			"- Stale pre-monorepo Exa code_search fallback.",
+			"",
+		].join("\n");
+
+		assert.equal(extractVersionSection(webAccessChangelog, "0.10.7"), null);
+		assert.equal(extractVersionSection(webAccessChangelog, "0.10.4"), null);
+		assert.ok(extractVersionSection(webAccessChangelog, "0.10.5"));
+
+		const withNew0107 = webAccessChangelog.replace(
+			"## [Unreleased]\n",
+			"## [Unreleased]\n\n## [0.10.7] - 2026-11-24\n\n### Fixed\n\n- Real unified 0.10.7 fix.\n",
+		);
+		const matched = extractVersionSection(withNew0107, "0.10.7");
+		assert.equal(matched?.sections.get("Fixed"), "- Real unified 0.10.7 fix.");
+
+		const repoNotes = buildReleaseNotes(readChangelogSources(join(process.cwd(), "packages")), "0.10.7");
+		assert.ok(!repoNotes.includes("get_code_context_exa"), "must not include stale May 2026 web-access notes");
+		assert.ok(!repoNotes.includes("summaryModel"), "must not include stale May 2026 web-access notes");
 	});
 });
