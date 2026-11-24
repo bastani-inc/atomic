@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+## [0.10.9-alpha.1] - 2026-11-24
+
+Atomic no longer warns that MCP tools are unreachable when a project with its own resources starts up.
+
+**MCP startup**
+
+- **No false "neither is active" warning.** Projects with their own resources, such as `.atomic/mcp.json`, no longer report that MCP tools are unreachable at startup while codemode is still loading. Codemode is also activated for the first prompt when `autoEnableCodemode` relies on it ([#6542](https://github.com/bastani-inc/atomic/issues/6542), [#6543](https://github.com/bastani-inc/atomic/pull/6543))
+
 ### Fixed
 
-- Fixed a false "MCP tools are only reachable from the codemode or tool_search tool, but neither is active" warning when starting in a project with its own resources (such as `.atomic/mcp.json`). MCP started with the pre-trust extension set and checked for the built-in discovery tools before they loaded. MCP now leaves a missing discovery tool to the next prompt or `/mcp` command, and activates codemode there when `autoEnableCodemode` asks for it ([#6542](https://github.com/bastani-inc/atomic/issues/6542)).
+- Fixed a false "MCP tools are only reachable from the codemode or tool_search tool, but neither is active" warning when starting in a project with its own resources (such as `.atomic/mcp.json`). MCP started with the pre-trust extension set and checked for the built-in discovery tools before they loaded. MCP now leaves a missing discovery tool to the next prompt or `/mcp` command, and activates codemode there when `autoEnableCodemode` asks for it ([#6542](https://github.com/bastani-inc/atomic/issues/6542), [#6543](https://github.com/bastani-inc/atomic/pull/6543)).
 
 ## [0.10.8] - 2026-11-24
 
