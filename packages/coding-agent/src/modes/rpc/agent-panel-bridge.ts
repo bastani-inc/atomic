@@ -157,6 +157,7 @@ interface PanelState {
 	readonly model: AgentPanelModel;
 	readonly reported: Set<string>;
 	rankCaches?: Map<number, PanelRankCache>;
+	lastSelectionAnchor?: ListSelectionAnchor;
 	hideCount: number;
 	open?: boolean;
 	onSourceError?: (error: Error) => void;
@@ -432,6 +433,7 @@ function rankPanelSession(
 	}
 
 	const panelCounts = { ...counts, shells, subagents };
+	if (panelCounts.total === 0) state.lastSelectionAnchor = undefined;
 	// The main row leads the panel whenever it lists a subagent.
 	const main = counts.agents > 0;
 	state.model.endPass(pass);
@@ -1054,10 +1056,15 @@ export async function showAgentPanel(
 	/** The viewed mark and nesting, only while the screen can show a subagent: without a bridge, today's rows. */
 	const focusMarks = () =>
 		bridge === undefined ? {} : { nestShells: true, ...(focusViewed === undefined ? {} : { viewedId: focusViewed }) };
+	const initialAnchor = returnAnchor ?? (selectId === undefined ? state.lastSelectionAnchor : undefined);
+	const initialScroll = Math.max(0, initialAnchor?.scroll ?? 0);
 	state.open = true;
 	try {
-		currentRows = focusedRows(0);
-		if (currentRows.length === 0) return;
+		currentRows = focusedRows(initialScroll);
+		if (currentRows.length === 0) {
+			state.lastSelectionAnchor = undefined;
+			return;
+		}
 		const shown = ui.custom<void>(
 			(tui, _theme, keybindings, done) => {
 				const keys = keybindings as Parameters<typeof renderAgentPanelHint>[3] & {
@@ -1079,7 +1086,7 @@ export async function showAgentPanel(
 					| undefined;
 				let cachedFaded = -1;
 				let cachedRowLines: string[] = [];
-				let materializedScroll = 0;
+				let materializedScroll = initialScroll;
 				let tick: ReturnType<typeof setInterval> | undefined;
 				const modelColumn = new ModelColumn(() => {
 					cachedRows = undefined;
@@ -1088,6 +1095,8 @@ export async function showAgentPanel(
 				const finish = () => {
 					if (finished) return;
 					finished = true;
+					if (currentRows.length === 0) state.lastSelectionAnchor = undefined;
+					else if (focus.selectedId !== AGENT_PANEL_MAIN_ID) state.lastSelectionAnchor = focus.captureAnchor();
 					// The idle panel is back in the step the focused one leaves.
 					idlePanel.show(() => done());
 				};
@@ -1149,7 +1158,7 @@ export async function showAgentPanel(
 					close: finish,
 				});
 				focus.update(currentRows);
-				focus.enter(selectId, returnAnchor);
+				focus.enter(selectId, initialAnchor);
 				const refreshRows = () => {
 					materializedScroll = focus.scroll;
 					currentRows = focusedRows(materializedScroll);
@@ -1311,7 +1320,7 @@ export async function showAgentPanel(
 							return true;
 						}
 						try {
-							if (dirty) {
+							if (dirty || materializedScroll !== focus.scroll) {
 								dirty = false;
 								refreshRows();
 							}
