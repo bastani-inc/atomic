@@ -16,6 +16,7 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.js";
 import { inspectInProcessChildStatus } from "../inprocess/control-status.js";
+import { filterModelsByScope, resolveSessionModelScope } from "../shared/model-scope.js";
 import { takeLegacyForegroundWait, withLegacyForegroundWaitNote } from "./legacy-foreground-wait.js";
 import {
 	CLEANUP_IN_BACKGROUND,
@@ -117,7 +118,8 @@ async function handleManagementRequest(input: {
 	}
 	if (action === "models") {
 		const current = ctx.model;
-		const models = (ctx.modelRegistry?.getAvailable() ?? []).map((model) => ({
+		const modelScope = resolveSessionModelScope(ctx, deps.pi.getSettings?.());
+		const models = filterModelsByScope(ctx.modelRegistry?.getAvailable() ?? [], modelScope).map((model) => ({
 			provider: model.provider,
 			id: model.id,
 			fullId: `${model.provider}/${model.id}`,

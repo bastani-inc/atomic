@@ -23,7 +23,8 @@ import { compactForegroundDetails, getSingleResultOutput } from "../../shared/ut
 import { resolveSubagentAutoModel } from "../shared/auto-model.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
-import { resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback.js";
+import { resultRanOnLine } from "../shared/model-fallback.js";
+import { resolveScopedModelCandidate, resolveSessionModelScope } from "../shared/model-scope.js";
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
 import { resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.js";
@@ -176,13 +177,15 @@ export async function runParallelPath(
 	const taskTexts = tasks.map((t) => t.task);
 	const behaviorOverrides = parallelTaskBehaviorOverrides(tasks, agentConfigs);
 	const autoModels = tasks.map((task, index) => (task.model ?? agentConfigs[index]?.model) === "auto");
-	const settings = autoModels.includes(true) ? deps.pi.getSettings?.() : undefined;
+	const settings = deps.pi.getSettings?.();
+	const modelScope = resolveSessionModelScope(ctx, settings);
 	const modelOverrides = tasks.map((_, index) =>
 		autoModels[index]
-			? resolveSubagentAutoModel(ctx, settings, agentConfigs[index]!)
-			: resolveModelCandidate(
+			? resolveSubagentAutoModel(ctx, settings, agentConfigs[index]!, modelScope)
+			: resolveScopedModelCandidate(
 					behaviorOverrides[index]?.model ?? agentConfigs[index]?.model,
 					availableModels,
+					modelScope,
 					currentProvider,
 				),
 	);
@@ -272,6 +275,7 @@ export async function runParallelPath(
 			paramsCwd: effectiveCwd,
 			availableModels,
 			knownModelProviders,
+			...(modelScope === undefined ? {} : { allowedModels: modelScope.allowedFullIds }),
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),
 			modelOverrides,
 			autoModels,

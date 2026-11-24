@@ -75,6 +75,7 @@ What triggers fallback:
 - **Request-incompatible candidates.** HTTP 400, 413, and 422 payload or parameter errors, unsupported tools, and context-window overflows. Context-window overflow advances to the user-selected model only when not pinned.
 - **Content-filter refusals.** Advances without retrying the refusing model (OpenAI HTTP 422 `cyber_policy`, Anthropic refusal stop, or `content_filter` finish reason). Set `retry.fallbackOnContentFilter: false` in settings to stay on the refusing model.
 - **Credential skipping.** Before starting a concrete-model child, Atomic skips known providers without credentials and still tries unknown or custom providers. If all candidates are skipped, launch fails and names each missing provider. During execution, HTTP 401 or an invalid key disables that provider for the rest of the chain, while model-scoped HTTP 403 blocks only that model.
+- **Session model scope (`enabledModels` / `--models` / `/scoped-models`).** When the parent session has a non-empty model scope, `subagent({ action: "models" })`, `model: "auto"`, pre-spawn candidate filtering, and child mid-run fallbacks enforce that allowlist. Candidates outside the scope are skipped with a reason naming `enabledModels`, and explicit launches targeting a disallowed model fail instead of running it. When unset or empty, all available models remain allowed.
 
 Refused tool calls, ordinary tool or task errors, validation errors, and cancellations never trigger fallback. There is no per-attempt idle watchdog or wall-clock kill cap.
 

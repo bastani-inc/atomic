@@ -24,7 +24,8 @@ import { compactForegroundDetails, getSingleResultOutput } from "../../shared/ut
 import { resolveSubagentAutoModel } from "../shared/auto-model.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
-import { currentModelFullId, resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback.js";
+import { currentModelFullId, resultRanOnLine } from "../shared/model-fallback.js";
+import { resolveScopedModelCandidate, resolveSessionModelScope } from "../shared/model-scope.js";
 import { recordRun } from "../shared/run-history.js";
 import {
 	finalizeSingleOutput,
@@ -160,13 +161,15 @@ export async function runSinglePath(
 	const currentProvider = ctx.model?.provider;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
+	const settings = deps.pi.getSettings?.();
+	const modelScope = resolveSessionModelScope(ctx, settings);
 	const handoffTaskContext = params.task ?? "";
 	let task = handoffTaskContext;
 	const effectiveModel = params.model ?? agentConfig.model;
 	const runsAutoModel = effectiveModel === "auto";
 	const modelOverride = runsAutoModel
-		? resolveSubagentAutoModel(ctx, deps.pi.getSettings?.(), agentConfig)
-		: resolveModelCandidate(effectiveModel, availableModels, currentProvider);
+		? resolveSubagentAutoModel(ctx, settings, agentConfig, modelScope)
+		: resolveScopedModelCandidate(effectiveModel, availableModels, modelScope, currentProvider);
 	const skillOverride: string[] | false | undefined = normalizeSkillInput(params.skill);
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
 	const effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
@@ -283,6 +286,7 @@ export async function runSinglePath(
 			...(runsAutoModel ? { runsNamedModel: false as const } : {}),
 			availableModels,
 			knownModelProviders,
+			...(modelScope === undefined ? {} : { allowedModels: modelScope.allowedFullIds }),
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),
 			preferredModelProvider: currentProvider,
 			currentModel: currentModelFullId(ctx.model),

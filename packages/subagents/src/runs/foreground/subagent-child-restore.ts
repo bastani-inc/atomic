@@ -42,6 +42,7 @@ import { createCandidateModelResolver } from "../../shared/model-resolution.js";
 import { getCurrentSubagentDepth, type IntercomEventBus, type RunSyncOptions } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
+import { resolveSessionModelScope } from "../shared/model-scope.js";
 import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
 import { subagentStartHoldMs } from "../shared/start-progress.js";
 import { issuingCallEntries } from "./branch-read-back.js";
@@ -1152,6 +1153,7 @@ async function relaunchChild(
 	const taskFallback = redispatch && wakeFallback;
 	// A fresh child its launch created in its owner's store starts there, while the owner's store is not files.
 	const sessionStore = fresh?.ownerStore && !sessionManager ? childSessionStore(ctx.sessionManager) : undefined;
+	const modelScope = resolveSessionModelScope(ctx, deps.pi.getSettings?.());
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
@@ -1229,6 +1231,7 @@ async function relaunchChild(
 		...(intercomGroup ? { intercomGroup } : {}),
 		availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
 		knownModelProviders: collectKnownModelProviders(ctx.modelRegistry),
+		...(modelScope === undefined ? {} : { allowedModels: modelScope.allowedFullIds }),
 		resolveCandidateModel,
 		...(inherited.modelProvider ? { preferredModelProvider: inherited.modelProvider } : {}),
 		// A launch that named its model keeps to that model and its own chain: when the model it continues on is gone, it

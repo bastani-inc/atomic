@@ -288,6 +288,7 @@ See [Background tasks](/background-tasks), [Viewing a subagent](/background-task
 
 - Named agents use the model and fallbacks declared in their definition. Omit the per-call `model` argument unless the user requested a specific model or you have a recorded task-specific reason.
 - When pinning a model, call `subagent({ action: "models" })` first and use only a returned `fullId` and supported thinking level. Never invent model IDs or inspect credentials.
+- When the session has an active `enabledModels` / `--models` / `/scoped-models` scope, `subagent({ action: "models" })` returns only models matching that scope, and subagent launches and fallbacks enforce the same allowlist (skipping disallowed fallback candidates and rejecting disallowed explicit models). When unset or empty, all available models remain allowed.
 - Children inherit the parent's Intercom group unless `group` is passed on the call or task (`contact_supervisor` still crosses group boundaries).
 
 ## Context and execution modes

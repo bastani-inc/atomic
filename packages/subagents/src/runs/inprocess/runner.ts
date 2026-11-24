@@ -107,6 +107,7 @@ import {
 	recoverCancelledChildOutput,
 } from "../shared/cancellation-recovery.js";
 import { finishElapsedSpan } from "../shared/elapsed.js";
+import { isModelCandidateAllowed } from "../shared/model-scope.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
 import { createInProcessChildPromptBehavior, forkedChildTools, forkedParentSessionId } from "./prompt-behavior.js";
 import {
@@ -230,6 +231,11 @@ export interface ChildSpec {
 	 */
 	readonly fallbackModels?: readonly string[];
 	readonly isFallbackModelAllowed?: CreateAgentSessionOptions["isFallbackModelAllowed"];
+	/**
+	 * When defined, restricts the child's start model and mid-run fallback models to these canonical `provider/id`
+	 * entries (enforcing the parent session's `enabledModels` / `--models` scope).
+	 */
+	readonly allowedModels?: readonly string[];
 	/**
 	 * The model the launch named, in its call or its agent, as given (`provider/model[:effort]`). The child runs only it
 	 * and its own `fallbackModels`, and a model failure that ends the child names it (#4188).
@@ -1885,6 +1891,28 @@ function assertStartModelAllowed(input: {
 	);
 }
 
+/**
+ * Fail a child whose start model is outside the session's `enabledModels` / `--models` scope.
+ * Enforced even for named models so a disallowed model can never start.
+ */
+function assertStartModelInScope(input: {
+	readonly model: Model<Api> | undefined;
+	readonly allowedModels: readonly string[] | undefined;
+	readonly scopedModels: CreateAgentSessionOptions["scopedModels"];
+}): void {
+	const { model, allowedModels, scopedModels } = input;
+	if (!model) return;
+	const fullId = `${model.provider}/${model.id}`;
+	if (allowedModels !== undefined) {
+		if (isModelCandidateAllowed(fullId, allowedModels)) return;
+		throw new Error(`Model ${fullId} is outside the session's enabledModels scope. No other model was used.`);
+	}
+	if (scopedModels && scopedModels.length > 0) {
+		if (scopedModels.some((entry) => entry.model.provider === model.provider && entry.model.id === model.id)) return;
+		throw new Error(`Model ${fullId} is outside the session's enabledModels scope. No other model was used.`);
+	}
+}
+
 async function cancelledEnvelope(
 	session: AgentSession | undefined,
 	spec: ChildSpec,
@@ -2645,9 +2673,20 @@ export class SubagentControlRuntime {
 					: mkdir(admitted.sessionDir, { recursive: true }).then(() =>
 							SessionManager.create(admitted.policy.cwd, admitted.sessionDir),
 						);
-			// The fallback gate the child session gets, its own with its parent's, to check the model it starts on.
+			// The fallback gate and model scope the child session gets, its own with its parent's, to check the model it starts on.
 			let startGate: CreateAgentSessionOptions["isFallbackModelAllowed"];
+			let startScopedModels: CreateAgentSessionOptions["scopedModels"];
 			const prepareChildSession = async () => {
+				const specAllowedModels = admitted.spec.allowedModels;
+				const specScopeGate: CreateAgentSessionOptions["isFallbackModelAllowed"] =
+					specAllowedModels === undefined
+						? undefined
+						: (model) => isModelCandidateAllowed(`${model.provider}/${model.id}`, specAllowedModels);
+				const specGate = admitted.spec.isFallbackModelAllowed;
+				const composedSpecGate: CreateAgentSessionOptions["isFallbackModelAllowed"] =
+					specGate && specScopeGate
+						? (model, effort) => specGate(model, effort) && specScopeGate(model, effort)
+						: (specGate ?? specScopeGate);
 				const childOptions: CreateAgentSessionOptions = {
 					cwd: admitted.policy.cwd,
 					...((candidate.model ?? admitted.policy.model)
@@ -2659,7 +2698,7 @@ export class SubagentControlRuntime {
 					...(admitted.spec.fallbackModels !== undefined
 						? { fallbackModels: [...admitted.spec.fallbackModels] }
 						: {}),
-					isFallbackModelAllowed: admitted.spec.isFallbackModelAllowed,
+					isFallbackModelAllowed: composedSpecGate,
 					tools: admitted.policy.tools ? [...admitted.policy.tools] : undefined,
 					excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
 				};
@@ -2698,9 +2737,15 @@ export class SubagentControlRuntime {
 						? { fallbackModels: pinnedFallbacks }
 						: {}),
 				};
-				// Checked against the gate the child session gets, the parent's included, at the effort it starts at; once
-				// more after the session picked its default effort, when the launch chose none.
+				// Checked against the gate and scope the child session gets, the parent's included, at the effort it starts at;
+				// once more after the session picked its default effort, when the launch chose none.
 				startGate = inherited.isFallbackModelAllowed;
+				startScopedModels = inherited.scopedModels;
+				assertStartModelInScope({
+					model: inherited.model,
+					allowedModels: admitted.spec.allowedModels,
+					scopedModels: inherited.scopedModels,
+				});
 				assertStartModelAllowed({
 					spec: admitted.spec,
 					ownModel: candidate.model ?? admitted.policy.model,
@@ -2872,6 +2917,11 @@ export class SubagentControlRuntime {
 				if (admitted.spec.namedModel !== undefined && !ownModel)
 					assertStartedOnNamedModel(admitted.spec.namedModel, session.model);
 				// The model and effort the session actually starts on, after its default, restore and clamping rules.
+				assertStartModelInScope({
+					model: session.model,
+					allowedModels: admitted.spec.allowedModels,
+					scopedModels: startScopedModels,
+				});
 				assertStartModelAllowed({
 					spec: admitted.spec,
 					ownModel,

@@ -5,6 +5,7 @@
 ### Changed
 
 - Updated the bundled `agent-browser` skill to v0.44.0, replacing the `protected-vercel-deployments` specialized skill entry with `vercel` (protected Vercel deployments and flag overrides).
+- Subagents now respect the session's active `enabledModels` / `--models` / `/scoped-models` scope: `subagent({ action: "models" })` filters the returned catalog to allowed models, single and parallel launches skip disallowed fallback candidates and reject disallowed explicit models with a clear reason, `model: "auto"` selects only in-scope models, and child mid-run model fallbacks enforce the same allowlist. Behavior is unchanged when no model scope is configured.
 
 ### Fixed
 
