@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.10.10] - 2026-11-24
+
+### Fixed
+
+- Subagent model-scope filtering now uses `@bastani/atomic`'s shared `resolveModelScopeFromModels` matcher so `[...]` character-class globs, literal bracketed model IDs, `:thinking` suffixes, fuzzy matching, and legacy Azure provider normalization behave identically to the main session ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- Agent frontmatter fields `fallbackModels`, `fallbackThinkingLevels`, `skills`/`skill`, `defaultReads`, and `extensions` now accept YAML list syntax in addition to comma-separated strings ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+- `discoverAgentsAll()` now deduplicates user-scope agents in the same precedence order as execution (`~/.atomic/agent/agents` > `~/.agents` > `~/.pi/agent/agents`), eliminating duplicate entries in `subagent({ action: "list" })` and ambiguous `update`/`delete` errors ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+
 ## [0.10.10-alpha.1] - 2026-11-24
 
 ### Fixed

@@ -4,6 +4,12 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.10.10] - 2026-11-24
+
+### Fixed
+
+- `ProcessTerminal.restoreOnExit()` now emits OSC 7501 `state=clear` when program status reporting is active, matching `stop()` ([#6552](https://github.com/bastani-inc/atomic/pull/6552)).
+
 ## [0.10.10-alpha.1] - 2026-11-24
 
 ### Fixed
