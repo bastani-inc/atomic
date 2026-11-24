@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.10.8] - 2026-11-24
+
+Atomic fixes deferred startup dropping the built-in Herdr reporter on plain `atomic` launches and expands SDK exports with session, storage, settings, and OAuth error classes, session stores, claim helpers, and model-scope utilities.
+
+**Herdr integration**
+
+- **Restored built-in Herdr reporting on plain `atomic` starts.** Fixed a 0.10.4 regression where deferred startup completion dropped inline extension factories (including `<inline:Herdr>`) whenever the preloaded extension set held only mandatory extensions, so new Atomic sessions in Herdr panes once again register and report `idle`, `working`, and `blocked` ([#6536](https://github.com/bastani-inc/atomic/issues/6536), [#6539](https://github.com/bastani-inc/atomic/pull/6539))
+
+**SDK exports and ergonomics**
+
+- **Typed session, storage, settings, and OAuth errors.** SDK callers can now import and catch `SessionAlreadyOpenError` (`SESSION_ALREADY_OPEN_EXIT_CODE`), `SessionConflictError`, `SessionDeletedError`, `SessionOpenElsewhereError`, `SessionNotFoundError`, `SessionExistsError`, `SessionFormatVersionError`, `SessionIdMismatchError`, `SessionInvalidTextError`, `SessionInvalidTimestampError`, `SessionImportFileNotFoundError`, `SessionWorkUnsettledError`, `JsonlStoragePoisonedError`, `SettingsFileChangedError`, `StorageTransferError`, `StorageImportIncompleteError`, and `OAuthLoginTransactionError` directly from `@bastani/atomic` ([#6537](https://github.com/bastani-inc/atomic/pull/6537))
+- **Session stores, claims, and model-scope helpers.** `@bastani/atomic` now exports `MemorySessionStore`, `SqlSessionStore`, `SessionStorageOptions`, `claimSession`, `prepareSessionClaim`, `attachSessionClaim`, `resolveModelScopeFromModels`, and `resolveModelScopeWithDiagnostics`, with updated SDK reference docs and 4-backend storage examples ([#6537](https://github.com/bastani-inc/atomic/pull/6537))
+
+### Added
+
+- Exported session, storage, settings, and OAuth error classes, stores, claims, and companion types from `@bastani/atomic` for SDK callers: `SessionAlreadyOpenError`, `SESSION_ALREADY_OPEN_EXIT_CODE`, `SessionDeletedError`, `SessionOpenElsewhereError`, `SessionConflictError`, `SessionNotFoundError`, `SessionExistsError`, `SessionFormatVersionError`, `SessionIdMismatchError`, `SessionInvalidTextError`, `SessionInvalidTimestampError`, `SessionImportFileNotFoundError`, `SessionWorkUnsettledError`, `JsonlStoragePoisonedError`, `SettingsFileChangedError`, `StorageTransferError`, `StorageImportIncompleteError`, `OAuthLoginTransactionError`, `MemorySessionStore`, `SqlSessionStore`, `SessionStorageOptions`, `claimSession`, `prepareSessionClaim`, `attachSessionClaim`, and companion types (`SessionJsonValue`, `SessionTextField`, `SessionTimestampField`, `StorageTransferErrorInit`, `TransferredIds`), along with model-scope helpers `resolveModelScopeFromModels`, `resolveModelScopeWithDiagnostics`, `ResolveModelScopeResult`, and `ModelScopeDiagnostic` ([#6537](https://github.com/bastani-inc/atomic/pull/6537)).
+
+### Fixed
+
+- Fixed a regression introduced in 0.10.4 where a plain `atomic` start via deferred startup completion dropped inline extension factories (including the built-in Herdr reporter `<inline:Herdr>`) when the preloaded set had no explicit `omittedInlineFactories` entry. `loadFinalExtensionSet` now loads any inline non-builtin factories not already present in or failed during the preloaded set, restoring Herdr pane registration and status reporting ([#6536](https://github.com/bastani-inc/atomic/issues/6536), [#6539](https://github.com/bastani-inc/atomic/pull/6539)).
+
 ## [0.10.8-alpha.1] - 2026-11-24
 
 Atomic fixes deferred startup dropping the built-in Herdr reporter on plain `atomic` launches and expands SDK exports with session, storage, settings, and OAuth error classes, session stores, claim helpers, and model-scope utilities.
