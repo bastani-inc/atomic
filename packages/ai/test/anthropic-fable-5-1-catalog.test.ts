@@ -140,8 +140,9 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		}
 	});
 
-	// models.dev publishes no `eu.` Bedrock inference profile for Claude Fable 5.1, and no longer
-	// publishes one for Claude Fable 5. Generating one would be an invented mirror.
+	// models.dev publishes no `eu.` Bedrock inference profile for Claude Fable 5.1. Generating one
+	// would be an invented mirror. Whether Claude Fable 5's `eu.` profile is listed depends on the
+	// catalog snapshot, so it is not asserted either way.
 	it("does not invent Bedrock inference profiles that Anthropic has not published", () => {
 		const bedrockIds = getModels("amazon-bedrock").map((model) => model.id);
 
@@ -149,7 +150,6 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		expect(bedrockIds).toContain("global.anthropic.claude-fable-5-1");
 		expect(bedrockIds).toContain("us.anthropic.claude-fable-5-1");
 		expect(bedrockIds).not.toContain("eu.anthropic.claude-fable-5-1");
-		expect(bedrockIds).not.toContain("eu.anthropic.claude-fable-5");
 	});
 });
 
