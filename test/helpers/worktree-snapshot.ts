@@ -38,8 +38,8 @@ export function startedGitProcesses(trace: string): { readonly argv?: readonly s
 /** The error code for a path below a regular file: POSIX systems say ENOTDIR, Windows reports the path as missing. */
 export const BELOW_FILE_ERRNO = process.platform === "win32" ? "ENOENT" : "ENOTDIR";
 
-/** The error code for opening a directory as a file: EISDIR on POSIX systems, EPERM on Windows. */
-export const DIRECTORY_AS_FILE_ERRNO = process.platform === "win32" ? "EPERM" : "EISDIR";
+export const COPY_DIRECTORY_ERRNO =
+	process.platform === "darwin" ? "ENOTSUP" : process.platform === "win32" ? "EPERM" : "EISDIR";
 
 /** `path` as a Git config value: forward slashes, which Git reads on every platform, where backslashes would be escapes. */
 export function gitConfigPath(path: string): string {
