@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Expanding the card of a subagent released while it waits now shows its task as the prompt and the tool calls of that attempt, with the call it waits on marked as waiting, instead of only its header. A woken subagent continues with no prompt of its own, so its card showed nothing although it promised the prompt, tool calls and full result. A card whose task names no prompt leaves the Prompt section out instead of showing `(none)`, and a card whose task saved nothing to show no longer promises more once folded again.
 - A compactor request that never reaches its endpoint now reports the underlying cause instead of only `fetch failed`, and names a DNS filter when the endpoint's host resolves to `0.0.0.0` or `::` ([#6561](https://github.com/bastani-inc/atomic/pull/6561)).
 
 ## [0.10.10] - 2026-11-24
