@@ -448,28 +448,48 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 					prefix: "s5473_",
 					pollIntervalMs: NEVER_POLL_MS,
 				});
+				let backupPollsArmed = 0;
 				const subscriber = await openDatabaseWakeUpBus({
 					openDatabase: through,
 					prefix: "s5473_",
 					pollIntervalMs: NEVER_POLL_MS,
+					schedule(poll, delayMs) {
+						if (delayMs === NEVER_POLL_MS) backupPollsArmed++;
+						const timer = setTimeout(poll, delayMs);
+						timer.unref();
+						return () => clearTimeout(timer);
+					},
 				});
 				try {
 					const hints: WakeUpHint[] = [];
 					await subscriber.subscribe("broker-b", (event) => {
 						if (event.kind === "hint") hints.push(event.hint);
 					});
-					await listening(scope, SLOW_RELISTENING_BOUND_MS);
-					// Every connection drops, the pool's idle ones too: the listening probe's notification then needs a new
-					// pool connection, through the slow proxy, before it is sent.
+					// Each time the bus starts listening, it polls immediately and then re-arms the hourly backup poll.
+					// Wait for that read to finish so dropping the tunnels only interrupts idle connections.
+					const firstArm = backupPollsArmed;
+					await until(
+						() => backupPollsArmed > firstArm,
+						SLOW_RELISTENING_BOUND_MS,
+						"initial wake-up poll did not finish",
+					);
+					// The listening probe now needs a fresh pool connection through the slow proxy before it can send.
+					const beforeDrop = backupPollsArmed;
 					slow.dropTunnels();
-					await new Promise((resolve) => setTimeout(resolve, 200));
-					await listening(scope, SLOW_RELISTENING_BOUND_MS);
-					await publisher.publish({ brokerId: "broker-b", reason: "outbox", version: 3 });
+					await until(
+						() => backupPollsArmed > beforeDrop,
+						SLOW_RELISTENING_BOUND_MS,
+						"wake-up poll did not finish after reconnect",
+					);
+					// The reconnect poll has already run, so only the notification can deliver this hint before the backup poll.
+					const hint: WakeUpHint = { brokerId: "broker-b", reason: "outbox", version: 3 };
+					assert.equal((await publisher.publish(hint)).status, "published");
 					await until(
 						() => hints.length > 0,
 						SLOW_PROXY_ANSWER_MS * 4,
 						"no notification after the slow reconnect",
 					);
+					assert.deepEqual(hints, [hint]);
 				} finally {
 					await publisher.close();
 					await subscriber.close();
