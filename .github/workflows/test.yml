@@ -40,7 +40,7 @@ on:
 #
 #   unit-tests          build package -> one of eleven (Linux) or twelve (Windows) unit shards
 #   integration-tests   build package -> one of twelve integration shards (per OS)
-#   storage-conformance build package -> one of three Linux server-backed storage shards
+#   storage-conformance build package -> one of four Linux server-backed storage shards
 #   agent-suite         build ai + native bindings -> one of nine (Linux) or eleven (Windows) coding-agent shards
 #   packages-suite      build forked packages -> atomic-ai and forked workspace package suites (per OS)
 #   release-archive     build package -> build-binaries.sh -> archive smoke
@@ -371,11 +371,11 @@ jobs:
   # Two shards, each with its own libSQL server and PostgreSQL: on one server for every file, sqld was saturated and
   # ordinary sqld tests ran past their 30 s budget.
   storage-conformance:
-    name: storage-conformance (linux-x64, ${{ matrix.shard }}/3)
+    name: storage-conformance (linux-x64, ${{ matrix.shard }}/4)
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
       fail-fast: false
     runs-on: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.storage-conformance.linux-amd64
     # Setup as in an integration shard, plus service startup and storage adapter conformance.
@@ -484,9 +484,9 @@ jobs:
       # Run the adapter conformance matrix, the Postgres adapter and Intercom tests, and all libSQL server tests.
       - name: Storage conformance and libSQL server tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64 ${{ matrix.shard }} of 3)"
+          bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64 ${{ matrix.shard }} of 4)"
           -- npm run test:integration -- storage-conformance-matrix storage-postgres intercom-postgres sqld
-          --shard=${{ matrix.shard }}/3
+          --shard=${{ matrix.shard }}/4
       - name: Upload test diagnostics
         if: always()
         # The tests decide the job's result, not a failed diagnostics upload (such as an artifact service timeout).
