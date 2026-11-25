@@ -825,6 +825,46 @@ test("a moved and renamed owner keeps its parent store when a sibling or recreat
 	}
 });
 
+test.each(["decision file", "decision file and agent directory"])(
+	"recycled inodes for the %s cannot give a relocated backup the parent workflow store (#5242)",
+	(recycled) => {
+		const original = join(root, "original-parent");
+		const moved = join(root, "moved-parent");
+		const owner = join(original, "a1");
+		const current = join(moved, "main");
+		const backup = join(moved, "main-backup");
+		const journal = join("workflows", "journal.sqlite");
+		const decision = ".atomic-storage-home";
+		mkdirSync(owner, { recursive: true });
+		mkdirSync(join(original, "workflows"));
+		writeFileSync(join(original, journal), "parent history");
+		assert.equal(defaultSessionDatabasePath(owner, {}), join(original, journal));
+		const oldDecision = statSync(join(owner, decision), { bigint: true });
+		const oldAgent = statSync(owner, { bigint: true });
+
+		cpSync(original, moved, { recursive: true });
+		rmSync(original, { recursive: true });
+		renameSyncWithRetry(join(moved, "a1"), current);
+		cpSync(current, backup, { recursive: true });
+		const claim = join(moved, ".atomic-storage-parent-owner");
+		const copiedClaim = readFileSync(claim, "utf8");
+		// Inode reuse gives the new backup the deleted decision file's dev:ino. As a copy, it also has the same ID.
+		const newBirthtime = statSync(claim, { bigint: true }).birthtimeNs + 1_000_000n;
+		fsFaults.statOverrides.set(join(backup, decision), {
+			dev: oldDecision.dev,
+			ino: oldDecision.ino,
+			birthtimeNs: newBirthtime,
+		});
+		if (recycled === "decision file and agent directory") {
+			fsFaults.statOverrides.set(backup, { dev: oldAgent.dev, ino: oldAgent.ino, birthtimeNs: newBirthtime });
+		}
+		resetStorageHomeCacheForTests();
+		assert.equal(defaultSessionDatabasePath(backup, {}), join(backup, journal));
+		assert.equal(defaultSessionDatabasePath(current, {}), join(current, journal));
+		assert.equal(readFileSync(claim, "utf8"), copiedClaim);
+	},
+);
+
 test("relative storage target ownership rejects reused sibling decision inodes while preserving a local-home owner's target claim (#5242)", () => {
 	const home = join(root, "target-reuse-home");
 	useHome(home);
