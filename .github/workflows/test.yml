@@ -112,7 +112,7 @@ jobs:
       # here rather than only by installed-package-node-extensions.test.ts.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ">=24.20.0 <25"
           package-manager-cache: false
       # The bindings depend only on these sources and the Rust compiler, and
       # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
@@ -275,7 +275,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ">=24.20.0 <25"
           package-manager-cache: false
       # The bindings depend only on these sources and the Rust compiler, and
       # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
@@ -415,7 +415,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ">=24.20.0 <25"
           package-manager-cache: false
       - name: Week for the native bindings cache key
         id: week
@@ -548,7 +548,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=22.23.4 <23"
+          node-version: ">=24.20.0 <25"
           package-manager-cache: false
       # The bindings depend only on these sources and the Rust compiler, and
       # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
@@ -710,7 +710,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ">=24.20.0 <25"
           package-manager-cache: false
       - name: Configure Namespace npm cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
@@ -781,7 +781,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ">=24.20.0 <25"
           package-manager-cache: false
       # The bindings depend only on these sources and the Rust compiler, and
       # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
@@ -1026,7 +1026,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ">=24.20.0 <25"
           package-manager-cache: false
       - name: Week for the native bindings cache key
         id: week
@@ -1091,7 +1091,7 @@ jobs:
         # Pinned: mintlify@4.2.732 pulls a package missing from the registry.
         # Unpin once upstream publishes a resolvable release.
         # bunx, deliberately without `--bun`, and not npx — both verified on a
-        # Linux + Node 22 + Bun 1.4.0 container:
+        # Linux + Node 22 + Bun 1.4.0 container (Node 24 is equally below mintlify's limit):
         # - `bunx --bun` re-hosts the CLI wrapper's spawned `node` child on Bun,
         #   and Bun 1.4.0 self-reports Node-compat 26.x, which trips mintlify's
         #   "not supported on node versions 25+" refusal.
@@ -1099,7 +1099,7 @@ jobs:
         #   mintlify resolves docs.json one directory up and fails with "must be
         #   run in a directory where a docs.json file exists".
         # Plain bunx preserves this working-directory and the wrapper's `node`
-        # child resolves to the Node 22 LTS this job pins above.
+        # child resolves to the Node 24 LTS this job pins above.
         timeout-minutes: 5
         run: |
           bunx mintlify@4.2.731 validate

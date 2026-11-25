@@ -28,7 +28,7 @@ const dataUrl = (source: string) => `data:text/javascript,${encodeURIComponent(s
 const sourceUrl = (path: string) =>
 	JSON.stringify(pathToFileURL(fileURLToPath(new URL(`../src/${path}`, import.meta.url))).href);
 const MISSING_NODE_SQLITE =
-	"SQLite selectors need node:sqlite (Node >= 22.13 or Bun >= 1.4.2); this runtime does not provide it.";
+	"SQLite selectors need node:sqlite (Node >= 24.20.0 or Bun >= 1.4.2); this runtime does not provide it.";
 
 let dir: string;
 let preloadLog: string;

@@ -59,7 +59,7 @@ Full documentation: [docs.bastani.ai](https://docs.bastani.ai/) | Contributing: 
 
 ## Quick start
 
-Install globally with npm, pnpm, or Bun (Node.js 22.19+ or Bun 1.4.5+):
+Install globally with npm, pnpm, or Bun (Node.js 24 LTS, version 24.20.0 or newer, or Bun 1.4.5+). Check with `node --version`; [Node.js version](docs/getting-started/installation.md#nodejs-version) explains why and how to upgrade:
 
 ```bash
 npm install -g @bastani/atomic
