@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A compactor request that never reaches its endpoint now reports the underlying cause instead of only `fetch failed`, and names a DNS filter when the endpoint's host resolves to `0.0.0.0` or `::` ([#6561](https://github.com/bastani-inc/atomic/pull/6561)).
+
 ## [0.10.10] - 2026-11-24
 
 Atomic adds configurable remote compaction models with live switching and typed compaction errors, introduces a dedicated SDK storage backends guide with standalone PostgreSQL and libSQL library docs, remembers your last selected row in the agent panel, drops redundant multi-provider scope warnings, and fixes CLI, tool, subagent, Intercom, TUI, Web Access, and documentation gaps across all packages.
