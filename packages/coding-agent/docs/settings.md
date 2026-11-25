@@ -45,7 +45,7 @@ Set up provider credentials in [Model providers](/providers) and define custom e
 | --- | --- | --- | --- |
 | `defaultProvider` | string | unset | Startup provider, saved automatically on interactive model switch |
 | `defaultModel` | string | unset | Startup model ID, saved automatically on interactive model switch |
-| `enabledModels` | string[] | unset | Scoped model patterns controlling startup fallback, `Ctrl+P` cycling, `/model`, and subagent allowlists. Fast and Ultrafast are separate IDs that must also match a pattern. See [Model scope (`enabledModels`)](#enabledmodels). |
+| `enabledModels` | string[] | unset | Model patterns that limit the startup model, `Ctrl+P` cycling, `/model`, and the models subagents may use. Fast and Ultrafast versions have their own model IDs, so a pattern must match them too. See [Model scope (`enabledModels`)](#enabledmodels). |
 | `fallbackModels` | string[] | unset | Ordered main-chat fallback chain (`provider/model` with optional `:effort` suffix). See [`fallbackModels`](#fallbackmodels). |
 | `decisionModel` | string | `""` | Model for `structured_output` (when omitted) and `decide()`: exact `provider/model` (chat or classifier), or `""`/`"auto"` for the current chat model. See [`decisionModel`](#decisionmodel). |
 | `defaultThinkingLevel` | string | unset | Startup thinking level (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`), clamped to model support |
@@ -90,7 +90,7 @@ Atomic resolves `enabledModels` and `--models` patterns against **authenticated,
 Additional matching rules:
 
 - **Provider-qualified vs bare IDs.** Use `provider/id` to pin a single provider. A bare ID or pattern matching multiple authenticated providers adds **every** matching provider to the scope.
-- **Fast and Ultrafast variants.** A provider wildcard alone does not match the model ID suffix. For example, `"openai-*/gpt-6.2-sol"` scopes only the base model on those aliases. Use `"openai-*/gpt-6.2-sol*"` to match the base and any available `-fast` and `-ultrafast` variants, or list the exact variant IDs you want. A pattern never creates a variant the provider does not offer.
+- **Fast and Ultrafast versions.** Some OpenAI models also come in Fast and Ultrafast versions, which use a faster, more expensive service tier (see [Fast and Ultrafast tiers](/providers#fast-and-ultrafast-tiers)). Each version has its own model ID ending in `-fast` or `-ultrafast`, and a pattern must match that ID. A `*` in the provider part of a pattern does not reach into the model ID. For example, `"openai-*/gpt-6.2-sol"` matches `openai-api/gpt-6.2-sol` and `openai-codex/gpt-6.2-sol`, but not `openai-codex/gpt-6.2-sol-fast`. To include the faster versions, end the pattern with `*`, as in `"openai-*/gpt-6.2-sol*"`, or list each ID you want. A pattern never adds a version that the provider does not offer.
 - **Order and deduplication.** Results keep the order of your patterns. Duplicate `(provider, id)` matches are removed while preserving the first occurrence (and its `:thinking` suffix, if any).
 - **Project overrides.** Setting `"enabledModels": []` in `.atomic/settings.json` clears a global `enabledModels` list for that project.
 
@@ -105,6 +105,24 @@ When a scope is active, it governs five areas across your session:
 - **Extensions and SDK.** Extensions read the active resolved scope through [`ctx.scopedModels`](/extensions/api-reference#ctx-modelregistry-ctx-model-ctx-scopedmodels) (read-only). SDK hosts can resolve patterns with `resolveModelScopeFromModels()`; see [Resolving scoped models](/sdk/reference#resolving-scoped-models).
 
 **What stays independent:** Main-chat `fallbackModels` is independent of `enabledModels`, so you can keep an out-of-scope emergency fallback for main-chat turns. Child subagent fallback chains remain bound by the parent session's `enabledModels` scope.
+
+##### When a subagent's model is out of scope
+
+Atomic skips any model outside your scope when it launches a subagent. If no allowed model is left, the launch fails and the error says why. When you name a Fast or Ultrafast version whose base model is already in scope, the error gives the exact ID to add:
+
+```text
+Model openai-codex/gpt-6.2-sol-ultrafast:high is not available (Skipped openai-codex/gpt-6.2-sol-ultrafast:high: model is outside the session's enabledModels scope; its base model openai-codex/gpt-6.2-sol is in scope. Add "openai-codex/gpt-6.2-sol-ultrafast" to enabledModels.). No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels.
+```
+
+To fix it, add that ID to `enabledModels`:
+
+```json
+{
+  "enabledModels": ["openai-codex/gpt-6.2-sol", "openai-codex/gpt-6.2-sol-ultrafast"]
+}
+```
+
+A model ID that does not exist at all, such as a typo or a version the provider does not offer, fails with `no such model in the catalog.` instead of the scope message.
 
 ##### Side effects from `/model` and `/scoped-models`
 

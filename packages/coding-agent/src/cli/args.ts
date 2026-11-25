@@ -333,7 +333,7 @@ const BUILTIN_TOOL_HELP_DESCRIPTIONS: Record<BuiltinHelpToolName, string> = {
 	read: "Read path selectors (files, dirs, archives, URLs)",
 	bash: "Execute shell commands",
 	powershell: "Execute PowerShell commands on Windows",
-	kill: "Stop an owned background shell or history task by task ID (default)",
+	kill: "Stop a background shell or history task by its task ID (default)",
 	edit: "Edit files with find/replace",
 	write: "Create or overwrite writable path selectors",
 	find: "Find filesystem paths by glob pattern (default)",
