@@ -9,7 +9,7 @@ import {
 	type TaskNoticeLine,
 } from "../tasks/completion.js";
 import type { WaitPolicy } from "../tasks/contracts.js";
-import { historyTaskTimeBudget } from "./history-session.ts";
+import { historyTaskTimeBudget } from "./history-session.js";
 
 /** How long a background history task may scan before it stops with its usual continuation, in milliseconds. */
 export const HISTORY_TASK_TIME_LIMIT_MS = 300_000;
