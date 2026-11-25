@@ -33,7 +33,7 @@ on:
 jobs:
   analyze:
     name: Analyze
-    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.codeql.linux-amd64
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x8;overrides.cache-tag=bastani-inc.atomic.ci.codeql.linux-amd64
     timeout-minutes: 30
     permissions:
       # Uploading the SARIF results is the whole point of the job.

@@ -72,7 +72,7 @@ Most release jobs use inline `nscloud-*` labels. Both macOS release targets use 
 
 ### Sizing
 
-The test suites use `8x16` profiles on both platforms. Smaller jobs use `4x16`. Check CPU, memory and step logs before resizing. Set up the new profile with the same access and cache rules before changing `runs-on`.
+The test suites use `8x16` profiles on both platforms. Smaller jobs use `4x8`. Check CPU, memory and step logs before resizing. Set up the new profile with the same access and cache rules before changing `runs-on`.
 
 ### Checkout and cache trust model
 
