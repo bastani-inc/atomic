@@ -1368,7 +1368,6 @@ function* isReusedParentDecisionInodeSteps(
 	if (
 		!owner.homeIdentity ||
 		owner.decisionId === undefined ||
-		owner.directoryIdentity === undefined ||
 		decisionStat === undefined ||
 		decisionStat.birthtimeNs <= 0n ||
 		pathsEqual(candidate, owner.path)
@@ -1381,13 +1380,12 @@ function* isReusedParentDecisionInodeSteps(
 		return false;
 	}
 	// The decision file used to publish the claim already existed when the claim was created. Copying the
-	// parent can make the claim file newer, but a subsequent backup can be newer still. Keep the normal
-	// in-place owner recovery when the directory itself still matches, and only demote copied decisions.
+	// parent can make the claim file newer, but a subsequent backup can be newer still. A directory inode
+	// match does not overturn that evidence: the backup can reuse the original directory's inode too.
 	return (
 		claimStat.dev === decisionStat.dev &&
 		claimStat.birthtimeNs > 0n &&
 		decisionStat.birthtimeNs > claimStat.birthtimeNs &&
-		(yield* fileIdentitySteps(candidate)) !== owner.directoryIdentity &&
 		(yield* storageDecisionMetadataSteps(candidate))?.id === owner.decisionId
 	);
 }
