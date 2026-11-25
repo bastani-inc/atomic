@@ -35,6 +35,7 @@ import {
 	formatSearchCursor,
 	type HistoryBudget,
 	HistoryCallBudget,
+	historyTaskTimeBudget,
 	isHistoryDeadlineError,
 	lineBytes,
 	MULTILINE_WINDOW_NOTE,
@@ -525,8 +526,10 @@ function normalizeInlineSearchRequest(
 
 export function createHistoryRouter(sources: HistorySources): InternalResourceRouter {
 	const limits: HistoryBudget = { ...DEFAULT_HISTORY_BUDGET, ...sources.budget };
-	const newBudget = (signal: AbortSignal | undefined, noteBytes?: number) =>
-		new HistoryCallBudget(limits, signal, noteBytes);
+	const newBudget = (signal: AbortSignal | undefined, noteBytes?: number) => {
+		const timeMs = historyTaskTimeBudget.getStore();
+		return new HistoryCallBudget(timeMs === undefined ? limits : { ...limits, timeMs }, signal, noteBytes);
+	};
 	const noteBytes = (
 		url: string,
 		target: HistoryTarget,

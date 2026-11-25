@@ -32,7 +32,18 @@ describe("find and search builtins", () => {
 	it("exposes the search schema documented by the tool reference", () => {
 		const properties =
 			(createSearchToolDefinition(testDir).parameters as { properties?: Record<string, unknown> }).properties ?? {};
-		expect(Object.keys(properties).sort()).toEqual(["case", "gitignore", "i", "paths", "pattern", "skip"]);
+		expect(Object.keys(properties).sort()).toEqual([
+			"action",
+			"budgetMs",
+			"case",
+			"gitignore",
+			"i",
+			"id",
+			"paths",
+			"pattern",
+			"skip",
+			"wait",
+		]);
 	});
 
 	it("custom find operations can return exact remote file paths", async () => {

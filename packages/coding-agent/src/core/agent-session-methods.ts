@@ -221,6 +221,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	dispose(): Promise<void>;
 	getAgentTaskHost(): import("./tasks/agent-adapter.js").AgentTaskHost;
 	_getCommandTaskOwner(): import("./tools/bash-pty-native.js").SupervisedCommandOwner | undefined;
+	/** This session's background history:// reads and searches; `undefined` while the session closes or reloads. */
+	_getHistoryTasks(): import("./tools/history-tasks.ts").HistoryTaskRegistry | undefined;
 	closeSessionTasks(): Promise<void>;
 	/** Cancel owned execution without closing message admission. */
 	pauseTasks(): Promise<void>;
@@ -805,4 +807,5 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_childTaskWaits: import("./tasks/child-command-owner.js").ChildTaskWaits;
 	_taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
 	_taskAdmission: import("./message-admission.js").MessageAdmissionBoundary | undefined;
+	_historyTasks: import("./tools/history-tasks.ts").HistoryTaskRegistry | undefined;
 }

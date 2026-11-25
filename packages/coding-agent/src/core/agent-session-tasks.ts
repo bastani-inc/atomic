@@ -13,6 +13,7 @@ import {
 	forgetChildDelivery,
 	type TaskCompletionMessage,
 } from "./tasks/child-command-owner.js";
+import { COMMAND_FOREGROUND_BUDGET_MS } from "./tasks/command-output.js";
 import {
 	type AdmittedTaskCompletion,
 	releasedWaitingOn,
@@ -27,6 +28,7 @@ import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks
 import { bindOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
 import { loadTaskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
 import type { SupervisedCommandOwner } from "./tools/bash-pty-native.js";
+import { HistoryTaskRegistry } from "./tools/history-tasks.ts";
 
 // Native owners identify live generations, never borrowed persisted storage.
 const replacementOwnerScopes = new WeakMap<object, string>();
@@ -378,7 +380,21 @@ export function waitingUntilSettled(owner: SupervisedCommandOwner, detaches: boo
 /** The kinds of a closing session's tasks, read before its close leaves its owner unreadable (#5079). */
 const closingTaskKinds = new WeakMap<AgentSession, ReadonlyMap<string, C.TaskRecord["kind"]>>();
 
+/** This session's background history:// reads and searches, opened on first use; none while it closes or reloads. */
+export function _getHistoryTasks(this: AgentSession): HistoryTaskRegistry | undefined {
+	if (this._disposed || sessionGenerationClosing.has(this)) return undefined;
+	this._historyTasks ??= new HistoryTaskRegistry({
+		notify: (message) => this.sendCustomMessage(message, { triggerTurn: true, persistWhenStreaming: true }),
+		automaticBudgetMs: () =>
+			this._agentTaskHost === undefined ? COMMAND_FOREGROUND_BUDGET_MS : this._agentTaskHost.commandWaitBudgetMs,
+	});
+	return this._historyTasks;
+}
+
 export async function closeSessionTasks(this: AgentSession): Promise<void> {
+	const history = this._historyTasks;
+	this._historyTasks = undefined;
+	await history?.close();
 	this._parentCommandTaskOwner?.unbind(this.sessionManager.getSessionId());
 	this._taskAdmission?.seal();
 	const host = this._agentTaskHost;
@@ -406,6 +422,7 @@ export function resumeTasks(this: AgentSession): void {
 export const agentSessionTaskMethods = {
 	getAgentTaskHost,
 	_getCommandTaskOwner,
+	_getHistoryTasks,
 	closeSessionTasks,
 	pauseTasks,
 	resumeTasks,

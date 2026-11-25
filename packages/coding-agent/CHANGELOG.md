@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `read` and `search` of `history://` now observe like `bash`: they take the same `wait` policy (the owner's automatic yield, 10 seconds by default), scan a slow or remote store to completion instead of stopping at the 3-second time budget, and continue as a background history task (`history-<n>`) when they outlive their observation budget. The result arrives as a task completion notice; `{ action: "wait", id, budgetMs }` on either tool observes the task and `kill({ id })` stops it. Calls that finish within the budget return inline as before. History tasks use the session's own store connection and stop when the session closes or reloads.
+
 ## [0.10.10] - 2026-11-24
 
 Atomic adds configurable remote compaction models with live switching and typed compaction errors, introduces a dedicated SDK storage backends guide with standalone PostgreSQL and libSQL library docs, remembers your last selected row in the agent panel, drops redundant multi-provider scope warnings, and fixes CLI, tool, subagent, Intercom, TUI, Web Access, and documentation gaps across all packages.

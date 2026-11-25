@@ -284,6 +284,7 @@ export function _buildRuntime(
 	// a stable binding so observation cleanup can finish after session disposal.
 	// Subagent children resolve their parent's owner, so their shells appear in its `/tasks`.
 	const getTaskOwner = () => this._getCommandTaskOwner();
+	const historyTasks = () => this._getHistoryTasks();
 	const baseToolDefinitions = this._baseToolsOverride
 		? Object.fromEntries(
 				Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -294,7 +295,7 @@ export function _buildRuntime(
 		: createToolDefinitionsFor(
 				this._cwd,
 				{
-					read: { autoResizeImages },
+					read: { autoResizeImages, historyTasks },
 					bash: {
 						get commandPrefix() {
 							return shellCommandPrefix();
@@ -322,10 +323,12 @@ export function _buildRuntime(
 					},
 					kill: {
 						taskOwner: getTaskOwner,
+						historyTasks,
 					},
 					search: {
 						contextBefore: this.settingsManager.getSearchContextBefore(),
 						contextAfter: this.settingsManager.getSearchContextAfter(),
+						historyTasks,
 					},
 				},
 				options.powerShellAvailable,

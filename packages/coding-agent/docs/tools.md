@@ -155,7 +155,7 @@ On native Windows, Atomic enables the `powershell` tool automatically when `pwsh
 
 ## `kill`
 
-`kill({ id: taskId })` cancels an owned background shell task started by `bash` or `powershell` (including commands that yielded automatically). Pass the returned task ID verbatim, not an OS PID. Cancellation is scoped to the launching session and does not cancel subagents or another session's tasks.
+`kill({ id: taskId })` cancels an owned background shell task started by `bash` or `powershell` (including commands that yielded automatically), or a background history task (`history-<n>`) started by a `read` or `search` of `history://`. Pass the returned task ID verbatim, not an OS PID. Cancellation is scoped to the launching session and does not cancel subagents or another session's tasks. Stopping a history task ends its scan and reports it without a completion notice.
 
 Returns the cancellation decision plus execution and cleanup state. A cancellation request does not guarantee immediate termination; repeated calls preserve the first decision, finished tasks keep their outcome, and cleanup errors are reported explicitly. See [Stop a shell task from a tool call](/background-tasks#stop-a-shell-task-from-a-tool-call).
 
@@ -178,7 +178,9 @@ Returns `scopePath`, `fileCount`, `files`, truncation and missing-path metadata,
 
 ### Searching contents
 
-`search` takes a required `pattern` regex plus optional `paths` (string or string array; omitted or empty searches `.`), `i` (boolean), `case` (boolean), `gitignore` (default `true`), and `skip` (non-negative integer or `null`, floored; ignored in single-file mode). Hidden files are searched by default.
+`search` takes a required `pattern` regex plus optional `paths` (string or string array; omitted or empty searches `.`), `i` (boolean), `case` (boolean), `gitignore` (default `true`), `skip` (non-negative integer or `null`, floored; ignored in single-file mode), and `wait` (for `history://` targets). Hidden files are searched by default.
+
+- **History searches in the background.** A `search` or `read` of `history://` takes the same `wait` observation policy as `bash` and continues as a background history task when it outlives it; `{ action: "wait", id, budgetMs }` observes such a task and `kill({ id })` stops it. See [Budgets and continuations](/sessions#recalling-earlier-work).
 
 - **Targets.** Searches files, directories, globs, archive members, SQLite selectors (`.sqlite`, `.sqlite3`, `.db`, `.db3`), and supported internal URLs (`local://`, `skill://`, `artifact://`, `conflict://`, `history://`, `tool-output://`). Rejects `http://` and `https://`.
 - **Patterns and case sensitivity.** Whitespace-only patterns are rejected; all other patterns pass verbatim, including inline `(?i)`, `(?m)`, `(?s)`, and `(?x)` flags at the start of patterns on resource-backed selectors. Setting `i: true` or `case: false` enables case-insensitive matching (if both `i: true` and `case: true` are passed, case-insensitive matching wins).

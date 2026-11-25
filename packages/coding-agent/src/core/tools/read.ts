@@ -1,5 +1,5 @@
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
-import type { AgentTool } from "@bastani/atomic-agent-core";
+import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
 import type { ImageContent, ModelImageResizeOptions, TextContent } from "@bastani/atomic-ai/compat";
 import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
 import { Text } from "@bastani/atomic-tui";
@@ -26,6 +26,17 @@ import {
 	type DirectoryTreeResult,
 } from "./directory-tree.ts";
 import { FileToolAbortedError } from "./file-tool-errors.ts";
+import {
+	HISTORY_TASK_GUIDELINE,
+	type HistoryTaskRegistry,
+	type HistoryWaitInput,
+	historyWaitActionProperties,
+	historyWaitSchema,
+	namesHistoryUrl,
+	prepareHistoryAwareInput,
+	validateHistoryWait,
+	waitForHistoryTask,
+} from "./history-tasks.ts";
 import { isNotebookPath, readEditableNotebookText } from "./notebook.ts";
 import { resolveReadPathAsync, resolveToCwdAsync, resolveToCwdIfUnambiguous } from "./path-utils.ts";
 import { applyReadLineSelection, extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
@@ -62,22 +73,38 @@ import {
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
-const readSchema = Type.Object(
+const readBaseSchema = Type.Object(
 	{
 		path: Type.String({
 			description:
 				"File, directory, archive member, SQLite selector, internal resource (skill://, local://, artifact://, conflict://, history://), image, document, or URL to read. Append selectors such as :raw, :conflicts, :N, :A-B, :A+C, or :A-B,C-D to scope output.",
 		}),
+		wait: Type.Optional(historyWaitSchema),
 	},
 	{ additionalProperties: false },
 );
+type ReadCallInput = Static<typeof readBaseSchema> & { action?: never; id?: never; budgetMs?: never };
+const readSchema = Type.Unsafe<ReadCallInput | (HistoryWaitInput & Partial<Record<keyof ReadCallInput, never>>)>({
+	...readBaseSchema,
+	properties: { ...readBaseSchema.properties, ...historyWaitActionProperties },
+	required: [],
+});
 export const readToolSystemPromptContribution = Object.freeze({
 	snippet: "Read a path selector.",
 	guidelines: Object.freeze([
 		"Use read to inspect file and resource contents; use path selectors for line ranges, raw output, and conflict views.",
+		HISTORY_TASK_GUIDELINE,
 	] as const),
 } as const);
 export type ReadToolInput = Static<typeof readSchema>;
+
+/** A history task's receipt or wait result, with the structured output every read result carries. */
+function asReadResult(result: AgentToolResult<unknown>): AgentToolResult<ReadToolDetails | undefined> {
+	return {
+		...(result as AgentToolResult<ReadToolDetails | undefined>),
+		structuredContent: result.structuredContent ?? toReadOutput(result.content),
+	};
+}
 
 const readOutputSchema = Type.Union([
 	Type.String(),
@@ -147,6 +174,8 @@ export interface ReadToolOptions {
 	/** Fallback resize profile when the execution context has no model metadata. */
 	resizeOptions?: ModelImageResizeOptions;
 	operations?: ReadOperations;
+	/** The session's background history tasks, resolved per call; without them a history:// read runs inline. */
+	historyTasks?: () => HistoryTaskRegistry | undefined;
 }
 type ReadRenderArgs = { path?: string };
 function formatReadLineRange(_args: ReadRenderArgs | undefined, _theme: Theme): string {
@@ -393,6 +422,553 @@ export function createReadToolDefinition(
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const fallbackResizeOptions = options?.resizeOptions;
 	const ops = options?.operations ?? defaultReadOperations;
+	const readPath = async (
+		toolCallId: string,
+		path: string,
+		signal: AbortSignal | undefined,
+		ctx: ExtensionContext | undefined,
+	): Promise<AgentToolResult<ReadToolDetails | undefined>> => {
+		const resourceCtx = ctx as InternalResourceContext | undefined;
+		const executionCwd = ctx?.cwd || cwd;
+		const markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
+			sqliteOriginal = await sqliteSelectorForPath(markerless, executionCwd),
+			sqliteDirect = await sqliteSelectorForPath(path, executionCwd),
+			literalPath = await isExistingLiteralPath(path, executionCwd, ops),
+			splitSelector =
+				literalPath || sqliteOriginal?.rowId ? splitSelectorOr(path, markerless) : splitReadLineSelector(path);
+		const wholePath = literalPath || (await archiveSelectorMemberExists(path, executionCwd));
+		const selector = wholePath
+			? { path }
+			: sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts")
+				? { path }
+				: sqliteOriginal?.rowId && splitSelector.path !== markerless
+					? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
+					: sqliteOriginal && splitSelector.path === markerless && markerless !== path
+						? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
+						: splitSelector.path === path && sqliteDirect
+							? { path }
+							: splitSelector;
+		const effectivePath = selector.path;
+		const effectiveOffset = selector.offset;
+		const effectiveLimit = selector.limit;
+		const effectiveRanges = selector.ranges;
+		const rawOutput = selector.raw;
+		const conflictsOnly = selector.conflicts;
+		return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
+			(resolve, reject) => {
+				if (signal?.aborted) {
+					reject(new FileToolAbortedError(signal.reason));
+					return;
+				}
+				let aborted = false;
+				const onAbort = () => {
+					aborted = true;
+					reject(new FileToolAbortedError(signal?.reason));
+				};
+				signal?.addEventListener("abort", onAbort, { once: true });
+				(async () => {
+					try {
+						const archive = parseArchiveSelector(effectivePath);
+						const sqlite = await sqliteSelectorForPath(effectivePath, executionCwd);
+						if (isReadableUrlPath(effectivePath)) {
+							const { readUrlBranch } = await import("./read-url.js");
+							resolve(
+								await readUrlBranch({
+									effectivePath,
+									rawOutput: rawOutput === true,
+									effectiveRanges,
+									effectiveOffset,
+									effectiveLimit,
+									cwd: executionCwd,
+									ctx,
+									signal,
+									maxChars: READ_TOOL_MAX_RESULT_CHARS,
+									maxBytes: DEFAULT_MAX_BYTES,
+									oversized: oversizedReadResult,
+									sourceMeta: readSourceMeta,
+								}),
+							);
+							return;
+						}
+						if (sqlite) {
+							const textContent = await readSqliteSelector(sqlite),
+								selection = applyReadLineSelection(
+									textContent.split("\n"),
+									effectiveRanges,
+									effectiveOffset,
+									effectiveLimit,
+									rawOutput,
+								),
+								selectedText = selection.lines.join("\n");
+							if ((effectiveRanges || effectiveOffset) && selection.lines.length === 0) {
+								const requested = effectiveRanges?.[0]?.start ?? effectiveOffset ?? 1;
+								resolve({
+									content: [
+										{
+											type: "text",
+											text: `Requested line ${requested} is beyond end of resource (${textContent.split("\n").length} lines total).`,
+										},
+									],
+									details: undefined,
+								});
+								return;
+							}
+							if (
+								selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
+								Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
+							) {
+								resolve(
+									oversizedReadResult({
+										blocked: true,
+										path: effectivePath,
+										chars: selectedText.length,
+										maxChars: READ_TOOL_MAX_RESULT_CHARS,
+										startLine: selection.firstLine,
+										totalFileLines: textContent.split("\n").length,
+										firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"),
+										byteGuidance: false,
+									}),
+								);
+								return;
+							}
+							resolve({
+								content: [{ type: "text", text: selectedText }],
+								details: readSourceMeta(effectivePath),
+							});
+							return;
+						}
+						if (archive) {
+							const resolvedArchive = await resolveArchiveSelector(archive, executionCwd);
+							const textContent = await readArchiveSelector(resolvedArchive);
+							let allLines = textContent.split("\n");
+							if (conflictsOnly) {
+								let inConflict = false;
+								const conflictLines = allLines.filter((line) => {
+									if (line.startsWith("<<<<<<<")) inConflict = true;
+									const keep = inConflict;
+									if (line.startsWith(">>>>>>>")) inConflict = false;
+									return keep;
+								});
+								if (conflictLines.length === 0) {
+									resolve({
+										content: [{ type: "text", text: "No conflict markers found" }],
+										details: undefined,
+									});
+									return;
+								}
+								allLines = conflictLines;
+							}
+							const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
+								allLines,
+								effectiveRanges,
+							);
+							const startLine = rangeSelection
+								? rangeSelection.firstLine - 1
+								: effectiveOffset
+									? Math.max(0, effectiveOffset - 1)
+									: 0;
+							if (
+								startLine >= allLines.length ||
+								(effectiveRanges && rangeSelection?.selectedLines.length === 0)
+							) {
+								resolve({
+									content: [
+										{
+											type: "text",
+											text: `Requested line ${startLine + 1} is beyond end of resource (${allLines.length} lines total).`,
+										},
+									],
+									details: undefined,
+								});
+								return;
+							}
+							const endLine =
+								effectiveLimit !== undefined
+									? Math.min(startLine + effectiveLimit, allLines.length)
+									: allLines.length;
+							const selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
+							const selectedText = selectedLines.join("\n");
+							if (
+								selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
+								Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
+							) {
+								resolve(
+									oversizedReadResult({
+										blocked: true,
+										path: `${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`,
+										chars: selectedText.length,
+										maxChars: READ_TOOL_MAX_RESULT_CHARS,
+										startLine: startLine + 1,
+										totalFileLines: allLines.length,
+										firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"),
+										byteGuidance: false,
+									}),
+								);
+								return;
+							}
+							resolve({
+								content: [{ type: "text", text: selectedText }],
+								details: readSourceMeta(`${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`),
+							});
+							return;
+						}
+						if (isInternalUrl(effectivePath)) {
+							const sourcePath = effectivePath.startsWith("local://")
+								? await resolveInternalSelector(effectivePath, executionCwd)
+								: undefined;
+							if (sourcePath) {
+								resolve(
+									await createReadToolDefinition(executionCwd, options).execute(
+										toolCallId,
+										{ path: appendReadSelectors(sourcePath, selector) },
+										signal,
+										undefined,
+										ctx as never,
+									),
+								);
+								return;
+							}
+							const selected = await readInternalSelected(
+								effectivePath,
+								{
+									...(effectiveRanges === undefined ? {} : { ranges: effectiveRanges }),
+									...(effectiveOffset === undefined ? {} : { offset: effectiveOffset }),
+									...(effectiveLimit === undefined ? {} : { limit: effectiveLimit }),
+									...(rawOutput ? { raw: true } : {}),
+									...(signal === undefined ? {} : { signal }),
+								},
+								resourceCtx,
+							);
+							if (aborted) return;
+							if (selected !== undefined) {
+								resolve({
+									content: [{ type: "text", text: selected }],
+									details: readSourceMeta(effectivePath),
+								});
+								return;
+							}
+							const allLines = (await readInternalSelector(effectivePath, executionCwd, resourceCtx)).split(
+								"\n",
+							);
+							const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
+								allLines,
+								effectiveRanges,
+							);
+							const startLine = rangeSelection
+								? rangeSelection.firstLine - 1
+								: effectiveOffset
+									? Math.max(0, effectiveOffset - 1)
+									: 0;
+							if (
+								startLine >= allLines.length ||
+								(effectiveRanges && rangeSelection?.selectedLines.length === 0)
+							) {
+								resolve({
+									content: [
+										{
+											type: "text",
+											text: `Requested line ${startLine + 1} is beyond end of resource (${allLines.length} lines total).`,
+										},
+									],
+									details: undefined,
+								});
+								return;
+							}
+							const endLine =
+								effectiveLimit !== undefined
+									? Math.min(startLine + effectiveLimit, allLines.length)
+									: allLines.length;
+							const selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
+							const selectedText = selectedLines.join("\n");
+							if (
+								selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
+								Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
+							) {
+								resolve(
+									oversizedReadResult({
+										blocked: true,
+										path: effectivePath,
+										chars: selectedText.length,
+										maxChars: READ_TOOL_MAX_RESULT_CHARS,
+										startLine: startLine + 1,
+										totalFileLines: allLines.length,
+										firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"),
+										byteGuidance: false,
+									}),
+								);
+								return;
+							}
+							resolve({
+								content: [{ type: "text", text: selectedText }],
+								details: readSourceMeta(effectivePath),
+							});
+							return;
+						}
+						if (isReadResourceSelector(effectivePath))
+							throw new Error(`Read resource selectors are not supported by this filesystem backend: ${path}`);
+						const absolutePath = await resolveReadPathAsync(effectivePath, executionCwd);
+						if (aborted) return;
+						let content: (TextContent | ImageContent)[];
+						let details: ReadToolDetails | undefined;
+						await ops.access(absolutePath);
+						if (aborted) return;
+						if (isDocumentPath(absolutePath) && !rawOutput && !isNotebookPath(absolutePath)) {
+							const buffer = await ops.readFile(absolutePath);
+							const textContent = await extractDocumentMarkdown(buffer, absolutePath);
+							const selection = applyReadLineSelection(
+								textContent.split("\n"),
+								effectiveRanges,
+								effectiveOffset,
+								effectiveLimit,
+								rawOutput,
+							);
+							if (selection.lines.length === 0) {
+								resolve({
+									content: [
+										{
+											type: "text",
+											text: `Requested line ${selection.firstLine} is beyond end of document (${textContent.split("\n").length} lines total).`,
+										},
+									],
+									details: undefined,
+								});
+								return;
+							}
+							const selectedText = selection.lines.join("\n");
+							if (
+								selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
+								Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
+							) {
+								resolve(
+									oversizedReadResult({
+										blocked: true,
+										path: absolutePath,
+										chars: selectedText.length,
+										maxChars: READ_TOOL_MAX_RESULT_CHARS,
+										startLine: selection.firstLine,
+										totalFileLines: textContent.split("\n").length,
+										firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"),
+										byteGuidance: false,
+									}),
+								);
+								return;
+							}
+							content = [{ type: "text", text: selectedText }];
+							resolve({ content, details: readSourceMeta(absolutePath) });
+							return;
+						}
+						let tree: DirectoryTreeResult | undefined;
+						if (ops.stat && ops.listDir) {
+							const stat = await ops.stat(absolutePath);
+							if (stat?.isDirectory)
+								tree = await buildDirectoryTreeFromOperations(
+									absolutePath,
+									{ listDir: ops.listDir },
+									{ maxDepth: 2, perDirLimit: 12, rootLimit: null },
+								);
+						} else if (!options?.operations && (await fsStat(absolutePath)).isDirectory()) {
+							tree = await buildDirectoryTree(absolutePath, {
+								maxDepth: 2,
+								perDirLimit: 12,
+								rootLimit: null,
+							});
+						}
+						if (tree) {
+							const allLines = tree.rendered.split("\n"),
+								rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
+									allLines,
+									effectiveRanges,
+								),
+								startLine = rangeSelection
+									? rangeSelection.firstLine - 1
+									: effectiveOffset
+										? Math.max(0, effectiveOffset - 1)
+										: 0;
+							if (
+								startLine >= allLines.length ||
+								(effectiveRanges && rangeSelection?.selectedLines.length === 0)
+							) {
+								resolve({
+									content: [
+										{
+											type: "text",
+											text: `Requested line ${startLine + 1} is beyond end of directory (${allLines.length} lines total).`,
+										},
+									],
+									details: undefined,
+								});
+								return;
+							}
+							const endLine =
+									effectiveLimit !== undefined
+										? Math.min(startLine + effectiveLimit, allLines.length)
+										: allLines.length,
+								selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
+							content = [{ type: "text", text: selectedLines.join("\n") }];
+							const meta = {
+								...readSourceMeta(absolutePath).meta,
+								...(tree.truncated ? { limits: { perDirLimit: 12, totalLines: tree.totalLines } } : {}),
+							};
+							resolve({ content, details: { isDirectory: true, resolvedPath: absolutePath, meta } });
+							return;
+						}
+						const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
+						if (mimeType) {
+							const buffer = await ops.readFile(absolutePath);
+							const processed = await processImage(buffer, mimeType, {
+								autoResizeImages,
+								resizeOptions: ctx?.model?.inputLimits?.images?.resize ?? fallbackResizeOptions,
+							});
+							if (!processed.ok) {
+								const textNote = `Read image file [${mimeType}]\n${processed.message}`;
+								content = [{ type: "text", text: textNote }];
+							} else {
+								let textNote = `Read image file [${processed.mimeType}]`;
+								if (processed.hints.length > 0) textNote += `\n${processed.hints.join("\n")}`;
+								content = [
+									{ type: "text", text: textNote },
+									{ type: "image", data: processed.data, mimeType: processed.mimeType },
+								];
+								if (ctx?.model && !ctx.model.input.includes("image")) {
+									details = {
+										...readSourceMeta(absolutePath),
+										imageUnsupportedByModel: ctx.model.id,
+									};
+								}
+							}
+						} else {
+							const offsetStartLine = effectiveOffset ? Math.max(0, effectiveOffset - 1) : 0;
+							const plan: ReadLinePlan = effectiveRanges?.length
+								? { ranges: effectiveRanges, exact: rawOutput === true }
+								: { firstLine: offsetStartLine + 1 };
+							const notebookView = isNotebookPath(absolutePath) && !rawOutput;
+							let selection: SelectedReadLines;
+							if (conflictsOnly || notebookView) {
+								const buffer = await ops.readFile(absolutePath);
+								const textContent = notebookView
+									? await readEditableNotebookText(absolutePath, effectivePath)
+									: buffer.toString("utf-8");
+								// Formatted output reads LF-normalized lines. Keep raw reads on the source bytes so
+								// :raw preserves CRLF and terminal-newline bytes exactly.
+								const lineTextContent = rawOutput ? textContent : textContent.replace(/\r\n/g, "\n");
+								const sourceLines = lineTextContent.split("\n");
+								// A terminal newline separates real lines; omit only its synthetic split item.
+								let allLines =
+									rawOutput || !lineTextContent.endsWith("\n") ? sourceLines : sourceLines.slice(0, -1);
+								if (conflictsOnly) {
+									registerConflictBlocks(executionCwd, absolutePath, parseConflictBytes(absolutePath, buffer));
+									const conflictLines: string[] = [];
+									let inConflict = false;
+									for (const line of allLines) {
+										if (line.startsWith("<<<<<<<")) inConflict = true;
+										if (inConflict) conflictLines.push(line);
+										if (line.startsWith(">>>>>>>")) inConflict = false;
+									}
+									if (conflictLines.length > 0) allLines = conflictLines;
+									else {
+										signal?.removeEventListener("abort", onAbort);
+										resolve({
+											content: [{ type: "text", text: "No conflict markers found" }],
+											details: undefined,
+										});
+										return;
+									}
+								}
+								selection = selectReadLinesFromList(allLines, plan, READ_TOOL_MAX_RESULT_CHARS);
+							} else {
+								// Stream plain text: only the selected lines are kept, so memory does not grow with the file.
+								selection = await selectReadLinesFromChunks(
+									ops.createReadStream?.(absolutePath, { signal }) ?? readWholeFile(ops, absolutePath),
+									plan,
+									{ raw: rawOutput === true, maxChars: READ_TOOL_MAX_RESULT_CHARS, signal },
+								);
+							}
+							const totalFileLines = selection.totalLines;
+							const startLine = "ranges" in plan ? selection.firstLineNumber - 1 : offsetStartLine;
+							const startLineDisplay = startLine + 1;
+							if (startLine >= totalFileLines || ("ranges" in plan && selection.count === 0)) {
+								const requested = effectiveRanges?.[0]?.start ?? startLineDisplay;
+								resolve({
+									content: [
+										{
+											type: "text",
+											text: `Requested line ${requested} is beyond end of file (${totalFileLines} lines total). Use ${effectivePath}:${Math.max(1, totalFileLines)} to read the final line.`,
+										},
+									],
+									details: undefined,
+								});
+								return;
+							}
+							const selectedLines = selection.lines;
+							if (selection.chars > READ_TOOL_MAX_RESULT_CHARS) {
+								const firstLineBytes = selection.firstLineBytes;
+								const byteGuidance =
+									selection.countBeforeTrailingEmpty <= 1 || firstLineBytes > DEFAULT_MAX_BYTES;
+								const oversizedRead: OversizedReadDetails = {
+									blocked: true,
+									path: absolutePath,
+									chars: selection.chars,
+									maxChars: READ_TOOL_MAX_RESULT_CHARS,
+									startLine: startLineDisplay,
+									totalFileLines,
+									firstLineBytes,
+									byteGuidance,
+								};
+								details = { oversizedRead, meta: readSourceMeta(absolutePath).meta };
+								content = [{ type: "text", text: buildOversizedReadMessage(oversizedRead) }];
+							} else {
+								const truncation = truncateHead(selectedLines.join("\n"));
+								const shownLines = truncation.truncated ? truncation.outputLines : selectedLines.length;
+								const shownLineNumbers =
+									"ranges" in plan ? selection.lineNumbers.slice(0, shownLines) : undefined;
+								const lastShownLine = shownLineNumbers?.at(-1) ?? startLine + shownLines;
+								let outputText =
+									shownLineNumbers && !rawOutput
+										? formatSelectedLines(
+												selectedLines.slice(0, shownLines),
+												shownLineNumbers,
+												totalFileLines,
+											)
+										: truncation.content;
+								if (truncation.firstLineExceedsLimit) {
+									const firstLineSize = formatSize(selection.firstLineBytes);
+									outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${effectivePath} | head -c ${DEFAULT_MAX_BYTES}]`;
+									details = {
+										truncation,
+										meta: { source: absolutePath, sourcePath: absolutePath, truncation },
+									};
+								} else if (truncation.truncated) {
+									const nextOffset = lastShownLine + 1;
+									outputText +=
+										truncation.truncatedBy === "lines"
+											? `\n\n[Showing lines ${startLineDisplay}-${lastShownLine} of ${totalFileLines}. Continue with path selector :${nextOffset}.]`
+											: `\n\n[Showing lines ${startLineDisplay}-${lastShownLine} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Continue with path selector :${nextOffset}.]`;
+									details = {
+										truncation,
+										meta: { source: absolutePath, sourcePath: absolutePath, truncation },
+									};
+								} else if (!rawOutput && lastShownLine < totalFileLines) {
+									const remaining = totalFileLines - lastShownLine;
+									outputText += `\n\n[${remaining} more lines in file. Continue with path selector :${lastShownLine + 1}.]`;
+								}
+								content = [{ type: "text", text: outputText }];
+							}
+						}
+						if (aborted) return;
+						signal?.removeEventListener("abort", onAbort);
+						resolve({ content, details: details ?? readSourceMeta(absolutePath) });
+					} catch (error: unknown) {
+						signal?.removeEventListener("abort", onAbort);
+						if (!aborted) reject(error);
+					}
+				})();
+			},
+		).then((result) =>
+			result.details?.oversizedRead?.blocked
+				? { ...result, isError: true }
+				: { ...result, structuredContent: toReadOutput(result.content) },
+		);
+	};
 	const definition: ToolDefinition<typeof readSchema, ReadToolDetails | undefined, ReadRenderState> = {
 		name: "read",
 		label: "read",
@@ -404,552 +980,22 @@ export function createReadToolDefinition(
 		parameters: readSchema,
 		outputSchema: readOutputSchema,
 		maxResultSizeChars: Infinity,
-		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
-			const resourceCtx = ctx as InternalResourceContext | undefined;
-			const executionCwd = ctx?.cwd || cwd;
-			const markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
-				sqliteOriginal = await sqliteSelectorForPath(markerless, executionCwd),
-				sqliteDirect = await sqliteSelectorForPath(path, executionCwd),
-				literalPath = await isExistingLiteralPath(path, executionCwd, ops),
-				splitSelector =
-					literalPath || sqliteOriginal?.rowId ? splitSelectorOr(path, markerless) : splitReadLineSelector(path);
-			const wholePath = literalPath || (await archiveSelectorMemberExists(path, executionCwd));
-			const selector = wholePath
-				? { path }
-				: sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts")
-					? { path }
-					: sqliteOriginal?.rowId && splitSelector.path !== markerless
-						? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
-						: sqliteOriginal && splitSelector.path === markerless && markerless !== path
-							? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
-							: splitSelector.path === path && sqliteDirect
-								? { path }
-								: splitSelector;
-			const effectivePath = selector.path;
-			const effectiveOffset = selector.offset;
-			const effectiveLimit = selector.limit;
-			const effectiveRanges = selector.ranges;
-			const rawOutput = selector.raw;
-			const conflictsOnly = selector.conflicts;
-			return new Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }>(
-				(resolve, reject) => {
-					if (signal?.aborted) {
-						reject(new FileToolAbortedError(signal.reason));
-						return;
-					}
-					let aborted = false;
-					const onAbort = () => {
-						aborted = true;
-						reject(new FileToolAbortedError(signal?.reason));
-					};
-					signal?.addEventListener("abort", onAbort, { once: true });
-					(async () => {
-						try {
-							const archive = parseArchiveSelector(effectivePath);
-							const sqlite = await sqliteSelectorForPath(effectivePath, executionCwd);
-							if (isReadableUrlPath(effectivePath)) {
-								const { readUrlBranch } = await import("./read-url.js");
-								resolve(
-									await readUrlBranch({
-										effectivePath,
-										rawOutput: rawOutput === true,
-										effectiveRanges,
-										effectiveOffset,
-										effectiveLimit,
-										cwd: executionCwd,
-										ctx,
-										signal,
-										maxChars: READ_TOOL_MAX_RESULT_CHARS,
-										maxBytes: DEFAULT_MAX_BYTES,
-										oversized: oversizedReadResult,
-										sourceMeta: readSourceMeta,
-									}),
-								);
-								return;
-							}
-							if (sqlite) {
-								const textContent = await readSqliteSelector(sqlite),
-									selection = applyReadLineSelection(
-										textContent.split("\n"),
-										effectiveRanges,
-										effectiveOffset,
-										effectiveLimit,
-										rawOutput,
-									),
-									selectedText = selection.lines.join("\n");
-								if ((effectiveRanges || effectiveOffset) && selection.lines.length === 0) {
-									const requested = effectiveRanges?.[0]?.start ?? effectiveOffset ?? 1;
-									resolve({
-										content: [
-											{
-												type: "text",
-												text: `Requested line ${requested} is beyond end of resource (${textContent.split("\n").length} lines total).`,
-											},
-										],
-										details: undefined,
-									});
-									return;
-								}
-								if (
-									selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
-									Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
-								) {
-									resolve(
-										oversizedReadResult({
-											blocked: true,
-											path: effectivePath,
-											chars: selectedText.length,
-											maxChars: READ_TOOL_MAX_RESULT_CHARS,
-											startLine: selection.firstLine,
-											totalFileLines: textContent.split("\n").length,
-											firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"),
-											byteGuidance: false,
-										}),
-									);
-									return;
-								}
-								resolve({
-									content: [{ type: "text", text: selectedText }],
-									details: readSourceMeta(effectivePath),
-								});
-								return;
-							}
-							if (archive) {
-								const resolvedArchive = await resolveArchiveSelector(archive, executionCwd);
-								const textContent = await readArchiveSelector(resolvedArchive);
-								let allLines = textContent.split("\n");
-								if (conflictsOnly) {
-									let inConflict = false;
-									const conflictLines = allLines.filter((line) => {
-										if (line.startsWith("<<<<<<<")) inConflict = true;
-										const keep = inConflict;
-										if (line.startsWith(">>>>>>>")) inConflict = false;
-										return keep;
-									});
-									if (conflictLines.length === 0) {
-										resolve({
-											content: [{ type: "text", text: "No conflict markers found" }],
-											details: undefined,
-										});
-										return;
-									}
-									allLines = conflictLines;
-								}
-								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
-									allLines,
-									effectiveRanges,
-								);
-								const startLine = rangeSelection
-									? rangeSelection.firstLine - 1
-									: effectiveOffset
-										? Math.max(0, effectiveOffset - 1)
-										: 0;
-								if (
-									startLine >= allLines.length ||
-									(effectiveRanges && rangeSelection?.selectedLines.length === 0)
-								) {
-									resolve({
-										content: [
-											{
-												type: "text",
-												text: `Requested line ${startLine + 1} is beyond end of resource (${allLines.length} lines total).`,
-											},
-										],
-										details: undefined,
-									});
-									return;
-								}
-								const endLine =
-									effectiveLimit !== undefined
-										? Math.min(startLine + effectiveLimit, allLines.length)
-										: allLines.length;
-								const selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
-								const selectedText = selectedLines.join("\n");
-								if (
-									selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
-									Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
-								) {
-									resolve(
-										oversizedReadResult({
-											blocked: true,
-											path: `${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`,
-											chars: selectedText.length,
-											maxChars: READ_TOOL_MAX_RESULT_CHARS,
-											startLine: startLine + 1,
-											totalFileLines: allLines.length,
-											firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"),
-											byteGuidance: false,
-										}),
-									);
-									return;
-								}
-								resolve({
-									content: [{ type: "text", text: selectedText }],
-									details: readSourceMeta(`${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`),
-								});
-								return;
-							}
-							if (isInternalUrl(effectivePath)) {
-								const sourcePath = effectivePath.startsWith("local://")
-									? await resolveInternalSelector(effectivePath, executionCwd)
-									: undefined;
-								if (sourcePath) {
-									resolve(
-										await createReadToolDefinition(executionCwd, options).execute(
-											_toolCallId,
-											{ path: appendReadSelectors(sourcePath, selector) },
-											signal,
-											_onUpdate,
-											ctx as never,
-										),
-									);
-									return;
-								}
-								const selected = await readInternalSelected(
-									effectivePath,
-									{
-										...(effectiveRanges === undefined ? {} : { ranges: effectiveRanges }),
-										...(effectiveOffset === undefined ? {} : { offset: effectiveOffset }),
-										...(effectiveLimit === undefined ? {} : { limit: effectiveLimit }),
-										...(rawOutput ? { raw: true } : {}),
-										...(signal === undefined ? {} : { signal }),
-									},
-									resourceCtx,
-								);
-								if (aborted) return;
-								if (selected !== undefined) {
-									resolve({
-										content: [{ type: "text", text: selected }],
-										details: readSourceMeta(effectivePath),
-									});
-									return;
-								}
-								const allLines = (await readInternalSelector(effectivePath, executionCwd, resourceCtx)).split(
-									"\n",
-								);
-								const rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
-									allLines,
-									effectiveRanges,
-								);
-								const startLine = rangeSelection
-									? rangeSelection.firstLine - 1
-									: effectiveOffset
-										? Math.max(0, effectiveOffset - 1)
-										: 0;
-								if (
-									startLine >= allLines.length ||
-									(effectiveRanges && rangeSelection?.selectedLines.length === 0)
-								) {
-									resolve({
-										content: [
-											{
-												type: "text",
-												text: `Requested line ${startLine + 1} is beyond end of resource (${allLines.length} lines total).`,
-											},
-										],
-										details: undefined,
-									});
-									return;
-								}
-								const endLine =
-									effectiveLimit !== undefined
-										? Math.min(startLine + effectiveLimit, allLines.length)
-										: allLines.length;
-								const selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
-								const selectedText = selectedLines.join("\n");
-								if (
-									selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
-									Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
-								) {
-									resolve(
-										oversizedReadResult({
-											blocked: true,
-											path: effectivePath,
-											chars: selectedText.length,
-											maxChars: READ_TOOL_MAX_RESULT_CHARS,
-											startLine: startLine + 1,
-											totalFileLines: allLines.length,
-											firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"),
-											byteGuidance: false,
-										}),
-									);
-									return;
-								}
-								resolve({
-									content: [{ type: "text", text: selectedText }],
-									details: readSourceMeta(effectivePath),
-								});
-								return;
-							}
-							if (isReadResourceSelector(effectivePath))
-								throw new Error(
-									`Read resource selectors are not supported by this filesystem backend: ${path}`,
-								);
-							const absolutePath = await resolveReadPathAsync(effectivePath, executionCwd);
-							if (aborted) return;
-							let content: (TextContent | ImageContent)[];
-							let details: ReadToolDetails | undefined;
-							await ops.access(absolutePath);
-							if (aborted) return;
-							if (isDocumentPath(absolutePath) && !rawOutput && !isNotebookPath(absolutePath)) {
-								const buffer = await ops.readFile(absolutePath);
-								const textContent = await extractDocumentMarkdown(buffer, absolutePath);
-								const selection = applyReadLineSelection(
-									textContent.split("\n"),
-									effectiveRanges,
-									effectiveOffset,
-									effectiveLimit,
-									rawOutput,
-								);
-								if (selection.lines.length === 0) {
-									resolve({
-										content: [
-											{
-												type: "text",
-												text: `Requested line ${selection.firstLine} is beyond end of document (${textContent.split("\n").length} lines total).`,
-											},
-										],
-										details: undefined,
-									});
-									return;
-								}
-								const selectedText = selection.lines.join("\n");
-								if (
-									selectedText.length > READ_TOOL_MAX_RESULT_CHARS ||
-									Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES
-								) {
-									resolve(
-										oversizedReadResult({
-											blocked: true,
-											path: absolutePath,
-											chars: selectedText.length,
-											maxChars: READ_TOOL_MAX_RESULT_CHARS,
-											startLine: selection.firstLine,
-											totalFileLines: textContent.split("\n").length,
-											firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"),
-											byteGuidance: false,
-										}),
-									);
-									return;
-								}
-								content = [{ type: "text", text: selectedText }];
-								resolve({ content, details: readSourceMeta(absolutePath) });
-								return;
-							}
-							let tree: DirectoryTreeResult | undefined;
-							if (ops.stat && ops.listDir) {
-								const stat = await ops.stat(absolutePath);
-								if (stat?.isDirectory)
-									tree = await buildDirectoryTreeFromOperations(
-										absolutePath,
-										{ listDir: ops.listDir },
-										{ maxDepth: 2, perDirLimit: 12, rootLimit: null },
-									);
-							} else if (!options?.operations && (await fsStat(absolutePath)).isDirectory()) {
-								tree = await buildDirectoryTree(absolutePath, {
-									maxDepth: 2,
-									perDirLimit: 12,
-									rootLimit: null,
-								});
-							}
-							if (tree) {
-								const allLines = tree.rendered.split("\n"),
-									rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(
-										allLines,
-										effectiveRanges,
-									),
-									startLine = rangeSelection
-										? rangeSelection.firstLine - 1
-										: effectiveOffset
-											? Math.max(0, effectiveOffset - 1)
-											: 0;
-								if (
-									startLine >= allLines.length ||
-									(effectiveRanges && rangeSelection?.selectedLines.length === 0)
-								) {
-									resolve({
-										content: [
-											{
-												type: "text",
-												text: `Requested line ${startLine + 1} is beyond end of directory (${allLines.length} lines total).`,
-											},
-										],
-										details: undefined,
-									});
-									return;
-								}
-								const endLine =
-										effectiveLimit !== undefined
-											? Math.min(startLine + effectiveLimit, allLines.length)
-											: allLines.length,
-									selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
-								content = [{ type: "text", text: selectedLines.join("\n") }];
-								const meta = {
-									...readSourceMeta(absolutePath).meta,
-									...(tree.truncated ? { limits: { perDirLimit: 12, totalLines: tree.totalLines } } : {}),
-								};
-								resolve({ content, details: { isDirectory: true, resolvedPath: absolutePath, meta } });
-								return;
-							}
-							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
-							if (mimeType) {
-								const buffer = await ops.readFile(absolutePath);
-								const processed = await processImage(buffer, mimeType, {
-									autoResizeImages,
-									resizeOptions: ctx?.model?.inputLimits?.images?.resize ?? fallbackResizeOptions,
-								});
-								if (!processed.ok) {
-									const textNote = `Read image file [${mimeType}]\n${processed.message}`;
-									content = [{ type: "text", text: textNote }];
-								} else {
-									let textNote = `Read image file [${processed.mimeType}]`;
-									if (processed.hints.length > 0) textNote += `\n${processed.hints.join("\n")}`;
-									content = [
-										{ type: "text", text: textNote },
-										{ type: "image", data: processed.data, mimeType: processed.mimeType },
-									];
-									if (ctx?.model && !ctx.model.input.includes("image")) {
-										details = {
-											...readSourceMeta(absolutePath),
-											imageUnsupportedByModel: ctx.model.id,
-										};
-									}
-								}
-							} else {
-								const offsetStartLine = effectiveOffset ? Math.max(0, effectiveOffset - 1) : 0;
-								const plan: ReadLinePlan = effectiveRanges?.length
-									? { ranges: effectiveRanges, exact: rawOutput === true }
-									: { firstLine: offsetStartLine + 1 };
-								const notebookView = isNotebookPath(absolutePath) && !rawOutput;
-								let selection: SelectedReadLines;
-								if (conflictsOnly || notebookView) {
-									const buffer = await ops.readFile(absolutePath);
-									const textContent = notebookView
-										? await readEditableNotebookText(absolutePath, effectivePath)
-										: buffer.toString("utf-8");
-									// Formatted output reads LF-normalized lines. Keep raw reads on the source bytes so
-									// :raw preserves CRLF and terminal-newline bytes exactly.
-									const lineTextContent = rawOutput ? textContent : textContent.replace(/\r\n/g, "\n");
-									const sourceLines = lineTextContent.split("\n");
-									// A terminal newline separates real lines; omit only its synthetic split item.
-									let allLines =
-										rawOutput || !lineTextContent.endsWith("\n") ? sourceLines : sourceLines.slice(0, -1);
-									if (conflictsOnly) {
-										registerConflictBlocks(
-											executionCwd,
-											absolutePath,
-											parseConflictBytes(absolutePath, buffer),
-										);
-										const conflictLines: string[] = [];
-										let inConflict = false;
-										for (const line of allLines) {
-											if (line.startsWith("<<<<<<<")) inConflict = true;
-											if (inConflict) conflictLines.push(line);
-											if (line.startsWith(">>>>>>>")) inConflict = false;
-										}
-										if (conflictLines.length > 0) allLines = conflictLines;
-										else {
-											signal?.removeEventListener("abort", onAbort);
-											resolve({
-												content: [{ type: "text", text: "No conflict markers found" }],
-												details: undefined,
-											});
-											return;
-										}
-									}
-									selection = selectReadLinesFromList(allLines, plan, READ_TOOL_MAX_RESULT_CHARS);
-								} else {
-									// Stream plain text: only the selected lines are kept, so memory does not grow with the file.
-									selection = await selectReadLinesFromChunks(
-										ops.createReadStream?.(absolutePath, { signal }) ?? readWholeFile(ops, absolutePath),
-										plan,
-										{ raw: rawOutput === true, maxChars: READ_TOOL_MAX_RESULT_CHARS, signal },
-									);
-								}
-								const totalFileLines = selection.totalLines;
-								const startLine = "ranges" in plan ? selection.firstLineNumber - 1 : offsetStartLine;
-								const startLineDisplay = startLine + 1;
-								if (startLine >= totalFileLines || ("ranges" in plan && selection.count === 0)) {
-									const requested = effectiveRanges?.[0]?.start ?? startLineDisplay;
-									resolve({
-										content: [
-											{
-												type: "text",
-												text: `Requested line ${requested} is beyond end of file (${totalFileLines} lines total). Use ${effectivePath}:${Math.max(1, totalFileLines)} to read the final line.`,
-											},
-										],
-										details: undefined,
-									});
-									return;
-								}
-								const selectedLines = selection.lines;
-								if (selection.chars > READ_TOOL_MAX_RESULT_CHARS) {
-									const firstLineBytes = selection.firstLineBytes;
-									const byteGuidance =
-										selection.countBeforeTrailingEmpty <= 1 || firstLineBytes > DEFAULT_MAX_BYTES;
-									const oversizedRead: OversizedReadDetails = {
-										blocked: true,
-										path: absolutePath,
-										chars: selection.chars,
-										maxChars: READ_TOOL_MAX_RESULT_CHARS,
-										startLine: startLineDisplay,
-										totalFileLines,
-										firstLineBytes,
-										byteGuidance,
-									};
-									details = { oversizedRead, meta: readSourceMeta(absolutePath).meta };
-									content = [{ type: "text", text: buildOversizedReadMessage(oversizedRead) }];
-								} else {
-									const truncation = truncateHead(selectedLines.join("\n"));
-									const shownLines = truncation.truncated ? truncation.outputLines : selectedLines.length;
-									const shownLineNumbers =
-										"ranges" in plan ? selection.lineNumbers.slice(0, shownLines) : undefined;
-									const lastShownLine = shownLineNumbers?.at(-1) ?? startLine + shownLines;
-									let outputText =
-										shownLineNumbers && !rawOutput
-											? formatSelectedLines(
-													selectedLines.slice(0, shownLines),
-													shownLineNumbers,
-													totalFileLines,
-												)
-											: truncation.content;
-									if (truncation.firstLineExceedsLimit) {
-										const firstLineSize = formatSize(selection.firstLineBytes);
-										outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${effectivePath} | head -c ${DEFAULT_MAX_BYTES}]`;
-										details = {
-											truncation,
-											meta: { source: absolutePath, sourcePath: absolutePath, truncation },
-										};
-									} else if (truncation.truncated) {
-										const nextOffset = lastShownLine + 1;
-										outputText +=
-											truncation.truncatedBy === "lines"
-												? `\n\n[Showing lines ${startLineDisplay}-${lastShownLine} of ${totalFileLines}. Continue with path selector :${nextOffset}.]`
-												: `\n\n[Showing lines ${startLineDisplay}-${lastShownLine} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Continue with path selector :${nextOffset}.]`;
-										details = {
-											truncation,
-											meta: { source: absolutePath, sourcePath: absolutePath, truncation },
-										};
-									} else if (!rawOutput && lastShownLine < totalFileLines) {
-										const remaining = totalFileLines - lastShownLine;
-										outputText += `\n\n[${remaining} more lines in file. Continue with path selector :${lastShownLine + 1}.]`;
-									}
-									content = [{ type: "text", text: outputText }];
-								}
-							}
-							if (aborted) return;
-							signal?.removeEventListener("abort", onAbort);
-							resolve({ content, details: details ?? readSourceMeta(absolutePath) });
-						} catch (error: unknown) {
-							signal?.removeEventListener("abort", onAbort);
-							if (!aborted) reject(error);
-						}
-					})();
-				},
-			).then((result) =>
-				result.details?.oversizedRead?.blocked
-					? { ...result, isError: true }
-					: { ...result, structuredContent: toReadOutput(result.content) },
+		prepareArguments: (args: unknown) => prepareHistoryAwareInput<ReadToolInput>(args, "read", "path"),
+		async execute(toolCallId, input: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
+			if (input.action !== undefined)
+				return asReadResult(await waitForHistoryTask(options?.historyTasks?.(), input, "read", signal));
+			const { path, wait } = input as ReadCallInput;
+			const policy = validateHistoryWait(wait);
+			const registry = namesHistoryUrl(path) ? options?.historyTasks?.() : undefined;
+			if (!registry) return readPath(toolCallId, path, signal, ctx);
+			return asReadResult(
+				await registry.run({
+					kind: "read",
+					subject: path,
+					wait: policy,
+					signal,
+					run: (callSignal) => readPath(toolCallId, path, callSignal, ctx),
+				}),
 			);
 		},
 		renderCall(args, theme, context) {
