@@ -11,10 +11,14 @@ import {
 import type { WaitPolicy } from "../tasks/contracts.js";
 import { historyTaskTimeBudget } from "./history-session.js";
 
-/** How long a background history task may scan before it stops with its usual continuation, in milliseconds. */
-export const HISTORY_TASK_TIME_LIMIT_MS = 300_000;
-/** History calls one session runs at once with the time budget lifted; a call past it runs inline with the default. */
+/**
+ * History calls one session runs at once with no time limit; a call past it is refused. They are scans in this process,
+ * on the session's own store and one shared pattern-matching worker, not processes like shell commands, so they keep a
+ * limit of their own: more of them at once only slow each other down.
+ */
 export const MAX_ACTIVE_HISTORY_TASKS = 4;
+/** Why a history call was refused at {@link MAX_ACTIVE_HISTORY_TASKS}, worded as the shell commands' limit is. */
+export const HISTORY_TASK_LIMIT_MESSAGE = `${MAX_ACTIVE_HISTORY_TASKS} history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.`;
 /** Finished background history tasks a session keeps, so a late wait still returns their result. */
 const SETTLED_HISTORY_TASKS_KEPT = 16;
 const PREVIEW_CHARS = 2_000;
@@ -23,8 +27,7 @@ const HISTORY_TASK_ID = /^history-\d+$/;
 let lastHistoryTaskNumber = 0;
 
 /** The model-facing rule for history:// calls that outlive their observation budget, shared by `read` and `search`. */
-export const HISTORY_TASK_GUIDELINE =
-	'A history:// read or search observes like bash (omitted wait uses the owner policy, normally 10s; wait: { kind: "background" } returns at once). One that runs longer continues as a background history task and returns its task ID; its result arrives as a completion notice. Observe it with { action: "wait", id } on the same tool, or stop it with kill({ id }). Never repeat the call to retrieve its result.';
+export const HISTORY_TASK_GUIDELINE = `A history:// read or search observes like bash (omitted wait uses the owner policy, normally 10s; wait: { kind: "background" } returns at once). One that runs longer continues as a background history task with no time limit and returns its task ID; its result arrives as a completion notice. Observe it with { action: "wait", id } on the same tool, or stop it with kill({ id }). Never repeat the call to retrieve its result. Up to ${MAX_ACTIVE_HISTORY_TASKS} run at once in a session; at that limit a new one is refused until one finishes or is stopped.`;
 
 export type HistoryTaskKind = "search" | "read";
 
@@ -61,8 +64,6 @@ export interface HistoryTaskRegistryOptions {
 	readonly notify: (message: HistoryTaskCompletionMessage) => Promise<void> | void;
 	/** The owner's automatic foreground budget, as for a shell command; `undefined` waits until the call settles. */
 	readonly automaticBudgetMs?: () => number | undefined;
-	/** The time budget a history call gets once lifted; defaults to {@link HISTORY_TASK_TIME_LIMIT_MS}. */
-	readonly timeLimitMs?: number;
 }
 
 /** What one history-aware call of `read` or `search` asks for. */
@@ -73,7 +74,7 @@ export interface HistoryTaskCall<R extends ToolResult> {
 	readonly wait: WaitPolicy | undefined;
 	/** The tool call's own signal: it stops the call while it is observed in the foreground. */
 	readonly signal: AbortSignal | undefined;
-	/** Runs the tool's ordinary call with `signal`; the history calls it makes get the lifted time budget. */
+	/** Runs the tool's ordinary call with `signal`; the history calls it makes have no time limit. */
 	readonly run: (signal: AbortSignal | undefined) => Promise<R>;
 }
 
@@ -119,17 +120,17 @@ function label(kind: HistoryTaskKind): string {
 	return kind === "search" ? "history search" : "history read";
 }
 
-function stillRunningText(task: Pick<HistoryTask, "id" | "kind">, timeLimitMs: number): string {
+function stillRunningText(task: Pick<HistoryTask, "id" | "kind">): string {
 	const tool = task.kind;
 	return (
-		`History ${task.kind} is still running (task ${task.id}). It scans for at most ${Math.round(timeLimitMs / 1000)} seconds, then stops with a continuation as usual; ` +
+		`History ${task.kind} is still running (task ${task.id}). It has no time limit: it runs until it finishes, kill stops it, or this session ends; ` +
 		`its result arrives as a completion notice. Wait on it with ${tool}({ action: "wait", id: "${task.id}" }) or stop it with kill({ id: "${task.id}" }). Never relaunch it to retrieve its result.`
 	);
 }
 
-function stillRunning(task: HistoryTask, timeLimitMs: number): AgentToolResult<HistoryTaskDetails> {
+function stillRunning(task: HistoryTask): AgentToolResult<HistoryTaskDetails> {
 	return {
-		content: [{ type: "text", text: stillRunningText(task, timeLimitMs) }],
+		content: [{ type: "text", text: stillRunningText(task) }],
 		details: { historyTask: { taskId: task.id, state: "running" } },
 	};
 }
@@ -197,10 +198,6 @@ export class HistoryTaskRegistry {
 		this.options = options;
 	}
 
-	private get timeLimitMs(): number {
-		return this.options.timeLimitMs ?? HISTORY_TASK_TIME_LIMIT_MS;
-	}
-
 	private automaticBudgetMs(): number | undefined {
 		return this.options.automaticBudgetMs ? this.options.automaticBudgetMs() : COMMAND_FOREGROUND_BUDGET_MS;
 	}
@@ -212,11 +209,12 @@ export class HistoryTaskRegistry {
 
 	/**
 	 * Runs one history call. It returns inline when it settles within its observation budget, and otherwise goes on
-	 * as a background task, returning a result that names it. Past {@link MAX_ACTIVE_HISTORY_TASKS} active calls, or
-	 * once closed, the call runs inline with the default time budget, as it always did.
+	 * as a background task, returning a result that names it. Past {@link MAX_ACTIVE_HISTORY_TASKS} active calls it is
+	 * refused; once closed, the call runs inline with the default time budget, as it always did.
 	 */
 	async run<R extends ToolResult>(call: HistoryTaskCall<R>): Promise<R | AgentToolResult<HistoryTaskDetails>> {
-		if (this.closed || this.running.size + this.observing >= MAX_ACTIVE_HISTORY_TASKS) return call.run(call.signal);
+		if (this.closed) return call.run(call.signal);
+		if (this.running.size + this.observing >= MAX_ACTIVE_HISTORY_TASKS) throw new Error(HISTORY_TASK_LIMIT_MESSAGE);
 		call.signal?.throwIfAborted();
 		const budgetMs =
 			call.wait === undefined ? this.automaticBudgetMs() : call.wait.kind === "background" ? 0 : call.wait.budgetMs;
@@ -230,7 +228,7 @@ export class HistoryTaskRegistry {
 			startedAt: Date.now(),
 			controller,
 			settled: outcomeOf(
-				historyTaskTimeBudget.run(this.timeLimitMs, () => call.run(controller.signal)),
+				historyTaskTimeBudget.run(Number.POSITIVE_INFINITY, () => call.run(controller.signal)),
 				controller.signal,
 			),
 			waiters: 0,
@@ -259,7 +257,7 @@ export class HistoryTaskRegistry {
 		}
 		this.running.set(task.id, task);
 		void task.settled.then((outcome) => this.settle(task, outcome));
-		return stillRunning(task, this.timeLimitMs);
+		return stillRunning(task);
 	}
 
 	private settle(task: HistoryTask, outcome: Outcome): void {
@@ -295,7 +293,7 @@ export class HistoryTaskRegistry {
 			const observed =
 				budget === undefined ? await task.settled : await Promise.race([task.settled, delay(budget, signal)]);
 			if (observed === "aborted") throw signal?.reason ?? new Error("aborted");
-			if (observed === "elapsed") return stillRunning(task, this.timeLimitMs);
+			if (observed === "elapsed") return stillRunning(task);
 			return settledResult(task, observed);
 		} finally {
 			task.waiters--;

@@ -33,7 +33,10 @@ export interface HistoryBudget {
 }
 
 export const DEFAULT_HISTORY_BUDGET: HistoryBudget = { bytes: 40_000, rows: 250_000, timeMs: 3_000 };
-/** The time budget of the history calls a background history task makes, in place of the router's own. */
+/**
+ * The time budget of the history calls a background history task makes, in place of the router's own:
+ * `Number.POSITIVE_INFINITY`, as such a task has no time limit.
+ */
 export const historyTaskTimeBudget = asyncScope<number>();
 export const HISTORY_TEXT_FORMAT = 2;
 export const MAX_MATCHES_PER_SESSION = 10;
@@ -83,6 +86,11 @@ export function yieldTurn(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
+/** A signal that aborts after `ms`, or never for an unlimited (infinite) time budget. */
+function timeoutSignal(ms: number): AbortSignal {
+	return Number.isFinite(ms) ? AbortSignal.timeout(ms) : new AbortController().signal;
+}
+
 export class HistoryCallBudget {
 	readonly signal: AbortSignal | undefined;
 	private reservedBytes: number;
@@ -98,7 +106,7 @@ export class HistoryCallBudget {
 		this.signal = signal;
 		this.timeMs = Math.max(STORE_WAIT_MIN_MS, budget.timeMs);
 		this.deadline = performance.now() + budget.timeMs;
-		this.callSignal = this.withCaller(AbortSignal.timeout(this.timeMs));
+		this.callSignal = this.withCaller(timeoutSignal(this.timeMs));
 		const reserve = Math.max(
 			Math.min(NOTE_RESERVE_BYTES, Math.floor(budget.bytes * 0.25)) + Math.max(0, noteBytes - NOTE_RESERVE_BYTES),
 			budget.bytes < NOTE_RESERVE_BYTES ? Math.min(noteBytes, Math.floor(budget.bytes / 2)) : 0,
@@ -116,7 +124,7 @@ export class HistoryCallBudget {
 	holdProgressFloor(): void {
 		const floorMs = Math.max(PROGRESS_FLOOR_MS, this.timeMs);
 		const until = performance.now() + floorMs;
-		this.floor = { until, signal: this.withCaller(AbortSignal.timeout(floorMs)) };
+		this.floor = { until, signal: this.withCaller(timeoutSignal(floorMs)) };
 	}
 
 	markProgress(): void {

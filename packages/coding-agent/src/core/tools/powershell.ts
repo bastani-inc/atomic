@@ -147,7 +147,7 @@ export function createPowerShellToolDefinition(cwd: string, options: PowerShellT
 			return definition.execute(...args);
 		},
 		description:
-			'Execute a PowerShell command or observe an existing task with action: "wait", id, and optional budgetMs. A command runs until it exits or is stopped unless timeout sets a deadline in seconds. Owner-bound commands automatically yield after 10s by default without stopping execution. Unbound commands wait for completion; background and existing-task waits require a task owner.',
+			'Execute a PowerShell command or observe an existing task with action: "wait", id, and optional budgetMs. A command runs until it exits or is stopped unless timeout sets a deadline in seconds. A background command can run indefinitely, such as a dev server; stop it with kill. Owner-bound commands automatically yield after 10s by default without stopping execution. Unbound commands wait for completion; background and existing-task waits require a task owner.',
 		promptSnippet: powershellToolSystemPromptContribution.snippet,
 		promptGuidelines:
 			options.exposeSessionEnvironment === false

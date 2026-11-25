@@ -438,9 +438,12 @@ function runWorkerTask<Op extends WorkerOp>(
 		const onAbort = () => {
 			removeOrCancel({ error: signal?.reason ?? new Error("Operation aborted") });
 		};
-		const timer = setTimeout(() => {
-			removeOrCancel({ timedOut: true });
-		}, effectiveMs);
+		// A call with no time limit (a background history task's) has no timer: only its signal stops it.
+		const timer = Number.isFinite(effectiveMs)
+			? setTimeout(() => {
+					removeOrCancel({ timedOut: true });
+				}, effectiveMs)
+			: undefined;
 		signal?.addEventListener("abort", onAbort, { once: true });
 		waitingQueue.push(task);
 		pumpQueue();

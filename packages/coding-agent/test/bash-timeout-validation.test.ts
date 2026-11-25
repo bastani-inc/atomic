@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { createBashToolDefinition, createLocalBashOperations } from "../src/core/tools/bash.ts";
+import { createPowerShellToolDefinition } from "../src/core/tools/powershell.ts";
 
 /** Node's longest timer delay, in milliseconds: a longer one fires at once. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -55,6 +56,39 @@ describe("bash timeout validation", () => {
 
 		expect(observed).toEqual([-1, 3600, 3600.5, 86400, 10_000_000]);
 	});
+
+	test.each([createBashToolDefinition, createPowerShellToolDefinition])(
+		"%o gives a command no deadline unless timeout sets one, of any length",
+		async (factory) => {
+			const observed: Array<number | undefined> = [];
+			let executed = 0;
+			const tool = factory(process.cwd(), {
+				operations: {
+					exec: async (_command, _cwd, options) => {
+						executed++;
+						observed.push(options.timeout);
+						return { exitCode: 0 };
+					},
+				},
+			});
+			const run = (timeout?: number) =>
+				tool.execute(
+					"run",
+					{ command: "true", ...(timeout === undefined ? {} : { timeout }) },
+					undefined,
+					undefined,
+					context,
+				);
+			const omitted = await run();
+			expect(omitted.details?.timeoutSeconds).toBeUndefined();
+			await run(86400);
+			await run(10_000_000);
+			expect(observed).toEqual([undefined, 86400, 10_000_000]);
+			for (const invalid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY])
+				await expect(run(invalid)).rejects.toThrow(/finite number of seconds greater than 0/);
+			expect(executed).toBe(3);
+		},
+	);
 
 	test("honours a fractional timeout instead of flooring it to whole seconds", async () => {
 		const observed: number[] = [];

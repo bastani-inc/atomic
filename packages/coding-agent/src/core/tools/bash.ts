@@ -484,7 +484,7 @@ export function createBashToolDefinition(
 		detachable: (args) => args.action === "wait" && args.budgetMs === undefined,
 		label: "bash",
 		description:
-			'Execute a shell command with optional PTY handling and foreground/background observation, or observe an existing task with action: "wait", id, and optional budgetMs. Omitted command wait uses owner policy (default 10s). A command runs until it exits or is stopped unless timeout sets a deadline in seconds; observation never stops it. Background and existing-task waits require a supported task owner; unbound foreground execution waits until completion.',
+			'Execute a shell command with optional PTY handling and foreground/background observation, or observe an existing task with action: "wait", id, and optional budgetMs. Omitted command wait uses owner policy (default 10s). A command runs until it exits or is stopped unless timeout sets a deadline in seconds; observation never stops it. A background command can run indefinitely, such as a dev server; stop it with kill. Background and existing-task waits require a supported task owner; unbound foreground execution waits until completion.',
 		promptSnippet: bashToolSystemPromptContribution.snippet,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		promptGuidelines: exposeSessionEnvironment ? [...bashToolSystemPromptContribution.guidelines] : undefined,
