@@ -187,44 +187,56 @@ The agent can inspect past project sessions from any session or subagent using r
 | `history://sessions/<id>:N-M` | 1-based entry ranges (`:N`, `:N+C`, `:N-M,P-Q`; `:raw` omits the heading). |
 
 - **Search behavior.** Searching `history://sessions` or `history://` scans the newest 25 sessions per page, excludes the current session (search the current session through its own ID URL), skips `custom` and `worktree_snapshot` entries, and caps output at 10 matches per session. Extra matches include a `?cursor=<seq>.<match>` continuation. Multi-line patterns match across up to 16,384 characters or 256 entries, with the same window for lookbehind, and matches crossing that boundary note the cutoff. After compaction, the boundary message gives the exact session URL and range to recover earlier details ([Context cleared](/compaction#context-cleared)).
-- **Budgets and continuations.** Every `history://` call enforces a 40,000-byte output cap, a 250,000-entry scan cap, and a 3-second nominal time budget. When a call stops early, it returns a `continue with` URL containing `cursor`, `after=<activityMs>.<createdMs>[.<id>]`, and an optional `session=<id>`. Pass that URL unchanged; list continuations expire after 60 seconds.
-- **Long searches.** A `read` or `search` of `history://` that takes longer than a few seconds keeps going in the background, with no time limit. See [Long history searches](#long-history-searches).
+- **Budgets and continuations.** Every `history://` call enforces a 40,000-byte output cap, a 250,000-entry scan cap, and a 3-second nominal time budget. A call in a session that moves to the background has no time limit instead, as described in [Slow history searches](#slow-history-searches). When a call stops early, it returns a `continue with` URL containing `cursor`, `after=<activityMs>.<createdMs>[.<id>]`, and an optional `session=<id>`. Pass that URL unchanged; list continuations expire after 60 seconds.
 - **Indexing and storage.** SQLite, libSQL, and PostgreSQL build a trigram index on first search. PostgreSQL installs `pg_trgm` during `atomic storage migrate` or on open when permissions allow. Multi-line patterns scan linearly. The index roughly doubles text-heavy session storage and clears automatically when sessions are deleted or rewritten (`VACUUM` or `VACUUM FULL` reclaims disk space). Never edit active JSONL files in place outside Atomic's storage APIs.
 
-### Long history searches
+### Slow history searches {#slow-history-searches}
 
-Searching a large history, or a store that answers slowly (for example a remote database), can take a while. In a session, a `read` or `search` of `history://` behaves like a [background shell command](/background-tasks#background-shells): Atomic watches it for up to 10 seconds, and if it is still running then, it goes on **in the background** while you and the model carry on. Its result arrives later as a message in the chat.
+Reading or searching past sessions can take more than a few seconds when the session store is large or remote, such as a PostgreSQL database. In a session, the agent can keep working while such a call runs. Atomic treats a slow history call the way it treats a slow shell command:
 
-- **What changed in this release.** Before, every history call stopped after about 3 seconds and returned a `continue with` link for the rest. Now a call that goes to the background has **no time limit**: it scans to the end, unless the result grows past the size limits above (40,000 bytes of output or 250,000 entries scanned), in which case it ends with the usual `continue with` link.
-- **What you see.** The model gets a **task ID**, a short name such as `history-3`, and this message:
+1. The agent waits up to 10 seconds for the result, the same default wait as for shell commands. A call that finishes in time returns its result right away.
+2. A call that is still running after that becomes a background task. A background task keeps running while the agent does other work. The agent gets a task ID such as `history-3`.
+3. When the task finishes, its result arrives in the chat as a completion notice, and the agent reads it there.
 
-  ```text
-  History search is still running (task history-3). It has no time limit: it runs until it finishes, kill stops it, or this session ends; its result arrives as a completion notice. Wait on it with search({ action: "wait", id: "history-3" }) or stop it with kill({ id: "history-3" }). Never relaunch it to retrieve its result.
-  ```
+A background history task has **no time limit**. It runs until it finishes, the agent stops it with `kill`, or the session closes or reloads. It still stops at the 40,000-byte output limit and after 250,000 entries; then its result ends with a `continue with` URL, as before. History calls take no `timeout`: to end a long one sooner, stop it with `kill`.
 
-  When it finishes, the chat shows `Background history search completed:` followed by the pattern and the URL, then the matches.
-- **Check on it, wait for it, stop it.**
+**What changed in this release.** Before, every history call stopped after 3 seconds and returned a `continue with` URL for the rest. Now a slow call in a session moves to the background and keeps running until it finishes.
 
-  ```ts
-  // Go to the background at once.
-  search({ pattern: "connection refused", paths: "history://sessions", wait: { kind: "background" } })
+In the chat, the tool call shows `Search(history-3) · continues in background`, and the agent receives this reply:
 
-  // Check on it: wait at most 5 seconds.
-  search({ action: "wait", id: "history-3", budgetMs: 5000 })
+```text
+History search is still running (task history-3). It has no time limit: it runs until it finishes, kill stops it, or this session ends. The result arrives as a completion notice; if it is too long, it ends with a "continue with" URL as usual. Wait for it with search({ action: "wait", id: "history-3" }) or stop it with kill({ id: "history-3" }). Never repeat the call to get its result.
+```
 
-  // Stop it.
-  kill({ id: "history-3" })
-  ```
+When the task finishes, a completion line appears:
 
-  Use `read({ action: "wait", id })` for a `read`. A wait that sees it finish returns the result itself, and no message follows.
-- **Deadline.** History searches take no `timeout`. If one runs longer than you want, stop it with `kill`.
-- **How many at once.** A session runs at most **4** history searches and reads at once. They scan in Atomic's own process and share one pattern matcher, so more at once would only slow each other down. At the limit, a new one does not start, and the call fails with:
+```text
+ ● History search "/ERR_/ in history://sessions" completed · 12s
+```
+
+The agent controls these tasks with the same options it uses for shell commands in the background. `read` takes the same options as `search`:
+
+```ts
+// Start the search in the background right away.
+search({ pattern: "ERR_", paths: "history://sessions", wait: { kind: "background" } })
+// Wait up to 60 seconds before moving to the background.
+search({ pattern: "ERR_", paths: "history://sessions", wait: { kind: "foreground", budgetMs: 60000 } })
+// Wait up to 30 more seconds for a running task's result.
+search({ action: "wait", id: "history-3", budgetMs: 30000 })
+// Stop the task.
+kill({ id: "history-3" })
+```
+
+- **Waiting for the result.** If the agent is waiting on the task when it finishes, the wait returns the result and no completion notice follows. A task stopped with `kill` sends no notice either.
+- **At most 4 at once.** A session runs up to 4 history reads and searches at a time. They run inside Atomic and share one pattern matcher, so more at once would only slow each other down; this limit is separate from the 64 shell commands a session can run. A call made while 4 are running does not start, and fails with:
 
   ```text
   4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.
   ```
 
-- **When the session ends.** Closing or reloading the session stops its history searches, and they are not restarted when you resume it. They never change your history: they read only, through the session's own connection to its store. They do not appear in `/tasks` or the agent panel.
+  Stop one with `kill({ id: "history-3" })`, or wait for one to finish, then make the call again.
+- **Session lifetime.** Background history tasks stop when the session closes or reloads, and they do not start again when you resume the session.
+- **Where they show.** History tasks do not appear in `/tasks` or the agent panel yet.
 
 ### Searching a stored session in the background
 

@@ -117,6 +117,24 @@ Compaction starts
 
 Atomic prints a one-line notice (`Compaction model not used (<reason>); context cleared instead`) without exposing your API key or sensitive headers. Pressing `Escape` or calling `abortCompaction()` during a compactor request also clears the context with reason `request aborted`. A takeover by `/compact`, closing the session, or an extension returning `{ cancel: true }` cancels compaction completely.
 
+#### When the compactor cannot reach its server
+
+If Atomic cannot connect to the compactor's server, the notice gives the reason the connection failed. For example, when the server's host name cannot be found:
+
+```text
+Compaction model not used (morph/morph-compactor failed: fetch failed: getaddrinfo ENOTFOUND api.morphllm.com); context cleared instead
+```
+
+Check your network connection, proxy or VPN, and the compactor's address.
+
+A DNS filter such as NextDNS, Pi-hole, or AdGuard can also block the compactor. These filters answer `0.0.0.0` or `::` for a domain they block, so the connection never reaches the real server. When the server's host name resolves only to those addresses, the notice says so and names the domain to allow:
+
+```text
+Compaction model not used (morph/morph-compactor failed: fetch failed: ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR: tlsv1 alert internal error (api.morphllm.com resolves to 0.0.0.0, the address DNS filters such as NextDNS, Pi-hole or AdGuard return for blocked domains; allow api.morphllm.com in the resolver)); context cleared instead
+```
+
+To fix it, add that domain to your DNS filter's allowlist. Until then, compaction keeps working by clearing the context.
+
 ## Compaction model
 
 Open `/settings` and select **Compaction model** to choose **Automatic** or any registered compactor model. Changes made in `/settings` (or via `session.setCompactionModel()` / RPC `set_compaction_model`) take effect immediately in your active session without running `/reload` or restarting Atomic. Both built-in `morph/morph-compactor` and any custom remote compactor models you define in `~/.atomic/agent/models.json` or an extension appear in this searchable list automatically, matching the **Decision model** and `/model` pickers (authenticated models appear first; unauthenticated ones show `requires /login <provider>`). The selector updates project settings when a project override already exists, and global settings otherwise. You can also edit `compactionModel` in `~/.atomic/agent/settings.json` or a trusted project's `.atomic/settings.json`:

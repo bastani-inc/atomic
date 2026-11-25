@@ -34,7 +34,7 @@ Control which tools a session exposes from the CLI, settings, SDK, or extensions
 
 ## `read` and path selectors
 
-`read` reads files, directories, images, documents, archives, SQLite databases, internal Atomic resources, and public HTTP(S) URLs through one `path` parameter.
+`read` reads files, directories, images, documents, archives, SQLite databases, internal Atomic resources, and public HTTP(S) URLs through one `path` parameter. A `read` of a `history://` URL also accepts `wait`, so a slow read can keep running in the background. See [Slow history searches](/sessions#slow-history-searches).
 
 Reading a directory returns a depth-2 tree sorted by most-recent modification time (with sizes and ages). It prunes `.git` and `node_modules` and caps each child directory at 12 entries while preserving the oldest shown entry with an elision marker.
 
@@ -173,9 +173,14 @@ On native Windows, Atomic enables the `powershell` tool automatically when `pwsh
 
 ## `kill`
 
-`kill({ id: taskId })` cancels an owned background shell task started by `bash` or `powershell` (including commands that yielded automatically), or a background history task (`history-<n>`) started by a `read` or `search` of `history://`. Pass the returned task ID verbatim, not an OS PID. Cancellation is scoped to the launching session and does not cancel subagents or another session's tasks. Stopping a history task ends its scan and reports it without a completion notice.
+`kill({ id: taskId })` stops a task that is running in the background. It works on two kinds of task:
 
-Returns the cancellation decision plus execution and cleanup state. A cancellation request does not guarantee immediate termination; repeated calls preserve the first decision, finished tasks keep their outcome, and cleanup errors are reported explicitly. See [Stop a shell task from a tool call](/background-tasks#stop-a-shell-task-from-a-tool-call).
+- A shell command started by `bash` or `powershell`, including one that moved to the background on its own after the default wait.
+- A slow `read` or `search` of past sessions, with an ID such as `history-3`. See [Slow history searches](/sessions#slow-history-searches).
+
+Pass the task ID exactly as the tool returned it, not a process ID. `kill` works only in the session that started the task, and it never stops subagents or another session's tasks. Stopping a history task replies `History search history-3 was stopped; it no longer reads the session store.` and sends no completion notice.
+
+For a shell task, `kill` returns the cancellation decision plus execution and cleanup state. A cancellation request does not guarantee immediate termination; repeated calls preserve the first decision, finished tasks keep their outcome, and cleanup errors are reported explicitly. See [Stop a shell task from a tool call](/background-tasks#stop-a-shell-task-from-a-tool-call).
 
 ## `find` and `search`
 
@@ -198,8 +203,7 @@ Returns `scopePath`, `fileCount`, `files`, truncation and missing-path metadata,
 
 `search` takes a required `pattern` regex plus optional `paths` (string or string array; omitted or empty searches `.`), `i` (boolean), `case` (boolean), `gitignore` (default `true`), `skip` (non-negative integer or `null`, floored; ignored in single-file mode), and `wait` (for `history://` targets). Hidden files are searched by default.
 
-- **History searches in the background.** A `search` or `read` of `history://` takes the same `wait` as `bash`. One that is still running after it (10 seconds by default) goes on in the background with no time limit and returns a task ID such as `history-3`; its result arrives as a completion message. Check on it with `{ action: "wait", id, budgetMs }` and stop it with `kill({ id })`. A session runs at most 4 at once; at that limit a new one is refused with `4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.` See [Long history searches](/sessions#long-history-searches).
-
+- **Slow history searches.** For a `history://` target, `wait` works as it does in `bash`. A search still running after the default wait of 10 seconds keeps running in the background, with no time limit, and returns a task ID such as `history-3`. Wait for its result with `search({ action: "wait", id: "history-3" })`, or stop it with `kill({ id: "history-3" })`. `read` of a `history://` URL works the same way. A session runs at most 4 at once; a call past that fails with `4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.` See [Slow history searches](/sessions#slow-history-searches).
 - **Targets.** Searches files, directories, globs, archive members, SQLite selectors (`.sqlite`, `.sqlite3`, `.db`, `.db3`), and supported internal URLs (`local://`, `skill://`, `artifact://`, `conflict://`, `history://`, `tool-output://`). Rejects `http://` and `https://`.
 - **Patterns and case sensitivity.** Whitespace-only patterns are rejected; all other patterns pass verbatim, including inline `(?i)`, `(?m)`, `(?s)`, and `(?x)` flags at the start of patterns on resource-backed selectors. Setting `i: true` or `case: false` enables case-insensitive matching (if both `i: true` and `case: true` are passed, case-insensitive matching wins).
 - **Line selectors.** Line-range selectors (`file.ts:10-50`) work on single files only (directories and globs fail with an error) and restrict matches before adding context lines.

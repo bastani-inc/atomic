@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- A subagent launch now distinguishes unknown catalog models from models outside `enabledModels`. If a Fast or Ultrafast variant is out of scope but its base model is allowed, the error shows the exact variant ID to add.
+- When a subagent cannot start on a model, the error now says whether the model does not exist (`no such model in the catalog`) or is left out by `enabledModels`. For a Fast or Ultrafast version whose base model is allowed, the error names the exact ID to add, such as `Add "openai-codex/gpt-6.2-sol-ultrafast" to enabledModels.` ([#6569](https://github.com/bastani-inc/atomic/pull/6569)).
 
 ## [0.10.10] - 2026-11-24
 

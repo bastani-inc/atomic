@@ -200,7 +200,7 @@ Call `kill` with the exact task ID returned by `bash` or `powershell`:
 kill({ id: taskId })
 ```
 
-Pass the task ID only, never a process ID, shell name, or subagent ID. `/tasks` stop controls remain available alongside `kill`.
+Pass the task ID only, never a process ID, shell name, or subagent ID. `/tasks` stop controls remain available alongside `kill`. `kill` also stops a slow search of past sessions by its ID, such as `kill({ id: "history-3" })`. See [Slow history searches](/sessions#slow-history-searches).
 
 The transcript shows `◼ stopping · cancellation requested`, `◯ cancelled`, or `● already completed · exit 0`. The structured result includes `taskId`, `decision`, `execution`, and `cleanup`. A cancellation request starts teardown rather than guaranteeing that every child process has exited immediately; wait until execution has settled and process cleanup is confirmed before assuming files or ports are free. If the command finished before `kill` ran, the original outcome is preserved.
 
@@ -236,7 +236,7 @@ A session runs at most 4 history searches and reads at once, separately from its
 4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.
 ```
 
-History searches take no `timeout`, are not restarted when a session is resumed, and do not appear in `/tasks`. See [Long history searches](/sessions#long-history-searches) for what the model sees and how results arrive.
+History searches take no `timeout`, are not restarted when a session is resumed, and do not appear in `/tasks`. See [Slow history searches](/sessions#slow-history-searches) for what the model sees and how results arrive.
 
 ## Choose how long to wait
 
@@ -295,9 +295,17 @@ The main footer shows `↓ N agents` for the panel's subagent rows, and `N needs
 
 Main-chat background shells are counted in the footer and inspected through [`/tasks`](#open-the-task-inspector). A subagent's own running shells appear as indented rows (`⧗ shell <command>`) directly beneath that subagent and leave once they finish or when their parent subagent leaves.
 
-Press `↓` on an empty prompt to focus the panel from either `main` or a subagent (while a viewed subagent's question form has focus, `↓` moves its selection instead). Returning to the panel with `↓` selects your most recently selected row, `main` included, and restores its scroll position. A subagent you open from `/tasks` by `Enter` or a click counts as your selection too. If that subagent left, the panel falls back to the nearest surviving row (and resets to the top row once the panel empties):
+Press `↓` on an empty prompt to focus the panel from either `main` or a subagent (while a viewed subagent's question form has focus, `↓` moves its selection instead).
 
-- `↑` and `↓` select rows, including `main` and nested shell rows. `↓` on the last row wraps to the first. The selected row shows `∀` before its mark in default text color.
+The panel remembers the row you chose last, so `↓` takes you back to it:
+
+- If you last chose `main`, `↓` selects `main` again. If the panel no longer shows a `main` row, it selects the first row.
+- If you open a subagent from `/tasks` with `Enter` or a click, the panel selects that subagent next time. Moving through `/tasks` and leaving with `Esc` does not change the remembered row.
+- If the remembered subagent has left the panel, the nearest remaining row is selected. Once the panel is empty, the next visit starts at the top row.
+
+The panel also keeps the scroll position you left it at. In the focused panel:
+
+- `↑` and `↓` select rows, including `main` and nested shell rows. `↓` on the last row moves back to the first row and scrolls to the top. The selected row shows `∀` before its mark in default text color.
 - `Enter` or `→` on a subagent switches the chat screen to that subagent and returns focus to the prompt.
 - `Enter` or `→` on `main` switches back to the main chat and returns focus to the prompt.
 - `Enter` or `→` on a nested shell opens that shell's output in `/tasks` without changing the viewed agent (`←` returns to the focused panel).

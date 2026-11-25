@@ -27,7 +27,7 @@ const HISTORY_TASK_ID = /^history-\d+$/;
 let lastHistoryTaskNumber = 0;
 
 /** The model-facing rule for history:// calls that outlive their observation budget, shared by `read` and `search`. */
-export const HISTORY_TASK_GUIDELINE = `A history:// read or search observes like bash (omitted wait uses the owner policy, normally 10s; wait: { kind: "background" } returns at once). One that runs longer continues as a background history task with no time limit and returns its task ID; its result arrives as a completion notice. Observe it with { action: "wait", id } on the same tool, or stop it with kill({ id }). Never repeat the call to retrieve its result. Up to ${MAX_ACTIVE_HISTORY_TASKS} run at once in a session; at that limit a new one is refused until one finishes or is stopped.`;
+export const HISTORY_TASK_GUIDELINE = `A history:// read or search waits for its result like bash does: 10 seconds by default, or as set by wait (wait: { kind: "background" } returns at once). If it is still running then, it keeps running in the background with no time limit and returns a task ID, and its result arrives later as a completion notice. To wait for that result, call the same tool with { action: "wait", id }; to stop it, call kill({ id }). Never repeat the call to get its result. Up to ${MAX_ACTIVE_HISTORY_TASKS} run at once in a session; at that limit a new one is refused until one finishes or is stopped.`;
 
 export type HistoryTaskKind = "search" | "read";
 
@@ -123,8 +123,8 @@ function label(kind: HistoryTaskKind): string {
 function stillRunningText(task: Pick<HistoryTask, "id" | "kind">): string {
 	const tool = task.kind;
 	return (
-		`History ${task.kind} is still running (task ${task.id}). It has no time limit: it runs until it finishes, kill stops it, or this session ends; ` +
-		`its result arrives as a completion notice. Wait on it with ${tool}({ action: "wait", id: "${task.id}" }) or stop it with kill({ id: "${task.id}" }). Never relaunch it to retrieve its result.`
+		`History ${task.kind} is still running (task ${task.id}). It has no time limit: it runs until it finishes, kill stops it, or this session ends. ` +
+		`The result arrives as a completion notice; if it is too long, it ends with a "continue with" URL as usual. Wait for it with ${tool}({ action: "wait", id: "${task.id}" }) or stop it with kill({ id: "${task.id}" }). Never repeat the call to get its result.`
 	);
 }
 
@@ -308,7 +308,7 @@ export class HistoryTaskRegistry {
 		task.controller.abort(new Error("Stopped by kill"));
 		const outcome = await task.settled;
 		return outcome.kind === "cancelled"
-			? `History ${task.kind} ${id} was stopped; its scan ended and its store reads were released.`
+			? `History ${task.kind} ${id} was stopped; it no longer reads the session store.`
 			: `History ${task.kind} ${id} ${outcomePhrase(outcome)} before it could be stopped.`;
 	}
 
@@ -359,13 +359,13 @@ export const historyWaitSchema = Type.Unsafe<WaitPolicy>({
 		budgetMs: {
 			type: "number",
 			minimum: 0,
-			description: "Foreground observation budget in milliseconds; only valid with foreground.",
+			description: "How long to wait, in milliseconds; only valid with kind foreground.",
 		},
 	},
 	required: ["kind"],
 	additionalProperties: false,
 	description:
-		"Observation policy for history:// targets, as bash's: omit for owner-configured automatic yield (default 10s); a call that outlives it continues as a background task.",
+		"How long to wait for a history:// read or search, as for bash. Omit to wait the default time (10 seconds unless configured); a call still running after that keeps running as a background task.",
 });
 
 /** The properties that observe an existing history task instead of starting a call. */
@@ -373,13 +373,13 @@ export const historyWaitActionProperties = {
 	action: {
 		type: "string",
 		enum: ["wait"],
-		description: "Observe an existing background history task instead of starting a call.",
+		description: "Wait for a background history task started earlier, instead of starting a new call.",
 	},
-	id: { type: "string", description: "Existing history task ID returned by an earlier call." },
+	id: { type: "string", description: "History task ID returned by an earlier call, such as history-3." },
 	budgetMs: {
 		type: "number",
 		minimum: 0,
-		description: "Observation budget in milliseconds; omitted uses owner policy.",
+		description: "How long to wait, in milliseconds; omit to wait the default time.",
 	},
 } as const;
 

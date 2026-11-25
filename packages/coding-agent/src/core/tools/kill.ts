@@ -12,7 +12,7 @@ import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 const killSchema = Type.Object({
 	id: Type.String({
 		description:
-			"Task ID returned by a background or auto-yielded bash, powershell, or history:// read or search call",
+			"Task ID returned by a bash or powershell command, or a history:// read or search, that is running in the background",
 	}),
 });
 
@@ -30,10 +30,10 @@ export function createKillToolDefinition(
 		name: "kill",
 		label: "Kill",
 		description:
-			"Stop an owned background bash or PowerShell task, or a background history:// read or search, by its task ID, not a PID. Does not stop subagents or other owners' tasks. Returns the cancellation decision and current execution/cleanup state; a cancellation request alone does not confirm termination.",
+			"Stop a background task this session started: a bash or PowerShell command, or a history:// read or search. Pass its task ID, not a process ID. It does not stop subagents or tasks owned by others. For a shell task, the result says whether the stop was accepted and whether the process and its cleanup have finished; an accepted stop does not mean the process has exited yet.",
 		parameters: killSchema,
 		...experimentalToolSamplingProperty(),
-		promptSnippet: "Stop an owned background shell or history task by task ID",
+		promptSnippet: "Stop a background shell or history task by its task ID",
 		execute: async (_toolCallId, { id }) => {
 			if (HistoryTaskRegistry.isTaskId(id)) {
 				const history = options?.historyTasks?.();
