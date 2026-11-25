@@ -501,14 +501,16 @@ test.runIf(process.platform === "win32")(
 				files: [[0, "package.json"]],
 			}),
 		);
-		// Use a minimal real marker-writing reader that mirrors startup-prefetch-reader.js checking existsSync(dirname(markerPath)).
+		// Publish the marker atomically like the shipped reader: its appearance tells the runner the JSON is complete.
 		file(
 			join(relPkgDir, "dist", "utils", "startup-prefetch-reader.js"),
-			`import { existsSync, writeFileSync } from "node:fs";
+			`import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 const [, listPath, packageDir, markerPath, version] = process.argv.slice(1);
 if (!existsSync(dirname(markerPath))) process.exit(2);
-writeFileSync(markerPath, JSON.stringify({ version, install: packageDir, listPath, readerCwd: process.cwd() }));
+const tempPath = markerPath + "." + process.pid + ".tmp";
+writeFileSync(tempPath, JSON.stringify({ version, install: packageDir, listPath, readerCwd: process.cwd() }));
+renameSync(tempPath, markerPath);
 process.exit(0);
 `,
 		);
