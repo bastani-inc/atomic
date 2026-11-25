@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { closeSync, constants, openSync, renameSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { setImmediate } from "node:timers/promises";
+import { setTimeout } from "node:timers/promises";
 import { AuthStorage } from "../../src/core/auth-storage.js";
 import { ModelRuntime } from "../../src/core/model-runtime.js";
 
@@ -11,6 +11,8 @@ assert.ok(dir);
 const modelsPath = join(dir, "models.json");
 const provider = "github-copilot";
 const id = "account-new";
+const GC_DEADLINE_MS = 5_000;
+const GC_POLL_INTERVAL_MS = 10;
 const entered = Promise.withResolvers<void>();
 const release = Promise.withResolvers<void>();
 let accountReads = 0;
@@ -49,12 +51,16 @@ if (mode === "borrowed") {
 		};
 	};
 	const borrowed = await borrow();
-	for (let i = 0; i < 12; i++) {
-		await setImmediate();
+	const deadline = performance.now() + GC_DEADLINE_MS;
+	let alive: { runtime: boolean; credentials: boolean };
+	do {
+		// WeakRef creation and deref keep the targets alive for the current job. Yield before collecting again.
+		await setTimeout(GC_POLL_INTERVAL_MS);
 		Bun.gc(true);
-	}
+		alive = { runtime: !!borrowed.owner.deref(), credentials: !!borrowed.credentials.deref() };
+	} while ((alive.runtime || alive.credentials) && performance.now() < deadline);
 	assert.equal(borrowed.refresh?.name, "refreshModels");
-	console.log(JSON.stringify({ runtime: !!borrowed.owner.deref(), credentials: !!borrowed.credentials.deref() }));
+	console.log(JSON.stringify(alive));
 } else if (mode === "account-fifo") {
 	const { createAgentSession } = await import("../../src/core/sdk.js");
 	const { SessionManager } = await import("../../src/core/session-manager.js");
