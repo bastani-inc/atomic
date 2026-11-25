@@ -15,7 +15,8 @@ Pull requests need `test (all platforms)` and CodeQL results. Releases use a sep
 ## Tests
 
 - `unit-tests` and `integration-tests` run the root suites on Linux and Windows.
-- `agent-suite` runs the AI and coding-agent suites on both platforms. Its first shard on each platform also runs the other compiled workspace packages' suites.
+- `agent-suite` runs the coding-agent suite on both platforms.
+- `packages-suite` runs the AI and other compiled workspace packages' suites on both platforms.
 - `storage-conformance` runs the database-backed suites on Linux.
 - `release-archive` builds and smoke tests the Linux and Windows archives without publishing them.
 - `static-checks` runs `npm run check`, documentation checks, script and CI contract tests, and installer smoke tests.
@@ -31,10 +32,9 @@ Draft PRs skip the work jobs and do not report `test (all platforms)`. Keep the 
 The workflows split suites by file. To reproduce a shard locally, use the job's `--shard` value with its npm command:
 
 ```sh
-npm run test:unit -- --shard=1/5
-npm run test:integration -- --shard=1/5
-npm run test --workspace=@bastani/atomic-ai -- --shard=1/3
-npm run test --workspace=@bastani/atomic -- --shard=1/3
+npm run test:unit -- --shard=1/10
+npm run test:integration -- --shard=1/9
+npm run test --workspace=@bastani/atomic -- --shard=1/9
 ```
 
 Keep Vitest's default worker sizing and file isolation. If one file dominates a shard, split it by topic. If the weights in `test/helpers/test-file-durations.json` are stale, download `test-diagnostics-*` artifacts from several recent runs. Run the first command for each run ID, then update the weights:

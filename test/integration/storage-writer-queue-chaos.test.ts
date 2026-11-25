@@ -1,24 +1,22 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import { afterEach, test } from "vitest";
 import {
 	rehydrateStorageError,
 	type SerializedStorageError,
 	StorageRollbackError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
-import type { WriterQueueStats } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { isSqliteBusy } from "../../packages/coding-agent/src/core/storage/write-ahead-log.js";
+import { sleep } from "../helpers/runtime.js";
 import {
-	makeTempDirectory,
-	readStreamText,
-	removeTempDirectory,
-	type SpawnedProcess,
-	sleep,
-	spawnProcess,
-} from "../helpers/runtime.js";
+	assertIntact,
+	CHAOS_TEST_TIMEOUT_MS,
+	createWriterQueueChaosHarness,
+	readerOf,
+	rows,
+	untilQueued,
+} from "./storage-writer-queue-chaos-helpers.js";
 
 /**
  * Chaos for the cross-process writers' queue (#4316): processes killed or stopped while they hold the write lock or
@@ -27,176 +25,12 @@ import {
  * writer makes progress, and the database passes `PRAGMA integrity_check`.
  */
 
-const WRITER = fileURLToPath(new URL("../fixtures/sqlite-queue-writer.mjs", import.meta.url));
-const HOLDER = fileURLToPath(new URL("../fixtures/sqlite-stalling-holder.mjs", import.meta.url));
-/** Child processes, jiti-loaded adapters, and waits of a few ticket lifetimes (2 s each). */
-const CHAOS_TEST_TIMEOUT_MS = 120_000;
-const STALL_PAST_TICKET_MS = 3_000;
-const STALL_PAST_REMOVAL_MS = 21_000;
-const RESUME_GAP_MS = 50;
-/**
- * How long after the host continues a writer short of CPU first runs again: several of a waiting writer's 250 ms
- * rechecks, well within the 1.5 s a waiting writer has between refreshing its ticket and the ticket going stale.
- */
-const STARVED_RESUME_MS = 800;
-
-interface WriterOptions {
-	readonly label: string;
-	readonly transactions?: number;
-	readonly concurrency?: number;
-	readonly busyMs?: number;
-	readonly lockWaitMs?: number;
-	readonly clockSkewMs?: number;
-	readonly blobBytes?: number;
-	readonly fillDatabase?: boolean;
-}
-
-interface WriterReport {
-	readonly pid: number;
-	readonly label: string;
-	readonly committed: number;
-	readonly errors: SerializedStorageError[];
-	readonly stats: WriterQueueStats;
-}
-
-/** Reads a child's stdout line by line, keeping what arrives after a line for the next read. */
-class Lines {
-	private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
-	private buffered = "";
-	private readonly child: SpawnedProcess;
-
-	constructor(child: SpawnedProcess) {
-		assert.ok(child.stdout);
-		this.child = child;
-		this.reader = child.stdout.getReader();
-	}
-
-	async next(): Promise<string> {
-		while (!this.buffered.includes("\n")) {
-			const chunk = await this.reader.read();
-			if (chunk.done) assert.fail(`child exited: ${await readStreamText(this.child.stderr)}`);
-			this.buffered += new TextDecoder().decode(chunk.value);
-		}
-		const end = this.buffered.indexOf("\n");
-		const line = this.buffered.slice(0, end);
-		this.buffered = this.buffered.slice(end + 1);
-		return line;
-	}
-}
-
-const children: SpawnedProcess[] = [];
-const directories: string[] = [];
+const harness = createWriterQueueChaosHarness();
+const { database, startWriter, startHolder } = harness;
 
 afterEach(async () => {
-	try {
-		for (const child of children.splice(0)) {
-			if (process.platform !== "win32") child.kill("SIGCONT");
-			child.kill("SIGKILL");
-			await child.exited;
-		}
-	} finally {
-		for (const directory of directories.splice(0)) removeTempDirectory(directory);
-	}
+	await harness.cleanup();
 });
-
-function database(prefix: string): { readonly path: string; readonly writers: string } {
-	const directory = makeTempDirectory(prefix);
-	directories.push(directory);
-	const path = join(directory, "journal.sqlite");
-	const setup = new DatabaseSync(path);
-	setup.exec(
-		"PRAGMA journal_mode = WAL; CREATE TABLE writes(writer TEXT NOT NULL, seq INTEGER NOT NULL, payload BLOB)",
-	);
-	setup.close();
-	return { path, writers: `${path}-writers` };
-}
-
-async function startWriter(path: string, options: WriterOptions) {
-	const child = spawnProcess([process.execPath, WRITER, path, JSON.stringify(options)], {
-		stdin: "pipe",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	children.push(child);
-	const lines = new Lines(child);
-	assert.equal(await lines.next(), "ready");
-	return {
-		child,
-		pid: child.pid!,
-		go: () => child.stdin?.end("go\n"),
-		report: async () => JSON.parse(await lines.next()) as WriterReport,
-	};
-}
-
-/** An Atomic process holding the write lock mid-transaction, with one uncommitted row; `commit` lets it finish. */
-async function startHolder(path: string) {
-	const child = spawnProcess([process.execPath, HOLDER, path, "stdin"], {
-		stdin: "pipe",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	children.push(child);
-	const lines = new Lines(child);
-	assert.equal(await lines.next(), "locked");
-	return {
-		child,
-		pid: child.pid!,
-		async commit() {
-			child.stdin?.end("commit\n");
-			assert.equal(await lines.next(), "committed");
-			assert.equal(await child.exited, 0, await readStreamText(child.stderr));
-		},
-	};
-}
-
-function ticketsOf(writers: string, pid: number): string[] {
-	return existsSync(writers) ? readdirSync(writers).filter((name) => name.split("-")[1] === String(pid)) : [];
-}
-
-/** Waits until the process has refreshed its ticket at least once: it is past its first look at the queue. */
-async function untilWaiting(writers: string, pid: number): Promise<void> {
-	const ticket = await untilQueued(writers, pid);
-	const queuedAt = statSync(join(writers, ticket)).mtimeMs;
-	while (statSync(join(writers, ticket)).mtimeMs === queuedAt) await sleep(5);
-}
-
-/** Waits until the process has a ticket in the writers' queue: it is waiting for the lock. */
-async function untilQueued(writers: string, pid: number): Promise<string> {
-	for (;;) {
-		const [ticket] = ticketsOf(writers, pid);
-		if (ticket !== undefined) return ticket;
-		await sleep(5);
-	}
-}
-
-/** A reader that waits out a writer process still closing (its last checkpoint locks the file briefly). */
-function readerOf(path: string): DatabaseSync {
-	return new DatabaseSync(path, { readOnly: true, timeout: 10_000 });
-}
-
-function rows(path: string): { writer: string; seq: number }[] {
-	const reader = readerOf(path);
-	try {
-		return reader.prepare("SELECT writer, seq FROM writes ORDER BY rowid").all() as { writer: string; seq: number }[];
-	} finally {
-		reader.close();
-	}
-}
-
-function assertIntact(path: string): void {
-	const reader = readerOf(path);
-	try {
-		assert.deepEqual(
-			reader
-				.prepare("PRAGMA integrity_check")
-				.all()
-				.map((row) => row.integrity_check),
-			["ok"],
-		);
-	} finally {
-		reader.close();
-	}
-}
 
 function holderRowExists(path: string): boolean {
 	const reader = readerOf(path);
@@ -337,143 +171,6 @@ test.skipIf(process.platform === "win32")(
 		assert.deepEqual(
 			rows(path).map((row) => row.writer),
 			["behind", "stopped"],
-		);
-		assertIntact(path);
-	},
-	CHAOS_TEST_TIMEOUT_MS,
-);
-
-for (const settled of ["as soon as they queue", "once they wait"] as const)
-	test.skipIf(process.platform === "win32")(
-		`writers stalled together past a ticket's lifetime ${settled} keep their order when they continue`,
-		async () => {
-			const { path, writers } = database("queue-chaos-stalled-together-");
-			const holder = await startHolder(path);
-			const first = await startWriter(path, { label: "first" });
-			const second = await startWriter(path, { label: "second" });
-			for (const writer of [first, second]) {
-				writer.go();
-				if (settled === "once they wait") await untilWaiting(writers, writer.pid);
-				else await untilQueued(writers, writer.pid);
-			}
-			first.child.kill("SIGSTOP");
-			second.child.kill("SIGSTOP");
-			await sleep(STALL_PAST_TICKET_MS);
-			holder.child.kill("SIGKILL");
-			await holder.child.exited;
-			second.child.kill("SIGCONT");
-			await sleep(RESUME_GAP_MS);
-			first.child.kill("SIGCONT");
-			const reports = await Promise.all([first.report(), second.report()]);
-			assert.deepEqual(
-				reports.map((report) => report.committed),
-				[1, 1],
-			);
-			assert.deepEqual(
-				rows(path).map((row) => row.writer),
-				["first", "second"],
-			);
-			assertIntact(path);
-		},
-		CHAOS_TEST_TIMEOUT_MS,
-	);
-
-test.skipIf(process.platform === "win32")(
-	"a writer that runs again before another stalled with it keeps its place behind it through several of its rechecks",
-	async () => {
-		const { path, writers } = database("queue-chaos-stalled-starved-");
-		const holder = await startHolder(path);
-		const first = await startWriter(path, { label: "first" });
-		const second = await startWriter(path, { label: "second" });
-		for (const writer of [first, second]) {
-			writer.go();
-			await untilWaiting(writers, writer.pid);
-		}
-		first.child.kill("SIGSTOP");
-		second.child.kill("SIGSTOP");
-		await sleep(STALL_PAST_TICKET_MS);
-		holder.child.kill("SIGKILL");
-		await holder.child.exited;
-		second.child.kill("SIGCONT");
-		await sleep(STARVED_RESUME_MS);
-		first.child.kill("SIGCONT");
-		const reports = await Promise.all([first.report(), second.report()]);
-		assert.deepEqual(
-			reports.map((report) => report.committed),
-			[1, 1],
-		);
-		assert.deepEqual(
-			rows(path).map((row) => row.writer),
-			["first", "second"],
-		);
-		assertIntact(path);
-	},
-	CHAOS_TEST_TIMEOUT_MS,
-);
-
-test.skipIf(process.platform === "win32")(
-	"a writer that starts after a stall queues behind the writers the stall left waiting instead of overtaking them",
-	async () => {
-		const { path, writers } = database("queue-chaos-stalled-newcomer-");
-		const holder = await startHolder(path);
-		const waiting = await startWriter(path, { label: "waiting" });
-		const newcomer = await startWriter(path, { label: "newcomer" });
-		waiting.go();
-		await untilWaiting(writers, waiting.pid);
-		holder.child.kill("SIGSTOP");
-		waiting.child.kill("SIGSTOP");
-		await sleep(STALL_PAST_TICKET_MS);
-		holder.child.kill("SIGKILL");
-		await holder.child.exited;
-		newcomer.go();
-		await sleep(STARVED_RESUME_MS);
-		waiting.child.kill("SIGCONT");
-		const reports = await Promise.all([waiting.report(), newcomer.report()]);
-		assert.deepEqual(
-			reports.map((report) => report.committed),
-			[1, 1],
-		);
-		assert.deepEqual(
-			rows(path).map((row) => row.writer),
-			["waiting", "newcomer"],
-		);
-		assertIntact(path);
-	},
-	CHAOS_TEST_TIMEOUT_MS,
-);
-
-test.skipIf(process.platform === "win32")(
-	"a holder stalled with its waiters past the removal age keeps their tickets when it commits",
-	async () => {
-		const { path, writers } = database("queue-chaos-stalled-holder-removal-");
-		const holder = await startHolder(path);
-		const first = await startWriter(path, { label: "first" });
-		const second = await startWriter(path, { label: "second" });
-		for (const writer of [first, second]) {
-			writer.go();
-			await untilWaiting(writers, writer.pid);
-		}
-		const tickets = [first, second].map((writer) => ticketsOf(writers, writer.pid));
-		for (const child of [holder.child, first.child, second.child]) child.kill("SIGSTOP");
-		await sleep(STALL_PAST_REMOVAL_MS);
-		holder.child.kill("SIGCONT");
-		await holder.commit();
-		assert.deepEqual(
-			[first, second].map((writer) => ticketsOf(writers, writer.pid)),
-			tickets,
-			"the holder's release removed no ticket of a writer stalled with it",
-		);
-		second.child.kill("SIGCONT");
-		await sleep(RESUME_GAP_MS);
-		first.child.kill("SIGCONT");
-		const reports = await Promise.all([first.report(), second.report()]);
-		assert.deepEqual(
-			reports.map((report) => report.committed),
-			[1, 1],
-		);
-		assert.deepEqual(
-			rows(path).map((row) => row.writer),
-			["first", "second"],
 		);
 		assertIntact(path);
 	},

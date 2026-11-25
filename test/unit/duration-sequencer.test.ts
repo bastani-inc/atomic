@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { test } from "vitest";
 import { createVitest } from "vitest/node";
-import { durationDrift, testFileDurations } from "../../scripts/test-file-durations.js";
+import { durationDrift, reportBucket, testFileDurations } from "../../scripts/test-file-durations.js";
 import {
 	DurationSequencer,
 	FILE_OVERHEAD_MS,
 	SHARD_WORKERS,
+	selectRecordedDurations,
 	shardByDuration,
 	UNKNOWN_FILE_MS,
 } from "../helpers/duration-sequencer.js";
@@ -95,6 +96,73 @@ test("heavy files that each fit in a shard's share spread across the shards inst
 	assert.deepEqual(heavy, [3, 3, 3, 3]);
 });
 
+test("a serial file lighter than the heaviest parallel files never stacks onto a heavy parallel shard", () => {
+	const gate = "test/integration/interactive-event-loop-guard.test.ts";
+	const record: Record<string, number> = { [gate]: 70_000 };
+	for (let i = 0; i < 8; i++) record[`test/integration/heavy-${i}.test.ts`] = 85_000;
+	for (let i = 0; i < 80; i++) record[`test/integration/light-${String(i).padStart(2, "0")}.test.ts`] = 5_000;
+	const weight = (path: string) => (record[path] ?? UNKNOWN_FILE_MS) + FILE_OVERHEAD_MS;
+	const paths = Object.keys(record);
+	const count = 9;
+	const walls = Array.from({ length: count }, (_, idx) => {
+		const shard = shardByDuration(paths, record, idx + 1, count, new Set([gate]));
+		const parallel = shard.filter((path) => path !== gate);
+		return (
+			Math.max(0, ...parallel.map(weight), parallel.reduce((sum, path) => sum + weight(path), 0) / SHARD_WORKERS) +
+			(shard.includes(gate) ? weight(gate) : 0)
+		);
+	});
+	const gateShard = Array.from({ length: count }, (_, idx) =>
+		shardByDuration(paths, record, idx + 1, count, new Set([gate])),
+	).find((shard) => shard.includes(gate))!;
+	assert.equal(
+		gateShard.some((path) => path.includes("heavy-")),
+		false,
+		`serial gate stacked with a heavy parallel file: ${gateShard.join(", ")}`,
+	);
+	assert.ok(Math.max(...walls) <= 95_000, `serial stacking pushed max shard wall to ${Math.max(...walls)} ms`);
+});
+
+test("selectRecordedDurations overlays storage-conformance weights only when server backends are required", () => {
+	const sample = {
+		linux: {
+			"test/integration/storage-conformance-matrix.test.ts": 31_000,
+			"test/integration/storage-postgres.test.ts": 0,
+			"test/unit/a.test.ts": 5_000,
+		},
+		win32: {
+			"test/integration/storage-conformance-matrix.test.ts": 40_000,
+			"test/unit/a.test.ts": 7_000,
+		},
+		"storage-conformance": {
+			"test/integration/storage-conformance-matrix.test.ts": 135_000,
+			"test/integration/storage-postgres.test.ts": 73_000,
+		},
+	};
+	assert.equal(
+		selectRecordedDurations(sample, "linux", {})["test/integration/storage-conformance-matrix.test.ts"],
+		31_000,
+	);
+	assert.equal(
+		selectRecordedDurations(sample, "win32", {})["test/integration/storage-conformance-matrix.test.ts"],
+		40_000,
+	);
+	const server = selectRecordedDurations(sample, "linux", { ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED: "1" });
+	assert.equal(server["test/integration/storage-conformance-matrix.test.ts"], 135_000);
+	assert.equal(server["test/integration/storage-postgres.test.ts"], 73_000);
+	assert.equal(server["test/unit/a.test.ts"], 5_000);
+});
+
+test("reportBucket routes storage-conformance reports separately from linux and win32 reports", () => {
+	assert.equal(
+		reportBucket("/tmp/reports/test-diagnostics-storage-conformance-linux-x64-1/storage.json"),
+		"storage-conformance",
+	);
+	assert.equal(reportBucket("/tmp/reports/test-diagnostics-integration-tests-linux-x64-1/int.json"), "linux");
+	assert.equal(reportBucket("/tmp/reports/test-diagnostics-unit-tests-windows-x64-3/unit.json"), "win32");
+	assert.equal(reportBucket("/tmp/reports/unknown/report.json"), undefined);
+});
+
 /** Structural: each case starts real Vitest instances on a suite's config and globs its files. */
 const REAL_VITEST_TIMEOUT_MS = 60_000;
 
@@ -121,7 +189,7 @@ const CODING_AGENT = SHARDED_SUITES[2]!;
  * Shard counts to split each suite into. CI runs three to seven per suite and OS today; every file must run exactly
  * once for any count, so the check does not follow the workflow's numbers.
  */
-const SHARD_COUNTS = [2, 3, 4, 5, 7];
+const SHARD_COUNTS = [2, 3, 9, 12];
 
 async function suiteSpecifications(suite: ShardedSuite, shard: string) {
 	const vitest = await createVitest("test", {
