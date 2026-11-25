@@ -4,19 +4,19 @@
 
 ### Added
 
-- `read` and `search` of `history://` now observe like `bash`: they take the same `wait` policy (the owner's automatic yield, 10 seconds by default), scan a slow or remote store to completion instead of stopping at the 3-second time budget, and continue as a background history task (`history-<n>`) when they outlive their observation budget. The result arrives as a task completion notice; `{ action: "wait", id, budgetMs }` on either tool observes the task and `kill({ id })` stops it. Calls that finish within the budget return inline as before. History tasks use the session's own store connection and stop when the session closes or reloads.
+- Slow reads and searches of past sessions (`history://`) now keep running in the background instead of stopping after 3 seconds. If one is still running after 10 seconds (the default wait), the agent gets a task ID such as `history-3` and can keep working, and the result arrives later as a completion notice. The agent can wait for it with `search({ action: "wait", id: "history-3" })` or stop it with `kill({ id: "history-3" })` ([#6563](https://github.com/bastani-inc/atomic/pull/6563)).
 
 ### Changed
 
-- In the focused agent panel, `↓` on the last row wraps to the first row, `main` when it is listed, and scrolls back to the top. `↑` on the first row still returns to the prompt.
+- In the agent panel, `↓` on the last row now moves back to the first row and scrolls to the top. `↑` on the first row still returns to the prompt ([#6564](https://github.com/bastani-inc/atomic/pull/6564)).
 
 ### Fixed
 
-- Choosing `main` in the agent panel is remembered: the next `↓` from an empty prompt focuses `main` again instead of the last subagent row you had selected before it.
-- A subagent you open from `/tasks` by `Enter` or a click becomes the agent panel's remembered selection, so the next `↓` from an empty prompt focuses it and arrow keys continue from it.
-- Expanding the card of a subagent released while it waits now shows its task as the prompt and the tool calls of that attempt, with the call it waits on marked as waiting, instead of only its header. A woken subagent continues with no prompt of its own, so its card showed nothing although it promised the prompt, tool calls and full result. A card whose task names no prompt leaves the Prompt section out instead of showing `(none)`, and a card whose task saved nothing to show no longer promises more once folded again.
-- A compactor request that never reaches its endpoint now reports the underlying cause instead of only `fetch failed`, and names a DNS filter when the endpoint's host resolves to `0.0.0.0` or `::` ([#6561](https://github.com/bastani-inc/atomic/pull/6561)).
-- A backup of a relocated custom agent directory no longer takes over the parent workflow store just because its copy of the storage decision file reused the deleted original's inode ([#5242](https://github.com/bastani-inc/atomic/issues/5242)).
+- The agent panel now remembers when you choose `main`. The next `↓` from an empty prompt selects `main` again instead of the subagent you had selected before it ([#6564](https://github.com/bastani-inc/atomic/pull/6564)).
+- Opening a subagent from `/tasks` with `Enter` or a click now makes it the agent panel's remembered row, so the next `↓` from an empty prompt selects it ([#6564](https://github.com/bastani-inc/atomic/pull/6564)).
+- Expanding the card of a subagent that is waiting on a tool call now shows its task and its tool calls, with the waited-on call marked `◌`, instead of only the card's first line. A card with no prompt to show leaves out the Prompt section instead of showing `(none)`, and a card with nothing more to show no longer offers to expand ([#6562](https://github.com/bastani-inc/atomic/pull/6562)).
+- When the compaction model cannot reach its server, the notice now gives the reason instead of only `fetch failed`. If the server's host name resolves only to `0.0.0.0` or `::`, which is how DNS filters such as NextDNS, Pi-hole, and AdGuard block a domain, the notice says so and names the domain to allow ([#6561](https://github.com/bastani-inc/atomic/pull/6561)).
+- If you use a custom agent directory (`ATOMIC_CODING_AGENT_DIR`), move its parent folder, and then copy the agent directory as a backup, the backup no longer takes over the session store in the parent folder. This could happen when the file system gave the backup's files the ID of a deleted file ([#5242](https://github.com/bastani-inc/atomic/issues/5242)).
 
 ## [0.10.10] - 2026-11-24
 
