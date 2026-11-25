@@ -1,3 +1,4 @@
+import { lookup } from "node:dns/promises";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactorApi } from "@bastani/atomic-ai";
 import type { Usage } from "@bastani/atomic-ai/compat";
@@ -260,6 +261,66 @@ export interface CompactorRequest {
 	readonly stop?: AbortSignal;
 	readonly timeoutMs?: number;
 	readonly fetchFn?: typeof fetch;
+	/** Resolves a host name to its addresses; used only to explain a network failure. */
+	readonly resolveHost?: (hostname: string) => Promise<readonly string[]>;
+}
+
+const SINKHOLE_ADDRESSES = new Set(["0.0.0.0", "::", "0:0:0:0:0:0:0:0"]);
+const HOST_RESOLVE_MAX_WAIT_MS = 2_000;
+const CAUSE_CHAIN_MAX_DEPTH = 4;
+
+async function resolveHostAddresses(hostname: string): Promise<readonly string[]> {
+	const addresses = await lookup(hostname, { all: true });
+	return addresses.map((entry) => entry.address);
+}
+
+interface ErrorWithCause {
+	readonly message?: unknown;
+	readonly code?: unknown;
+	readonly cause?: unknown;
+}
+
+/** `fetch failed` alone names no reason; the reason is on the cause chain (`ENOTFOUND`, a TLS alert, a refused connection). */
+function describeWithCauses(error: Error): string {
+	const parts = [error.message || error.name];
+	let cause: unknown = error.cause;
+	for (let depth = 0; depth < CAUSE_CHAIN_MAX_DEPTH && typeof cause === "object" && cause !== null; depth++) {
+		const { message, code, cause: next } = cause as ErrorWithCause;
+		const text = typeof message === "string" ? (message.trim().split("\n")[0] ?? "") : "";
+		const label = typeof code === "string" && !text.includes(code) ? `${code}: ${text}` : text;
+		if (label && !parts.includes(label)) parts.push(label);
+		cause = next;
+	}
+	return parts.join(": ");
+}
+
+/** Names a DNS filter as the reason when the endpoint's host resolves only to an unroutable sinkhole address. */
+async function sinkholeHint(
+	url: string,
+	resolveHost: (hostname: string) => Promise<readonly string[]>,
+): Promise<string> {
+	let hostname: string;
+	try {
+		hostname = new URL(url).hostname;
+	} catch {
+		return "";
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const addresses = await Promise.race([
+			resolveHost(hostname),
+			new Promise<readonly string[]>((resolve) => {
+				timer = setTimeout(() => resolve([]), HOST_RESOLVE_MAX_WAIT_MS);
+				timer.unref?.();
+			}),
+		]);
+		if (addresses.length === 0 || !addresses.every((address) => SINKHOLE_ADDRESSES.has(address))) return "";
+		return ` (${hostname} resolves to ${addresses[0]}, the address DNS filters such as NextDNS, Pi-hole or AdGuard return for blocked domains; allow ${hostname} in the resolver)`;
+	} catch {
+		return "";
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 function trimTrailingSlashes(url: string): string {
@@ -360,7 +421,11 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 			signal,
 		});
 	} catch (error) {
-		return failure(error instanceof Error ? error : String(error), { code: "network-error" });
+		if (!(error instanceof Error) || signal.aborted) {
+			return failure(error instanceof Error ? error : String(error), { code: "network-error" });
+		}
+		const hint = await sinkholeHint(url, request.resolveHost ?? resolveHostAddresses);
+		return failure(`${describeWithCauses(error)}${hint}`, { code: "network-error" });
 	}
 	if (!response.ok) {
 		return failure(await httpErrorMessage(response, secrets), { code: "http-error", status: response.status });
