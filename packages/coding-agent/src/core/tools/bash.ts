@@ -16,7 +16,8 @@ import {
 } from "../../utils/child-process.ts";
 import { getShellConfigAsync, getShellEnvAsync, spawnShellProcess } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { formatTimeoutSeconds, longerRunAdvice, MAX_COMMAND_TIMEOUT_SECONDS } from "../tasks/cancel-reason.js";
+import { formatTimeoutSeconds } from "../tasks/cancel-reason.js";
+import { MAX_LIVE_COMMANDS } from "../tasks/command-capacity.ts";
 import type { WaitPolicy } from "../tasks/contracts.js";
 import { validateTaskHeartbeatMs } from "../tasks/heartbeat-notice.js";
 import { stripLeadingCdCommandAsync } from "./bash-leading-cd.ts";
@@ -42,6 +43,7 @@ import {
 } from "./render-utils.ts";
 import { expandShellInternalUrls, type InternalResourceContext } from "./resource-selectors.ts";
 import { invalidateNativeSearchCache } from "./search-native.ts";
+import { startShellDeadline } from "./shell-deadline.ts";
 import { ShellTimeoutError } from "./shell-errors.ts";
 import { addShellOutputPreview, formatTruncationNotice, rebuildShellWaitResult } from "./shell-task-render.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -68,7 +70,11 @@ const bashBaseSchema = Type.Object(
 	{
 		command: Type.String({ description: "Shell command to execute." }),
 		env: Type.Optional(envSchema),
-		timeout: Type.Optional(Type.Number({ description: "Timeout in seconds." })),
+		timeout: Type.Optional(
+			Type.Number({
+				description: "Optional deadline in seconds. Omitted, the command runs until it finishes or is stopped.",
+			}),
+		),
 		wait: Type.Optional(
 			Type.Unsafe<WaitPolicy>({
 				type: "object",
@@ -83,7 +89,7 @@ const bashBaseSchema = Type.Object(
 				required: ["kind"],
 				additionalProperties: false,
 				description:
-					"Observation policy, independent of execution timeout. Omit for owner-configured automatic yield (default 10s).",
+					"Observation policy; it never stops the command. Omit for owner-configured automatic yield (default 10s).",
 			}),
 		),
 		cwd: Type.Optional(Type.String({ description: "Working directory for the command." })),
@@ -136,9 +142,10 @@ export const bashToolSystemPromptContribution = Object.freeze({
 	snippet: "Execute a shell command.",
 	guidelines: Object.freeze([
 		"You can inspect ATOMIC_* or PI_* environment variables for current model and session details.",
-		'Use { action: "wait", id: taskId } to observe an existing shell task with the owner policy. Avoid repeated short polls; await completion notifications when no dependent work is blocked. Never relaunch a yielded command. Waiting does not extend execution timeout or owner lifetime.',
+		'Use { action: "wait", id: taskId } to observe an existing shell task with the owner policy. Avoid repeated short polls; await completion notifications when no dependent work is blocked. Never relaunch a yielded command. Waiting never stops a command or changes when it stops.',
 		"For ordinary commands, omit wait to use the owner's observation policy (normally 10s). Do not routinely request one-second waits: premature yields add tool calls without making the command faster. Use a short budget only for a concrete responsiveness need, or explicit background observation when you have independent work to do. Explicit budgets, including zero for polling, remain available.",
-		"Choose foreground or background shell observation as needed without asking the user each time. Background yields after admission; foreground waits for its optional budget then the same command continues in background. Omitted wait uses owner-configured automatic background yield (default 10s). Observation never changes the execution timeout, which stops the command. Background requires a supported task owner; unbound foreground waits until completion regardless of budget.",
+		"Choose foreground or background shell observation as needed without asking the user each time. Background yields after admission; foreground waits for its optional budget then the same command continues in background. Omitted wait uses owner-configured automatic background yield (default 10s). Observation never stops the command. Background requires a supported task owner; unbound foreground waits until completion regardless of budget.",
+		`A command has no time limit: it runs until it exits, kill({ id: taskId }) stops it, or this session ends. Set timeout (in seconds) only when it must stop by a deadline; timeout: 600 stops it after 10 minutes. Up to ${MAX_LIVE_COMMANDS} commands run at once in a session; at that limit a new command is refused until one finishes or is stopped.`,
 	] as const),
 } as const);
 export type BashToolInput = Static<typeof bashSchema>;
@@ -151,26 +158,24 @@ export interface BashToolDetails {
 	requestedTimeoutSeconds?: number;
 	wallTimeMs?: number;
 }
-const DEFAULT_TIMEOUT_SECONDS = 300,
-	MAX_TIMEOUT_SECONDS = MAX_COMMAND_TIMEOUT_SECONDS;
 export function validateExplicitTimeoutSeconds(timeout: number): void {
-	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_TIMEOUT_SECONDS)
-		throw new Error(
-			`Invalid timeout ${String(timeout)}: timeout must be a finite number greater than 0 and no more than ${MAX_TIMEOUT_SECONDS} seconds`,
-		);
+	if (!Number.isFinite(timeout) || timeout <= 0)
+		throw new Error(`Invalid timeout ${String(timeout)}: timeout must be a finite number of seconds greater than 0`);
 }
 const STILL_RUNNING = (taskId: string) => `Command is still running (task ${taskId}).`;
 
 /**
- * The text a launch that continues in the background ends with: its task, and the execution timeout that stops it
- * whether or not anyone waits on it, so a long run is not stopped by a default nobody saw (#4639).
+ * The text a launch that continues in the background ends with: its task, and what stops it. A command has no time
+ * limit unless its launch set a timeout, which then stops it whether or not anyone waits on it (#4639).
  */
-export function stillRunningReceipt(taskId: string, timeoutSeconds: number): string {
-	return `${STILL_RUNNING(taskId)} Its execution timeout stops it after ${formatTimeoutSeconds(timeoutSeconds * 1000)}; ${longerRunAdvice(timeoutSeconds * 1000, "launch")}`;
+export function stillRunningReceipt(taskId: string, timeoutSeconds: number | undefined): string {
+	return timeoutSeconds === undefined
+		? `${STILL_RUNNING(taskId)} It has no time limit: it runs until it exits, kill stops it, or this session ends.`
+		: `${STILL_RUNNING(taskId)} Its timeout stops it after ${formatTimeoutSeconds(timeoutSeconds * 1000)}.`;
 }
 
-function normalizeTimeoutSeconds(timeout: number | undefined): number {
-	if (timeout === undefined) return DEFAULT_TIMEOUT_SECONDS;
+function normalizeTimeoutSeconds(timeout: number | undefined): number | undefined {
+	if (timeout === undefined) return undefined;
 	validateExplicitTimeoutSeconds(timeout);
 	// The nearest whole millisecond, and at least one: fractional seconds are honoured, not floored.
 	return Math.max(1, Math.round(timeout * 1000)) / 1000;
@@ -268,15 +273,15 @@ export function createLocalBashOperations(options?: {
 			});
 			// Set when the deadline fires, with the shell's exit time if it had already exited.
 			let deadline: { timeoutSeconds: number; elapsedMs: number; shellExitedAfterMs?: number } | undefined;
-			let timeoutHandle: NodeJS.Timeout | undefined;
+			let stopDeadline: (() => void) | undefined;
 			const waitAbort = new AbortController();
 			const onAbort = () => {
 				waitAbort.abort();
 				shellProcess.stop();
 			};
 			try {
-				if (timeout !== undefined && timeout > 0) {
-					timeoutHandle = setTimeout(() => {
+				if (timeout !== undefined) {
+					stopDeadline = startShellDeadline(timeout * 1000, () => {
 						deadline = {
 							timeoutSeconds: timeout,
 							elapsedMs: Math.round(performance.now() - startedAt),
@@ -287,7 +292,7 @@ export function createLocalBashOperations(options?: {
 						// processes holding the pipes, and on Windows the shell's job does. Without the job, Windows
 						// cannot find them once the shell pid is gone.
 						shellProcess.stop();
-					}, timeout * 1000);
+					});
 				}
 				child.stdout?.on("data", (data: Buffer) => onData(data, "stdout"));
 				child.stderr?.on("data", (data: Buffer) => onData(data, "stderr"));
@@ -331,7 +336,7 @@ export function createLocalBashOperations(options?: {
 				return { exitCode: resolvedExitCode };
 			} finally {
 				shellProcess.finish();
-				if (timeoutHandle) clearTimeout(timeoutHandle);
+				stopDeadline?.();
 				if (signal) signal.removeEventListener("abort", onAbort);
 			}
 		},
@@ -479,7 +484,7 @@ export function createBashToolDefinition(
 		detachable: (args) => args.action === "wait" && args.budgetMs === undefined,
 		label: "bash",
 		description:
-			'Execute a shell command with optional PTY handling and foreground/background observation, or observe an existing task with action: "wait", id, and optional budgetMs. Omitted command wait uses owner policy (default 10s). Observation never changes execution timeout. Background and existing-task waits require a supported task owner; unbound foreground execution waits until completion.',
+			'Execute a shell command with optional PTY handling and foreground/background observation, or observe an existing task with action: "wait", id, and optional budgetMs. Omitted command wait uses owner policy (default 10s). A command runs until it exits or is stopped unless timeout sets a deadline in seconds; observation never stops it. A background command can run indefinitely, such as a dev server; stop it with kill. Background and existing-task waits require a supported task owner; unbound foreground execution waits until completion.',
 		promptSnippet: bashToolSystemPromptContribution.snippet,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		promptGuidelines: exposeSessionEnvironment ? [...bashToolSystemPromptContribution.guidelines] : undefined,
@@ -658,7 +663,7 @@ export function createBashToolDefinition(
 			const startedAt = Date.now();
 			const withTiming = (details: BashToolDetails | undefined): BashToolDetails => ({
 				...details,
-				timeoutSeconds: timeout,
+				...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
 				...(bashCommand.timeout !== undefined && bashCommand.timeout !== timeout
 					? { requestedTimeoutSeconds: bashCommand.timeout }
 					: {}),

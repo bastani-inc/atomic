@@ -361,24 +361,32 @@ for (const factory of [createBashToolDefinition, createPowerShellToolDefinition]
 }
 
 test.runIf(process.platform !== "win32")(
-	"a background command's receipt names the execution timeout that will stop it (#4639)",
+	"a background command's receipt says what will stop it: its timeout, or nothing but an exit or a stop (#4639)",
 	async () => {
 		const owner = host();
 		try {
 			const tool = createBashToolDefinition(process.cwd(), { taskOwner: owner.ownerBinding });
-			const result = await tool.execute("launch", {
+			const timed = await tool.execute("launch", {
 				command: "read value",
 				timeout: 2,
 				wait: { kind: "background" },
 			});
-			const id = result.details?.observation?.taskId;
-			assert.ok(id);
-			const text = result.content[0].text;
+			const timedId = timed.details?.observation?.taskId;
+			assert.ok(timedId);
 			assert.ok(
-				text.endsWith(
-					`Command is still running (task ${id}). Its execution timeout stops it after 2 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.`,
+				timed.content[0].text.endsWith(
+					`Command is still running (task ${timedId}). Its timeout stops it after 2 seconds.`,
 				),
-				text,
+				timed.content[0].text,
+			);
+			const open = await tool.execute("launch", { command: "read value", wait: { kind: "background" } });
+			const openId = open.details?.observation?.taskId;
+			assert.ok(openId);
+			assert.ok(
+				open.content[0].text.endsWith(
+					`Command is still running (task ${openId}). It has no time limit: it runs until it exits, kill stops it, or this session ends.`,
+				),
+				open.content[0].text,
 			);
 		} finally {
 			await owner.close("session-close");

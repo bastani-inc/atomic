@@ -333,7 +333,7 @@ test("a shell its execution timeout stopped names the timeout's length and how t
 	assert.match(notice, /Stop reason: execution-timeout \(timed out after 300 seconds\)\n/);
 	assert.match(
 		notice,
-		/Its execution timeout stopped it after 300 seconds, before it finished\. If its result is still needed, run it again with a larger timeout\.$/,
+		/Its execution timeout stopped it after 300 seconds, before it finished\. If its result is still needed, run it again with a larger timeout, or with none so it runs until it finishes\.$/,
 	);
 	assert.doesNotMatch(notice, /Do not restart it/);
 });
@@ -361,26 +361,21 @@ test("a shell its execution timeout stopped, with no recorded limit, still says 
 	assert.match(notice, /^Background shell timed out: /);
 	assert.match(
 		notice,
-		/Its execution timeout stopped it, before it finished\. If its result is still needed, run it again with a larger timeout\.$/,
+		/Its execution timeout stopped it, before it finished\. If its result is still needed, run it again with a larger timeout, or with none so it runs until it finishes\.$/,
 	);
 });
 
-test("a shell stopped at the longest execution timeout is told to split its run (#4639)", () => {
-	const shell = taskRecord("max-timeout-shell", "command");
+test("a shell a day-long timeout stopped is not told to split its run: a timeout has no maximum (#4639)", () => {
 	const notice = formatTaskCompletion(
-		{ ...envelope, result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 3_600_000 } },
-		shell,
+		{ ...envelope, result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 86_400_000 } },
+		taskRecord("day-timeout-shell", "command"),
 	);
-	assert.match(notice, /^Background shell timed out after 3600 seconds: /);
+	assert.match(notice, /^Background shell timed out after 86400 seconds: /);
 	assert.match(
 		notice,
-		/Its execution timeout stopped it after 3600 seconds, before it finished\. If its result is still needed, 3600 seconds is the longest timeout; split a longer run into shorter commands\.$/,
+		/Its execution timeout stopped it after 86400 seconds, before it finished\. If its result is still needed, run it again with a larger timeout, or with none so it runs until it finishes\.$/,
 	);
-	const justBelow = formatTaskCompletion(
-		{ ...envelope, result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 3_599_000 } },
-		shell,
-	);
-	assert.match(justBelow, /run it again with a larger timeout\.$/);
+	assert.doesNotMatch(notice, /split/);
 });
 
 test("a finished task's notice names no stop reason (#4639)", () => {

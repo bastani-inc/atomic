@@ -4,11 +4,12 @@
 
 ### Added
 
-- Slow reads and searches of past sessions (`history://`) now keep running in the background instead of stopping after 3 seconds. If one is still running after 10 seconds (the default wait), the agent gets a task ID such as `history-3` and can keep working, and the result arrives later as a completion notice. The agent can wait for it with `search({ action: "wait", id: "history-3" })` or stop it with `kill({ id: "history-3" })` ([#6563](https://github.com/bastani-inc/atomic/pull/6563)).
+- Slow reads and searches of past sessions (`history://`) now keep running in the background instead of stopping after 3 seconds. If one is still running after 10 seconds (the default wait), the agent gets a task ID such as `history-3` and can keep working, and the result arrives later as a completion notice. It has no time limit: it runs until it finishes, the agent stops it, or the session closes; a result past the size limits still ends with a `continue with` link. The agent can wait for it with `search({ action: "wait", id: "history-3" })` or stop it with `kill({ id: "history-3" })`. A session runs at most 4 at once; a fifth is refused with a message saying how to free a place ([#6563](https://github.com/bastani-inc/atomic/pull/6563), [#6574](https://github.com/bastani-inc/atomic/pull/6574)).
 
 ### Changed
 
 - In the agent panel, `↓` on the last row now moves back to the first row and scrolls to the top. `↑` on the first row still returns to the prompt ([#6564](https://github.com/bastani-inc/atomic/pull/6564)).
+- `bash` and `powershell` commands no longer stop after 5 minutes when no `timeout` is given. A command runs until it finishes, someone stops it with `kill` or `/tasks`, or its session closes, so long builds, test runs, dev servers, file watchers and tunnels keep going. `timeout` still sets a deadline in seconds, now with no upper limit instead of 1 hour, and the advice to split longer runs into shorter commands is gone. To guard against runaway launches, a session runs at most 64 commands at once, its subagents' shells included; at that limit a new command is refused with a message saying how to free a place, and nothing running is stopped. See [Background shells](docs/background-tasks.md#background-shells) ([#6574](https://github.com/bastani-inc/atomic/pull/6574)).
 
 ### Fixed
 

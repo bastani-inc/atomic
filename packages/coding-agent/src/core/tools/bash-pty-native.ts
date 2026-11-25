@@ -6,9 +6,12 @@ import type { OperationId, TaskId, WaitOutcome, WaitPolicy } from "../tasks/cont
 import type { CommandLaunchOrigin, OwnerLease, TaskLease, TaskSupervisor, WaitLease } from "../tasks/supervisor.js";
 import { OutputAccumulator, type OutputAccumulatorOptions } from "./output-accumulator.ts";
 import { completeUtf8PrefixLength } from "./persisted-output-file.ts";
+import { startShellDeadline } from "./shell-deadline.ts";
 import { EMPTY_OUTPUT_TEXT, TaskToolError, waitResultTail } from "./shell-task-status.ts";
 
 const NATIVE_PACKAGE = "@bastani/atomic-natives";
+/** The longest timeout the native PTY takes, in milliseconds (a `u32`); a longer one is kept here instead. */
+const MAX_NATIVE_PTY_TIMEOUT_MS = 0xffff_ffff;
 
 interface NativePtyRunResult {
 	exitCode?: number;
@@ -166,7 +169,7 @@ export async function waitForSupervisedCommand(
 		if (observed.value.kind === "yielded" && BigInt(nextOffset) > BigInt(yieldedOutputOffsets.get(task) ?? "0"))
 			yieldedOutputOffsets.set(task, nextOffset);
 		const terminal = observed.value.kind === "settled" ? observed.value.result : undefined;
-		// A command its execution timeout stopped did not finish: the wait that sees it reports an error (#4639).
+		// A command its timeout stopped did not finish: the wait that sees it reports an error (#4639).
 		const timedOut = terminal?.kind === "cancelled" && terminal.cause === "execution-timeout";
 		return {
 			...(timedOut ? { isError: true } : {}),
@@ -268,7 +271,13 @@ export async function executeSupervisedCommand(
 		options.signal,
 		context.launchOrigin,
 	);
-	if (!started.ok) throw new Error(`${started.error.code}: ${started.error.message}`);
+	if (!started.ok)
+		throw new Error(
+			// The refusal at the live-command limit is written for the reader as it is.
+			started.error.code === "CapacityExhausted"
+				? started.error.message
+				: `${started.error.code}: ${started.error.message}`,
+		);
 	const task = started.value;
 	context.onCommandStarted?.(context.supervisor.taskReference(task).taskId);
 	const abort = () => {
@@ -356,6 +365,16 @@ export async function executeNativePty(
 		} catch {}
 	};
 	if (options.signal) options.signal.addEventListener("abort", onAbort, { once: true });
+	const timeoutMs = options.timeout === undefined ? undefined : Math.max(1, Math.floor(options.timeout * 1000));
+	const nativeTimeoutMs = timeoutMs !== undefined && timeoutMs <= MAX_NATIVE_PTY_TIMEOUT_MS ? timeoutMs : undefined;
+	let timedOutHere = false;
+	const stopDeadline =
+		timeoutMs !== undefined && nativeTimeoutMs === undefined
+			? startShellDeadline(timeoutMs, () => {
+					timedOutHere = true;
+					onAbort();
+				})
+			: undefined;
 	try {
 		const result = await session.start(
 			{
@@ -366,7 +385,7 @@ export async function executeNativePty(
 						createChildProcessEnvironment({ TERM: "xterm-256color" }, { ...shellEnv, ...(options.env ?? {}) }),
 					).filter((entry): entry is [string, string] => entry[1] !== undefined),
 				),
-				timeoutMs: options.timeout !== undefined ? Math.max(1, Math.floor(options.timeout * 1000)) : undefined,
+				timeoutMs: nativeTimeoutMs,
 				cols: options.cols ?? 120,
 				rows: options.rows ?? 40,
 				shell: shellConfig.shell,
@@ -378,10 +397,12 @@ export async function executeNativePty(
 				if (chunk) options.onData(Buffer.from(chunk));
 			},
 		);
-		if (options.signal?.aborted || result.cancelled) throw new Error("aborted");
-		if (result.timedOut ?? result.timed_out) throw new Error(`timeout:${options.timeout}`);
+		if (options.signal?.aborted) throw new Error("aborted");
+		if (timedOutHere || (result.timedOut ?? result.timed_out)) throw new Error(`timeout:${options.timeout}`);
+		if (result.cancelled) throw new Error("aborted");
 		return { exitCode: result.exitCode ?? result.exit_code ?? null };
 	} finally {
+		stopDeadline?.();
 		if (options.signal) options.signal.removeEventListener("abort", onAbort);
 	}
 }

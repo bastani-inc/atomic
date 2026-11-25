@@ -38,18 +38,3 @@ export function cancelReasonText(result: CancelledTaskResult): string {
 		return `timed out after ${formatTimeoutSeconds(result.executionTimeoutMs)}`;
 	return CANCEL_CAUSE_TEXT[result.cause];
 }
-
-/** The longest execution timeout a shell command may ask for, in seconds. */
-export const MAX_COMMAND_TIMEOUT_SECONDS = 3600;
-
-/**
- * What to do about an execution timeout that is too short, for the text that names it (#4639). Advice to ask for a
- * larger timeout stops at the longest one, where the only way on is to split the run.
- */
-export function longerRunAdvice(timeoutMs: number | undefined, action: "launch" | "rerun"): string {
-	if (timeoutMs !== undefined && timeoutMs >= MAX_COMMAND_TIMEOUT_SECONDS * 1000)
-		return `${MAX_COMMAND_TIMEOUT_SECONDS} seconds is the longest timeout; split a longer run into shorter commands.`;
-	return action === "launch"
-		? `launch it with a larger timeout (up to ${MAX_COMMAND_TIMEOUT_SECONDS} seconds) for a longer run.`
-		: "run it again with a larger timeout.";
-}

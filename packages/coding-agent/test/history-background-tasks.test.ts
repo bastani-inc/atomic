@@ -1,15 +1,11 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION, type SessionStore } from "../src/core/storage/session/types.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
-import {
-	type HistoryTaskCompletionMessage,
-	HistoryTaskRegistry,
-	MAX_ACTIVE_HISTORY_TASKS,
-} from "../src/core/tools/history-tasks.js";
+import { type HistoryTaskCompletionMessage, HistoryTaskRegistry } from "../src/core/tools/history-tasks.js";
 import { createKillToolDefinition } from "../src/core/tools/kill.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
@@ -24,6 +20,13 @@ const ROUTER_TIME_BUDGET_MS = 40;
 const OBSERVATION_BUDGET_MS = 150;
 /** How long a waiting observation may take before the test calls it hung. */
 const SETTLE_WAIT_MS = 5_000;
+/** How long a background history task used to scan before it stopped with a continuation. */
+const OLD_TIME_LIMIT_MS = 300_000;
+/** Entries in a session that takes several store reads to scan. */
+const LONG_SESSION_ENTRIES = 1_000;
+/** The refusal past the history tasks a session runs at once, worded as the shell commands' limit is. */
+const LIMIT_MESSAGE =
+	"4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.";
 
 function entry(seq: number, text: string): SessionEntry {
 	const at = BASE + seq * 1_000;
@@ -36,15 +39,22 @@ function entry(seq: number, text: string): SessionEntry {
 	};
 }
 
-/** A store whose entry reads wait for `open()` while the gate is closed, as a remote store that answers slowly. */
-async function gatedStore(): Promise<{ store: SessionStore; open: () => void }> {
+/**
+ * A store whose entry reads wait for `open()` while the gate is closed, as a remote store that answers slowly. The
+ * first `answered` reads pass the gate.
+ */
+async function gatedStore(
+	entries: SessionEntry[] = [entry(1, "first line"), entry(2, "the NEEDLE is here"), entry(3, "last line")],
+	answered = 0,
+): Promise<{ store: SessionStore; open: () => void; reads: () => number }> {
 	const base = new MemorySessionStore();
 	await base.create(
 		{ id: "slow", version: SESSION_FORMAT_VERSION, createdAt: new Date(BASE).toISOString(), cwd: PROJECT },
-		[entry(1, "first line"), entry(2, "the NEEDLE is here"), entry(3, "last line")],
+		entries,
 	);
 	let gate: (() => void) | undefined;
 	let opened = false;
+	let reads = 0;
 	const waiting = new Promise<void>((resolve) => {
 		gate = resolve;
 	});
@@ -53,7 +63,7 @@ async function gatedStore(): Promise<{ store: SessionStore; open: () => void }> 
 			if (key === "searchIndex") return undefined;
 			if (key === "readEntryRange")
 				return async (...args: Parameters<MemorySessionStore["readEntryRange"]>) => {
-					if (!opened) await waiting;
+					if (!opened && ++reads > answered) await waiting;
 					return target.readEntryRange(...args);
 				};
 			const value = Reflect.get(target, key, target);
@@ -66,6 +76,7 @@ async function gatedStore(): Promise<{ store: SessionStore; open: () => void }> 
 			opened = true;
 			gate?.();
 		},
+		reads: () => reads,
 	};
 }
 
@@ -114,6 +125,23 @@ function tools(store: SessionStore) {
 					ctx as never,
 				),
 			),
+	};
+}
+
+/**
+ * Moves a scan's clocks onto fake time: the timers a call sets, the clock its time budget reads, and the timeout
+ * signals that end its store reads (Node runs those on timers of its own, which fake timers leave alone).
+ */
+function useFakeClock(): () => void {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), ms);
+		return controller.signal;
+	});
+	return () => {
+		timeout.mockRestore();
+		vi.useRealTimers();
 	};
 }
 
@@ -207,22 +235,82 @@ describe("background history tasks", () => {
 		assert.equal(t.notices.length, 0);
 	});
 
-	it(`runs at most ${MAX_ACTIVE_HISTORY_TASKS} history tasks at once; a call past them runs inline`, async () => {
+	it("runs at most 4 history tasks at once and refuses the next with a message, until one is stopped", async () => {
 		const { store, open } = await gatedStore();
 		const t = tools(store);
-		for (let index = 0; index < MAX_ACTIVE_HISTORY_TASKS; index++)
-			taskIdOf(
-				await t.search({ pattern: "NEEDLE", paths: "history://sessions/slow", wait: { kind: "background" } }),
+		const ids: string[] = [];
+		for (let index = 0; index < 4; index++)
+			ids.push(
+				taskIdOf(
+					await t.search({ pattern: "NEEDLE", paths: "history://sessions/slow", wait: { kind: "background" } }),
+				),
 			);
-		const extra = await t.search({
-			pattern: "NEEDLE",
-			paths: "history://sessions/slow",
-			wait: { kind: "background" },
-		});
-		assert.equal((extra.details as { historyTask?: unknown } | undefined)?.historyTask, undefined);
-		assert.match(t.textOf(extra), /time budget ran out/);
+		await assert.rejects(
+			t.search({ pattern: "NEEDLE", paths: "history://sessions/slow", wait: { kind: "background" } }),
+			{ message: LIMIT_MESSAGE },
+		);
+		await assert.rejects(t.read({ path: "history://sessions/slow:1-3" }), { message: LIMIT_MESSAGE });
+		await t.kill(ids[0]!);
+		taskIdOf(await t.search({ pattern: "NEEDLE", paths: "history://sessions/slow", wait: { kind: "background" } }));
 		open();
 		await t.registry.close();
+	});
+
+	it("a history task has no time limit: it scans on past the old 300 seconds and delivers its whole result", async () => {
+		// Long enough to take several reads. The first is answered, so the scan has started its time budget when the
+		// next one waits.
+		const { store, open, reads } = await gatedStore(
+			[
+				...Array.from({ length: LONG_SESSION_ENTRIES - 1 }, (_, index) => entry(index + 1, `filler ${index + 1}`)),
+				entry(LONG_SESSION_ENTRIES, "the NEEDLE is here"),
+			],
+			1,
+		);
+		const t = tools(store);
+		const restoreClock = useFakeClock();
+		try {
+			const launched = await t.search({
+				pattern: "NEEDLE",
+				paths: "history://sessions/slow",
+				wait: { kind: "background" },
+			});
+			taskIdOf(launched);
+			assert.match(
+				t.textOf(launched),
+				/It has no time limit: it runs until it finishes, kill stops it, or this session ends/,
+			);
+			while (reads() < 2) await new Promise((resolve) => setImmediate(resolve));
+			await vi.advanceTimersByTimeAsync(OLD_TIME_LIMIT_MS + 60_000);
+			open();
+			await t.noticeArrived;
+		} finally {
+			restoreClock();
+		}
+		const [notice] = t.notices;
+		assert.equal(notice?.details.notification.status, "completed");
+		assert.match(
+			notice?.content ?? "",
+			new RegExp(`^history://sessions/slow:${LONG_SESSION_ENTRIES}: the NEEDLE is here$`, "m"),
+		);
+		assert.doesNotMatch(notice?.content ?? "", /time budget/);
+	});
+
+	it("kill stops a history task that has run past the old 300 seconds", async () => {
+		const { store } = await gatedStore();
+		const t = tools(store);
+		const restoreClock = useFakeClock();
+		let id: string;
+		try {
+			id = taskIdOf(
+				await t.search({ pattern: "NEEDLE", paths: "history://sessions/slow", wait: { kind: "background" } }),
+			);
+			await vi.advanceTimersByTimeAsync(OLD_TIME_LIMIT_MS + 60_000);
+		} finally {
+			restoreClock();
+		}
+		assert.equal(taskIdOf(await t.search({ action: "wait", id, budgetMs: 0 })), id, "it is still running");
+		assert.match(await t.kill(id), new RegExp(`History search ${id} was stopped`));
+		assert.equal(t.notices.length, 0);
 	});
 
 	it("refuses a malformed wait like bash does", async () => {

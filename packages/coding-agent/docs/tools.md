@@ -134,11 +134,29 @@ Returns the replacement count plus `details` (`diff`, unified `patch`, and `firs
 - **Observation and background yield (`wait`, `action: "wait"`).** `wait` controls how long the tool observes output and never changes the execution `timeout`. When `wait` is omitted in interactive and standard sessions, Atomic yields automatically after 10 seconds by default while the command keeps running in the background. Pass `wait: { kind: "background" }` to return immediately with the task ID after the command starts, or `wait: { kind: "foreground", budgetMs }` to wait up to `budgetMs` milliseconds before yielding. Call `{ action: "wait", id, budgetMs? }` to observe an owned background task later (omitting `budgetMs` uses the default yield budget). Background mode and task waits require sessions with background task support; standalone SDK sessions without background task support wait until the command finishes.
 - **`cwd` and leading `cd`.** Sets the working directory for the command. If `cwd` is omitted, a leading `cd <path> && ...` or `cd <path>; ...` sets the working directory when `<path>` is a single literal word (optionally single- or double-quoted, with no variables, globs, or leading `-`). Unquoted `~` and `~/` expand to your home directory. Atomic skips stripping when `CDPATH` applies to a non-dot relative path or the local directory cannot be entered.
 - **`env` and session variables.** Adds or overrides environment variables for the command. Every key in `env` must match `^[A-Za-z_][A-Za-z0-9_]*$`; invalid names fail before spawning. Atomic automatically sets `ATOMIC_SESSION_ID`, `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL` (plus legacy `PI_*` aliases) and strips any caller-supplied values for those keys as well as `ATOMIC_SESSION_FILE` and `PI_SESSION_FILE`.
-- **`timeout`.** Execution deadline in seconds (default `300`, range `(0, 3600]`, rounded to the nearest millisecond with a 1 ms minimum; invalid values fail before running). The timer keeps running if a command continues in the background; see [Background shells](/background-tasks#background-shells).
+- **How long a command runs, and `timeout`.** A command has no time limit: it runs until it finishes, someone stops it (`kill` or `/tasks`), or the session closes. How long the call waits (`wait`) never stops it. To give it a deadline, pass `timeout` in seconds: `{ "command": "npm run e2e", "timeout": 7200 }` stops it after 2 hours. Any number greater than `0` works, with no upper limit; zero, negative, or non-numeric values are refused before the command starts. Before this release a command stopped after 300 seconds by default and could ask for 3600 seconds at most; both limits are gone. See [How long a command runs](/background-tasks#background-shells).
+- **At most 64 at once.** A session runs up to 64 commands at the same time, its subagents' shells included. At that limit a new command is refused with `64 commands are already running in this session, the most it runs at once. Stop one you no longer need with kill or /tasks, or wait for one to finish, then run this command again.` Nothing running is stopped to make room. See [How many commands run at once](/background-tasks#how-many-commands-run-at-once).
 - **`pty: true`.** Runs the command in the bundled native PTY. In interactive and standard sessions, native PTY errors fail the call rather than silently falling back to pipes; standalone SDK sessions without background task support fall back to pipes if the native PTY is unavailable. Set `ATOMIC_NO_PTY=1` to force pipes (`ATOMIC_NO_PTY=0` overrides a legacy `PI_NO_PTY=1`).
 - **`heartbeatMs`.** Background [task heartbeat](/background-tasks#task-heartbeats) interval in milliseconds (defaults to `tasks.heartbeatMs` or 15 minutes; `0` disables; minimum `60000`).
 
-Model-facing output truncates at 3,000 lines or 50 KiB with `Full output: <path>`. Structured output (used by codemode) keeps up to 1 MiB (the first and last 512 KiB around an omission marker if longer). Foreground results include `timeoutSeconds`, `requestedTimeoutSeconds`, `wallTimeMs`, non-zero `exitCode`, and `fullOutputPath` when truncated.
+Model-facing output truncates at 3,000 lines or 50 KiB with `Full output: <path>`. Structured output (used by codemode) keeps up to 1 MiB (the first and last 512 KiB around an omission marker if longer). Foreground results include `timeoutSeconds` (only when `timeout` was set), `requestedTimeoutSeconds`, `wallTimeMs`, non-zero `exitCode`, and `fullOutputPath` when truncated.
+
+### Long-running servers and watchers
+
+A dev web server, a file watcher, a local database, or a tunnel can run for as long as you work. Start it in the background:
+
+```json
+{ "command": "npm run dev", "wait": { "kind": "background" } }
+```
+
+The call returns at once with a task ID such as `task-1-0-5`. Nothing stops the server on a timer: it runs until you stop it with `kill`, it exits on its own, or the session ends.
+
+- **Check its output** with a short wait, which leaves it running: `{ "action": "wait", "id": "task-1-0-5", "budgetMs": 1000 }`.
+- **Stop it** with `kill({ id: "task-1-0-5" })`, or from `/tasks`.
+- **It counts toward the 64 commands** a session runs at once, for as long as it runs.
+- **When the session ends**, Atomic stops it and the processes it started. Resuming the session does not start it again; the chat shows `Background shell stopped (session closed)` for it, and you run it again if you still need it.
+
+See [Long-running servers and watchers](/background-tasks#long-running-servers-and-watchers).
 
 **Internal URL expansion (`skill://`, `local://`, `artifact://`):**
 - Only unquoted URLs starting a plain shell word expand to shell-quoted filesystem paths (for example `printf %s local://notes.txt`). Other schemes (`conflict://`, `history://`, `tool-output://`, `http://`, `https://`) stay literal text.
@@ -148,7 +166,7 @@ Model-facing output truncates at 3,000 lines or 50 KiB with `Full output: <path>
 
 ### PowerShell
 
-On native Windows, Atomic enables the `powershell` tool automatically when `pwsh.exe` or `powershell.exe` resolves on `PATH`. It accepts the same parameters and wait modes as `bash`, preferring PowerShell 7 and falling back to Windows PowerShell 5.1.
+On native Windows, Atomic enables the `powershell` tool automatically when `pwsh.exe` or `powershell.exe` resolves on `PATH`. It accepts the same parameters and wait modes as `bash`, preferring PowerShell 7 and falling back to Windows PowerShell 5.1. A PowerShell command has no time limit either, takes the same optional `timeout`, and counts toward the same 64 commands a session runs at once.
 
 - Resolved paths use PowerShell single-quoted literals (doubling ASCII apostrophes and `U+2018` to `U+201B` smart single quotes). `bash` always uses POSIX quoting, even on Windows.
 - Redirected stderr on a successful native command (such as `git push 2>&1 | Select-Object -Last 3`) still reports success. Failed final statements report failure, and scripts can return an explicit status with `exit <code>`.
@@ -185,7 +203,7 @@ Returns `scopePath`, `fileCount`, `files`, truncation and missing-path metadata,
 
 `search` takes a required `pattern` regex plus optional `paths` (string or string array; omitted or empty searches `.`), `i` (boolean), `case` (boolean), `gitignore` (default `true`), `skip` (non-negative integer or `null`, floored; ignored in single-file mode), and `wait` (for `history://` targets). Hidden files are searched by default.
 
-- **Slow history searches.** For a `history://` target, `wait` works as it does in `bash`. A search still running after the default wait of 10 seconds keeps running in the background and returns a task ID such as `history-3`. Wait for its result with `search({ action: "wait", id: "history-3" })`, or stop it with `kill({ id: "history-3" })`. `read` of a `history://` URL works the same way. See [Slow history searches](/sessions#slow-history-searches).
+- **Slow history searches.** For a `history://` target, `wait` works as it does in `bash`. A search still running after the default wait of 10 seconds keeps running in the background, with no time limit, and returns a task ID such as `history-3`. Wait for its result with `search({ action: "wait", id: "history-3" })`, or stop it with `kill({ id: "history-3" })`. `read` of a `history://` URL works the same way. A session runs at most 4 at once; a call past that fails with `4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.` See [Slow history searches](/sessions#slow-history-searches).
 - **Targets.** Searches files, directories, globs, archive members, SQLite selectors (`.sqlite`, `.sqlite3`, `.db`, `.db3`), and supported internal URLs (`local://`, `skill://`, `artifact://`, `conflict://`, `history://`, `tool-output://`). Rejects `http://` and `https://`.
 - **Patterns and case sensitivity.** Whitespace-only patterns are rejected; all other patterns pass verbatim, including inline `(?i)`, `(?m)`, `(?s)`, and `(?x)` flags at the start of patterns on resource-backed selectors. Setting `i: true` or `case: false` enables case-insensitive matching (if both `i: true` and `case: true` are passed, case-insensitive matching wins).
 - **Line selectors.** Line-range selectors (`file.ts:10-50`) work on single files only (directories and globs fail with an error) and restrict matches before adding context lines.
