@@ -333,6 +333,7 @@ async function launchSingleInProcess(
 		knownModelProviders: options.knownModelProviders,
 		currentModel: options.currentModel,
 		allowedModels: options.allowedModels,
+		resolveCandidateModel: options.resolveCandidateModel,
 	});
 	const resolveCandidate = options.resolveCandidateModel;
 	if (namesModel && resolveCandidate) {

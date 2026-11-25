@@ -326,6 +326,30 @@ export function isModelCandidateAllowed(candidate: string, allowedFullIds: reado
 	return unknown !== undefined && matchesAllowedSets(unknown.baseModel, allowedFullSet, allowedIdSet);
 }
 
+/** Check exact catalog IDs, including unauthenticated or ambiguous matches, before reporting a model as unknown. */
+export function isModelCandidateInCatalog(candidate: string, catalog: readonly Model<Api>[]): boolean {
+	const { baseModel } = splitKnownThinkingSuffix(candidate);
+	const matches = (id: string) => {
+		const raw = id.toLowerCase();
+		const qualified = normalizeProviderReference(id).toLowerCase();
+		return catalog.some(
+			(model) => model.id.toLowerCase() === raw || modelKey(model.provider, model.id) === qualified,
+		);
+	};
+	if (matches(candidate) || (baseModel !== candidate && matches(baseModel))) return true;
+	const unknown = splitUnknownThinkingSuffix(baseModel);
+	return unknown !== undefined && matches(unknown.baseModel);
+}
+
+/** Explain a scope refusal, with the smallest settings change when its base model is already allowed. */
+export function modelOutsideScopeReason(model: Model<Api> | undefined, isAllowed: (fullId: string) => boolean): string {
+	const reason = "model is outside the session's enabledModels scope";
+	if (!model?.fastRoute) return `${reason}.`;
+	const baseFullId = `${model.provider}/${model.fastRoute.baseModelId}`;
+	if (!isAllowed(baseFullId)) return `${reason}.`;
+	return `${reason}; its base model ${baseFullId} is in scope. Add ${JSON.stringify(`${model.provider}/${model.id}`)} to enabledModels.`;
+}
+
 /**
  * Resolve a model candidate string while preferring models in the active scope for bare model IDs.
  * Falls back to the full available catalog when no scoped model matches so disallowed models still

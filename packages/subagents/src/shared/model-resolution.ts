@@ -21,6 +21,8 @@ import { splitUnknownThinkingSuffix, THINKING_LEVELS, type ThinkingLevel } from 
 
 /** Registry surface needed to resolve a candidate; satisfied by `ctx.modelRegistry`. */
 export interface CandidateModelLookup {
+	/** Full catalog, including models without configured auth. */
+	getAll?(): readonly Model<Api>[];
 	getAvailable(): Model<Api>[];
 	find(provider: string, modelId: string): Model<Api> | undefined;
 	hasConfiguredAuth(model: Model<Api>): boolean;
@@ -44,7 +46,11 @@ export interface ResolvedCandidateModel {
  * a candidate ending in a `:word` that names no thinking level: a launch of one
  * fails rather than run another model.
  */
-export type CandidateModelResolver = (candidateId: string) => ResolvedCandidateModel | undefined;
+export interface CandidateModelResolver {
+	(candidateId: string): ResolvedCandidateModel | undefined;
+	/** Present when the host exposes the full catalog; for refusal diagnostics only. */
+	getCatalog?: () => readonly Model<Api>[];
+}
 
 /** Resolve a name exactly as a settings `fallbackModels` entry or `--model` is resolved (#5046). */
 function findCandidateModel(
@@ -84,5 +90,8 @@ export function createCandidateModelResolver(
 	lookup: CandidateModelLookup,
 	preferredProvider?: string,
 ): CandidateModelResolver {
-	return (candidateId: string) => resolveCandidateModel(candidateId, lookup, preferredProvider);
+	const resolve: CandidateModelResolver = (candidateId) =>
+		resolveCandidateModel(candidateId, lookup, preferredProvider);
+	if (typeof lookup.getAll === "function") resolve.getCatalog = lookup.getAll.bind(lookup);
+	return resolve;
 }

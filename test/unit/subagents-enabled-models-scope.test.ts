@@ -250,17 +250,20 @@ describe("subagent launch enforcement of enabledModels / scopedModels", () => {
 	const available = [anthropicSonnet, anthropicHaiku, openaiGpt];
 	const availableInfo = available.map((m) => ({ provider: m.provider, id: m.id, fullId: `${m.provider}/${m.id}` }));
 
-	test("rejects explicit named model outside enabledModels scope without starting a child", async () => {
+	test("rejects an out-of-scope catalog model without misreporting it as unknown when it lacks auth", async () => {
 		const cwd = tempDir("atomic-subagent-reject-explicit-");
 		const worker = makeWorker(cwd);
 		const result = await runSync(cwd, [worker], "worker", "Do work", {
 			cwd,
 			runId: "reject-explicit",
 			modelOverride: "openai/gpt-5",
-			availableModels: availableInfo,
+			availableModels: availableInfo.filter((model) => model.provider !== "openai"),
 			knownModelProviders: ["anthropic", "openai"],
 			allowedModels: ["anthropic/claude-sonnet-4-5", "anthropic/claude-haiku-4-5"],
-			resolveCandidateModel: createCandidateModelResolver(makeRegistry(available), "anthropic"),
+			resolveCandidateModel: createCandidateModelResolver(
+				makeRegistry([anthropicSonnet, anthropicHaiku], available),
+				"anthropic",
+			),
 			testSession: { output: "should never run" },
 		});
 
@@ -271,6 +274,47 @@ describe("subagent launch enforcement of enabledModels / scopedModels", () => {
 			result.modelAttempts?.map((a) => a.model),
 			["openai/gpt-5"],
 		);
+	});
+
+	test("suggests enabling the variant explicitly when its base is in scope (#6532)", async () => {
+		const cwd = tempDir("atomic-subagent-variant-scope-");
+		const base = makeModel("openai-1", "gpt-6.2-sol");
+		const variant: Model<Api> = {
+			...base,
+			id: "gpt-6.2-sol-ultrafast",
+			fastRoute: { baseModelId: base.id, upstreamModelId: base.id, serviceTier: "ultrafast" },
+		};
+		const catalog = [base, variant];
+		const result = await runSync(cwd, [makeWorker(cwd)], "worker", "Do work", {
+			cwd,
+			runId: "reject-unlisted-tier",
+			modelOverride: "openai-1/gpt-6.2-sol-ultrafast:high",
+			allowedModels: ["openai-1/gpt-6.2-sol"],
+			availableModels: catalog.map((m) => ({ provider: m.provider, id: m.id, fullId: `${m.provider}/${m.id}` })),
+			resolveCandidateModel: createCandidateModelResolver(makeRegistry(catalog), "openai-1"),
+			testSession: { output: "should never run" },
+		});
+
+		assert.equal(result.status, "error");
+		assert.match(result.error ?? "", /its base model openai-1\/gpt-6\.2-sol is in scope/);
+		assert.match(result.error ?? "", /Add "openai-1\/gpt-6\.2-sol-ultrafast" to enabledModels/);
+	});
+
+	test("reports an unoffered variant as missing from the catalog, not outside the scope (#6532)", async () => {
+		const cwd = tempDir("atomic-subagent-missing-variant-");
+		const result = await runSync(cwd, [makeWorker(cwd)], "worker", "Do work", {
+			cwd,
+			runId: "reject-unknown-tier",
+			modelOverride: "anthropic/claude-sonnet-4-5-ultrafast:high",
+			allowedModels: ["anthropic/claude-sonnet-4-5"],
+			availableModels: availableInfo,
+			resolveCandidateModel: createCandidateModelResolver(makeRegistry(available), "anthropic"),
+			testSession: { output: "should never run" },
+		});
+
+		assert.equal(result.status, "error");
+		assert.match(result.error ?? "", /anthropic\/claude-sonnet-4-5-ultrafast:high: no such model in the catalog/);
+		assert.doesNotMatch(result.error ?? "", /enabledModels scope/);
 	});
 
 	test("skips disallowed primary/fallback candidates and runs an allowed fallback candidate", async () => {
