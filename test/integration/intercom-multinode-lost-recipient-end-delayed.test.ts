@@ -12,9 +12,3 @@ test(
 	() => runLostRecipientUnavailableScenario(50),
 	TEST_TIMEOUT_MS,
 );
-
-test(
-	"an asker is told once that its recipient is unavailable when the recipient's broker is killed 100 ms into its departure (#5154)",
-	() => runLostRecipientUnavailableScenario(100),
-	TEST_TIMEOUT_MS,
-);

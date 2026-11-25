@@ -32,8 +32,8 @@ Draft PRs skip the work jobs and do not report `test (all platforms)`. Keep the 
 The workflows split suites by file. To reproduce a shard locally, use the job's `--shard` value with its npm command:
 
 ```sh
-npm run test:unit -- --shard=1/10
-npm run test:integration -- --shard=1/9
+npm run test:unit -- --shard=1/11
+npm run test:integration -- --shard=1/12
 npm run test --workspace=@bastani/atomic -- --shard=1/9
 ```
 
