@@ -11,7 +11,7 @@ test("bash exposes a provider-friendly wait object and forwards observation inde
 		operations: {
 			exec: async (_command, _cwd, options) => {
 				observed.push(options.wait);
-				assert.equal(options.timeout, 300);
+				assert.equal(options.timeout, undefined);
 				return { exitCode: 0 };
 			},
 		},
@@ -124,8 +124,8 @@ test.runIf(process.platform !== "win32")(
 	},
 );
 
-test("a backgrounded command's receipt names the default execution timeout that will stop it (#4639)", async () => {
-	const tool = createBashToolDefinition(process.cwd(), {
+function yieldingBash() {
+	return createBashToolDefinition(process.cwd(), {
 		operations: {
 			exec: async () => ({
 				exitCode: null,
@@ -138,7 +138,10 @@ test("a backgrounded command's receipt names the default execution timeout that 
 			}),
 		},
 	});
-	const result = await tool.execute(
+}
+
+test("a backgrounded command without a timeout is told it runs until it exits or is stopped", async () => {
+	const result = await yieldingBash().execute(
 		"launch",
 		{ command: "npm test", wait: { kind: "background" } },
 		undefined,
@@ -148,27 +151,15 @@ test("a backgrounded command's receipt names the default execution timeout that 
 	const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 	assert.equal(
 		text,
-		"(no output)\n\nCommand is still running (task task-9). Its execution timeout stops it after 300 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.",
+		"(no output)\n\nCommand is still running (task task-9). It has no time limit: it runs until it exits, kill stops it, or this session ends.",
 	);
+	assert.equal(result.details?.timeoutSeconds, undefined);
 });
 
-test("a backgrounded command at the longest timeout is told to split its run, not to ask for a larger timeout (#4639)", async () => {
-	const tool = createBashToolDefinition(process.cwd(), {
-		operations: {
-			exec: async () => ({
-				exitCode: null,
-				observation: {
-					kind: "yielded",
-					taskId: "task-9" as TaskId,
-					waitId: "wait-9" as WaitId,
-					reason: "explicit",
-				},
-			}),
-		},
-	});
-	const result = await tool.execute(
+test("a backgrounded command's receipt names the timeout that will stop it, with no advice to split the run (#4639)", async () => {
+	const result = await yieldingBash().execute(
 		"launch",
-		{ command: "npm test", timeout: 3600, wait: { kind: "background" } },
+		{ command: "npm test", timeout: 86400, wait: { kind: "background" } },
 		undefined,
 		undefined,
 		{} as never,
@@ -176,6 +167,7 @@ test("a backgrounded command at the longest timeout is told to split its run, no
 	const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 	assert.equal(
 		text,
-		"(no output)\n\nCommand is still running (task task-9). Its execution timeout stops it after 3600 seconds; 3600 seconds is the longest timeout; split a longer run into shorter commands.",
+		"(no output)\n\nCommand is still running (task task-9). Its timeout stops it after 86400 seconds.",
 	);
+	assert.equal(result.details?.timeoutSeconds, 86400);
 });

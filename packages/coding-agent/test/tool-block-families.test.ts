@@ -413,7 +413,7 @@ test("Bash and Wait families render running tail, collapsed tail, preserved inde
 				content: [
 					{
 						type: "text",
-						text: "(no output)\n\nCommand is still running (task task-1). Its execution timeout stops it after 5m.",
+						text: "(no output)\n\nCommand is still running (task task-1). It has no time limit: it runs until it exits, kill stops it, or this session ends.",
 					},
 				],
 				details: {

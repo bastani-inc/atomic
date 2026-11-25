@@ -239,7 +239,7 @@ Put each with_skill version before its baseline counterpart.
 
 3. **Do an analyst pass** — read the benchmark data and surface patterns the aggregate stats might hide. See `agents/analyzer.md` (the "Analyzing Benchmark Results" section) for what to look for — things like assertions that always pass regardless of skill (non-discriminating), high-variance evals (possibly flaky), and time/token tradeoffs.
 
-4. **Launch the viewer** with both qualitative outputs and quantitative data. Start it as a background shell, `bash` with `wait: { kind: "background" }`, so it keeps serving after the call returns (a process started with `&` stops when the call that started it ends). The shell's timeout also stops the viewer, so pass the longest, `timeout: 3600`:
+4. **Launch the viewer** with both qualitative outputs and quantitative data. Start it as a background shell, `bash` with `wait: { kind: "background" }`, so it keeps serving after the call returns (a process started with `&` stops when the call that started it ends). Pass no `timeout`: the viewer then serves until you stop it with `kill` or the session ends:
    ```bash
    python <skill-creator-path>/eval-viewer/generate_review.py \
      <workspace>/iteration-N \

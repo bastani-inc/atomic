@@ -2,7 +2,7 @@ import { graphemeAt } from "../../utils/terminal-text.ts";
 import { splitFallbackModel } from "../fallback-models.ts";
 import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import type { SessionManager } from "../session-manager.ts";
-import { cancelReasonText, formatTimeoutSeconds, longerRunAdvice } from "./cancel-reason.js";
+import { cancelReasonText, formatTimeoutSeconds } from "./cancel-reason.js";
 import { type OmissionSpan, taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
 import { taskStoppedForResume } from "./task-resumer.ts";
@@ -567,7 +567,7 @@ export function formatTaskCompletion(
 						: resumable
 							? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
 							: timedOut
-								? `Its execution timeout stopped it${result.executionTimeoutMs === undefined ? "" : ` after ${formatTimeoutSeconds(result.executionTimeoutMs)}`}, before it finished. If its result is still needed, ${longerRunAdvice(result.executionTimeoutMs, "rerun")}`
+								? `Its execution timeout stopped it${result.executionTimeoutMs === undefined ? "" : ` after ${formatTimeoutSeconds(result.executionTimeoutMs)}`}, before it finished. If its result is still needed, run it again with a larger timeout, or with none so it runs until it finishes.`
 								: finishedAgent
 									? `This execution has ended. Do not restart it merely to retrieve its result. ${finishedSubagentResumeText(resumeId(envelope, task))}${intercomTarget ? ` Once resumed, it takes Intercom messages again as ${completionTitleText(intercomTarget)}.` : ""} The user can inspect retained output with /tasks.`
 									: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",

@@ -9,6 +9,7 @@
 ### Changed
 
 - In the focused agent panel, `↓` on the last row wraps to the first row, `main` when it is listed, and scrolls back to the top. `↑` on the first row still returns to the prompt.
+- `bash` and `powershell` commands no longer stop after 5 minutes when no `timeout` is given. A command runs until it finishes, someone stops it with `kill` or `/tasks`, or its session closes, so long builds, test runs and dev servers keep going. `timeout` still sets a deadline in seconds, now with no upper limit instead of 1 hour, and the advice to split longer runs into shorter commands is gone. To guard against runaway launches, a session runs at most 64 commands at once, its subagents' shells included; at that limit a new command is refused with a message saying how to free a place, and nothing running is stopped. See [How long a command runs](docs/background-tasks.md#how-long-a-command-runs).
 
 ### Fixed
 

@@ -11,6 +11,7 @@ import type { SessionManager } from "../session-manager.ts";
 import type { SkillCatalog } from "../skill-catalog.ts";
 import type { SourceInfo } from "../source-info.ts";
 import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cleanup-error.js";
+import { LIVE_COMMAND_LIMIT_MESSAGE, MAX_LIVE_COMMANDS } from "./command-capacity.ts";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
 import * as C from "./contracts.js";
@@ -1451,6 +1452,9 @@ export class TaskSupervisor {
 				error: { code: "OperationConflict", message: "Operation was started with a different command" },
 			};
 		}
+		// Counted and claimed in one synchronous step: the launch below registers itself before it first awaits.
+		if (this.#liveCommandCount(state) >= MAX_LIVE_COMMANDS)
+			return { ok: false, error: { code: "CapacityExhausted", message: LIVE_COMMAND_LIMIT_MESSAGE } };
 		const snapshot = structuredClone(intent);
 		const result = this.#launchCommandTask(state, snapshot, operation, signal);
 		const start: CommandStart = { intent: snapshot, result };
@@ -1465,6 +1469,19 @@ export class TaskSupervisor {
 			} else forget();
 		}, forget);
 		return result;
+	}
+	/**
+	 * The owner's commands that are starting, queued or running, its subagents' included, as the owner's own watch
+	 * sees them once drained. One stopping is on its way out and leaves its place to a new launch.
+	 */
+	#liveCommandCount(state: OwnerState): number {
+		const live = new Set<string>(state.commandLaunches.keys());
+		const [watch] = state.watches;
+		watch?.drain();
+		for (const task of watch?.snapshot.tasks ?? [])
+			if (task.kind === "command" && (task.execution.kind === "queued" || task.execution.kind === "running"))
+				live.add(task.launchOperationId);
+		return live.size;
 	}
 	async #launchCommandTask(
 		state: OwnerState,

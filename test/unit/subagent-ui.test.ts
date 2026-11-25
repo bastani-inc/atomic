@@ -259,7 +259,7 @@ test("background bash results show observation status rather than finished timin
 		content: [
 			{
 				type: "text" as const,
-				text: "first output\n\nCommand is still running (task shell-id). Its execution timeout stops it after 300 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.",
+				text: "first output\n\nCommand is still running (task shell-id). It has no time limit: it runs until it exits, kill stops it, or this session ends.",
 			},
 		],
 		details: { observation: { kind: "yielded", taskId: "shell-id", waitId: "wait-id", reason: "elapsed" } },
@@ -271,7 +271,7 @@ test("background bash results show observation status rather than finished timin
 		const compact = stripVTControlCharacters(component.render(80).join("\n"));
 		assert.match(compact, /Running in background/);
 		assert.match(compact, /first output/);
-		assert.doesNotMatch(compact, /Command is still running|execution timeout|shell-id|Took/);
+		assert.doesNotMatch(compact, /Command is still running|time limit|shell-id|Took/);
 		component.setExpanded(true);
 		assert.match(
 			stripVTControlCharacters(component.render(80).join("\n")),
@@ -307,10 +307,10 @@ test("a background bash result hides exactly its still-running receipt (#4639)",
 		}
 	};
 	const receipt =
-		"Command is still running (task shell-id). Its execution timeout stops it after 300 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.";
+		"Command is still running (task shell-id). It has no time limit: it runs until it exits, kill stops it, or this session ends.";
 	assert.equal(render(`first output\n\n${receipt}`), render("first output"));
 	assert.match(render("first output"), /first output/);
-	assert.doesNotMatch(render(receipt), /still running|execution timeout/);
+	assert.doesNotMatch(render(receipt), /still running|time limit/);
 });
 
 test("collapsed agent list advertises the actual expand binding", () => {

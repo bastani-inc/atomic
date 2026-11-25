@@ -58,7 +58,7 @@ When a background task ends, Atomic adds one unshaded notice line to the launchi
 
 - Green `●` completed
 - `✗` failed
-- Red `◯` stopped (user stops, execution timeouts, and paused or quit subagents awaiting resume)
+- Red `◯` stopped (user stops, shells stopped by their `timeout`, and paused or quit subagents awaiting resume)
 - Dim `◌` [released while waiting](/subagents#released-subagents)
 
 Each notice names the task or agent, its outcome, and how long it ran. A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows only its summary line. Press `Ctrl+O` to expand the shell's retained output lines or the subagent's full retained result:
@@ -85,26 +85,63 @@ Main chat and subagent views render the same notice format. Long titles shorten 
 
 ## Background shells
 
-Model [`bash`](/tools#bash) calls on POSIX and native Windows, and `powershell` calls on native Windows, run under your session's background task manager. Subagent shells are managed by the launching main session; see [Shells started by subagents](#shells-started-by-subagents). A command that runs past its foreground observation budget returns a task ID and keeps running in the background while its execution timeout keeps counting.
+Model [`bash`](/tools#bash) calls on POSIX and native Windows, and `powershell` calls on native Windows, run under your session's background task manager. Subagent shells are managed by the launching main session; see [Shells started by subagents](#shells-started-by-subagents). A command that runs past its foreground observation budget returns a task ID and keeps running in the background.
 
 ```ts
 // Ordinary commands wait for the session's default observation budget (10 seconds).
 bash({ command: "npm run check" })
 
 // Start a build in the background when you have independent work to do.
-bash({ command: "npm run build", wait: { kind: "background" }, timeout: 600 })
+bash({ command: "npm run build", wait: { kind: "background" } })
 
-// Wait longer when the test result is needed next; execution timeout is separate.
-bash({ command: "npm test", wait: { kind: "foreground", budgetMs: 30000 }, timeout: 600 })
+// Wait longer when the test result is needed next.
+bash({ command: "npm test", wait: { kind: "foreground", budgetMs: 30000 } })
 ```
 
-Execution `timeout` is measured in seconds and is independent of observation `budgetMs`. Valid values are greater than `0` and up to `3600` seconds (default `300`), rounded to the nearest millisecond with a 1 ms minimum; invalid values fail before the command starts. A backgrounded launch names the timeout that will stop it:
+### How long a command runs
+
+A command has no time limit. It runs until one of these happens:
+
+- it finishes by itself;
+- you or the model stop it, with `kill` or from `/tasks`;
+- the session that started it closes.
+
+How long a call waits for output (`wait` and `budgetMs`) never stops a command. A long build, a test run that takes hours, or a dev server keeps going after the call returns. A backgrounded launch says so:
 
 ```text
-Command is still running (task task-1-0-3). Its execution timeout stops it after 300 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.
+Command is still running (task task-1-0-3). It has no time limit: it runs until it exits, kill stops it, or this session ends.
 ```
 
-When the timeout expires, `wait` returns an error ending `Task <id> was cancelled (timed out after 300 seconds).` The completion notice uses the red `◯` stopped mark and reads `Background shell timed out after 300 seconds` with `Stop reason: execution-timeout (timed out after 300 seconds)`. For runs longer than 5 minutes, pass an explicit `timeout` up to `3600`; split longer work into shorter commands.
+**Set a deadline** with `timeout`, in seconds, when a command must not run longer than a known time. Any number greater than `0` works, with no upper limit, and it is rounded to the nearest millisecond. A zero, negative, or non-numeric value is refused before the command starts.
+
+```ts
+// Stop the end-to-end run if it is still going after 2 hours.
+bash({ command: "npm run e2e", wait: { kind: "background" }, timeout: 7200 })
+```
+
+A backgrounded launch with a deadline names it:
+
+```text
+Command is still running (task task-1-0-4). Its timeout stops it after 7200 seconds.
+```
+
+When the deadline passes, the command is stopped. `wait` returns an error ending `Task <id> was cancelled (timed out after 7200 seconds).` The completion notice uses the red `◯` stopped mark and reads `Background shell timed out after 7200 seconds`.
+
+### How many commands run at once
+
+One session runs at most 64 commands at the same time, counting the shells its subagents start. The limit catches a runaway loop that keeps launching commands and never stops them. A command being stopped no longer counts. At the limit, a new command does not start, and the call that tried to start it fails with:
+
+```text
+64 commands are already running in this session, the most it runs at once. Stop one you no longer need with kill or /tasks, or wait for one to finish, then run this command again.
+```
+
+Nothing already running is stopped to make room. To free a place, open `/tasks` to see what is running and stop what you no longer need, or wait for one to finish.
+
+### Find and stop long-running commands
+
+- **See them.** `/tasks` lists every running command with how long it has run. Heartbeats remind the model of commands that are still running every 15 minutes by default; see [Task heartbeats](#task-heartbeats).
+- **Stop one.** Select it in `/tasks` and press `x`, or have the model call `kill({ id })` with its task ID.
+- **Stop them all.** `Ctrl+X Ctrl+K` stops every background command and subagent in the session.
 
 Observe an existing shell task without running the command again:
 
@@ -116,7 +153,7 @@ powershell({ action: "wait", id: taskId })
 - Pass the exact task ID from the same session. Omit `budgetMs` for the default observation budget, or pass `0` to check immediately without waiting.
 - The transcript shows one status line above the output matching `/tasks`: `● completed · exit 0`, `✗ exited 1`, `⧗ still running · showing output so far`, or red `◯ cancelled`. Truncated output includes a dim line with the path to the full output file.
 - While running, repeated yielded waits advance through retained output in bounded pages (returning no new output once caught up). Settled waits return all retained output again, with labelled gaps and truncation.
-- Do not combine `action: "wait"` with `command`, `timeout`, `wait`, `env`, `cwd`, or `pty`. Unknown or foreign IDs fail with `No background task "<id>" in this session`. Cancelling a wait releases observation only and never changes the command's execution timeout.
+- Do not combine `action: "wait"` with `command`, `timeout`, `wait`, `env`, `cwd`, or `pty`. Unknown or foreign IDs fail with `No background task "<id>" in this session`. Cancelling a wait ends only the wait: the command keeps running, and its deadline, if it has one, stays the same.
 
 ### Stop a shell task from a tool call
 
@@ -346,7 +383,7 @@ Shell output is sampled every 30 seconds from the last 2 KiB of output, reportin
 - A heartbeat queues like a steering message without interrupting streaming text. In an idle chat it starts a turn immediately, including after an `Esc` interrupt (sending only the heartbeat and held incoming messages, without resuming the interrupted response). If you queued a message and interrupted with `Ctrl+C`, the heartbeat waits so your text is not sent automatically. Set [`tasks.heartbeatWakesIdleSession`](/settings#tasks) to `false` to prevent heartbeats from waking an idle chat.
 - Heartbeats also yield an active `action: "wait"` call while the waited task keeps running.
 - Heartbeats go to the session managing the task. Because a subagent's shells run under the launching main session, their heartbeats go to the main session.
-- A shell's execution `timeout` (300 seconds by default) still ends it, so a shell emits heartbeats only when it runs past its cadence.
+- A shell has no time limit unless its launch set a `timeout`, so a long-running shell keeps sending heartbeats until it finishes or is stopped.
 
 ### Choose the cadence
 
@@ -354,7 +391,7 @@ Set `heartbeatMs` on `bash`, `powershell`, or `subagent`. Omit it for the chat d
 
 ```ts
 // A long end-to-end run checked every 5 minutes.
-bash({ command: "npm run e2e", wait: { kind: "background" }, timeout: 3600, heartbeatMs: 300000 })
+bash({ command: "npm run e2e", wait: { kind: "background" }, heartbeatMs: 300000 })
 
 // A deliberately long investigation that should not heartbeat.
 subagent({ agent: "codebase-analyzer", task: "Map every caller of the auth module.", heartbeatMs: 0 })

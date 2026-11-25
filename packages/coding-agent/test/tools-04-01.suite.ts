@@ -50,7 +50,7 @@ describe("Coding Agent Tools", () => {
 			const result = await bashTool.execute("test-call-8", { command: "echo 'test output'" });
 
 			expect(getTextOutput(result)).toContain("test output");
-			expect(result.details?.timeoutSeconds).toBe(300);
+			expect(result.details?.timeoutSeconds).toBeUndefined();
 			expect(typeof result.details?.wallTimeMs).toBe("number");
 		});
 		it("should handle command errors", async () => {

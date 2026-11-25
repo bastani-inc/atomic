@@ -20,6 +20,7 @@ import {
 	type SupervisedCommandOwner,
 	validateBashWait,
 } from "./bash-pty-native.js";
+import { startShellDeadline } from "./shell-deadline.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const POWERSHELL_PRESENTATION: ShellToolPresentation = {
@@ -82,19 +83,19 @@ export function createLocalPowerShellOperations(binding?: {
 			});
 			const { child } = shellProcess;
 			let timedOut = false;
-			let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+			let stopDeadline: (() => void) | undefined;
 			const waitAbort = new AbortController();
 			const onAbort = () => {
 				waitAbort.abort();
 				shellProcess.stop();
 			};
 			try {
-				if (options.timeout !== undefined && options.timeout > 0) {
-					timeoutHandle = setTimeout(() => {
+				if (options.timeout !== undefined) {
+					stopDeadline = startShellDeadline(options.timeout * 1000, () => {
 						timedOut = true;
 						waitAbort.abort();
 						shellProcess.stop();
-					}, options.timeout * 1000);
+					});
 				}
 				child.stdout?.on("data", (data: Buffer) => options.onData(data, "stdout"));
 				child.stderr?.on("data", (data: Buffer) => options.onData(data, "stderr"));
@@ -115,7 +116,7 @@ export function createLocalPowerShellOperations(binding?: {
 				return { exitCode };
 			} finally {
 				shellProcess.finish();
-				if (timeoutHandle) clearTimeout(timeoutHandle);
+				stopDeadline?.();
 				options.signal?.removeEventListener("abort", onAbort);
 			}
 		},
@@ -146,7 +147,7 @@ export function createPowerShellToolDefinition(cwd: string, options: PowerShellT
 			return definition.execute(...args);
 		},
 		description:
-			'Execute a PowerShell command or observe an existing task with action: "wait", id, and optional budgetMs. Owner-bound commands automatically yield after 10s by default without stopping execution. Unbound commands wait for completion; background and existing-task waits require a task owner.',
+			'Execute a PowerShell command or observe an existing task with action: "wait", id, and optional budgetMs. A command runs until it exits or is stopped unless timeout sets a deadline in seconds. Owner-bound commands automatically yield after 10s by default without stopping execution. Unbound commands wait for completion; background and existing-task waits require a task owner.',
 		promptSnippet: powershellToolSystemPromptContribution.snippet,
 		promptGuidelines:
 			options.exposeSessionEnvironment === false
