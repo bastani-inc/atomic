@@ -159,8 +159,10 @@ export interface BashToolDetails {
 	wallTimeMs?: number;
 }
 export function validateExplicitTimeoutSeconds(timeout: number): void {
-	if (!Number.isFinite(timeout) || timeout <= 0)
-		throw new Error(`Invalid timeout ${String(timeout)}: timeout must be a finite number of seconds greater than 0`);
+	if (!Number.isFinite(timeout) || timeout <= 0 || !Number.isFinite(timeout * 1000))
+		throw new Error(
+			`Invalid timeout ${String(timeout)}: timeout must be a finite number of seconds greater than 0. Leave timeout out for no time limit.`,
+		);
 }
 const STILL_RUNNING = (taskId: string) => `Command is still running (task ${taskId}).`;
 

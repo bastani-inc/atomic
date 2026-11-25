@@ -84,8 +84,10 @@ describe("bash timeout validation", () => {
 			await run(86400);
 			await run(10_000_000);
 			expect(observed).toEqual([undefined, 86400, 10_000_000]);
-			for (const invalid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY])
-				await expect(run(invalid)).rejects.toThrow(/finite number of seconds greater than 0/);
+			for (const invalid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1e308])
+				await expect(run(invalid)).rejects.toThrow(
+					/finite number of seconds greater than 0\. Leave timeout out for no time limit\./,
+				);
 			expect(executed).toBe(3);
 		},
 	);
