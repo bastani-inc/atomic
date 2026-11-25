@@ -1,8 +1,9 @@
 import type { SkippedModel } from "@bastani/atomic";
 import { splitKnownThinkingSuffix } from "../../shared/model-info.js";
+import type { CandidateModelResolver } from "../../shared/model-resolution.js";
 import type { ModelAttempt } from "../../shared/types.js";
 import type { AvailableModelInfo } from "./model-fallback.js";
-import { isModelCandidateAllowed } from "./model-scope.js";
+import { isModelCandidateAllowed, isModelCandidateInCatalog, modelOutsideScopeReason } from "./model-scope.js";
 
 export interface FilteredModelCandidates {
 	candidates: string[];
@@ -36,6 +37,7 @@ export function filterSpawnableModelCandidates(params: {
 	 * scope is configured.
 	 */
 	allowedModels?: readonly string[];
+	resolveCandidateModel?: CandidateModelResolver;
 }): FilteredModelCandidates {
 	const providersWithAvailableAuth = new Set((params.availableModels ?? []).map((model) => model.provider));
 	const knownProviders = new Set(params.knownModelProviders ?? []);
@@ -46,9 +48,13 @@ export function filterSpawnableModelCandidates(params: {
 	const skippedModels: SkippedModel[] = [];
 	for (const candidate of params.candidates) {
 		if (allowedModels !== undefined && !isModelCandidateAllowed(candidate, allowedModels)) {
-			skippedAttempts.push(
-				skippedModelAttempt(candidate, `Skipped ${candidate}: model is outside the session's enabledModels scope.`),
-			);
+			const model = params.resolveCandidateModel?.(candidate)?.model;
+			const catalog = model ? undefined : params.resolveCandidateModel?.getCatalog?.();
+			const reason =
+				catalog && !isModelCandidateInCatalog(candidate, catalog)
+					? "no such model in the catalog."
+					: modelOutsideScopeReason(model, (id) => isModelCandidateAllowed(id, allowedModels));
+			skippedAttempts.push(skippedModelAttempt(candidate, `Skipped ${candidate}: ${reason}`));
 			continue;
 		}
 		if (currentModel && candidate === currentModel) {

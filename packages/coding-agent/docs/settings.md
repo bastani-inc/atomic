@@ -45,7 +45,7 @@ Set up provider credentials in [Model providers](/providers) and define custom e
 | --- | --- | --- | --- |
 | `defaultProvider` | string | unset | Startup provider, saved automatically on interactive model switch |
 | `defaultModel` | string | unset | Startup model ID, saved automatically on interactive model switch |
-| `enabledModels` | string[] | unset | Scoped model patterns controlling startup fallback, `Ctrl+P` cycling, `/model`, and subagent allowlists. See [Model scope (`enabledModels`)](#enabledmodels). |
+| `enabledModels` | string[] | unset | Scoped model patterns controlling startup fallback, `Ctrl+P` cycling, `/model`, and subagent allowlists. Fast and Ultrafast are separate IDs that must also match a pattern. See [Model scope (`enabledModels`)](#enabledmodels). |
 | `fallbackModels` | string[] | unset | Ordered main-chat fallback chain (`provider/model` with optional `:effort` suffix). See [`fallbackModels`](#fallbackmodels). |
 | `decisionModel` | string | `""` | Model for `structured_output` (when omitted) and `decide()`: exact `provider/model` (chat or classifier), or `""`/`"auto"` for the current chat model. See [`decisionModel`](#decisionmodel). |
 | `defaultThinkingLevel` | string | unset | Startup thinking level (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`), clamped to model support |
@@ -90,6 +90,7 @@ Atomic resolves `enabledModels` and `--models` patterns against **authenticated,
 Additional matching rules:
 
 - **Provider-qualified vs bare IDs.** Use `provider/id` to pin a single provider. A bare ID or pattern matching multiple authenticated providers adds **every** matching provider to the scope.
+- **Fast and Ultrafast variants.** A provider wildcard alone does not match the model ID suffix. For example, `"openai-*/gpt-6.2-sol"` scopes only the base model on those aliases. Use `"openai-*/gpt-6.2-sol*"` to match the base and any available `-fast` and `-ultrafast` variants, or list the exact variant IDs you want. A pattern never creates a variant the provider does not offer.
 - **Order and deduplication.** Results keep the order of your patterns. Duplicate `(provider, id)` matches are removed while preserving the first occurrence (and its `:thinking` suffix, if any).
 - **Project overrides.** Setting `"enabledModels": []` in `.atomic/settings.json` clears a global `enabledModels` list for that project.
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent launch now distinguishes unknown catalog models from models outside `enabledModels`. If a Fast or Ultrafast variant is out of scope but its base model is allowed, the error shows the exact variant ID to add.
+
 ## [0.10.10] - 2026-11-24
 
 ### Fixed

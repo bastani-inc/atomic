@@ -107,7 +107,7 @@ import {
 	recoverCancelledChildOutput,
 } from "../shared/cancellation-recovery.js";
 import { finishElapsedSpan } from "../shared/elapsed.js";
-import { isModelCandidateAllowed } from "../shared/model-scope.js";
+import { isModelCandidateAllowed, modelOutsideScopeReason } from "../shared/model-scope.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
 import { createInProcessChildPromptBehavior, forkedChildTools, forkedParentSessionId } from "./prompt-behavior.js";
 import {
@@ -1902,15 +1902,15 @@ function assertStartModelInScope(input: {
 }): void {
 	const { model, allowedModels, scopedModels } = input;
 	if (!model) return;
+	const isAllowed =
+		allowedModels !== undefined
+			? (id: string) => isModelCandidateAllowed(id, allowedModels)
+			: (id: string) =>
+					!scopedModels?.length ||
+					scopedModels.some((entry) => `${entry.model.provider}/${entry.model.id}` === id);
 	const fullId = `${model.provider}/${model.id}`;
-	if (allowedModels !== undefined) {
-		if (isModelCandidateAllowed(fullId, allowedModels)) return;
-		throw new Error(`Model ${fullId} is outside the session's enabledModels scope. No other model was used.`);
-	}
-	if (scopedModels && scopedModels.length > 0) {
-		if (scopedModels.some((entry) => entry.model.provider === model.provider && entry.model.id === model.id)) return;
-		throw new Error(`Model ${fullId} is outside the session's enabledModels scope. No other model was used.`);
-	}
+	if (isAllowed(fullId)) return;
+	throw new Error(`${fullId}: ${modelOutsideScopeReason(model, isAllowed)} No other model was used.`);
 }
 
 async function cancelledEnvelope(
