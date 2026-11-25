@@ -811,6 +811,13 @@ export class AgentPanelFocus {
 		this.actions.open(row);
 	}
 	enter(selectId?: string, returnAnchor?: ListSelectionAnchor): void {
+		if (returnAnchor?.selectedKey === AGENT_PANEL_MAIN_ID && this.showMain) {
+			this.selectedId = AGENT_PANEL_MAIN_ID;
+			this.selectedKey = undefined;
+			this.scroll = returnAnchor.scroll;
+			this.keepInView();
+			return;
+		}
 		if (returnAnchor !== undefined) {
 			const resolved = resolveListEntry(
 				returnAnchor.selectedKey,
