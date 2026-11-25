@@ -72,6 +72,7 @@ const TEXT_MODELS = [
 	"qwen3.7-plus",
 	"qwen3.8-flash",
 	"qwen3.8-max",
+	"qwen4-max",
 ];
 
 const INDIVIDUAL_TEXT_MODELS = [

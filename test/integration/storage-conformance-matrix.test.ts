@@ -1,117 +1,32 @@
 import assert from "node:assert/strict";
-import type { SqliteDatabase } from "@bastani/atomic/storage";
-import { describe, it, test } from "vitest";
-import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
-import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.ts";
+import { test } from "vitest";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { registerSessionStoreConformance } from "../../packages/coding-agent/src/core/storage/session/conformance.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { registerSqliteDatabaseConformance } from "../../packages/coding-agent/src/core/storage/testing.js";
-import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
-import type { IntercomBrokerStateOptions } from "../../packages/intercom/broker/multinode-state-store.js";
-import { borrowedDatabase } from "../../packages/intercom/broker/open-broker-state.js";
-import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
-import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
-import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
-import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-store.js";
-import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pending-ask-store.js";
-import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
-import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
-import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
-import {
-	type OpenSharedStoreFixture,
-	registerBrokerLeaseStoreConformance,
-	registerCrossNodeHeldRoundTripConformance,
-	registerCrossNodeRoundTripConformance,
-	registerHeldSendStoreConformance,
-	registerIdOwnerConformance,
-	registerKnownSessionStoreConformance,
-	registerOutboxStoreConformance,
-	registerPendingAskStoreConformance,
-	registerReleasedAskStoreConformance,
-	registerRestoringReservationStoreConformance,
-	registerReturningSessionConformance,
-	registerSentMessageAuthorityConformance,
-} from "../helpers/intercom-multinode-contract.js";
-import { openMemoryOutboxFixture, openMemoryWakeUpBusFixture } from "../helpers/intercom-multinode-memory-reference.js";
-import { databaseSubject, type StorageBackend, storageBackends } from "../helpers/storage-backends.js";
+import { databaseSubject, storageBackends } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+import { backendLabel, runnerFor, withSqlSessionStore } from "./storage-conformance-matrix-helpers.js";
 
 /**
- * Every store's behavioural contract on every storage backend (#4793): the database facade, sessions and Intercom's
- * multi-node routing state, each on a SQLite file, a libSQL server and Postgres.
+ * Every store's behavioural contract on every storage backend (#4793): the database facade and same-handle sessions
+ * on a SQLite file, a libSQL server and Postgres. Reopen sessions and Intercom's multi-node routing state run in
+ * sibling `storage-conformance-matrix-*.test.ts` files.
  */
 
 useTemporaryAgentDir();
 
-/**
- * Rows that fail on a backend because of an open bug, by suite and test name, with the issue. They run as `it.fails`,
- * so the row turns red once the bug is fixed and the fix removes its entry.
- */
-const KNOWN_FAILURES: ReadonlyMap<string, string> = new Map();
-
-/** A describe/it runner for `backend`: skipped rows when the backend is, known failures as `it.fails`. */
-function runnerFor(backend: StorageBackend) {
-	const { skipReason } = backend;
-	let suite = "";
-	return {
-		describe(name: string, body: () => void) {
-			describe(name, () => {
-				const outer = suite;
-				suite = name;
-				try {
-					body();
-				} finally {
-					suite = outer;
-				}
-			});
-		},
-		it(name: string, body: () => Promise<void>, timeoutMs?: number) {
-			const issue = KNOWN_FAILURES.get(`${suite} > ${name}`);
-			if (skipReason !== undefined) it.skip(name, body);
-			else if (issue !== undefined) it.fails(`${name} (known failure, ${issue})`, body, timeoutMs);
-			else it(name, body, timeoutMs);
-		},
-	};
-}
-
-/** A shared-state fixture whose every connection is another database connection to one backend scope. */
-function scopeFixture<Store>(
-	backend: StorageBackend,
-	openStore: (options: IntercomBrokerStateOptions) => Promise<Store>,
-): OpenSharedStoreFixture<Store> {
-	return async () => {
-		const scope = await backend.openScope();
-		return {
-			connect: async () => openStore({ database: await scope.connect(), prefix: scope.prefix }),
-			close: () => scope.close(),
-		};
-	};
-}
-
 for (const backend of storageBackends) {
-	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
+	const name = backendLabel(backend);
 	const run = backend.skipReason === undefined ? test : test.skip;
-	const runner = runnerFor(backend);
 	registerSqliteDatabaseConformance(runnerFor(backend), `database facade on ${name}`, databaseSubject(backend));
 
-	registerSessionStoreConformance(runner, `SqlSessionStore on ${name}`, async (body) => {
-		const scope = await backend.openScope();
-		try {
-			const open = async (database: SqliteDatabase) => SqlSessionStore.open(database, { prefix: scope.prefix });
-			let store = await open(await scope.connect());
-			await body({
-				get store() {
-					return store;
-				},
-				async reopen() {
-					store = await open(await scope.connect());
-					return store;
-				},
-			});
-		} finally {
-			await scope.close();
-		}
-	});
+	registerSessionStoreConformance(
+		runnerFor(backend, { includeSuite: (suite) => !suite.endsWith(" (reopen)") }),
+		`SqlSessionStore on ${name}`,
+		withSqlSessionStore(backend),
+	);
 
 	run(`projects an older session's resume state on ${name} without decoding its transcript (#5249)`, async () => {
 		const scope = await backend.openScope();
@@ -199,49 +114,5 @@ for (const backend of storageBackends) {
 		} finally {
 			await scope.close();
 		}
-	});
-
-	const intercom = `Intercom routing on ${name}`;
-	registerBrokerLeaseStoreConformance(run, intercom, scopeFixture(backend, openSqlBrokerLeaseStore));
-	registerKnownSessionStoreConformance(run, intercom, scopeFixture(backend, openSqlKnownSessionStore));
-	// The lease store's table is there first, as in a broker: an unanswered claim's `reclaim` reads it.
-	registerIdOwnerConformance(
-		run,
-		intercom,
-		scopeFixture(backend, async (options) => {
-			await openSqlBrokerLeaseStore(options);
-			return openSqlKnownSessionStore(options);
-		}),
-	);
-	registerOutboxStoreConformance(run, intercom, scopeFixture(backend, openSqlOutboxStore));
-	registerPendingAskStoreConformance(run, intercom, scopeFixture(backend, openSqlPendingAskStore));
-	registerReleasedAskStoreConformance(run, intercom, scopeFixture(backend, openSqlReleasedAskStore));
-	registerSentMessageAuthorityConformance(run, intercom, scopeFixture(backend, openSqlSentMessageAuthority));
-	registerHeldSendStoreConformance(run, intercom, scopeFixture(backend, openSqlHeldSendStore));
-	registerRestoringReservationStoreConformance(run, intercom, scopeFixture(backend, openSqlRestoringReservationStore));
-	// The stores in the order a broker opens them, then its wake-up bus on the same connection (#5607).
-	registerReturningSessionConformance(
-		run,
-		intercom,
-		scopeFixture(backend, async (options) => ({
-			leases: await openSqlBrokerLeaseStore(options),
-			knownSessions: await openSqlKnownSessionStore(options),
-			outbox: await openSqlOutboxStore(options),
-			bus: await openDatabaseWakeUpBus({
-				openDatabase: async () => borrowedDatabase(options.database),
-				prefix: options.prefix,
-			}),
-		})),
-	);
-	registerCrossNodeRoundTripConformance(run, intercom, {
-		openOutbox: scopeFixture(backend, openSqlOutboxStore),
-		openPendingAsks: scopeFixture(backend, openSqlPendingAskStore),
-		openBus: openMemoryWakeUpBusFixture,
-	});
-	registerCrossNodeHeldRoundTripConformance(run, intercom, {
-		openReservations: scopeFixture(backend, openSqlRestoringReservationStore),
-		openHeldSends: scopeFixture(backend, openSqlHeldSendStore),
-		openOutbox: openMemoryOutboxFixture,
-		openBus: openMemoryWakeUpBusFixture,
 	});
 }

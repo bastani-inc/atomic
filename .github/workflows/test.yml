@@ -38,12 +38,14 @@ on:
 # The work runs as five independent jobs. Root suites duplicate setup so neither
 # waits for the other; no shared producer sits on their critical path.
 #
-#   unit-tests      build package -> one of five (Linux) or seven (Windows) unit shards
-#   integration-tests build package -> one of five integration shards (per OS)
-#   agent-suite     build ai + native bindings -> one of three (Linux) or five (Windows) atomic-ai and coding-agent shards
-#   release-archive build package -> build-binaries.sh -> archive smoke
-#   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
-#   test            result gate; carries the required check contexts
+#   unit-tests          build package -> one of eleven (Linux) or twelve (Windows) unit shards
+#   integration-tests   build package -> one of twelve integration shards (per OS)
+#   storage-conformance build package -> one of four Linux server-backed storage shards
+#   agent-suite         build ai + native bindings -> one of nine (Linux) or eleven (Windows) coding-agent shards
+#   packages-suite      build forked packages -> atomic-ai and forked workspace package suites (per OS)
+#   release-archive     build package -> build-binaries.sh -> archive smoke
+#   static-checks       typecheck, docs, Mintlify, CI contracts (Linux)
+#   test                result gate; carries the required check contexts
 #
 # Nothing is passed between jobs as an artifact: waiting for a producer job
 # adds a serial dependency, regardless of how cheaply its output transfers.
@@ -61,25 +63,23 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Five shards on Linux and seven on Windows, balanced by per-OS file durations measured on CI
+        # Eleven shards on Linux and twelve on Windows, balanced by per-OS file durations measured on CI
         # (test/helpers/duration-sequencer.ts). The result gate needs every shard. See docs/ci.md ("Sharded suites").
         binary_platform: [linux-x64, windows-x64]
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         exclude:
           - binary_platform: linux-x64
-            shard: 6
-          - binary_platform: linux-x64
-            shard: 7
+            shard: 12
         include:
           # The three suites run on 8 vCPU: on 4 vCPU they averaged 54-77% CPU, and
           # Windows unit/integration hit their caps at p95. See docs/ci.md ("Sizing").
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.linux-amd64
-            shards: 5
+            shards: 11
             timeout_minutes: 14
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.windows-amd64
-            shards: 7
+            shards: 12
             timeout_minutes: 14
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -238,14 +238,14 @@ jobs:
           retention-days: 14
 
   integration-tests:
-    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/5)
+    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/12)
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Five shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts). The result
+        # Twelve shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts). The result
         # gate below needs every shard, so the required check still covers the whole suite on both hosts.
         binary_platform: [linux-x64, windows-x64]
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.linux-amd64
@@ -348,8 +348,8 @@ jobs:
         run: npm run build
       - name: Integration tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 5)"
-          -- npm run test:integration -- --shard=${{ matrix.shard }}/5
+          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 12)"
+          -- npm run test:integration -- --shard=${{ matrix.shard }}/12
         env:
           # Hard-require the installed-package Node smoke on both supported hosts.
           ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
@@ -371,11 +371,11 @@ jobs:
   # Two shards, each with its own libSQL server and PostgreSQL: on one server for every file, sqld was saturated and
   # ordinary sqld tests ran past their 30 s budget.
   storage-conformance:
-    name: storage-conformance (linux-x64, ${{ matrix.shard }}/2)
+    name: storage-conformance (linux-x64, ${{ matrix.shard }}/4)
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
       fail-fast: false
     runs-on: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.storage-conformance.linux-amd64
     # Setup as in an integration shard, plus service startup and storage adapter conformance.
@@ -484,9 +484,9 @@ jobs:
       # Run the adapter conformance matrix, the Postgres adapter and Intercom tests, and all libSQL server tests.
       - name: Storage conformance and libSQL server tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64)"
+          bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64 ${{ matrix.shard }} of 4)"
           -- npm run test:integration -- storage-conformance-matrix storage-postgres intercom-postgres sqld
-          --shard=${{ matrix.shard }}/2
+          --shard=${{ matrix.shard }}/4
       - name: Upload test diagnostics
         if: always()
         # The tests decide the job's result, not a failed diagnostics upload (such as an artifact service timeout).
@@ -504,26 +504,24 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Three shards on Linux and five on Windows, each running its share of both the atomic-ai and the coding-agent
-        # suites. The coding-agent share is balanced by measured file duration; atomic-ai's small suite uses vitest's
-        # own split.
+        # Nine shards on Linux and eleven on Windows, running the coding-agent suite balanced by measured file duration.
         binary_platform: [linux-x64, windows-x64]
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         exclude:
           - binary_platform: linux-x64
-            shard: 4
+            shard: 10
           - binary_platform: linux-x64
-            shard: 5
+            shard: 11
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.linux-amd64
-            shards: 3
+            shards: 9
             timeout_minutes: 10
             ripgrep_target: x86_64-unknown-linux-musl.tar.gz
             ripgrep_sha256: 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.windows-amd64
-            shards: 5
+            shards: 11
             timeout_minutes: 10
             ripgrep_target: x86_64-pc-windows-msvc.zip
             ripgrep_sha256: 71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5
@@ -616,12 +614,6 @@ jobs:
         run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
         run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core run build:bundle
-      - name: atomic-ai vitest suite
-        run: npm --workspace=@bastani/atomic-ai run test -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
-      # The other forked packages' suites are small, so one shard per OS runs them whole.
-      - name: Forked package suites (schema, telemetry, tui, agent-core, codemode)
-        if: matrix.shard == 1
-        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run test
       # packages/coding-agent/test/native-binding-exports.test.ts is hard-required
       # by ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE below, so the vitest suite must
       # stay behind this build.
@@ -688,6 +680,73 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
+
+  packages-suite:
+    name: packages-suite (${{ matrix.binary_platform }})
+    if: ${{ !github.event.pull_request.draft }}
+    strategy:
+      matrix:
+        include:
+          - binary_platform: linux-x64
+            runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.packages-suite.linux-amd64
+            timeout_minutes: 8
+          - binary_platform: windows-x64
+            runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.packages-suite.windows-amd64
+            timeout_minutes: 8
+      fail-fast: false
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+          fetch-depth: 1
+      - name: Configure private Windows temp storage
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup-windows-ci-temp.ps1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Configure Namespace npm cache
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
+      - name: Restore model data
+        id: model-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
+          restore-keys: |
+            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
+          enableCrossOsArchive: true
+      - name: Hydrate model data unless the restored snapshot is valid
+        shell: bash
+        run: |
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
+            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
+          else
+            echo "No valid model data snapshot; hydrating from the upstream catalogs"
+            npm run hydrate:model-data
+          fi
+      - name: Build @bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
+      - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core run build:bundle
+      - name: atomic-ai vitest suite
+        run: npm --workspace=@bastani/atomic-ai run test
+      - name: Forked package suites (schema, telemetry, tui, agent-core, codemode)
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run test
 
   release-archive:
     name: release-archive (${{ matrix.binary_platform }})
@@ -1058,7 +1117,7 @@ jobs:
     # GitHub counts a skipped required check as satisfied, so in a draft this job is skipped under another name and
     # never reports the required context; see docs/ci.md ("Draft pull requests").
     name: ${{ github.event.pull_request.draft && 'test (draft, runs when marked ready)' || 'test (all platforms)' }}
-    needs: [unit-tests, integration-tests, storage-conformance, agent-suite, release-archive, static-checks]
+    needs: [unit-tests, integration-tests, storage-conformance, agent-suite, packages-suite, release-archive, static-checks]
     if: ${{ always() && !github.event.pull_request.draft }}
     runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.result-gate.linux-amd64
     timeout-minutes: 1

@@ -36,12 +36,27 @@ export const SHARD_WORKERS = 7;
 /** Recorded per-file durations in milliseconds, keyed by repository-relative path with forward slashes. */
 export type FileDurations = Readonly<Record<string, number>>;
 
-/** One record per CI OS: file times differ between them, and many pool files do not run on Windows. */
-export type DurationRecord = Readonly<Record<"linux" | "win32", FileDurations>>;
+/** One record per CI OS, plus an optional server-backed storage-conformance overlay. */
+export type DurationBucket = "linux" | "win32" | "storage-conformance";
+export type DurationRecord = Readonly<
+	Record<"linux" | "win32", FileDurations> & Partial<Record<"storage-conformance", FileDurations>>
+>;
+
+export function selectRecordedDurations(
+	source: DurationRecord,
+	platform: NodeJS.Platform = process.platform,
+	env: NodeJS.ProcessEnv = process.env,
+): FileDurations {
+	const base = platform === "win32" ? source.win32 : source.linux;
+	if (env.ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED === "1" && source["storage-conformance"]) {
+		return { ...base, ...source["storage-conformance"] };
+	}
+	return base;
+}
 
 const record: DurationRecord = JSON.parse(readFileSync(new URL("./test-file-durations.json", import.meta.url), "utf8"));
 /** This OS's recorded durations: the weights this process shards and orders by. */
-export const recordedDurations: FileDurations = process.platform === "win32" ? record.win32 : record.linux;
+export const recordedDurations: FileDurations = selectRecordedDurations(record);
 
 function weightOf(path: string, durations: FileDurations): number {
 	return (durations[path] ?? UNKNOWN_FILE_MS) + FILE_OVERHEAD_MS;
@@ -71,9 +86,10 @@ export function shardByDuration(
 	count: number,
 	serial: ReadonlySet<string> = new Set(),
 ): string[] {
-	const ordered = [...paths].sort(
-		(a, b) => weightOf(b, durations) - weightOf(a, durations) || (a < b ? -1 : a > b ? 1 : 0),
-	);
+	const ordered = [...paths].sort((a, b) => {
+		const serialOrder = (serial.has(a) ? 0 : 1) - (serial.has(b) ? 0 : 1);
+		return serialOrder || weightOf(b, durations) - weightOf(a, durations) || (a < b ? -1 : a > b ? 1 : 0);
+	});
 	const shards = Array.from({ length: count }, () => ({ paths: [] as string[], total: 0, longest: 0, serial: 0 }));
 	type Shard = (typeof shards)[number];
 	let parallelTotal = 0;

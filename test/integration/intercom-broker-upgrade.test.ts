@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
@@ -421,7 +421,10 @@ const SUB_MILLISECOND_S = 0.000_345_6;
 function datedBeforeItsPidWasGivenAgain(pid: number): void {
 	const pidPath = join(agentDir, "intercom", "broker.pid");
 	writeFileSync(pidPath, String(pid));
-	const written = (Date.now() - WRITTEN_BEFORE_ITS_PID_WAS_GIVEN_AGAIN_MS) / 1_000 + SUB_MILLISECOND_S;
+	const written =
+		Math.floor(statSync(pidPath).mtimeMs / 1_000) -
+		WRITTEN_BEFORE_ITS_PID_WAS_GIVEN_AGAIN_MS / 1_000 +
+		SUB_MILLISECOND_S;
 	utimesSync(pidPath, written, written);
 }
 
@@ -796,7 +799,7 @@ describe("replacing an older broker (#4538)", () => {
 			const found = await recordProcess(legacy.pid);
 			const pidPath = join(agentDir, "intercom", "broker.pid");
 			writeFileSync(pidPath, String(legacy.pid));
-			const written = Date.now() / 1_000 + SUB_MILLISECOND_S;
+			const written = Math.floor(statSync(pidPath).mtimeMs / 1_000) + 1 + SUB_MILLISECOND_S;
 			utimesSync(pidPath, written, written);
 			const { BROKER_PROTOCOL } = await import("../../packages/intercom/broker/protocol-version.js");
 			const { isSpawnLockStale, upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
