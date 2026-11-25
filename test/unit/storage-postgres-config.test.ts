@@ -185,14 +185,21 @@ test("Atomic loads the installed Postgres package by name as a storage adapter (
 /** An open that fails to connect gives up only after the facade's five runs and their backoff, about four seconds. */
 const FAILED_OPEN_TIMEOUT_MS = 20_000;
 
+/** Read the adapter's effective URL without relying on DNS or the OS refusing a TCP connection. */
+async function failedOpenLocation(url: string): Promise<string> {
+	const error = await openPostgresDatabase({
+		url,
+		socket: () => {
+			throw Object.assign(new Error("fixture refused the TCP connection"), { code: "ECONNREFUSED" });
+		},
+	}).catch((caught) => caught);
+	assert.ok(error instanceof StorageUnavailableError, inspect(error));
+	return error.location;
+}
+
 test(
 	"Postgres requires a verified TLS connection to a host that is not this machine, unless the URL says otherwise (#4793)",
 	async () => {
-		const location = async (url: string) => {
-			const error = await openPostgresDatabase({ url }).catch((caught) => caught);
-			assert.ok(error instanceof StorageUnavailableError, inspect(error));
-			return error.location;
-		};
 		const verified = [
 			"postgres://atomic@db.invalid:1/atomic",
 			"postgres://atomic@127.db.invalid:1/atomic",
@@ -208,7 +215,7 @@ test(
 			"postgres:///atomic?host=/nonexistent-socket-directory&port=1",
 			"postgres://atomic@db.invalid:1/atomic?sslmode=disable",
 		];
-		const locations = await Promise.all([...verified, ...unchanged].map(location));
+		const locations = await Promise.all([...verified, ...unchanged].map(failedOpenLocation));
 		assert.deepEqual(locations, [
 			...verified.map((url) => {
 				const parsed = new URL(url);
@@ -230,13 +237,7 @@ test(
 			"postgres://atomic@[::ffff:127.0.0.1]:1/atomic",
 			"postgres://atomic@db.invalid:1/atomic?host=127.1",
 		];
-		const locations = await Promise.all(
-			local.map(async (url) => {
-				const error = await openPostgresDatabase({ url }).catch((caught) => caught);
-				assert.ok(error instanceof StorageUnavailableError, inspect(error));
-				return error.location;
-			}),
-		);
+		const locations = await Promise.all(local.map(failedOpenLocation));
 		assert.deepEqual(locations, local);
 	},
 	FAILED_OPEN_TIMEOUT_MS,
