@@ -865,10 +865,12 @@ export class AgentPanelFocus {
 		}
 		this.scroll = keepRowInView(this.scroll, index, AGENT_PANEL_FOCUSED_ROWS, this.rows.length);
 	}
+	/** Moves the selection `delta` rows; ↓ on the last row wraps to the first. */
 	private move(delta: number): void {
 		const ids = this.ids();
 		const index = Math.max(0, ids.indexOf(this.selectedId));
-		this.selectedId = ids[Math.max(0, Math.min(ids.length - 1, index + delta))] ?? AGENT_PANEL_MAIN_ID;
+		const target = delta > 0 && index === ids.length - 1 ? 0 : Math.max(0, Math.min(ids.length - 1, index + delta));
+		this.selectedId = ids[target] ?? AGENT_PANEL_MAIN_ID;
 		this.syncSelectedKey();
 		this.keepInView();
 	}

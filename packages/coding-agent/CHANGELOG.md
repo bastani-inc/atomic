@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- In the focused agent panel, `↓` on the last row wraps to the first row, `main` when it is listed, and scrolls back to the top. `↑` on the first row still returns to the prompt.
+
+### Fixed
+
+- Choosing `main` in the agent panel is remembered: the next `↓` from an empty prompt focuses `main` again instead of the last subagent row you had selected before it.
+- A subagent you open from `/tasks` by `Enter` or a click becomes the agent panel's remembered selection, so the next `↓` from an empty prompt focuses it and arrow keys continue from it.
+
 ## [0.10.10] - 2026-11-24
 
 Atomic adds configurable remote compaction models with live switching and typed compaction errors, introduces a dedicated SDK storage backends guide with standalone PostgreSQL and libSQL library docs, remembers your last selected row in the agent panel, drops redundant multi-provider scope warnings, and fixes CLI, tool, subagent, Intercom, TUI, Web Access, and documentation gaps across all packages.
