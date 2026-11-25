@@ -1208,3 +1208,37 @@ test("Bash derives final state from settled metadata and does not let program ou
 		assert.deepEqual(settledWithBackgroundWaitArg, [" ● Bash(echo ready)", "   ⎿  ready"]);
 	}
 });
+
+test("a history search that went on in the background, and a wait on it, render as such", () => {
+	const receipt = plain(
+		renderFamily({
+			toolName: "search",
+			args: { pattern: "NEEDLE", paths: "history://sessions" },
+			result: {
+				content: [{ type: "text", text: "History search is still running (task history-7)." }],
+				details: { historyTask: { taskId: "history-7", state: "running" } },
+				isError: false,
+			},
+			expanded: false,
+			isPartial: false,
+		}),
+	);
+	assert.match(receipt[0] ?? "", /Search\(history-7\) · continues in background/);
+	assert.match(receipt.join("\n"), /History search is still running \(task history-7\)\./);
+
+	const waited = plain(
+		renderFamily({
+			toolName: "search",
+			args: { action: "wait", id: "history-7" },
+			result: {
+				content: [{ type: "text", text: "history://sessions/abc:2: the NEEDLE is here" }],
+				details: undefined,
+				isError: false,
+			},
+			expanded: false,
+			isPartial: false,
+		}),
+	);
+	assert.match(waited[0] ?? "", /Wait\(history-7\)/);
+	assert.match(waited.join("\n"), /history:\/\/sessions\/abc:2: the NEEDLE is here/);
+});

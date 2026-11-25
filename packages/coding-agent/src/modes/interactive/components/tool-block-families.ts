@@ -472,7 +472,44 @@ function shortReadErrorReason(text: string, details: Record<string, unknown> | u
 	return "failed";
 }
 
+/**
+ * A `read` or `search` that waits on a background history task, or whose call went on as one: a Wait block for the
+ * former, and a block that names the running task for the latter. Any other call returns `undefined`.
+ */
+function presentHistoryTask(input: BuiltinToolBlockInput, title: string): BuiltinToolBlockPresentation | undefined {
+	const argsRecord = asRecord(input.args);
+	const waiting = argsRecord?.action === "wait";
+	const task = asRecord(asRecord(input.result?.details)?.historyTask);
+	if (!waiting && task === undefined) return undefined;
+	const blockTitle = waiting ? "Wait" : title;
+	const args = waiting ? singleLineDisplayText(asString(argsRecord?.id) ?? "") : undefined;
+	const isRunning = !input.result || input.isPartial;
+	const elapsed = formatToolBlockElapsed(resolveDurationMs(input), { isRunning, subTenDecimal: false });
+	if (isRunning) return { title: blockTitle, args, status: "running", meta: elapsed ? [elapsed] : undefined };
+	const rawText = extractRawText(input.result);
+	const lines = splitContentLines(rawText).map((line) =>
+		theme.fg(input.result?.isError ? "error" : "toolOutput", replaceTabs(line)),
+	);
+	if (task !== undefined)
+		return {
+			title: blockTitle,
+			args: args ?? singleLineDisplayText(asString(task.taskId) ?? ""),
+			status: "shell-running",
+			meta: ["continues in background"],
+			details: new ToolBlockLines(lines, true),
+		};
+	return {
+		title: blockTitle,
+		args,
+		status: input.result?.isError ? "failure" : "success",
+		meta: elapsed ? [elapsed] : undefined,
+		details: new ToolBlockLines(collapseToolBlockLines(lines, TOOL_BLOCK_LIMITS.search, input.expanded)),
+	};
+}
+
 function presentRead(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation {
+	const historyTask = presentHistoryTask(input, "Read");
+	if (historyTask) return historyTask;
 	const activeTheme = input.theme ?? theme;
 	const argsRecord = asRecord(input.args);
 	const { display, startLine, basePath } = formatReadArgs(argsRecord, input.cwd);
@@ -626,6 +663,8 @@ function parseSearchRows(rawText: string): { rows: string[]; matchCount: number;
 }
 
 function presentSearch(input: BuiltinToolBlockInput): BuiltinToolBlockPresentation {
+	const historyTask = presentHistoryTask(input, "Search");
+	if (historyTask) return historyTask;
 	const argsRecord = asRecord(input.args);
 	const display = formatSearchArgs(argsRecord, input.cwd);
 	const isRunning = !input.result || input.isPartial;

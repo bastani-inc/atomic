@@ -1,4 +1,5 @@
 import { setImmediate } from "node:timers";
+import { asyncScope } from "../async-scope.ts";
 import type { SessionEntry } from "../session-manager-types.ts";
 import {
 	MAX_INDEXED_ENTRY_CHARS,
@@ -32,6 +33,8 @@ export interface HistoryBudget {
 }
 
 export const DEFAULT_HISTORY_BUDGET: HistoryBudget = { bytes: 40_000, rows: 250_000, timeMs: 3_000 };
+/** The time budget of the history calls a background history task makes, in place of the router's own. */
+export const historyTaskTimeBudget = asyncScope<number>();
 export const HISTORY_TEXT_FORMAT = 2;
 export const MAX_MATCHES_PER_SESSION = 10;
 

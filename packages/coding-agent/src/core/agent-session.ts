@@ -316,6 +316,7 @@ class AgentSessionBase {
 	protected _resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
 	protected _childTaskWaits = new ChildTaskWaits();
 	protected _taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
+	protected _historyTasks: import("./tools/history-tasks.ts").HistoryTaskRegistry | undefined;
 	protected _taskAdmission: MessageAdmissionBoundary | undefined;
 	protected _cacheWarmer?: import("./cache-warmer.ts").CacheWarmer;
 	protected _worktreeSnapshots: SessionWorktreeSnapshotRecorder;

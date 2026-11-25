@@ -442,6 +442,8 @@ interface NoticeLoad {
 }
 
 const expandedNoticeCache = new WeakMap<TaskCompletionNotice, ExtractedNoticeTranscript | null>();
+/** Notices whose task's history was read and held nothing to show: folded again, their card promises no more. */
+const emptyNoticeTranscripts = new WeakSet<TaskCompletionNotice>();
 const pendingNoticeLoads = new WeakMap<TaskCompletionNotice, NoticeLoad>();
 
 function isCompletionHistory(loaded: object): loaded is TaskCompletionHistory {
@@ -473,12 +475,13 @@ function renderInnerNoticeToolCall(input: {
 	const { id, name, args, matched, settledStatus, getToolDefinition, cwd } = input;
 	const isPartial = !matched && settledStatus === "running";
 	const isError = matched?.isError === true;
+	// A subagent released while it waits still has its unanswered calls running: they show as waiting, as it does.
 	const status: ToolBlockStatus = matched
 		? matched.isError
 			? "failure"
 			: "success"
-		: settledStatus === "running"
-			? "running"
+		: settledStatus === "running" || settledStatus === "waiting"
+			? settledStatus
 			: "stopped";
 	const durationMeta =
 		matched?.durationMs !== undefined && matched.durationMs >= 1000
@@ -509,7 +512,8 @@ function renderInnerNoticeToolCall(input: {
 		presentation !== undefined && (!toolDef?.renderResult || isBuiltinToolResultRenderer(toolDef.renderResult));
 	if (canonicalCall && canonicalResult && presentation) {
 		return new ToolBlock({
-			status: presentation.status ?? status,
+			// A settled card's unanswered call is no longer running here, whatever the call alone would show.
+			status: matched || settledStatus === "running" ? (presentation.status ?? status) : status,
 			title: presentation.title,
 			args: presentation.args,
 			meta: presentation.meta,
@@ -618,8 +622,8 @@ function extractEntriesExpansion(
 			? projectTaskCompletionEntries(loaded)
 			: projectTaskCompletionEntries(loaded.entries ?? [], loaded.unavailable);
 	const { prompt, unavailable } = history;
-	// No entries, or none that prompted the task, and no reason why: there is nothing more to show than the preview.
-	if (!prompt && !unavailable) return undefined;
+	// A subagent woken after a release continues with no prompt of its own, so its calls alone are worth showing.
+	if (!prompt && history.toolCalls.length === 0 && !unavailable) return undefined;
 	const cwd = options?.cwd ?? process.cwd();
 	const toolBlocks = history.toolCalls.map(({ id, name, args, result }) =>
 		renderInnerNoticeToolCall({
@@ -784,7 +788,11 @@ export class TaskCompletionMessage implements Component {
 				const result = Promise.resolve()
 					.then(() => loader(taskId, { signal: controller.signal }))
 					.then(
-						(loaded) => extractEntriesExpansion(loaded, status, this.options) ?? null,
+						(loaded) => {
+							const extracted = extractEntriesExpansion(loaded, status, this.options);
+							if (extracted === undefined) emptyNoticeTranscripts.add(notice);
+							return extracted ?? null;
+						},
 						() => null,
 					)
 					.finally(() => {
@@ -837,13 +845,10 @@ export class TaskCompletionMessage implements Component {
 			];
 			const transcript = this.ensureTranscriptLoaded(notice, spec.status);
 			if (transcript) {
+				// A subagent woken after a release continues with no prompt of its own: its task's title still names it.
+				const prompt = transcript.prompt || notice.line?.subject?.trim();
 				const records = new ToolBlockRecords([
-					new SectionRecord(
-						theme.bold("Prompt"),
-						transcript.prompt
-							? new ToolBlockMarkdown(transcript.prompt)
-							: new Text(theme.fg("dim", "(none)"), 0, 0),
-					),
+					...(prompt ? [new SectionRecord(theme.bold("Prompt"), new ToolBlockMarkdown(prompt))] : []),
 					new SectionRecord(
 						theme.bold("Tool calls"),
 						transcript.toolBlocks.length > 0
@@ -884,6 +889,7 @@ export class TaskCompletionMessage implements Component {
 		}
 		const canLoadTranscript =
 			this.loadedByTask.get(taskId) !== null &&
+			!emptyNoticeTranscripts.has(notice) &&
 			(this.options?.hasTranscript ? this.options.hasTranscript(taskId) : Boolean(this.options?.loadTranscript));
 		if (!preview && !canLoadTranscript) return line === undefined ? [] : [line];
 		let rows = this.previewRows.get(notice);

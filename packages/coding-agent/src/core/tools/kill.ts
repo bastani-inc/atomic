@@ -4,29 +4,42 @@ import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
 import type { CancelReceipt } from "../tasks/contracts.js";
 import { lookupOwnedTask, type SupervisedCommandOwner } from "./bash-pty-native.js";
+import { HistoryTaskRegistry } from "./history-tasks.ts";
 import { formatKillCall, rebuildKillResult } from "./shell-task-render.ts";
 import { cancelReceiptSentence, TaskToolError } from "./shell-task-status.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const killSchema = Type.Object({
-	id: Type.String({ description: "Task ID returned by a background or auto-yielded bash or powershell call" }),
+	id: Type.String({
+		description:
+			"Task ID returned by a background or auto-yielded bash, powershell, or history:// read or search call",
+	}),
 });
 
 export interface KillToolOptions {
 	/** Resolve the live trusted owner at execution time, including after session switches. */
 	taskOwner?: () => SupervisedCommandOwner | undefined;
+	/** The session's background history tasks, resolved per call. */
+	historyTasks?: () => HistoryTaskRegistry | undefined;
 }
 
-export function createKillToolDefinition(options?: KillToolOptions): ToolDefinition<typeof killSchema, CancelReceipt> {
+export function createKillToolDefinition(
+	options?: KillToolOptions,
+): ToolDefinition<typeof killSchema, CancelReceipt | undefined> {
 	return {
 		name: "kill",
 		label: "Kill",
 		description:
-			"Stop an owned background bash or PowerShell task by its task ID, not a PID. Does not stop subagents or other owners' tasks. Returns the cancellation decision and current execution/cleanup state; a cancellation request alone does not confirm termination.",
+			"Stop an owned background bash or PowerShell task, or a background history:// read or search, by its task ID, not a PID. Does not stop subagents or other owners' tasks. Returns the cancellation decision and current execution/cleanup state; a cancellation request alone does not confirm termination.",
 		parameters: killSchema,
 		...experimentalToolSamplingProperty(),
-		promptSnippet: "Stop an owned background shell task by task ID",
+		promptSnippet: "Stop an owned background shell or history task by task ID",
 		execute: async (_toolCallId, { id }) => {
+			if (HistoryTaskRegistry.isTaskId(id)) {
+				const history = options?.historyTasks?.();
+				if (!history) throw new Error("kill of a history task requires a session");
+				return { content: [{ type: "text", text: await history.cancel(id) }], details: undefined };
+			}
 			const binding = options?.taskOwner?.();
 			if (!binding) throw new Error("kill requires a supported task owner");
 			const { supervisor, owner } = binding;
