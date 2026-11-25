@@ -305,6 +305,50 @@ describe("compactor endpoint", () => {
 		});
 	}
 
+	const unreachable = (code: string, message: string): typeof fetch =>
+		(async () => {
+			throw new TypeError("fetch failed", { cause: Object.assign(new Error(message), { code }) });
+		}) as typeof fetch;
+
+	it("names the network failure's cause instead of a bare 'fetch failed'", async () => {
+		const error = await requestCompactorOutput({
+			apiKey: API_KEY,
+			modelId: "morph-compactor",
+			baseUrl: "https://api.morphllm.com/v1",
+			messages: [],
+			query: "q",
+			signal: new AbortController().signal,
+			fetchFn: unreachable("ENOTFOUND", "getaddrinfo ENOTFOUND api.morphllm.com"),
+			resolveHost: async () => ["104.18.28.116"],
+		}).catch((caught: Error) => caught);
+		assert.ok(error instanceof CompactorFailure, String(error));
+		assert.equal(error.code, "network-error");
+		assert.equal(error.message, "fetch failed: getaddrinfo ENOTFOUND api.morphllm.com");
+	});
+
+	it("names a DNS filter when the endpoint's host resolves to a sinkhole address", async () => {
+		const resolved: string[] = [];
+		const error = await requestCompactorOutput({
+			apiKey: API_KEY,
+			modelId: "morph-compactor",
+			baseUrl: "https://api.morphllm.com/v1",
+			messages: [],
+			query: "q",
+			signal: new AbortController().signal,
+			fetchFn: unreachable("ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR", "tlsv1 alert internal error"),
+			resolveHost: async (hostname) => {
+				resolved.push(hostname);
+				return ["0.0.0.0", "::"];
+			},
+		}).catch((caught: Error) => caught);
+		assert.ok(error instanceof CompactorFailure, String(error));
+		assert.deepEqual(resolved, ["api.morphllm.com"]);
+		assert.match(error.message, /^fetch failed: ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR: tlsv1 alert internal error \(/u);
+		assert.match(error.message, /api\.morphllm\.com resolves to 0\.0\.0\.0/u);
+		assert.match(error.message, /allow api\.morphllm\.com in the resolver\)$/u);
+		assert.ok(!error.message.includes(API_KEY));
+	});
+
 	it("times out with a bounded wait", async () => {
 		const fake = endpoint(() => new Promise<Response>(() => {}));
 		const hanging: typeof fetch = ((input: string | URL | Request, init?: RequestInit) =>

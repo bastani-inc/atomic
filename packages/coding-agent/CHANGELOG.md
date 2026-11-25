@@ -10,6 +10,7 @@
 
 - Choosing `main` in the agent panel is remembered: the next `↓` from an empty prompt focuses `main` again instead of the last subagent row you had selected before it.
 - A subagent you open from `/tasks` by `Enter` or a click becomes the agent panel's remembered selection, so the next `↓` from an empty prompt focuses it and arrow keys continue from it.
+- A compactor request that never reaches its endpoint now reports the underlying cause instead of only `fetch failed`, and names a DNS filter when the endpoint's host resolves to `0.0.0.0` or `::` ([#6561](https://github.com/bastani-inc/atomic/pull/6561)).
 
 ## [0.10.10] - 2026-11-24
 
