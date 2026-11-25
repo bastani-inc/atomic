@@ -45,7 +45,7 @@ import {
 	assertCaptureUnreadable,
 	assertUnreadablePath,
 	BELOW_FILE_ERRNO,
-	DIRECTORY_AS_FILE_ERRNO,
+	COPY_DIRECTORY_ERRNO,
 	GitSandbox,
 	gitConfigPath,
 } from "../helpers/worktree-snapshot.js";
@@ -135,13 +135,10 @@ describe("which directories can be captured", () => {
 
 	test("an index that cannot be read makes the capture unavailable with the typed reason, not a silently empty snapshot", async () => {
 		const { clone } = await sandbox.remoteWithClone();
-		unlinkSync(join(clone, ".git", "index"));
-		mkdirSync(join(clone, ".git", "index"));
-		assertCaptureUnreadable(
-			await captureWorktreeSnapshot(clone),
-			join(clone, ".git", "index"),
-			DIRECTORY_AS_FILE_ERRNO,
-		);
+		const index = join(clone, ".git", "index");
+		unlinkSync(index);
+		mkdirSync(index);
+		assertCaptureUnreadable(await captureWorktreeSnapshot(clone), index, COPY_DIRECTORY_ERRNO);
 	});
 });
 
