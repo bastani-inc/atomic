@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Expanding the card of a subagent released while it waits now shows its task as the prompt and the tool calls of that attempt, with the call it waits on marked as waiting, instead of only its header. A woken subagent continues with no prompt of its own, so its card showed nothing although it promised the prompt, tool calls and full result. A card whose task names no prompt leaves the Prompt section out instead of showing `(none)`, and a card whose task saved nothing to show no longer promises more once folded again.
+
 ## [0.10.10] - 2026-11-24
 
 Atomic adds configurable remote compaction models with live switching and typed compaction errors, introduces a dedicated SDK storage backends guide with standalone PostgreSQL and libSQL library docs, remembers your last selected row in the agent panel, drops redundant multi-provider scope warnings, and fixes CLI, tool, subagent, Intercom, TUI, Web Access, and documentation gaps across all packages.
