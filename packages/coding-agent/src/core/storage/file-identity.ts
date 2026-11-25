@@ -1358,6 +1358,40 @@ function* readStorageOwnerSteps(file: string): StorageSteps<StorageOwner | undef
 	return owner;
 }
 
+/** A copied decision can have both the original decision ID and a recycled inode. */
+function* isReusedParentDecisionInodeSteps(
+	owner: StorageOwner,
+	claimDirectory: string,
+	candidate: string,
+	decisionStat: StorageFileStat | undefined,
+): StorageSteps<boolean> {
+	if (
+		!owner.homeIdentity ||
+		owner.decisionId === undefined ||
+		owner.directoryIdentity === undefined ||
+		decisionStat === undefined ||
+		decisionStat.birthtimeNs <= 0n ||
+		pathsEqual(candidate, owner.path)
+	)
+		return false;
+	let claimStat: StorageFileStat;
+	try {
+		claimStat = yield* io("stat", join(claimDirectory, PARENT_CLAIM_FILE));
+	} catch {
+		return false;
+	}
+	// The decision file used to publish the claim already existed when the claim was created. Copying the
+	// parent can make the claim file newer, but a subsequent backup can be newer still. Keep the normal
+	// in-place owner recovery when the directory itself still matches, and only demote copied decisions.
+	return (
+		claimStat.dev === decisionStat.dev &&
+		claimStat.birthtimeNs > 0n &&
+		decisionStat.birthtimeNs > claimStat.birthtimeNs &&
+		(yield* fileIdentitySteps(candidate)) !== owner.directoryIdentity &&
+		(yield* storageDecisionMetadataSteps(candidate))?.id === owner.decisionId
+	);
+}
+
 function* scanStorageOwnerCandidatesSteps(
 	owner: StorageOwner,
 	claimDirectory: string,
@@ -1382,7 +1416,13 @@ function* scanStorageOwnerCandidatesSteps(
 		);
 		const isExcludedExact =
 			excludedExactCandidate !== undefined && (yield* sameDirectorySteps(candidate, excludedExactCandidate));
-		if (!isExcludedExact && identityInfo !== undefined && identityInfo.identity === owner.identity) {
+		if (
+			!isExcludedExact &&
+			identityInfo !== undefined &&
+			identityInfo.identity === owner.identity &&
+			(claimedTarget !== undefined ||
+				!(yield* isReusedParentDecisionInodeSteps(owner, claimDirectory, candidate, identityInfo.stat)))
+		) {
 			for (const match of exact) {
 				if (yield* sameDirectorySteps(match.path, candidate)) return;
 			}
@@ -1562,7 +1602,11 @@ function* resolveStorageOwnerForCallerSteps(
 	const path = owner.relativePath === undefined ? owner.path : resolve(claimDirectory, owner.relativePath);
 	if (owner.identity === undefined) return { ownerPath: path };
 	const fastInfo = yield* fileIdentityWithStatSteps(owner.homeIdentity ? storageHomeDecisionFile(path) : path);
-	if (fastInfo?.identity === owner.identity) {
+	if (
+		fastInfo?.identity === owner.identity &&
+		(claimedTarget !== undefined ||
+			!(yield* isReusedParentDecisionInodeSteps(owner, claimDirectory, path, fastInfo.stat)))
+	) {
 		return yield* maybeDisplaceConflictingExactCandidateSteps(
 			owner,
 			claimDirectory,
