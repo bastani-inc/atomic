@@ -16,7 +16,7 @@ permissions: {}
 jobs:
   cancel:
     name: cancel closed pull request runs
-    runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.run-cleanup.linux-amd64
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x8;overrides.cache-tag=bastani-inc.atomic.ci.run-cleanup.linux-amd64
     timeout-minutes: 5
     permissions:
       actions: write
