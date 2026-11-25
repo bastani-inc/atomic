@@ -34,6 +34,7 @@ import { sleep } from "../helpers/runtime.js";
 
 /** Comfortably past pi-tui's 16 ms render throttle, so a component's own repaint request has fired. */
 const REPAINT_SETTLE_MS = 60;
+const RENDER_SIGNAL_TIMEOUT_MS = 5_000;
 const WIDTH = 120;
 
 beforeAll(() => {
@@ -532,24 +533,43 @@ test("a transcript row that fails to render answers with a failure frame (#4333)
 
 test("every queued transcript row renders, and each one's repaint check runs (#4333)", async () => {
 	const rows = rowRenderHarness(true);
-	rows.render(1, "FIRST_ROW", "row-a");
-	rows.render(2, "SECOND_ROW", "row-b");
-	rows.renderMessage(3, "MESSAGE_ROW", "row-c");
-	await sleep(REPAINT_SETTLE_MS);
-	const frameOf = (componentId: string) =>
-		rows.messages.find((message) => message.type === "engine_custom_frame" && message.componentId === componentId);
-	const [a, b, c] = ["row-a", "row-b", "row-c"].map(frameOf);
-	assert.ok(
-		a?.type === "engine_custom_frame" && b?.type === "engine_custom_frame" && c?.type === "engine_custom_frame",
-	);
-	assert.match(a.lines.join("\n"), /FIRST_ROW/);
-	assert.match(b.lines.join("\n"), /SECOND_ROW/);
-	assert.match(c.lines.join("\n"), /MESSAGE_ROW/, "a message row renders as a custom message");
-	const invalidated = new Set(
-		rows.messages.flatMap((message) => (message.type === "engine_custom_invalidate" ? [message.componentId] : [])),
-	);
-	assert.ok(invalidated.has("row-a") && invalidated.has("row-b"), "each tool row's own repaint check ran");
-	rows.service.dispose();
+	try {
+		rows.render(1, "FIRST_ROW", "row-a");
+		rows.render(2, "SECOND_ROW", "row-b");
+		rows.renderMessage(3, "MESSAGE_ROW", "row-c");
+		const frameOf = (componentId: string) =>
+			rows.messages.find((message) => message.type === "engine_custom_frame" && message.componentId === componentId);
+		// The headless repaint timer queues a separate lane job. A frame's arrival doesn't mean its repaint check ran.
+		const [a, b, c] = await vi.waitFor(
+			() => {
+				const [a, b, c] = ["row-a", "row-b", "row-c"].map(frameOf);
+				assert.ok(
+					a?.type === "engine_custom_frame" &&
+						b?.type === "engine_custom_frame" &&
+						c?.type === "engine_custom_frame",
+					"all three transcript frames arrived",
+				);
+				for (const componentId of ["row-a", "row-b"]) {
+					assert.ok(
+						rows.messages.some(
+							(message) =>
+								message.type === "engine_custom_invalidate" &&
+								message.componentId === componentId &&
+								!message.evictCache,
+						),
+						`${componentId}'s own repaint check ran`,
+					);
+				}
+				return [a, b, c] as const;
+			},
+			{ timeout: RENDER_SIGNAL_TIMEOUT_MS },
+		);
+		assert.match(a.lines.join("\n"), /FIRST_ROW/);
+		assert.match(b.lines.join("\n"), /SECOND_ROW/);
+		assert.match(c.lines.join("\n"), /MESSAGE_ROW/, "a message row renders as a custom message");
+	} finally {
+		rows.service.dispose();
+	}
 });
 
 test("background renders report their callback activity like the renders they replace (#4333)", async () => {
