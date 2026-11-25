@@ -117,7 +117,6 @@ describe("Bedrock temperature suppression for Claude Fable 5.1", () => {
 	it("omits inferenceConfig.temperature for the Claude Fable 5 profiles too", async () => {
 		for (const modelId of [
 			"anthropic.claude-fable-5",
-			"eu.anthropic.claude-fable-5",
 			"global.anthropic.claude-fable-5",
 			"us.anthropic.claude-fable-5",
 		] as const) {

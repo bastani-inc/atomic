@@ -433,12 +433,6 @@ describe("thinking off on Bedrock Converse (#4552)", () => {
 			getModel("amazon-bedrock", "us.anthropic.claude-fable-5"),
 		],
 		[
-			"eu.anthropic.claude-fable-5",
-			"minimal",
-			claudeLowEffort,
-			getModel("amazon-bedrock", "eu.anthropic.claude-fable-5"),
-		],
-		[
 			"global.anthropic.claude-fable-5",
 			"minimal",
 			claudeLowEffort,
