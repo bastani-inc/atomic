@@ -22,19 +22,28 @@ permissions:
   contents: read
 
 on:
-  push:
-    branches: [main]
   pull_request:
-  # Default setup ran on a weekly schedule. Keeping it means a newly published
-  # CodeQL query still reaches code that is not being actively changed.
+  # main is analyzed once a day instead of on every push: a full JavaScript/TypeScript analysis takes far
+  # longer than a pull request's, which analyzes only the code it changes, and every change reaching main has
+  # already been analyzed on its pull request. The daily run also brings newly published CodeQL queries to
+  # code that is not being changed.
   schedule:
-    - cron: "31 4 * * 1"
+    - cron: "31 4 * * *"
+  workflow_dispatch:
+
+# A newer push supersedes an analysis still running for the same pull request or branch: only the latest
+# commit's results are ever used, so the older run is cancelled rather than left to use runner minutes.
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   analyze:
     name: Analyze
-    runs-on: namespace-profile-atomic-ci-linux-amd64-4x8;overrides.cache-tag=bastani-inc.atomic.ci.codeql.linux-amd64
-    timeout-minutes: 30
+    # A pull request analyzes only the code it changes and finishes in minutes. The daily schedule and manual
+    # runs analyze the whole tree, so the JavaScript/TypeScript job gets the larger runner.
+    runs-on: ${{ github.event_name != 'pull_request' && matrix.language == 'javascript-typescript' && 'namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.codeql-full.linux-amd64' || 'namespace-profile-atomic-ci-linux-amd64-4x8;overrides.cache-tag=bastani-inc.atomic.ci.codeql.linux-amd64' }}
+    timeout-minutes: ${{ github.event_name != 'pull_request' && matrix.language == 'javascript-typescript' && 60 || 30 }}
     permissions:
       # Uploading the SARIF results is the whole point of the job.
       security-events: write

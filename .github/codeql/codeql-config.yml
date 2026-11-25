@@ -1,6 +1,18 @@
 name: Atomic CodeQL configuration
 
+# Code that never ships is left out of the analysis: tests, fixtures, examples, research notes and generated
+# model data are about two thirds of the TypeScript tree, and analyzing them pushed a full JavaScript/TypeScript
+# analysis past its 30-minute limit on every push to main.
 paths-ignore:
   # Fixtures for the event-loop check (scripts/event-loop). They hold backtracking regular expressions on
   # purpose: test/unit/event-loop-check.test.ts asserts that the check reports them.
   - test/fixtures/event-loop
+  - test
+  - "packages/*/test"
+  - "**/*.test.ts"
+  - "**/*.test.mjs"
+  - "packages/coding-agent/examples"
+  - research
+  - "packages/ai/src/models.generated.ts"
+  - "packages/ai/src/providers/data"
+  - "**/dist"
