@@ -273,6 +273,75 @@ test("re-entering /tasks after opening a subagent keeps selection on that subage
 	}
 });
 
+test("a subagent chosen in /tasks, by Enter or a click, is where the next ↓ from the prompt focuses the agent panel", async () => {
+	for (const how of ["enter", "click"] as const) {
+		const session = { extensionRunner: {} };
+		const store = new FakeOwnerTaskStore([
+			agent("a1", "first alpha", 1, "op-a"),
+			agent("a2", "second beta", 2, "op-b"),
+			agent("a3", "third gamma", 3, "op-c"),
+		]);
+		bindOwnerTaskStore(session, store);
+		const bridge = fakeBridge();
+		setAgentViewBridge(session, bridge);
+
+		// The panel remembers the top row first.
+		await showAgentPanel(
+			session,
+			mountUi((component, rows) => {
+				assert.match(selectedLine(rows()), /third gamma/);
+				component.handleInput(ESC);
+			}).ui,
+		);
+
+		await openTasks(
+			session,
+			store,
+			mountUi((component, rows) => {
+				const lines = rows();
+				if (how === "enter") {
+					component.handleInput(DOWN);
+					component.handleInput(DOWN);
+					assert.match(selectedLine(rows()), /first alpha/);
+					component.handleInput(ENTER);
+					return;
+				}
+				const y = lines.findIndex((line) => line.includes("first alpha"));
+				assert.notEqual(y, -1, lines.join("\n"));
+				component.handleMouse?.({
+					type: "click",
+					button: "left",
+					x: 6,
+					y,
+					screenX: 6,
+					screenY: 30 + y,
+					width: 100,
+					height: lines.length,
+					shift: false,
+					alt: false,
+					ctrl: false,
+					clickCount: 1,
+				});
+			}).ui,
+		);
+		assert.equal(bridge.viewedTaskId(), "a1", how);
+
+		let focused = "";
+		let afterUp = "";
+		await showAgentPanel(
+			session,
+			mountUi((component, rows) => {
+				focused = selectedLine(rows());
+				component.handleInput(UP);
+				afterUp = selectedLine(rows());
+				component.handleInput(ESC);
+			}).ui,
+		);
+		assert.match(focused, /first alpha/, `the panel focuses the subagent chosen in /tasks by ${how}`);
+		assert.match(afterUp, /second beta/, `arrow keys continue from the subagent chosen by ${how}`);
+	}
+});
+
 test("re-entering /tasks keeps selection when opened subagent finishes and re-sorts from Working to Done", async () => {
 	const session = { extensionRunner: {} };
 	const store = new FakeOwnerTaskStore([

@@ -26,9 +26,10 @@ import "../../packages/coding-agent/src/modes/interactive/interactive-editor-act
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-dialogs.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-input-handling.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
-import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { getEditorTheme, initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 const DOWN = "\x1b[B";
+const UP = "\x1b[A";
 
 beforeAll(() => {
 	initTheme("dark", false);
@@ -476,5 +477,55 @@ describe("main composer agent panel hints and custom editor Down routing (#5239)
 
 		assert.equal(pressKey("\x1b"), false, "global focus listener must yield physical Escape");
 		assert.equal(customs.length, 0);
+	});
+
+	test("↓ from the prompt reopens the agent panel on main when main was the last row chosen", async () => {
+		const { mode, keybindings, customs, closeCustoms, pressDown } = createHarness({
+			initialItems: [
+				{ id: "ext:t1", kind: "agent", state: "running", name: "debugger", task: "alpha" },
+				{ id: "ext:t2", kind: "agent", state: "running", name: "worker", task: "beta" },
+				{ id: "ext:t3", kind: "agent", state: "running", name: "review", task: "gamma" },
+			],
+		});
+		await mode.setupKeyHandlers();
+		type PanelFactory = (
+			tui: unknown,
+			theme: unknown,
+			kb: KeybindingsManager,
+			done: () => void,
+		) => Promise<{ render(width: number): string[]; handleInput(data: string): void }>;
+		const mountPanel = async (index: number) => {
+			const factory = customs[index] as PanelFactory;
+			const panel = await factory(
+				{ requestRender() {}, terminal: { rows: 24, columns: 100 } },
+				theme,
+				keybindings,
+				() => {},
+			);
+			const selected = () =>
+				panel
+					.render(100)
+					.map((line) => stripTerminalSequences(line).trimEnd())
+					.find((line) => line.startsWith("∀ ")) ?? "";
+			return { panel, selected };
+		};
+
+		assert.equal(pressDown(), true);
+		const first = await mountPanel(0);
+		// Walk down to the bottom row, then back up to main, and ↑ on main returns to the prompt.
+		first.panel.handleInput(DOWN);
+		first.panel.handleInput(DOWN);
+		assert.doesNotMatch(first.selected(), /\bmain$/);
+		first.panel.handleInput(UP);
+		first.panel.handleInput(UP);
+		first.panel.handleInput(UP);
+		assert.match(first.selected(), /\bmain$/);
+		first.panel.handleInput(UP);
+		await closeCustoms();
+
+		assert.equal(pressDown(), true);
+		const second = await mountPanel(1);
+		assert.match(second.selected(), /\bmain$/, "↓ from the prompt lands on main, not on the bottom row");
+		await closeCustoms();
 	});
 });

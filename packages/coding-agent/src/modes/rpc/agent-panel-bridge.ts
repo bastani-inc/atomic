@@ -62,7 +62,11 @@ import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
 import { isSingleLeftClick } from "../interactive/components/single-click.ts";
 import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
 import { taskDisplayText } from "../interactive/components/task-row.js";
-import { clearTasksReturnAnchor, type ListSelectionAnchor } from "../interactive/components/task-selection-state.js";
+import {
+	clearTasksReturnAnchor,
+	keepRowInView,
+	type ListSelectionAnchor,
+} from "../interactive/components/task-selection-state.js";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getGlobalTheme } from "../interactive/theme/global-theme.ts";
 import { theme } from "../interactive/theme/theme.js";
@@ -1096,7 +1100,7 @@ export async function showAgentPanel(
 					if (finished) return;
 					finished = true;
 					if (currentRows.length === 0) state.lastSelectionAnchor = undefined;
-					else if (focus.selectedId !== AGENT_PANEL_MAIN_ID) state.lastSelectionAnchor = focus.captureAnchor();
+					else state.lastSelectionAnchor = focus.captureAnchor();
 					// The idle panel is back in the step the focused one leaves.
 					idlePanel.show(() => done());
 				};
@@ -1390,6 +1394,22 @@ function agentPanelListsWhenShown(session: AgentPanelSession & object, taskId: T
  * later), and `show` with the view's `close`, so the panel is back in the step the view leaves and that close says so.
  * `show` also cancels a hide not done yet; each happens once.
  */
+/**
+ * Makes the row a reader opened in `/tasks`, by its stable key, the agent panel's remembered selection, so the next
+ * ↓ from the prompt focuses it. A key the panel does not list leaves the remembered selection as it was.
+ */
+export function rememberAgentPanelChoice(session: AgentPanelSession & object, key: string): void {
+	const { rows } = rankPanelSession(session);
+	const index = rows.findIndex((row) => panelItemStableKey(row) === key || row.id === key || panelTaskId(row) === key);
+	if (index < 0) return;
+	const state = panelState(session);
+	state.lastSelectionAnchor = {
+		selectedKey: panelItemStableKey(rows[index]!),
+		orderKeys: rows.map((row) => panelItemStableKey(row)),
+		scroll: keepRowInView(state.lastSelectionAnchor?.scroll ?? 0, index, AGENT_PANEL_FOCUSED_ROWS, rows.length),
+	};
+}
+
 export function hideAgentPanelFor(target: object): { hide(): void; show(close?: () => void): void } {
 	let state: "shown" | "hiding" | "hidden" | "over" = "shown";
 	return {

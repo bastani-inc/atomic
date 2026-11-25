@@ -799,8 +799,91 @@ test("duplicate row ids do not trap focused keyboard navigation (#5224, #5239)",
 	focus.selectedId = AGENT_PANEL_MAIN_ID;
 	press("\x1b[B");
 	press("\x1b[B");
-	press("\x1b[B");
 	assert.equal(focus.selectedId, ROWS[1]!.id);
+	press("\x1b[B");
+	assert.equal(focus.selectedId, AGENT_PANEL_MAIN_ID, "↓ on the last row wraps past the duplicate to main");
+});
+
+test("↓ on the last row wraps to the first row and scrolls back to the top", () => {
+	const many: AgentPanelRow[] = Array.from({ length: 12 }, (_, index) => ({
+		...ROWS[0]!,
+		id: `task:${index}`,
+		name: `w${index}`,
+	}));
+	const calls: string[] = [];
+	const focus = new AgentPanelFocus(new KeybindingsManager(), {
+		open() {},
+		stop() {},
+		dismiss() {},
+		close: () => calls.push("close"),
+	});
+	focus.update(many);
+	focus.enter();
+	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
+	for (let step = 0; step < 11; step++) press("\x1b[B");
+	assert.equal(focus.selectedId, "task:11");
+	assert.equal(focus.scroll, 4);
+	press("\x1b[B");
+	assert.equal(focus.selectedId, AGENT_PANEL_MAIN_ID, "↓ on the last row wraps to main, the first row");
+	assert.equal(focus.scroll, 0);
+	press("\x1b[B");
+	assert.equal(focus.selectedId, "task:0");
+	assert.deepEqual(calls, [], "wrapping never leaves the panel");
+
+	// A row added below the last one: ↓ moves onto it instead of wrapping.
+	press("\x1b[F");
+	assert.equal(focus.selectedId, "task:11");
+	const grown = [...many, { ...ROWS[0]!, id: "task:12", name: "w12" }];
+	focus.update(grown);
+	press("\x1b[B");
+	assert.equal(focus.selectedId, "task:12");
+
+	// The last row leaves while selected: the selection moves to the new last row, and ↓ wraps from there.
+	focus.update(many);
+	assert.equal(focus.selectedId, "task:11");
+	press("\x1b[B");
+	assert.equal(focus.selectedId, AGENT_PANEL_MAIN_ID);
+	assert.equal(focus.scroll, 0);
+});
+
+test("without a main row, ↓ on the last row wraps to the first row and ↑ on the first row still returns to the prompt", () => {
+	const shells: AgentPanelRow[] = ["s0", "s1", "s2"].map((id) => ({ ...ROWS[0]!, id, kind: "shell", name: id }));
+	const calls: string[] = [];
+	const focus = new AgentPanelFocus(new KeybindingsManager(), {
+		open() {},
+		stop() {},
+		dismiss() {},
+		close: () => calls.push("close"),
+	});
+	focus.update(shells);
+	focus.enter();
+	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
+	assert.equal(focus.showMain, false);
+	press("\x1b[B");
+	press("\x1b[B");
+	assert.equal(focus.selectedId, "s2");
+	press("\x1b[B");
+	assert.equal(focus.selectedId, "s0");
+	assert.deepEqual(calls, []);
+	press("\x1b[A");
+	assert.deepEqual(calls, ["close"], "↑ on the first row returns to the prompt, it does not wrap");
+
+	// One row: ↓ keeps it selected.
+	focus.update([shells[0]!]);
+	press("\x1b[B");
+	assert.equal(focus.selectedId, "s0");
+
+	// A remembered main with no main row listed falls back to the first row.
+	focus.update(shells);
+	focus.enter(undefined, { selectedKey: AGENT_PANEL_MAIN_ID, orderKeys: ["s0", "s1", "s2"], scroll: 0 });
+	assert.equal(focus.selectedId, "s0");
+});
+
+test("a remembered main is restored when the panel lists main", () => {
+	const { focus } = focusFixture();
+	focus.enter(undefined, { selectedKey: AGENT_PANEL_MAIN_ID, orderKeys: ROWS.map((row) => row.id), scroll: 0 });
+	assert.equal(focus.selectedId, AGENT_PANEL_MAIN_ID);
+	assert.equal(focus.scroll, 0);
 });
 
 test("the panel resets its scroll when the selected rows disappear and main remains selected (#5224, #5239)", () => {

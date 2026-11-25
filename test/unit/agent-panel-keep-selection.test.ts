@@ -241,31 +241,32 @@ test("focused agent panel remembers the selected subagent across Esc, Left arrow
 	}
 });
 
-test("switching back to main or closing from the main row keeps the most recently selected subagent row", async () => {
+test("choosing main, by Enter, Esc or ↑ on it, is remembered: the next ↓ from the prompt lands on main again", async () => {
 	const { session, bridge } = panelSession([
 		agent("a1", "first alpha", 1, "op-a"),
 		agent("a2", "second beta", 2, "op-b"),
 		agent("a3", "third gamma", 3, "op-c"),
 	]);
 
-	// Select a2 (index 1) and open it with Enter.
+	// Walk to the bottom row and open it, so the panel remembers the bottom row.
 	await showAgentPanel(
 		session,
 		panelUi((component, rows) => {
 			component.handleInput(DOWN);
-			assert.match(selectedLine(rows()), /second beta/);
+			component.handleInput(DOWN);
+			assert.match(selectedLine(rows()), /first alpha/);
 			component.handleInput(ENTER);
 		}),
 	);
-	assert.equal(bridge.viewedTaskId(), "a2");
+	assert.equal(bridge.viewedTaskId(), "a1");
 
-	// Reopen -> restores a2 -> walk Up through a3 to main -> Enter to return to main chat.
+	// Reopen on the bottom row, walk up to main and choose it with Enter: the screen shows main again.
 	await showAgentPanel(
 		session,
 		panelUi((component, rows) => {
-			assert.match(selectedLine(rows()), /second beta/);
+			assert.match(selectedLine(rows()), /first alpha/);
 			component.handleInput(UP);
-			assert.match(selectedLine(rows()), /third gamma/);
+			component.handleInput(UP);
 			component.handleInput(UP);
 			assert.match(selectedLine(rows()), /\bmain$/);
 			component.handleInput(ENTER);
@@ -273,44 +274,48 @@ test("switching back to main or closing from the main row keeps the most recentl
 	);
 	assert.equal(bridge.viewedTaskId(), undefined);
 
-	// Reopen again -> must still select a2 (neither main nor row 0 a3).
 	let afterMainEnter = "";
 	await showAgentPanel(
 		session,
 		panelUi((component, rows) => {
 			afterMainEnter = selectedLine(rows());
-			// Walk up to main and close with Esc; must also keep a2.
-			component.handleInput(UP);
-			component.handleInput(UP);
-			assert.match(selectedLine(rows()), /\bmain$/);
 			component.handleInput(ESC);
 		}),
 	);
-	assert.match(afterMainEnter, /second beta/, "Enter on main keeps the most recently selected subagent");
+	assert.match(afterMainEnter, /\bmain$/, "Enter on main is remembered, not the bottom row");
 
-	// Reopen after closing via Esc on main -> still selects a2; Up from main also keeps a2.
 	let afterMainEsc = "";
 	await showAgentPanel(
 		session,
 		panelUi((component, rows) => {
 			afterMainEsc = selectedLine(rows());
 			component.handleInput(UP);
-			component.handleInput(UP);
-			assert.match(selectedLine(rows()), /\bmain$/);
-			component.handleInput(UP);
 		}),
 	);
-	assert.match(afterMainEsc, /second beta/, "Esc on main keeps the most recently selected subagent");
+	assert.match(afterMainEsc, /\bmain$/, "Esc on main is remembered");
 
 	let afterMainUp = "";
 	await showAgentPanel(
 		session,
 		panelUi((component, rows) => {
 			afterMainUp = selectedLine(rows());
+			// Leaving from a subagent row remembers that row instead.
+			component.handleInput(DOWN);
+			assert.match(selectedLine(rows()), /third gamma/);
 			component.handleInput(ESC);
 		}),
 	);
-	assert.match(afterMainUp, /second beta/, "Up from main keeps the most recently selected subagent");
+	assert.match(afterMainUp, /\bmain$/, "↑ from main back to the prompt is remembered");
+
+	let afterRow = "";
+	await showAgentPanel(
+		session,
+		panelUi((component, rows) => {
+			afterRow = selectedLine(rows());
+			component.handleInput(ESC);
+		}),
+	);
+	assert.match(afterRow, /third gamma/, "a subagent row chosen after main replaces it");
 });
 
 test("reopening after the previously selected subagent disappears or is dismissed selects its nearest surviving neighbour", async () => {

@@ -6,8 +6,14 @@
 
 - `read` and `search` of `history://` now observe like `bash`: they take the same `wait` policy (the owner's automatic yield, 10 seconds by default), scan a slow or remote store to completion instead of stopping at the 3-second time budget, and continue as a background history task (`history-<n>`) when they outlive their observation budget. The result arrives as a task completion notice; `{ action: "wait", id, budgetMs }` on either tool observes the task and `kill({ id })` stops it. Calls that finish within the budget return inline as before. History tasks use the session's own store connection and stop when the session closes or reloads.
 
+### Changed
+
+- In the focused agent panel, `↓` on the last row wraps to the first row, `main` when it is listed, and scrolls back to the top. `↑` on the first row still returns to the prompt.
+
 ### Fixed
 
+- Choosing `main` in the agent panel is remembered: the next `↓` from an empty prompt focuses `main` again instead of the last subagent row you had selected before it.
+- A subagent you open from `/tasks` by `Enter` or a click becomes the agent panel's remembered selection, so the next `↓` from an empty prompt focuses it and arrow keys continue from it.
 - Expanding the card of a subagent released while it waits now shows its task as the prompt and the tool calls of that attempt, with the call it waits on marked as waiting, instead of only its header. A woken subagent continues with no prompt of its own, so its card showed nothing although it promised the prompt, tool calls and full result. A card whose task names no prompt leaves the Prompt section out instead of showing `(none)`, and a card whose task saved nothing to show no longer promises more once folded again.
 - A compactor request that never reaches its endpoint now reports the underlying cause instead of only `fetch failed`, and names a DNS filter when the endpoint's host resolves to `0.0.0.0` or `::` ([#6561](https://github.com/bastani-inc/atomic/pull/6561)).
 

@@ -35,7 +35,7 @@ import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interact
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
 import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
-import { hideAgentPanelFor } from "./agent-panel-bridge.ts";
+import { hideAgentPanelFor, rememberAgentPanelChoice } from "./agent-panel-bridge.ts";
 import {
 	engineAgentViewHasTypedHost,
 	engineAgentViewLastRequestId,
@@ -389,6 +389,8 @@ export async function showTaskInspector(
 				clearTasksReturnAnchor(store, { keepPending: true });
 			}
 		}
+		if (session !== undefined && inspector.chosenKey !== undefined)
+			rememberAgentPanelChoice(session, inspector.chosenKey);
 		inspector?.dispose();
 		panel.show();
 	}

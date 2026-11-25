@@ -203,9 +203,9 @@ The main footer shows `↓ N agents` for the panel's subagent rows, and `N needs
 
 Main-chat background shells are counted in the footer and inspected through [`/tasks`](#open-the-task-inspector). A subagent's own running shells appear as indented rows (`⧗ shell <command>`) directly beneath that subagent and leave once they finish or when their parent subagent leaves.
 
-Press `↓` on an empty prompt to focus the panel from either `main` or a subagent (while a viewed subagent's question form has focus, `↓` moves its selection instead). Returning to the panel with `↓` selects your most recently selected subagent row and restores its scroll position, falling back to the nearest surviving row if that subagent left (and resetting to the top row once the panel empties):
+Press `↓` on an empty prompt to focus the panel from either `main` or a subagent (while a viewed subagent's question form has focus, `↓` moves its selection instead). Returning to the panel with `↓` selects your most recently selected row, `main` included, and restores its scroll position. A subagent you open from `/tasks` by `Enter` or a click counts as your selection too. If that subagent left, the panel falls back to the nearest surviving row (and resets to the top row once the panel empties):
 
-- `↑` and `↓` select rows, including `main` and nested shell rows. The selected row shows `∀` before its mark in default text color.
+- `↑` and `↓` select rows, including `main` and nested shell rows. `↓` on the last row wraps to the first. The selected row shows `∀` before its mark in default text color.
 - `Enter` or `→` on a subagent switches the chat screen to that subagent and returns focus to the prompt.
 - `Enter` or `→` on `main` switches back to the main chat and returns focus to the prompt.
 - `Enter` or `→` on a nested shell opens that shell's output in `/tasks` without changing the viewed agent (`←` returns to the focused panel).

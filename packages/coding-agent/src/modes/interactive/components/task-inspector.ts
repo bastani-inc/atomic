@@ -298,6 +298,8 @@ export class TaskInspector implements Component {
 	closeReason: InspectorCloseReason = "dismissed";
 	/** Return anchor captured when leaving `/tasks` to view a subagent or extension item. */
 	returnAnchor?: ListSelectionAnchor;
+	/** Stable key of the row the reader last opened here, by Enter or a click. */
+	chosenKey?: string;
 	/** Typed state machine for list selection & viewport scroll across away/return transitions. */
 	private selectionPhase: ListSelectionPhase = { kind: "browsing", scroll: 0 };
 	/** What ← from a chat opened by the caller names, such as `main chat`. */
@@ -558,6 +560,7 @@ export class TaskInspector implements Component {
 		};
 	}
 	private enterAwayView(task?: TaskRecord): void {
+		if (task !== undefined) this.chosenKey = taskStableKey(task);
 		if (this.selectionPhase.kind === "away") return;
 		const anchor = this.captureListAnchor(task?.ref.taskId, task);
 		if (anchor !== undefined) this.selectionPhase = { kind: "away", anchor };
@@ -785,6 +788,7 @@ export class TaskInspector implements Component {
 	private showAgent(task: TaskRecord): boolean {
 		const view = this.agentView;
 		if (view === undefined || task.kind !== "agent") return false;
+		this.chosenKey = taskStableKey(task);
 		const baseAnchor = this.selectionPhase.kind === "away" ? this.selectionPhase.anchor : undefined;
 		this.returnAnchor = {
 			selectedKey: taskStableKey(task),
@@ -1176,6 +1180,7 @@ export class TaskInspector implements Component {
 				);
 				if (opened === false) this.failureNotice = `Could not open ${rowName(row)}.`;
 				else {
+					this.chosenKey = panelItemStableKey(row.item);
 					this.returnAnchor = anchor;
 					this.closeReason = "navigated-item";
 					this.close();
