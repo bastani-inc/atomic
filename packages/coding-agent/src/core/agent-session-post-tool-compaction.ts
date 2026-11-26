@@ -5,6 +5,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
+import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
 
 function postToolFailureMessage(error: unknown): string {
 	const detail = error instanceof Error ? error.message : String(error);
@@ -28,6 +29,11 @@ export async function _preflightPostToolContext(
 	const hardInputLimit = model.contextWindow;
 	const projectedTokens = estimateContextTokens(messages).tokens;
 	if (!shouldCompact(projectedTokens, hardInputLimit, settings)) return messages;
+	// A compaction model may return a boundary that is itself past the trigger. Compacting again before every tool
+	// round would resend it each time; the request goes out instead, and a provider overflow is recovered once.
+	const boundaryTokens = getLatestCompactionBoundaryEntry(this.sessionManager.getBranch())?.details?.stats
+		?.tokensAfter;
+	if (boundaryTokens !== undefined && shouldCompact(boundaryTokens, hardInputLimit, settings)) return messages;
 
 	// Tool-result persistence is ordered on AgentSession's event queue, while Pi
 	// may reach its next-turn hook as soon as its own listener barrier settles.
