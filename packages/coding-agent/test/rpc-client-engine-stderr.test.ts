@@ -62,6 +62,45 @@ describe("RpcClient engine stderr routing", () => {
 			await client.stop();
 		}
 	});
+	// After a memory-pressure event macOS prints this from inside fork(), to the forking engine's stderr, for every command
+	// the engine starts. It is the OS's notice, not the engine's, and showed up in the TUI once per command.
+	test("does not show the macOS stack-logging notice a forked command writes to the engine's stderr", async () => {
+		const path = writeChildScript();
+		const notice =
+			"node(31280) MallocStackLogging: can't turn off malloc stack logging because it was not enabled.\n";
+		writeFileSync(
+			path,
+			`import { writeSync } from "node:fs";
+			process.stdout.write(JSON.stringify({type:"engine_ready",protocolVersion:4,pid:process.pid})+"\\n");
+			writeSync(2, ${JSON.stringify(notice)});
+			setTimeout(() => { writeSync(2, ${JSON.stringify(notice)} + ${JSON.stringify(`${ZLIB_LINE}\n`)} + ${JSON.stringify(notice)}); }, 50);
+			process.stdin.resume();`,
+		);
+		const shown: string[] = [];
+		const real = Promise.withResolvers<void>();
+		const client = new RpcClient({
+			cliPath: path,
+			runtimeExecutable: process.execPath,
+			interactiveEngine: {
+				onDiagnostic: (diagnostic) =>
+					renderEngineDiagnostic(diagnostic, {
+						stopWorkingLoader: () => {},
+						showError: () => {},
+						showStatus: (message) => {
+							shown.push(message);
+							if (message.includes(ZLIB_LINE)) real.resolve();
+						},
+					}),
+			},
+		});
+		try {
+			await client.start();
+			await real.promise;
+			expect(shown).toEqual([`${ZLIB_LINE}\n`]);
+		} finally {
+			await client.stop();
+		}
+	});
 	test("uses console.log for noninteractive clients", async () => {
 		const shown = Promise.withResolvers<string>();
 		vi.spyOn(console, "log").mockImplementation(shown.resolve);
