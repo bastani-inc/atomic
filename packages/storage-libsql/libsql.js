@@ -567,7 +567,10 @@ function hranaCode(hrana, error) {
  * One Hrana stream that statements outside a transaction take in turn (#5151). sqld loads the database's schema for
  * every stream it opens, so a request that opens, uses and closes a stream costs time that grows with the number of
  * tables; a stream kept open loads it once. A stream that failed, sat idle `STREAM_REUSE_IDLE_MS` or lived
- * `STREAM_REUSE_MAX_AGE_MS` is closed and a new one opened. A statement is sent again only when the server refused its
+ * `STREAM_REUSE_MAX_AGE_MS` is closed and a new one opened. An idle stream is closed as soon as it has sat idle that
+ * long, not at the next statement: an open stream holds one of the server's connections, of which sqld has 128 by
+ * default, so a process with many databases on one server would otherwise keep one idle per database until the server
+ * expired it, leaving too few for their transactions. A statement is sent again only when the server refused its
  * request without running it: it found the stream expired, or refused its baton (`REFUSED_BATON`). A request whose
  * answer was lost may have run, so its failure is the caller's, as it is for a statement on a stream of its own. A
  * statement the server answered `no such table` for a table the schema holds runs again, with growing waits, up to
@@ -581,6 +584,8 @@ class ReusedStream {
 	usedAt = 0;
 	/** Whether a statement is on the stream now; a statement arriving meanwhile takes a stream of its own. */
 	busy = false;
+	/** Closes the stream once it sat idle `STREAM_REUSE_IDLE_MS`. @type {ReturnType<typeof setTimeout> | undefined} */
+	idleTimer;
 
 	/**
 	 * @param {typeof import("@libsql/hrana-client")} hrana
@@ -649,7 +654,21 @@ class ReusedStream {
 			}
 		} finally {
 			this.busy = false;
+			this.closeWhenIdle();
 		}
+	}
+
+	/** Closes the stream once it has sat idle `STREAM_REUSE_IDLE_MS`, without keeping the process alive for it. */
+	closeWhenIdle() {
+		if (this.stream === undefined || this.idleTimer !== undefined) return;
+		this.idleTimer = setTimeout(() => {
+			this.idleTimer = undefined;
+			if (this.busy) return;
+			const idle = performance.now() - this.usedAt;
+			if (idle >= STREAM_REUSE_IDLE_MS) this.drop();
+			else this.closeWhenIdle();
+		}, Math.max(STREAM_REUSE_IDLE_MS - (performance.now() - this.usedAt), 0));
+		this.idleTimer.unref?.();
 	}
 
 	/**
@@ -699,6 +718,8 @@ class ReusedStream {
 
 	/** Closes the stream, if one is open; its close is sent in the background. */
 	drop() {
+		clearTimeout(this.idleTimer);
+		this.idleTimer = undefined;
 		this.stream?.close();
 		this.stream = undefined;
 	}
@@ -1319,8 +1340,9 @@ function serverBusyDelayMs(wait, left) {
 }
 
 /**
- * Runs `operation` again, with growing jittered waits, while it fails with `SQLITE_BUSY` and `ranNothing` says the
- * failed run ran nothing, or with `SQLITE_SCHEMA`; then it fails with the last run's failure.
+ * Runs `operation` again, with growing jittered waits, while it fails with `SQLITE_BUSY`, or the server could not open
+ * a connection for it (`isRefusedConnection`), and `ranNothing` says the failed run ran nothing, or with
+ * `SQLITE_SCHEMA`; then it fails with the last run's failure.
  *
  * The wall-clock deadline is measured from `started` (the call's start) and includes every attempt's duration:
  * `started + min(SERVER_BUSY_MAX_TOTAL_MS, SERVER_BUSY_TIMEOUT_MS + maxAttemptMs)`, paired with a cumulative backoff
@@ -1357,7 +1379,10 @@ async function whileServerBusy(
 		try {
 			return await operation();
 		} catch (error) {
-			const rerun = isBusy(error) ? ranNothing() : isSchemaChanged(error) && rerunsAfterSchemaChange();
+			const rerun =
+				isBusy(error) || isRefusedConnection(error)
+					? ranNothing()
+					: isSchemaChanged(error) && rerunsAfterSchemaChange();
 			if (!rerun) throw error;
 			const now = performance.now();
 			const attemptMs = Math.max(0, now - attemptStarted);
@@ -1381,6 +1406,24 @@ async function whileServerBusy(
  */
 function isBusy(error) {
 	return /** @type {{ readonly code?: unknown } | undefined} */ (error)?.code === "SQLITE_BUSY";
+}
+
+/**
+ * Whether a server refused a request with HTTP 429, read along the cause chain. sqld answers so, having run nothing,
+ * when it could not open a database connection for a new stream in time: every one of its connections (128 by default,
+ * `--max-concurrent-connections`) was held by an open stream, or too many requests were already waiting for one.
+ * @param {unknown} error
+ */
+function isRefusedConnection(error) {
+	let current = error;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const { name, status, cause } = /** @type {{ readonly name?: unknown, readonly status?: unknown, readonly cause?: unknown }} */ (
+			current
+		);
+		if (name === "HttpServerError" && status === 429) return true;
+		current = cause;
+	}
+	return false;
 }
 
 /**
@@ -1813,6 +1856,8 @@ function transientCause(failure) {
 		// and been applied before the answer was lost (#4970).
 		if (name === "HttpServerError" && typeof status === "number" && status >= 500)
 			return { code: "connection-lost", outcome: "unknown" };
+		// HTTP 429: the server opened no connection for the request, so ran none of it (`isRefusedConnection`).
+		if (name === "HttpServerError" && status === 429) return { code: "connection-refused", outcome: "not-applied" };
 		const ended = ENDED_BY_SERVER.get(code);
 		if (ended !== undefined) return { code: ended, outcome: "not-applied" };
 		if (NOT_SENT.has(code)) return { code: "connection-refused", outcome: "not-applied" };
