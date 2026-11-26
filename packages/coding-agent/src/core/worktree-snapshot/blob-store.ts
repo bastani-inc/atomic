@@ -1303,24 +1303,14 @@ export function sessionEntryLinks(prefix: string, dialect: StorageDialect, forkS
 	const source = indexSources(prefix, t, dialect, forkSegments).find((source) => source.name === "session-entries")!;
 	const linking = entryLinking(source, dialect, t.sessionLinks);
 	const complete = entriesIndexComplete(t.sources);
-	// The rows to check, from their links, which name each entry's id and its parent's, so no entry's JSON is parsed. A
-	// link without a parent is taken for a root: one whose parent is a value of another type, which no store writes, is
-	// linked broken, so the check finds it and the session is linked again row by row, from its JSON. A snapshot entry
-	// is its own anchor, as no other entry is.
-	const linked = `(SELECT l.session_id, l.seq, l.entry_id, l.parent_id, CASE WHEN l.parent_id IS NOT NULL THEN 'text' ELSE 'null' END AS parent_type, l.anchor_seq AS own_anchor FROM ${t.sessionLinks} AS l WHERE l.session_id = ? AND l.seq >= ?)`;
-	const check = forkLinksCheck(
-		{ links: t.sessionLinks, segments: forkSegments, refs: t.sessionRefs },
-		linked,
-		"r.own_anchor = r.seq",
-		complete,
-	);
+	const check = forkLinksCheck({ links: t.sessionLinks, segments: forkSegments, refs: t.sessionRefs }, complete);
 	return {
 		materialized: materializedForkLinks(t.sessionLinks, forkSegments, complete, dialect.types.int),
 		async settle(executor, sessionId, fromSeq, before) {
 			type Verdict = SqliteRow & { seq: number | null; children: number; refs: number };
 			const [, verdict] = await Promise.all([
 				runInOrder(executor, before),
-				executor.get<Verdict>(check, sessionId, fromSeq, sessionId, fromSeq, sessionId, fromSeq),
+				executor.get<Verdict>(check, sessionId, fromSeq, fromSeq, sessionId, fromSeq),
 			]);
 			if (verdict === undefined) return;
 			const children = Number(verdict.children) === 1;
