@@ -5,7 +5,12 @@ import {
 	forkLinkWrites,
 	legacyForkLinksTriggerName,
 } from "../../worktree-snapshot/fork-snapshot-index.ts";
-import { ensureTableFillfactor, MAX_SEQUENCE_REQUEST_STATEMENTS, transactionFinisher } from "../added-exports.js";
+import { ensureTableFillfactor, transactionFinisher } from "../added-exports.js";
+import {
+	MAX_SEQUENCE_REQUEST_STATEMENTS,
+	noteStorageSchemaTables,
+	refreshStorageSchemaCatalog,
+} from "../added-exports-0-10-11.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -19,12 +24,7 @@ import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaV
 import { ensureStorageSchema } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
-import {
-	noteStorageSchemaTables,
-	refreshStorageSchemaCatalog,
-	schemaCatalogOf,
-	withStorageSchemaCatalog,
-} from "../schema-catalog.js";
+import { schemaCatalogOf, withStorageSchemaCatalog } from "../schema-catalog.js";
 import { applyStorageMigrationsTogether, statementBatch } from "../statement-batches.js";
 import { sequenceRunner } from "../statement-sequence.js";
 import { sha256Hex } from "./blob-hash.js";

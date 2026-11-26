@@ -8,6 +8,7 @@ import { test } from "node:test";
 import {
 	checkDeferredChunkDisjointness,
 	checkRelease,
+	latestPublishedReleases,
 	recordRelease,
 	resolveReleaseRecords,
 } from "./in-place-update-exports.mjs";
@@ -309,4 +310,16 @@ test("resolveReleaseRecords requires committed records only before GUARDED_SINCE
 	});
 	assert.equal(recordedGuarded.ok, true);
 	assert.deepEqual(downloads, []);
+});
+
+test("a build is checked before release against the newest published release and the newest stable one", () => {
+	// 0.10.11-alpha.2's release checked 0.10.11-alpha.1, which no committed record held, so only the release found its
+	// break; most installations it replaces run 0.10.10.
+	assert.deepEqual(latestPublishedReleases(["0.10.9", "0.10.10-alpha.2", "0.10.11-alpha.1", "0.10.10", "0.10.4"]), [
+		"0.10.11-alpha.1",
+		"0.10.10",
+	]);
+	assert.deepEqual(latestPublishedReleases(["0.10.10-alpha.1", "0.10.9", "0.10.10"]), ["0.10.10"]);
+	assert.deepEqual(latestPublishedReleases(["0.1.0-alpha.1"]), ["0.1.0-alpha.1"]);
+	assert.deepEqual(latestPublishedReleases([]), []);
 });
