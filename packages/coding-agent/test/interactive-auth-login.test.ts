@@ -356,6 +356,38 @@ describe("interactive OAuth cancellation", () => {
 	});
 });
 describe("post-login model refresh", () => {
+	it("selects an available default when a provider retires its preferred model (#6580)", async () => {
+		const providerId = "cloudflare-ai-gateway";
+		const firstById = { provider: providerId, id: "workers-ai/@cf/moonshotai/example-a" } as Model<Api>;
+		const lastById = { provider: providerId, id: "workers-ai/@cf/moonshotai/example-z" } as Model<Api>;
+		const otherRoute = { provider: providerId, id: "claude-example" } as Model<Api>;
+		const anotherProvider = { provider: "anthropic", id: "example" } as Model<Api>;
+		const harness = {
+			session: {
+				modelRuntime: { getAvailableSnapshot: () => [anotherProvider, otherRoute, lastById, firstById] },
+				setModel: vi.fn(),
+			},
+			updateAvailableProviderCount: vi.fn(),
+			setupAutocompleteProvider: vi.fn(),
+			footer: { invalidate: vi.fn() },
+			updateEditorBorderColor: vi.fn(),
+			showStatus: vi.fn(),
+			showError: vi.fn(),
+			maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
+		};
+		const loggedOutModel = { provider: "unknown", id: "unknown", api: "unknown" } as Model<Api>;
+		await InteractiveModeBase.prototype.completeProviderAuthentication.call(
+			harness as unknown as InteractiveModeBase,
+			providerId,
+			"Cloudflare AI Gateway",
+			"api_key",
+			loggedOutModel,
+			{ modelsRefreshed: true },
+		);
+		expect(harness.session.setModel).toHaveBeenCalledWith(firstById);
+		expect(harness.showError).not.toHaveBeenCalled();
+	});
+
 	it("does not select or recommend a chat model after Jev login", async () => {
 		const harness = {
 			session: { modelRuntime: { refresh: vi.fn(), getAvailableSnapshot: vi.fn(() => []) }, setModel: vi.fn() },
