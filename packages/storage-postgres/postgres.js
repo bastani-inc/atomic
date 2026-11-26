@@ -486,8 +486,28 @@ function socketFactoryId(factory) {
 	return id;
 }
 
+/** Where every load of this adapter in a process finds the number it gave each password (#6560). */
+const CREDENTIAL_IDS = Symbol.for("@bastani/atomic-storage-postgres/credential-ids@1");
+
 /**
- * What tells one password from another in a pool's identity: a hash of the password `source` gives now, never the
+ * A number for `password` in a pool's identity, the same for the same password in every load of this adapter in the
+ * process. The password stays in memory, as the pool's own configuration already holds it; it is never hashed, stored
+ * or sent anywhere.
+ * @param {string} password
+ */
+function credentialId(password) {
+	const holder = /** @type {{ [CREDENTIAL_IDS]?: { ids: Map<string, number>, next: number } }} */ (globalThis);
+	const registry = (holder[CREDENTIAL_IDS] ??= { ids: new Map(), next: 0 });
+	let id = registry.ids.get(password);
+	if (id === undefined) {
+		id = ++registry.next;
+		registry.ids.set(password, id);
+	}
+	return id;
+}
+
+/**
+ * What tells one password from another in a pool's identity: a number for the password `source` gives now, never the
  * password itself, with the password, which the redactor removes from failures. Undefined when the source fails or
  * gives no password: such a database shares nothing, and its connections fail as they would alone (#6560).
  * @param {string | (() => Promise<string>) | undefined} source
@@ -503,7 +523,7 @@ async function credentialOf(source) {
 		return undefined;
 	}
 	if (typeof value !== "string" || value === "") return undefined;
-	return { key: createHash("sha256").update(value).digest("hex"), value };
+	return { key: `password:${credentialId(value)}`, value };
 }
 
 /**
