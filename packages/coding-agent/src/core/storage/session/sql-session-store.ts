@@ -1527,16 +1527,18 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<(SessionWriteResult & { remainingBlobs: readonly string[] }) | undefined> {
 		const needsSource = source.receipts.size > 0 || source.hashes.length > 0;
 		let shared: SharedForkDonor | undefined;
-		// Reads made for a store that has seen shared history need not wait for the schema: the switch is one way.
-		if (reads !== undefined || (await this.sharedHistoryForks(tx))) {
+		// Locked in whatever generation it is: the generation the entries were read in is compared below.
+		const unchecked = { ...source, epoch: undefined };
+		const sharedRead = this.leadingForkDonor(tx, header.id, unchecked, reads);
+		if (await this.sharedHistoryForks(tx)) {
 			try {
-				// Locked in whatever generation it is: the generation the entries were read in is compared below.
-				shared = await this.sharedForkDonor(
-					tx,
-					header.id,
-					{ ...source, epoch: undefined },
-					reads ?? this.sharedForkReads(header.id, source.sessionId, false),
-				);
+				shared = await (sharedRead ??
+					this.sharedForkDonor(
+						tx,
+						header.id,
+						unchecked,
+						this.sharedForkReads(header.id, source.sessionId, false),
+					));
 			} catch (error) {
 				if (needsSource || !(error instanceof SessionNotFoundError)) throw error;
 				return undefined;
@@ -2076,17 +2078,16 @@ export class SqlSessionStore implements SessionStore {
 		source: ForkArchiveSource,
 		reads: SharedForkReads | undefined,
 	) {
-		// Reads made for a store that has seen shared history need not wait for the schema: the switch is one way. They go
-		// first, with the transaction's start, before anything else the fork waits for.
-		const shared =
-			reads !== undefined || (await this.sharedHistoryForks(tx))
-				? await this.sharedForkDonor(
+		const sharedRead = this.leadingForkDonor(tx, header.id, source, reads);
+		const shared = (await this.sharedHistoryForks(tx))
+			? await (sharedRead ??
+					this.sharedForkDonor(
 						tx,
 						header.id,
 						source,
-						reads ?? this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined),
-					)
-				: undefined;
+						this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined),
+					))
+			: undefined;
 		const head = shared ?? (await this.forkDonor(tx, header.id, source));
 		await checked;
 		const { encodedForkRow } = await import("./fork-row-bytes.js");
@@ -2289,6 +2290,24 @@ export class SqlSessionStore implements SessionStore {
 		});
 		if (!remainingBlobs.finished) await this.finishFork(tx, header.id);
 		return { lastSeq: seq, epoch: remainingBlobs.epoch, remainingBlobs: remainingBlobs.remaining };
+	}
+
+	/**
+	 * The donor `reads` read, when the fork made them, asked for at once: its reads then go out beside the schema check,
+	 * in one wait for the connection, as a `create`'s first read does. The fork uses it only once the schema it checks in
+	 * this transaction has shared history: a store that saw shared history may meet a database whose schema says
+	 * otherwise, and a fork there never names its source's rows. Unused, its failure is nobody's.
+	 */
+	private leadingForkDonor(
+		tx: SqliteExecutor,
+		child: string,
+		source: ForkArchiveSource,
+		reads: SharedForkReads | undefined,
+	): Promise<SharedForkDonor> | undefined {
+		if (reads === undefined) return undefined;
+		const read = this.sharedForkDonor(tx, child, source, reads);
+		read.catch(() => {});
+		return read;
 	}
 
 	/** Notes the sessions session `id`'s segments name, which a fork of it locks. */
