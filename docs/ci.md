@@ -4,17 +4,17 @@ Pull requests need `test (all platforms)` and CodeQL results. Releases use a sep
 
 ## Workflow overview
 
-- [Tests](../.github/workflows/test.yml) runs on pushes to `main` and when a pull request opens, gets a push, reopens or changes draft status. It runs tests and archive smoke checks on Linux and Windows.
+- [Tests](../.github/workflows/test.yml) runs on pushes to `main` and when a pull request opens, gets a push, reopens or changes draft status. It runs tests and archive smoke checks on Linux and Windows, and the root unit and integration suites on macOS.
 - [Cancel closed pull request runs](../.github/workflows/cancel-closed-pr-runs.yml) runs when a pull request closes, including after a merge. The `cancel` job stops queued and running `test.yml` runs for that PR without checking out its code.
 - [CodeQL](../.github/workflows/codeql.yml) runs on pushes to `main`, on PRs targeting any branch and weekly. The `analyze` job scans GitHub Actions, JavaScript and TypeScript, and Rust. Keep GitHub's CodeQL default setup disabled so this workflow can upload results.
-- [macOS tests](../.github/workflows/macos-tests.yml) runs selected root or coding-agent test files on a branch a maintainer dispatches. It is not a required check.
+- [macOS tests](../.github/workflows/macos-tests.yml) runs selected root, coding-agent or native test files on a branch a maintainer dispatches. It is not a required check.
 - [Warm toolchain cache](../.github/workflows/warm-toolchain-cache.yml) warms Linux and Windows release caches on pushes to `main` or a manual dispatch on `main`.
 - [Warm macOS release cache](../.github/workflows/warm-macos-release-cache.yml) warms the macOS release cache on pushes to `main` or a manual dispatch on `main`.
 - [Publish](../.github/workflows/publish.yml) runs on release tag pushes. Use manual dispatch only for [recovery](#direct-release-trigger-and-recovery).
 
 ## Tests
 
-- `unit-tests` and `integration-tests` run the root suites on Linux and Windows. The first Linux unit-test shard also runs the release's in-place update check on the build (see [Release pipeline](#release-pipeline)).
+- `unit-tests` and `integration-tests` run the root suites on Linux, Windows and macOS (Apple silicon). The first Linux unit-test shard also runs the release's in-place update check on the build (see [Release pipeline](#release-pipeline)).
 - `agent-suite` runs the coding-agent suite on both platforms.
 - `packages-suite` runs the AI and other compiled workspace packages' suites on both platforms.
 - `storage-conformance` runs the database-backed suites on Linux.
@@ -37,10 +37,12 @@ npm run test:integration -- --shard=1/12
 npm run test --workspace=@bastani/atomic -- --shard=1/9
 ```
 
-Keep Vitest's default worker sizing and file isolation. If one file dominates a shard, split it by topic. If the weights in `test/helpers/test-file-durations.json` are stale, download `test-diagnostics-*` artifacts from several recent runs. Run the first command for each run ID, then update the weights:
+The macOS shards (six per suite) balance by the Linux weights, since the record has no macOS entry.
+
+Keep Vitest's default worker sizing and file isolation. If one file dominates a shard, split it by topic. If the weights in `test/helpers/test-file-durations.json` are stale, download the Linux and Windows `test-diagnostics-*` artifacts from several recent runs. Run the first command for each run ID, then update the weights:
 
 ```sh
-gh run download "$run_id" -p 'test-diagnostics-*' -D "/tmp/test-reports/$run_id"
+gh run download "$run_id" -p 'test-diagnostics-*-x64-*' -D "/tmp/test-reports/$run_id"
 bun run scripts/test-file-durations.ts /tmp/test-reports/*/*/*.json
 ```
 
@@ -54,7 +56,7 @@ Read the job's `timeout-minutes` in the workflow. It covers setup, tests and tea
 
 ### macOS test dispatch
 
-A maintainer can run specific tests on the chosen branch. Pick `unit`, `integration`, or `agent` and provide space-separated `.test.ts` paths from that project's directory: `test/unit/`, `test/integration/`, or `packages/coding-agent/test/`.
+Every pull request runs the root unit and integration suites on macOS. The coding-agent suite and the native Rust tests do not run there, so a maintainer can run specific tests on the chosen branch. Pick `unit`, `integration`, or `agent` and provide space-separated `.test.ts` paths from that project's directory: `test/unit/`, `test/integration/`, or `packages/coding-agent/test/`.
 
 ```sh
 gh workflow run macos-tests.yml --ref "$branch" \
@@ -74,13 +76,13 @@ Link the run from the PR if the change depends on macOS validation.
 
 ## Runners
 
-`test.yml` and `codeql.yml` use repository-specific `namespace-profile-atomic-ci-*` profiles. In the [Namespace profile editor](https://cloud.namespace.so/workspace/actions/profiles), set their Access Level to Restricted. For the exact job mapping, see `runs-on` in each workflow. If a job stays queued, check that its profile exists and that Namespace has capacity.
+`test.yml` and `codeql.yml` use repository-specific `namespace-profile-atomic-ci-*` profiles, including `namespace-profile-atomic-ci-macos-arm64-6x14` for the macOS shards. In the [Namespace profile editor](https://cloud.namespace.so/workspace/actions/profiles), set their Access Level to Restricted. For the exact job mapping, see `runs-on` in each workflow. If a job stays queued, check that its profile exists and that Namespace has capacity.
 
 Most release jobs use inline `nscloud-*` labels. Both macOS release targets use `namespace-profile-atomic-release-macos-arm64-6x14`. The Intel build runs its smoke test under Rosetta. Keep `publish-npm` on GitHub-hosted `ubuntu-latest`. npm requires a GitHub-hosted runner for trusted publishing and provenance.
 
 ### Sizing
 
-The test suites use `8x16` profiles on both platforms. Smaller jobs use `4x8`. Check CPU, memory and step logs before resizing. Set up the new profile with the same access and cache rules before changing `runs-on`.
+The test suites use `8x16` profiles on Linux and Windows and the `6x14` Apple silicon profile on macOS. Smaller jobs use `4x8`. The workspace's macOS capacity (160 vCPU) is shared with release builds, so one run's twelve macOS shards use under half of it. Add macOS shards only after checking that limit with `nsc workspace concurrency`. Check CPU, memory and step logs before resizing. Set up the new profile with the same access and cache rules before changing `runs-on`.
 
 ### Checkout and cache trust model
 
@@ -96,7 +98,7 @@ Open the PR's **Files changed** tab before approving each run from a fork. If it
 
 In `test.yml`, `model-data` restores a verified snapshot from `main` for pull requests. It fetches the catalogs once if there is no valid snapshot, and on pushes to `main`. The other jobs download the same run artifact, including its validation manifest, and build offline. A failed shard can rerun against the same artifact without checking upstream again.
 
-All work jobs wait for this short catalog-only job. It installs no dependencies and prevents typecheck and the suites from testing different catalogs. A warm pull-request run can use older data until `main` refreshes the cache. The separate manual macOS workflow still restores or hydrates independently, and releases fetch live data.
+All work jobs wait for this short catalog-only job. It installs no dependencies and prevents typecheck and the suites from testing different catalogs. A warm pull-request run can use older data until `main` refreshes the cache. The manual macOS workflow still restores or hydrates independently, and releases fetch live data.
 
 Transport and session tests use model inputs from `test/helpers/catalog-model-fixtures.ts`. Add only the entries a test needs to `test/fixtures/model-catalog.json`; do not refresh this fixture as part of catalog hydration. Tests of catalog generation should run the generator on fixed upstream inputs. Tests that need the generated catalog should use an untyped lookup such as `builtinModels().getModel(provider, id)` and skip with a reason if the upstream entry is absent. The CI contract rejects typed lookups of literal IDs, since removing one upstream should not break typecheck.
 
