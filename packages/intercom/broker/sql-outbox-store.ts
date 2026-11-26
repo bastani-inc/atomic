@@ -178,9 +178,9 @@ export function rowTransaction(): SqliteTransactionOptions {
 /**
  * S2 outbox on the shared storage adapter's database, in `<prefix>intercom_outbox`. Every read-modify-write runs in
  * one `BEGIN IMMEDIATE` transaction, and every age is measured on the database clock. On a database whose transactions
- * run concurrently (PostgreSQL), an enqueue holds its recipient's domain (`recipientTransaction`); a claim locks the
- * recipient's rows in sequence order and every write of a claimed row is one statement guarded by its claim token
- * (`rowTransaction`), so no write waits for another recipient's (#6560).
+ * run concurrently (PostgreSQL), an enqueue holds its recipient's domain (`recipientTransaction`); a claim holds its
+ * recipient's claim domain and locks the recipient's rows in sequence order, and every write of a claimed row is one
+ * statement guarded by its claim token (`rowTransaction`), so no write waits for another recipient's (#6560).
  */
 export function openSqlOutboxStore(options: IntercomBrokerStateOptions): Promise<SqlOutboxStore> {
 	// Its schema checks answer from one read of the catalog, shared with an open around it: a current schema costs
@@ -192,7 +192,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 	const { database } = options;
 	const table = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_outbox`;
 	const { types, nowMs, greatest, lockClause, name: dialect } = dialectOf(database);
-	/** Claims, claim writes and expiry: each decides on the rows it locks (#6560). */
+	/** Claim writes and expiry: each decides on the rows it locks (#6560). */
 	const fenced = rowTransaction();
 	const ageSince = (column: string) => greatest("0", `${nowMs} - ${column}`);
 	// In a serial transaction, so brokers opening a new store at once take turns creating it (#5054).
@@ -557,6 +557,11 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				// this claim for it. It does not skip a locked row (SKIP LOCKED): an earlier row passed over could be handed out
 				// after a later one, and another claimant's live claim would go unseen. Another claimant's live claim holds
 				// every row; otherwise each row not live is claimed, and the claimant's own live claims stay in flight.
+				// The recipient's claims take turns: the transaction's start takes the lock domain `<outbox>_claims:<recipient>`,
+				// before the statement takes its snapshot. The statement sees only rows its snapshot holds, so without it a claim
+				// made meanwhile of a row queued meanwhile went unseen: this claim could take over a claimant's older row it was
+				// late to renew while that claimant held a newer one, and two brokers would hand out one recipient's messages at
+				// once, the newer possibly first. Sends, settlements and other recipients' claims do not take it.
 				const statement: SqliteStatement = {
 					sql: `WITH locked AS MATERIALIZED (
 						SELECT message_id, sequence, state, claimant_id, claim_renewed_at FROM ${table}
@@ -588,7 +593,11 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 						if (holder !== null) return { status: "held", claimantId: holder } as const;
 						return claimed(records.filter((record) => record.message_id !== null));
 					},
-					{ ...fenced, leading: [statement], leadingOnly: true },
+					{
+						concurrency: { kind: "serial", domain: `${table}_claims:${targetIdentity}` },
+						leading: [statement],
+						leadingOnly: true,
+					},
 				);
 			}
 			// SQLite and libSQL: a write statement takes the database's write lock even when it changes nothing, so a read

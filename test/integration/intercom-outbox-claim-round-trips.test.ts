@@ -191,15 +191,104 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claims on Pos
 	});
 });
 
+describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claim order on PostgreSQL (#6560)", () => {
+	test("a claim that takes over a late claimant's row waits for that claimant's newer claim, so one session's messages stay in order (#6560)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			// A role that owns the database, so the row policy below applies to it (a superuser would bypass it).
+			const owner = `atomic_claim_order_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+			const password = `pw-${randomUUID()}`;
+			await scope.admin.exec(`CREATE ROLE ${owner} LOGIN PASSWORD '${password}'`);
+			try {
+				await scope.admin.exec(`GRANT ${owner} TO CURRENT_USER`);
+				await scope.admin.exec(`ALTER DATABASE ${scope.name} OWNER TO ${owner}`);
+				const urlFor = (stalls: boolean) => {
+					const url = new URL(scope.url);
+					url.username = owner;
+					// The claimant whose claim statement stalls is told apart by a setting of its connections.
+					if (stalls) url.searchParams.set("options", "-c atomic_test.stall_claim=on");
+					return url.href;
+				};
+				const openAs = (stalls: boolean) => scope.open({ url: urlFor(stalls), password });
+				const late = await openIntercomBrokerState({ openDatabase: () => openAs(false) });
+				const takeover = await openIntercomBrokerState({ openDatabase: () => openAs(true) });
+				const control = await openAs(false);
+				try {
+					// The test's hook into the server: while the test holds advisory lock 6560, the stalling claimant's claim
+					// statement waits as it reads row m-1, after it took its snapshot and before it locks the row. Nothing else
+					// waits: other connections, and the stalling claimant's other statements, pass.
+					await control.exec(`
+						CREATE FUNCTION atomic_test_claim_stall(id text) RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$
+						BEGIN
+							IF id = 'm-1' AND current_setting('atomic_test.stall_claim', true) = 'on'
+								AND current_query() LIKE '%FOR UPDATE%' THEN
+								PERFORM pg_advisory_xact_lock_shared(6560);
+							END IF;
+							RETURN true;
+						END $$;
+						ALTER TABLE intercom_outbox ENABLE ROW LEVEL SECURITY;
+						ALTER TABLE intercom_outbox FORCE ROW LEVEL SECURITY;
+						CREATE POLICY atomic_test_claim_stall ON intercom_outbox USING (atomic_test_claim_stall(message_id));
+					`);
+					await enqueue(late.state, "m-1", "target-a");
+					assert.deepEqual(claimedIds(await claim(late.state, "broker-late", "target-a")), ["m-1"]);
+					let release!: () => void;
+					const released = new Promise<void>((resolve) => {
+						release = resolve;
+					});
+					let held!: () => void;
+					const holding = new Promise<void>((resolve) => {
+						held = resolve;
+					});
+					const stall = control.transaction(async (tx) => {
+						await tx.get("SELECT pg_advisory_xact_lock(6560)::text AS locked");
+						held();
+						await released;
+					}, rowTransaction());
+					await holding;
+					// To this claimant, a claim unrenewed for 50 ms is stale: broker-late is late to renew m-1.
+					const takingOver = takeover.state.outbox.claim({
+						claimantId: "broker-takeover",
+						targetIdentity: "target-a",
+						staleAfterMs: 50,
+					});
+					await waitForLockWaiter(control, "advisory");
+					// m-2 is queued after the takeover's statement took its snapshot, and broker-late, which still holds m-1 live
+					// by its own count, claims it.
+					await enqueue(late.state, "m-2", "target-a");
+					const newer = claim(late.state, "broker-late", "target-a");
+					await Promise.race([newer, new Promise((resolve) => setTimeout(resolve, 500))]);
+					release();
+					await stall;
+					const [taken, newest] = [claimedIds(await takingOver), await newer];
+					assert.deepEqual(taken, ["m-1"]);
+					// Before the fix broker-late claimed m-2 while the takeover claimed m-1: two brokers held one session's
+					// messages at once, and broker-late could deliver m-2 before m-1 arrived.
+					assert.deepEqual(newest, { status: "held", claimantId: "broker-takeover" });
+				} finally {
+					await control.close();
+					await takeover.bus.close();
+					await takeover.state.close();
+					await late.bus.close();
+					await late.state.close();
+				}
+			} finally {
+				await scope.admin.exec(`DROP DATABASE IF EXISTS ${scope.name} WITH (FORCE)`);
+				await scope.admin.exec(`DROP ROLE IF EXISTS ${owner}`);
+			}
+		});
+	});
+});
+
 /** How long a write that does not wait for the claim may take, far below the time the claim is kept waiting. */
 const UNBLOCKED_MS = 5_000;
 
-/** Waits until a session of the database waits for a row lock. */
-async function waitForLockWaiter(watcher: SqliteDatabase): Promise<void> {
+/** Waits until a session of the database waits for a row lock, or with `advisory` for an advisory lock. */
+async function waitForLockWaiter(watcher: SqliteDatabase, kind: "row" | "advisory" = "row"): Promise<void> {
+	const events = kind === "row" ? "('transactionid', 'tuple')" : "('advisory')";
 	for (;;) {
 		const waiting = await watcher.get<{ waiting: number | string }>(
 			`SELECT count(*) AS waiting FROM pg_stat_activity
-			WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event IN ('transactionid', 'tuple')`,
+			WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event IN ${events}`,
 		);
 		if (Number(waiting?.waiting) > 0) return;
 		await new Promise((resolve) => setTimeout(resolve, 20));
