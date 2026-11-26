@@ -37,7 +37,6 @@ import {
 	type StorageSettingsSelection,
 	selectStorage,
 } from "../core/storage/selection.js";
-import type { SessionOpenMarkerBuild } from "../core/storage/session/sql-session-store.js";
 import type { SessionStore } from "../core/storage/session/types.js";
 import { SESSION_FORMAT_VERSION } from "../core/storage/session/types.js";
 import {
@@ -63,7 +62,7 @@ const JOIN_USAGE = `${APP_NAME} storage join <url> [--token-file <path> | --pass
                             [--prefix <prefix>]`;
 
 const MIGRATE_USAGE = `${APP_NAME} storage migrate [--db <url> [--password-file <path> | --token-file <path> | --auth azure|aws|gcp]]
-                            [--prefix <prefix>] [--enable-shared-history-forks [--force]]`;
+                            [--prefix <prefix>]`;
 
 const HELP = `Usage:
   ${APP_NAME} storage status [--json]
@@ -95,11 +94,6 @@ Commands:
            role (DML privileges only) run no DDL. On PostgreSQL the tables live in schema atomic;
            tables an earlier release created in public are moved there, and processes of that release
            still using public are refused. Running it again on a current schema changes nothing.
-           With --enable-shared-history-forks, also turns on forks that share their parent's
-           history instead of copying it, in the store this directory's sessions use (a local
-           SQLite file too) or the one --db names. One way: Atomic releases without the feature
-           refuse the store afterwards, so upgrade every machine first. Refused while sessions of
-           such a release are running; --force turns it on anyway.
   move-snapshot-chunks
            Move the snapshot chunk table in a closed local SQLite file. Uses exclusive access to
            checkpoint after each batch, so the log does not need room for the whole copy.
@@ -129,10 +123,6 @@ Options:
                         PostgreSQL URLs take exactly one of --password-file, --token-file and --auth, and
                         never a password in the URL
   --prefix <prefix>     Table prefix, to share one database between projects or teams
-  --enable-shared-history-forks
-                        migrate: let new forks share their parent's history instead of copying it
-  --force               migrate --enable-shared-history-forks: turn it on even while sessions of an older
-                        Atomic are running; they fail at their next read or write
   --sessions            export, import: sessions, which is all they move
   --limit <n>           export: at most n sessions, most recently modified first
   --since <time>        export: only sessions modified at or after <time>, a date such as
@@ -166,8 +156,6 @@ export type StorageCommand =
 			readonly kind: "migrate";
 			/** `--db` and its credential; this machine's shared selection without it. */
 			readonly database?: MigrationDatabase;
-			/** `--enable-shared-history-forks`, with `--force` or not. */
-			readonly sharedHistoryForks?: { readonly force: boolean };
 	  }
 	| { readonly kind: "move-snapshot-chunks"; readonly file: string; readonly prefix: string }
 	| {
@@ -213,15 +201,10 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	const positional: string[] = [];
 	const values = new Map<string, string>();
 	let json = false;
-	const flags = new Set<string>();
 	for (let index = 0; index < rest.length; index++) {
 		const arg = rest[index]!;
 		if (command === "status" && arg === "--json") {
 			json = true;
-			continue;
-		}
-		if (command === "migrate" && (arg === "--enable-shared-history-forks" || arg === "--force")) {
-			flags.add(arg);
 			continue;
 		}
 		if ((command === "export" || command === "import") && arg === "--sessions") continue;
@@ -269,17 +252,12 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	}
 	if (command === "migrate") {
 		if (positional.length > 0) throw new StorageCommandError(`Usage: ${MIGRATE_USAGE}`);
-		if (flags.has("--force") && !flags.has("--enable-shared-history-forks"))
-			throw new StorageCommandError("--force qualifies --enable-shared-history-forks; pass both.");
-		const forks = flags.has("--enable-shared-history-forks")
-			? { sharedHistoryForks: { force: flags.has("--force") } }
-			: {};
 		const url = values.get("--db");
 		if (url === undefined) {
 			for (const option of ["--token-file", "--password-file", "--auth", "--prefix"])
 				if (values.has(option))
 					throw new StorageCommandError(`${option} qualifies --db; pass the database URL with --db too.`);
-			return { kind: "migrate", ...forks };
+			return { kind: "migrate" };
 		}
 		const checked = checkSharedDatabaseArguments({
 			url,
@@ -297,7 +275,6 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 				...(checked.auth === undefined ? {} : { auth: checked.auth }),
 				...(prefix === undefined ? {} : { prefix }),
 			},
-			...forks,
 		};
 	}
 	const named = namedStorage(values);
@@ -651,8 +628,6 @@ async function migrate(
 	const settings = command.database === undefined ? undefined : migrateDatabaseSelection(command.database, cwd);
 	const selection =
 		settings === undefined ? effectiveSharedSelection(cwd, agentDir) : selectStorage(settings, "cli", "--db", "");
-	if (command.sharedHistoryForks !== undefined && (selection === undefined || selection.kind !== "adapter"))
-		return await enableSharedHistoryForks(undefined, command.sharedHistoryForks.force, options, log);
 	if (selection === undefined) {
 		log(
 			`No shared storage is selected here (the \`storage\` setting, --storage, ATOMIC_STORAGE or ATOMIC_PROFILE=ci), so there is nothing to migrate; name a database with --db.`,
@@ -683,6 +658,9 @@ async function migrate(
 	} finally {
 		await opened.close();
 	}
+	// Opening the sessions also switches them to shared-history forks once no older Atomic runs a session there (#6560),
+	// judging those sessions' markers as a running session does.
+	await import("../core/session-open-markers.js");
 	const sessions = await new StorageProvider().openSessionStore(selection, { agentDir, domain: "sessions" });
 	try {
 		// The fork staging table, which a runtime role without DDL cannot create when its first bounded clone needs it
@@ -726,103 +704,7 @@ async function migrate(
 		log(
 			`Searches of session history will read each session a page at a time: the pg_trgm extension, which their index uses, is not installed in this database and this role could not install it. On Azure Database for PostgreSQL and Azure HorizonDB, add pg_trgm to the server parameter azure.extensions; elsewhere, grant this role CREATE on the database or have an administrator run CREATE EXTENSION pg_trgm in it. Then run \`${APP_NAME} storage migrate\` again.`,
 		);
-	if (command.sharedHistoryForks === undefined) return 0;
-	return await enableSharedHistoryForks(
-		command.database === undefined ? undefined : selection,
-		command.sharedHistoryForks.force,
-		options,
-		log,
-	);
-}
-
-/**
- * `atomic storage migrate --enable-shared-history-forks` (#6560): turns on forks that share their parent's history in
- * `named`, or in the store this directory's sessions use. Refused while sessions of older builds run there, unless
- * `force`.
- */
-async function enableSharedHistoryForks(
-	named: StorageSelection | undefined,
-	force: boolean,
-	options: StorageCommandOptions,
-	log: (line: string) => void,
-): Promise<number> {
-	const settings = SettingsManager.create(options.cwd, options.agentDir, {
-		projectTrusted: projectTrust(options.cwd, options.agentDir),
-	}).getSettings();
-	const storageOptions = { agentDir: options.agentDir, settings };
-	const selection = named ?? selectSessionStorageWithSettings(options.cwd, storageOptions);
-	const described = "load" in selection ? "the selected session store" : describeStorageSelection(selection);
-	if (
-		!("load" in selection) &&
-		(selection.kind === "memory" ||
-			selection.kind === "jsonl" ||
-			(selection.kind === "sqlite" && selection.path === ":memory:"))
-	) {
-		log(
-			`Shared-history forks need sessions in a SQLite, libSQL or PostgreSQL database, but sessions here use ${described}; forks there keep copying their parent's history.`,
-		);
-		return 1;
-	}
-	const store =
-		named === undefined
-			? await resolveSessionStore(options.cwd, storageOptions)
-			: await new StorageProvider().openSessionStore(named, { agentDir: options.agentDir, domain: "sessions" });
-	try {
-		const [{ SqlSessionStore }, { sessionOpenMarkerRuns }] = await Promise.all([
-			import("../core/storage/session/sql-session-store.js"),
-			import("../core/session-open-markers.js"),
-		]);
-		if (!(store instanceof SqlSessionStore)) {
-			log(
-				`Shared-history forks need sessions in a SQLite, libSQL or PostgreSQL database, but sessions here use ${described}; forks there keep copying their parent's history.`,
-			);
-			return 1;
-		}
-		const outcome = await store.enableSharedHistoryForks({ force, live: sessionOpenMarkerRuns });
-		if (outcome.status === "already") {
-			log(`Shared-history forks are already on in ${described}; nothing changed.`);
-			return 0;
-		}
-		if (outcome.status === "refused") {
-			log(
-				[
-					`Shared-history forks were not turned on in ${described}. ${plural(outcome.holders.length, "running session")} of an older Atomic still ${outcome.holders.length === 1 ? "uses" : "use"} it, and an older Atomic would read a fork that shares history as if it had none:`,
-					...olderProcesses(outcome.holders),
-					`Upgrade Atomic on those machines and restart those sessions, or wait for them to end, then run this again. To turn it on now anyway, add --force: those sessions then stop at their next read or write with StorageSchemaVersionError.`,
-				].join("\n"),
-			);
-			return 1;
-		}
-		if (outcome.bypassed.length > 0)
-			log(
-				[
-					`Warning: --force turned on shared-history forks while ${plural(outcome.bypassed.length, "running session")} of an older Atomic still ${outcome.bypassed.length === 1 ? "uses" : "use"} ${described}:`,
-					...olderProcesses(outcome.bypassed),
-					`They stop at their next read or write with StorageSchemaVersionError. Upgrade Atomic on those machines before restarting them.`,
-				].join("\n"),
-			);
-		log(
-			`Turned on shared-history forks in ${described}: new forks share their parent's history instead of copying it. Atomic releases without this feature now refuse this store, so run only this release or later against it.`,
-		);
-		return 0;
-	} finally {
-		await store.close();
-	}
-}
-
-/** One line per process among `markers`: its host, pid and Atomic version, and how many sessions it has open. */
-function olderProcesses(markers: readonly SessionOpenMarkerBuild[]): string[] {
-	const processes = new Map<string, { marker: SessionOpenMarkerBuild; sessions: number }>();
-	for (const marker of markers) {
-		const key = `${marker.host}\0${marker.token}`;
-		const known = processes.get(key);
-		if (known === undefined) processes.set(key, { marker, sessions: 1 });
-		else known.sessions++;
-	}
-	return [...processes.values()].map(
-		({ marker, sessions }) =>
-			`  ${marker.host}, pid ${marker.pid}: ${marker.build === undefined ? "an Atomic release from before shared-history forks" : `Atomic ${marker.build}`} (${plural(sessions, "session")})`,
-	);
+	return 0;
 }
 
 /** Whether the PostgreSQL extension `name` is installed in `database`'s current database. */

@@ -1,21 +1,25 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { sessionOpenMarkerRuns } from "../../packages/coding-agent/src/core/session-open-markers.js";
-import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import "../../packages/coding-agent/src/core/session-open-markers.js";
+import type { SqliteDatabase, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	renderStorageIdentifiers,
 	storageMigrationTable,
 } from "../../packages/coding-agent/src/core/storage/prefix.js";
+import {
+	schemaCatalogOf,
+	withStorageSchemaCatalog,
+} from "../../packages/coding-agent/src/core/storage/schema-catalog.js";
 import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
 import { sessionForkTables } from "../../packages/coding-agent/src/core/storage/session/fork-schema.js";
 import {
-	SESSION_PRESENCE_TABLES,
 	SESSION_TABLES,
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionRecordHeader } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import {
 	bytesOf,
@@ -27,14 +31,14 @@ import {
 } from "./storage-conformance-matrix-fork-staging-helpers.js";
 
 /**
- * Forks that share their parent's history are opt-in (#6560): only `atomic storage migrate
- * --enable-shared-history-forks` raises the sessions schema to 3, never a fork. It refuses while sessions of an older
- * Atomic run there, and once it is done a build that does not read the new schema refuses the store instead of reading
- * a fork's own rows as its whole history. Runs on every backend of the storage matrix.
+ * Forks share their parent's history by themselves (#6560): a session store's open, and `atomic storage migrate`,
+ * switch the sessions schema to 3, with the fork tables, in one transaction. The switch waits while a session of an
+ * older Atomic runs on the database, and forks copy meanwhile; once the database is switched, a build that does not
+ * read schema 3 refuses it instead of reading a fork's own rows as its whole history. Runs on every backend of the
+ * storage matrix.
  */
 
-const OLD_HOST = "older-atomic-host";
-/** A heartbeat older than any marker of another host counts for. */
+/** A heartbeat older than any marker counts for. */
 const LONG_AGO_MS = 3_600_000;
 
 const tables = (prefix: string) => renderStorageIdentifiers("sessions", SESSION_TABLES, prefix);
@@ -49,25 +53,20 @@ async function tableExists(database: SqliteDatabase, table: string): Promise<boo
 	return (await database.get(probe.sql, ...probe.params)) !== undefined;
 }
 
-/**
- * The marker an Atomic release from before shared-history forks keeps for a session it runs, as its own statement writes
- * it: the sessions schema it reads (2, or none before #5065) and no Atomic version. `ageMs` back-dates its heartbeat.
- */
-async function olderBuildMarker(
-	database: SqliteDatabase,
-	prefix: string,
-	marker: { sessionId: string; pid: number; schemaVersion: number | null; ageMs?: number },
-): Promise<void> {
-	const open = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, prefix).open;
-	await database.run(
-		`INSERT INTO ${open} (session_id, token, pid, host, heartbeat_at, schema_version) VALUES (?, ?, ?, ?, ${dialectOf(database).nowMs} - ?, ?)`,
-		marker.sessionId,
-		`${marker.pid}-0123456789abcdef`,
-		marker.pid,
-		OLD_HOST,
-		marker.ageMs ?? 0,
-		marker.schemaVersion,
+/** The versions the migration ledger records for the sessions domain, where the dialect keeps one. */
+async function ledger(database: SqliteDatabase, prefix: string): Promise<number[] | undefined> {
+	if (!dialectOf(database).versionedMigrations) return undefined;
+	const rows = await database.all(
+		`SELECT version FROM ${storageMigrationTable(prefix)} WHERE domain = 'sessions' ORDER BY version`,
 	);
+	return rows.map((row) => Number(row.version));
+}
+
+/** Whether every fork table exists, the fork segments' first. */
+async function forkTablesExist(database: SqliteDatabase, prefix: string): Promise<boolean> {
+	for (const table of Object.values(sessionForkTables(prefix)))
+		if (!(await tableExists(database, table))) return false;
+	return true;
 }
 
 /** What `forkTo` does for a whole-session fork in one store: `createFork` with the complete feed. */
@@ -89,131 +88,171 @@ async function ownEntryRows(database: SqliteDatabase, prefix: string, id: string
 	return Number(row?.n);
 }
 
-const enable = (store: SqlSessionStore, force = false) =>
-	store.enableSharedHistoryForks({ force, live: sessionOpenMarkerRuns });
+/**
+ * A store at schema 2, as an older Atomic left it: opened while that build's session ran, with a chunked entry, then
+ * that session ended. Its next open switches it.
+ */
+async function schemaTwoStore(database: SqliteDatabase, prefix: string): Promise<void> {
+	const older = await holdOlderBuildMarker(database, prefix);
+	const store = await SqlSessionStore.open(database, { prefix });
+	await seedSource(store, "src", "older");
+	await store.close();
+	assert.equal(await schemaVersion(database, prefix), 2);
+	await older.release();
+}
+
+/** Every statement `database` is sent, and every transaction it starts, until `stop`. */
+function recording(database: SqliteDatabase) {
+	const statements: string[] = [];
+	let transactions = 0;
+	const recorded = new Proxy(database, {
+		get(target, key, receiver) {
+			const value = Reflect.get(target, key, receiver) as unknown;
+			if (key === "transaction") {
+				return (...args: unknown[]) => {
+					transactions++;
+					return (value as (...a: unknown[]) => unknown).apply(target, args);
+				};
+			}
+			if (key === "get" || key === "all" || key === "run" || key === "exec")
+				return (sql: string, ...params: SqliteValue[]) => {
+					statements.push(sql);
+					return (value as (sql: string, ...p: SqliteValue[]) => unknown).call(target, sql, ...params);
+				};
+			return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+		},
+	});
+	return { database: recorded, statements, transactions: () => transactions };
+}
 
 for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
-	describe.skipIf(backend.skipReason !== undefined)(`turning on shared-history forks on ${name} (#6560)`, () => {
+	describe.skipIf(backend.skipReason !== undefined)(`the switch to shared-history forks on ${name} (#6560)`, () => {
 		test(
-			"a fork on schema 2 copies the parent's rows and leaves the schema where it was",
+			"a new store is at schema 3, with the fork tables, from its first open",
 			() =>
 				withBackendScope(backend, async (scope) => {
 					const database = await scope.connect();
 					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+
+					assert.equal(await schemaVersion(database, scope.prefix), 3);
+					assert.equal(await forkTablesExist(database, scope.prefix), true);
+					assert.equal(await database.transaction((tx) => store.sharedHistoryForks(tx)), true);
+					const recorded = await ledger(database, scope.prefix);
+					if (recorded !== undefined) assert.deepEqual(recorded, [1, 2, 3]);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"a store at schema 2 switches at its next open, its history unchanged",
+			() =>
+				withBackendScope(backend, async (scope) => {
+					const database = await scope.connect();
+					await schemaTwoStore(database, scope.prefix);
+					const store = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
+
+					assert.equal(await schemaVersion(database, scope.prefix), 3, "that open switched it");
+					assert.equal(await forkTablesExist(database, scope.prefix), true);
+					const recorded = await ledger(database, scope.prefix);
+					if (recorded !== undefined) assert.deepEqual(recorded, [1, 2, 3]);
+					assert.equal((await store.load("src")).entries.length, 13, "the history is unchanged");
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"an open that switches the database refreshes the schema catalog it read, so stores it opens next see the fork tables",
+			() =>
+				withBackendScope(backend, async (scope) => {
+					const database = await scope.connect();
+					await schemaTwoStore(database, scope.prefix);
+					const segments = sessionForkTables(scope.prefix).forkSegments;
+
+					const seen = await withStorageSchemaCatalog(database, storageMigrationTable(scope.prefix), async () => {
+						assert.equal((await schemaCatalogOf(database))?.hasTable(segments), false, "read before the switch");
+						await SqlSessionStore.open(database, { prefix: scope.prefix });
+						return (await schemaCatalogOf(database))?.hasTable(segments);
+					});
+
+					assert.equal(seen, true);
+					assert.equal(await schemaVersion(database, scope.prefix), 3);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"while a session of an older Atomic runs, opens leave the schema alone and forks copy; once it ends, the next open switches",
+			() =>
+				withBackendScope(backend, async (scope) => {
+					const database = await scope.connect();
+					const older = await holdOlderBuildMarker(database, scope.prefix, { pid: 4101 });
+					const unmarked = await holdOlderBuildMarker(database, scope.prefix, {
+						sessionId: "before-5065",
+						pid: 4102,
+						schemaVersion: null,
+					});
+					const crashed = await holdOlderBuildMarker(database, scope.prefix, {
+						sessionId: "crashed",
+						pid: 4103,
+					});
+					await crashed.age(LONG_AGO_MS);
+					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
 					await seedSource(store, "src", "copy");
-					assert.equal(await schemaVersion(database, scope.prefix), 2, "a chunked entry raised it to 2");
 
 					const created = await fork(store, "src", header("child", "src"));
-
 					assert.equal(created.lastSeq, 13);
-					assert.equal(await ownEntryRows(database, scope.prefix, "child"), 13, "the child holds its own rows");
-					assert.equal(await schemaVersion(database, scope.prefix), 2, "a fork never raises the schema");
+					assert.equal(await ownEntryRows(database, scope.prefix, "child"), 13, "the fork copied its history");
+					assert.equal(await schemaVersion(database, scope.prefix), 2, "neither the open nor the fork switched");
 					assert.equal(await tableExists(database, sessionForkTables(scope.prefix).forkSegments), false);
 					assert.equal(await database.transaction((tx) => store.sharedHistoryForks(tx)), false);
+
+					await older.release();
+					await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
+					assert.equal(
+						await schemaVersion(database, scope.prefix),
+						2,
+						"a build that records no version still runs",
+					);
+
+					await unmarked.age(LONG_AGO_MS);
+					await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
+					assert.equal(await schemaVersion(database, scope.prefix), 3, "no older session runs any more");
+					assert.equal(await database.transaction((tx) => store.sharedHistoryForks(tx)), true);
 					assert.deepEqual((await store.load("child")).entries, (await store.load("src")).entries);
 				}),
 			SERVER_TIMEOUT_MS,
 		);
 
 		test(
-			"turning them on is refused while a session of an older Atomic runs, and goes ahead once it stopped",
+			"a session of this release does not hold the switch back",
 			() =>
 				withBackendScope(backend, async (scope) => {
 					const database = await scope.connect();
+					const older = await holdOlderBuildMarker(database, scope.prefix);
 					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
 					await store.create(header("s"), [user("e1", null, "hello", 1)]);
-					await olderBuildMarker(database, scope.prefix, { sessionId: "s", pid: 4101, schemaVersion: 2 });
-					await olderBuildMarker(database, scope.prefix, { sessionId: "t", pid: 4102, schemaVersion: null });
-					await olderBuildMarker(database, scope.prefix, {
-						sessionId: "u",
-						pid: 4103,
-						schemaVersion: 2,
-						ageMs: LONG_AGO_MS,
-					});
+					await store.openMarkers.put("s", { token: "4301-0123456789abcdef", pid: 4301, host: "this-release" });
+					await older.release();
 
-					const refused = await enable(store);
+					await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
 
-					assert.equal(refused.status, "refused");
-					assert.deepEqual(
-						refused.status === "refused"
-							? refused.holders.map(({ host, pid, sessionId, build }) => ({ host, pid, sessionId, build }))
-							: [],
-						[
-							{ host: OLD_HOST, pid: 4101, sessionId: "s", build: undefined },
-							{ host: OLD_HOST, pid: 4102, sessionId: "t", build: undefined },
-						],
-						"the two running older sessions, not the one whose process stopped long ago",
-					);
-					assert.equal(await schemaVersion(database, scope.prefix), 1, "nothing changed");
-					assert.equal(await tableExists(database, sessionForkTables(scope.prefix).forkSegments), false);
-
-					const open = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, scope.prefix).open;
-					await database.run(`UPDATE ${open} SET heartbeat_at = heartbeat_at - ?`, LONG_AGO_MS);
-					assert.deepEqual(await enable(store), { status: "enabled", bypassed: [] });
 					assert.equal(await schemaVersion(database, scope.prefix), 3);
-					for (const table of Object.values(sessionForkTables(scope.prefix)))
-						assert.equal(await tableExists(database, table), true, `${table} exists`);
-					assert.deepEqual(await enable(store), { status: "already" });
+					await store.append("s", [user("e2", "e1", "after", 2)], { expectSeq: 1 });
+					assert.equal((await store.load("s")).entries.length, 2);
 				}),
 			SERVER_TIMEOUT_MS,
 		);
 
 		test(
-			"--force turns them on while a session of an older Atomic runs, and names it",
-			() =>
-				withBackendScope(backend, async (scope) => {
-					const database = await scope.connect();
-					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
-					await store.create(header("s"), [user("e1", null, "hello", 1)]);
-					await olderBuildMarker(database, scope.prefix, { sessionId: "s", pid: 4201, schemaVersion: 2 });
-
-					const forced = await enable(store, true);
-
-					assert.equal(forced.status, "enabled");
-					assert.deepEqual(
-						forced.status === "enabled" ? forced.bypassed.map(({ pid }) => pid) : [],
-						[4201],
-						"the bypassed session is reported",
-					);
-					assert.equal(await schemaVersion(database, scope.prefix), 3);
-				}),
-			SERVER_TIMEOUT_MS,
-		);
-
-		test(
-			"a session of this release does not hold the switch back, and a store opened before it sees it in its next transaction",
-			() =>
-				withBackendScope(backend, async (scope) => {
-					const database = await scope.connect();
-					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
-					await store.create(header("s"), [user("e1", null, "hello", 1)]);
-					await store.openMarkers.put("s", { token: "4301-0123456789abcdef", pid: 4301, host: OLD_HOST });
-					const before = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
-					assert.equal(await database.transaction((tx) => before.sharedHistoryForks(tx)), false);
-
-					const operator = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
-					assert.deepEqual(await enable(operator), { status: "enabled", bypassed: [] });
-
-					assert.equal(await database.transaction((tx) => before.sharedHistoryForks(tx)), true);
-					await before.append("s", [user("e2", "e1", "after", 2)], { expectSeq: 1 });
-					assert.equal((await before.load("s")).entries.length, 2);
-					const reopened = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
-					assert.equal((await reopened.load("s")).entries.length, 2, "this release opens the store at 3");
-				}),
-			SERVER_TIMEOUT_MS,
-		);
-
-		test(
-			"two hosts turning them on at once: one does it, the other finds it done, and writers beside them commit",
+			"two hosts opening a store at schema 2 at once both end on schema 3, beside a writer that keeps committing",
 			() =>
 				withBackendScope(backend, async (scope) => {
 					const writerDb = await scope.connect();
+					await schemaTwoStore(writerDb, scope.prefix);
 					const writer = await SqlSessionStore.open(writerDb, { prefix: scope.prefix });
 					await writer.create(header("w"), [user("e1", null, "hello", 1)]);
-					const hosts = await Promise.all(
-						[0, 1].map(async () => SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix })),
-					);
+					const hosts = await Promise.all([scope.connect(), scope.connect()]);
 
 					const appends = (async () => {
 						for (let seq = 1; seq <= 6; seq++)
@@ -221,22 +260,42 @@ for (const backend of storageBackends) {
 								expectSeq: seq,
 							});
 					})();
-					const outcomes = await Promise.all(hosts.map((host) => enable(host)));
+					const opened = await Promise.all(
+						hosts.map((host) => SqlSessionStore.open(host, { prefix: scope.prefix })),
+					);
 					await appends;
 
-					assert.deepEqual(outcomes.map((outcome) => outcome.status).sort(), ["already", "enabled"]);
 					assert.equal(await schemaVersion(writerDb, scope.prefix), 3);
+					for (const store of opened)
+						assert.equal(await writerDb.transaction((tx) => store.sharedHistoryForks(tx)), true);
 					assert.equal((await writer.load("w")).entries.length, 7);
-					if (dialectOf(writerDb).versionedMigrations) {
-						const ledger = await writerDb.all(
-							`SELECT version FROM ${storageMigrationTable(scope.prefix)} WHERE domain = 'sessions' ORDER BY version`,
-						);
-						assert.deepEqual(
-							ledger.map((row) => Number(row.version)),
-							[1, 2, 3],
-							"one ledger row for version 3",
-						);
+					const recorded = await ledger(writerDb, scope.prefix);
+					if (recorded !== undefined) assert.deepEqual(recorded, [1, 2, 3], "one ledger row for version 3");
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"opening a switched store reads nothing more for the switch: no marker read, no version read, no transaction",
+			() =>
+				withBackendScope(backend, async (scope) => {
+					await (await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix })).close();
+					const warm = recording(await scope.connect());
+
+					await (await SqlSessionStore.open(warm.database, { prefix: scope.prefix })).close();
+
+					const open = `${scope.prefix}session_open`;
+					for (const sql of warm.statements) {
+						assert.ok(!sql.includes(open), `a warm open read the markers: ${sql}`);
+						assert.ok(!/max\(schema_version\)/i.test(sql), `a warm open read the version again: ${sql}`);
 					}
+					assert.equal(warm.transactions(), 0, "a warm open runs no transaction");
+					assert.equal(
+						warm.statements.length,
+						// The schema catalog and the session versions, then the snapshot and search index probes; nothing for the switch.
+						{ sqlite: 6, postgres: 4 }[dialectOf(warm.database).name] ?? -1,
+						`a warm open sent ${warm.statements.join(" | ")}`,
+					);
 				}),
 			SERVER_TIMEOUT_MS,
 		);
@@ -285,7 +344,7 @@ for (const backend of storageBackends) {
 						StorageSchemaVersionError,
 						"a new open refuses it before anything else opens",
 					);
-					await database.run(`UPDATE ${tables(scope.prefix).meta} SET schema_version = 2`);
+					await database.run(`UPDATE ${tables(scope.prefix).meta} SET schema_version = 3`);
 					assert.equal((await store.load("src")).entries.length, 13, "nothing was written meanwhile");
 				}),
 			SERVER_TIMEOUT_MS,

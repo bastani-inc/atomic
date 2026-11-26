@@ -13,7 +13,7 @@ import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
-import { schemaCatalogOf, withStorageSchemaCatalog } from "../schema-catalog.js";
+import { refreshStorageSchemaCatalog, schemaCatalogOf, withStorageSchemaCatalog } from "../schema-catalog.js";
 import { applyStorageMigrationsTogether, statementBatch } from "../statement-batches.js";
 import { sequenceRunner } from "../statement-sequence.js";
 import { sha256Hex } from "./blob-hash.js";
@@ -66,6 +66,7 @@ import {
 	type SessionSummaryText,
 } from "./session-summary.js";
 import { sessionWriteTransaction } from "./session-transactions.js";
+import { sharedHistorySwitchHost } from "./shared-history-switch.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import { type SqlSessionChatRecords, sqlChatRecords } from "./sql-chat-records.js";
 import type {
@@ -129,10 +130,11 @@ const SESSION_SCHEMA_VERSION_UNCHUNKED = 1;
 /** The sessions schema the first chunked entry raises a version 1 database to, which builds since #4954 read. */
 export const SESSION_SCHEMA_VERSION_CHUNKED = 2;
 /**
- * The sessions schema in which a fork may share its parent's history instead of copying it (#6560). Only
- * `atomic storage migrate --enable-shared-history-forks` raises a database to it, never a fork or any other write:
- * builds that know only versions 1 and 2 refuse it, in every transaction, rather than read a fork's own rows as its
- * whole history. `SqlSessionStore.sharedHistoryForks(tx)` tells a transaction whether its database is there.
+ * The sessions schema in which a fork shares its parent's history instead of copying it (#6560). A store's open, or
+ * `atomic storage migrate`, raises a database to it by itself once no session of an older build runs there
+ * (`SqlSessionStore.enableSharedHistoryForks`); a fork or any other write never does. Builds that know only versions 1
+ * and 2 refuse it, at their open and in every transaction, rather than read a fork's own rows as its whole history.
+ * `SqlSessionStore.sharedHistoryForks(tx)` tells a transaction whether its database is there.
  */
 export const SESSION_SCHEMA_VERSION_SHARED_HISTORY = 3;
 /** The schema domain of the session tables in the prefix's migration ledger. */
@@ -825,8 +827,10 @@ export class SqlSessionStore implements SessionStore {
 			presence.open,
 			database.readOnly === true ? undefined : orphanedEntryKeys,
 		);
+		let sharedHistory: boolean | undefined;
 		if (current !== undefined) {
 			legacyBlobData = current.legacyBlobData;
+			sharedHistory = current.sharedHistory;
 			if (current.orphaned)
 				await database
 					.transaction(async (tx) => {
@@ -844,15 +848,15 @@ export class SqlSessionStore implements SessionStore {
 						if (error instanceof StorageSchemaVersionError) throw error;
 					});
 		} else {
-			await applyStorageMigrationsTogether(database, [
+			const [sessionsSchema] = await applyStorageMigrationsTogether(database, [
 				{
 					domain: SESSION_DOMAIN,
 					steps: [
 						{ version: 1, up: createTables },
 						{ version: 2, up: addEntryChunks },
 					],
-					// Version 3 is recorded only by `enableSharedHistoryForks`, never by an open; builds without it refuse it
-					// here, before their snapshot or search index opens (#6560).
+					// Version 3 is recorded only by the switch to shared-history forks (`enableSharedHistoryForks`), never by
+					// these steps; builds without it refuse it here, before their snapshot or search index opens (#6560).
 					options: {
 						table: storageMigrationTable(options.prefix),
 						recordedThrough: SESSION_SCHEMA_VERSION_SHARED_HISTORY,
@@ -874,6 +878,9 @@ export class SqlSessionStore implements SessionStore {
 					options: { table: storageMigrationTable(options.prefix), acceptNewer: true },
 				},
 			]);
+			// Where versions are recorded, the ledger tells whether the switch below ran already; elsewhere it reads.
+			if (dialectOf(database).versionedMigrations)
+				sharedHistory = (sessionsSchema?.version ?? 0) >= SESSION_SCHEMA_VERSION_SHARED_HISTORY;
 		}
 		// Room on each page for the session row's next version, which every append writes, so it stays a HOT update
 		// (#6560). PostgreSQL only; a runtime role leaves it to `atomic storage migrate`.
@@ -884,6 +891,19 @@ export class SqlSessionStore implements SessionStore {
 			table: tables.sessions,
 			fillfactor: SESSION_ROW_FILLFACTOR,
 		});
+		const markers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
+		// Shared-history forks turn on by themselves (#6560). An open that found them on reads nothing more for it; one
+		// that switched the database refreshes the catalog it read, so the stores it opens next see the fork tables.
+		if (sharedHistory !== true && database.readOnly !== true) {
+			const switched = await SqlSessionStore.switchAtOpen(
+				database,
+				options.prefix ?? "",
+				tables,
+				markers,
+				sharedHistory === false,
+			);
+			if (switched) refreshStorageSchemaCatalog(database);
+		}
 		// Whether a staged clone ever ran here (#5594), asked beside the rest of the open rather than after it.
 		const staging = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, options.prefix).forkStaging;
 		const stagingProbe = dialectOf(database).tableExists(staging);
@@ -917,7 +937,7 @@ export class SqlSessionStore implements SessionStore {
 			searchIndex,
 			entryByteLength,
 		);
-		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
+		store.openMarkers = markers;
 		if (await staged) await store.cleanupForkStaging();
 		return store;
 	}
@@ -945,7 +965,9 @@ export class SqlSessionStore implements SessionStore {
 		tables: Tables,
 		open: string,
 		orphans: string | undefined,
-	): Promise<{ readonly legacyBlobData: boolean; readonly orphaned: boolean } | undefined> {
+	): Promise<
+		{ readonly legacyBlobData: boolean; readonly orphaned: boolean; readonly sharedHistory: boolean } | undefined
+	> {
 		const dialect = dialectOf(database);
 		if (dialect.versionedMigrations) return undefined;
 		const required = [...Object.values(tables), open];
@@ -997,7 +1019,11 @@ export class SqlSessionStore implements SessionStore {
 			)
 		)
 			return undefined;
-		return { legacyBlobData: legacyBlobs, orphaned: (await orphaned) !== undefined };
+		return {
+			legacyBlobData: legacyBlobs,
+			orphaned: (await orphaned) !== undefined,
+			sharedHistory: versions.every((row) => Number(row.schema_version) >= SESSION_SCHEMA_VERSION_SHARED_HISTORY),
+		};
 	}
 
 	/**
@@ -1121,45 +1147,125 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/**
-	 * Turns on forks that share their parent's history (#6560): creates the fork tables and raises the sessions schema to
-	 * {@link SESSION_SCHEMA_VERSION_SHARED_HISTORY} in one transaction, recording the version in the migration ledger
-	 * where there is one, so that builds which do not read it refuse the database at their next open or transaction. One
-	 * way: nothing lowers it again. `atomic storage migrate --enable-shared-history-forks` calls it, never a fork.
-	 *
-	 * Refused, changing nothing, while `live` judges any open marker of an older build to be a running process, unless
-	 * `force`. The transaction is the only writer of the whole database while it runs, so every session write either
-	 * finished before it, or starts after it and reads the new version first. Two hosts enabling at once run one after
-	 * the other, and the second finds it `already` done.
+	 * Turns on forks that share their parent's history (#6560), as a store's open does by itself: see
+	 * {@link SqlSessionStore.switchSharedHistory}. `live` judges whether the process of an older build's open-session
+	 * marker still runs; the application's judge by default.
 	 */
-	async enableSharedHistoryForks(options: {
-		readonly force?: boolean;
-		readonly live: (marker: SessionOpenMarkerBuild) => Promise<boolean>;
-	}): Promise<SharedHistoryForksOutcome> {
+	enableSharedHistoryForks(
+		options: { readonly live?: (marker: SessionOpenMarkerBuild) => Promise<boolean> } = {},
+	): Promise<SharedHistoryForksOutcome> {
 		this.assertOpen();
-		const tables = sessionForkTables(this.prefix);
-		return this.database.transaction(
+		return SqlSessionStore.switchSharedHistory(
+			this.database,
+			this.prefix,
+			this.tables,
+			this.openMarkers,
+			options.live ?? sharedHistorySwitchHost().live,
+		);
+	}
+
+	/**
+	 * The switch to shared-history forks (#6560), in one transaction: creates the fork tables, records version 3 in the
+	 * migration ledger where there is one, and raises the sessions schema to it, so that builds which do not read it
+	 * refuse the database at their next open or transaction. One way: nothing lowers it again.
+	 *
+	 * It never leaves an older process reading what it cannot read: while `live` judges any open-session marker of an
+	 * older build to be a running process, it changes nothing and is `deferred`, and the next open tries again. The
+	 * transaction is the only writer of the whole database while it runs, so every session write either finished before
+	 * it, or starts after it and reads the new version first. Two hosts switching at once run one after the other, and
+	 * the second finds it `already` done.
+	 */
+	private static switchSharedHistory(
+		database: SqliteDatabase,
+		prefix: string,
+		tables: Tables,
+		markers: SqlSessionOpenMarkers,
+		live: (marker: SessionOpenMarkerBuild) => Promise<boolean>,
+	): Promise<SharedHistoryForksOutcome> {
+		const dialect = dialectOf(database);
+		return database.transaction(
 			async (tx): Promise<SharedHistoryForksOutcome> => {
-				if (await this.sharedHistoryForks(tx)) return { status: "already" };
-				const older = await this.openMarkers.olderThan(tx, SESSION_SCHEMA_VERSION_SHARED_HISTORY);
-				const holders: SessionOpenMarkerBuild[] = [];
-				for (const marker of older) if (await options.live(marker)) holders.push(marker);
-				if (holders.length > 0 && options.force !== true) return { status: "refused", holders };
-				await createSharedHistoryTables(tx, this.dialect, tables);
-				if (this.dialect.versionedMigrations)
-					await tx.run(
-						`INSERT INTO ${storageMigrationTable(this.prefix)} (domain, version, applied_at) VALUES (?, ?, ${this.dialect.nowMs}) ON CONFLICT DO NOTHING`,
-						SESSION_DOMAIN,
-						SESSION_SCHEMA_VERSION_SHARED_HISTORY,
-					);
-				await tx.run(
-					`UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version < ?`,
-					SESSION_SCHEMA_VERSION_SHARED_HISTORY,
-					SESSION_SCHEMA_VERSION_SHARED_HISTORY,
+				const [row, older] = await statementBatch(
+					tx,
+					[],
+					[
+						() => tx.get(`SELECT max(schema_version) AS schema_version FROM ${tables.meta}`),
+						() => markers.olderThan(tx, SESSION_SCHEMA_VERSION_SHARED_HISTORY),
+					],
 				);
-				return { status: "enabled", bypassed: holders };
+				const version = row?.schema_version ?? null;
+				assertStorageSchemaVersion("sessions", version, SESSION_SCHEMA_VERSION, SESSION_SCHEMA_VERSION_UNCHUNKED);
+				if (Number(version) >= SESSION_SCHEMA_VERSION_SHARED_HISTORY) return { status: "already" };
+				const holders = await liveMarkers(older, live);
+				if (holders.length > 0) return { status: "deferred", holders };
+				await createSharedHistoryTables(tx, dialect, sessionForkTables(prefix));
+				await statementBatch(
+					tx,
+					[
+						dialect.versionedMigrations && {
+							sql: `INSERT INTO ${storageMigrationTable(prefix)} (domain, version, applied_at) VALUES (?, ?, ${dialect.nowMs}) ON CONFLICT DO NOTHING`,
+							params: [SESSION_DOMAIN, SESSION_SCHEMA_VERSION_SHARED_HISTORY],
+						},
+						{
+							sql: `UPDATE ${tables.meta} SET schema_version = ? WHERE schema_version < ?`,
+							params: [SESSION_SCHEMA_VERSION_SHARED_HISTORY, SESSION_SCHEMA_VERSION_SHARED_HISTORY],
+						},
+					],
+					[],
+				);
+				return { status: "enabled" };
 			},
 			{ retryTransientFailures: true, concurrency: { kind: "serial" } },
 		);
+	}
+
+	/**
+	 * An open's switch to shared-history forks, true when it switched the database. With `precheck`, for an open that
+	 * read the schema without a lock, it first reads, still without one, the version and the markers of older builds
+	 * together, so an open that must leave the switch for later, while an older build runs a session, takes no lock and
+	 * writes nothing; an open that set the schema up under the write lock goes straight to the switch. A switch that cannot run, such as for a role without the
+	 * privilege to create tables, is left for a later open or `atomic storage migrate`; forks copy meanwhile. Either way
+	 * the open goes on, and only the debug log notes it.
+	 */
+	private static async switchAtOpen(
+		database: SqliteDatabase,
+		prefix: string,
+		tables: Tables,
+		markers: SqlSessionOpenMarkers,
+		precheck: boolean,
+	): Promise<boolean> {
+		const host = sharedHistorySwitchHost();
+		const deferred = (holders: readonly SessionOpenMarkerBuild[]) =>
+			host.skipped({
+				reason: "older-sessions-running",
+				prefix,
+				sessions: holders.length,
+				holders: holders.map((holder) => `${holder.host}:${holder.pid}`).join(", "),
+			});
+		try {
+			if (precheck) {
+				const [found, older] = await statementBatch(
+					database,
+					[],
+					[
+						() => database.get(`SELECT max(schema_version) AS schema_version FROM ${tables.meta}`),
+						() => markers.olderThan(database, SESSION_SCHEMA_VERSION_SHARED_HISTORY),
+					],
+				);
+				if (Number(found?.schema_version) >= SESSION_SCHEMA_VERSION_SHARED_HISTORY) return false;
+				const holders = await liveMarkers(older, host.live);
+				if (holders.length > 0) {
+					deferred(holders);
+					return false;
+				}
+			}
+			const outcome = await SqlSessionStore.switchSharedHistory(database, prefix, tables, markers, host.live);
+			if (outcome.status === "deferred") deferred(outcome.holders);
+			return outcome.status === "enabled";
+		} catch (error) {
+			host.skipped({ reason: "switch-failed", prefix, error: (error as Error).message });
+			return false;
+		}
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -4488,14 +4594,23 @@ export interface SessionOpenMarkerBuild extends SessionOpenMarkerAge {
 }
 
 /**
- * What {@link SqlSessionStore.enableSharedHistoryForks} did: `enabled`, it raised the sessions schema (`bypassed`
- * lists the running older processes `force` let it pass); `already`, the schema was there; `refused`, `holders`, running
- * processes of older builds, still have sessions open, and nothing changed.
+ * What the switch to shared-history forks did: `enabled`, it raised the sessions schema; `already`, the schema was
+ * there; `deferred`, `holders`, running processes of older builds, still have sessions open, and nothing changed.
  */
 export type SharedHistoryForksOutcome =
-	| { readonly status: "enabled"; readonly bypassed: readonly SessionOpenMarkerBuild[] }
+	| { readonly status: "enabled" }
 	| { readonly status: "already" }
-	| { readonly status: "refused"; readonly holders: readonly SessionOpenMarkerBuild[] };
+	| { readonly status: "deferred"; readonly holders: readonly SessionOpenMarkerBuild[] };
+
+/** The markers among `markers` whose processes `live` judges to be running. */
+async function liveMarkers(
+	markers: readonly SessionOpenMarkerBuild[],
+	live: (marker: SessionOpenMarkerBuild) => Promise<boolean>,
+): Promise<SessionOpenMarkerBuild[]> {
+	const running: SessionOpenMarkerBuild[] = [];
+	for (const marker of markers) if (await live(marker)) running.push(marker);
+	return running;
+}
 
 /** The running sessions that have a SQL store's sessions open, in a table every host sharing the store reads (#4971). */
 class SqlSessionOpenMarkers implements SessionOpenMarkerStore {

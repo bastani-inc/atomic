@@ -24,6 +24,7 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
 
 import { withLibsqlDatabase } from "../helpers/libsql-database.js";
+import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { rowLimitedDatabase } from "../helpers/row-limited-database.js";
 import { withCallerThreadSqliteDatabase, withNodeSqliteDatabase } from "../helpers/storage-database.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -780,6 +781,8 @@ describe("a database written with chunked entries is refused by older builds (#4
 
 	test("a database without chunked entries stays readable by older builds (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
+			// While an older build runs a session, the database stays at the versions it reads (#6560).
+			await holdOlderBuildMarker(database);
 			const store = await SqlSessionStore.open(database);
 			await store.create(header(), [message("m", null, "x".repeat(SESSION_ENTRY_CHUNK_BYTES / 4))]);
 			await store.append("session", [message("n", "m", "more")], { expectSeq: 1 });
@@ -792,6 +795,8 @@ describe("a database written with chunked entries is refused by older builds (#4
 
 	test("an older build's database keeps its version and sessions until a chunked entry is written (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
+			// While an older build runs a session, the database stays at the versions it reads (#6560).
+			await holdOlderBuildMarker(database);
 			await SqlSessionStore.open(database);
 			await database.exec("UPDATE session_meta SET schema_version = 1");
 			const store = await SqlSessionStore.open(database);
@@ -809,6 +814,8 @@ describe("a database written with chunked entries is refused by older builds (#4
 
 	test("a failed first chunked write rolls back its schema bump and entries (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
+			// While an older build runs a session, the database stays at the versions it reads (#6560).
+			await holdOlderBuildMarker(database);
 			const store = await SqlSessionStore.open(database);
 			const kept = message("m", null, "kept");
 			const large = message("large", "m", "x".repeat(2 * MiB));
@@ -830,6 +837,8 @@ describe("a database written with chunked entries is refused by older builds (#4
 
 	test("concurrent first chunked writers both commit with one schema upgrade (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
+			// While an older build runs a session, the database stays at the versions it reads (#6560).
+			await holdOlderBuildMarker(database);
 			const first = await SqlSessionStore.open(database);
 			const otherDatabase = await openNodeSqliteDatabase(database.descriptor.location);
 			try {

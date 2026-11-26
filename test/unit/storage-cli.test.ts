@@ -13,8 +13,6 @@ import {
 } from "../../packages/coding-agent/src/cli/storage-command.js";
 import { FileSettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
 import { isTeamProfileConfigError } from "../../packages/coding-agent/src/core/storage/errors.js";
-import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import {
 	checkSharedStorageAdapter,
 	collectStorageStatus,
@@ -104,6 +102,9 @@ test("storage migrate initializes sessions and Intercom without the workflow run
 		const tables = (await database.all("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => row.name);
 		assert.ok(tables.includes("session_sessions"));
 		assert.ok(tables.includes("intercom_known_sessions"));
+		// Shared-history forks turned on by themselves, with no older Atomic running a session there (#6560).
+		assert.ok(tables.includes("session_fork_segments"));
+		assert.equal((await database.get("SELECT schema_version FROM session_meta"))?.schema_version, 3);
 	} finally {
 		await database.close();
 	}
@@ -134,98 +135,6 @@ test("storage migrate creates the Intercom tables a broker otherwise creates onl
 	} finally {
 		await database.close();
 	}
-});
-
-describe("storage migrate --enable-shared-history-forks (#6560)", () => {
-	async function sessionsSchema(path: string): Promise<number> {
-		const database = await openNodeSqliteDatabase(path);
-		try {
-			return Number((await database.get("SELECT schema_version FROM session_meta"))?.schema_version);
-		} finally {
-			await database.close();
-		}
-	}
-
-	/** A running session of an Atomic release from before shared-history forks, on another machine, as it marks it. */
-	async function olderSessionRunning(path: string): Promise<void> {
-		const database = await openNodeSqliteDatabase(path);
-		try {
-			const store = await SqlSessionStore.open(database);
-			await store.create(
-				{ id: "s1", version: SESSION_FORMAT_VERSION, createdAt: "2026-11-25T00:00:00.000Z", cwd: project },
-				[],
-			);
-			await store.close();
-			await database.run(
-				`INSERT INTO session_open (session_id, token, pid, host, heartbeat_at, schema_version)
-				 VALUES ('s1', '4242-0123456789abcdef', 4242, 'build-box', CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER), 2)`,
-			);
-		} finally {
-			await database.close();
-		}
-	}
-
-	test("parses the flag, and --force only with it", () => {
-		assert.deepEqual(parseStorageCommand(["migrate", "--enable-shared-history-forks"]), {
-			kind: "migrate",
-			sharedHistoryForks: { force: false },
-		});
-		assert.deepEqual(parseStorageCommand(["migrate", "--force", "--enable-shared-history-forks"]), {
-			kind: "migrate",
-			sharedHistoryForks: { force: true },
-		});
-		assert.throws(
-			() => parseStorageCommand(["migrate", "--force"]),
-			/--force qualifies --enable-shared-history-forks/,
-		);
-		assert.throws(() => parseStorageCommand(["status", "--force"]), /Unknown option --force/);
-	});
-
-	test("turns them on in this directory's local SQLite sessions, once", async () => {
-		const path = join(agentDir, "sessions.sqlite");
-		writeSettings({ sessions: { storage: { path } } });
-
-		const first = await storage(["migrate", "--enable-shared-history-forks"]);
-		assert.equal(first.code, 0, first.out + first.err);
-		assert.match(first.out, /Turned on shared-history forks in .*sessions\.sqlite/);
-		assert.equal(await sessionsSchema(path), 3);
-
-		const again = await storage(["migrate", "--enable-shared-history-forks"]);
-		assert.equal(again.code, 0, again.out + again.err);
-		assert.match(again.out, /already on .*nothing changed/);
-	});
-
-	test("refuses while a session of an older Atomic runs, naming its machine, and --force goes ahead with a warning", async () => {
-		const path = join(agentDir, "sessions.sqlite");
-		writeSettings({ sessions: { storage: { path } } });
-		await olderSessionRunning(path);
-
-		const refused = await storage(["migrate", "--enable-shared-history-forks"]);
-		assert.equal(refused.code, 1);
-		assert.match(refused.out, /not turned on .* 1 running session of an older Atomic still uses it/);
-		assert.match(
-			refused.out,
-			/build-box, pid 4242: an Atomic release from before shared-history forks \(1 session\)/,
-		);
-		assert.match(refused.out, /add --force/);
-		assert.equal(await sessionsSchema(path), 1, "nothing changed");
-
-		const forced = await storage(["migrate", "--enable-shared-history-forks", "--force"]);
-		assert.equal(forced.code, 0, forced.out + forced.err);
-		assert.match(
-			forced.out,
-			/Warning: --force turned on shared-history forks while 1 running session of an older Atomic still uses/,
-		);
-		assert.match(forced.out, /build-box, pid 4242/);
-		assert.equal(await sessionsSchema(path), 3);
-	});
-
-	test("refuses a JSONL session directory, whose forks keep copying", async () => {
-		writeSettings({ sessions: { storage: { dir: join(root, "jsonl") } } });
-		const result = await storage(["migrate", "--enable-shared-history-forks"]);
-		assert.equal(result.code, 1);
-		assert.match(result.out, /need sessions in a SQLite, libSQL or PostgreSQL database/);
-	});
 });
 
 describe("atomic storage and atomic intercom arguments", () => {

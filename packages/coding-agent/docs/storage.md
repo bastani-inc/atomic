@@ -763,7 +763,7 @@ Payloads that still exceed a backend's limit fail non-retryably with `StoragePay
 
 ### Upgrading older SQLite and shared stores
 
-- **One-way session schema upgrade.** Writing the first chunked session entry permanently upgrades the session schema from version `1` to `2`. Upgrade every host sharing a database together because older releases reject version 2 stores with `StorageSchemaVersionError`. Version `3` comes only from turning on [shared-history forks](#shared-history-forks), never from ordinary use.
+- **One-way session schema upgrade.** Writing the first chunked session entry permanently upgrades the session schema from version `1` to `2`. Upgrade every host sharing a database together because older releases reject version 2 stores with `StorageSchemaVersionError`. Version `3` comes from the switch to [shared-history forks](#shared-history-forks), which waits until no older release runs a session on the database.
 - **Offline local snapshot chunk migration.** On older local SQLite files, background snapshot collection migrates legacy snapshot chunk tables automatically when free disk space allows. To migrate a cleanly closed local SQLite file offline with bounded WAL growth, stop all Atomic processes using that file and run:
 
 ```bash
@@ -774,62 +774,38 @@ The file must be a local WAL-mode SQLite database with an empty WAL and without 
 
 ## Shared-history forks
 
-A fork normally copies the history it keeps from its parent into the new session. With shared-history forks turned on, a fork made in the same store as its parent stores only a note of which part of the parent's history it continues from, and reads those entries from the parent. Only the entries added after the fork are stored as the fork's own. This applies to `/fork`, `/clone`, `atomic --fork`, and subagents that start from a copy of their parent's conversation.
+A fork made in the same store as its parent shares the parent's history instead of copying it. The fork stores a note of which part of the parent's history it continues from, and reads those entries from the parent; only the entries added after the fork are its own. This applies to `/fork`, `/clone`, `atomic --fork`, and subagents that start from a copy of their parent's conversation. Forking a long session then takes about as long as forking a short one, and the store does not grow by a second copy of the parent's history.
 
-Forking a long session then takes about as long as forking a short one, and the store does not grow by a second copy of the parent's history.
-
-What stays the same:
+There is nothing to turn on or configure. What stays the same:
 
 - A fork looks and behaves like a copied fork: the same entries, search results, tree, resume, and export.
 - Changing or deleting the parent never changes a fork. Before the parent's entries change or go away, Atomic copies the entries each fork still reads into that fork, or keeps them stored, hidden, until no fork reads them.
 - `atomic storage export` writes each fork's full history, and a fork into another store copies, so nothing outside the store depends on it.
 - JSONL session directories and in-memory stores always copy.
 
-### Why they are off by default
+### How a fork reads its history
 
-A store with shared-history forks keeps forks in a form that Atomic releases without this feature cannot read correctly. Such a release would show a fork's own entries as its whole history, and could delete or rewrite a parent that forks still read.
+A fork that shares its parent's history keeps a short list of ranges, for example "my entries 1 to 400 are the parent's entries 1 to 400". Every entry added after the fork, and any entry the fork changed, is stored in the fork itself.
 
-Turning the feature on therefore marks the store so that older releases refuse it. This is one way: there is no command to turn it off. After the switch, an older release refuses to open the store with `StorageSchemaVersionError` ("this store needs a newer Atomic"). Until you turn it on, forks copy as before, and every release that can use the store today keeps using it.
+- **One query.** When Atomic reads a fork, it looks the list up in the same database query that reads the entries, so the list and the entries always come from the same moment. No copy of the list is kept in memory between reads, so a read never uses an out-of-date list.
+- **Up to the fork point only.** A fork reads its parent's entries only up to the point where it was made. When the parent keeps going, the new entries are the parent's alone.
+- **The parent cannot change a fork.** If the parent is later rewritten, Atomic first copies the entries the fork still uses into the fork, in the same step. If the parent is deleted, its entries stay stored, hidden, until no fork uses them.
+- **Forking never holds the parent up.** On PostgreSQL, the parent keeps appending while forks are made from it. Making a fork takes the same 2 round trips as creating a session, whatever the parent's length or how many forks deep the chain goes, and the first load of a fork takes the same round trips as a session of the same length.
 
-Turn it on when every machine and process that uses the store runs this release or later, and you fork long sessions often. Keep it off while you may still run an older release against the store, for example to try a downgrade.
+### Older Atomic versions {#older-atomic-versions}
 
-### Turning them on {#turning-them-on}
+A store whose forks share history keeps them in a form that Atomic releases without this feature cannot read correctly: such a release would show a fork's own entries as its whole history, and could delete or rewrite a parent that forks still read. So the first time this release or a later one opens a store, it marks the store as needing this release or later. From then on, an older release refuses to open the store with `StorageSchemaVersionError` ("this store needs a newer Atomic"). The mark is permanent: a store cannot go back to older releases.
 
-1. Upgrade Atomic to this release or later on every machine that uses the store. For a local SQLite file, include every Atomic installation on the machine that uses that file, such as a second version run through `npx` or a pinned binary in CI.
-2. Close or restart sessions that are still running under an older release.
-3. From a machine that uses the store, run once:
+The switch never pulls a store out from under an older Atomic that is using it:
 
-```bash
-atomic storage migrate --enable-shared-history-forks
-```
+- **It waits for older versions to stop.** Every running session records in the store which release runs it. While a session of an older release is running on any machine that uses the store, Atomic leaves the store as it is, and forks keep copying. The next time Atomic opens the store after those sessions have stopped, for example when a session starts or resumes, the switch happens. A session on the same machine counts as running while its process runs. A session on another machine counts while its record is refreshed, about every 15 seconds; one whose record is more than a minute old, for example on a machine that crashed, no longer counts.
+- **It happens in one step.** The fork tables and the new mark are written in one transaction that waits for writes already in progress to finish, so upgraded sessions keep working through it, and two machines switching at once is safe.
+- **It costs nothing once done.** A store that is already switched opens with the same reads as before.
+- **It needs table privileges.** On PostgreSQL, a runtime role without DDL privileges cannot create the fork tables, so forks there keep copying until the owner runs `atomic storage migrate`, which switches the database too. The new tables are `session_fork_segments`, `session_fork_lineage`, `session_fork_tombstones`, and `session_fork_detach`, and the runtime role reaches them through the default privileges granted in [Set up the database](#set-up-the-database).
 
-Without `--db`, the command turns the feature on in the store this directory's sessions use: the default local SQLite file, another SQLite file, or a shared libSQL or PostgreSQL database. With `--db <url>`, plus its credential flags and `--prefix`, it turns it on in that database. For a shared database, it also does everything plain `atomic storage migrate` does.
+None of this needs any action and none of it is reported as an error. With debug mode on, Atomic notes in the debug log when it leaves the switch for later, and why.
 
-On PostgreSQL, run it as the owner role, as with every `atomic storage migrate`. It creates four tables: `session_fork_segments`, `session_fork_lineage`, `session_fork_tombstones`, and `session_fork_detach`. The runtime role reaches them through the default privileges granted in [Set up the database](#set-up-the-database).
-
-The command waits for writes already in progress to finish and holds new ones back for the moment it takes, so upgraded sessions can keep working while it runs. Their next fork shares history.
-
-Running it again prints that the feature is already on and changes nothing. Running it from two machines at the same time is safe: one turns the feature on, and the other reports that it is already on. JSONL and in-memory session stores are refused, because their forks always copy.
-
-### Mixed Atomic versions {#mixed-atomic-versions}
-
-Every running session records in the store which machine and process run it, which session schema it reads, and, from this release on, its Atomic version. Before it changes anything, the command looks for running sessions of a release that cannot read shared-history forks. If it finds any, it changes nothing, exits with code `1`, and names each one:
-
-```text
-Shared-history forks were not turned on in ... 1 running session of an older Atomic still uses it, and an older Atomic would read a fork that shares history as if it had none:
-  build-box, pid 4242: an Atomic release from before shared-history forks (1 session)
-Upgrade Atomic on those machines and restart those sessions, or wait for them to end, then run this again. ...
-```
-
-A session on another machine counts as running while its record is refreshed, which happens about every 15 seconds; a record more than a minute old counts as stopped, so a machine that crashed or was switched off stops counting after a minute. A session on the machine running the command counts as running while its process is alive.
-
-Upgrade Atomic on the machines named, restart or close those sessions, and run the command again.
-
-`--force` turns the feature on anyway, and prints a warning naming the sessions it went past. Each of those sessions stops at its next save, or its next history read that checks the store's version, with `StorageSchemaVersionError`, and its machine must be upgraded before the session can resume. Use `--force` only when you accept that those sessions fail, for example a stuck process you are about to stop.
-
-Older releases check the store's version when they open it and at every save, but not at every read. That is why the command waits for their running sessions rather than relying on that check alone.
-
-To go back to a release without this feature after turning it on, export your sessions with `atomic storage export`, which writes each fork's full history, then import them with that release into a new store.
+If you still run an older Atomic against a shared database, for example on a machine you have not upgraded yet, upgrade it too. Once its sessions have stopped and an upgraded session opens the store, the older release cannot open the store again. To move sessions back to an older release after the switch, export them with `atomic storage export`, which writes each fork's full history, then import them with that release into a new store.
 
 ## Workflow data from earlier releases
 

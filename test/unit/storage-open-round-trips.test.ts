@@ -190,8 +190,10 @@ test("a session store opened on a new file sets its schema up in a few dozen wai
 	const { database } = await databaseFile();
 	const requests = recordRequests();
 	await (await SqlSessionStore.open(database)).close();
-	// 95 statements, each its own wait, on main: four transactions now, each statement batch one wait.
-	assert.ok(requests.waits <= 30, `${requests.waits} waits for ${requests.sent.length} requests`);
+	// 95 statements, each its own wait, on main: four transactions now, each statement batch one wait, and the switch to
+	// shared-history forks, a fifth transaction a new database takes once: its reads together, the fork tables, then the
+	// version (#6560).
+	assert.ok(requests.waits <= 35, `${requests.waits} waits for ${requests.sent.length} requests`);
 });
 
 test("a schema set up in batches on the connection's thread is the one set up a statement at a time", async () => {

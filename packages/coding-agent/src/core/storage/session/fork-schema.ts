@@ -7,9 +7,9 @@ import { renderStorageIdentifiers } from "../prefix.js";
  * which maps a fork's inherited seqs onto the rows its sources store, and `<prefix>session_fork_lineage`, one row per
  * such fork; `<prefix>session_fork_tombstones`, one row per deleted session whose rows forks still read, which those
  * forks and the sweep that removes the rows lock; and `<prefix>session_fork_detach`, the progress of a fork copying
- * the rows it read from a source into its own. They exist only in a store whose sessions schema was raised to version 3 by
- * `atomic storage migrate --enable-shared-history-forks`; an open never creates them, so a store that was not switched
- * keeps the tables every older build reads.
+ * the rows it read from a source into its own. They exist only in a store whose sessions schema was raised to version 3
+ * by the switch a store's open or `atomic storage migrate` makes once no older build runs a session there, in the same
+ * transaction; a store that was not switched keeps only the tables every older build reads.
  */
 export const SESSION_FORK_TABLES = Object.freeze({
 	forkSegments: "fork_segments",

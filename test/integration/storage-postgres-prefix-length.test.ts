@@ -98,8 +98,6 @@ async function openEveryStore(scope: PostgresScope, prefix: string): Promise<voi
 	await seedLegacyWorkflowTables(database, { prefix });
 	const sessions = await SqlSessionStore.open(database, { prefix });
 	await sessions.prepareChatRecords();
-	// The fork tables and the snapshot index trigger that turning shared-history forks on creates (#6560).
-	await sessions.enableSharedHistoryForks({ live: async () => false });
 	await sessions.close();
 	await ensureForkStagingTable(database, postgresDialect, `${prefix}session_fork_staging`);
 	const intercom = await openIntercomBrokerState({ prefix, openDatabase: () => scope.open() });

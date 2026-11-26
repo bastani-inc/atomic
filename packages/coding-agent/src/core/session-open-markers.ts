@@ -14,9 +14,11 @@ import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/pr
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir, VERSION } from "../config.js";
+import { reportDebugAsync } from "./debug.ts";
 import { ownProcessStartToken, readProcessStartToken } from "./process-start-token.js";
 import { attachSessionClaim } from "./session-claims.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
+import { setSharedHistorySwitchHost } from "./storage/session/shared-history-switch.ts";
 import type {
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
@@ -280,6 +282,15 @@ async function holderRuns(marker: SessionOpenMarkerAge): Promise<boolean> {
 export async function sessionOpenMarkerRuns(marker: SessionOpenMarkerAge): Promise<boolean> {
 	return marker.host === hostname() ? await holderRuns(marker) : marker.ageMs <= STALE_MS;
 }
+
+// A session store's open switches it to shared-history forks only once no older Atomic runs a session there (#6560): it
+// judges their markers as this module does, and notes a switch it leaves for later in the debug log.
+setSharedHistorySwitchHost({
+	live: sessionOpenMarkerRuns,
+	skipped: (fields) => {
+		reportDebugAsync("storage", "shared-history-forks-deferred", fields).catch(() => {});
+	},
+});
 
 /**
  * A running session, in another process or in this one, that has `sessionId` of `store` open, or undefined when none

@@ -381,9 +381,11 @@ test("a store with a migration ledger records each step of the session and blob 
 	assert.deepEqual(await database.all("SELECT domain, version FROM team_atomic_migrations ORDER BY domain, version"), [
 		{ domain: "session-presence", version: 1 },
 		{ domain: "session-presence", version: 2 },
+		{ domain: "session-presence", version: 3 },
 		{ domain: "session-search", version: 1 },
 		{ domain: "sessions", version: 1 },
 		{ domain: "sessions", version: 2 },
+		{ domain: "sessions", version: 3 },
 		{ domain: "snapshot-blobs", version: 1 },
 		{ domain: "snapshot-blobs", version: 2 },
 		{ domain: "snapshot-blobs", version: 3 },

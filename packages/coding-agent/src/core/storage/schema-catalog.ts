@@ -168,6 +168,15 @@ export async function withStorageSchemaCatalog<T>(
 }
 
 /**
+ * Drops the catalog an open of `database` in progress read, so the next question reads the schema again: for a step of
+ * the open that changed the schema the stores it opens after it ask about.
+ */
+export function refreshStorageSchemaCatalog(database: SqliteDatabase): void {
+	const scope = scopes.get(database);
+	if (scope !== undefined) scope.catalog = undefined;
+}
+
+/**
  * The catalog an open of `database` in progress read ({@link withStorageSchemaCatalog}), when it read `ledger`'s
  * versions or no `ledger` is named; undefined outside such an open, and when it could not be read.
  */
