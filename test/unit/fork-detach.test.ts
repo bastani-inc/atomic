@@ -274,6 +274,30 @@ test("detaching 50 sibling forks copies the parent's rows once and re-points the
 	for (const [id, bodies] of before) assert.deepEqual(await view(id), bodies, id);
 });
 
+test("a detach never points a fork at a session that reads that fork's rows", async () => {
+	await session("P", 2);
+	await fork("C1", "P", 2, 0);
+	const host = storeHost();
+	// C1's detach copies P's first row, then stops: C1 holds seq 1 and still reads P's seq 2.
+	host.crashAfterCommits = 1;
+	await assert.rejects(detachFork(host, "P", "C1", { pageRows: 1 }), Crash);
+	host.crashAfterCommits = undefined;
+	// C2 forks C1: it reads C1's own row and, composed, P's row 2.
+	await fork("C2", "C1", 2, 0);
+	assert.deepEqual(await host.forkSegments(database, "C2"), [
+		{ sourceId: "C1", fromSeq: 1, toSeq: 1, baseSeq: 0 },
+		{ sourceId: "P", fromSeq: 2, toSeq: 2, baseSeq: 1 },
+	]);
+	// C2's detach from P must leave C1 on P: pointed at C2, C1 and C2 would each keep the other's rows forever.
+	assert.deepEqual(await detachFork(host, "P", "C2"), { detached: ["C2"], reparented: [] });
+	assert.deepEqual(await host.forkSegments(database, "C1"), [{ sourceId: "P", fromSeq: 2, toSeq: 2, baseSeq: 1 }]);
+	assert.deepEqual(await resumeForkDetaches(host), { detached: ["C1"], reparented: [] });
+	assert.deepEqual(await host.forkChildren(database, "P"), []);
+	await removeSession("P");
+	assert.deepEqual(await view("C1"), ["P:1", "P:2"]);
+	assert.deepEqual(await view("C2"), ["P:1", "P:2"]);
+});
+
 test("a parent rewritten during a detach keeps its other forks off the child's copy", async () => {
 	await session("P", 6);
 	await fork("C", "P", 5, 1);

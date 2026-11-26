@@ -152,6 +152,19 @@ async function rewriteEpochs(
 	return [await host.forkRewriteEpoch(tx, parentId), await host.forkRewriteEpoch(tx, childId)];
 }
 
+/** Every session whose rows `sessionId` reads, directly or through the sessions it reads. */
+async function readSources(host: ForkDetachHost, tx: SqliteExecutor, sessionId: string): Promise<Set<string>> {
+	const found = new Set<string>();
+	const pending = [sessionId];
+	for (let next = pending.pop(); next !== undefined; next = pending.pop())
+		for (const { sourceId } of await host.forkSegments(tx, next))
+			if (!found.has(sourceId)) {
+				found.add(sourceId);
+				pending.push(sourceId);
+			}
+	return found;
+}
+
 /**
  * Within `tx`, copies every row of `parentId` the child reads into the child and removes its segments on the parent,
  * as a caller about to rewrite the parent in the same transaction needs. With `reparent`, the parent's other forks are
@@ -181,7 +194,11 @@ export async function detachForkWithin(
 	}
 	const reparented: string[] = [];
 	if (map.length === 0) return reparented;
+	// A fork the child still reads rows of, directly or through the sessions it reads, keeps reading the parent: pointed
+	// at the child, the two would each keep the other's rows, and neither could ever be swept.
+	const readByChild = await readSources(host, tx, childId);
 	for (const sibling of siblings) {
+		if (readByChild.has(sibling)) continue;
 		const before = await host.forkSegments(tx, sibling);
 		const after = reparentedSegments(before, parentId, childId, map);
 		if (after !== undefined) {
