@@ -1486,6 +1486,283 @@ test("a renewal renews every message a broker is delivering in one call, not one
 	}
 });
 
+test("a renewal renews every mirrored restoring reservation in one call, dropping stale ones and falling back on custom stores (#6714)", async () => {
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+	try {
+		const [a, b] = await cluster();
+		const owner = await b!.connect("owner", { group: "crew" });
+		const caps = [0, 1, 2].map((index) => ({
+			capability: `${randomUUID()}.capability`,
+			child: `restored-child-${index}`,
+		}));
+		const keys = caps.map(({ capability }) => createHash("sha256").update(capability).digest("hex"));
+		for (const { capability, child } of caps)
+			await b!.router.restoringReserved(capability, owner.info.id, child, normalizeGroup("crew"), [], false);
+		// End the middle reservation remotely so the next renewal tick sees mixed renewed + stale answers.
+		const midRead = await a!.opened.state.reservations.read(keys[1]!);
+		assert.equal(midRead.status, "active");
+		if (midRead.status !== "active") return;
+		assert.equal(
+			(
+				await a!.opened.state.reservations.release({
+					reservationKey: keys[1]!,
+					ownerSessionId: midRead.reservation.ownerSessionId,
+					fencingToken: midRead.reservation.fencingToken,
+				})
+			).status,
+			"released",
+		);
+
+		const reservations = b!.opened.state.reservations;
+		const renewMany = reservations.renewMany!.bind(reservations);
+		const batchedCalls: Promise<Awaited<ReturnType<typeof renewMany>>>[] = [];
+		const renewManySpy = vi.spyOn(reservations, "renewMany").mockImplementation((leases) => {
+			const pending = renewMany(leases);
+			batchedCalls.push(pending);
+			return pending;
+		});
+		const renewAloneSpy = vi.spyOn(reservations, "renew");
+		try {
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(batchedCalls.length, 1), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				renewManySpy.mock.calls[0]![0].map((lease) => lease.reservationKey),
+				keys,
+			);
+			assert.deepEqual(
+				(await batchedCalls[0]!).map((result) => result.status),
+				["renewed", "stale", "renewed"],
+			);
+			assert.equal(renewAloneSpy.mock.calls.length, 0);
+
+			// Next tick only renews the two remaining live mirrored reservations (the stale one was dropped).
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(batchedCalls.length, 2), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				renewManySpy.mock.calls[1]![0].map((lease) => lease.reservationKey),
+				[keys[0]!, keys[2]!],
+			);
+			assert.deepEqual(
+				(await batchedCalls[1]!).map((result) => result.status),
+				["renewed", "renewed"],
+			);
+			assert.equal(renewAloneSpy.mock.calls.length, 0);
+		} finally {
+			renewManySpy.mockRestore();
+			renewAloneSpy.mockRestore();
+		}
+
+		// Custom store fallback: when `renewMany` is absent, the router falls back to serial `renew()` calls.
+		Object.assign(reservations, { renewMany: undefined });
+		const fallbackSpy = vi.spyOn(reservations, "renew");
+		try {
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(fallbackSpy.mock.calls.length, 2), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				fallbackSpy.mock.calls.map(([lease]) => lease.reservationKey),
+				[keys[0]!, keys[2]!],
+			);
+		} finally {
+			fallbackSpy.mockRestore();
+		}
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a departing recipient releases all its in-flight messages in one releaseClaims call and keeps order (#6713)", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const returnAddress = randomUUID();
+	const recipient = await b!.connect("recipient", { returnAddress });
+	const recipientId = recipient.info.id;
+	const sent = Array.from({ length: 4 }, (_, index) => message({ content: { text: `depart ${index}` } }));
+	for (const each of sent) a!.send(sender, recipientId, each);
+	for (const each of sent) await waitFor(() => messageFrames(recipient, each.id)[0]);
+
+	const outbox = b!.opened.state.outbox;
+	const releaseClaims = outbox.releaseClaims!.bind(outbox);
+	const batches: Promise<Awaited<ReturnType<typeof releaseClaims>>>[] = [];
+	const releasedTogether = vi.spyOn(outbox, "releaseClaims").mockImplementation((claims, options) => {
+		const releasing = releaseClaims(claims, options);
+		batches.push(releasing);
+		return releasing;
+	});
+	const releasedAlone = vi.spyOn(outbox, "releaseClaim");
+	try {
+		b!.leave(recipient);
+		await vi.waitFor(() => assert.equal(batches.length, 1), { timeout: CROSS_NODE_WAIT_MS });
+		assert.deepEqual(
+			releasedTogether.mock.calls[0]![0].map((claim) => claim.messageId).sort(),
+			sent.map((each) => each.id).sort(),
+		);
+		assert.deepEqual(
+			(await batches[0]!).map((result) => result.status),
+			["released", "released", "released", "released"],
+		);
+		assert.equal(releasedAlone.mock.calls.length, 0);
+	} finally {
+		releasedTogether.mockRestore();
+		releasedAlone.mockRestore();
+	}
+
+	// Reconnect on B and verify all 4 messages are redelivered in exact send order.
+	const returned = await b!.connect("recipient", { id: recipientId, returnAddress });
+	await vi.waitFor(
+		() =>
+			assert.deepEqual(
+				framesOf(returned).flatMap((frame) => (frame.type === "message" ? [frame.message.content.text] : [])),
+				["depart 0", "depart 1", "depart 2", "depart 3"],
+			),
+		{ timeout: CROSS_NODE_WAIT_MS },
+	);
+	for (const each of sent) b!.router.received(returned, each.id);
+	for (const each of sent) assert.equal((await waitFor(() => outcomeOf(sender, each.id))).type, "delivered");
+});
+
+test("unwritten tail release, shutdown, and stores lacking releaseClaims each preserve behavior (#6713)", async () => {
+	// 1. Unwritten tail in claimFor releases all remaining rows in one call with unwritten: true and wakes origins in order.
+	{
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const returnAddress = randomUUID();
+		const initial = await b!.connect("recipient", { returnAddress });
+		const recipientId = initial.info.id;
+		b!.leave(initial);
+		await waitOffline(a!, initial);
+
+		const sent = Array.from({ length: 3 }, (_, index) => message({ content: { text: `tail ${index}` } }));
+		for (const each of sent) {
+			a!.send(sender, recipientId, each);
+			await waitFor(() => outcomeOf(sender, each.id));
+		}
+
+		const outbox = b!.opened.state.outbox;
+		const origClaim = outbox.claim.bind(outbox);
+		const origReleaseMany = outbox.releaseClaims!.bind(outbox);
+		const releaseManySpy = vi
+			.spyOn(outbox, "releaseClaims")
+			.mockImplementation((claims, options) => origReleaseMany(claims, options));
+		const releaseOneSpy = vi.spyOn(outbox, "releaseClaim");
+		const wokenVersions: number[] = [];
+		const origPublish = b!.opened.bus.publish.bind(b!.opened.bus);
+		const publishSpy = vi.spyOn(b!.opened.bus, "publish").mockImplementation(async (hint) => {
+			if (hint.reason === "outcome" && hint.version > 0) wokenVersions.push(hint.version);
+			return origPublish(hint);
+		});
+		let returning: BrokerConnectedSession | undefined;
+		let left = false;
+		Object.assign(outbox, {
+			claim: async (...args: Parameters<typeof origClaim>) => {
+				const result = await origClaim(...args);
+				if (!left && result.status === "claimed" && result.rows.length === 3 && returning !== undefined) {
+					left = true;
+					b!.leave(returning);
+				}
+				return result;
+			},
+		});
+
+		returning = await b!.connect("recipient", { id: recipientId, returnAddress });
+		await vi.waitFor(() => assert.equal(releaseManySpy.mock.calls.length, 1), { timeout: CROSS_NODE_WAIT_MS });
+		assert.equal(releaseOneSpy.mock.calls.length, 0);
+		assert.deepEqual(releaseManySpy.mock.calls[0]![1], { unwritten: true });
+		assert.deepEqual(
+			releaseManySpy.mock.calls[0]![0].map((claim) => claim.messageId),
+			sent.map((each) => each.id),
+		);
+		await vi.waitFor(() => assert.equal(wokenVersions.length, 3), { timeout: CROSS_NODE_WAIT_MS });
+		const sequences = await Promise.all(
+			sent.map(async (each) => {
+				const row = await a!.opened.state.outbox.read(each.id);
+				assert.equal(row.status, "found");
+				if (row.status !== "found") throw new Error("unreachable");
+				assert.equal(row.row.state, "queued");
+				assert.equal(row.row.claimAttempts, 0);
+				return row.row.sequence;
+			}),
+		);
+		assert.deepEqual(wokenVersions, sequences, "origins woken in exact outbox sequence order");
+		publishSpy.mockRestore();
+	}
+
+	// 2. Shutdown (close) releases all in-flight claims in one releaseClaims call.
+	{
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const sent = Array.from({ length: 3 }, (_, index) => message({ content: { text: `close ${index}` } }));
+		for (const each of sent) a!.send(sender, "recipient", each);
+		for (const each of sent) await waitFor(() => messageFrames(recipient, each.id)[0]);
+
+		const outbox = b!.opened.state.outbox;
+		const releaseManySpy = vi.spyOn(outbox, "releaseClaims");
+		const releaseOneSpy = vi.spyOn(outbox, "releaseClaim");
+		await b!.router.close();
+		assert.equal(releaseManySpy.mock.calls.length, 1);
+		assert.deepEqual(
+			releaseManySpy.mock.calls[0]![0].map((claim) => claim.messageId).sort(),
+			sent.map((each) => each.id).sort(),
+		);
+		assert.equal(releaseOneSpy.mock.calls.length, 0);
+	}
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+	try {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const sent = Array.from({ length: 3 }, (_, index) => message({ content: { text: `fenced ${index}` } }));
+		for (const each of sent) a!.send(sender, "recipient", each);
+		for (const each of sent) await waitFor(() => messageFrames(recipient, each.id)[0]);
+
+		// Retire B's id ownership and run one renewal tick so B fences this registration before departure.
+		const owners = a!.opened.state.knownSessions.owners!;
+		const currentOwner = await owners.ownerOf(recipient.info.id);
+		assert.ok(currentOwner !== undefined);
+		await owners.retireBroker(currentOwner.brokerId);
+		vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+		// Wait for B's renewal to observe the lost owner and mark the registration fenced.
+		const bRenewSpy = vi.spyOn(b!.opened.state.outbox, "renewClaims");
+		await vi.waitFor(() => assert.equal(bRenewSpy.mock.calls.length, 1), { timeout: CROSS_NODE_WAIT_MS });
+		bRenewSpy.mockRestore();
+
+		const outbox = b!.opened.state.outbox;
+		const releaseManySpy = vi.spyOn(outbox, "releaseClaims");
+		const releaseOneSpy = vi.spyOn(outbox, "releaseClaim");
+		const pruneSenderSpy = vi.spyOn(b!.opened.state.pendingAsks, "pruneSender");
+		b!.leave(recipient);
+		await vi.waitFor(() => assert.equal(releaseManySpy.mock.calls.length, 1), { timeout: CROSS_NODE_WAIT_MS });
+		assert.deepEqual(
+			releaseManySpy.mock.calls[0]![0].map((claim) => claim.messageId).sort(),
+			sent.map((each) => each.id).sort(),
+		);
+		assert.equal(releaseOneSpy.mock.calls.length, 0);
+		assert.equal(pruneSenderSpy.mock.calls.length, 0, "fenced departure skips normal session teardown");
+	} finally {
+		vi.useRealTimers();
+	}
+
+	// 4. Serial fallback when a custom store lacks releaseClaims.
+	{
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const sent = Array.from({ length: 3 }, (_, index) => message({ content: { text: `fallback ${index}` } }));
+		for (const each of sent) a!.send(sender, "recipient", each);
+		for (const each of sent) await waitFor(() => messageFrames(recipient, each.id)[0]);
+
+		const outbox = b!.opened.state.outbox;
+		Reflect.deleteProperty(outbox, "releaseClaims");
+		const releaseOneSpy = vi.spyOn(outbox, "releaseClaim");
+		b!.leave(recipient);
+		await vi.waitFor(() => assert.equal(releaseOneSpy.mock.calls.length, 3), { timeout: CROSS_NODE_WAIT_MS });
+		for (const each of sent) {
+			const row = await a!.opened.state.outbox.read(each.id);
+			assert.equal(row.status === "found" && row.row.state, "queued");
+		}
+	}
+});
+
 test("an ask whose route write fails is redelivered and keeps its reply route instead of settling without one", async () => {
 	const [a, b] = await cluster();
 	const asker = await a!.connect("asker");
