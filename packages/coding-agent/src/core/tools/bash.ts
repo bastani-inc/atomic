@@ -72,7 +72,8 @@ const bashBaseSchema = Type.Object(
 		env: Type.Optional(envSchema),
 		timeout: Type.Optional(
 			Type.Number({
-				description: "Optional deadline in seconds. Omitted, the command runs until it finishes or is stopped.",
+				description:
+					"Optional deadline in seconds. Omit it for no time limit: the command runs until it finishes or is stopped. 0 stops it immediately; negative values are refused.",
 			}),
 		),
 		wait: Type.Optional(
@@ -158,10 +159,14 @@ export interface BashToolDetails {
 	requestedTimeoutSeconds?: number;
 	wallTimeMs?: number;
 }
+/**
+ * As in OpenAI Codex: a negative timeout is refused, `0` stops the command at once rather than meaning "no limit", and
+ * leaving `timeout` out is what runs a command with no time limit.
+ */
 export function validateExplicitTimeoutSeconds(timeout: number): void {
-	if (!Number.isFinite(timeout) || timeout <= 0 || !Number.isFinite(timeout * 1000))
+	if (!Number.isFinite(timeout) || timeout < 0 || !Number.isFinite(timeout * 1000))
 		throw new Error(
-			`Invalid timeout ${String(timeout)}: timeout must be a finite number of seconds greater than 0. Leave timeout out for no time limit.`,
+			`Invalid timeout ${String(timeout)}: timeout must be a finite, non-negative number of seconds. Leave timeout out for no time limit; 0 stops the command immediately.`,
 		);
 }
 const STILL_RUNNING = (taskId: string) => `Command is still running (task ${taskId}).`;
@@ -179,6 +184,7 @@ export function stillRunningReceipt(taskId: string, timeoutSeconds: number | und
 function normalizeTimeoutSeconds(timeout: number | undefined): number | undefined {
 	if (timeout === undefined) return undefined;
 	validateExplicitTimeoutSeconds(timeout);
+	if (timeout === 0) return 0;
 	// The nearest whole millisecond, and at least one: fractional seconds are honoured, not floored.
 	return Math.max(1, Math.round(timeout * 1000)) / 1000;
 }
@@ -207,6 +213,8 @@ export function createLocalBashOperations(options?: {
 		exec: async (command, cwd, { onData, signal, timeout, wait, env, pty, heartbeatMs }) => {
 			validateBashWait(wait, !!options?.taskOwner);
 			if (timeout !== undefined) validateExplicitTimeoutSeconds(timeout);
+			// A zero deadline has already passed: the command times out without starting.
+			if (timeout === 0) throw new Error("timeout:0");
 			if (pty && getEnvValue(`${APP_NAME.toUpperCase()}_NO_PTY`) !== "1") {
 				try {
 					return await executeNativePty(command, cwd, {
@@ -406,7 +414,7 @@ function formatBashCall(
 	if (args?.action === "wait") return theme.fg("toolTitle", theme.bold(`${prompt} wait ${str(args.id) ?? "..."}`));
 	const command = str(args?.command);
 	const timeout = args?.timeout as number | undefined;
-	const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
+	const timeoutSuffix = timeout !== undefined ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
 	return theme.fg("toolTitle", theme.bold(`${prompt} ${commandDisplay}`)) + timeoutSuffix;
 }
