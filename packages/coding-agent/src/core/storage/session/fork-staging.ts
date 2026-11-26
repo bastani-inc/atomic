@@ -107,6 +107,16 @@ export interface ForkStagingTarget {
 	/** The destination's `create`: one transaction with every entry. */
 	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult>;
 	/**
+	 * The read that begins the child's publication, as `create`'s begins: whether the child exists and, where it can tell,
+	 * whether a deleted session with the child's ID left rows forks still read.
+	 */
+	newSessionRead(id: string): SqliteStatement;
+	/**
+	 * In the publication, before its writes, given what `newSessionRead` found, as `create` does: refuses a child that
+	 * exists, and gives the rows a deleted session with the child's ID left for forks to those forks.
+	 */
+	startNewSession(tx: SqliteExecutor, id: string, found: SqliteRow | undefined): Promise<void>;
+	/**
 	 * A write of the session `sessionId` in the destination, which checks the sessions schema version first: the only
 	 * writer of that session, beside writers of other sessions (#6560). `leading` names the calls the body makes first,
 	 * after the check, sent with the transaction's start where the connection is pipelined.
@@ -835,7 +845,7 @@ async function stageAndPublish(
 		await flush();
 
 		const { tables } = target;
-		const existing: SqliteStatement = { sql: `SELECT id FROM ${tables.sessions} WHERE id = ?`, params: [header.id] };
+		const existing = target.newSessionRead(header.id);
 		const { epoch } = await destinationWrite(
 			target.transaction(
 				header.id,
@@ -846,8 +856,7 @@ async function stageAndPublish(
 					// transaction's start, behind the schema check: a check that fails rolls it back with the rest.
 					const { changes: held } = await tx.run(renewal.sql, ...renewal.params);
 					if (held !== 1) throw lostTransfer(header);
-					if ((await tx.get(existing.sql, ...existing.params)) !== undefined)
-						throw new SessionExistsError(header.id);
+					await target.startNewSession(tx, header.id, await tx.get(existing.sql, ...existing.params));
 					const saved = target.summaryWrite(header, seq, summary, index);
 					// The child's writes go out together, each behind the one before, and are answered together: a kind whose
 					// staged rows fit one batch moves in one statement. A larger kind moves a batch at a time, after the rest.

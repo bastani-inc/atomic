@@ -7,8 +7,8 @@
  *   tombstone once nothing names them any more: when the last fork reading them is deleted, replaced or detached.
  * - Replacing a session that forks still read first gives each of them its own copy of the rows it read (detach),
  *   since the replace deletes those rows.
- * - Creating a session under the ID of a tombstone first detaches the forks that still read the old rows, then removes
- *   them, so the new session starts empty.
+ * - Creating a session under the ID of a tombstone, by `create` or by any fork, first detaches the forks that still
+ *   read the old rows, then removes them, so the new session starts empty.
  *
  * A session's own segments go when it is deleted or replaced, which may leave a deleted source no fork reads; the caller
  * sweeps it once its transaction commits (fork-sweep.ts). A delete and a replace lock the session's row for update
@@ -111,8 +111,13 @@ export async function replaceForkedSessionWithin(
 }
 
 /**
- * In `create`'s transaction, before the session is written: when a deleted session with this ID left a tombstone,
- * the forks still reading its rows get their own copy, and the rows go.
+ * In the transaction that writes a new session, by `create` or by a fork, before the session is written: when a
+ * deleted session with this ID left a tombstone, the forks still reading its rows get their own copy, and the rows go.
+ *
+ * The forks that read the rows are locked before the tombstone, as a fork locks its sources' rows before their
+ * tombstones: a fork of one of them, which holds that fork's row while it waits for the tombstone, never waits for this
+ * transaction while this one waits for it. Under the tombstone's lock no fork starts reading the rows, so the forks are
+ * listed again there; one that a fork committed meanwhile is locked as it is detached.
  */
 export async function createOverTombstoneWithin(
 	host: ForkDetachHost,
@@ -120,6 +125,9 @@ export async function createOverTombstoneWithin(
 	sessionId: string,
 ): Promise<void> {
 	if (!(await isTombstoned(host, tx, sessionId))) return;
+	// Where writers run one at a time, nothing is locked.
+	if (host.lockClause("update") !== "")
+		await host.lockForkSources(tx, await host.forkChildren(tx, sessionId), "update");
 	for (const child of await lockedReferrers(host, tx, sessionId))
 		await detachForkWithin(host, tx, sessionId, child, false);
 	await removeStoredRows(host, tx, sessionId);
