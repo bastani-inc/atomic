@@ -5,6 +5,7 @@ import { completeSessionForkStream } from "../../packages/coding-agent/src/core/
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { countRoundTrips as countingRoundTrips } from "../helpers/postgres-round-trips.js";
+import { gate, instrumented, within } from "./storage-conformance-matrix-fork-staging-helpers.js";
 
 /** Counts the round trips to the server until the test ends. */
 function countRoundTrips() {
@@ -132,6 +133,42 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL round trips of for
 				console.info(`round trips: ${report.join("; ")}`);
 			} finally {
 				await store.close();
+			}
+		});
+	});
+	test("a parent's append does not wait for a fork that shares its history, and the fork keeps the history it locked (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const held = gate();
+			let armed = true;
+			// The fork's transaction stops once it holds the parent's row locked, as it reads the parent's segments.
+			const forking = await SqlSessionStore.open(
+				instrumented(await open(), {
+					pause: (sql, inTransaction) => {
+						if (!armed || !inTransaction || !sql.includes("ORDER BY idx")) return undefined;
+						armed = false;
+						return held.wait();
+					},
+				}),
+			);
+			const appending = await SqlSessionStore.open(await open());
+			try {
+				assert.equal((await forking.enableSharedHistoryForks({ live: async () => false })).status, "enabled");
+				const made = entries("p", 30);
+				await forking.create(header("p"), made);
+				const fork = clone(forking, "p", "c");
+				await within(held.reached, "the fork locking the parent", 20_000);
+				const more = entries("q", 5).map((entry, index) =>
+					index === 0 ? ({ ...entry, parentId: made.at(-1)!.id } as SessionEntry) : entry,
+				);
+				await within(appending.append("p", more, { expectSeq: 30 }), "the parent's append", 10_000);
+				held.release();
+				await fork;
+				assert.deepEqual((await forking.load("c")).entries, made, "the fork holds the parent as it locked it");
+				assert.deepEqual((await appending.load("p")).entries, [...made, ...more]);
+			} finally {
+				held.release();
+				await forking.close();
+				await appending.close();
 			}
 		});
 	});
