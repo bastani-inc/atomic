@@ -107,7 +107,7 @@ import { sessionWriteTransaction } from "./session-transactions.js";
 import { sharedHistorySwitchHost } from "./shared-history-switch.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import { type SqlSessionChatRecords, sqlChatRecords } from "./sql-chat-records.js";
-import { noteStoredEntry, storedSeqOf } from "./stored-entries.js";
+import { dropStoredNotes, storedEntryNotes, storedSeqOf } from "./stored-entries.js";
 import type {
 	ChildDisplayLaunch,
 	ForkArchiveSource,
@@ -130,7 +130,6 @@ import type {
 	SessionOpenMarkerStore,
 	SessionRecordHeader,
 	SessionResume,
-	SessionResumeOptions,
 	SessionScanOptions,
 	SessionScanPage,
 	SessionSnapshot,
@@ -3518,6 +3517,8 @@ $grant$`);
 		this.closed = true;
 		this.scopes.clear();
 		this.summaries.clear();
+		// Notes whose fingerprint is still to take go with the store: their entries are copied by a fork (#6560).
+		dropStoredNotes(this);
 		const reader = this.reader;
 		this.reader = undefined;
 		if (reader !== undefined) await (await reader.catch(() => undefined))?.close();
@@ -3887,21 +3888,24 @@ $grant$`);
 
 	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {
 		// The entries' first page is asked for beside the session's row: a pipelined connection sends both at once.
+		const generation = this.generation(sessionId);
 		const shared = await this.viewTables(tx);
-		const head = tx.get<HeaderRow & { chat_epoch: string | null; forked?: number }>(
-			`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision${this.forkedColumn(shared.segments)} FROM ${this.tables.sessions} WHERE id = ?`,
+		const head = tx.get<HeaderRow & { chat_epoch: string | null; epoch: string; forked?: number }>(
+			`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision,${generation.sql} AS epoch${this.forkedColumn(shared.segments)} FROM ${this.tables.sessions} WHERE id = ?`,
+			...generation.params,
 			sessionId,
 		);
 		// The rows go out before the row's answer, read directly when this store last found the session without
 		// segments; the row then says whether that still holds in this snapshot, and a guess it disproves reads again.
 		const guess: ForkViewTables =
 			this.forkedSessions.get(sessionId) === false ? { ...shared, segments: undefined } : shared;
-		// A load notes no entry for a fork to share: no fork of this store forks what a load read (#6560).
-		let [row, rows] = await Promise.all([head, this.readRows(tx, sessionId, undefined, undefined, undefined, guess)]);
+		// Each entry is noted in the generation the same snapshot reads, for a fork to share its row (#6560).
+		const epoch = head.then((found) => found?.epoch);
+		let [row, rows] = await Promise.all([head, this.readRows(tx, sessionId, undefined, undefined, epoch, guess)]);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		this.noteForked(tx, sessionId, row.forked);
 		if (guess.segments === undefined && shared.segments !== undefined && Number(row.forked) === 1)
-			rows = await this.readRows(tx, sessionId, undefined, undefined, undefined, shared);
+			rows = await this.readRows(tx, sessionId, undefined, undefined, epoch, shared);
 		const snapshot = {
 			header: JSON.parse(row.header_json) as SessionRecordHeader,
 			entries: rows.map(({ entry }) => entry),
@@ -3922,7 +3926,7 @@ $grant$`);
 		sessionId: string,
 		range: { readonly from?: number; readonly through?: number } = {},
 		seqs?: readonly number[],
-		epoch?: string,
+		epoch?: string | PromiseLike<string | undefined>,
 		viewTables?: ForkViewTables,
 	): Promise<SessionStoredEntry[]> {
 		const tables = viewTables ?? (await this.viewTables(tx, sessionId));
@@ -3973,13 +3977,19 @@ $grant$`);
 				SESSION_READ_PAGE_CHARS,
 				limit,
 			);
+			const generation = await epoch;
+			// Each entry is noted where it is stored, for a fork to share its row (#6560), only where that can happen.
+			const note =
+				generation === undefined || !this.sharedHistorySeen
+					? undefined
+					: storedEntryNotes(this, sessionId, generation);
 			for (const entry of rows) {
 				const chunks = Number(entry.chunks);
 				const seq = Number(entry.seq);
 				const json =
 					chunks === 0 ? entry.entry_json : await this.readEntryChunks(tx, tables, sessionId, seq, chunks);
 				const parsed = JSON.parse(json) as SessionEntry;
-				if (epoch !== undefined) noteStoredEntry(parsed, sessionId, seq, epoch, json);
+				note?.(parsed, seq, json);
 				entries.push({ seq, entry: parsed });
 			}
 			const next = nextFetch(limit, rows);
@@ -4625,7 +4635,10 @@ $grant$`);
 			const head = await this.historyHead(tx, sessionId, true);
 			if (expectedEpoch !== undefined && expectedEpoch !== head.epoch)
 				throw new SessionConflictError(sessionId, endSeq, head.lastSeq);
-			const entries = endSeq < start ? [] : await this.readRows(tx, sessionId, { from: start, through: endSeq });
+			const entries =
+				endSeq < start
+					? []
+					: await this.readRows(tx, sessionId, { from: start, through: endSeq }, undefined, head.epoch);
 			return {
 				startSeq: start,
 				entries: entries.map(({ entry }) => entry),
@@ -5664,14 +5677,14 @@ $grant$`);
 	): Promise<SessionResume> {
 		return this.resumeWindow(sessionId, leafId, throughSeq, options);
 	}
-	readResume(sessionId: string, leafId?: string, options?: SessionResumeOptions): Promise<SessionResume> {
+	readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		return this.resumeWindow(sessionId, leafId, undefined, options);
 	}
 	private async resumeWindow(
 		sessionId: string,
 		leafId?: string,
 		throughSeq?: number,
-		options?: SessionResumeOptions,
+		options?: { deferChildRecords: true },
 	): Promise<SessionResume> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
@@ -5715,11 +5728,9 @@ $grant$`);
 		sessionId: string,
 		header: SessionRecordHeader,
 		index: SessionResumeIndex,
-		options?: SessionResumeOptions,
+		options?: { deferChildRecords: true },
 	): Promise<SessionResume> {
 		const { leafSeq } = index;
-		// Only a fork's read notes where each entry is stored, for the fork to share it (#6560): a plain resume pays nothing.
-		const epoch = options?.forFork ? index.epoch : undefined;
 		const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
 		announceHistoryLoad(plan.state.length + plan.branch.reduce((sum, [a, b]) => sum + b - a + 1, 0));
 		// The branch's ranges, the state and the leaf depend on the index alone: a pipelined connection sends them at once,
@@ -5727,10 +5738,10 @@ $grant$`);
 		const [ranges, state, leaf] = await Promise.all([
 			Promise.all(
 				plan.branch.map(([start, end]) =>
-					this.readRows(tx, sessionId, { from: start, through: end }, undefined, epoch),
+					this.readRows(tx, sessionId, { from: start, through: end }, undefined, index.epoch),
 				),
 			),
-			this.readSeqs(tx, sessionId, plan.state, epoch),
+			this.readSeqs(tx, sessionId, plan.state, index.epoch),
 			leafSeq <= 0 ? undefined : this.entryIdAt(tx, sessionId, leafSeq),
 		]);
 		const branch: SessionStoredEntry[] = ranges.flat();
@@ -6089,7 +6100,8 @@ $grant$`);
 	 */
 	private noteWritten(sessionId: string, epoch: string, written: readonly WrittenEntry[]): void {
 		if (!this.sharedHistorySeen) return;
-		for (const { entry, seq, json } of written) noteStoredEntry(entry, sessionId, seq, epoch, json);
+		const note = storedEntryNotes(this, sessionId, epoch);
+		for (const { entry, seq, json } of written) note(entry, seq, json);
 	}
 
 	/**

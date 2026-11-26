@@ -191,7 +191,7 @@ async function withPriorAnswer(store: SessionStore, resume: SelectedWindow): Pro
 async function readStoredSession(
 	store: SessionStore,
 	sessionId: string,
-	options: { readonly history?: "tail"; readonly leafId?: string; readonly forFork?: true } | undefined,
+	options: { readonly history?: "tail"; readonly leafId?: string } | undefined,
 ): Promise<{ resume: SelectedWindow }>;
 async function readStoredSession(
 	store: SessionStore,
@@ -219,10 +219,7 @@ async function readStoredSession(
 	return {
 		resume: await withPriorAnswer(
 			store,
-			await store.readResume(sessionId, options?.leafId, {
-				deferChildRecords: true,
-				...(options !== undefined && "forFork" in options && options.forFork ? { forFork: true as const } : {}),
-			}),
+			await store.readResume(sessionId, options?.leafId, { deferChildRecords: true }),
 		),
 	};
 }
@@ -2861,8 +2858,7 @@ export class SessionManager {
 
 	/** Resolve the selected stored branch even when an earlier clear has retired its first kept span. */
 	private async contextBranch(leafId: string): Promise<SessionEntry[]> {
-		// A fork takes these entries: the store notes where each is stored, for the fork to share it (#6560).
-		const { resume } = await readStoredSession(this.store, this.sessionId, { leafId, forFork: true });
+		const { resume } = await readStoredSession(this.store, this.sessionId, { leafId });
 		if (this.historyEpoch !== undefined && resume.epoch !== this.historyEpoch)
 			throw new SessionConflictError(this.sessionId, this.lastSeq, resume.lastSeq);
 		if (resume.leafId !== leafId) throw new SessionEntryError(leafId, "missing");
