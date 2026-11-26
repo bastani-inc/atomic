@@ -55,6 +55,19 @@ import {
 import { entryProjector, jsonlEntryProjection, type ProjectedEntry } from "./jsonl-entry-projection.js";
 import { epochHasCreationTime, fileEpochOf, legacyFileEpochOf } from "./jsonl-file-epoch.js";
 import {
+	acquireFineSessionLocks,
+	acquireSessionGroupLock,
+	LOCK_BACKOFF_MS,
+	loadNativeSessionLocks,
+	RelockRequiredError,
+	removeDirectory,
+	type SessionLockFs,
+	type SessionLockScope,
+	sessionLockStripe,
+	sortedStripesForPaths,
+	TRANSIENT_RELEASE_CODES,
+} from "./jsonl-session-lock.js";
+import {
 	isCurrentSessionHeader,
 	legacyVersion,
 	type StoredSessionHeader,
@@ -972,22 +985,18 @@ export class JsonlStoragePoisonedError extends Error {
 	}
 }
 
-/**
- * The file-system calls the session lock makes, replaceable so a test can fail the ones that only
- * fail on Windows. `rmdir` and `stat` are also what this store uses to clear a lock it could not release.
- */
-export interface SessionLockFs {
-	mkdir: typeof import("node:fs").mkdir;
-	rmdir: typeof import("node:fs").rmdir;
-	stat: typeof import("node:fs").stat;
-	utimes: typeof import("node:fs").utimes;
-	realpath: typeof import("node:fs").realpath;
-}
+export type { SessionLockFs } from "./jsonl-session-lock.js";
 
-/** Removing a lock directory fails with these on Windows while another handle, such as a scanner or indexer, holds it. */
-const TRANSIENT_RELEASE_CODES = new Set(["EPERM", "EBUSY", "EACCES", "ENOTEMPTY"]);
-/** Waits between attempts to take or remove the lock directory, about 1.5 s in all, far inside the lock's 10 s stale window. */
-const LOCK_BACKOFF_MS = [10, 20, 50, 100, 200, 400, 700];
+type RunLock =
+	| boolean
+	| SessionLockScope
+	| {
+			readonly kind: "sessions";
+			readonly sessionIds: () => readonly string[];
+			readonly create?: boolean;
+			readonly forceFull?: () => boolean;
+	  }
+	| (() => SessionLockScope);
 
 /** The name a session's file is created with: its creation time, then its id or the key of its id. */
 const SESSION_FILE_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d+)?Z_(.+)\.jsonl$/;
@@ -1042,7 +1051,10 @@ export class JsonlSessionStore implements SessionStore {
 					else pending.reject(pending.answer !== undefined ? pending.answer.error : fallback);
 				}
 			};
-			this.run(() => this.commitChatAppends(group)).then(
+			this.run(() => this.commitChatAppends(group), {
+				kind: "sessions",
+				sessionIds: () => group.requests.map((pending) => pending.owner.id),
+			}).then(
 				() => settle(),
 				(cause: unknown) => settle(cause),
 			);
@@ -1053,6 +1065,7 @@ export class JsonlSessionStore implements SessionStore {
 	private async commitChatAppends(group: ChatAppendGroup): Promise<void> {
 		group.started = true;
 		if (this.chatAppendGroup === group) this.chatAppendGroup = undefined;
+		for (const request of group.requests) request.answer = undefined;
 		const byOwner = new Map<string, { readonly owner: ChatRecordOwner; readonly requests: ChatAppendRequest[] }>();
 		for (const request of group.requests) {
 			const key = `${request.owner.id}\0${request.owner.file ?? ""}\0${request.owner.epoch}`;
@@ -1063,15 +1076,29 @@ export class JsonlSessionStore implements SessionStore {
 			}
 			bucket.requests.push(request);
 		}
+		const located: Array<{
+			readonly owner: ChatRecordOwner;
+			readonly requests: ChatAppendRequest[];
+			readonly writable: boolean;
+		}> = [];
 		for (const { owner, requests } of byOwner.values()) {
 			try {
 				const held = await this.locate(owner.id);
-				if (
-					held &&
+				const writable =
+					held !== undefined &&
 					held.stats.birthtimeNs > 0n &&
 					held.path === owner.file &&
-					fileEpochOf(held.stats, JSON.stringify(held.header)) === owner.epoch
-				)
+					fileEpochOf(held.stats, JSON.stringify(held.header)) === owner.epoch;
+				located.push({ owner, requests, writable });
+			} catch (cause) {
+				if (cause instanceof RelockRequiredError) throw cause;
+				const failure = this.failure(cause);
+				for (const request of requests) request.answer = { error: failure };
+			}
+		}
+		for (const { owner, requests, writable } of located) {
+			try {
+				if (writable)
 					await appendFileChatRecords(
 						owner,
 						requests.map(({ anchor, record }) => ({ anchor, record })),
@@ -1089,10 +1116,12 @@ export class JsonlSessionStore implements SessionStore {
 
 	private readonly exactDirectory: boolean;
 	private readonly lockFs: SessionLockFs | undefined;
+	/** Stripes currently held by this store's active locked operation in `heldLockDirectory`, if narrowed. */
+	private heldStripes: ReadonlySet<number> | undefined;
+	private heldLockDirectory: string | undefined;
 	/**
-	 * Lock directories this store acquired and could not remove, by path, with the modification time they had
-	 * then. Nothing refreshes them any more, so another process may take them only once they are stale; until
-	 * then the store removes its own, recognised by that time, rather than waiting out the stale window.
+	 * Lock directories this store acquired and could not remove (fallback path when native advisory locks are
+	 * unavailable), by path, with the modification time they had then.
 	 */
 	private readonly unreleased = new Map<string, number>();
 
@@ -1155,23 +1184,26 @@ export class JsonlSessionStore implements SessionStore {
 			return changed;
 		}, false);
 		if (paths === undefined || unread.size > 0) {
-			await store.run(async () => {
-				for (const path of paths ?? (await store.paths())) {
-					if (paths !== undefined && !unread.has(path)) continue;
-					try {
-						await store.readSnapshot(path);
-					} catch {
-						store.fileStates.delete(path);
+			await store.run(
+				async () => {
+					for (const path of paths ?? (await store.paths())) {
+						if (paths !== undefined && !unread.has(path)) continue;
+						try {
+							await store.readSnapshot(path);
+						} catch {
+							store.fileStates.delete(path);
+						}
 					}
-				}
-				// Files keep the order the directory lists them in, which a lookup of a duplicated ID follows.
-				for (const path of paths ?? []) {
-					const state = store.fileStates.get(path);
-					if (state === undefined) continue;
-					store.fileStates.delete(path);
-					store.fileStates.set(path, state);
-				}
-			});
+					// Files keep the order the directory lists them in, which a lookup of a duplicated ID follows.
+					for (const path of paths ?? []) {
+						const state = store.fileStates.get(path);
+						if (state === undefined) continue;
+						store.fileStates.delete(path);
+						store.fileStates.set(path, state);
+					}
+				},
+				paths === undefined ? true : { kind: "files", paths: [...unread] },
+			);
 		}
 		return store;
 	}
@@ -1195,35 +1227,44 @@ export class JsonlSessionStore implements SessionStore {
 		entries: readonly SessionEntry[],
 		location?: string,
 	): Promise<SessionWriteResult> {
-		return this.run(async () => {
-			validateSessionHeader(header);
-			validateSessionEntries(entries);
-			if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
-			const payload = Buffer.from(this.encode(header, entries));
-			const path = location === undefined ? this.locationFor(header) : resolve(location);
-			await makeDirectory(dirname(path));
-			const temporary = `${path}.${randomUUID()}.tmp`;
-			try {
-				await writeSynced(temporary, payload);
+		return this.run(
+			async () => {
+				validateSessionHeader(header);
+				validateSessionEntries(entries);
+				if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
+				const payload = Buffer.from(this.encode(header, entries));
+				const path = location === undefined ? this.locationFor(header) : resolve(location);
+				await makeDirectory(dirname(path));
+				const temporary = `${path}.${randomUUID()}.tmp`;
 				try {
-					await link(temporary, path);
-				} catch (cause) {
-					if ((cause as NodeJS.ErrnoException).code === "EEXIST") throw new SessionExistsError(header.id);
-					throw cause;
+					await writeSynced(temporary, payload);
+					try {
+						await link(temporary, path);
+					} catch (cause) {
+						if ((cause as NodeJS.ErrnoException).code === "EEXIST") throw new SessionExistsError(header.id);
+						throw cause;
+					}
+				} finally {
+					await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
+						if (cause.code !== "ENOENT") throw cause;
+					});
 				}
-			} finally {
-				await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
-					if (cause.code !== "ENOENT") throw cause;
-				});
-			}
-			// The new name, and the temporary one gone, last a crash before the session is acknowledged.
-			await syncDirectory(dirname(path));
-			const state = this.contentState(header, entries, payload);
-			const stats = await this.remember(path, state);
-			// Only successful creation of a new generation of the bound ID moves this handle's association.
-			if (this.selectedFile?.id === header.id) this.selectedFile = { id: header.id, path };
-			return { lastSeq: entries.length, epoch: fileEpochOf(stats, state.headerStamp) };
-		}, true);
+				// The new name, and the temporary one gone, last a crash before the session is acknowledged.
+				await syncDirectory(dirname(path));
+				const state = this.contentState(header, entries, payload);
+				const stats = await this.remember(path, state);
+				// Only successful creation of a new generation of the bound ID moves this handle's association.
+				if (this.selectedFile?.id === header.id) this.selectedFile = { id: header.id, path };
+				return { lastSeq: entries.length, epoch: fileEpochOf(stats, state.headerStamp) };
+			},
+			() => {
+				try {
+					return { kind: "create", path: location === undefined ? this.locationFor(header) : resolve(location) };
+				} catch {
+					return { kind: "list" };
+				}
+			},
+		);
 	}
 
 	async createFork(
@@ -1304,53 +1345,56 @@ export class JsonlSessionStore implements SessionStore {
 				await handle.close();
 			}
 			// Reading a source through this directory's own queue must finish before taking its write lock.
-			return await this.run(async () => {
-				if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
-				try {
-					await link(temporary, path);
-				} catch (cause) {
-					if ((cause as NodeJS.ErrnoException).code === "EEXIST") throw new SessionExistsError(header.id);
-					throw cause;
-				}
-				await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
-					if (cause.code !== "ENOENT") throw cause;
-				});
-				// The new name, and the temporary one gone, last a crash before the fork is acknowledged.
-				await syncDirectory(dirname(path));
-				const headerStamp = JSON.stringify(header);
-				const stats = await this.remember(path, {
-					headerStamp,
-					headerId: header.id,
-					lastSeq: ids.length,
-					lastEntryId: lastId,
-					terminated: true,
-					torn: false,
-					witness: integrity.witness,
-					summaryState: summary,
-				});
-				const epoch = fileEpochOf(stats, headerStamp);
-				await this.keepIndex(
-					path,
-					{
-						identity: `${stats.dev}:${stats.ino}`,
-						birthtimeNs: String(stats.birthtimeNs),
+			return await this.run(
+				async () => {
+					if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
+					try {
+						await link(temporary, path);
+					} catch (cause) {
+						if ((cause as NodeJS.ErrnoException).code === "EEXIST") throw new SessionExistsError(header.id);
+						throw cause;
+					}
+					await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
+						if (cause.code !== "ENOENT") throw cause;
+					});
+					// The new name, and the temporary one gone, last a crash before the fork is acknowledged.
+					await syncDirectory(dirname(path));
+					const headerStamp = JSON.stringify(header);
+					const stats = await this.remember(path, {
 						headerStamp,
-						fileSize: size,
-						mtimeNs: String(stats.mtimeNs),
-						size,
-						...integrity,
-						synced: true,
+						headerId: header.id,
+						lastSeq: ids.length,
+						lastEntryId: lastId,
 						terminated: true,
 						torn: false,
-						spans,
-						ids,
-						index: { ...index, epoch },
-						sidecarSize: 0,
-					},
-					{ synced: true },
-				);
-				return { lastSeq: ids.length, epoch };
-			}, true);
+						witness: integrity.witness,
+						summaryState: summary,
+					});
+					const epoch = fileEpochOf(stats, headerStamp);
+					await this.keepIndex(
+						path,
+						{
+							identity: `${stats.dev}:${stats.ino}`,
+							birthtimeNs: String(stats.birthtimeNs),
+							headerStamp,
+							fileSize: size,
+							mtimeNs: String(stats.mtimeNs),
+							size,
+							...integrity,
+							synced: true,
+							terminated: true,
+							torn: false,
+							spans,
+							ids,
+							index: { ...index, epoch },
+							sidecarSize: 0,
+						},
+						{ synced: true },
+					);
+					return { lastSeq: ids.length, epoch };
+				},
+				{ kind: "create", path },
+			);
 		} finally {
 			await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
 				if (cause.code !== "ENOENT") throw cause;
@@ -1388,7 +1432,17 @@ export class JsonlSessionStore implements SessionStore {
 					else reject(answer !== undefined ? answer.error : fallback);
 				}
 			};
-			this.run(() => this.commitAppends(group)).then(
+			this.run(() => this.commitAppends(group), {
+				kind: "sessions",
+				sessionIds: () => group.requests.map((pending) => pending.sessionId),
+				forceFull: () => {
+					const ids = new Set(group.requests.map((pending) => pending.sessionId));
+					return (
+						ids.size > 1 &&
+						group.requests.some((pending) => pending.entries.some((entry) => entry.type === "compaction"))
+					);
+				},
+			}).then(
 				() => settle(),
 				(cause: unknown) => settle(cause),
 			);
@@ -1399,6 +1453,7 @@ export class JsonlSessionStore implements SessionStore {
 	private async commitAppends(group: AppendGroup): Promise<void> {
 		group.started = true;
 		if (this.appendGroup === group) this.appendGroup = undefined;
+		for (const request of group.requests) request.answer = undefined;
 		const staged = new Map<string, StagedFile>();
 		for (const request of group.requests) {
 			if (this.poisoned) {
@@ -1408,6 +1463,7 @@ export class JsonlSessionStore implements SessionStore {
 			try {
 				await this.stageAppend(staged, request);
 			} catch (cause) {
+				if (cause instanceof RelockRequiredError) throw cause;
 				if (this.poisoned) {
 					request.answer = { error: this.poisoned };
 					break;
@@ -1576,63 +1632,69 @@ export class JsonlSessionStore implements SessionStore {
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
 	): Promise<SessionWriteResult> {
-		return this.run(async () => {
-			const { path } = await this.forWrite(sessionId, options);
-			validateSessionHeader(header);
-			validateSessionEntries(entries);
-			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
-			return { lastSeq: entries.length, epoch: await this.commit(path, header, entries) };
-		});
+		return this.run(
+			async () => {
+				const { path } = await this.forWrite(sessionId, options);
+				validateSessionHeader(header);
+				validateSessionEntries(entries);
+				if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
+				return { lastSeq: entries.length, epoch: await this.commit(path, header, entries) };
+			},
+			{ kind: "sessions", sessionIds: () => [sessionId] },
+		);
 	}
 
 	updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
-		return this.run(async () => {
-			validateSessionHeader(header);
-			const { path, state } = await this.forWrite(header.id, options);
-			const temporary = `${path}.${randomUUID()}.tmp`;
-			const output = await open(temporary, "wx+", 0o600);
-			try {
-				let witness: Buffer;
+		return this.run(
+			async () => {
+				validateSessionHeader(header);
+				const { path, state } = await this.forWrite(header.id, options);
+				const temporary = `${path}.${randomUUID()}.tmp`;
+				const output = await open(temporary, "wx+", 0o600);
 				try {
-					await output.writeFile(this.encode(header, []));
-					let inHeader = true;
-					const source = createReadStream(path, { end: state.size - 1 });
-					for await (const chunk of source as AsyncIterable<Buffer>) {
-						if (!inHeader) await output.writeFile(chunk);
-						else {
-							const newline = chunk.indexOf(10);
-							if (newline >= 0) {
-								inHeader = false;
-								await output.writeFile(chunk.subarray(newline + 1));
+					let witness: Buffer;
+					try {
+						await output.writeFile(this.encode(header, []));
+						let inHeader = true;
+						const source = createReadStream(path, { end: state.size - 1 });
+						for await (const chunk of source as AsyncIterable<Buffer>) {
+							if (!inHeader) await output.writeFile(chunk);
+							else {
+								const newline = chunk.indexOf(10);
+								if (newline >= 0) {
+									inHeader = false;
+									await output.writeFile(chunk.subarray(newline + 1));
+								}
 							}
 						}
+						witness = await witnessAt(output, (await output.stat()).size);
+						await output.chmod((await stat(path)).mode & 0o7777);
+						// Synced before it is renamed over the session: a crash leaves the old file or this one, never an empty one.
+						await syncFile(output);
+					} finally {
+						await output.close();
 					}
-					witness = await witnessAt(output, (await output.stat()).size);
-					await output.chmod((await stat(path)).mode & 0o7777);
-					// Synced before it is renamed over the session: a crash leaves the old file or this one, never an empty one.
-					await syncFile(output);
+					await this.forgetIndex(path);
+					await this.closeKept(path);
+					await renameOver(temporary, path);
+					await syncDirectory(dirname(path));
+					const headerStamp = JSON.stringify(header);
+					const stats = await this.remember(path, {
+						...state,
+						headerStamp,
+						witness,
+						torn: false,
+						terminated: state.lastSeq === 0 || state.terminated,
+					});
+					return { lastSeq: state.lastSeq, epoch: fileEpochOf(stats, headerStamp) };
 				} finally {
-					await output.close();
+					await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
+						if (cause.code !== "ENOENT") throw cause;
+					});
 				}
-				await this.forgetIndex(path);
-				await this.closeKept(path);
-				await renameOver(temporary, path);
-				await syncDirectory(dirname(path));
-				const headerStamp = JSON.stringify(header);
-				const stats = await this.remember(path, {
-					...state,
-					headerStamp,
-					witness,
-					torn: false,
-					terminated: state.lastSeq === 0 || state.terminated,
-				});
-				return { lastSeq: state.lastSeq, epoch: fileEpochOf(stats, headerStamp) };
-			} finally {
-				await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
-					if (cause.code !== "ENOENT") throw cause;
-				});
-			}
-		});
+			},
+			{ kind: "sessions", sessionIds: () => [header.id] },
+		);
 	}
 
 	private async commit(path: string, header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<string> {
@@ -1915,11 +1977,131 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	loadFile(path: string): Promise<SessionSnapshot> {
-		return this.run(() => this.readPersisted(resolve(path)));
+		const target = resolve(path);
+		return this.run(async () => {
+			const fallback = () =>
+				this.exclusive(() => this.readPersisted(target), undefined, this.directory, {
+					kind: "files",
+					paths: [target],
+				});
+			let handle: FileHandle;
+			try {
+				handle = await open(target, "r");
+			} catch {
+				return fallback();
+			}
+			let snapshot: SessionSnapshot | undefined;
+			let commit: (() => Promise<void>) | undefined;
+			let caught: { readonly error: unknown } | undefined;
+			let valid = false;
+			let isLegacy = false;
+			try {
+				const stats = await handle.stat({ bigint: true });
+				let firstLine: FirstLineRead | undefined;
+				try {
+					firstLine = await readFirstLineWithTailFrom(handle, HEADER_READ_CHUNK_BYTES, Number(stats.size));
+				} catch (error) {
+					caught = { error };
+				}
+				if (firstLine !== undefined) {
+					if (!isCurrentSessionHeader(firstLine.stored)) {
+						isLegacy = true;
+					} else {
+						try {
+							const header = await this.readHeaderAt(target, firstLine.stored);
+							const { entries, witness, terminated, torn, size } = await this.readEntriesFrom(
+								handle,
+								Number(stats.size),
+								firstLine,
+							);
+							validateSessionEntryStructure(entries, target);
+							validateSessionEntries(entries);
+							const headerStamp = JSON.stringify(header);
+							bindChatEpoch(header, fileEpochOf(stats, headerStamp));
+							snapshot = { header, entries, lastSeq: entries.length };
+							commit = async () => {
+								if (torn) reportTornLine(target);
+								await this.remember(
+									target,
+									{
+										headerStamp,
+										headerId: header.id,
+										lastSeq: entries.length,
+										lastEntryId: entries.at(-1)?.id,
+										witness,
+										terminated,
+										torn,
+										summaryState: applySessionSummaryEntries(undefined, entries).state,
+									},
+									torn ? size : undefined,
+									stats,
+								);
+							};
+						} catch (error) {
+							caught = { error };
+						}
+					}
+				}
+				if (!isLegacy) {
+					const dir = dirname(target);
+					const dirUnlocked =
+						!(await this.isDirectoryLockPresent(dir)) &&
+						(dir === this.directory || !(await this.isDirectoryLockPresent(this.directory)));
+					if (dirUnlocked) {
+						const after = await stat(target, { bigint: true }).catch(() => undefined);
+						valid = after !== undefined && this.stamp(after) === this.stamp(stats);
+					}
+				}
+			} finally {
+				await handle.close();
+			}
+			if (isLegacy || !valid) return fallback();
+			if (caught !== undefined) throw caught.error;
+			await commit!();
+			return snapshot!;
+		}, false);
 	}
 
 	readHeaderFile(path: string): Promise<SessionRecordHeader> {
-		return this.run(() => this.readHeaderAt(resolve(path)));
+		const target = resolve(path);
+		return this.run(async () => {
+			const fallback = () =>
+				this.exclusive(() => this.readHeaderAt(target), undefined, this.directory, {
+					kind: "files",
+					paths: [target],
+				});
+			let handle: FileHandle;
+			try {
+				handle = await open(target, "r");
+			} catch {
+				return fallback();
+			}
+			let header: SessionRecordHeader | undefined;
+			let caught: { readonly error: unknown } | undefined;
+			let valid = false;
+			try {
+				const stats = await handle.stat({ bigint: true });
+				try {
+					const stored = await readFirstLineFrom(handle, HEADER_READ_CHUNK_BYTES, 0);
+					header = await this.readHeaderAt(target, stored);
+				} catch (error) {
+					caught = { error };
+				}
+				const dir = dirname(target);
+				const dirUnlocked =
+					!(await this.isDirectoryLockPresent(dir)) &&
+					(dir === this.directory || !(await this.isDirectoryLockPresent(this.directory)));
+				if (dirUnlocked) {
+					const after = await stat(target, { bigint: true }).catch(() => undefined);
+					valid = after !== undefined && this.stamp(after) === this.stamp(stats);
+				}
+			} finally {
+				await handle.close();
+			}
+			if (!valid) return fallback();
+			if (caught !== undefined) throw caught.error;
+			return header!;
+		}, false);
 	}
 
 	readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
@@ -1960,15 +2142,18 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	readChildDisplayCut(sessionId: string, launch: ChildDisplayLaunch) {
-		return this.run(async () => {
-			const { childDisplayCut } = await import("./card-view.js");
-			const { path, jsonl } = await this.indexed(sessionId);
-			const found =
-				typeof launch.launchLeafId === "string"
-					? await this.seqInFile(path, jsonl, launch.launchLeafId)
-					: undefined;
-			return childDisplayCut(jsonl.index, launch, found);
-		});
+		return this.run(
+			async () => {
+				const { childDisplayCut } = await import("./card-view.js");
+				const { path, jsonl } = await this.indexed(sessionId);
+				const found =
+					typeof launch.launchLeafId === "string"
+						? await this.seqInFile(path, jsonl, launch.launchLeafId)
+						: undefined;
+				return childDisplayCut(jsonl.index, launch, found);
+			},
+			{ kind: "sessions", sessionIds: () => [sessionId] },
+		);
 	}
 
 	/** Bind a short-lived archive reader to this exact file, including for duplicate exported IDs. */
@@ -1985,31 +2170,40 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	readBranchSpan(sessionId: string, cut: SessionBranchPageCut) {
-		return this.run(async () => transcriptBranchSpan(sessionId, (await this.indexed(sessionId)).jsonl.index, cut));
+		return this.run(async () => transcriptBranchSpan(sessionId, (await this.indexed(sessionId)).jsonl.index, cut), {
+			kind: "sessions",
+			sessionIds: () => [sessionId],
+		});
 	}
 
 	readEntrySizes(sessionId: string, startSeq: number, endSeq: number, limit?: number): Promise<SessionEntrySizes> {
-		return this.run(async () => {
-			const { jsonl } = await this.indexed(sessionId);
-			const start = Math.max(1, startSeq);
-			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq, start + entrySizeLimit(limit) - 1));
-			return {
-				epoch: jsonl.index.epoch,
-				lastSeq: jsonl.index.seq,
-				sizes: seqs.map((seq) => ({ seq, bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq) })),
-			};
-		});
+		return this.run(
+			async () => {
+				const { jsonl } = await this.indexed(sessionId);
+				const start = Math.max(1, startSeq);
+				const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq, start + entrySizeLimit(limit) - 1));
+				return {
+					epoch: jsonl.index.epoch,
+					lastSeq: jsonl.index.seq,
+					sizes: seqs.map((seq) => ({ seq, bytes: spanEnd(jsonl, seq) - spanStart(jsonl, seq) })),
+				};
+			},
+			{ kind: "sessions", sessionIds: () => [sessionId] },
+		);
 	}
 
 	readEntryChunk(reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> {
-		return this.run(async () => {
-			const { path, jsonl } = await this.indexed(reference.sessionId);
-			if (jsonl.index.epoch !== reference.epoch)
-				throw new SessionConflictError(reference.sessionId, reference.seq, jsonl.index.seq);
-			const start = spanStart(jsonl, reference.seq) + offset;
-			const length = Math.min(SESSION_HISTORY_CHUNK_BYTES, spanEnd(jsonl, reference.seq) - start);
-			return readBytes(path, start, length, this.keptFor(path, jsonl.identity));
-		});
+		return this.run(
+			async () => {
+				const { path, jsonl } = await this.indexed(reference.sessionId);
+				if (jsonl.index.epoch !== reference.epoch)
+					throw new SessionConflictError(reference.sessionId, reference.seq, jsonl.index.seq);
+				const start = spanStart(jsonl, reference.seq) + offset;
+				const length = Math.min(SESSION_HISTORY_CHUNK_BYTES, spanEnd(jsonl, reference.seq) - start);
+				return readBytes(path, start, length, this.keptFor(path, jsonl.identity));
+			},
+			{ kind: "sessions", sessionIds: () => [reference.sessionId] },
+		);
 	}
 
 	readRange(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange> {
@@ -2058,19 +2252,22 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
-		return this.run(async () => {
-			if (leafId !== undefined) validateSessionText("entry.id", leafId);
-			const { path, jsonl } = await this.indexed(sessionId);
-			const leafSeq =
-				leafId === undefined ? jsonl.index.leafSeq : ((await this.seqInFile(path, jsonl, leafId)) ?? -1);
-			const point = latestCompactionOf(jsonl.index, leafSeq);
-			if (point === undefined) return undefined;
-			const read = await this.entriesAt(path, jsonl, [point.seq, leafSeq]);
-			const boundary = read.find((held) => held.seq === point.seq)?.entry;
-			const leaf = read.find((held) => held.seq === leafSeq)?.entry;
-			if (boundary?.type !== "compaction" || leaf === undefined) return undefined;
-			return { ...point, entry: boundary, leafId: leaf.id, lastSeq: jsonl.index.seq };
-		});
+		return this.run(
+			async () => {
+				if (leafId !== undefined) validateSessionText("entry.id", leafId);
+				const { path, jsonl } = await this.indexed(sessionId);
+				const leafSeq =
+					leafId === undefined ? jsonl.index.leafSeq : ((await this.seqInFile(path, jsonl, leafId)) ?? -1);
+				const point = latestCompactionOf(jsonl.index, leafSeq);
+				if (point === undefined) return undefined;
+				const read = await this.entriesAt(path, jsonl, [point.seq, leafSeq]);
+				const boundary = read.find((held) => held.seq === point.seq)?.entry;
+				const leaf = read.find((held) => held.seq === leafSeq)?.entry;
+				if (boundary?.type !== "compaction" || leaf === undefined) return undefined;
+				return { ...point, entry: boundary, leafId: leaf.id, lastSeq: jsonl.index.seq };
+			},
+			{ kind: "sessions", sessionIds: () => [sessionId] },
+		);
 	}
 
 	/** Read this exact export file, not another file in the directory with the same session ID. An export is an
@@ -2189,83 +2386,93 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	readForkWindow(sessionId: string, entryId: string, options?: { readonly archivedReceipts: true }) {
-		return this.run(async () => {
-			const { indexedForkWindow, rangedForkMetadata, scanForkRecords } = await import("./fork-window.js");
-			for (;;) {
-				const { path, header, jsonl } = await this.indexed(sessionId);
-				const file = await open(path, "r");
-				try {
-					const stat = await file.stat({ bigint: true });
-					if (!matchesIndexRevision(stat, jsonl)) continue;
-					const leaf = (await this.seqInFile(path, jsonl, entryId, file)) ?? 0;
-					const many = (seqs: readonly number[]) => this.entriesAt(path, jsonl, seqs, { handle: file });
-					const metadata = rangedForkMetadata(
-						(seq) => [spanStart(jsonl, seq), spanEnd(jsonl, seq)],
-						(start, n) => readFrom(file, start, n),
-					);
-					const scan = scanForkRecords(metadata);
-					let fork = jsonl.fork;
-					const forkIndex = async (): Promise<JsonlForkIndex> => {
-						if (fork) return fork;
-						// An older sidecar has offsets but not label order. Fill the optional cache only when
-						// a fork needs it, reading bounded metadata once rather than decoding the file per fork.
-						const active = new Map<string, number>(),
-							catalog: Array<readonly [number, ForkCatalogType]> = [];
-						for await (const m of scan(
-							[[1, jsonl.index.seq]],
-							[],
-							["label", "session_info", "session_summary", "branch_summary"],
-						)) {
-							if (isForkCatalogType(m.type)) catalog.push([m.seq, m.type]);
-							else {
-								const target = m.label?.targetId ?? m.labelTarget;
-								if (target === undefined) continue;
-								if (m.label?.label || m.labelSet) active.set(target, m.seq);
-								else active.delete(target);
+		return this.run(
+			async () => {
+				const { indexedForkWindow, rangedForkMetadata, scanForkRecords } = await import("./fork-window.js");
+				for (;;) {
+					const { path, header, jsonl } = await this.indexed(sessionId);
+					const file = await open(path, "r");
+					try {
+						const stat = await file.stat({ bigint: true });
+						if (!matchesIndexRevision(stat, jsonl)) continue;
+						const leaf = (await this.seqInFile(path, jsonl, entryId, file)) ?? 0;
+						const many = (seqs: readonly number[]) => this.entriesAt(path, jsonl, seqs, { handle: file });
+						const metadata = rangedForkMetadata(
+							(seq) => [spanStart(jsonl, seq), spanEnd(jsonl, seq)],
+							(start, n) => readFrom(file, start, n),
+						);
+						const scan = scanForkRecords(metadata);
+						let fork = jsonl.fork;
+						const forkIndex = async (): Promise<JsonlForkIndex> => {
+							if (fork) return fork;
+							// An older sidecar has offsets but not label order. Fill the optional cache only when
+							// a fork needs it, reading bounded metadata once rather than decoding the file per fork.
+							const active = new Map<string, number>(),
+								catalog: Array<readonly [number, ForkCatalogType]> = [];
+							for await (const m of scan(
+								[[1, jsonl.index.seq]],
+								[],
+								["label", "session_info", "session_summary", "branch_summary"],
+							)) {
+								if (isForkCatalogType(m.type)) catalog.push([m.seq, m.type]);
+								else {
+									const target = m.label?.targetId ?? m.labelTarget;
+									if (target === undefined) continue;
+									if (m.label?.label || m.labelSet) active.set(target, m.seq);
+									else active.delete(target);
+								}
 							}
-						}
-						fork = { labels: [...active.values()], catalog };
-						await this.keepIndex(path, { ...jsonl, fork }, { synced: jsonl.synced, handle: file });
-						return fork;
-					};
-					return await indexedForkWindow(
-						header,
-						jsonl.index,
-						leaf,
-						(lo, hi) => many(seqRange(lo, hi)),
-						many,
-						metadata,
-						async function* (ranges, kinds, types = []) {
-							if (kinds.length || types.includes("label") || types.includes("custom")) {
-								yield* scan(ranges, kinds, types);
-								return;
-							}
-							for (const [seq, type] of (await forkIndex()).catalog)
-								if (types.includes(type) && ranges.some(([a, b]) => seq >= a && seq <= b)) yield { seq, type };
-						},
-						options,
-						async () => (await forkIndex()).labels,
-					);
-				} finally {
-					await file.close();
+							fork = { labels: [...active.values()], catalog };
+							await this.keepIndex(path, { ...jsonl, fork }, { synced: jsonl.synced, handle: file });
+							return fork;
+						};
+						return await indexedForkWindow(
+							header,
+							jsonl.index,
+							leaf,
+							(lo, hi) => many(seqRange(lo, hi)),
+							many,
+							metadata,
+							async function* (ranges, kinds, types = []) {
+								if (kinds.length || types.includes("label") || types.includes("custom")) {
+									yield* scan(ranges, kinds, types);
+									return;
+								}
+								for (const [seq, type] of (await forkIndex()).catalog)
+									if (types.includes(type) && ranges.some(([a, b]) => seq >= a && seq <= b))
+										yield { seq, type };
+							},
+							options,
+							async () => (await forkIndex()).labels,
+						);
+					} finally {
+						await file.close();
+					}
 				}
-			}
-		});
+			},
+			{ kind: "sessions", sessionIds: () => [sessionId] },
+		);
 	}
 
 	readChildCatalogCut(sessionId: string) {
-		return this.run(async () => childCatalogCut((await this.indexed(sessionId)).jsonl.index));
+		return this.run(async () => childCatalogCut((await this.indexed(sessionId)).jsonl.index), {
+			kind: "sessions",
+			sessionIds: () => [sessionId],
+		});
 	}
 	/** The snapshot entries the session's index locates; no line of the file is read (#5554). */
 	readSnapshotCut(
 		sessionId: string,
 		options: { readonly leafSeq?: number } = {},
 	): Promise<SessionSnapshotCut | undefined> {
-		return this.run(async () => {
-			const { index } = (await this.indexed(sessionId)).jsonl;
-			if (options.leafSeq !== undefined && options.leafSeq > index.seq) return undefined;
-			return snapshotCutOf(index, options.leafSeq);
-		});
+		return this.run(
+			async () => {
+				const { index } = (await this.indexed(sessionId)).jsonl;
+				if (options.leafSeq !== undefined && options.leafSeq > index.seq) return undefined;
+				return snapshotCutOf(index, options.leafSeq);
+			},
+			{ kind: "sessions", sessionIds: () => [sessionId] },
+		);
 	}
 	/** The lines at `seqs`, each read from where the index places it, without reading the lines between them. */
 	readSelectedPage(
@@ -2274,22 +2481,25 @@ export class JsonlSessionStore implements SessionStore {
 		epoch: string,
 		options: { readonly limit?: number; readonly backward?: boolean } = {},
 	): Promise<SessionHistoryPage> {
-		return this.run(async () => {
-			const limit = entrySizeLimit(options.limit);
-			const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
-			if (!wanted.length) return { items: [] };
-			const { path, jsonl } = await this.indexed(sessionId);
-			if (jsonl.index.epoch !== epoch) throw new SessionConflictError(sessionId, wanted.at(-1)!, jsonl.index.seq);
-			const plan = selectedPagePlan(
-				sessionId,
-				wanted,
-				jsonl.index.seq,
-				(seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
-				options.backward,
-			);
-			if ("oversized" in plan) return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
-			return { items: await this.entriesAt(path, jsonl, plan.seqs) };
-		});
+		return this.run(
+			async () => {
+				const limit = entrySizeLimit(options.limit);
+				const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
+				if (!wanted.length) return { items: [] };
+				const { path, jsonl } = await this.indexed(sessionId);
+				if (jsonl.index.epoch !== epoch) throw new SessionConflictError(sessionId, wanted.at(-1)!, jsonl.index.seq);
+				const plan = selectedPagePlan(
+					sessionId,
+					wanted,
+					jsonl.index.seq,
+					(seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+					options.backward,
+				);
+				if ("oversized" in plan) return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
+				return { items: await this.entriesAt(path, jsonl, plan.seqs) };
+			},
+			{ kind: "sessions", sessionIds: () => [sessionId] },
+		);
 	}
 	readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		return this.run(async () => {
@@ -2388,11 +2598,14 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
-		return this.run(async () => {
-			validateSessionText("entry.id", entryId);
-			const { path, jsonl } = await this.indexed(sessionId);
-			return this.seqInFile(path, jsonl, entryId);
-		});
+		return this.run(
+			async () => {
+				validateSessionText("entry.id", entryId);
+				const { path, jsonl } = await this.indexed(sessionId);
+				return this.seqInFile(path, jsonl, entryId);
+			},
+			{ kind: "sessions", sessionIds: () => [sessionId] },
+		);
 	}
 
 	private async indexed(sessionId: string): Promise<IndexedSession> {
@@ -2461,17 +2674,22 @@ export class JsonlSessionStore implements SessionStore {
 
 	private async persistSidecarUnderLock(path: string, jsonl: JsonlIndex, stats: BigIntStats): Promise<void> {
 		const expected = this.stamp(stats);
-		await this.exclusive(async () => {
-			const current = await stat(path, { bigint: true }).catch(() => undefined);
-			if (current !== undefined && this.stamp(current) === expected) {
-				const kept = this.keptFor(path, jsonl.identity);
-				await this.keepIndex(path, jsonl, {
-					synced: jsonl.synced,
-					handle: kept,
-					writable: kept !== undefined,
-				});
-			}
-		});
+		await this.exclusive(
+			async () => {
+				const current = await stat(path, { bigint: true }).catch(() => undefined);
+				if (current !== undefined && this.stamp(current) === expected) {
+					const kept = this.keptFor(path, jsonl.identity);
+					await this.keepIndex(path, jsonl, {
+						synced: jsonl.synced,
+						handle: kept,
+						writable: kept !== undefined,
+					});
+				}
+			},
+			undefined,
+			this.directory,
+			{ kind: "files", paths: [path] },
+		);
 	}
 
 	private async indexFor(
@@ -3064,44 +3282,64 @@ export class JsonlSessionStore implements SessionStore {
 		stored ??= await this.readFirstLine(path);
 		const directory = dirname(path);
 		if (isCurrentSessionHeader(stored) || directory === this.directory) return this.readSnapshot(path, stored, true);
-		return this.exclusive(() => this.readSnapshot(path, undefined, true), undefined, directory);
+		return this.exclusive(() => this.readSnapshot(path, undefined, true), undefined, directory, {
+			kind: "files",
+			paths: [path],
+		});
 	}
 
 	findFile(sessionId: string): Promise<string | undefined> {
-		return this.run(async () => (await this.locate(sessionId))?.path);
+		return this.run(
+			() =>
+				this.readUnlocked(
+					sessionId,
+					async ({ path }) => ({ value: path, commit: async () => {} }),
+					async () => (await this.locate(sessionId))?.path,
+				),
+			false,
+		);
 	}
 
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
-		return this.run(async () => {
-			return (await this.locate(sessionId))?.header;
-		});
+		return this.run(
+			() =>
+				this.readUnlocked(
+					sessionId,
+					async ({ header }) => ({ value: header, commit: async () => {} }),
+					async () => (await this.locate(sessionId))?.header,
+				),
+			false,
+		);
 	}
 
 	delete(sessionId: string): Promise<void> {
-		return this.run(async () => {
-			const known = [...this.fileStates.values()].some((state) => state.headerId === sessionId);
-			const located = await this.locate(sessionId);
-			if (!located) {
-				if (known) throw new SessionNotFoundError(sessionId);
-				return;
-			}
-			const owner: ChatRecordOwner = {
-				file: located.path,
-				id: sessionId,
-				epoch: fileEpochOf(located.stats, JSON.stringify(located.header)),
-			};
-			await this.closeKept(located.path);
-			await unlink(located.path);
-			this.fileStates.delete(located.path);
-			await this.forgetIndex(located.path);
-			await deleteFileChatRecords(owner).catch(() => {});
-		});
+		return this.run(
+			async () => {
+				const known = [...this.fileStates.values()].some((state) => state.headerId === sessionId);
+				const located = await this.locate(sessionId);
+				if (!located) {
+					if (known) throw new SessionNotFoundError(sessionId);
+					return;
+				}
+				const owner: ChatRecordOwner = {
+					file: located.path,
+					id: sessionId,
+					epoch: fileEpochOf(located.stats, JSON.stringify(located.header)),
+				};
+				await this.closeKept(located.path);
+				await unlink(located.path);
+				this.fileStates.delete(located.path);
+				await this.forgetIndex(located.path);
+				await deleteFileChatRecords(owner).catch(() => {});
+			},
+			{ kind: "sessions", sessionIds: () => [sessionId], create: true },
+		);
 	}
 
 	async *list(query: SessionListQuery): AsyncIterable<SessionSummary> {
 		this.checkAbort(query.signal);
 		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcherAsync(query.cwd);
-		const paths = await this.run(() => this.paths(), true, query.signal);
+		const paths = await this.run(() => this.paths(), { kind: "list" }, query.signal);
 		for (const path of paths) {
 			const cached = query.withoutSearchText ? this.fileStates.get(path) : undefined;
 			const summary = await this.run(
@@ -3140,7 +3378,9 @@ export class JsonlSessionStore implements SessionStore {
 							}
 							return { ...summarizeSession(await this.readSnapshot(path, stored)), location: path };
 						};
-						return await (cached?.summaryState !== undefined ? this.exclusive(readOne, query.signal) : readOne());
+						return await (cached?.summaryState !== undefined
+							? this.exclusive(readOne, query.signal, this.directory, { kind: "files", paths: [path] })
+							: readOne());
 					} catch (cause) {
 						const error = cause as NodeJS.ErrnoException;
 						if (error.path === path && (error.code === "ENOENT" || error.code === "ENOTDIR")) return undefined;
@@ -3154,13 +3394,13 @@ export class JsonlSessionStore implements SessionStore {
 						throw cause;
 					}
 				},
-				cached?.summaryState === undefined,
+				cached?.summaryState === undefined ? { kind: "files", paths: [path] } : false,
 				query.signal,
 			);
 			this.checkAbort(query.signal);
 			if (summary) yield summary;
 		}
-		await this.run(async () => this.checkAbort(query.signal), true, query.signal);
+		await this.run(async () => this.checkAbort(query.signal), { kind: "list" }, query.signal);
 	}
 
 	async *scanFiles(): AsyncIterable<JsonlSessionFile> {
@@ -3260,13 +3500,13 @@ export class JsonlSessionStore implements SessionStore {
 		kept.idle.unref();
 	}
 
-	private run<T>(operation: () => Promise<T>, locked = true, signal?: AbortSignal): Promise<T> {
+	private run<T>(operation: () => Promise<T>, locked: RunLock = true, signal?: AbortSignal): Promise<T> {
 		if (this.closed) return Promise.reject(new StoreClosedError(this.descriptor));
 		this.queued++;
 		const result = this.queue.then(async () => {
 			if (this.poisoned) throw this.poisoned;
 			try {
-				return await (locked ? this.exclusive(operation, signal) : operation());
+				return await (locked === false ? operation() : this.exclusive(operation, signal, this.directory, locked));
 			} catch (cause) {
 				if (signal?.aborted && cause === signal.reason) throw cause;
 				throw this.failure(cause);
@@ -3296,7 +3536,106 @@ export class JsonlSessionStore implements SessionStore {
 		return new StorageUnavailableError(this.descriptor, cause as Error);
 	}
 
+	private async resolveLockScope(lockRequest: Exclude<RunLock, false>): Promise<SessionLockScope> {
+		if (lockRequest === true) return { kind: "full" };
+		if (typeof lockRequest === "function") return lockRequest();
+		if (lockRequest.kind !== "sessions") return lockRequest;
+		if (lockRequest.forceFull?.()) return { kind: "full" };
+		const ids = [...new Set(lockRequest.sessionIds())];
+		const targetPaths: string[] = [];
+		const missing: string[] = [];
+		for (const id of ids) {
+			if (this.selectedFile?.id === id) {
+				targetPaths.push(this.selectedFile.path);
+				continue;
+			}
+			let found: string | undefined;
+			for (const [path, cached] of this.fileStates) {
+				if (cached.headerId === id) {
+					found = path;
+					break;
+				}
+			}
+			if (found !== undefined) targetPaths.push(found);
+			else missing.push(id);
+		}
+		if (missing.length > 0) {
+			const allPaths = await this.paths();
+			for (const id of missing) {
+				const key = this.key(id);
+				const suffix = `_${key}.jsonl`;
+				let matched = false;
+				for (const path of allPaths) {
+					const name = basename(path);
+					if (name.endsWith(suffix) || SESSION_FILE_NAME.exec(name)?.[1] === id) {
+						targetPaths.push(path);
+						matched = true;
+					}
+				}
+				if (!matched) return { kind: "full" };
+			}
+		}
+		return {
+			kind: "stripes",
+			stripes: sortedStripesForPaths(targetPaths),
+			create: lockRequest.create === true,
+		};
+	}
+
+	private assertStripeHeld(path: string): void {
+		if (this.heldStripes === undefined || this.heldLockDirectory !== this.directory) return;
+		if (!this.heldStripes.has(sessionLockStripe(basename(path)))) throw new RelockRequiredError(path);
+	}
+
 	private async exclusive<T>(
+		operation: () => Promise<T>,
+		signal?: AbortSignal,
+		directory = this.directory,
+		lockRequest: Exclude<RunLock, false> = true,
+	): Promise<T> {
+		const native = loadNativeSessionLocks();
+		if (native === null) return this.exclusiveLegacy(operation, signal, directory);
+
+		const groupLock = await acquireSessionGroupLock(native, directory, {
+			lockFs: this.lockFs,
+			signal,
+			onCompromised: (cause) => {
+				this.poisoned = new StorageUnavailableError(this.descriptor, cause);
+			},
+		});
+
+		try {
+			let scope = await this.resolveLockScope(lockRequest);
+			for (let attempt = 0; ; attempt++) {
+				const fine = await acquireFineSessionLocks(native, groupLock.lockPath, scope, signal);
+				const prevStripes = this.heldStripes;
+				const prevDir = this.heldLockDirectory;
+				this.heldStripes = fine.stripes;
+				this.heldLockDirectory = directory;
+				try {
+					this.checkAbort(signal);
+					if (this.poisoned) throw this.poisoned;
+					const result = await operation();
+					if (this.poisoned) throw this.poisoned;
+					return result;
+				} catch (cause) {
+					if (cause instanceof RelockRequiredError && attempt === 0) {
+						scope = { kind: "full" };
+						continue;
+					}
+					throw cause;
+				} finally {
+					this.heldStripes = prevStripes;
+					this.heldLockDirectory = prevDir;
+					fine.release();
+				}
+			}
+		} finally {
+			await groupLock.release();
+		}
+	}
+
+	private async exclusiveLegacy<T>(
 		operation: () => Promise<T>,
 		signal?: AbortSignal,
 		directory = this.directory,
@@ -3344,9 +3683,7 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	/**
-	 * Releases the lock. The directory removal is retried when Windows refuses it for a moment. If it never
-	 * succeeds the work is still done, so the failure is not reported over it: the lock is remembered so this
-	 * store's next acquire removes it at once, instead of waiting for it to go stale.
+	 * Releases a fallback proper-lockfile directory lock when native advisory locks are unavailable.
 	 */
 	private async release(release: () => Promise<void>, lockfilePath: string): Promise<void> {
 		const fs: Pick<SessionLockFs, "rmdir" | "stat"> = this.lockFs ?? { rmdir: rmdirCallback, stat: statCallback };
@@ -3370,7 +3707,7 @@ export class JsonlSessionStore implements SessionStore {
 		if (modified !== undefined) this.unreleased.set(lockfilePath, modified);
 	}
 
-	/** Removes a lock directory this store failed to release, if it still has the time it had then. */
+	/** Removes a fallback lock directory this store failed to release, if it still has the time it had then. */
 	private async clearUnreleased(lockfilePath: string): Promise<boolean> {
 		const expected = this.unreleased.get(lockfilePath);
 		if (expected === undefined) return false;
@@ -3402,6 +3739,7 @@ export class JsonlSessionStore implements SessionStore {
 	private async paths(options: { readonly skipUnreadableDirectories?: boolean } = {}): Promise<string[]> {
 		const paths: string[] = [];
 		for (const entry of await readdir(this.directory, { withFileTypes: true })) {
+			if (entry.name.startsWith(".session.lock")) continue;
 			const path = join(this.directory, entry.name);
 			if ((entry.isDirectory() || entry.isSymbolicLink()) && !this.exactDirectory) {
 				const children = await readdir(path, { withFileTypes: true }).catch((cause: NodeJS.ErrnoException) => {
@@ -3428,14 +3766,29 @@ export class JsonlSessionStore implements SessionStore {
 		| undefined
 	> {
 		validateSessionText("sessionId", sessionId);
-		if (this.selectedFile?.id === sessionId) return this.scan(sessionId, [this.selectedFile.path]);
-		const known = await this.locateKnown(sessionId);
-		if (known) return known;
-		const suffix = `_${this.key(sessionId)}.jsonl`;
-		const paths = await this.paths();
-		const named = paths.filter((path) => basename(path).endsWith(suffix));
-		const others = paths.filter((path) => !named.includes(path));
-		return (await this.scan(sessionId, named)) ?? (await this.scan(sessionId, others));
+		let found:
+			| {
+					path: string;
+					header: SessionRecordHeader;
+					stored: StoredSessionHeader;
+					stats: BigIntStats;
+					state: SessionFileState | undefined;
+			  }
+			| undefined;
+		if (this.selectedFile?.id === sessionId) {
+			found = await this.scan(sessionId, [this.selectedFile.path]);
+		} else {
+			found = await this.locateKnown(sessionId);
+			if (!found) {
+				const suffix = `_${this.key(sessionId)}.jsonl`;
+				const paths = await this.paths();
+				const named = paths.filter((path) => basename(path).endsWith(suffix));
+				const others = paths.filter((path) => !named.includes(path));
+				found = (await this.scan(sessionId, named)) ?? (await this.scan(sessionId, others));
+			}
+		}
+		if (found !== undefined) this.assertStripeHeld(found.path);
+		return found;
 	}
 
 	/**
@@ -3693,7 +4046,8 @@ export class JsonlSessionStore implements SessionStore {
 		locked: () => Promise<T>,
 	): Promise<T> {
 		const found = await this.locateOpen(sessionId);
-		if (found.kind !== "found") return this.exclusive(locked);
+		const lockScope = { kind: "sessions" as const, sessionIds: () => [sessionId] };
+		if (found.kind !== "found") return this.exclusive(locked, undefined, this.directory, lockScope);
 		const { located } = found;
 		let outcome: { readonly value: T; readonly commit: () => Promise<void> } | undefined;
 		let caught: { readonly error: unknown } | undefined;
@@ -3708,7 +4062,7 @@ export class JsonlSessionStore implements SessionStore {
 		} finally {
 			if (located.owned) await located.handle.close();
 		}
-		if (!valid) return this.exclusive(locked);
+		if (!valid) return this.exclusive(locked, undefined, this.directory, lockScope);
 		if (caught !== undefined) throw caught.error;
 		await outcome!.commit();
 		return outcome!.value;
@@ -4068,15 +4422,6 @@ export class JsonlSessionStore implements SessionStore {
 	private encode(header: SessionRecordHeader, entries: readonly SessionEntry[]): string {
 		return `${[JSON.stringify({ type: "session", ...header }), ...entries.map((entry) => JSON.stringify(entry))].join("\n")}\n`;
 	}
-}
-
-function removeDirectory(fs: Pick<SessionLockFs, "rmdir">, path: string): Promise<void> {
-	return new Promise((resolve, reject) => {
-		fs.rmdir(path, (error) => {
-			if (error && (error as NodeJS.ErrnoException).code !== "ENOENT") reject(error);
-			else resolve();
-		});
-	});
 }
 
 function statMtimeMs(fs: Pick<SessionLockFs, "stat">, path: string): Promise<number | undefined> {
