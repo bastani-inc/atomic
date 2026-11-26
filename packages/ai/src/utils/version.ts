@@ -1,2 +1,2 @@
 // The @bastani/atomic-ai package version. scripts/bump-version.ts keeps it in sync with package.json.
-export const PI_AI_VERSION = "0.0.0";
+export const PI_AI_VERSION = "0.10.11-alpha.2";

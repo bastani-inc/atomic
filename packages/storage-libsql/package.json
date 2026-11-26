@@ -1,27 +1,74 @@
 {
   "name": "@bastani/atomic-storage-libsql",
-  "version": "0.0.0",
+  "version": "0.10.11-alpha.2",
   "description": "libSQL / Turso storage adapter for Atomic sessions and Intercom.",
-  "contributors": ["Norin Lavaee", "Alex Lavaee"],
+  "contributors": [
+    "Norin Lavaee",
+    "Alex Lavaee"
+  ],
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=24.20.0" },
+  "engines": {
+    "node": ">=24.20.0"
+  },
   "main": "./libsql.js",
   "types": "./libsql.d.ts",
-  "exports": { ".": { "types": "./libsql.d.ts", "import": "./libsql.js", "default": "./libsql.js" } },
-  "files": ["libsql.js", "libsql.d.ts", "README.md", "CHANGELOG.md", "LICENSE"],
-  "publishConfig": { "access": "public" },
+  "exports": {
+    ".": {
+      "types": "./libsql.d.ts",
+      "import": "./libsql.js",
+      "default": "./libsql.js"
+    }
+  },
+  "files": [
+    "libsql.js",
+    "libsql.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bastani-inc/atomic.git",
     "directory": "packages/storage-libsql"
   },
   "homepage": "https://docs.bastani.ai/libraries/storage-libsql",
-  "bugs": { "url": "https://github.com/bastani-inc/atomic/issues" },
-  "keywords": ["atomic", "storage", "libsql", "turso", "sqlite", "bastani"],
-  "atomic": { "storageAdapters": ["./libsql.js"] },
-  "pi": { "storageAdapters": ["./libsql.js"] },
-  "dependencies": { "@libsql/client": "0.18.0", "@libsql/core": "0.18.0", "@libsql/hrana-client": "0.10.0", "undici": "8.12.3" },
-  "peerDependencies": { "@bastani/atomic": "*" },
-  "peerDependenciesMeta": { "@bastani/atomic": { "optional": true } }
+  "bugs": {
+    "url": "https://github.com/bastani-inc/atomic/issues"
+  },
+  "keywords": [
+    "atomic",
+    "storage",
+    "libsql",
+    "turso",
+    "sqlite",
+    "bastani"
+  ],
+  "atomic": {
+    "storageAdapters": [
+      "./libsql.js"
+    ]
+  },
+  "pi": {
+    "storageAdapters": [
+      "./libsql.js"
+    ]
+  },
+  "dependencies": {
+    "@libsql/client": "0.18.0",
+    "@libsql/core": "0.18.0",
+    "@libsql/hrana-client": "0.10.0",
+    "undici": "8.12.3"
+  },
+  "peerDependencies": {
+    "@bastani/atomic": "*"
+  },
+  "peerDependenciesMeta": {
+    "@bastani/atomic": {
+      "optional": true
+    }
+  }
 }
