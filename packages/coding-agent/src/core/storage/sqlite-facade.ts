@@ -866,6 +866,7 @@ class DriverDatabase implements SqliteDatabase {
 	readonly databaseIdentity?: () => string | undefined;
 	readonly openReader?: () => Promise<SqliteDatabase>;
 	readonly takeOpenedCatalog?: () => StorageOpenedCatalog | undefined;
+	readonly autocommit?: (statement: SqliteStatement, concurrency: TransactionConcurrency) => Promise<SqliteRow[]>;
 	/** Readers this database opened and that are not closed; closing closes them. */
 	private readonly readers = new Set<DriverDatabase>();
 	private readonly closed?: () => void;
@@ -915,6 +916,31 @@ class DriverDatabase implements SqliteDatabase {
 		);
 		const batch = driver.batch?.bind(driver);
 		if (batch) this.batch = (statements, options) => this.runBatch(batch, statements, options);
+		if (driver.concurrentTransactions === true)
+			this.autocommit = (statement, concurrency) => this.runAutocommit(statement, concurrency);
+	}
+
+	/** `autocommit`: the statement on its own, through the driver's `execute`, in the queue scope of `concurrency`. */
+	private runAutocommit(statement: SqliteStatement, concurrency: TransactionConcurrency): Promise<SqliteRow[]> {
+		if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
+		let scope: CallScope;
+		try {
+			scope = transactionScope(transactionConcurrency({ concurrency }), false, true);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const bound = snapshotParams(statement.params);
+		return this.queue.push(
+			() =>
+				this.retrying(async (attempt) => {
+					const invalidIndex = bound.findIndex((value) => typeof value === "string" && value.includes("\0"));
+					if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
+					const result = await this.call(() => this.driver.execute(statement.sql, bound), attempt, true, bound);
+					return result.rows.map((row) => normalizeRow(row, result.columns));
+				}, true),
+			false,
+			scope,
+		);
 	}
 
 	private runBatch(

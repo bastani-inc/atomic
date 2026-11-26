@@ -5,6 +5,7 @@
 ### Changed
 
 - Opening a database also reads the list of Atomic's tables and their recorded versions, in the same round trip as the server version. The first store opened on the database uses them instead of reading them again, so opening it takes one round trip less ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- Prepared statements turn on by themselves behind PgBouncer 1.21 or later when its `max_prepared_statements` is above `0`, which is PgBouncer's default from 1.24. Atomic checks this on its first connection without an extra round trip: PgBouncer 1.26 and later report it when a client logs in, and for 1.21 to 1.25 Atomic checks whether PgBouncer renamed a test statement, then removes it. Behind Supavisor, older PgBouncer releases, PgBouncer with `max_prepared_statements = 0` and any pooler Atomic cannot identify, they stay off. The same check now also notices a pooler on a port other than `6432` or `6543`, when the pooler hands out its own cancel keys, as PgBouncer does, and turns prepared statements off there too. If your pooler listens on another port, set `listenUrl` or `maxPreparedStatements: 0`. A `maxPreparedStatements` you set still wins ([#6604](https://github.com/bastani-inc/atomic/pull/6604), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ## [0.10.11-alpha.1] - 2026-11-25
 
