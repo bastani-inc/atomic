@@ -118,9 +118,13 @@ test("libSQL redacts auth tokens in malformed URLs without changing caller input
 });
 
 test("libSQL redacts question marks inside credential values (#3857)", async () => {
-	vi.doMock("@libsql/client", () => ({
-		createClient: () => {
-			throw new Error("fixture?secret");
+	// A `file:` database opens its connections through the client's pool, which fails here with the secret in its message.
+	vi.doMock("@libsql/client/sqlite3", async (importOriginal) => ({
+		...(await importOriginal<typeof import("@libsql/client/sqlite3")>()),
+		ConnectionPool: class {
+			constructor() {
+				throw new Error("fixture?secret");
+			}
 		},
 	}));
 	await assert.rejects(openLibsqlDatabase({ url: "file:/missing?authToken=fixture?secret" }), (error: Error) => {
