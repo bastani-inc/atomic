@@ -1,6 +1,6 @@
+import { transactionFinisher } from "./added-exports.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "./database.js";
 import { dialectOf } from "./dialect.js";
-import { transactionFinisher } from "./statement-sequence.js";
 
 /**
  * What a schema held when one open read it: its relations, triggers and columns, and on PostgreSQL the versions its
