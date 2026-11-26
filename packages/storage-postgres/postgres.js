@@ -116,6 +116,8 @@ export const DEFAULT_READER_MAX_CONNECTIONS = 2;
  * server or a network that stopped answering, and a statement that cannot run in a transaction block.
  */
 const CLIENT_TIMEOUT_GRACE_MS = 5_000;
+/** How long closing a database waits for the server to let go of each of its connections before it drops them. */
+const CLOSE_WAIT_MS = 5_000;
 /** Sends the notifications of a JSON array of `[channel, payload]` pairs, as Oban sends many in one statement. */
 const NOTIFY_MANY_SQL = "SELECT pg_notify(notice ->> 0, notice ->> 1) FROM json_array_elements(?::json) AS notice";
 /** The conditional notify statement texts a database sends after their commit, at most. */
@@ -580,6 +582,48 @@ async function credentialOf(source) {
 	}
 	if (typeof value !== "string" || value === "") return undefined;
 	return { key: `password:${credentialId(value)}`, value };
+}
+
+/**
+ * The connections each pool opened that have not closed yet (`endPool`).
+ * @type {WeakMap<import("pg").Pool, Set<import("pg").Client>>}
+ */
+const openConnections = new WeakMap();
+
+/**
+ * Ends `pool`, and resolves once every connection it opened has closed. pg-pool's `end` resolves as soon as it has
+ * asked each connection to close, before the server has seen any of them go: a statement such as `DROP DATABASE`, or a
+ * count of the database's backends, made right after `close()` returned could still meet them. A connection whose
+ * server has not answered its goodbye within `CLOSE_WAIT_MS`, as across a network that stopped carrying packets, is
+ * dropped then, so closing never waits for TCP to give up on it.
+ * @param {import("pg").Pool} pool
+ */
+async function endPool(pool) {
+	const open = openConnections.get(pool);
+	if (open === undefined || open.size === 0) return pool.end();
+	const closed = new Promise((resolve) => {
+		const removed = () => {
+			if (open.size > 0) return;
+			pool.off("remove", removed);
+			resolve(undefined);
+		};
+		pool.on("remove", removed);
+	});
+	await pool.end();
+	const timer = setTimeout(() => {
+		for (const client of open) {
+			const { connection } = /** @type {{ connection: { stream: import("node:net").Socket } }} */ (
+				/** @type {unknown} */ (client)
+			);
+			connection.stream.destroy();
+		}
+	}, CLOSE_WAIT_MS);
+	timer.unref();
+	try {
+		await closed;
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /**
@@ -1259,7 +1303,12 @@ export async function openPostgresDatabase(options) {
 		});
 		// An idle connection that breaks emits `error` on the pool, which would end the process unheard.
 		opened.on("error", (_error, client) => lost.add(client));
+		// Each connection from when it opened until it closed, which pg-pool reports once its socket closed (`endPool`).
+		const open = new Set();
+		openConnections.set(opened, open);
+		opened.on("remove", (client) => open.delete(client));
 		opened.on("connect", (client) => {
+			open.add(client);
 			client.on("error", () => lost.add(client));
 			shared.pooler?.decide(client);
 		});
@@ -1844,7 +1893,7 @@ export async function openPostgresDatabase(options) {
 		await listener.close();
 		const reader = shared.reader;
 		shared.reader = undefined;
-		await Promise.all([pool.end(), reader?.pool.end()]);
+		await Promise.all([endPool(pool), reader === undefined ? undefined : endPool(reader.pool)]);
 	};
 
 	/**
@@ -2136,7 +2185,7 @@ export async function openPostgresDatabase(options) {
 								// The readers' pool ended already when the last database closed before its readers.
 								if (--reader.references > 0 || reader.pool.ending) return;
 								if (shared.reader === reader) shared.reader = undefined;
-								await reader.pool.end();
+								await endPool(reader.pool);
 							},
 						};
 					},

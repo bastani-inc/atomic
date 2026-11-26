@@ -7,6 +7,10 @@
 - A transaction with `relaxedDurability` runs with `synchronous_commit` off, set inside the `BEGIN` the adapter already sends, so it costs no extra round trip. Its commit returns without waiting for the disk. The setting ends with the transaction ([#6633](https://github.com/bastani-inc/atomic/pull/6633), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - A transaction that sends a wake-up notification no longer holds up every other one that does. PostgreSQL takes one server-wide lock for every commit that sends a notification and holds it until that commit is written to disk, so those commits ran one at a time. The adapter now sends the notification right after the commit, in a short transaction of its own that does not wait for the disk, in the same round trip as the commit. When several commits in one process send the same notification within 5 ms, it goes out once after them. In a test on PostgreSQL 16 with 50 or 200 Intercom senders waking brokers at once, 3 rounds alternated this change with the version before it on a busy machine. In every round the change committed more wake-ups per second, 1.2 to 3.2 times as many, and the median commit took 7 to 35 ms instead of 8 to 76 ms. A notification lost between the two transactions only delays its listener until its next poll, as one lost while the listening connection is down already did ([#6655](https://github.com/bastani-inc/atomic/pull/6655)).
 
+### Fixed
+
+- `close()` now returns only once the server has closed every connection of the database's pools, its readers' included. Before, it returned as soon as it had asked them to close, so a `DROP DATABASE` or a count of the database's connections made right after could still find them. A connection whose server stops answering is dropped after 5 seconds, so closing never waits for the network to give up on it.
+
 ## [0.10.11-alpha.2] - 2026-11-26
 
 ### Changed
