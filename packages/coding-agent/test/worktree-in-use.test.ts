@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -10,7 +10,8 @@ let dir: string;
 let path: string | undefined;
 
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "atomic-in-use-"));
+	// The real path, as lsof lists it: on macOS the temporary directory is under /var, a link to /private/var.
+	dir = realpathSync(mkdtempSync(join(tmpdir(), "atomic-in-use-")));
 	mkdirSync(join(dir, "worktree"));
 	mkdirSync(join(dir, "bin"));
 	path = process.env.PATH;
