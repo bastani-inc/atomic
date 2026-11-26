@@ -53,7 +53,9 @@ knowledge:
       `npm run test --workspace=@bastani/atomic -- agent-session-concurrent-` to select the five
       `.suite.ts` files; the `agent-session-concurrent.test.ts` wrapper is excluded.
       Finish `npm run check` and `npm run build` before running suites that import built packages:
-      typechecking rebuilds dist in place and cleans provider data.
+      typechecking rebuilds dist in place and cleans provider data. To test a restored catalog without fetching,
+      validate it with `npm run check:model-data --workspace=@bastani/atomic-ai`, then run `npm run check`
+      and `npm run test --workspace=@bastani/atomic-ai`. Typecheck reuses valid generated data.
       Validate named-worktree permissions with a private default umask:
       `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not

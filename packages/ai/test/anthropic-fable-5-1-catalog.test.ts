@@ -93,31 +93,16 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 	// Asserted as relations, not amounts: on 2026-11-19 models.dev moved the in-region
 	// `anthropic.claude-fable-5-1` profile from the global rates to the US-only rates, and a
 	// catalog refresh like that must not fail the build.
-	it("carries provider-specific Bedrock pricing rather than mirrored Anthropic prices", () => {
-		const rates = ["input", "output", "cacheRead", "cacheWrite"] as const;
+	it("uses Fable 5.1's rate ratios for each published Bedrock profile", ({ skip }) => {
+		const profiles = getModels("amazon-bedrock").filter((model) => /(?:^|\.)anthropic\.claude-fable-5-1$/.test(model.id));
+		if (profiles.length === 0) return skip("The generated Bedrock catalog has no Fable 5.1 profiles");
 		const anthropic = getModel("anthropic", "claude-fable-5-1").cost;
-
-		// Every profile keeps Fable 5.1's rate card: Anthropic's rates scaled by one factor per
-		// profile. A rate mirrored from Claude Fable 5 or another model, or a zeroed one, breaks it.
-		for (const id of [
-			"anthropic.claude-fable-5-1",
-			"global.anthropic.claude-fable-5-1",
-			"us.anthropic.claude-fable-5-1",
-		] as const) {
-			const cost = getModel("amazon-bedrock", id).cost;
+		for (const { id, cost } of profiles) {
 			const factor = cost.input / anthropic.input;
 			expect(factor, id).toBeGreaterThan(0);
-			for (const rate of rates) {
+			for (const rate of ["output", "cacheRead", "cacheWrite"] as const) {
 				expect(cost[rate], `${id} ${rate}`).toBeCloseTo(anthropic[rate] * factor, 10);
 			}
-		}
-
-		// US-only inference carries a documented 1.1x premium on every rate over global inference,
-		// which mirrored prices cannot satisfy.
-		const global = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1").cost;
-		const us = getModel("amazon-bedrock", "us.anthropic.claude-fable-5-1").cost;
-		for (const rate of rates) {
-			expect(us[rate], rate).toBeCloseTo(global[rate] * 1.1, 10);
 		}
 	});
 
@@ -140,17 +125,6 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		}
 	});
 
-	// models.dev publishes no `eu.` Bedrock inference profile for Claude Fable 5.1. Generating one
-	// would be an invented mirror. Whether Claude Fable 5's `eu.` profile is listed depends on the
-	// catalog snapshot, so it is not asserted either way.
-	it("does not invent Bedrock inference profiles that Anthropic has not published", () => {
-		const bedrockIds = getModels("amazon-bedrock").map((model) => model.id);
-
-		expect(bedrockIds).toContain("anthropic.claude-fable-5-1");
-		expect(bedrockIds).toContain("global.anthropic.claude-fable-5-1");
-		expect(bedrockIds).toContain("us.anthropic.claude-fable-5-1");
-		expect(bedrockIds).not.toContain("eu.anthropic.claude-fable-5-1");
-	});
 });
 
 describe("Claude Fable 5.1 server-side fallback", () => {

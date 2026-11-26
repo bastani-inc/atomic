@@ -57,6 +57,8 @@ export function createLocalPowerShellOperations(binding?: {
 		exec: async (command, cwd, options) => {
 			validateBashWait(options.wait, !!binding?.taskOwner);
 			if (options.timeout !== undefined) validateExplicitTimeoutSeconds(options.timeout);
+			// A zero deadline has already passed: the command times out without starting.
+			if (options.timeout === 0) throw new Error("timeout:0");
 			if (options.signal?.aborted) throw new Error("aborted");
 			const { shell, args } = await getPowerShellConfigAsync();
 			const script = `${UTF8_OUTPUT_PREFIX}${command}${windowsPowerShellExitSuffix(shell, command)}`;

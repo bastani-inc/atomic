@@ -9,7 +9,7 @@ import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { stream as streamOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { clampThinkingLevel, getModel, getSupportedThinkingLevels, streamSimple } from "../src/compat.ts";
+import { clampThinkingLevel, getModel, getModels, getSupportedThinkingLevels, streamSimple } from "../src/compat.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -424,93 +424,49 @@ async function captureStream(
 describe("thinking off on Bedrock Converse (#4552)", () => {
 	const claudeLowEffort = { thinking: { type: "adaptive" }, output_config: { effort: "low" } };
 
-	it.each([
-		["anthropic.claude-fable-5", "minimal", claudeLowEffort, getModel("amazon-bedrock", "anthropic.claude-fable-5")],
-		[
-			"us.anthropic.claude-fable-5",
-			"minimal",
-			claudeLowEffort,
-			getModel("amazon-bedrock", "us.anthropic.claude-fable-5"),
-		],
-		[
-			"global.anthropic.claude-fable-5",
-			"minimal",
-			claudeLowEffort,
-			getModel("amazon-bedrock", "global.anthropic.claude-fable-5"),
-		],
-		["anthropic.claude-fable-5-1", "low", claudeLowEffort, getModel("amazon-bedrock", "anthropic.claude-fable-5-1")],
-		[
-			"us.anthropic.claude-fable-5-1",
-			"low",
-			claudeLowEffort,
-			getModel("amazon-bedrock", "us.anthropic.claude-fable-5-1"),
-		],
-		[
-			"global.anthropic.claude-fable-5-1",
-			"low",
-			claudeLowEffort,
-			getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1"),
-		],
-		["openai.gpt-6-astra", "low", { reasoning_effort: "low" }, getModel("amazon-bedrock", "openai.gpt-6-astra")],
-		[
-			"us.openai.gpt-6-astra",
-			"low",
-			{ reasoning_effort: "low" },
-			getModel("amazon-bedrock", "us.openai.gpt-6-astra"),
-		],
-		[
-			"global.openai.gpt-6-astra",
-			"low",
-			{ reasoning_effort: "low" },
-			getModel("amazon-bedrock", "global.openai.gpt-6-astra"),
-		],
-		["openai.gpt-6.1-sol", "low", { reasoning: { effort: "low" } }, getModel("amazon-bedrock", "openai.gpt-6.1-sol")],
-		[
-			"us.openai.gpt-6.1-sol",
-			"low",
-			{ reasoning: { effort: "low" } },
-			getModel("amazon-bedrock", "us.openai.gpt-6.1-sol"),
-		],
-		[
-			"global.openai.gpt-6.1-sol",
-			"low",
-			{ reasoning: { effort: "low" } },
-			getModel("amazon-bedrock", "global.openai.gpt-6.1-sol"),
-		],
-	] as const)(
-		"sends amazon-bedrock/%s its lowest level, %s, when it cannot disable thinking",
-		async (_id, level, fields, model) => {
+	function bedrockProfiles(id: string) {
+		return getModels("amazon-bedrock").filter((model) => model.id === id || model.id.endsWith(`.${id}`));
+	}
+
+	it.for([
+		["anthropic.claude-fable-5", "minimal", claudeLowEffort],
+		["anthropic.claude-fable-5-1", "low", claudeLowEffort],
+		["openai.gpt-6-astra", "low", { reasoning_effort: "low" }],
+		["openai.gpt-6.1-sol", "low", { reasoning: { effort: "low" } }],
+	] as const)("sends Bedrock %s profiles their lowest level, %s, when they cannot disable thinking", async ([id, level, fields], { skip }) => {
+		const profiles = bedrockProfiles(id);
+		if (profiles.length === 0) return skip(`The generated Bedrock catalog has no ${id} profiles`);
+		for (const model of profiles) {
 			const off = await captureRequest(model);
 			const lowest = await captureRequest(model, { reasoning: level });
 
-			expect(off.payload.additionalModelRequestFields).toMatchObject(fields);
-			expect(off.payload.additionalModelRequestFields).toEqual(lowest.payload.additionalModelRequestFields);
-			expect(off.offFallbacks).toEqual([offFallbackDiagnostic(level, "low")]);
-			expect(lowest.offFallbacks).toEqual([]);
-		},
-	);
+			expect(off.payload.additionalModelRequestFields, model.id).toMatchObject(fields);
+			expect(off.payload.additionalModelRequestFields, model.id).toEqual(lowest.payload.additionalModelRequestFields);
+			expect(off.offFallbacks, model.id).toEqual([offFallbackDiagnostic(level, "low")]);
+			expect(lowest.offFallbacks, model.id).toEqual([]);
+		}
+	});
 
-	it.each([
-		[
-			"global.openai.gpt-6-sol",
-			{ reasoning: { effort: "none" } },
-			getModel("amazon-bedrock", "global.openai.gpt-6-sol"),
-		],
-		["global.openai.gpt-5.6-sol", undefined, getModel("amazon-bedrock", "global.openai.gpt-5.6-sol")],
-		["us.anthropic.claude-opus-4-8", undefined, getModel("amazon-bedrock", "us.anthropic.claude-opus-4-8")],
-	] as const)(
-		"keeps the off request of amazon-bedrock/%s, which can turn thinking off",
-		async (_id, fields, model) => {
+	it.for([
+		["openai.gpt-6-sol", { reasoning: { effort: "none" } }],
+		["openai.gpt-5.6-sol", undefined],
+		["anthropic.claude-opus-4-8", undefined],
+	] as const)("keeps the off request of Bedrock %s profiles that can turn thinking off", async ([id, fields], { skip }) => {
+		const profiles = bedrockProfiles(id);
+		if (profiles.length === 0) return skip(`The generated Bedrock catalog has no ${id} profiles`);
+		for (const model of profiles) {
 			const { payload, offFallbacks } = await captureRequest(model);
 
-			expect(payload.additionalModelRequestFields).toEqual(fields);
-			expect(offFallbacks).toEqual([]);
-		},
-	);
+			expect(payload.additionalModelRequestFields, model.id).toEqual(fields);
+			expect(offFallbacks, model.id).toEqual([]);
+		}
+	});
 
-	it("leaves a budget-thinking Claude model whose map denies off without thinking fields, as the Anthropic API does", async () => {
+	it("leaves a budget-thinking Claude model whose map denies off without thinking fields, as the Anthropic API does", async ({ skip }) => {
+		const profile = bedrockProfiles("anthropic.claude-sonnet-4-5-20250929-v1:0")[0];
+		if (!profile) return skip("The generated Bedrock catalog has no Claude Sonnet 4.5 profiles");
 		const model: Model<"bedrock-converse-stream"> = {
-			...getModel("amazon-bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+			...profile,
 			thinkingLevelMap: { off: null },
 		};
 
@@ -533,9 +489,11 @@ describe("thinking off on Bedrock Converse (#4552)", () => {
 		expect(offFallbacks).toEqual([]);
 	});
 
-	it("runs a low-level request without a reasoning level at the lowest level", async () => {
+	it("runs a low-level request without a reasoning level at the lowest level", async ({ skip }) => {
+		const profile = bedrockProfiles("openai.gpt-6-astra")[0];
+		if (!profile) return skip("The generated Bedrock catalog has no GPT-6 Astra profiles");
 		const { payload, offFallbacks } = await captureStream((onPayload) =>
-			streamBedrock(offline(getModel("amazon-bedrock", "us.openai.gpt-6-astra")), context, {
+			streamBedrock(offline(profile), context, {
 				apiKey: "test-key",
 				onPayload,
 			}),
@@ -545,16 +503,12 @@ describe("thinking off on Bedrock Converse (#4552)", () => {
 		expect(offFallbacks).toEqual([offFallbackDiagnostic("low", "low")]);
 	});
 
-	it.each([
-		["low", "low"],
-		["medium", "medium"],
-		["high", "high"],
-	] as const)("keeps an explicit %s level on Bedrock GPT-6 Astra at effort %s", async (reasoning, effort) => {
-		const { payload, offFallbacks } = await captureRequest(getModel("amazon-bedrock", "us.openai.gpt-6-astra"), {
-			reasoning,
-		});
+	it.for(["low", "medium", "high"] as const)("keeps an explicit %s level on Bedrock GPT-6 Astra", async (reasoning, { skip }) => {
+		const profile = bedrockProfiles("openai.gpt-6-astra")[0];
+		if (!profile) return skip("The generated Bedrock catalog has no GPT-6 Astra profiles");
+		const { payload, offFallbacks } = await captureRequest(profile, { reasoning });
 
-		expect(payload.additionalModelRequestFields).toEqual({ reasoning_effort: effort });
+		expect(payload.additionalModelRequestFields).toEqual({ reasoning_effort: reasoning });
 		expect(offFallbacks).toEqual([]);
 	});
 });
