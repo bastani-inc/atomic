@@ -39,11 +39,23 @@ import {
  */
 
 /**
- * The transactions a new store's first open runs, as many as before shared-history forks: on SQLite and libSQL the
- * sessions schema with its fork tables, the snapshot tables, their index and the search index; on PostgreSQL the
- * sessions, open-session and fillfactor steps, the snapshot tables with their index, and the search index.
+ * The transactions a new store's first open runs, as many as an open before shared-history forks runs, none of them a
+ * switch: on SQLite and libSQL the sessions schema with its fork tables, the snapshot tables, their index and the
+ * search index; on PostgreSQL also the read-only reads of the schema catalog and of the snapshot index's state, then
+ * the sessions, open-session and fillfactor steps, the snapshot tables with their index, and the search index.
  */
-const TRANSACTIONS_OF_A_NEW_STORE: Record<string, number> = { sqlite: 4, postgres: 5 };
+const TRANSACTIONS_OF_A_NEW_STORE: Record<string, number> = { sqlite: 4, postgres: 7 };
+
+/**
+ * What the open of a store already switched sends, as an open before shared-history forks does, nothing of it for the
+ * switch: on SQLite and libSQL the schema catalog and the session versions, then the snapshot and search index probes,
+ * each a statement of its own; on PostgreSQL the schema catalog and the snapshot index's state, each read in a
+ * read-only transaction of its own.
+ */
+const WARM_OPEN: Record<string, { readonly transactions: number; readonly statements: number }> = {
+	sqlite: { transactions: 0, statements: 6 },
+	postgres: { transactions: 2, statements: 0 },
+};
 
 /** A heartbeat older than any marker counts for. */
 const LONG_AGO_MS = 3_600_000;
@@ -328,7 +340,7 @@ for (const backend of storageBackends) {
 		);
 
 		test(
-			"opening a switched store reads nothing more for the switch: no marker read, no version read, no transaction",
+			"opening a switched store reads nothing more for the switch: no marker or version read, and no transaction of its own",
 			() =>
 				withBackendScope(backend, async (scope) => {
 					await (await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix })).close();
@@ -341,11 +353,9 @@ for (const backend of storageBackends) {
 						assert.ok(!sql.includes(open), `a warm open read the markers: ${sql}`);
 						assert.ok(!/max\(schema_version\)/i.test(sql), `a warm open read the version again: ${sql}`);
 					}
-					assert.equal(warm.transactions(), 0, "a warm open runs no transaction");
-					assert.equal(
-						warm.statements.length,
-						// The schema catalog and the session versions, then the snapshot and search index probes; nothing for the switch.
-						{ sqlite: 6, postgres: 4 }[dialectOf(warm.database).name] ?? -1,
+					assert.deepEqual(
+						{ transactions: warm.transactions(), statements: warm.statements.length },
+						WARM_OPEN[dialectOf(warm.database).name],
 						`a warm open sent ${warm.statements.join(" | ")}`,
 					);
 				}),
