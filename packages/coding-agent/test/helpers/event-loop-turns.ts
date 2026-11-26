@@ -11,8 +11,19 @@ const STALLS_ALLOWED = 3;
 /** No turn may hold the event loop this long, however few do. */
 const STALL_CEILING_MS = 100;
 
-/** This thread's CPU time in milliseconds. */
+/** Whether this thread's CPU clock must be brought up to date before it is read; see `cpuMs`. */
+const LAZY_THREAD_CLOCK = process.platform === "linux" && typeof process.threadCpuUsage === "function";
+
+/**
+ * This thread's CPU time in milliseconds.
+ *
+ * Linux adds a running thread's CPU time to the clock `process.threadCpuUsage` reads (`getrusage(RUSAGE_THREAD)`) only
+ * at a scheduler tick or a switch, so read alone it lags by up to a tick, and the next turn the thread is switched out
+ * in is charged the work of the turns before it. Reading the process's clock first (`getrusage(RUSAGE_SELF)`) brings
+ * the calling thread's time up to date (`task_sched_runtime`), so each turn is charged its own work (#6614).
+ */
 export function cpuMs(): number {
+	if (LAZY_THREAD_CLOCK) process.cpuUsage();
 	const used = typeof process.threadCpuUsage === "function" ? process.threadCpuUsage() : process.cpuUsage();
 	return (used.user + used.system) / 1000;
 }
