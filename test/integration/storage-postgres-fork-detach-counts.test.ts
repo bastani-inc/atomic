@@ -65,7 +65,7 @@ async function detach(store: SqlSessionStore): Promise<void> {
 }
 
 describe("detaching a parent's shared-history forks (#6560)", () => {
-	test("on SQLite, runs the same 43 statements whether the parent has 200 or 1,000 entries", async () => {
+	test("on SQLite, runs the same 41 statements whether the parent has 200 or 1,000 entries", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-fork-detach-counts-"));
 		try {
 			const counts: number[] = [];
@@ -82,14 +82,14 @@ describe("detaching a parent's shared-history forks (#6560)", () => {
 					await counted.wrapped.close();
 				}
 			}
-			assert.deepEqual(counts, [43, 43]);
+			assert.deepEqual(counts, [41, 41]);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
 
 	test.skipIf(postgresSkipReason !== undefined)(
-		"on PostgreSQL, takes the same 51 round trips whether the parent has 200 or 1,000 entries",
+		"on PostgreSQL, takes constant round trips (at most 43, down from 51) whether the parent has 200 or 1,000 entries",
 		async () => {
 			const counts: number[] = [];
 			for (const length of [200, 1000])
@@ -106,7 +106,13 @@ describe("detaching a parent's shared-history forks (#6560)", () => {
 						await store.close();
 					}
 				});
-			assert.deepEqual(counts, [51, 51]);
+			// Read-only gate and discovery transactions pipeline their COMMIT with the next BEGIN when in flight, so
+			// localhost counts vary slightly around 39-41 rather than growing with row count (was 51).
+			assert.ok(counts[0]! <= 43 && counts[1]! <= 43, `expected <= 43 round trips, got ${counts.join(", ")}`);
+			assert.ok(
+				Math.abs(counts[0]! - counts[1]!) <= 4,
+				`expected constant round trips for 200 vs 1,000 entries, got ${counts.join(", ")}`,
+			);
 		},
 	);
 });
