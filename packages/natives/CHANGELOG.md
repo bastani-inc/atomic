@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `fsyncDescriptor(fd)`: syncs an open file descriptor with plain `fsync(2)` on a worker thread, retrying `EINTR` (Unix; rejects on Windows), so macOS JSONL storage syncs at the same level as SQLite's default without Node.js's `fcntl(F_FULLFSYNC)` ([#6686](https://github.com/bastani-inc/atomic/issues/6686), [#6717](https://github.com/bastani-inc/atomic/issues/6717)).
+
 ## [0.10.11-alpha.3] - 2026-11-26
 
 ### Added

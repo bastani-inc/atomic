@@ -1,5 +1,6 @@
 pub mod advisory_lock;
 pub mod directory_security;
+pub mod file_sync;
 pub mod fs_cache;
 pub mod glob;
 mod glob_util;

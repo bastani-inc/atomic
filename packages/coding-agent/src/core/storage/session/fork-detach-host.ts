@@ -30,9 +30,25 @@ export interface ForkHostStore {
 	 */
 	readonly entryLinks: {
 		readonly materialized?: string;
-		settle(tx: SqliteExecutor, sessionId: string, fromSeq: number, before: readonly SqliteStatement[]): Promise<void>;
+		settle(
+			tx: SqliteExecutor,
+			sessionId: string,
+			fromSeq: number,
+			before: readonly SqliteStatement[],
+			hasSegments?: boolean,
+		): Promise<void>;
 	};
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
+	readTransaction?<T>(
+		body: (tx: SqliteExecutor) => Promise<T>,
+		leading?: readonly SqliteStatement[],
+		leadingOnly?: boolean,
+	): Promise<T>;
+	sessionTransaction?<T>(
+		sessionId: string,
+		body: (tx: SqliteExecutor) => Promise<T>,
+		leading?: readonly SqliteStatement[],
+	): Promise<T>;
 }
 
 /** The fork host of a store whose sessions schema has shared-history forks. */
@@ -65,6 +81,17 @@ export function forkDetachHost(store: ForkHostStore): ForkDetachHost {
 			forkLineage: forkTables.forkLineage,
 		},
 		forkTransaction: (body) => store.transaction(body),
+		...(store.readTransaction === undefined
+			? {}
+			: {
+					forkReadTransaction: (body, leading, leadingOnly) => store.readTransaction!(body, leading, leadingOnly),
+				}),
+		...(store.sessionTransaction === undefined
+			? {}
+			: {
+					forkSessionTransaction: (sessionId, body, leading) =>
+						store.sessionTransaction!(sessionId, body, leading),
+				}),
 		lockClause: (mode) => dialect.lockClause(mode),
 		forkSegments: (tx, sessionId) => readForkSegments(tx, lineage, sessionId),
 		forkChildren: (tx, sourceId) => forkChildren(tx, lineage, sourceId),
@@ -94,14 +121,14 @@ export function forkDetachHost(store: ForkHostStore): ForkDetachHost {
 				await writeForkSegments(tx, lineage, sessionId, segments, await length(tx, sessionId));
 		},
 		async lockForkSources(tx, ids, mode) {
-			await lockForkSources(tx, dialect, lineage, ids, mode);
-			// A deleted session forks still read has only its tombstone left to lock.
+			// Every writer locks tombstones before sessions rows, both in ascending id order.
 			const sorted = [...new Set(ids)].sort();
 			if (dialect.name !== "sqlite" && sorted.length > 0)
 				await tx.all(
 					`SELECT session_id FROM ${forkTables.forkTombstones} WHERE ${inJsonList(dialect, "session_id")} ORDER BY session_id${dialect.lockClause(mode)}`,
 					JSON.stringify(sorted),
 				);
+			await lockForkSources(tx, dialect, lineage, sorted, mode);
 		},
 		async forkRewriteEpoch(tx, sessionId) {
 			const row = await tx.get<SqliteRow & { epoch: string | null }>(

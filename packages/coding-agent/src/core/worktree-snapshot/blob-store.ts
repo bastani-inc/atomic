@@ -1,5 +1,5 @@
 import { storageSchemaCurrent, transactionFinisher } from "../storage/added-exports.js";
-import { noteStorageSchemaTables } from "../storage/added-exports-0-10-11.js";
+import { MAX_SEQUENCE_REQUEST_STATEMENTS, noteStorageSchemaTables } from "../storage/added-exports-0-10-11.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -1291,6 +1291,7 @@ export interface SessionEntryLinks {
 		sessionId: string,
 		fromSeq: number,
 		before: readonly SqliteStatement[],
+		hasSegments?: boolean,
 	): Promise<void>;
 }
 
@@ -1304,14 +1305,32 @@ export function sessionEntryLinks(prefix: string, dialect: StorageDialect, forkS
 	const source = indexSources(prefix, t, dialect, forkSegments).find((source) => source.name === "session-entries")!;
 	const linking = entryLinking(source, dialect, t.sessionLinks);
 	const complete = entriesIndexComplete(t.sources);
-	const check = forkLinksCheck({ links: t.sessionLinks, segments: forkSegments, refs: t.sessionRefs }, complete);
+	const tables = { links: t.sessionLinks, segments: forkSegments, refs: t.sessionRefs };
+	const materializePlain = dialect.name === "postgres";
+	const checkWithSegments = forkLinksCheck(tables, complete, { hasSegments: true });
+	const checkWithoutSegments = forkLinksCheck(tables, complete, {
+		hasSegments: false,
+		materialize: materializePlain,
+	});
 	return {
-		materialized: materializedForkLinks(t.sessionLinks, forkSegments, complete, dialect.types.int),
-		async settle(executor, sessionId, fromSeq, before) {
+		materialized: materializedForkLinks(t.sessionLinks, forkSegments, complete, dialect.types.int, dialect.name),
+		async settle(executor, sessionId, fromSeq, before, hasSegments = true) {
 			type Verdict = SqliteRow & { seq: number | null; children: number; refs: number };
 			const [, verdict] = await Promise.all([
 				runInOrder(executor, before),
-				executor.get<Verdict>(check, sessionId, fromSeq, fromSeq, sessionId, fromSeq),
+				hasSegments
+					? executor.get<Verdict>(checkWithSegments, sessionId, sessionId, fromSeq, sessionId, fromSeq)
+					: materializePlain
+						? executor.get<Verdict>(checkWithoutSegments, sessionId, fromSeq, sessionId, fromSeq)
+						: executor.get<Verdict>(
+								checkWithoutSegments,
+								sessionId,
+								fromSeq,
+								sessionId,
+								fromSeq,
+								sessionId,
+								fromSeq,
+							),
 			]);
 			if (verdict === undefined) return;
 			const children = Number(verdict.children) === 1;
@@ -2376,8 +2395,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const chunk = `INSERT INTO ${this.tables.blobChunks} (hash, idx, data) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ${this.table} WHERE hash = ?) ON CONFLICT DO NOTHING`;
 		const statements: { sql: string; params: SqliteValue[] }[] = [];
 		let chunked = false;
+		let totalBytes = 0;
 		for (const blob of blobs) {
 			const { hash, data } = blob;
+			totalBytes += data.byteLength;
 			if (data.byteLength <= SNAPSHOT_BLOB_CHUNK_BYTES) {
 				statements.push({ sql: header, params: [hash, data.byteLength, data, 0] });
 				continue;
@@ -2394,11 +2415,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			await this.database.batch(statements);
 			return;
 		}
-		await this.database.transaction(async (transaction) => {
-			// On a pipelined connection the statements go out with the commit: one round trip after the locks.
-			if (transactionFinisher(transaction)?.(statements) === true) return;
-			for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
-		}, this.blobWrite());
+		const lead = statements.length < MAX_SEQUENCE_REQUEST_STATEMENTS && totalBytes <= SNAPSHOT_BLOB_CHUNK_BYTES;
+		await this.database.transaction(
+			async (transaction) => {
+				// On a pipelined connection the statements go out with the commit: one round trip after the locks.
+				if (transactionFinisher(transaction)?.(statements) === true) return;
+				for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
+			},
+			this.blobWrite(lead ? statements : undefined, lead),
+		);
 	}
 
 	/**
@@ -2409,11 +2434,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * in hash order, as an append's check of the blobs it records locks them (`missingBlob`), so neither waits on the
 	 * other in a cycle. Its callback only uses the transaction, so a transient failure runs it again.
 	 */
-	private blobWrite(leading?: readonly SqliteStatement[]): SqliteTransactionOptions {
+	private blobWrite(leading?: readonly SqliteStatement[], leadingOnly = false): SqliteTransactionOptions {
 		return {
 			retryTransientFailures: true,
 			concurrency: { kind: "serial", domain: this.table },
 			...(leading === undefined ? {} : { leading }),
+			...(leading !== undefined && leadingOnly ? { leadingOnly: true } : {}),
 		};
 	}
 	/**

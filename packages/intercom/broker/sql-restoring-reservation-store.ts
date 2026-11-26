@@ -4,6 +4,7 @@ import {
 	type StorageSchemaCatalog,
 	type SqliteExecutor,
 	type SqliteRow,
+	type SqliteStatement,
 	validateStoragePrefix,
 } from "@bastani/atomic/storage";
 import type {
@@ -57,6 +58,27 @@ type ReservationRow = SqliteRow & {
 };
 
 type Counter = "order" | "token";
+
+type RenewedReservationRow = SqliteRow & {
+	reservation_key: string | null;
+	owner_session_id: string | null;
+	fencing_token: number | bigint | null;
+};
+
+type MissedReservationRow = SqliteRow & {
+	reservation_key: string;
+	end_json: string | null;
+	fencing_token: number | bigint;
+};
+
+/** The setting a PostgreSQL batched reservation renewal sets when any reservation missed, so its follow-up read runs. */
+const RESERVATION_RENEW_MISSES = "atomic.intercom_reservation_renew_misses";
+
+const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+function wellFormed(_key: string, value: unknown): unknown {
+	return typeof value === "string" ? value.toWellFormed() : value;
+}
 
 const invalid = (reason: StateStoreInvalidReason): InvalidStateInput => ({ status: "invalid", reason });
 
@@ -146,7 +168,7 @@ async function openRestoringReservationStoreInCatalog({
 	const table = `${validPrefix}intercom_restoring_reservations`;
 	const counters = `${validPrefix}intercom_restoring_reservation_counters`;
 	const wakeClaims = `${validPrefix}intercom_restoring_wake_claims`;
-	const { types, nowMs, greatest } = dialectOf(database);
+	const { types, nowMs, greatest, jsonValues, name: dialect } = dialectOf(database);
 	/**
 	 * Its transactions read and write this table, its counters and its wake claims alone, which no other store
 	 * touches, so they exclude one another, not every writer of the database (#6560).
@@ -436,6 +458,200 @@ async function openRestoringReservationStoreInCatalog({
 				);
 				return { status: "renewed" };
 			}, { ...serial, relaxedDurability: true });
+		},
+		async renewMany(leases): Promise<RestoringReservationRenewResult[]> {
+			if (leases.length === 0) return [];
+			const invalidResults: Array<InvalidStateInput | undefined> = new Array(leases.length);
+			let validCount = 0;
+			for (let i = 0; i < leases.length; i++) {
+				const bad = invalidLease(leases[i]!);
+				if (bad !== undefined) invalidResults[i] = bad;
+				else validCount++;
+			}
+			if (validCount === 0) return invalidResults as RestoringReservationRenewResult[];
+			const tupleKey = (reservationKey: string, ownerSessionId: string, fencingToken: number) =>
+				JSON.stringify([reservationKey.toWellFormed(), ownerSessionId.toWellFormed(), fencingToken]);
+			const byTuple = new Map<string, RestoringReservationLease>();
+			const validKeys = new Set<string>();
+			let hasNonSafeIntToken = false;
+			for (let i = 0; i < leases.length; i++) {
+				if (invalidResults[i] !== undefined) continue;
+				const lease = leases[i]!;
+				validKeys.add(lease.reservationKey.toWellFormed());
+				if (!Number.isSafeInteger(lease.fencingToken)) {
+					hasNonSafeIntToken = true;
+					continue;
+				}
+				const tKey = tupleKey(lease.reservationKey, lease.ownerSessionId, lease.fencingToken);
+				if (!byTuple.has(tKey)) byTuple.set(tKey, lease);
+			}
+			const entries = [...byTuple.values()].sort((a, b) => compare(a.reservationKey, b.reservationKey));
+			const answer = (
+				renewed: ReadonlySet<string>,
+				found: ReadonlyMap<string, MissedReservationRow>,
+			): RestoringReservationRenewResult[] =>
+				leases.map((lease, index): RestoringReservationRenewResult => {
+					const bad = invalidResults[index];
+					if (bad !== undefined) return bad;
+					if (
+						Number.isSafeInteger(lease.fencingToken) &&
+						renewed.has(tupleKey(lease.reservationKey, lease.ownerSessionId, lease.fencingToken))
+					)
+						return { status: "renewed" };
+					const row = found.get(lease.reservationKey.toWellFormed());
+					if (row === undefined || row.end_json !== null) return { status: "stale" };
+					return { status: "stale", currentFencingToken: Number(row.fencing_token) };
+				});
+			if (dialect === "postgres") {
+				const keysParam = JSON.stringify([...validKeys], wellFormed);
+				if (entries.length === 0) {
+					const readAll: SqliteStatement = {
+						sql: `SELECT reservation_key, end_json, fencing_token FROM ${table}
+							WHERE reservation_key = ANY(ARRAY(SELECT value FROM ${jsonValues("?")}))`,
+						params: [keysParam],
+					};
+					return database.transaction(
+						async (tx) => {
+							const found = new Map<string, MissedReservationRow>();
+							for (const row of await tx.all<MissedReservationRow>(readAll.sql, ...readAll.params))
+								found.set(row.reservation_key, row);
+							return answer(new Set(), found);
+						},
+						{ ...serial, leading: [readAll], leadingOnly: true, relaxedDurability: true },
+					);
+				}
+				const write: SqliteStatement = {
+					sql: `WITH requested AS MATERIALIZED (
+							SELECT
+								entry ->> 0 AS reservation_key,
+								entry ->> 1 AS owner_session_id,
+								(entry ->> 2)::bigint AS fencing_token
+							FROM jsonb_array_elements((?)::jsonb) AS entry
+						),
+						locked AS MATERIALIZED (
+							SELECT t.reservation_key, requested.owner_session_id, requested.fencing_token
+							FROM ${table} AS t
+							JOIN requested
+								ON t.reservation_key = requested.reservation_key
+								AND t.owner_session_id = requested.owner_session_id
+								AND t.fencing_token = requested.fencing_token
+							WHERE t.reservation_key = ANY(ARRAY(SELECT DISTINCT reservation_key FROM requested))
+								AND t.end_json IS NULL
+							ORDER BY t.reservation_key
+							FOR UPDATE OF t
+						),
+						renewed AS (
+							UPDATE ${table} AS t
+							SET renewed_at = ${nowMs}
+							FROM locked
+							WHERE t.reservation_key = locked.reservation_key
+								AND t.owner_session_id = locked.owner_session_id
+								AND t.fencing_token = locked.fencing_token
+								AND t.end_json IS NULL
+							RETURNING t.reservation_key, t.owner_session_id, t.fencing_token
+						),
+						gate AS MATERIALIZED (
+							SELECT set_config('${RESERVATION_RENEW_MISSES}',
+								CASE WHEN (SELECT COUNT(*) FROM renewed) < CAST(? AS ${types.int}) THEN '1' ELSE '' END,
+								true) AS misses
+						)
+						SELECT renewed.reservation_key, renewed.owner_session_id, renewed.fencing_token
+						FROM gate LEFT JOIN renewed ON TRUE`,
+					params: [
+						JSON.stringify(
+							entries.map((lease) => [lease.reservationKey, lease.ownerSessionId, lease.fencingToken]),
+							wellFormed,
+						),
+						entries.length + (hasNonSafeIntToken ? 1 : 0),
+					],
+				};
+				const readMisses: SqliteStatement = {
+					sql: `SELECT reservation_key, end_json, fencing_token FROM ${table}
+						WHERE current_setting('${RESERVATION_RENEW_MISSES}', true) = '1'
+							AND reservation_key = ANY(ARRAY(SELECT value FROM ${jsonValues("?")}))`,
+					params: [keysParam],
+				};
+				return database.transaction(
+					async (tx) => {
+						const renewed = new Set<string>();
+						for (const row of await tx.all<RenewedReservationRow>(write.sql, ...write.params))
+							if (
+								row.reservation_key !== null &&
+								row.owner_session_id !== null &&
+								row.fencing_token !== null
+							)
+								renewed.add(tupleKey(row.reservation_key, row.owner_session_id, Number(row.fencing_token)));
+						const found = new Map<string, MissedReservationRow>();
+						for (const row of await tx.all<MissedReservationRow>(readMisses.sql, ...readMisses.params))
+							found.set(row.reservation_key, row);
+						return answer(renewed, found);
+					},
+					{ ...serial, leading: [write, readMisses], leadingOnly: true, relaxedDurability: true },
+				);
+			}
+			const write: SqliteStatement | undefined =
+				entries.length === 0
+					? undefined
+					: {
+							sql: `WITH requested AS (
+									SELECT
+										json_extract(value, '$[0]') AS req_reservation_key,
+										json_extract(value, '$[1]') AS req_owner_session_id,
+										json_extract(value, '$[2]') AS req_fencing_token
+									FROM json_each(?)
+								)
+								UPDATE ${table}
+								SET renewed_at = ${nowMs}
+								FROM requested
+								WHERE ${table}.reservation_key = requested.req_reservation_key
+									AND ${table}.owner_session_id = requested.req_owner_session_id
+									AND ${table}.fencing_token = requested.req_fencing_token
+									AND ${table}.end_json IS NULL
+								RETURNING reservation_key, owner_session_id, fencing_token`,
+							params: [
+								JSON.stringify(
+									entries.map((lease) => [lease.reservationKey, lease.ownerSessionId, lease.fencingToken]),
+									wellFormed,
+								),
+							],
+						};
+			const readMissedSql = `SELECT reservation_key, end_json, fencing_token FROM ${table}
+				WHERE reservation_key IN (SELECT value FROM ${jsonValues("?")})`;
+			return database.transaction(
+				async (tx) => {
+					const renewed = new Set<string>();
+					if (write !== undefined) {
+						for (const row of await tx.all<RenewedReservationRow>(write.sql, ...write.params))
+							if (
+								row.reservation_key !== null &&
+								row.owner_session_id !== null &&
+								row.fencing_token !== null
+							)
+								renewed.add(tupleKey(row.reservation_key, row.owner_session_id, Number(row.fencing_token)));
+					}
+					const missedKeys = new Set<string>();
+					for (let i = 0; i < leases.length; i++) {
+						if (invalidResults[i] !== undefined) continue;
+						const lease = leases[i]!;
+						if (
+							Number.isSafeInteger(lease.fencingToken) &&
+							renewed.has(tupleKey(lease.reservationKey, lease.ownerSessionId, lease.fencingToken))
+						)
+							continue;
+						missedKeys.add(lease.reservationKey.toWellFormed());
+					}
+					const found = new Map<string, MissedReservationRow>();
+					if (missedKeys.size > 0) {
+						const rows = await tx.all<MissedReservationRow>(
+							readMissedSql,
+							JSON.stringify([...missedKeys], wellFormed),
+						);
+						for (const row of rows) found.set(row.reservation_key, row);
+					}
+					return answer(renewed, found);
+				},
+				{ ...serial, relaxedDurability: true },
+			);
 		},
 		async release(lease, outcome): Promise<RestoringReservationReleaseResult> {
 			const bad = invalidLease(lease);

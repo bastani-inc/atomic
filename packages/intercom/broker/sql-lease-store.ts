@@ -5,7 +5,6 @@ import {
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
-	type SqliteRunResult,
 	type SqliteStatement,
 	type StorageDialect,
 	storageMigrationTable,
@@ -59,6 +58,8 @@ const LEASE_LOCK_WAIT_MS = 2_000;
 
 /** The statement of a presence acquisition's wait for the sends to its recipient under way: it only takes the lock. */
 const SENDS_PASSED = { sql: "SELECT 1 AS passed", params: [] };
+/** The setting a PostgreSQL batched lease renewal sets when any lease missed, so its follow-up read runs. */
+const LEASE_RENEW_MISSES = "atomic.intercom_lease_renew_misses";
 
 /**
  * The kind of the row whose `last_token` counts acquisitions on PostgreSQL where the order sequence is missing: see
@@ -291,6 +292,20 @@ type HolderRow = SqliteRow & {
 	age_ms: number | bigint | null;
 };
 
+type RenewedLeaseRow = SqliteRow & {
+	kind: string | null;
+	key: string | null;
+	holder_id: string | null;
+	fencing_token: number | bigint | null;
+};
+
+type MissedHolderRow = SqliteRow & {
+	kind: string;
+	key: string;
+	holder_id: string | null;
+	fencing_token: number | bigint | null;
+};
+
 type StateRow = SqliteRow & {
 	kind: string;
 	key: string;
@@ -428,7 +443,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 		const { sql, params } = holderStatement(key);
 		return executor.get<HolderRow>(sql, ...params);
 	};
-	const stale = (row: HolderRow | undefined) =>
+	const stale = (row: Pick<HolderRow, "holder_id" | "fencing_token"> | undefined) =>
 		row?.holder_id === null || row?.holder_id === undefined
 			? ({ status: "stale" } as const)
 			: ({ status: "stale", currentFencingToken: Number(row.fencing_token) } as const);
@@ -597,53 +612,272 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 		},
 		async renewMany(requests) {
 			if (requests.length === 0) return [];
-			const results: Array<LeaseRenewResult | undefined> = new Array(requests.length);
+			const invalidResults: Array<InvalidStateInput | undefined> = new Array(requests.length);
 			let validCount = 0;
 			for (let i = 0; i < requests.length; i++) {
 				const { lease, subject } = requests[i]!;
 				const bad = validLease(lease);
 				if (bad !== undefined) {
-					results[i] = bad;
+					invalidResults[i] = bad;
 				} else if (
 					subject !== undefined &&
 					(subject.kind !== lease.key.kind || keyId(keyOf(subject)) !== keyId(lease.key))
 				) {
-					results[i] = invalid("subject-key-mismatch");
+					invalidResults[i] = invalid("subject-key-mismatch");
 				} else {
 					validCount++;
 				}
 			}
-			if (validCount === 0) return results as LeaseRenewResult[];
-			// Rows locked in one order on every broker, so two renewals of overlapping leases never deadlock.
-			const order = requests
-				.map((request, index) => ({ index, kind: request.lease.key.kind, id: keyId(request.lease.key) }))
-				.filter(({ index }) => results[index] === undefined)
-				.sort((a, b) => compare(a.kind, b.kind) || compare(a.id, b.id))
-				.map(({ index }) => index);
-			await database.transaction(async (tx) => {
-				// Every update is sent before any answer is awaited, in the lock order: a pipelined connection sends them
-				// in one round trip, and the server runs them in the order sent (#6560).
-				const renewals = order.map((i) => {
-					const { lease, subject } = requests[i]!;
-					return subject === undefined
-						? tx.run(`UPDATE ${table} SET renewed_at = ${nowMs} WHERE ${owned}`, ...ownedParams(lease))
-						: tx.run(
-								`UPDATE ${table} SET renewed_at = ${nowMs}, subject_json = ? WHERE ${owned}`,
-								subjectJson(subject),
-								...ownedParams(lease),
-							);
+			if (validCount === 0) return invalidResults as LeaseRenewResult[];
+			const tupleKey = (kind: string, id: string, holderId: string, fencingToken: number) =>
+				JSON.stringify([kind, id.toWellFormed(), holderId.toWellFormed(), fencingToken]);
+			const pairKey = (kind: string, id: string) => JSON.stringify([kind, id.toWellFormed()]);
+			// Deduplicate exact (kind, key, holder, fencing_token) tuples, keeping the last subject in input order so the
+			// single UPDATE matches each target row at most once and matches serial renewal semantics (#6714).
+			const byTuple = new Map<
+				string,
+				{
+					readonly kind: LeaseKind;
+					readonly id: string;
+					readonly holderId: string;
+					readonly fencingToken: number;
+					subjectJson: string | null;
+				}
+			>();
+			const validPairs = new Map<string, readonly [LeaseKind, string]>();
+			let hasNonSafeIntToken = false;
+			for (let i = 0; i < requests.length; i++) {
+				if (invalidResults[i] !== undefined) continue;
+				const { lease, subject } = requests[i]!;
+				const id = keyId(lease.key);
+				const pKey = pairKey(lease.key.kind, id);
+				if (!validPairs.has(pKey)) validPairs.set(pKey, [lease.key.kind, id]);
+				if (!Number.isSafeInteger(lease.fencingToken)) {
+					hasNonSafeIntToken = true;
+					continue;
+				}
+				const tKey = tupleKey(lease.key.kind, id, lease.holderId, lease.fencingToken);
+				const nextSubject = subject === undefined ? undefined : subjectJson(subject);
+				const existing = byTuple.get(tKey);
+				if (existing === undefined) {
+					byTuple.set(tKey, {
+						kind: lease.key.kind,
+						id,
+						holderId: lease.holderId,
+						fencingToken: lease.fencingToken,
+						subjectJson: nextSubject ?? null,
+					});
+				} else if (nextSubject !== undefined) {
+					existing.subjectJson = nextSubject;
+				}
+			}
+			const entries = [...byTuple.values()].sort((a, b) => compare(a.kind, b.kind) || compare(a.id, b.id));
+			const answer = (
+				renewed: ReadonlySet<string>,
+				found: ReadonlyMap<string, MissedHolderRow>,
+			): LeaseRenewResult[] =>
+				requests.map(({ lease }, index): LeaseRenewResult => {
+					const bad = invalidResults[index];
+					if (bad !== undefined) return bad;
+					const id = keyId(lease.key);
+					if (
+						Number.isSafeInteger(lease.fencingToken) &&
+						renewed.has(tupleKey(lease.key.kind, id, lease.holderId, lease.fencingToken))
+					)
+						return { status: "renewed" } as const;
+					return stale(found.get(pairKey(lease.key.kind, id)));
 				});
-				const settled = await Promise.allSettled(renewals);
-				const failed = settled.find((outcome) => outcome.status === "rejected");
-				if (failed !== undefined) throw failed.reason;
-				const renewed = settled.map((outcome) => (outcome as PromiseFulfilledResult<SqliteRunResult>).value);
-				for (const [position, i] of order.entries())
-					results[i] =
-						renewed[position]!.changes === 1
-							? ({ status: "renewed" } as const)
-							: stale(await holderOf(tx, requests[i]!.lease.key));
-			}, renewal);
-			return results as LeaseRenewResult[];
+			if (dialect.name === "postgres") {
+				const pairsParam = JSON.stringify([...validPairs.values()], wellFormed);
+				if (entries.length === 0) {
+					const readAll: SqliteStatement = {
+						sql: `WITH missed AS MATERIALIZED (
+								SELECT entry ->> 0 AS kind, entry ->> 1 AS key
+								FROM jsonb_array_elements((?)::jsonb) AS entry
+							)
+							SELECT t.kind, t.key, t.holder_id, t.fencing_token
+							FROM ${table} AS t
+							JOIN missed ON t.kind = missed.kind AND t.key = missed.key
+							WHERE t.kind = ANY(ARRAY(SELECT DISTINCT kind FROM missed))
+								AND t.key = ANY(ARRAY(SELECT DISTINCT key FROM missed))`,
+						params: [pairsParam],
+					};
+					return database.transaction(
+						async (tx) => {
+							const found = new Map<string, MissedHolderRow>();
+							for (const row of await tx.all<MissedHolderRow>(readAll.sql, ...readAll.params))
+								found.set(pairKey(row.kind, row.key), row);
+							return answer(new Set(), found);
+						},
+						{ ...renewal, leading: [readAll], leadingOnly: true },
+					);
+				}
+				const write: SqliteStatement = {
+					sql: `WITH requested AS MATERIALIZED (
+							SELECT
+								entry ->> 0 AS kind,
+								entry ->> 1 AS key,
+								entry ->> 2 AS holder_id,
+								(entry ->> 3)::bigint AS fencing_token,
+								entry ->> 4 AS subject_json
+							FROM jsonb_array_elements((?)::jsonb) AS entry
+						),
+						locked AS MATERIALIZED (
+							SELECT t.kind, t.key, requested.holder_id, requested.fencing_token, requested.subject_json
+							FROM ${table} AS t
+							JOIN requested
+								ON t.kind = requested.kind
+								AND t.key = requested.key
+								AND t.holder_id = requested.holder_id
+								AND t.fencing_token = requested.fencing_token
+							WHERE t.kind = ANY(ARRAY(SELECT DISTINCT kind FROM requested))
+								AND t.key = ANY(ARRAY(SELECT DISTINCT key FROM requested))
+							ORDER BY t.kind, t.key
+							FOR UPDATE OF t
+						),
+						renewed AS (
+							UPDATE ${table} AS t
+							SET renewed_at = ${nowMs}, subject_json = COALESCE(locked.subject_json, t.subject_json)
+							FROM locked
+							WHERE t.kind = locked.kind
+								AND t.key = locked.key
+								AND t.holder_id = locked.holder_id
+								AND t.fencing_token = locked.fencing_token
+							RETURNING t.kind, t.key, t.holder_id, t.fencing_token
+						),
+						gate AS MATERIALIZED (
+							SELECT set_config('${LEASE_RENEW_MISSES}',
+								CASE WHEN (SELECT COUNT(*) FROM renewed) < CAST(? AS ${types.int}) THEN '1' ELSE '' END,
+								true) AS misses
+						)
+						SELECT renewed.kind, renewed.key, renewed.holder_id, renewed.fencing_token
+						FROM gate LEFT JOIN renewed ON TRUE`,
+					params: [
+						JSON.stringify(
+							entries.map((entry) => [
+								entry.kind,
+								entry.id,
+								entry.holderId,
+								entry.fencingToken,
+								entry.subjectJson,
+							]),
+							wellFormed,
+						),
+						entries.length + (hasNonSafeIntToken ? 1 : 0),
+					],
+				};
+				const readMisses: SqliteStatement = {
+					sql: `WITH missed AS MATERIALIZED (
+							SELECT entry ->> 0 AS kind, entry ->> 1 AS key
+							FROM jsonb_array_elements((?)::jsonb) AS entry
+							WHERE current_setting('${LEASE_RENEW_MISSES}', true) = '1'
+						)
+						SELECT t.kind, t.key, t.holder_id, t.fencing_token
+						FROM ${table} AS t
+						JOIN missed ON t.kind = missed.kind AND t.key = missed.key
+						WHERE current_setting('${LEASE_RENEW_MISSES}', true) = '1'
+							AND t.kind = ANY(ARRAY(SELECT DISTINCT kind FROM missed))
+							AND t.key = ANY(ARRAY(SELECT DISTINCT key FROM missed))`,
+					params: [pairsParam],
+				};
+				return database.transaction(
+					async (tx) => {
+						const renewed = new Set<string>();
+						for (const row of await tx.all<RenewedLeaseRow>(write.sql, ...write.params))
+							if (
+								row.kind !== null &&
+								row.key !== null &&
+								row.holder_id !== null &&
+								row.fencing_token !== null
+							)
+								renewed.add(tupleKey(row.kind, row.key, row.holder_id, Number(row.fencing_token)));
+						const found = new Map<string, MissedHolderRow>();
+						for (const row of await tx.all<MissedHolderRow>(readMisses.sql, ...readMisses.params))
+							found.set(pairKey(row.kind, row.key), row);
+						return answer(renewed, found);
+					},
+					{ ...renewal, leading: [write, readMisses], leadingOnly: true },
+				);
+			}
+			const write: SqliteStatement | undefined =
+				entries.length === 0
+					? undefined
+					: {
+							sql: `WITH requested AS (
+									SELECT
+										json_extract(value, '$[0]') AS req_kind,
+										json_extract(value, '$[1]') AS req_key,
+										json_extract(value, '$[2]') AS req_holder_id,
+										json_extract(value, '$[3]') AS req_fencing_token,
+										json_extract(value, '$[4]') AS req_subject_json
+									FROM json_each(?)
+								)
+								UPDATE ${table}
+								SET renewed_at = ${nowMs}, subject_json = COALESCE(requested.req_subject_json, ${table}.subject_json)
+								FROM requested
+								WHERE ${table}.kind = requested.req_kind
+									AND ${table}.key = requested.req_key
+									AND ${table}.holder_id = requested.req_holder_id
+									AND ${table}.fencing_token = requested.req_fencing_token
+								RETURNING kind, key, holder_id, fencing_token`,
+							params: [
+								JSON.stringify(
+									entries.map((entry) => [
+										entry.kind,
+										entry.id,
+										entry.holderId,
+										entry.fencingToken,
+										entry.subjectJson,
+									]),
+									wellFormed,
+								),
+							],
+						};
+			const readMissedSql = `SELECT t.kind, t.key, t.holder_id, t.fencing_token
+				FROM ${table} AS t
+				JOIN (
+					SELECT json_extract(value, '$[0]') AS kind, json_extract(value, '$[1]') AS key
+					FROM json_each(?)
+				) AS missed
+					ON t.kind = missed.kind AND t.key = missed.key`;
+			return database.transaction(
+				async (tx) => {
+					const renewed = new Set<string>();
+					if (write !== undefined) {
+						for (const row of await tx.all<RenewedLeaseRow>(write.sql, ...write.params))
+							if (
+								row.kind !== null &&
+								row.key !== null &&
+								row.holder_id !== null &&
+								row.fencing_token !== null
+							)
+								renewed.add(tupleKey(row.kind, row.key, row.holder_id, Number(row.fencing_token)));
+					}
+					const missedByPair = new Map<string, readonly [LeaseKind, string]>();
+					for (let i = 0; i < requests.length; i++) {
+						if (invalidResults[i] !== undefined) continue;
+						const { lease } = requests[i]!;
+						const id = keyId(lease.key);
+						if (
+							Number.isSafeInteger(lease.fencingToken) &&
+							renewed.has(tupleKey(lease.key.kind, id, lease.holderId, lease.fencingToken))
+						)
+							continue;
+						const pKey = pairKey(lease.key.kind, id);
+						if (!missedByPair.has(pKey)) missedByPair.set(pKey, [lease.key.kind, id]);
+					}
+					const found = new Map<string, MissedHolderRow>();
+					if (missedByPair.size > 0) {
+						const rows = await tx.all<MissedHolderRow>(
+							readMissedSql,
+							JSON.stringify([...missedByPair.values()], wellFormed),
+						);
+						for (const row of rows) found.set(pairKey(row.kind, row.key), row);
+					}
+					return answer(renewed, found);
+				},
+				renewal,
+			);
 		},
 		async release(lease) {
 			const bad = validLease(lease);

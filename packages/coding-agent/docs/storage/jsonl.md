@@ -74,7 +74,7 @@ To delete a session, delete its `.jsonl` file, or select it in `/resume`, press 
 Several Atomic processes on one machine can use the same directory at once:
 
 - **One writer at a time.** Before it writes, a process takes the `.session.lock` folder in the directory, and other processes wait for it. If a process exits while it holds the lock, another process takes the lock over after about 10 seconds.
-- **Grouped writes.** Saves that queue up while another save holds the lock are written together under one lock.
+- **Durable grouped writes.** Saves that queue up while another save holds the lock are written together under one lock, and every save waits until its bytes are synced to disk before it is acknowledged. A new, forked, or replaced session file is synced before it is linked or renamed into place, and its folder is synced after. On macOS this uses plain `fsync(2)`, matching the default local SQLite store (`fullfsync` off) and the standalone binary; Linux uses `fdatasync(2)` and Windows uses `FlushFileBuffers` (NTFS journals directory entries, so Windows skips the directory sync).
 - **Files kept open while writing.** While a session is being written, Atomic keeps its file open between saves and closes it soon after the last one. On Windows, Atomic closes each file after it writes, because Windows won't delete or replace an open file.
 
 Keep the directory on a local disk of one machine. Don't share it between machines through a network drive or a cloud-synced folder.

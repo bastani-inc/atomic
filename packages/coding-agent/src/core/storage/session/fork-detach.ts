@@ -19,7 +19,7 @@
  * would deadlock against the parent's replace, which holds the parent's row while it waits for its forks' rows.
  */
 
-import type { SqliteExecutor } from "../database.js";
+import type { SqliteExecutor, SqliteStatement } from "../database.js";
 import { reparentedSegments, splitSegment } from "./fork-detach-map.js";
 import { ForkSourceIncompleteError } from "./fork-errors.js";
 import { type ForkSegment, segmentLength } from "./fork-segments.js";
@@ -71,6 +71,24 @@ export interface ForkDetachHost {
 	readonly forkDetachTable: string;
 	/** Runs `body` in one write transaction of the store. */
 	forkTransaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
+	/**
+	 * Runs `body` in one read-only snapshot transaction of the store without acquiring a write lock; falls back to
+	 * `forkTransaction` when absent.
+	 */
+	forkReadTransaction?<T>(
+		body: (tx: SqliteExecutor) => Promise<T>,
+		leading?: readonly SqliteStatement[],
+		leadingOnly?: boolean,
+	): Promise<T>;
+	/**
+	 * Runs `body` in a write transaction scoped to `sessionId` (and `leading` statements sent with its start); falls back
+	 * to `forkTransaction` when absent.
+	 */
+	forkSessionTransaction?<T>(
+		sessionId: string,
+		body: (tx: SqliteExecutor) => Promise<T>,
+		leading?: readonly SqliteStatement[],
+	): Promise<T>;
 	/** The session's segments, ordered by `baseSeq`. */
 	forkSegments(tx: SqliteExecutor, sessionId: string): Promise<readonly ForkSegment[]>;
 	/** The sessions with a segment pointing at `sourceId`, ordered by ID. */
@@ -320,15 +338,26 @@ export async function detachForkChildren(
 		detached.push(...report.detached);
 		for (const id of report.reparented) reparented.add(id);
 	};
-	const pending = await host.forkTransaction((tx) =>
-		tx.all<ProgressRow>(
-			`SELECT child_id FROM ${host.forkDetachTable} WHERE parent_id = ? ORDER BY child_id`,
-			parentId,
-		),
+	const readTransaction = <T>(
+		body: (tx: SqliteExecutor) => Promise<T>,
+		leading?: readonly SqliteStatement[],
+		leadingOnly?: boolean,
+	): Promise<T> =>
+		host.forkReadTransaction === undefined
+			? host.forkTransaction(body)
+			: host.forkReadTransaction(body, leading, leadingOnly);
+	const pendingQuery: SqliteStatement = {
+		sql: `SELECT child_id FROM ${host.forkDetachTable} WHERE parent_id = ? ORDER BY child_id`,
+		params: [parentId],
+	};
+	const pending = await readTransaction(
+		(tx) => tx.all<ProgressRow>(pendingQuery.sql, ...pendingQuery.params),
+		[pendingQuery],
+		true,
 	);
 	for (const { child_id } of pending) record(await detachFork(host, parentId, child_id, options));
 	for (;;) {
-		const next = await host.forkTransaction(async (tx) => {
+		const next = await readTransaction(async (tx) => {
 			let best: { id: string; rows: number } | undefined;
 			for (const id of await host.forkChildren(tx, parentId)) {
 				const rows = (await host.forkSegments(tx, id))
@@ -346,9 +375,13 @@ export async function detachForkChildren(
 
 /** Finishes every detach a crash stopped, as each started. */
 export async function resumeForkDetaches(host: ForkDetachHost): Promise<ForkDetachReport> {
-	const rows = await host.forkTransaction((tx) =>
-		tx.all<ProgressRow>(`SELECT parent_id, child_id FROM ${host.forkDetachTable} ORDER BY parent_id, child_id`),
-	);
+	const query: SqliteStatement = {
+		sql: `SELECT parent_id, child_id FROM ${host.forkDetachTable} ORDER BY parent_id, child_id`,
+		params: [],
+	};
+	const rows = await (host.forkReadTransaction === undefined
+		? host.forkTransaction((tx) => tx.all<ProgressRow>(query.sql, ...query.params))
+		: host.forkReadTransaction((tx) => tx.all<ProgressRow>(query.sql, ...query.params), [query], true));
 	const detached: string[] = [];
 	const reparented: string[] = [];
 	for (const { parent_id, child_id } of rows) {

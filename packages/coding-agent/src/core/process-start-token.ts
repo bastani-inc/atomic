@@ -8,10 +8,11 @@ import { windowsPowerShellEnvironment } from "../utils/windows-powershell.ts";
 /**
  * When process `pid` of this host started, as `sha12` of a start that no later process given the same id shares, so a
  * holder named by its pid is told apart from that later process (#4990, #5141); undefined where that cannot be read:
- * on platforms other than Linux and Windows, or once the process is gone.
+ * on platforms other than Linux, macOS and Windows, on macOS without the native module, or once the process is gone.
  *
- * On Linux it is the boot and the process's start time since boot, from `/proc`. On Windows it is the process's
- * creation time, read by the native module. Where that is not available it is read by a bounded PowerShell query that
+ * On Linux it is the boot and the process's start time since boot, from `/proc`. On macOS it is the process's start, to
+ * the microsecond, read by the native module (`proc_pidinfo`). On Windows it is the process's creation time, read by the
+ * native module. Where that is not available it is read by a bounded PowerShell query that
  * never blocks the main thread (#5315): this answers with what such a query already read, and otherwise starts one and
  * answers undefined; {@link readProcessStartToken} waits for it.
  */
@@ -26,7 +27,7 @@ export function processStartToken(pid: number): string | undefined {
 
 /**
  * The start of `pid`, as {@link processStartToken} reads it, read now where that starts no process: from `/proc` on
- * Linux, from the native module on Windows. Never an answer remembered from an earlier read, which may describe an
+ * Linux, from the native module on macOS and Windows. Never an answer remembered from an earlier read, which may describe an
  * earlier process given the same id (#6133). Null where the native module found none, as for a process that already
  * exited; undefined where it can only be read later ({@link readProcessStartToken}), as without the native module.
  * For a record that must hold the start when it lands: a blueprint build lock naming a step that just started.
@@ -36,6 +37,7 @@ export function processStartTokenNow(pid: number): string | null | undefined {
 		const created = nativeProcessCreationTime(pid);
 		return typeof created === "string" ? windowsStartToken(created) : created;
 	}
+	if (process.platform === "darwin") return darwinStartTokenNow(pid);
 	try {
 		return linuxStartToken(readFileSync(`/proc/${pid}/stat`, "utf8"), readFileSync(BOOT_ID, "utf8"));
 	} catch {
@@ -116,6 +118,7 @@ export function processStartTokenForSynchronousTakeover(pid: number): string | u
 }
 
 function procStartToken(pid: number): string | undefined {
+	if (process.platform === "darwin") return darwinStartTokenNow(pid) ?? undefined;
 	try {
 		return linuxStartToken(readFileSync(`/proc/${pid}/stat`, "utf8"), readFileSync(BOOT_ID, "utf8"));
 	} catch {
@@ -124,6 +127,8 @@ function procStartToken(pid: number): string | undefined {
 }
 
 async function procStartTokenAsync(pid: number): Promise<string | undefined> {
+	// The native module answers at once on macOS, from the kernel: nothing to wait for.
+	if (process.platform === "darwin") return darwinStartTokenNow(pid) ?? undefined;
 	try {
 		return linuxStartToken(await readFile(`/proc/${pid}/stat`, "utf8"), await readFile(BOOT_ID, "utf8"));
 	} catch {
@@ -132,9 +137,14 @@ async function procStartTokenAsync(pid: number): Promise<string | undefined> {
 }
 
 const BOOT_ID = "/proc/sys/kernel/random/boot_id";
-const OWN_PROC_START = process.platform === "win32" ? undefined : procStartToken(process.pid);
+const OWN_PROC_START = process.platform === "linux" ? procStartToken(process.pid) : undefined;
+let ownDarwinStart: string | undefined;
 
 export function ownProcessStartToken(): string | undefined {
+	if (process.platform === "darwin") {
+		ownDarwinStart ??= darwinStartTokenNow(process.pid) ?? undefined;
+		return ownDarwinStart;
+	}
 	if (process.platform !== "win32") return OWN_PROC_START;
 	const native = nativeCreationTime();
 	if (native !== null) return windowsStartToken(nativeCreation(native, process.pid));
@@ -149,6 +159,19 @@ function linuxStartToken(stat: string, bootId: string): string | undefined {
 	const boot = bootId.trim();
 	if (started === undefined || !/^\d+$/.test(started) || boot === "") return undefined;
 	return sha12(`${boot}\n${started}`);
+}
+
+/**
+ * The start token of macOS process `pid` from the native module's `processCreationTime`, which reads its start (to the
+ * microsecond, in the Windows creation-time count) with `proc_pidinfo`, or `sysctl` for another user's process. Null
+ * where the module answers none (no such process, a zombie); undefined without the module. A distinct prefix keeps a
+ * macOS start from ever equalling a Windows one.
+ */
+function darwinStartTokenNow(pid: number): string | null | undefined {
+	const native = nativeCreationTime();
+	if (native === null) return undefined;
+	const created = nativeCreation(native, pid);
+	return created === undefined ? null : sha12(`darwin\n${created}`);
 }
 
 function windowsStartToken(created: string | undefined): string | undefined {
@@ -166,6 +189,8 @@ function sha12(text: string): string {
 
 /** Whether the loaded native addon was built for Windows (its Windows termination binding exists only there). */
 const NATIVE_WINDOWS_HOST = process.platform === "win32";
+/** Where the native module reads a process's start: Windows, and macOS since #6394. */
+const NATIVE_START_HOST = NATIVE_WINDOWS_HOST || process.platform === "darwin";
 
 /**
  * Ends Windows process `pid` if it was created at `started`, and with `descendants` every process it started that still
@@ -212,7 +237,7 @@ let nativeReader: CreationTimeReader | null | undefined;
 /** The native module's `processCreationTime`, or null where the module or that binding (added in #5141) is missing. */
 function nativeCreationTime(): CreationTimeReader | null {
 	if (nativeReader === undefined) {
-		if (!NATIVE_WINDOWS_HOST) {
+		if (!NATIVE_START_HOST) {
 			nativeReader = null;
 			return null;
 		}

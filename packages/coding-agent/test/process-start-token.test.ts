@@ -120,7 +120,7 @@ describe("the start of a process of this host (#5141)", () => {
 		assert.equal(binding.processCreationTime(child.pid), null);
 	});
 
-	test.skipIf(!windows && process.platform !== "linux")(
+	test.skipIf(!windows && process.platform !== "linux" && process.platform !== "darwin")(
 		"two processes have different starts, and a gone one has none (#5141)",
 		async () => {
 			const child = await runningChild();
@@ -137,7 +137,7 @@ describe("the start of a process of this host (#5141)", () => {
 		},
 	);
 
-	test.skipIf(!windows && process.platform !== "linux")(
+	test.skipIf(!windows && process.platform !== "linux" && process.platform !== "darwin")(
 		"the start read without blocking is the start read synchronously, and a gone process has none",
 		async () => {
 			const child = await runningChild();

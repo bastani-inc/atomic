@@ -846,6 +846,7 @@ export default function piIntercomExtension(atomic: ExtensionAPI, testOverrides:
       void saved
         .then(async (arrival) => {
           if (arrival !== "fresh") {
+            if (arrival === "unsaved") receiver.forgetUnsavedOutcome(message.id);
             place.cancel();
             return;
           }
@@ -853,10 +854,14 @@ export default function piIntercomExtension(atomic: ExtensionAPI, testOverrides:
           if (liveContext) await handleIncomingMessage(liveContext, from, bounded, channel, place);
           else place.cancel();
         })
-        .catch(() => place.cancel())
+        .catch(() => {
+          receiver.forgetUnsavedOutcome(message.id);
+          place.cancel();
+        })
         .finally(() => arrived.resolve());
     }, () => {
       clearInterval(saving);
+      receiver.forgetUnsavedOutcome(message.id);
       place.cancel();
       arrived.resolve();
     });
@@ -1196,6 +1201,7 @@ export default function piIntercomExtension(atomic: ExtensionAPI, testOverrides:
   function attachClientHandlers(nextClient: IntercomClient): void {
     nextClient.on("message", (from: SessionInfo, message: Message, channel?: "supervisor") => {
       if (client !== nextClient || !getLiveContext()) {
+        nextClient.forgetUnsavedOutcome(message.id);
         return;
       }
       receiveIncomingMessage(nextClient, from, message, channel);

@@ -2127,6 +2127,14 @@ export class IntercomClient extends EventEmitter {
 	}
 
 	/**
+	 * #5145, #6712: clears an outcome that was heard on this registration but not saved, so a redelivery on the same
+	 * connection is heard and saved again instead of dropped. Already-saved outcomes stay recorded.
+	 */
+	forgetUnsavedOutcome(messageId: string): void {
+		if (this.heardOutcomes.get(messageId) === "heard") this.heardOutcomes.delete(messageId);
+	}
+
+	/**
 	 * #5145: whether `message` is an outcome this client already heard, so it is not heard twice. A copy of one already
 	 * saved is confirmed again, so the broker that sent it stops holding it.
 	 */
