@@ -33,6 +33,7 @@ import { homedir, constants as osConstants } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, parse, posix, relative, resolve, sep, win32 } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { fileGenerationOf, learnCreationTime, learnCreationTimeSync, legacyFileGenerationOf } from "./creation-time.js";
 import type { SqliteDatabase } from "./database.js";
 import type { StorageInputSelection, StorageSettingsSelection } from "./selection.js";
 
@@ -157,6 +158,8 @@ interface StorageIo {
 	remove(path: string): void;
 	mkdir(path: string): void;
 	sleep(ms: number): void;
+	/** Learns whether the file system of `directory` keeps creation times; see `creation-time.ts`. */
+	learnCreationTime(directory: string): void;
 }
 
 type StorageIoOp = keyof StorageIo;
@@ -296,6 +299,7 @@ const syncIo: StorageIo = {
 	sleep: (ms) => {
 		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 	},
+	learnCreationTime: (directory) => learnCreationTimeSync(directory),
 };
 
 const asyncIo: AsyncStorageIo = {
@@ -348,6 +352,7 @@ const asyncIo: AsyncStorageIo = {
 		await mkdir(path, { recursive: true });
 	},
 	sleep: (ms) => sleep(ms),
+	learnCreationTime: (directory) => learnCreationTime(directory),
 };
 
 function* io<Op extends StorageIoOp>(
@@ -1094,7 +1099,12 @@ interface OwnerLookupContext {
 
 const decisionCanonicalPaths = new WeakMap<StorageHomeDecision, string>();
 let storageTargetDecisions = new WeakMap<SettledStorageHome, Map<string, StorageTargetDecision>>();
-let defaultTargetClaims = new WeakMap<StorageTargetDecision, { version: string; claims: readonly string[] }>();
+interface TargetClaims {
+	readonly claims: readonly string[];
+	readonly older: readonly string[];
+}
+
+let defaultTargetClaims = new WeakMap<StorageTargetDecision, { version: string; claims: TargetClaims }>();
 
 function* canonicalPathSteps(path: string): StorageSteps<string> {
 	try {
@@ -1980,21 +1990,32 @@ function containsPath(directory: string, target: string): boolean {
 	return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
 }
 
-function* targetClaimFilesSteps(agentPath: string, home: string, target: string): StorageSteps<readonly string[]> {
+/**
+ * The claim files of `target`: by its path, and by the file itself, so another path to the same file finds the same
+ * owner. `older` are the claims an older build named by the file with its creation time in it, where this build leaves
+ * that out: they are read, and never made.
+ */
+function* targetClaimFilesSteps(agentPath: string, home: string, target: string): StorageSteps<TargetClaims> {
 	const containers = [dirname(yield* canonicalPathSteps(agentPath))];
 	const decisionHome = yield* canonicalPathSteps(home);
 	if (!pathsEqual(containers[0]!, decisionHome)) containers.push(decisionHome);
-	const identities = [getPathComparisonKey(yield* canonicalPathSteps(target))];
+	const physical = yield* canonicalPathSteps(target);
+	const identities = [getPathComparisonKey(physical)];
+	const older: string[] = [];
 	try {
 		const stats = yield* io("stat", target);
-		if (stats.ino !== 0n) identities.push(`file:${stats.dev}:${stats.ino}:${stats.birthtimeNs}`);
+		if (stats.ino !== 0n) {
+			yield* io("learnCreationTime", dirname(physical));
+			const generation = fileGenerationOf(stats);
+			identities.push(`file:${generation}`);
+			if (generation !== legacyFileGenerationOf(stats)) older.push(`file:${legacyFileGenerationOf(stats)}`);
+		}
 	} catch {}
-	return containers.flatMap((container) =>
-		identities.map((identity) => {
-			const key = createHash("sha256").update(identity).digest("hex");
-			return join(container, `.atomic-storage-target-${key}`);
-		}),
-	);
+	const claimFiles = (identity: string) =>
+		containers.map((container) =>
+			join(container, `.atomic-storage-target-${createHash("sha256").update(identity).digest("hex")}`),
+		);
+	return { claims: identities.flatMap(claimFiles), older: older.flatMap(claimFiles) };
 }
 
 function* preferredTargetOwnerSteps(agentPath: string, parent: string, target: string): StorageSteps<string> {
@@ -2189,8 +2210,10 @@ function* applyStorageTargetDecisionSteps(
 		version !== undefined && cached?.version === version
 			? cached.claims
 			: yield* targetClaimFilesSteps(agentPath, decision.home, selected);
-	for (const claim of claims) {
+	const older = new Set(claims.older);
+	for (const claim of [...claims.claims, ...claims.older]) {
 		let owner = yield* readStorageOwnerSteps(claim);
+		if (owner === undefined && older.has(claim)) continue;
 		if (owner === undefined && settings !== undefined && (yield* io("isDirectory", agentPath))) {
 			yield* io("mkdir", dirname(claim));
 			yield* claimFileAtomicallySteps(

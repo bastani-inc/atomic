@@ -65,7 +65,8 @@ async function create(path: string, header: string): Promise<FileHandle> {
 }
 /**
  * Device, a known inode, a recorded creation time and the header: an unknown inode or creation time proves no owner.
- * On macOS, which never reuses an inode number, the epoch has no creation time.
+ * Where creation times move (APFS and HFS+, which never reuse an inode number) the epoch has none; see
+ * `creation-time.ts`.
  */
 export function hasStableFileOwner(epoch: string): boolean {
 	return /^\d+:[1-9]\d*:(?:[1-9]\d*:)?[\da-f]{16}$/.test(epoch);

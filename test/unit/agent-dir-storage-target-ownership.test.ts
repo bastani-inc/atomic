@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { linkSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, linkSync, mkdirSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { selectSessionStorage } from "../../packages/coding-agent/src/core/session-storage.js";
@@ -235,4 +236,47 @@ test("an adopted agent reopened through an external alias and a default-agent al
 			}),
 		/owned by another agent directory/,
 	);
+});
+
+/** The claim files a target's file identity names, in `container`: `dev:ino`, and `dev:ino:creation time`. */
+function fileClaims(container: string, target: string): { readonly current: string; readonly older: string } {
+	const stats = statSync(target, { bigint: true });
+	const name = (identity: string) =>
+		join(container, `.atomic-storage-target-${createHash("sha256").update(`file:${identity}`).digest("hex")}`);
+	return { current: name(`${stats.dev}:${stats.ino}`), older: name(`${stats.dev}:${stats.ino}:${stats.birthtimeNs}`) };
+}
+
+test("a hard-linked database keeps a sibling off it after its modified time is set earlier (#4319)", () => {
+	const first = join(root, "a1");
+	const second = join(root, "a2");
+	for (const agent of [first, second]) mkdirSync(agent, { recursive: true });
+	writeFileSync(join(root, "first.sqlite"), "history");
+	linkSync(join(root, "first.sqlite"), join(root, "second.sqlite"));
+	const select = (agent: string, path: string) =>
+		selectSessionStorage(root, { agentDir: agent, settings: { sessions: { storage: { path } } } });
+	assert.deepEqual(select(first, "first.sqlite"), { kind: "sqlite", path: join(root, "first.sqlite") });
+	// As `touch -t` or a backup tool restoring times does. macOS then moves the file's creation time back too.
+	const earlier = Date.now() / 1000 - 86_400;
+	utimesSync(join(root, "first.sqlite"), earlier, earlier);
+	resetStorageHomeCacheForTests();
+	assert.deepEqual(select(second, "second.sqlite"), { kind: "sqlite", path: join(second, "second.sqlite") });
+});
+
+test("an older build's claim on a hard-linked database still keeps a sibling off it (#4319)", () => {
+	const first = join(root, "a1");
+	const second = join(root, "a2");
+	for (const agent of [first, second]) mkdirSync(agent, { recursive: true });
+	writeFileSync(join(root, "first.sqlite"), "history");
+	linkSync(join(root, "first.sqlite"), join(root, "second.sqlite"));
+	const select = (agent: string, path: string) =>
+		selectSessionStorage(root, { agentDir: agent, settings: { sessions: { storage: { path } } } });
+	assert.deepEqual(select(first, "first.sqlite"), { kind: "sqlite", path: join(root, "first.sqlite") });
+	// An older build names the file's claim with its creation time in it; where this build leaves that out (macOS),
+	// the claim is renamed to the name the older build gives it.
+	const { current, older } = fileClaims(root, join(root, "first.sqlite"));
+	if (existsSync(current)) renameSync(current, older);
+	assert.ok(existsSync(older));
+	resetStorageHomeCacheForTests();
+	assert.deepEqual(select(second, "second.sqlite"), { kind: "sqlite", path: join(second, "second.sqlite") });
+	assert.equal(existsSync(current), process.platform === "darwin");
 });
