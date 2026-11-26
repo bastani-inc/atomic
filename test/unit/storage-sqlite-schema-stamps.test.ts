@@ -227,7 +227,8 @@ test("a broker's first open of a new database stamps nothing, so it costs what i
 	await withBroker(current, path);
 	const first = sent.take();
 	// Its setups' transactions only: no stamps statement, no end-of-open transaction, no read of a missing stamps table.
-	assert.equal(first.filter((kind) => kind === "begin").length, 30);
+	// The wake-up hints' recipient column is added like the outbox's later columns, in a transaction of its own.
+	assert.equal(first.filter((kind) => kind === "begin").length, 31);
 	assert.equal(
 		await onFile(path, (database) =>
 			database.get("SELECT name FROM sqlite_master WHERE name = 'atomic_schema_stamps'"),

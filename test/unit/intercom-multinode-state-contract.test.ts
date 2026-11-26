@@ -45,8 +45,8 @@ registerReturningSessionConformance(test, "memory reference", async () => {
 	const bus = await openMemoryWakeUpBusFixture();
 	const wakes = await bus.connect();
 	const knownSessions = await openMemoryKnownSessionFixture(leases.returnAddressHolders);
-	const outbox = await openMemoryOutboxFixture(leases.presenceHolder, (brokerId, version) =>
-		wakes.publish({ brokerId, reason: "outbox", version }),
+	const outbox = await openMemoryOutboxFixture(leases.presenceHolder, (brokerId, version, targetIdentity) =>
+		wakes.publish({ brokerId, reason: "outbox", version, targetIdentity }),
 	);
 	return {
 		connect: async () => ({

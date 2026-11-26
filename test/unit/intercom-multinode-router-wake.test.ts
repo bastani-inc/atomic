@@ -164,8 +164,8 @@ async function cluster(): Promise<Cluster> {
 	cleanups.push(() => bus.close());
 	// #5607: the hint an enqueue for an offline recipient sends, as the SQL outbox writes it with the row.
 	const wakes = await bus.connect();
-	const outbox = await openMemoryOutboxFixture(leases.presenceHolder, (brokerId, version) =>
-		wakes.publish({ brokerId, reason: "outbox", version }),
+	const outbox = await openMemoryOutboxFixture(leases.presenceHolder, (brokerId, version, targetIdentity) =>
+		wakes.publish({ brokerId, reason: "outbox", version, targetIdentity }),
 	);
 	const heldSends = await openMemoryHeldSendFixture();
 	const reservations = await openMemoryRestoringReservationFixture();
