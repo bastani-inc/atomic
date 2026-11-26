@@ -11,7 +11,7 @@ import type {
 	InvalidStateInput,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
-import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
+import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type HeldRow = SqliteRow & {
 	reservation_key: string;
@@ -45,7 +45,7 @@ async function openHeldSendStoreInCatalog({ database, prefix }: IntercomBrokerSt
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_held_sends`;
 	const { types, nowMs } = dialectOf(database);
 	/** `take` reads and writes this table alone, so it excludes other takes, not every writer (#6560). */
-	const serial = { concurrency: { kind: "serial", domain: table } } as const;
+	const serial = { ...RETRY_UNAPPLIED, concurrency: { kind: "serial", domain: table } } as const;
 	await ensureBrokerSchema(database, prefix, "held-sends", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(

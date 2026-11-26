@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Fixed
+
+- Intercom calls on a busy shared PostgreSQL database could fail with a lock timeout instead of retrying. A send, a session's registration renewal, a broker taking waiting messages, or a delivery confirmation that waited too long for a lock, or that the database ended to break a deadlock, failed even though nothing had been written. They now try again after a short random wait, up to 5 times, and a send still keeps its place behind the earlier sends to the same session. A send to a session now takes 1 round trip instead of 3 and holds that session's lock only while the database runs it, so sends to a busy session no longer queue behind each other's network round trips. A registration renewal now gives up waiting for a lock after 2 seconds and tries again, so a session no longer goes stale while one renewal waits.
+
 ## [0.10.11-alpha.2] - 2026-11-26
 
 ### Changed

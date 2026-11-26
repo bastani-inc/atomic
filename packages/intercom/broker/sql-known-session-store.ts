@@ -13,7 +13,7 @@ import type {
 	SessionIdReclaim,
 	SessionIdReclaimResult,
 } from "./multinode-state-store.js";
-import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
+import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type BindingRow = SqliteRow & { return_address: string; owner_token?: string | null; owner_broker?: string | null };
 
@@ -315,7 +315,7 @@ async function openKnownSessionStoreInCatalog({
 						: await bindIn(tx, request.freshId, request.returnAddress, request.retentionMs, undefined, owning);
 				return { status: "fresh", binding } as const;
 			},
-			{ concurrency: { kind: "serial", domain: bindings } },
+			{ ...RETRY_UNAPPLIED, concurrency: { kind: "serial", domain: bindings } },
 		);
 	};
 
@@ -377,6 +377,7 @@ async function openKnownSessionStoreInCatalog({
 		async bind(intercomSessionId, returnAddress, retentionMs, claim, owner): Promise<KnownSessionBindResult> {
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
 			return database.transaction((tx) => bindIn(tx, intercomSessionId, returnAddress, retentionMs, claim, owner), {
+				...RETRY_UNAPPLIED,
 				concurrency: { kind: "serial", domain: bindings },
 			});
 		},
@@ -410,7 +411,7 @@ async function openKnownSessionStoreInCatalog({
 						);
 					}
 				},
-				{ concurrency: { kind: "serial", domain: table } },
+				{ ...RETRY_UNAPPLIED, concurrency: { kind: "serial", domain: table } },
 			);
 		},
 		async listLost(olderThanMs): Promise<KnownSessionState[]> {

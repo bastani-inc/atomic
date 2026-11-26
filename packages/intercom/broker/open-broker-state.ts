@@ -187,6 +187,16 @@ export async function openIntercomBrokerState(
 			reserveAndEnqueue(reservation, request) {
 				// The recipient's domain: sends to it run one at a time, and sends to others beside them (#6560).
 				const send = recipientTransaction(database, source.prefix, request.targetIdentity);
+				// PostgreSQL: one round trip, decided by the database, so the recipient's domain is held for no round trip
+				// and sends to a busy recipient do not queue for its lock past the lock timeout.
+				const reserved = sentMessages.reservationOf(reservation);
+				const atOnce = reserved === undefined ? undefined : outbox.enqueueAtOnce?.(request, reserved);
+				if (atOnce !== undefined)
+					return database.transaction((tx) => atOnce.answer(tx), {
+						...send,
+						leading: atOnce.leading,
+						leadingOnly: true,
+					});
 				// The reservation's read and the enqueue's go out with the transaction's start, the reservation's write
 				// and the row's insert together, then the commit, on a pipelined connection: three round trips (#6560).
 				const leading = (attempt: typeof request) => [
