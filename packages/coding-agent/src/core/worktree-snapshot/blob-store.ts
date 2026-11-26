@@ -16,6 +16,7 @@ import { schemaCatalogOf } from "../storage/schema-catalog.js";
 import { statementBatch } from "../storage/statement-batches.js";
 import type { BatchWrite } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
+import { forkLinksTriggerName, forkSegmentsTable, forkSessionLink } from "./fork-snapshot-index.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
 /** A trigger or view, by its exact name. */
@@ -806,7 +807,17 @@ function withMarker(trigger: StorageTrigger, marker: string): StorageTrigger {
 	return { ...trigger, statements: [`/* ${marker} */ ${first}`, ...rest] };
 }
 
-function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect): readonly IndexSource[] {
+/**
+ * The tables whose rows reference snapshot blobs, and how each is indexed. `forkSegments` names the sessions' fork
+ * segments table when it exists (#6560): the session entries then also have the trigger that links an entry whose
+ * parent the session inherits.
+ */
+function indexSources(
+	prefix: string,
+	t: SnapshotIndexTables,
+	d: StorageDialect,
+	forkSegments?: string,
+): readonly IndexSource[] {
 	const { events, runs } = renderStorageIdentifiers("journal", { events: "events", runs: "runs" }, prefix);
 	const { entries } = renderStorageIdentifiers("sessions", { entries: "entries" }, prefix);
 
@@ -933,6 +944,8 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 	const storedEntry = `(SELECT ${entryColumns.join(", ")}, ${parentColumns("entry_json")} FROM ${entries} WHERE ${d.rowOrder()} = ?)`;
 	const indexComplete = `(SELECT backfilled_through >= watermark FROM ${t.sources} WHERE source = 'session-entries')`;
 	const newRowOrder = d.rowOrder("NEW");
+	const forkLink = (rows: string) =>
+		forkSegments === undefined ? [] : [forkSessionLink(t.sessionLinks, forkSegments, rows, isSnapshot)];
 	const entriesSource = {
 		name: "session-entries",
 		table: entries,
@@ -942,6 +955,18 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 			// already gone by, which SQLite reuses once the newest rows are deleted, moves the pass back to it; indexing
 			// a row twice changes nothing.
 			createTrigger(`${entries}_snapshot_links`, "INSERT", entries, sessionLink(triggerEntry), indexComplete),
+			// Shared-history forks (#6560): an entry of a session with fork segments is linked as in a copy of the session.
+			...(forkSegments === undefined
+				? []
+				: [
+						createTrigger(
+							forkLinksTriggerName(entries),
+							"INSERT",
+							entries,
+							[sessionLink(triggerEntry)[0]!, ...forkLink(triggerEntry)],
+							`EXISTS (SELECT 1 FROM ${forkSegments} WHERE session_id = NEW.session_id) AND ${indexComplete}`,
+						),
+					]),
 			createTrigger(
 				`${entries}_snapshot_refs`,
 				"INSERT",
@@ -970,7 +995,7 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 			]),
 		].map((trigger) => withMarker(trigger, ENTRIES_OWN_PROGRESS)),
 		backfill: [],
-		rowwise: [...sessionLink(storedEntry), ...sessionRecord(storedEntry)],
+		rowwise: [...sessionLink(storedEntry), ...forkLink(storedEntry), ...sessionRecord(storedEntry)],
 		// The triggers that index degraded pins (#4922). Older builds install theirs under the same names (#5065).
 		version: "session-entries@degraded-pins",
 		own: ENTRIES_OWN_PROGRESS,
@@ -1302,8 +1327,13 @@ async function readSourceStates(
 	t: SnapshotIndexTables,
 	sources: readonly IndexSource[],
 	listRetired = false,
+	also?: { readonly names: readonly string[]; readonly found: Set<string> },
 ): Promise<SourceState[]> {
-	const names = sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]);
+	// `also` asks, in the same statement, which of other objects exist, as `also.found` tells.
+	const names = [
+		...sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]),
+		...(also?.names ?? []),
+	];
 	// Builds before 0.9.88 open SQLite and libSQL databases only, so only there can a trigger of this build's name be
 	// one that indexes less.
 	const sqlite = dialect.name === "sqlite";
@@ -1341,6 +1371,7 @@ async function readSourceStates(
 		],
 	);
 	const present = new Set(objectRows.map((row) => row.name));
+	for (const name of also?.names ?? []) if (present.has(name)) also?.found.add(name);
 	// Whether each checked trigger's SQL holds this build's text; every other object reads null.
 	const checked = (column: "signed" | "marked") =>
 		new Map(
@@ -1425,6 +1456,28 @@ async function readSourceStates(
 }
 
 /**
+ * Installs, in `transaction`, the trigger that links the entries of sessions with fork segments under `prefix`, once
+ * the fork segments table exists: the step of turning shared-history forks on (#6560). Its name carries a version and
+ * no release before it has a trigger of that name, so installing the released triggers again leaves it in place. A
+ * database whose reference index is not set up yet gets it with the rest of the index when a store next opens.
+ */
+export async function installSharedHistorySnapshotIndex(
+	transaction: SqliteExecutor,
+	dialect: StorageDialect,
+	prefix = "",
+): Promise<void> {
+	const t = snapshotIndexTables(prefix);
+	const links = dialect.tableExists(t.sessionLinks);
+	if ((await transaction.get(links.sql, ...links.params)) === undefined) return;
+	const entries = indexSources(prefix, t, dialect, forkSegmentsTable(prefix)).find(
+		(source) => source.name === "session-entries",
+	)!;
+	const trigger = entries.triggers.find((trigger) => trigger.name === forkLinksTriggerName(entries.table))!;
+	await transaction.exec(dialect.dropTrigger(trigger.name, trigger.table));
+	await transaction.exec(dialect.renderTrigger(trigger));
+}
+
+/**
  * The `<prefix>snapshot_blobs` table and its reference index, shared by the session stores of one database. The index
  * also counts the references a workflow run journal of an earlier release holds in the same database, so collection
  * never deletes a blob such a run still needs.
@@ -1434,6 +1487,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private readonly tables: SnapshotIndexTables;
 	private readonly sources: readonly IndexSource[];
 	private readonly dialect: StorageDialect;
+	/** The sessions' fork segments table (#6560), which exists once shared-history forks are on. */
+	private readonly forkSegments: string;
 	readonly table: string;
 
 	private constructor(
@@ -1441,11 +1496,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		dialect: StorageDialect,
 		tables: SnapshotIndexTables,
 		sources: readonly IndexSource[],
+		forkSegments = forkSegmentsTable(),
 	) {
 		this.database = database;
 		this.dialect = dialect;
 		this.tables = tables;
 		this.sources = sources;
+		this.forkSegments = forkSegments;
 		this.table = tables.blobs;
 	}
 
@@ -1473,9 +1530,19 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			...columns.map(([table, column]) => dialect.columnExists(table, column)),
 			dialect.schemaObjects(triggers),
 		];
+		// One catalog read answers the schema questions where an open read it (#6560): always on Postgres, at the first
+		// question on SQLite.
+		const catalog = await schemaCatalogOf(database);
+		// Whether shared-history forks are on (#6560), from that catalog or asked beside the probes.
+		const segments = forkSegmentsTable(prefix);
+		const segmentsProbe = dialect.tableExists(segments);
+		const shared =
+			catalog !== undefined
+				? Promise.resolve(catalog.hasTable(segments))
+				: database.get(segmentsProbe.sql, ...segmentsProbe.params).then((row) => row !== undefined);
+		shared.catch(() => {});
 		// A versioned database checks its ledger whatever the probes find, so it does not ask them. Elsewhere the catalog
-		// an open read answers them all, in one read instead of a read each (#6560).
-		const catalog = dialect.versionedMigrations ? undefined : await schemaCatalogOf(database);
+		// answers them all, in one read instead of a read each.
 		const current = dialect.versionedMigrations
 			? false
 			: catalog !== undefined
@@ -1527,7 +1594,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				{ table: storageMigrationTable(prefix) },
 			);
 		}
-		const store = new SqlSnapshotBlobStore(database, dialect, t, indexSources(prefix, t, dialect));
+		const store = new SqlSnapshotBlobStore(
+			database,
+			dialect,
+			t,
+			indexSources(prefix, t, dialect, (await shared) ? segments : undefined),
+			segments,
+		);
 		await store.installIndex();
 		return store;
 	}
@@ -1989,11 +2062,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		options.signal?.throwIfAborted();
 		const trigger = `${t.blobs}_chunks_delete_all`;
 		const required = [trigger, `${t.blobs}_age`, `${t.blobs}_inline_size`];
-		const schema = this.dialect.schemaObjects(required);
+		// Asked with them: whether forks share their parents' histories, whose inherited snapshots the sweep keeps (#6560).
+		const schema = this.dialect.schemaObjects([...required, this.forkSegments]);
 		const present = new Set(
 			(await this.database.all<SqliteRow & { name: string }>(schema.sql, ...schema.params)).map((row) => row.name),
 		);
-		if (present.size < required.length) {
+		const forks = present.has(this.forkSegments);
+		if (!required.every((name) => present.has(name))) {
 			options.signal?.throwIfAborted();
 			await this.write(options.pace, async (transaction) => {
 				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
@@ -2025,6 +2100,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				page.map((row) => row.hash),
 				sessions,
 				turns,
+				forks,
 			);
 			let incomplete = false;
 			for (const batch of sessions.batches(candidates)) {
@@ -2069,6 +2145,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		hashes: readonly string[],
 		sessions: SweepSessions,
 		turns: SweepTurns,
+		forks: boolean,
 	): Promise<SweepCandidate[]> {
 		if (hashes.length === 0) return [];
 		const t = this.tables;
@@ -2089,7 +2166,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			sessions.cost(costs);
 			for (const group of sessionGroups(costs)) {
 				await turns.next();
-				sessions.retain(group, await this.retainedBySessions(group));
+				sessions.retain(group, await this.retainedBySessions(group, forks));
 				turns.held();
 			}
 		}
@@ -2114,10 +2191,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	): Promise<string[] | undefined> {
 		const t = this.tables;
 		return this.write(options.pace, async (transaction) => {
-			const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources);
+			const found = new Set<string>();
+			const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources, false, {
+				names: [this.forkSegments],
+				found,
+			});
 			if (!states.every((state) => state.installed && state.backfilled)) return undefined;
 			if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
-			const kept = new Set(await this.keptBySessions(transaction, batch));
+			const kept = new Set(await this.keptBySessions(transaction, batch, found.has(this.forkSegments)));
 			const unretained = batch.hashes.filter((hash) => !kept.has(hash));
 			if (unretained.length === 0) return [];
 			const rows = await transaction.all<SqliteRow & { hash: string }>(
@@ -2164,15 +2245,16 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * The blobs that the snapshots `sessions` retain reference, in one statement. A session whose tree the index could
 	 * not follow retains every snapshot it records.
 	 */
-	private async retainedBySessions(sessions: readonly string[]): Promise<string[]> {
+	private async retainedBySessions(sessions: readonly string[], forks: boolean): Promise<string[]> {
 		const t = this.tables;
 		const ids = JSON.stringify(sessions);
+		const inherited = this.inheritedRecord(forks);
 		const rows = await this.database.all<SqliteRow & { hash: string }>(
 			`SELECT DISTINCT record.hash FROM ${t.sessionRecords} AS record
 			WHERE record.session_id IN (SELECT value FROM ${this.dialect.jsonValues("?")})
 			AND (
 				(record.session_id, record.snapshot_id) IN (${this.sessionHeads(`session_id IN (SELECT value FROM ${this.dialect.jsonValues("?")})`)})
-				OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
+				OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)${inherited}
 			)`,
 			ids,
 			ids,
@@ -2181,21 +2263,36 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	}
 
 	/**
+	 * A condition, after `OR`, that another session inherits the session record `record` through a fork segment
+	 * (#6560); empty when `forks` says the fork segments table is not there, as while shared-history forks are off. A
+	 * fork that shares its parent's history stores none of the entries it inherits, so its own references never name
+	 * their snapshots: a record a segment names is kept whatever its session retains, as long as the segment lasts. A
+	 * delete batch reads whether the table exists in its own transaction, so it sees the segments that hold when it
+	 * commits.
+	 */
+	private inheritedRecord(forks: boolean): string {
+		if (!forks) return "";
+		return `
+				OR EXISTS (SELECT 1 FROM ${this.forkSegments} AS segment WHERE segment.source_id = record.session_id AND record.seq BETWEEN segment.from_seq AND segment.to_seq)`;
+	}
+
+	/**
 	 * The blobs of `batch` that a session records and that the delete must keep, in one statement: those the snapshots
 	 * of `batch.sessions` retain, and those a session not among them records, whose snapshots the sweep did not walk.
 	 * Walks only `batch.sessions`, whose snapshot entries the sweep bounded when it made the batch (#5530).
 	 */
-	private async keptBySessions(executor: SqliteExecutor, batch: SweepDeleteBatch): Promise<string[]> {
+	private async keptBySessions(executor: SqliteExecutor, batch: SweepDeleteBatch, forks: boolean): Promise<string[]> {
 		const t = this.tables;
 		const ids = JSON.stringify(batch.sessions);
 		const walked = `(SELECT value FROM ${this.dialect.jsonValues("?")})`;
+		const inherited = this.inheritedRecord(forks);
 		const rows = await executor.all<SqliteRow & { hash: string }>(
 			`SELECT DISTINCT record.hash FROM ${t.sessionRecords} AS record
 			WHERE record.hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})
 			AND (
 				record.session_id NOT IN ${walked}
 				OR (record.session_id, record.snapshot_id) IN (${this.sessionHeads(`session_id IN ${walked}`)})
-				OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
+				OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)${inherited}
 			)`,
 			JSON.stringify(batch.hashes),
 			ids,

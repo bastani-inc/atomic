@@ -1,5 +1,9 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
-import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
+import {
+	installSharedHistorySnapshotIndex,
+	SqlSnapshotBlobStore,
+	snapshotIndexTables,
+} from "../../worktree-snapshot/blob-store.ts";
 import { ensureTableFillfactor, transactionFinisher } from "../added-exports.js";
 import type {
 	SqliteDatabase,
@@ -1314,6 +1318,8 @@ export class SqlSessionStore implements SessionStore {
 				const holders = await liveMarkers(older, live);
 				if (holders.length > 0) return { status: "deferred", holders };
 				await createSharedHistoryTables(tx, dialect, sessionForkTables(prefix));
+				// The snapshot index links the entries of forks that share history from the first one on.
+				await installSharedHistorySnapshotIndex(tx, dialect, prefix);
 				await statementBatch(
 					tx,
 					[
