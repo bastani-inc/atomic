@@ -103,6 +103,34 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL round trips of for
 		});
 	});
 
+	test("a replace of a session forks read, and a fork of one of them, take no more round trips than before the replace locked its forks with the session (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const store = await SqlSessionStore.open(await open());
+			try {
+				assert.equal((await store.enableSharedHistoryForks()).status, "already");
+				await store.create(header("lone"), entries("lone", 20));
+				await store.create(header("read"), entries("read", 20));
+				await clone(store, "read", "reader");
+				await store.create(header("x"), entries("x", 1));
+				const trips = countRoundTrips();
+				await store.replace("lone", header("lone"), entries("lone2", 2), { expectSeq: 20 });
+				const lone = trips.take();
+				await store.replace("read", header("read"), entries("read2", 2), { expectSeq: 20 });
+				const read = trips.take();
+				let forked = 0;
+				await clone(store, "reader", "reader-fork", () => {
+					forked = trips.take();
+				});
+				trips.restore();
+				// Measured before the replace locked its forks with the session: 11, 29 and 2.
+				const report = `replace without forks ${lone}, replace of a session a fork reads ${read}, fork of the reader ${forked}`;
+				assert.ok(lone <= 11 && read <= 29 && forked <= 2, report);
+			} finally {
+				await store.close();
+			}
+		});
+	});
+
 	test("the first load of a fork that shares its parent's history takes no more round trips than a session of the same length (#6560)", async () => {
 		await withPostgresDatabase(async ({ open }) => {
 			const store = await SqlSessionStore.open(await open());

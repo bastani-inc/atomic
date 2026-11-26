@@ -148,9 +148,24 @@ function tracked<T>(operation: Promise<T>): { readonly done: Promise<T>; settled
 	return { done, settled: () => settled };
 }
 
-/** `database`, counting the runs of its transactions' callbacks: a transaction run again after a failure counts twice. */
-function countingRuns(database: SqliteDatabase): { readonly database: SqliteDatabase; runs(): number } {
+/** Whether `error`, or an error it was caused by, is PostgreSQL's deadlock_detected. */
+function isDeadlock(error: unknown): boolean {
+	for (let cause = error, depth = 0; cause instanceof Error && depth < 8; cause = cause.cause, depth++)
+		if ((cause as Error & { code?: unknown }).code === "40P01") return true;
+	return false;
+}
+
+/**
+ * `database`, counting the runs of its transactions' callbacks, a transaction run again after a failure counting twice,
+ * and the runs a deadlock rolled back.
+ */
+function countingRuns(database: SqliteDatabase): {
+	readonly database: SqliteDatabase;
+	runs(): number;
+	deadlocks(): number;
+} {
 	let runs = 0;
+	let deadlocks = 0;
 	return {
 		database: new Proxy(database, {
 			get(target, key) {
@@ -158,11 +173,15 @@ function countingRuns(database: SqliteDatabase): { readonly database: SqliteData
 				return (callback: (tx: SqliteExecutor) => Promise<unknown>, options?: SqliteTransactionOptions) =>
 					target.transaction(async (tx) => {
 						runs++;
-						return callback(tx);
+						return callback(tx).catch((error: unknown) => {
+							if (isDeadlock(error)) deadlocks++;
+							throw error;
+						});
 					}, options);
 			},
 		}),
 		runs: () => runs,
+		deadlocks: () => deadlocks,
 	};
 }
 
@@ -389,6 +408,169 @@ for (const backend of storageBackends) {
 						await forker.delete("F");
 						await forker.delete("R");
 						assert.deepEqual(await texts(forker, "S"), ["p1", "p2", "p3"], "the last fork reads its own copy");
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+		},
+	);
+
+	// A replace locks the session's row and the rows of the forks reading it in one statement, in id order, as a fork
+	// locks its donor's row with the rows of the sessions its segments name: neither waits for the other in a cycle.
+	describe.skipIf(backend.skipReason !== undefined || backend.name !== "Postgres")(
+		`replacing a session beside a fork of its reader on ${name}`,
+		() => {
+			test(
+				"a fork of a reader that sorts before the session waits for the replace, and each runs once (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const { prefix } = scope;
+						const setup = await SqlSessionStore.open(await scope.connect(), { prefix });
+						await setup.create(header("D"), chain(["d1", "d2", "d3"]));
+						await forkWhole(setup, "D", "B");
+						await setup.close();
+
+						const sessions = renderStorageIdentifiers("sessions", SESSION_TABLES, prefix).sessions;
+						const reached = gate();
+						let paused = false;
+						// The replace stops before its detach locks B's row, until the fork of B has run or queues for a lock.
+						const replacing = countingRuns(
+							instrumented(await scope.connect(), {
+								pause: (sql, inTransaction, params) => {
+									if (paused || !inTransaction || !locksRowForUpdate(sessions, sql, params, "B"))
+										return undefined;
+									paused = true;
+									return reached.wait();
+								},
+							}),
+						);
+						const forking = countingRuns(await scope.connect());
+						const replacer = await SqlSessionStore.open(replacing.database, { prefix });
+						const forker = await SqlSessionStore.open(forking.database, { prefix });
+						await replacer.readEntrySizes("D", 1, 0);
+						await forker.readEntrySizes("B", 1, 0);
+						const before = [replacing.runs(), forking.runs()];
+
+						const replaced = tracked(replacer.replace("D", header("D"), chain(["r1"]), { expectSeq: 3 }));
+						await stoppedAt(reached.reached, replaced.done, "the replace stopping before it locks B's row");
+						const forked = tracked(forkWhole(forker, "B", "C"));
+						const probe = await scope.connect();
+						await settledOrQueued(probe, forked.settled);
+						reached.release();
+						await Promise.all([replaced.done, forked.done]);
+
+						assert.deepEqual(
+							[replacing.runs() - before[0]!, forking.runs() - before[1]!],
+							[1, 1],
+							"the replace and the fork each ran once: no deadlock rolled one back",
+						);
+						assert.deepEqual(await texts(forker, "D"), ["r1"]);
+						assert.deepEqual(await texts(forker, "B"), ["d1", "d2", "d3"]);
+						assert.deepEqual(await texts(forker, "C"), ["d1", "d2", "d3"]);
+						await forker.delete("B");
+						assert.deepEqual(await texts(forker, "C"), ["d1", "d2", "d3"], "the fork's fork reads its own copy");
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a fork of a reader made while the replace waits for its locks is detached too (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const { prefix } = scope;
+						const setup = await SqlSessionStore.open(await scope.connect(), { prefix });
+						await setup.create(header("D"), chain(["d1", "d2", "d3"]));
+						await forkWhole(setup, "D", "B");
+						await setup.close();
+
+						// The fork of B stops before its first write, holding B's and D's rows, while the replace queues for them.
+						const segments = sessionForkTables(prefix).forkSegments;
+						const reached = gate();
+						let paused = false;
+						const forking = instrumented(await scope.connect(), {
+							pause: (sql, inTransaction) => {
+								if (paused || !inTransaction || !sql.includes(`INSERT INTO ${segments}`)) return undefined;
+								paused = true;
+								return reached.wait();
+							},
+						});
+						const replacer = await SqlSessionStore.open(await scope.connect(), { prefix });
+						const forker = await SqlSessionStore.open(forking, { prefix });
+						await replacer.readEntrySizes("D", 1, 0);
+						await forker.readEntrySizes("B", 1, 0);
+
+						const forked = tracked(forkWhole(forker, "B", "C"));
+						await stoppedAt(reached.reached, forked.done, "the fork of B stopping before its first write");
+						const replaced = tracked(replacer.replace("D", header("D"), chain(["r1"]), { expectSeq: 3 }));
+						const probe = await scope.connect();
+						await settledOrQueued(probe, replaced.settled);
+						reached.release();
+						await Promise.all([replaced.done, forked.done]);
+
+						assert.deepEqual(await texts(replacer, "D"), ["r1"]);
+						for (const id of ["B", "C"]) assert.deepEqual(await texts(replacer, id), ["d1", "d2", "d3"], id);
+						await replacer.delete("B");
+						assert.deepEqual(
+							await texts(replacer, "C"),
+							["d1", "d2", "d3"],
+							"the fork made meanwhile holds its own copy",
+						);
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a fork into the ID of a deleted session its donor read locks that session's readers in order with the donor (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const { prefix } = scope;
+						// D reads P's rows and adds one; B, a fork of D that sorts before it, reads both. P is deleted.
+						const setup = await SqlSessionStore.open(await scope.connect(), { prefix });
+						await setup.create(header("P"), chain(["p1", "p2", "p3"]));
+						await forkWhole(setup, "P", "D");
+						await setup.append("D", chain(["d4"]), { expectSeq: 3 });
+						await forkWhole(setup, "D", "B");
+						await setup.delete("P");
+						await setup.close();
+
+						const sessions = renderStorageIdentifiers("sessions", SESSION_TABLES, prefix).sessions;
+						const reached = gate();
+						let paused = false;
+						// The fork of D into P stops before its detach of B locks B's row, until the replace of D, which locks B
+						// and D in id order, has run or queues for a lock.
+						const forking = countingRuns(
+							instrumented(await scope.connect(), {
+								pause: (sql, inTransaction, params) => {
+									if (paused || !inTransaction || !locksRowForUpdate(sessions, sql, params, "B"))
+										return undefined;
+									paused = true;
+									return reached.wait();
+								},
+							}),
+						);
+						const replacing = countingRuns(await scope.connect());
+						const forker = await SqlSessionStore.open(forking.database, { prefix });
+						const replacer = await SqlSessionStore.open(replacing.database, { prefix });
+						await forker.readEntrySizes("D", 1, 0);
+						await replacer.readEntrySizes("D", 1, 0);
+
+						const forked = tracked(forkWhole(forker, "D", "P"));
+						await stoppedAt(reached.reached, forked.done, "the fork stopping before it locks B's row");
+						const replaced = tracked(replacer.replace("D", header("D"), chain(["r1"]), { expectSeq: 4 }));
+						const probe = await scope.connect();
+						await settledOrQueued(probe, replaced.settled);
+						reached.release();
+						await Promise.all([forked.done, replaced.done]);
+
+						assert.deepEqual(
+							[forking.deadlocks(), replacing.deadlocks()],
+							[0, 0],
+							"no deadlock rolled back the fork or the replace",
+						);
+						const history = ["p1", "p2", "p3", "d4"];
+						assert.deepEqual(await texts(forker, "P"), history, "the new P reads D's history as it forked it");
+						assert.deepEqual(await texts(forker, "B"), history);
+						assert.deepEqual(await texts(forker, "D"), ["r1"]);
+						assert.equal(await tombstones(probe, prefix, "P"), 0);
 					}),
 				SERVER_TIMEOUT_MS,
 			);

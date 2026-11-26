@@ -47,6 +47,7 @@
 - On macOS, an agent directory can no longer open another agent directory's session database through a hard link once the database's modified date has been set to an earlier date ([#6661](https://github.com/bastani-inc/atomic/pull/6661), [#4319](https://github.com/bastani-inc/atomic/issues/4319)).
 - Forking one of a deleted session's forks back into the deleted session's ID now works. It used to fail with "Invalid fork segment" ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - A process still running Atomic 0.10.10 or 0.10.11-alpha.1 after an in-place update no longer deletes worktree snapshots that a fork shares with its parent when it cleans up old snapshots, for example after the parent session is deleted. The database now refuses to delete a snapshot that a fork still uses, so the fork can still restore it. Once no fork uses it, it is cleaned up as before ([#6657](https://github.com/bastani-inc/atomic/pull/6657)).
+- On PostgreSQL, replacing a session's history in a session store no longer deadlocks with a fork of one of that session's forks made at the same time. Previously one of the two was rolled back and ran again ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ### Removed
 

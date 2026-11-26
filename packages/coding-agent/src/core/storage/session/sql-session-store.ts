@@ -54,6 +54,7 @@ import { type ForkLineageTables, ForkSegmentRuns, forkLineageWrite, forkSegmentI
 import {
 	createOverTombstoneWithin,
 	deleteForkedSessionWithin,
+	ForkReadersMoved,
 	forkPinReads,
 	readForkPins,
 	replaceForkedSessionWithin,
@@ -268,6 +269,11 @@ type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
 /** The reads that begin a fork with shared history: see `SqlSessionStore.sharedForkReads`. */
 interface SharedForkReads {
 	readonly exists: SqliteStatement;
+	/**
+	 * For a fork into the ID of a deleted session forks still read: that session's tombstone, locked for update before
+	 * any session's row, and the lock read then locks the forks reading it too, for update, in id order with the rest.
+	 */
+	readonly childTombstone?: SqliteStatement;
 	readonly lock: SqliteStatement;
 	readonly tombstones: SqliteStatement;
 	readonly segments: SqliteStatement;
@@ -284,6 +290,8 @@ interface SharedForkDonor {
 	readonly state?: StoredSummaryState;
 	/** What the fork's read of the child's ID found. */
 	readonly child: NewSessionRow | undefined;
+	/** Whether the reads locked the child's tombstone and the forks reading it, in order with the donor's rows. */
+	readonly ordered: boolean;
 }
 
 /** The donor's segments name a session the fork did not lock: the fork runs again, locking it too (#6560). */
@@ -292,6 +300,27 @@ class ForkSourcesMoved extends Error {
 		super("The fork's source moved its history while the fork read it");
 	}
 }
+
+/**
+ * A fork into the ID of a deleted session forks still read, whose reads did not lock that session's tombstone and the
+ * forks reading it before the donor's row: the fork runs again with reads that do (#6560).
+ */
+class ForkChildTombstoned extends Error {
+	constructor() {
+		super("The fork's child has the ID of a deleted session forks still read");
+	}
+}
+/** The leading statements of a fork's transaction: its reads of {@link SharedForkReads}, in the order it makes them. */
+function sharedForkLeading(reads: SharedForkReads): SqliteStatement[] {
+	return [
+		reads.exists,
+		...(reads.childTombstone === undefined ? [] : [reads.childTombstone]),
+		reads.tombstones,
+		reads.lock,
+		reads.segments,
+	];
+}
+
 /** An entry a write stores, at seq `seq`, as `json`: see `SqlSessionStore.noteWritten`. */
 interface WrittenEntry {
 	readonly entry: SessionEntry;
@@ -1774,7 +1803,14 @@ export class SqlSessionStore implements SessionStore {
 		source: ForkArchiveSource,
 		withState: boolean,
 	): Promise<SharedForkDonor> {
-		if (!(await this.startNewSession(tx, child, donor.child, "fork"))) return donor;
+		const found = donor.child;
+		const tombstoned =
+			found?.tombstone === undefined ? await this.hasForkTombstone(tx, child) : found.tombstone !== null;
+		// Locked now, the tombstone and its readers would come after the donor's row, out of the order every writer takes
+		// them in: where writers run together, the fork runs again with reads that lock them first.
+		if (tombstoned && !donor.ordered && this.dialect.lockClause("update") !== "") throw new ForkChildTombstoned();
+		if (!(await this.startNewSession(tx, child, { id: null, tombstone: tombstoned ? child : null }, "fork")))
+			return donor;
 		if (!donor.segments.some((segment) => segment.sourceId === child)) return donor;
 		return this.sharedForkDonor(tx, child, source, this.sharedForkReads(child, source.sessionId, withState));
 	}
@@ -1816,20 +1852,20 @@ export class SqlSessionStore implements SessionStore {
 			(!this.sharedHistorySeen || source.epoch === undefined)
 		)
 			return undefined;
-		for (let attempt = 0; ; attempt++) {
+		for (let attempt = 0, ordered = false; ; attempt++) {
 			// As a streamed fork's: once this store has seen shared history, the reads that lock the source go out first.
-			const reads = this.sharedHistorySeen ? this.sharedForkReads(header.id, source.sessionId, false) : undefined;
+			const reads = this.sharedHistorySeen
+				? this.sharedForkReads(header.id, source.sessionId, false, ordered)
+				: undefined;
 			try {
 				// The schema check goes out with the fork's first reads, as a `create`'s does: its writes wait for it.
 				return await this.transactionCheckedAlongside(
 					(tx, checked) => this.writeEntriesFork(tx, checked, header, entries, source, reads),
-					this.sessionWrite(
-						header.id,
-						...(reads === undefined ? [] : [reads.exists, reads.tombstones, reads.lock, reads.segments]),
-					),
+					this.sessionWrite(header.id, ...(reads === undefined ? [] : sharedForkLeading(reads))),
 				);
 			} catch (error) {
-				if (!(error instanceof ForkSourcesMoved) || attempt >= 3) throw error;
+				if (error instanceof ForkChildTombstoned && !ordered) ordered = true;
+				else if (!(error instanceof ForkSourcesMoved) || attempt >= 3) throw error;
 			}
 		}
 	}
@@ -2441,22 +2477,20 @@ export class SqlSessionStore implements SessionStore {
 	private async createStreamedFork(header: SessionRecordHeader, stream: SessionForkStream, source: ForkArchiveSource) {
 		this.assertOpen();
 		validateSessionHeader(header);
-		for (let attempt = 0; ; attempt++) {
+		for (let attempt = 0, ordered = false; ; attempt++) {
 			// Once this store has seen shared history, the reads that lock the source go out with the transaction's start.
 			const reads = this.sharedHistorySeen
-				? this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined)
+				? this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined, ordered)
 				: undefined;
 			try {
 				// The schema check goes out with the fork's first reads, as a `create`'s does: its writes wait for it.
 				return await this.transactionCheckedAlongside(
 					(tx, checked) => this.writeStreamedFork(tx, checked, header, stream, source, reads),
-					this.sessionWrite(
-						header.id,
-						...(reads === undefined ? [] : [reads.exists, reads.tombstones, reads.lock, reads.segments]),
-					),
+					this.sessionWrite(header.id, ...(reads === undefined ? [] : sharedForkLeading(reads))),
 				);
 			} catch (error) {
-				if (!(error instanceof ForkSourcesMoved) || attempt >= 3) throw error;
+				if (error instanceof ForkChildTombstoned && !ordered) ordered = true;
+				else if (!(error instanceof ForkSourcesMoved) || attempt >= 3) throw error;
 			}
 		}
 	}
@@ -2734,17 +2768,35 @@ export class SqlSessionStore implements SessionStore {
 	 * `key-share` in id order, unless the child exists, with the donor's watermark and generation, and with `withState`
 	 * its summary state; then the donor's segments, read once those locks are held.
 	 */
-	private sharedForkReads(child: string, donor: string, withState: boolean): SharedForkReads {
+	private sharedForkReads(child: string, donor: string, withState: boolean, ordered = false): SharedForkReads {
 		const ids = [...new Set([donor, ...(this.forkSources.get(donor) ?? [])])].sort();
 		const epoch = `COALESCE(${this.dialect.jsonText("summary_state", "epoch")}, ${this.dialect.jsonText("summary_state", "resume", "epoch")}, revision)`;
+		const readers = ordered
+			? ` OR id IN (SELECT session_id FROM ${this.forkTables.forkSegments} WHERE source_id = ?)`
+			: "";
 		return {
 			exists: this.newSessionRead(child),
+			...(ordered
+				? {
+						childTombstone: {
+							sql: `SELECT session_id FROM ${this.forkTables.forkTombstones} WHERE session_id = ?${this.dialect.lockClause("update")}`,
+							params: [child],
+						},
+					}
+				: {}),
 			lock: {
 				sql: `SELECT id, last_seq, CASE WHEN id = ? THEN ${epoch} END AS epoch${withState ? ", CASE WHEN id = ? THEN summary_state END AS summary_state" : ""}
 					FROM ${this.tables.sessions} WHERE (${inJsonList(this.dialect, "id")}
-						OR id IN (SELECT source_id FROM ${this.forkTables.forkSegments} WHERE session_id = ?))
-					AND NOT EXISTS (SELECT 1 FROM ${this.tables.sessions} c WHERE c.id = ?) ORDER BY id${this.dialect.lockClause("key-share")}`,
-				params: [donor, ...(withState ? [donor] : []), JSON.stringify(ids), donor, child],
+						OR id IN (SELECT source_id FROM ${this.forkTables.forkSegments} WHERE session_id = ?)${readers})
+					AND NOT EXISTS (SELECT 1 FROM ${this.tables.sessions} c WHERE c.id = ?) ORDER BY id${this.dialect.lockClause(ordered ? "update" : "key-share")}`,
+				params: [
+					donor,
+					...(withState ? [donor] : []),
+					JSON.stringify(ids),
+					donor,
+					...(ordered ? [child] : []),
+					child,
+				],
 			},
 			// A source deleted while forks still read it keeps only a tombstone, which the sweep that removes its rows and a
 			// session created under its ID lock: the fork locks it too, before the sessions rows, as every writer orders them
@@ -2781,12 +2833,22 @@ export class SqlSessionStore implements SessionStore {
 				(error: unknown) => ({ error }),
 			);
 		const existing = settle(tx.get<NewSessionRow>(reads.exists.sql, ...reads.exists.params));
+		const childTombstone =
+			reads.childTombstone === undefined
+				? undefined
+				: settle(tx.all(reads.childTombstone.sql, ...reads.childTombstone.params));
 		const tombstones = settle(
 			tx.all<SqliteRow & { session_id: string }>(reads.tombstones.sql, ...reads.tombstones.params),
 		);
 		const locked = settle(tx.all<Locked>(reads.lock.sql, ...reads.lock.params));
 		const segmentRows = settle(tx.all<Segment>(reads.segments.sql, ...reads.segments.params));
-		for (const read of [existing, tombstones, locked, segmentRows]) {
+		for (const read of [
+			existing,
+			...(childTombstone === undefined ? [] : [childTombstone]),
+			tombstones,
+			locked,
+			segmentRows,
+		]) {
 			const answer = await read;
 			if ("error" in answer) throw answer.error;
 		}
@@ -2820,6 +2882,7 @@ export class SqlSessionStore implements SessionStore {
 			epoch,
 			segments,
 			child: found,
+			ordered: reads.childTombstone !== undefined,
 			...(typeof row.summary_state === "string"
 				? { state: JSON.parse(row.summary_state) as StoredSummaryState }
 				: {}),
@@ -3250,52 +3313,62 @@ $grant$`);
 		let released: readonly string[] = [];
 		let entriesWritten: WrittenEntry[] = [];
 		const pinReads = this.sharedHistorySeen
-			? forkPinReads(this.forkHost(), this.tables.sessions, sessionId)
+			? forkPinReads(this.forkHost(), this.tables.sessions, sessionId, true)
 			: undefined;
 		// The lock index writes of this session hold, which they take instead of the session's (#6638): taken first, with
 		// the transaction's start, so the rewrite forgets an index write that committed and one that starts later sees it.
 		const searchLock = this.searchIndex?.writeLock(sessionId);
-		const written = await this.transactionCheckedAlongside(
-			async (tx, checked) => {
-				released = [];
-				entriesWritten = [];
-				// The session's row and its fork history are read beside the schema check, in one wait for the connection.
-				const [, , pins] = await Promise.all([
-					searchLock === undefined ? undefined : tx.get(searchLock.sql, ...searchLock.params),
-					this.forWrite(tx, sessionId, options),
-					this.readForkPinsWithin(tx, sessionId, pinReads),
-				]);
-				await checked;
-				validateSessionHeader(header);
-				validateSessionEntries(entries);
-				if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
-				// Forks reading the rows about to go get their own copies; the session holds all of its new rows itself. A fork
-				// whose copy a missing chunk of these rows refuses keeps reading them, so the replace is refused instead.
-				if (pins !== undefined)
-					released = await replaceForkedSessionWithin(this.forkHost(), tx, sessionId, pins).catch(
-						(error: unknown) => {
-							noteForkCopyRefusal(error, "replace");
-							throw error;
-						},
-					);
-				await this.searchIndex?.forgetWithin(tx, sessionId);
-				await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
-				await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
-				await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
-				const { texts, epoch } = await this.saveSummary(tx, sessionId, {
-					header,
-					entries,
-					lastSeq: entries.length,
-				});
-				await this.insertEntries(tx, sessionId, entries, 0, texts, true, entriesWritten);
-				return { lastSeq: entries.length, epoch };
-			},
-			this.sessionWrite(
-				sessionId,
-				...(searchLock === undefined ? [] : [searchLock]),
-				...(pinReads === undefined ? [] : [this.headRead(sessionId, options, false), ...pinReads]),
-			),
-		);
+		const run = (lockLate: boolean) =>
+			this.transactionCheckedAlongside(
+				async (tx, checked) => {
+					released = [];
+					entriesWritten = [];
+					// The session's row and its fork history are read beside the schema check, in one wait for the connection.
+					const [, , pins] = await Promise.all([
+						searchLock === undefined ? undefined : tx.get(searchLock.sql, ...searchLock.params),
+						this.forWrite(tx, sessionId, options),
+						this.readForkPinsWithin(tx, sessionId, pinReads, true),
+					]);
+					await checked;
+					validateSessionHeader(header);
+					validateSessionEntries(entries);
+					if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
+					// Forks reading the rows about to go get their own copies; the session holds all of its new rows itself. A fork
+					// whose copy a missing chunk of these rows refuses keeps reading them, so the replace is refused instead.
+					if (pins !== undefined)
+						released = await replaceForkedSessionWithin(this.forkHost(), tx, sessionId, pins, lockLate).catch(
+							(error: unknown) => {
+								noteForkCopyRefusal(error, "replace");
+								throw error;
+							},
+						);
+					await this.searchIndex?.forgetWithin(tx, sessionId);
+					await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
+					await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
+					await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
+					const { texts, epoch } = await this.saveSummary(tx, sessionId, {
+						header,
+						entries,
+						lastSeq: entries.length,
+					});
+					await this.insertEntries(tx, sessionId, entries, 0, texts, true, entriesWritten);
+					return { lastSeq: entries.length, epoch };
+				},
+				this.sessionWrite(
+					sessionId,
+					...(searchLock === undefined ? [] : [searchLock]),
+					...(pinReads === undefined ? [] : [this.headRead(sessionId, options, false), ...pinReads]),
+				),
+			);
+		// A fork made while the first read waited for its locks is locked in order when the replace runs again (#6560).
+		let written: Awaited<ReturnType<typeof run>>;
+		for (let attempt = 0; ; attempt++)
+			try {
+				written = await run(attempt >= 3);
+				break;
+			} catch (error) {
+				if (!(error instanceof ForkReadersMoved)) throw error;
+			}
 		this.noteWritten(sessionId, written.epoch, entriesWritten);
 		await this.sweepReleasedForkRows(released);
 		return written;
@@ -3539,10 +3612,11 @@ $grant$`);
 		tx: SqliteExecutor,
 		sessionId: string,
 		reads: ReturnType<typeof forkPinReads> | undefined,
+		readers = false,
 	) {
 		if (reads !== undefined) return readForkPins(tx, reads);
 		if (!(await this.sharedHistoryForks(tx))) return undefined;
-		return readForkPins(tx, forkPinReads(this.forkHost(), this.tables.sessions, sessionId));
+		return readForkPins(tx, forkPinReads(this.forkHost(), this.tables.sessions, sessionId, readers));
 	}
 
 	/**
