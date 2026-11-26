@@ -67,7 +67,7 @@ export class ForkRowRuns {
 	 * The statements that copy the runs added since the last call, in seq order, each with the rows it must copy: a run's
 	 * entries statement copies one row for each of its seqs, or the source changed under the fork.
 	 */
-	take(): CountedStatement[] {
+	drain(): CountedStatement[] {
 		const { entries, entryChunks } = this.tables;
 		const statements: CountedStatement[] = [];
 		for (const { sourceFrom, childFrom, count } of this.runs) {

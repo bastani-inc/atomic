@@ -1542,12 +1542,12 @@ export class SqlSessionStore implements SessionStore {
 					if (row.stored?.sessionId === source.sessionId && row.edits === undefined) {
 						copies.add(row.stored.seq, seq + 1, entry.id);
 						await writes.send(this.entryWrites(header.id, [], seq, listed.texts, false));
-						if (copies.full) await writes.send(copies.take());
+						if (copies.full) await writes.send(copies.drain());
 						seq++;
 						continue;
 					}
 					// What the child holds is in seq order, for the snapshot index's triggers: the runs before this row first.
-					await writes.send(copies.take());
+					await writes.send(copies.drain());
 					if (!row.reference) {
 						await writes.send(this.entryWrites(header.id, [entry], seq, listed.texts, false));
 					} else if (row.inlineSnapshot) {
@@ -1598,7 +1598,7 @@ export class SqlSessionStore implements SessionStore {
 					}
 					seq++;
 				}
-				await writes.send(copies.take());
+				await writes.send(copies.drain());
 				blobs.copy = this.forkBlobCopy(source.sessionId, header.id, hashes);
 				const statement = this.summaryWrite(header.id, { header, entries: [], lastSeq: seq }, summary, index);
 				await writes.send([statement.statement]);
