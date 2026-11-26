@@ -84,9 +84,11 @@ Use `actions/checkout`, not the Namespace git mirror. CI and release jobs use se
 
 Open the PR's **Files changed** tab before approving each run from a fork. If it touches `.github/`, wait for maintainer review. Check `runs-on`, label suffixes, triggers and permissions. Do not approve a fork run that adds a PR workflow or picks a runner outside the approved Restricted profiles. Restricted access protects the committed configuration, not a workflow that the PR changes to select another runner.
 
-### Model data cached, fetched live in one place
+### One model catalog snapshot per test run
 
-Among the regular test jobs, `static-checks` always fetches the live model catalogs. The suites and archive job can restore a verified snapshot from `main`. A job with no valid snapshot runs `npm run hydrate:model-data` before building offline. Releases fetch live data.
+In `test.yml`, `model-data` restores a verified snapshot from `main` for pull requests. It fetches the catalogs once if there is no valid snapshot, and on pushes to `main`. The other jobs download the same run artifact, including its validation manifest, and build offline. A failed shard can rerun against the same artifact without checking upstream again.
+
+All work jobs wait for this short catalog-only job. It installs no dependencies and prevents typecheck and the suites from testing different catalogs. A warm pull-request run can use older data until `main` refreshes the cache. The separate manual macOS workflow still restores or hydrates independently, and releases fetch live data.
 
 ### Warming the release toolchain caches
 
