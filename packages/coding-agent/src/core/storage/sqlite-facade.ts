@@ -8,6 +8,7 @@ import type {
 	SqliteValue,
 	StorageDescriptor,
 	StorageNotifications,
+	StorageOpenedCatalog,
 	TransactionConcurrency,
 } from "./database.js";
 import { type StorageDialect, sqliteDialect } from "./dialect.js";
@@ -185,6 +186,11 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	 * the very tables the other's do. Undefined where that cannot be told, as for a database in memory.
 	 */
 	databaseIdentity?(): string | undefined;
+	/**
+	 * Optional. The schema the driver read in its open's own round trip, given once; the facade exposes it as
+	 * `SqliteDatabase.takeOpenedCatalog`, so the first store open does not read it again (#6560).
+	 */
+	takeOpenedCatalog?(): StorageOpenedCatalog | undefined;
 }
 
 /**
@@ -854,6 +860,7 @@ class DriverDatabase implements SqliteDatabase {
 	readonly freeBytes?: () => Promise<number | undefined>;
 	readonly databaseIdentity?: () => string | undefined;
 	readonly openReader?: () => Promise<SqliteDatabase>;
+	readonly takeOpenedCatalog?: () => StorageOpenedCatalog | undefined;
 	/** Readers this database opened and that are not closed; closing closes them. */
 	private readonly readers = new Set<DriverDatabase>();
 	private readonly closed?: () => void;
@@ -868,6 +875,8 @@ class DriverDatabase implements SqliteDatabase {
 		if (freeBytes) this.freeBytes = async () => freeBytes();
 		const databaseIdentity = driver.databaseIdentity?.bind(driver);
 		if (databaseIdentity) this.databaseIdentity = databaseIdentity;
+		const takeOpenedCatalog = driver.takeOpenedCatalog?.bind(driver);
+		if (takeOpenedCatalog) this.takeOpenedCatalog = takeOpenedCatalog;
 		this.redact = redact;
 		this.descriptor = { adapter: driver.descriptor.adapter, location: redact(driver.descriptor.location) };
 		const stalled = (ranMs: number) =>

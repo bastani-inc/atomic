@@ -74,33 +74,10 @@ async function readSqliteCatalog(database: SqliteDatabase, ledger: string): Prom
 	};
 }
 
-/**
- * Reads `database`'s schema and the versions `ledger` records, in two statements sent at once, without a transaction
- * or a lock. On SQLite and libSQL, which record no versions, reads the schema alone in one statement. Undefined when a
- * read fails: the stores then check each object themselves.
- */
-export async function readStorageSchemaCatalog(
-	database: SqliteDatabase,
-	ledger: string,
-): Promise<StorageSchemaCatalog | undefined> {
-	const dialect = dialectOf(database);
-	if (dialect.name === "sqlite") return readSqliteCatalog(database, ledger);
-	if (!dialect.versionedMigrations || dialect.name !== "postgres") return undefined;
-	const physicalLedger = dialect.identifier(ledger);
-	const versions = database
-		.all<SqliteRow & { domain: string; version: number | string | null }>(
-			`SELECT domain, MAX(version) AS version FROM ${ledger} GROUP BY domain`,
-		)
-		.then(
-			(rows) => rows,
-			() => undefined,
-		);
-	let rows: CatalogRow[];
-	try {
-		rows = await database.all<CatalogRow>(CATALOG_SQL);
-	} catch {
-		return undefined;
-	}
+type VersionRow = SqliteRow & { domain: string; version: number | string | null };
+
+/** The tables, objects and columns of PostgreSQL catalog rows (`CATALOG_SQL`'s). */
+function catalogSets(rows: readonly CatalogRow[]) {
 	const tables = new Set<string>();
 	const objects = new Set<string>();
 	const columns = new Set<string>();
@@ -111,11 +88,78 @@ export async function readStorageSchemaCatalog(
 			if (row.kind === "relation" && TABLE_KINDS.has(String(row.detail))) tables.add(row.name);
 		}
 	}
+	return { tables, objects, columns };
+}
+
+/**
+ * The catalog rows and the ledger's versions of `database`'s schema, read in one read-only transaction whose start
+ * carries both reads, so they cost one round trip (#6560). The versions are undefined when the ledger did not exist;
+ * the whole read is undefined when it failed.
+ */
+async function readPostgresCatalog(
+	database: SqliteDatabase,
+	ledger: string,
+	physicalLedger: string,
+): Promise<{ rows: CatalogRow[]; versions: VersionRow[] | undefined } | undefined> {
+	const versionsSql = `SELECT domain, MAX(version) AS version FROM ${ledger} GROUP BY domain`;
+	let read: { rows: CatalogRow[]; versions: VersionRow[] | undefined } | undefined;
+	try {
+		await database.transaction(
+			async (tx) => {
+				read = undefined;
+				const rows = await tx.all<CatalogRow>(CATALOG_SQL);
+				// Taken even where the ledger does not exist and its read failed, so the transaction ends with its commit,
+				// sent at once, rather than with a rollback after it.
+				const ledgerExists = catalogSets(rows).tables.has(physicalLedger);
+				const versions = await tx.all<VersionRow>(versionsSql).catch((error: unknown) => {
+					if (ledgerExists) throw error;
+					return undefined;
+				});
+				read = { rows, versions };
+			},
+			{
+				readOnly: true,
+				retryTransientFailures: true,
+				leading: [
+					{ sql: CATALOG_SQL, params: [] },
+					{ sql: versionsSql, params: [] },
+				],
+			},
+		);
+	} catch {
+		return undefined;
+	}
+	return read;
+}
+
+/**
+ * Reads `database`'s schema and the versions `ledger` records, in one read-only transaction that takes no lock. On
+ * PostgreSQL, an adapter that read them when it opened gives them once (`takeOpenedCatalog`), and the first open reads
+ * nothing (#6560). On SQLite and libSQL, which record no versions, reads the schema alone in one statement. Undefined
+ * when a read fails: the stores then check each object themselves.
+ */
+export async function readStorageSchemaCatalog(
+	database: SqliteDatabase,
+	ledger: string,
+): Promise<StorageSchemaCatalog | undefined> {
+	const dialect = dialectOf(database);
+	if (dialect.name === "sqlite") return readSqliteCatalog(database, ledger);
+	if (!dialect.versionedMigrations || dialect.name !== "postgres") return undefined;
+	const physicalLedger = dialect.identifier(ledger);
+	const opened = database.takeOpenedCatalog?.();
+	const read =
+		opened !== undefined && opened.ledger === physicalLedger
+			? {
+					rows: opened.rows as readonly CatalogRow[],
+					versions: opened.versions as readonly VersionRow[] | undefined,
+				}
+			: await readPostgresCatalog(database, ledger, physicalLedger);
+	if (read === undefined) return undefined;
+	const { tables, objects, columns } = catalogSets(read.rows);
 	const recorded = new Map<string, number>();
 	if (tables.has(physicalLedger)) {
-		const read = await versions;
-		if (read === undefined) return undefined;
-		for (const row of read) recorded.set(row.domain, Number(row.version ?? 0));
+		if (read.versions === undefined) return undefined;
+		for (const row of read.versions) recorded.set(row.domain, Number(row.version ?? 0));
 	}
 	return {
 		ledger,

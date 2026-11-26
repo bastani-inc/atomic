@@ -84,6 +84,88 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom send round trips on 
 		});
 	});
 
+	test("claimed messages marked delivered at once settle in one transaction: two round trips, not two each (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });
+			try {
+				for (const id of ["m-1", "m-2", "m-3", "m-4"])
+					assert.equal((await state.reserveAndEnqueue!(...send(id))).status, "inserted");
+				const claimed = await state.outbox.claim({
+					claimantId: "broker-b",
+					targetIdentity: "target-a",
+					staleAfterMs: OUTBOX_CLAIM_STALE_AFTER_MS,
+				});
+				assert.equal(claimed.status, "claimed");
+				if (claimed.status !== "claimed") return;
+				assert.equal(claimed.rows.length, 4);
+				const trips = countRoundTrips();
+				const delivered = await Promise.all(claimed.rows.map(({ claim }) => state.outbox.markDelivered(claim)));
+				const deliveredTrips = trips.take();
+				assert.deepEqual(
+					delivered.map((result) => (result.status === "delivered" ? result.row.messageId : result.status)),
+					["m-1", "m-2", "m-3", "m-4"],
+				);
+				// The update with the transaction's start, then the commit. Eight before: two for each message.
+				assert.equal(deliveredTrips, 2);
+				for (const id of ["m-1", "m-2", "m-3", "m-4"]) {
+					const read = await state.outbox.read(id);
+					assert.equal(read.status === "found" ? read.row.state : read.status, "delivered");
+				}
+			} finally {
+				await bus.close();
+				await state.close();
+			}
+		});
+	});
+
+	test("each of the deliveries settled together answers as if it ran alone, in the order made (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });
+			try {
+				for (const id of ["m-1", "m-2", "m-3"])
+					assert.equal((await state.reserveAndEnqueue!(...send(id))).status, "inserted");
+				const claimed = await state.outbox.claim({
+					claimantId: "broker-b",
+					targetIdentity: "target-a",
+					staleAfterMs: OUTBOX_CLAIM_STALE_AFTER_MS,
+				});
+				assert.equal(claimed.status, "claimed");
+				if (claimed.status !== "claimed") return;
+				const [first, second, third] = claimed.rows.map(({ claim }) => claim);
+				assert.ok(first !== undefined && second !== undefined && third !== undefined);
+				assert.equal((await state.outbox.markFailed(third, "refused")).status, "failed");
+				const results = await Promise.all([
+					state.outbox.markDelivered(first),
+					// Another claim of the same row, made after: the row is delivered by then.
+					state.outbox.markDelivered({ ...first, token: "another-claim" }),
+					// The same claim again: delivered once, settled the second time.
+					state.outbox.markDelivered(first),
+					state.outbox.markDelivered({ ...second, token: "an-earlier-claim" }),
+					state.outbox.markDelivered(second),
+					state.outbox.markDelivered(third),
+					state.outbox.markDelivered({ ...first, messageId: "never-queued" }),
+				]);
+				assert.deepEqual(
+					results.map((result) =>
+						"row" in result ? `${result.status} ${result.row.messageId} ${result.row.state}` : result.status,
+					),
+					[
+						"delivered m-1 delivered",
+						"settled m-1 delivered",
+						"settled m-1 delivered",
+						"stale",
+						"delivered m-2 delivered",
+						"settled m-3 failed",
+						"unknown",
+					],
+				);
+			} finally {
+				await bus.close();
+				await state.close();
+			}
+		});
+	});
+
 	test("a send costs three round trips: its reads with the start, its row, its reservation with the commit (#6560)", async () => {
 		await withPostgresDatabase(async ({ open }) => {
 			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });

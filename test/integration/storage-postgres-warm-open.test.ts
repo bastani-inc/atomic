@@ -14,6 +14,10 @@ import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-rele
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import { type PostgresScope, postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
+import { sleep } from "../helpers/runtime.js";
+
+/** Long enough for a local server to answer a read-only transaction's commit, which an open does not wait for. */
+const COMMIT_SETTLE_MS = 200;
 
 /**
  * Records what every connection sends, and counts the round trips: queries a connection sent while none of its own
@@ -120,6 +124,56 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL warm open (#6560)"
 		});
 	});
 
+	test("a warm open reads the schema with the server's version, in the open's own round trip (#6560)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			await (await openProcess(scope)).close();
+			// Each read-only transaction's commit is answered after the open returned: the opens are counted apart, once the
+			// commits before them were answered.
+			await sleep(COMMIT_SETTLE_MS);
+			const recorded = recordQueries();
+			const store = await SqlSessionStore.open(await scope.open());
+			await sleep(COMMIT_SETTLE_MS);
+			const session = recorded.take();
+			const broker = await openIntercomBrokerState(
+				{ prefix: "", openDatabase: () => scope.open() },
+				{ pollIntervalMs: 60_000 },
+			);
+			await sleep(COMMIT_SETTLE_MS);
+			const intercom = recorded.take();
+			try {
+				// The session store: the version check with the catalog and the ledger's versions, then its commit, sent with
+				// the start of the snapshot index's reads, then their commit, which the open does not wait for. Five before: the
+				// version check, the ledger's versions, the catalog and the snapshot index's two reads each took one.
+				assert.equal(session.trips, 3);
+				// The broker: the version check with the catalog and the versions, then its commit. Three before.
+				assert.equal(intercom.trips, 2);
+				assert.equal(session.texts.filter((text) => text.includes("information_schema.columns")).length, 1);
+				assert.equal(intercom.texts.filter((text) => text.includes("information_schema.columns")).length, 1);
+			} finally {
+				await broker.bus.close();
+				await broker.state.close();
+				await store.close();
+			}
+		});
+	});
+
+	test("the first open of a new database installs the snapshot index of the tables it creates after reading the catalog (#6560)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const database = await scope.open();
+			const store = await SqlSessionStore.open(database);
+			try {
+				// The catalog the open read had no entries table: the open created it, so its triggers are read, not taken
+				// from the catalog, and installed.
+				const triggers = await database.all<{ name: string }>(
+					"SELECT tgname AS name FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid WHERE c.relname = 'session_entries' AND NOT t.tgisinternal AND t.tgname LIKE 'session_entries_snapshot%'",
+				);
+				assert.ok(triggers.length > 0, "the entries table has no snapshot index triggers");
+			} finally {
+				await store.close();
+			}
+		});
+	});
+
 	test("a broker's start on a current schema, the ended-child queue of its new home included, takes no lock and runs no DDL (#6560)", async () => {
 		await withPostgresDatabase(async (scope) => {
 			await startEarlierBroker(scope);
@@ -208,8 +262,9 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL warm open (#6560)"
 				assert.equal((await bus.publish(hint)).status, "published");
 				const reconnected = recorded.take().texts;
 				assertNoLockOrDdl(reconnected, "the bus's reconnect");
-				// The bus set its table up when it opened: a new connection does not even check it again.
-				for (const text of reconnected) assert.doesNotMatch(text, /atomic_migrations/);
+				// The bus set its table up when it opened: a new connection does not even check it again. Only the database's
+				// open reads the ledger, with the catalog, for a store open that may follow.
+				for (const text of reconnected) assert.doesNotMatch(text, /atomic_migrations WHERE/);
 			} finally {
 				await bus.close();
 			}

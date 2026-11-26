@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Opening a database also reads the list of Atomic's tables and their recorded versions, in the same round trip as the server version. The first store opened on the database uses them instead of reading them again, so opening it takes one round trip less ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.1] - 2026-11-25
 
 ### Breaking Changes
