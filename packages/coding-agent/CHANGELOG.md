@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On macOS, the standalone `atomic` binary no longer reports a healthy local SQLite store as failed with "unable to open database file (SQLite code 14)" in `atomic storage status` after every Atomic process had closed it, for example right after `atomic storage import`. macOS's SQLite, which that binary uses, would not open a store read-only once its last connection had removed the `-wal` file.
+
 ## [0.10.11-alpha.2] - 2026-11-26
 
 Forks in a SQLite, libSQL or PostgreSQL session store now read their parent's history instead of copying it, and session and Intercom stores make fewer round trips.
