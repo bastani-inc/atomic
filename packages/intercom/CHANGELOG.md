@@ -7,6 +7,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 ### Changed
 
 - With multi-node routing, a broker now renews all the messages it is delivering in one statement every 10 seconds. It used to renew them one transaction at a time, waiting for each before the next. A broker delivering 20 messages to sessions that are still saving them now makes 1 round trip per renewal instead of 20. A message whose delivery another broker has taken over, or that was settled meanwhile, is still left alone, as before ([#6693](https://github.com/bastani-inc/atomic/pull/6693), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- With multi-node routing, a broker that checks for missed messages for all of its sessions now finds which sessions have any in one read of the shared database. Before, it ran a claim for each session. Only sessions with waiting messages get a claim. A broker hosting a session and its 20 subagents used to send 21 statements every 30 seconds, and on each reconnect, when nothing was waiting. It now sends 1. If the read fails, the broker claims for every session as before ([#6690](https://github.com/bastani-inc/atomic/pull/6690), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ## [0.10.11-alpha.3] - 2026-11-26
 

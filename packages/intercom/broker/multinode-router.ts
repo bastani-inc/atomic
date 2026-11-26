@@ -5833,10 +5833,28 @@ export class MultiNodeRouter {
 		return done;
 	}
 
+	/**
+	 * Scans every recipient this broker hosts. With several, one read first finds those with undelivered rows, and only
+	 * they are claimed for: a backup poll or resync across idle recipients costs one statement, not a claim each (#6560).
+	 * A row queued after the read is claimed when its send's wake-up hint arrives, or at the next scan, as one queued
+	 * right after a claim's own read is. When the read fails, every recipient is claimed for, as without it.
+	 */
 	private scanAll(): void {
-		for (const identity of new Set([...this.host.sessions.values()].map(deliveryTargetIdentity))) {
-			this.scanIdentity(identity);
+		const identities = [...new Set([...this.host.sessions.values()].map(deliveryTargetIdentity))];
+		const outbox = this.state.outbox;
+		if (identities.length < 2 || outbox.withUndelivered === undefined) {
+			for (const identity of identities) this.scanIdentity(identity);
+			return;
 		}
+		void outbox.withUndelivered(identities).then(
+			(found) => {
+				for (const identity of identities) if (found.has(identity)) this.scanIdentity(identity);
+			},
+			(error: unknown) => {
+				this.report(error);
+				for (const identity of identities) this.scanIdentity(identity);
+			},
+		);
 	}
 
 	private localSessionFor(identity: string): BrokerConnectedSession | undefined {

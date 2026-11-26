@@ -681,6 +681,30 @@ export function registerOutboxStoreConformance(
 		},
 	);
 
+	check(
+		"names, in one read, the recipients that have queued or claimed rows and no other (#6560)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			if (a.withUndelivered === undefined) return;
+			assert.deepEqual([...(await a.withUndelivered([]))], []);
+			await insert(a, frameFor("queued", "one"));
+			await insert(a, frameFor("claimed", "two"), { targetIdentity: OTHER_RECIPIENT });
+			await insert(a, frameFor("settled", "three"), { targetIdentity: "settled-recipient" });
+			const [claimed] = await claimAll(b, "broker-b", LIVE_MS, OTHER_RECIPIENT);
+			assert.equal(claimed?.row.messageId, "claimed");
+			const [settling] = await claimAll(b, "broker-b", LIVE_MS, "settled-recipient");
+			assert.equal(expectStatus(await b.markDelivered(settling!.claim), "delivered").row.state, "delivered");
+			const found = await b.withUndelivered!([
+				RECIPIENT,
+				OTHER_RECIPIENT,
+				"settled-recipient",
+				"nobody",
+				'it\'s "quoted"',
+			]);
+			assert.deepEqual([...found].sort(), [RECIPIENT, OTHER_RECIPIENT].sort());
+		},
+	);
+
 	check("writes one row per message id and reports duplicates and conflicts", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		const frame = frameFor("m1", "hello");

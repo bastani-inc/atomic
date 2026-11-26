@@ -35,11 +35,15 @@ import {
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { releasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import { RESTORING_RECIPIENT_HOLD_MS } from "../../packages/intercom/broker/restoring-recipients.js";
-import type { BrokerConnectedSession, SendClientMessage } from "../../packages/intercom/broker/send-handler.js";
+import {
+	type BrokerConnectedSession,
+	deliveryTargetIdentity,
+	type SendClientMessage,
+} from "../../packages/intercom/broker/send-handler.js";
 import { buildMessageSendSignature } from "../../packages/intercom/broker/send-signature.js";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
-import type { WakeUpBus } from "../../packages/intercom/broker/wake-up-bus.js";
+import type { WakeUpBus, WakeUpListener } from "../../packages/intercom/broker/wake-up-bus.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
 import { NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../../packages/intercom/recipient-purpose.js";
 import { RECIPIENT_RECEIPT_TIMEOUT_MS, SEND_RESPONSE_TIMEOUT_MS } from "../../packages/intercom/retry-policy.js";
@@ -1483,6 +1487,68 @@ test("a renewal renews every message a broker is delivering in one call, not one
 		for (const each of sent) assert.equal((await waitFor(() => outcomeOf(sender, each.id))).type, "delivered");
 	} finally {
 		vi.useRealTimers();
+	}
+});
+
+test("a resync scans a broker's idle recipients in one read of the outbox, and claims only for one whose message lost its wake-up (#6560)", async () => {
+	const listeners: WakeUpListener[] = [];
+	const [a] = await cluster(1, (_node, bus) => ({
+		publish: (hint) => bus.publish(hint),
+		subscribe: (brokerId, listener) => {
+			listeners.push(listener);
+			return bus.subscribe(brokerId, listener);
+		},
+		close: () => bus.close(),
+	}));
+	const outbox = a!.opened.state.outbox;
+	const claim = outbox.claim.bind(outbox);
+	const claimedFor: string[] = [];
+	let claiming = 0;
+	const claimSpy = vi.spyOn(outbox, "claim").mockImplementation(async (request) => {
+		claimedFor.push(request.targetIdentity);
+		claiming++;
+		try {
+			return await claim(request);
+		} finally {
+			claiming--;
+		}
+	});
+	const withUndelivered = outbox.withUndelivered!.bind(outbox);
+	const probes: (readonly string[])[] = [];
+	const probeSpy = vi.spyOn(outbox, "withUndelivered").mockImplementation((identities) => {
+		probes.push([...identities]);
+		return withUndelivered(identities);
+	});
+	try {
+		const recipients: BrokerConnectedSession[] = [];
+		for (let index = 0; index < 6; index++) recipients.push(await a!.connect(`idle-${index}`));
+		// Each registration's own first scan has ended.
+		await vi.waitFor(() => assert.ok(claimedFor.length >= recipients.length && claiming === 0), {
+			timeout: CROSS_NODE_WAIT_MS,
+		});
+		claimedFor.length = 0;
+		probes.length = 0;
+		const lost = recipients[3]!;
+		// Queued by another broker whose wake-up hint never arrived: only a scan finds it.
+		const id = randomUUID();
+		const queued = await outbox.enqueue({
+			targetIdentity: deliveryTargetIdentity(lost),
+			originBrokerId: "other-origin",
+			digest: id,
+			frame: { type: "message", from: lost.info, message: { id, timestamp: 1, content: { text: "lost hint" } } },
+		});
+		assert.equal(queued.status, "inserted");
+		for (const listener of listeners) listener({ kind: "resync", cause: "reconnected" });
+		await waitFor(() => messageFrames(lost, id)[0]);
+		assert.deepEqual(
+			probes.map((identities) => [...identities].sort()),
+			[recipients.map(deliveryTargetIdentity).sort()],
+			"one read for every recipient",
+		);
+		assert.deepEqual(claimedFor, [deliveryTargetIdentity(lost)], "a claim only where there is a row");
+	} finally {
+		claimSpy.mockRestore();
+		probeSpy.mockRestore();
 	}
 });
 

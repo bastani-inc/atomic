@@ -387,6 +387,12 @@ export interface OutboxStore {
 	 */
 	listUndelivered(targetIdentity: string, limit?: number): Promise<OutboxListResult>;
 	/**
+	 * Which of `targetIdentities` have `queued` or `claimed` rows, read in one statement, so a broker that scans every
+	 * recipient it hosts claims only for those (#6560). A row queued after the read is found by the claim its send's
+	 * wake-up hint starts, or by the next scan. Optional: without it, the broker claims for each recipient.
+	 */
+	withUndelivered?(targetIdentities: readonly string[]): Promise<ReadonlySet<string>>;
+	/**
 	 * #4896: where `messageId` stands in its recipient's undelivered rows, from 1 for the oldest, counted without
 	 * reading any row: `missing` when it is not one of them.
 	 */

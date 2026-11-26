@@ -1092,6 +1092,18 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			return { status: "listed", rows: (await undelivered(database, targetIdentity, limit)).map(toRow) };
 		},
 
+		async withUndelivered(targetIdentities) {
+			if (targetIdentities.length === 0) return new Set<string>();
+			// One lookup of `<outbox>_undelivered` per recipient, its ids as one JSON parameter, so the text is the same however
+			// many there are. No lock, and no row or frame read (#6560).
+			const found = await database.all<SqliteRow & { readonly target_identity: string }>(
+				`SELECT value AS target_identity FROM ${jsonValues("?")}
+				WHERE EXISTS (SELECT 1 FROM ${table} WHERE target_identity = value AND ${UNDELIVERED})`,
+				JSON.stringify(targetIdentities),
+			);
+			return new Set(found.map((row) => row.target_identity));
+		},
+
 		async undeliveredPosition(targetIdentity, messageId) {
 			if (targetIdentity.length === 0) return invalid("empty-target-identity");
 			if (messageId.length === 0) return invalid("empty-message-id");
