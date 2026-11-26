@@ -225,6 +225,38 @@ for (const backend of storageBackends) {
 		);
 
 		test(
+			"a fork on schema 3 shares the parent's rows: it stores none of them, and reads as its parent does",
+			() =>
+				withBackendScope(backend, async (scope) => {
+					const database = await scope.connect();
+					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+					await seedSource(store, "src", "shared");
+
+					const created = await fork(store, "src", header("child", "src"));
+
+					assert.equal(created.lastSeq, 13);
+					assert.deepEqual(created.remainingBlobs, []);
+					assert.equal(await ownEntryRows(database, scope.prefix, "child"), 0, "the child stores no entry");
+					const segments = await database.all(
+						`SELECT source_id, from_seq, to_seq, base_seq FROM ${sessionForkTables(scope.prefix).forkSegments} WHERE session_id = ?`,
+						"child",
+					);
+					assert.deepEqual(
+						segments.map((row) => [
+							row.source_id,
+							Number(row.from_seq),
+							Number(row.to_seq),
+							Number(row.base_seq),
+						]),
+						[["src", 1, 13, 0]],
+					);
+					assert.equal(await schemaVersion(database, scope.prefix), 3);
+					assert.deepEqual((await store.load("child")).entries, (await store.load("src")).entries);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
 			"a session of this release does not hold the switch back",
 			() =>
 				withBackendScope(backend, async (scope) => {
@@ -322,6 +354,9 @@ for (const backend of storageBackends) {
 							for await (const _ of store.list({})) break;
 						},
 						readRange: () => store.readRange("src", 1, 13),
+						readEntryRange: () => store.readEntryRange("src", { fromSeq: 1, toSeq: 13 }),
+						findEntrySeq: () => store.findEntrySeq("src", "e2"),
+						getBlob: () => store.getBlob("src", "0".repeat(64)),
 						readResume: () => store.readResume("src"),
 						findLatestCompaction: () => store.findLatestCompaction("src"),
 						putBlob: () => store.putBlob("src", bytesOf(50, 5)),
