@@ -309,8 +309,8 @@ for (const backend of storageBackends) {
 				const get = vi.spyOn(db, "get");
 				const all = vi.spyOn(db, "all");
 				assert.equal(await store.findLatestCompaction(id), undefined);
-				// One header, three pages, and the final revision check; no layout or chunk round trip.
-				assert.equal(get.mock.calls.length + all.mock.calls.length, 5);
+				// Three pages and the conditional UPDATE RETURNING; the header came from the leading read, with no layout or chunk round trip.
+				assert.equal(get.mock.calls.length + all.mock.calls.length, 4);
 			} finally {
 				await scope.close();
 			}

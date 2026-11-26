@@ -725,4 +725,36 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 			await database.close();
 		}
 	});
+
+	it("falls back to revision verification when conditional UPDATE RETURNING fails on a read-only connection (#6710)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(20);
+		await writeSession(path, entries);
+		await onDatabase(path, dropResumeIndex);
+		await onDatabase(path, async (db) => {
+			// Simulate a read-only connection whose readOnly flag is unset: UPDATE fails, SELECT succeeds.
+			const get = db.get.bind(db);
+			let refusedUpdates = 0;
+			db.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
+				if (/^\s*UPDATE\b/i.test(sql) && sql.includes("RETURNING")) {
+					refusedUpdates++;
+					throw new Error("attempt to write a readonly database");
+				}
+				return get<T>(sql, ...args);
+			};
+			const store = await SqlSessionStore.open(db);
+			try {
+				const cut = await store.readChildCatalogCut(header.id);
+				assert.equal(cut.lastSeq, entries.length);
+				assert.equal(refusedUpdates, 1, "conditional UPDATE RETURNING was attempted once and fell back cleanly");
+				// Cached in memory under current revision, so the next read reuses it without re-attempting UPDATE.
+				const tail = await store.readTail(header.id, entries.length - 2);
+				assert.deepEqual(tailContent(tail), sessionTailOf(header, entries, entries.length - 2));
+				assert.equal(refusedUpdates, 1);
+				assert.equal(await hasResumeIndex(db), false);
+			} finally {
+				await store.close();
+			}
+		});
+	});
 });
