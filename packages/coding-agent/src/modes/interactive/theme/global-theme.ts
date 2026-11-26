@@ -119,8 +119,10 @@ function startThemeWatcher(): void {
 	const watchDir = path.dirname(themeFile);
 	const watchedFileName = path.basename(themeFile);
 	const generation = themeWatcherGeneration;
+	let reloadSequence = 0;
 
 	const reload = async () => {
+		const sequence = ++reloadSequence;
 		let content: string;
 		try {
 			content = await fs.promises.readFile(themeFile, "utf-8");
@@ -128,7 +130,11 @@ function startThemeWatcher(): void {
 			// Keep the last successfully loaded theme active if the file is temporarily missing
 			return;
 		}
-		if (currentThemeName !== watchedThemeName || generation !== themeWatcherGeneration) {
+		if (
+			currentThemeName !== watchedThemeName ||
+			generation !== themeWatcherGeneration ||
+			sequence !== reloadSequence
+		) {
 			return;
 		}
 		try {
@@ -154,7 +160,7 @@ function startThemeWatcher(): void {
 			themeReloadTimer = undefined;
 
 			// Ignore stale timers after switching themes or stopping the watcher
-			if (currentThemeName !== watchedThemeName) {
+			if (currentThemeName !== watchedThemeName || generation !== themeWatcherGeneration) {
 				return;
 			}
 
@@ -168,6 +174,9 @@ function startThemeWatcher(): void {
 		}
 		themeWatchFilePath = themeFile;
 		themeWatchFileListener = (current, previous) => {
+			if (currentThemeName !== watchedThemeName || generation !== themeWatcherGeneration) {
+				return;
+			}
 			if (
 				current.mtimeMs !== previous.mtimeMs ||
 				current.ctimeMs !== previous.ctimeMs ||
@@ -183,7 +192,7 @@ function startThemeWatcher(): void {
 	void watchWithErrorHandlerAsync(
 		watchDir,
 		(_eventType, filename) => {
-			if (currentThemeName !== watchedThemeName) {
+			if (currentThemeName !== watchedThemeName || generation !== themeWatcherGeneration) {
 				return;
 			}
 			if (!filename) {

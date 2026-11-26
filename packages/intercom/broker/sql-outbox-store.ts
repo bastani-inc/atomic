@@ -54,6 +54,14 @@ const SEND_WAKE = "atomic.intercom_send_wake";
 const SEND_WAKE_VERSION = "atomic.intercom_send_wake_version";
 const SEND_WAKE_TARGET = "atomic.intercom_send_wake_target";
 const SEND_HINT = "atomic.intercom_send_hint";
+/**
+ * The settings a one-round-trip PostgreSQL delivery settlement records for the statements after its update: the
+ * unmatched claim ids to look up, the distinct remote origin brokers to wake with outcome hints, and whether the hint
+ * log took the settlement's lock without waiting (#6715).
+ */
+const SETTLE_UNMATCHED = "atomic.intercom_settle_unmatched";
+const SETTLE_WAKE = "atomic.intercom_settle_wake";
+const SETTLE_HINT = "atomic.intercom_settle_hint";
 /** The setting a PostgreSQL claim transaction records in that its recipient has undelivered rows, and its locks are held. */
 const CLAIM_GATE = "atomic.intercom_outbox_claim";
 /** The setting a PostgreSQL batched renewal records in when fewer rows renewed than it was given, so its follow-up read runs. */
@@ -360,48 +368,238 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				)} AND state = 'claimed' AND ${matchesClaim}`
 			: `state = 'claimed' AND ${matchesClaim}`;
 
+	type MarkDeliveredEntry = {
+		readonly claim: OutboxClaim;
+		readonly wakeOrigin: boolean;
+	};
+
 	/**
-	 * Settles each of `claims`, of distinct rows, as delivered, in one transaction: one UPDATE, sent with its start, that
-	 * locks their rows in sequence order on PostgreSQL, as a claim locks a recipient's rows, and changes those whose claim
-	 * is still current. Only when it changed fewer rows than it was given are the others read, to report why (#6560,
+	 * Settles each of `entries`, of distinct rows, as delivered, in one transaction: one UPDATE that locks their rows in
+	 * sequence order on PostgreSQL, as a claim locks a recipient's rows, and changes those whose claim is still current,
+	 * followed in the same transaction by the optional outcome hints for remote origin brokers (with NOWAIT on
+	 * PostgreSQL so a contended hint log never fails the settlement) and the lookup of any unmatched rows (#6560, #6715,
 	 * #6716).
 	 */
-	const markDeliveredTogether = (claims: readonly OutboxClaim[]): Promise<OutboxDeliveredResult[]> => {
-		const write: SqliteStatement = {
-			sql: `${claimsCte}
-				UPDATE ${table} SET state = 'delivered', ${settled}
-				WHERE ${lockedClaimsWhere}
-				RETURNING ${columns}`,
-			params: [claimTriples(claims), null],
-		};
-		return database.transaction(
-			async (executor) => {
-				const written = new Map(
-					(await executor.all<OutboxRecord>(write.sql, ...write.params)).map((record) => [record.message_id, record]),
+	const markDeliveredTogether = (entries: readonly MarkDeliveredEntry[]): Promise<OutboxDeliveredResult[]> => {
+		const wantsWake = entries.some(({ wakeOrigin }) => wakeOrigin);
+		if (dialect !== "postgres") {
+			const runSqlite = (wakes: boolean): Promise<OutboxDeliveredResult[]> => {
+				const claims = entries.map(({ claim }) => claim);
+				const write: SqliteStatement = {
+					sql: `${claimsCte}
+						UPDATE ${table} SET state = 'delivered', ${settled}
+						WHERE ${lockedClaimsWhere}
+						RETURNING ${columns}`,
+					params: [claimTriples(claims), null],
+				};
+				return database.transaction(
+					async (executor) => {
+						const written = new Map(
+							(await executor.all<OutboxRecord>(write.sql, ...write.params)).map((record) => [
+								record.message_id,
+								record,
+							]),
+						);
+						const others = claims.filter((claim) => !written.has(claim.messageId));
+						const found =
+							others.length === 0
+								? new Map<string, OutboxRecord>()
+								: new Map(
+										(
+											await executor.all<OutboxRecord>(
+												`SELECT ${columns} FROM ${table} WHERE ${messageIdIn(`SELECT value FROM ${jsonValues("?")}`)}`,
+												JSON.stringify(others.map((claim) => claim.messageId)),
+											)
+										).map((record) => [record.message_id, record]),
+									);
+						const wokenOrigins = new Map<string, number>();
+						if (wakes) {
+							for (const { claim, wakeOrigin } of entries) {
+								if (!wakeOrigin) continue;
+								const delivered = written.get(claim.messageId);
+								if (delivered === undefined || delivered.origin_broker_id === claim.claimantId) continue;
+								const sequence = Number(delivered.sequence);
+								const prev = wokenOrigins.get(delivered.origin_broker_id);
+								if (prev === undefined || sequence > prev) wokenOrigins.set(delivered.origin_broker_id, sequence);
+							}
+							if (wokenOrigins.size > 0) {
+								const notifications = database.notifications;
+								const hintRows = [...wokenOrigins.entries()];
+								const statements: SqliteStatement[] = [
+									{
+										sql: `INSERT INTO ${wakeups}(broker_id, reason, version, created_at)
+											SELECT json_extract(value, '$[0]'), 'outcome',
+												CAST(json_extract(value, '$[1]') AS ${types.int}), ${nowMs}
+											FROM json_each(?)`,
+										params: [JSON.stringify(hintRows)],
+									},
+									...(notifications === undefined
+										? []
+										: hintRows.flatMap(([brokerId]) => wakeUpNotices(notifications, wakeups, leases, brokerId))),
+								];
+								await (async () => {
+									for (const { sql, params } of statements) await executor.run(sql, ...params);
+								})().catch((cause: unknown) => {
+									throw new OutboxWakeFailedError(cause);
+								});
+							}
+						}
+						return entries.map(({ claim, wakeOrigin }): OutboxDeliveredResult => {
+							const delivered = written.get(claim.messageId);
+							if (delivered !== undefined) {
+								const woke =
+									wakes &&
+									wakeOrigin &&
+									wokenOrigins.has(delivered.origin_broker_id) &&
+									delivered.origin_broker_id !== claim.claimantId
+										? delivered.origin_broker_id
+										: undefined;
+								return { status: "delivered", row: toRow(delivered), ...(woke === undefined ? {} : { woke }) };
+							}
+							const record = found.get(claim.messageId);
+							if (record === undefined) return { status: "unknown" };
+							if (isSettled(record)) return { status: "settled", row: toRow(record) };
+							return { status: "stale" };
+						});
+					},
+					{ ...fenced, leading: [write] },
 				);
-				const others = claims.filter((claim) => !written.has(claim.messageId));
-				const found =
-					others.length === 0
-						? new Map<string, OutboxRecord>()
-						: new Map(
-								(
-									await executor.all<OutboxRecord>(
-										`SELECT ${columns} FROM ${table} WHERE ${messageIdIn(`SELECT value FROM ${jsonValues("?")}`)}`,
-										JSON.stringify(others.map((claim) => claim.messageId)),
-									)
-								).map((record) => [record.message_id, record]),
-							);
-				return claims.map((claim): OutboxDeliveredResult => {
-					const delivered = written.get(claim.messageId);
-					if (delivered !== undefined) return { status: "delivered", row: toRow(delivered) };
-					const record = found.get(claim.messageId);
-					if (record === undefined) return { status: "unknown" };
-					if (isSettled(record)) return { status: "settled", row: toRow(record) };
-					return { status: "stale" };
+			};
+			return wantsWake
+				? runSqlite(true).catch((error) => {
+						if (error instanceof OutboxWakeFailedError) return runSqlite(false);
+						throw error;
+					})
+				: runSqlite(false);
+		}
+		const run = (wakes: boolean): Promise<OutboxDeliveredResult[]> => {
+			// The claims go as one JSON parameter, so the statement's text is the same however many it settles: a server
+			// that keeps prepared statements, and pg_stat_statements, see one statement, not one per count (#6560). Each
+			// row is found by its key, then checked against its claim.
+			const write: SqliteStatement = {
+				sql: `WITH claims AS MATERIALIZED (
+						SELECT c ->> 0 AS message_id, c ->> 1 AS claim_token, c ->> 2 AS claimant_id,
+							(c ->> 3)::int AS wake
+						FROM jsonb_array_elements(?::jsonb) AS c
+					), updated AS (
+						UPDATE ${table} SET state = 'delivered', ${settled}
+						WHERE ${lockedClaimsWhere}
+						RETURNING ${columns}
+					), recorded AS MATERIALIZED (
+						SELECT
+							set_config('${SETTLE_UNMATCHED}', COALESCE((
+								SELECT jsonb_agg(c.message_id)::text FROM claims c
+								WHERE NOT EXISTS (SELECT 1 FROM updated u WHERE u.message_id = c.message_id)
+							), ''), true) AS unmatched,
+							set_config('${SETTLE_WAKE}', COALESCE((
+								SELECT jsonb_agg(jsonb_build_array(origin_broker_id, max_sequence))::text
+								FROM (
+									SELECT u.origin_broker_id, MAX(u.sequence) AS max_sequence
+									FROM updated u
+									JOIN claims c ON c.message_id = u.message_id
+									WHERE c.wake = 1 AND u.origin_broker_id <> c.claimant_id
+									GROUP BY u.origin_broker_id
+								) AS origins
+							), ''), true) AS wake_hints
+					)
+					SELECT updated.*
+					FROM recorded LEFT JOIN updated ON TRUE`,
+				params: [
+					JSON.stringify(
+						entries.map(({ claim, wakeOrigin }) => [
+							claim.messageId,
+							claim.token,
+							claim.claimantId,
+							wakes && wakeOrigin ? 1 : 0,
+						]),
+					),
+					null,
+				],
+			};
+			// Locks the hint log without waiting and writes one outcome hint per distinct remote origin broker; a hint
+			// log held locked by another session leaves the settlement intact without its hints (#6715).
+			const writeHints: SqliteStatement = {
+				sql: `DO $atomic_settle$ BEGIN
+					IF COALESCE(current_setting('${SETTLE_WAKE}', true), '') <> '' THEN
+						LOCK TABLE ${wakeups} IN ROW EXCLUSIVE MODE NOWAIT;
+						INSERT INTO ${wakeups}(broker_id, reason, version, created_at)
+							SELECT h ->> 0, 'outcome', (h ->> 1)::bigint, ${nowMs}
+							FROM jsonb_array_elements(current_setting('${SETTLE_WAKE}', true)::jsonb) AS h;
+						PERFORM set_config('${SETTLE_HINT}', 'written', true);
+					END IF;
+				EXCEPTION WHEN lock_not_available THEN NULL;
+				END $atomic_settle$`,
+				params: [],
+			};
+			const hintRead: SqliteStatement = {
+				sql: `SELECT COALESCE(current_setting('${SETTLE_HINT}', true), '') AS written`,
+				params: [],
+			};
+			const readOthers: SqliteStatement = {
+				sql: `SELECT ${columns} FROM ${table}
+					WHERE message_id = ANY(ARRAY(
+						SELECT jsonb_array_elements_text(
+							COALESCE(NULLIF(current_setting('${SETTLE_UNMATCHED}', true), ''), '[]')::jsonb
+						)
+					))`,
+				params: [],
+			};
+			const leading = wakes ? [write, writeHints, hintRead, readOthers] : [write, readOthers];
+			return database
+				.transaction(
+					async (executor) => {
+						const written = new Map(
+							(await executor.all<OutboxRecord>(write.sql, ...write.params))
+								.filter((record) => record.message_id !== null)
+								.map((record) => [record.message_id, record]),
+						);
+						let hintWritten = false;
+						if (wakes) {
+							await executor.run(writeHints.sql).catch((cause: unknown) => {
+								throw new OutboxWakeFailedError(cause);
+							});
+							const hintRow = await executor.get<SqliteRow & { written: string }>(hintRead.sql);
+							hintWritten = hintRow?.written === "written";
+						}
+						const found = new Map(
+							(await executor.all<OutboxRecord>(readOthers.sql)).map((record) => [record.message_id, record]),
+						);
+						return entries.map(({ claim, wakeOrigin }): OutboxDeliveredResult => {
+							const delivered = written.get(claim.messageId);
+							if (delivered !== undefined) {
+								const woke =
+									hintWritten && wakeOrigin && delivered.origin_broker_id !== claim.claimantId
+										? delivered.origin_broker_id
+										: undefined;
+								return { status: "delivered", row: toRow(delivered), ...(woke === undefined ? {} : { woke }) };
+							}
+							const record = found.get(claim.messageId);
+							if (record === undefined) return { status: "unknown" };
+							if (isSettled(record)) return { status: "settled", row: toRow(record) };
+							return { status: "stale" };
+						});
+					},
+					{ ...fenced, leading, leadingOnly: true },
+				)
+				.then((results) => {
+					const notifications = database.notifications;
+					if (notifications !== undefined) {
+						const brokers = new Set<string>();
+						for (const result of results)
+							if (result.status === "delivered" && result.woke !== undefined) brokers.add(result.woke);
+						for (const brokerId of brokers)
+							for (const { sql, params } of wakeUpNotices(notifications, wakeups, leases, brokerId))
+								void database.run(sql, ...params).catch(() => {});
+					}
+					return results;
 				});
-			},
-			{ ...fenced, leading: [write] },
-		);
+		};
+		return wantsWake
+			? run(true).catch((error) => {
+					if (error instanceof OutboxWakeFailedError) return run(false);
+					throw error;
+				})
+			: run(false);
 	};
 
 	/**
@@ -666,6 +864,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 	 */
 	const deliveries: {
 		readonly claim: OutboxClaim;
+		readonly wakeOrigin: boolean;
 		readonly resolve: (result: OutboxDeliveredResult) => void;
 		readonly reject: (error: unknown) => void;
 	}[] = [];
@@ -686,7 +885,9 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				rows.add(deliveries[count++]!.claim.messageId);
 			const batch = deliveries.splice(0, count);
 			try {
-				const results = await markDeliveredTogether(batch.map(({ claim }) => claim));
+				const results = await markDeliveredTogether(
+					batch.map(({ claim, wakeOrigin }) => ({ claim, wakeOrigin })),
+				);
 				batch.forEach(({ resolve }, index) => resolve(results[index]!));
 			} catch (error) {
 				for (const { reject } of batch) reject(error);
@@ -1023,9 +1224,11 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				// earlier release), as the wake-up bus's own hints are, so the host does not wait for its backup poll
 				// (#6560); the hint is there for its poll if a notification is lost.
 				const notifications = database.notifications;
-				if (result.status === "inserted" && result.woke !== undefined && notifications !== undefined)
-					for (const { sql, params } of wakeUpNotices(notifications, wakeups, leases, result.woke))
-						void database.run(sql, ...params).catch(() => {});
+				if (result.status === "inserted" && result.woke !== undefined && notifications !== undefined) {
+					const notices = wakeUpNotices(notifications, wakeups, leases, result.woke);
+					if (notifications.send !== undefined) void notifications.send(notices).catch(() => {});
+					else for (const { sql, params } of notices) void database.run(sql, ...params).catch(() => {});
+				}
 				return result;
 			});
 	};
@@ -1218,11 +1421,12 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			return changes;
 		},
 
-		markDelivered(claim) {
+		markDelivered(claim, options) {
 			if (claim.messageId.length === 0) return Promise.resolve(invalid("empty-message-id"));
 			if (claim.claimantId.length === 0) return Promise.resolve(invalid("empty-claimant-id"));
+			const wakeOrigin = options?.wakeOrigin === true;
 			return new Promise<OutboxDeliveredResult>((resolve, reject) => {
-				deliveries.push({ claim, resolve, reject });
+				deliveries.push({ claim, wakeOrigin, resolve, reject });
 				if (delivering) return;
 				delivering = true;
 				void deliverQueued();
@@ -1245,6 +1449,18 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		async listUndelivered(targetIdentity, limit) {
 			if (targetIdentity.length === 0) return invalid("empty-target-identity");
 			return { status: "listed", rows: (await undelivered(database, targetIdentity, limit)).map(toRow) };
+		},
+
+		async withUndelivered(targetIdentities) {
+			if (targetIdentities.length === 0) return new Set<string>();
+			// One lookup of `<outbox>_undelivered` per recipient, its ids as one JSON parameter, so the text is the same however
+			// many there are. No lock, and no row or frame read (#6560).
+			const found = await database.all<SqliteRow & { readonly target_identity: string }>(
+				`SELECT value AS target_identity FROM ${jsonValues("?")}
+				WHERE EXISTS (SELECT 1 FROM ${table} WHERE target_identity = value AND ${UNDELIVERED})`,
+				JSON.stringify(targetIdentities),
+			);
+			return new Set(found.map((row) => row.target_identity));
 		},
 
 		async undeliveredPosition(targetIdentity, messageId) {

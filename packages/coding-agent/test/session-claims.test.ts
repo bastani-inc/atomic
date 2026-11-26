@@ -144,8 +144,8 @@ describe("session claims (#5135)", () => {
 	test("a claim naming a start of its pid other than the live process's is taken over (#5135, #5141)", async () => {
 		const sessionId = newSessionId();
 		writeClaim(sessionId, { token: "reused", pid: await liveProcess(), host: hostname(), started: "000000000000" });
-		// Linux reads a start from /proc, Windows from the process's creation time (#5141).
-		if (process.platform === "linux" || process.platform === "win32") {
+		// Linux reads a start from /proc, Windows and macOS from the native module (#5141).
+		if (process.platform === "linux" || process.platform === "win32" || process.platform === "darwin") {
 			claim(sessionId);
 			assert.ok(claimedByThisProcess(sessionId));
 		} else {
@@ -154,7 +154,7 @@ describe("session claims (#5135)", () => {
 		}
 	});
 
-	test.skipIf(process.platform !== "linux" && process.platform !== "win32")(
+	test.skipIf(process.platform !== "linux" && process.platform !== "win32" && process.platform !== "darwin")(
 		"a claim naming when its live holder started is refused (#5135, #5141)",
 		async () => {
 			const sessionId = newSessionId();

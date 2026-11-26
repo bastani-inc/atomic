@@ -64,6 +64,8 @@ async function notifyingFile() {
 	};
 	/** While set, every read of the bus waits for it. */
 	let gate: Promise<void> | undefined;
+	/** Optional hook called around each transaction commit; returning a rejection fails the batch. */
+	let txHook: (() => Promise<void>) | undefined;
 	const open = async (): Promise<SqliteDatabase> => {
 		const database = await openNodeSqliteDatabase(path);
 		opened.push(database);
@@ -73,7 +75,12 @@ async function notifyingFile() {
 				if (key === "transaction")
 					return (body: Parameters<SqliteDatabase["transaction"]>[0], options?: SqliteTransactionOptions) => {
 						transactions.push(options);
-						return target.transaction(body, options);
+						const hook = txHook;
+						return target.transaction(async (tx) => {
+							const result = await body(tx);
+							if (hook !== undefined) await hook();
+							return result;
+						}, options);
 					};
 				if (key === "all")
 					return async (...args: Parameters<SqliteDatabase["all"]>) => {
@@ -91,6 +98,9 @@ async function notifyingFile() {
 		transactions,
 		opened,
 		open,
+		onTransaction(hook: (() => Promise<void>) | undefined) {
+			txHook = hook;
+		},
 		hold(): () => void {
 			let release!: () => void;
 			gate = new Promise((resolve) => {
@@ -386,6 +396,147 @@ test("a hint table an earlier release created gets the recipient column when thi
 			"the earlier release's hint names no recipient",
 		);
 		await bus.close();
+	} finally {
+		await file.close();
+	}
+});
+
+test("publishes arriving while a batch is in flight coalesce into the next transaction, notify each broker once, and resolve only after commit (#6715)", async () => {
+	const file = await notifyingFile();
+	try {
+		const bus = await file.openBus();
+		// Warm up the prune interval so only publish transactions run below.
+		assert.deepEqual(await bus.publish({ brokerId: "broker-warm", reason: "outbox", version: 0 }), {
+			status: "published",
+		});
+		file.transactions.length = 0;
+
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		let firstBatch = true;
+		file.onTransaction(async () => {
+			if (!firstBatch) return;
+			firstBatch = false;
+			entered.resolve();
+			await release.promise;
+		});
+
+		let firstResolved = false;
+		const first = bus
+			.publish({ brokerId: "broker-a", reason: "outbox", version: 1, targetIdentity: "alice" })
+			.then((r) => {
+				firstResolved = true;
+				return r;
+			});
+		await entered.promise;
+		// While the first transaction has not committed yet, its publish must not have resolved.
+		await Promise.resolve();
+		assert.equal(firstResolved, false, "a publish resolves only after its batch commits");
+
+		// Three publishes arrive while the first batch is in flight across two distinct brokers.
+		const wave = Promise.all([
+			bus.publish({ brokerId: "broker-b", reason: "outbox", version: 2, targetIdentity: "bob" }),
+			bus.publish({ brokerId: "broker-b", reason: "outcome", version: 3 }),
+			bus.publish({ brokerId: "broker-c", reason: "outbox", version: 4, targetIdentity: "carol" }),
+		]);
+		release.resolve();
+		assert.deepEqual(await first, { status: "published" });
+		assert.deepEqual(await wave, [{ status: "published" }, { status: "published" }, { status: "published" }]);
+		assert.equal(
+			file.transactions.length,
+			2,
+			"one transaction for the first publish, one for the whole waiting wave",
+		);
+
+		const observer = await openNodeSqliteDatabase(file.path);
+		try {
+			const hints = await observer.all<{
+				broker_id: string;
+				reason: string;
+				version: number;
+				target_identity: string | null;
+			}>(`SELECT broker_id, reason, version, target_identity FROM ${TABLE} WHERE version > 0 ORDER BY id`);
+			assert.deepEqual(hints, [
+				{ broker_id: "broker-a", reason: "outbox", version: 1, target_identity: "alice" },
+				{ broker_id: "broker-b", reason: "outbox", version: 2, target_identity: "bob" },
+				{ broker_id: "broker-b", reason: "outcome", version: 3, target_identity: null },
+				{ broker_id: "broker-c", reason: "outbox", version: 4, target_identity: "carol" },
+			]);
+			const notices = await observer.all<{ channel: string; payload: string }>(
+				"SELECT channel, payload FROM notices WHERE payload <> 'broker-warm' ORDER BY id",
+			);
+			assert.deepEqual(notices, [
+				{ channel: brokerWakeUpChannel(TABLE, "broker-a"), payload: "broker-a" },
+				{ channel: TABLE, payload: "broker-a" },
+				{ channel: brokerWakeUpChannel(TABLE, "broker-b"), payload: "broker-b" },
+				{ channel: TABLE, payload: "broker-b" },
+				{ channel: brokerWakeUpChannel(TABLE, "broker-c"), payload: "broker-c" },
+				{ channel: TABLE, payload: "broker-c" },
+			]);
+		} finally {
+			await observer.close();
+		}
+		await bus.close();
+	} finally {
+		await file.close();
+	}
+});
+
+test("when a publish batch transaction fails, every publish in it reports unavailable and nothing commits (#6715)", async () => {
+	const file = await notifyingFile();
+	try {
+		const bus = await file.openBus();
+		file.onTransaction(async () => {
+			throw new Error("simulated commit failure");
+		});
+		const results = await Promise.all([
+			bus.publish({ brokerId: "broker-a", reason: "outbox", version: 10 }),
+			bus.publish({ brokerId: "broker-b", reason: "outcome", version: 11 }),
+			bus.publish({ brokerId: "broker-a", reason: "outbox", version: 12 }),
+		]);
+		assert.deepEqual(results, [{ status: "unavailable" }, { status: "unavailable" }, { status: "unavailable" }]);
+		const observer = await openNodeSqliteDatabase(file.path);
+		try {
+			assert.deepEqual(
+				await observer.all(`SELECT id FROM ${TABLE}`),
+				[],
+				"no hints from the failed batch committed",
+			);
+		} finally {
+			await observer.close();
+		}
+		// Subsequent publishes still work after the bus reopens on its next call (no stranded queue).
+		file.onTransaction(undefined);
+		assert.deepEqual(await bus.publish({ brokerId: "broker-a", reason: "outbox", version: 13 }), {
+			status: "published",
+		});
+		await bus.close();
+	} finally {
+		await file.close();
+	}
+});
+
+test("closing the bus while a publish batch is in flight resolves queued publishes as unavailable without stranding (#6715)", async () => {
+	const file = await notifyingFile();
+	try {
+		const bus = await file.openBus();
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		file.onTransaction(async () => {
+			entered.resolve();
+			await release.promise;
+		});
+		const inFlight = bus.publish({ brokerId: "broker-a", reason: "outbox", version: 1 });
+		await entered.promise;
+		const queued = Promise.all([
+			bus.publish({ brokerId: "broker-b", reason: "outbox", version: 2 }),
+			bus.publish({ brokerId: "broker-c", reason: "outcome", version: 3 }),
+		]);
+		const closing = bus.close();
+		release.resolve();
+		assert.deepEqual(await inFlight, { status: "published" });
+		assert.deepEqual(await queued, [{ status: "unavailable" }, { status: "unavailable" }]);
+		await closing;
 	} finally {
 		await file.close();
 	}
