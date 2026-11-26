@@ -58,7 +58,6 @@ async function withStore(backend: StorageBackend, body: (fixture: Fixture) => Pr
 		const database = await scope.connect();
 		const store = await SqlSessionStore.open(crashing(database, crash), { prefix: scope.prefix });
 		try {
-			assert.notEqual((await store.enableSharedHistoryForks({ live: async () => false })).status, "refused");
 			await body({ store, prefix: scope.prefix, database, crash });
 		} finally {
 			await store.close();

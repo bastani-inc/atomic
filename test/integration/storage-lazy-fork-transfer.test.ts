@@ -15,6 +15,7 @@ import {
 	type SessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { importStorage } from "../../packages/coding-agent/src/core/storage-transfer.js";
+import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { type StorageBackend, type StorageBackendScope, storageBackends } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -163,11 +164,13 @@ async function withScope<T>(backend: StorageBackend, body: (scope: StorageBacken
 	}
 }
 
-/** Opens a store under `prefix`, with shared-history forks turned on when `shared`. */
+/**
+ * Opens a store under `prefix`. A store shares fork history from its first open; `shared: false` keeps it copying, as a
+ * session an older Atomic has open there does.
+ */
 async function openStore(scope: StorageBackendScope, prefix: string, shared: boolean): Promise<SqlSessionStore> {
-	const store = await SqlSessionStore.open(await scope.connect(), { prefix });
-	if (shared) assert.notEqual((await store.enableSharedHistoryForks({ live: async () => false })).status, "refused");
-	return store;
+	if (!shared) await holdOlderBuildMarker(await scope.connect(), prefix);
+	return SqlSessionStore.open(await scope.connect(), { prefix });
 }
 
 /** How many fork segments session `id` of the store under `prefix` has: none for a session that holds its history. */
@@ -197,6 +200,8 @@ for (const backend of storageBackends) {
 							const chain = await buildChain(store, "depth3", true, shared);
 							if (shared)
 								assert.ok((await segmentCount(scope, prefix, chain.ids.c)) > 0, "C shares A's and B's rows");
+							// A store that copies has nothing to detach.
+							else assert.deepEqual(await store.detachForks(chain.ids.a), { detached: [], reparented: [] });
 							const first = join(directory, "first");
 							await exportSessions(store, join(first, "sessions"));
 							const exported = exportedLines(first, chain.ids.c);
