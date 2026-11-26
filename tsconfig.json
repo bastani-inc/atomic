@@ -56,6 +56,7 @@
         "test/fixtures/intercom-pre-5218",
         "test/fixtures/intercom-socket-lock-main",
         "test/fixtures/intercom-main-pre-5999",
-        "test/fixtures/intercom-wake-up-bus-0.10.11-alpha.2"
+        "test/fixtures/intercom-wake-up-bus-0.10.11-alpha.2",
+        "test/fixtures/jsonl-session-store-pre-6718"
     ]
 }

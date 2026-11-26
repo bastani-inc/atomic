@@ -99,7 +99,7 @@ export interface WaitForEarlierOptions {
 	 */
 	readonly blockerProgressAt?: (earlier: SendOrderTicket) => number | undefined;
 	/** Silence window (ms) to wait past a progressing blocker's latest store answer; 0 disables extension. */
-	readonly progressSilenceMs?: number;
+	readonly progressSilenceMs?: number | ((earlier: SendOrderTicket) => number);
 	/** Hard monotonic deadline (`performance.now()`) past which progress extensions stop. */
 	readonly maxLocalWaitUntil?: number;
 }
@@ -307,7 +307,10 @@ export class SendOrderGate {
 	}
 
 	private extensionRemainingMs(earlier: InternalTicket, options: WaitForEarlierOptions): number {
-		const silenceMs = options.progressSilenceMs ?? 0;
+		const silenceMs =
+			typeof options.progressSilenceMs === "function"
+				? options.progressSilenceMs(earlier)
+				: (options.progressSilenceMs ?? 0);
 		if (silenceMs <= 0 || options.blockerProgressAt === undefined) return 0;
 		const progressAt = options.blockerProgressAt(earlier);
 		if (progressAt === undefined) return 0;

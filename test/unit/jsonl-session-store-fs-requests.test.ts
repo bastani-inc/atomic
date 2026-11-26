@@ -14,13 +14,15 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
 }));
 
 /**
- * File-system requests the JSONL session store makes for its common operations (#6560). Each request is one trip to
- * libuv's thread pool and one system call: the session lock's own (take the lock directory, read its time, remove it)
- * and the store's. Before #6560 one append took 18 of them on macOS and 11 on Linux, ten appends made together 180 on
- * macOS, a tail read of an indexed session 22 and reopening a directory of two sessions 31. Since #6686 each group of
- * appends also syncs its lines once before it is acknowledged; on macOS the native plain fsync runs outside libuv.
+ * File-system requests the JSONL session store makes for its common operations (#6560, #6718). Each request is one
+ * trip to libuv's thread pool and one system call. Under #6718's advisory group lock, an uncontended operation that
+ * opens and closes the mixed-version `.session.lock` group makes 12 libuv lock requests (checking `.dead` and
+ * `.session.lock`, creating/backdating/statting `.staging`, opening/writing/closing `.group`, and on release statting
+ * `.session.lock`, removing it, and opening/closing `.group` with `O_TRUNC`; the kernel advisory locks and atomic
+ * rename run natively outside libuv). Since #6686 each group of appends also syncs its lines once before it is
+ * acknowledged; on macOS the native plain fsync runs outside libuv.
  */
-const LOCK_REQUESTS = 3;
+const LOCK_REQUESTS = 12;
 /** An unlocked read checks that `.session.lock` is absent and re-stats the file path after reading (#6719). */
 const UNLOCKED_CHECK_REQUESTS = 2;
 /** Windows closes a session file's handle once its appends are written, so each append opens and closes it again. */

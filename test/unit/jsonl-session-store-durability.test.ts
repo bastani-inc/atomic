@@ -179,6 +179,8 @@ describe("JSONL session store durability (#6686)", () => {
 		};
 	}
 
+	const nonLockEntries = () => readdirSync(directory).filter((name) => !name.startsWith(".session.lock."));
+
 	it("syncs a created session's file before linking it, and its directory after", async () => {
 		const store = await JsonlSessionStore.open(directory, { exactDirectory: true });
 		try {
@@ -188,7 +190,7 @@ describe("JSONL session store durability (#6686)", () => {
 				directoryAfter(() => path),
 			);
 			assertPlacedDurably(synced, path);
-			assert.deepEqual(readdirSync(directory), [basename(path)]);
+			assert.deepEqual(nonLockEntries(), [basename(path)]);
 		} finally {
 			await store.close();
 		}
@@ -226,7 +228,7 @@ describe("JSONL session store durability (#6686)", () => {
 			);
 			assert.equal(result?.lastSeq, 2);
 			assertPlacedDurably(synced, path);
-			assert.deepEqual(readdirSync(directory).sort(), [basename(path), `${basename(path)}.idx`].sort());
+			assert.deepEqual(nonLockEntries().sort(), [basename(path), `${basename(path)}.idx`].sort());
 		} finally {
 			await store.close();
 		}

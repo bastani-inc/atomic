@@ -19,6 +19,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 - On PostgreSQL, the post-commit wake-up notifications sent after a message to an offline recipient no longer enter the database's serial call queue as two separate calls. Before, each notification waited behind and blocked unrelated concurrent transactions on the sender's database handle and checked out two pool connections, raising 95th-percentile send-to-delivery latency under 200 concurrent brokers. Both notifications now go out together through `StorageNotifications.send` in one coalesced round trip without blocking other transactions ([#6712](https://github.com/bastani-inc/atomic/issues/6712)).
 - Fixed an Intercom reply or ask-failure outcome whose durable inbox save failed transiently being silently dropped on subsequent redeliveries over the same connection. Unsaved outcomes are now forgotten when saving fails so a redelivery retries saving and confirms receipt once saved, while already-saved outcomes continue to deduplicate and re-confirm ([#6712](https://github.com/bastani-inc/atomic/issues/6712)).
+- With multi-node routing, plain local sends queued behind an active local `requirePendingReply` reply on a responsive shared store no longer overtake that reply when a single contended database write takes longer than 300 ms; hung databases and hung remote replies still unblock plain local sends within 300 ms ([#6712](https://github.com/bastani-inc/atomic/issues/6712)).
 
 ## [0.10.11-alpha.3] - 2026-11-26
 

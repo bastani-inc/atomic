@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as nodeFs from "node:fs";
 import { constants, createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import {
@@ -31,6 +32,7 @@ import {
 	JsonlSessionStore,
 	JsonlStoragePoisonedError,
 	SessionFormatVersionError,
+	type SessionLockFs,
 } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { upgradeLegacySessionEntry } from "../../packages/coding-agent/src/core/storage/session/legacy-format.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
@@ -394,36 +396,39 @@ for (const code of ["ENOTDIR", "EACCES"] as const) {
 }
 
 it("cancels a listing waiting for a held lock without another acquisition attempt", async () => {
-	await withStore(async (store, directory) => {
-		const lockPath = join(directory, ".session.lock");
-		const release = await lockfile.lock(directory, { lockfilePath: lockPath });
-		const controller = new AbortController();
-		const originalLock = lockfile.lock;
-		let attempts = 0;
-		const locking = vi.spyOn(lockfile, "lock").mockImplementation(async (...args) => {
-			attempts++;
-			assert.equal(attempts, 1, "cancelled listing must not try acquiring again");
-			try {
-				return await originalLock(...args);
-			} catch (error) {
-				assert.equal((error as NodeJS.ErrnoException).code, "ELOCKED");
+	const directory = await mkdtemp(join(tmpdir(), "jsonl-session-cancel-lock-"));
+	const lockPath = join(directory, ".session.lock");
+	const release = await lockfile.lock(directory, { lockfilePath: lockPath });
+	const controller = new AbortController();
+	let attempts = 0;
+	const lockFs: SessionLockFs = {
+		mkdir: nodeFs.mkdir,
+		rmdir: nodeFs.rmdir,
+		utimes: nodeFs.utimes,
+		realpath: nodeFs.realpath,
+		stat: ((path: nodeFs.PathLike, ...rest: unknown[]) => {
+			if (String(path) === lockPath) {
+				attempts++;
+				assert.equal(attempts, 1, "cancelled listing must not try acquiring again");
 				controller.abort();
-				throw error;
 			}
+			return (nodeFs.stat as (...args: unknown[]) => void)(path, ...rest);
+		}) as unknown as SessionLockFs["stat"],
+	};
+	const store = await JsonlSessionStore.open(directory, { scanExisting: false, lockFs });
+	try {
+		await assert.rejects(collect(store.list({ signal: controller.signal })), (error: Error) => {
+			assert.ok(error instanceof DOMException);
+			assert.equal(error.name, "AbortError");
+			return true;
 		});
-		try {
-			await assert.rejects(collect(store.list({ signal: controller.signal })), (error: Error) => {
-				assert.ok(error instanceof DOMException);
-				assert.equal(error.name, "AbortError");
-				return true;
-			});
-			assert.equal(attempts, 1);
-			assert.ok((await fs.stat(lockPath)).isDirectory(), "the owner's lock must remain held");
-		} finally {
-			locking.mockRestore();
-			await release();
-		}
-	});
+		assert.equal(attempts, 1);
+		assert.ok((await fs.stat(lockPath)).isDirectory(), "the owner's lock must remain held");
+	} finally {
+		await store.close();
+		await release();
+		await rm(directory, { recursive: true, force: true });
+	}
 });
 
 it("continues listing when another handle deletes a pending session between yields", async () => {
@@ -1027,7 +1032,7 @@ it("keeps the old file on failed replace without creating a compaction backup", 
 		);
 		assert.equal(await readFile(path, "utf8"), before);
 		await store.replace(header.id, { ...header, internal: true }, [], { expectSeq: 1 });
-		const [project] = await readdir(directory);
+		const [project] = (await readdir(directory)).filter((name) => name.startsWith("--"));
 		assert.ok(project);
 		const backups = (await readdir(join(directory, project))).filter((name) => name.endsWith(".bak"));
 		assert.deepEqual(backups, []);
@@ -1112,7 +1117,7 @@ it("backs up the committed transcript before appending a compaction boundary", a
 			],
 			{ expectSeq: 1 },
 		);
-		const [project] = await readdir(directory);
+		const [project] = (await readdir(directory)).filter((name) => name.startsWith("--"));
 		assert.ok(project);
 		const backups = (await readdir(join(directory, project))).filter((name) => name.endsWith(".compact.bak"));
 		assert.equal(backups.length, 1);
