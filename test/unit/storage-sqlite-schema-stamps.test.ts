@@ -117,6 +117,7 @@ async function onFile<T>(
 test("a broker store whose table was dropped after it was stamped is set up again, not believed current (#6560)", async () => {
 	const path = databasePath();
 	await withBroker(current, path, (state) => reserve(state, "first"));
+	await withBroker(current, path);
 	// Dropped behind Atomic's back: the stamp still names the store's revision, and the schema version moved on.
 	await onFile(path, (database) => database.exec("DROP TABLE intercom_restoring_reservation_counters"));
 	const begins = countBegins();
@@ -131,6 +132,7 @@ test("a build that records no stamps opens a stamped store, and the next open ch
 	const path = databasePath();
 	const earlier = (await import(earlierBroker)).openIntercomBrokerState as OpenBroker;
 	await withBroker(current, path, (state) => reserve(state, "first"));
+	await withBroker(current, path);
 	const begins = countBegins();
 	await withBroker(current, path);
 	assert.equal(begins.take(), 0, "a current schema is believed");
@@ -171,6 +173,7 @@ function stampsOf(path: string) {
 test("a broker store whose dropped column an open adds again is stamped again in that open (#6560)", async () => {
 	const path = databasePath();
 	await withBroker(current, path);
+	await withBroker(current, path);
 	const stamped = await stampsOf(path);
 	assert.equal(stamped.behind, 0);
 	await onFile(path, (database) => database.exec("ALTER TABLE intercom_known_sessions DROP COLUMN lost_at"));
@@ -203,6 +206,7 @@ test("a store an earlier build set up, which has no stamps, is stamped at this b
 test("a broker reopened after another prefix changed the schema checks its stores in one write transaction (#6560)", async () => {
 	const path = databasePath();
 	await withBroker(current, path);
+	await withBroker(current, path);
 	// Another team's tables on the same database: the schema version every stamp records moves on.
 	await onFile(path, (database) => database.exec("CREATE TABLE other_team_items (value)"));
 	const sent = recordKinds();
@@ -215,4 +219,22 @@ test("a broker reopened after another prefix changed the schema checks its store
 		sent.take().filter((kind) => kind === "begin"),
 		[],
 	);
+});
+
+test("a broker's first open of a new database stamps nothing, so it costs what it did before stamps (#6560)", async () => {
+	const path = databasePath();
+	const sent = recordKinds();
+	await withBroker(current, path);
+	const first = sent.take();
+	// Its setups' transactions only: no stamps statement, no end-of-open transaction, no read of a missing stamps table.
+	assert.equal(first.filter((kind) => kind === "begin").length, 30);
+	assert.equal(
+		await onFile(path, (database) =>
+			database.get("SELECT name FROM sqlite_master WHERE name = 'atomic_schema_stamps'"),
+		),
+		undefined,
+	);
+	await withBroker(current, path);
+	assert.equal(sent.take().filter((kind) => kind === "begin").length, 1, "the second open stamps every store in one");
+	assert.equal((await stampsOf(path)).behind, 0);
 });

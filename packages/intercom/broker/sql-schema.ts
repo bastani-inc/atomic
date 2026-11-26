@@ -34,9 +34,11 @@ export async function withBrokerSchemaCatalog<T>(
  * records `revision` for `store` already (#5218): on PostgreSQL a current schema runs no DDL, so a role with only DML
  * privileges opens the store. Raise `revision` whenever `setup` creates or alters anything new. Inside an open that read
  * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560). On SQLite and
- * libSQL the store's stamp records it; where the stamp is behind, a setup whose objects the catalog holds is checked
- * again, and a counter it seeds seeded, in the one transaction the open's end stamps every such store in, so the next
- * open of a current schema takes no write lock and answers every store from its stamp.
+ * libSQL the store's stamp records it. A setup that runs stamps nothing: later setups of the same open would leave its
+ * stamp behind, and stamping costs a new database's first open statements and a transaction. The next open finds the
+ * store in the catalog instead; there a setup whose objects the catalog holds is checked again, and a counter it seeds
+ * seeded, in the one transaction the open's end stamps every such store in, so later opens of a current schema take no
+ * write lock and answer every store from its stamp.
  */
 export async function ensureBrokerSchema(
 	database: SqliteDatabase,
@@ -48,17 +50,24 @@ export async function ensureBrokerSchema(
 	const schema = { ledger: storageMigrationTable(prefix), domain: `intercom-${store}`, revision };
 	if (await catalogApi.storageSchemaCurrent?.(database, schema)) return;
 	const found = await foundInCatalog(database, setup);
-	if (found !== undefined) {
+	if (found?.present === true) {
 		const options = { verify: found.verify, deferred: found.seeds };
 		if (catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup, options) === true) return;
 		if (!found.seeds) return;
 	}
-	await database.transaction((tx) =>
-		ensureStorageSchema(tx, dialectOf(database), schema, async () => {
+	const dialect = dialectOf(database);
+	await database.transaction(async (tx) => {
+		if (!dialect.versionedMigrations) {
 			await setup(tx);
-		}),
-	);
-	catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup);
+			return;
+		}
+		await ensureStorageSchema(tx, dialect, schema, async () => {
+			await setup(tx);
+		});
+	});
+	// Stamped where the end of the open takes a transaction for other stores anyway, as after a repair or an upgrade.
+	if (!dialect.versionedMigrations)
+		catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup, { verify: found?.verify, alongside: true });
 }
 
 /**
@@ -81,19 +90,26 @@ export async function stampBrokerSchemaAtOpenEnd(
 }
 
 /**
- * Whether the catalog an open in progress read holds everything `setup` creates on a SQLite or libSQL database: where
- * it only runs `CREATE TABLE` and `CREATE INDEX` statements with `IF NOT EXISTS`, and seeds rows with `INSERT … ON
- * CONFLICT … DO NOTHING`, and the catalog found each object, as a table or an index as the statement names it. Then
- * `verify` checks the same against another catalog, and `seeds` tells whether it seeds rows, which still have to be
- * written. SQLite records no versions, so such a setup ran at every open in a write transaction of its own, which took
- * the database's write lock and, on a server, three round trips (#6560); statements on an existing object of that kind
- * do nothing. The setup runs against a handle that only collects the SQL it would run; any other call, or a statement
- * of another form, and it runs as before. Undefined outside such an open, and on PostgreSQL, whose ledger decides.
+ * What `setup` creates on a SQLite or libSQL database, where it only runs `CREATE TABLE` and `CREATE INDEX` statements
+ * with `IF NOT EXISTS` and seeds rows with `INSERT … ON CONFLICT … DO NOTHING`: `present`, whether the catalog an open
+ * in progress read found each object, as a table or an index as the statement names it; `verify`, the same check
+ * against another catalog; and `seeds`, whether it seeds rows, which still have to be written. SQLite records no
+ * versions, so such a setup ran at every open in a write transaction of its own, which took the database's write lock
+ * and, on a server, three round trips (#6560); statements on an existing object of that kind do nothing. The setup runs
+ * against a handle that only collects the SQL it would run. Undefined for any other call or statement, outside such an
+ * open, and on PostgreSQL, whose ledger decides.
  */
 async function foundInCatalog(
 	database: SqliteDatabase,
 	setup: (tx: SqliteExecutor) => Promise<unknown>,
-): Promise<{ readonly verify: (catalog: storage.StorageSchemaCatalog) => boolean; readonly seeds: boolean } | undefined> {
+): Promise<
+	| {
+			readonly verify: (catalog: storage.StorageSchemaCatalog) => boolean;
+			readonly seeds: boolean;
+			readonly present: boolean;
+	  }
+	| undefined
+> {
 	if (dialectOf(database).versionedMigrations) return undefined;
 	const catalog = await openCatalogOf(database);
 	if (catalog?.sqliteObjectType === undefined) return undefined;
@@ -132,7 +148,7 @@ async function foundInCatalog(
 	}
 	const verify = (found: storage.StorageSchemaCatalog) =>
 		created.every(({ name, type }) => found.sqliteObjectType?.(name) === type);
-	return verify(catalog) ? { verify, seeds } : undefined;
+	return { verify, seeds, present: verify(catalog) };
 }
 
 /** `INSERT INTO … ON CONFLICT … DO NOTHING`: rows a setup seeds once, which writing again leaves as they are. */

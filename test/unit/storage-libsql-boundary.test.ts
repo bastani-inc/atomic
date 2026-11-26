@@ -7,6 +7,7 @@ import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 
 afterEach(() => {
 	vi.doUnmock("@libsql/client");
+	vi.doUnmock("@libsql/client/sqlite3");
 	vi.unstubAllEnvs();
 	vi.restoreAllMocks();
 });
@@ -77,19 +78,26 @@ test("libSQL does not take an auth token from the environment or replace an open
 	vi.stubEnv("TURSO_AUTH_TOKEN", "environment-token-must-not-be-used");
 	vi.stubEnv("LIBSQL_AUTH_TOKEN", "environment-token-must-not-be-used");
 	const failure = new StorageError("fixture opening failure");
-	const createClient = vi.fn((config: Config) => {
-		// A local file also gets the busy timeout that lets several processes share it.
-		assert.deepEqual(config, { url: "file:fixture.sqlite", authToken: undefined, intMode: "bigint", timeout: 5000 });
+	const opened = vi.fn((path: string, options: object) => {
+		// A local file's connections take no token, and get the busy timeout that lets several processes share it.
+		assert.deepEqual([path, options], ["fixture.sqlite", { timeout: 5000 }]);
 		throw failure;
 	});
-	vi.doMock("@libsql/client", () => ({ createClient }));
+	vi.doMock("@libsql/client/sqlite3", async (importOriginal) => ({
+		...(await importOriginal<typeof import("@libsql/client/sqlite3")>()),
+		ConnectionPool: class {
+			constructor(path: string, options: object) {
+				opened(path, options);
+			}
+		},
+	}));
 	await assert.rejects(openLibsqlDatabase({ url: "file:fixture.sqlite" }), (error: Error) => {
 		assert.ok(error instanceof StorageUnavailableError);
 		assert.equal(error.location, "file:fixture.sqlite");
 		assert.equal(error.cause, failure);
 		return true;
 	});
-	assert.equal(createClient.mock.calls.length, 1);
+	assert.equal(opened.mock.calls.length, 1);
 });
 
 test("libSQL redacts auth tokens in malformed URLs without changing caller input", async () => {
@@ -110,9 +118,13 @@ test("libSQL redacts auth tokens in malformed URLs without changing caller input
 });
 
 test("libSQL redacts question marks inside credential values (#3857)", async () => {
-	vi.doMock("@libsql/client", () => ({
-		createClient: () => {
-			throw new Error("fixture?secret");
+	// A `file:` database opens its connections through the client's pool, which fails here with the secret in its message.
+	vi.doMock("@libsql/client/sqlite3", async (importOriginal) => ({
+		...(await importOriginal<typeof import("@libsql/client/sqlite3")>()),
+		ConnectionPool: class {
+			constructor() {
+				throw new Error("fixture?secret");
+			}
 		},
 	}));
 	await assert.rejects(openLibsqlDatabase({ url: "file:/missing?authToken=fixture?secret" }), (error: Error) => {
@@ -148,7 +160,7 @@ test("libSQL forwards a lone-surrogate token without an untyped encoding failure
 		throw failure;
 	});
 	vi.doMock("@libsql/client", () => ({ createClient }));
-	await assert.rejects(openLibsqlDatabase({ url: "file:fixture.sqlite", authToken }), (error: Error) => {
+	await assert.rejects(openLibsqlDatabase({ url: "https://example.invalid/database", authToken }), (error: Error) => {
 		assert.ok(error instanceof StorageUnavailableError);
 		assert.equal(error.cause, failure);
 		return true;

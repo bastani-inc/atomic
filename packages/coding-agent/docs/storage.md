@@ -124,7 +124,7 @@ When the runtime role lacks a required privilege or the schema is behind the cur
 
 Once the schema is current, opening the session store or an Intercom broker's shared state reads the schema catalog and the migration ledger once, in two statements sent together, and runs no schema transaction and takes no lock. Many processes can therefore start at once against one database without waiting for each other or for other writers. Only an open that finds something missing or behind takes the schema lock and checks again under it.
 
-On SQLite and libSQL, Atomic records which version of each Intercom store's tables it set up in a table named `<prefix>atomic_schema_stamps`, together with SQLite's count of schema changes (`PRAGMA schema_version`). Reopening a broker whose tables are current then takes no write lock. Any later change to the schema, by any program or by an older Atomic that doesn't keep the record, makes the next open check those tables again. Older Atomic versions ignore the table.
+On SQLite and libSQL, Atomic records which version of each Intercom store's tables it set up in a table named `<prefix>atomic_schema_stamps`, together with SQLite's count of schema changes (`PRAGMA schema_version`). Atomic writes that record during the second open of a database, in the write transaction that open already takes; from the third open on, opening a broker whose tables are current takes no write lock. Any later change to the schema, by any program or by an older Atomic that doesn't keep the record, makes the next open check those tables again. Older Atomic versions ignore the table.
 
 `atomic storage migrate` sets `fillfactor = 80` on the sessions table and the Intercom lease table, which every append and lease renewal updates, so those updates usually stay on their page without touching an index. The setting applies to pages written after it. To apply it to existing pages too, run `VACUUM FULL` on those two tables during a quiet period, or use `pg_repack` to do it without a long lock. Both steps are optional. A runtime role that cannot alter these tables leaves the setting to the owner's `atomic storage migrate` and keeps working.
 
@@ -1060,7 +1060,7 @@ Multiple stores can share one caller-owned `database` without closing it.
 
 Non-SQL backends can implement `openSessionStore` directly (each session has one writer):
 
-- **Required for `history://`.** Implement `readEntryRange(id, query)` honoring `fromSeq`, `toSeq`, `maxChars`, `largeEntryBytes`, `skipTypes`, and `signal`. Return freshly owned UTF-8 JSON buffers and `{ entries: [{ seq, entry }], throughSeq, lastSeq }` without falling back to whole-session `load()`.
+- **Required for `history://`.** Implement `readEntryRange(id, query)` honoring `fromSeq`, `toSeq`, `seqs`, `maxChars`, `largeEntryBytes`, `skipTypes`, and `signal`. When `query.seqs` lists sequence numbers, return only the entries at those numbers. A `history://` search reads the entries it found, and the lines around them, this way, in one call. A store that returns the whole range instead still gives the same results, but reads more. Return freshly owned UTF-8 JSON buffers and `{ entries: [{ seq, entry }], throughSeq, lastSeq }` without falling back to whole-session `load()`.
 - **Optional fast-path methods.** Implementing these avoids loading entire sessions into memory (stores implementing only `load()` still work with higher memory use):
 
 | Method | Purpose |

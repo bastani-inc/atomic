@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { connect, createServer, type Server, type Socket } from "node:net";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/index.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -20,9 +20,16 @@ const ONE_WAY_MS = 40;
 /** The reads made at once. */
 const READS = 8;
 
-/** A TCP proxy to `target` that delays every chunk `delayMs` each way, keeping each direction's order. */
-async function latencyProxy(target: URL, delayMs: number): Promise<{ url: string; close(): Promise<void> }> {
+/**
+ * A TCP proxy to `target` that delays every chunk `delayMs` each way, keeping each direction's order, and counts the
+ * connections it accepts.
+ */
+async function latencyProxy(
+	target: URL,
+	delayMs: number,
+): Promise<{ url: string; readonly accepted: number; close(): Promise<void> }> {
 	const sockets = new Set<Socket>();
+	let accepted = 0;
 	const forward = (from: Socket, to: Socket) => {
 		from.on("data", (chunk) => setTimeout(() => to.destroyed || to.write(chunk), delayMs));
 		from.on("end", () => setTimeout(() => to.end(), delayMs));
@@ -30,6 +37,7 @@ async function latencyProxy(target: URL, delayMs: number): Promise<{ url: string
 		from.on("close", () => setTimeout(() => to.destroy(), delayMs));
 	};
 	const server: Server = createServer((client) => {
+		accepted++;
 		const upstream = connect(Number(target.port || 80), target.hostname);
 		for (const socket of [client, upstream]) {
 			sockets.add(socket);
@@ -42,6 +50,9 @@ async function latencyProxy(target: URL, delayMs: number): Promise<{ url: string
 	const { port } = server.address() as { port: number };
 	return {
 		url: `http://127.0.0.1:${port}`,
+		get accepted() {
+			return accepted;
+		},
 		close: async () => {
 			for (const socket of sockets) socket.destroy();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -140,6 +151,70 @@ withSqld(
 		} finally {
 			await database.exec(`DROP TABLE IF EXISTS ${table}`).catch(() => {});
 			await database.close();
+		}
+	},
+);
+
+withSqld(
+	"lone reads made at once share one request and one connection, each reading its own statement's snapshot (#6560)",
+	{ timeout: 120_000 },
+	async () => {
+		const proxy = await latencyProxy(new URL(url as string), ONE_WAY_MS);
+		const table = `merged_${randomBytes(4).toString("hex")}`;
+		const database = await openLibsqlDatabase({ url: proxy.url });
+		const real = globalThis.fetch;
+		let requests = 0;
+		vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+			requests++;
+			return real(input, init);
+		});
+		try {
+			await database.exec(`CREATE TABLE ${table}(n INTEGER NOT NULL)`);
+			await database.run(`INSERT INTO ${table} VALUES (1)`);
+			await database.all(`SELECT n FROM ${table}`);
+			const connections = proxy.accepted;
+			requests = 0;
+			const read = await Promise.all(
+				Array.from({ length: READS }, (_, index) =>
+					database.get<{ n: number; index: number }>(`SELECT n, ? AS "index" FROM ${table}`, index),
+				),
+			);
+			assert.deepEqual(
+				read.map((row) => [Number(row?.n), Number(row?.index)]),
+				Array.from({ length: READS }, (_, index) => [1, index]),
+			);
+			// Before, every read past the first opened a stream of its own: 8 requests, and on a client whose connections
+			// were all busy, 7 new connections. Now the first takes the reused stream and the others go in one request.
+			assert.ok(requests <= 2, `${requests} requests`);
+			assert.ok(proxy.accepted - connections <= 1, `${proxy.accepted - connections} new connections`);
+			// Each read is a statement of its own: reads made after a write was answered all see it.
+			for (let round = 2; round <= 4; round++) {
+				await database.run(`INSERT INTO ${table} VALUES (?)`, round);
+				const counts = await Promise.all(
+					Array.from({ length: READS }, () => database.get<{ c: number }>(`SELECT count(*) AS c FROM ${table}`)),
+				);
+				assert.deepEqual(
+					counts.map((row) => Number(row?.c)),
+					Array.from({ length: READS }, () => round),
+				);
+			}
+			// A read that fails fails alone: the others in its request are answered.
+			const mixed = await Promise.allSettled([
+				database.all(`SELECT n FROM ${table}`),
+				database.all(`SELECT n FROM ${table}_missing`),
+				database.all(`SELECT n FROM ${table} ORDER BY n`),
+			]);
+			assert.equal(mixed[0]?.status, "fulfilled");
+			assert.equal(mixed[1]?.status, "rejected");
+			assert.deepEqual(
+				mixed[2]?.status === "fulfilled" ? mixed[2].value.map((row) => Number(row.n)) : undefined,
+				[1, 2, 3, 4],
+			);
+		} finally {
+			vi.unstubAllGlobals();
+			await database.exec(`DROP TABLE IF EXISTS ${table}`).catch(() => {});
+			await database.close();
+			await proxy.close();
 		}
 	},
 );

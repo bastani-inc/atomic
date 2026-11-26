@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- On a libSQL server, single `SELECT` statements made at the same time no longer each open a stream, and possibly a new connection, of their own. The first uses the connection the adapter keeps open, and the others go together in one request on one other stream. Each statement still reads the database as of its own run, and one that fails does not fail the others. With 8 reads at once, the server got 2 requests instead of 8, and the first such burst opened no new connection instead of 5 ([#6607](https://github.com/bastani-inc/atomic/pull/6607), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- Writes to a local `file:` database are much faster. Each connection now keeps up to 256 prepared statements and reuses them, as Atomic's own SQLite stores do, instead of preparing every statement again each time it runs. SQLite compiles every trigger on a table into each prepared write to it, and Atomic's sessions table has several, so most of a write's time went to preparing it. Saving a new 500-entry session takes about 14 ms instead of 69 ms. Saving one entry takes about 0.2 ms instead of 0.4 ms, and saving 20 entries at once takes about 0.75 ms instead of 3 ms. Each extra trigger on the sessions table used to add about 65 ms to a 500-entry save and now adds under 1 ms. Loading a 500-entry session takes about 2.25 ms instead of 2.5 ms. A statement that was kept picks up later schema changes, including ones made by other connections, and databases on a libSQL server are unchanged ([#6613](https://github.com/bastani-inc/atomic/pull/6613), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.1] - 2026-11-25
 
 ### Breaking Changes

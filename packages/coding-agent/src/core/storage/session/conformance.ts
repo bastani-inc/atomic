@@ -1478,6 +1478,59 @@ export function registerSessionStoreConformance(
 				await assert.rejects(store.readEntryRange!("missing", { fromSeq: 1, toSeq: 1 }), notFound("missing"));
 			});
 
+			check("reads the entries at the sequences asked for in one range read (#6560)", async (store, reload) => {
+				const custom: SessionEntry = {
+					type: "custom",
+					id: "c2",
+					parentId: "e1",
+					timestamp: createdAt,
+					customType: "note",
+					data: { value: "skipped" },
+				};
+				const entries = [
+					message("e1", "first"),
+					custom,
+					message("e3", "third"),
+					message("e4", "fourth"),
+					message("e5", "fifth"),
+					message("e6", "sixth"),
+				];
+				await store.create(header(), entries);
+				store = await reload(store);
+				const picked = await store.readEntryRange!("session", {
+					fromSeq: 2,
+					toSeq: 8,
+					seqs: [2, 3, 5, 8],
+					skipTypes: ["custom"],
+				});
+				assert.equal(picked.lastSeq, 6);
+				assert.equal(picked.throughSeq, 6);
+				assert.deepEqual(
+					picked.entries.map((item) => [item.seq, item.entry]),
+					[
+						[3, entries[2]],
+						[5, entries[4]],
+					],
+				);
+				const kept = await store.readEntryRange!("session", { fromSeq: 1, toSeq: 4, seqs: [2, 4] });
+				assert.deepEqual(
+					kept.entries.map((item) => [item.seq, item.entry]),
+					[
+						[2, custom],
+						[4, entries[3]],
+					],
+				);
+				const capped = await store.readEntryRange!("session", { fromSeq: 3, toSeq: 6, seqs: [3, 6], maxChars: 1 });
+				assert.equal(capped.throughSeq, 3);
+				assert.deepEqual(
+					capped.entries.map((item) => item.seq),
+					[3],
+				);
+				const none = await store.readEntryRange!("session", { fromSeq: 3, toSeq: 6, seqs: [] });
+				assert.deepEqual(none.entries, []);
+				assert.equal(none.throughSeq, 6);
+			});
+
 			check("reads a session's tail with the state entries before it (#5249)", async (store, reload) => {
 				const entries = compactedSession();
 				await appendEach(store, entries);

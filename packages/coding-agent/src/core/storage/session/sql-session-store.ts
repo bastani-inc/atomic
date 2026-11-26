@@ -3060,12 +3060,20 @@ $grant$`);
 		const skippedSet = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
 		const skippedPrefixes = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
 		const largeBytes = query.largeEntryBytes ?? 0x7fffffff;
+		// The sequences asked for, as one JSON parameter, so the statement's text is the same however many there are. Read
+		// ahead of need, they end the page before an entry past `maxChars`, the first excepted: a large entry the reader
+		// may never reach is not read for it.
+		const selected =
+			query.seqs === undefined
+				? ""
+				: ` AND seq IN (SELECT CAST(value AS ${this.dialect.types.int}) FROM ${this.dialect.jsonValues("?")})`;
+		const fitted = query.seqs === undefined ? "" : " AND (p.before_chars = 0 OR p.before_chars + p.bytes <= ?)";
+		const maxChars =
+			query.maxChars !== undefined && query.maxChars <= 0 ? 0 : (query.maxChars ?? Number.MAX_SAFE_INTEGER);
 		// The session's watermark and the page up to it, in one statement and so one snapshot: a read each, in turn, cost
 		// a search a second round trip for every page it reads (#6560). The session's row, joined to a page that may be
 		// empty, is a row with no entry; no row at all is a session that does not exist. The page reads the session's
 		// view; a page that should hold an entry and holds none was held back by the read's own check of the schema.
-		const maxChars =
-			query.maxChars !== undefined && query.maxChars <= 0 ? 0 : (query.maxChars ?? Number.MAX_SAFE_INTEGER);
 		const read = await this.outsideSessionRead(
 			sessionId,
 			(tables) => {
@@ -3088,10 +3096,10 @@ $grant$`);
 				SELECT seq, chunks, src_id, src_seq, ${this.entryByteLength("entry_json")} AS raw_bytes,
 					${this.entryByteLength("entry_json")} + chunks * ? AS bytes
 				FROM ${view.name}
-				WHERE seq <= (SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?)
+				WHERE seq <= (SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?)${selected}
 			),
 			paged AS (
-				SELECT seq, chunks, src_id, src_seq, raw_bytes, count(*) OVER () AS remaining,
+				SELECT seq, chunks, src_id, src_seq, raw_bytes, bytes, count(*) OVER () AS remaining,
 					sum(bytes) OVER (ORDER BY seq) - bytes AS before_chars
 				FROM sized
 			),
@@ -3102,7 +3110,7 @@ $grant$`);
 						THEN ${this.dialect.jsonText("e.entry_json", "type")} END AS entry_type
 				FROM paged p
 				JOIN ${this.tables.entries} e ON e.session_id = p.src_id AND e.seq = p.src_seq
-				WHERE p.before_chars < ?
+				WHERE p.before_chars < ?${fitted}
 			)
 			SELECT s.last_seq, page.seq, page.entry_json, page.entry_head, page.chunks, page.remaining, page.entry_type${this.outsideForkedColumn("s.id")}
 			FROM ${this.tables.sessions} s LEFT JOIN page ON 1 = 1
@@ -3112,9 +3120,11 @@ $grant$`);
 					...view.params,
 					SESSION_ENTRY_CHUNK_BYTES,
 					sessionId,
+					...(query.seqs === undefined ? [] : [JSON.stringify(query.seqs)]),
 					largeBytes,
 					largeBytes,
 					maxChars,
+					...(query.seqs === undefined ? [] : [maxChars]),
 					sessionId,
 				);
 			},
