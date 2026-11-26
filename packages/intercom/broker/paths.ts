@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import { type BigIntStats, lstatSync, mkdirSync, readFileSync, renameSync, type Stats, writeFileSync } from "fs";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "os";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
 
 /**
  * The shared storage selection (`ATOMIC_STORAGE` JSON) the launching Atomic process hands its broker: its
@@ -251,6 +251,10 @@ function inDirectorySocketPath(agentDir: string): string {
   return join(getIntercomDirPath(agentDir), "broker.sock");
 }
 
+function absoluteSocketPath(socketPath: string): string {
+  return isAbsolute(socketPath) ? socketPath : resolve(socketPath);
+}
+
 function fitsUnixSocketPath(socketPath: string, platform: NodeJS.Platform): boolean {
   return Buffer.byteLength(socketPath) <= maxUnixSocketPathBytes(platform);
 }
@@ -264,7 +268,7 @@ export function directBrokerSocketPath(
     return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `${WINDOWS_PIPE_PREFIX}${agentDirDigest(agentDir)}`;
   }
   const socketPath = inDirectorySocketPath(agentDir);
-  return fitsUnixSocketPath(socketPath, platform) ? socketPath : undefined;
+  return fitsUnixSocketPath(absoluteSocketPath(socketPath), platform) ? socketPath : undefined;
 }
 
 /**
@@ -327,7 +331,7 @@ export function chooseBrokerSocketPath(
   const direct = directBrokerSocketPath(platform, agentDir);
   if (direct !== undefined) return direct;
 
-  const socketPath = inDirectorySocketPath(agentDir);
+  const socketPath = absoluteSocketPath(inDirectorySocketPath(agentDir));
   const shortPath = join(privateSocketDirectory(), `${agentDirDigest(agentDir)}.sock`);
   if (!fitsUnixSocketPath(shortPath, platform)) {
     throw new Error(
@@ -344,7 +348,7 @@ export async function chooseBrokerSocketPathAsync(
   const direct = directBrokerSocketPath(platform, agentDir);
   if (direct !== undefined) return direct;
 
-  const socketPath = inDirectorySocketPath(agentDir);
+  const socketPath = absoluteSocketPath(inDirectorySocketPath(agentDir));
   const shortPath = join(await privateSocketDirectoryAsync(), `${agentDirDigest(agentDir)}.sock`);
   if (!fitsUnixSocketPath(shortPath, platform)) {
     throw new Error(

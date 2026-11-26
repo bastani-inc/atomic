@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, sep, win32 } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
-import { removePathSync } from "../helpers/runtime.js";
+import { makeTempDirectory, removePathSync } from "../helpers/runtime.js";
 
 const agentDir = mkdtempSync(join(tmpdir(), "ic-dir-100%TEMP%-"));
 const previousAgentDirEnv = {
@@ -49,7 +49,7 @@ afterAll(async () => {
 
 describe("Windows direct broker launch spec (no wscript or VBS launcher)", () => {
 	test("starts Node source and bundled brokers directly on Windows without wscript or cmd", () => {
-		const extDir = mkdtempSync(join(tmpdir(), "ic-ext-"));
+		const extDir = makeTempDirectory("ic-ext-");
 		try {
 			const jitiCli = createBundledJitiCli(extDir);
 			const nodePath = String.raw`C:\Program Files\Atomic 100%\node.exe`;
