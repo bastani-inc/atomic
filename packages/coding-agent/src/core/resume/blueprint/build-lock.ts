@@ -241,9 +241,12 @@ function recordStepProcessDurably(
 	clearRetryTimer(writer, pid);
 	if (running) {
 		writer.started = true;
-		const step: LockedProcess = { pid, at: Date.now() };
+		// Written with its start where that reads at once: a host killed after a write that named the step without it
+		// left a step the next resume cannot prove, and so waits for until BUILD_LOCK_WAIT_MS.
+		const start = processStartToken.processStartTokenNow(pid);
+		const step: LockedProcess = typeof start === "string" ? { pid, at: Date.now(), start } : { pid, at: Date.now() };
 		steps.set(pid, step);
-		readStepStartDurably(writer, pid, step, 1, stillRunning);
+		if (start === undefined) readStepStartDurably(writer, pid, step, 1, stillRunning);
 	} else steps.delete(pid);
 	writeBuildLocksDurably(writer);
 }

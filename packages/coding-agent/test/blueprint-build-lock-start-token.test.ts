@@ -31,6 +31,7 @@ vi.mock("../src/core/process-start-token.ts", async (importOriginal) => {
 	return {
 		...actual,
 		processStartToken: vi.fn(actual.processStartToken),
+		processStartTokenNow: vi.fn(actual.processStartTokenNow),
 		processStartTokenAsync: vi.fn(actual.processStartTokenAsync),
 	};
 });
@@ -95,24 +96,66 @@ function watcher(): (pid: number, running: boolean, stillRunning?: () => boolean
 }
 
 describe("blueprint build lock step starts (#4748)", () => {
-	test("records a step at once without reading its start synchronously, then adds the start once read", async () => {
+	test("records a step with its start, where that reads at once, before control returns to what spawned it", async () => {
 		const step = sleeper();
 		const expected = await startTokens.processStartTokenAsync(step.pid!);
-		vi.mocked(startTokens.processStartTokenAsync).mockClear();
 		await withBuildLocks(dir, [root()], async () => {
 			watcher()(step.pid!, true);
 			const [recorded] = stepsOf();
 			assert.equal(recorded?.pid, step.pid, "the step is on disk before control returns to what spawned it");
 			assert.equal(typeof recorded?.at, "number");
-			assert.equal(vi.mocked(startTokens.processStartToken).mock.calls.length, 0);
-			if (expected !== undefined) {
-				await until(() => stepsOf()[0]?.start !== undefined);
-				assert.equal(stepsOf()[0]?.start, expected);
-			}
+			assert.equal(recorded?.start, expected, "in the same write");
 			watcher()(step.pid!, false);
 		});
 		assert.equal(existsSync(buildLockPath(dir, root())), false);
 	});
+
+	// A host killed right after the lock first named a step leaves that lock behind. The next resume must be able to prove
+	// that step and stop it, not wait out BUILD_LOCK_WAIT_MS (5 minutes) for a step it cannot identify.
+	test.skipIf(process.platform === "win32")(
+		"the lock that first names a step holds its start, so a resume after the host was killed then stops it at once",
+		async () => {
+			const step = sleeper();
+			const stepExited = new Promise<void>((resolve) => step.once("exit", () => resolve()));
+			// Where this platform reads no start at all (macOS has no /proc), a stand-in reads one for the live step.
+			const actualSync = vi.mocked(startTokens.processStartTokenNow).getMockImplementation()!;
+			const actualAsync = vi.mocked(startTokens.processStartTokenAsync).getMockImplementation()!;
+			const standIn = (pid: number) =>
+				actualSync(pid) ??
+				(pid === step.pid && step.exitCode === null && step.signalCode === null ? "dddddddddddd" : undefined);
+			vi.mocked(startTokens.processStartTokenNow).mockImplementation(standIn);
+			vi.mocked(startTokens.processStartTokenAsync).mockImplementation(
+				async (pid, options) => (await actualAsync(pid, options)) ?? standIn(pid) ?? undefined,
+			);
+			const abandon = new AbortController();
+			try {
+				let left = "";
+				await withBuildLocks(dir, [root()], async () => {
+					watcher()(step.pid!, true);
+					// What a SIGKILL of this process right after that write leaves on disk.
+					left = readFileSync(buildLockPath(dir, root()), "utf8");
+					watcher()(step.pid!, false);
+				});
+				writeLock({ ...JSON.parse(left), pid: MISSING_HOLDER_PID, start: "aaaaaaaaaaaa" });
+				const settling = settleOtherBuilds(dir, [root()], { signal: abandon.signal });
+				settling.catch(() => {});
+				const outcome = await Promise.race([
+					settling,
+					new Promise<"still waiting">((resolve) => setTimeout(() => resolve("still waiting"), 15_000)),
+				]);
+				assert.notEqual(outcome, "still waiting", "the resume waits out the full build-lock wait for the step");
+				if (outcome === "still waiting") return;
+				await outcome.release();
+				assert.deepEqual(outcome.warnings, []);
+				await stepExited;
+			} finally {
+				abandon.abort();
+				vi.mocked(startTokens.processStartTokenNow).mockImplementation(actualSync);
+				vi.mocked(startTokens.processStartTokenAsync).mockImplementation(actualAsync);
+			}
+		},
+		30_000,
+	);
 
 	test("a step that ended before its start was read is not written back", async () => {
 		const step = sleeper();
