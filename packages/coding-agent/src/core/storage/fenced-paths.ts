@@ -76,15 +76,16 @@ const FENCED_PATHS = {
 	/**
 	 * Intercom's outbox rows and sent-message reservations (`openSqlOutboxStore`, `openSqlSentMessageAuthority`), which
 	 * left the outbox's one lock domain (#6560). A claim reads its recipient's undelivered rows `FOR UPDATE` in sequence
-	 * order, then claims them; a claim's renewal, saving report, release and settlement are each one `UPDATE` guarded by
-	 * message id, claimant, token and state; expiry and `releaseClaimsOf` lock their rows in sequence order in a
-	 * subquery; a reservation, an acceptance and a forget are each one statement on the message's row, guarded by its
-	 * digest. Each decides on the rows it locks, never on an earlier read. They exclude the database-wide transactions an
-	 * older broker runs on these tables (`excludesSerial`). A send itself is a serial transaction of its recipient's domain.
+	 * order, then claims them; a single claim's renewal, saving report, release and settlement are each one `UPDATE`
+	 * guarded by message id, claimant, token and state; batched `markDelivered`, `renewClaims`, `releaseClaims`, expiry
+	 * and `releaseClaimsOf` lock their rows in sequence order in a subquery; a reservation, an acceptance and a forget
+	 * are each one statement on the message's row, guarded by its digest. Each decides on the rows it locks, never on an
+	 * earlier read. They exclude the database-wide transactions an older broker runs on these tables (`excludesSerial`).
+	 * A send itself is a serial transaction of its recipient's domain.
 	 */
 	"intercom-outbox-row": {
 		fences: [
-			"outbox rows, FOR UPDATE in sequence order (claim, expiry, releaseClaimsOf), or one row by its own guarded UPDATE",
+			"outbox rows, FOR UPDATE in sequence order (claim, markDelivered batch, renewClaims, releaseClaims, expiry, releaseClaimsOf), or one row by its own guarded UPDATE",
 			"one sent-message row, by its own guarded INSERT, UPDATE or DELETE",
 		],
 		conformance:
