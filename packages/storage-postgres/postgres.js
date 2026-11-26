@@ -1750,6 +1750,13 @@ export async function openPostgresDatabase(options) {
 			 * not make failed, which aborted the transaction. Calls go out in the order they are made, so this decides at once.
 			 */
 			const endLead = () => lead.splice(0).find((read) => "failure" in read)?.failure;
+			/** Whether the connection went back to the pool, which a read-only transaction's commit does as it is sent. */
+			let released = false;
+			const release = () => {
+				if (released) return;
+				released = true;
+				client.release(lost.has(client));
+			};
 			return {
 				execute: (sql, params) => {
 					const next = lead[0];
@@ -1773,14 +1780,23 @@ export async function openPostgresDatabase(options) {
 					// failure, not a bare rollback, says whether the transaction may run again.
 					const failure = endLead();
 					if (failure !== undefined) throw failure;
-					const result = await submit("", () => watched(client, () => client.query("COMMIT"), clientTimeoutMs));
+					const result = await submit("", () => {
+						const answer = watched(client, () => client.query("COMMIT"), clientTimeoutMs);
+						// A read-only transaction's connection goes back to the pool once its `COMMIT` is written, not once it is
+						// answered: the connection is pipelined, so the next transaction's `BEGIN` goes out behind the `COMMIT` and the
+						// server runs it after. A read that follows at once then reuses this connection instead of opening another,
+						// whose handshakes cost several round trips (#6560). A commit that fails ended nothing this transaction wrote.
+						if (begin.readOnly === true) release();
+						return answer;
+					});
 					// A transaction a failed statement aborted ends in a rollback when committed, without an error.
 					if (result.command === "ROLLBACK")
 						throw new StorageError("The transaction was rolled back because a statement in it failed");
 				},
 				async rollback() {
-					// The server rolled back the transaction of a connection that broke.
-					if (lost.has(client)) return;
+					// The server rolled back the transaction of a connection that broke. One that went back to the pool is another
+					// call's now, and its `COMMIT`, answered or not, ended the read-only transaction.
+					if (released || lost.has(client)) return;
 					try {
 						await watched(client, () => client.query("ROLLBACK"), clientTimeoutMs);
 					} catch (error) {
@@ -1790,7 +1806,7 @@ export async function openPostgresDatabase(options) {
 					}
 				},
 				// The facade closes a transaction once, after its commit or rollback.
-				close: () => client.release(lost.has(client)),
+				close: release,
 			};
 		},
 	});

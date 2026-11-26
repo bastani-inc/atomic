@@ -12,6 +12,7 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
+import { schemaCatalogOf } from "../storage/schema-catalog.js";
 import { statementBatch } from "../storage/statement-batches.js";
 import type { BatchWrite } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
@@ -1461,20 +1462,32 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	static async open(database: SqliteDatabase, prefix = ""): Promise<SqlSnapshotBlobStore> {
 		const t = snapshotIndexTables(prefix);
 		const dialect = dialectOf(database);
+		const columns = [
+			[t.blobs, "created_at"],
+			[t.blobs, "chunks"],
+			...SESSION_REF_COLUMNS.map((column) => [t.sessionRefs, column] as const),
+		] as const;
+		const triggers = [`${t.blobs}_chunks_delete_all`, `${t.blobs}_chunks_delete`];
 		const probes = [
 			...Object.values(t).map((table) => dialect.tableExists(table)),
-			dialect.columnExists(t.blobs, "created_at"),
-			dialect.columnExists(t.blobs, "chunks"),
-			dialect.schemaObjects([`${t.blobs}_chunks_delete_all`, `${t.blobs}_chunks_delete`]),
-			...SESSION_REF_COLUMNS.map((column) => dialect.columnExists(t.sessionRefs, column)),
+			...columns.map(([table, column]) => dialect.columnExists(table, column)),
+			dialect.schemaObjects(triggers),
 		];
-		// A versioned database checks its ledger whatever the probes find, so it does not ask them.
-		const found = dialect.versionedMigrations
-			? []
-			: await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
+		// A versioned database checks its ledger whatever the probes find, so it does not ask them. Elsewhere the catalog
+		// an open read answers them all, in one read instead of a read each (#6560).
+		const catalog = dialect.versionedMigrations ? undefined : await schemaCatalogOf(database);
+		const current = dialect.versionedMigrations
+			? false
+			: catalog !== undefined
+				? Object.values(t).every((table) => catalog.hasTable(table)) &&
+					columns.every(([table, column]) => catalog.hasColumn(table, column)) &&
+					triggers.some((trigger) => catalog.hasObject(trigger))
+				: (await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)))).every(
+						(row) => row !== undefined,
+					);
 		// A versioned database always checks its ledger: a newer schema with the same tables is refused, and a step it
 		// lacks, such as the index triggers, runs even when every table exists.
-		if (dialect.versionedMigrations || !found.every((row) => row !== undefined)) {
+		if (!current) {
 			await applyStorageMigrations(
 				database,
 				SNAPSHOT_BLOB_DOMAIN,

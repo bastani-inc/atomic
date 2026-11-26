@@ -238,7 +238,8 @@ function failingAlters(db: SqliteDatabase, failure: Error): SqliteDatabase {
 	return interceptingDatabase(
 		{ ...batchingFacade(db), batch: undefined },
 		{
-			all: async (sql, params, next) => (/table_info/i.test(sql) ? [] : next(sql, ...params)),
+			// The probes, and the schema catalog an open reads, which lists columns with pragma_table_xinfo, miss the columns.
+			all: async (sql, params, next) => (/table_x?info/i.test(sql) ? [] : next(sql, ...params)),
 			exec: (sql, next) => (sql.startsWith("ALTER TABLE") ? Promise.reject(failure) : next(sql)),
 		},
 	);

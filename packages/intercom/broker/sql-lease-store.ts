@@ -24,7 +24,7 @@ import type {
 } from "./multinode-state-store.js";
 import { isMissingPrivilege } from "./sql-add-column.js";
 import { recipientTransaction } from "./sql-outbox-store.js";
-import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
+import { ensureBrokerSchema, openCatalogOf, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 /** Store-clock milliseconds since the lease was renewed, never negative. */
 const age = ({ greatest, nowMs }: StorageDialect) => greatest("0", `${nowMs} - renewed_at`);
@@ -158,6 +158,16 @@ async function ensureAddressColumns(database: SqliteDatabase, prefix: string | u
 	const indexes = ADDRESS_COLUMNS.map(
 		(column) => `CREATE INDEX IF NOT EXISTS ${table}_${column} ON ${table}(${column})`,
 	).join(";\n");
+	// On SQLite, which records no step, the catalog an open read finds the columns and their indexes, so a current
+	// table costs no write transaction (#6560).
+	const catalog = dialect.versionedMigrations ? undefined : await openCatalogOf(database);
+	if (
+		catalog?.sqliteObjectType !== undefined &&
+		ADDRESS_COLUMNS.every(
+			(column) => catalog.hasColumn(table, column) && catalog.sqliteObjectType?.(`${table}_${column}`) === "index",
+		)
+	)
+		return true;
 	try {
 		await ensureBrokerSchema(database, prefix, "lease-addresses", async (tx) => {
 			if (dialect.name === "postgres") {
