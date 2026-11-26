@@ -3343,16 +3343,18 @@ $grant$`);
 							},
 						);
 					await this.searchIndex?.forgetWithin(tx, sessionId);
-					await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
-					await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
-					await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
-					const { texts, epoch } = await this.saveSummary(tx, sessionId, {
-						header,
-						entries,
-						lastSeq: entries.length,
-					});
-					await this.insertEntries(tx, sessionId, entries, 0, texts, true, entriesWritten);
-					return { lastSeq: entries.length, epoch };
+					// The session's row, then its old rows' deletes and its new rows, in one batch: where the connection is
+					// pipelined and the batch is small, it goes out with the commit.
+					const summary = this.summaryWrite(sessionId, { header, entries, lastSeq: entries.length });
+					await this.writeEntries(
+						tx,
+						summary.statement,
+						withRest(
+							this.sessionRowDeletes(sessionId),
+							this.entryWrites(sessionId, entries, 0, summary.texts, true, entriesWritten),
+						),
+					);
+					return { lastSeq: entries.length, epoch: summary.epoch };
 				},
 				this.sessionWrite(
 					sessionId,
@@ -3588,16 +3590,16 @@ $grant$`);
 					released = pinned.released;
 					// Rows forks still read stay under a tombstone until the last of them no longer needs them.
 					if (pinned.keepRows) {
-						await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
+						await this.finishWrites(tx, [this.sessionRowDelete(sessionId)]);
 						return;
 					}
 				}
-				await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
-				await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
-				await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
-				await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
-				await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
-				await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
+				// The transaction's last writes: where its connection is pipelined, they go out with the commit, which commits
+				// them all or, when one fails, none.
+				await this.finishWrites(tx, [
+					...this.sessionRowDeletes(sessionId, [this.tables.blobChunks, this.tables.blobs]),
+					this.sessionRowDelete(sessionId),
+				]);
 			},
 			pinReads === undefined ? SESSION_TRANSACTION : { ...SESSION_TRANSACTION, leading: pinReads },
 		);
@@ -6412,19 +6414,7 @@ $grant$`);
 		return row?.seq == null ? undefined : Number(row.seq);
 	}
 
-	private async saveSummary(
-		tx: SqliteExecutor,
-		sessionId: string,
-		snapshot: SessionSnapshot,
-		previous?: SessionSummaryState,
-		appendedResume?: SessionResumeIndex,
-	): Promise<{ readonly texts: readonly SessionSummaryText[]; readonly epoch: string }> {
-		const { statement, texts, epoch } = this.summaryWrite(sessionId, snapshot, previous, appendedResume);
-		await tx.run(statement.sql, ...statement.params);
-		return { texts, epoch };
-	}
-
-	/** The statement that saves the session's row as `saveSummary` saves it, with what `saveSummary` returns. */
+	/** The statement that saves the session's row, with the search texts of `snapshot`'s entries and its generation. */
 	private summaryWrite(
 		sessionId: string,
 		snapshot: SessionSnapshot,
@@ -6626,6 +6616,32 @@ $grant$`);
 		}
 		const writes = new SentWrites(tx);
 		await writes.around(() => writes.send(whole ? batch : withRest(batch, pending)));
+	}
+
+	/**
+	 * The deletes of session `sessionId`'s rows in `before` (the tables of rows only `delete` removes), then in its search
+	 * texts, entry chunks and entries, in that order: what a delete or a replace removes ahead of the session's row.
+	 */
+	private sessionRowDeletes(sessionId: string, before: readonly string[] = []): SqliteStatement[] {
+		return [...before, this.tables.searchTexts, this.tables.entryChunks, this.tables.entries].map((table) => ({
+			sql: `DELETE FROM ${table} WHERE session_id = ?`,
+			params: [sessionId],
+		}));
+	}
+
+	/** The delete of session `sessionId`'s row. */
+	private sessionRowDelete(sessionId: string): SqliteStatement {
+		return { sql: `DELETE FROM ${this.tables.sessions} WHERE id = ?`, params: [sessionId] };
+	}
+
+	/**
+	 * Runs `statements` as the last calls of transaction `tx`: where its connection is pipelined, they go out with the
+	 * commit, in one round trip, and commit together or, when one fails, not at all; on a connection thread, as one
+	 * request; otherwise one after another. The first that fails ends them with its failure.
+	 */
+	private async finishWrites(tx: SqliteExecutor, statements: readonly SqliteStatement[]): Promise<void> {
+		if (transactionFinisher(tx)?.(statements) === true) return;
+		await statementBatch(tx, statements, []);
 	}
 
 	private encode(value: SessionRecordHeader | SessionEntry | StoredSummaryState | string): string {

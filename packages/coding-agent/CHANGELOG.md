@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- On PostgreSQL, deleting or replacing an indexed session now takes 3 round trips instead of 13 for a delete and 12 for a replace, both directly and through PgBouncer in transaction mode. The session's per-table deletes and rewrite now go out with the commit in one request, and forgetting its search index sends its savepoint, deletes and release together. At 80 ms latency, deleting a session took about 0.25 seconds instead of 1.03 seconds and replacing one took about 0.25 seconds instead of 0.96 seconds ([#6697](https://github.com/bastani-inc/atomic/pull/6697), [#6710](https://github.com/bastani-inc/atomic/issues/6710)).
+
 ## [0.10.11-alpha.3] - 2026-11-26
 
 Atomic drops libSQL storage and keeps SQLite, PostgreSQL and JSONL, many agents open and share one PostgreSQL database with less waiting, and the storage docs get one page per backend.
