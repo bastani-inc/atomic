@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.js";
+import { shellQuote } from "../src/core/resume/blueprint/envrc.js";
 import { createBashToolDefinition, createLocalBashOperations } from "../src/core/tools/bash.js";
 
 // Each generated case runs two real shells; the case count, not a slow test, sets this budget.
@@ -11,7 +12,8 @@ const PROPERTY_CASES = 160;
 const PROPERTY_TIMEOUT_MS = 120_000;
 
 let root = "";
-const inheritedOldPwd = process.env.OLDPWD;
+const setupEnvName = process.platform === "darwin" ? "BASH_ENV" : "OLDPWD";
+const inheritedSetupEnv = process.env[setupEnvName];
 
 beforeAll(async () => {
 	root = await realpath(await mkdtemp(join(tmpdir(), "atomic-bash-cd-parity-")));
@@ -21,13 +23,19 @@ beforeAll(async () => {
 	await writeFile(join(root, "my dir", "spaced.txt"), "");
 	await writeFile(join(root, "top.txt"), "");
 	await writeFile(join(root, "file.txt"), "");
-	// `cd -` goes to $OLDPWD; point it at a directory whose listing is stable.
-	process.env.OLDPWD = join(root, "src");
+	const oldPwd = join(root, "src");
+	if (setupEnvName === "BASH_ENV") {
+		const bashEnv = join(root, ".cd-parity-env");
+		await writeFile(bashEnv, `OLDPWD=${shellQuote(oldPwd)}\n`);
+		process.env.BASH_ENV = bashEnv;
+	} else {
+		process.env.OLDPWD = oldPwd;
+	}
 });
 
 afterAll(async () => {
-	if (inheritedOldPwd === undefined) delete process.env.OLDPWD;
-	else process.env.OLDPWD = inheritedOldPwd;
+	if (inheritedSetupEnv === undefined) delete process.env[setupEnvName];
+	else process.env[setupEnvName] = inheritedSetupEnv;
 	await rm(root, { recursive: true, force: true });
 });
 

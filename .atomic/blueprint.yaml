@@ -29,8 +29,10 @@ knowledge:
   - name: test
     contents: |
       Root suites run under vitest: `npm run test:unit`, `npm run test:integration`, or both with
-      `npm run test:all`. The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the
-      scripts/*.test.mjs tests run with `npm run test:scripts` (`node --test`). The TUI package uses
+      `npm run test:all`. On macOS, `test/integration/task-process-tree-containment.test.ts` needs GNU
+      `timeout` on PATH (Homebrew `coreutils`), as supplied by the manual macOS workflow.
+      The coding-agent suite is `npm run test --workspace=@bastani/atomic`, and the scripts/*.test.mjs
+      tests run with `npm run test:scripts` (`node --test`). The TUI package uses
       `npm run test --workspace=@bastani/atomic-tui` (`node --test`), not a Vitest config.
       Focused TUI tests run with `node --test packages/tui/test/<name>.test.ts`; the TUI workspace's
       npm test script always expands its full test glob, even when a filename is appended.

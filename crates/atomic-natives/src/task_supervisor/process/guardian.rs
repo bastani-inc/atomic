@@ -19,19 +19,90 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[cfg(target_os = "macos")]
+const DARWIN_SESSION_SCAN: &str = r#"
+function run(sessions) {
+	ObjC.bindFunction('getsid', ['int', ['int']]);
+	ObjC.bindFunction('kill', ['int', ['int', 'int']]);
+	const SIGKILL = 9;
+	const watched = new Set(sessions.map(Number));
+	const input = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
+	const table = ObjC.unwrap($.NSString.alloc.initWithDataEncoding(input, $.NSUTF8StringEncoding));
+	let hit = false;
+	for (const row of table.split('\n')) {
+		const fields = row.trim().split(/\s+/);
+		const pid = Number(fields[0]);
+		if (pid > 1 && fields[3] && fields[3][0] !== 'Z' && watched.has($.getsid(pid))) {
+			if ($.kill(pid, SIGKILL) === 0) hit = true;
+		}
+	}
+	return hit ? 'hit' : 'quiet';
+}
+"#;
+
+#[cfg(any(target_os = "macos", test))]
+const DARWIN_FALLBACK_PIDS: &str = r#"
+BEGIN {
+	n = split(sessions, ids, / +/)
+	for (i = 1; i <= n; i++) if (ids[i] > 1) groups[ids[i]] = selected[ids[i]] = 1
+}
+$1 > 1 && NF == 4 {
+	parent[$1] = $2
+	if ($3 in groups) selected[$1] = 1
+	if ($4 !~ /^Z/) live[$1] = 1
+}
+END {
+	do {
+		changed = 0
+		for (pid in parent) if (!(pid in selected) && (parent[pid] in selected)) {
+			selected[pid] = 1
+			changed = 1
+		}
+	} while (changed)
+	for (pid in selected) if (pid in live) print pid
+}
+"#;
+
 /// Reads `+ <sid> <cgroup or -> [<start time, for tests>]` and `- <sid>` lines until end-of-file. On `+` it records the leader's start time
 /// (field 22 of `/proc/<sid>/stat` on Linux, `ps -o lstart=` elsewhere). At end-of-file it keeps each session whose
 /// leader is gone or still has that start time, freezes the session's cgroup if it has one and kills the members it
-/// lists, then SIGKILLs every process in those sessions with `pkill -s` (or, without it, a `/proc` scan) until three
-/// passes in a row find none, so that a member that forks while a pass runs is still found.
+/// lists, then SIGKILLs every process in those sessions. macOS uses `getsid` through the system Objective-C bridge;
+/// elsewhere it runs `pkill -s` or scans `/proc`. Three passes in a row must find none before the scan stops.
 const SCRIPT: &str = r#"trap '' HUP INT QUIT TERM PIPE TSTP TTIN TTOU
+darwin_scanner=${1:-}
+darwin_fallback_pids=${2:-}
+darwin_fallback=0
 ident() {
 	v=
 	if [ -r /proc/self/stat ]; then
 		read -r l < "/proc/$1/stat" && set -- ${l##*) } && v=${20}
 	else
-		v=$(ps -o lstart= -p "$1")
+		v=$(/bin/ps -o lstart= -p "$1")
 	fi
+}
+matching_sessions() {
+	matched=' '
+	for id in "$@"; do
+		ident "$id"
+		eval "w=\$i_$id"
+		if [ -z "$v" ] || [ "$v" = "$w" ]; then matched="$matched$id "; fi
+	done
+}
+darwin_scan() {
+	if [ "$darwin_fallback" = 0 ]; then
+		if table=$(/bin/ps -axo pid=,ppid=,pgid=,stat=) &&
+			result=$(printf '%s\n' "$table" | /usr/bin/osascript -l JavaScript -e "$darwin_scanner" "$@"); then
+			case $result in hit) return 0 ;; quiet) return 1 ;; esac
+		fi
+		darwin_fallback=1
+		/usr/bin/logger -t atomic-task-guardian 'macOS session scan failed; falling back to process groups and descendants'
+	fi
+	table=$(/bin/ps -axo pid=,ppid=,pgid=,stat=)
+	pids=$(printf '%s\n' "$table" | /usr/bin/awk -v sessions="$*" "$darwin_fallback_pids")
+	found=0
+	for pid in $pids; do kill -KILL "$pid" 2>/dev/null && found=1; done
+	for id in "$@"; do kill -KILL -- "-$id" 2>/dev/null && found=1; done
+	[ "$found" = 1 ]
 }
 s=' '
 while read -r op id cg recorded; do
@@ -40,12 +111,8 @@ while read -r op id cg recorded; do
 	-) case $s in *" $id "*) s="${s%% $id *} ${s#* $id }" ;; esac ;;
 	esac
 done
-k=' '
-for id in $s; do
-	ident "$id"
-	eval "w=\$i_$id"
-	if [ -z "$v" ] || [ "$v" = "$w" ]; then k="$k$id "; fi
-done
+matching_sessions $s
+k=$matched
 [ "$k" = ' ' ] && exit 0
 for id in $k; do
 	eval "cg=\$c_$id"
@@ -67,7 +134,12 @@ done
 quiet=0; pass=0
 while [ $quiet -lt 3 ] && [ $pass -lt 50 ]; do
 	pass=$((pass+1)); hit=0
-	if command -v pkill >/dev/null; then
+	if [ -n "$darwin_scanner" ]; then
+		matching_sessions $k
+		k=$matched
+		[ "$k" = ' ' ] && break
+		darwin_scan $k && hit=1
+	elif command -v pkill >/dev/null; then
 		for id in $k; do pkill -KILL -s "$id" && hit=1; done
 	elif [ -r /proc/self/stat ]; then
 		for f in /proc/[0-9]*/stat; do
@@ -130,6 +202,8 @@ fn spawn() -> io::Result<Guardian> {
 		.stdout(Stdio::null())
 		.stderr(Stdio::null())
 		.current_dir("/");
+	#[cfg(target_os = "macos")]
+	command.args(["task-guardian", DARWIN_SESSION_SCAN, DARWIN_FALLBACK_PIDS]);
 	// A session of its own: terminal signals and the host's process-group signals never reach it.
 	unsafe {
 		command.pre_exec(|| {
@@ -293,6 +367,31 @@ fn kill_session(session: libc::pid_t, start: Option<u64>) {
 #[cfg(test)]
 pub(super) mod testing {
 	use super::*;
+
+	#[test]
+	fn darwin_fallback_finds_group_members_and_their_descendants_5057() {
+		use std::io::Write;
+
+		let mut awk = Command::new("/usr/bin/awk")
+			.args(["-v", "sessions=100 200", DARWIN_FALLBACK_PIDS])
+			.stdin(Stdio::piped())
+			.stdout(Stdio::piped())
+			.spawn()
+			.unwrap();
+		awk.stdin
+			.take()
+			.unwrap()
+			.write_all(
+				b"1 0 1 Ss\n100 1 100 Ss\n105 1 100 S\n107 105 107 S\n108 107 108 S\n109 100 109 Z\n210 200 210 S\n211 1 200 S\n300 1 300 Ss\n301 300 301 S\n",
+			)
+			.unwrap();
+		let output = awk.wait_with_output().unwrap();
+		assert!(output.status.success());
+		let mut pids: Vec<_> = std::str::from_utf8(&output.stdout).unwrap().lines().collect();
+		pids.sort_unstable();
+		assert_eq!(pids, ["100", "105", "107", "108", "210", "211"]);
+	}
+
 	/// Starts a guardian of its own, tells it to watch `session` as the host would, and closes the socket as a dying
 	/// host does, then waits for it to finish. `recorded` replaces the leader start time the guardian would record,
 	/// as when the leader exited and its PID was handed to another process before the host died.

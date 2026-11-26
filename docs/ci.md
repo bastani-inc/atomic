@@ -7,7 +7,7 @@ Pull requests need `test (all platforms)` and CodeQL results. Releases use a sep
 - [Tests](../.github/workflows/test.yml) runs on pushes to `main` and when a pull request opens, gets a push, reopens or changes draft status. It runs tests and archive smoke checks on Linux and Windows.
 - [Cancel closed pull request runs](../.github/workflows/cancel-closed-pr-runs.yml) runs when a pull request closes, including after a merge. The `cancel` job stops queued and running `test.yml` runs for that PR without checking out its code.
 - [CodeQL](../.github/workflows/codeql.yml) runs on pushes to `main`, on PRs targeting any branch and weekly. The `analyze` job scans GitHub Actions, JavaScript and TypeScript, and Rust. Keep GitHub's CodeQL default setup disabled so this workflow can upload results.
-- [macOS tests](../.github/workflows/macos-tests.yml) runs selected root test files on a branch a maintainer dispatches. It is not a required check.
+- [macOS tests](../.github/workflows/macos-tests.yml) runs selected root or coding-agent test files on a branch a maintainer dispatches. It is not a required check.
 - [Warm toolchain cache](../.github/workflows/warm-toolchain-cache.yml) warms Linux and Windows release caches on pushes to `main` or a manual dispatch on `main`.
 - [Warm macOS release cache](../.github/workflows/warm-macos-release-cache.yml) warms the macOS release cache on pushes to `main` or a manual dispatch on `main`.
 - [Publish](../.github/workflows/publish.yml) runs on release tag pushes. Use manual dispatch only for [recovery](#direct-release-trigger-and-recovery).
@@ -54,7 +54,7 @@ Read the job's `timeout-minutes` in the workflow. It covers setup, tests and tea
 
 ### macOS test dispatch
 
-A maintainer can run specific root tests on the chosen branch. Set `project` to `unit` or `integration` and provide space-separated `.test.ts` paths under `test/`.
+A maintainer can run specific tests on the chosen branch. Pick `unit`, `integration`, or `agent` and provide space-separated `.test.ts` paths from that project's directory: `test/unit/`, `test/integration/`, or `packages/coding-agent/test/`.
 
 ```sh
 gh workflow run macos-tests.yml --ref "$branch" \
