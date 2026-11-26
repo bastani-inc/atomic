@@ -330,6 +330,46 @@ describe.skipIf(python === undefined)("skill-creator scripts' files and review v
 		},
 	);
 
+	test("print the review viewer's URL without waiting for a name lookup of its address (#6691)", async () => {
+		const box = sandbox();
+		const workspace = workspaceWithOneRun(box);
+		// As on CI's Macs, where the resolver kept a reverse lookup of 127.0.0.1 waiting: here every name lookup waits an
+		// hour. The browser is left alone.
+		const resolverNeverAnswers = [
+			"import runpy, socket, sys, time, webbrowser",
+			"def never_answers(*args, **kwargs): time.sleep(3600)",
+			"socket.getfqdn = socket.gethostbyaddr = never_answers",
+			"webbrowser.open = lambda *args, **kwargs: True",
+			"sys.argv = sys.argv[1:]",
+			"runpy.run_path(sys.argv[0], run_name='__main__')",
+		].join("\n");
+		const viewer = spawnProcess(
+			[
+				python ?? "python3",
+				"-c",
+				resolverNeverAnswers,
+				join(skillCreatorDir, "eval-viewer", "generate_review.py"),
+				workspace,
+				"--port",
+				"0",
+			],
+			{ cwd: box.dir, env: box.env({ PYTHONUNBUFFERED: "1" }), stdout: "pipe", stderr: "pipe" },
+		);
+		try {
+			const url = await withTimeout(
+				readUntil(viewer.stdout, /URL:\s+(\S+)/u),
+				VIEWER_START_MS,
+				"the URL is printed",
+			);
+			const page = await fetch(url);
+			assert.equal(page.status, 200);
+			assert.match(await page.text(), /EMBEDDED_DATA/u);
+		} finally {
+			viewer.kill("SIGTERM");
+			await viewer.exited;
+		}
+	});
+
 	test.skipIf(process.platform === "win32")(
 		"save review feedback as UTF-8, whatever the locale's encoding",
 		async () => {
