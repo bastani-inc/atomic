@@ -551,7 +551,10 @@ impl Actor {
 					}
 					#[cfg(target_os = "linux")]
 					let (child, stdin, stdout, stderr) = spawn_pipe_command(&command.intent, procs)?;
-					#[cfg(not(target_os = "linux"))]
+					#[cfg(target_os = "macos")]
+					let (child, stdin, stdout, stderr) =
+						spawn_pipe_command(&command.intent, None).map_err(explain_spawn_error)?;
+					#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 					let (child, stdin, stdout, stderr) = {
 						use std::os::unix::process::CommandExt;
 						use std::process::{Command, Stdio};
@@ -1274,12 +1277,12 @@ fn explain_spawn_error(error: io::Error) -> io::Error {
 	}
 	error
 }
-/// Starts a pipe command on Linux without copying the host's address space (see `crate::spawn`): in a session of its
-/// own, whose ID is the leader's PID, so cleanup ends every process left in it, including descendants that moved to
-/// another process group (#5057), and in the cgroup `procs` belongs to before it runs anything. Host death is the
-/// guardian's (see `guardian`), not PR_SET_PDEATHSIG's: that fires when the spawning thread ends, which would kill a
-/// leader whose failed cleanup must keep it owned and reapable.
-#[cfg(target_os = "linux")]
+/// Starts a pipe command without fork (see `crate::spawn`): in a session of its own, whose ID is the leader's PID, so
+/// cleanup ends every process left in it, including descendants that moved to another process group (#5057), and on
+/// Linux in the cgroup `procs` belongs to before it runs anything. Host death is the guardian's (see `guardian`), not
+/// PR_SET_PDEATHSIG's: that fires when the spawning thread ends, which would kill a leader whose failed cleanup must
+/// keep it owned and reapable.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn spawn_pipe_command(
 	intent: &CommandIntent,
 	procs: Option<libc::c_int>,
@@ -2094,6 +2097,78 @@ mod tests {
 		assert!(matches!(actor.snapshot(&owner).unwrap().tasks[0].cleanup, Cleanup::Reaped {}));
 	}
 	#[cfg(target_os = "macos")]
+	const STACK_LOGGING_PROBE: &str = "ATOMIC_TEST_STACK_LOGGING_PROBE";
+	/// After memory pressure, libmalloc loads its stack-logging support into a process by itself. From then on every
+	/// fork() of that process printed "MallocStackLogging: can't turn off malloc stack logging because it was not
+	/// enabled." to its stderr, which the interactive TUI showed once per command (#6643). Run in a process of its own,
+	/// whose stderr the test reads.
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn commands_start_without_the_macos_fork_notice_6643() {
+		if std::env::var_os(STACK_LOGGING_PROBE).is_some() {
+			unsafe extern "C" {
+				fn malloc_register_stack_logger() -> libc::c_int;
+			}
+			// What a memory-pressure event does to the host.
+			assert_ne!(unsafe { malloc_register_stack_logger() }, 0);
+			for terminal in [CommandTerminal::Pipe {}, CommandTerminal::Pty { columns: 80, rows: 24 }]
+			{
+				let (actor, owner) = command_owner();
+				let mut intent = pipe_intent("echo started");
+				intent.terminal = terminal;
+				actor.start_command(&owner, intent, "notice".into()).unwrap();
+				let settled = settled_record(&actor, &owner);
+				assert!(
+					matches!(
+						settled.execution,
+						Execution::Settled { result: TaskResult::Completed { exit_code: Some(0.0), .. } }
+					),
+					"{settled:?}"
+				);
+			}
+			return;
+		}
+		let probe = std::process::Command::new(std::env::current_exe().unwrap())
+			.args([
+				"--exact",
+				"task_supervisor::process::tests::commands_start_without_the_macos_fork_notice_6643",
+				"--nocapture",
+			])
+			.env(STACK_LOGGING_PROBE, "1")
+			.output()
+			.unwrap();
+		let stderr = String::from_utf8_lossy(&probe.stderr);
+		assert!(probe.status.success(), "{stderr}");
+		assert!(String::from_utf8_lossy(&probe.stdout).contains("1 passed"), "the probe did not run");
+		assert!(!stderr.contains("MallocStackLogging"), "{stderr}");
+	}
+	/// A PTY command leads a session whose controlling terminal is its PTY, so the terminal's job control and window-size
+	/// signals reach it.
+	#[cfg(unix)]
+	#[test]
+	fn a_pty_command_leads_a_session_on_its_terminal() {
+		let (actor, owner) = command_owner();
+		let path = std::env::temp_dir().join(format!(
+			"atomic-pty-session-{}-{}",
+			std::process::id(),
+			actor.id
+		));
+		let mut intent = pipe_intent(&format!(
+			"echo $$ $(ps -o pgid= -o tpgid= -p $$) $(tty) > '{}.tmp'; mv '{0}.tmp' '{0}'",
+			path.display()
+		));
+		intent.terminal = CommandTerminal::Pty { columns: 80, rows: 24 };
+		actor.start_command(&owner, intent, "pty-session".into()).unwrap();
+		let line = wait_for_file(&path);
+		std::fs::remove_file(&path).unwrap();
+		actor.shutdown();
+		let fields: Vec<&str> = line.split_whitespace().collect();
+		assert_eq!(fields.len(), 4, "{line}");
+		// Its own group, which is the terminal's foreground group, on a terminal device.
+		assert_eq!((fields[1], fields[2]), (fields[0], fields[0]), "{line}");
+		assert!(fields[3].starts_with("/dev/"), "{line}");
+	}
+	#[cfg(target_os = "macos")]
 	const HELD_ZOMBIE_DIRECTORY: &str = "ATOMIC_TEST_HELD_ZOMBIE_DIRECTORY";
 	// Darwin's group probe can return EPERM while another parent still owns a zombie.
 	#[cfg(target_os = "macos")]
@@ -2637,7 +2712,7 @@ mod tests {
 			dir.display()
 		)
 	}
-	#[cfg(target_os = "linux")]
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	fn settled_record(actor: &Actor, owner: &OwnerLease) -> TaskRecord {
 		let deadline =
 			Instant::now() + PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE + PROCESS_SHUTDOWN_GRACE;

@@ -20,6 +20,7 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -213,9 +214,26 @@ while [ $quiet -lt 3 ] && [ $pass -lt 50 ]; do
 done
 "#;
 
+/// The guardian process: started without fork on Linux and macOS (see `crate::spawn`), by the standard library
+/// elsewhere.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+type GuardianChild = crate::spawn::SpawnedChild;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+type GuardianChild = Child;
+
 struct Guardian {
-	child: Child,
+	child: GuardianChild,
 	host: UnixStream,
+}
+impl Guardian {
+	/// Kills the guardian and reaps it.
+	fn end(mut self) {
+		#[cfg(any(target_os = "linux", target_os = "macos"))]
+		let _ = self.child.kill(libc::SIGKILL);
+		#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+		let _ = self.child.kill();
+		let _ = self.child.wait();
+	}
 }
 /// What the host knows of a watched session: its leader's start time and its cgroup.
 struct Watched {
@@ -247,7 +265,6 @@ fn line(session: libc::pid_t, watched: &Watched) -> String {
 }
 
 fn spawn() -> io::Result<Guardian> {
-	use std::os::unix::process::CommandExt;
 	let (host, guardian) = UnixStream::pair()?;
 	#[cfg(target_os = "macos")]
 	{
@@ -263,6 +280,41 @@ fn spawn() -> io::Result<Guardian> {
 		};
 	}
 	host.set_nonblocking(true)?;
+	let child = start(guardian)?;
+	let monitor = host.try_clone();
+	let id = child.id();
+	if let Ok(monitor) = monitor {
+		let _ = std::thread::Builder::new()
+			.name("task-guardian".into())
+			.spawn(move || replace_when_dead(&monitor, id));
+	}
+	Ok(Guardian { child, host })
+}
+
+/// Starts `/bin/sh -c SCRIPT` with `guardian` as its standard input, in a session of its own, so terminal signals and
+/// the host's process-group signals never reach it. Without fork: the host may have many gigabytes mapped by then.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn start(guardian: UnixStream) -> io::Result<GuardianChild> {
+	use crate::spawn::{SignalDefaults, SpawnRequest, SpawnedChild, child_environment, spawn};
+	#[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+	let mut args: Vec<std::ffi::OsString> = vec!["-c".into(), SCRIPT.into()];
+	#[cfg(target_os = "macos")]
+	args.extend(["task-guardian", DARWIN_SESSION_SCAN, DARWIN_FALLBACK_PIDS].map(Into::into));
+	let request = SpawnRequest::new(
+		std::ffi::OsStr::new("/bin/sh"),
+		args,
+		child_environment(true, []),
+		Some(std::path::Path::new("/")),
+		true,
+		SignalDefaults::Handled,
+	)?;
+	let null = std::fs::OpenOptions::new().read(true).write(true).open("/dev/null")?;
+	let pid = spawn(&request, [guardian.as_raw_fd(), null.as_raw_fd(), null.as_raw_fd()], None)?;
+	Ok(SpawnedChild::new(pid))
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn start(guardian: UnixStream) -> io::Result<GuardianChild> {
+	use std::os::unix::process::CommandExt;
 	let mut command = Command::new("/bin/sh");
 	command
 		.arg("-c")
@@ -282,15 +334,7 @@ fn spawn() -> io::Result<Guardian> {
 			Ok(())
 		});
 	}
-	let child = command.spawn()?;
-	let monitor = host.try_clone();
-	let id = child.id();
-	if let Ok(monitor) = monitor {
-		let _ = std::thread::Builder::new()
-			.name("task-guardian".into())
-			.spawn(move || replace_when_dead(&monitor, id));
-	}
-	Ok(Guardian { child, host })
+	command.spawn()
 }
 
 /// Waits until the guardian `id` closes its end of the socket, which it does only by exiting, then starts another
@@ -312,9 +356,8 @@ fn replace_when_dead(monitor: &UnixStream, id: u32) {
 	if state.guardian.as_ref().is_none_or(|guardian| guardian.child.id() != id) {
 		return;
 	}
-	if let Some(mut dead) = state.guardian.take() {
-		let _ = dead.child.kill();
-		let _ = dead.child.wait();
+	if let Some(dead) = state.guardian.take() {
+		dead.end();
 	}
 	if state.watches_any() {
 		let _ = guardian(&mut state);
@@ -324,9 +367,8 @@ fn replace_when_dead(monitor: &UnixStream, id: u32) {
 /// Drops a guardian that can no longer be told what to watch. SIGKILL first: closing the socket while it lives would
 /// read as the host's death and kill every watched session.
 fn discard(state: &mut State) {
-	if let Some(mut guardian) = state.guardian.take() {
-		let _ = guardian.child.kill();
-		let _ = guardian.child.wait();
+	if let Some(guardian) = state.guardian.take() {
+		guardian.end();
 	}
 }
 

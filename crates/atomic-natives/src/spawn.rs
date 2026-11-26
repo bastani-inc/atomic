@@ -8,7 +8,8 @@
 //! sharing this process's memory, and suspends only the calling thread until the child has called `execve` or exited.
 //! Between the two, the child runs only async-signal-safe system calls on memory prepared before the clone: it
 //! allocates nothing and takes no lock. A failed step sends its errno to the parent through a close-on-exec pipe,
-//! which a successful `execve` closes empty.
+//! which a successful `execve` closes empty. On macOS it calls `posix_spawn`, which the kernel carries out as one
+//! system call that builds the child from the program, with `POSIX_SPAWN_SETSID` for a session of its own.
 
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
@@ -18,6 +19,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
+#[cfg(target_os = "linux")]
 /// The child's stack: what its steps up to `execve` use, with ample room for the C library's system call wrappers.
 const CHILD_STACK_BYTES: usize = 128 * 1024;
 /// The search path the C library's `execvp` uses when the environment has no `PATH`.
@@ -31,8 +33,17 @@ pub(crate) enum SignalDefaults {
 	/// `std::process::Command` starts children. Other ignored signals stay ignored.
 	Handled,
 	/// Every standard signal, as Node's `child_process` starts children.
+	#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 	All,
+	/// As `Handled`, plus the signals a terminal's processes expect at their default, whatever this process does with
+	/// them (see [`TERMINAL_SIGNALS`]): as `portable-pty` starts a command on a pseudo-terminal.
+	#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+	Terminal,
 }
+
+/// The signals `portable-pty` puts back to their default for a command it starts on a pseudo-terminal.
+const TERMINAL_SIGNALS: [libc::c_int; 6] =
+	[libc::SIGCHLD, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGALRM];
 
 /// What to run and how. Built before the clone, so the child only reads it.
 pub(crate) struct SpawnRequest {
@@ -44,7 +55,7 @@ pub(crate) struct SpawnRequest {
 	signals: SignalDefaults,
 	end_with_parent: bool,
 	/// Makes the child take the parent-death signal as refused, as a sandbox can refuse it.
-	#[cfg(test)]
+	#[cfg(all(test, target_os = "linux"))]
 	refuse_parent_death: bool,
 }
 
@@ -82,7 +93,7 @@ impl SpawnRequest {
 			new_session,
 			signals,
 			end_with_parent: false,
-			#[cfg(test)]
+			#[cfg(all(test, target_os = "linux"))]
 			refuse_parent_death: false,
 		})
 	}
@@ -90,12 +101,13 @@ impl SpawnRequest {
 	/// Ends the child with `SIGKILL` when the thread that starts it ends, as it does when this process ends however it
 	/// ends (`PR_SET_PDEATHSIG`). The processes the child starts are not ended with it. Where the system refuses the
 	/// request, as a sandbox can, the child runs without it.
+	#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 	pub(crate) fn ending_with_parent(mut self) -> Self {
 		self.end_with_parent = true;
 		self
 	}
 
-	#[cfg(test)]
+	#[cfg(all(test, target_os = "linux"))]
 	fn refusing_parent_death(mut self) -> Self {
 		self.refuse_parent_death = true;
 		self
@@ -161,6 +173,7 @@ fn resolve_program(
 	Err(io::Error::from_raw_os_error(if denied { libc::EACCES } else { libc::ENOENT }))
 }
 
+#[cfg(target_os = "linux")]
 /// Everything the child reads, as raw pointers into memory the suspended parent keeps alive.
 struct ChildArgs {
 	program: *const libc::c_char,
@@ -180,6 +193,7 @@ struct ChildArgs {
 	empty_mask: libc::sigset_t,
 }
 
+#[cfg(target_os = "linux")]
 /// Sends `errno` to the parent and exits. Async-signal-safe.
 unsafe fn fail(args: &ChildArgs, errno: libc::c_int) -> ! {
 	unsafe {
@@ -189,10 +203,12 @@ unsafe fn fail(args: &ChildArgs, errno: libc::c_int) -> ! {
 	}
 }
 
+#[cfg(target_os = "linux")]
 fn errno() -> libc::c_int {
 	io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO)
 }
 
+#[cfg(target_os = "linux")]
 /// The child, from the clone to `execve`. Only async-signal-safe calls, on memory prepared before the clone.
 extern "C" fn child_main(arg: *mut libc::c_void) -> libc::c_int {
 	unsafe {
@@ -207,6 +223,7 @@ extern "C" fn child_main(arg: *mut libc::c_void) -> libc::c_int {
 				continue;
 			}
 			let reset = (args.signals == SignalDefaults::All && signal < 32)
+				|| (args.signals == SignalDefaults::Terminal && TERMINAL_SIGNALS.contains(&signal))
 				|| signal == libc::SIGPIPE
 				|| (libc::sigaction(signal, std::ptr::null(), &mut current) == 0
 					&& current.sa_sigaction != libc::SIG_DFL
@@ -263,11 +280,13 @@ extern "C" fn child_main(arg: *mut libc::c_void) -> libc::c_int {
 	}
 }
 
+#[cfg(target_os = "linux")]
 /// A stack for the child, unmapped when dropped.
 struct ChildStack {
 	base: *mut libc::c_void,
 	size: usize,
 }
+#[cfg(target_os = "linux")]
 impl ChildStack {
 	fn new(size: usize) -> io::Result<Self> {
 		let base = unsafe {
@@ -290,12 +309,14 @@ impl ChildStack {
 		unsafe { self.base.cast::<u8>().add(self.size).cast() }
 	}
 }
+#[cfg(target_os = "linux")]
 impl Drop for ChildStack {
 	fn drop(&mut self) {
 		unsafe { libc::munmap(self.base, self.size) };
 	}
 }
 
+#[cfg(target_os = "linux")]
 fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 	let mut fds = [0 as RawFd; 2];
 	if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
@@ -304,6 +325,7 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 	Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
+#[cfg(target_os = "linux")]
 /// Starts `request` with `stdio` as its standard input, output and error, moving it into the cgroup whose
 /// `cgroup.procs` is open as `cgroup_procs` before it runs anything. Returns its process ID once it has called
 /// `execve`; the caller reaps it. Every descriptor this process opened stays out of the child, as all are
@@ -386,6 +408,206 @@ pub(crate) fn spawn(
 	} else {
 		libc::EIO
 	}))
+}
+
+#[cfg(target_os = "macos")]
+fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+	let mut fds = [0 as RawFd; 2];
+	if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+		return Err(io::Error::last_os_error());
+	}
+	let fds = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+	// macOS has no pipe2. A child another thread starts in between gets neither end: posix_spawn here, and Node's,
+	// start children with POSIX_SPAWN_CLOEXEC_DEFAULT.
+	for fd in [&fds.0, &fds.1] {
+		if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+			return Err(io::Error::last_os_error());
+		}
+	}
+	Ok(fds)
+}
+
+/// `POSIX_SPAWN_SETSID` from `<sys/spawn.h>`, macOS 10.15 and later, which the libc crate does not define.
+#[cfg(target_os = "macos")]
+const POSIX_SPAWN_SETSID: libc::c_int = 0x0400;
+
+/// Owns a `posix_spawnattr_t` and a `posix_spawn_file_actions_t`, destroyed when dropped.
+#[cfg(target_os = "macos")]
+struct SpawnSetup {
+	attributes: libc::posix_spawnattr_t,
+	actions: libc::posix_spawn_file_actions_t,
+}
+#[cfg(target_os = "macos")]
+impl SpawnSetup {
+	fn new() -> io::Result<Self> {
+		let mut setup = Self { attributes: std::ptr::null_mut(), actions: std::ptr::null_mut() };
+		check(unsafe { libc::posix_spawnattr_init(&mut setup.attributes) })?;
+		if let Err(error) = check(unsafe { libc::posix_spawn_file_actions_init(&mut setup.actions) })
+		{
+			unsafe { libc::posix_spawnattr_destroy(&mut setup.attributes) };
+			return Err(error);
+		}
+		Ok(setup)
+	}
+}
+#[cfg(target_os = "macos")]
+impl Drop for SpawnSetup {
+	fn drop(&mut self) {
+		unsafe {
+			libc::posix_spawn_file_actions_destroy(&mut self.actions);
+			libc::posix_spawnattr_destroy(&mut self.attributes);
+		}
+	}
+}
+
+/// A `posix_spawn*` result, which is the error number itself.
+#[cfg(target_os = "macos")]
+fn check(result: libc::c_int) -> io::Result<()> {
+	if result == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(result)) }
+}
+
+/// Starts `request` with `stdio` as its standard input, output and error, through `posix_spawn`. On macOS that is
+/// one system call: the kernel builds the new process from the program, so no copy of this process ever runs, and
+/// nothing runs in the child before the program does. That keeps fork's costs out (see the module's documentation)
+/// and fork's side effects too: once memory pressure has made libmalloc load its stack-logging support, every
+/// `fork()` prints "MallocStackLogging: can't turn off malloc stack logging because it was not enabled." to this
+/// process's stderr. Returns the child's process ID; the caller reaps it. Only `stdio` reaches the child
+/// (`POSIX_SPAWN_CLOEXEC_DEFAULT`), as with Node's `child_process` on macOS. There are no cgroups on macOS, so
+/// `cgroup_procs` must be `None`, and no parent-death signal, so the request must not ask to end with its parent.
+#[cfg(target_os = "macos")]
+pub(crate) fn spawn(
+	request: &SpawnRequest,
+	stdio: [RawFd; 3],
+	cgroup_procs: Option<RawFd>,
+) -> io::Result<libc::pid_t> {
+	if cgroup_procs.is_some() {
+		return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+	}
+	// A source in 0..=2 could be overwritten by placing another stream first: give it a number of its own.
+	let mut moved = Vec::new();
+	let mut sources = stdio;
+	for source in &mut sources {
+		if (0..3).contains(source) {
+			let duplicate = unsafe { libc::fcntl(*source, libc::F_DUPFD_CLOEXEC, 3) };
+			if duplicate < 0 {
+				return Err(io::Error::last_os_error());
+			}
+			moved.push(unsafe { OwnedFd::from_raw_fd(duplicate) });
+			*source = duplicate;
+		}
+	}
+	posix_spawn_with(request, |actions| {
+		for (target, source) in sources.into_iter().enumerate() {
+			check(unsafe {
+				libc::posix_spawn_file_actions_adddup2(actions, source, target as RawFd)
+			})?;
+		}
+		Ok(())
+	})
+}
+
+/// Starts `request` as [`spawn`] does, on the terminal device at `terminal`, such as a pseudo-terminal's
+/// replica: the child opens it as its standard input, output and error. A new session's leader that opens a terminal
+/// makes it its controlling terminal, which `portable-pty` gets with `TIOCSCTTY` in a forked child, so the terminal's
+/// job control and window-size signals reach the command.
+#[cfg(target_os = "macos")]
+pub(crate) fn spawn_on_terminal(
+	request: &SpawnRequest,
+	terminal: &std::ffi::CStr,
+) -> io::Result<libc::pid_t> {
+	posix_spawn_with(request, |actions| unsafe {
+		check(libc::posix_spawn_file_actions_addopen(
+			actions,
+			0,
+			terminal.as_ptr(),
+			libc::O_RDWR,
+			0,
+		))?;
+		check(libc::posix_spawn_file_actions_adddup2(actions, 0, 1))?;
+		check(libc::posix_spawn_file_actions_adddup2(actions, 0, 2))
+	})
+}
+
+/// `posix_spawn` of `request`, with `stdio` adding the file actions that place its standard streams.
+#[cfg(target_os = "macos")]
+fn posix_spawn_with(
+	request: &SpawnRequest,
+	stdio: impl FnOnce(&mut libc::posix_spawn_file_actions_t) -> io::Result<()>,
+) -> io::Result<libc::pid_t> {
+	if request.end_with_parent {
+		return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+	}
+	let argv: Vec<*mut libc::c_char> = request
+		.argv
+		.iter()
+		.map(|arg| arg.as_ptr().cast_mut())
+		.chain(std::iter::once(std::ptr::null_mut()))
+		.collect();
+	let envp: Vec<*mut libc::c_char> = request
+		.envp
+		.iter()
+		.map(|entry| entry.as_ptr().cast_mut())
+		.chain(std::iter::once(std::ptr::null_mut()))
+		.collect();
+	let mut setup = SpawnSetup::new()?;
+	stdio(&mut setup.actions)?;
+	if let Some(cwd) = &request.cwd {
+		check(unsafe {
+			libc::posix_spawn_file_actions_addchdir_np(&mut setup.actions, cwd.as_ptr())
+		})?;
+	}
+	let mut flags = libc::POSIX_SPAWN_CLOEXEC_DEFAULT
+		| libc::POSIX_SPAWN_SETSIGDEF
+		| libc::POSIX_SPAWN_SETSIGMASK;
+	if request.new_session {
+		flags |= POSIX_SPAWN_SETSID;
+	}
+	unsafe {
+		let mut defaults: libc::sigset_t = std::mem::zeroed();
+		libc::sigemptyset(&mut defaults);
+		match request.signals {
+			// Handlers end with exec anyway. SIGPIPE, which Rust's standard library and Node ignore, starts at its
+			// default, as Rust's `std::process::Command` starts children; other ignored signals stay ignored.
+			SignalDefaults::Handled => {
+				libc::sigaddset(&mut defaults, libc::SIGPIPE);
+			},
+			SignalDefaults::Terminal => {
+				for signal in TERMINAL_SIGNALS.into_iter().chain([libc::SIGPIPE]) {
+					libc::sigaddset(&mut defaults, signal);
+				}
+			},
+			SignalDefaults::All => {
+				for signal in 1..32 {
+					if signal != libc::SIGKILL && signal != libc::SIGSTOP {
+						libc::sigaddset(&mut defaults, signal);
+					}
+				}
+			},
+		}
+		let mut none: libc::sigset_t = std::mem::zeroed();
+		libc::sigemptyset(&mut none);
+		check(libc::posix_spawnattr_setsigdefault(&mut setup.attributes, &defaults))?;
+		check(libc::posix_spawnattr_setsigmask(&mut setup.attributes, &none))?;
+		check(libc::posix_spawnattr_setflags(&mut setup.attributes, flags as libc::c_short))?;
+	}
+	let mut pid: libc::pid_t = 0;
+	loop {
+		let result = unsafe {
+			libc::posix_spawn(
+				&mut pid,
+				request.program.as_ptr(),
+				&setup.actions,
+				&setup.attributes,
+				argv.as_ptr(),
+				envp.as_ptr(),
+			)
+		};
+		if result == libc::EINTR {
+			continue;
+		}
+		check(result)?;
+		return Ok(pid);
+	}
 }
 
 /// A child started by [`spawn`], reaped by [`SpawnedChild::try_wait`] or [`SpawnedChild::wait`].
@@ -513,6 +735,7 @@ mod tests {
 		SpawnedChild::new(pid).wait().unwrap()
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn a_child_started_to_end_with_its_parent_ends_when_the_thread_that_started_it_ends() {
 		let status = status_after_the_starting_thread_ended(
@@ -521,6 +744,7 @@ mod tests {
 		assert_eq!(status.signal(), Some(libc::SIGKILL));
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn a_child_whose_parent_death_signal_is_refused_runs_without_it() {
 		let status = status_after_the_starting_thread_ended(
@@ -545,6 +769,7 @@ mod tests {
 		);
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn a_missing_program_or_directory_is_an_error_and_leaves_no_child() {
 		let missing = request("atomic-no-such-program", &[], None).err().unwrap();
@@ -570,6 +795,7 @@ mod tests {
 		assert_eq!(left.count(), 0);
 	}
 
+	#[cfg(target_os = "linux")]
 	#[test]
 	fn the_child_starts_with_default_signals_and_none_blocked() {
 		// SIGPIPE is ignored by the Rust test harness; the child must start with it at its default.
@@ -588,21 +814,76 @@ mod tests {
 
 	#[test]
 	fn a_new_session_is_led_by_the_child() {
-		let pipes = stdio_pipes().unwrap();
-		let mut request = request("/bin/sh", &["-c", "ps -o sid= -p $$"], None).unwrap();
+		let mut request = request("/bin/sleep", &["30"], None).unwrap();
 		request.new_session = true;
+		let pipes = stdio_pipes().unwrap();
 		let pid = spawn(
 			&request,
 			[pipes.child[0].as_raw_fd(), pipes.child[1].as_raw_fd(), pipes.child[2].as_raw_fd()],
 			None,
 		)
 		.unwrap();
-		let StdioPipes { child, stdin, stdout, .. } = pipes;
-		drop(child);
-		drop(stdin);
-		let mut output = String::new();
-		std::fs::File::from(stdout).read_to_string(&mut output).unwrap();
-		SpawnedChild::new(pid).wait().unwrap();
-		assert_eq!(output.trim(), pid.to_string());
+		let (session, group) = unsafe { (libc::getsid(pid), libc::getpgid(pid)) };
+		let mut child = SpawnedChild::new(pid);
+		child.kill(libc::SIGKILL).unwrap();
+		child.wait().unwrap();
+		assert_eq!((session, group), (pid, pid));
+	}
+
+	#[test]
+	fn the_child_starts_with_sigpipe_at_its_default() {
+		// The Rust test harness ignores SIGPIPE. Were the child to start with it ignored, the shell would survive.
+		let (status, _) = run(&request("/bin/sh", &["-c", "kill -PIPE $$; exit 3"], None).unwrap());
+		assert_eq!(status.signal(), Some(libc::SIGPIPE));
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn a_missing_program_or_directory_is_an_error() {
+		let missing = request("atomic-no-such-program", &[], None).err().unwrap();
+		assert_eq!(missing.raw_os_error(), Some(libc::ENOENT));
+		let request =
+			request("/bin/sh", &["-c", "true"], Some(Path::new("/nonexistent-atomic-dir"))).unwrap();
+		let pipes = stdio_pipes().unwrap();
+		let fds =
+			[pipes.child[0].as_raw_fd(), pipes.child[1].as_raw_fd(), pipes.child[2].as_raw_fd()];
+		assert_eq!(spawn(&request, fds, None).err().unwrap().raw_os_error(), Some(libc::ENOENT));
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn the_child_starts_with_no_signal_blocked() {
+		// posix_spawn hands the child the starting thread's mask unless told otherwise: block one in that thread.
+		let (_, output) = std::thread::spawn(|| {
+			unsafe {
+				let mut blocked: libc::sigset_t = std::mem::zeroed();
+				libc::sigemptyset(&mut blocked);
+				libc::sigaddset(&mut blocked, libc::SIGUSR2);
+				libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
+			}
+			run(&request("/bin/sh", &["-c", "ps -o blocked= -p $$"], None).unwrap())
+		})
+		.join()
+		.unwrap();
+		assert_eq!(output.trim(), "0");
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn only_the_standard_streams_reach_the_child() {
+		// A descriptor without close-on-exec, as a parent of this process could have left open.
+		let file = std::fs::File::open("/dev/null").unwrap();
+		let open = unsafe { libc::dup(file.as_raw_fd()) };
+		assert!(open > 2);
+		let (_, output) = run(
+			&request(
+				"/bin/sh",
+				&["-c", &format!("[ -e /dev/fd/{open} ] && echo open || echo closed")],
+				None,
+			)
+			.unwrap(),
+		);
+		unsafe { libc::close(open) };
+		assert_eq!(output, "closed\n");
 	}
 }

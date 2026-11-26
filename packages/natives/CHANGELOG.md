@@ -6,6 +6,10 @@
 
 - `watchProcessUntilHostDies(pid)`: on Linux and macOS, the host-death guardian ends a running child process, and the processes below it in its process group, when the calling process dies, until `release()`. A process ID that by then names another process is left alone.
 
+### Changed
+
+- **Commands start without fork on macOS.** The task supervisor starts `bash` commands, with or without `pty: true`, and its host-death guardian through `posix_spawn` instead of `fork()`. With a 3 GB host, starting a command took 0.5 ms instead of 4.4 ms, 1.7 ms instead of 5.5 ms on a terminal, and the host's JavaScript thread no longer stalled 9 to 18 ms each time. After the Mac came under memory pressure, each `fork()` also printed "MallocStackLogging: can't turn off malloc stack logging because it was not enabled.", which the TUI showed once per command. As with Node's `child_process` on macOS, a command now gets only its standard input, output and error, not other descriptors the host left open. The guardian also starts without fork on Linux, as commands already did.
+
 ### Fixed
 
 - **`bash` with `pty: true` no longer slows to about 150 KB/s on macOS.** A macOS terminal holds about 1 KB of output, and the task supervisor read it only every 5 ms, so a command that printed 1 MB took about 6.5 seconds and waited on its own output. The supervisor now reads output as soon as it arrives: the same command takes under half a second ([#6634](https://github.com/bastani-inc/atomic/pull/6634)).
