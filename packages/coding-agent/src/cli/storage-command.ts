@@ -659,7 +659,7 @@ async function migrate(
 		{ agentDir, domain: "sessions" },
 	);
 	try {
-		const { SqlSnapshotBlobStore } = await import("../core/worktree-snapshot/blob-store.js");
+		const { SqlSnapshotBlobStore } = await import("../core/worktree-snapshot/blob-store.ts");
 		if ((await SqlSnapshotBlobStore.buildHotSessionLinksIndex(building, selection.prefix)) === "built")
 			log("Rebuilt an index of the worktree snapshot links without stopping writes to them.");
 	} finally {
