@@ -45,7 +45,8 @@ const CHILD_TEST_TIMEOUT_MS = CHILD_LOAD_TIMEOUT_MS + CHILD_RUN_TIMEOUT_MS + 10_
 const LOADED = "event-loop-block-monitor fixture loaded";
 
 const RUNTIMES = [
-	{ name: "Node", command: () => [process.execPath, "--import", "jiti/register"] },
+	// Node 26 deprecates the `module.register()` that jiti/register calls; its warning is not the monitor's output.
+	{ name: "Node", command: () => [process.execPath, "--disable-warning=DEP0205", "--import", "jiti/register"] },
 	{ name: "Bun", command: () => [bunExecutable()] },
 ] as const;
 
