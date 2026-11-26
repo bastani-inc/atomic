@@ -40,6 +40,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"TerminationCause",
 	"containProcessTree",
 	"containProcessTreeAllowingBreakaway",
+	"fsyncDescriptor",
 	"glob",
 	"grep",
 	"hasMatch",

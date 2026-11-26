@@ -89,32 +89,98 @@ export async function discoverChatFile(file: string, id: string): Promise<boolea
 export async function hasFileChatRecords(owner: ChatRecordOwner): Promise<boolean> {
 	return !!owner.file && hasStableFileOwner(owner.epoch) && discoverChatFile(owner.file, owner.id);
 }
+const CHAT_OPEN_BATCH = 32;
+
 export async function appendFileChatRecord(owner: ChatRecordOwner, anchor: string, record: ChatRecord): Promise<void> {
-	if (!hasStableFileOwner(owner.epoch)) return;
-	await appendSlot(owner, slotFor(owner, anchor), JSON.stringify({ v: 1, ...record }));
-	// The anchored record is the edge; this index only finds it from the prompt, without the notice's file.
-	if (record.kind === "promptBefore")
-		await appendSlot(owner, orderSlot(owner), encodeChatOrder({ anchor, promptId: record.promptId }));
+	await appendFileChatRecords(owner, [{ anchor, record }]);
 }
-async function appendSlot(owner: ChatRecordOwner, slot: string, line: string): Promise<void> {
-	const { path, header } = files(owner);
-	const index = (await owned(path, header, true)) ?? (await create(path, header));
-	try {
-		const bodyPath = `${path}.${slot}`,
-			bodyHeader = `${header.trimEnd()} ${slot}\n`;
-		let data = await owned(bodyPath, bodyHeader, true);
-		if (!data) {
-			// Register first. A crash can leave an empty slot, never a body that deletion cannot locate.
-			await index.appendFile(`\n${slot}\n`);
-			data = await create(bodyPath, bodyHeader);
+
+export async function appendFileChatRecords(
+	owner: ChatRecordOwner,
+	entries: readonly { readonly anchor: string; readonly record: ChatRecord }[],
+): Promise<void> {
+	if (!entries.length || !hasStableFileOwner(owner.epoch)) return;
+	const grouped = new Map<string, string[]>();
+	const add = (slot: string, line: string) => {
+		let lines = grouped.get(slot);
+		if (!lines) {
+			lines = [];
+			grouped.set(slot, lines);
 		}
-		try {
-			await data.appendFile(`\n${line}\n`);
-		} finally {
-			await data.close();
+		lines.push(line);
+	};
+	for (const { anchor, record } of entries) {
+		add(slotFor(owner, anchor), JSON.stringify({ v: 1, ...record }));
+		// The anchored record is the edge; this index only finds it from the prompt, without the notice's file.
+		if (record.kind === "promptBefore") add(orderSlot(owner), encodeChatOrder({ anchor, promptId: record.promptId }));
+	}
+	await appendSlots(owner, grouped);
+}
+
+async function appendSlots(owner: ChatRecordOwner, grouped: ReadonlyMap<string, readonly string[]>): Promise<void> {
+	const { path, header } = files(owner);
+	const headerPrefix = header.trimEnd();
+	const slots = [...grouped.keys()];
+	let index: FileHandle | undefined;
+	try {
+		for (let at = 0; at < slots.length; at += CHAT_OPEN_BATCH) {
+			const batch = slots.slice(at, at + CHAT_OPEN_BATCH);
+			const handles = new Map<string, FileHandle>();
+			try {
+				const openIndex = index === undefined;
+				// Open the index alongside the first batch of slots, keeping one index handle for the whole call.
+				const results = await Promise.allSettled([
+					...(openIndex ? [owned(path, header, true)] : []),
+					...batch.map((slot) => owned(`${path}.${slot}`, `${headerPrefix} ${slot}\n`, true)),
+				]);
+				let firstError: unknown;
+				let hasError = false;
+				const slotResults = openIndex ? results.slice(1) : results;
+				if (openIndex) {
+					const indexResult = results[0]!;
+					if (indexResult.status === "fulfilled") index = indexResult.value;
+					else {
+						firstError = indexResult.reason;
+						hasError = true;
+					}
+				}
+				for (const [i, result] of slotResults.entries()) {
+					if (result.status === "fulfilled") {
+						if (result.value) handles.set(batch[i]!, result.value);
+					} else if (!hasError) {
+						firstError = result.reason;
+						hasError = true;
+					}
+				}
+				if (hasError) throw firstError;
+				index ??= await create(path, header);
+				const missing = batch.filter((slot) => !handles.has(slot));
+				if (missing.length > 0) {
+					// Register every new slot first. A crash can leave an empty slot, never a body that deletion cannot locate.
+					await index.appendFile(`\n${missing.join("\n")}\n`);
+					const created = await Promise.allSettled(
+						missing.map((slot) => create(`${path}.${slot}`, `${headerPrefix} ${slot}\n`)),
+					);
+					let createError: unknown;
+					let hasCreateError = false;
+					for (const [i, result] of created.entries()) {
+						if (result.status === "fulfilled") handles.set(missing[i]!, result.value);
+						else if (!hasCreateError) {
+							createError = result.reason;
+							hasCreateError = true;
+						}
+					}
+					if (hasCreateError) throw createError;
+				}
+				await Promise.all(
+					batch.map((slot) => handles.get(slot)!.appendFile(`\n${grouped.get(slot)!.join("\n")}\n`)),
+				);
+			} finally {
+				await Promise.all([...handles.values()].map((handle) => handle.close().catch(() => undefined)));
+			}
 		}
 	} finally {
-		await index.close();
+		await index?.close().catch(() => undefined);
 	}
 }
 async function readSlot(owner: ChatRecordOwner, slot: string): Promise<string[]> {
@@ -135,25 +201,34 @@ export async function readFileChatRecords(
 	owner: ChatRecordOwner,
 	anchors: readonly string[],
 ): Promise<AnchoredChatRecord[]> {
-	if (!hasStableFileOwner(owner.epoch)) return [];
+	if (!anchors.length || !hasStableFileOwner(owner.epoch)) return [];
 	const older = await olderEpoch(owner);
 	const owners = older === undefined ? [owner] : [{ ...owner, epoch: older }, owner];
-	const result: AnchoredChatRecord[] = [];
+	const tasks: { readonly anchor: string; readonly owner: ChatRecordOwner; readonly slot: string }[] = [];
 	for (const anchor of anchors)
-		for (const each of owners)
-			for (const line of await readSlot(each, slotFor(each, anchor))) {
+		for (const each of owners) tasks.push({ anchor, owner: each, slot: slotFor(each, anchor) });
+	const result: AnchoredChatRecord[] = [];
+	for (let at = 0; at < tasks.length; at += CHAT_OPEN_BATCH) {
+		const batch = tasks.slice(at, at + CHAT_OPEN_BATCH);
+		const read = await Promise.all(batch.map((task) => readSlot(task.owner, task.slot)));
+		for (const [i, lines] of read.entries()) {
+			const anchor = batch[i]!.anchor;
+			for (const line of lines) {
 				const record = decodeChatRecord(line);
 				if (record) result.push({ anchor, record });
 			}
+		}
+	}
 	return result;
 }
 export async function readFileChatOrders(owner: ChatRecordOwner, promptIds: readonly string[]): Promise<ChatOrder[]> {
 	if (!promptIds.length || !owner.file || !hasStableFileOwner(owner.epoch)) return [];
 	const older = await olderEpoch(owner);
 	const owners = older === undefined ? [owner] : [{ ...owner, epoch: older }, owner];
+	const read = await Promise.all(owners.map((each) => readSlot(each, orderSlot(each))));
 	const orders: ChatOrder[] = [];
-	for (const each of owners)
-		for (const line of await readSlot(each, orderSlot(each))) {
+	for (const lines of read)
+		for (const line of lines) {
 			const order = decodeChatOrder(line);
 			if (order) orders.push(order);
 		}
@@ -169,13 +244,19 @@ export async function deleteFileChatRecords(owner: ChatRecordOwner): Promise<voi
 	} finally {
 		await index.close();
 	}
-	for (const slot of new Set(slots)) {
-		if (!/^[0-9a-f]{64}$/.test(slot)) continue;
-		const name = `${path}.${slot}`,
-			data = await owned(name, `${header.trimEnd()} ${slot}\n`);
-		if (!data) continue;
-		await data.close();
-		await unlink(name);
+	const unique = [...new Set(slots)].filter((slot) => /^[0-9a-f]{64}$/.test(slot));
+	const headerPrefix = header.trimEnd();
+	for (let at = 0; at < unique.length; at += CHAT_OPEN_BATCH) {
+		const batch = unique.slice(at, at + CHAT_OPEN_BATCH);
+		await Promise.all(
+			batch.map(async (slot) => {
+				const name = `${path}.${slot}`;
+				const data = await owned(name, `${headerPrefix} ${slot}\n`);
+				if (!data) return;
+				await data.close();
+				await unlink(name);
+			}),
+		);
 	}
 	await unlink(path);
 }

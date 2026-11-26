@@ -22,23 +22,25 @@ interface Scan {
 	texts: string[];
 }
 
-function applyLine(scan: Scan, line: string, unterminated = false): void {
-	if (!line.trim()) return;
+function applyLine(scan: Scan, line: string, unterminated = false): boolean {
+	if (line.includes("\0")) return false;
+	if (!line.trim()) return true;
 	let entry: SessionEntry;
 	try {
 		entry = JSON.parse(line) as SessionEntry;
 	} catch (cause) {
 		// A last line with no newline after it that does not parse is a write that never finished (#4993).
-		if (unterminated) return;
+		if (unterminated) return false;
 		throw cause;
 	}
 	const { state, texts } = applySessionSummaryEntries(scan.state, [entry]);
 	scan.state = state;
 	for (const { text } of texts) scan.texts.push(text);
+	return true;
 }
 
 /** Reads entries up to the first user message; returns the offset after the last line consumed. */
-async function scanHead(handle: FileHandle, scan: Scan): Promise<{ end: number; complete: boolean }> {
+async function scanHead(handle: FileHandle, scan: Scan): Promise<{ end: number; complete: boolean; torn: boolean }> {
 	const chunk = Buffer.alloc(HEAD_CHUNK_BYTES);
 	let pending = Buffer.alloc(0);
 	let offset = 0;
@@ -47,21 +49,26 @@ async function scanHead(handle: FileHandle, scan: Scan): Promise<{ end: number; 
 	while (offset < HEAD_SCAN_LIMIT_BYTES) {
 		const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset);
 		if (bytesRead === 0) {
-			if (pending.length > 0) applyLine(scan, pending.toString("utf8"), true);
-			return { end: end + pending.length, complete: true };
+			if (pending.length > 0 && !applyLine(scan, pending.toString("utf8"), true))
+				return { end, complete: true, torn: true };
+			return { end: end + pending.length, complete: true, torn: false };
 		}
 		offset += bytesRead;
 		pending = Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
 		for (let newline = pending.indexOf(NEWLINE); newline !== -1; newline = pending.indexOf(NEWLINE)) {
 			const line = pending.subarray(0, newline).toString("utf8");
 			pending = pending.subarray(newline + 1);
+			if (header) {
+				header = false;
+				end += newline + 1;
+				continue;
+			}
+			if (!applyLine(scan, line)) return { end, complete: true, torn: true };
 			end += newline + 1;
-			if (header) header = false;
-			else applyLine(scan, line);
-			if (scan.state.firstMessage) return { end, complete: true };
+			if (scan.state.firstMessage) return { end, complete: true, torn: false };
 		}
 	}
-	return { end, complete: false };
+	return { end, complete: false, torn: false };
 }
 
 /**
@@ -94,7 +101,9 @@ async function scanTail(
 	}
 	if (skipsMiddle) scan.state = { ...scan.state, latestMessageTime: null };
 	const lines = bytes.subarray(from, filled).toString("utf8").split("\n");
-	for (const [index, line] of lines.entries()) applyLine(scan, line, index === lines.length - 1);
+	for (const [index, line] of lines.entries()) {
+		if (!applyLine(scan, line, index === lines.length - 1)) break;
+	}
 	return !skipsMiddle || scan.state.latestMessageTime !== null;
 }
 
@@ -119,8 +128,9 @@ export async function summarizeLegacySession(
 	try {
 		const head = await scanHead(handle, scan);
 		if (!head.complete && allowWhole) return summarizeSession(await file.read());
-		if (!(await scanTail(handle, size, head.end, scan)) && allowWhole) return summarizeSession(await file.read());
-		estimated = Math.max(size - SUMMARY_WINDOW_BYTES, head.end) > head.end;
+		if (!head.torn && !(await scanTail(handle, size, head.end, scan)) && allowWhole)
+			return summarizeSession(await file.read());
+		estimated = !head.torn && Math.max(size - SUMMARY_WINDOW_BYTES, head.end) > head.end;
 	} finally {
 		await handle.close();
 	}
