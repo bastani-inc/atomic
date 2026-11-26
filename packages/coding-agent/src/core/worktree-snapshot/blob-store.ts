@@ -1,5 +1,5 @@
 import { storageSchemaCurrent, transactionFinisher } from "../storage/added-exports.js";
-import { noteStorageSchemaTables } from "../storage/added-exports-0-10-11.js";
+import { MAX_SEQUENCE_REQUEST_STATEMENTS, noteStorageSchemaTables } from "../storage/added-exports-0-10-11.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -2231,8 +2231,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const chunk = `INSERT INTO ${this.tables.blobChunks} (hash, idx, data) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ${this.table} WHERE hash = ?) ON CONFLICT DO NOTHING`;
 		const statements: { sql: string; params: SqliteValue[] }[] = [];
 		let chunked = false;
+		let totalBytes = 0;
 		for (const blob of blobs) {
 			const { hash, data } = blob;
+			totalBytes += data.byteLength;
 			if (data.byteLength <= SNAPSHOT_BLOB_CHUNK_BYTES) {
 				statements.push({ sql: header, params: [hash, data.byteLength, data, 0] });
 				continue;
@@ -2249,11 +2251,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			await this.database.batch(statements);
 			return;
 		}
-		await this.database.transaction(async (transaction) => {
-			// On a pipelined connection the statements go out with the commit: one round trip after the locks.
-			if (transactionFinisher(transaction)?.(statements) === true) return;
-			for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
-		}, this.blobWrite());
+		const lead = statements.length < MAX_SEQUENCE_REQUEST_STATEMENTS && totalBytes <= SNAPSHOT_BLOB_CHUNK_BYTES;
+		await this.database.transaction(
+			async (transaction) => {
+				// On a pipelined connection the statements go out with the commit: one round trip after the locks.
+				if (transactionFinisher(transaction)?.(statements) === true) return;
+				for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
+			},
+			this.blobWrite(lead ? statements : undefined, lead),
+		);
 	}
 
 	/**
@@ -2264,11 +2270,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * in hash order, as an append's check of the blobs it records locks them (`missingBlob`), so neither waits on the
 	 * other in a cycle. Its callback only uses the transaction, so a transient failure runs it again.
 	 */
-	private blobWrite(leading?: readonly SqliteStatement[]): SqliteTransactionOptions {
+	private blobWrite(leading?: readonly SqliteStatement[], leadingOnly = false): SqliteTransactionOptions {
 		return {
 			retryTransientFailures: true,
 			concurrency: { kind: "serial", domain: this.table },
 			...(leading === undefined ? {} : { leading }),
+			...(leading !== undefined && leadingOnly ? { leadingOnly: true } : {}),
 		};
 	}
 	/**
