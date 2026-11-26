@@ -2020,3 +2020,120 @@ test("batched departure release preserves per-sender FIFO when recipient moves b
 		});
 	}
 });
+
+test("mixed burst with two serialized shared-route local replies preserves FIFO when a single healthy reply step exceeds LOCAL_RETRY_LOOKUP_BOUND_MS (#6712)", async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const target = await a.connect("target");
+
+		const ask1 = randomUUID();
+		const ask2 = randomUUID();
+		await a.opened.state.pendingAsks.record({
+			senderSessionId: target.info.id,
+			targetSessionId: sender.info.id,
+			messageId: ask1,
+		});
+		await a.opened.state.pendingAsks.record({
+			senderSessionId: target.info.id,
+			targetSessionId: sender.info.id,
+			messageId: ask2,
+		});
+
+		// Simulate a single healthy-but-contended SQLite write (450 ms > 300 ms LOCAL_RETRY_LOOKUP_BOUND_MS) on ask2's
+		// route release while the shared store is alive and answering other reads.
+		const pendingAsks = a.opened.state.pendingAsks;
+		const origRelease = pendingAsks.releaseRoute.bind(pendingAsks);
+		const slowStepMs = LOCAL_RETRY_LOOKUP_BOUND_MS + 150;
+		const ask2ReleaseStarted = deferred();
+		const ask2ReleaseDone = deferred();
+		Object.assign(pendingAsks, {
+			releaseRoute: async (...args: Parameters<typeof origRelease>) => {
+				if (args[0].replyTo === ask2) {
+					ask2ReleaseStarted.resolve();
+					const timer = setTimeout(() => ask2ReleaseDone.resolve(), slowStepMs);
+					try {
+						await ask2ReleaseDone.promise;
+					} finally {
+						clearTimeout(timer);
+					}
+				}
+				return origRelease(...args);
+			},
+		});
+		cleanups.push(async () => {
+			ask2ReleaseDone.resolve();
+			Object.assign(pendingAsks, { releaseRoute: origRelease });
+		});
+
+		const expected: string[] = [];
+		for (let i = 0; i < 16; i++) {
+			const text = `local-seq-${i}`;
+			expected.push(text);
+			if (i === 0) {
+				a.send(sender, target.info.id, makeMessage(text, { replyTo: ask1 }), {
+					requirePendingReply: true,
+					expectedRecipientId: target.info.id,
+				});
+			} else if (i === 5) {
+				a.send(sender, target.info.id, makeMessage(text, { replyTo: ask2 }), {
+					requirePendingReply: true,
+					expectedRecipientId: target.info.id,
+				});
+			} else {
+				a.send(sender, target.info.id, makeMessage(text));
+			}
+		}
+
+		await ask2ReleaseStarted.promise;
+		// Advance past LOCAL_RETRY_LOOKUP_BOUND_MS while ask2's releaseRoute is still finishing: local-seq-6..15 must NOT overtake local-seq-5!
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS + 50);
+		await flushImmediate(3);
+		assert.deepEqual(
+			receivedTexts(target),
+			["local-seq-0", "local-seq-1", "local-seq-2", "local-seq-3", "local-seq-4"],
+			"plain sends must wait for an active local requirePendingReply reply on a responding store",
+		);
+
+		await vi.advanceTimersByTimeAsync(slowStepMs);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(target), expected));
+	});
+});
+
+test("a plain local send behind a local requirePendingReply parked behind a hung remote reply still completes within LOCAL_RETRY_LOOKUP_BOUND_MS (#6712)", async () => {
+	await withFakeClocks(async () => {
+		const { nodes } = await cluster(1);
+		const a = nodes[0]!;
+		const sender = await a.connect("sender");
+		const localTarget = await a.connect("local-target");
+
+		const { leases } = a.opened.state;
+		const origListLive = leases.listLive.bind(leases);
+		const origListLiveFor = leases.listLiveFor?.bind(leases);
+		const release = deferred();
+		cleanups.push(async () => {
+			Object.assign(leases, {
+				listLive: origListLive,
+				...(origListLiveFor ? { listLiveFor: origListLiveFor } : {}),
+			});
+			release.resolve();
+		});
+		Object.assign(leases, {
+			listLive: () => release.promise.then(() => []),
+			listLiveFor: undefined,
+		});
+
+		a.send(sender, "remote-r", makeMessage("r0-remote-reply", { replyTo: "ask-remote-r0" }), {
+			requirePendingReply: true,
+		});
+		a.send(sender, localTarget.info.id, makeMessage("r1-local-reply", { replyTo: "ask-local-r1" }), {
+			requirePendingReply: true,
+			expectedRecipientId: localTarget.info.id,
+		});
+		a.send(sender, localTarget.info.id, makeMessage("m2-plain-local"));
+
+		await vi.advanceTimersByTimeAsync(LOCAL_RETRY_LOOKUP_BOUND_MS);
+		await waitImmediate(() => assert.deepEqual(receivedTexts(localTarget), ["m2-plain-local"]));
+	});
+});

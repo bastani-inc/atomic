@@ -589,6 +589,7 @@ interface SendProgress {
 	readonly messageId: string;
 	readonly attemptId?: string;
 	readonly ticket?: SendOrderTicket;
+	readonly requirePendingReplyLocal?: true;
 	waitingOnReplyKey?: string;
 	scheduledFireAt?: number;
 	stopReporting?: () => void;
@@ -3676,6 +3677,7 @@ export class MultiNodeRouter {
 			messageId: request.message.id,
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			ticket,
+			...(request.localTarget !== undefined && request.requirePendingReply ? { requirePendingReplyLocal: true as const } : {}),
 		};
 		this.sendProgress.set(request.clientMessage, progress);
 		this.ticketProgress.set(ticket, progress);
@@ -3999,7 +4001,29 @@ export class MultiNodeRouter {
 		if (upstream !== undefined && upstream.hadProgress) {
 			latest = latest === undefined ? upstream.lastProgressAt : Math.max(latest, upstream.lastProgressAt);
 		}
+		const active = upstream ?? own;
+		if (
+			latest === undefined &&
+			active.requirePendingReplyLocal === true &&
+			active.waitingOnReplyKey === undefined &&
+			this.storeAnsweredAt >= active.startedAt
+		) {
+			latest = this.storeAnsweredAt;
+		}
 		return latest;
+	}
+
+	/**
+	 * Store-silence window for a plain local send waiting on `earlier`. A local `requirePendingReply` reply has a
+	 * `PRESENCE_REGISTRATION_BOUND_MS` shared-route adoption budget, so once the shared store is proven responsive a
+	 * single contended write (> 300 ms) must not let later plain sends overtake it; soft replies and unsettled outbox
+	 * retries keep `LOCAL_RETRY_LOOKUP_BOUND_MS`.
+	 */
+	private localBlockerSilenceMs(earlier: SendOrderTicket): number {
+		const own = this.ticketProgress.get(earlier);
+		if (own === undefined) return LOCAL_RETRY_LOOKUP_BOUND_MS;
+		const active = this.resolveBlockerProgress(own, earlier) ?? own;
+		return active.requirePendingReplyLocal === true ? PRESENCE_REGISTRATION_BOUND_MS : LOCAL_RETRY_LOOKUP_BOUND_MS;
 	}
 
 	/** Wait for strictly earlier sends from the same sender to `target` before performing a local commit. */
@@ -4038,7 +4062,7 @@ export class MultiNodeRouter {
 			...(hasBound
 				? {
 						blockerProgressAt: (earlier) => this.blockerProgressAt(earlier),
-						progressSilenceMs: LOCAL_RETRY_LOOKUP_BOUND_MS,
+						progressSilenceMs: (earlier) => this.localBlockerSilenceMs(earlier),
 						maxLocalWaitUntil: (ownProgress?.startedAt ?? performance.now()) + PRESENCE_REGISTRATION_BOUND_MS,
 					}
 				: {}),
