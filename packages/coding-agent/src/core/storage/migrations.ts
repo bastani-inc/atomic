@@ -348,19 +348,56 @@ export interface StorageFillfactorSetup extends StorageSchemaSetup {
 }
 
 /**
+ * The fillfactor checks this process made that found nothing for it to do, by database (`databaseIdentity`, which
+ * names the role and schema too), ledger and table, and the ones under way: the table had a fillfactor, or this role
+ * does not own it (#6560). Such a check is not made again. One that set the fillfactor, or found no table, is.
+ */
+const fillfactorChecks = new Map<string, Promise<boolean>>();
+
+/**
  * Sets `setup.table`'s fillfactor on PostgreSQL, once per database, recorded in the ledger as `schema:<domain>`: each
  * page then keeps room for a new version of the rows on it, so updates of rows that change no indexed column stay on
  * their page as HOT updates and touch no index (#6560). It applies to the pages written from then on; `VACUUM FULL`
- * or pg_repack rewrites the existing ones with it. Nothing runs where the catalog an open read records the step, where
- * the table has a fillfactor already, or where this role does not own the table: a runtime role without DDL opens as
- * before, and `atomic storage migrate`, run as the owner, sets it. Does nothing on SQLite.
+ * or pg_repack rewrites the existing ones with it. Nothing runs where the catalog an open read records the step.
+ * Otherwise one read of the table's catalog entry decides: nothing runs where the table has a fillfactor already, or
+ * where this role does not own the table, so a runtime role without DDL opens as before, and `atomic storage migrate`,
+ * run as the owner, sets it. A process reads that once for each database and table, so until migrate records the step
+ * only its first open pays the read. Does nothing on SQLite.
  */
 export async function ensureTableFillfactor(database: SqliteDatabase, setup: StorageFillfactorSetup): Promise<void> {
 	const dialect = dialectOf(database);
 	if (dialect.name !== "postgres" || database.readOnly === true) return;
+	const { ledger, domain, revision, table } = setup;
+	if (await storageSchemaCurrent(database, { ledger, domain, revision })) return;
+	const identity = database.databaseIdentity?.();
+	if (identity === undefined) {
+		await checkTableFillfactor(database, setup);
+		return;
+	}
+	const key = JSON.stringify([identity, ledger, table]);
+	let check = fillfactorChecks.get(key);
+	if (check === undefined) {
+		const made = checkTableFillfactor(database, setup);
+		check = made;
+		fillfactorChecks.set(key, made);
+		const forget = () => {
+			if (fillfactorChecks.get(key) === made) fillfactorChecks.delete(key);
+		};
+		made.then((settled) => {
+			if (!settled) forget();
+		}, forget);
+	}
+	await check;
+}
+
+/**
+ * {@link ensureTableFillfactor}'s read of the table's catalog entry, and the change where it is due. True where it
+ * found nothing this role can do: the table has a fillfactor, or this role does not own it.
+ */
+async function checkTableFillfactor(database: SqliteDatabase, setup: StorageFillfactorSetup): Promise<boolean> {
+	const dialect = dialectOf(database);
 	const { ledger, domain, revision, table, fillfactor } = setup;
 	const schema = { ledger, domain, revision };
-	if (await storageSchemaCurrent(database, schema)) return;
 	const found = await database.get<SqliteRow & { owned: boolean | number; tuned: boolean | number }>(
 		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned,
 			coalesce(array_to_string(c.reloptions, ',') LIKE '%fillfactor=%', false) AS tuned
@@ -368,7 +405,8 @@ export async function ensureTableFillfactor(database: SqliteDatabase, setup: Sto
 		dialect.identifier(table),
 	);
 	const yes = (value: boolean | number | undefined) => value === true || Number(value) === 1;
-	if (found === undefined || yes(found.tuned) || !yes(found.owned)) return;
+	if (found === undefined) return false;
+	if (yes(found.tuned) || !yes(found.owned)) return true;
 	await database.transaction(
 		(tx) =>
 			ensureStorageSchema(tx, dialect, schema, async () => {
@@ -376,4 +414,5 @@ export async function ensureTableFillfactor(database: SqliteDatabase, setup: Sto
 			}),
 		{ retryTransientFailures: true, concurrency: { kind: "serial", domain: ledger } },
 	);
+	return false;
 }
