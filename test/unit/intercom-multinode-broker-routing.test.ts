@@ -27,6 +27,7 @@ import {
 	BROKER_LEASE_RENEW_INTERVAL_MS,
 	type IntercomBrokerStateOptions,
 	KNOWN_SESSION_RETENTION_MS,
+	OUTBOX_CLAIM_STALE_AFTER_MS,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import {
 	resolveBrokerStateSource,
@@ -1854,6 +1855,46 @@ test("an ask whose route write fails is redelivered and keeps its reply route in
 	b!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
 	const frame = await waitFor(() => messageFrames(asker, reply.id)[0] ?? reasonOf(outcomeOf(replier, reply.id)));
 	assert.deepEqual(frame, { type: "message", from: replier.info, message: reply });
+});
+
+test("a late received after a broker reclaims a stale claim settles the current claim token (#6712)", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("recipient");
+	const sent = message({ content: { text: "slow save across reclaim" } });
+	a!.send(sender, "recipient", sent);
+
+	await waitFor(() => messageFrames(recipient, sent.id)[0]);
+	const firstRow = await a!.opened.state.outbox.read(sent.id);
+	assert.equal(firstRow.status, "found");
+	if (firstRow.status === "found") assert.equal(firstRow.row.claimAttempts, 1);
+
+	// Age the claim past staleness and nudge broker b to reclaim under a new token (T2) while the recipient is still
+	// saving frame 1, producing a duplicate frame on the wire.
+	await b!.database.run(
+		"UPDATE mn_intercom_outbox SET claim_renewed_at = claim_renewed_at - ? WHERE message_id = ?",
+		OUTBOX_CLAIM_STALE_AFTER_MS + 5_000,
+		sent.id,
+	);
+	await a!.opened.bus.publish({
+		brokerId: b!.router.brokerId,
+		reason: "outbox",
+		version: firstRow.status === "found" ? firstRow.row.sequence : 1,
+	});
+	await waitFor(() => (messageFrames(recipient, sent.id).length >= 2 ? true : undefined));
+	const reclaimedRow = await a!.opened.state.outbox.read(sent.id);
+	assert.equal(reclaimedRow.status, "found");
+	if (reclaimedRow.status === "found") {
+		assert.equal(reclaimedRow.row.state, "claimed");
+		assert.equal(reclaimedRow.row.claimAttempts, 2);
+	}
+
+	// A single received confirmation (without re-confirming the duplicate frame) settles broker b's current claim (T2).
+	assert.equal(b!.router.received(recipient, sent.id), true);
+	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "delivered");
+	const settled = await a!.opened.state.outbox.read(sent.id);
+	assert.equal(settled.status, "found");
+	if (settled.status === "found") assert.equal(settled.row.state, "delivered");
 });
 
 test("an away session's asks move to the shared state only once it has them, and stay here otherwise (#4997)", async () => {
