@@ -1245,6 +1245,99 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 		});
 	});
 
+	test("migrate takes the leaf condition out of the session links' indexes, which a runtime role leaves alone without DDL, and a warm open does not check again (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const row = await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema");
+			const schema = String(row?.schema);
+			const links = `${PREFIX}snapshot_session_links`;
+			const step = "schema:snapshot-links-hot";
+			const indexes = async () =>
+				(
+					await ownerDatabase.all<{ name: string; definition: string }>(
+						"SELECT indexname AS name, indexdef AS definition FROM pg_indexes WHERE schemaname = ? AND tablename = ? ORDER BY indexname",
+						schema,
+						links,
+					)
+				).map((index) => `${index.name}: ${index.definition.replace(/^.* USING btree /, "")}`);
+			const recorded = async () =>
+				(
+					await ownerDatabase.all<{ domain: string }>(
+						`SELECT domain FROM ${schema}.${PREFIX}atomic_migrations WHERE domain = ?`,
+						step,
+					)
+				).map((ledger) => ledger.domain);
+			const hot = [
+				`${links}_anchored: (session_id, anchor_seq) WHERE (anchor_seq IS NOT NULL)`,
+				`${links}_broken: (session_id) WHERE (broken = 1)`,
+				`${links}_entry: (session_id, entry_id)`,
+				`${links}_pkey: (session_id, seq)`,
+			];
+			assert.deepEqual(await indexes(), hot);
+			assert.deepEqual(await recorded(), [step]);
+
+			// As an earlier release left the schema: the index of leaves, and no ledger record of the step.
+			await ownerDatabase.exec(`DROP INDEX ${schema}.${links}_anchored`);
+			await ownerDatabase.exec(
+				`CREATE INDEX ${links}_leaves ON ${schema}.${links} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL`,
+			);
+			await ownerDatabase.run(`DELETE FROM ${schema}.${PREFIX}atomic_migrations WHERE domain = ?`, step);
+			const earlier = await indexes();
+			assert.deepEqual(earlier, [
+				`${links}_broken: (session_id) WHERE (broken = 1)`,
+				`${links}_entry: (session_id, entry_id)`,
+				`${links}_leaves: (session_id, anchor_seq) WHERE ((children = 0) AND (anchor_seq IS NOT NULL))`,
+				`${links}_pkey: (session_id, seq)`,
+			]);
+			await grantRuntime(ownerDatabase, roles);
+			const openAsRuntime = async (statements: string[]) => {
+				const sessions = await SqlSessionStore.open(recording(await roles.open("runtime"), statements), {
+					prefix: PREFIX,
+				});
+				const id = `s-${statements.length}-${randomUUID()}`;
+				const created = await sessions.create(
+					{ id, version: SESSION_FORMAT_VERSION, cwd: "/work", createdAt: "2026-11-26T00:00:00.000Z" },
+					[],
+				);
+				const entry = {
+					type: "message",
+					id: "m1",
+					parentId: null,
+					timestamp: "2026-11-26T00:00:01.000Z",
+					message: { role: "user", content: "hello", timestamp: 1 },
+				} as SessionEntry;
+				await sessions.append(id, [entry], { expectSeq: created.lastSeq, epoch: created.epoch });
+				await sessions.close();
+			};
+			const before: string[] = [];
+			await openAsRuntime(before);
+			assert.deepEqual(before.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.deepEqual(await indexes(), earlier);
+			const second: string[] = [];
+			await openAsRuntime(second);
+			assert.deepEqual(
+				second.filter((statement) => statement.includes("relowner")),
+				[],
+				"the process found out once that the runtime role does not own the table",
+			);
+
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.deepEqual(await indexes(), hot);
+			assert.deepEqual(await recorded(), [step]);
+			const warm: string[] = [];
+			await openAsRuntime(warm);
+			assert.deepEqual(warm.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.deepEqual(
+				warm.filter((statement) => statement.includes("relowner")),
+				[],
+				"a warm open finds the step in the catalog it read",
+			);
+		});
+	});
+
 	test("a second open of every store on a current schema runs no DDL (#5218)", async () => {
 		await withRoles(async (_scope, roles) => {
 			await openEveryStore(() => roles.open("owner"), PREFIX);
