@@ -36,6 +36,47 @@ useTemporaryAgentDir();
 
 /** How long the Postgres interleaving waits for the fork to queue behind the create's locks. */
 const LOCK_WAIT_POLL_MS = 30_000;
+/** How long the Postgres interleaving waits for the create to reach the statement it stops before. */
+const PAUSE_REACH_MS = 60_000;
+
+/**
+ * Whether `sql`, with `params`, locks the row of session `id` in `sessions` for update, whatever form the statement
+ * names its rows in: a list of placeholders, or one JSON list (#6644).
+ */
+function locksRowForUpdate(sessions: string, sql: string, params: readonly unknown[], id: string): boolean {
+	if (!sql.includes(`FROM ${sessions} WHERE`) || !/FOR UPDATE/i.test(sql)) return false;
+	return params.some(
+		(param) =>
+			param === id ||
+			(typeof param === "string" && param.startsWith("[") && (JSON.parse(param) as unknown[]).includes(id)),
+	);
+}
+
+/**
+ * Resolves once `operation` has stopped at the statement `reached` marks. Fails with what went wrong, never waiting
+ * forever, when the operation settles without sending that statement, as after a change to its SQL, or does not reach
+ * it within {@link PAUSE_REACH_MS}.
+ */
+async function stoppedAt(reached: Promise<void>, operation: Promise<unknown>, what: string): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([
+			reached,
+			operation.then(
+				() => Promise.reject(new Error(`${what}: it finished without sending that statement`)),
+				(error: Error) => Promise.reject(new Error(`${what}: it failed first: ${error.message}`)),
+			),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error(`${what}: not reached within ${PAUSE_REACH_MS} ms`)),
+					PAUSE_REACH_MS,
+				);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 /** Entries with `texts` as their user messages, each the child of the one before. */
 function chain(texts: readonly string[]): SessionEntry[] {
@@ -189,8 +230,7 @@ for (const backend of storageBackends) {
 						const creating = countingRuns(
 							instrumented(await scope.connect(), {
 								pause: (sql, inTransaction, params) => {
-									if (paused || !inTransaction || !params.includes("F")) return undefined;
-									if (!sql.includes(`FROM ${sessions} WHERE id IN`) || !/FOR UPDATE/i.test(sql))
+									if (paused || !inTransaction || !locksRowForUpdate(sessions, sql, params, "F"))
 										return undefined;
 									paused = true;
 									return reached.wait();
@@ -206,7 +246,7 @@ for (const backend of storageBackends) {
 
 						const created = creator.create(header("P"), chain(["new-p1"]));
 						created.catch(() => {});
-						await reached.reached;
+						await stoppedAt(reached.reached, created, "the create stopping before it locks F's row");
 						let forkSettled = false;
 						const forked = forkWhole(forker, "F", "C").finally(() => {
 							forkSettled = true;
