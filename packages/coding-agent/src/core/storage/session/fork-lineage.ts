@@ -264,10 +264,11 @@ async function firstIncomplete(tx: SqliteExecutor, tables: ForkMaterializeTables
 
 /**
  * Copies into session `childId`, a fork that shares history, the rows `pieces` of its segments name, with their chunks,
- * search texts and the blobs their tool outputs name, then writes its segments without them, with a new generation, so
- * its view stays as it was at every commit (#6560). Last, `relink` links the child's rows in the snapshot index again
- * from the first row copied on, in seq order, as the index's rebuild links them: the copies are stored after the rows
- * the child appended, which are linked behind them again. Each piece lies within one of the child's segments: a sub-range of
+ * search texts and the blobs their tool outputs name, and links them in the snapshot index with `links.materialized`
+ * (see `materializedForkLinks`), a statement a piece, then writes its segments without them, with a new generation, so
+ * its view stays as it was at every commit (#6560). `links.settle` writes the segments, and in the same request checks
+ * the child's links from the first row copied on against the ones a save in seq order writes, linking them again where
+ * they differ (`sessionEntryLinks`). Each piece lies within one of the child's segments: a sub-range of
  * it, or all of it. The caller holds the child's row locked `update`, and the sources' rows locked, so neither its
  * segments nor the rows they name change meanwhile; `length` is the child's last seq.
  */
@@ -276,7 +277,10 @@ export async function materializeForkSegments(
 	dialect: StorageDialect,
 	tables: ForkMaterializeTables,
 	blobs: { readonly legacyBlobData: boolean; readonly chunkBytes: number },
-	relink: (tx: SqliteExecutor, sessionId: string, fromSeq: number) => Promise<void>,
+	links: {
+		readonly materialized?: string;
+		settle(tx: SqliteExecutor, sessionId: string, fromSeq: number, before: readonly SqliteStatement[]): Promise<void>;
+	},
 	childId: string,
 	length: number,
 	pieces: readonly ForkSegment[],
@@ -298,13 +302,18 @@ export async function materializeForkSegments(
 		);
 		if (Number(copied.changes) !== segmentLength(piece))
 			throw new ForkSourceIncompleteError(childId, piece.sourceId, await firstIncomplete(tx, tables, piece));
-		// Each entry's own chunks only, never a row an older version left past them or at an entry stored whole.
-		await tx.run(
-			`INSERT INTO ${tables.entryChunks} (session_id, seq, idx, data) SELECT ?, c.seq + ?, c.idx, c.data FROM ${tables.entryChunks} c JOIN ${tables.entries} e ON e.session_id = c.session_id AND e.seq = c.seq WHERE c.session_id = ? AND c.seq BETWEEN ? AND ? AND c.idx >= 0 AND c.idx < e.chunks ORDER BY c.seq, c.idx`,
-			childId,
-			shift,
-			...range,
-		);
+		await Promise.all([
+			// The piece's links, all of them in one statement, while the segments still name the piece: sent with the chunks'
+			// copy, which goes on behind it without waiting for its answer.
+			links.materialized === undefined ? undefined : tx.run(links.materialized, childId, shift, ...range, childId),
+			// Each entry's own chunks only, never a row an older version left past them or at an entry stored whole.
+			tx.run(
+				`INSERT INTO ${tables.entryChunks} (session_id, seq, idx, data) SELECT ?, c.seq + ?, c.idx, c.data FROM ${tables.entryChunks} c JOIN ${tables.entries} e ON e.session_id = c.session_id AND e.seq = c.seq WHERE c.session_id = ? AND c.seq BETWEEN ? AND ? AND c.idx >= 0 AND c.idx < e.chunks ORDER BY c.seq, c.idx`,
+				childId,
+				shift,
+				...range,
+			),
+		]);
 		await tx.run(
 			`INSERT INTO ${tables.searchTexts} (session_id, seq, text_json) SELECT ?, seq + ?, text_json FROM ${tables.searchTexts} WHERE session_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`,
 			childId,
@@ -330,6 +339,7 @@ export async function materializeForkSegments(
 		// A blob the source no longer holds stays missing, as it was for the source; one copied part way fails.
 		copy.remaining(answers);
 	}
-	await writeForkSegments(tx, tables, childId, remaining, length);
-	if (pieces.length > 0) await relink(tx, childId, Math.min(...pieces.map((piece) => piece.baseSeq + 1)));
+	const writes = forkSegmentWrites(tables, childId, remaining, length);
+	if (pieces.length === 0) for (const { sql, params } of writes) await tx.run(sql, ...params);
+	else await links.settle(tx, childId, Math.min(...pieces.map((piece) => piece.baseSeq + 1)), writes);
 }

@@ -14,7 +14,7 @@ export function forkSegmentsTable(prefix = ""): string {
 /**
  * The trigger that earlier builds of #6560 installed to link each entry a session with fork segments writes. Each
  * INSERT into the session entries table ran it, a plain session's too, so the store now writes those links itself
- * (`forkLinkWrites`, `sessionEntryRelinker`), and a store's open drops the trigger where it finds it.
+ * (`forkLinkWrites`, `materializedForkLinks`), and a store's open drops the trigger where it finds it.
  */
 export function legacyForkLinksTriggerName(entries: string): string {
 	return `${entries}_fork_links_v1`;
@@ -88,6 +88,24 @@ function childViewSeq(
  * stores, and keeps every snapshot record a segment names (see `SqlSnapshotBlobStore.sweep`), so it never needs it.
  */
 export function forkSessionLink(links: string, segments: string, rows: string, isSnapshot: string): string {
+	const { anchor, broken } = forkLinkValues(links, segments, isSnapshot);
+	return `INSERT INTO ${links} (session_id, seq, entry_id, parent_id, anchor_seq, children, broken)
+		SELECT r.session_id, r.seq, r.entry_id, CASE WHEN r.parent_type = 'text' THEN r.parent_id END, ${anchor}, 0, ${broken}
+		FROM ${rows} AS r WHERE EXISTS (SELECT 1 FROM ${segments} AS any_segment WHERE any_segment.session_id = r.session_id)
+		ON CONFLICT (session_id, seq) DO UPDATE SET anchor_seq = excluded.anchor_seq, broken = excluded.broken`;
+}
+
+/**
+ * The anchor and the broken mark of entry `r` as {@link forkSessionLink} links it, from the links before it, its
+ * session's and those its segments name: the one function a save, the index's rebuild and the check of a
+ * materialization's links ({@link forkLinksCheck}) all compute them with (#6560). For a session without segments it
+ * is what the released link statement writes.
+ */
+export function forkLinkValues(
+	links: string,
+	segments: string,
+	isSnapshot: string,
+): { readonly anchor: string; readonly broken: string } {
 	const parentSeq = ownParentSeq(links);
 	const own = (column: string) =>
 		`(SELECT p.${column} FROM ${links} AS p WHERE p.session_id = r.session_id AND p.seq = ${parentSeq})`;
@@ -96,13 +114,58 @@ export function forkSessionLink(links: string, segments: string, rows: string, i
 		`(SELECT ${select} FROM ${segments} AS seg JOIN ${links} AS up ON up.session_id = seg.source_id AND up.entry_id = r.parent_id AND +up.seq BETWEEN seg.from_seq AND seg.to_seq WHERE seg.session_id = r.session_id AND r.parent_type = 'text' AND seg.base_seq < r.seq ORDER BY seg.base_seq, up.seq LIMIT 1)`;
 	const anchor = `CASE WHEN up.anchor_seq IS NOT NULL THEN ${childViewSeq(links, segments, "r.session_id", "up.session_id", "up.anchor_seq", "r.seq")} END`;
 	const duplicate = `${ownDuplicate(links)} OR EXISTS (SELECT 1 FROM ${segments} AS seg JOIN ${links} AS other ON other.session_id = seg.source_id AND other.entry_id = r.entry_id AND +other.seq BETWEEN seg.from_seq AND seg.to_seq WHERE seg.session_id = r.session_id AND seg.base_seq < r.seq)`;
+	return {
+		anchor: `CASE WHEN ${isSnapshot} THEN r.seq WHEN ${ownParent} THEN ${own("anchor_seq")} ELSE ${inherited(anchor)} END`,
+		broken: `CASE WHEN ${duplicate} THEN 1 WHEN r.parent_type IS NULL OR r.parent_type = 'null' THEN 0 WHEN ${ownParent} THEN ${own("broken")} ELSE COALESCE(${inherited("up.broken")}, 1) END`,
+	};
+}
+
+/**
+ * The statement that links the rows a materialization just copied into a fork (#6560), one piece of one source at a
+ * time, all of them in one statement: each row is linked as its source links it, its anchor taken into the fork's
+ * view, and its children counted among the rows the fork now stores. It runs after the piece's rows are inserted and
+ * before the fork's segments lose the piece, so they still map the source's seqs. These links are what
+ * {@link forkLinkValues} computes for every history but a few: {@link forkLinksCheck} tells, once the segments lost
+ * the pieces, and the fork is linked again row by row where it does not hold. `complete` is the condition that the
+ * index's backfill is done: until then the backfill links the rows. Parameters: the fork's id, the shift from the
+ * source's seqs to the fork's, the source's id, the first and last seq of the piece in the source, and the fork's id.
+ */
+export function materializedForkLinks(links: string, segments: string, complete: string, int: string): string {
+	const anchor = `CASE WHEN up.anchor_seq IS NOT NULL THEN ${childViewSeq(links, segments, "m.child", "up.session_id", "up.anchor_seq", "up.seq + m.shift")} END`;
 	return `INSERT INTO ${links} (session_id, seq, entry_id, parent_id, anchor_seq, children, broken)
-		SELECT r.session_id, r.seq, r.entry_id, CASE WHEN r.parent_type = 'text' THEN r.parent_id END,
-			CASE WHEN ${isSnapshot} THEN r.seq WHEN ${ownParent} THEN ${own("anchor_seq")} ELSE ${inherited(anchor)} END,
-			0,
-			CASE WHEN ${duplicate} THEN 1 WHEN r.parent_type IS NULL OR r.parent_type = 'null' THEN 0 WHEN ${ownParent} THEN ${own("broken")} ELSE COALESCE(${inherited("up.broken")}, 1) END
-		FROM ${rows} AS r WHERE EXISTS (SELECT 1 FROM ${segments} AS any_segment WHERE any_segment.session_id = r.session_id)
-		ON CONFLICT (session_id, seq) DO UPDATE SET anchor_seq = excluded.anchor_seq, broken = excluded.broken`;
+		SELECT m.child, up.seq + m.shift, up.entry_id, up.parent_id, ${anchor}, COALESCE(kids.n, 0), up.broken
+		FROM (SELECT CAST(? AS text) AS child, CAST(? AS ${int}) AS shift) AS m
+		JOIN ${links} AS up ON up.session_id = ? AND up.seq BETWEEN ? AND ?
+		LEFT JOIN (SELECT parent_id, count(*) AS n FROM ${links} WHERE session_id = ? GROUP BY parent_id) AS kids ON kids.parent_id = up.entry_id
+		WHERE ${complete}
+		ON CONFLICT (session_id, seq) DO UPDATE SET anchor_seq = excluded.anchor_seq, children = excluded.children, broken = excluded.broken`;
+}
+
+/**
+ * The read that tells whether the links of session `?` from seq `?` on are the ones {@link forkLinkValues} computes,
+ * one statement for them all (#6560): `seq`, the first row whose anchor or broken mark is not, or null; `children`,
+ * whether a row from that seq on has a child stored before it, whose count {@link materializedForkLinks} and a save
+ * may tell apart; and `refs`, whether a snapshot entry's reference names another previous snapshot than its parent's
+ * anchor. `rows` yields the session's rows from that seq on as `r`, with their ids, their parents' ids and JSON types
+ * (`parent_id`, `parent_type`), bound to the session's id and the seq; `isSnapshot` tells whether `r` is a snapshot
+ * entry; `refs` is the snapshot references' table. Nothing is read until the index's backfill is done (`complete`).
+ */
+export function forkLinksCheck(
+	tables: { readonly links: string; readonly segments: string; readonly refs: string },
+	rows: string,
+	isSnapshot: string,
+	complete: string,
+): string {
+	const { links, segments, refs } = tables;
+	const { anchor, broken } = forkLinkValues(links, segments, isSnapshot);
+	const parentAnchor = `(SELECT p.anchor_seq FROM ${links} AS p WHERE p.session_id = r.session_id AND p.seq = ${ownParentSeq(links)})`;
+	return `SELECT
+		(SELECT min(v.seq) FROM (SELECT r.session_id, r.seq, ${anchor} AS anchor_seq, ${broken} AS broken FROM ${rows} AS r) AS v
+			JOIN ${links} AS l ON l.session_id = v.session_id AND l.seq = v.seq
+			WHERE COALESCE(l.anchor_seq, -1) <> COALESCE(v.anchor_seq, -1) OR l.broken <> v.broken) AS seq,
+		CASE WHEN EXISTS (SELECT 1 FROM ${links} AS c WHERE c.session_id = ? AND c.parent_id IS NOT NULL AND EXISTS (SELECT 1 FROM ${links} AS q WHERE q.session_id = c.session_id AND q.entry_id = c.parent_id AND +q.seq > c.seq AND +q.seq >= ?)) THEN 1 ELSE 0 END AS children,
+		CASE WHEN EXISTS (SELECT 1 FROM ${rows} AS r JOIN ${refs} AS ref ON ref.session_id = r.session_id AND ref.seq = r.seq WHERE ${isSnapshot} AND COALESCE(ref.prev_seq, -1) <> COALESCE(${parentAnchor}, -1)) THEN 1 ELSE 0 END AS refs
+	WHERE ${complete}`;
 }
 
 /** Whether `column(name)`'s row is a snapshot entry, whose snapshot the index records. */
@@ -139,8 +202,7 @@ export interface ForkLinkTables {
  * released triggers, which every entry runs, link an entry whose parent the session inherits as broken, without an
  * anchor, and an entry below it the same; so the store writes the link over theirs in the transaction that writes the
  * entry, behind it and the entries before it, in seq order. A plain session's writes run none of them. It waits for
- * the index's backfill, which links what it would. The rows a materialization copies into a fork are linked again
- * with the rest of the fork by `sessionEntryRelinker`, with this same statement.
+ * the index's backfill, which links what it would.
  */
 export interface ForkLinkWrites {
 	/** The link of the entry at `seq` of session `sessionId`, run after the statements that wrote it. */
