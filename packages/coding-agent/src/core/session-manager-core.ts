@@ -2723,7 +2723,7 @@ export class SessionManager {
 					: store.locationFor(record)
 				: undefined;
 		assertSessionBlobStore(store, record.id, hashes.length);
-		await createForkArchive(
+		const created = await createForkArchive(
 			store,
 			record,
 			entries,
@@ -2731,7 +2731,17 @@ export class SessionManager {
 			location,
 		);
 		this.store = store;
-		this.restoreOpened(await readStoredSession(store, record.id, undefined), location);
+		// The child holds exactly the entries just written, in the generation the write reports: it opens from them, without
+		// reading them back (#6560). Not when a receipt stands for bytes only the store holds, or the store gave no
+		// generation of its own.
+		if (receipts.size === 0 && created.epoch !== undefined && created.lastSeq === entries.length) {
+			const { windowFromSnapshot } = await import("./storage/session/snapshot-history.js");
+			const snapshot = { header: record, entries, lastSeq: created.lastSeq, epoch: created.epoch };
+			this.restoreOpened(
+				{ resume: windowFromSnapshot(snapshot, undefined, undefined, undefined, isProxy) },
+				location,
+			);
+		} else this.restoreOpened(await readStoredSession(store, record.id, undefined), location);
 		this.markSessionStarted();
 		return this.sessionFile;
 	}
