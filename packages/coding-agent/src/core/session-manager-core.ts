@@ -2699,6 +2699,7 @@ export class SessionManager {
 		receipts = new Map<string, OversizedSessionEntry>(),
 		preserveReceiptLinks = true,
 		labels?: Pick<ReturnType<typeof buildSessionIndex>, "labelsById" | "labelTimestampsById">,
+		internal?: boolean,
 	): Promise<string | undefined> {
 		const result = createBranchedSessionState({
 			leafId,
@@ -2708,6 +2709,7 @@ export class SessionManager {
 			preserveReceiptLinks,
 			labelsById: labels?.labelsById ?? this.labelsById,
 			labelTimestampsById: labels?.labelTimestampsById ?? this.labelTimestampsById,
+			internal,
 		});
 		const header = result.fileEntries[0] as SessionHeader;
 		const entries = getEntriesWithoutHeader(result.fileEntries);
@@ -2755,8 +2757,11 @@ export class SessionManager {
 		return source.forkWindow(await source.contextBranch(leafId), leafId, point === undefined ? "session" : "branch");
 	}
 
-	/** Keep a launch point, not the live parent or a list of the entries that happen to be resident now. */
-	captureFork(leafId: string): () => Promise<SessionManager> {
+	/**
+	 * Keep a launch point, not the live parent or a list of the entries that happen to be resident now. The fork is
+	 * created in this session's store; `internal` marks it internal, as a subagent's own session is.
+	 */
+	captureFork(leafId: string, options?: Pick<NewSessionOptions, "internal">): () => Promise<SessionManager> {
 		return SessionManager.capturedFork(
 			this.store,
 			this.sessionId,
@@ -2765,6 +2770,7 @@ export class SessionManager {
 			this.historyEpoch,
 			this.lastSeq,
 			leafId,
+			options?.internal,
 		);
 	}
 
@@ -2781,6 +2787,7 @@ export class SessionManager {
 		epoch: string | undefined,
 		watermark: number | undefined,
 		leafId: string,
+		internal?: boolean,
 	): () => Promise<SessionManager> {
 		return async () => {
 			const bounded = store.readForkWindow;
@@ -2816,7 +2823,7 @@ export class SessionManager {
 						receipts,
 					)
 				: window.entries;
-			await source.installFork(leafId, entries, receipts, !!bounded);
+			await source.installFork(leafId, entries, receipts, !!bounded, undefined, internal);
 			return source;
 		};
 	}

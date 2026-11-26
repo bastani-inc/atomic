@@ -304,6 +304,7 @@ interface TopLevelParallelConfig {
 }
 
 export interface ExtensionConfig {
+	/** Deprecated and ignored: a subagent's session is always kept in its parent's store. Names only the run's control root. */
 	defaultSessionDir?: string;
 	control?: ControlConfig;
 	parallel?: TopLevelParallelConfig;

@@ -11,7 +11,7 @@ import {
 } from "../../intercom/intercom-bridge.js";
 import { ownIntercomSessionId } from "../../intercom/own-intercom-session.js";
 import { getArtifactsDir } from "../../shared/artifacts.js";
-import { childSessionStore } from "../../shared/child-session-store.js";
+import { childSessionStore, warnIgnoredSessionDir } from "../../shared/child-session-store.js";
 import { createForkContextResolver } from "../../shared/fork-context.js";
 import { resolveCurrentSessionId } from "../../shared/session-identity.js";
 import { buildReadInstruction } from "../../shared/settings.js";
@@ -177,10 +177,11 @@ export async function prepareExecutionContext(input: {
 			: deps.getSubagentSessionRoot(parentSessionFile, parentSessionId);
 		sessionRoot = path.join(baseSessionRoot, runId);
 	}
-	// A directory chosen for the run's sessions keeps them in files there; otherwise a fresh child's session is created in
-	// its parent's store, and the run needs no directory.
-	const sessionStore =
-		effectiveParams.sessionDir || deps.config.defaultSessionDir ? undefined : childSessionStore(ctx.sessionManager);
+	// A child's session is always created in its parent's store, so the run needs no directory: a directory the launch or
+	// the config names for sessions only names the run's control root.
+	const sessionStore = childSessionStore(ctx.sessionManager);
+	if (effectiveParams.sessionDir) warnIgnoredSessionDir("sessionDir");
+	if (deps.config.defaultSessionDir) warnIgnoredSessionDir("defaultSessionDir");
 	try {
 		if (sessionStore === undefined) await mkdir(sessionRoot, { recursive: true });
 	} catch (error) {

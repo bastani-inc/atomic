@@ -19,7 +19,14 @@ type DeprecationRegistry = typeof globalThis & {
  * settings file and the values it keeps, the warning is shown once across starts while that file keeps those values.
  */
 export function warnRemovedRoutingOption(option: string, saved?: string): void {
-	const message = `"${option}" is ignored: automatic model routing was removed, so "auto" runs your default model and provider or model restrictions no longer limit "auto" or any fallback model.`;
+	warnDeprecationOnce(
+		`"${option}" is ignored: automatic model routing was removed, so "auto" runs your default model and provider or model restrictions no longer limit "auto" or any fallback model.`,
+		saved,
+	);
+}
+
+/** Show a deprecation warning once per process (or, with `saved`, once across starts), as the host shows its own. */
+export function warnDeprecationOnce(message: string, saved?: string): void {
 	const registry = globalThis as DeprecationRegistry;
 	const warn = registry[WARN_KEY];
 	if (warn !== undefined) {

@@ -110,7 +110,15 @@ Summary generation feeds up to 4,000 tokens of recent conversation, caps the sto
 
 ### Internal sessions
 
-Sessions marked **internal** are hidden from `/resume`, `atomic -r`, `-c`, and `history://sessions`, while remaining openable by exact session ID. A fresh subagent's own session is internal, whereas a `context: "fork"` subagent's session is a fork of its parent and appears in normal listings.
+Sessions marked **internal** are hidden from `/resume`, `atomic -r`, `-c`, and `history://sessions`, while remaining openable by exact session ID. Every subagent's own session is internal, whether it started fresh or as a `context: "fork"` copy of its parent's conversation.
+
+### Subagent sessions
+
+A subagent's session always lives in the same session store as the session that launched it. The subagent's working directory, worktree, or the storage settings of the project it runs in never select another store. Forked and fresh subagents are stored the same way, and so are subagents resumed after a restart. As a result:
+
+- `history://sessions/<id>` reads a subagent's session from any session that uses that store, including the launching session after it is resumed on another machine that shares the database. Add `?project=<dir>` when the subagent ran in another directory; its result gives the full URL.
+- `/tasks` and `subagent({ action: "status" })` read the transcript from the launching session's store, so a subagent's history is available wherever that session opens.
+- Subagents do not appear in `/resume` or the `history://sessions` list, since their sessions are internal.
 
 When an 8-character ID prefix passed to `--session` or `--fork` matches both a listed session and internal sessions (such as subagent sessions created around the same time), Atomic selects the listed session.
 

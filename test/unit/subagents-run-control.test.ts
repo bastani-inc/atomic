@@ -1013,7 +1013,12 @@ for (const action of ["pause", "quit"] as const) {
 		const [start] = starts;
 		assert.equal(start?.options.index, 0);
 		assert.equal(start?.options.resumeSession, undefined, "it is a new launch, not a reopened session");
-		assert.equal(start?.options.sessionDir, join(h.cwd, "children", runId));
+		assert.equal(
+			start?.options.sessionStore,
+			h.sessionManager.getSessionStore(),
+			"it starts in its owner's store, not the directory its launch recorded",
+		);
+		assert.equal(start?.options.sessionDir, undefined);
 		assert.deepEqual(start?.options.skills, ["review"]);
 		assert.equal(start?.options.intercomSessionName, `subagent-worker-${runId}`);
 		assert.ok(start?.options.supervisorAuthorization, "it gets fresh supervisor authorization");

@@ -1151,8 +1151,9 @@ async function relaunchChild(
 	}
 	// Redispatched calls start the child; their task is never prompted, so it is only a fallback.
 	const taskFallback = redispatch && wakeFallback;
-	// A fresh child its launch created in its owner's store starts there, while the owner's store is not files.
-	const sessionStore = fresh?.ownerStore && !sessionManager ? childSessionStore(ctx.sessionManager) : undefined;
+	// A fresh child that never started starts in its owner's store, whatever directory its launch record names (one
+	// recorded by an earlier release, or for a launch that named a session directory).
+	const sessionStore = fresh && !sessionManager ? childSessionStore(ctx.sessionManager) : undefined;
 	const modelScope = resolveSessionModelScope(ctx, deps.pi.getSettings?.());
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
