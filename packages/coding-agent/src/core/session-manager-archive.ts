@@ -13,6 +13,8 @@ export interface BranchedSessionStateInput {
 	preserveReceiptLinks?: boolean;
 	labelsById: ReadonlyMap<string, string>;
 	labelTimestampsById: ReadonlyMap<string, string>;
+	/** Mark the new session internal, as a subagent's own session is; see `NewSessionOptions.internal`. */
+	internal?: boolean;
 }
 
 export interface BranchedSessionState {
@@ -103,7 +105,13 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 	}
 	const newSessionId = createSessionId();
 	const timestamp = new Date().toISOString();
-	const header: SessionHeader = createSessionHeader(newSessionId, input.cwd, timestamp, input.parentSessionId);
+	const header: SessionHeader = createSessionHeader(
+		newSessionId,
+		input.cwd,
+		timestamp,
+		input.parentSessionId,
+		input.internal,
+	);
 
 	// Collect labels for entries in the path
 	const pathEntryIds = new Set(pathWithoutLabels.map((entry) => entry.id));

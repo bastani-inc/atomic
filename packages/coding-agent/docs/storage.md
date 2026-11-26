@@ -13,7 +13,7 @@ Atomic saves sessions in a local SQLite database (`~/.atomic/workflows/journal.s
 | **Custom adapters and SQL drivers** | [Selecting an adapter](#selecting-an-adapter), [Bring your own driver](#bring-your-own-driver), [Adapter conformance](#adapter-conformance) |
 
 - A configured persistent store never silently falls back to memory when it fails to open.
-- A subagent keeps its session in its launching parent's store unless the launch specifies a `sessionDir` for a fresh subagent. Fresh subagent sessions are marked internal and hidden from normal session lists. See [Subagents](/subagents).
+- A subagent always keeps its session in its launching parent's store, whatever its working directory, worktree, or the storage settings of the project it runs in. Subagent sessions, fresh or forked, are marked internal and hidden from normal session lists. See [Subagents](/subagents).
 - Workflow data written by releases before 0.10.0 stays untouched on disk. See [Workflow data from earlier releases](#workflow-data-from-earlier-releases).
 
 ## Which store to choose

@@ -349,8 +349,7 @@ const SubagentParams = Type.Object(
 		),
 		sessionDir: Type.Optional(
 			Type.String({
-				description:
-					"Keep fresh (not forked) subagents' sessions as JSONL files under this directory instead of the launching session's store",
+				description: "Deprecated and ignored: a subagent's session is always kept in the launching session's store",
 			}),
 		),
 		control: Type.Optional(ControlOverrides),

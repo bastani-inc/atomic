@@ -122,7 +122,7 @@ Global subagent runtime configuration lives at `~/.atomic/agent/extensions/subag
 | `parallel.runningCapacity` | `1000` | Maximum simultaneously running subagents across this session (also bounds concurrent released-subagent wakes). Takes effect when the first subagent starts; restart Atomic after changing. |
 | `resumeInFlight` | `"never"` | How startup and `/resume` handle paused or quit subagents awaiting resume: `"never"`, `"ask"` (one confirmation prompt; falls back to `"never"` without a UI), or `"auto"`. |
 | `sessionStartTimeoutMs` | `300000` | Startup budget per attempt in milliseconds (`1` to `2147483647`). Queue wait under `parallel.runningCapacity` does not count. |
-| `defaultSessionDir` | None | Directory where fresh (non-forked) subagents store JSONL session files instead of the launching session's store. |
+| `defaultSessionDir` | None | Deprecated and ignored, with a one-time warning: subagent sessions always stay in the launching session's store. |
 | `worktreeSetupHook` | None | Executable script path (absolute, `~/...`, or repo-relative containing `/` or `\`) run after creating each `worktree: true` temporary worktree. Receives JSON metadata on stdin and prints `{ "syntheticPaths": [...] }` on stdout to exclude generated files from diff capture. |
 | `worktreeSetupHookTimeoutMs` | `30000` | Timeout in milliseconds for `worktreeSetupHook`. |
 | `intercomBridge.mode` | `"always"` | Controls automatic injection of `intercom`, `contact_supervisor`, and Intercom orchestration prompt instructions into subagents: `"always"` (all subagents), `"fork-only"` (forked subagents only), or `"off"` (frontmatter tool lists only). |
@@ -158,7 +158,7 @@ Global subagent runtime configuration lives at `~/.atomic/agent/extensions/subag
 | `output` / `outputMode` | Single launch / task | `output` file path (or `false`); `outputMode` is `"inline"` (default) or `"file-only"` (requires an `output` path). |
 | `reads` | Single launch / task | Array of file paths prepended relative to child `cwd`, or `false` to disable `defaultReads`. |
 | `progress` / `includeProgress` | Launch / task | `progress` toggles isolated run-scoped `progress.md`; `includeProgress` adds runtime progress telemetry to the tool result. |
-| `cwd`, `sessionDir`, `agentScope`, `artifacts`, `maxOutput`, `control` | Launch | Working directory, fresh-child JSONL directory, discovery scope (`"user" \| "project" \| "both"`, default `"both"`), debug artifacts (`true`), output truncation (`{ bytes?, lines? }`), and per-run `control` overrides. |
+| `cwd`, `sessionDir`, `agentScope`, `artifacts`, `maxOutput`, `control` | Launch | Working directory, `sessionDir` (deprecated and ignored: sessions stay in the launching session's store), discovery scope (`"user" \| "project" \| "both"`, default `"both"`), debug artifacts (`true`), output truncation (`{ bytes?, lines? }`), and per-run `control` overrides. |
 
 ## SDK integration and errors
 
