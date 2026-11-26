@@ -153,6 +153,18 @@ function run(command, args, cwd) {
 	return result.stdout;
 }
 
+/** The update: each of Atomic's packages under `prefix` is replaced by the build's in `tarballs`, where the install put it. */
+function putBuildInPlace(prefix, tarballs, work) {
+	for (const { name, dir } of installedPackageDirs(prefix)) {
+		const unpacked = mkdtempSync(join(work, "unpacked-"));
+		untar(tarballOf(tarballs, name), unpacked);
+		const nested = join(dir, "node_modules");
+		for (const entry of readdirSync(dir))
+			if (join(dir, entry) !== nested) rmSync(join(dir, entry), { recursive: true });
+		cpSync(join(unpacked, "package"), dir, { recursive: true });
+	}
+}
+
 /**
  * Updates a running process of release `record` to the packages in `tarballs` (the build of `version`), in `work`.
  * `allowed` maps the package subpaths the release cannot resolve that the build may import to why (`allowed.json`).
@@ -206,15 +218,7 @@ export async function updateRunningRelease(record, tarballs, version, work, allo
 		});
 	try {
 		if ((await line(0)) !== "ready") throw new Error(`the ${record.version} process did not start: ${output}`);
-		// The update: each of Atomic's packages is replaced by the build's, where the release's install put it.
-		for (const { name, dir } of installedPackageDirs(prefix)) {
-			const unpacked = mkdtempSync(join(work, "unpacked-"));
-			untar(tarballOf(tarballs, name), unpacked);
-			const nested = join(dir, "node_modules");
-			for (const entry of readdirSync(dir))
-				if (join(dir, entry) !== nested) rmSync(join(dir, entry), { recursive: true });
-			cpSync(join(unpacked, "package"), dir, { recursive: true });
-		}
+		putBuildInPlace(prefix, tarballs, work);
 		child.stdin.write("updated\n");
 		const outcomes = JSON.parse(await line(1));
 		const restart = new RegExp(
@@ -278,9 +282,12 @@ for await (const line of lines) {
 process.exit(0);
 `;
 
-/** Runs `host` (with `args`) until it prints ready, then calls `update` and sends it "updated"; its outcomes. */
-async function runHost(host, args, cwd, update) {
-	const child = spawn(process.execPath, [host, ...args], { cwd, stdio: ["pipe", "pipe", "inherit"] });
+/**
+ * Runs `host` (with `args`, and `env` for its environment) until it prints ready, then calls `update` and sends it
+ * "updated"; its outcomes.
+ */
+async function runHost(host, args, cwd, update, env = process.env) {
+	const child = spawn(process.execPath, [host, ...args], { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
 	let output = "";
 	const lines = () => output.split("\n");
 	const exited = new Promise((resolve) => child.once("exit", resolve));
@@ -387,6 +394,203 @@ export async function updateRunningBuild(tarballs, version, repositoryRoot) {
 			{ message: "written for another release" },
 			fresh.readSessionChildCatalog,
 		);
+		return problems;
+	} finally {
+		await rm(prefix, { recursive: true, force: true, maxRetries: 10 });
+	}
+}
+
+/**
+ * A process of an earlier release that forks a session after an update (`forkAfterUpdate`). With `setup`, it sets up
+ * each database marked `earlier` through the release's own session store, writing one session, and exits. Otherwise it
+ * loads what a running process holds, without the session store, which it loads on demand, and once updated opens each
+ * database through the release's storage provider: it creates a session, forks it, appends to both, reads both, then
+ * opens the database again and reads them once more.
+ */
+const FORK_HOST = `
+import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
+import { join } from "node:path";
+const [packageDir, config] = [process.argv[2], JSON.parse(process.argv[3])];
+const load = (path) => import(pathToFileURL(join(packageDir, path)).href);
+for (const path of config.held) await load(path);
+const storage = await load("dist/core/storage/index.js");
+const postgres = config.databases.some((each) => each.kind === "postgres")
+	? await import("@bastani/atomic-storage-postgres")
+	: undefined;
+const open = (each) =>
+	each.kind === "sqlite"
+		? storage.openNodeSqliteDatabase(each.path)
+		: postgres.openPostgresDatabase({ url: each.url, password: each.password });
+const header = (id) => ({ id, version: 4, createdAt: "2026-11-01T00:00:00.000Z", cwd: "/project" });
+const entries = (tag, count, parentId = null) => {
+	const made = [];
+	for (let index = 1; index <= count; index++)
+		made.push({
+			type: "message",
+			id: tag + "-" + index,
+			parentId: made.at(-1)?.id ?? parentId,
+			timestamp: "2026-11-01T00:00:00.000Z",
+			message: { role: "user", content: tag + " " + index, timestamp: 1 },
+		});
+	return made;
+};
+const ids = async (store, id) => (await store.load(id)).entries.map((entry) => entry.id);
+async function withStore(each, body) {
+	const database = await open(each);
+	try {
+		const store = await new storage.StorageProvider().openSessionStore(
+			{ kind: "database", database },
+			{ agentDir: config.agentDir },
+		);
+		try {
+			return await body(store, database);
+		} finally {
+			await store.close();
+		}
+	} finally {
+		await database.close();
+	}
+}
+async function forkAndRead(each) {
+	const outcome = {};
+	await withStore(each, async (store, database) => {
+		if (each.earlier) outcome.earlier = await ids(store, "earlier");
+		const parent = entries("parent", 3);
+		await store.create(header("parent"), parent);
+		const head = await store.readEntrySizes("parent", 1, 0);
+		// As the release's session manager forks a session: the stream of its history, from the module it loads on demand.
+		const { completeSessionForkStream } = await load("dist/core/storage/session/branch-fork-source.code.js");
+		const source = { store, sessionId: "parent", epoch: head.epoch, hashes: [], receipts: new Map() };
+		const fork = await store.createFork(
+			header("fork"),
+			completeSessionForkStream("parent", head.epoch, head.lastSeq),
+			source,
+		);
+		await store.append("parent", entries("parent-after", 2, "parent-3"), { expectSeq: 3 });
+		await store.append("fork", entries("fork", 2, "parent-3"), { expectSeq: fork.lastSeq });
+		outcome.parent = await ids(store, "parent");
+		outcome.fork = await ids(store, "fork");
+		const segments = await database.get("SELECT count(*) AS segments FROM session_fork_segments WHERE session_id = ?", "fork");
+		outcome.segments = Number(segments.segments);
+	});
+	await withStore(each, async (store) => {
+		outcome.reopened = { parent: await ids(store, "parent"), fork: await ids(store, "fork") };
+	});
+	return outcome;
+}
+if (config.setup) {
+	for (const each of config.databases.filter((each) => each.earlier))
+		await withStore(each, (store) => store.create(header("earlier"), entries("earlier", 2)));
+	process.exit(0);
+}
+process.stdout.write("ready\\n");
+const lines = createInterface({ input: process.stdin });
+for await (const line of lines) {
+	if (line !== "updated") continue;
+	const outcomes = {};
+	for (const each of config.databases) {
+		try {
+			outcomes[each.name] = await forkAndRead(each);
+		} catch (error) {
+			outcomes[each.name] = { error: String(error?.message ?? error), cause: error?.cause === undefined ? undefined : String(error.cause.message ?? error.cause) };
+		}
+	}
+	process.stdout.write(JSON.stringify(outcomes) + "\\n");
+	break;
+}
+process.exit(0);
+`;
+
+/** What each database reads after {@link FORK_HOST}'s fork: the parent and its fork, each with its own entries after. */
+const FORKED = {
+	parent: ["parent-1", "parent-2", "parent-3", "parent-after-1", "parent-after-2"],
+	fork: ["parent-1", "parent-2", "parent-3", "fork-1", "fork-2"],
+};
+
+/**
+ * A database {@link forkAfterUpdate} forks a session in: a SQLite file or a PostgreSQL database, each empty, named
+ * `name` in what goes wrong. With `earlier`, the release sets it up first, before the update, and the process then
+ * finds it as the release left it, with forks that copy their parent's history.
+ *
+ * @typedef {{ name: string, earlier: boolean } & ({ kind: "sqlite", path: string } | { kind: "postgres", url: string, password?: string })} ForkDatabase
+ */
+
+/**
+ * Updates a running process of release `version`, installed from npm with its PostgreSQL adapter, in place to the
+ * packages in `tarballs`, in `work`, and has it fork a session in each of `databases` (see {@link ForkDatabase}) through
+ * the session store it then loads from the update: each fork must read its parent's history and its own entries, share
+ * that history rather than copy it, and read the same once the database is opened again. Returns what went wrong.
+ *
+ * @param {string} version
+ * @param {string} tarballs
+ * @param {string} work
+ * @param {readonly ForkDatabase[]} databases
+ * @returns {Promise<string[]>}
+ */
+export async function forkAfterUpdate(version, tarballs, work, databases) {
+	const prefix = mkdtempSync(join(work, `forks-${version}-`));
+	try {
+		writeFileSync(join(prefix, "package.json"), '{ "private": true }\n');
+		run(
+			npm,
+			[
+				"install",
+				"--ignore-scripts",
+				"--no-audit",
+				"--no-fund",
+				`@bastani/atomic@${version}`,
+				`@bastani/atomic-storage-postgres@${version}`,
+			],
+			prefix,
+		);
+		const packageDir = join(prefix, "node_modules", "@bastani", "atomic");
+		const host = join(prefix, "host.mjs");
+		writeFileSync(host, FORK_HOST);
+		const agentDir = join(prefix, "agent");
+		mkdirSync(agentDir);
+		// A profile of its own: the process reads and writes no user's settings.
+		const env = {
+			...process.env,
+			ATOMIC_OFFLINE: "1",
+			ATOMIC_CODING_AGENT_DIR: agentDir,
+			HOME: prefix,
+			USERPROFILE: prefix,
+		};
+		const config = { held: ["dist/index.js", ...startImports(packageDir)], agentDir, databases };
+		const setup = spawnSync(process.execPath, [host, packageDir, JSON.stringify({ ...config, setup: true })], {
+			cwd: prefix,
+			env,
+			encoding: "utf8",
+		});
+		if (setup.status !== 0) throw new Error(`the ${version} process could not set up its databases: ${setup.stderr}`);
+		const outcomes = await runHost(
+			host,
+			[packageDir, JSON.stringify(config)],
+			prefix,
+			async () => putBuildInPlace(prefix, tarballs, work),
+			env,
+		);
+		const problems = [];
+		for (const { name, earlier } of databases) {
+			const outcome = outcomes[name];
+			const where = `a running ${version} process updated in place, on ${name}`;
+			if (outcome?.error !== undefined) {
+				problems.push(`${where}: ${outcome.error}${outcome.cause === undefined ? "" : ` (${outcome.cause})`}`);
+				continue;
+			}
+			const expect = (what, actual, wanted) => {
+				if (JSON.stringify(actual) !== JSON.stringify(wanted))
+					problems.push(`${where}: ${what} read ${JSON.stringify(actual)}, not ${JSON.stringify(wanted)}`);
+			};
+			if (earlier) expect("the session the release wrote", outcome.earlier, ["earlier-1", "earlier-2"]);
+			expect("the parent", outcome.parent, FORKED.parent);
+			expect("the fork", outcome.fork, FORKED.fork);
+			expect("the parent, opened again,", outcome.reopened?.parent, FORKED.parent);
+			expect("the fork, opened again,", outcome.reopened?.fork, FORKED.fork);
+			if (!(outcome.segments > 0))
+				problems.push(`${where}: the fork copied its parent's history instead of sharing it`);
+		}
 		return problems;
 	} finally {
 		await rm(prefix, { recursive: true, force: true, maxRetries: 10 });
