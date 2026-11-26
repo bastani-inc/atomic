@@ -156,6 +156,12 @@ export interface StorageNotifications {
 	 * adapters send it in the transaction and ignore `unless`.
 	 */
 	notify(channel: string, payload: string, unless?: SqliteStatement): SqliteStatement;
+	/**
+	 * Optional. Sends already-committed notifications produced by `notify` together, outside the database's serial
+	 * call queue so post-commit wake-ups never block or wait behind unrelated transactions. Coalesced within the same
+	 * window as in-transaction notifications, and awaited before the database closes.
+	 */
+	send?(notices: readonly SqliteStatement[]): Promise<void>;
 	/** Delivers `channel`'s events to `listener`, on one listening connection the database shares between channels. */
 	listen(channel: string, listener: (event: StorageNotificationEvent) => void): StorageNotificationSubscription;
 	/** Opens the listening connection when it is not open, and resolves with its state once the first attempt settled. */
