@@ -1038,6 +1038,47 @@ pub fn kill_supervised_process_trees() {
 	#[cfg(unix)]
 	guardian::kill_watched();
 }
+
+/// A running child process that ends, with the processes below it in its process group, if this process dies first.
+#[napi]
+pub struct HostDeathWatch {
+	pid: i32,
+	watching: bool,
+}
+#[napi]
+impl HostDeathWatch {
+	/// Stops the watch, once the process exited by itself: what it left running keeps running.
+	#[napi]
+	pub fn release(&mut self) {
+		if std::mem::take(&mut self.watching) {
+			#[cfg(unix)]
+			guardian::queue_process_watch(self.pid, false);
+		}
+	}
+}
+
+/// On Linux and macOS, has the host-death guardian SIGKILL running child process `pid`, and the processes below it in
+/// its process group, when this process dies, however it dies, until `release()`. A process whose PID by then names
+/// another process is not touched, and one that left the group (a program started detached) is not followed. `pid`
+/// must be a child whose exit this process has not seen yet. Returns at once: the guardian, which starts with the first
+/// watch, is told on a thread of its own. Best effort: where no guardian can start, the process runs on. `null` on
+/// Windows.
+#[napi(js_name = "watchProcessUntilHostDies")]
+pub fn watch_process_until_host_dies(pid: i32) -> Option<HostDeathWatch> {
+	#[cfg(unix)]
+	{
+		if pid <= 1 {
+			return None;
+		}
+		guardian::queue_process_watch(pid, true);
+		Some(HostDeathWatch { pid, watching: true })
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = pid;
+		None
+	}
+}
 #[cfg(windows)]
 pub(super) fn poll_failed_processes() {
 	windows::poll_failed_windows();

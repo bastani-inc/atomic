@@ -146,6 +146,52 @@ export function holdProcessDescendants(pid: number): HeldProcessDescendants | un
 	return result.kind === "held" ? result.held : undefined;
 }
 
+/** A running child process that the host-death guardian ends, with what it started in its group, if this process dies. */
+export interface HostDeathWatch {
+	/** Stops the watch, once the process exited: what it left running keeps running. */
+	release(): void;
+}
+
+type WatchProcessUntilHostDies = (pid: number) => HostDeathWatch | null;
+
+let nativeWatchUntilHostDies: WatchProcessUntilHostDies | null | undefined;
+
+function watchUntilHostDiesFunction(): WatchProcessUntilHostDies | null {
+	if (NATIVE_WINDOWS_HOST) return null;
+	if (nativeWatchUntilHostDies === undefined) {
+		try {
+			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
+				watchProcessUntilHostDies?: WatchProcessUntilHostDies;
+			};
+			nativeWatchUntilHostDies = binding.watchProcessUntilHostDies ?? null;
+		} catch {
+			nativeWatchUntilHostDies = null;
+		}
+	}
+	return nativeWatchUntilHostDies;
+}
+
+/** Whether {@link watchProcessUntilHostDies} can watch a process here: on Linux and macOS, with the native module. */
+export function canWatchProcessUntilHostDies(): boolean {
+	return watchUntilHostDiesFunction() !== null;
+}
+
+/**
+ * On Linux and macOS, has the native host-death guardian, a process of its own, SIGKILL running child process `pid`
+ * and the processes below it in its process group when this process dies, however it dies (`kill -9` included), until
+ * `release()`. A PID that by then names another process is not touched, and a program that left the group is not
+ * followed. `pid` must be a child whose exit this process has not seen yet. Returns at once: the guardian is told on a
+ * thread of the native module's own, as starting it forks this process. Best effort: where no guardian can start, the
+ * process runs on. `undefined` on Windows and without the native module.
+ */
+export function watchProcessUntilHostDies(pid: number): HostDeathWatch | undefined {
+	try {
+		return watchUntilHostDiesFunction()?.(pid) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function processTreeEnded(tree: ProcessTreeContainment, timeoutMs: number): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
