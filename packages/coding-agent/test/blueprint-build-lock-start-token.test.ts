@@ -65,12 +65,16 @@ function writeLock(lock: object): void {
 
 let dir: string;
 const children: ChildProcess[] = [];
+const readStartNow = vi.mocked(startTokens.processStartTokenNow).getMockImplementation()!;
+/** Makes the start of a new step one that can only be read later, as without the native module on Windows. */
+const startReadsLater = () => vi.mocked(startTokens.processStartTokenNow).mockReturnValue(undefined);
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "atomic-build-lock-start-"));
 	vi.mocked(startTokens.processStartToken).mockClear();
 	vi.mocked(startTokens.processStartTokenAsync).mockClear();
 });
 afterEach(() => {
+	vi.mocked(startTokens.processStartTokenNow).mockImplementation(readStartNow);
 	startTokens.setProcessCreationTimeQueryForTesting(undefined);
 	startTokens.setNativeProcessCreationTimeForTesting(undefined);
 	Object.defineProperty(process, "platform", PLATFORM);
@@ -158,6 +162,7 @@ describe("blueprint build lock step starts (#4748)", () => {
 	);
 
 	test("a step that ended before its start was read is not written back", async () => {
+		startReadsLater();
 		const step = sleeper();
 		let release!: () => void;
 		const held = new Promise<void>((resolve) => {
@@ -179,6 +184,7 @@ describe("blueprint build lock step starts (#4748)", () => {
 	});
 
 	test("a start read for an earlier step of a reused id does not overwrite the later step", async () => {
+		startReadsLater();
 		const step = sleeper();
 		let release!: () => void;
 		const held = new Promise<void>((resolve) => {
