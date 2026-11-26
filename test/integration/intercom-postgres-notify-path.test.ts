@@ -180,9 +180,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 		await withPostgresDatabase(async (scope) => {
 			const { state, bus } = await openIntercomBrokerState(
 				{ openDatabase: () => scope.open(), prefix: PREFIX },
-				{
-					pollIntervalMs: NEVER_POLL_MS,
-				},
+				{ pollIntervalMs: NEVER_POLL_MS, listeningPollIntervalMs: NEVER_POLL_MS },
 			);
 			const presence = {
 				kind: "presence",
@@ -208,12 +206,23 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 						},
 						...(wakeHostWithinMs === undefined ? {} : { wakeHostWithinMs }),
 					});
-				assert.equal((await send("m-warm", BROKER_LEASE_STALE_AFTER_MS)).status, "inserted");
+				const warm = await send("m-warm", BROKER_LEASE_STALE_AFTER_MS);
+				assert.equal(warm.status === "inserted" && warm.woke, "broker-b");
 				// The host's own bus, as its broker subscribes: the hints it is handed name the recipient whose queue it reads.
 				const hosted = await collect(bus, "broker-b");
 				const own = await rawListener(scope, [brokerWakeUpChannel(TABLE, "broker-b")]);
 				const others = await rawListener(scope, [TABLE, brokerWakeUpChannel(TABLE, "broker-c")]);
 				try {
+					// The host's bus listens, probing its connection through the pool, and polls once it does, which hands it the
+					// warm-up's hint: only then is it quiet, so its own statements are not counted as the sends'.
+					const warmSequence = warm.status === "inserted" ? warm.row.sequence : -1;
+					const deadlineQuiet = performance.now() + LISTENING_BOUND_MS;
+					while (!hosted.hints.some((hint) => hint.version === warmSequence) && performance.now() < deadlineQuiet)
+						await new Promise((resolve) => setTimeout(resolve, 5));
+					assert.ok(
+						hosted.hints.some((hint) => hint.version === warmSequence),
+						"the host's bus never polled",
+					);
 					const trips = countRoundTrips();
 					restores.push(trips.restore);
 					assert.equal((await send("m-plain")).status, "inserted");
