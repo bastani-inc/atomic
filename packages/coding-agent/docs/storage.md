@@ -325,12 +325,7 @@ There is nothing to turn on or configure. What stays the same:
 
 ### How a fork reads its history
 
-A fork that shares its parent's history keeps a short list of ranges, for example "my entries 1 to 400 are the parent's entries 1 to 400". Every entry added after the fork, and any entry the fork changed, is stored in the fork itself.
-
-- **One query.** When Atomic reads a fork, it looks the list up in the same database query that reads the entries, so the list and the entries always come from the same moment. No copy of the list is kept in memory between reads, so a read never uses an out-of-date list.
-- **Up to the fork point only.** A fork reads its parent's entries only up to the point where it was made. When the parent keeps going, the new entries are the parent's alone.
-- **The parent cannot change a fork.** If the parent is later rewritten, Atomic first copies the entries the fork still uses into the fork, in the same step. If the parent is deleted, its entries stay stored, hidden, until no fork uses them.
-- **Forking never holds the parent up.** On PostgreSQL, the parent keeps appending while forks are made from it. Making a fork takes the same 2 round trips as creating a session, whatever the parent's length or how many forks deep the chain goes, and the first load of a fork takes the same round trips as a session of the same length.
+A fork shows its parent's entries only up to the point where it was made. Entries the parent adds later belong to the parent alone, and entries added to the fork are stored in the fork.
 
 ### Older Atomic versions {#older-atomic-versions}
 
@@ -341,7 +336,7 @@ The switch never pulls a store out from under an older Atomic that is using it:
 - **It waits for older versions to stop.** Every running session records in the store which release runs it. While a session of an older release is running on any machine that uses the store, Atomic leaves the store as it is, and forks keep copying. The next time Atomic opens the store after those sessions have stopped, for example when a session starts or resumes, the switch happens. A session on the same machine counts as running while its process runs. A session on another machine counts while its record is refreshed, about every 15 seconds; one whose record is more than a minute old, for example on a machine that crashed, no longer counts.
 - **It happens in one step.** The fork tables and the new mark are written in one transaction that waits for writes already in progress to finish, so upgraded sessions keep working through it, and two machines switching at once is safe.
 - **It costs nothing once done.** A store that is already switched opens with the same reads as before.
-- **It needs table privileges.** On PostgreSQL, a runtime role without DDL privileges cannot create the fork tables, so forks there keep copying until the owner runs `atomic storage migrate`, which switches the database too. The new tables are `session_fork_segments`, `session_fork_lineage`, `session_fork_tombstones`, and `session_fork_detach`, and the runtime role reaches them through the default privileges granted in [Set up the database](/storage/postgres#set-up-the-database).
+- **It needs table privileges.** On PostgreSQL, a runtime role without DDL privileges cannot create the fork tables, so forks there keep copying until the owner runs `atomic storage migrate`, which switches the database too. The runtime role reaches the new tables through the default privileges granted in [Set up the database](/storage/postgres#set-up-the-database).
 
 None of this needs any action and none of it is reported as an error. With debug mode on, Atomic notes in the debug log when it leaves the switch for later, and why.
 

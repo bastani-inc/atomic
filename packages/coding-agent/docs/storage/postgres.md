@@ -68,10 +68,6 @@ Provider notes:
 
 When the runtime role lacks a required privilege or the schema is behind the current Atomic release, opening the store fails with `StorageConfigError` (`reason: "missing-privilege"`). The error names the exact `GRANT` or `atomic storage migrate` command to run.
 
-Once the schema is current, opening the session store or an Intercom broker's shared state reads the schema catalog and the migration ledger once, in two statements sent together, and runs no schema transaction and takes no lock. Many processes can therefore start at once against one database without waiting for each other or for other writers. Only an open that finds something missing or behind takes the schema lock and checks again under it.
-
-On SQLite and libSQL, Atomic records which version of each Intercom store's tables it set up in a table named `<prefix>atomic_schema_stamps`, together with SQLite's count of schema changes (`PRAGMA schema_version`). Atomic writes that record during the second open of a database, in the write transaction that open already takes; from the third open on, opening a broker whose tables are current takes no write lock. Any later change to the schema, by any program or by an older Atomic that doesn't keep the record, makes the next open check those tables again. Older Atomic versions ignore the table.
-
 `atomic storage migrate` sets `fillfactor = 80` on the sessions table and the Intercom lease table, which every append and lease renewal updates, so those updates usually stay on their page without touching an index. The setting applies to pages written after it. To apply it to existing pages too, run `VACUUM FULL` on those two tables during a quiet period, or use `pg_repack` to do it without a long lock. Both steps are optional. A runtime role that cannot alter these tables leaves the setting to the owner's `atomic storage migrate` and keeps working.
 
 `atomic storage migrate` also creates a function in the `atomic` schema that saves new entries to a session in 1 round trip instead of 2, and lets every role that may write sessions run it. The function runs with the rights of the role that calls it, so it gives the runtime role no new rights. Each process checks for the function when it opens the database, with no extra query. Until you run `atomic storage migrate`, or if the runtime role may not run the function, saves take 2 round trips as before. Long entries that Atomic stores in chunks, and entries that refer back to earlier parts of a branch, also take the 2-round-trip path. Older Atomic versions ignore the function and keep working.
@@ -176,10 +172,6 @@ Each Atomic process holds one set of connections per database. The session store
 So a process opens at most `maxConnections` + `readerMaxConnections` + 1 connections per database: 11 with the defaults.
 
 Pools grow for bursts and shrink afterwards. A connection opened for a burst closes after 10 seconds without use. A pool's last connection stays open for `idleTimeoutMs`, 5 minutes by default, after the pool's last call, so a call after a pause skips the connection and TLS handshakes. Unused connections do not keep the process from exiting.
-
-This follows common pool designs. [HikariCP](https://github.com/brettwooldridge/HikariCP#frequently-used) closes idle connections above a minimum and recommends [small pools](https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing). Rails keeps [one pool per process and database](https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/ConnectionPool.html) and closes connections idle for 300 seconds. [pgx](https://github.com/jackc/pgx/blob/master/pgxpool/pool.go) keeps no minimum and closes connections idle for 30 minutes. node-postgres closes idle connections after 10 seconds by default.
-
-In one measurement, a process with a session store and an Intercom broker made 100 session saves and 100 Intercom sends, 4 at a time each. It peaked at 8 connections instead of 9. Ten seconds after the burst, it held 3 connections, one in each pool and the listening one, instead of 9. With `maxConnections: 2`, the peak dropped from 7 to 5 and the idle count from 7 to 3.
 
 The Intercom broker runs in its own process on each machine. Count each machine's broker process and each `atomic` process separately. How to size these settings:
 
