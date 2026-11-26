@@ -3,6 +3,7 @@ import type { StorageDialect } from "../dialect.js";
 import { ForkSourceIncompleteError } from "./fork-errors.js";
 import { type ForkCopyTables, forkBlobCopy } from "./fork-row-copy.js";
 import { assertForkSegments, type ForkSegment, forkRunSegments, segmentLength } from "./fork-segments.js";
+import { inJsonList } from "./json-list.js";
 
 /**
  * The rows that say where a fork that shares its parent's history finds the entries it inherits (#6560): its segments,
@@ -140,8 +141,8 @@ export async function lockForkSources(
 	const sorted = [...new Set(ids)].sort();
 	if (dialect.name === "sqlite" || sorted.length === 0) return;
 	await tx.all(
-		`SELECT id FROM ${tables.sessions} WHERE id IN (${sorted.map(() => "?").join(", ")}) ORDER BY id${dialect.lockClause(mode)}`,
-		...sorted,
+		`SELECT id FROM ${tables.sessions} WHERE ${inJsonList(dialect, "id")} ORDER BY id${dialect.lockClause(mode)}`,
+		JSON.stringify(sorted),
 	);
 }
 
@@ -320,6 +321,7 @@ export async function materializeForkSegments(
 			...range,
 		);
 		const copy = forkBlobCopy(
+			dialect,
 			tables,
 			blobs,
 			piece.sourceId,

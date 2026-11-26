@@ -1,6 +1,8 @@
 import type { SqliteRow, SqliteStatement } from "../database.js";
+import type { StorageDialect } from "../dialect.js";
 import { SessionBlobError } from "../errors.js";
 import { SessionConflictError } from "./errors.js";
+import { inJsonList } from "./json-list.js";
 
 /** The tables a fork copies stored rows between, in one database. */
 export interface ForkCopyTables {
@@ -141,6 +143,7 @@ export interface ForkBlobCopy {
  * only with all its bytes, and each chunk only at its full length.
  */
 export function forkBlobCopy(
+	dialect: StorageDialect,
 	tables: ForkCopyTables,
 	options: { readonly legacyBlobData: boolean; readonly chunkBytes: number },
 	source: string,
@@ -157,20 +160,20 @@ export function forkBlobCopy(
 	for (let start = 0; start < hashes.length; start += BLOB_HASHES_PER_STATEMENT)
 		groups.push(hashes.slice(start, start + BLOB_HASHES_PER_STATEMENT));
 	for (const group of groups) {
-		const named = group.map(() => "?").join(", ");
+		const named = JSON.stringify(group);
 		statements.push(
 			{
-				sql: `INSERT INTO ${blobs} (session_id, hash, bytes, chunks${columns}) SELECT ?, p.hash, p.bytes, p.chunks${sourceColumns} FROM ${blobs} p WHERE p.session_id = ? AND p.hash IN (${named})${whole} AND NOT EXISTS (SELECT 1 FROM ${blobs} c WHERE c.session_id = ? AND c.hash = p.hash) ORDER BY p.hash`,
-				params: [child, source, ...group, child],
+				sql: `INSERT INTO ${blobs} (session_id, hash, bytes, chunks${columns}) SELECT ?, p.hash, p.bytes, p.chunks${sourceColumns} FROM ${blobs} p WHERE p.session_id = ? AND ${inJsonList(dialect, "p.hash")}${whole} AND NOT EXISTS (SELECT 1 FROM ${blobs} c WHERE c.session_id = ? AND c.hash = p.hash) ORDER BY p.hash`,
+				params: [child, source, named, child],
 			},
 			{
-				sql: `INSERT INTO ${blobChunks} (session_id, hash, idx, data) SELECT ?, k.hash, k.idx, k.data FROM ${blobChunks} k JOIN ${blobs} p ON p.session_id = k.session_id AND p.hash = k.hash WHERE k.session_id = ? AND k.hash IN (${named}) AND k.idx < p.chunks AND length(k.data) = CASE WHEN k.idx = p.chunks - 1 THEN p.bytes - k.idx * ? ELSE ? END AND NOT EXISTS (SELECT 1 FROM ${blobChunks} x WHERE x.session_id = ? AND x.hash = k.hash AND x.idx = k.idx) ORDER BY k.hash, k.idx`,
-				params: [child, source, ...group, options.chunkBytes, options.chunkBytes, child],
+				sql: `INSERT INTO ${blobChunks} (session_id, hash, idx, data) SELECT ?, k.hash, k.idx, k.data FROM ${blobChunks} k JOIN ${blobs} p ON p.session_id = k.session_id AND p.hash = k.hash WHERE k.session_id = ? AND ${inJsonList(dialect, "k.hash")} AND k.idx < p.chunks AND length(k.data) = CASE WHEN k.idx = p.chunks - 1 THEN p.bytes - k.idx * ? ELSE ? END AND NOT EXISTS (SELECT 1 FROM ${blobChunks} x WHERE x.session_id = ? AND x.hash = k.hash AND x.idx = k.idx) ORDER BY k.hash, k.idx`,
+				params: [child, source, named, options.chunkBytes, options.chunkBytes, child],
 			},
 		);
 		checks.push({
-			sql: `SELECT p.hash, p.bytes, p.chunks, (SELECT count(*) FROM ${blobs} c WHERE c.session_id = ? AND c.hash = p.hash) AS copied, (SELECT count(*) FROM ${blobChunks} k WHERE k.session_id = ? AND k.hash = p.hash) AS parts FROM ${blobs} p WHERE p.session_id = ? AND p.hash IN (${named})`,
-			params: [child, child, source, ...group],
+			sql: `SELECT p.hash, p.bytes, p.chunks, (SELECT count(*) FROM ${blobs} c WHERE c.session_id = ? AND c.hash = p.hash) AS copied, (SELECT count(*) FROM ${blobChunks} k WHERE k.session_id = ? AND k.hash = p.hash) AS parts FROM ${blobs} p WHERE p.session_id = ? AND ${inJsonList(dialect, "p.hash")}`,
+			params: [child, child, source, named],
 		});
 	}
 	return {

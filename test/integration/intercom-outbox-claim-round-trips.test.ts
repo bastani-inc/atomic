@@ -159,6 +159,44 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claims on Pos
 		});
 	});
 
+	test("confirmations settled together send one statement text however many they settle (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });
+			await bus.close();
+			const texts = new Set<string>();
+			const query = pg.Client.prototype.query;
+			pg.Client.prototype.query = function (this: pg.Client, ...args: unknown[]) {
+				const first = args[0] as string | { text?: string } | undefined;
+				const text = typeof first === "string" ? first : first?.text;
+				if (text?.includes("'delivered'")) texts.add(text);
+				return Reflect.apply(query, this, args);
+			} as pg.Client["query"];
+			restores.push(() => {
+				pg.Client.prototype.query = query;
+			});
+			try {
+				for (const [target, count] of [
+					["target-1", 1],
+					["target-3", 3],
+				] as const) {
+					for (let index = 0; index < count; index++) await enqueue(state, `${target}-m${index}`, target);
+					const claimed = await claim(state, "broker-b", target);
+					assert.equal(claimed.status, "claimed");
+					if (claimed.status !== "claimed") return;
+					assert.deepEqual(
+						await Promise.all(
+							claimed.rows.map(async ({ claim }) => (await state.outbox.markDelivered(claim)).status),
+						),
+						Array(count).fill("delivered"),
+					);
+				}
+				assert.equal(texts.size, 1, [...texts].join("\n---\n"));
+			} finally {
+				await state.close();
+			}
+		});
+	});
+
 	test("an empty poll takes no lock, and a poll that finds messages takes the database's and its recipient's (#6560)", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => scope.open() });
