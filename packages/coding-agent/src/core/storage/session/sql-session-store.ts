@@ -766,14 +766,7 @@ export class SqlSessionStore implements SessionStore {
 	private readonly forkedSessions = new Map<string, boolean>();
 	/** The sessions each recently forked session's segments named when this store last read them (#6560). */
 	private readonly forkSources = new Map<string, readonly string[]>();
-	/**
-	 * Absent on a local libSQL file, which then behaves as before: @libsql/client waits for another process's write
-	 * lock on the calling thread, even to begin a transaction, so a side write would stop the event loop where an
-	 * ordinary turn-ending notice writes nothing (#5682).
-	 */
 	get chatRecords(): SqlSessionChatRecords | undefined {
-		const { adapter, location } = this.database.descriptor;
-		if (adapter === "libsql" && /^file:/i.test(location)) return undefined;
 		if (!this.chatStore) {
 			const names = renderStorageIdentifiers(
 				"sessions",
@@ -5338,7 +5331,7 @@ $grant$`);
 
 	/**
 	 * A condition on an entries row that holds for every entry `select` selects (and more): an entry larger than a page;
-	 * on SQLite and libSQL, a message whose stored type and role say it is a tool result, or an assistant message with a
+	 * on SQLite, a message whose stored type and role say it is a tool result, or an assistant message with a
 	 * tool call named other than `exceptCalls`, and any row that is not valid JSON; on Postgres, which would parse each
 	 * row's JSON to read those, any row whose JSON holds a tool call block's `"toolCall"` or a result's `"toolResult"`,
 	 * which `JSON.stringify`, the only writer of a row, always writes as such (it never escapes a letter).

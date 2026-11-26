@@ -1,14 +1,10 @@
 import { createHash } from "node:crypto";
-import { pathToFileURL } from "node:url";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 
-const [adapter, path, hash, mode] = process.argv.slice(2);
-const database = adapter === "node-sqlite"
-	? await openNodeSqliteDatabase(path!)
-	: await openLibsqlDatabase({ url: pathToFileURL(path!).href });
+const [, path, hash, mode] = process.argv.slice(2);
+const database = await openNodeSqliteDatabase(path!);
 const resume = () => new Promise<void>((resolve) => process.once("message", () => resolve()));
 let paused = false;
 const observed: SqliteDatabase = {

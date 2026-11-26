@@ -12,9 +12,9 @@ In the `atomic-monorepo` npm workspace:
   They compile with `tsc` and publish as `@bastani/atomic-*`, with `packages/agent` publishing as `@bastani/atomic-agent-core`.
   The CLI pins them to its release version. The loader resolves `@earendil-works/pi-*`, `@mariozechner/pi-*`, and `@bastani/pi-ai` aliases.
 - `packages/natives` builds the `@bastani/atomic-natives` N-API module from Rust code in `crates/`.
-- `packages/storage-libsql` and `packages/storage-postgres` publish separately as JSDoc-checked ESM with type declarations.
-  They have no compile step. Keep them out of the CLI's dependencies and `dist/builtin`.
-  Install with `atomic install npm:@bastani/atomic-storage-libsql` or `atomic install npm:@bastani/atomic-storage-postgres`.
+- `packages/storage-postgres` publishes separately as JSDoc-checked ESM with type declarations.
+  It has no compile step. Keep it out of the CLI's dependencies and `dist/builtin`.
+  Install with `atomic install npm:@bastani/atomic-storage-postgres`.
 
 ## Tech stack
 

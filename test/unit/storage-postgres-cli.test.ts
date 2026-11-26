@@ -119,17 +119,6 @@ describe("atomic storage join postgres:// arguments (#4793)", () => {
 			url: URL_,
 			auth: "aws-iam",
 		});
-		configRefusal(
-			() => parseStorageCommand(["join", "libsql://db.example.turso.io", "--password-file", "a"]),
-			"unsupported-option",
-			"--password-file",
-			/Only postgres:\/\/ and postgresql:\/\/ URLs take --password-file/,
-		);
-		configRefusal(
-			() => parseStorageCommand(["join", "libsql://db.example.turso.io", "--auth", "azure"]),
-			"unsupported-option",
-			"--auth",
-		);
 		for (const url of ["postgres:///atomic", "postgres://[bad/atomic"])
 			configRefusal(
 				() => parseStorageCommand(["join", url, "--auth", "aws"]),
@@ -141,7 +130,7 @@ describe("atomic storage join postgres:// arguments (#4793)", () => {
 			() => parseStorageCommand(["join", "mysql://db.example.com/atomic", "--token-file", "t"]),
 			"unsupported-url",
 			"<url>",
-			/Use a postgres:\/\/, postgresql:\/\/, libsql:\/\//,
+			/Use a postgres:\/\/ or postgresql:\/\/ URL/,
 		);
 		configRefusal(
 			() => parseStorageCommand(["join", "my+postgres://db.example.com/atomic", "--token-file", "t"]),
@@ -292,6 +281,25 @@ describe("atomic storage join postgres:// with the adapter (#4793)", () => {
 		assert.ok(!readFileSync(join(agentDir, "settings.json"), "utf8").includes(PASSWORD));
 	});
 
+	test("a join over a libSQL selection replaces it, naming it as a database this release no longer opens", async () => {
+		installFakePostgres();
+		const installed = settings();
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				...installed,
+				storage: { adapter: "@bastani/atomic-storage-libsql", options: { url: "libsql://team.example.turso.io" } },
+			}),
+		);
+		const result = await storage(["join", URL_, "--password-file", passwordFile]);
+		assert.equal(result.code, 0, result.err);
+		assert.match(
+			result.out,
+			/^It replaces the previous selection: a libSQL database, which this release no longer opens\.$/m,
+		);
+		assert.equal(settings().storage?.adapter, POSTGRES_ADAPTER_PACKAGE);
+	});
+
 	test("--token-file is checked as connections read it, dropping only one final line ending (#4793)", async () => {
 		const fake = installFakePostgres();
 		writeFileSync(passwordFile, `${PASSWORD}\n\n`);
@@ -364,7 +372,6 @@ describe("atomic storage join postgres:// with the adapter (#4793)", () => {
 					passwordFile,
 					agentDir,
 					cwd: project,
-					pinLocalSessions: false,
 				},
 				"cli",
 				50,
@@ -464,14 +471,7 @@ describe("atomic storage status for a Postgres selection (#4793)", () => {
 	});
 });
 
-describe("Postgres selections in team join and export (#4793)", () => {
-	test("team join keeps to libSQL URLs (#4793)", async () => {
-		await assert.rejects(
-			joinSharedDatabase({ url: URL_, auth: "azure-entra", agentDir, cwd: project, pinLocalSessions: true }, "cli"),
-			(error: Error & { code?: string }) => error.code === "unsupported-url",
-		);
-	});
-
+describe("Postgres selections in export (#4793)", () => {
 	test("sessions in a joined Postgres database are not exported unless it is named (#4793)", async () => {
 		installFakePostgres();
 		writeFileSync(

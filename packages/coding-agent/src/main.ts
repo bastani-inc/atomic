@@ -551,10 +551,6 @@ export async function main(argv: string[], options?: MainOptions) {
 	try {
 		setCliStorageSelection(parsed.storage, cwd);
 		selectProcessStorage("shared", agentDir, cwd);
-		if (engineEnv.child !== "1") {
-			const { assertTeamAdapterInstalled } = await import("./core/storage/team.js");
-			await assertTeamAdapterInstalled(agentDir);
-		}
 	} catch (error) {
 		if (!(error instanceof StorageConfigError || isTeamProfileError(error))) throw error;
 		console.error(chalk.red(`Error: ${error.message}`));
@@ -1356,7 +1352,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	} catch (error) {
 		// Another live process resumed this session (#5135): nothing was changed.
 		const held = error instanceof SessionAlreadyOpenError;
-		const message = held ? error.message : resumeFailureMessage(error);
+		// A storage selection settings make, such as one naming the removed libSQL adapter, fails as its message alone.
+		const message = held || error instanceof StorageConfigError ? error.message : resumeFailureMessage(error);
 		if (message === undefined) throw error;
 		startupEarlyInputCapture?.consume();
 		console.error(chalk.red(`Error: ${message}`));

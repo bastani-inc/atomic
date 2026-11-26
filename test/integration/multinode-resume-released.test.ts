@@ -5,7 +5,7 @@ import { connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { renameWithRetry } from "../../packages/coding-agent/src/core/rename-retry.ts";
-import { type FakeLibsqlServer, startFakeLibsqlServer } from "../helpers/fake-libsql-server.js";
+import { createPostgresDatabase, postgresSkipReason, postgresStorageSelection } from "../helpers/postgres-database.js";
 import { bunExecutable, makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import { treeDigest } from "../helpers/tree-digest.js";
@@ -15,9 +15,9 @@ useTemporaryAgentDir();
 
 /**
  * Scenario 5 of #4329, reduced to processes on one runner: each node is its own process with its own agent directory,
- * HOME and Atomic home; the nodes share only a libSQL database over HTTP (a loopback stand-in for sqld) selected by
- * ATOMIC_STORAGE. Node B reaches it through a proxy the test can cut, as a partition cuts a node off. The Azure variant
- * runs the same steps on separate VMs against a real sqld.
+ * HOME and Atomic home; the nodes share only a PostgreSQL database selected by ATOMIC_STORAGE. Node B reaches it
+ * through a proxy the test can cut, as a partition cuts a node off. It runs where ATOMIC_TEST_POSTGRES_URL is set, as
+ * in CI's storage conformance job.
  */
 const MULTINODE_RELEASED_TIMEOUT_MS = 240_000;
 /** One node process: it starts Bun, loads the sources and opens the shared database. */
@@ -26,8 +26,6 @@ const NODE_STEP_TIMEOUT_MS = 90_000;
 const PARTITIONED_WAKE_TIMEOUT_MS = 90_000;
 const driver = join(moduleDir(import.meta.url), "..", "fixtures", "multinode-released-node.ts");
 const subagentDriver = join(moduleDir(import.meta.url), "..", "fixtures", "multinode-released-subagent-node.ts");
-/** This checkout's libSQL adapter by path, so a node never resolves (or Bun auto-installs) a published copy. */
-const libsqlAdapter = join(moduleDir(import.meta.url), "..", "..", "packages", "storage-libsql", "libsql.js");
 const CLEARED_STORAGE_ENV = {
 	ATOMIC_SESSIONS_STORAGE: "",
 	ATOMIC_WORKFLOWS_JOURNAL: "",
@@ -75,9 +73,9 @@ function toolResultText(output: NodeOutput): string {
 
 let root: string;
 let sandbox: GitSandbox;
-let database: FakeLibsqlServer;
+let database: { readonly url: string; drop(): Promise<void> } | undefined;
 
-function nodeEnv(name: string, storageUrl = database.url): NodeJS.ProcessEnv {
+function nodeEnv(name: string, storageUrl = database!.url): NodeJS.ProcessEnv {
 	const home = join(root, name, "home");
 	mkdirSync(home, { recursive: true });
 	return {
@@ -85,7 +83,7 @@ function nodeEnv(name: string, storageUrl = database.url): NodeJS.ProcessEnv {
 		...CLEARED_STORAGE_ENV,
 		HOME: home,
 		ATOMIC_CODING_AGENT_DIR: join(root, name, "agent"),
-		ATOMIC_STORAGE: JSON.stringify({ adapter: libsqlAdapter, options: { url: storageUrl } }),
+		ATOMIC_STORAGE: postgresStorageSelection(storageUrl),
 		GIT_CONFIG_GLOBAL: sandbox.globalConfig,
 		GIT_CONFIG_NOSYSTEM: "1",
 	};
@@ -179,15 +177,20 @@ async function partitionProxy(
 	};
 }
 
-describe("multi-node wake of a released session (#4329)", () => {
+/** The shared database's URL as a node reaches it through the proxy on `port`. */
+function throughProxy(port: number): string {
+	return Object.assign(new URL(database!.url), { hostname: "127.0.0.1", port: String(port) }).href;
+}
+
+describe.skipIf(postgresSkipReason !== undefined)("multi-node wake of a released session (#4329)", () => {
 	beforeAll(async () => {
 		root = makeTempDirectory("atomic-multinode-released-");
 		sandbox = new GitSandbox();
-		database = await startFakeLibsqlServer();
+		database = await createPostgresDatabase();
 	});
 
 	afterAll(async () => {
-		await database?.close();
+		await database?.drop();
 		sandbox?.dispose();
 		if (root) await removeTempDirectory(root);
 	});
@@ -227,11 +230,11 @@ describe("multi-node wake of a released session (#4329)", () => {
 
 			// A partition during the wake: node B is up, then cut off from the database as its wake starts. The wake fails
 			// typed and retryable, and restores nothing.
-			const proxy = await partitionProxy(database.port);
+			const proxy = await partitionProxy(Number(new URL(database!.url).port || 5432));
 			const partitionedNode = startNode(
 				"wake",
 				wakeArgs,
-				nodeEnv("node-b", `http://127.0.0.1:${proxy.port}`),
+				nodeEnv("node-b", throughProxy(proxy.port)),
 				PARTITIONED_WAKE_TIMEOUT_MS,
 			);
 			assert.equal((await firstOutput(partitionedNode)).ready, true);
@@ -320,11 +323,11 @@ describe("multi-node wake of a released session (#4329)", () => {
 			};
 
 			// A partition during the wake: the wake fails typed and retryable, and restores nothing.
-			const proxy = await partitionProxy(database.port);
+			const proxy = await partitionProxy(Number(new URL(database!.url).port || 5432));
 			const partitionedNode = startNode(
 				"wake",
 				wakeArgs,
-				nodeEnv("subagent-node-b", `http://127.0.0.1:${proxy.port}`),
+				nodeEnv("subagent-node-b", throughProxy(proxy.port)),
 				PARTITIONED_WAKE_TIMEOUT_MS,
 				subagentDriver,
 			);

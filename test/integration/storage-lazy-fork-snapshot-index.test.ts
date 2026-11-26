@@ -27,7 +27,7 @@ import {
 } from "../helpers/lazy-fork-worlds.js";
 import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { messageEntry, snapshotEntry, syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
-import { libsqlFileBackend, type StorageBackend, storageBackends } from "../helpers/storage-backends.js";
+import { type StorageBackend, storageBackends } from "../helpers/storage-backends.js";
 import { header, user } from "./storage-conformance-matrix-fork-staging-helpers.js";
 
 /**
@@ -56,8 +56,6 @@ const released = (await import(
 /** Histories per backend: a local file runs more of them than a server, where each statement is a round trip. */
 const SEEDS: Record<string, number> = {
 	"SQLite file": 16,
-	"libSQL file": 8,
-	"libSQL server (sqld)": 4,
 	Postgres: 6,
 };
 
@@ -111,7 +109,7 @@ async function detachAll(worlds: Worlds, sessions: readonly string[], pageRows: 
 	}
 }
 
-for (const backend of [...storageBackends, libsqlFileBackend]) {
+for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
 	describe.skipIf(backend.skipReason !== undefined)(
 		`the snapshot index of shared-history forks on ${name} (#6560)`,

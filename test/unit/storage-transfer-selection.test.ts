@@ -7,40 +7,56 @@ import { afterEach, beforeEach, test, vi } from "vitest";
 import { parseStorageCommand, runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";
-import { LIBSQL_ADAPTER_PACKAGE } from "../../packages/coding-agent/src/core/storage/selection.js";
-import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
+import { POSTGRES_ADAPTER_PACKAGE } from "../../packages/coding-agent/src/core/storage/selection.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
-/** Loading the libSQL package adapter through jiti and opening a `file:` database, several times. */
-const LIBSQL_SCENARIO_TIMEOUT_MS = 60_000;
+/** Loading a package adapter through jiti and opening a database, several times. */
+const SHARED_SCENARIO_TIMEOUT_MS = 60_000;
 
-const libsqlPackage = resolve(moduleDir(import.meta.url), "../../packages/storage-libsql");
+const testAdapter = resolve(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts");
 const STORAGE_VARIABLES = [
 	"ATOMIC_STORAGE",
 	"ATOMIC_SESSIONS_STORAGE",
 	"ATOMIC_WORKFLOWS_JOURNAL",
 	"ATOMIC_CODING_AGENT_SESSION_DIR",
 	"ATOMIC_WORKFLOW_JOURNAL_PATH",
-	"ATOMIC_PROFILE",
 ];
 
 let root: string;
 let project: string;
-let libsqlDirectory: string;
+let sharedDirectory: string;
 
 beforeEach(() => {
 	for (const name of STORAGE_VARIABLES) vi.stubEnv(name, "");
 	root = makeTempDirectory("storage-transfer-selection-");
 	project = join(root, "project");
 	mkdirSync(project, { recursive: true });
-	libsqlDirectory = makeLibsqlDirectory();
+	sharedDirectory = join(root, "shared");
+	mkdirSync(sharedDirectory, { recursive: true });
 });
 
-afterEach(async () => {
+afterEach(() => {
 	vi.unstubAllEnvs();
-	await removeLibsqlDirectory(libsqlDirectory);
 	removeTempDirectory(root);
 });
+
+/**
+ * A package installed as the PostgreSQL adapter that opens a SQLite file: the plain commands treat its selection as a
+ * shared database, which is what this test is about, without a PostgreSQL server.
+ */
+function sharedDatabasePackage(): string {
+	const directory = join(root, "shared-adapter");
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(
+		join(directory, "package.json"),
+		JSON.stringify({ name: POSTGRES_ADAPTER_PACKAGE, type: "module", atomic: { storageAdapters: ["./adapter.ts"] } }),
+	);
+	writeFileSync(
+		join(directory, "adapter.ts"),
+		`export { default } from ${JSON.stringify(pathToFileURL(testAdapter).href)};\n`,
+	);
+	return directory;
+}
 
 function machine(name: string, settings: object = {}): string {
 	const agentDir = join(root, name, "agent");
@@ -107,8 +123,8 @@ test(
 	"a named shared selection is exported from and imported into, though the plain commands refuse it (#4793)",
 	async () => {
 		const shared = {
-			adapter: LIBSQL_ADAPTER_PACKAGE,
-			options: { url: pathToFileURL(join(libsqlDirectory, "shared.sqlite")).href },
+			adapter: POSTGRES_ADAPTER_PACKAGE,
+			options: { path: join(sharedDirectory, "shared.sqlite") },
 			prefix: "team_",
 		};
 		const source = machine("a");
@@ -119,7 +135,7 @@ test(
 		assert.deepEqual(Object.keys(before), [`sessions/${sessionId}.jsonl`]);
 
 		// This machine joined the shared database: the plain commands refuse it, a named selection is used.
-		const target = machine("b", { packages: [libsqlPackage], storage: shared });
+		const target = machine("b", { packages: [sharedDatabasePackage()], storage: shared });
 		const refused = await storage(target, ["import", exported]);
 		assert.equal(refused.code, 1);
 		assert.match(refused.err, /atomic storage import works with .*A shared database already holds/);
@@ -135,9 +151,12 @@ test(
 		const back = await storage(target, ["export", reexported, "--storage", JSON.stringify(shared)]);
 		assert.equal(back.code, 0, back.err);
 		assert.deepEqual(tree(reexported), before, "the session reads back byte for byte");
-		const database = await openNodeSqliteDatabase(join(libsqlDirectory, "shared.sqlite"), { readOnly: true });
+		const database = await openNodeSqliteDatabase(join(sharedDirectory, "shared.sqlite"), { readOnly: true });
 		try {
-			const tables = await database.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'");
+			// The test adapter keeps a table of its own, `adapter_probe`; every table the stores created has the prefix.
+			const tables = await database.all<{ name: string }>(
+				"SELECT name FROM sqlite_master WHERE type = 'table' AND name <> 'adapter_probe'",
+			);
 			assert.ok(
 				tables.length > 0 && tables.every(({ name }) => name.startsWith("team_") || name.startsWith("sqlite_")),
 				JSON.stringify(tables),
@@ -146,7 +165,7 @@ test(
 			await database.close();
 		}
 	},
-	LIBSQL_SCENARIO_TIMEOUT_MS,
+	SHARED_SCENARIO_TIMEOUT_MS,
 );
 
 test("a named SQLite file selection is created by an import and read by an export; memory is refused (#4793)", async () => {

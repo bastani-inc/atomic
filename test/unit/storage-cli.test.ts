@@ -1,17 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { runIntercomCommand } from "../../packages/coding-agent/src/cli/intercom-command.js";
-import {
-	LIBSQL_ADAPTER_PACKAGE,
-	parseStorageCommand,
-	runStorageCommand,
-	STORAGE_TOKEN_FILE,
-} from "../../packages/coding-agent/src/cli/storage-command.js";
-import { FileSettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
+import { parseStorageCommand, runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
 import { isTeamProfileConfigError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	checkSharedStorageAdapter,
@@ -20,13 +13,8 @@ import {
 	type StorageStatus,
 } from "../../packages/coding-agent/src/core/storage/storage-status.js";
 import { ProjectTrustStore } from "../../packages/coding-agent/src/core/trust-manager.js";
-import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
-/** Loading the libSQL package adapter through jiti and opening a `file:` database. */
-const LIBSQL_SCENARIO_TIMEOUT_MS = 60_000;
-
-const packageRoot = resolve(moduleDir(import.meta.url), "../../packages/storage-libsql");
 const STORAGE_VARIABLES = [
 	"ATOMIC_STORAGE",
 	"ATOMIC_SESSIONS_STORAGE",
@@ -144,13 +132,16 @@ describe("atomic storage and atomic intercom arguments", () => {
 		assert.deepEqual(parseStorageCommand(["status"]), { kind: "status", json: false });
 		assert.deepEqual(parseStorageCommand(["status", "--json"]), { kind: "status", json: true });
 		assert.deepEqual(
-			parseStorageCommand(["join", "libsql://db.example.turso.io", "--token-file", "token", "--prefix", "team_"]),
-			{ kind: "join", url: "libsql://db.example.turso.io", tokenFile: "token", prefix: "team_" },
+			parseStorageCommand([
+				"join",
+				"postgres://atomic@db.example.com/atomic",
+				"--password-file",
+				"password",
+				"--prefix",
+				"team_",
+			]),
+			{ kind: "join", url: "postgres://atomic@db.example.com/atomic", passwordFile: "password", prefix: "team_" },
 		);
-		assert.deepEqual(parseStorageCommand(["join", "file:/tmp/shared.sqlite"]), {
-			kind: "join",
-			url: "file:/tmp/shared.sqlite",
-		});
 	});
 
 	test("reject storage arguments that would join the wrong way (#3857)", () => {
@@ -159,37 +150,46 @@ describe("atomic storage and atomic intercom arguments", () => {
 				() => parseStorageCommand(args),
 				(error: Error) => isTeamProfileConfigError(error) && error.code === code && error.field === field,
 			);
-		rejects(["join", "libsql://db.example.turso.io"], "missing-token", "--token-file");
+		rejects(["join", "postgres://atomic@db.example.com/atomic"], "missing-token", "--password-file");
 		rejects(["join", "mysql://db", "--token-file", "t"], "unsupported-url", "<url>");
-		rejects(["join", "file:./shared.sqlite"], "relative-file-url", "<url>");
 		assert.throws(() => parseStorageCommand(["join"]), /Usage: .* storage join <url>/);
-		assert.throws(() => parseStorageCommand(["join", "file:/x", "--token-file"]), /--token-file needs a value/);
+		assert.throws(
+			() => parseStorageCommand(["join", "postgres://atomic@db.example.com/atomic", "--token-file"]),
+			/--token-file needs a value/,
+		);
 		assert.throws(() => parseStorageCommand(["status", "--prefix", "x"]), /Unknown option --prefix/);
 		assert.throws(() => parseStorageCommand(["doctor"]), /Unknown storage command "doctor"/);
 	});
 
-	test("join refuses a database URL that carries the token, so it never reaches settings or the output (#3857)", () => {
+	test("join and migrate refuse every libSQL URL, saying libSQL was removed and how to move sessions off it", () => {
 		for (const url of [
-			"libsql://db.example.turso.io?authToken=secret",
-			"libsql://db.example.turso.io/?x=1&authToken=secret",
-			"libsql://user:secret@db.example.turso.io",
-			"https://secret@db.example.turso.io",
+			"libsql://db.example.turso.io",
+			"https://db.example.turso.io",
+			"http://127.0.0.1:8080",
+			"wss://db.example.turso.io",
+			"file:/tmp/shared.sqlite",
+			"file:./shared.sqlite",
 		]) {
-			assert.throws(
-				() => parseStorageCommand(["join", url, "--token-file", "token"]),
-				(error: Error) => {
-					assert.match(error.message, /carries a credential.*--token-file/);
-					assert.doesNotMatch(error.message, /secret/);
-					return true;
-				},
-				url,
-			);
+			for (const args of [
+				["join", url, "--token-file", "token"],
+				["join", url],
+				["migrate", "--db", url, "--token-file", "token"],
+			]) {
+				assert.throws(
+					() => parseStorageCommand(args),
+					(error: Error) => {
+						assert.ok(isTeamProfileConfigError(error), error.message);
+						assert.equal(error.code, "libsql-removed");
+						assert.equal(error.field, "<url>");
+						assert.match(error.message, /libSQL support .* was removed in Atomic 0\.10\.11/);
+						assert.match(error.message, /storage export .* storage import/);
+						assert.match(error.message, /https:\/\/docs\.bastani\.ai\/storage#moving-off-libsql/);
+						return true;
+					},
+					args.join(" "),
+				);
+			}
 		}
-		assert.deepEqual(parseStorageCommand(["join", "libsql://db.example.turso.io/?tls=0", "--token-file", "token"]), {
-			kind: "join",
-			url: "libsql://db.example.turso.io/?tls=0",
-			tokenFile: "token",
-		});
 	});
 
 	test("intercom accepts only status, restart and upgrade (#3857, #4538)", async () => {
@@ -323,21 +323,6 @@ describe("storage status checks", () => {
 		assert.equal(result.out, "");
 	});
 
-	test("status never creates a missing libSQL file database (#3856)", async () => {
-		const path = join(root, "missing-libsql.sqlite");
-		writeSettings({
-			packages: [packageRoot],
-			storage: { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url: pathToFileURL(path).href } },
-		});
-		const result = await storage(["status", "--json"]);
-		assert.equal(result.code, 0, result.err);
-		assert.equal(existsSync(path), false);
-		const status: StorageStatus = JSON.parse(result.out);
-		assert.equal(domain(status, "sessions").probe?.adapter?.loaded, true);
-		assert.equal(domain(status, "sessions").probe?.connection.status, "skipped");
-		assert.match(domain(status, "sessions").probe?.connection.detail ?? "", /file not found/);
-	});
-
 	test("status leaves a DELETE-journal SQLite file byte-for-byte unchanged (#3856)", async () => {
 		const { DatabaseSync } = await import("node:sqlite");
 		const path = join(root, "delete-journal.sqlite");
@@ -401,9 +386,6 @@ describe("storage status checks", () => {
 			/Storage adapter "\.\/missing-adapter\.ts" cannot be loaded by this Atomic \([^)]+\): Cannot find module '\.\/missing-adapter\.ts'\. /,
 		);
 		assert.doesNotMatch(warning ?? "", /Require stack/);
-		// The packaged libSQL adapter loads, so a correctly installed selection is not warned about.
-		writeSettings({ packages: [packageRoot] });
-		assert.equal(await checkSharedStorageAdapter(agentDir, { adapter: LIBSQL_ADAPTER_PACKAGE }), undefined);
 		assert.match(warning ?? "", /Intercom multi-node routing stays off/);
 		assert.equal(await checkSharedStorageAdapter(agentDir, { path: "x.sqlite" }), undefined);
 		assert.equal(await checkSharedStorageAdapter(agentDir, undefined), undefined);
@@ -428,211 +410,4 @@ describe("storage status checks", () => {
 			"No Intercom broker is running. The next session that uses Intercom starts this version's broker.",
 		);
 	});
-});
-
-describe("atomic storage join with the libSQL package (#3857)", () => {
-	let databaseDirectory: string;
-	let databaseUrl: string;
-	let tokenFile: string;
-
-	beforeEach(async () => {
-		databaseDirectory = makeLibsqlDirectory();
-		const path = join(databaseDirectory, "shared.sqlite");
-		databaseUrl = pathToFileURL(path).href;
-		const database = await openNodeSqliteDatabase(path);
-		await database.exec("CREATE TABLE existing (id INTEGER PRIMARY KEY)");
-		await database.close();
-		tokenFile = join(root, "turso-token");
-		writeFileSync(tokenFile, "  secret-token\n\n");
-	});
-
-	afterEach(async () => {
-		await removeLibsqlDirectory(databaseDirectory);
-	});
-
-	async function tables(): Promise<{ name: string }[]> {
-		const database = await openNodeSqliteDatabase(join(databaseDirectory, "shared.sqlite"));
-		try {
-			return await database.all<{ name: string }>(
-				"SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-			);
-		} finally {
-			await database.close();
-		}
-	}
-
-	test("prints the install command and changes nothing when the package is not installed", async () => {
-		writeSettings({ theme: "dark" });
-		const result = await storage(["join", databaseUrl, "--token-file", tokenFile]);
-		assert.equal(result.code, 1);
-		assert.match(result.err, new RegExp(`atomic install npm:${LIBSQL_ADAPTER_PACKAGE.replace("/", "\\/")}`));
-		assert.deepEqual(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")), { theme: "dark" });
-		assert.throws(() => statSync(join(agentDir, STORAGE_TOKEN_FILE)), { code: "ENOENT" });
-	});
-
-	test("a malformed global settings file reports the settings error instead of a missing adapter, and stays as it was (#3857)", async () => {
-		const malformed = '{ "theme": "dark", ';
-		writeFileSync(join(agentDir, "settings.json"), malformed);
-		const result = await storage(["join", databaseUrl, "--token-file", tokenFile]);
-		assert.equal(result.code, 1);
-		assert.match(result.err, /Cannot update the global settings/);
-		assert.match(result.err, /Fix .*settings\.json first/);
-		assert.doesNotMatch(result.err, /not installed/);
-		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), malformed);
-		assert.throws(() => statSync(join(agentDir, STORAGE_TOKEN_FILE)), { code: "ENOENT" });
-	});
-
-	test("join rejects relative file URLs before checking or saving them (#3857)", async () => {
-		writeSettings({ packages: [packageRoot] });
-		const before = readFileSync(join(agentDir, "settings.json"), "utf8");
-		const result = await storage(["join", "file:./shared.sqlite"]);
-		assert.equal(result.code, 1);
-		assert.match(result.err, /absolute file: URL/);
-		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
-	});
-
-	test("join finds legacy global adapter packages without leaking them into explicit agent directories (#3857)", async () => {
-		vi.stubEnv("HOME", root);
-		vi.stubEnv("USERPROFILE", root);
-		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", undefined);
-		vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
-		agentDir = join(root, ".atomic", "agent");
-		mkdirSync(agentDir, { recursive: true });
-		const legacyAgentDir = join(root, ".pi", "agent");
-		mkdirSync(legacyAgentDir, { recursive: true });
-		writeFileSync(join(legacyAgentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
-		writeSettings({ theme: "dark" });
-		const result = await storage(["join", databaseUrl, "--token-file", tokenFile]);
-		assert.equal(result.code, 0, result.err);
-		const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-		assert.equal(saved.storage.adapter, LIBSQL_ADAPTER_PACKAGE);
-		assert.equal(saved.theme, "dark");
-		agentDir = join(root, "isolated-agent");
-		mkdirSync(agentDir);
-		const isolated = await storage(["join", databaseUrl, "--token-file", tokenFile]);
-		assert.equal(isolated.code, 1);
-		assert.match(isolated.err, /adapter is not installed/);
-	});
-
-	test("join refuses credentials in file URLs without printing or saving them (#3857)", async () => {
-		writeSettings({ packages: [packageRoot] });
-		const before = readFileSync(join(agentDir, "settings.json"), "utf8");
-		const result = await storage(["join", `${databaseUrl}?authToken=file-url-secret`]);
-		assert.equal(result.code, 1);
-		assert.match(result.err, /carries a credential/);
-		assert.doesNotMatch(`${result.out}\n${result.err}`, /file-url-secret/);
-		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
-		assert.deepEqual(
-			readdirSync(agentDir).filter((name) => name.startsWith(STORAGE_TOKEN_FILE)),
-			[],
-		);
-	});
-
-	test("a settings write failure preserves the previous token and leaves settings intact (#3857)", async () => {
-		writeSettings({
-			packages: [packageRoot],
-			storage: {
-				adapter: LIBSQL_ADAPTER_PACKAGE,
-				options: { url: "file:old.sqlite" },
-				secrets: { authToken: { file: `agent/${STORAGE_TOKEN_FILE}` } },
-			},
-		});
-		const settingsBefore = readFileSync(join(agentDir, "settings.json"), "utf8");
-		const tokenPath = join(agentDir, STORAGE_TOKEN_FILE);
-		writeFileSync(tokenPath, "previous-token", { mode: 0o600 });
-		vi.spyOn(FileSettingsStorage.prototype, "withPrimaryWriteLock").mockImplementation(() => {
-			throw new Error("settings write denied");
-		});
-		const result = await storage(["join", databaseUrl, "--token-file", tokenFile]);
-		assert.equal(result.code, 1);
-		assert.match(result.err, /settings write denied/);
-		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), settingsBefore);
-		assert.equal(readFileSync(tokenPath, "utf8"), "previous-token");
-		assert.deepEqual(
-			readdirSync(agentDir).filter((name) => name.startsWith(STORAGE_TOKEN_FILE)),
-			[STORAGE_TOKEN_FILE],
-		);
-	});
-
-	test("join reports success after saving even if project diagnostics cannot load (#3857)", async () => {
-		writeSettings({ packages: [packageRoot] });
-		writeProjectSettings({}, true);
-		writeFileSync(join(project, ".atomic", "settings.json"), '{ "storage": ');
-		const result = await storage(["join", databaseUrl, "--token-file", tokenFile]);
-		assert.equal(result.code, 0, result.err);
-		assert.match(result.out, /saved.*could not report.*project settings/i);
-		const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-		assert.equal(saved.storage.options.url, databaseUrl);
-		assert.equal(readFileSync(resolve(agentDir, saved.storage.secrets.authToken.file), "utf8"), "secret-token");
-	});
-
-	test(
-		"stores the trimmed token privately, writes only `storage`, creates no tables, and reports overrides",
-		async () => {
-			const other = {
-				theme: "dark",
-				packages: [packageRoot],
-				sessions: { storage: { path: "sessions.sqlite" } },
-				retry: { enabled: false, provider: { maxRetryDelayMs: 1000 } },
-			};
-			writeSettings(other);
-			writeProjectSettings({ storage: { path: join(root, "project.sqlite") } }, true);
-			const before = await tables();
-
-			const result = await storage(["join", databaseUrl, "--token-file", tokenFile, "--prefix", "team_"]);
-			assert.equal(result.code, 0, result.err);
-
-			const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-			const tokenReference: string = saved.storage.secrets.authToken.file;
-			assert.match(tokenReference, /^storage-token\.[\da-f-]+$/);
-			const tokenPath = resolve(agentDir, tokenReference);
-			assert.equal(readFileSync(tokenPath, "utf8"), "secret-token");
-			if (process.platform !== "win32") assert.equal(statSync(tokenPath).mode & 0o777, 0o600);
-			assert.equal(readFileSync(tokenFile, "utf8"), "  secret-token\n\n");
-			assert.deepEqual(saved, {
-				...other,
-				storage: {
-					adapter: LIBSQL_ADAPTER_PACKAGE,
-					options: { url: databaseUrl },
-					secrets: { authToken: { file: tokenReference } },
-					prefix: "team_",
-				},
-			});
-			assert.deepEqual(await tables(), before);
-			assert.match(result.out, /Sessions: global settings: sessions\.storage/);
-			assert.doesNotMatch(result.out, /Workflow runs/);
-			assert.match(result.out, /which Intercom ignores/);
-			assert.doesNotMatch(result.out, /secret-token/);
-
-			const status = await storage(["status", "--json"]);
-			const parsed: StorageStatus = JSON.parse(status.out);
-			assert.equal(domain(parsed, "intercom").source, "global settings: storage");
-			assert.equal(domain(parsed, "intercom").probe?.connection.status, "ok");
-			assert.equal(domain(parsed, "intercom").multiNode, "on");
-			assert.deepEqual(await tables(), before);
-		},
-		LIBSQL_SCENARIO_TIMEOUT_MS,
-	);
-
-	test(
-		"an empty token or an unreachable database leaves settings and token untouched",
-		async () => {
-			writeSettings({ packages: [packageRoot] });
-			writeFileSync(tokenFile, " \n");
-			const empty = await storage(["join", databaseUrl, "--token-file", tokenFile]);
-			assert.equal(empty.code, 1);
-			assert.match(empty.err, /is empty/);
-
-			writeFileSync(tokenFile, "token\n");
-			const missing = pathToFileURL(join(databaseDirectory, "absent", "dir", "db.sqlite")).href;
-			const unreachable = await storage(["join", missing, "--token-file", tokenFile]);
-			assert.equal(unreachable.code, 1);
-			assert.match(unreachable.err, /Could not connect to .*Nothing was changed/);
-			assert.deepEqual(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")), {
-				packages: [packageRoot],
-			});
-			assert.throws(() => statSync(join(agentDir, STORAGE_TOKEN_FILE)), { code: "ENOENT" });
-		},
-		LIBSQL_SCENARIO_TIMEOUT_MS,
-	);
 });

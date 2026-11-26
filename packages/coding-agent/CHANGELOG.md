@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Atomic no longer supports libSQL: Turso, self-hosted `sqld`, and libSQL `file:` databases. A `storage` or `sessions.storage` setting, an `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, `--storage` or SDK selection, or a URL that still names libSQL now stops Atomic at once with a `libsql-removed` error that says how to move. Nothing falls back to another store. To keep your sessions, export them with 0.10.11-alpha.2, which reads every libSQL database: `npx -y @bastani/atomic@0.10.11-alpha.2 storage export ~/moved --storage-file old-storage.json`, with `old-storage.json` holding your old `storage` setting. Then import them with this release, into PostgreSQL (`atomic storage join postgres://…` and `atomic storage import ~/moved --storage-file new-storage.json`) or into local SQLite (`atomic storage import ~/moved`). Forks keep their whole history and worktree snapshots keep their content. Finally run `atomic remove npm:@bastani/atomic-storage-libsql`. See [Moving off libSQL](https://docs.bastani.ai/storage#moving-off-libsql) ([#6624](https://github.com/bastani-inc/atomic/pull/6624)).
+- Removed the libSQL team setup, with these replacements ([#6624](https://github.com/bastani-inc/atomic/pull/6624)):
+  - `atomic team join` and `atomic team leave` now fail with `libsql-removed`. Join a PostgreSQL database with `atomic storage join postgres://… --password-file <path>`. To keep sessions on the machine while Intercom uses the shared database, add `"sessions": { "storage": {} }` to global settings. To leave, remove `storage` and `sessions.storage` and run `atomic intercom restart`. `atomic team status` still works.
+  - `ATOMIC_PROFILE=ci` and `ATOMIC_TEAM_URL`, `ATOMIC_TEAM_TOKEN`, `ATOMIC_TEAM_TOKEN_FILE` and `ATOMIC_TEAM_PREFIX` now fail startup when set. Set `ATOMIC_STORAGE` to a PostgreSQL selection instead, with the password in an `{ "env": "<VAR>" }` secret.
+  - The SDK's `joinTeam()`, `leaveTeam()` and `teamProfileSelection()` now always throw `TeamProfileConfigError` with code `libsql-removed`. They stay exported, deprecated, only so a running process that an in-place update catches does not crash. The SDK no longer exports the `JoinTeamOptions`, `LeaveTeamOptions`, `TeamJoinResult`, `TeamLeaveResult`, `TeamBrokerRestart`, `TeamKeptSetting`, `TeamSettingKey`, `TeamProfileSelectionOptions` and `TeamStorageSelection` types. Pass `createAgentSession({ storage })` a PostgreSQL selection, with the password as `inMemorySecret(password)`. `getTeamProfile()` still works.
+  - `LIBSQL_ADAPTER_PACKAGE`, `TEAM_PROFILE_ENV`, `TEAM_URL_ENV`, `TEAM_TOKEN_ENV`, `TEAM_TOKEN_FILE_ENV`, `TEAM_PREFIX_ENV`, `SHARED_STORAGE_JOIN_HINT` and `TEAM_JOIN_COMMAND` are deprecated and will be removed. Nothing uses them any more: Atomic refuses the adapter and the variables they name. Use `POSTGRES_ADAPTER_PACKAGE` and `POSTGRES_STORAGE_JOIN_HINT`.
+  - The `teamJoin` setting that `atomic team join` wrote is no longer read. You can delete it.
+
 ### Added
 
 - Storage adapters receive a new transaction option, `relaxedDurability`, for writes whose loss in a server crash is harmless, such as lease renewals. A driver may answer the commit before the write reaches disk, or ignore the option. The PostgreSQL adapter turns `synchronous_commit` off for that transaction only. See [custom storage adapters](docs/storage/custom-adapters.md) ([#6633](https://github.com/bastani-inc/atomic/pull/6633), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
@@ -11,6 +21,11 @@
 - On macOS, the standalone `atomic` binary no longer reports a healthy local SQLite store as failed with "unable to open database file (SQLite code 14)" in `atomic storage status` after every Atomic process had closed it, for example right after `atomic storage import`. macOS's SQLite, which that binary uses, would not open a store read-only once its last connection had removed the `-wal` file.
 - A process still running Atomic 0.10.10 or 0.10.11-alpha.1 after an in-place update (`npm install -g`, `bun add -g`) no longer fails to open a PostgreSQL session store with "this store needs a newer Atomic" once forks share history in that database. It opens the store, and its forks share their parent's history as in a new process ([#6631](https://github.com/bastani-inc/atomic/pull/6631)).
 - On macOS, a session saved in the default session files no longer stops accepting new messages with a "Session conflict" error after the computer's clock moves backward, for example after a time sync or a time zone fix. macOS changes a file's creation date when its modified date is set earlier, and Atomic used that date to recognize the session file. Sessions, their indexes and saved diagnostics from earlier versions keep working after the update ([#6647](https://github.com/bastani-inc/atomic/pull/6647), [#4319](https://github.com/bastani-inc/atomic/issues/4319)).
+
+### Removed
+
+- Removed the `@bastani/atomic-storage-libsql` adapter. It is no longer published with Atomic releases ([#6624](https://github.com/bastani-inc/atomic/pull/6624)).
+- `atomic storage join` and `atomic storage migrate --db` now take only `postgres://` and `postgresql://` URLs ([#6624](https://github.com/bastani-inc/atomic/pull/6624)).
 
 ## [0.10.11-alpha.2] - 2026-11-26
 

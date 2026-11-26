@@ -103,15 +103,15 @@ Expose [storage adapters](/storage/custom-adapters#selecting-an-adapter) via `st
 
 ```json
 {
-  "name": "@example/atomic-libsql",
-  "dependencies": { "@libsql/client": "0.18.0" },
+  "name": "@example/atomic-mydb",
+  "dependencies": { "mydb-client": "1.0.0" },
   "peerDependencies": { "@bastani/atomic": "*" },
-  "atomic": { "storageAdapters": ["./libsql-adapter.ts"] }
+  "atomic": { "storageAdapters": ["./mydb-adapter.ts"] }
 }
 ```
 
-- Select an adapter by package name (`"storage": { "adapter": "@example/atomic-libsql" }`), which selects the first entry in `storageAdapters` when a package lists multiple adapters.
-- Select a specific adapter from a multi-adapter package with `<package>/<file-stem>`, where `<file-stem>` is the filename without its extension (for example `"@example/atomic-libsql/libsql-adapter"`).
+- Select an adapter by package name (`"storage": { "adapter": "@example/atomic-mydb" }`), which selects the first entry in `storageAdapters` when a package lists multiple adapters.
+- Select a specific adapter from a multi-adapter package with `<package>/<file-stem>`, where `<file-stem>` is the filename without its extension (for example `"@example/atomic-mydb/mydb-adapter"`).
 - Storage adapters load only from user-settings packages or explicit extension paths (`--extension <dir>` in [CLI resource options](/reference/cli#resource-options) or [`DefaultResourceLoader({ additionalExtensionPaths })`](/sdk/reference#extensions), which take precedence over settings). Project-installed packages cannot supply storage adapters, and global npm adapter lookup checks `~/.atomic/agent/npm/` only (not the system global npm root). See [Adapters from Atomic packages](/storage/custom-adapters#adapters-from-atomic-packages).
 
 ## Gallery metadata

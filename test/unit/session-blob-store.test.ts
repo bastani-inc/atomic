@@ -103,7 +103,7 @@ describe("SessionBlobError (#4379)", () => {
 
 		assert.equal(
 			unsupported.message,
-			"Session store cannot hold blobs: jsonl store of session s (blobs-unsupported). Keep the session in a SQLite or libSQL session store (the default sessions database, --session-store <path>, or a sessions.storage selection), or give a custom store putBlob and getBlob",
+			"Session store cannot hold blobs: jsonl store of session s (blobs-unsupported). Keep the session in a SQLite or PostgreSQL session store (the default sessions database, --session-store <path>, or a sessions.storage selection), or give a custom store putBlob and getBlob",
 		);
 		assert.equal(
 			missing.message,

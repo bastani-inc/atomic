@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
@@ -27,7 +26,6 @@ import { createEngineHostPair } from "../../packages/coding-agent/test/helpers/i
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.js";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import { createHarnessWithExtensions } from "../../packages/coding-agent/test/test-harness.js";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import { editorTheme, plainStyle } from "./chat-session-host-working-lifecycle-fixture.js";
@@ -331,18 +329,10 @@ test("a refused second cancellation record never hides the earlier saved line at
 	await vi.waitFor(() => assert.equal(count(), 1));
 });
 
-test.each([
-	["a SQLite file", "shows it after the conversation, as saved"],
-	["a local libSQL file", "shows the conversation alone, as main does, and saves nothing"],
-] as const)("a cancelled compaction in a chat reopened from %s: the chat %s (#5682)", async (kind, _shows) => {
-	// @libsql/client waits for another process's lock on the calling thread, even in a transaction: a side write there
-	// would stop the event loop where main writes nothing, so that store keeps main's behaviour.
+test("a cancelled compaction in a chat reopened from a SQLite file: the chat shows it after the conversation, as saved (#5682)", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "atomic-reopened-notices-"));
 	const path = join(directory, "sessions.db");
-	const libsql = kind === "a local libSQL file";
-	const database = libsql
-		? await openLibsqlDatabase({ url: pathToFileURL(path).href })
-		: await openNodeSqliteDatabase(path);
+	const database = await openNodeSqliteDatabase(path);
 	const store = await SqlSessionStore.open(database);
 	cleanups.push(async () => {
 		await store.close();
@@ -367,12 +357,7 @@ test.each([
 	const mode = chat(h.session);
 	mode.renderInitialMessages();
 	const conversation = ["original conversation", "seed"];
-	if (libsql) {
-		await new Promise<void>((resolve) => setTimeout(resolve, 200));
-		assert.deepEqual(rows(mode), conversation);
-		assert.deepEqual(await database.all("SELECT name FROM sqlite_schema WHERE name LIKE '%chat_v1%'"), []);
-		assert.equal(h.sessionManager.chatRecordScope(), undefined);
-	} else await vi.waitFor(() => assert.deepEqual(rows(mode), [...conversation, "Error: Compaction cancelled"]));
+	await vi.waitFor(() => assert.deepEqual(rows(mode), [...conversation, "Error: Compaction cancelled"]));
 });
 
 test("fullscreen shows its primary rows immediately and still accepts a late discovery without holding a frame (#5649)", async () => {

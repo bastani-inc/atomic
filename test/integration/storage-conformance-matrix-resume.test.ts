@@ -474,126 +474,6 @@ for (const backend of storageBackends) {
 			}
 		});
 	}
-	if (backend.name === "libSQL server (sqld)") {
-		run("a refused inline response is final after one projection and one page-key check (#5590)", async () => {
-			const scope = await backend.openScope();
-			try {
-				const db = await scope.connect();
-				const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
-				const entries: SessionEntry[] = Array.from({ length: 250 }, (_, i) => ({
-					type: "message",
-					id: `tool${i}`,
-					parentId: i ? `tool${i - 1}` : null,
-					timestamp,
-					message: {
-						role: "toolResult",
-						toolName: "scan",
-						toolCallId: "t".repeat(49_152),
-						content: [],
-						isError: false,
-						timestamp: i,
-					},
-				}));
-				const fitting = "fitting";
-				await store.create({ ...header, id: fitting }, entries.slice(0, 1));
-				await store.create(header, entries);
-				const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix);
-				await db.run(`UPDATE ${tables.sessions} SET summary_state = '{}'`);
-				let projections = 0;
-				let probes = 0;
-				const all = db.all.bind(db);
-				db.all = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
-					if (sql.includes("resume_toolcalls")) projections++;
-					return all<T>(sql, ...args);
-				};
-				const get = db.get.bind(db);
-				db.get = <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {
-					if (sql.includes(tables.entryChunks)) probes++;
-					return get<T>(sql, ...args);
-				};
-				assert.equal(await store.findLatestCompaction(fitting), undefined);
-				assert.deepEqual({ projections, probes }, { projections: 1, probes: 0 });
-				projections = 0;
-				await assert.rejects(() => store.findLatestCompaction(header.id), {
-					name: "StoragePayloadTooLargeError",
-					kind: "response",
-				});
-				assert.deepEqual({ projections, probes }, { projections: 1, probes: 1 });
-			} finally {
-				await scope.close();
-			}
-		});
-		run(
-			"a 17,500-entry resume rebuild writes only the completed index while another session appends (#5590)",
-			async () => {
-				const scope = await backend.openScope();
-				try {
-					const db = await scope.connect();
-					const store = await SqlSessionStore.open(db, { prefix: scope.prefix });
-					const page = SESSION_RESUME_REBUILD.pageEntries;
-					const count = 17_500;
-					const message = (i: number, parentId: string | null, content: string): SessionEntry => ({
-						type: "message",
-						id: `e${i}`,
-						parentId,
-						timestamp,
-						message: { role: "user", timestamp: i, content },
-					});
-					// The jump also exercises the active-branch refold. Neither pass should save a prefix.
-					await seedLegacyResumeSession(db, store, header, count, scope.prefix, page);
-					const otherId = "other-session";
-					await store.create({ ...header, id: otherId }, []);
-					const table = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).sessions;
-					const conn = await scope.connect();
-					const reader = await SqlSessionStore.open(conn, { prefix: scope.prefix });
-					let readerWrites = 0;
-					const countWrites =
-						(execute: typeof conn.run): typeof conn.run =>
-						(sql, ...args) => {
-							readerWrites++;
-							return execute(sql, ...args);
-						};
-					conn.run = countWrites(conn.run.bind(conn));
-					// Publication can be a standalone statement or run in the store's format-fenced transaction.
-					const transaction = conn.transaction.bind(conn);
-					conn.transaction = (body, options) =>
-						transaction(
-							(tx) =>
-								body({
-									exec: tx.exec.bind(tx),
-									get: tx.get.bind(tx),
-									all: tx.all.bind(tx),
-									run: countWrites(tx.run.bind(tx)),
-								}),
-							options,
-						);
-					// Count lock acquisitions, not milliseconds waiting for an unrelated writer or a CI worker.
-					const competingBody = "n".repeat(SESSION_ENTRY_CHUNK_BYTES + SESSION_ENTRY_CHUNK_BYTES / 2);
-					const competingAppends = 6;
-					const results = await Promise.allSettled([
-						reader.findLatestCompaction(header.id),
-						(async () => {
-							for (let i = 0; i < competingAppends; i++)
-								await store.append(otherId, [message(i, i ? `e${i - 1}` : null, competingBody)], {
-									expectSeq: i,
-								});
-						})(),
-					]);
-					for (const result of results) if (result.status === "rejected") throw result.reason;
-					const finalPublications = 1;
-					assert.equal(readerWrites, finalPublications, "only the completed index needs the server's write lock");
-					const row = await db.get<{ summary_state: string }>(
-						`SELECT summary_state FROM ${table} WHERE id = ?`,
-						header.id,
-					);
-					assert.equal(JSON.parse(row!.summary_state).resume.seq, count);
-				} finally {
-					await scope.close();
-				}
-			},
-			120_000,
-		);
-	}
 	run(
 		`builds byte-identical indexes from chunked and inline protocol metadata on ${backend.name} (#5590)`,
 		async () => {
@@ -693,8 +573,7 @@ for (const backend of storageBackends) {
 					parentId: "msg",
 					message: {
 						role: "assistant",
-						// The server cannot return an inline projection with invalid UTF-8; compare only inputs it can project.
-						provider: backend.name === "libSQL server (sqld)" ? "p🙂" : "p\ud800",
+						provider: "p\ud800",
 						model: "m",
 						api: "openai-completions",
 						stopReason: "toolUse",
@@ -935,8 +814,7 @@ for (const backend of storageBackends) {
 			await database.run(`UPDATE ${table} SET summary_state = ? WHERE id = ?`, JSON.stringify(summary), header.id);
 			const lost = await scope.connect();
 			const interrupted = await SqlSessionStore.open(lost, { prefix: scope.prefix });
-			// sqld enforces its own 5 MB cap; exercise an interrupted bounded read on the other engines too.
-			if (backend.name !== "libSQL server (sqld)") refuseChunkProjection(lost, "receipt");
+			refuseChunkProjection(lost, "receipt");
 			const get = lost.get.bind(lost);
 			let chunks = 0;
 			lost.get = async <T extends SqliteRow>(sql: string, ...args: SqliteValue[]) => {

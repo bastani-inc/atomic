@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { openPostgresDatabase, type PostgresDatabaseOptions } from "../../packages/storage-postgres/postgres.js";
 
@@ -74,4 +75,45 @@ export async function withPostgresDatabase<T>(body: (scope: PostgresScope) => Pr
 		await admin.exec(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
 		await admin.close();
 	}
+}
+
+/** This checkout's PostgreSQL adapter by path, so a process the test starts never resolves a published copy. */
+export const postgresAdapterPath = fileURLToPath(
+	new URL("../../packages/storage-postgres/postgres.js", import.meta.url),
+);
+
+/** A database of its own on the test server, for processes to share until `drop`. */
+export async function createPostgresDatabase(): Promise<{ readonly url: string; drop(): Promise<void> }> {
+	const admin = await openPostgresAdmin();
+	const name = `atomic_p2_${randomUUID().replaceAll("-", "")}`;
+	try {
+		await admin.exec(`CREATE DATABASE ${name}`);
+	} catch (error) {
+		await admin.close();
+		throw error;
+	}
+	return {
+		url: postgresUrlFor(name),
+		async drop() {
+			try {
+				await admin.exec(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+			} finally {
+				await admin.close();
+			}
+		},
+	};
+}
+
+/**
+ * The `ATOMIC_STORAGE` value that opens `url` through this checkout's adapter. The password is read from
+ * `ATOMIC_TEST_POSTGRES_PASSWORD` in the process that opens it, never written into the selection.
+ */
+export function postgresStorageSelection(url: string): string {
+	return JSON.stringify({
+		adapter: postgresAdapterPath,
+		options: { url },
+		...(postgresTestPassword === undefined
+			? {}
+			: { secrets: { password: { env: "ATOMIC_TEST_POSTGRES_PASSWORD" } } }),
+	});
 }

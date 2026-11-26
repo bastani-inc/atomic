@@ -14,7 +14,6 @@ import {
 	SNAPSHOT_INDEX_BACKFILL_BATCH,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { createSession, messageEntry, syntheticSnapshot } from "../helpers/snapshot-reference-index.js";
 
 /** The snapshot blob store of Atomic 0.9.87, vendored unmodified (test/fixtures/snapshot-store-0.9.87/README.md). */
@@ -571,11 +570,6 @@ const SHARED_TRIGGERS = ["session_entries_snapshot_links", "session_entries_snap
 
 const drivers = {
 	"node:sqlite": open,
-	libSQL: async () => {
-		const database = await openLibsqlDatabase({ url: pathToFileURL(join(directory, "store.sqlite")).href });
-		databases.push(database);
-		return database;
-	},
 };
 
 /**

@@ -253,7 +253,7 @@ export const POSTGRES_MAX_STORAGE_PREFIX_LENGTH =
 export const POSTGRES_POOL_SESSION_PREFIX = "wf_ps_";
 
 /**
- * Check a storage prefix, and with `dialect`, that the backend can name every identifier under it. SQLite and libSQL
+ * Check a storage prefix, and with `dialect`, that the backend can name every identifier under it. SQLite
  * have no identifier limit. On PostgreSQL the limit applies to the prefix a user chose: a worker pool's session prefix
  * (`<prefix>wf_ps_`) is checked as the prefix before it.
  */

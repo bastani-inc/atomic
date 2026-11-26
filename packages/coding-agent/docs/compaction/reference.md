@@ -77,7 +77,7 @@ A successful compaction appends a `type: "compaction"` entry (see [`CompactionEn
 | `details.history` | Boundary location in `history://sessions/<sessionId>`: `rangeUnit: "entries"`, `entriesBefore`, `boundaryEntry`, and `totalEntries` |
 | `details.historyAccess` | `"read-search"` or `"session-history-tool"`. Resumed sessions receive `session_history` whenever `read` or `search` is absent from resumed tools |
 | `details.stats` | Heuristic estimates: `tokensAfter` counts the system prompt and boundary message, `linesBefore` counts replaced context lines, `linesKept` counts compacted lines (`0` on a clear), and `rangeCount` is `0` |
-| `details.backupPath` | Path to the pre-compaction backup (`<sessionFile>.<timestamp>.<label>.bak`, never auto-deleted). Populated only for JSONL stores, never SQLite, libSQL, PostgreSQL, or memory stores (see [Storage backends](/storage)). |
+| `details.backupPath` | Path to the pre-compaction backup (`<sessionFile>.<timestamp>.<label>.bak`, never auto-deleted). Populated only for JSONL stores, never SQLite, PostgreSQL, or memory stores (see [Storage backends](/storage)). |
 
 Only `compaction` entries with `details.strategy: "verbatim-lines"` affect active context. Resuming uses the saved boundary text directly without another model request, and messages appended after the boundary stay ordinary messages. Inactive legacy formats do not reapply historical omissions, so content they previously hid may reappear on resume.
 

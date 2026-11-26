@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
@@ -11,12 +10,11 @@ import {
 	SNAPSHOT_BLOB_CHUNK_BYTES,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { syntheticSnapshot } from "../helpers/snapshot-reference-index.js";
 
 /**
  * What one operation on the snapshot blob table costs in bytes read from the database files, not in time: the bytes
- * this process reads (`rchar` in `/proc/self/io`, which counts every read call of every thread, the libSQL driver's
+ * this process reads (`rchar` in `/proc/self/io`, which counts every read call of every thread, the driver's
  * included). Each operation runs on a connection opened for it, so no earlier operation left its pages in SQLite's
  * cache.
  *
@@ -38,7 +36,7 @@ function blob(salt: number, bytes: number): { readonly hash: string; readonly da
 	return { hash: createHash("sha256").update(data).digest("hex"), data };
 }
 
-for (const adapter of ["node-sqlite", "libsql"] as const) {
+for (const adapter of ["node-sqlite"] as const) {
 	describe.runIf(linux)(`${adapter}: snapshot chunk reads (#5541)`, () => {
 		let directory: string;
 		let path: string;
@@ -48,9 +46,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 		const unchunked = Array.from({ length: 4 }, (_, index) => blob(1_000 + index, 12_000));
 
 		async function connect(): Promise<SqliteDatabase> {
-			return adapter === "node-sqlite"
-				? openNodeSqliteDatabase(path)
-				: openLibsqlDatabase({ url: pathToFileURL(path).href });
+			return openNodeSqliteDatabase(path);
 		}
 
 		/** Runs `operation` on a store opened on a fresh connection and resolves with the bytes it read. */

@@ -134,7 +134,7 @@ Represents one `ask_user_question` tool call: one to four questions, each with a
       "header": "Storage",
       "options": [
         { "label": "SQLite", "description": "A local file" },
-        { "label": "libSQL", "description": "A shared database" }
+        { "label": "PostgreSQL", "description": "A shared database" }
       ]
     }
   ]
@@ -152,7 +152,7 @@ Expected response: `extension_ui_response` with `answers` (one entry per answere
 {
   "type": "extension_ui_response",
   "id": "uuid-5",
-  "answers": [{ "questionIndex": 0, "question": "Which storage should runs use?", "kind": "option", "answer": "libSQL" }]
+  "answers": [{ "questionIndex": 0, "question": "Which storage should runs use?", "kind": "option", "answer": "PostgreSQL" }]
 }
 ```
 

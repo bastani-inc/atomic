@@ -16,23 +16,17 @@ import {
 	storagePathBaseDirSteps,
 	storageSettingsSteps,
 } from "./file-identity.js";
+import { rejectRemovedTeamProfile } from "./libsql-removed.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { StorageSelection } from "./provider.js";
-import {
-	environmentTeamProfile,
-	environmentTeamProfileAsync,
-	environmentTeamProfileSelection,
-	selectStorage,
-	selectStorageSteps,
-	TEAM_PROFILE_ENV,
-} from "./selection.js";
+import { selectStorage, selectStorageSteps } from "./selection.js";
 
 export const STORAGE_ENV = "ATOMIC_STORAGE";
 export const SESSIONS_STORAGE_ENV = "ATOMIC_SESSIONS_STORAGE";
 
 /**
  * `sessions`: the session store, which has variables of its own. `shared`: the shared selection alone (`--storage`,
- * `ATOMIC_STORAGE`, `ATOMIC_PROFILE=ci`), as `atomic storage migrate` and the team layout read it.
+ * `ATOMIC_STORAGE`), as `atomic storage migrate` and the team layout read it.
  */
 export type StorageDomain = "sessions" | "shared";
 export type StorageFlag = "--storage" | "--storage-file";
@@ -136,8 +130,12 @@ export function setCliStorageSelection(argument: StorageFlagArgument | undefined
 	};
 }
 
-/** Every set storage variable, parsed and checked even when another selection outranks it. */
+/**
+ * Every set storage variable, parsed and checked even when another selection outranks it. A variable of the removed
+ * `ATOMIC_PROFILE=ci` team profile is refused.
+ */
 function environmentChoices(agentDir: string, env: NodeJS.ProcessEnv = process.env) {
+	rejectRemovedTeamProfile(env);
 	const read = (
 		field: string,
 		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,
@@ -147,12 +145,9 @@ function environmentChoices(agentDir: string, env: NodeJS.ProcessEnv = process.e
 		const value = parseSelection(text, schema, "env", field);
 		return chooseAt(value, "env", field, agentDir);
 	};
-	const team = environmentTeamProfileSelection(env);
 	return {
 		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema),
 		shared: read(STORAGE_ENV, StorageSelectionSchema),
-		team: team === undefined ? undefined : chooseAt(team, "env", TEAM_PROFILE_ENV, agentDir),
-		teamValue: team,
 	};
 }
 
@@ -198,10 +193,7 @@ export function previewProcessStorageSelection(
 			throw new StorageConfigError("env", legacyField, "invalid-path");
 		}
 	}
-	if (validated.shared !== undefined) {
-		return validated.shared.selection;
-	}
-	return validated.team?.selection;
+	return validated.shared?.selection;
 }
 
 /**
@@ -223,17 +215,15 @@ export function previewSessionSettingSelection(
 /** Check every set storage variable, whether or not any selection uses it. */
 export function validateProcessStorage(agentDir: string): void {
 	environmentChoices(agentDir);
-	environmentTeamProfile();
 }
 
 export async function validateProcessStorageAsync(agentDir: string): Promise<void> {
 	environmentChoices(agentDir);
-	await environmentTeamProfileAsync();
 }
 
 /**
  * The process-level storage selection for one domain: `--storage`/`--storage-file`, then, for sessions, the domain
- * variable or its legacy path variable, then `ATOMIC_STORAGE`, then the `ATOMIC_PROFILE=ci` team database.
+ * variable or its legacy path variable, then `ATOMIC_STORAGE`.
  * `undefined` leaves the choice to settings.
  * Every set storage variable is validated, whichever one applies.
  */
@@ -312,43 +302,34 @@ export function* selectProcessStorageSteps(
 	if (validated.shared !== undefined) {
 		return yield* resolveEnv(STORAGE_ENV, StorageSelectionSchema, sharedDefault);
 	}
-	const team = validated.teamValue;
-	return team === undefined ? undefined : yield* chooseSteps(team, "env", TEAM_PROFILE_ENV, baseDir, sharedDefault);
+	return undefined;
 }
 
 /** Whether the launching process selected this domain's storage, without validating the selection. */
 export function hasProcessStorageSelection(domain: StorageDomain): boolean {
 	return (
 		registry[CLI_SELECTION] !== undefined ||
-		(domain === "sessions"
-			? [SESSIONS_STORAGE_ENV, ENV_SESSION_DIR, STORAGE_ENV, TEAM_PROFILE_ENV]
-			: [STORAGE_ENV, TEAM_PROFILE_ENV]
-		).some((name) => environmentValue(name) !== undefined)
+		(domain === "sessions" ? [SESSIONS_STORAGE_ENV, ENV_SESSION_DIR, STORAGE_ENV] : [STORAGE_ENV]).some(
+			(name) => environmentValue(name) !== undefined,
+		)
 	);
 }
 
 /**
  * The shared `storage` selection this process was launched with, as the `ATOMIC_STORAGE` value a child process it
- * spawns should receive: `--storage`/`--storage-file`, then `ATOMIC_STORAGE`, then the `ATOMIC_PROFILE=ci` team
- * database, which references its token by variable or file and never copies it. `undefined` leaves the choice to
- * settings. An invalid team profile throws {@link TeamProfileConfigError}, as it does at startup.
+ * spawns should receive: `--storage`/`--storage-file`, then `ATOMIC_STORAGE`. `undefined` leaves the choice to
+ * settings. A variable of the removed `ATOMIC_PROFILE=ci` team profile is refused, so a broker or Intercom session
+ * never starts without the database it named.
  */
 export function processSharedStorageSelection(): string | undefined {
+	rejectRemovedTeamProfile();
 	const cli = registry[CLI_SELECTION];
 	if (cli !== undefined) return JSON.stringify(cli.value);
-	const shared = environmentValue(STORAGE_ENV);
-	if (shared !== undefined) return shared;
-	const team = environmentTeamProfile();
-	return team === undefined ? undefined : JSON.stringify(team);
+	return environmentValue(STORAGE_ENV);
 }
 
 export async function processSharedStorageSelectionAsync(): Promise<string | undefined> {
-	const cli = registry[CLI_SELECTION];
-	if (cli !== undefined) return JSON.stringify(cli.value);
-	const shared = environmentValue(STORAGE_ENV);
-	if (shared !== undefined) return shared;
-	const team = await environmentTeamProfileAsync();
-	return team === undefined ? undefined : JSON.stringify(team);
+	return processSharedStorageSelection();
 }
 
 /**

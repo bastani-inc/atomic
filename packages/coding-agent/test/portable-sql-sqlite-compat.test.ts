@@ -15,7 +15,7 @@ import { SqlSnapshotBlobStore, snapshotIndexTables } from "../src/core/worktree-
 
 /**
  * The SQLite schema and index rows the session store and the snapshot blob store wrote before their SQL went through
- * the storage dialect (#4793). An older and a newer Atomic share one SQLite or libSQL database, so what lands in
+ * the storage dialect (#4793). An older and a newer Atomic share one SQLite database, so what lands in
  * `sqlite_schema` and in the reference index must not change.
  */
 const GOLDEN_PATH = join(import.meta.dirname, "fixtures", "portable-sql-sqlite-golden.json");

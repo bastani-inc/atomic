@@ -1,6 +1,6 @@
 /**
- * `atomic team join|status|leave`: the recommended team layout as one command, over the SDK's `joinTeam`,
- * `selectTeamProfile` and `leaveTeam`. Intercom routing shares a team database; sessions stay local.
+ * `atomic team status`: the layout in effect over the SDK's `selectTeamProfile`, and the storage status. `team join`
+ * and `team leave`, which set up a libSQL team database, were removed with libSQL support.
  */
 
 import { APP_NAME } from "../config.js";
@@ -11,64 +11,38 @@ import {
 	StorageError,
 	TeamProfileConfigError,
 } from "../core/storage/errors.js";
+import { LIBSQL_MIGRATION_DOCS_URL } from "../core/storage/libsql-removed.js";
 import { processStorageEnvironment } from "../core/storage/process-selection.js";
-import { LIBSQL_ADAPTER_PACKAGE } from "../core/storage/selection.js";
 import { collectStorageStatus, describeStorageError, type StorageStatus } from "../core/storage/storage-status.js";
-import {
-	joinTeamWith,
-	leaveTeamWith,
-	type SharedDatabaseJoin,
-	selectTeamProfile,
-	type TeamBrokerRestart,
-	type TeamLeaveResult,
-	type TeamProfile,
-	type TeamProfileName,
-} from "../core/storage/team.js";
+import { selectTeamProfile, type TeamProfile, type TeamProfileName } from "../core/storage/team.js";
 import { createGitEnvironment } from "../utils/git-env.ts";
 import { failed, formatStorageStatus, loadBrokerControl } from "./storage-command.js";
 
 const HELP = `Usage:
-  ${APP_NAME} team join <url> [--token-file <path>] [--prefix <prefix>]
   ${APP_NAME} team status [--json]
-  ${APP_NAME} team leave
 
 Commands:
-  join     Share Intercom routing with your team through a libSQL / Turso database while
-           sessions stay on this machine. Checks the token and the connection with
-           ${LIBSQL_ADAPTER_PACKAGE}, stores the token in the agent directory (mode 600), sets the
-           global \`storage\` setting to the team database and \`sessions.storage\` to the local store in
-           one write, restarts the Intercom broker, and prints the storage status. While multi-node
-           routing is on, sessions join a project group (project:<owner>/<repo>) instead of "default".
-           Nothing is changed when a check fails.
   status   Show the profile in effect (individual, team, ci or custom) and the storage status. Exits 1
            when a selection is invalid, an adapter cannot load, or a database does not answer.
-  leave    Restore the individual layout: remove \`storage\` and \`sessions.storage\` when they hold what
-           \`team join\` wrote, delete that token file unless a setting still references it, and restart
-           the Intercom broker. Other settings are unchanged; running it again changes nothing.
 
 Options:
   --json                Print the status as JSON
-  --token-file <path>   File holding the database token, for example from \`turso db tokens create\`;
-                        surrounding whitespace is removed. Required except for file: URLs
-  --prefix <prefix>     Table prefix, to share one database between teams`;
+
+To share sessions or Intercom routing through a PostgreSQL database, run ${APP_NAME} storage join postgres://….`;
 
 const HELP_HINT = `Use "${APP_NAME} team --help" for usage.`;
 
-export type TeamCommand =
-	| { readonly kind: "help" }
-	| { readonly kind: "join"; readonly url: string; readonly tokenFile?: string; readonly prefix?: string }
-	| { readonly kind: "status"; readonly json: boolean }
-	| { readonly kind: "leave" };
+export type TeamCommand = { readonly kind: "help" } | { readonly kind: "status"; readonly json: boolean };
 
 const PROFILE_DESCRIPTIONS: Readonly<Record<TeamProfileName, string>> = {
 	individual: "sessions on this machine; Intercom on this machine only",
-	team: "sessions on this machine; Intercom on the team database",
-	ci: "sessions and Intercom on the team database",
+	team: "sessions on this machine; Intercom on the shared database",
+	ci: "sessions and Intercom on the shared database",
 	custom: "matches no preset; see the selections below",
 };
 
 function usage(
-	code: "unknown-command" | "unknown-option" | "missing-value" | "unexpected-argument" | "missing-url",
+	code: "unknown-command" | "unknown-option" | "unexpected-argument" | "libsql-removed",
 	field: string,
 	hint: string,
 ): TeamProfileConfigError {
@@ -81,61 +55,30 @@ export function parseTeamCommand(args: readonly string[]): TeamCommand {
 	if (command === undefined || command === "help" || args.includes("--help") || args.includes("-h")) {
 		return { kind: "help" };
 	}
-	if (command !== "join" && command !== "status" && command !== "leave") {
-		throw usage("unknown-command", "<command>", `Use join, status or leave. ${HELP_HINT}`);
+	if (command === "join" || command === "leave") {
+		throw usage(
+			"libsql-removed",
+			`${APP_NAME} team ${command}`,
+			`\`${APP_NAME} team join\` and \`${APP_NAME} team leave\` were removed with libSQL support in Atomic 0.10.11. To share sessions or Intercom routing, join a PostgreSQL database with ${APP_NAME} storage join postgres://…; to leave it, remove the \`storage\` setting. To move sessions off libSQL, see ${LIBSQL_MIGRATION_DOCS_URL}`,
+		);
 	}
-	const positional: string[] = [];
-	const values = new Map<string, string>();
+	if (command !== "status") throw usage("unknown-command", "<command>", `Use status. ${HELP_HINT}`);
 	let json = false;
-	for (let index = 0; index < rest.length; index++) {
-		const arg = rest[index]!;
-		if (command === "status" && arg === "--json") {
+	for (const arg of rest) {
+		if (arg === "--json") {
 			json = true;
 			continue;
 		}
-		if (command === "join" && (arg === "--token-file" || arg === "--prefix")) {
-			const value = rest[++index];
-			if (value === undefined) throw usage("missing-value", arg, `Pass a value after ${arg}.`);
-			values.set(arg, value);
-			continue;
-		}
 		if (arg.startsWith("-")) {
-			throw usage(
-				"unknown-option",
-				arg.split("=")[0]!,
-				`"${APP_NAME} team ${command}" does not take it. ${HELP_HINT}`,
-			);
+			throw usage("unknown-option", arg.split("=")[0]!, `"${APP_NAME} team status" does not take it. ${HELP_HINT}`);
 		}
-		positional.push(arg);
-	}
-	if (command === "join") {
-		if (positional.length === 0) {
-			throw usage(
-				"missing-url",
-				"<url>",
-				`Pass the team database URL: ${APP_NAME} team join <url> [--token-file <path>] [--prefix <prefix>]`,
-			);
-		}
-		if (positional.length > 1) {
-			throw usage("unexpected-argument", "arguments after <url>", `Pass one URL. ${HELP_HINT}`);
-		}
-		const tokenFile = values.get("--token-file");
-		const prefix = values.get("--prefix");
-		return {
-			kind: "join",
-			url: positional[0]!,
-			...(tokenFile === undefined ? {} : { tokenFile }),
-			...(prefix === undefined ? {} : { prefix }),
-		};
-	}
-	if (positional.length > 0) {
 		throw usage(
 			"unexpected-argument",
-			`arguments after ${command}`,
-			`"${APP_NAME} team ${command}" takes none. ${HELP_HINT}`,
+			"arguments after status",
+			`"${APP_NAME} team status" takes none. ${HELP_HINT}`,
 		);
 	}
-	return command === "status" ? { kind: "status", json } : { kind: "leave" };
+	return { kind: "status", json };
 }
 
 export interface TeamCommandOptions {
@@ -145,30 +88,6 @@ export interface TeamCommandOptions {
 	readonly error?: (line: string) => void;
 	/** Defaults to the bundled Intercom package's broker control. */
 	readonly loadControl?: () => Promise<IntercomBrokerControl>;
-}
-
-function describeRestart(
-	restart: TeamBrokerRestart,
-	log: (line: string) => void,
-	error: (line: string) => void,
-): boolean {
-	if (restart.status === "failed") {
-		error(restart.error.message);
-		return false;
-	}
-	if (restart.status === "not-running") {
-		log("No Intercom broker was running; the next session that uses Intercom starts one with these settings.");
-	} else if (restart.status === "stopped") {
-		log(
-			`Stopped the Intercom broker (pid ${restart.previous.pid}); the next session that uses Intercom starts one with these settings.`,
-		);
-	} else {
-		const current = restart.current;
-		log(
-			`Restarted the Intercom broker: pid ${restart.previous.pid} → ${current.state === "running" ? current.report.pid : (current.pid ?? "unknown")}.`,
-		);
-	}
-	return true;
 }
 
 function projectGroupOf(control: IntercomBrokerControl | Error, options: TeamCommandOptions): string | undefined {
@@ -241,68 +160,7 @@ export async function runTeamCommand(args: readonly string[], options: TeamComma
 			log(HELP);
 			return 0;
 		}
-		const context = options.loadControl === undefined ? {} : { loadControl: options.loadControl };
-		if (command.kind === "status") return (await report(options, command.json, log)).failed ? 1 : 0;
-		if (command.kind === "join") {
-			const reportJoined = (joined: SharedDatabaseJoin): void => {
-				log(`Connected to ${command.url}.`);
-				if (joined.tokenPath !== undefined) {
-					log(
-						joined.token === "reused"
-							? `Kept the token in ${joined.tokenPath}; it already holds this token.`
-							: `Stored the token in ${joined.tokenPath} (mode 600).`,
-					);
-				}
-				log(
-					`Set \`storage\` to the team database and \`sessions.storage\` to the local store in ${joined.settingsPath}; other settings are unchanged.`,
-				);
-				if (joined.replaced !== undefined) log(`It replaces the previous selection: ${joined.replaced}.`);
-				if (joined.replacedSessionsStorage !== undefined)
-					log(`It replaces the previous \`sessions.storage\`: ${joined.replacedSessionsStorage}.`);
-			};
-			const joined = await joinTeamWith(
-				{ ...command, agentDir: options.agentDir, cwd: options.cwd, onProgress: log },
-				"cli",
-				{ ...context, onJoined: reportJoined },
-			);
-			const restarted = describeRestart(joined.broker, log, error);
-			log("");
-			const status = await report(options, false, log);
-			return restarted && !status.failed ? 0 : 1;
-		}
-		let reportedLeft = false;
-		const reportLeft = (left: Pick<TeamLeaveResult, "settingsPath" | "removed" | "kept">): void => {
-			reportedLeft = true;
-			if (left.removed.length === 0) {
-				log(`Nothing to remove: ${left.settingsPath} holds no settings that \`${APP_NAME} team join\` wrote.`);
-			} else {
-				log(
-					`Removed ${left.removed.map((key) => `\`${key}\``).join(" and ")} from ${left.settingsPath}; other settings are unchanged.`,
-				);
-			}
-			for (const { key, reason } of left.kept) {
-				log(
-					reason === "changed"
-						? `Left \`${key}\` in place: it holds something other than what team join writes.`
-						: `Left \`${key}\` in place: \`storage\` is still set, and without it new sessions would move to that store.`,
-				);
-			}
-		};
-		const left = await leaveTeamWith(
-			{ agentDir: options.agentDir, cwd: options.cwd, onProgress: log },
-			{ ...context, onLeft: reportLeft },
-		);
-		if (!reportedLeft) reportLeft(left);
-		for (const path of left.deletedTokenFiles) log(`Deleted the token file ${path}.`);
-		for (const path of left.keptTokenFiles) log(`Kept the token file ${path}: another setting still references it.`);
-		const restarted = left.broker === undefined || describeRestart(left.broker, log, error);
-		const profile = selectTeamProfile({ agentDir: options.agentDir, cwd: options.cwd });
-		const described =
-			profile.profile === "custom"
-				? `sessions: ${profile.sessions}; Intercom: ${profile.intercom}`
-				: PROFILE_DESCRIPTIONS[profile.profile];
-		log(`Profile: ${profile.profile} (${described})`);
-		return restarted ? 0 : 1;
+		return (await report(options, command.json, log)).failed ? 1 : 0;
 	} catch (caught) {
 		error(
 			isTeamProfileError(caught) || isTeamProfileConfigError(caught)

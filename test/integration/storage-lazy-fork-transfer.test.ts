@@ -291,11 +291,10 @@ const jsonlEndpoint: Endpoint = {
 	},
 };
 
-const [sqliteFile, libsql, postgres] = storageBackends.map(sqlEndpoint) as [Endpoint, Endpoint, Endpoint];
+const [sqliteFile, postgres] = storageBackends.map(sqlEndpoint) as [Endpoint, Endpoint];
 const moves: readonly (readonly [Endpoint, Endpoint])[] = [
 	[sqliteFile, postgres],
-	[postgres, libsql],
-	[libsql, jsonlEndpoint],
+	[postgres, jsonlEndpoint],
 	[jsonlEndpoint, sqliteFile],
 	[sqliteFile, jsonlEndpoint],
 ];

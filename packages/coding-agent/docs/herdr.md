@@ -36,7 +36,7 @@ With Herdr 0.9.2 or newer, Atomic also reports a resume command so Herdr can reo
 
 - **Local SQLite sessions (default):** Atomic reports `atomic --session-store <path> --session <id>` (plus `--session-prefix <prefix>` when a table prefix is configured).
 - **JSONL directory sessions:** Atomic reports `atomic --session-dir <dir> --session <id>`. Session IDs ending in `.jsonl` still use `--session <id>`.
-- **Other persisted stores (such as remote libSQL or PostgreSQL):** Atomic reports `atomic --session <id>`.
+- **Other persisted stores (such as PostgreSQL):** Atomic reports `atomic --session <id>`.
 - **Switching sessions:** Running `/new`, `/resume`, `/fork`, or `/clone` updates the pane to the new session's ID and resume command.
 - **Unsaved sessions:** Sessions started with `--no-session` report status without a resume command. For a brand-new persisted session, Atomic reports the resume command right away, though reopening succeeds only after the session's first entry is saved to storage.
 - **Quit vs. stop signals:** Quitting Atomic yourself (`Ctrl+D`, `Ctrl+C` twice, `/quit`, or `/exit`) clears the resume command so Herdr does not reopen the pane. When Herdr or the OS stops Atomic with `SIGTERM`, `SIGHUP`, or a Windows console close or sign-out, the resume command stays registered for restore.

@@ -6,7 +6,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionRecordHeader } from "../../packages/coding-agent/src/core/storage/session/types.js";
 
-/** Seed a missing-index session on SQLite or sqld without a write round trip per entry. */
+/** Seed a missing-index session on SQLite or PostgreSQL without a write round trip per entry. */
 export async function seedLegacyResumeSession(
 	db: SqliteDatabase,
 	store: SqlSessionStore,

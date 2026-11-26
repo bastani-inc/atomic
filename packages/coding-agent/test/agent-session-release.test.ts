@@ -571,7 +571,7 @@ describe("AgentSessionRuntime.rehydrate (#4326)", () => {
 		assert.deepEqual((await store.inner.load(sessionId)).entries, continued);
 	});
 
-	test("a session not in this node's local-only storage fails at once, naming the team join command", async () => {
+	test("a session not in this node's local-only storage fails at once, naming the storage join command", async () => {
 		const host = await runtimeHost({ adapter: "node-sqlite" });
 		host.store.reset();
 		const calls = host.factoryCalls.length;
@@ -1150,7 +1150,7 @@ describe("a session whose history could not be reopened is not released (#4326)"
 		assert.equal(admissions, 2);
 	});
 
-	test("a miss in memory storage points at the store, not at team join", () => {
+	test("a miss in memory storage points at the store, not at storage join", () => {
 		const error = new AgentRehydrateError("session-not-found", {
 			sessionId: "s",
 			storage: "memory",

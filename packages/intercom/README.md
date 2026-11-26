@@ -379,7 +379,7 @@ graph TB
     B2 <-->|Local Socket/Pipe| B3
 ```
 
-The broker is a standalone process that manages session registration and message routing over length-prefixed JSON frames on a Unix domain socket (macOS and Linux) or named pipe (Windows). When [shared storage](https://docs.bastani.ai/storage) is configured through [`@bastani/atomic-storage-libsql`](https://docs.bastani.ai/libraries/storage-libsql) or [`@bastani/atomic-storage-postgres`](https://docs.bastani.ai/libraries/storage-postgres), brokers also enable multi-node routing so sessions on different machines can list and message each other, and ungrouped sessions default to their repository's `project:<owner>/<repo>` group instead of `default`.
+The broker is a standalone process that manages session registration and message routing over length-prefixed JSON frames on a Unix domain socket (macOS and Linux) or named pipe (Windows). When [shared storage](https://docs.bastani.ai/storage) is configured through [`@bastani/atomic-storage-postgres`](https://docs.bastani.ai/libraries/storage-postgres), brokers also enable multi-node routing so sessions on different machines can list and message each other, and ungrouped sessions default to their repository's `project:<owner>/<repo>` group instead of `default`.
 
 ### Broker lifecycle and recovery
 
@@ -404,7 +404,7 @@ Runtime files live in `~/.atomic/agent/intercom/`. Setting [`ATOMIC_CODING_AGENT
 
 ## Limitations
 
-- **Local IPC by default:** Without [shared storage](https://docs.bastani.ai/storage), Intercom connects sessions on the same machine only. Cross-machine messaging requires configuring a shared storage adapter ([`@bastani/atomic-storage-libsql`](https://docs.bastani.ai/libraries/storage-libsql) or [`@bastani/atomic-storage-postgres`](https://docs.bastani.ai/libraries/storage-postgres)).
+- **Local IPC by default:** Without [shared storage](https://docs.bastani.ai/storage), Intercom connects sessions on the same machine only. Cross-machine messaging requires configuring a shared storage adapter ([`@bastani/atomic-storage-postgres`](https://docs.bastani.ai/libraries/storage-postgres)).
 - **No separate transcript file:** Messages are stored in Atomic session history rather than a dedicated Intercom inbox file.
 - **No attachments UI:** The `intercom` tool supports `file`, `snippet`, and `context` attachments, while the `Alt+M` compose overlay sends plain text only.
 - **Connected sessions only:** `intercom list` shows sessions currently registered with the broker, not disconnected or offline Atomic processes.
