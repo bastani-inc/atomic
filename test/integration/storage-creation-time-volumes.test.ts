@@ -1,24 +1,21 @@
 /**
  * File identities on macOS volumes other than APFS (#4319). APFS and HFS+ move a file's creation time back when its
  * modified time is set earlier, and never reuse an inode number, so there a file's identity leaves the creation time
- * out. FAT keeps creation times and hands a deleted file's inode number to the next new file, so there the identity
- * keeps the creation time, and a new database is not taken for a deleted one whose inode number it got.
+ * out. FAT keeps creation times and can hand a deleted file's inode number to the next new file, so there the identity
+ * keeps the creation time. The identity names a database's claim file, which other agent directories look up.
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { selectSessionStorage } from "../../packages/coding-agent/src/core/session-storage.js";
 import { resetStorageHomeCacheForTests } from "../../packages/coding-agent/src/core/storage/file-identity.js";
-import { makeTempDirectory, removeTempDirectory, sleep, spawnSyncCollect } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 /** Structural cost: making, attaching and detaching a disk image takes seconds. */
 const VOLUME_TEST_TIMEOUT_MS = 120_000;
-/** FAT keeps creation times to two seconds: a file made this much later has a later one. */
-const FAT_CREATION_TIME_STEP_MS = 2_100;
-/** New files made to find the one FAT gives the deleted database's inode number; it takes the first that fits. */
-const FAT_REUSE_CANDIDATES = 20;
 
 beforeEach(() => {
 	resetStorageHomeCacheForTests();
@@ -59,32 +56,37 @@ async function withFatVolume(body: (volume: string) => Promise<void>): Promise<v
 	}
 }
 
+/** Which of a database's two possible file claims an agent directory's selection made: with or without its creation time. */
+function fileClaim(root: string, agent: string): { readonly withCreationTime: boolean; readonly without: boolean } {
+	writeFileSync(join(root, "history.sqlite"), "history");
+	assert.deepEqual(
+		selectSessionStorage(root, { agentDir: agent, settings: { sessions: { storage: { path: "history.sqlite" } } } }),
+		{ kind: "sqlite", path: join(root, "history.sqlite") },
+	);
+	const stats = statSync(join(root, "history.sqlite"), { bigint: true });
+	const claim = (identity: string) =>
+		existsSync(join(root, `.atomic-storage-target-${createHash("sha256").update(`file:${identity}`).digest("hex")}`));
+	return {
+		withCreationTime: claim(`${stats.dev}:${stats.ino}:${stats.birthtimeNs}`),
+		without: claim(`${stats.dev}:${stats.ino}`),
+	};
+}
+
 test.skipIf(process.platform !== "darwin")(
-	"on a FAT volume, a new database that got a deleted one's inode number is not the deleted one's owner's (#4319)",
+	"a database's identity keeps its creation time on a FAT volume and leaves it out on APFS (#4319)",
 	async () => {
 		await withFatVolume(async (volume) => {
-			const first = join(volume, "a1");
-			const second = join(volume, "a2");
-			for (const agent of [first, second]) mkdirSync(agent);
-			const select = (agent: string, path: string) =>
-				selectSessionStorage(volume, { agentDir: agent, settings: { sessions: { storage: { path } } } });
-			writeFileSync(join(volume, "first.sqlite"), "first history");
-			assert.deepEqual(select(first, "first.sqlite"), { kind: "sqlite", path: join(volume, "first.sqlite") });
-			const { ino } = statSync(join(volume, "first.sqlite"), { bigint: true });
-			rmSync(join(volume, "first.sqlite"));
-			await sleep(FAT_CREATION_TIME_STEP_MS);
-			// FAT numbers a file by where its directory entry is, and a new file takes the first free entries that fit it.
-			// Names as long as the deleted one's fit its entries: within a few new files, one gets its inode number.
-			let reused: string | undefined;
-			for (let candidate = 0; candidate < FAT_REUSE_CANDIDATES && reused === undefined; candidate++) {
-				const name = `new${String(candidate).padStart(2, "0")}.sqlite`;
-				writeFileSync(join(volume, name), "second history");
-				if (statSync(join(volume, name), { bigint: true }).ino === ino) reused = name;
-			}
-			assert.ok(reused, "FAT gave a new file the deleted database's inode number");
-			resetStorageHomeCacheForTests();
-			assert.deepEqual(select(second, reused), { kind: "sqlite", path: join(volume, reused) });
+			mkdirSync(join(volume, "agent"));
+			assert.deepEqual(fileClaim(volume, join(volume, "agent")), { withCreationTime: true, without: false });
 		});
+		const apfs = makeTempDirectory("storage-apfs-");
+		try {
+			mkdirSync(join(apfs, "agent"));
+			resetStorageHomeCacheForTests();
+			assert.deepEqual(fileClaim(apfs, join(apfs, "agent")), { withCreationTime: false, without: true });
+		} finally {
+			removeTempDirectory(apfs);
+		}
 	},
 	VOLUME_TEST_TIMEOUT_MS,
 );
