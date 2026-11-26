@@ -1,4 +1,4 @@
-import { storageSchemaCurrent } from "../added-exports.js";
+import { storageSchemaCurrent, transactionFinisher } from "../added-exports.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -222,7 +222,11 @@ interface TrigramEngine {
 		docs: readonly SearchDoc[],
 		signal?: AbortSignal,
 	): Promise<boolean>;
-	forget(tx: SqliteExecutor, tables: SearchTables, sessionId: string): Promise<void>;
+	/**
+	 * The statement that removes session `sessionId`'s indexed text, run while its state row still names its `sid`: one
+	 * statement, so a pipelined transaction sends it with the state row's delete.
+	 */
+	forgetStatement(tables: SearchTables, sessionId: string): SqliteStatement;
 	/**
 	 * Sets the index's tuning on a database this role owns the index of, once, recorded in `ledger`. Absent where
 	 * there is none.
@@ -377,12 +381,11 @@ const sqliteFts: TrigramEngine = {
 		signal?.throwIfAborted();
 		return repeated === MERGE_STEPS_PER_WRITE;
 	},
-	async forget(tx, tables, sessionId) {
-		await tx.run(
-			`DELETE FROM ${tables.fts} WHERE rowid BETWEEN (SELECT sid << 40 FROM ${tables.state} WHERE session_id = ?) AND (SELECT (sid << 40) + 1099511627775 FROM ${tables.state} WHERE session_id = ?)`,
-			sessionId,
-			sessionId,
-		);
+	forgetStatement(tables, sessionId) {
+		return {
+			sql: `DELETE FROM ${tables.fts} WHERE rowid BETWEEN (SELECT sid << 40 FROM ${tables.state} WHERE session_id = ?) AND (SELECT (sid << 40) + 1099511627775 FROM ${tables.state} WHERE session_id = ?)`,
+			params: [sessionId, sessionId],
+		};
 	},
 	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit, signal) {
 		signal?.throwIfAborted();
@@ -580,14 +583,12 @@ const postgresTrigrams: TrigramEngine = {
 			if (start + INSERT_ROWS_PER_STATEMENT < docs.length) await yieldTurn();
 		}
 	},
-	async forget(tx, tables, sessionId) {
-		const deleted = await tx.all<SqliteRow & { sid: number | bigint }>(
-			`DELETE FROM ${tables.state} WHERE session_id = ? RETURNING sid`,
-			sessionId,
-		);
-		for (const row of deleted) {
-			await tx.run(`DELETE FROM ${tables.entries} WHERE sid = ?`, Number(row.sid));
-		}
+	forgetStatement(tables, sessionId) {
+		// The state row holds one sid at most (its session_id is unique), so this is a lookup of that sid's rows by key.
+		return {
+			sql: `DELETE FROM ${tables.entries} WHERE sid IN (SELECT sid FROM ${tables.state} WHERE session_id = ?)`,
+			params: [sessionId],
+		};
 	},
 	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit, signal) {
 		signal?.throwIfAborted();
@@ -741,18 +742,49 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		return found.every((row) => row !== undefined);
 	}
 
-	async forget(tx: SqliteExecutor, sessionId: string): Promise<void> {
-		await this.engine.forget(tx, this.tables, sessionId);
-		await tx.run(`DELETE FROM ${this.tables.state} WHERE session_id = ?`, sessionId);
+	/** The statements that forget session `sessionId`, in order: its indexed text, then its state row. */
+	private forgetStatements(sessionId: string): readonly SqliteStatement[] {
+		return [
+			this.engine.forgetStatement(this.tables, sessionId),
+			{ sql: `DELETE FROM ${this.tables.state} WHERE session_id = ?`, params: [sessionId] },
+		];
 	}
 
+	async forget(tx: SqliteExecutor, sessionId: string): Promise<void> {
+		for (const { sql, params } of this.forgetStatements(sessionId)) await tx.run(sql, ...params);
+	}
+
+	/**
+	 * Forgets session `sessionId` inside transaction `tx` under a savepoint, so an index that cannot be forgotten leaves
+	 * the transaction going. Where `tx` is pipelined on PostgreSQL, the savepoint, the forget and the release go out in
+	 * one round trip: a statement that fails aborts the transaction, so nothing after it runs, and the release with it;
+	 * the transaction then goes back to the savepoint, which still stands, and drops it.
+	 */
 	async forgetWithin(tx: SqliteExecutor, sessionId: string): Promise<void> {
-		await tx.exec("SAVEPOINT atomic_session_search_forget");
-		try {
-			await this.forget(tx, sessionId);
-		} catch {
-			await tx.exec("ROLLBACK TO SAVEPOINT atomic_session_search_forget");
+		if (transactionFinisher(tx) === undefined || this.dialect.name !== "postgres") {
+			await tx.exec("SAVEPOINT atomic_session_search_forget");
+			try {
+				await this.forget(tx, sessionId);
+			} catch {
+				await tx.exec("ROLLBACK TO SAVEPOINT atomic_session_search_forget");
+			}
+			await tx.exec("RELEASE SAVEPOINT atomic_session_search_forget");
+			return;
 		}
+		const [savepoint, ...rest] = await Promise.allSettled([
+			tx.exec("SAVEPOINT atomic_session_search_forget"),
+			...this.forgetStatements(sessionId).map(({ sql, params }) => tx.run(sql, ...params)),
+			tx.exec("RELEASE SAVEPOINT atomic_session_search_forget"),
+		]);
+		// Without the savepoint the transaction was over already: its failure is the forget's.
+		if (savepoint!.status === "rejected") throw savepoint!.reason;
+		const forgets = rest.slice(0, -1);
+		const release = rest.at(-1)!;
+		if (forgets.every((forgot) => forgot.status === "fulfilled")) {
+			if (release.status === "rejected") throw release.reason;
+			return;
+		}
+		await tx.exec("ROLLBACK TO SAVEPOINT atomic_session_search_forget");
 		await tx.exec("RELEASE SAVEPOINT atomic_session_search_forget");
 	}
 

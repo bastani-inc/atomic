@@ -4,6 +4,7 @@
 
 ### Changed
 
+- On PostgreSQL, deleting or replacing an indexed session now takes 3 round trips instead of 13 for a delete and 12 for a replace, both directly and through PgBouncer in transaction mode. The session's per-table deletes and rewrite now go out with the commit in one request, and forgetting its search index sends its savepoint, deletes and release together. At 80 ms latency, deleting a session took about 0.25 seconds instead of 1.03 seconds and replacing one took about 0.25 seconds instead of 0.96 seconds ([#6697](https://github.com/bastani-inc/atomic/pull/6697), [#6710](https://github.com/bastani-inc/atomic/issues/6710)).
 - Checking a detached fork's worktree snapshot links now reads the fork's links in one pass and looks up each entry's parent once, so the check takes about half the time it first did: 1.9 ms instead of 3.7 ms on SQLite, and 6.4 ms instead of 10.7 ms on PostgreSQL, for a fork of 1,000 entries ([#6692](https://github.com/bastani-inc/atomic/pull/6692), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ## [0.10.11-alpha.3] - 2026-11-26
