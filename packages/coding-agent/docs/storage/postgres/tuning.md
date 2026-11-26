@@ -274,7 +274,7 @@ An unlogged table is emptied when the server crashes, and it is not copied to st
 
 PostgreSQL compresses large values, such as long session entries, stored files and Intercom messages, before it stores them. Its default method, `pglz`, is slow. `atomic storage migrate` switches those columns to `lz4` when the server supports it. Most PostgreSQL 14 and later servers do, including the PostgreSQL project's packages and Docker images.
 
-With a sample of real session history and source files, `lz4` stored session entries in 5% less space, and stored files in 8% more. It compressed them in 30% to 50% less time, and reading every value back took 17% to 60% less time.
+In a test with large values built from real session history and source files, `lz4` took about 60% less time to compress them. Reading session entries back took 17% less time, and reading files back half as long. It stored session entries in 5% to 17% less space, and files in about 9% more.
 
 Only values written after the change use `lz4`. Values already stored stay readable as they are. To see how a table's values are compressed, run:
 
