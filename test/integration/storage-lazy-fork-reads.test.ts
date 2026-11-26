@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { appendFileSync } from "node:fs";
 import { describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import {
@@ -12,6 +14,7 @@ import {
 	readForkSegments,
 } from "../../packages/coding-agent/src/core/storage/session/fork-lineage.js";
 import { sessionForkTables } from "../../packages/coding-agent/src/core/storage/session/fork-schema.js";
+import { assertForkSegments } from "../../packages/coding-agent/src/core/storage/session/fork-segments.js";
 import {
 	historyPages,
 	selectedHistoryPages,
@@ -326,7 +329,34 @@ async function openPair(
 	return pair;
 }
 
+/** `id`'s segments in `store`'s database, read in a transaction of its own. */
+async function segmentsOf(scope: { connect(): Promise<SqliteDatabase> }, prefix: string, id: string) {
+	const database = await scope.connect();
+	return database.transaction((tx) => readForkSegments(tx, sessionForkTables(prefix) as never, id));
+}
+
+/** The seqs `id` stores itself in `prefix`'s entries table. */
+async function ownSeqs(scope: { connect(): Promise<SqliteDatabase> }, prefix: string, id: string): Promise<number[]> {
+	const t = renderStorageIdentifiers("sessions", SESSION_TABLES, prefix);
+	const database = await scope.connect();
+	const rows = await database.all(`SELECT seq FROM ${t.entries} WHERE session_id = ? ORDER BY seq`, id);
+	return rows.map((row) => Number(row.seq));
+}
+
+/** The median of `runs` timings of `read`, in milliseconds. */
+async function medianMs(runs: number, read: () => Promise<unknown>): Promise<number> {
+	const times: number[] = [];
+	for (let run = 0; run < runs; run++) {
+		const start = performance.now();
+		await read();
+		times.push(performance.now() - start);
+	}
+	return times.sort((a, b) => a - b)[Math.floor(runs / 2)]!;
+}
+
 const SEEDS = [11, 12, 13];
+/** How much slower than a session of its own a fork's read may be on a loaded test host. */
+const FORK_READ_SLACK = 1.5;
 
 for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
@@ -382,6 +412,155 @@ for (const backend of storageBackends) {
 							2,
 							"the last fork stores only its own",
 						);
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a fork never reads its parent's entries past its cut-off while the parent appends (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const pair = await openPair(scope, 31);
+						pair.big = 0;
+						await create(pair, "p", 20);
+						await cloneBoth(pair, "p", "c");
+						await append(pair, "p", 10);
+						await append(pair, "c", 3);
+						const parent = pair.known.get("p")!.entries;
+						const child = (await pair.shared.load("c")).entries;
+						assert.deepEqual(child.slice(0, 20), parent.slice(0, 20), "the parent's history up to the cut-off");
+						assert.deepEqual(
+							child.slice(20),
+							pair.known.get("c")!.entries.slice(20),
+							"then the fork's own entries",
+						);
+						for (const late of parent.slice(20))
+							assert.equal(
+								await pair.shared.findEntrySeq("c", late.id),
+								undefined,
+								`${late.id} is the parent's alone`,
+							);
+						assert.equal((await pair.shared.readRange("c", 1, 30)).lastSeq, 23);
+						await compare(pair, "c");
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"every shared fork's segments and its own rows cover each of its seqs exactly once (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const pair = await openPair(scope, 41);
+						pair.big = 0;
+						const ids = ["root"];
+						await create(pair, "root", 30);
+						for (let step = 0; step < 16; step++) {
+							const parent = pair.rng.pick(ids);
+							const child = `v${step}`;
+							if (pair.rng.below(2) === 0) await cloneBoth(pair, parent, child);
+							else await branchBoth(pair, parent, child);
+							ids.push(child);
+							if (pair.rng.below(2) === 0) await append(pair, child, 1 + pair.rng.below(5));
+						}
+						const prefix = `${scope.prefix}l_`;
+						for (const id of ids) {
+							const last = pair.known.get(id)!.entries.length;
+							const segments = await segmentsOf(scope, prefix, id);
+							assert.doesNotThrow(
+								() => assertForkSegments(id, segments, last),
+								`${id}'s segments are well formed`,
+							);
+							const covered = segments.flatMap((segment) =>
+								Array.from(
+									{ length: segment.toSeq - segment.fromSeq + 1 },
+									(_, index) => segment.baseSeq + index + 1,
+								),
+							);
+							const seqs = [...covered, ...(await ownSeqs(scope, prefix, id))].sort((a, b) => a - b);
+							assert.deepEqual(
+								seqs,
+								Array.from({ length: last }, (_, index) => index + 1),
+								`${id} covers 1..${last} once`,
+							);
+							for (const segment of segments) assert.notEqual(segment.sourceId, id, "no session reads itself");
+						}
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a fork writes one segment row per run of its parent's view, never one per entry, at any depth (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const pair = await openPair(scope, 51);
+						pair.big = 0;
+						const prefix = `${scope.prefix}l_`;
+						for (const length of [20, 400]) {
+							await create(pair, `p${length}`, length);
+							await cloneBoth(pair, `p${length}`, `c${length}`);
+							assert.equal(
+								(await segmentsOf(scope, prefix, `c${length}`)).length,
+								1,
+								`${length} entries, one run`,
+							);
+							assert.deepEqual(await ownSeqs(scope, prefix, `c${length}`), []);
+						}
+						// Each fork of the chain appends two entries: its child's view is one run more than its own.
+						await create(pair, "g0", 6);
+						for (let depth = 1; depth <= 50; depth++) {
+							await cloneBoth(pair, `g${depth - 1}`, `g${depth}`);
+							assert.equal((await segmentsOf(scope, prefix, `g${depth}`)).length, depth, `depth ${depth}`);
+							await append(pair, `g${depth}`, 2);
+						}
+						await compare(pair, "g50");
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a fork fifty deep of 500 entries loads and reads its tail about as fast as a session of its own (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const pair = await openPair(scope, 61);
+						pair.big = 0;
+						const store = pair.shared;
+						// Only the sharing store: two entries of each fork's own on a chain of fifty clones of a 400-entry session.
+						const made: SessionEntry[] = [];
+						const next = (count: number) => {
+							const added: SessionEntry[] = [];
+							for (let index = 0; index < count; index++) {
+								const id = `d.${made.length}`;
+								const entry =
+									made.length % 2 === 0
+										? user(id, made.at(-1)?.id ?? null, `question ${id} ${"q".repeat(400)}`, made.length)
+										: assistant(id, made.at(-1)!.id, `answer ${id} ${"a".repeat(400)}`, made.length);
+								made.push(entry);
+								added.push(entry);
+							}
+							return added;
+						};
+						await store.create(header("d0"), next(400));
+						for (let depth = 1; depth <= 50; depth++) {
+							await clone(store, `d${depth - 1}`, `d${depth}`);
+							const expectSeq = made.length;
+							await store.append(`d${depth}`, next(2), { expectSeq });
+						}
+						const entries = (await store.load("d50")).entries;
+						assert.deepEqual(entries, made);
+						await store.create(header("own"), entries);
+						const runs = 7;
+						const timings = {
+							loadOwn: await medianMs(runs, () => store.load("own")),
+							loadFork: await medianMs(runs, () => store.load("d50")),
+							tailOwn: await medianMs(runs, () => store.readTail("own", 491)),
+							tailFork: await medianMs(runs, () => store.readTail("d50", 491)),
+						};
+						const report = `${backend.name}: load own ${timings.loadOwn.toFixed(1)} ms, fork ${timings.loadFork.toFixed(1)} ms; tail own ${timings.tailOwn.toFixed(1)} ms, fork ${timings.tailFork.toFixed(1)} ms`;
+						if (process.env.ATOMIC_TEST_LAZY_FORK_TIMINGS)
+							appendFileSync(process.env.ATOMIC_TEST_LAZY_FORK_TIMINGS, `${report}\n`);
+						// Measured within about 10% when the machine is idle; the bound leaves room for a loaded test host.
+						assert.ok(timings.loadFork <= timings.loadOwn * FORK_READ_SLACK + 5, report);
+						assert.ok(timings.tailFork <= timings.tailOwn * FORK_READ_SLACK + 5, report);
 					}),
 				SERVER_TIMEOUT_MS,
 			);

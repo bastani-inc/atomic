@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
+import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
-import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { sessionForkTables } from "../../packages/coding-agent/src/core/storage/session/fork-schema.js";
+import { forkView, withForkViews } from "../../packages/coding-agent/src/core/storage/session/fork-view.js";
+import {
+	SESSION_TABLES,
+	SqlSessionStore,
+} from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { countRoundTrips as countingRoundTrips } from "../helpers/postgres-round-trips.js";
 import { gate, instrumented, within } from "./storage-conformance-matrix-fork-staging-helpers.js";
@@ -170,6 +177,98 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL round trips of for
 				held.release();
 				await forking.close();
 				await appending.close();
+			}
+		});
+	});
+	test("a fork fifty deep takes the round trips of creating a session, and its first load those of a session of its own (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const store = await SqlSessionStore.open(await open());
+			try {
+				await store.enableSharedHistoryForks({ live: async () => false });
+				await store.create(header("one"), entries("one", 1));
+				const made = entries("g", 400);
+				await store.create(header("g0"), made);
+				const trips = countRoundTrips();
+				let deepest = 0;
+				for (let depth = 1; depth <= 50; depth++) {
+					await clone(store, `g${depth - 1}`, `g${depth}`, () => {
+						deepest = trips.take();
+					});
+					const own = entries(`g${depth}`, 2).map((entry, index) =>
+						index === 0 ? ({ ...entry, parentId: made.at(-1)!.id } as SessionEntry) : entry,
+					);
+					await store.append(`g${depth}`, own, { expectSeq: made.length });
+					made.push(...own);
+				}
+				trips.take();
+				await store.create(header("x"), entries("x", 1));
+				const created = trips.take();
+				await store.create(header("own"), made);
+				const reader = await SqlSessionStore.open(await open());
+				try {
+					trips.take();
+					const ownLoad = await reader.load("own");
+					const ownTrips = trips.take();
+					const forkLoad = await reader.load("g50");
+					const forkTrips = trips.take();
+					trips.restore();
+					const report = `create ${created}, fork at depth 50 ${deepest}; load own ${ownTrips}, fork ${forkTrips}`;
+					assert.deepEqual(forkLoad.entries, ownLoad.entries);
+					assert.ok(deepest <= created, report);
+					assert.ok(forkTrips <= ownTrips, report);
+				} finally {
+					await reader.close();
+				}
+			} finally {
+				await store.close();
+			}
+		});
+	});
+
+	test("a fork's read finds its segments by session and each source's rows by key on PostgreSQL (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const database = await open();
+			const store = await SqlSessionStore.open(database);
+			try {
+				await store.enableSharedHistoryForks({ live: async () => false });
+				const made = entries("p", 3000);
+				await store.create(header("p"), made);
+				await clone(store, "p", "c");
+				await store.append(
+					"c",
+					entries("c", 5).map((entry, index) =>
+						index === 0 ? ({ ...entry, parentId: made.at(-1)!.id } as SessionEntry) : entry,
+					),
+					{ expectSeq: 3000 },
+				);
+				await clone(store, "c", "cc");
+				// Many sessions' segments, as a store that has made many forks holds.
+				for (let index = 0; index < 1000; index++) await clone(store, "c", `k${index}`);
+				await database.run("ANALYZE");
+				const view = forkView(
+					{ segments: sessionForkTables().forkSegments, dialect: dialectOf(database) },
+					{
+						name: "v",
+						table: renderStorageIdentifiers("sessions", SESSION_TABLES).entries,
+						columns: ["entry_id", "entry_json", "chunks"],
+						sessionId: "cc",
+						after: 2990,
+						through: 3005,
+					},
+				);
+				const plan = (
+					await database.all(
+						`EXPLAIN ${withForkViews([view], "SELECT seq, entry_json FROM v ORDER BY seq")}`,
+						...view.params,
+					)
+				)
+					.map((row) => String(Object.values(row)[0]))
+					.join("\n");
+				assert.match(plan, /Index[^\n]* on session_fork_segments/, plan);
+				assert.match(plan, /Index[^\n]* on session_entries/, plan);
+				assert.doesNotMatch(plan, /Seq Scan on session_entries/, plan);
+			} finally {
+				await store.close();
 			}
 		});
 	});
