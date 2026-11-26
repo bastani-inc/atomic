@@ -231,6 +231,13 @@ class ForkSourcesMoved extends Error {
 		super("The fork's source moved its history while the fork read it");
 	}
 }
+/** An entry a write stores, at seq `seq`, as `json`: see `SqlSessionStore.noteWritten`. */
+interface WrittenEntry {
+	readonly entry: SessionEntry;
+	readonly seq: number;
+	readonly json: string;
+}
+
 type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
 type SummaryStateRow = HeaderRow & { summary_state: string };
 type ResumeRow = SummaryStateRow & { revision: string };
@@ -1395,18 +1402,26 @@ export class SqlSessionStore implements SessionStore {
 			sql: `SELECT id FROM ${this.tables.sessions} WHERE id = ?`,
 			params: [header.id],
 		};
-		return this.transactionCheckedAlongside(
+		let written: WrittenEntry[] = [];
+		const created = await this.transactionCheckedAlongside(
 			async (tx, checked) => {
 				if (await tx.get(existing.sql, ...existing.params)) {
 					throw new SessionExistsError(header.id);
 				}
 				const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
 				await checked;
-				await this.writeEntries(tx, summary.statement, this.entryWrites(header.id, entries, 0, summary.texts));
+				written = [];
+				await this.writeEntries(
+					tx,
+					summary.statement,
+					this.entryWrites(header.id, entries, 0, summary.texts, true, written),
+				);
 				return { lastSeq: entries.length, epoch: summary.epoch };
 			},
 			this.sessionWrite(header.id, existing),
 		);
+		this.noteWritten(header.id, created.epoch, written);
+		return created;
 	}
 
 	async createFork(
@@ -1446,8 +1461,9 @@ export class SqlSessionStore implements SessionStore {
 			// As a streamed fork's: once this store has seen shared history, the reads that lock the source go out first.
 			const reads = this.sharedHistorySeen ? this.sharedForkReads(header.id, source.sessionId, false) : undefined;
 			try {
-				return await this.transaction(
-					(tx) => this.writeEntriesFork(tx, header, entries, source, reads),
+				// The schema check goes out with the fork's first reads, as a `create`'s does: its writes wait for it.
+				return await this.transactionCheckedAlongside(
+					(tx, checked) => this.writeEntriesFork(tx, checked, header, entries, source, reads),
 					this.sessionWrite(
 						header.id,
 						...(reads === undefined ? [] : [reads.exists, reads.lock, reads.tombstones, reads.segments]),
@@ -1469,6 +1485,7 @@ export class SqlSessionStore implements SessionStore {
 	 */
 	private async writeEntriesFork(
 		tx: SqliteExecutor,
+		checked: Promise<void>,
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		source: ForkArchiveSource,
@@ -1476,7 +1493,8 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<(SessionWriteResult & { remainingBlobs: readonly string[] }) | undefined> {
 		const needsSource = source.receipts.size > 0 || source.hashes.length > 0;
 		let shared: SharedForkDonor | undefined;
-		if (await this.sharedHistoryForks(tx)) {
+		// Reads made for a store that has seen shared history need not wait for the schema: the switch is one way.
+		if (reads !== undefined || (await this.sharedHistoryForks(tx))) {
 			try {
 				// Locked in whatever generation it is: the generation the entries were read in is compared below.
 				shared = await this.sharedForkDonor(
@@ -1501,6 +1519,7 @@ export class SqlSessionStore implements SessionStore {
 				throw new SessionConflictError(ref.sessionId, ref.seq, donor.lastSeq);
 		}
 		const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
+		await checked;
 		const tables = await this.viewTables(tx);
 		const writes = new SentWrites(tx);
 		if (!sharing) {
@@ -1950,8 +1969,9 @@ export class SqlSessionStore implements SessionStore {
 				? this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined)
 				: undefined;
 			try {
-				return await this.transaction(
-					(tx) => this.writeStreamedFork(tx, header, stream, source, reads),
+				// The schema check goes out with the fork's first reads, as a `create`'s does: its writes wait for it.
+				return await this.transactionCheckedAlongside(
+					(tx, checked) => this.writeStreamedFork(tx, checked, header, stream, source, reads),
 					this.sessionWrite(
 						header.id,
 						...(reads === undefined ? [] : [reads.exists, reads.lock, reads.tombstones, reads.segments]),
@@ -1965,22 +1985,27 @@ export class SqlSessionStore implements SessionStore {
 
 	private async writeStreamedFork(
 		tx: SqliteExecutor,
+		checked: Promise<void>,
 		header: SessionRecordHeader,
 		stream: SessionForkStream,
 		source: ForkArchiveSource,
 		reads: SharedForkReads | undefined,
 	) {
+		// Reads made for a store that has seen shared history need not wait for the schema: the switch is one way. They go
+		// first, with the transaction's start, before anything else the fork waits for.
+		const shared =
+			reads !== undefined || (await this.sharedHistoryForks(tx))
+				? await this.sharedForkDonor(
+						tx,
+						header.id,
+						source,
+						reads ?? this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined),
+					)
+				: undefined;
+		const head = shared ?? (await this.forkDonor(tx, header.id, source));
+		await checked;
 		const { encodedForkRow } = await import("./fork-row-bytes.js");
 		const { foldForkRow } = await import("./fork-row-index.js");
-		const shared = (await this.sharedHistoryForks(tx))
-			? await this.sharedForkDonor(
-					tx,
-					header.id,
-					source,
-					reads ?? this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined),
-				)
-			: undefined;
-		const head = shared ?? (await this.forkDonor(tx, header.id, source));
 		const prefix = stream.prefix;
 		if (
 			shared !== undefined &&
@@ -2014,8 +2039,12 @@ export class SqlSessionStore implements SessionStore {
 		);
 		// The reader's reads outside a transaction run in this one, which has read the schema already.
 		reader.sharedHistorySeen = await this.sharedHistoryForks(tx);
-		const { index: donorIndex } = await reader.prepareResume(source.sessionId);
-		reader.readBranchSpan = async (id, cut) => transcriptBranchSpan(id, donorIndex, cut);
+		// The source's resume index, read only for a stream that asks for a branch's span.
+		let donorIndex: Promise<SessionResumeIndex> | undefined;
+		reader.readBranchSpan = async (id, cut) => {
+			donorIndex ??= reader.prepareResume(source.sessionId).then((prepared) => prepared.index);
+			return transcriptBranchSpan(id, await donorIndex, cut);
+		};
 		reader.readEntryChunk = this.forkChunkReader(tx, await this.viewTables(tx), reader, source.sessionId, head.epoch);
 		// The source's rows the child keeps unchanged, copied a run at a time rather than written a row at a time (#6560),
 		// or, with shared history, named by the child's segments.
@@ -2080,6 +2109,8 @@ export class SqlSessionStore implements SessionStore {
 		};
 		const writes = new SentWrites(tx);
 		const blobs: { copy?: ForkBlobCopy | undefined } = {};
+		// Whether a row was copied from the source's stored bytes, which `finishForkCopy` checks are complete.
+		let copiedRows = false;
 		const remainingBlobs = await writes.around(async () => {
 			for await (const row of stream.read(reader, async (id) => (await lookup(id)) !== undefined, inlineSnapshot)) {
 				index = await foldForkRow(index, row, lookup);
@@ -2100,6 +2131,7 @@ export class SqlSessionStore implements SessionStore {
 					continue;
 				}
 				if (row.stored?.sessionId === source.sessionId && row.edits === undefined) {
+					copiedRows = true;
 					copies.add(row.stored.seq, seq + 1, entry.id);
 					await writes.send(this.entryWrites(header.id, [], seq, listed.texts, false));
 					if (copies.full) await writes.send(copies.drain());
@@ -2113,6 +2145,7 @@ export class SqlSessionStore implements SessionStore {
 				} else if (row.inlineSnapshot) {
 					await this.writeInlineForkSnapshot(tx, reader, row.reference, header.id, seq, listed.texts, row.edits);
 				} else {
+					copiedRows = true;
 					const encoded = await encodedForkRow(reader, row);
 					const chunks = Math.ceil(encoded.size / SESSION_ENTRY_CHUNK_BYTES);
 					await tx.run(
@@ -2150,20 +2183,26 @@ export class SqlSessionStore implements SessionStore {
 				}
 				seq++;
 			}
-			await writes.send(runs?.drain() ?? copies.drain());
+			const last: CountedStatement[] = [...(runs?.drain() ?? copies.drain())];
 			if (runs !== undefined) {
 				assertForkSegments(header.id, runs.segments, seq);
-				await writes.send([
-					forkLineageWrite(lineage, header.id, { parentId: source.sessionId, cutSeq: head.lastSeq }),
-				]);
+				last.push(forkLineageWrite(lineage, header.id, { parentId: source.sessionId, cutSeq: head.lastSeq }));
 			}
-			blobs.copy = this.forkBlobCopy(source.sessionId, header.id, hashes);
 			const statement = this.summaryWrite(header.id, { header, entries: [], lastSeq: seq }, summary, index);
-			await writes.send([statement.statement]);
+			last.push(statement.statement);
+			if (!copiedRows && hashes.size === 0) {
+				// Every row the child stores was written whole from what the stream gave, and it has no blob to copy: nothing
+				// to check after them, so the last writes go out with the commit where the connection is pipelined.
+				last.push(this.forkVersionStep(header.id));
+				if (transactionFinisher(tx)?.(last) !== true) await writes.send(last);
+				return { remaining: [], epoch: statement.epoch, finished: true };
+			}
+			await writes.send(last);
+			blobs.copy = this.forkBlobCopy(source.sessionId, header.id, hashes);
 			const remaining = await this.finishForkCopy(tx, writes, header.id, blobs.copy, hashes);
-			return { remaining, epoch: statement.epoch };
+			return { remaining, epoch: statement.epoch, finished: false };
 		});
-		await this.finishFork(tx, header.id);
+		if (!remainingBlobs.finished) await this.finishFork(tx, header.id);
 		return { lastSeq: seq, epoch: remainingBlobs.epoch, remainingBlobs: remainingBlobs.remaining };
 	}
 
@@ -2384,7 +2423,8 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.transactionCheckedAlongside(
+		let written: WrittenEntry[] = [];
+		const appended = await this.transactionCheckedAlongside(
 			async (tx, checked) => {
 				const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
 				validateSessionEntries(entries);
@@ -2408,13 +2448,18 @@ export class SqlSessionStore implements SessionStore {
 						entries,
 					),
 				);
-				const written = this.entryWrites(sessionId, entries, previous.last_seq, summary.texts);
+				written = [];
+				const statements = this.entryWrites(sessionId, entries, previous.last_seq, summary.texts, true, written);
 				await checked;
-				await this.writeEntries(tx, summary.statement, written);
-				return { lastSeq };
+				await this.writeEntries(tx, summary.statement, statements);
+				// The generation the session is in once this commits: the one a fork of it later finds, while only appends
+				// follow.
+				return { lastSeq, epoch: summary.epoch };
 			},
 			this.sessionWrite(sessionId, this.headRead(sessionId, options, true)),
 		);
+		this.noteWritten(sessionId, appended.epoch, written);
+		return { lastSeq: appended.lastSeq };
 	}
 
 	async replace(
@@ -2425,7 +2470,8 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.transaction(async (tx) => {
+		let written: WrittenEntry[] = [];
+		const replaced = await this.transaction(async (tx) => {
 			await this.forWrite(tx, sessionId, options);
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
@@ -2435,9 +2481,12 @@ export class SqlSessionStore implements SessionStore {
 			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
 			const { texts, epoch } = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
-			await this.insertEntries(tx, sessionId, entries, 0, texts);
+			written = [];
+			await this.insertEntries(tx, sessionId, entries, 0, texts, true, written);
 			return { lastSeq: entries.length, epoch };
 		}, this.sessionWrite(sessionId));
+		this.noteWritten(sessionId, replaced.epoch, written);
+		return replaced;
 	}
 
 	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
@@ -5366,9 +5415,22 @@ export class SqlSessionStore implements SessionStore {
 		lastSeq: number,
 		texts: readonly SessionSummaryText[],
 		versionStep = true,
+		written?: WrittenEntry[],
 	): Promise<void> {
 		const writes = new SentWrites(tx);
-		await writes.around(() => writes.send(this.entryWrites(sessionId, entries, lastSeq, texts, versionStep)));
+		await writes.around(() =>
+			writes.send(this.entryWrites(sessionId, entries, lastSeq, texts, versionStep, written)),
+		);
+	}
+
+	/**
+	 * Notes `written`, the entries a committed write of session `sessionId` stored in generation `epoch`, as stored there
+	 * (#6560): a manager keeps the very objects it appended, so a fork of it shares their rows without reading them back.
+	 * Only where this store has seen shared history, for which alone the notes count.
+	 */
+	private noteWritten(sessionId: string, epoch: string, written: readonly WrittenEntry[]): void {
+		if (!this.sharedHistorySeen) return;
+		for (const { entry, seq, json } of written) noteStoredEntry(entry, sessionId, seq, epoch, json);
 	}
 
 	/**
@@ -5393,7 +5455,8 @@ export class SqlSessionStore implements SessionStore {
 	/**
 	 * The statements that store `entries` after `lastSeq`, in order, each entry encoded only when its statements are
 	 * taken: each entry's row and its chunks, the version step a first chunked entry takes unless `versionStep` is
-	 * false (a fork takes it once its last entry is in), then the entries' search texts.
+	 * false (a fork takes it once its last entry is in), then the entries' search texts. With `written`, each entry is
+	 * added to it with its seq and its JSON as it is encoded, for {@link noteWritten} once the write commits.
 	 */
 	private *entryWrites(
 		sessionId: string,
@@ -5401,11 +5464,14 @@ export class SqlSessionStore implements SessionStore {
 		lastSeq: number,
 		texts: readonly SessionSummaryText[],
 		versionStep = true,
+		written?: WrittenEntry[],
 	): Generator<SqliteStatement> {
 		let chunked = false;
 		for (const [index, entry] of entries.entries()) {
 			const seq = lastSeq + index + 1;
-			const stored = storedEntry(entry, this.encode(entry));
+			const json = this.encode(entry);
+			written?.push({ entry, seq, json });
+			const stored = storedEntry(entry, json);
 			chunked ||= stored.chunks.length > 0;
 			yield {
 				sql: `INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json, chunks) VALUES (?, ?, ?, ?, ?)`,
