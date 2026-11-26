@@ -606,6 +606,9 @@ function migrateDatabaseSelection(database: MigrationDatabase, cwd: string): Sto
 	};
 }
 
+/** How long `migrate` lets one statement of an index build run: a large table takes minutes. */
+const INDEX_BUILD_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+
 /**
  * `atomic storage migrate` (#5218): sets up or upgrades every store's tables in the shared database, as its owner role.
  * On PostgreSQL, tables an earlier release created in `public` move to schema `atomic` first.
@@ -648,6 +651,19 @@ async function migrate(
 		}
 	} finally {
 		await opened.close();
+	}
+	// The session links index that keeps an append's update of its parent's link in place, built without holding the
+	// table's writes, before the sessions' open would build it in a transaction (#6560). The build may take minutes.
+	const building = await openAdapterSelectionDatabase(
+		{ ...selection, options: { ...selection.options, statementTimeoutMs: INDEX_BUILD_TIMEOUT_MS } },
+		{ agentDir, domain: "sessions" },
+	);
+	try {
+		const { SqlSnapshotBlobStore } = await import("../core/worktree-snapshot/blob-store.ts");
+		if ((await SqlSnapshotBlobStore.buildHotSessionLinksIndex(building, selection.prefix)) === "built")
+			log("Rebuilt an index of the worktree snapshot links without stopping writes to them.");
+	} finally {
+		await building.close();
 	}
 	// Opening the sessions also switches them to shared-history forks once no older Atomic runs a session there (#6560),
 	// judging those sessions' markers as a running session does.

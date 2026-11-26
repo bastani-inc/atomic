@@ -6,12 +6,15 @@ import type { SessionEntry } from "../../packages/coding-agent/src/core/session-
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { SqlSnapshotBlobStore } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
 import { type PostgresScope, postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 
 /** Entries appended one at a time after the session's first, each the child of the one before. */
 const APPENDS = 20;
 /** How long PostgreSQL may take to publish the statistics of the store's closed connections. */
 const STATS_WAIT_MS = 10_000;
+/** Links in a table larger than an open builds the index for in its own transaction. */
+const LARGE_LINKS = 250_000;
 
 function entry(n: number): SessionEntry {
 	const id = `e${n}`;
@@ -34,11 +37,22 @@ const release0989 = (await import(
 /** The session links' indexes as `name: definition`. */
 async function linkIndexes(database: SqliteDatabase): Promise<string[]> {
 	return (
-		await database.all<{ name: string; definition: string }>(
-			"SELECT indexname AS name, indexdef AS definition FROM pg_indexes WHERE tablename = 'snapshot_session_links' ORDER BY indexname",
+		await database.all<{ name: string; definition: string; valid: number }>(
+			`SELECT i.relname AS name, pg_get_indexdef(x.indexrelid) AS definition, x.indisvalid::int AS valid FROM pg_index x
+			JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = 'snapshot_session_links'::regclass ORDER BY i.relname`,
 		)
-	).map((index) => `${index.name}: ${index.definition.replace(/^.* USING btree /, "")}`);
+	).map(
+		(index) =>
+			`${index.name}: ${index.definition.replace(/^.* USING btree /, "")}${Number(index.valid) === 1 ? "" : " (invalid)"}`,
+	);
 }
+
+const EARLIER_INDEXES = [
+	"snapshot_session_links_broken: (session_id) WHERE (broken = 1)",
+	"snapshot_session_links_entry: (session_id, entry_id)",
+	"snapshot_session_links_leaves: (session_id, anchor_seq) WHERE ((children = 0) AND (anchor_seq IS NOT NULL))",
+	"snapshot_session_links_pkey: (session_id, seq)",
+];
 
 const HOT_INDEXES = [
 	"snapshot_session_links_anchored: (session_id, anchor_seq) WHERE (anchor_seq IS NOT NULL)",
@@ -46,6 +60,28 @@ const HOT_INDEXES = [
 	"snapshot_session_links_entry: (session_id, entry_id)",
 	"snapshot_session_links_pkey: (session_id, seq)",
 ];
+
+/** Puts the links back as an earlier build left them: the index of leaves, and no ledger record of the step. */
+async function asEarlierBuildLeftIt(database: SqliteDatabase): Promise<void> {
+	await database.exec("DROP INDEX IF EXISTS snapshot_session_links_anchored");
+	await database.exec(
+		"CREATE INDEX snapshot_session_links_leaves ON snapshot_session_links (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL",
+	);
+	await database.run("DELETE FROM atomic_migrations WHERE domain = 'schema:snapshot-links-hot'");
+}
+
+/** Whether the ledger records the step. */
+async function recorded(database: SqliteDatabase): Promise<boolean> {
+	return (
+		(await database.get("SELECT 1 AS found FROM atomic_migrations WHERE domain = 'schema:snapshot-links-hot'")) !==
+		undefined
+	);
+}
+
+/** Opens the session store on `database`, as a session does, and closes it. */
+async function openStore(database: SqliteDatabase): Promise<void> {
+	await (await SqlSessionStore.open(database, {})).close();
+}
 
 /** Creates session `s` with its first entry, then appends {@link APPENDS} more one at a time, and closes the store. */
 async function writeSession(scope: PostgresScope): Promise<void> {
@@ -99,5 +135,53 @@ describe.skipIf(postgresSkipReason !== undefined)("session links on PostgreSQL (
 
 			await writeSession(scope);
 			assert.deepEqual(await linkUpdates(scope), { updates: APPENDS, hot: APPENDS });
+		}));
+
+	test("migrate replaces an index a stopped build left invalid, which an open leaves alone, and records the step once", () =>
+		withPostgresDatabase(async (scope) => {
+			const database = await scope.open();
+			await openStore(database);
+			await asEarlierBuildLeftIt(database);
+			// A build of `_anchored` that stopped part way leaves it invalid: here one that fails on duplicate keys.
+			await database.run(
+				"INSERT INTO snapshot_session_links VALUES ('x', 1, 'a', NULL, 5, 1, 0), ('x', 2, 'b', 'a', 5, 0, 0)",
+			);
+			await assert.rejects(
+				database.exec(
+					"CREATE UNIQUE INDEX CONCURRENTLY snapshot_session_links_anchored ON snapshot_session_links (anchor_seq)",
+				),
+			);
+			const stopped = ["snapshot_session_links_anchored: (anchor_seq) (invalid)", ...EARLIER_INDEXES];
+			assert.deepEqual(await linkIndexes(database), stopped);
+
+			await openStore(await scope.open());
+			assert.deepEqual(await linkIndexes(database), stopped, "an open leaves the invalid index to migrate");
+			assert.equal(await recorded(database), false);
+
+			assert.equal(await SqlSnapshotBlobStore.buildHotSessionLinksIndex(database), "built");
+			assert.deepEqual(await linkIndexes(database), HOT_INDEXES);
+			assert.equal(await recorded(database), true);
+			assert.equal(await SqlSnapshotBlobStore.buildHotSessionLinksIndex(database), "current");
+		}));
+
+	test("an open leaves a large links table's index to migrate, which builds it", () =>
+		withPostgresDatabase(async (scope) => {
+			const database = await scope.open();
+			await openStore(database);
+			await asEarlierBuildLeftIt(database);
+			// More links than an open builds the index for in its own transaction: over 16 MiB.
+			await database.run(
+				`INSERT INTO snapshot_session_links (session_id, seq, entry_id, parent_id, anchor_seq, children, broken)
+				SELECT 's' || (g / 1000), g % 1000, 'e' || g, 'e' || (g - 1), g - g % 10, 1, 0 FROM generate_series(0, ${LARGE_LINKS - 1}) g`,
+			);
+			await database.exec("ANALYZE snapshot_session_links");
+
+			await openStore(await scope.open());
+			assert.deepEqual(await linkIndexes(database), EARLIER_INDEXES, "the open built nothing");
+			assert.equal(await recorded(database), false);
+
+			assert.equal(await SqlSnapshotBlobStore.buildHotSessionLinksIndex(database), "built");
+			assert.deepEqual(await linkIndexes(database), HOT_INDEXES);
+			assert.equal(await recorded(database), true);
 		}));
 });

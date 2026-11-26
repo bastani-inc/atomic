@@ -1556,20 +1556,72 @@ async function ensureHotSessionLinks(database: SqliteDatabase, t: SnapshotIndexT
 	await check;
 }
 
-/** Runs {@link hotSessionLinks} where this role owns the links table; true when this process need not check again. */
+/**
+ * The largest links table, in bytes, an open builds {@link hotSessionLinks}'s index for in its own transaction, which
+ * holds the table's writes for the build: about 150,000 links, a fraction of a second. A larger one is left to `atomic
+ * storage migrate`, which builds the index without holding them ({@link SqlSnapshotBlobStore.buildHotSessionLinksIndex}).
+ */
+const HOT_SESSION_LINKS_OPEN_BUILD_BYTES = 16 * 1024 * 1024;
+/** How often {@link SqlSnapshotBlobStore.buildHotSessionLinksIndex} looks again at an index build another process runs. */
+const HOT_SESSION_LINKS_BUILD_POLL_MS = 500;
+
+/** What {@link sessionLinksState} finds of the links table. */
+interface SessionLinksState {
+	readonly owned: boolean;
+	readonly bytes: number;
+	/** Whether `_anchored` exists and is valid; `false` for one a build that did not finish left. */
+	readonly anchored: boolean | undefined;
+	/** Whether an index of the table is being built right now. */
+	readonly building: boolean;
+}
+
+/** The links table's owner, size and `_anchored` index, in one read; `undefined` when the table does not exist. */
+async function sessionLinksState(
+	database: SqliteExecutor,
+	t: SnapshotIndexTables,
+	dialect: StorageDialect,
+): Promise<SessionLinksState | undefined> {
+	const row = await database.get<
+		SqliteRow & {
+			owned: boolean | number;
+			bytes: number | string;
+			anchored: boolean | number | null;
+			building: boolean | number;
+		}
+	>(
+		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned, pg_catalog.pg_relation_size(c.oid) AS bytes,
+			(SELECT x.indisvalid FROM pg_catalog.pg_index x JOIN pg_catalog.pg_class i ON i.oid = x.indexrelid
+				WHERE x.indrelid = c.oid AND i.relname = ?) AS anchored,
+			EXISTS (SELECT 1 FROM pg_catalog.pg_stat_progress_create_index p WHERE p.relid = c.oid) AS building
+		FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?`,
+		dialect.identifier(`${t.sessionLinks}_anchored`),
+		dialect.identifier(t.sessionLinks),
+	);
+	if (row === undefined) return undefined;
+	const yes = (value: boolean | number | null) => value === true || Number(value) === 1;
+	return {
+		owned: yes(row.owned),
+		bytes: Number(row.bytes),
+		anchored: row.anchored === null ? undefined : yes(row.anchored),
+		building: yes(row.building),
+	};
+}
+
+/**
+ * Runs {@link hotSessionLinks} where this role owns a small links table; true when this process need not check again.
+ * A large table, or one whose `_anchored` index a build of `atomic storage migrate` left unfinished or is making now,
+ * is left to `atomic storage migrate`.
+ */
 async function checkHotSessionLinks(
 	database: SqliteDatabase,
 	t: SnapshotIndexTables,
 	prefix: string,
 ): Promise<boolean> {
 	const dialect = dialectOf(database);
-	const found = await database.get<SqliteRow & { owned: boolean | number }>(
-		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned
-		FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?`,
-		dialect.identifier(t.sessionLinks),
-	);
+	const found = await sessionLinksState(database, t, dialect);
 	if (found === undefined) return false;
-	if (!(found.owned === true || Number(found.owned) === 1)) return true;
+	if (!found.owned || found.bytes > HOT_SESSION_LINKS_OPEN_BUILD_BYTES || found.anchored === false || found.building)
+		return true;
 	await database.transaction((transaction) => hotSessionLinks(transaction, t, prefix, dialect), {
 		retryTransientFailures: true,
 		concurrency: { kind: "serial", domain: sessionLinksHotSchema(prefix).ledger },
@@ -2035,6 +2087,59 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		);
 		await store.installIndex(undefined, false, await schemaCatalogOf(database));
 		return store;
+	}
+
+	/**
+	 * Gives a PostgreSQL database's session links the index of {@link hotSessionLinks} without holding the table's writes,
+	 * as `atomic storage migrate` does where an open would not ({@link HOT_SESSION_LINKS_OPEN_BUILD_BYTES}). Each step
+	 * runs on its own, outside a transaction: `CREATE INDEX CONCURRENTLY` builds `_anchored`, `DROP INDEX CONCURRENTLY`
+	 * removes `_leaves`, and only then does the ledger record the step. A build that stopped part way, which leaves an
+	 * invalid `_anchored`, is dropped and made again; one another process is making is waited for. Nothing runs where the
+	 * ledger records the step, where the table does not exist yet (its first open creates it with the index), or where
+	 * this role does not own it. `database` should allow a statement as long as the build takes.
+	 */
+	static async buildHotSessionLinksIndex(
+		database: SqliteDatabase,
+		prefix = "",
+	): Promise<"built" | "current" | "absent" | "not-owner"> {
+		const dialect = dialectOf(database);
+		if (dialect.name !== "postgres") return "current";
+		const t = snapshotIndexTables(prefix);
+		const schema = sessionLinksHotSchema(prefix);
+		const recorded = async () => {
+			const ledger = dialect.tableExists(schema.ledger);
+			if ((await database.get(ledger.sql, ...ledger.params)) === undefined) return false;
+			return (
+				(await database.get(
+					`SELECT 1 AS found FROM ${schema.ledger} WHERE domain = ? AND version >= ?`,
+					`schema:${schema.domain}`,
+					schema.revision,
+				)) !== undefined
+			);
+		};
+		if (await recorded()) return "current";
+		for (;;) {
+			const found = await sessionLinksState(database, t, dialect);
+			if (found === undefined) return "absent";
+			if (!found.owned) return "not-owner";
+			if (found.building) {
+				// Another process builds an index of the table, perhaps this one: its outcome decides what is left to do.
+				await new Promise((resolve) => setTimeout(resolve, HOT_SESSION_LINKS_BUILD_POLL_MS));
+				continue;
+			}
+			if (found.anchored === false)
+				await database.exec(`DROP INDEX CONCURRENTLY IF EXISTS ${t.sessionLinks}_anchored`);
+			if (found.anchored !== true)
+				await database.exec(sessionLinksLeafIndex(t, dialect).replace("CREATE INDEX", "CREATE INDEX CONCURRENTLY"));
+			break;
+		}
+		await database.exec(`DROP INDEX CONCURRENTLY IF EXISTS ${t.sessionLinks}_leaves`);
+		// The index is in place, so the record runs no DDL, which would wait for the table's writes.
+		await database.transaction((transaction) => ensureStorageSchema(transaction, dialect, schema, async () => {}), {
+			retryTransientFailures: true,
+			concurrency: { kind: "serial", domain: schema.ledger },
+		});
+		return "built";
 	}
 
 	/** Runs only layout maintenance on the offline command's dedicated, exclusively locked SQLite file connection. */
