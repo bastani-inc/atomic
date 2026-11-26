@@ -603,6 +603,84 @@ export function registerOutboxStoreConformance(
 	const ids = (rows: ReadonlyArray<ClaimedOutboxRow | OutboxRow>) =>
 		rows.map((entry) => ("claim" in entry ? entry.row.messageId : entry.messageId));
 
+	check(
+		"renews claims together, each answered as renewClaim answers it, in the order given (#6560)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			if (a.renewClaims === undefined) return;
+			for (const id of ["r1", "r2", "r3", "r4", "r5"]) await insert(a, frameFor(id, id));
+			await insert(a, frameFor("o1", "other"), { targetIdentity: OTHER_RECIPIENT });
+			const [r1, r2, r3, r4, r5] = await claimAll(a, "broker-a");
+			const [o1] = await claimAll(b, "broker-b", LIVE_MS, OTHER_RECIPIENT);
+			expectStatus(await b.markDelivered(r2!.claim), "delivered");
+			expectStatus(await b.releaseClaim(r3!.claim), "released");
+			const answers = await b.renewClaims!([
+				r4!.claim,
+				r2!.claim,
+				{ ...r5!.claim, token: "not-its-token" },
+				r3!.claim,
+				{ messageId: "missing", claimantId: "broker-a", token: "t", attempt: 1 },
+				o1!.claim,
+				{ ...r1!.claim, messageId: "" },
+				r1!.claim,
+			]);
+			assert.deepEqual(
+				answers.map((answer) => answer.status),
+				["renewed", "settled", "stale", "stale", "unknown", "renewed", "invalid", "renewed"],
+			);
+			// Renewed claims are still the claims: a renewal of one again, alone, finds it current.
+			assert.equal((await a.renewClaim(r4!.claim)).status, "renewed");
+			assert.equal((await a.renewClaim(o1!.claim)).status, "renewed");
+		},
+	);
+
+	check(
+		"renewClaims matches each claim as a whole triple and never renews swapped tokens (#6712)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			if (a.renewClaims === undefined) return;
+			for (const id of ["s1", "s2", "s3"]) await insert(a, frameFor(id, id));
+			await insert(a, frameFor("so1", "other"), { targetIdentity: OTHER_RECIPIENT });
+			const [s1, s2, s3] = await claimAll(a, "broker-a");
+			const [so1] = await claimAll(b, "broker-b", LIVE_MS, OTHER_RECIPIENT);
+			const swapped = [
+				{ ...s1!.claim, token: s2!.claim.token },
+				{ ...s2!.claim, token: s1!.claim.token },
+			];
+			assert.deepEqual(
+				(await b.renewClaims!(swapped)).map((answer) => answer.status),
+				["stale", "stale"],
+			);
+			assert.deepEqual(
+				(await b.renewClaims!([s3!.claim, ...swapped, so1!.claim])).map((answer) => answer.status),
+				["renewed", "stale", "stale", "renewed"],
+			);
+			// Duplicate entries for the same row: the matching triple renews and the mismatched one reports stale.
+			assert.deepEqual(
+				(await b.renewClaims!([s3!.claim, { ...s3!.claim, token: "wrong" }])).map((answer) => answer.status),
+				["renewed", "stale"],
+			);
+			// Swapped tokens must not refresh claim_renewed_at: after sleeping past RENEWAL_GAP_MS/2, another broker takes over.
+			await sleep(RENEWAL_GAP_MS);
+			assert.deepEqual(
+				(await b.renewClaims!(swapped)).map((answer) => answer.status),
+				["stale", "stale"],
+			);
+			expectStatus(await a.markDelivered(s3!.claim), "delivered");
+			assert.deepEqual(ids(await claimAll(b, "broker-b", RENEWAL_GAP_MS / 2)), ["s1", "s2"]);
+			assert.deepEqual(await b.renewClaims!([]), []);
+			assert.deepEqual(
+				(
+					await b.renewClaims!([
+						{ ...so1!.claim, messageId: "" },
+						{ ...so1!.claim, claimantId: "" },
+					])
+				).map((answer) => answer.status),
+				["invalid", "invalid"],
+			);
+		},
+	);
+
 	check("writes one row per message id and reports duplicates and conflicts", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		const frame = frameFor("m1", "hello");
