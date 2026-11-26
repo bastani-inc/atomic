@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Sessions saved as JSONL files make far fewer file operations. On macOS and Linux, Atomic keeps a session's file open while the session is being written, and closes it after 30 seconds without a write, when the session is released, or when Atomic exits. Entries saved at the same moment go into the file in one write, so ten saves at once cost about as much as one. Saving an entry takes 7 file operations instead of 18, ten saves at once 7 instead of 180, and reading a session's latest entries 7 instead of 22. Reopening a folder of sessions only checks each file's size and time instead of reading it again: a folder of 201 sessions reopens in about 9 ms instead of about 640 ms. `history://` reads of a session's last entries read from the end of the file instead of from the start. Saved files, crash recovery and locking between Atomic processes work as before ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.1] - 2026-11-25
 
 Many agents can now share one PostgreSQL or libSQL database without waiting for each other, forks cost about the same however long the session is, and shell commands and history searches now run until they finish.

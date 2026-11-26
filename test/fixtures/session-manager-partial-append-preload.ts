@@ -1,6 +1,8 @@
 import { mock } from "bun:test";
+import { constants } from "node:fs";
 import * as originalFs from "node:fs/promises";
-const originalAppendFile = originalFs.appendFile.bind(originalFs);
+
+const originalOpen = originalFs.open.bind(originalFs);
 
 export class PartialAppendFault extends Error {
 	readonly marker: string;
@@ -15,17 +17,28 @@ export class PartialAppendFault extends Error {
 const markers = ["partial-fault-later", "partial-fault-batch"] as const;
 const fired = new Set<string>();
 
+/** Writes part of a marked payload through a handle the store appends with, then fails, as a full disk would. */
+function faultingWrites(handle: originalFs.FileHandle): originalFs.FileHandle {
+	const write = handle.write.bind(handle) as (buffer: Buffer, offset: number, length: number) => Promise<unknown>;
+	Object.assign(handle, {
+		async write(buffer: Buffer, offset = 0, length = buffer.length - offset) {
+			const data = buffer.subarray(offset, offset + length).toString("utf8");
+			const marker = markers.find((candidate) => data.includes(candidate) && !fired.has(candidate));
+			if (marker === undefined) return write(buffer, offset, length);
+			fired.add(marker);
+			const prefixLength = Buffer.byteLength(data.slice(0, data.indexOf(marker) + Math.max(1, Math.floor(marker.length / 2))));
+			await write(buffer, offset, prefixLength);
+			throw new PartialAppendFault(marker);
+		},
+	});
+	return handle;
+}
+
 mock.module("node:fs/promises", () => ({
 	...originalFs,
-	async appendFile(path: string, data: string): Promise<void> {
-		const marker = markers.find((candidate) => data.includes(candidate) && !fired.has(candidate));
-		if (marker === undefined) {
-			await originalAppendFile(path, data);
-			return;
-		}
-		fired.add(marker);
-		const prefixLength = data.indexOf(marker) + Math.max(1, Math.floor(marker.length / 2));
-		await originalAppendFile(path, data.slice(0, prefixLength));
-		throw new PartialAppendFault(marker);
+	async open(...args: Parameters<typeof originalFs.open>): Promise<originalFs.FileHandle> {
+		const handle = await originalOpen(...args);
+		const flags = args[1];
+		return typeof flags === "number" && (flags & constants.O_APPEND) !== 0 ? faultingWrites(handle) : handle;
 	},
 }));
