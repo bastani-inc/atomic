@@ -177,7 +177,12 @@ Keep third-party actions pinned to full commit SHAs. Validate workflow changes w
 
 ### Node.js version
 
-The root `package.json` `engines.node` is the one source for the Node.js version. Every `actions/setup-node` step and `.atomic/blueprint.yaml` read it with `node-version-file`. Jobs with a sparse `release-tooling` checkout read `release-tooling/package.json`. CI therefore runs the newest Node.js release that satisfies the floor. The root and every published package declare the same `engines.node`. The one exception is the Mintlify step in `static-checks`, which switches to the newest Node 24 release because Mintlify refuses Node 25 and later. `test/ci/node-version-source.test.ts` enforces these rules.
+The root `package.json` `engines.node` is the one source for the Node.js version. Every `actions/setup-node` step and `.atomic/blueprint.yaml` read it with `node-version-file`. Jobs with a sparse `release-tooling` checkout read `release-tooling/package.json`. CI therefore runs the newest Node.js release that satisfies the floor. The root and every published package declare the same `engines.node`. There are two exceptions:
+
+- One Linux `unit-tests` shard and one Linux `agent-suite` shard run on exactly the floor (24.20.0), the oldest Node.js an npm install accepts. They are extra matrix entries with `node: "24.20.0"`, named for example `unit-tests (linux-x64, 2/11, Node.js 24.20.0)`, and their diagnostics artifacts end in `-node-24.20.0`. They run in parallel with the other shards, and the result gate requires them like any other shard. When you raise the floor, update the version in both matrix entries and in both `Node.js at the engines.node floor` steps.
+- The Mintlify step in `static-checks` switches to the newest Node 24 release because Mintlify refuses Node 25 and later.
+
+`test/ci/node-version-source.test.ts` enforces these rules.
 
 ### Dependabot and the pi sync
 
