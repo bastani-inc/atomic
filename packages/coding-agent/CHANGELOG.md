@@ -4,6 +4,7 @@
 
 ### Changed
 
+- On PostgreSQL, opening a session store whose tables are up to date now waits for 2 round trips instead of 5, and an Intercom broker for 1 instead of 3. The first query that opens the database also reads the list of Atomic's tables and their recorded versions, so the store does not read them again, and the snapshot index's two checks go out together. At 80 ms latency, reopening a session store takes about a quarter of a second less ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - On SQLite and libSQL, reopening an Intercom broker whose tables are already set up no longer takes the database's write lock, so brokers that start together no longer wait for each other. The same goes for a session's first chat record in each process. Atomic now records which version of each store's tables it set up, along with SQLite's own count of schema changes. If anything changes the tables later, including an older Atomic, the next open checks them again instead of trusting the record ([#6609](https://github.com/bastani-inc/atomic/pull/6609), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - Reading a session from a local SQLite file now waits for the database's background thread 2 or 3 times instead of 4 or 5. A read starts with its first queries in one message and doesn't wait for its final commit ([#6609](https://github.com/bastani-inc/atomic/pull/6609), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 

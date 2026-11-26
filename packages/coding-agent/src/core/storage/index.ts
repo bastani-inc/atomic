@@ -18,6 +18,7 @@ export type {
 	StorageNotificationEvent,
 	StorageNotificationSubscription,
 	StorageNotifications,
+	StorageOpenedCatalog,
 	TransactionConcurrency,
 } from "./database.js";
 export * from "./dialect.js";
