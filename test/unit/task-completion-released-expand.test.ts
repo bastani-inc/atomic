@@ -128,7 +128,9 @@ async function releasedWokenAttempt(title = "Run the load test") {
 async function expandedRows(card: TaskCompletionMessage, rendered: { count: number }): Promise<string[]> {
 	card.setExpanded(true);
 	card.render(100);
-	for (let i = 0; i < 40 && rendered.count === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+	const deadline = Date.now() + 10_000;
+	while (rendered.count === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.ok(rendered.count > 0, "the card's transcript loaded and asked for a render");
 	return card.render(100).map((row) => stripVTControlCharacters(row).trimEnd());
 }
 
