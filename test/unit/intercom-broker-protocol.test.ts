@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type net from "node:net";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { describe, test } from "vitest";
 import * as currentPaths from "../../packages/intercom/broker/paths.js";
 import {
@@ -268,19 +268,26 @@ describe("the broker's address across versions (#4538)", () => {
 			"D:\\a b\\agent",
 			"/home/dev/.atomic/agent",
 			"/tmp/x y/agent",
+			"./relative-agent",
 		];
-		for (const agentDir of agentDirs) {
-			for (const platform of ["win32", "linux", "darwin"] as const) {
-				assert.equal(
-					current.getBrokerSocketPath(platform, agentDir),
-					previousPaths.getBrokerSocketPath(platform, agentDir),
-					`${platform} ${agentDir}`,
-				);
+		const originalCwd = process.cwd();
+		process.chdir(resolve(sep));
+		try {
+			for (const agentDir of agentDirs) {
+				for (const platform of ["win32", "linux", "darwin"] as const) {
+					assert.equal(
+						current.getBrokerSocketPath(platform, agentDir),
+						previousPaths.getBrokerSocketPath(platform, agentDir),
+						`${platform} ${agentDir}`,
+					);
+				}
+				assert.equal(current.getBrokerSpawnLockPath(agentDir), previousPaths.getBrokerSpawnLockPath(agentDir));
+				assert.equal(current.getBrokerPidPath(agentDir), previousPaths.getBrokerPidPath(agentDir));
 			}
-			assert.equal(current.getBrokerSpawnLockPath(agentDir), previousPaths.getBrokerSpawnLockPath(agentDir));
-			assert.equal(current.getBrokerPidPath(agentDir), previousPaths.getBrokerPidPath(agentDir));
+			assert.match(current.getBrokerSocketPath("win32", agentDirs[0]), /^\\\\\.\\pipe\\/);
+		} finally {
+			process.chdir(originalCwd);
 		}
-		assert.match(current.getBrokerSocketPath("win32", agentDirs[0]), /^\\\\\.\\pipe\\/);
 	});
 });
 

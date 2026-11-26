@@ -264,7 +264,7 @@ export function directBrokerSocketPath(
     return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `${WINDOWS_PIPE_PREFIX}${agentDirDigest(agentDir)}`;
   }
   const socketPath = inDirectorySocketPath(agentDir);
-  return fitsUnixSocketPath(socketPath, platform) ? socketPath : undefined;
+  return fitsUnixSocketPath(resolve(socketPath), platform) ? socketPath : undefined;
 }
 
 /**
@@ -327,7 +327,7 @@ export function chooseBrokerSocketPath(
   const direct = directBrokerSocketPath(platform, agentDir);
   if (direct !== undefined) return direct;
 
-  const socketPath = inDirectorySocketPath(agentDir);
+  const socketPath = resolve(inDirectorySocketPath(agentDir));
   const shortPath = join(privateSocketDirectory(), `${agentDirDigest(agentDir)}.sock`);
   if (!fitsUnixSocketPath(shortPath, platform)) {
     throw new Error(
@@ -344,7 +344,7 @@ export async function chooseBrokerSocketPathAsync(
   const direct = directBrokerSocketPath(platform, agentDir);
   if (direct !== undefined) return direct;
 
-  const socketPath = inDirectorySocketPath(agentDir);
+  const socketPath = resolve(inDirectorySocketPath(agentDir));
   const shortPath = join(await privateSocketDirectoryAsync(), `${agentDirDigest(agentDir)}.sock`);
   if (!fitsUnixSocketPath(shortPath, platform)) {
     throw new Error(

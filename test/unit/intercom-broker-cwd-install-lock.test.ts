@@ -26,6 +26,7 @@ import {
 } from "../../packages/intercom/broker/spawn.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { moduleDir, removePathSync } from "../helpers/runtime.js";
+import { replaceEnvironmentVariable } from "../helpers/temporary-agent-dir.js";
 
 const REPO = resolve(moduleDir(import.meta.url), "../..");
 const BUILT_INTERCOM_DIR = join(REPO, "packages", "coding-agent", "dist", "builtin", "intercom");
@@ -38,8 +39,8 @@ const savedEnv = {
 	piAgentDir: process.env.PI_CODING_AGENT_DIR,
 };
 
-function makeTempRoot(prefix: string): string {
-	const root = mkdtempSync(join(tmpdir(), prefix));
+function makeTempRoot(prefix: string, base = tmpdir()): string {
+	const root = mkdtempSync(join(base, prefix));
 	tempRoots.push(root);
 	return root;
 }
@@ -179,12 +180,15 @@ describe("Intercom broker working directory never pins the installation director
 	});
 
 	test("spawning the real broker succeeds when ATOMIC_CODING_AGENT_DIR is relative (absolutizing broker.log and env for relay)", async () => {
-		const root = makeTempRoot("ic-rel-agent-live-");
-		const relAgent = join(root, "rel-agent");
+		const windows = process.platform === "win32";
+		const root = makeTempRoot("ic-rel-agent-live-", windows ? tmpdir() : "/tmp");
+		const cwd = windows ? root : join(root, "nested-".repeat(16));
+		const relAgent = join(cwd, "rel-agent");
 		mkdirSync(relAgent, { recursive: true });
 		const origCwd = process.cwd();
-		const relSpelling = process.platform === "win32" ? ".\\rel-agent" : "./rel-agent";
-		process.chdir(root);
+		const restoreRuntimeDir = windows ? undefined : replaceEnvironmentVariable("XDG_RUNTIME_DIR", root);
+		const relSpelling = windows ? ".\\rel-agent" : "./rel-agent";
+		process.chdir(cwd);
 		process.env.ATOMIC_CODING_AGENT_DIR = relSpelling;
 		delete process.env.PI_CODING_AGENT_DIR;
 		try {
@@ -199,6 +203,7 @@ describe("Intercom broker working directory never pins the installation director
 				await stopIdleIntercomBroker(relSpelling, { stopTimeoutMs: 5_000 });
 			} catch {}
 			process.chdir(origCwd);
+			restoreRuntimeDir?.();
 		}
 	});
 
