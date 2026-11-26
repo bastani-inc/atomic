@@ -84,6 +84,18 @@ knowledge:
       Run the Darwin zombie process-group fixtures with
       `cargo test --locked -p atomic-natives --lib externally_terminated_group`, or dispatch
       `macos-tests.yml` with `project=native` and `tests=externally_terminated_group`.
+  - name: worktrees
+    contents: |
+      Set up a linked Git worktree with `node scripts/worktree-setup.mjs` from inside it (`--no-build` skips the
+      final `npm run build`). With a lockfile matching the main checkout's, it makes `node_modules` and each
+      `packages/*/node_modules` real directories of absolute links to the main checkout's packages, recreates the
+      `@bastani/*` workspace links and `.bin` entries so they point into the worktree, copies `vitest`, and keeps
+      `.cache`, `.vite` and `.vite-temp` per worktree. Otherwise it runs `npm ci --ignore-scripts` in the worktree.
+      Never link the whole `node_modules` to another checkout: `@bastani/atomic` would resolve to that checkout's
+      build, so child-process tests would test the wrong code, and Vitest 4 (whose files would then sit outside the
+      project root) fails bare imports such as `string_decoder` or `stream` with
+      "Cannot find module '<worktree>/string_decoder'" when the worktree path has a matching length.
+      `test/global-setup-workspace-links.ts` stops the root and coding-agent suites in a worktree set up that way.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

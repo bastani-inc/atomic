@@ -21,6 +21,8 @@ In the `atomic-monorepo` npm workspace:
 - Install with `npm ci --ignore-scripts`. Add dependencies with `npm install <pkg>`. Never use `yarn install`, `pnpm install`, or `bun install`.
   Keep `package-lock.json` as the only lockfile. Use exact versions for dependencies of published packages and keep `.npmrc` at `save-exact=true`.
   Keep `.npmrc`'s `min-release-age=0` in sync with `.github/dependabot.yml`'s `cooldown.default-days: 0`.
+- Set up a new Git worktree with `node scripts/worktree-setup.mjs` from inside it. Don't link its whole `node_modules` to another checkout;
+  see [Git worktrees](DEV_SETUP.md#git-worktrees).
 - Run `npm run build` after installing in a fresh checkout or pulling changes to the CLI, the pi forks, `packages/natives`, or `crates/`.
   Force a full rebuild with `npm run build -- --force` or `ATOMIC_BUILD_FORCE=1`. For a missing native binding alone, run `npm run build --workspace=@bastani/atomic-natives`.
 - Run `npm run check` regularly. It runs Biome, the typechecks, and the interactive event-loop check. Format with `npm run format`.
