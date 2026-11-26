@@ -4,7 +4,7 @@
 
 ### Changed
 
-- On PostgreSQL, until `atomic storage migrate` sets `fillfactor` on the sessions table and the Intercom lease table, a process now checks each table's setting once instead of every time it opens a store. A role that may not change those tables, such as a runtime role, then opens the session store in 4 round trips instead of 5 from its second open on. Once migrate has set it, no open checks it, as before ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- On PostgreSQL, until `atomic storage migrate` sets `fillfactor` on the sessions table and the Intercom lease table, a process now checks each table's setting once instead of every time it opens a store. A role that may not change those tables, such as a runtime role, then opens the session store in 4 round trips instead of 5 from its second open on. Once migrate has set it, no open checks it, as before ([#6635](https://github.com/bastani-inc/atomic/pull/6635), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ### Fixed
 
