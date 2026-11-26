@@ -1,9 +1,6 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
-import {
-	installSharedHistorySnapshotIndex,
-	SqlSnapshotBlobStore,
-	snapshotIndexTables,
-} from "../../worktree-snapshot/blob-store.ts";
+import { installSharedHistorySnapshotIndex } from "../../worktree-snapshot/added-exports.ts";
+import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import { ensureTableFillfactor, transactionFinisher } from "../added-exports.js";
 import type {
 	SqliteDatabase,

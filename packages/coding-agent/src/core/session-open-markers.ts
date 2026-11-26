@@ -18,7 +18,7 @@ import { reportDebugAsync } from "./debug.ts";
 import { ownProcessStartToken, readProcessStartToken } from "./process-start-token.js";
 import { attachSessionClaim } from "./session-claims.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
-import { setSharedHistorySwitchHost } from "./storage/session/shared-history-switch.ts";
+import { setSharedHistorySwitchHost } from "./storage/session/shared-history-switch.js";
 import type {
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
