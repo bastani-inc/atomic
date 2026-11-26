@@ -1116,7 +1116,9 @@ export type WaitOutcome =
  * On Linux and macOS, has the host-death guardian SIGKILL running child process `pid`, and the processes below it in
  * its process group, when this process dies, however it dies, until `release()`. A process whose PID by then names
  * another process is not touched, and one that left the group (a program started detached) is not followed. `pid`
- * must be a child whose exit this process has not seen yet. `null` on Windows and when no guardian can run.
+ * must be a child whose exit this process has not seen yet. Returns at once: the guardian, which starts with the first
+ * watch, is told on a thread of its own. Best effort: where no guardian can start, the process runs on. `null` on
+ * Windows.
  */
 export declare function watchProcessUntilHostDies(pid: number): HostDeathWatch | null
 

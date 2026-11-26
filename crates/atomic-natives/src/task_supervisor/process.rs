@@ -1052,7 +1052,7 @@ impl HostDeathWatch {
 	pub fn release(&mut self) {
 		if std::mem::take(&mut self.watching) {
 			#[cfg(unix)]
-			guardian::unwatch_process(self.pid);
+			guardian::queue_process_watch(self.pid, false);
 		}
 	}
 }
@@ -1060,7 +1060,9 @@ impl HostDeathWatch {
 /// On Linux and macOS, has the host-death guardian SIGKILL running child process `pid`, and the processes below it in
 /// its process group, when this process dies, however it dies, until `release()`. A process whose PID by then names
 /// another process is not touched, and one that left the group (a program started detached) is not followed. `pid`
-/// must be a child whose exit this process has not seen yet. `null` on Windows and when no guardian can run.
+/// must be a child whose exit this process has not seen yet. Returns at once: the guardian, which starts with the first
+/// watch, is told on a thread of its own. Best effort: where no guardian can start, the process runs on. `null` on
+/// Windows.
 #[napi(js_name = "watchProcessUntilHostDies")]
 pub fn watch_process_until_host_dies(pid: i32) -> Option<HostDeathWatch> {
 	#[cfg(unix)]
@@ -1068,10 +1070,7 @@ pub fn watch_process_until_host_dies(pid: i32) -> Option<HostDeathWatch> {
 		if pid <= 1 {
 			return None;
 		}
-		if !guardian::watch_process(pid) {
-			guardian::unwatch_process(pid);
-			return None;
-		}
+		guardian::queue_process_watch(pid, true);
 		Some(HostDeathWatch { pid, watching: true })
 	}
 	#[cfg(not(unix))]

@@ -408,21 +408,62 @@ pub(super) fn unwatch(session: libc::pid_t) {
 	}
 }
 
+/// What [`queue_process_watch`] hands its thread.
+enum ProcessOp {
+	Watch(libc::pid_t),
+	Unwatch(libc::pid_t),
+}
+static PROCESS_OPS: Mutex<Option<std::sync::mpsc::Sender<ProcessOp>>> = Mutex::new(None);
+
+/// Runs [`watch_process`] (`watch`) or [`unwatch_process`] for `pid` on a thread of its own, in the order of the
+/// calls, so that the caller, the JavaScript thread, never waits for a guardian to start: starting one forks this
+/// process. Inline where that thread cannot start.
+pub(super) fn queue_process_watch(pid: libc::pid_t, watch: bool) {
+	let op = if watch { ProcessOp::Watch(pid) } else { ProcessOp::Unwatch(pid) };
+	let mut ops = PROCESS_OPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+	if ops.is_none() {
+		let (sender, receiver) = std::sync::mpsc::channel::<ProcessOp>();
+		let started =
+			std::thread::Builder::new().name("task-guardian-processes".into()).spawn(move || {
+				for op in receiver {
+					match op {
+						ProcessOp::Watch(pid) => watch_process(pid),
+						ProcessOp::Unwatch(pid) => unwatch_process(pid),
+					}
+				}
+			});
+		if started.is_ok() {
+			*ops = Some(sender);
+		}
+	}
+	let op = match ops.as_ref() {
+		Some(sender) => match sender.send(op) {
+			Ok(()) => return,
+			Err(std::sync::mpsc::SendError(op)) => op,
+		},
+		None => op,
+	};
+	drop(ops);
+	match op {
+		ProcessOp::Watch(pid) => watch_process(pid),
+		ProcessOp::Unwatch(pid) => unwatch_process(pid),
+	}
+}
+
 /// Kills `pid`, a running child of the host in the host's own session, and the processes below it in its process
-/// group, if the host dies before [`unwatch_process`]. Must run while `pid` is unreaped, so that the start time the
-/// guardian records is its own. Returns whether a guardian has it.
-pub(super) fn watch_process(pid: libc::pid_t) -> bool {
+/// group, if the host dies before [`unwatch_process`]. The guardian records `pid`'s start time when it reads this, so
+/// a PID handed to another process by the time the host dies is spared. Best effort: without a guardian `pid` runs on.
+pub(super) fn watch_process(pid: libc::pid_t) {
 	let mut state = lock();
 	if !state.processes.insert(pid) {
-		return state.guardian.is_some();
+		return;
 	}
 	let entry = format!("+p {pid} -\n");
-	if guardian(&mut state).is_some_and(|guardian| send(guardian, &entry)) {
-		return true;
+	if !guardian(&mut state).is_none_or(|guardian| send(guardian, &entry)) {
+		// The replacement is told every watched process, this one included.
+		discard(&mut state);
+		let _ = guardian(&mut state);
 	}
-	// The replacement is told every watched process, this one included.
-	discard(&mut state);
-	guardian(&mut state).is_some()
 }
 
 /// Stops watching `pid`, as soon as it exited: what it left running is not the guardian's to end.

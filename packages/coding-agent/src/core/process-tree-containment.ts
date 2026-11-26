@@ -180,8 +180,9 @@ export function canWatchProcessUntilHostDies(): boolean {
  * On Linux and macOS, has the native host-death guardian, a process of its own, SIGKILL running child process `pid`
  * and the processes below it in its process group when this process dies, however it dies (`kill -9` included), until
  * `release()`. A PID that by then names another process is not touched, and a program that left the group is not
- * followed. `pid` must be a child whose exit this process has not seen yet. `undefined` on Windows, without the native
- * module, and when no guardian can run.
+ * followed. `pid` must be a child whose exit this process has not seen yet. Returns at once: the guardian is told on a
+ * thread of the native module's own, as starting it forks this process. Best effort: where no guardian can start, the
+ * process runs on. `undefined` on Windows and without the native module.
  */
 export function watchProcessUntilHostDies(pid: number): HostDeathWatch | undefined {
 	try {
