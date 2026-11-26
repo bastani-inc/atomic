@@ -48,6 +48,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	return {
 		...fs,
 		readFile: vi.fn(fs.readFile),
+		truncate: vi.fn(fs.truncate),
 		rename: vi.fn(fs.rename),
 	};
 });
@@ -86,18 +87,14 @@ async function collect<T>(values: AsyncIterable<T>): Promise<T[]> {
 	return results;
 }
 
-/**
- * Fails the next write of the next handle the store opens to append to a session file with what `write` throws, and with
- * `rollback` the truncate that undoes it.
- */
-function faultNextAppendHandle(write: () => Promise<never>, rollback?: Error): void {
+/** Fails the next write of the next handle the store opens to append to a session file with what `write` throws. */
+function faultNextAppendHandle(write: () => Promise<never>): void {
 	const originalOpen = fs.open;
 	const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
 		const handle = await originalOpen(...args);
 		if (typeof args[1] === "number" && (args[1] & constants.O_APPEND) !== 0) {
 			opened.mockRestore();
 			vi.spyOn(handle, "write").mockImplementationOnce(write);
-			if (rollback) vi.spyOn(handle, "truncate").mockRejectedValueOnce(rollback);
 		}
 		return handle;
 	});
@@ -993,7 +990,8 @@ it("poisons all subsequent operations after append rollback fails", async () => 
 		const path = await location(store);
 		const failure = new Error("append fault");
 		const rollbackFailure = new Error("rollback fault");
-		faultNextAppendHandle(() => Promise.reject(failure), rollbackFailure);
+		faultNextAppendHandle(() => Promise.reject(failure));
+		vi.mocked(truncate).mockRejectedValueOnce(rollbackFailure);
 		const isPoisoned = (error: Error): boolean => {
 			assert.ok(error instanceof JsonlStoragePoisonedError);
 			assert.equal(error.location, path);

@@ -10,6 +10,7 @@ import {
 	readFile,
 	rename,
 	stat,
+	truncate,
 	unlink,
 	writeFile,
 } from "node:fs/promises";
@@ -1289,12 +1290,14 @@ export class JsonlSessionStore implements SessionStore {
 		const payload = Buffer.from(`${before.terminated ? "" : "\n"}${lines.join("\n")}\n`);
 		try {
 			const kept = await this.keptFile(path, file.identity);
-			if (before.torn) await kept.handle.truncate(before.size);
+			// Cut by path, which names the handle's file under the lock: Windows refuses to truncate through a handle
+			// opened to append.
+			if (before.torn) await truncate(path, before.size);
 			try {
 				await writeAll(kept.handle, payload);
 			} catch (cause) {
 				try {
-					await kept.handle.truncate(offset);
+					await truncate(path, offset);
 				} catch (rollbackCause) {
 					this.poisoned = new JsonlStoragePoisonedError(path, cause as Error, rollbackCause as Error);
 					throw this.poisoned;
