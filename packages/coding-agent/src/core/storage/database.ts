@@ -134,6 +134,17 @@ export interface StorageNotifications {
 	state(): Promise<StorageListenerState>;
 }
 
+/**
+ * @internal What a driver read of its schema in its open's own round trip (#6560): the rows of the catalog read
+ * `readStorageSchemaCatalog` makes (`kind` `relation`, `trigger` or `column`, with `name` and `detail`) and the
+ * versions `ledger` records, as rows of `domain` and `version`; `versions` is undefined when the ledger did not exist.
+ */
+export interface StorageOpenedCatalog {
+	readonly ledger: string;
+	readonly rows: readonly SqliteRow[];
+	readonly versions: readonly SqliteRow[] | undefined;
+}
+
 export interface SqliteDatabase extends SqliteExecutor {
 	/**
 	 * True when the connection refuses writes, as `openNodeSqliteDatabase(path, { readOnly: true })` sets it, so opening a
@@ -166,10 +177,23 @@ export interface SqliteDatabase extends SqliteExecutor {
 	tryMaintenance?(callback: (transaction: SqliteExecutor) => Promise<void>): Promise<boolean>;
 	/** Opens a separate handle on this same database for reads. It has its own call queue; the caller must close it. */
 	openReader?(): Promise<SqliteDatabase>;
+	/**
+	 * @internal The schema the driver read when it opened, given once: the first store open answers its schema checks
+	 * from it instead of reading the catalog again. Undefined after the first call, and where the driver read none.
+	 */
+	takeOpenedCatalog?(): StorageOpenedCatalog | undefined;
 	transaction<T>(
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,
 	): Promise<T>;
+	/**
+	 * @internal Runs `statement` by itself as one request that commits on its own, queued in this process as a
+	 * transaction of `concurrency` is: behind the calls such a transaction waits for, and ahead of the calls that wait
+	 * for it. The statement takes on the server whatever locks it needs itself, such as a function that takes the
+	 * domain's advisory locks. A transient failure that applied nothing runs it again. Resolves with its rows. Present
+	 * only where the driver runs transactions concurrently (PostgreSQL).
+	 */
+	autocommit?(statement: SqliteStatement, concurrency: TransactionConcurrency): Promise<SqliteRow[]>;
 	/**
 	 * Runs the statements in order, in one write transaction, as one call to the database: all of them commit or none
 	 * do. Resolves with each statement's rows. Present only when the driver can send a batch in one request, which

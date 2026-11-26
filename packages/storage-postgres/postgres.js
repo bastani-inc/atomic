@@ -1,5 +1,5 @@
 // @ts-check
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { connect as connectSocket, isIP } from "node:net";
 import { join } from "node:path";
 import { connect as connectTls } from "node:tls";
@@ -81,6 +81,33 @@ const STATEMENTS_TRACKED = 4096;
 const PREPARABLE = /^\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH)\b/i;
 /** The ports transaction poolers listen on by convention: PgBouncer's and Supavisor's. */
 const POOLER_PORTS = new Set([6432, 6543]);
+/** The first PgBouncer release that keeps each client's prepared statements across its server connections. */
+const PGBOUNCER_PREPARED_VERSION = [1, 21];
+/**
+ * Whether the server that runs this statement holds it under a name PgBouncer gave it: PgBouncer 1.21 and later,
+ * with `max_prepared_statements` above 0, prepare a client's named statement on each server connection as
+ * `PGBOUNCER_<n>`. The server holds it under the client's own name when nothing renames it: a direct connection, or
+ * a pooler that passes statements on as they are. With the server process that runs it, which a pooler that hands
+ * out cancel keys of its own does not name in the connection's key.
+ */
+const PGBOUNCER_PROBE_SQL =
+	"SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_prepared_statements WHERE statement = current_query() AND name LIKE 'PGBOUNCER\\_%') AS kept, pg_backend_pid() AS pid";
+
+/**
+ * What the `pgbouncer.*` parameters a server reports at login say of prepared statements: PgBouncer 1.26 and later
+ * report its version and `max_prepared_statements` there. True for PgBouncer 1.21 or later with
+ * `max_prepared_statements` above 0, false for another PgBouncer, undefined when the parameters name none.
+ * @param {ReadonlyMap<string, string>} parameters
+ * @returns {boolean | undefined}
+ */
+function pgbouncerKeepsPrepared(parameters) {
+	const version = parameters.get("pgbouncer.version");
+	if (version === undefined) return undefined;
+	const [major = 0, minor = 0] = version.split(".").map((part) => Number.parseInt(part, 10));
+	const [needMajor, needMinor] = PGBOUNCER_PREPARED_VERSION;
+	const recent = major > needMajor || (major === needMajor && minor >= needMinor);
+	return recent && Number(parameters.get("pgbouncer.max_prepared_statements")) > 0;
+}
 /** Connections the pool for reads keeps open at most, per process; never more than `maxConnections`. */
 export const DEFAULT_READER_MAX_CONNECTIONS = 2;
 /**
@@ -199,6 +226,26 @@ const LEGACY_MARKERS = "(atomic_migrations|wf_runs|session_sessions|intercom_lea
  * `public` the schema to use, as after the `atomic` schema was dropped to start over (#5218).
  */
 const MOVED_FENCE_COMMENT = "atomic-moved-fence:";
+/** The ledger a store opened without a prefix records its schema versions in, whose versions the open reads. */
+const OPENED_LEDGER = "atomic_migrations";
+/**
+ * Every relation, trigger, column and function of the schema the statement runs in, as the coding agent's
+ * `readStorageSchemaCatalog` reads them: the open reads them with its own query, and the first store open takes them
+ * instead of reading them again (#6560).
+ */
+const OPENED_CATALOG_SQL = `SELECT 'relation' AS kind, c.relname::text AS name, c.relkind::text AS detail
+	FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace
+UNION ALL SELECT 'trigger', t.tgname::text, NULL
+	FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+	WHERE c.relnamespace = current_schema()::regnamespace AND NOT t.tgisinternal
+UNION ALL SELECT 'column', table_name::text, column_name::text
+	FROM information_schema.columns WHERE table_schema = current_schema()
+UNION ALL SELECT 'function', p.proname::text, CASE WHEN has_function_privilege(p.oid, 'EXECUTE') THEN 'executable' END
+	FROM pg_catalog.pg_proc p WHERE p.pronamespace = current_schema()::regnamespace`;
+/** The highest version the ledger records for each domain. */
+const OPENED_VERSIONS_SQL = `SELECT domain, MAX(version) AS version FROM ${OPENED_LEDGER} GROUP BY domain`;
+/** The kinds of relation the catalog counts as tables: plain, partitioned and foreign tables, and views of each kind. */
+const TABLE_KINDS = new Set(["r", "p", "v", "m", "f"]);
 /** A schema name the adapter accepts: a lowercase identifier that needs no quotes. */
 const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 
@@ -434,6 +481,7 @@ export function numberPlaceholders(sql) {
  *   passwords: Set<string>,
  *   password: (() => Promise<string>) | undefined,
  *   listenPassword: (() => Promise<string>) | undefined,
+ *   pooler?: { decided: Promise<boolean | undefined>, decide(client: object): void },
  * }} SharedConnections The connections the databases a process opens with one identity share (#6560): the pool, the
  *   readers' pool, opened by the first reader and closed by the last, and the listening connection, with what their
  *   connections are opened and checked with. The last database to close closes them.
@@ -951,6 +999,11 @@ export async function openPostgresDatabase(options) {
 	let legacy = false;
 	/** @type {Promise<void> | undefined} */
 	let creatingSchema;
+	/**
+	 * The schema's catalog and ledger versions the open read, until the first store open takes them (#6560).
+	 * @type {import("@bastani/atomic/storage").StorageOpenedCatalog | undefined}
+	 */
+	let openedCatalog;
 	const searchPathSql = () => `SET LOCAL search_path TO "${schema}"`;
 	/** A lock or channel name of this schema's own: unchanged for `public`, so earlier releases there share them. */
 	const inSchema = (/** @type {string} */ name) => (schema === LEGACY_SCHEMA ? name : `${schema}:${name}`);
@@ -979,10 +1032,11 @@ export async function openPostgresDatabase(options) {
 		options.listenUrl === undefined ? connection : parseConnection(connectionUrl(options.listenUrl, "listenUrl"));
 	// Behind a transaction pooler, a connection's prepared statements can land on another server connection, which
 	// only some poolers handle (PgBouncer 1.21 and later with `max_prepared_statements` set, not Supavisor's shared
-	// pooler), so unless configured they are off there: where `listenUrl` names a direct endpoint, or on the ports
-	// PgBouncer (6432) and Supavisor (6543) listen on.
+	// pooler), so unless configured they start off there: where `listenUrl` names a direct endpoint, or on the ports
+	// PgBouncer (6432) and Supavisor (6543) listen on. The first connection then tells whether the endpoint is such a
+	// PgBouncer, which turns them on, or another pooler, which turns them off on any port (`keepsPrepared`).
 	const behindPooler = options.listenUrl !== undefined || POOLER_PORTS.has(endpointOf(connection).port);
-	const maxPreparedStatements = configuredPrepared ?? (behindPooler ? 0 : DEFAULT_MAX_PREPARED_STATEMENTS);
+	let maxPreparedStatements = configuredPrepared ?? (behindPooler ? 0 : DEFAULT_MAX_PREPARED_STATEMENTS);
 
 	/**
 	 * How connections to `target` are opened (#5473): through the caller's socket factory, the `proxy` option, or the
@@ -1091,9 +1145,17 @@ export async function openPostgresDatabase(options) {
 	// the server waited for the password; the server keeps that half-started backend until its authentication timeout,
 	// and meanwhile it holds up statements that wait for every backend, such as `DROP DATABASE`.
 	class ClosingClient extends pg.Client {
+		/** The `pgbouncer.*` parameters the server reported at login, which PgBouncer 1.26 and later report. */
+		poolerParameters = new Map();
 		/** @param {(error: Error | undefined) => void} callback */
 		// @ts-expect-error pg-pool always passes a callback, so the promise form is left out.
 		connect(callback) {
+			this.connection.on(
+				"parameterStatus",
+				(/** @type {{ parameterName: string, parameterValue: string }} */ { parameterName, parameterValue }) => {
+					if (parameterName.startsWith("pgbouncer.")) this.poolerParameters.set(parameterName, parameterValue);
+				},
+			);
 			super.connect((/** @type {Error | undefined} */ error) => {
 				if (error) this.connection.stream.destroy();
 				callback(error);
@@ -1102,6 +1164,59 @@ export async function openPostgresDatabase(options) {
 	}
 	/** Connections that broke: they are closed, never returned to the pool. */
 	const lost = found?.lost ?? new WeakSet();
+	/**
+	 * Whether the endpoint keeps a connection's prepared statements across the server connections it hands it, as a
+	 * direct connection does: true for PgBouncer 1.21 or later with `max_prepared_statements` above 0, false for any
+	 * other pooler found, undefined when it cannot tell. Decided from `client`, the first connection the shared pools
+	 * opened, at no cost of its own: PgBouncer 1.26 and later name themselves in the parameters they report at login.
+	 * Otherwise `client` prepares a probe statement in a transaction sent ahead of the call that opened it, in the same
+	 * round trip, and drops it again. A server that holds it under a PgBouncer name keeps statements. A server process
+	 * other than the one the connection's cancel key names sits behind a pooler that hands out keys of its own (as every
+	 * PgBouncer does), which keeps them off. A failed probe says nothing.
+	 * @param {ClosingClient} client
+	 * @returns {Promise<boolean | undefined>}
+	 */
+	const keepsPrepared = async (client) => {
+		const reported = pgbouncerKeepsPrepared(client.poolerParameters);
+		if (reported !== undefined) return reported;
+		const name = `atomic_probe_${randomBytes(8).toString("hex")}`;
+		// Every answer is awaited, so none is left to fail unheard. The probe runs in a transaction, so the statement it
+		// leaves on a server connection that a pooler passes it to is dropped on that same connection.
+		const [, probe] = await Promise.allSettled([
+			client.query("BEGIN"),
+			client.query({ name, text: PGBOUNCER_PROBE_SQL, rowMode: "array" }),
+			client.query(
+				`DO $probe$BEGIN EXECUTE 'DEALLOCATE ${name}'; EXCEPTION WHEN invalid_sql_statement_name THEN NULL; END$probe$`,
+			),
+			client.query("COMMIT"),
+		]);
+		if (probe.status !== "fulfilled") return undefined;
+		const [kept, pid] = probe.value.rows[0] ?? [];
+		// The pool reads booleans as SQLite does, 1 for true.
+		if (kept === 1) return true;
+		const { processID } = /** @type {ClosingClient & { processID: number }} */ (client);
+		return Number(pid) === processID ? undefined : false;
+	};
+	/**
+	 * What the shared pools' first connection tells of prepared statements (`keepsPrepared`), decided once.
+	 * @returns {NonNullable<SharedConnections["pooler"]>}
+	 */
+	const poolerDecision = () => {
+		/** @type {(kept: Promise<boolean | undefined>) => void} */
+		let settle = () => {};
+		const decided = new Promise((resolve) => {
+			settle = resolve;
+		});
+		let pending = true;
+		return {
+			decided: /** @type {Promise<boolean | undefined>} */ (decided),
+			decide(client) {
+				if (!pending) return;
+				pending = false;
+				settle(keepsPrepared(/** @type {ClosingClient} */ (client)).catch(() => undefined));
+			},
+		};
+	};
 	/**
 	 * Whether the pool keeps its first connection longer than the others: with an idle timeout above
 	 * `SURGE_IDLE_TIMEOUT_MS`, a connection beyond the first closes after that much idle time, and the first one only
@@ -1136,7 +1251,10 @@ export async function openPostgresDatabase(options) {
 		});
 		// An idle connection that breaks emits `error` on the pool, which would end the process unheard.
 		opened.on("error", (_error, client) => lost.add(client));
-		opened.on("connect", (client) => client.on("error", () => lost.add(client)));
+		opened.on("connect", (client) => {
+			client.on("error", () => lost.add(client));
+			shared.pooler?.decide(client);
+		});
 		if (tiered) closeWhenIdle(opened, idleTimeoutMs);
 		return opened;
 	};
@@ -1152,6 +1270,7 @@ export async function openPostgresDatabase(options) {
 		passwords,
 		password,
 		listenPassword: passwordFor(listenConnection),
+		pooler: poolerDecision(),
 	};
 	if (found === undefined && identity !== undefined) sharing.set(identity, shared);
 	shared.references++;
@@ -1318,6 +1437,17 @@ export async function openPostgresDatabase(options) {
 	const names = new Map();
 	/** @type {WeakMap<PoolClient, Set<string>>} The names each connection was asked to prepare. */
 	const preparedOn = new WeakMap();
+	/** Whether a server or pooler lost or confused a named statement, which keeps every statement unnamed from then on. */
+	let refused = false;
+	// Unless configured, prepared statements follow what the endpoint turns out to be once the first connection tells:
+	// on behind a PgBouncer that keeps them, off behind one that does not. Pools an earlier release's adapter opened
+	// tell nothing, and leave the default.
+	if (configuredPrepared === undefined)
+		void shared.pooler?.decided.then((kept) => {
+			if (kept === undefined) return;
+			maxPreparedStatements = kept ? DEFAULT_MAX_PREPARED_STATEMENTS : 0;
+			preparing = kept && !refused;
+		});
 
 	/**
 	 * The name `text` is sent under on `client`, or undefined to send it unnamed. A named statement is parsed and planned
@@ -1373,7 +1503,10 @@ export async function openPostgresDatabase(options) {
 	 */
 	const forgetPrepared = (client, cause, confirmed) => {
 		if (!(cause instanceof pg.DatabaseError)) return;
-		if ((cause.code === "26000" && confirmed) || cause.code === "42P05") preparing = false;
+		if ((cause.code === "26000" && confirmed) || cause.code === "42P05") {
+			preparing = false;
+			refused = true;
+		}
 		else if (cause.code !== "26000" && !isStalePlan(cause)) return;
 		lost.add(client);
 	};
@@ -1857,23 +1990,56 @@ export async function openPostgresDatabase(options) {
 					},
 				}),
 		notifications,
+		takeOpenedCatalog: () => {
+			const catalog = openedCatalog;
+			openedCatalog = undefined;
+			return catalog;
+		},
 		close: release,
 	});
 	try {
 		// The server's version, and which schema holds Atomic's tables, read in one round trip without creating anything
 		// (#5218, #6560). The query runs on any server version, so an older server is refused by its answer.
-		const found = await database.get(
-			`SELECT current_setting('server_version_num') AS version,
+		const probe = {
+			sql: `SELECT current_setting('server_version_num') AS version,
 				(SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS present,
 				(SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS preferred,
 				(SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 					WHERE n.nspname = ? AND c.relkind = 'r' AND c.relname ~ ?
 					AND coalesce(obj_description(c.oid, 'pg_class'), '') NOT LIKE ?) AS legacy`,
-			schema,
-			DEFAULT_SCHEMA,
-			LEGACY_SCHEMA,
-			LEGACY_MARKERS,
-			`${MOVED_FENCE_COMMENT}%`,
+			params: [schema, DEFAULT_SCHEMA, LEGACY_SCHEMA, LEGACY_MARKERS, `${MOVED_FENCE_COMMENT}%`],
+		};
+		/** @type {import("@bastani/atomic/storage").SqliteRow | undefined} */
+		let found;
+		// The schema's catalog and the ledger's versions go out with it, read as the schema checks of the first store open
+		// read them, which then reads nothing (`takeOpenedCatalog`): an open costs one round trip less (#6560). They are
+		// read in the schema the open expects, and kept only when it is the one the answer chose.
+		await database.transaction(
+			async (transaction) => {
+				openedCatalog = undefined;
+				found = await transaction.get(probe.sql, ...probe.params);
+				if (options.schema === undefined && Number(found?.preferred) === 0 && Number(found?.legacy) > 0) return;
+				try {
+					const rows = await transaction.all(OPENED_CATALOG_SQL);
+					const ledger = rows.some(
+						(row) => row.kind === "relation" && row.name === OPENED_LEDGER && TABLE_KINDS.has(String(row.detail)),
+					);
+					// Taken even where the ledger does not exist and the read failed, so the transaction ends with its commit,
+					// sent at once, rather than with a rollback after it.
+					const versions = await transaction.all(OPENED_VERSIONS_SQL).catch((error) => {
+						if (ledger) throw error;
+						return undefined;
+					});
+					openedCatalog = { ledger: OPENED_LEDGER, rows, versions };
+				} catch {
+					// The first store open reads them itself, as it would without them.
+				}
+			},
+			{
+				readOnly: true,
+				retryTransientFailures: true,
+				leading: [probe, { sql: OPENED_CATALOG_SQL, params: [] }, { sql: OPENED_VERSIONS_SQL, params: [] }],
+			},
 		);
 		const version = Number(found?.version);
 		if (!(version >= MINIMUM_SERVER_VERSION))

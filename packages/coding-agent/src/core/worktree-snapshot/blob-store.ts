@@ -12,7 +12,7 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
-import { schemaCatalogOf } from "../storage/schema-catalog.js";
+import { type StorageSchemaCatalog, schemaCatalogOf } from "../storage/schema-catalog.js";
 import { statementBatch } from "../storage/statement-batches.js";
 import type { BatchWrite } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
@@ -1321,20 +1321,32 @@ async function installMissingSources(
 	}
 }
 
-/** Which referencing tables exist, whether each has all its triggers and a source row, and whether its backfill is done. */
+/** The names of `sources`' tables and triggers, whose presence `readSourceStates` reads. */
+function sourceObjectNames(sources: readonly IndexSource[]): string[] {
+	return sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]);
+}
+
+/** The read of every source's progress rows. */
+function sourceProgressRead(t: SnapshotIndexTables): SqliteStatement {
+	return { sql: `SELECT source, watermark, backfilled_through FROM ${t.sources}`, params: [] };
+}
+
+/**
+ * Which referencing tables exist, whether each has all its triggers and a source row, and whether its backfill is done.
+ * `present`, when given, holds every table and trigger of `sources`, as an open's catalog found them: the objects are
+ * not read then (#6560).
+ */
 async function readSourceStates(
 	executor: SqliteExecutor,
 	dialect: StorageDialect,
 	t: SnapshotIndexTables,
 	sources: readonly IndexSource[],
 	listRetired = false,
+	present?: ReadonlySet<string>,
 	also?: { readonly names: readonly string[]; readonly found: Set<string> },
 ): Promise<SourceState[]> {
 	// `also` asks, in the same statement, which of other objects exist, as `also.found` tells.
-	const names = [
-		...sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]),
-		...(also?.names ?? []),
-	];
+	const names = [...sourceObjectNames(sources), ...(also?.names ?? [])];
 	// Builds before 0.9.88 open SQLite and libSQL databases only, so only there can a trigger of this build's name be
 	// one that indexes less.
 	const sqlite = dialect.name === "sqlite";
@@ -1355,24 +1367,26 @@ async function readSourceStates(
 					sql: `SELECT name, ${holds(signatures)} AS signed, ${holds(markers)} AS marked FROM sqlite_schema WHERE name IN (${names.map(() => "?").join(", ")})`,
 					params: [...signatures, ...markers].flatMap((check) => [check.trigger, check.text]).concat(names),
 				};
+	const progressRead = sourceProgressRead(t);
+	type ObjectRow = SqliteRow & { name: string; signed?: number | null; marked?: number | null };
 	// Read together: the progress rows do not depend on the objects.
 	const [objectRows, progressRows] = await statementBatch(
 		executor,
 		[],
 		[
 			() =>
-				executor.all<SqliteRow & { name: string; signed?: number | null; marked?: number | null }>(
-					objects.sql,
-					...objects.params,
-				),
+				present === undefined
+					? executor.all<ObjectRow>(objects.sql, ...objects.params)
+					: Promise.resolve(names.filter((name) => present.has(name)).map((name): ObjectRow => ({ name }))),
 			() =>
 				executor.all<SqliteRow & { source: string; watermark: number; backfilled_through: number }>(
-					`SELECT source, watermark, backfilled_through FROM ${t.sources}`,
+					progressRead.sql,
+					...progressRead.params,
 				),
 		],
 	);
-	const present = new Set(objectRows.map((row) => row.name));
-	for (const name of also?.names ?? []) if (present.has(name)) also?.found.add(name);
+	const found = new Set(objectRows.map((row) => row.name));
+	for (const name of also?.names ?? []) if (found.has(name)) also?.found.add(name);
 	// Whether each checked trigger's SQL holds this build's text; every other object reads null.
 	const checked = (column: "signed" | "marked") =>
 		new Map(
@@ -1398,7 +1412,7 @@ async function readSourceStates(
 		}),
 	);
 	return sources
-		.filter((source) => present.has(source.table))
+		.filter((source) => found.has(source.table))
 		.map((source) => {
 			const row = progress.get(source.name);
 			const version = source.version === undefined ? undefined : progress.get(source.version);
@@ -1414,7 +1428,7 @@ async function readSourceStates(
 			// missing is not, even when its SQL is the same in every build otherwise (#5558).
 			const mine =
 				source.marker !== undefined &&
-				source.triggers.every((trigger) => !present.has(trigger.name) || marked.get(trigger.name) === true);
+				source.triggers.every((trigger) => !found.has(trigger.name) || marked.get(trigger.name) === true);
 			let foreign: boolean;
 			// Whether the backfill is done for this build, besides the source's own progress row.
 			let trusted: boolean;
@@ -1437,7 +1451,7 @@ async function readSourceStates(
 				row !== undefined &&
 				!foreign &&
 				Number(row.watermark) >= 0 &&
-				source.triggers.every((trigger) => present.has(trigger.name));
+				source.triggers.every((trigger) => found.has(trigger.name));
 			const backfilled =
 				row !== undefined &&
 				!foreign &&
@@ -1610,7 +1624,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			indexSources(prefix, t, dialect, (await shared) ? segments : undefined),
 			segments,
 		);
-		await store.installIndex();
+		await store.installIndex(undefined, false, await schemaCatalogOf(database));
 		return store;
 	}
 
@@ -1824,10 +1838,28 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 */
 	async assertStored(transaction: SqliteExecutor, snapshots: readonly WorktreeSnapshot[]): Promise<void> {
 		const missing = await this.missingBlob(transaction, snapshots);
-		if (missing === undefined) return;
+		if (missing !== undefined) await this.refuseCollected(missing);
+	}
+
+	/** The `blobs-collected` {@link WorkspaceSnapshotError} `assertStored` rejects with for `hash`. */
+	async refuseCollected(hash: string): Promise<never> {
 		// Loaded only when a write is refused, so the storage entry does not load the workspace error family.
 		const { WorkspaceSnapshotError } = await import("./errors.ts");
-		throw new WorkspaceSnapshotError("blobs-collected", missing);
+		throw new WorkspaceSnapshotError("blobs-collected", hash);
+	}
+
+	/** The blobs of `snapshots` that `assertStored` checks, each once, in the order it reports the first missing one. */
+	storedHashes(snapshots: readonly WorktreeSnapshot[]): string[] {
+		return [...new Set(snapshots.flatMap(wellFormedBlobHashes))];
+	}
+
+	/**
+	 * The query `missingBlob` reads, for the blobs named by `source`, an SQL expression of a JSON array of hashes: the
+	 * hashes this table holds in full, locked FOR SHARE in hash order. A statement that checks the blobs on the server,
+	 * such as the session append function, runs it as it is (#6599).
+	 */
+	storedBlobsQuery(source: string): string {
+		return `SELECT hash FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues(source)}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash)) ORDER BY hash${this.dialect.byteOrderCollation}${this.dialect.lockClause("share")}`;
 	}
 
 	/**
@@ -1848,10 +1880,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * rows it finds stay locked FOR SHARE until the transaction ends, taken in hash order as a blob write takes them.
 	 */
 	async missingBlob(transaction: SqliteExecutor, snapshots: readonly WorktreeSnapshot[]): Promise<string | undefined> {
-		const hashes = [...new Set(snapshots.flatMap(wellFormedBlobHashes))];
+		const hashes = this.storedHashes(snapshots);
 		if (hashes.length === 0) return undefined;
 		const rows = await transaction.all<SqliteRow & { hash: string }>(
-			`SELECT hash FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash)) ORDER BY hash${this.dialect.byteOrderCollation}${this.dialect.lockClause("share")}`,
+			this.storedBlobsQuery("?"),
 			JSON.stringify(hashes),
 		);
 		const stored = new Set(rows.map((row) => row.hash));
@@ -1864,8 +1896,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * above it, indexed by the triggers. A table that has none yet, an empty one included, costs one watermark of 0.
 	 * Resolves with the state of every referencing table.
 	 */
-	private async installIndex(pace?: BackgroundCollectionPace, includeDeferred = false): Promise<SourceState[]> {
-		const states = await readSourceStates(this.database, this.dialect, this.tables, this.sources, includeDeferred);
+	private async installIndex(
+		pace?: BackgroundCollectionPace,
+		includeDeferred = false,
+		catalog?: StorageSchemaCatalog,
+	): Promise<SourceState[]> {
+		const states = await this.readStates(includeDeferred, catalog);
 		const missing = states.filter((state) => !state.installed && (includeDeferred || !state.deferred));
 		for (const { source } of missing) {
 			const reset =
@@ -1881,9 +1917,33 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				);
 			});
 		}
-		return missing.length === 0
-			? states
-			: readSourceStates(this.database, this.dialect, this.tables, this.sources, includeDeferred);
+		return missing.length === 0 ? states : this.readStates(includeDeferred);
+	}
+
+	/**
+	 * The state of every source, read outside a transaction. On PostgreSQL the objects and the progress rows are read in
+	 * one read-only transaction whose start carries both, so they cost one round trip, not one each. An open's
+	 * `catalog` answers which objects exist only when it found every one: only its positive answers are final, and a
+	 * source table it lacks may have been created since (#6560).
+	 */
+	private readStates(includeDeferred: boolean, catalog?: StorageSchemaCatalog): Promise<SourceState[]> {
+		if (this.dialect.name !== "postgres")
+			return readSourceStates(this.database, this.dialect, this.tables, this.sources, includeDeferred);
+		const names = sourceObjectNames(this.sources);
+		const present =
+			catalog !== undefined && names.every((name) => catalog.hasObject(name)) ? new Set(names) : undefined;
+		return this.database.transaction(
+			(transaction) =>
+				readSourceStates(transaction, this.dialect, this.tables, this.sources, includeDeferred, present),
+			{
+				readOnly: true,
+				retryTransientFailures: true,
+				leading: [
+					...(present === undefined ? [this.dialect.schemaObjects(names)] : []),
+					sourceProgressRead(this.tables),
+				],
+			},
+		);
 	}
 
 	/**
@@ -2201,7 +2261,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const t = this.tables;
 		return this.write(options.pace, async (transaction) => {
 			const found = new Set<string>();
-			const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources, false, {
+			const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources, false, undefined, {
 				names: [this.forkSegments],
 				found,
 			});

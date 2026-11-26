@@ -12,6 +12,7 @@ import type {
 } from "../database.js";
 import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
+import { ensureStorageSchema } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
 import {
@@ -183,6 +184,19 @@ export const SESSION_FILLFACTOR_DOMAIN = "session-fillfactor";
 /** The fillfactor of the sessions table on PostgreSQL: a fifth of each page stays free for head row updates. */
 const SESSION_ROW_FILLFACTOR = 80;
 /**
+ * The ledger step, `schema:session-append-function`, that creates the session append function on PostgreSQL (#6599).
+ * Raise its revision whenever the function's body changes: `atomic storage migrate` of an older build then leaves the
+ * newer body in place.
+ */
+export const SESSION_APPEND_FUNCTION_DOMAIN = "session-append-function";
+const SESSION_APPEND_FUNCTION_REVISION = 1;
+/**
+ * The session append function's name under the store's prefix. The version in the name is the function's contract:
+ * its arguments and what it answers. A build that needs another contract creates a function of a new name beside
+ * this one, which builds that call this one keep using.
+ */
+const SESSION_APPEND_FUNCTION = "append_v1";
+/**
  * The most bytes of a chunked session blob one row holds. New blobs use a header row and rows of at most this size,
  * so their bound and returned values stay within it: libSQL servers cap a row and a bound value (sqld's default is
  * 5 MB) and a statement's response (10 MB), and the HTTP protocol carries a blob as base64 in JSON, about 1.4 MB for
@@ -265,6 +279,15 @@ interface WrittenEntry {
 	readonly json: string;
 }
 
+/** The columns of a session's row that an append plans from, as a write of this store left them. */
+type WrittenRow = {
+	readonly header_json: string;
+	readonly summary_state: string;
+	readonly revision: string;
+	readonly last_seq: number;
+};
+/** What the session append function answers: what it did, and the value its outcome names. */
+type AppendOutcomeRow = SqliteRow & { outcome: string; detail: string | null };
 type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
 type SummaryStateRow = HeaderRow & { summary_state: string };
 type ResumeRow = SummaryStateRow & { revision: string };
@@ -562,6 +585,9 @@ async function entryByteLengthOf(database: SqliteDatabase): Promise<(expression:
  */
 const STATEMENT_BATCH_BYTES = 1024 * 1024;
 
+/** The most sessions whose last written row a store remembers for appends through the append function. */
+const WRITTEN_ROWS = 64;
+
 /** About how many bytes `statement` carries: its text and its parameters. */
 function statementBytes(statement: SqliteStatement): number {
 	let bytes = statement.sql.length;
@@ -712,6 +738,13 @@ export class SqlSessionStore implements SessionStore {
 		string,
 		{ readonly revision: string; readonly lastSeq: number; readonly epoch: string }
 	>();
+	/**
+	 * The session append function of this store's tables, when the open found it and this role may run it (#6599):
+	 * `atomic storage migrate` creates it. Absent elsewhere, where appends take their two round trips as before.
+	 */
+	private readonly appendFunction?: string;
+	/** The row each recent write of this store left for its session, which an append through the function plans from. */
+	private readonly writtenRows = new Map<string, WrittenRow>();
 
 	private constructor(
 		database: SqliteDatabase,
@@ -722,8 +755,10 @@ export class SqlSessionStore implements SessionStore {
 		legacyBlobData: boolean,
 		searchIndex: SqlSessionSearchIndex | undefined,
 		entryByteLength: (expression: string) => string,
+		appendFunction?: string,
 	) {
 		this.database = database;
+		if (appendFunction !== undefined) this.appendFunction = appendFunction;
 		this.dialect = dialectOf(database);
 		this.entryByteLength = entryByteLength;
 		this.tables = tables;
@@ -1039,6 +1074,18 @@ export class SqlSessionStore implements SessionStore {
 			SqlSessionSearchIndex.open(database, tables, options.prefix),
 			entryByteLengthOf(database),
 		]);
+		// The append function `atomic storage migrate` creates, found by the catalog read the open made anyway (#6599). A
+		// facade or blob store loaded from an earlier release, as a process updated in place can hold, lacks what an
+		// append through it needs, and appends as before.
+		const appendFunction = renderStorageIdentifiers(
+			"sessions",
+			{ append: SESSION_APPEND_FUNCTION },
+			options.prefix,
+		).append;
+		const appendsThroughFunction =
+			catalog?.hasFunction?.(appendFunction) === true &&
+			database.autocommit !== undefined &&
+			typeof blobs.storedBlobsQuery === "function";
 		const store = new SqlSessionStore(
 			database,
 			tables,
@@ -1048,6 +1095,7 @@ export class SqlSessionStore implements SessionStore {
 			legacyBlobData,
 			searchIndex,
 			entryByteLength,
+			appendsThroughFunction ? appendFunction : undefined,
 		);
 		store.openMarkers = markers;
 		// The switch is one way: what the open found or made holds for every later transaction.
@@ -1520,8 +1568,10 @@ export class SqlSessionStore implements SessionStore {
 				}
 			: { sql: `SELECT id FROM ${this.tables.sessions} WHERE id = ?`, params: [header.id] };
 		let written: WrittenEntry[] = [];
+		let writtenRow: WrittenRow | undefined;
 		const created = await this.transactionCheckedAlongside(
 			async (tx, checked) => {
+				writtenRow = undefined;
 				const found = await tx.get<SqliteRow & { id: string | null; tombstone?: string | null }>(
 					existing.sql,
 					...existing.params,
@@ -1540,6 +1590,7 @@ export class SqlSessionStore implements SessionStore {
 				const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
 				await checked;
 				written = [];
+				writtenRow = summary.row;
 				await this.writeEntries(
 					tx,
 					summary.statement,
@@ -1550,6 +1601,7 @@ export class SqlSessionStore implements SessionStore {
 			this.sessionWrite(header.id, existing),
 		);
 		this.noteWritten(header.id, created.epoch, written);
+		this.rememberWritten(header.id, writtenRow);
 		return created;
 	}
 
@@ -2625,9 +2677,13 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
+		const fast = await this.appendThroughFunction(sessionId, entries, options);
+		if (fast !== undefined) return fast;
 		let written: WrittenEntry[] = [];
+		let writtenRow: WrittenRow | undefined;
 		const appended = await this.transactionCheckedAlongside(
 			async (tx, checked) => {
+				writtenRow = undefined;
 				const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
 				validateSessionEntries(entries);
 				// A new snapshot record is written only while every blob it references is still stored (#5077).
@@ -2653,6 +2709,7 @@ export class SqlSessionStore implements SessionStore {
 				written = [];
 				const statements = this.entryWrites(sessionId, entries, previous.last_seq, summary.texts, true, written);
 				await checked;
+				writtenRow = summary.row;
 				await this.writeEntries(tx, summary.statement, statements);
 				// The generation the session is in once this commits: the one a fork of it later finds, while only appends
 				// follow.
@@ -2661,7 +2718,238 @@ export class SqlSessionStore implements SessionStore {
 			this.sessionWrite(sessionId, this.headRead(sessionId, options, true)),
 		);
 		this.noteWritten(sessionId, appended.epoch, written);
+		this.rememberWritten(sessionId, writtenRow);
 		return { lastSeq: appended.lastSeq };
+	}
+
+	/**
+	 * Remembers `row`, the session's row a committed write of this store left, for the next append to plan from, where
+	 * appends go through the append function; forgets the session's row when `row` is undefined. At most
+	 * {@link WRITTEN_ROWS} sessions are remembered, the latest written.
+	 */
+	private rememberWritten(sessionId: string, row: WrittenRow | undefined): void {
+		this.writtenRows.delete(sessionId);
+		if (row === undefined || this.appendFunction === undefined) return;
+		this.writtenRows.set(sessionId, row);
+		while (this.writtenRows.size > WRITTEN_ROWS) this.writtenRows.delete(this.writtenRows.keys().next().value!);
+	}
+
+	/**
+	 * Appends `entries` in one round trip through the session append function, planned from the row this store's last
+	 * write of the session left (#6599). The function takes the session's locks as a session write transaction does,
+	 * checks the schema version, the session and its expected seq as `forWrite` does, writes nothing unless the stored
+	 * row is still the one planned from, checks the snapshot blobs as `assertStored` does, and writes the row, the
+	 * entries and their search texts in the order an append's transaction does. Undefined, having written nothing, when
+	 * the append is not one it plans (no function, no remembered row, a row other than the stored one, invalid entries,
+	 * a chunked entry or more than one batch of writes, an entry that refers back past the resume window): the caller
+	 * then appends in a transaction as before, which reads the row itself and reports what fails.
+	 */
+	private async appendThroughFunction(
+		sessionId: string,
+		entries: readonly SessionEntry[],
+		options: SessionWriteOptions,
+	): Promise<{ readonly lastSeq: number } | undefined> {
+		const fn = this.appendFunction;
+		const autocommit = this.database.autocommit?.bind(this.database);
+		const previous = this.writtenRows.get(sessionId);
+		if (fn === undefined || autocommit === undefined || previous === undefined) return undefined;
+		if (previous.last_seq !== options.expectSeq) return undefined;
+		const state = JSON.parse(previous.summary_state) as StoredSummaryState;
+		if (options.epoch !== undefined && state.epoch !== options.epoch) return undefined;
+		try {
+			validateSessionEntries(entries);
+		} catch {
+			return undefined;
+		}
+		const window = windowIndex(state, previous.last_seq);
+		// An entry whose resume fold looks up an earlier entry's seq reads in the append's transaction.
+		if (isSessionResumeIndex(window, previous.last_seq) && foreignResumeIds(window, entries).length > 0)
+			return undefined;
+		const lastSeq = previous.last_seq + entries.length;
+		const summary = this.summaryWrite(
+			sessionId,
+			{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
+			state,
+			await this.appendedResume(this.database, sessionId, window, previous.last_seq, entries),
+		);
+		const rows: [string, string][] = [];
+		let bytes = statementBytes(summary.statement);
+		for (const entry of entries) {
+			const stored = storedEntry(entry, this.encode(entry));
+			bytes += entry.id.length + stored.json.length;
+			if (stored.chunks.length > 0 || bytes > STATEMENT_BATCH_BYTES) return undefined;
+			rows.push([entry.id, stored.json]);
+		}
+		const texts = summary.texts.map(({ index, text }): [number, string] => [
+			previous.last_seq + index + 1,
+			this.encode(text),
+		]);
+		const blobs = this.blobTable.storedHashes(
+			entries.flatMap((entry) =>
+				entry.type === "worktree_snapshot" && entry.snapshot !== undefined ? [entry.snapshot] : [],
+			),
+		);
+		const { concurrency = { kind: "serial" } } = sessionWriteTransaction(this.tables.sessions, sessionId);
+		const [answer] = (await autocommit(
+			{
+				sql: `SELECT outcome, detail FROM ${fn}(${Array.from({ length: 24 }, () => "?").join(", ")})`,
+				params: [
+					concurrency.kind === "serial" ? (concurrency.domain ?? "") : "",
+					SESSION_SCHEMA_VERSION_UNCHUNKED,
+					SESSION_SCHEMA_VERSION,
+					sessionId,
+					previous.last_seq,
+					previous.revision,
+					await sha256Hex(new TextEncoder().encode(`${previous.header_json}\n${previous.summary_state}`)),
+					blobs.length === 0 ? null : JSON.stringify(blobs),
+					...summary.statement.params.slice(1),
+					JSON.stringify(rows),
+					JSON.stringify(texts),
+				],
+			},
+			concurrency,
+		)) as AppendOutcomeRow[];
+		switch (answer?.outcome) {
+			case "appended":
+				this.rememberWritten(sessionId, summary.row);
+				return { lastSeq };
+			case "version":
+				assertStorageSchemaVersion(
+					"sessions",
+					answer.detail === null ? null : Number(answer.detail),
+					SESSION_SCHEMA_VERSION,
+					SESSION_SCHEMA_VERSION_UNCHUNKED,
+				);
+				break;
+			case "missing":
+				throw new SessionNotFoundError(sessionId);
+			case "conflict":
+				throw new SessionConflictError(sessionId, options.expectSeq, Number(answer.detail));
+			case "blob":
+				return this.blobTable.refuseCollected(String(answer.detail));
+		}
+		// The stored row is not the one planned from: another writer, or a refresh of its resume index, wrote it since.
+		this.writtenRows.delete(sessionId);
+		return undefined;
+	}
+
+	/**
+	 * The session append function of the store's tables, `<prefix>session_append_v1`: one statement, and so one round
+	 * trip, for what an append's transaction does with its two (#6599). Created by `atomic storage migrate` through
+	 * {@link prepareAppendFunction}. It runs with the caller's rights, so it lets a role do nothing its table
+	 * privileges do not, and in the caller's `search_path`, the schema a transaction of the store sets. It writes no
+	 * chunked entry: an append that has one goes through a transaction. Its answer is one row: `appended`, or why it
+	 * wrote nothing, with the stored version (`version`), the stored last seq (`conflict`), the first blob that is not
+	 * stored (`blob`), no session (`missing`), or a stored row other than the one the caller planned from (`stale`).
+	 */
+	private appendFunctionSql(fn: string): string {
+		const t = this.tables;
+		return `CREATE OR REPLACE FUNCTION ${fn}(
+	p_domain text, p_oldest bigint, p_newest bigint, p_session_id text, p_expect_seq bigint, p_revision text,
+	p_digest text, p_blobs text, p_cwd text, p_created_at text, p_header_json text, p_internal bigint, p_last_seq bigint,
+	p_modified_at text, p_message_count bigint, p_first_message text, p_name text, p_has_name bigint, p_summary text,
+	p_summarized_through_id text, p_summary_state text, p_new_revision text, p_entries text, p_texts text
+) RETURNS TABLE (outcome text, detail text) LANGUAGE plpgsql AS $append$
+#variable_conflict use_column
+DECLARE
+	scope text := CASE WHEN current_schema() = 'public' THEN '' ELSE current_schema() || ':' END;
+	stored_version bigint;
+	head record;
+	stored_blobs text[];
+	missing_blob text;
+BEGIN
+	-- The locks of a session write transaction, waited for as long as one waits: its lock wait is the statement timeout.
+	PERFORM set_config('lock_timeout', current_setting('statement_timeout'), true);
+	PERFORM pg_advisory_xact_lock_shared(hashtextextended(scope || 'atomic', 0)),
+		pg_advisory_xact_lock(hashtextextended(scope || p_domain, 0));
+	SELECT schema_version INTO stored_version FROM ${t.meta};
+	IF stored_version IS NULL OR stored_version < p_oldest OR stored_version > p_newest THEN
+		RETURN QUERY SELECT 'version'::text, stored_version::text;
+		RETURN;
+	END IF;
+	SELECT s.last_seq, s.revision,
+		encode(sha256(convert_to(s.header_json || E'\n' || s.summary_state, 'UTF8')), 'hex') AS digest
+		INTO head FROM ${t.sessions} AS s WHERE s.id = p_session_id;
+	IF NOT FOUND THEN
+		RETURN QUERY SELECT 'missing'::text, NULL::text;
+		RETURN;
+	END IF;
+	IF head.last_seq <> p_expect_seq THEN
+		RETURN QUERY SELECT 'conflict'::text, head.last_seq::text;
+		RETURN;
+	END IF;
+	IF head.revision <> p_revision OR head.digest <> p_digest THEN
+		RETURN QUERY SELECT 'stale'::text, NULL::text;
+		RETURN;
+	END IF;
+	IF p_blobs IS NOT NULL THEN
+		SELECT array_agg(locked.hash) INTO stored_blobs FROM (${this.blobTable.storedBlobsQuery("p_blobs")}) AS locked;
+		SELECT h.value INTO missing_blob FROM json_array_elements_text(p_blobs::json) WITH ORDINALITY AS h(value, ord)
+			WHERE h.value <> ALL (coalesce(stored_blobs, '{}'::text[])) ORDER BY h.ord LIMIT 1;
+		IF missing_blob IS NOT NULL THEN
+			RETURN QUERY SELECT 'blob'::text, missing_blob;
+			RETURN;
+		END IF;
+	END IF;
+	INSERT INTO ${t.sessions}
+		(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count,
+		 first_message, name, has_name, summary, summarized_through_id, summary_state, revision)
+		VALUES (p_session_id, p_cwd, p_created_at, p_header_json, p_internal, p_last_seq, p_modified_at, p_message_count,
+		 p_first_message, p_name, p_has_name, p_summary, p_summarized_through_id, p_summary_state, p_new_revision)
+		ON CONFLICT(id) DO UPDATE SET
+		cwd = excluded.cwd, created_at = excluded.created_at, header_json = excluded.header_json,
+		internal = excluded.internal, last_seq = excluded.last_seq, modified_at = excluded.modified_at,
+		message_count = excluded.message_count, first_message = excluded.first_message, name = excluded.name,
+		has_name = excluded.has_name, summary = excluded.summary,
+		summarized_through_id = excluded.summarized_through_id,
+		summary_state = excluded.summary_state, revision = excluded.revision;
+	INSERT INTO ${t.entries} (session_id, seq, entry_id, entry_json, chunks)
+		SELECT p_session_id, p_expect_seq + e.ord, e.value->>0, e.value->>1, 0
+		FROM json_array_elements(p_entries::json) WITH ORDINALITY AS e(value, ord) ORDER BY e.ord;
+	INSERT INTO ${t.searchTexts} (session_id, seq, text_json)
+		SELECT p_session_id, (x.value->>0)::bigint, x.value->>1
+		FROM json_array_elements(p_texts::json) WITH ORDINALITY AS x(value, ord) ORDER BY x.ord;
+	RETURN QUERY SELECT 'appended'::text, NULL::text;
+END
+$append$`;
+	}
+
+	/**
+	 * Creates the session append function (#6599), once per revision, as the ledger records it, and lets every role that
+	 * may insert into the sessions table execute it: `atomic storage migrate` runs this as the owner role, and a
+	 * runtime role appends through the function from its next open on. PostgreSQL only; does nothing elsewhere.
+	 */
+	async prepareAppendFunction(): Promise<void> {
+		this.assertOpen();
+		if (this.dialect.name !== "postgres") return;
+		const fn = renderStorageIdentifiers("sessions", { append: SESSION_APPEND_FUNCTION }, this.prefix).append;
+		const ledger = storageMigrationTable(this.prefix);
+		const physical = (name: string) => this.dialect.identifier(name).replaceAll("'", "''");
+		await this.database.transaction(
+			async (tx) => {
+				await ensureStorageSchema(
+					tx,
+					this.dialect,
+					{ ledger, domain: SESSION_APPEND_FUNCTION_DOMAIN, revision: SESSION_APPEND_FUNCTION_REVISION },
+					() => tx.exec(this.appendFunctionSql(fn)),
+				);
+				// Every role granted INSERT on the sessions table, the runtime role among them, may run the function, and
+				// gains no other right by it: it runs with the caller's.
+				await tx.exec(`DO $grant$
+DECLARE grantee text;
+BEGIN
+	FOR grantee IN SELECT DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(pg_catalog.pg_get_userbyid(a.grantee)) END
+		FROM pg_catalog.pg_class c, pg_catalog.aclexplode(c.relacl) AS a
+		WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = '${physical(this.tables.sessions)}'
+			AND a.privilege_type = 'INSERT' AND a.grantee <> c.relowner
+	LOOP
+		EXECUTE format('GRANT EXECUTE ON FUNCTION %I TO %s', '${physical(fn)}', grantee);
+	END LOOP;
+END
+$grant$`);
+			},
+			{ retryTransientFailures: true, concurrency: { kind: "serial", domain: ledger } },
+		);
 	}
 
 	async replace(
@@ -2672,6 +2960,7 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
+		this.writtenRows.delete(sessionId);
 		let released: readonly string[] = [];
 		let entriesWritten: WrittenEntry[] = [];
 		const pinReads = this.sharedHistorySeen
@@ -2724,6 +3013,7 @@ export class SqlSessionStore implements SessionStore {
 	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
+		this.writtenRows.delete(header.id);
 		return this.transaction(
 			async (tx) => {
 				const { row, state } = await this.forWrite(tx, header.id, options, true);
@@ -2889,6 +3179,7 @@ export class SqlSessionStore implements SessionStore {
 	async delete(sessionId: string): Promise<void> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
+		this.writtenRows.delete(sessionId);
 		let released: readonly string[] = [];
 		// Where this store has seen shared history, the session's fork history is read with the transaction's start.
 		const pinReads = this.sharedHistorySeen
@@ -5726,6 +6017,7 @@ export class SqlSessionStore implements SessionStore {
 		readonly statement: SqliteStatement;
 		readonly texts: readonly SessionSummaryText[];
 		readonly epoch: string;
+		readonly row: WrittenRow;
 	} {
 		const { header, lastSeq } = snapshot;
 		const { state: listed, texts } = applySessionSummaryEntries(previous, snapshot.entries);
@@ -5737,6 +6029,12 @@ export class SqlSessionStore implements SessionStore {
 			epoch,
 		};
 		const summary = materializeSessionSummaryMetadata(header, state);
+		const row: WrittenRow = {
+			header_json: this.encode(header),
+			summary_state: this.encode(state),
+			revision: newRevision(),
+			last_seq: lastSeq,
+		};
 		const sql = `INSERT INTO ${this.tables.sessions}
 				(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count,
 				 first_message, name, has_name, summary, summarized_through_id, summary_state, revision)
@@ -5752,7 +6050,7 @@ export class SqlSessionStore implements SessionStore {
 			sessionId,
 			header.cwd,
 			header.createdAt,
-			this.encode(header),
+			row.header_json,
 			header.internal ? 1 : 0,
 			lastSeq,
 			summary.modifiedAt,
@@ -5762,10 +6060,10 @@ export class SqlSessionStore implements SessionStore {
 			summary.hasName ? 1 : 0,
 			summary.summary === undefined ? null : this.encode(summary.summary),
 			summary.summarizedThroughId ?? null,
-			this.encode(state),
-			newRevision(),
+			row.summary_state,
+			row.revision,
 		];
-		return { statement: { sql, params }, texts, epoch };
+		return { statement: { sql, params }, texts, epoch, row };
 	}
 
 	private async insertEntries(

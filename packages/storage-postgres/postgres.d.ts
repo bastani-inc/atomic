@@ -38,7 +38,9 @@ export interface PostgresDatabaseOptions {
 	keepAliveIdleMs?: number;
 	/**
 	 * Statements each pooled connection keeps prepared at most, so the server parses and plans each once per connection.
-	 * Default 256; `0` sends every statement unnamed, for a transaction-mode pooler without prepared-statement support.
+	 * `0` sends every statement unnamed, for a transaction-mode pooler without prepared-statement support. Default 256,
+	 * or `0` behind a transaction pooler (`listenUrl` set, port 6432 or 6543, or a pooler the first connection finds)
+	 * unless the first connection finds PgBouncer 1.21 or later with `max_prepared_statements` above 0.
 	 */
 	maxPreparedStatements?: number;
 	/**

@@ -26,6 +26,7 @@ import {
 	postgresSkipReason,
 	withPostgresDatabase,
 } from "../helpers/postgres-database.js";
+import { countRoundTrips } from "../helpers/postgres-round-trips.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -306,6 +307,76 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			// Again, as after an upgrade with nothing new: still nothing to change.
 			const again = await migrateAs(roles, "owner");
 			assert.equal(again.code, 0, again.err);
+		});
+	});
+
+	test("a runtime role appends in one round trip once the owner's storage migrate creates the append function and grants it EXECUTE, in two before (#6599)", async () => {
+		await withRoles(async (_scope, roles) => {
+			// The tables as an earlier build set them up, without the function.
+			await openEveryStore(() => roles.open("owner"), PREFIX);
+			const owner = await roles.open("owner");
+			const schema = String((await owner.get<{ schema: string }>("SELECT current_schema() AS schema"))?.schema);
+			// Table privileges alone, on a server that grants new functions to no one: the runtime role may run the function
+			// only by the grant storage migrate makes.
+			for (const statement of [
+				`ALTER DEFAULT PRIVILEGES FOR ROLE ${roles.owner} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`,
+				`REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA ${schema} FROM PUBLIC`,
+				`GRANT USAGE ON SCHEMA ${schema} TO ${roles.runtime}`,
+				`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${schema} TO ${roles.runtime}`,
+				`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${schema} TO ${roles.runtime}`,
+				`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA ${schema} TO ${roles.runtime}`,
+			])
+				await owner.exec(statement);
+			/**
+			 * The round trips of each of three appends to a new session, through a store the runtime role opens anew; the
+			 * calls of the open's own reads and housekeeping are over before the first.
+			 */
+			const appendTrips = async (id: string) => {
+				const sessions = await SqlSessionStore.open(await roles.open("runtime"), { prefix: PREFIX });
+				try {
+					const created = await sessions.create(
+						{ id, version: 4, createdAt: new Date(0).toISOString(), cwd: "/repo" },
+						[],
+					);
+					await sessions.load(id);
+					const counted: number[] = [];
+					let lastSeq = created.lastSeq;
+					let parentId: string | null = null;
+					for (const index of [1, 2, 3]) {
+						const trips = countRoundTrips();
+						try {
+							const entry = {
+								type: "message",
+								id: `${id}-m${index}`,
+								parentId,
+								timestamp: new Date(0).toISOString(),
+								message: { role: "user", content: `hello ${index}`, timestamp: 0 },
+							} as SessionEntry;
+							({ lastSeq } = await sessions.append(id, [entry], { expectSeq: lastSeq, epoch: created.epoch }));
+							parentId = entry.id;
+							counted.push(trips.take());
+						} finally {
+							trips.restore();
+						}
+					}
+					return counted;
+				} finally {
+					await sessions.close();
+				}
+			};
+			assert.deepEqual(await appendTrips("before"), [2, 2, 2]);
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			assert.deepEqual(await appendTrips("after"), [1, 1, 1]);
+			const runtime = await roles.open("runtime");
+			assert.equal(
+				(await runtime.get<{ id: string }>(`SELECT id FROM ${PREFIX}session_sessions WHERE id = 'after'`))?.id,
+				"after",
+			);
+			// Again, as after an upgrade with nothing new.
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.deepEqual(await appendTrips("again"), [1, 1, 1]);
 		});
 	});
 

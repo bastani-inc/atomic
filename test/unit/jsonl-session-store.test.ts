@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { createReadStream } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import {
 	appendFile,
 	chmod,
-	type FileHandle,
 	mkdir,
 	mkdtemp,
 	readdir,
@@ -16,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
 import { afterEach, describe, it, vi } from "vitest";
 import { registerSessionStoreConformance } from "../../packages/coding-agent/src/core/storage/session/conformance.js";
@@ -48,7 +48,6 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	return {
 		...fs,
 		readFile: vi.fn(fs.readFile),
-		appendFile: vi.fn(fs.appendFile),
 		truncate: vi.fn(fs.truncate),
 		rename: vi.fn(fs.rename),
 	};
@@ -86,6 +85,62 @@ async function collect<T>(values: AsyncIterable<T>): Promise<T[]> {
 	const results: T[] = [];
 	for await (const value of values) results.push(value);
 	return results;
+}
+
+/** Fails the next write of the next handle the store opens to append to a session file with what `write` throws. */
+function faultNextAppendHandle(write: () => Promise<never>): void {
+	const originalOpen = fs.open;
+	const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+		const handle = await originalOpen(...args);
+		if (typeof args[1] === "number" && (args[1] & constants.O_APPEND) !== 0) {
+			opened.mockRestore();
+			vi.spyOn(handle, "write").mockImplementationOnce(write);
+		}
+		return handle;
+	});
+}
+
+interface FileRead {
+	readonly position: number | bigint | null | undefined;
+	readonly bytesRead: number;
+}
+
+/** Records every read any `FileHandle` makes, from the store's kept handles as from the ones it opens per read. */
+async function recordFileReads(): Promise<{ readonly reads: FileRead[]; restore(): void }> {
+	const probe = await fs.open(fileURLToPath(import.meta.url), "r");
+	const prototype = Object.getPrototypeOf(probe) as { read: (...args: unknown[]) => Promise<{ bytesRead: number }> };
+	await probe.close();
+	const reads: FileRead[] = [];
+	const read = prototype.read;
+	prototype.read = async function (this: unknown, ...args: unknown[]) {
+		const result = await read.apply(this, args);
+		reads.push({ position: args.at(-1) as FileRead["position"], bytesRead: result.bytesRead });
+		return result;
+	};
+	return {
+		reads,
+		restore: () => {
+			prototype.read = read;
+		},
+	};
+}
+
+async function fileReads<T>(work: () => Promise<T>): Promise<{ result: T; reads: FileRead[] }> {
+	const recorded = await recordFileReads();
+	try {
+		return { result: await work(), reads: recorded.reads };
+	} finally {
+		recorded.restore();
+	}
+}
+
+/** The reads are `appends` reads of the session's header line, each from the start of the file, and nothing else. */
+function assertHeaderReads(reads: readonly FileRead[], appends: number): void {
+	const headerBytes = Buffer.byteLength(`${JSON.stringify({ type: "session", ...header })}\n`);
+	assert.deepEqual(
+		reads.map(({ position, bytesRead }) => ({ fromStart: position === null || position === 0, bytesRead })),
+		Array.from({ length: appends }, () => ({ fromStart: true, bytesRead: headerBytes })),
+	);
 }
 
 async function location(store: JsonlSessionStore): Promise<string> {
@@ -168,45 +223,28 @@ it("bounds alternating writers to header, a 64-byte witness and newly appended b
 					const writer = index % 2 === 0 ? store : other;
 					const knownSize = knownSizes.get(writer)!;
 					const currentSize = (await fs.stat(path)).size;
-					const handles: FileHandle[] = [];
-					const originalOpen = fs.open;
-					const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-						const handle = await originalOpen(...args);
-						vi.spyOn(handle, "read");
-						handles.push(handle);
-						return handle;
-					});
 					vi.mocked(readFile).mockClear();
-					try {
-						await writer.append(header.id, [{ ...entry, id: `new-${index}` }], { expectSeq: count + index });
-						assert.equal(vi.mocked(readFile).mock.calls.length, 0, "append must not read the transcript");
-						let bytes = 0;
-						for (const handle of handles) {
-							let sequential = 0;
-							const reads = vi.mocked(handle.read);
-							for (const [readIndex, result] of reads.mock.results.entries()) {
-								assert.equal(result.type, "return");
-								if (result.type !== "return") continue;
-								const length = (await result.value).bytesRead;
-								const position = reads.mock.calls[readIndex]?.at(-1);
-								if (position === null) {
-									sequential += length;
-									assert.ok(sequential <= headerBytes);
-								} else {
-									assert.equal(typeof position, "number");
-									assert.ok(Number(position) >= knownSize - 64, "must not revisit old history");
-									assert.ok(Number(position) + length <= currentSize);
-								}
-								bytes += length;
-							}
+					const { reads } = await fileReads(() =>
+						writer.append(header.id, [{ ...entry, id: `new-${index}` }], { expectSeq: count + index }),
+					);
+					assert.equal(vi.mocked(readFile).mock.calls.length, 0, "append must not read the transcript");
+					let bytes = 0;
+					let fromStart = 0;
+					for (const { position, bytesRead } of reads) {
+						if (position === null || position === 0) {
+							// The header, read from the start of the file through the handle the append opened or kept.
+							fromStart += bytesRead;
+							assert.ok(fromStart <= headerBytes);
+						} else {
+							assert.equal(typeof position, "number");
+							assert.ok(Number(position) >= knownSize - 64, "must not revisit old history");
+							assert.ok(Number(position) + bytesRead <= currentSize);
 						}
-						const newlyAppended = currentSize - knownSize;
-						assert.equal(bytes, headerBytes + (newlyAppended === 0 ? 0 : 64 + newlyAppended));
-						if (newlyAppended > 0) overheads.push(bytes - newlyAppended);
-					} finally {
-						opened.mockRestore();
-						for (const handle of handles) vi.mocked(handle.read).mockRestore();
+						bytes += bytesRead;
 					}
+					const newlyAppended = currentSize - knownSize;
+					assert.equal(bytes, headerBytes + (newlyAppended === 0 ? 0 : 64 + newlyAppended));
+					if (newlyAppended > 0) overheads.push(bytes - newlyAppended);
 					knownSizes.set(writer, (await fs.stat(path)).size);
 				}
 				assert.equal((await other.load(header.id)).lastSeq, count + 4);
@@ -932,7 +970,7 @@ it("rolls back partial append failure and accepts the next write at the unchange
 		const path = await location(store);
 		const before = await readFile(path, "utf8");
 		const failure = new Error("append fault");
-		vi.mocked(appendFile).mockImplementationOnce(async () => {
+		faultNextAppendHandle(async () => {
 			await writeFile(path, `${before}{"partial":`);
 			throw failure;
 		});
@@ -952,7 +990,7 @@ it("poisons all subsequent operations after append rollback fails", async () => 
 		const path = await location(store);
 		const failure = new Error("append fault");
 		const rollbackFailure = new Error("rollback fault");
-		vi.mocked(appendFile).mockRejectedValueOnce(failure);
+		faultNextAppendHandle(() => Promise.reject(failure));
 		vi.mocked(truncate).mockRejectedValueOnce(rollbackFailure);
 		const isPoisoned = (error: Error): boolean => {
 			assert.ok(error instanceof JsonlStoragePoisonedError);
@@ -1154,38 +1192,18 @@ it("appends small batches without rereading or parsing the committed 4 MiB trans
 		await store.create(header, [{ ...entry, name: "x".repeat(4 * 1024 * 1024) }]);
 		vi.mocked(readFile).mockClear();
 		const parse = vi.spyOn(JSON, "parse");
-		const handles: FileHandle[] = [];
-		const originalOpen = fs.open;
-		const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-			const handle = await originalOpen(...args);
-			vi.spyOn(handle, "read");
-			handles.push(handle);
-			return handle;
-		});
 		try {
-			for (let index = 1; index <= 3; index++) {
-				assert.deepEqual(await store.append(header.id, [entry], { expectSeq: index }), { lastSeq: index + 1 });
-			}
+			const { reads } = await fileReads(async () => {
+				for (let index = 1; index <= 3; index++) {
+					assert.deepEqual(await store.append(header.id, [entry], { expectSeq: index }), { lastSeq: index + 1 });
+				}
+			});
 			const transcriptReads = vi.mocked(readFile).mock.calls.filter(([path]) => String(path).endsWith(".jsonl"));
 			assert.equal(transcriptReads.length, 0);
 			assert.equal(parse.mock.calls.filter(([text]) => text.length >= 4 * 1024 * 1024).length, 0);
-			const headerBytes = Buffer.byteLength(`${JSON.stringify({ type: "session", ...header })}\n`);
-			assert.equal(handles.length, 3);
-			for (const handle of handles) {
-				let position = 0;
-				const reads = vi.mocked(handle.read);
-				for (const [index, result] of reads.mock.results.entries()) {
-					assert.equal(reads.mock.calls[index]?.at(-1), null);
-					assert.equal(result.type, "return");
-					if (result.type === "return") position += (await result.value).bytesRead;
-					assert.ok(position <= headerBytes);
-				}
-				assert.equal(position, headerBytes);
-			}
+			assertHeaderReads(reads, 3);
 		} finally {
 			parse.mockRestore();
-			opened.mockRestore();
-			for (const handle of handles) vi.mocked(handle.read).mockRestore();
 		}
 		assert.equal((await store.load(header.id)).lastSeq, 4);
 	});
@@ -1209,14 +1227,7 @@ for (const terminated of [true, false]) {
 			assert.deepEqual((await store.load(header.id)).entries, entries);
 			vi.mocked(readFile).mockClear();
 			const parse = vi.spyOn(JSON, "parse");
-			const handles: FileHandle[] = [];
-			const originalOpen = fs.open;
-			const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-				const handle = await originalOpen(...args);
-				vi.spyOn(handle, "read");
-				handles.push(handle);
-				return handle;
-			});
+			const reads = await recordFileReads();
 			try {
 				for (let index = 0; index < 2; index++) {
 					assert.deepEqual(await store.append(header.id, [entry], { expectSeq: entries.length + index }), {
@@ -1225,23 +1236,10 @@ for (const terminated of [true, false]) {
 				}
 				assert.equal(vi.mocked(readFile).mock.calls.filter(([file]) => String(file).endsWith(".jsonl")).length, 0);
 				assert.equal(parse.mock.calls.filter(([text]) => text.length > 1024).length, 0);
-				const headerBytes = Buffer.byteLength(`${JSON.stringify({ type: "session", ...header })}\n`);
-				assert.equal(handles.length, 2);
-				for (const handle of handles) {
-					let position = 0;
-					const reads = vi.mocked(handle.read);
-					for (const [index, result] of reads.mock.results.entries()) {
-						assert.equal(reads.mock.calls[index]?.at(-1), null);
-						assert.equal(result.type, "return");
-						if (result.type === "return") position += (await result.value).bytesRead;
-						assert.ok(position <= headerBytes);
-					}
-					assert.equal(position, headerBytes);
-				}
+				assertHeaderReads(reads.reads, 2);
 			} finally {
 				parse.mockRestore();
-				opened.mockRestore();
-				for (const handle of handles) vi.mocked(handle.read).mockRestore();
+				reads.restore();
 			}
 			assert.deepEqual((await store.load(header.id)).entries, [...entries, entry, entry]);
 		} finally {
@@ -1268,14 +1266,7 @@ for (const terminated of [true, false]) {
 			store = await JsonlSessionStore.open(directory);
 			vi.mocked(readFile).mockClear();
 			const parse = vi.spyOn(JSON, "parse");
-			const handles: FileHandle[] = [];
-			const originalOpen = fs.open;
-			const opened = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
-				const handle = await originalOpen(...args);
-				vi.spyOn(handle, "read");
-				handles.push(handle);
-				return handle;
-			});
+			const reads = await recordFileReads();
 			try {
 				assert.deepEqual(await store.append(header.id, [], { expectSeq: entries.length }), {
 					lastSeq: entries.length,
@@ -1293,23 +1284,10 @@ for (const terminated of [true, false]) {
 				}
 				assert.equal(vi.mocked(readFile).mock.calls.filter(([file]) => String(file).endsWith(".jsonl")).length, 0);
 				assert.equal(parse.mock.calls.filter(([text]) => text.length > 1024).length, 0);
-				const headerBytes = Buffer.byteLength(`${JSON.stringify({ type: "session", ...header })}\n`);
-				assert.equal(handles.length, 4);
-				for (const handle of handles) {
-					let position = 0;
-					const reads = vi.mocked(handle.read);
-					for (const [index, result] of reads.mock.results.entries()) {
-						assert.equal(reads.mock.calls[index]?.at(-1), null);
-						assert.equal(result.type, "return");
-						if (result.type === "return") position += (await result.value).bytesRead;
-						assert.ok(position <= headerBytes);
-					}
-					assert.equal(position, headerBytes);
-				}
+				assertHeaderReads(reads.reads, 4);
 			} finally {
 				parse.mockRestore();
-				opened.mockRestore();
-				for (const handle of handles) vi.mocked(handle.read).mockRestore();
+				reads.restore();
 			}
 			assert.deepEqual((await store.load(header.id)).entries, [...entries, entry, entry]);
 		} finally {

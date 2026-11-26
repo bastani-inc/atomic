@@ -21,6 +21,7 @@ import {
 	type IntercomBrokerStateOptions,
 	type OutboxClaim,
 	type OutboxClaimWriteRejection,
+	type OutboxDeliveredResult,
 	type OutboxEnqueueRequest,
 	type OutboxEnqueueResult,
 	type OutboxFrame,
@@ -33,6 +34,8 @@ import { addMissingColumns } from "./sql-add-column.js";
 import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 const UNDELIVERED = "state IN ('queued', 'claimed')";
+/** The most `markDelivered` calls one transaction settles together (#6560). */
+const MARK_DELIVERED_BATCH_MAX = 100;
 
 interface OutboxRecord extends SqliteRow {
 	readonly sequence: SqliteValue;
@@ -293,6 +296,89 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL`;
 
 	/**
+	 * Settles each of `claims`, of distinct rows, as delivered, in one transaction: one UPDATE, sent with its start, that
+	 * locks their rows in sequence order, as a claim locks a recipient's rows, and changes those whose claim is still
+	 * current. Only when it changed fewer rows than it was given are the others read, to report why (#6560).
+	 */
+	const markDeliveredTogether = (claims: readonly OutboxClaim[]): Promise<OutboxDeliveredResult[]> => {
+		const current = claims.map(() => "(message_id = ? AND claim_token = ? AND claimant_id = ?)").join(" OR ");
+		const keys = claims.flatMap((claim) => [claim.messageId, claim.token, claim.claimantId]);
+		const write: SqliteStatement = {
+			sql: `UPDATE ${table} SET state = 'delivered', ${settled}
+				WHERE message_id IN (
+					SELECT message_id FROM ${table} WHERE state = 'claimed' AND (${current})
+					ORDER BY sequence${lockClause("update")}
+				) AND state = 'claimed' AND (${current})
+				RETURNING ${columns}`,
+			params: [null, ...keys, ...keys],
+		};
+		return database.transaction(
+			async (executor) => {
+				const written = new Map(
+					(await executor.all<OutboxRecord>(write.sql, ...write.params)).map((record) => [record.message_id, record]),
+				);
+				const others = claims.filter((claim) => !written.has(claim.messageId));
+				const found =
+					others.length === 0
+						? new Map<string, OutboxRecord>()
+						: new Map(
+								(
+									await executor.all<OutboxRecord>(
+										`SELECT ${columns} FROM ${table} WHERE message_id IN (${others.map(() => "?").join(", ")})`,
+										...others.map((claim) => claim.messageId),
+									)
+								).map((record) => [record.message_id, record]),
+							);
+				return claims.map((claim): OutboxDeliveredResult => {
+					const delivered = written.get(claim.messageId);
+					if (delivered !== undefined) return { status: "delivered", row: toRow(delivered) };
+					const record = found.get(claim.messageId);
+					if (record === undefined) return { status: "unknown" };
+					if (isSettled(record)) return { status: "settled", row: toRow(record) };
+					return { status: "stale" };
+				});
+			},
+			{ ...fenced, leading: [write] },
+		);
+	};
+
+	/**
+	 * The `markDelivered` calls waiting for the transaction that settles them, in the order they were made. On PostgreSQL
+	 * the calls made while one transaction settles others go together in the next, whose round trips they share, rather
+	 * than two round trips each: one transaction at a time, so each commits after every call made before it (#6560).
+	 */
+	const deliveries: {
+		readonly claim: OutboxClaim;
+		readonly resolve: (result: OutboxDeliveredResult) => void;
+		readonly reject: (error: unknown) => void;
+	}[] = [];
+	let delivering = false;
+	const deliverQueued = async () => {
+		// Calls made in the same turn as the first go with it.
+		await undefined;
+		while (deliveries.length > 0) {
+			// The calls in order, up to one that names a row already in the batch: it goes in the next, so it finds the row as
+			// the call before it left it.
+			const rows = new Set<string>();
+			let count = 0;
+			while (
+				count < deliveries.length &&
+				count < MARK_DELIVERED_BATCH_MAX &&
+				!rows.has(deliveries[count]!.claim.messageId)
+			)
+				rows.add(deliveries[count++]!.claim.messageId);
+			const batch = deliveries.splice(0, count);
+			try {
+				const results = await markDeliveredTogether(batch.map(({ claim }) => claim));
+				batch.forEach(({ resolve }, index) => resolve(results[index]!));
+			} catch (error) {
+				for (const { reject } of batch) reject(error);
+			}
+		}
+		delivering = false;
+	};
+
+	/**
 	 * #4896: the recipient's undelivered rows and their frame bytes, read from `<table>_target_bytes` alone. Only rows an
 	 * older broker wrote, without `frame_bytes`, are measured from their frames.
 	 */
@@ -541,10 +627,17 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		},
 
 		markDelivered(claim) {
-			return withClaim(claim, `state = 'delivered', ${settled}`, [null], (written) => ({
-				status: "delivered" as const,
-				row: toRow(written),
-			}));
+			if (dialect !== "postgres" || claim.messageId.length === 0 || claim.claimantId.length === 0)
+				return withClaim(claim, `state = 'delivered', ${settled}`, [null], (written) => ({
+					status: "delivered" as const,
+					row: toRow(written),
+				}));
+			return new Promise<OutboxDeliveredResult>((resolve, reject) => {
+				deliveries.push({ claim, resolve, reject });
+				if (delivering) return;
+				delivering = true;
+				void deliverQueued();
+			});
 		},
 
 		markFailed(claim, reason) {
