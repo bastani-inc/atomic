@@ -6069,7 +6069,12 @@ export class MultiNodeRouter {
 						});
 					}
 				}
-				const delivered = await this.state.outbox.markDelivered(inflight.claim);
+				// Replies clear their shared pending-ask route after `markDelivered` commits; keeping `wakeOrigin` after
+				// `clearReply` prevents the replier from hearing `delivered` and sending a second reply before the route
+				// is cleared (#6715). Non-reply deliveries write the outcome hint atomically inside the settlement.
+				const delivered = await this.state.outbox.markDelivered(inflight.claim, {
+					wakeOrigin: frame.message.replyTo === undefined,
+				});
 				this.storeAnswered();
 				marked = true;
 				this.firstHandedOverAt.delete(messageId);
@@ -6094,7 +6099,7 @@ export class MultiNodeRouter {
 					inflight.handedOverAt,
 				);
 				finishOpening?.();
-				await this.wakeOrigin(inflight.row);
+				if (delivered.woke !== inflight.row.originBrokerId) await this.wakeOrigin(inflight.row);
 			} finally {
 				finishOpening?.();
 			}

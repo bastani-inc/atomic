@@ -279,7 +279,13 @@ export async function materializeForkSegments(
 	blobs: { readonly legacyBlobData: boolean; readonly chunkBytes: number },
 	links: {
 		readonly materialized?: string;
-		settle(tx: SqliteExecutor, sessionId: string, fromSeq: number, before: readonly SqliteStatement[]): Promise<void>;
+		settle(
+			tx: SqliteExecutor,
+			sessionId: string,
+			fromSeq: number,
+			before: readonly SqliteStatement[],
+			hasSegments?: boolean,
+		): Promise<void>;
 	},
 	childId: string,
 	length: number,
@@ -341,5 +347,12 @@ export async function materializeForkSegments(
 	}
 	const writes = forkSegmentWrites(tables, childId, remaining, length);
 	if (pieces.length === 0) for (const { sql, params } of writes) await tx.run(sql, ...params);
-	else await links.settle(tx, childId, Math.min(...pieces.map((piece) => piece.baseSeq + 1)), writes);
+	else
+		await links.settle(
+			tx,
+			childId,
+			Math.min(...pieces.map((piece) => piece.baseSeq + 1)),
+			writes,
+			remaining.length > 0,
+		);
 }

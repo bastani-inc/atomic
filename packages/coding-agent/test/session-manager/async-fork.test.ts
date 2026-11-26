@@ -64,9 +64,11 @@ test("streamed forks retain history and can append without replacing it (#3577)"
 			fork = await SessionManager.forkFrom(source, dir, join(dir, "forks"));
 			assert.equal(opens.mock.calls.filter(([path]) => path === source).length, 1, "one pinned source file");
 			assert.ok(!wholeReads.mock.calls.some(([path]) => path === source), "do not load the whole source file");
-			assert.equal(writes.mock.calls.length, 1);
-			assert.equal(String(writes.mock.calls[0][0]).startsWith(`${fork.getSessionFile()}.`), true);
-			assert.equal(String(writes.mock.calls[0][0]).endsWith(".tmp"), true);
+			const stagedOpens = opens.mock.calls.filter(([, flags]) => flags === "wx" || flags === "wx+");
+			assert.equal(stagedOpens.length, 1);
+			assert.equal(String(stagedOpens[0]![0]).startsWith(`${fork.getSessionFile()}.`), true);
+			assert.equal(String(stagedOpens[0]![0]).endsWith(".tmp"), true);
+			assert.equal(writes.mock.calls.length, 0);
 		} finally {
 			for (const spy of spies) spy.mockRestore();
 		}

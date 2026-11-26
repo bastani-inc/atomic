@@ -30,7 +30,13 @@ export interface ForkHostStore {
 	 */
 	readonly entryLinks: {
 		readonly materialized?: string;
-		settle(tx: SqliteExecutor, sessionId: string, fromSeq: number, before: readonly SqliteStatement[]): Promise<void>;
+		settle(
+			tx: SqliteExecutor,
+			sessionId: string,
+			fromSeq: number,
+			before: readonly SqliteStatement[],
+			hasSegments?: boolean,
+		): Promise<void>;
 	};
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
 	readTransaction?<T>(

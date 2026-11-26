@@ -178,6 +178,90 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 		});
 	});
 
+	test("concurrent publishes share one transaction and one notice per distinct broker, in two round trips (#6715)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const publisher = await openBus(scope);
+			const subscriber = await openBus(scope);
+			try {
+				await members(scope, { "broker-b": "current", "broker-c": "current" });
+				// Warm up the publisher's pool & prune timer before subscribing so the warm-up notifications cannot arrive
+				// late and race the count; only the subscriber's initial listening poll delivers these hints (#6688).
+				assert.deepEqual(await publisher.publish({ brokerId: "broker-b", reason: "outbox", version: 0 }), {
+					status: "published",
+				});
+				assert.deepEqual(await publisher.publish({ brokerId: "broker-c", reason: "outbox", version: 0 }), {
+					status: "published",
+				});
+				const toB = await collect(subscriber, "broker-b");
+				const toC = await collect(subscriber, "broker-c");
+				const ownB = await rawListener(scope, [brokerWakeUpChannel(TABLE, "broker-b")]);
+				const ownC = await rawListener(scope, [brokerWakeUpChannel(TABLE, "broker-c")]);
+				try {
+					await toB.until(1, LISTENING_BOUND_MS);
+					await toC.until(1, LISTENING_BOUND_MS);
+					await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 4));
+					ownB.received.length = 0;
+					ownC.received.length = 0;
+
+					const batch: WakeUpHint[] = Array.from({ length: 12 }, (_, index) =>
+						index % 2 === 0
+							? {
+									brokerId: "broker-b",
+									reason: "outbox",
+									version: index + 1,
+									targetIdentity: `alice-${index}`,
+								}
+							: {
+									brokerId: "broker-c",
+									reason: "outcome",
+									version: index + 1,
+								},
+					);
+					const trips = countRoundTrips();
+					restores.push(trips.restore);
+					const texts = recordStatements();
+					const results = await Promise.all(batch.map((hint) => publisher.publish(hint)));
+					const publishTrips = trips.take();
+					assert.deepEqual(
+						results,
+						batch.map(() => ({ status: "published" })),
+					);
+					assert.equal(publishTrips, 2, "all concurrent hints share one transaction and its commit + notices");
+					const inserts = texts.filter((text) => text.includes(`INSERT INTO ${TABLE}`));
+					assert.equal(inserts.length, 1, `expected one batch insert, got ${JSON.stringify(inserts)}`);
+					const commit = texts.indexOf("COMMIT");
+					const insertIndex = texts.findIndex((text) => text.includes(`INSERT INTO ${TABLE}`));
+					const notify = texts.findIndex((text) => text.includes("pg_notify"));
+					assert.ok(insertIndex >= 0 && insertIndex < commit, "the batch insert commits with the transaction");
+					assert.ok(notify > commit, `notifications go out after commit: ${JSON.stringify(texts)}`);
+					assert.ok(
+						texts.slice(commit + 1, notify).some((text) => text.includes("SET LOCAL synchronous_commit TO off")),
+						"notifications run in their own no-flush transaction",
+					);
+					await toB.until(7, NOTIFIED_BOUND_MS);
+					await toC.until(7, NOTIFIED_BOUND_MS);
+					assert.deepEqual(
+						toB.hints.slice(1),
+						batch.filter((hint) => hint.brokerId === "broker-b"),
+					);
+					assert.deepEqual(
+						toC.hints.slice(1),
+						batch.filter((hint) => hint.brokerId === "broker-c"),
+					);
+					await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 4));
+					assert.equal(ownB.received.length, 1, "one notice for broker-b across all its hints in the batch");
+					assert.equal(ownC.received.length, 1, "one notice for broker-c across all its hints in the batch");
+				} finally {
+					await ownB.close();
+					await ownC.close();
+				}
+			} finally {
+				await publisher.close();
+				await subscriber.close();
+			}
+		});
+	});
+
 	test("an offline recipient's send writes its hint and notifies after its commit, at no extra round trip, on its host's channel alone", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const { state, bus } = await openIntercomBrokerState(
