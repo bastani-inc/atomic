@@ -132,7 +132,8 @@ const handlers = {
 			throw error;
 		}
 	},
-	// One non-blocking BEGIN IMMEDIATE, the connection's busy timeout restored before answering.
+	// One non-blocking BEGIN IMMEDIATE, the connection's busy timeout restored before answering, then the transaction's
+	// leading statements, if any, in the same request.
 	begin: (request) => {
 		// The file's lock word (see FREE in node-sqlite-file-gate.ts): taken before BEGIN, after waiting here for a
 		// statement the calling thread runs meanwhile; settleLock gives it back once the transaction ended.
@@ -163,7 +164,9 @@ const handlers = {
 				throw restoreFailure;
 			}
 		}
+		return request.statements === undefined ? undefined : lead(request.statements);
 	},
+	lead: (request) => lead(request.statements),
 	// \`repeat\`, then each statement, in one request: the statements the caller would send one at a time, in the same
 	// order, each prepared when it is reached. The caller's abort flag is read where the caller would check its signal.
 	sequence: (request) => {
@@ -206,18 +209,44 @@ const handlers = {
 	},
 };
 
+// A write transaction's leading statements, run in order once BEGIN IMMEDIATE took the lock: each answers with its rows
+// and the rows it changed, as all and run would, up to the first that fails; nothing after it runs. The answer says
+// whether the transaction is still open after that failure: SQLite rolls back only the statement for most failures, and
+// the whole transaction for a few (a full disk, an I/O error). A script answers nothing.
+function lead(statements) {
+	const answers = [];
+	for (const { sql, params, script } of statements) {
+		try {
+			if (script === true) {
+				database.exec(sql);
+				answers.push({ columns: [], values: [], changes: 0 });
+				continue;
+			}
+			const rows = table(statement(sql).all(...params));
+			answers.push({ ...rows, changes: Number(statement("SELECT changes() AS changes").get().changes) });
+		} catch (error) {
+			return { answers, failure: failure(error), open: database.isTransaction === true };
+		}
+	}
+	return { answers };
+}
+
 // The file's lock word while this connection takes or holds the lock: held while a transaction is open on it, given
 // back (and the waiting threads woken) once none is, before the request that ended it is answered.
 let lockState;
 
+function inTransaction() {
+	try {
+		return database?.isTransaction === true;
+	} catch {
+		return false;
+	}
+}
+
 function settleLock() {
 	if (lockState === undefined) return;
 	const { state, held } = lockState;
-	let open = false;
-	try {
-		open = database?.isTransaction === true;
-	} catch {}
-	if (open) {
+	if (inTransaction()) {
 		if (Atomics.compareExchange(state, 0, held - 1, held) === held - 1) Atomics.notify(state, 0);
 		return;
 	}
@@ -236,9 +265,9 @@ function handle(request) {
 
 parentPort.on("message", (request) => {
 	try {
-		parentPort.postMessage({ id: request.id, value: handle(request) });
+		parentPort.postMessage({ id: request.id, value: handle(request), tx: inTransaction() });
 	} catch (error) {
-		parentPort.postMessage({ id: request.id, failure: failure(error) });
+		parentPort.postMessage({ id: request.id, failure: failure(error), tx: inTransaction() });
 	}
 });
 `;
@@ -265,10 +294,43 @@ export type ConnectionRequest =
 	| { readonly kind: "open"; readonly path: string; readonly readOnly: boolean }
 	| { readonly kind: "exec"; readonly sql: string }
 	| { readonly kind: "run" | "get" | "all"; readonly sql: string; readonly params: readonly SqliteValue[] }
-	| { readonly kind: "begin"; readonly lockState?: SharedArrayBuffer; readonly lockTag?: number }
+	| BeginRequest
+	| LeadRequest
 	| { readonly kind: "dataVersion" | "now" | "jsonbExtract" | "close" }
 	| ReadTransactionRequest
 	| SequenceRequest;
+
+/**
+ * One non-blocking `BEGIN IMMEDIATE`, then, once it took the lock, `statements`, the transaction's leading statements, in
+ * the same request (#6560): see the thread's `begin` and `lead`. `lockState` and `lockTag` are the file's lock word and
+ * this connection's tag in it (see `node-sqlite-file-gate.ts`).
+ */
+export interface BeginRequest {
+	readonly kind: "begin";
+	readonly lockState?: SharedArrayBuffer;
+	readonly lockTag?: number;
+	readonly statements?: readonly SequencedStatement[];
+}
+
+/**
+ * Statements run in one request inside an open transaction, such as a group-commit member's `SAVEPOINT` with its
+ * leading statements (#6706): see the thread's `lead`.
+ */
+export interface LeadRequest {
+	readonly kind: "lead";
+	readonly statements: readonly SequencedStatement[];
+}
+
+/**
+ * What a `begin` request with statements is answered with: each statement's rows and the rows it changed, in order, up
+ * to the first that failed, that one's failure, and whether the transaction was still open after it; nothing after it
+ * ran.
+ */
+export interface LeadAnswer {
+	readonly answers: readonly { readonly rows: SqliteRow[]; readonly changes: number }[];
+	readonly failure?: Error;
+	readonly open?: boolean;
+}
 
 /**
  * A read-only transaction's start with its leading reads, and its end, which only a connection on a thread of its own
@@ -284,10 +346,18 @@ interface RowTable {
 	readonly values: readonly (readonly SqliteValue[])[];
 }
 
+/** A `LeadAnswer` as it crosses, before rows and the failure are rebuilt. */
+interface LeadTable {
+	readonly answers: readonly (RowTable & { readonly changes: number })[];
+	readonly failure?: ConnectionFailure;
+	readonly open?: boolean;
+}
+
 /** What a request's answer carries as it crosses, before rows are rebuilt. */
 type ConnectionValue =
 	| RowTable
 	| readonly RowTable[]
+	| LeadTable
 	| { readonly changes: number }
 	| SequenceAnswer
 	| string
@@ -305,6 +375,7 @@ export type ConnectionAnswer =
 	| SqliteRow
 	| SqliteRow[]
 	| SqliteRow[][]
+	| LeadAnswer
 	| { readonly changes: number }
 	| SequenceAnswer
 	| string
@@ -331,6 +402,7 @@ interface ConnectionReply {
 	readonly id: number;
 	readonly value?: ConnectionValue;
 	readonly failure?: ConnectionFailure;
+	readonly tx?: boolean;
 }
 
 const STANDARD_ERRORS: Readonly<Record<string, ErrorConstructor>> = {
@@ -423,8 +495,14 @@ export class ThreadConnection {
 	private readonly worker: Worker;
 	private readonly waiting = new Map<number, Waiter>();
 	private nextId = 1;
+	private _inTransaction?: boolean;
 	private ended?: Error;
 	private closing?: Promise<undefined>;
+
+	/** Whether SQLite had an open transaction after the thread's last answer; undefined for older connection threads. */
+	get inTransaction(): boolean | undefined {
+		return this._inTransaction;
+	}
 
 	private constructor() {
 		// None of the process's own flags: the caller's preloads would run again for every connection, and its
@@ -518,6 +596,15 @@ export class ThreadConnection {
 			return answer.then((value) => (value === undefined ? undefined : rowsOf(value as RowTable)[0]));
 		if (request.kind === "all") return answer.then((value) => rowsOf(value as RowTable));
 		if (request.kind === "read") return answer.then((value) => (value as readonly RowTable[]).map(rowsOf));
+		if (request.kind === "lead" || (request.kind === "begin" && request.statements !== undefined))
+			return answer.then((value): LeadAnswer | undefined => {
+				if (value === undefined) return undefined;
+				const { answers, failure, open } = value as LeadTable;
+				return {
+					answers: answers.map((each) => ({ rows: rowsOf(each), changes: each.changes })),
+					...(failure === undefined ? {} : { failure: connectionError(failure), open: open === true }),
+				};
+			});
 		return answer as Promise<ConnectionAnswer>;
 	}
 
@@ -557,6 +644,7 @@ export class ThreadConnection {
 	}
 
 	private receive(reply: ConnectionReply): void {
+		if (typeof reply.tx === "boolean") this._inTransaction = reply.tx;
 		const waiter = this.waiting.get(reply.id);
 		if (waiter === undefined) return;
 		this.waiting.delete(reply.id);
