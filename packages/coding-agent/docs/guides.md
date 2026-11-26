@@ -25,6 +25,8 @@ New to Atomic? Follow the [Quickstart](/quickstart) to install, authenticate, ru
 - **[Background tasks](/background-tasks).** Launch, inspect, steer, and stop background subagents and shells.
 - **[Intercom](/guides/intercom).** Coordinate live sessions and subagents on one machine or across a shared database (see the full [Intercom guide](/intercom)).
 - **[Team and CI setup](/guides/team-setup).** Share Intercom with a team through one database while sessions stay private, and configure CI runners from environment variables.
+- **[PostgreSQL with PgBouncer](/guides/postgres-pgbouncer).** Run many agents on one PostgreSQL server by putting PgBouncer in front of it.
+- **[Tune PostgreSQL](/guides/postgres-tuning).** Tune the PostgreSQL server that many agents share: distance, connections, memory, monitoring, and busy tables.
 - **[Structured decisions](/sdk/structured-decisions).** Make typed classifier or chat decisions with `decide()` and `generateStructuredOutput()`.
 - **[Computer use](/computer-use).** Automate desktop apps, browsers, and terminals across macOS, Linux, and Windows.
 - **[Verification](/verification).** Reproduce bugs and collect verifiable evidence across terminal, browser, and desktop environments.

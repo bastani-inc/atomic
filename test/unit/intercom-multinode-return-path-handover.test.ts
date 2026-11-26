@@ -443,6 +443,8 @@ test("router close releases pending openings before awaiting serial reply lanes 
 
 	let listLiveAfterClose = 0;
 	const origListLive = b.opened.state.leases.listLive.bind(b.opened.state.leases);
+	// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+	Object.assign(b.opened.state.leases, { listLiveFor: undefined });
 	let closing = false;
 	b.opened.state.leases.listLive = async (...args) => {
 		if (closing) listLiveAfterClose += 1;

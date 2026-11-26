@@ -113,6 +113,41 @@ test("Postgres refuses connection limits that are not positive integers (#4793)"
 			"statementTimeoutMs",
 			"positive-integer-required",
 		);
+	for (const idleTimeoutMs of [0, -5, 2.5])
+		await assertRefused(
+			() => openPostgresDatabase({ url: "postgres://atomic@127.0.0.1:1/atomic", idleTimeoutMs }),
+			"idleTimeoutMs",
+			"positive-integer-required",
+		);
+	for (const connectTimeoutMs of [0, -5, 2.5, "10000" as unknown as number])
+		await assertRefused(
+			() => openPostgresDatabase({ url: "postgres://atomic@127.0.0.1:1/atomic", connectTimeoutMs }),
+			"connectTimeoutMs",
+			"positive-integer-required",
+		);
+	for (const keepAliveIdleMs of [0, -5, 2.5])
+		await assertRefused(
+			() => openPostgresDatabase({ url: "postgres://atomic@127.0.0.1:1/atomic", keepAliveIdleMs }),
+			"keepAliveIdleMs",
+			"positive-integer-required",
+		);
+	// 0 is allowed: it turns the separate pool for reads off.
+	for (const readerMaxConnections of [-1, 1.5, Number.NaN, "2" as unknown as number])
+		await assertRefused(
+			() => openPostgresDatabase({ url: "postgres://atomic@127.0.0.1:1/atomic", readerMaxConnections }),
+			"readerMaxConnections",
+			"non-negative-integer-required",
+		);
+	for (const maxPreparedStatements of [-1, 2.5, "256"])
+		await assertRefused(
+			() =>
+				openPostgresDatabase({
+					url: "postgres://atomic@127.0.0.1:1/atomic",
+					maxPreparedStatements: maxPreparedStatements as number,
+				}),
+			"maxPreparedStatements",
+			"non-negative-integer-required",
+		);
 });
 
 test("the Postgres adapter module declares its password as a live secret (#4793)", () => {
@@ -345,6 +380,31 @@ test("the Postgres adapter checks the options settings give it before connecting
 		() => adapter.openDatabase({ url, statementTimeoutMs: -1 }, context),
 		"statementTimeoutMs",
 		"positive-integer-required",
+	);
+	await assertRefused(
+		() => adapter.openDatabase({ url, idleTimeoutMs: "300000" }, context),
+		"idleTimeoutMs",
+		"positive-integer-required",
+	);
+	await assertRefused(
+		() => adapter.openDatabase({ url, readerMaxConnections: -1 }, context),
+		"readerMaxConnections",
+		"non-negative-integer-required",
+	);
+	await assertRefused(
+		() => adapter.openDatabase({ url, connectTimeoutMs: 0 }, context),
+		"connectTimeoutMs",
+		"positive-integer-required",
+	);
+	await assertRefused(
+		() => adapter.openDatabase({ url, keepAliveIdleMs: "60000" }, context),
+		"keepAliveIdleMs",
+		"positive-integer-required",
+	);
+	await assertRefused(
+		() => adapter.openDatabase({ url, maxPreparedStatements: -1 }, context),
+		"maxPreparedStatements",
+		"non-negative-integer-required",
 	);
 	await assertRefused(() => adapter.openDatabase({ url, auth: "kerberos" }, context), "auth", "unsupported-auth");
 	await assertRefused(

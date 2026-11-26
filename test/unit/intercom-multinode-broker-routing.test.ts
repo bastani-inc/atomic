@@ -1320,13 +1320,18 @@ test("an asker that moved to its recipient's broker while away gets the failure 
 });
 
 /**
- * Counts the statements `database` runs for calls made inside `within`, those of its transactions included: a broker's
- * polls and renewals run outside any send, so what runs inside a send's context is what that send costs.
+ * Counts the statements `databases` run for calls made inside `within`, those of their transactions included, and the
+ * rows their reads return: a broker's polls and renewals run outside any send, so what runs inside a send's context is
+ * what that send costs. The broker's reader handles are connections to the same database, so their reads count as the
+ * writer's do (#6560).
  */
-function countStatements(database: SqliteDatabase, within: AsyncLocalStorage<true>) {
+function countStatements(databases: readonly SqliteDatabase[], within: AsyncLocalStorage<true>) {
 	let count = 0;
+	let rows = 0;
 	const tally = () => {
-		if (within.getStore() === true) count++;
+		const inside = within.getStore() === true;
+		if (inside) count++;
+		return inside;
 	};
 	const counted = (executor: SqliteExecutor): SqliteExecutor => ({
 		exec: (sql) => {
@@ -1337,35 +1342,51 @@ function countStatements(database: SqliteDatabase, within: AsyncLocalStorage<tru
 			tally();
 			return executor.run(sql, ...params);
 		},
-		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-			tally();
-			return executor.get<T>(sql, ...params);
+		get: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+			const inside = tally();
+			const row = await executor.get<T>(sql, ...params);
+			if (inside && row !== undefined) rows++;
+			return row;
 		},
-		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
-			tally();
-			return executor.all<T>(sql, ...params);
+		all: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+			const inside = tally();
+			const read = await executor.all<T>(sql, ...params);
+			if (inside) rows += read.length;
+			return read;
 		},
 	});
-	const original = {
-		exec: database.exec.bind(database),
-		run: database.run.bind(database),
-		get: database.get.bind(database),
-		all: database.all.bind(database),
-		transaction: database.transaction.bind(database),
+	const restores = databases.map((database) => {
+		const original = {
+			exec: database.exec.bind(database),
+			run: database.run.bind(database),
+			get: database.get.bind(database),
+			all: database.all.bind(database),
+			transaction: database.transaction.bind(database),
+		};
+		Object.assign(database, counted(original), {
+			transaction: <T>(
+				callback: (transaction: SqliteExecutor) => Promise<T>,
+				options?: Parameters<SqliteDatabase["transaction"]>[1],
+			) => original.transaction((transaction) => callback(counted(transaction)), options),
+		});
+		return () => Object.assign(database, original);
+	});
+	return {
+		count: () => count,
+		rows: () => rows,
+		restore: () => {
+			for (const restore of restores) restore();
+		},
 	};
-	Object.assign(database, counted(original), {
-		transaction: <T>(
-			callback: (transaction: SqliteExecutor) => Promise<T>,
-			options?: Parameters<SqliteDatabase["transaction"]>[1],
-		) => original.transaction((transaction) => callback(counted(transaction)), options),
-	});
-	return { count: () => count, restore: () => Object.assign(database, original) };
 }
 
 /**
- * What queuing one send for an offline session costs the shared database: its target resolved (the live presences, a
- * reservation, its known session and its id's binding), its row looked up, reserved and written in one transaction (the
- * write reads the row back, with the broker its recipient's presence names, #5607), and one read once it is written.
+ * What queuing one send for an offline session costs the shared database, through the broker's write handle and its
+ * reader handle together, as before either existed: on the reader (#6560), the presences its target may name (by
+ * index, #6560), its known session and its id's binding; on the writer, its target's reservation read, its row looked
+ * up, then one transaction that reads its reservation, its row and its recipient's queue, writes the row (which comes
+ * back from its insert, with the broker its recipient's presence names, #5607) and its reservation, and one read of its
+ * position once it is written.
  */
 const QUEUED_SEND_STATEMENTS = 11;
 
@@ -1377,7 +1398,7 @@ test("sends queued for a session that stays offline cost the shared database no 
 	await waitOffline(a!, recipient);
 	const sends = 64;
 	const within = new AsyncLocalStorage<true>();
-	const statements = countStatements(a!.database, within);
+	const statements = countStatements([a!.database, ...a!.readers], within);
 	try {
 		for (let index = 0; index < sends; index++) {
 			const sent = message({ content: { text: `queued ${index}` } });
@@ -1394,6 +1415,33 @@ test("sends queued for a session that stays offline cost the shared database no 
 		statements.restore();
 	}
 	assert.equal(statements.count(), sends * QUEUED_SEND_STATEMENTS);
+});
+
+test("a send to a session on another broker reads as many rows of the shared database however many other sessions are present (#6560)", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("recipient");
+	const within = new AsyncLocalStorage<true>();
+	const rowsPerSend = async () => {
+		const sends = 4;
+		const statements = countStatements([a!.database, ...a!.readers], within);
+		try {
+			for (let index = 0; index < sends; index++) {
+				const sent = message({ content: { text: `reads ${index}` } });
+				within.run(true, () => a!.send(sender, "recipient", sent));
+				await waitFor(() => messageFrames(recipient, sent.id)[0]);
+				b!.router.received(recipient, sent.id);
+				assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "delivered");
+			}
+		} finally {
+			statements.restore();
+		}
+		return statements.rows() / sends;
+	};
+	const alone = await rowsPerSend();
+	for (let index = 0; index < 32; index++) await b!.connect(`bystander-${index}`);
+	for (let index = 0; index < 32; index++) await a!.connect(`neighbour-${index}`);
+	assert.equal(await rowsPerSend(), alone);
 });
 
 test("an ask whose route write fails is redelivered and keeps its reply route instead of settling without one", async () => {

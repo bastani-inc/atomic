@@ -453,6 +453,9 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL through an HTTP CO
 					openDatabase: through,
 					prefix: "s5473_",
 					pollIntervalMs: NEVER_POLL_MS,
+					// While its listener is live the bus re-arms the backup poll at the listening interval (#6560); keep that
+					// hourly too, so the arms below count every finished poll and only a notification can deliver the hint.
+					listeningPollIntervalMs: NEVER_POLL_MS,
 					schedule(poll, delayMs) {
 						if (delayMs === NEVER_POLL_MS) backupPollsArmed++;
 						const timer = setTimeout(poll, delayMs);

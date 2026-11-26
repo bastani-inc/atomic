@@ -27,7 +27,7 @@ import type {
 import { reservationAdmitsSender } from "./group-membership.js";
 import { isReleasedReservationKey } from "./released-children.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema } from "./sql-schema.js";
+import { ensureBrokerSchema, openCatalogOf, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type ReservationRow = SqliteRow & {
 	reservation_key: string;
@@ -123,7 +123,13 @@ async function renameWakeIndex(tx: SqliteExecutor, dialect: StorageDialect, tabl
  * `<prefix>intercom_restoring_reservations`. Insertion order and fencing tokens come from
  * `<prefix>intercom_restoring_reservation_counters`, so both keep increasing after `prune` deletes rows.
  */
-export async function openSqlRestoringReservationStore({
+export function openSqlRestoringReservationStore(options: IntercomBrokerStateOptions): Promise<RestoringReservationStore> {
+	// Its schema checks answer from one read of the catalog, shared with an open around it: a current schema costs
+	// no transaction and no lock, also when the store is opened on its own (#6560).
+	return withBrokerSchemaCatalog(options.database, options.prefix, () => openRestoringReservationStoreInCatalog(options));
+}
+
+async function openRestoringReservationStoreInCatalog({
 	database,
 	prefix,
 }: IntercomBrokerStateOptions): Promise<RestoringReservationStore> {
@@ -132,6 +138,11 @@ export async function openSqlRestoringReservationStore({
 	const counters = `${validPrefix}intercom_restoring_reservation_counters`;
 	const wakeClaims = `${validPrefix}intercom_restoring_wake_claims`;
 	const { types, nowMs, greatest } = dialectOf(database);
+	/**
+	 * Its transactions read and write this table, its counters and its wake claims alone, which no other store
+	 * touches, so they exclude one another, not every writer of the database (#6560).
+	 */
+	const serial = { concurrency: { kind: "serial", domain: table } } as const;
 	await ensureBrokerSchema(database, prefix, "restoring-reservations", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
@@ -172,8 +183,13 @@ export async function openSqlRestoringReservationStore({
 	await ensureBrokerSchema(database, prefix, "restoring-reservation-indexes", (tx) =>
 		tx.exec(`CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL`),
 	);
-	// Probed every time, as an earlier broker may recreate its index meanwhile; a current one runs no DDL (#5218).
-	await database.transaction((tx) => renameWakeIndex(tx, dialectOf(database), table));
+	// Probed every time, as an earlier broker may recreate its index meanwhile; a current one runs no DDL (#5218). The
+	// catalog an open read answers that probe, so a current index costs no transaction (#6560).
+	const catalog = await openCatalogOf(database);
+	const wakeIndexCurrent =
+		catalog?.hasObject(`${table}_wake`) === true &&
+		!catalog.hasObject(`${table}_wake_requested`.slice(0, dialectOf(database).name === "postgres" ? 63 : undefined));
+	if (!wakeIndexCurrent) await database.transaction((tx) => renameWakeIndex(tx, dialectOf(database), table));
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
 		targets_json, "group" AS reservation_group, dormant, wake, wake_generation, fencing_token, "order" AS reservation_order,
 		gone AS gone_json, end_json,
@@ -316,7 +332,7 @@ export async function openSqlRestoringReservationStore({
 					},
 					superseded,
 				};
-			});
+			}, serial);
 		},
 		async lookup(target, sender, staleAfterMs): Promise<RestoringReservationLookupResult> {
 			if (target.length === 0) return invalid("empty-target");
@@ -353,7 +369,7 @@ export async function openSqlRestoringReservationStore({
 					reservationKey,
 				);
 				return { status: changes > 0 ? "requested" : "not-wakeable" };
-			});
+			}, serial);
 		},
 		async takeWakeRequests(ownerBrokerId): Promise<RestoringReservationTakeWakeResult> {
 			if (ownerBrokerId.length === 0) return invalid("empty-broker-id");
@@ -374,7 +390,7 @@ export async function openSqlRestoringReservationStore({
 						childName: JSON.parse(row.child_name_json) as string,
 					})),
 				};
-			});
+			}, serial);
 		},
 		async renew(lease): Promise<RestoringReservationRenewResult> {
 			const bad = invalidLease(lease);
@@ -387,7 +403,7 @@ export async function openSqlRestoringReservationStore({
 					lease.reservationKey,
 				);
 				return { status: "renewed" };
-			});
+			}, serial);
 		},
 		async release(lease, outcome): Promise<RestoringReservationReleaseResult> {
 			const bad = invalidLease(lease);
@@ -411,7 +427,7 @@ export async function openSqlRestoringReservationStore({
 						: { outcome: "released", refusal: outcome.refusal },
 				);
 				return { status: "released" };
-			});
+			}, serial);
 		},
 		async consume(reservationKey, registered): Promise<RestoringReservationConsumeResult> {
 			if (reservationKey.length === 0) return invalid("empty-reservation-key");
@@ -435,7 +451,7 @@ export async function openSqlRestoringReservationStore({
 					ended.push(row.reservation_key);
 				}
 				return { status: "consumed", reservationKeys: ended };
-			});
+			}, serial);
 		},
 		async insertionMark(): Promise<number> {
 			const row = await database.get<SqliteRow & { value: number }>(
@@ -458,7 +474,7 @@ export async function openSqlRestoringReservationStore({
 				);
 				await tx.run(`DELETE FROM ${wakeClaims} WHERE reservation_key NOT IN (SELECT reservation_key FROM ${table})`);
 				return changes;
-			});
+			}, serial);
 		},
 	};
 }

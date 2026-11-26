@@ -725,6 +725,8 @@ test("a hung remote send does not block a local send to an already-local target 
 		// Stall listLive forever so a remote send to "missing-remote" hangs inside route().
 		const leases = a.opened.state.leases;
 		const origListLive = leases.listLive.bind(leases);
+		// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+		Object.assign(leases, { listLiveFor: undefined });
 		const listLiveStarted = deferred();
 		const releaseListLive = deferred();
 		Object.assign(leases, {
@@ -893,6 +895,8 @@ test("a hung remote send followed by a local send to a newly joined target still
 
 		const leases = a.opened.state.leases;
 		const origListLive = leases.listLive.bind(leases);
+		// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+		Object.assign(leases, { listLiveFor: undefined });
 		const listLiveStarted = deferred();
 		const releaseListLive = deferred();
 		cleanups.push(async () => {
@@ -1045,6 +1049,8 @@ test("re-entrant local-to-remote fallback when target disconnects and reconnects
 		// Hold m1's remote listLive once it falls back re-entrantly so targetNew can reconnect meanwhile.
 		const leases = a.opened.state.leases;
 		const origListLive = leases.listLive.bind(leases);
+		// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+		Object.assign(leases, { listLiveFor: undefined });
 		let heldRemote = false;
 		const m1ReenteredRemote = deferred();
 		Object.assign(leases, {
@@ -1190,6 +1196,8 @@ test("a late database error during answerLocalRetry shares the remaining LOCAL_R
 		// Hang an earlier remote send to a target that joins afterwards.
 		const leases = a.opened.state.leases;
 		const origListLive = leases.listLive.bind(leases);
+		// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+		Object.assign(leases, { listLiveFor: undefined });
 		const listLiveStarted = deferred();
 		const releaseListLive = deferred();
 		cleanups.push(async () => {
@@ -1271,6 +1279,8 @@ test("when m1 re-enters into a hung remote lookup after m2 already started waiti
 		// Hang listLive when m1 falls back to remote routing.
 		const leases = a.opened.state.leases;
 		const origListLive = leases.listLive.bind(leases);
+		// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+		Object.assign(leases, { listLiveFor: undefined });
 		const m1HungInRemote = deferred();
 		Object.assign(leases, {
 			listLive: async (...args: Parameters<typeof origListLive>) => {
@@ -1365,6 +1375,8 @@ test("a plain local send behind a local reply parked behind a hung remote reply 
 
 		const leases = a.opened.state.leases;
 		const origListLive = leases.listLive.bind(leases);
+		// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+		Object.assign(leases, { listLiveFor: undefined });
 		const releaseListLive = deferred();
 		cleanups.push(async () => {
 			Object.assign(leases, { listLive: origListLive });
@@ -1400,6 +1412,8 @@ test("a plain local send behind a local requirePendingReply or soft reply on a h
 			const origRead = outbox.read.bind(outbox);
 			const origMatches = pendingAsks.matchesReply.bind(pendingAsks);
 			const origListLive = leases.listLive.bind(leases);
+			// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+			Object.assign(leases, { listLiveFor: undefined });
 			const release = deferred();
 			cleanups.push(async () => {
 				Object.assign(outbox, { read: origRead });

@@ -96,8 +96,11 @@ export interface ForkStagingTarget {
 	readonly ownsBlobs: boolean;
 	/** The destination's `create`: one transaction with every entry. */
 	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult>;
-	/** The destination's session transaction, which checks the sessions schema version first. */
-	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
+	/**
+	 * A write of the session `sessionId` in the destination, which checks the sessions schema version first: the only
+	 * writer of that session, beside writers of other sessions (#6560).
+	 */
+	transaction<T>(sessionId: string, body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
 	/** Writes the child's sessions row, as `create` does, from the summary and index the clone folded. */
 	saveSummary(
 		tx: SqliteExecutor,
@@ -702,9 +705,11 @@ async function stageAndPublish(
 		await flush();
 
 		const { epoch } = await destinationWrite(
-			target.transaction(async (tx) => {
+			target.transaction(header.id, async (tx) => {
 				const { tables } = target;
-				// The lease decides between this publication and a cleanup that took the transfer over.
+				// The lease decides between this publication and a cleanup that took the transfer over. Its row lock, taken
+				// first and held to the commit, keeps a cleanup from taking the transfer over meanwhile: a cleanup skips a
+				// locked lease, and its takeover's guarded update waits for this commit (#6560).
 				const { changes: held } = await tx.run(
 					`UPDATE ${table} SET size = ${dialect.nowMs} + ? WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`,
 					FORK_STAGING_LEASE_MS,

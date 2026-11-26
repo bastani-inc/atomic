@@ -8,6 +8,7 @@ import {
 	BROKER_LEASE_STALE_AFTER_MS,
 	type BrokerMembershipSubject,
 	type IntercomBrokerStateStore,
+	type LeaseState,
 	type RecipientPresenceSubject,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
@@ -191,7 +192,7 @@ async function lostCluster({
 		);
 	const route = (replySenderSessionId: string, replyTo: string) =>
 		seed.pendingAsks.matchesReply({ replySenderSessionId, replyTargetSessionId: ASKER, replyTo });
-	return { seed, start, failures, route, frames };
+	return { seed, connectState, start, failures, route, frames };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
@@ -334,4 +335,52 @@ test("an asker on another broker is told through the outbox, under the lost sess
 	await vi.waitFor(async () =>
 		assert.deepEqual(await route(LOST, "q1"), { status: "no-match" }, "an asker in its groups needs no route for it"),
 	);
+});
+
+test("a sweep that finds no recipient lost reads no live presence lease (#6560)", async () => {
+	const { seed, connectState, start, failures } = await lostCluster();
+	for (let index = 0; index < 30; index++)
+		await seed.leases.acquire(
+			{ kind: "presence", targetIdentity: `present-${index}`, session: session(`present-${index}`, null) },
+			"live",
+			HOUR_MS,
+		);
+	const state = await connectState();
+	let presencesRead = 0;
+	let swept = false;
+	const countPresences = (leases: LeaseState[]) => {
+		presencesRead += leases.filter((lease) => lease.key.kind === "presence").length;
+		return leases;
+	};
+	const leases = new Proxy(state.leases, {
+		get(target, key) {
+			const value = Reflect.get(target, key, target);
+			if (typeof value !== "function") return value;
+			if (key === "listLive" || key === "listAged")
+				return (...args: unknown[]) => value.apply(target, args).then(countPresences);
+			return value.bind(target);
+		},
+	});
+	const knownSessions = new Proxy(state.knownSessions, {
+		get(target, key) {
+			const value = Reflect.get(target, key, target);
+			if (typeof value !== "function") return value;
+			if (key === "listLost")
+				return (...args: unknown[]) =>
+					value.apply(target, args).finally(() => {
+						swept = true;
+					});
+			return value.bind(target);
+		},
+	});
+	// Not the crashed broker's restart, so its session's presence is live like every other.
+	await start({
+		instanceKey: "/other.sock",
+		state: { ...state, leases, knownSessions },
+		lostRecipientBounds: { afterRestartMs: HOUR_MS, afterStaleLeaseMs: HOUR_MS },
+	});
+	await vi.waitFor(() => assert.ok(swept, "the broker swept for lost recipients"));
+	await settle();
+	assert.equal(presencesRead, 0, "the sweep read the live presence leases");
+	assert.deepEqual(failures(), []);
 });

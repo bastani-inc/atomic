@@ -6,6 +6,21 @@
 
 - This package now needs Node.js 24.20.0 or newer, in the Node.js 24 LTS line (`engines.node` is `>=24.20.0`, up from `>=22.19.0`). Check with `node --version`, and upgrade from [nodejs.org](https://nodejs.org/en/download) or with `nvm install 24`, `fnm install 24`, or `mise use -g node@24`. Node.js releases before 24.15.0 bundle a SQLite version with a [bug that can corrupt](https://www.sqlite.org/wal.html#walresetbug) a database opened by a writer and a reader at once, and Node.js 24.17.0 through 24.19.0 reject valid certificates for IPv6 addresses ([nodejs/node#64145](https://github.com/nodejs/node/pull/64145)) ([#6579](https://github.com/bastani-inc/atomic/pull/6579)).
 
+### Added
+
+- `keepAliveMs` keeps idle connections to a libSQL server open longer than Node.js's default of about 4 seconds, so a request after a pause skips the new connection and TLS handshake. Set it only for a server that keeps idle connections open at least that long, such as a self-hosted sqld; Turso closes idle connections after 5 seconds, so leave it unset there ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- On a libSQL server, reads made at once now run at the same time instead of one after another: read-only transactions, such as session loads, and single `SELECT` statements each take a stream of their own, while writes still run one at a time and a read still sees every write made before it. The new `concurrency` option sets how many reads one connection runs at once (a positive integer, default 20); it has no effect on `file:` databases ([#6565](https://github.com/bastani-inc/atomic/issues/6565), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
+### Changed
+
+- A transaction on a libSQL server sends its statements without waiting for each answer. Its first reads go with its `BEGIN`, and its last writes go with its `COMMIT`, so saving entries to a session takes 2 requests instead of 6. If a statement fails while later ones are already on their way, nothing in the transaction commits ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- `openReader()` is now also available for local `file:` databases, and closing a database also closes the readers it opened ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
+### Fixed
+
+- On Bun, including the `atomic` binary, a write to Turso about 5 seconds after the previous request no longer fails with `ECONNRESET` and an unknown outcome. Bun kept the idle connection longer than Turso does, so the request could go out on a connection Turso was closing. The adapter now opens a new connection after 4 seconds without an answer, as Node.js does, and honours `keepAliveMs` on Bun too ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
+
 ## [0.10.10] - 2026-11-24
 
 ### Changed

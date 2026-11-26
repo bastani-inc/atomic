@@ -122,9 +122,13 @@ Provider notes:
 
 When the runtime role lacks a required privilege or the schema is behind the current Atomic release, opening the store fails with `StorageConfigError` (`reason: "missing-privilege"`). The error names the exact `GRANT` or `atomic storage migrate` command to run.
 
+Once the schema is current, opening the session store or an Intercom broker's shared state reads the schema catalog and the migration ledger once, in two statements sent together, and runs no schema transaction and takes no lock. Many processes can therefore start at once against one database without waiting for each other or for other writers. Only an open that finds something missing or behind takes the schema lock and checks again under it.
+
+`atomic storage migrate` sets `fillfactor = 80` on the sessions table and the Intercom lease table, which every append and lease renewal updates, so those updates usually stay on their page without touching an index. The setting applies to pages written after it. To apply it to existing pages too, run `VACUUM FULL` on those two tables during a quiet period, or use `pg_repack` to do it without a long lock. Both steps are optional. A runtime role that cannot alter these tables leaves the setting to the owner's `atomic storage migrate` and keeps working.
+
 If you have not run `atomic storage migrate` after an upgrade and a low-privilege runtime role clones a session across connections, Atomic falls back to copying in memory and prints a one-time warning asking you to run `atomic storage migrate` as the owner role.
 
-Every Atomic process opens a connection pool of up to 8 connections (`maxConnections`). If your fleet exceeds the server's `max_connections`, lower `maxConnections` or connect through a [connection pooler](#connection-poolers).
+Every Atomic process opens one pool of up to 8 connections (`maxConnections`) per database, however many stores it opens there, plus a smaller pool for reads. See [Connection budget](#connection-budget) for what each process holds, and [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents) for how to size a fleet.
 
 Give each team or project its own `prefix` or its own database. PostgreSQL prefixes must be lowercase ASCII and at most 24 characters so generated identifiers stay within PostgreSQL's 63-byte limit. Longer prefixes fail with `StoragePrefixError` (`reason: "too-long"`), and uppercase letters fail with `reason: "uppercase"`.
 
@@ -172,8 +176,13 @@ You can also edit this configuration directly. For password authentication in ad
 | --- | --- | --- |
 | `url` | Required | `postgres://` or `postgresql://` URL with username and no password |
 | `auth` | `"password"` | `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` for [cloud identities](#cloud-identities) |
-| `maxConnections` | `8` | Maximum pooled connections per Atomic process |
-| `statementTimeoutMs` | `30000` | Maximum runtime for one statement before server cancellation (client cancels the connection 5,000 ms later if the server stops answering; idle connections close after 10,000 ms, and connect/pool-wait timeout is 10,000 ms) |
+| `maxConnections` | `8` | Most connections one Atomic process opens in its main pool for this database. A positive integer. Raise it for more concurrent writes, as far as the server allows. See [Connection budget](#connection-budget) and [Tuning](#tuning-for-many-concurrent-agents) |
+| `readerMaxConnections` | `2` | Most connections in the process's pool for reads, capped at `maxConnections`. A non-negative integer. `0` turns the separate pool off, so reads share the main pool |
+| `statementTimeoutMs` | `30000` | How long one statement may run, in milliseconds, before the server cancels it. If the server stops answering, Atomic gives up on the connection 5 seconds after this |
+| `connectTimeoutMs` | `10000` | How long opening a connection, or waiting for a free one, may take, in milliseconds. A positive integer |
+| `idleTimeoutMs` | `300000` | How long, in milliseconds, a pool's last connection stays open after the pool's last call. Connections opened for a burst close after 10 seconds idle, or after `idleTimeoutMs` when it is shorter. A positive integer |
+| `keepAliveIdleMs` | `60000` | How long, in milliseconds, a connection sits unused before Atomic starts TCP keepalive probes on it. A positive integer |
+| `maxPreparedStatements` | `256`, or `0` when `listenUrl` is set or the URL's port is 6432 or 6543 | Most statements each connection keeps prepared on the server, so the server plans each one once. A non-negative integer. `0` turns prepared statements off. Each prepared statement uses some server memory per connection |
 | `listenUrl` | `url` | Direct endpoint for [wake-ups](#wake-ups) when `url` uses a transaction pooler. Enforces the same URL, TLS, proxy, and no-embedded-password rules as `url` (`credential-in-url`) |
 | `schema` | `"atomic"` | Schema name starting with a lowercase ASCII letter or `_`, followed by lowercase letters, digits, or `_` (1 to 63 characters) |
 | `proxy` | From environment | `http://` or `https://` proxy URL for all connections, or `"none"` to connect directly |
@@ -206,17 +215,41 @@ Atomic handles informational `1xx` proxy replies (such as `103 Early Hints`) and
 
 If the proxy refuses the tunnel (`403` or `407`), opening fails immediately with `StorageUnavailableError` without retrying. Connection refusals, dropped connections, and `502` or `503` responses retry like an unreachable server (about 4 seconds for refused connections, or up to about 45 seconds when attempts time out after 8 seconds each), with a warning naming the proxy and failure reason.
 
+### Connection budget
+
+Each Atomic process holds one set of connections per database. The session store, in-process subagents' session stores, chat records, search, the Intercom broker's state, and all their read handles share it, when they use the same URL, role, password, `listenUrl`, `auth`, `schema`, `proxy`, and pool settings. The set closes when the last store using it closes. It holds:
+
+- **A main pool** of up to `maxConnections` connections, 8 by default, opened as calls need them. In `pg_stat_activity`, their `application_name` is `atomic`.
+- **A reader pool** of up to `readerMaxConnections` connections, 2 by default and never more than `maxConnections`. Reads use it, so they do not wait for connections that writes are using. Their `application_name` is `atomic-reader`.
+- **One listening connection** for [wake-ups](#wake-ups), opened once something in the process listens, such as an Intercom broker. Its `application_name` is `atomic-listen`.
+
+So a process opens at most `maxConnections` + `readerMaxConnections` + 1 connections per database: 11 with the defaults.
+
+Pools grow for bursts and shrink afterwards. A connection opened for a burst closes after 10 seconds without use. A pool's last connection stays open for `idleTimeoutMs`, 5 minutes by default, after the pool's last call, so a call after a pause skips the connection and TLS handshakes. Unused connections do not keep the process from exiting.
+
+This follows common pool designs. [HikariCP](https://github.com/brettwooldridge/HikariCP#frequently-used) closes idle connections above a minimum and recommends [small pools](https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing). Rails keeps [one pool per process and database](https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/ConnectionPool.html) and closes connections idle for 300 seconds. [pgx](https://github.com/jackc/pgx/blob/master/pgxpool/pool.go) keeps no minimum and closes connections idle for 30 minutes. node-postgres closes idle connections after 10 seconds by default.
+
+In one measurement, a process with a session store and an Intercom broker made 100 session saves and 100 Intercom sends, 4 at a time each. It peaked at 8 connections instead of 9. Ten seconds after the burst, it held 3 connections, one in each pool and the listening one, instead of 9. With `maxConnections: 2`, the peak dropped from 7 to 5 and the idle count from 7 to 3.
+
+The Intercom broker runs in its own process on each machine. Count each machine's broker process and each `atomic` process separately. How to size these settings:
+
+- **A few long-lived processes**, such as one interactive session per machine: the defaults suit them. Each process holds 2 to 3 connections between bursts, and up to the maximum above during one.
+- **Many processes, such as a swarm of agent runners:** work out `maxConnections` from the server's limit with [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents). If the processes often sit idle, lower `idleTimeoutMs` to between 10000 and 30000, so idle processes give back their last pooled connection. Each process that listens still holds its listening connection.
+- **More processes than the server allows:** connect through [PgBouncer](/guides/postgres-pgbouncer) in transaction mode and set `listenUrl` to the server's direct address. Then only the listening connections count against the server directly.
+
 ### Connection poolers
 
 Atomic works with transaction-mode poolers, including PgBouncer, Azure's built-in PgBouncer (port 6432), Supabase Supavisor (port 6543), and Neon's `-pooler` endpoint. Use transaction or session mode, never statement mode.
 
 Atomic keeps schema selection (`SET LOCAL search_path`), statement and lock timeouts, and advisory locks scoped inside transactions so pooled connections return clean. Because transaction poolers cannot relay `LISTEN`/`NOTIFY`, set `listenUrl` to the server's direct endpoint (such as port 5432 on Azure or Neon's unpooled host) to keep [wake-ups](#wake-ups) active while queries stay pooled.
 
+To run your own PgBouncer, follow the [PgBouncer guide](/guides/postgres-pgbouncer). It has a complete configuration with TLS and SCRAM, how to size the pools, and how to check that it works.
+
 ### Wake-ups
 
-On PostgreSQL, Intercom brokers receive instant notifications of new messages through `LISTEN`/`NOTIFY`. Each Atomic process holds one extra listening connection outside `maxConnections`.
+On PostgreSQL, Intercom brokers receive instant notifications of new messages through `LISTEN`/`NOTIFY`. Each Atomic process that listens, such as an Intercom broker, holds one listening connection per database in addition to its pools. Everything in the process that listens shares it.
 
-If the listening connection drops or `url` points to a transaction pooler without `listenUrl`, brokers fall back to polling so no messages are lost. Atomic checks the listening connection every 30 seconds and reconnects if it drops. If it detects a transaction pooler, it stops retrying wake-ups until the process restarts.
+While notifications are active, each broker also checks for missed messages every 5 seconds. If the listening connection drops or `url` points to a transaction pooler without `listenUrl`, brokers fall back to checking every half second, so no messages are lost. Atomic checks the listening connection every 30 seconds and reconnects if it drops. If it detects a transaction pooler, it stops retrying wake-ups until the process restarts.
 
 `atomic storage status` reports the wake-up state:
 
@@ -231,7 +264,7 @@ If the listening connection drops or `url` points to a transaction pooler withou
 - Connect directly to `<server>.postgres.database.azure.com` on port 5432.
 - Port 6432 uses the built-in PgBouncer transaction pooler on General Purpose and Memory Optimized tiers after enabling `pgbouncer.enabled`. Set `listenUrl` to port 5432 so [wake-ups](#wake-ups) work.
 - Add `PG_TRGM` to the `azure.extensions` server parameter before running `atomic storage migrate` so Atomic can index session history search. Without it, searches scan sessions page by page, and `atomic storage migrate` tells you to rerun after enabling it.
-- Watch connection limits. A Burstable B1ms server allows 50 connections (15 reserved for administrators), and each Atomic process opens up to `maxConnections` (8) plus one wake-up connection. Lower `maxConnections`, use PgBouncer, or scale up for multiple processes.
+- Watch connection limits. A Burstable B1ms server allows 50 connections (15 reserved for administrators), and each Atomic process opens up to `maxConnections` (8), 2 reader connections, and one wake-up connection. Lower `maxConnections`, use PgBouncer, or scale up for multiple processes. See [Connection budget](#connection-budget).
 - Allow client addresses in firewall rules or use private access.
 
 **Azure HorizonDB (preview, PostgreSQL 17):**
@@ -284,7 +317,9 @@ Running `atomic install npm:@azure/identity` (or the AWS or Google SDK) installs
 - **Proxy refused tunnel or unreachable.** Allowlist the database `host:port` on the proxy, supply proxy credentials for `407`, verify `HTTPS_PROXY`, or bypass the proxy with `NO_PROXY` or `proxy: "none"`. See [Through an HTTP proxy](#through-an-http-proxy).
 - **`unsupported-proxy`.** Proxy URLs must use `http://` or `https://` (not `socks5://`). Switch to an HTTP proxy or bypass it with `NO_PROXY` or `proxy: "none"`.
 - **`StorageTransientError` with code `read-only-server` (`25006`).** Point `url` at the primary read/write endpoint instead of a replica, or retry once failover or storage-full recovery completes.
-- **`too many connections` or `remaining connection slots are reserved` (`53300`).** Lower `maxConnections`, increase `max_connections`, or connect through a [connection pooler](#connection-poolers).
+- **`sorry, too many clients already`, `remaining connection slots are reserved for roles with the SUPERUSER attribute`, or `too many connections for role "<role>"` (`53300`).** The server, or the role's `CONNECTION LIMIT`, has no connection left. Atomic reports `StorageTransientError` with code `connection-refused`, and the server's message is its cause. Lower `maxConnections` or `readerMaxConnections`, raise the server's `max_connections`, or put [PgBouncer](/guides/postgres-pgbouncer) in front. See [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents).
+- **`timeout exceeded when trying to connect`.** Every connection in the process's pool stayed busy, or a new connection took longer than `connectTimeoutMs` to open. Atomic reports `StorageTransientError` with code `connection-refused`, and this message is its cause. Raise `maxConnections` if the server has connections to spare. Raise `connectTimeoutMs` if the server is far away or slow to accept connections.
+- **`prepared statement "atomic_…" does not exist` or `already exists` behind a pooler.** The pooler does not keep prepared statements across connections. Atomic then stops preparing statements for the rest of the process and retries the call, so you usually see only a one-time warning. A call Atomic cannot retry fails once with `StorageTransientError` code `connection-lost`, and the pooler's message is its cause. Set `maxPreparedStatements` to `0`, or on PgBouncer 1.21 or later set `max_prepared_statements` above `0`.
 - **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`.** The server cancelled a statement or transaction that waited too long or exceeded `statementTimeoutMs`, and wrote nothing. Repeated errors indicate server overload.
 - **`wake-ups: polling only` in `atomic storage status`.** Messages still arrive via polling. See [Wake-ups](#wake-ups) to restore `LISTEN`/`NOTIFY`.
 - **Failover or pooler restart disconnects.** Reported as `StorageTransientError` with code `connection-lost`.
@@ -310,6 +345,7 @@ atomic install npm:@bastani/atomic-storage-libsql
 - **Self-hosted `sqld`.** Always start `sqld` with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`). Without it, `sqld` 0.24.33 and earlier can stall writes during WAL checkpoints. Atomic warns after three consecutive unanswered writes. Interval checkpoints pause writes briefly (up to 5 seconds) while Atomic retries automatically.
 - **Namespaces and headers.** For `sqld --enable-namespaces`, set `"namespace": "<name>"` in `options` (sent as `x-namespace` over `libsql:`, `https:`, or `http:` URLs). SDK callers can also pass extra `headers` to `openLibsqlDatabase`, which Atomic redacts from errors.
 - **Tokens and local files.** Save a Turso token with `turso db tokens create <db> > turso-token && chmod 600 turso-token` (one trailing line ending is stripped when read from `secrets.authToken.file`, and relative paths resolve against [storage home](#storage-home)), or reference `{ "env": "TURSO_TOKEN" }`. Absolute `file:` URLs need no `secrets`. Add `prefix` to isolate projects or teams.
+- **Throughput.** A libSQL database has one writer at a time. The `concurrency` option sets how many reads one connection runs at the same time. See [Tuning libSQL and Turso](#tuning-libsql-and-turso).
 - **Retries and WebSockets.** Transient outages, expired streams, and 30-second unanswered requests report `StorageTransientError`. Calls that failed before writing retry up to 5 times over about 4 seconds. Writes with an uncertain outcome fail immediately with `outcome: "unknown"` and are not retried automatically. Over `ws:` or `wss:`, a batch whose `COMMIT` does not run reports `StorageUnavailableError` (`TRANSACTION_CLOSED`).
 
 For Node.js and TypeScript SDK apps, install `@bastani/atomic-storage-libsql` with `npm install` and import `openLibsqlDatabase` directly as plain ESM with TypeScript declarations. See [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql) and [SDK session storage](/sdk/storage). To wrap another driver, see [Bring your own driver](#bring-your-own-driver).
@@ -418,6 +454,210 @@ Before starting any session (in every mode, including RPC and SDK `createAgentSe
 Process-level storage options bypass [project trust](/security) because they come from the launching host. Because adapter modules execute code with Atomic's privileges, select only trusted modules and pass credentials through `secrets` instead of `options`. Prefer `--storage-file` or environment variables over `--storage` when the selection itself is sensitive, because command-line arguments can be visible to other local users.
 
 SDK callers can also keep a token strictly in memory with `inMemorySecret(token)` or `teamProfileSelection({ token })` (`{ "value": token }`), which serializes as `[redacted]` and is refused in settings, CLI flags, or environment variables.
+
+## Tuning for many concurrent agents
+
+How many agents can write at once depends on the store. On PostgreSQL it depends on how many connections each process may open. Writes to different sessions run in parallel, each on its own connection. Writes to one session wait for each other. On libSQL and local SQLite, one writer at a time writes a database, and no setting changes that.
+
+### Tuning PostgreSQL
+
+This section covers Atomic's own settings. For the server side, such as memory, monitoring, and the tables that change most, see [Tune PostgreSQL for many agents](/guides/postgres-tuning).
+
+For high throughput, set `maxConnections` to the maximum the server allows, or a generous value. More connections let more writes from one process run at the same time. The limit is the server's `max_connections`, which every Atomic process on every machine shares.
+
+#### Count the connections Atomic needs
+
+Each Atomic process opens up to this many connections:
+
+- **An agent process**, including each `atomic --mode rpc` child: `maxConnections` plus `readerMaxConnections`.
+- **An Intercom broker**: `maxConnections` plus `readerMaxConnections`, plus 1 for [wake-ups](#wake-ups).
+
+Atomic opens a connection only when it needs one, so a quiet process holds fewer. Plan for the maximum anyway, because busy processes reach it.
+
+Find what the server has to share. Run these as an administrator:
+
+```sql
+SHOW max_connections;
+SHOW superuser_reserved_connections;
+SHOW reserved_connections; -- PostgreSQL 16 and later
+SELECT count(*) FROM pg_stat_activity
+WHERE backend_type = 'client backend' AND application_name NOT LIKE 'atomic%';
+```
+
+The connections Atomic may use are `max_connections`, minus both reserved counts, minus what other clients use. Call that number *available*. With *P* Atomic processes, of which *B* are brokers, each process may use `(available - B) / P` connections, rounded down. Set `maxConnections` to that number minus `readerMaxConnections`.
+
+#### Example: 24 processes on a large server
+
+Four machines each run five agent processes and one Intercom broker, so *P* is 24 and *B* is 4. The server has `max_connections = 500`, 3 superuser slots, no other reserved slots, and 20 connections used by other clients.
+
+- *available* is 500 − 3 − 0 − 20 = 477.
+- Each process may use (477 − 4) / 24 = 19.7, rounded down to 19.
+- With the default `readerMaxConnections` of 2, set `maxConnections` to 19 − 2 = 17.
+
+In `~/.atomic/agent/settings.json` on each machine:
+
+```json
+{
+  "storage": {
+    "adapter": "@bastani/atomic-storage-postgres",
+    "options": {
+      "url": "postgresql://atomic_runtime@db.example.com:5432/atomic",
+      "maxConnections": 17,
+      "readerMaxConnections": 2
+    },
+    "secrets": { "password": { "file": "agent/storage-token.3f2a" } }
+  }
+}
+```
+
+The same options in an SDK app:
+
+```typescript
+import { openPostgresDatabase } from "@bastani/atomic-storage-postgres";
+
+const database = await openPostgresDatabase({
+	url: "postgresql://atomic_runtime@db.example.com:5432/atomic",
+	password: process.env.ATOMIC_DB_PASSWORD,
+	maxConnections: 17,
+	readerMaxConnections: 2,
+});
+```
+
+#### Example: 200 machines on a smaller server
+
+Two hundred CI runners each run one agent process and one Intercom broker, so *P* is 400 and *B* is 200. The server has `max_connections = 300`, 3 superuser slots, and 10 connections used by other clients, so *available* is 287.
+
+Even at the smallest settings, `maxConnections: 1` and `readerMaxConnections: 0`, the processes need 400 × 1 + 200 = 600 connections. That is more than 287, so connect through a transaction pooler such as PgBouncer instead. Switch to a pooler whenever the arithmetic gives `maxConnections` below 2.
+
+With PgBouncer in transaction mode on port 6432:
+
+- Point `url` at PgBouncer. Connections to PgBouncer cost the server nothing, so keep `maxConnections` at its default of 8. Set PgBouncer's `max_client_conn` to at least *P* × (`maxConnections` + `readerMaxConnections`), here 400 × 10 = 4000.
+- PgBouncer cannot pass wake-up notifications. Either point `listenUrl` at the server directly, which uses one server connection per broker, or leave it out. With `listenUrl`, brokers are notified of new messages and check for missed ones every 5 seconds. Without it, they check the database every half second, 10 times as often.
+- Size PgBouncer's server pool (`default_pool_size`) to what is left. With `listenUrl`, that is 287 − 200 = 87. Without it, PgBouncer can use up to 287.
+
+```json
+{
+  "storage": {
+    "adapter": "@bastani/atomic-storage-postgres",
+    "options": {
+      "url": "postgresql://atomic_runtime@pgbouncer.example.com:6432/atomic",
+      "listenUrl": "postgresql://atomic_runtime@db.example.com:5432/atomic",
+      "maxConnections": 8
+    },
+    "secrets": { "password": { "file": "agent/storage-token.3f2a" } }
+  }
+}
+```
+
+The same options in an SDK app:
+
+```typescript
+const database = await openPostgresDatabase({
+	url: "postgresql://atomic_runtime@pgbouncer.example.com:6432/atomic",
+	listenUrl: "postgresql://atomic_runtime@db.example.com:5432/atomic",
+	password: process.env.ATOMIC_DB_PASSWORD,
+	maxConnections: 8,
+});
+```
+
+The [PgBouncer guide](/guides/postgres-pgbouncer) has a complete, tested PgBouncer configuration, the PostgreSQL and Atomic settings that go with it, and how to check that it works.
+
+#### Other settings
+
+Set these in the same `options` object, or pass them to `openPostgresDatabase`. Each takes a positive integer number of milliseconds.
+
+- **Distance.** Saving new entries to a session takes 2 round trips to the server. Put the database in the same region as the agents. A machine 80 ms away from the server spends at least 160 ms on each save.
+- **`idleTimeoutMs`** (default `300000`, 5 minutes). Unused connections stay open this long, so the next call skips the connection and TLS handshakes. A process that exits closes its connections at once. Lower it, for example to `30000`, when long-running processes sit idle and the server is near its limit.
+- **`statementTimeoutMs`** (default `30000`). The server cancels a statement that runs longer. Raise it only if statements fail with `StorageTransientError` code `transaction-timeout` on a slow server. A lower value does not raise throughput.
+- **`connectTimeoutMs`** (default `10000`). Opening a connection, or waiting for a free one in the pool, fails after this long. Raise it for a distant server or one that is slow to accept connections.
+- **`keepAliveIdleMs`** (default `60000`). Atomic sends TCP keepalive probes on a connection that has been unused this long. Lower it if calls fail with `StorageTransientError` code `connection-lost` after pauses, which means a firewall, NAT or load balancer dropped idle connections.
+- **`maxPreparedStatements`** (default `256`). Each connection keeps up to this many statements prepared on the server, so the server plans each statement once per connection. It does not change round trips. Atomic turns it off by default when `listenUrl` is set or the URL's port is 6432 or 6543, the usual pooler ports. Set it to `0` behind any other pooler that does not keep prepared statements, such as PgBouncer before 1.21 or Supabase's shared pooler. On PgBouncer 1.21 to 1.23, prepared statements work only when PgBouncer's `max_prepared_statements` is above `0`; 1.24 and later set it to 200 by default. Lower the value if the server is short of memory per connection.
+
+#### Check the effect
+
+Run these as an administrator. Replace `atomic` with your database name. Atomic's connections report the application name `atomic`, and wake-up connections `atomic-listen`.
+
+How many connections Atomic holds, and what they are doing:
+
+```sql
+SELECT application_name, state, count(*)
+FROM pg_stat_activity
+WHERE datname = 'atomic'
+GROUP BY 1, 2
+ORDER BY 3 DESC;
+```
+
+What busy connections are waiting for:
+
+```sql
+SELECT wait_event_type, wait_event, count(*)
+FROM pg_stat_activity
+WHERE datname = 'atomic' AND state <> 'idle'
+GROUP BY 1, 2
+ORDER BY 3 DESC;
+```
+
+How close the server is to its limit:
+
+```sql
+SELECT count(*) AS used, current_setting('max_connections')::int AS max
+FROM pg_stat_activity
+WHERE backend_type = 'client backend';
+```
+
+What to change:
+
+| You see | It means | Change |
+| --- | --- | --- |
+| `sorry, too many clients already`, `remaining connection slots are reserved for roles with the SUPERUSER attribute`, or `too many connections for role "<role>"` | The processes asked for more connections than the server or role allows. | Lower `maxConnections` or `readerMaxConnections`, raise `max_connections` or the role's `CONNECTION LIMIT`, or [put PgBouncer in front](/guides/postgres-pgbouncer). |
+| `timeout exceeded when trying to connect` | Every connection in a process's pool stayed busy for `connectTimeoutMs`. | Raise `maxConnections` if the server has connections to spare. Otherwise raise `connectTimeoutMs`. |
+| `the call was queued behind an earlier call that ran 60 seconds without settling, and did not run; nothing was written, retry it` | A call that this one had to wait for ran for a minute, usually because it waited on a lock or on an overloaded server. | Check what busy connections wait for. More connections do not help. |
+| Many connections with `wait_event_type` `Lock` | Agents are writing the same sessions or rows at once and wait for each other. | More connections do not help. Spread agents over more sessions. |
+| Most `atomic` connections are `idle` and the server is near its limit | Idle processes keep connections open. | Lower `idleTimeoutMs`. |
+| `wake-ups: polling only, the listen connection failed` in `atomic storage status` | A broker could not open its wake-up connection, often because the server has none left. | Recount the connections with the formula above. |
+
+Atomic reports the first two rows as `StorageTransientError` with code `connection-refused`, with the quoted text as the error's cause. The third row is a `StorageUnavailableError` whose message ends with the quoted text.
+
+### Tuning libSQL and Turso
+
+A libSQL server lets one writer at a time write a database, and no setting changes that. Each Atomic process has two connections to the server, one for writes and one for reads. A transaction sends its statements together, so saving entries to a session takes 2 requests.
+
+Reads can run at the same time. The `concurrency` option sets how many reads each connection runs at once, such as session loads and single `SELECT` statements. It takes a positive integer and defaults to `20`. Writes still run one at a time, in the order they were made, and a read waits for the writes made before it. The option has no effect on `file:` URLs.
+
+For high read throughput, set `concurrency` to a generous value, such as 50 to 100, when many agents, subagents or Intercom brokers in one process read at once. It helps most over a slow link. It does not make writes faster.
+
+```json
+{
+  "storage": {
+    "adapter": "@bastani/atomic-storage-libsql",
+    "options": { "url": "libsql://<db>.turso.io", "concurrency": 50 },
+    "secrets": { "authToken": { "file": "turso-token" } }
+  }
+}
+```
+
+The same option in an SDK app:
+
+```typescript
+import { openLibsqlDatabase } from "@bastani/atomic-storage-libsql";
+
+const database = await openLibsqlDatabase({
+	url: "libsql://<db>.turso.io",
+	authToken: process.env.TURSO_AUTH_TOKEN,
+	concurrency: 50,
+});
+```
+
+What else helps:
+
+- Keep the database close to the agents, because each request is a round trip.
+- On a self-hosted `sqld` reached over `http:`, `https:` or `libsql:`, set `keepAliveMs`, for example to `60000`. Unused connections then stay open that long, so a request after a pause skips the connection and TLS handshakes. Without it, Node.js closes an unused connection after about 4 seconds. Leave it unset for Turso, which closes unused connections after 5 seconds. A longer value there makes a write fail with `StorageTransientError` code `connection-lost` when Turso drops the connection just as Atomic reuses it. The option has no effect on `ws:` and `wss:` URLs.
+- Give each team its own database. Each database has its own writer. A `prefix` only separates data inside one database, so teams that share a database share its writer.
+- For many agents writing at once from many machines, use [PostgreSQL](#postgresql).
+
+### Tuning local SQLite
+
+A local SQLite file has one writer at a time. Atomic queues the writers of every process on the machine in order, and commits the writes queued in one process together. Reads use a separate connection, and Atomic reuses prepared statements. There is nothing to set in `settings.json`. For many agents writing at once from many machines, use [PostgreSQL](#postgresql).
 
 ## Exporting and importing sessions
 
@@ -577,7 +817,7 @@ try {
 
 ### Concurrency, options, and diagnostics
 
-- **Database options.** `openNodeSqliteDatabase(path, options?)` creates parent directories and enables WAL mode, `FULL` sync, foreign keys, and `busyTimeoutMs: 5000`. Pass `:memory:` for an ephemeral database or `{ readOnly: true }` to inspect a file without creating it or changing its journal mode. File-backed handles run off the main event loop so statements waiting on locks or disk syncs do not block your application.
+- **Database options.** `openNodeSqliteDatabase(path, options?)` creates parent directories and enables WAL mode, `FULL` sync, foreign keys, and `busyTimeoutMs: 5000`. Pass `:memory:` for an ephemeral database or `{ readOnly: true }` to inspect a file without creating it or changing its journal mode. File-backed handles run off the main event loop so statements waiting on locks or disk syncs do not block your application. Each connection keeps up to 256 prepared statements for reuse; a handle from `wrapNodeSqliteDatabase` keeps none. A file-backed handle's `openReader()` opens a separate read-only connection to the same file with its own queue. In WAL mode it reads the last commit without waiting for the handle's writes. Closing the handle also closes its readers.
 - **Wrapping an existing connection.** `wrapNodeSqliteDatabase(conn)` adapts an existing Node `DatabaseSync` handle on the calling thread and leaves the underlying connection open on `close()`. Avoid mixing raw `DatabaseSync` calls with wrapped calls on the same connection.
 - **Writer queuing and timeouts.** Multiple handles in one process and across processes on the same host share FIFO write queues. `groupCommitHoldMs` (default `100` ms, exported as `DEFAULT_GROUP_COMMIT_HOLD_MS`, `0` commits individually) batches queued transactions per lock acquisition. Waiting longer than `lockWaitMs` (default `30000` ms, or per-transaction `{ lockWaitMs }`) with no commits rejects with `StorageWriteLockTimeoutError`.
 - **Diagnostics.** `getWriterQueueStats(db)` returns 10-second lock utilization, waiter count, wait latency percentiles (`p50WaitMs`, `p95WaitMs`), and `commitsPerSecond`. `getWriterQueueDegradation(db)` returns recorded `StorageWriterQueueDegradedError` entries (also logged in [debug mode](/development#debugging)). Passing a non-node-sqlite handle throws `StorageUnsupportedOperationError`.
@@ -669,14 +909,24 @@ To wrap a SQLite-compatible driver into a `SqliteDatabase`, call `createSqliteDa
 - `redact(text)` (optional) strips credentials from error text. Use `redactSecrets(secrets)` to build one that removes raw, URI-encoded, and decoded forms.
 - `transientFailure(failure)` (optional) classifies retryable driver errors from structured fields (never message text) and returns `{ code, outcome, hop? }`. Set `outcome` to `"not-applied"` when the database cannot have changed, or `"unknown"` when the write may have committed. Set `hop: { name, failure }` when an intermediate hop such as a proxy failed before reaching the database.
 - `freeBytes()` (optional) returns writable free bytes on the filesystem holding a local database file, or `undefined`.
+- `openReader()` (optional) returns a driver with connections of its own on the same database, for reads. The facade exposes it as `SqliteDatabase.openReader()`. The reader gets its own call queue and closes when the main database closes.
+- `concurrentTransactions` (optional) marks a driver that runs each transaction on its own connection, as the PostgreSQL adapter does. The facade then runs calls that cannot conflict at the same time. See the queue rules below.
+- `pipelinedTransactions` (optional) marks a transaction connection that accepts a statement before the previous one is answered. The PostgreSQL adapter and the libSQL adapter's server connections set it. The facade then sends each statement of a transaction without waiting for the answer before it. It can also send a transaction's last writes together with its commit.
+  - `beginTransaction` receives `leading`, the reads the transaction makes first. The driver may send them with the begin and answer the transaction's first calls from them.
+  - If a statement sent ahead of an earlier answer, or with the commit, fails, the driver's commit must fail, so nothing commits. The transaction then fails with that statement's error.
+  - A statement whose connection broke after the commit was sent reports `outcome: "unknown"`, because the commit may have applied.
+- `concurrentReads` (optional) is a positive integer for a driver that runs reads on connections or streams of their own, up to that many at once. The facade then runs read-only transactions, and statements outside a transaction that `readsOnly` accepts, beside each other. Every other call still waits for each call before it, and a read waits for the writes queued before it. With `concurrentTransactions` as well, the facade runs at most this many reads at once.
+- `readsOnly(sql)` (optional) says whether a statement run outside a transaction only reads. With `concurrentReads` or `concurrentTransactions`, such a statement runs beside other reads. Answer `true` only for a statement that can never write.
+- On a driver with `concurrentTransactions`, a read-only transaction returns once its reads are answered. Its commit only ends the snapshot, so it finishes in the background, and `close()` waits for it.
 
-Driver hooks may return values or promises. The facade serializes operations, copies binary parameters on call, rejects NUL text bindings with `StorageInvalidTextError`, converts safe-range integers to `number`, expires transaction handles after settlement, and drains accepted work on `close()`. Unclassified driver errors reject with `StorageUnavailableError` (with redacted `cause`), and failed rollbacks reject with `StorageRollbackError`.
+Driver hooks may return values or promises. The facade runs one operation at a time unless the driver sets `concurrentTransactions`. It copies binary parameters on call, rejects NUL text bindings with `StorageInvalidTextError`, converts safe-range integers to `number`, expires transaction handles after settlement, and drains accepted work on `close()`. Unclassified driver errors reject with `StorageUnavailableError` (with redacted `cause`), and failed rollbacks reject with `StorageRollbackError`.
 
 Transient retry and queue bounds:
 
 - Recognized transient failures reject with `StorageTransientError`. Statements and batches that failed before writing retry up to `STORAGE_TRANSIENT_RETRY_ATTEMPTS` (5) times starting at 250 ms with exponential backoff and up to 20% jitter. Writes with `outcome: "unknown"` never retry automatically.
 - Transactions retry (re-running their callback) only when called with `{ retryTransientFailures: true }` and only for callbacks that have no external side effects. Non-boolean values throw `StorageConfigError`. The first retried failure on a database emits a one-time process warning.
-- While one call runs without settling, waiting priority calls (such as heartbeats or lease renewals) fail after `STORAGE_PRIORITY_CALL_MAX_WAIT_MS` (10 seconds), and other waiting calls fail after `STORAGE_QUEUED_CALL_MAX_WAIT_MS` (60 seconds), both with `StorageUnavailableError`. Timers reset for each call that begins running.
+- On a driver with `concurrentTransactions`, a call waits only for earlier unfinished calls it conflicts with. Statements and batches outside a transaction, and serial transactions without a `domain`, conflict with every call. A serial transaction with a `domain` conflicts with others of the same domain. A read-only transaction waits for writes queued before it, but not for other read-only transactions or later writes. Conflicting calls run in call order, and calls that do not conflict, such as appends to different sessions, run concurrently. `fenced` transactions bypass the queue. Other drivers run one call at a time.
+- While a call runs without settling, waiting priority batches (batches sent with `{ priority: true }`) fail after `STORAGE_PRIORITY_CALL_MAX_WAIT_MS` (10 seconds), and other waiting calls fail after `STORAGE_QUEUED_CALL_MAX_WAIT_MS` (60 seconds), both with `StorageUnavailableError`. On a driver with `concurrentTransactions`, only calls waiting behind the stuck call (directly or through other waiting calls) fail. Timers reset for each call that begins running.
 - For shared local SQLite files, enable WAL mode with `switchToWriteAheadLog(exec, busyTimeoutMs)` from `@bastani/atomic/storage`. It retries `SQLITE_BUSY` up to `busyTimeoutMs` and retries Windows `SQLITE_IOERR_TRUNCATE` for up to 5 seconds (or `busyTimeoutMs`, whichever is shorter).
 
 You can also implement `SqliteDatabase` directly. In either case, verify your implementation with the [conformance suite](#adapter-conformance).

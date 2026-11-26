@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { SqliteDatabase } from "@bastani/atomic/storage";
+import type { SqliteDatabase, SqliteExecutor } from "@bastani/atomic/storage";
 import type { BrokerMessage, ClientMessage, ReachPolicyFrame, SessionInfo } from "../types.js";
 import type { EndedChildQueueStore } from "./sql-ended-child-queue-store.js";
 import { isReleasedReservationKey } from "./released-children.js";
@@ -180,6 +180,22 @@ export interface BrokerLeaseStore {
 	read(key: LeaseKey): Promise<LeaseReadResult>;
 	/** Live leases of one kind, in the order their keys were first acquired. */
 	listLive(kind: LeaseKind, staleAfterMs: number): Promise<LeaseState[]>;
+	/**
+	 * The live presence leases a send to `target` may resolve to, in the order their keys were first acquired: every one
+	 * whose session's id is `target` or `target` trimmed, whose session's name is either of them in any case, whose UUID
+	 * id starts with `target` trimmed when that is an 8-digit hex prefix, whose identity's return address is `target`
+	 * trimmed, or whose aliases include `target`. It may list others too, which the caller's own matching leaves out. Read
+	 * by index, so a send's read does not grow with the presences of other sessions (#6560). Absent on custom stores and
+	 * on a database whose role may not add the columns it reads, where `listLive("presence")` serves instead.
+	 */
+	listLiveFor?(target: string, staleAfterMs: number): Promise<LeaseState[]>;
+	/**
+	 * Held leases of one kind at least `minAgeMs` old, in the order their keys were first acquired: what `listLive` with
+	 * no bound lists past that age, without reading the younger ones. While every lease is renewed it reads no row, so a
+	 * periodic check for leases left behind costs one empty read rather than every lease (#6560). Absent on custom
+	 * stores, which `listLive` with no bound serves instead.
+	 */
+	listAged?(kind: LeaseKind, minAgeMs: number): Promise<LeaseState[]>;
 	/**
 	 * #5038: give up every lease `holderId` holds, as its own `release` would, so their next acquisitions need not
 	 * wait for them to go stale. Resolves to the number of leases retired.
@@ -1056,6 +1072,11 @@ export interface IntercomBrokerStateOptions {
 	readonly database: SqliteDatabase;
 	/** The adapter's validated table prefix. */
 	readonly prefix: string;
+	/**
+	 * A separate handle on `database` for the reads that answer within a bound (live leases, known sessions), so they
+	 * never queue behind its writes (#6560); the store does not close it. Absent: they read through `database`.
+	 */
+	readonly reader?: SqliteExecutor;
 }
 
 export type OpenIntercomBrokerStateStore = (options: IntercomBrokerStateOptions) => Promise<IntercomBrokerStateStore>;

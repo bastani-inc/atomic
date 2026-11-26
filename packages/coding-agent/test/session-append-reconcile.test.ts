@@ -100,6 +100,42 @@ describe("SessionManager appends after an unknown outcome (#4970)", () => {
 		assert.deepEqual(texts(manager.getBranch()), ["one", "two"]);
 	});
 
+	it("a resend that conflicts with its own earlier commit, which landed after the read-back, is recognised as saved, once (#6560)", async () => {
+		const store = new MemorySessionStore();
+		let lost: (() => Promise<unknown>) | undefined;
+		let loseNext = false;
+		const delayed: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+			async append(...args: Parameters<SessionStore["append"]>) {
+				// The server takes a COMMIT whose answer was lost only after the read that checked for it: it lands just
+				// before the resend, which then meets the session one entry ahead of its expected seq.
+				if (lost !== undefined) {
+					const landing = lost;
+					lost = undefined;
+					await landing();
+				}
+				if (!loseNext) return store.append(...args);
+				loseNext = false;
+				lost = () => store.append(...args);
+				throw new StorageTransientError(store.descriptor, {
+					code: "connection-lost",
+					outcome: "unknown",
+					attempts: 1,
+				});
+			},
+		});
+		const manager = await SessionManager.create(delayed, "/project");
+		await manager.appendMessage(message("one"));
+
+		loseNext = true;
+		await manager.appendMessage(message("two"));
+		await manager.appendMessage(message("three"));
+
+		const stored = await store.load(manager.getSessionId());
+		assert.deepEqual(texts(stored.entries), ["one", "two", "three"]);
+		assert.deepEqual(stored.entries, manager.getEntries());
+		assert.deepEqual(texts(manager.getBranch()), ["one", "two", "three"]);
+	});
+
 	it("an append whose connection keeps breaking fails after four tries (#4970)", async () => {
 		const { store, faulty, appends, loseConnection } = faultyStore();
 		const manager = await SessionManager.create(faulty, "/project");

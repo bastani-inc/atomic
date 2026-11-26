@@ -11,7 +11,7 @@ import type {
 	InvalidStateInput,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
-import { ensureBrokerSchema } from "./sql-schema.js";
+import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type HeldRow = SqliteRow & {
 	reservation_key: string;
@@ -35,9 +35,17 @@ function heldSendOf(row: HeldRow): HeldSend {
  * S3: `HeldSendStore` on the shared storage adapter's database, table `<prefix>intercom_held_sends`. Sends are keyed
  * by `reservationKeyFor(capability)`; the capability itself is never stored.
  */
-export async function openSqlHeldSendStore({ database, prefix }: IntercomBrokerStateOptions): Promise<HeldSendStore> {
+export function openSqlHeldSendStore(options: IntercomBrokerStateOptions): Promise<HeldSendStore> {
+	// Its schema checks answer from one read of the catalog, shared with an open around it: a current schema costs
+	// no transaction and no lock, also when the store is opened on its own (#6560).
+	return withBrokerSchemaCatalog(options.database, options.prefix, () => openHeldSendStoreInCatalog(options));
+}
+
+async function openHeldSendStoreInCatalog({ database, prefix }: IntercomBrokerStateOptions): Promise<HeldSendStore> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_held_sends`;
 	const { types, nowMs } = dialectOf(database);
+	/** `take` reads and writes this table alone, so it excludes other takes, not every writer (#6560). */
+	const serial = { concurrency: { kind: "serial", domain: table } } as const;
 	await ensureBrokerSchema(database, prefix, "held-sends", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
@@ -84,7 +92,7 @@ export async function openSqlHeldSendStore({ database, prefix }: IntercomBrokerS
 				const taken = await tx.all<HeldRow>(selectForReservation, reservationKey);
 				await tx.run(`DELETE FROM ${table} WHERE reservation_key = ?`, reservationKey);
 				return taken;
-			});
+			}, serial);
 			return { status: "taken", sends: rows.map(heldSendOf) };
 		},
 		async drop(messageId): Promise<HeldSendDropResult> {

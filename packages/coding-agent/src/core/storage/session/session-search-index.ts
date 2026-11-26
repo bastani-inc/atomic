@@ -1,8 +1,17 @@
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteStatement, SqliteValue } from "../database.js";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+	SqliteStatement,
+	SqliteTransactionOptions,
+	SqliteValue,
+} from "../database.js";
 import { dialectOf, type StorageDialect, type StorageTrigger } from "../dialect.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
+import { schemaCatalogOf } from "../schema-catalog.js";
 import { type RunSequence, sequenceRunner } from "../statement-sequence.js";
+import { sessionWriteTransaction } from "./session-transactions.js";
 import type {
 	SessionSearchCoverage,
 	SessionSearchExtendOptions,
@@ -411,6 +420,8 @@ async function trigramIndexExists(
 	dialect: StorageDialect,
 	tables: SearchTables,
 ): Promise<boolean> {
+	// An open that read the schema's catalog found the index there, if it existed then (#6560).
+	if ((await schemaCatalogOf(database))?.hasObject(tables.trigrams)) return true;
 	const found = await database.get(
 		"SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = current_schema() AND indexname = ?",
 		dialect.identifier(tables.trigrams),
@@ -638,7 +649,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		if (Number(row.format) === format && indexedSeq <= lastSeq && generation.startsWith("g:")) {
 			return withCoverageMeta({ indexedSeq, lastSeq }, generation, row.session_revision);
 		}
-		await this.database.transaction((tx) => this.forget(tx, sessionId), { retryTransientFailures: true });
+		await this.database.transaction((tx) => this.forget(tx, sessionId), this.sessionWrite(sessionId));
 		return withCoverageMeta({ indexedSeq: 0, lastSeq }, newGeneration(), row.session_revision);
 	}
 
@@ -652,12 +663,12 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	): Promise<boolean> {
 		if (throughSeq >= SEQ_SPACE || throughSeq < afterSeq) return false;
 		options?.signal?.throwIfAborted();
-		const txOptions = { retryTransientFailures: true };
+		const txOptions = this.sessionWrite(sessionId);
 		const { docs, oversizedSeqs } = prepareDocs(texts);
 		const totalChars = docs.reduce((sum, doc) => sum + doc.text.length, 0);
 		if (totalChars <= BATCH_CHARS) {
 			let backlog = false;
-			const extended = await this.writeTransaction(async (tx) => {
+			const extended = await this.writeTransaction(sessionId, async (tx) => {
 				options?.signal?.throwIfAborted();
 				const row = await tx.get<CoverageRow>(
 					`SELECT s.last_seq, s.revision AS session_revision, st.sid, st.format, st.indexed_seq, st.revision AS generation, st.entry_id AS whole_seqs
@@ -711,7 +722,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			if (extended && backlog) await this.mergeBacklog(options?.signal);
 			return extended;
 		}
-		const started = await this.writeTransaction(async (tx) => {
+		const started = await this.writeTransaction(sessionId, async (tx) => {
 			options?.signal?.throwIfAborted();
 			const row = await tx.get<CoverageRow>(
 				`SELECT s.last_seq, s.revision AS session_revision, st.sid, st.format, st.indexed_seq, st.revision AS generation, st.entry_id AS whole_seqs
@@ -812,18 +823,23 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		}
 	}
 
-	private async writeTransaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
+	/**
+	 * A write of the session `sessionId`'s index rows: the session's own domain, which the session store's writers take,
+	 * since `replace` and `delete` forget a session's index in their own transactions.
+	 */
+	private sessionWrite(sessionId: string): SqliteTransactionOptions {
+		return sessionWriteTransaction(this.sessionTables.sessions, sessionId);
+	}
+
+	private async writeTransaction<T>(sessionId: string, body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
 		let prepared = this.writesPrepared;
-		const result = await this.database.transaction(
-			async (tx) => {
-				if (!this.writesPrepared) {
-					await this.engine.prepareWrites(tx, this.dialect, this.tables, this.sessionTables);
-					prepared = true;
-				}
-				return body(tx);
-			},
-			{ retryTransientFailures: true },
-		);
+		const result = await this.database.transaction(async (tx) => {
+			if (!this.writesPrepared) {
+				await this.engine.prepareWrites(tx, this.dialect, this.tables, this.sessionTables);
+				prepared = true;
+			}
+			return body(tx);
+		}, this.sessionWrite(sessionId));
 		if (prepared) this.writesPrepared = true;
 		return result;
 	}

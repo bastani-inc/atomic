@@ -6,8 +6,13 @@ import {
 	type StorageDialect,
 	type StorageTrigger,
 } from "../../packages/coding-agent/src/core/storage/dialect.js";
+import {
+	POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES,
+	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
+} from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
+import { ensureEndedChildQueueSchema } from "../../packages/intercom/broker/sql-ended-child-queue-store.js";
 import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
@@ -110,6 +115,7 @@ async function openEveryStore(
 	connect: () => Promise<SqliteDatabase>,
 ): Promise<void> {
 	const sessions = await SqlSessionStore.open(database, { prefix });
+	await sessions.prepareChatRecords();
 	await sessions.close();
 	const options = { database, prefix };
 	await openSqlBrokerLeaseStore(options);
@@ -120,6 +126,7 @@ async function openEveryStore(
 	await openSqlReleasedAskStore(options);
 	await openSqlSentMessageAuthority(options);
 	await openSqlKnownSessionStore(options);
+	await ensureEndedChildQueueSchema(options);
 	await (await openDatabaseWakeUpBus({ openDatabase: connect, prefix })).close();
 }
 
@@ -238,6 +245,16 @@ describe.skipIf(postgres.skipReason !== undefined)(
 						ours.filter((name) => !found.has(name) && !name.endsWith("_fn")),
 						[],
 						"every object a store created exists under the dialect's name for it",
+					);
+					// The prefix check and the move to schema atomic know a name only by its suffix.
+					const suffixes = new Set([
+						...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
+						...POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES,
+					]);
+					assert.deepEqual(
+						ours.map((name) => name.slice(prefix.length)).filter((suffix) => !suffixes.has(suffix)),
+						[],
+						"every object a store created has a registered suffix",
 					);
 				} finally {
 					await scope.close();

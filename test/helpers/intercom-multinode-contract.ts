@@ -8,6 +8,7 @@ import type {
 	IntercomDeliveryFrame,
 	KnownSession,
 	KnownSessionStore,
+	Lease,
 	LeaseSubject,
 	OutboxClaim,
 	OutboxEnqueueRequest,
@@ -83,10 +84,16 @@ const EXPIRED_MS = -1;
 const WAKE_UP_EVENT_LIMIT_MS = 20_000;
 /** How long a closed subscription is watched for stray events. */
 const CLOSED_SUBSCRIPTION_QUIET_MS = 100;
+/** How long hints published at once may take to arrive, through the backup poll where no notification wakes it. */
+const CONCURRENT_HINTS_BOUND_MS = 20_000;
 /** Wait between taking a lease or claim and renewing it, so a renewal that leaves the age unchanged is observable. */
 const RENEWAL_GAP_MS = 1_000;
 /** Store-clock rounding allowed when a store age is compared with an interval the caller measured. */
 const CLOCK_TOLERANCE_MS = 25;
+/** Brokers that contend for one lease at once, standing in for brokers on several hosts. */
+const CONCURRENT_BROKERS = 6;
+/** How many times each contending broker takes the lease. */
+const CONCURRENT_ROUNDS = 4;
 
 const RECIPIENT = JSON.stringify(["return", "recipient-address", "team"]);
 const SENDER_IDENTITY = JSON.stringify(["return", "sender-address", "team"]);
@@ -312,6 +319,126 @@ export function registerBrokerLeaseStoreConformance(
 		assert.deepEqual(await targets(), ["target-2", "target-1"]);
 	});
 
+	check("lists the held leases of one kind at least an age old, and none younger (#6560)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		assert.ok(a.listAged, "the store lists aged leases");
+		const released = await acquire(a, "broker-a", presence("target-3"));
+		await acquire(a, "broker-a", presence("target-2"));
+		await acquire(b, "broker-b", presence("target-1"));
+		await acquire(a, "broker-a", membership("broker-a"));
+		await a.release(released);
+		const aged = async (minAgeMs: number) =>
+			(await b.listAged!("presence", minAgeMs)).map((lease) =>
+				lease.subject.kind === "presence" ? lease.subject.targetIdentity : lease.subject.brokerId,
+			);
+		assert.deepEqual(await aged(LIVE_MS), [], "a lease younger than the age is not listed");
+		assert.deepEqual(await aged(0), ["target-2", "target-1"]);
+		assert.deepEqual(
+			(await b.listAged!("broker", 0)).map((lease) => lease.subject),
+			[membership("broker-a")],
+		);
+		const [first] = await b.listAged!("presence", 0);
+		assert.deepEqual(first, { ...(await b.listLive("presence", LIVE_MS))[0], ageMs: first!.ageMs });
+	});
+
+	check(
+		"lists the live presences a send's target may name, and none of a session it cannot name (#6560)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			assert.ok(b.listLiveFor, "the store lists the presences a target may name");
+			const host = JSON.stringify(["return", "host-1", "team"]);
+			const uuid = "6F1C2A3B-0000-4000-8000-000000000001";
+			const released = await acquire(a, "broker-a", presence("released", sessionInfo("released-id", "Worker")));
+			await acquire(a, "broker-a", presence(host, sessionInfo(uuid, "Worker")));
+			await acquire(b, "broker-b", presence("accented", sessionInfo("accented-id", "Éclair")));
+			await acquire(a, "broker-a", {
+				...presence("aliased", sessionInfo("aliased-id", "aliased")),
+				aliases: [{ id: "alias-id", owner: "witness" }],
+			});
+			await acquire(b, "broker-b", presence("nul", sessionInfo("nul-id", "nul\u0000name")));
+			const bystander = await acquire(
+				a,
+				"broker-a",
+				presence("bystander", sessionInfo("bystander-id", "bystander")),
+			);
+			await acquire(a, "broker-a", membership("broker-a"));
+			await a.release(released);
+			const named = async (target: string, staleAfterMs = LIVE_MS) =>
+				(await b.listLiveFor!(target, staleAfterMs)).map((lease) =>
+					lease.subject.kind === "presence" ? lease.subject.targetIdentity : lease.subject.brokerId,
+				);
+			// Each target's presences, in first-acquisition order; others a store cannot index exactly may come along.
+			const assertNames = async (target: string, expected: readonly string[]) => {
+				const listed = await named(target);
+				assert.deepEqual(
+					listed.filter((identity) => expected.includes(identity)),
+					expected,
+					`${JSON.stringify(target)} lists ${JSON.stringify(listed)}`,
+				);
+				for (const identity of ["bystander", "released", "broker-a"])
+					if (!expected.includes(identity))
+						assert.ok(!listed.includes(identity), `${JSON.stringify(target)} lists ${identity}`);
+			};
+			await assertNames(uuid, [host]);
+			await assertNames("WORKER", [host]);
+			await assertNames(" worker ", [host]);
+			await assertNames("6f1c2a3b", [host]);
+			await assertNames(" host-1 ", [host]);
+			await assertNames("éclair", ["accented"]);
+			await assertNames("alias-id", ["aliased"]);
+			await assertNames("nul-id", ["nul"]);
+			assert.ok((await named("NUL\u0000NAME")).includes("nul"), "a target with a NUL character finds its session");
+			await assertNames("nobody", []);
+			await assertNames("bystander", ["bystander"]);
+			assert.deepEqual(await named("bystander", EXPIRED_MS), []);
+			// A renewal that renames the session moves its presence to the new name.
+			assert.deepEqual(await a.renew(bystander, presence("bystander", sessionInfo("bystander-id", "renamed"))), {
+				status: "renewed",
+			});
+			await assertNames("Renamed", ["bystander"]);
+			assert.ok(!(await named("bystander")).includes("bystander"));
+		},
+	);
+
+	check(
+		"takes, renews and finds presences whose strings end in half a surrogate pair, keeping them well formed (#6560)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			// An emoji cut in half, as a UTF-16 slice of a longer name leaves it.
+			const half = "Fix the build \u{1F600}".slice(0, 15);
+			const whole = half.toWellFormed();
+			const address = JSON.stringify(["return", half, "team"]);
+			const named = await acquire(a, "broker-a", presence("half-named", sessionInfo("half-id", half)));
+			const plain = await acquire(a, "broker-a", presence("plain", sessionInfo("plain-id", "plain")));
+			await acquire(b, "broker-b", presence(address, sessionInfo("host-id", "host")));
+			await acquire(b, "broker-b", presence("bystander", sessionInfo("bystander-id", "bystander")));
+			// One heartbeat renews both, the one whose status was cut too.
+			const cut = { ...sessionInfo("plain-id", "plain"), status: half };
+			const heartbeat = [{ lease: named }, { lease: plain, subject: presence("plain", cut) }];
+			assert.deepEqual(
+				a.renewMany === undefined
+					? await Promise.all(heartbeat.map(({ lease, subject }) => a.renew(lease, subject)))
+					: await a.renewMany(heartbeat),
+				[{ status: "renewed" }, { status: "renewed" }],
+			);
+			const subjectOf = async (lease: Lease) =>
+				expectStatus(await b.read(lease.key), "found").lease.subject as RecipientPresenceSubject;
+			assert.equal((await subjectOf(named)).session.name, whole);
+			assert.equal((await subjectOf(plain)).session.status, whole);
+			assert.ok(b.listLiveFor, "the store lists the presences a target may name");
+			const listed = async (target: string) =>
+				(await b.listLiveFor!(target, LIVE_MS)).map((lease) =>
+					lease.subject.kind === "presence" ? lease.subject.targetIdentity : lease.subject.brokerId,
+				);
+			for (const target of [half, whole]) {
+				const found = await listed(target);
+				assert.ok(found.includes("half-named"), `${JSON.stringify(target)} lists its name's presence`);
+				assert.ok(found.includes(address), `${JSON.stringify(target)} lists its return address's presence`);
+				assert.ok(!found.includes("bystander"), `${JSON.stringify(target)} lists another session`);
+			}
+		},
+	);
+
 	check(
 		"retires every live lease of one holder at once, fencing it, and leaves other holders alone (#5038)",
 		async (connect) => {
@@ -350,6 +477,65 @@ export function registerBrokerLeaseStoreConformance(
 		);
 		assert.deepEqual(await a.read({ kind: "presence", targetIdentity: "never acquired" }), { status: "missing" });
 		assert.deepEqual(await a.renew(lease), { status: "renewed" });
+	});
+
+	check(
+		"lets many brokers acquire, renew and release one lease concurrently without two holders (#6560)",
+		async (connect) => {
+			const brokers = await Promise.all(Array.from({ length: CONCURRENT_BROKERS }, () => connect()));
+			let holder: string | undefined;
+			const tokens: number[] = [];
+			await Promise.all(
+				brokers.map(async (store, index) => {
+					const holderId = `broker-${index}`;
+					for (let taken = 0; taken < CONCURRENT_ROUNDS; ) {
+						const attempt = await store.acquire(presence(RECIPIENT), holderId, LIVE_MS);
+						if (attempt.status !== "acquired") {
+							expectStatus(attempt, "held");
+							await sleep(1);
+							continue;
+						}
+						// The lease was free until this acquisition committed, and its holder gives it up only below.
+						assert.equal(holder, undefined, `${holderId} acquired the lease ${holder} holds`);
+						holder = holderId;
+						tokens.push(attempt.lease.fencingToken);
+						assert.deepEqual(await store.renew(attempt.lease, presence(RECIPIENT)), { status: "renewed" });
+						holder = undefined;
+						assert.deepEqual(await store.release(attempt.lease), { status: "released" });
+						taken++;
+					}
+				}),
+			);
+			assert.equal(tokens.length, CONCURRENT_BROKERS * CONCURRENT_ROUNDS);
+			for (let i = 1; i < tokens.length; i++)
+				assert.ok(tokens[i]! > tokens[i - 1]!, `fencing token ${tokens[i]} after ${tokens[i - 1]}`);
+		},
+	);
+
+	check("hands a stale lease to one taker at a time and fences every earlier holder (#6560)", async (connect) => {
+		const brokers = await Promise.all(Array.from({ length: CONCURRENT_BROKERS }, () => connect()));
+		const taken = (
+			await Promise.all(
+				brokers.flatMap((store, index) =>
+					Array.from({ length: CONCURRENT_ROUNDS }, async (_, round) => {
+						// Every lease counts as stale, so each attempt takes it over from whoever holds it.
+						const attempt = await store.acquire(presence(RECIPIENT), `broker-${index}-${round}`, EXPIRED_MS);
+						const lease = expectStatus(attempt, "acquired").lease;
+						// Its renewal races the takeovers after it: renewed while it still holds the lease, stale once it does not.
+						const renewed = await store.renew(lease);
+						if (renewed.status !== "renewed") expectStatus(renewed, "stale");
+						return { store, lease };
+					}),
+				),
+			)
+		).sort((a, b) => a.lease.fencingToken - b.lease.fencingToken);
+		const tokens = taken.map(({ lease }) => lease.fencingToken);
+		assert.equal(new Set(tokens).size, tokens.length, `two takeovers got one fencing token: ${tokens.join(", ")}`);
+		const last = taken.at(-1)!;
+		assert.equal(expectStatus(await brokers[0]!.read(last.lease.key), "found").lease.holderId, last.lease.holderId);
+		const fenced = { status: "stale", currentFencingToken: last.lease.fencingToken };
+		for (const { store, lease } of taken.slice(0, -1)) assert.deepEqual(await store.renew(lease), fenced);
+		assert.deepEqual(await last.store.renew(last.lease), { status: "renewed" });
 	});
 
 	check("renews with a structurally equal lease key whose properties come in another order", async (connect) => {
@@ -2226,6 +2412,29 @@ export function registerWakeUpBusConformance(
 			assert.deepEqual(await b.subscribe("broker-b", () => {}), { status: "unavailable" });
 		},
 	);
+
+	check("delivers each hint published at once from several connections exactly once (#6560)", async (fixture) => {
+		const publishers = [await fixture.connect(), await fixture.connect(), await fixture.connect()];
+		const { recorder } = await subscribe(publishers[0]!, "broker-a");
+		await recorder.next((event) => event.kind === "resync");
+		const versions = Array.from({ length: 30 }, (_, index) => index + 1);
+		const published = await Promise.all(
+			versions.map((version) =>
+				publishers[version % publishers.length]!.publish({ brokerId: "broker-a", reason: "outbox", version }),
+			),
+		);
+		assert.ok(published.every((result) => result.status === "published"));
+		const deadline = performance.now() + CONCURRENT_HINTS_BOUND_MS;
+		while (recorder.hints().length < versions.length && performance.now() < deadline) await sleep(20);
+		await sleep(CLOSED_SUBSCRIPTION_QUIET_MS);
+		assert.deepEqual(
+			recorder
+				.hints()
+				.map((hint) => hint.version)
+				.sort((left, right) => left - right),
+			versions,
+		);
+	});
 
 	check("rejects an empty broker id", async (fixture) => {
 		const bus = await fixture.connect();

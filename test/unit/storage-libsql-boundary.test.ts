@@ -196,8 +196,9 @@ test("libSQL captures caller options before awaiting the driver load", async () 
 		assert.equal(inspect(error, { depth: null }).includes(original.authToken), false);
 		return true;
 	});
-	// A server's client also gets the adapter's fetch, which bounds how long a request may go unanswered (#4768).
+	// A server's client also gets the adapter's fetch, which bounds how long a request may go unanswered (#4768), and
+	// the default limit of reads it runs at once (#6565).
 	const { fetch: bounded, ...rest } = supplied!;
-	assert.deepEqual(rest, { ...original, intMode: "bigint" });
+	assert.deepEqual(rest, { ...original, intMode: "bigint", concurrency: 20 });
 	assert.equal(typeof bounded, "function");
 });

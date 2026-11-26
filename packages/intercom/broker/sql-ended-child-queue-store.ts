@@ -10,7 +10,7 @@ import {
 } from "@bastani/atomic/storage";
 import { ENDED_CHILD_QUEUE_BYTES_TOTAL_MAX, EndedChildQueueFullError } from "./ended-child-wakes.js";
 import type { IntercomBrokerStateOptions } from "./multinode-state-store.js";
-import { ensureBrokerSchema } from "./sql-schema.js";
+import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 /**
  * #5999 durable wake queue: the messages queued for subagents that ended (to be resumed, or kept while paused), kept
@@ -287,8 +287,13 @@ class OrderedWrites {
 	private brokenUntil = Number.NEGATIVE_INFINITY;
 	private brokenBy: unknown;
 
+	/**
+	 * @param domain The queue's table: its writes touch the queue's own tables alone, so they exclude one another, not
+	 * every writer of a shared database (#6560).
+	 */
 	constructor(
 		private readonly database: SqliteDatabase,
+		private readonly domain: string,
 		private readonly lockWaitMs = ENDED_QUEUE_LOCK_WAIT_MS,
 	) {}
 
@@ -340,7 +345,7 @@ class OrderedWrites {
 						}
 					}
 					return outcomes;
-				}, { lockWaitMs: this.lockWaitMs });
+				}, { lockWaitMs: this.lockWaitMs, concurrency: { kind: "serial", domain: this.domain } });
 				batch.forEach((item, index) => {
 					const outcome = results[index]!;
 					if (outcome.ok) item.resolve(outcome.value);
@@ -548,6 +553,61 @@ function failureForm(senderJson: string, requestJson: string | null): { readonly
 }
 
 /**
+ * Creates the ended-child queue's tables unless the store's ledger says they are there, as its first open on a database
+ * does, and as `atomic storage migrate` does, so a runtime role that may not create tables finds them (#6560).
+ */
+export async function ensureEndedChildQueueSchema({ database, prefix }: IntercomBrokerStateOptions): Promise<void> {
+	const valid = validateStoragePrefix(prefix, dialectOf(database).name);
+	const queue = `${valid}intercom_ended_child_queue`;
+	const bodies = `${valid}intercom_ended_child_bodies`;
+	const wakes = `${valid}intercom_ended_child_wakes`;
+	const meta = `${valid}intercom_ended_child_meta`;
+	const { types } = dialectOf(database);
+	await ensureBrokerSchema(database, prefix, "ended-child-queue", (tx) =>
+		tx.exec(`
+			CREATE TABLE IF NOT EXISTS ${queue}(
+				seq ${types.serialKey},
+				message_id TEXT NOT NULL UNIQUE,
+				home TEXT NOT NULL,
+				holder TEXT NOT NULL,
+				keeper TEXT NOT NULL,
+				owner_session_id TEXT NOT NULL,
+				owner_host TEXT NOT NULL,
+				child_key TEXT NOT NULL,
+				child_json TEXT NOT NULL,
+				sender_json TEXT NOT NULL,
+				bytes ${types.int} NOT NULL,
+				queued_at ${types.int} NOT NULL,
+				wake_json TEXT,
+				owner_away_since ${types.int},
+				failed_reason TEXT,
+				failed_at ${types.int},
+				dispatched ${types.int} NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS ${queue}_home ON ${queue}(home, seq);
+			CREATE TABLE IF NOT EXISTS ${bodies}(
+				message_id TEXT PRIMARY KEY,
+				request_json TEXT NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS ${queue}_departure ON ${queue}(home, owner_host, owner_session_id, child_key);
+			CREATE TABLE IF NOT EXISTS ${wakes}(
+				home TEXT NOT NULL,
+				child_key TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				at ${types.int} NOT NULL,
+				depth ${types.int} NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS ${wakes}_home ON ${wakes}(home, at);
+			CREATE TABLE IF NOT EXISTS ${meta}(
+				home TEXT PRIMARY KEY,
+				store_id TEXT NOT NULL,
+				holder_pid TEXT
+			);
+		`),
+	);
+}
+
+/**
  * #5999: the queue on `database`, tables `<prefix>intercom_ended_child_queue`, `<prefix>intercom_ended_child_wakes` and
  * `<prefix>intercom_ended_child_meta`. `home` partitions the rows by broker home; `holder` is this broker instance.
  */
@@ -593,49 +653,10 @@ export async function openSqlEndedChildQueueStore(
 	const bodies = `${valid}intercom_ended_child_bodies`;
 	const wakes = `${valid}intercom_ended_child_wakes`;
 	const meta = `${valid}intercom_ended_child_meta`;
-	const { types } = dialectOf(database);
-	const createSchema = () => ensureBrokerSchema(database, prefix, "ended-child-queue", (tx) =>
-		tx.exec(`
-			CREATE TABLE IF NOT EXISTS ${queue}(
-				seq ${types.serialKey},
-				message_id TEXT NOT NULL UNIQUE,
-				home TEXT NOT NULL,
-				holder TEXT NOT NULL,
-				keeper TEXT NOT NULL,
-				owner_session_id TEXT NOT NULL,
-				owner_host TEXT NOT NULL,
-				child_key TEXT NOT NULL,
-				child_json TEXT NOT NULL,
-				sender_json TEXT NOT NULL,
-				bytes ${types.int} NOT NULL,
-				queued_at ${types.int} NOT NULL,
-				wake_json TEXT,
-				owner_away_since ${types.int},
-				failed_reason TEXT,
-				failed_at ${types.int},
-				dispatched ${types.int} NOT NULL DEFAULT 0
-			);
-			CREATE INDEX IF NOT EXISTS ${queue}_home ON ${queue}(home, seq);
-			CREATE TABLE IF NOT EXISTS ${bodies}(
-				message_id TEXT PRIMARY KEY,
-				request_json TEXT NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS ${queue}_departure ON ${queue}(home, owner_host, owner_session_id, child_key);
-			CREATE TABLE IF NOT EXISTS ${wakes}(
-				home TEXT NOT NULL,
-				child_key TEXT NOT NULL,
-				kind TEXT NOT NULL,
-				at ${types.int} NOT NULL,
-				depth ${types.int} NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS ${wakes}_home ON ${wakes}(home, at);
-			CREATE TABLE IF NOT EXISTS ${meta}(
-				home TEXT PRIMARY KEY,
-				store_id TEXT NOT NULL,
-				holder_pid TEXT
-			);
-		`),
-	);
+	// Set up when a home first opens the queue, long after the broker's other stores: checked against a read of the
+	// schema catalog of its own, so a database where another home set the queue up costs no transaction or lock (#6560).
+	const createSchema = () =>
+		withBrokerSchemaCatalog(database, prefix, () => ensureEndedChildQueueSchema({ database, prefix }));
 	// The identity of a store already set up is read without a write, so a broker's start never waits for another
 	// process's write lock on it (a reader of a write-ahead log is not blocked by a writer). A new one is set up first.
 	const readMeta = async (): Promise<{ readonly id: string; readonly holderPid?: string } | undefined> => {
@@ -667,10 +688,10 @@ export async function openSqlEndedChildQueueStore(
 			await tx.run(`INSERT INTO ${meta}(home, store_id) VALUES (?, ?) ON CONFLICT DO NOTHING`, home, randomUUID());
 			const row = await tx.get<SqliteRow & { store_id: string }>(`SELECT store_id FROM ${meta} WHERE home = ?`, home);
 			return row?.store_id as string;
-		});
+		}, { concurrency: { kind: "serial", domain: queue } });
 	}
 	const keeper = id;
-	const writes = new OrderedWrites(database, lockWaitMs);
+	const writes = new OrderedWrites(database, queue, lockWaitMs);
 	let compacting: Promise<void> | undefined;
 	let closing = false;
 	const pragmaOf = async (executor: SqliteExecutor, name: string): Promise<number> => {

@@ -48,6 +48,49 @@ const FENCED_PATHS = {
 		conformance: "many hosts claim, commit and complete concurrently: no double claim, no lost settle (#5102)",
 	},
 	/**
+	 * Intercom's broker leases (`openSqlBrokerLeaseStore`): `acquire` is one upsert whose guard takes the row only while
+	 * it is free, stale or the acquirer's own, `renew` and `release` one `UPDATE` guarded by holder and fencing token, and
+	 * `renewMany` those updates in (kind, key) order. Each decides on its own row lock, never on an earlier read (#6560).
+	 * On PostgreSQL a first acquisition takes its order from the lease order sequence, which waits for nothing; where
+	 * `atomic storage migrate` has not created it yet, `acquire`'s statement first upserts the acquisition-order counter
+	 * row instead, which no other path locks.
+	 */
+	"intercom-lease": {
+		fences: [
+			"acquire only, without the order sequence: the acquisition-order counter row, by the statement's own upsert",
+			"each lease row, by its own guarded upsert or UPDATE, in (kind, key) order",
+		],
+		conformance:
+			"many brokers acquire, renew and release one lease concurrently: never two holders, fencing tokens strictly increase, a stale holder's renewal fails (#6560)",
+	},
+	/**
+	 * Intercom's wake-up hint log (`intercom_wakeups`): a hint is a row inserted once and deleted by its id or its age,
+	 * and no write reads the log to decide what to write, so its writers take no lock domain: the bus's `publish`
+	 * inserts a hint and notifies in one transaction that commits both, an outbox enqueue inserts one inside its own
+	 * transaction, and the bus's poll and pruning delete rows in single statements (#6560).
+	 */
+	"intercom-wakeup-hint": {
+		fences: ["none: the new hint row only, by its own INSERT"],
+		conformance: "delivers each hint published at once from several connections exactly once (#6560)",
+	},
+	/**
+	 * Intercom's outbox rows and sent-message reservations (`openSqlOutboxStore`, `openSqlSentMessageAuthority`), which
+	 * left the outbox's one lock domain (#6560). A claim reads its recipient's undelivered rows `FOR UPDATE` in sequence
+	 * order, then claims them; a claim's renewal, saving report, release and settlement are each one `UPDATE` guarded by
+	 * message id, claimant, token and state; expiry and `releaseClaimsOf` lock their rows in sequence order in a
+	 * subquery; a reservation, an acceptance and a forget are each one statement on the message's row, guarded by its
+	 * digest. Each decides on the rows it locks, never on an earlier read. They exclude the database-wide transactions an
+	 * older broker runs on these tables (`excludesSerial`). A send itself is a serial transaction of its recipient's domain.
+	 */
+	"intercom-outbox-row": {
+		fences: [
+			"outbox rows, FOR UPDATE in sequence order (claim, expiry, releaseClaimsOf), or one row by its own guarded UPDATE",
+			"one sent-message row, by its own guarded INSERT, UPDATE or DELETE",
+		],
+		conformance:
+			"a send to one recipient does not wait while another recipient's claim holds its rows; sends to one recipient keep their order and suppress duplicates (#6560)",
+	},
+	/**
 	 * `SqlRateBuckets.acquire` and `cooldown`: one `UPDATE … RETURNING` (or upsert) of the scope's bucket row, which locks
 	 * no pool row, so it orders after none of them (#4768).
 	 */

@@ -900,6 +900,8 @@ test("a cross-node send whose routing queries consume part of the client respons
 	const recipient = await b!.connect("recipient");
 	const leases = a!.opened.state.leases;
 	const listLive = leases.listLive.bind(leases);
+	// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+	Object.assign(leases, { listLiveFor: undefined });
 	let delayRouting = true;
 	const spy = vi.spyOn(leases, "listLive").mockImplementation(async (kind, staleAfterMs) => {
 		if (delayRouting && kind === "presence") {
@@ -954,6 +956,8 @@ test("a cross-node send whose routing queries make slow progress past 18 s keeps
 	const outbox = state.outbox;
 	const pendingAsks = state.pendingAsks;
 	const listLive = leases.listLive.bind(leases);
+	// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+	Object.assign(leases, { listLiveFor: undefined });
 	const binding = known.binding.bind(known);
 	const readOutbox = outbox.read.bind(outbox);
 	const matchesReply = pendingAsks.matchesReply.bind(pendingAsks);
@@ -1220,6 +1224,8 @@ test("progress timers never arm without store progress and clear cleanly when th
 	await b!.connect("recipient");
 	const leases = a!.opened.state.leases;
 	const listLive = leases.listLive.bind(leases);
+	// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+	Object.assign(leases, { listLiveFor: undefined });
 	const known = a!.opened.state.knownSessions;
 	const binding = known.binding.bind(known);
 	let mode: "hung" | "slow-then-hang" = "hung";
@@ -1282,6 +1288,8 @@ test("routing that exceeds RECIPIENT_SAVE_MAX_WAIT_MS before enqueue fails witho
 	const recipient = await b!.connect("recipient");
 	const leases = a!.opened.state.leases;
 	const listLive = leases.listLive.bind(leases);
+	// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+	Object.assign(leases, { listLiveFor: undefined });
 	let stallOnce = true;
 	const unblocks: Array<() => void> = [];
 	const spy = vi.spyOn(leases, "listLive").mockImplementation(async (kind, staleAfterMs) => {
@@ -1328,6 +1336,8 @@ test("two concurrent slow replies in the same sender reply lane both extend past
 	const outbox = state.outbox;
 	const pendingAsks = state.pendingAsks;
 	const listLive = leases.listLive.bind(leases);
+	// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+	Object.assign(leases, { listLiveFor: undefined });
 	const binding = known.binding.bind(known);
 	const readOutbox = outbox.read.bind(outbox);
 	const matchesReply = pendingAsks.matchesReply.bind(pendingAsks);
@@ -1463,6 +1473,8 @@ test("re-entrant local-to-remote fallback enables progress reporting and queued 
 	const known = state.knownSessions;
 	const outbox = state.outbox;
 	const listLive = leases.listLive.bind(leases);
+	// A send reads its presences through `listLive`, which this test stubs, as on a store without `listLiveFor` (#6560).
+	Object.assign(leases, { listLiveFor: undefined });
 	const binding = known.binding.bind(known);
 	const readOutbox = outbox.read.bind(outbox);
 	const reserveAndEnqueue = state.reserveAndEnqueue!.bind(state);

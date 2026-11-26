@@ -1,5 +1,8 @@
+import { storageSchemaCurrent } from "../added-exports.js";
 import type { SqliteDatabase, SqliteTransactionOptions, SqliteValue } from "../database.js";
 import { dialectOf } from "../dialect.js";
+import { ensureStorageSchema } from "../migrations.js";
+import { withStorageSchemaCatalog } from "../schema-catalog.js";
 import {
 	type AnchoredChatRecord,
 	boundedChatRecord,
@@ -10,6 +13,7 @@ import {
 	firstChatOrders,
 	type SessionChatRecords,
 } from "./chat-records.js";
+import { sessionWriteTransaction } from "./session-transactions.js";
 
 /** Rows one read fetches at most. */
 const READ_PAGE_ROWS = 64;
@@ -35,30 +39,59 @@ const lineKey = (anchor: string) => `L${anchor}`;
 const orderKey = (promptId: string) => `O${promptId}`;
 
 /**
- * Each write runs in a transaction of its own, as every session write does, on the session writer's connection and
- * in its order. A statement outside a transaction would wait for another process's write lock in node:sqlite's busy
- * handler, which blocks the event loop for up to the busy timeout (#5682); a transaction waits for the lock without
- * blocking it. A transient failure runs the write again, as one statement outside a transaction would.
+ * The schema's setup runs in a transaction of its own, on the session writer's connection and in its order. A statement
+ * outside a transaction would wait for another process's write lock in node:sqlite's busy handler, which blocks the
+ * event loop for up to the busy timeout (#5682); a transaction waits for the lock without blocking it. A transient
+ * failure runs it again, as one statement outside a transaction would. Each record's write does the same, as a write
+ * of its session's rows (`sessionWriteTransaction`).
  */
 const SIDE_WRITE: SqliteTransactionOptions = { retryTransientFailures: true };
 
-/** A new physical table per format version; the main sessions schema (and all its old readers) stay unchanged. */
+/** The chat records' name in the storage ledger: `atomic storage migrate` sets them up as the owner role. */
+export const SESSION_CHAT_DOMAIN = "session-chat";
+/** The revision of the chat records' table and index: raise it whenever their setup creates anything new. */
+const SESSION_CHAT_REVISION = 1;
+
+/** Chat records whose table and index `initialize` creates, unless the ledger records them, before the first write. */
+export interface SqlSessionChatRecords extends SessionChatRecords {
+	initialize(): Promise<void>;
+}
+
+/**
+ * A new physical table per format version; the main sessions schema (and all its old readers) stay unchanged. `ledger`
+ * is the prefix's storage ledger, which records the table and index once set up, so a runtime role without DDL
+ * privileges runs no DDL once the owner created them.
+ */
 export function sqlChatRecords(
 	database: SqliteDatabase,
 	sessions: string,
 	table: string,
 	index: string,
-): SessionChatRecords {
+	ledger: string,
+): SqlSessionChatRecords {
 	const dialect = dialectOf(database);
+	const schema = { ledger, domain: SESSION_CHAT_DOMAIN, revision: SESSION_CHAT_REVISION };
 	let initialized: Promise<void> | undefined;
 	function initialize(): Promise<void> {
-		const create = () =>
-			database.transaction(async (tx) => {
-				await tx.exec(`CREATE TABLE IF NOT EXISTS ${table} (
+		const create = async () => {
+			// The first record of a process, long after the store opened: a current table is found in one read of the
+			// catalog, without a transaction or the database's write lock (#6560).
+			if (await withStorageSchemaCatalog(database, ledger, () => storageSchemaCurrent(database, schema))) return;
+			await database.transaction(
+				(tx) =>
+					ensureStorageSchema(tx, dialect, schema, async () => {
+						// An earlier build created them on a first record and recorded nothing: found, no DDL runs, which a role
+						// without the privilege to create objects in the schema could not run even with IF NOT EXISTS.
+						const probe = dialect.schemaObjects([table, index]);
+						if ((await tx.all(probe.sql, ...probe.params)).length === 2) return;
+						await tx.exec(`CREATE TABLE IF NOT EXISTS ${table} (
 				position ${dialect.types.serialKey}, session_id TEXT NOT NULL REFERENCES ${sessions}(id) ON DELETE CASCADE,
 				epoch TEXT NOT NULL, anchor TEXT NOT NULL, data TEXT NOT NULL)`);
-				await tx.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(session_id, epoch, anchor, position)`);
-			}, SIDE_WRITE);
+						await tx.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(session_id, epoch, anchor, position)`);
+					}),
+				SIDE_WRITE,
+			);
+		};
 		// PostgreSQL fails one of two first diagnostics creating the table together; it then exists for the retry.
 		initialized ??= create()
 			.catch(() => create())
@@ -71,6 +104,7 @@ export function sqlChatRecords(
 	const current = dialect.jsonText("summary_state", "epoch");
 	const bytes = (column: string) => dialect.textByteLength(column);
 	return {
+		initialize,
 		async append(owner, anchor, record) {
 			record = boundedChatRecord(record);
 			await initialize();
@@ -88,7 +122,7 @@ export function sqlChatRecords(
 							.join(" UNION ALL ")}`,
 						...rows.flatMap(([key, data]) => [owner.epoch, key, data, owner.id, owner.epoch]),
 					),
-				SIDE_WRITE,
+				sessionWriteTransaction(sessions, owner.id),
 			);
 		},
 		async has(owner) {

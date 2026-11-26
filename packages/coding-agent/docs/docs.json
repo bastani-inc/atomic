@@ -46,6 +46,8 @@
               "background-tasks",
               "guides/intercom",
               "guides/team-setup",
+              "guides/postgres-pgbouncer",
+              "guides/postgres-tuning",
               "computer-use",
               "verification"
             ]

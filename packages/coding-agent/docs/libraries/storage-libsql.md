@@ -58,6 +58,8 @@ Pass the returned `SqliteDatabase` to `createAgentSession({ sessionStore: { kind
 | `authToken` | `string` | For remote databases | Database auth token. In CLI settings, pass through `secrets` (`{ "file": ... }` or `{ "env": ... }`) so it never lands in `settings.json`. |
 | `namespace` | `string` | No | Self-hosted `sqld` namespace (`sqld --enable-namespaces`), sent as the `x-namespace` header. Requires a `libsql:`, `https:`, or `http:` URL. |
 | `headers` | `Readonly<Record<string, string>>` | No | Extra request headers sent on every HTTP/libSQL request and redacted from diagnostics. Requires a `libsql:`, `https:`, or `http:` URL. |
+| `keepAliveMs` | `number` | No | How long, in milliseconds, an unused HTTP connection stays open for reuse on `libsql:`, `https:` and `http:` URLs. A positive integer. Unset, Atomic closes an unused connection after about 4 seconds. Leave it unset for Turso, which closes unused connections after 5 seconds. Ignored for `ws:` and `wss:` URLs. |
+| `concurrency` | `number` | No | On a libSQL server, the most reads one connection runs at the same time. A positive integer, default `20` (`DEFAULT_CONCURRENCY`). Writes still run one at a time. No effect on `file:` URLs. |
 
 ## Exported API
 
@@ -69,6 +71,9 @@ Pass the returned `SqliteDatabase` to `createAgentSession({ sessionStore: { kind
 
 - **Local `file:` databases:** On first open, the adapter enables write-ahead logging (WAL, creating `-wal` and `-shm` sidecar files) with a 5-second busy timeout matching Atomic's built-in SQLite stores. Single statements, single-statement `exec`, batches, and transaction starts retry when another connection commits while waiting; multi-statement `exec` calls are not retried. Open a local file through only one SQLite library at a time so concurrent readers do not see stale WAL state.
 - **Remote `sqld` servers:** When `sqld` hits a WAL checkpoint, it returns `SQLITE_BUSY` immediately without running the write. The adapter retries single statements, single-statement `exec`, batches, and transaction starts with jittered exponential backoff for up to 5 seconds within a 10-second wall-clock ceiling (one 5-second lock timeout plus one 5-second checkpoint window). For self-hosted `sqld`, start with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`).
+- **Server transactions:** A transaction sends its first reads with its `BEGIN` and its last writes with its `COMMIT`, so saving entries to a session takes 2 requests. The commit runs only if every write before it succeeded; otherwise nothing commits.
+- **Readers:** `openReader()` returns a handle with its own client, for local files and servers. Its reads do not wait behind the main handle's calls. Closing the database closes its readers.
+- **Throughput:** On a server, a connection runs up to `concurrency` reads at the same time. Writes run one at a time, in call order, and a libSQL database has one writer at a time. See [Tuning for many concurrent agents](/storage#tuning-libsql-and-turso).
 
 ## CLI configuration
 

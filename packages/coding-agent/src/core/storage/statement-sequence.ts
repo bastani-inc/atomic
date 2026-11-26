@@ -69,6 +69,38 @@ export function sequenceRunner(executor: SqliteExecutor): RunSequence | undefine
 }
 
 /**
+ * Sends `statements` as the last calls of a transaction, so its commit goes out right behind them instead of after their
+ * answers: one round trip for the writes and the commit together. Returns false, having sent nothing, when they cannot
+ * go that way (too many for one request, or text holding NUL); the caller then runs them as it would otherwise. After it
+ * returns true the transaction takes no more calls, and its callback must return without awaiting anything more: the
+ * statements' failures, if any, are the transaction's, and nothing commits.
+ */
+export type FinishTransaction = (statements: readonly SequencedStatement[]) => boolean;
+
+const FINISHES = Symbol.for("atomic-storage/transaction-finishes@1");
+const finishBag = globalThis as typeof globalThis &
+	Record<symbol, WeakMap<SqliteExecutor, FinishTransaction> | undefined>;
+const finishes = finishBag[FINISHES] ?? new WeakMap<SqliteExecutor, FinishTransaction>();
+finishBag[FINISHES] = finishes;
+
+/** Lets `executor`, a transaction's own handle, send its last statements with its commit through `finish`. */
+export function offerFinish(executor: SqliteExecutor, finish: FinishTransaction): void {
+	finishes.set(executor, finish);
+}
+
+/**
+ * How `executor` sends a transaction's last statements together with its commit (a transaction of a pipelined
+ * connection); undefined for any other executor, including a wrapper around one, or one whose `run` or `get` was
+ * replaced, whose own methods must see each statement.
+ */
+export function transactionFinisher(executor: SqliteExecutor): FinishTransaction | undefined {
+	const offered = sequences.get(executor);
+	if (offered === undefined) return undefined;
+	if (executor.run !== offered.statements.run || executor.get !== offered.statements.get) return undefined;
+	return finishes.get(executor);
+}
+
+/**
  * A write of a {@link statementBatch}: SQL text of one or more statements without parameters, run as `exec` runs it, or
  * one statement with its parameters, run as `run` runs it. `false` and `undefined` stand for a write left out.
  */

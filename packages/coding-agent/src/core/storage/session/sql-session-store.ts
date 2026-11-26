@@ -1,5 +1,6 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
+import { ensureTableFillfactor, transactionFinisher } from "../added-exports.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -12,10 +13,11 @@ import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
+import { schemaCatalogOf, withStorageSchemaCatalog } from "../schema-catalog.js";
 import { applyStorageMigrationsTogether, statementBatch } from "../statement-batches.js";
 import { sequenceRunner } from "../statement-sequence.js";
 import { sha256Hex } from "./blob-hash.js";
-import { bindChatEpoch, type SessionChatRecords } from "./chat-records.js";
+import { bindChatEpoch } from "./chat-records.js";
 import {
 	SessionConflictError,
 	SessionExistsError,
@@ -55,8 +57,9 @@ import {
 	type SessionSummaryState,
 	type SessionSummaryText,
 } from "./session-summary.js";
+import { sessionWriteTransaction } from "./session-transactions.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
-import { sqlChatRecords } from "./sql-chat-records.js";
+import { type SqlSessionChatRecords, sqlChatRecords } from "./sql-chat-records.js";
 import type {
 	ChildDisplayLaunch,
 	ForkArchiveSource,
@@ -116,6 +119,10 @@ export const SESSION_SCHEMA_VERSION = 2;
 const SESSION_SCHEMA_VERSION_UNCHUNKED = 1;
 /** The schema domain of the session tables in the prefix's migration ledger. */
 export const SESSION_DOMAIN = "sessions";
+/** The ledger step, `schema:session-fillfactor`, that sets the sessions table's fillfactor on PostgreSQL (#6560). */
+export const SESSION_FILLFACTOR_DOMAIN = "session-fillfactor";
+/** The fillfactor of the sessions table on PostgreSQL: a fifth of each page stays free for head row updates. */
+const SESSION_ROW_FILLFACTOR = 80;
 /**
  * The most bytes of a chunked session blob one row holds. New blobs use a header row and rows of at most this size,
  * so their bound and returned values stay within it: libSQL servers cap a row and a bound value (sqld's default is
@@ -375,6 +382,11 @@ const LISTING_SCOPES = 8;
  * ended before it committed runs again (#4383); `append` and `replace` check `expectSeq` again on each run.
  */
 const SESSION_TRANSACTION: SqliteTransactionOptions = { retryTransientFailures: true };
+/**
+ * A session read: one snapshot that takes no write lock, so it neither waits for writers nor makes them wait. Its
+ * statements all run in that snapshot: split into separate ones, a read could join rows of two generations.
+ */
+const SESSION_READ: SqliteTransactionOptions = { retryTransientFailures: true, readOnly: true };
 
 /** The largest content index or suffix length a task-reference query binds, an SQL `INTEGER` on every backend. */
 const TASK_REFERENCE_INTEGER = 2 ** 31 - 1;
@@ -465,6 +477,57 @@ function statementBytes(statement: SqliteStatement): number {
 	return bytes;
 }
 
+/**
+ * Writes of one transaction sent without waiting for each answer: the connection runs them in the order they were
+ * sent, behind the transaction's earlier calls and ahead of its later ones, so a read made after `send` sees them. On a
+ * pipelined connection they share round trips instead of taking one each. At most `STATEMENT_BATCH_BYTES` of them are
+ * unanswered at a time. `settle` waits for every one sent and throws the first that failed.
+ */
+class SentWrites {
+	private readonly tx: SqliteExecutor;
+	private readonly sent: Promise<void>[] = [];
+	private unansweredBytes = 0;
+	private failure: { readonly error: unknown } | undefined;
+
+	constructor(tx: SqliteExecutor) {
+		this.tx = tx;
+	}
+
+	async send(statements: Iterable<SqliteStatement>): Promise<void> {
+		for (const statement of statements) {
+			this.sent.push(
+				this.tx.run(statement.sql, ...statement.params).then(
+					() => {},
+					(error: unknown) => {
+						this.failure ??= { error };
+					},
+				),
+			);
+			this.unansweredBytes += statementBytes(statement);
+			if (this.unansweredBytes > STATEMENT_BATCH_BYTES) await this.settle();
+		}
+	}
+
+	async settle(): Promise<void> {
+		await Promise.all(this.sent.splice(0));
+		this.unansweredBytes = 0;
+		if (this.failure !== undefined) throw this.failure.error;
+	}
+
+	/** Settles after `body`, and reports the first write that failed before what `body` met, as its cause. */
+	async around<T>(body: () => Promise<T>): Promise<T> {
+		let value: T;
+		try {
+			value = await body();
+		} catch (error) {
+			await this.settle();
+			throw error;
+		}
+		await this.settle();
+		return value;
+	}
+}
+
 export class SqlSessionStore implements SessionStore {
 	private readonly database: SqliteDatabase;
 	private readonly dialect: StorageDialect;
@@ -479,13 +542,15 @@ export class SqlSessionStore implements SessionStore {
 	/** Set by `open`, once the store exists (#4971). */
 	openMarkers!: SqlSessionOpenMarkers;
 	readonly searchIndex?: SqlSessionSearchIndex;
-	private chatStore?: SessionChatRecords;
+	private chatStore?: SqlSessionChatRecords;
+	/** The database's reader handle, once a read opened it: see `readerDatabase`. */
+	private reader?: Promise<SqliteDatabase>;
 	/**
 	 * Absent on a local libSQL file, which then behaves as before: @libsql/client waits for another process's write
 	 * lock on the calling thread, even to begin a transaction, so a side write would stop the event loop where an
 	 * ordinary turn-ending notice writes nothing (#5682).
 	 */
-	get chatRecords(): SessionChatRecords | undefined {
+	get chatRecords(): SqlSessionChatRecords | undefined {
 		const { adapter, location } = this.database.descriptor;
 		if (adapter === "libsql" && /^file:/i.test(location)) return undefined;
 		if (!this.chatStore) {
@@ -494,7 +559,13 @@ export class SqlSessionStore implements SessionStore {
 				{ rows: "chat_v1", byAnchor: "chat_v1_anchor" },
 				this.prefix,
 			);
-			this.chatStore = sqlChatRecords(this.database, this.tables.sessions, names.rows, names.byAnchor);
+			this.chatStore = sqlChatRecords(
+				this.database,
+				this.tables.sessions,
+				names.rows,
+				names.byAnchor,
+				storageMigrationTable(this.prefix),
+			);
 		}
 		return this.chatStore;
 	}
@@ -545,12 +616,12 @@ export class SqlSessionStore implements SessionStore {
 		registerHistorySnapshot(this, (sessionId, project) => {
 			this.assertOpen();
 			validateSessionText("sessionId", sessionId);
-			return this.transaction(async (tx) => {
-				const head = await this.historyHead(tx, sessionId);
+			return this.readTransaction(async (tx) => {
+				const head = await this.historyHead(tx, sessionId, true);
 				return project(head.epoch, head.lastSeq, (from, through, backward) =>
 					this.historyPacket(tx, sessionId, head.epoch, from, through, backward),
 				);
-			}, SESSION_TRANSACTION);
+			});
 		});
 		this.forkStagingTable = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, prefix).forkStaging;
 	}
@@ -577,6 +648,17 @@ export class SqlSessionStore implements SessionStore {
 		options: { readonly prefix?: string; readonly cwdMatcher?: SessionCwdMatcher } = {},
 	): Promise<SqlSessionStore> {
 		validateStoragePrefix(options.prefix, dialectOf(database).name);
+		// One read of the schema for every table set the open checks: where it is current, the open runs no schema
+		// transaction and takes no lock, so processes starting together do not queue behind one another (#6560).
+		return withStorageSchemaCatalog(database, storageMigrationTable(options.prefix), () =>
+			SqlSessionStore.openWithCatalog(database, options),
+		);
+	}
+
+	private static async openWithCatalog(
+		database: SqliteDatabase,
+		options: { readonly prefix?: string; readonly cwdMatcher?: SessionCwdMatcher },
+	): Promise<SqlSessionStore> {
 		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, options.prefix);
 		let legacyBlobData = false;
 		const createTables = async (tx: SqliteExecutor, dialect: StorageDialect) => {
@@ -750,16 +832,28 @@ export class SqlSessionStore implements SessionStore {
 				},
 			]);
 		}
+		// Room on each page for the session row's next version, which every append writes, so it stays a HOT update
+		// (#6560). PostgreSQL only; a runtime role leaves it to `atomic storage migrate`.
+		await ensureTableFillfactor(database, {
+			ledger: storageMigrationTable(options.prefix),
+			domain: SESSION_FILLFACTOR_DOMAIN,
+			revision: 1,
+			table: tables.sessions,
+			fillfactor: SESSION_ROW_FILLFACTOR,
+		});
 		// Whether a staged clone ever ran here (#5594), asked beside the rest of the open rather than after it.
 		const staging = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, options.prefix).forkStaging;
 		const stagingProbe = dialectOf(database).tableExists(staging);
+		const catalog = await schemaCatalogOf(database);
 		const staged =
 			database.readOnly === true || !database.tryMaintenance
 				? Promise.resolve(false)
-				: database.get(stagingProbe.sql, ...stagingProbe.params).then(
-						(row) => row !== undefined,
-						() => false,
-					);
+				: catalog !== undefined
+					? Promise.resolve(catalog.hasTable(staging))
+					: database.get(stagingProbe.sql, ...stagingProbe.params).then(
+							(row) => row !== undefined,
+							() => false,
+						);
 		// Neither the snapshot tables nor the search index depend on the other. Where the sessions schema was current,
 		// theirs most likely is too and opening them only reads, so those reads go together. Otherwise the snapshot
 		// tables are set up first, in a transaction of their own as before: set up together, the two transactions would
@@ -847,7 +941,50 @@ export class SqlSessionStore implements SessionStore {
 		return this.database.transaction(async (tx) => {
 			await this.assertReadableSchema(tx);
 			return body(tx);
-		}, options);
+		}, this.checkedFirst(options));
+	}
+
+	/**
+	 * `options` with the schema check its transaction makes first, before the reads `options.leading` names, sent with
+	 * the transaction's start where the connection is pipelined.
+	 */
+	private checkedFirst(options: SqliteTransactionOptions): SqliteTransactionOptions {
+		return { ...options, leading: [this.schemaCheck(), ...(options.leading ?? [])] };
+	}
+
+	/**
+	 * `transaction` for a write to the rows of the session `sessionId` only, beside writers of other sessions. `leading`
+	 * names the reads the body makes first, after the schema check.
+	 */
+	private sessionWrite(sessionId: string, ...leading: readonly SqliteStatement[]): SqliteTransactionOptions {
+		const options = sessionWriteTransaction(this.tables.sessions, sessionId);
+		return leading.length === 0 ? options : { ...options, leading };
+	}
+
+	/**
+	 * `transaction` for a body that only reads, in one read-only snapshot, on the database's reader handle when it
+	 * offers one: its reads then wait for neither the writes queued on this store's connection nor their locks.
+	 */
+	private async readTransaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
+		const database = await this.readerDatabase();
+		return database.transaction(async (tx) => {
+			await this.assertReadableSchema(tx);
+			return body(tx);
+		}, this.checkedFirst(SESSION_READ));
+	}
+
+	/**
+	 * The database's reader handle, opened at the first read and closed with the store; the database without one. A
+	 * reader that cannot open, such as when its file can no longer be opened anew, leaves the read on the store's own
+	 * connection, as every read ran before readers, and the next read tries to open one again.
+	 */
+	private readerDatabase(): Promise<SqliteDatabase> | SqliteDatabase {
+		if (this.database.openReader === undefined) return this.database;
+		this.reader ??= this.database.openReader().catch((error: Error) => {
+			this.reader = undefined;
+			throw error;
+		});
+		return this.reader.catch(() => this.database);
 	}
 
 	/**
@@ -875,13 +1012,18 @@ export class SqlSessionStore implements SessionStore {
 			await checked;
 			if ("failure" in outcome) throw outcome.failure;
 			return outcome.value;
-		}, options);
+		}, this.checkedFirst(options));
+	}
+
+	/** The read that checks the sessions schema version, which every transaction of this store makes first. */
+	private schemaCheck(): SqliteStatement {
+		return { sql: `SELECT schema_version FROM ${this.tables.meta}`, params: [] };
 	}
 
 	private assertReadableSchema(executor: SqliteExecutor): Promise<void> {
 		return assertStoredSchemaVersion(
 			executor,
-			{ sql: `SELECT schema_version FROM ${this.tables.meta}` },
+			this.schemaCheck(),
 			"sessions",
 			SESSION_SCHEMA_VERSION,
 			"schema_version",
@@ -897,15 +1039,22 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
-		return this.transactionCheckedAlongside(async (tx, checked) => {
-			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, header.id)) {
-				throw new SessionExistsError(header.id);
-			}
-			const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
-			await checked;
-			await this.writeEntries(tx, summary.statement, this.entryWrites(header.id, entries, 0, summary.texts));
-			return { lastSeq: entries.length, epoch: summary.epoch };
-		}, SESSION_TRANSACTION);
+		const existing: SqliteStatement = {
+			sql: `SELECT id FROM ${this.tables.sessions} WHERE id = ?`,
+			params: [header.id],
+		};
+		return this.transactionCheckedAlongside(
+			async (tx, checked) => {
+				if (await tx.get(existing.sql, ...existing.params)) {
+					throw new SessionExistsError(header.id);
+				}
+				const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
+				await checked;
+				await this.writeEntries(tx, summary.statement, this.entryWrites(header.id, entries, 0, summary.texts));
+				return { lastSeq: entries.length, epoch: summary.epoch };
+			},
+			this.sessionWrite(header.id, existing),
+		);
 	}
 
 	async createFork(
@@ -940,7 +1089,7 @@ export class SqlSessionStore implements SessionStore {
 			if (source.epoch !== undefined && donor.epoch !== source.epoch)
 				throw new SessionConflictError(source.sessionId, 0, donor.lastSeq);
 			const { texts, epoch } = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
-			await this.insertEntries(tx, header.id, entries, 0, texts);
+			await this.insertEntries(tx, header.id, entries, 0, texts, false);
 			for (const [i, entry] of entries.entries()) {
 				const ref = source.receipts.get(entry.id);
 				if (!ref) continue;
@@ -977,11 +1126,12 @@ export class SqlSessionStore implements SessionStore {
 						);
 				}
 			}
+			await this.forkVersionStep(tx, header.id);
 			const remainingBlobs: string[] = [];
 			for (const hash of source.hashes)
 				if (!(await this.copyForkBlob(tx, source.sessionId, header.id, hash))) remainingBlobs.push(hash);
 			return { lastSeq: entries.length, epoch, remainingBlobs };
-		}, SESSION_TRANSACTION);
+		}, this.sessionWrite(header.id));
 	}
 
 	/**
@@ -1012,6 +1162,16 @@ export class SqlSessionStore implements SessionStore {
 		await cleanupForkStaging(this.database, this.dialect, this.forkStagingTable, Number.POSITIVE_INFINITY);
 	}
 
+	/**
+	 * Creates the chat records' table and index unless the ledger records them, as `atomic storage migrate` does as the
+	 * owner role: a runtime role without DDL privileges then saves chat records too. Opens never create them; the first
+	 * chat record does where `migrate` has not run.
+	 */
+	async prepareChatRecords(): Promise<void> {
+		this.assertOpen();
+		await this.chatRecords?.initialize();
+	}
+
 	private forkStagingTarget(): import("./fork-staging.js").ForkStagingTarget {
 		return {
 			database: this.database,
@@ -1025,7 +1185,7 @@ export class SqlSessionStore implements SessionStore {
 			chunkedSchemaVersion: SESSION_SCHEMA_VERSION,
 			ownsBlobs:
 				this.getBlob === SqlSessionStore.prototype.getBlob && this.putBlob === SqlSessionStore.prototype.putBlob,
-			transaction: (body) => this.transaction(body, SESSION_TRANSACTION),
+			transaction: (sessionId, body) => this.transaction(body, this.sessionWrite(sessionId)),
 			saveSummary: (tx, header, lastSeq, summary, index) =>
 				this.saveSummary(tx, header.id, { header, entries: [], lastSeq }, summary, index),
 			create: (header, entries) => this.create(header, entries),
@@ -1064,9 +1224,9 @@ export class SqlSessionStore implements SessionStore {
 		index: number,
 	): Promise<Uint8Array | undefined> {
 		this.assertOpen();
-		return this.transaction(async (tx) => {
+		return this.readTransaction(async (tx) => {
 			const { sessionId, epoch, seq } = reference;
-			const head = await this.historyHead(tx, sessionId);
+			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
 			const row = await tx.get<SqliteRow & { chunks: number; data: Uint8Array | null }>(
 				`SELECT e.chunks, c.data FROM ${this.tables.entries} e LEFT JOIN ${this.tables.entryChunks} c
@@ -1080,15 +1240,15 @@ export class SqlSessionStore implements SessionStore {
 			if (row.data == null)
 				throw new StorageUnavailableError(this.descriptor, new Error(`Missing chunk of session entry ${seq}`));
 			return row.data;
-		}, SESSION_TRANSACTION);
+		});
 	}
 
 	/** How many chunks the entry `reference` names is stored in, 0 when it is stored whole, in its generation. */
 	private async readStoredChunks(reference: OversizedSessionEntry): Promise<number> {
 		this.assertOpen();
-		return this.transaction(async (tx) => {
+		return this.readTransaction(async (tx) => {
 			const { sessionId, epoch, seq } = reference;
-			const head = await this.historyHead(tx, sessionId);
+			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
 			const row = await tx.get<SqliteRow & { chunks: number }>(
 				`SELECT chunks FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
@@ -1097,7 +1257,7 @@ export class SqlSessionStore implements SessionStore {
 			);
 			if (!row) throw new StorageUnavailableError(this.descriptor, new Error(`Missing session entry ${seq}`));
 			return Number(row.chunks);
-		}, SESSION_TRANSACTION);
+		});
 	}
 
 	/**
@@ -1244,76 +1404,87 @@ export class SqlSessionStore implements SessionStore {
 					...(s.degraded ? { degradedFrom: s.degraded } : {}),
 				} as SessionEntry;
 			};
-			for await (const row of stream.read(reader, async (id) => (await lookup(id)) !== undefined, inlineSnapshot)) {
-				index = await foldForkRow(index, row, lookup);
-				const entry = row.entry;
-				const listed = applySessionSummaryEntries(summary, [entry]);
-				summary = listed.state;
-				if (entry.type === "custom" && entry.customType === "atomic.tool-output") {
-					const hash = (entry.data as { hash?: string })?.hash;
-					if (
-						typeof hash === "string" &&
-						!remainingBlobs.has(hash) &&
-						!(await this.copyForkBlob(tx, source.sessionId, header.id, hash))
-					)
-						remainingBlobs.add(hash);
-				}
-				if (!row.reference) {
-					await this.insertEntries(tx, header.id, [entry], seq, listed.texts);
-				} else if (row.inlineSnapshot) {
-					await this.writeInlineForkSnapshot(tx, reader, row.reference, header.id, seq, listed.texts, row.edits);
-				} else {
-					const encoded = await encodedForkRow(reader, row);
-					const chunks = Math.ceil(encoded.size / SESSION_ENTRY_CHUNK_BYTES);
-					await tx.run(
-						`INSERT INTO ${this.tables.entries} (session_id,seq,entry_id,entry_json,chunks) VALUES (?,?,?,?,?)`,
-						header.id,
-						seq + 1,
-						entry.id,
-						JSON.stringify({ type: entry.type, id: entry.id, parentId: entry.parentId ?? null }),
-						chunks,
-					);
-					let n = 0,
-						used = 0,
-						buffer = new Uint8Array(SESSION_ENTRY_CHUNK_BYTES);
-					const write = async () => {
+			const writes = new SentWrites(tx);
+			await writes.around(async () => {
+				for await (const row of stream.read(
+					reader,
+					async (id) => (await lookup(id)) !== undefined,
+					inlineSnapshot,
+				)) {
+					index = await foldForkRow(index, row, lookup);
+					const entry = row.entry;
+					const listed = applySessionSummaryEntries(summary, [entry]);
+					summary = listed.state;
+					if (entry.type === "custom" && entry.customType === "atomic.tool-output") {
+						const hash = (entry.data as { hash?: string })?.hash;
+						if (
+							typeof hash === "string" &&
+							!remainingBlobs.has(hash) &&
+							!(await this.copyForkBlob(tx, source.sessionId, header.id, hash))
+						)
+							remainingBlobs.add(hash);
+					}
+					if (!row.reference) {
+						await writes.send(this.entryWrites(header.id, [entry], seq, listed.texts, false));
+					} else if (row.inlineSnapshot) {
+						await this.writeInlineForkSnapshot(
+							tx,
+							reader,
+							row.reference,
+							header.id,
+							seq,
+							listed.texts,
+							row.edits,
+						);
+					} else {
+						const encoded = await encodedForkRow(reader, row);
+						const chunks = Math.ceil(encoded.size / SESSION_ENTRY_CHUNK_BYTES);
 						await tx.run(
-							`INSERT INTO ${this.tables.entryChunks} (session_id,seq,idx,data) VALUES (?,?,?,?)`,
+							`INSERT INTO ${this.tables.entries} (session_id,seq,entry_id,entry_json,chunks) VALUES (?,?,?,?,?)`,
 							header.id,
 							seq + 1,
-							n++,
-							buffer.subarray(0, used),
+							entry.id,
+							JSON.stringify({ type: entry.type, id: entry.id, parentId: entry.parentId ?? null }),
+							chunks,
 						);
-						used = 0;
-					};
-					for await (const part of encoded.chunks())
-						for (let start = 0; start < part.length; ) {
-							const count = Math.min(part.length - start, buffer.length - used);
-							buffer.set(part.subarray(start, start + count), used);
-							start += count;
-							used += count;
-							if (used === buffer.length) await write();
-						}
-					if (used) await write();
-					if (n !== chunks) throw new StorageError("Incomplete historical entry in fork");
-					for (const { text } of listed.texts)
-						await tx.run(
-							`INSERT INTO ${this.tables.searchTexts} (session_id,seq,text_json) VALUES (?,?,?)`,
-							header.id,
-							seq + 1,
-							this.encode(text),
-						);
-					await tx.run(
-						`UPDATE ${this.tables.meta} SET schema_version=? WHERE schema_version=?`,
-						SESSION_SCHEMA_VERSION,
-						SESSION_SCHEMA_VERSION_UNCHUNKED,
-					);
+						let n = 0,
+							used = 0,
+							buffer = new Uint8Array(SESSION_ENTRY_CHUNK_BYTES);
+						const write = async () => {
+							await tx.run(
+								`INSERT INTO ${this.tables.entryChunks} (session_id,seq,idx,data) VALUES (?,?,?,?)`,
+								header.id,
+								seq + 1,
+								n++,
+								buffer.subarray(0, used),
+							);
+							used = 0;
+						};
+						for await (const part of encoded.chunks())
+							for (let start = 0; start < part.length; ) {
+								const count = Math.min(part.length - start, buffer.length - used);
+								buffer.set(part.subarray(start, start + count), used);
+								start += count;
+								used += count;
+								if (used === buffer.length) await write();
+							}
+						if (used) await write();
+						if (n !== chunks) throw new StorageError("Incomplete historical entry in fork");
+						for (const { text } of listed.texts)
+							await tx.run(
+								`INSERT INTO ${this.tables.searchTexts} (session_id,seq,text_json) VALUES (?,?,?)`,
+								header.id,
+								seq + 1,
+								this.encode(text),
+							);
+					}
+					seq++;
 				}
-				seq++;
-			}
+			});
+			await this.forkVersionStep(tx, header.id);
 			const { epoch } = await this.saveSummary(tx, header.id, { header, entries: [], lastSeq: seq }, summary, index);
 			return { lastSeq: seq, epoch, remainingBlobs: [...remainingBlobs] };
-		}, SESSION_TRANSACTION);
+		}, this.sessionWrite(header.id));
 	}
 
 	/** Keep the legacy inline payload outside the iterator's yielded value and the caller's async frame:
@@ -1329,7 +1500,7 @@ export class SqlSessionStore implements SessionStore {
 	) {
 		const original = (await reader.readRange!(ref.sessionId, ref.seq, ref.seq, ref.epoch)).entries[0];
 		if (original?.type !== "worktree_snapshot") throw new SessionConflictError(ref.sessionId, ref.seq, seq);
-		await this.insertEntries(tx, child, [edits ? { ...original, ...edits } : original], seq, texts);
+		await this.insertEntries(tx, child, [edits ? { ...original, ...edits } : original], seq, texts, false);
 	}
 
 	async append(
@@ -1339,34 +1510,37 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.transactionCheckedAlongside(async (tx, checked) => {
-			const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
-			validateSessionEntries(entries);
-			// A new snapshot record is written only while every blob it references is still stored (#5077).
-			await this.blobTable.assertStored(
-				tx,
-				entries.flatMap((entry) =>
-					entry.type === "worktree_snapshot" && entry.snapshot !== undefined ? [entry.snapshot] : [],
-				),
-			);
-			const lastSeq = previous.last_seq + entries.length;
-			const summary = this.summaryWrite(
-				sessionId,
-				{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
-				summaryState,
-				await this.appendedResume(
+		return this.transactionCheckedAlongside(
+			async (tx, checked) => {
+				const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
+				validateSessionEntries(entries);
+				// A new snapshot record is written only while every blob it references is still stored (#5077).
+				await this.blobTable.assertStored(
 					tx,
+					entries.flatMap((entry) =>
+						entry.type === "worktree_snapshot" && entry.snapshot !== undefined ? [entry.snapshot] : [],
+					),
+				);
+				const lastSeq = previous.last_seq + entries.length;
+				const summary = this.summaryWrite(
 					sessionId,
-					windowIndex(summaryState, previous.last_seq),
-					previous.last_seq,
-					entries,
-				),
-			);
-			const written = this.entryWrites(sessionId, entries, previous.last_seq, summary.texts);
-			await checked;
-			await this.writeEntries(tx, summary.statement, written);
-			return { lastSeq };
-		}, SESSION_TRANSACTION);
+					{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
+					summaryState,
+					await this.appendedResume(
+						tx,
+						sessionId,
+						windowIndex(summaryState, previous.last_seq),
+						previous.last_seq,
+						entries,
+					),
+				);
+				const written = this.entryWrites(sessionId, entries, previous.last_seq, summary.texts);
+				await checked;
+				await this.writeEntries(tx, summary.statement, written);
+				return { lastSeq };
+			},
+			this.sessionWrite(sessionId, this.headRead(sessionId, options, true)),
+		);
 	}
 
 	async replace(
@@ -1389,25 +1563,29 @@ export class SqlSessionStore implements SessionStore {
 			const { texts, epoch } = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
 			await this.insertEntries(tx, sessionId, entries, 0, texts);
 			return { lastSeq: entries.length, epoch };
-		}, SESSION_TRANSACTION);
+		}, this.sessionWrite(sessionId));
 	}
 
 	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
-		return this.transaction(async (tx) => {
-			const { row, state } = await this.forWrite(tx, header.id, options, true);
-			const epoch = newRevision();
-			const resume = windowIndex(state, row.last_seq);
-			await this.saveSummary(
-				tx,
-				header.id,
-				{ header, entries: [], lastSeq: row.last_seq },
-				{ ...state, epoch } as StoredSummaryState,
-				resume && { ...resume, epoch },
-			);
-			return { lastSeq: row.last_seq, epoch };
-		}, SESSION_TRANSACTION);
+		return this.transaction(
+			async (tx) => {
+				const { row, state } = await this.forWrite(tx, header.id, options, true);
+				const epoch = newRevision();
+				const resume = windowIndex(state, row.last_seq);
+				const { statement } = this.summaryWrite(
+					header.id,
+					{ header, entries: [], lastSeq: row.last_seq },
+					{ ...state, epoch } as StoredSummaryState,
+					resume && { ...resume, epoch },
+				);
+				// The transaction's last write: where its connection is pipelined, it goes out with the commit.
+				if (transactionFinisher(tx)?.([statement]) !== true) await tx.run(statement.sql, ...statement.params);
+				return { lastSeq: row.last_seq, epoch };
+			},
+			this.sessionWrite(header.id, this.headRead(header.id, options, true)),
+		);
 	}
 
 	async load(sessionId: string): Promise<SessionSnapshot> {
@@ -1420,7 +1598,7 @@ export class SqlSessionStore implements SessionStore {
 			);
 			if (row) announceHistoryLoad(row.last_seq);
 		}
-		return this.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION);
+		return this.readTransaction((tx) => this.read(tx, sessionId));
 	}
 
 	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
@@ -1550,8 +1728,9 @@ export class SqlSessionStore implements SessionStore {
 			// Each batch releases the writer queue; a crash loses at most one batch and readers keep the old bytes.
 			if (previous.chunks === -1) {
 				while (
-					await this.database.transaction((tx) =>
-						migrateLegacyBlobBatch(tx, this.tables, sessionId, blob.hash, stored),
+					await this.database.transaction(
+						(tx) => migrateLegacyBlobBatch(tx, this.tables, sessionId, blob.hash, stored),
+						this.sessionWrite(sessionId),
 					)
 				) {
 					await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -1726,6 +1905,9 @@ export class SqlSessionStore implements SessionStore {
 		this.closed = true;
 		this.scopes.clear();
 		this.summaries.clear();
+		const reader = this.reader;
+		this.reader = undefined;
+		if (reader !== undefined) await (await reader.catch(() => undefined))?.close();
 	}
 
 	/**
@@ -2045,14 +2227,18 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {
-		const row = await tx.get<HeaderRow & { chat_epoch: string | null }>(
-			`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision FROM ${this.tables.sessions} WHERE id = ?`,
-			sessionId,
-		);
+		// The entries' first page is asked for beside the session's row: a pipelined connection sends both at once.
+		const [row, rows] = await Promise.all([
+			tx.get<HeaderRow & { chat_epoch: string | null }>(
+				`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision FROM ${this.tables.sessions} WHERE id = ?`,
+				sessionId,
+			),
+			this.readRows(tx, sessionId),
+		]);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		const snapshot = {
 			header: JSON.parse(row.header_json) as SessionRecordHeader,
-			entries: (await this.readRows(tx, sessionId)).map(({ entry }) => entry),
+			entries: rows.map(({ entry }) => entry),
 			lastSeq: row.last_seq,
 		};
 		if (typeof row.chat_epoch === "string") bindChatEpoch(snapshot.header, row.chat_epoch);
@@ -2131,7 +2317,7 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 	): Promise<ResumeSource & { readonly row: ResumeRow }> {
 		const row = await tx.get<ResumeRow>(
-			`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?${this.dialect.lockClause("share")}`,
+			`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
@@ -2634,7 +2820,7 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		await this.prepareResume(sessionId);
 		const start = Math.max(1, fromSeq);
-		const { tail } = await this.transaction(async (tx) => {
+		const { tail } = await this.readTransaction(async (tx) => {
 			const source = await this.resumeSource(tx, sessionId);
 			const stateSeqs = stateSeqsBefore(source.index, start);
 			if (hasHistoryLoadObserver())
@@ -2642,7 +2828,7 @@ export class SqlSessionStore implements SessionStore {
 			const state = await this.readSeqs(tx, sessionId, stateSeqs);
 			const entries = (await this.readRows(tx, sessionId, "seq >= ?", [start])).map(({ entry }) => entry);
 			return { tail: sessionTailFrom(source.index, source.header, start, state, entries), source };
-		}, SESSION_TRANSACTION);
+		});
 
 		return tail;
 	}
@@ -2656,8 +2842,8 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		const start = Math.max(1, startSeq);
-		return this.transaction(async (tx) => {
-			const head = await this.historyHead(tx, sessionId);
+		return this.readTransaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId, true);
 			if (expectedEpoch !== undefined && expectedEpoch !== head.epoch)
 				throw new SessionConflictError(sessionId, endSeq, head.lastSeq);
 			const entries =
@@ -2668,7 +2854,7 @@ export class SqlSessionStore implements SessionStore {
 				seqs: entries.map(({ seq }) => seq),
 				...head,
 			};
-		}, SESSION_TRANSACTION);
+		});
 	}
 
 	private async historyHead(
@@ -2742,21 +2928,18 @@ export class SqlSessionStore implements SessionStore {
 		const { childDisplayCut } = await import("./card-view.js");
 		const { index } = await this.prepareResume(sessionId);
 		if (typeof launch.launchLeafId !== "string") return childDisplayCut(index, launch);
-		return this.transaction(
-			async (tx) => {
-				const head = await this.historyHead(tx, sessionId, true);
-				if (head.epoch !== index.epoch || head.lastSeq < index.seq)
-					throw new SessionConflictError(sessionId, index.seq, head.lastSeq);
-				const row = await tx.get<SqliteRow & { seq: number }>(
-					`SELECT seq FROM ${this.tables.entries} WHERE session_id=? AND entry_id=? AND seq<=? ORDER BY seq DESC LIMIT 1`,
-					sessionId,
-					launch.launchLeafId!,
-					index.seq,
-				);
-				return childDisplayCut(index, launch, row === undefined ? undefined : Number(row.seq));
-			},
-			{ ...SESSION_TRANSACTION, readOnly: true },
-		);
+		return this.readTransaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId, true);
+			if (head.epoch !== index.epoch || head.lastSeq < index.seq)
+				throw new SessionConflictError(sessionId, index.seq, head.lastSeq);
+			const row = await tx.get<SqliteRow & { seq: number }>(
+				`SELECT seq FROM ${this.tables.entries} WHERE session_id=? AND entry_id=? AND seq<=? ORDER BY seq DESC LIMIT 1`,
+				sessionId,
+				launch.launchLeafId!,
+				index.seq,
+			);
+			return childDisplayCut(index, launch, row === undefined ? undefined : Number(row.seq));
+		});
 	}
 
 	/**
@@ -2795,8 +2978,8 @@ export class SqlSessionStore implements SessionStore {
 		epoch?: string,
 	): Promise<readonly (SessionTreeOutlineEntry | { seq: number; streamed: true })[]> {
 		this.assertOpen();
-		return this.transaction(async (tx) => {
-			const head = await this.historyHead(tx, sessionId);
+		return this.readTransaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId, true);
 			if ((epoch !== undefined && head.epoch !== epoch) || head.lastSeq < toSeq)
 				throw new SessionConflictError(sessionId, toSeq, head.lastSeq);
 			const sqlite = this.dialect.name === "sqlite";
@@ -2849,7 +3032,7 @@ export class SqlSessionStore implements SessionStore {
 								: {}),
 						},
 			);
-		}, SESSION_TRANSACTION);
+		});
 	}
 
 	/** Sparse page of child state in one fenced read, bounded by the same byte and row caps as a transcript page. */
@@ -2863,8 +3046,8 @@ export class SqlSessionStore implements SessionStore {
 		const limit = entrySizeLimit(options.limit);
 		const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
 		if (!wanted.length) return { items: [] };
-		return this.transaction(async (tx) => {
-			const head = await this.historyHead(tx, sessionId);
+		return this.readTransaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== epoch || head.lastSeq < wanted.at(-1)!)
 				throw new SessionConflictError(sessionId, wanted.at(-1)!, head.lastSeq);
 			const tail = `(SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id=e.session_id AND c.seq=e.seq AND c.idx=e.chunks-1)`;
@@ -2889,7 +3072,7 @@ export class SqlSessionStore implements SessionStore {
 			if ("oversized" in plan)
 				return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized } as const] };
 			return { items: await this.readSeqs(tx, sessionId, plan.seqs) };
-		}, SESSION_TRANSACTION);
+		});
 	}
 
 	/**
@@ -2926,8 +3109,8 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<SessionEntrySizes> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.transaction(async (tx) => {
-			const head = await this.historyHead(tx, sessionId);
+		return this.readTransaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId, true);
 			const lastChunk = `(SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx = e.chunks - 1)`;
 			const rows = await tx.all<SqliteRow & { seq: number; bytes: number | null }>(
 				`SELECT seq, CASE WHEN chunks = 0 THEN ${this.entryByteLength("entry_json")} ELSE (chunks - 1) * ? + ${lastChunk} END AS bytes FROM ${this.tables.entries} e WHERE session_id = ? AND seq BETWEEN ? AND ? ORDER BY seq LIMIT ?`,
@@ -2948,7 +3131,7 @@ export class SqlSessionStore implements SessionStore {
 					return { seq: Number(row.seq), bytes: Number(row.bytes) };
 				}),
 			};
-		}, SESSION_TRANSACTION);
+		});
 	}
 
 	/**
@@ -3248,8 +3431,8 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		const { candidates, afterSeq, limit } = taskReferenceDuplicateQuery(query);
-		return this.transaction(async (tx) => {
-			const head = await this.historyHead(tx, sessionId);
+		return this.readTransaction(async (tx) => {
+			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== query.epoch || head.lastSeq < query.throughSeq)
 				throw new SessionConflictError(sessionId, query.throughSeq, head.lastSeq);
 			if (candidates.length === 0) return { seqs: [] };
@@ -3304,18 +3487,18 @@ export class SqlSessionStore implements SessionStore {
 			if (found !== candidates.length) throw new SessionConflictError(sessionId, query.throughSeq, head.lastSeq);
 			seqs.sort((a, b) => a - b);
 			return seqs.length > limit ? { seqs: seqs.slice(0, limit), nextAfterSeq: seqs[limit - 1]! } : { seqs };
-		}, SESSION_TRANSACTION);
+		});
 	}
 	async readForkWindow(sessionId: string, entryId: string, options?: { readonly archivedReceipts: true }) {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		const { indexedForkWindow, forkMetadata, byteMetadata, locateFork } = await import("./fork-window.js");
-		return this.transaction(async (tx) => {
+		return this.readTransaction(async (tx) => {
 			// Check the index in the same snapshot as the entries. A peer can legitimately invalidate or
 			// remove it when appending to a side branch; that must not make a committed fork point disappear.
 			const snapshots = snapshotIndexTables(this.prefix);
 			const row = await tx.get<ResumeRow & { leaf_seq: number | null }>(
-				`SELECT header_json,last_seq,summary_state,revision,CASE WHEN EXISTS (SELECT 1 FROM ${snapshots.sources} WHERE source='session-entries' AND backfilled_through>=watermark) THEN (SELECT max(seq) FROM ${snapshots.sessionLinks} WHERE session_id=s.id AND entry_id=?) ELSE (SELECT max(seq) FROM ${this.tables.entries} WHERE session_id=s.id AND entry_id=?) END AS leaf_seq FROM ${this.tables.sessions} s WHERE s.id=?${this.dialect.lockClause("share")}`,
+				`SELECT header_json,last_seq,summary_state,revision,CASE WHEN EXISTS (SELECT 1 FROM ${snapshots.sources} WHERE source='session-entries' AND backfilled_through>=watermark) THEN (SELECT max(seq) FROM ${snapshots.sessionLinks} WHERE session_id=s.id AND entry_id=?) ELSE (SELECT max(seq) FROM ${this.tables.entries} WHERE session_id=s.id AND entry_id=?) END AS leaf_seq FROM ${this.tables.sessions} s WHERE s.id=?`,
 				entryId,
 				entryId,
 				sessionId,
@@ -3515,7 +3698,7 @@ export class SqlSessionStore implements SessionStore {
 				},
 				{ ...selected.extras, ...options },
 			);
-		}, SESSION_TRANSACTION);
+		});
 	}
 
 	private async *forkEntryChunks(tx: SqliteExecutor, id: string, seq: number, count: number) {
@@ -3557,9 +3740,9 @@ export class SqlSessionStore implements SessionStore {
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const { index, revision } = await this.prepareResume(sessionId, leafId, throughSeq);
-			const resume = await this.transaction(async (tx) => {
+			const resume = await this.readTransaction(async (tx) => {
 				const head = await tx.get<SqliteRow & { header_json: string; revision: string }>(
-					`SELECT header_json,revision FROM ${this.tables.sessions} WHERE id = ?${this.dialect.lockClause("share")}`,
+					`SELECT header_json,revision FROM ${this.tables.sessions} WHERE id = ?`,
 					sessionId,
 				);
 				if (!head) throw new SessionNotFoundError(sessionId);
@@ -3584,7 +3767,7 @@ export class SqlSessionStore implements SessionStore {
 				if (resume.compaction)
 					await readEarlierCompletionIntents(index, resume, (seqs) => this.readSeqs(tx, sessionId, seqs));
 				return resume;
-			}, SESSION_TRANSACTION);
+			});
 			if (resume !== undefined) return resume;
 		}
 		throw new SessionConflictError(sessionId, 0, 0);
@@ -3595,7 +3778,7 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
 		await this.prepareResume(sessionId);
-		const { point } = await this.transaction(async (tx) => {
+		const { point } = await this.readTransaction(async (tx) => {
 			const source = await this.resumeSource(tx, sessionId);
 			const { index } = source;
 			const leafSeq = leafId === undefined ? index.leafSeq : ((await this.seqOfEntry(tx, sessionId, leafId)) ?? -1);
@@ -3615,7 +3798,7 @@ export class SqlSessionStore implements SessionStore {
 				lastSeq: index.seq,
 			};
 			return { point, source };
-		}, SESSION_TRANSACTION);
+		});
 
 		return point;
 	}
@@ -3709,11 +3892,8 @@ export class SqlSessionStore implements SessionStore {
 		options: SessionWriteOptions,
 		includeSummaryState = false,
 	): Promise<{ readonly row: HeaderRow; readonly state?: StoredSummaryState }> {
-		const row = await tx.get<HeaderRow>(
-			`SELECT header_json, last_seq${includeSummaryState || options.epoch !== undefined ? ", summary_state" : ""}
-			 FROM ${this.tables.sessions} WHERE id = ?`,
-			sessionId,
-		);
+		const read = this.headRead(sessionId, options, includeSummaryState);
+		const row = await tx.get<HeaderRow>(read.sql, ...read.params);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		const state =
 			row.summary_state === undefined ? undefined : (JSON.parse(String(row.summary_state)) as StoredSummaryState);
@@ -3721,6 +3901,15 @@ export class SqlSessionStore implements SessionStore {
 			throw new SessionConflictError(sessionId, options.expectSeq, row.last_seq);
 		}
 		return { row, state };
+	}
+
+	/** The read of the session's row that `forWrite` checks a write against. */
+	private headRead(sessionId: string, options: SessionWriteOptions, includeSummaryState: boolean): SqliteStatement {
+		return {
+			sql: `SELECT header_json, last_seq${includeSummaryState || options.epoch !== undefined ? ", summary_state" : ""}
+			 FROM ${this.tables.sessions} WHERE id = ?`,
+			params: [sessionId],
+		};
 	}
 
 	private async appendedResume(
@@ -3830,20 +4019,37 @@ export class SqlSessionStore implements SessionStore {
 		entries: readonly SessionEntry[],
 		lastSeq: number,
 		texts: readonly SessionSummaryText[],
+		versionStep = true,
 	): Promise<void> {
-		for (const { sql, params } of this.entryWrites(sessionId, entries, lastSeq, texts)) await tx.run(sql, ...params);
+		const writes = new SentWrites(tx);
+		await writes.around(() => writes.send(this.entryWrites(sessionId, entries, lastSeq, texts, versionStep)));
+	}
+
+	/**
+	 * A fork's version step, once every entry of the child is in: the same row order as an append, which takes the
+	 * snapshot index's progress rows with its entries inserts and the schema row after them, so the two never deadlock
+	 * (#6560).
+	 */
+	private async forkVersionStep(tx: SqliteExecutor, child: string): Promise<void> {
+		await tx.run(
+			`UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version = ? AND EXISTS (SELECT 1 FROM ${this.tables.entries} WHERE session_id = ? AND chunks > 0)`,
+			SESSION_SCHEMA_VERSION,
+			SESSION_SCHEMA_VERSION_UNCHUNKED,
+			child,
+		);
 	}
 
 	/**
 	 * The statements that store `entries` after `lastSeq`, in order, each entry encoded only when its statements are
-	 * taken: each entry's row and its chunks, the version step a first chunked entry takes, then the entries' search
-	 * texts.
+	 * taken: each entry's row and its chunks, the version step a first chunked entry takes unless `versionStep` is
+	 * false (a fork takes it once its last entry is in), then the entries' search texts.
 	 */
 	private *entryWrites(
 		sessionId: string,
 		entries: readonly SessionEntry[],
 		lastSeq: number,
 		texts: readonly SessionSummaryText[],
+		versionStep = true,
 	): Generator<SqliteStatement> {
 		let chunked = false;
 		for (const [index, entry] of entries.entries()) {
@@ -3869,7 +4075,7 @@ export class SqlSessionStore implements SessionStore {
 		}
 		// One way, in the transaction that writes the first chunked entry: a build that knows only version 1 refuses the
 		// database when next opened instead of reading the entry as a stub.
-		if (chunked) {
+		if (chunked && versionStep) {
 			yield {
 				sql: `UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version = ?`,
 				params: [SESSION_SCHEMA_VERSION, SESSION_SCHEMA_VERSION_UNCHUNKED],
@@ -3889,6 +4095,7 @@ export class SqlSessionStore implements SessionStore {
 	 * it once. A larger one runs its statements one at a time as they are made, as before, so it never holds more than
 	 * about that much of them, or sends it, at once.
 	 */
+	/** Writes the session's row and its entries as the transaction's last calls: the body makes none after them. */
 	private async writeEntries(
 		tx: SqliteExecutor,
 		summary: SqliteStatement,
@@ -3906,6 +4113,8 @@ export class SqlSessionStore implements SessionStore {
 				await tx.run(rest.value.sql, ...rest.value.params);
 			return;
 		}
+		// The transaction's last writes: where its connection is pipelined, they go out with its commit.
+		if (transactionFinisher(tx)?.(batch) === true) return;
 		await statementBatch(tx, batch, []);
 	}
 

@@ -29,6 +29,12 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import {
+	MAX_SEQUENCE_REQUEST_STATEMENTS,
+	offerFinish,
+	offerSequences,
+	type SqliteSequence,
+} from "./statement-sequence.js";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -81,6 +87,12 @@ export interface SqliteDriverTransactionOptions {
 	readonly concurrency: TransactionConcurrency;
 	/** The transaction's `SqliteTransactionOptions.lockWaitMs`, when it set one. */
 	readonly lockWaitMs?: number;
+	/**
+	 * Optional. `SqliteTransactionOptions.leading`, with parameters snapshotted and none holding NUL: a driver with
+	 * `pipelinedTransactions` may send them with the begin and answer the transaction's first calls that make them, in
+	 * order, from what it got. A call that differs from the next of them ends the lead.
+	 */
+	readonly leading?: readonly SqliteStatement[];
 }
 
 /** The driver calls `createSqliteDatabase` turns into a `SqliteDatabase`. */
@@ -90,15 +102,29 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	/** The SQL dialect the driver speaks; SQLite when absent. The facade exposes it as `SqliteDatabase.dialect`. */
 	readonly dialect?: StorageDialect;
 	/**
-	 * Optional. The driver runs `fenced` transactions on connections of their own, concurrently with other calls: the
-	 * facade then starts them without waiting for queued calls. Otherwise every transaction waits its turn.
+	 * Optional. The driver runs transactions on connections of their own, concurrently with other calls: the facade then
+	 * starts `fenced` transactions without waiting for queued calls, and any other call once no earlier unfinished call
+	 * conflicts with it (`ScopeQueue`). Otherwise every call waits its turn.
 	 */
 	readonly concurrentTransactions?: boolean;
 	/**
+	 * Optional. The driver runs reads on connections or streams of their own, up to this many at once: the facade then
+	 * lets read-only transactions, and statements outside a transaction that `readsOnly` accepts, run beside each other,
+	 * while every other call still waits for each call before it, as without it, and a read waits for the writes queued
+	 * before it. A positive integer; anything else runs every call in turn. A driver with `concurrentTransactions` runs at
+	 * most this many reads at once when it sets it.
+	 */
+	readonly concurrentReads?: number;
+	/**
+	 * Optional. Whether `sql`, run outside a transaction, only reads: with `concurrentReads` or `concurrentTransactions`,
+	 * such a statement runs beside other reads. Answer true only for a statement that can never write.
+	 */
+	readsOnly?(sql: string): boolean;
+	/**
 	 * Optional. A transaction's connection takes a statement before the one before it is answered, and runs them in the
 	 * order it took them (a pipelined connection): the facade then sends each call of a transaction as it is made, so a
-	 * body that makes several calls without awaiting each sends them in one round trip. Otherwise each call waits for
-	 * the one before it to settle.
+	 * body that makes several calls without awaiting each sends them in one round trip, and the transaction runs
+	 * statement sequences (`sequenceRunner`) that way. Otherwise each call waits for the one before it to settle.
 	 */
 	readonly pipelinedTransactions?: boolean;
 	/**
@@ -117,6 +143,11 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 		statements: readonly SqliteStatement[],
 		options?: SqliteBatchOptions,
 	): Awaitable<readonly SqliteDriverResult[]>;
+	/**
+	 * Optional. Opens a driver on this same database, on connections of its own, for reads: the facade offers it as
+	 * `SqliteDatabase.openReader`, with a call queue of its own, and closes it when this driver's database closes.
+	 */
+	openReader?(): Awaitable<SqliteDriver>;
 	/** Releases the connection. Called once, after accepted work drains. */
 	close(): Awaitable<void>;
 	/** Removes credentials from diagnostic text: the descriptor location and driver failure messages and stacks. */
@@ -189,6 +220,11 @@ function transientRetryDelayMs(attempt: number): number {
 interface Attempt {
 	readonly number: number;
 	transient?: StorageTransientError;
+	/**
+	 * Set once the transaction's commit was sent: a statement answered after it may have been committed with it when the
+	 * connection broke, so its failure keeps the outcome the driver gives it.
+	 */
+	committing?: boolean;
 }
 
 const REDACTED = "[redacted]";
@@ -407,27 +443,35 @@ class CallQueue {
 
 /** Starts each operation as it is pushed, so a pipelined connection receives them in push order without waiting. */
 class PipelineQueue {
-	private readonly started = new Set<Promise<void>>();
+	private readonly started: Promise<unknown>[] = [];
 
 	push<T>(operation: () => Promise<T>): Promise<T> {
 		const result = operation();
-		const settled = result.then(
-			() => {},
-			() => {},
-		);
+		result.catch(() => {});
 		// A queue lasts one transaction, so it keeps every call it started.
-		this.started.add(settled);
+		this.started.push(result);
 		return result;
 	}
 
 	drained(): Promise<void> {
-		return Promise.all(this.started).then(() => {});
+		return Promise.allSettled(this.started).then(() => {});
+	}
+
+	/** The failure of the first call, in the order they were sent, that failed; undefined when none did. */
+	firstFailure(): Promise<unknown> {
+		return firstFailure(this.started);
 	}
 }
 
 interface QueuedCall {
 	run(): Promise<void>;
 	fail(error: Error): void;
+}
+
+/** A database's call queue: which call may start when, and whether any is unfinished. */
+interface CallLanes {
+	push<T>(operation: () => Promise<T>, priority?: boolean, scope?: CallScope): Promise<T>;
+	drained(): Promise<void>;
 }
 
 /**
@@ -527,6 +571,265 @@ class LaneQueue {
 	}
 }
 
+/**
+ * What a call of a driver that runs transactions concurrently may run beside: `whole`, a serial transaction without a
+ * domain, and `plain`, a statement or batch outside a transaction, run beside nothing; `domain`, a serial transaction
+ * of one domain, beside calls of other domains and read-only transactions; `read`, a read-only transaction, beside
+ * other read-only ones and the writes queued after it.
+ */
+type CallScope =
+	| { readonly kind: "whole" }
+	| { readonly kind: "plain" }
+	| { readonly kind: "read" }
+	| { readonly kind: "domain"; readonly domain: string };
+
+const WHOLE_SCOPE: CallScope = Object.freeze({ kind: "whole" });
+const PLAIN_SCOPE: CallScope = Object.freeze({ kind: "plain" });
+const READ_SCOPE: CallScope = Object.freeze({ kind: "read" });
+
+/**
+ * Whether `later` must wait for `earlier`, a call queued before it. A read-only transaction waits for the writes queued
+ * before it, so it sees them, but a write queued after a read-only transaction does not wait for it.
+ */
+function scopesConflict(earlier: CallScope, later: CallScope): boolean {
+	if (earlier.kind === "whole" || earlier.kind === "plain" || later.kind === "whole" || later.kind === "plain")
+		return true;
+	if (later.kind === "read") return earlier.kind !== "read";
+	return earlier.kind === "domain" && earlier.domain === later.domain;
+}
+
+interface ScopedCall extends QueuedCall {
+	readonly scope: CallScope;
+	readonly priority: boolean;
+	/** Call order within the call's lane. */
+	readonly seq: number;
+	/** When the call was queued, on the queue's clock of admissions and starts. */
+	readonly admitted: number;
+	/** When the call started, on that clock; undefined while it waits. */
+	started?: number;
+	/** When the call started, as `Date.now()`. */
+	runningSince: number;
+}
+
+/**
+ * `LaneQueue` for a driver that runs transactions or reads concurrently: a call starts once no unfinished call ahead of
+ * it conflicts with it (`scopesConflict`), so calls that conflict run one at a time in call order, and the others at
+ * once, reads no more than `maxReads` at a time. A priority call is ahead of every waiting call of the normal lane,
+ * as there. A waiting call fails with `stalled()` once a conflicting call ahead of it, or one such a call waits for,
+ * has run `STORAGE_PRIORITY_CALL_MAX_WAIT_MS` (a priority call) or `STORAGE_QUEUED_CALL_MAX_WAIT_MS` without
+ * settling; a read waiting for a free place waits for the reads running then.
+ */
+class ScopeQueue {
+	/** Unfinished calls: priority ones first, then the normal lane's, each in call order. */
+	private readonly calls: ScopedCall[] = [];
+	/** How many calls of the read scope run at once at most. */
+	private readonly maxReads: number;
+	private seq = 0;
+	private clock = 0;
+	private idle: (() => void)[] = [];
+	private watchdog?: ReturnType<typeof setTimeout>;
+	/** When the planned check runs, as `Date.now()`, or undefined when none is planned. */
+	private watchdogAt?: number;
+	private readonly stalled: (ranMs: number) => Error;
+
+	constructor(stalled: (ranMs: number) => Error, maxReads = Number.POSITIVE_INFINITY) {
+		this.stalled = stalled;
+		this.maxReads = maxReads;
+	}
+
+	push<T>(operation: () => Promise<T>, priority = false, scope: CallScope = PLAIN_SCOPE): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			const call: ScopedCall = {
+				scope,
+				priority,
+				seq: this.seq++,
+				admitted: this.clock++,
+				runningSince: 0,
+				run: () => Promise.resolve().then(operation).then(resolve, reject),
+				fail: reject,
+			};
+			const firstNormal = this.calls.findIndex((queued) => !queued.priority);
+			if (priority && firstNormal !== -1) this.calls.splice(firstNormal, 0, call);
+			else this.calls.push(call);
+			this.next();
+			this.watch();
+		});
+	}
+
+	drained(): Promise<void> {
+		if (this.calls.length === 0) return Promise.resolve();
+		return new Promise((resolve) => this.idle.push(resolve));
+	}
+
+	/** Whether `call`, still waiting, must wait for `other`. */
+	private waitsFor(call: ScopedCall, other: ScopedCall): boolean {
+		if (other === call) return false;
+		// A read waits for a running read while as many as `maxReads` run.
+		if (call.scope.kind === "read" && other.scope.kind === "read" && other.started !== undefined)
+			return call.started === undefined && this.runningReads() >= this.maxReads;
+		if (!scopesConflict(other.scope, call.scope)) return false;
+		if (other.priority === call.priority) return other.seq < call.seq;
+		// A priority call goes ahead of the normal lane's waiting calls, not of those already running when it came.
+		return other.priority || (other.started !== undefined && other.started < call.admitted);
+	}
+
+	private runningReads(): number {
+		let running = 0;
+		for (const call of this.calls) if (call.scope.kind === "read" && call.started !== undefined) running++;
+		return running;
+	}
+
+	private next(): void {
+		for (const call of this.calls) {
+			if (call.started !== undefined || this.calls.some((other) => this.waitsFor(call, other))) continue;
+			call.started = this.clock++;
+			call.runningSince = Date.now();
+			// Started on a later microtask, as a promise chain starts it, never inside the call that queued it.
+			void call.run().finally(() => {
+				this.calls.splice(this.calls.indexOf(call), 1);
+				this.next();
+				this.watch();
+			});
+		}
+		if (this.calls.length > 0) return;
+		const idle = this.idle;
+		this.idle = [];
+		for (const resolve of idle) resolve();
+	}
+
+	/** Each waiting call with when the earliest running call it waits for, directly or through others, started. */
+	private stuck(): Map<ScopedCall, number> {
+		const since = new Map<ScopedCall, number>();
+		for (const call of this.calls) {
+			if (call.started !== undefined) continue;
+			let earliest = Number.POSITIVE_INFINITY;
+			for (const other of this.calls) {
+				if (!this.waitsFor(call, other)) continue;
+				earliest = Math.min(
+					earliest,
+					other.started === undefined ? (since.get(other) ?? earliest) : other.runningSince,
+				);
+			}
+			since.set(call, earliest);
+		}
+		return since;
+	}
+
+	private static bound(call: ScopedCall): number {
+		return call.priority ? STORAGE_PRIORITY_CALL_MAX_WAIT_MS : STORAGE_QUEUED_CALL_MAX_WAIT_MS;
+	}
+
+	/** Plans the check that fails the waiting calls whose wait passed its bound. No timer runs while nothing waits. */
+	private watch(): void {
+		let at: number | undefined;
+		for (const [call, since] of this.stuck())
+			if (Number.isFinite(since)) at = Math.min(at ?? Number.POSITIVE_INFINITY, since + ScopeQueue.bound(call));
+		if (at === this.watchdogAt) return;
+		clearTimeout(this.watchdog);
+		this.watchdog = undefined;
+		this.watchdogAt = at;
+		if (at === undefined) return;
+		this.watchdog = setTimeout(
+			() => {
+				this.watchdog = undefined;
+				this.watchdogAt = undefined;
+				const now = Date.now();
+				const failing: [ScopedCall, number][] = [];
+				for (const [call, since] of this.stuck())
+					if (now - since >= ScopeQueue.bound(call)) failing.push([call, now - since]);
+				for (const [call] of failing) this.calls.splice(this.calls.indexOf(call), 1);
+				for (const [call, ran] of failing) call.fail(this.stalled(ran));
+				this.next();
+				this.watch();
+			},
+			Math.max(0, at - Date.now()),
+		);
+		// A stuck call ahead of the queue never keeps the process alive on its own.
+		this.watchdog.unref();
+	}
+}
+
+/** How many reads `driver` runs at once, when it runs any beside each other (`SqliteDriver.concurrentReads`). */
+function concurrentReads(driver: SqliteDriver): number | undefined {
+	const reads = driver.concurrentReads;
+	return typeof reads === "number" && Number.isInteger(reads) && reads > 0 ? reads : undefined;
+}
+
+/**
+ * The scope a transaction runs in on a driver that runs transactions or reads concurrently: a write transaction keeps
+ * its domain only on a driver that runs writes concurrently (`concurrentTransactions`), and runs alone otherwise.
+ */
+function transactionScope(
+	concurrency: TransactionConcurrency,
+	readOnly: boolean,
+	concurrentWrites: boolean,
+): CallScope {
+	if (readOnly) return READ_SCOPE;
+	if (concurrentWrites && concurrency.kind === "serial" && concurrency.domain !== undefined)
+		return { kind: "domain", domain: concurrency.domain };
+	return WHOLE_SCOPE;
+}
+
+function hasInvalidText(statement: SqliteStatement): boolean {
+	return statement.params.some((value) => typeof value === "string" && value.includes("\0"));
+}
+
+/** The failure of the first of `calls` that failed, in their order, once all settled; undefined when none did. */
+async function firstFailure(calls: readonly Promise<unknown>[]): Promise<unknown> {
+	for (const outcome of await Promise.allSettled(calls)) if (outcome.status === "rejected") return outcome.reason;
+	return undefined;
+}
+
+/** `leading` with parameters snapshotted, up to the first statement that holds NUL, which the facade refuses to send. */
+function leadingStatements(leading: readonly SqliteStatement[] | undefined): readonly SqliteStatement[] {
+	const sent: SqliteStatement[] = [];
+	for (const statement of leading ?? []) {
+		if (hasInvalidText(statement)) break;
+		sent.push({ sql: statement.sql, params: snapshotParams(statement.params) });
+	}
+	return sent;
+}
+
+/**
+ * Runs `sequence` on a transaction of a pipelined connection: `repeat` one run at a time, since each run's changes
+ * decide the next, then the statements a request's worth at a time, each request sent whole before any answer comes.
+ * A statement sent behind one that failed fails too, or runs in a transaction that can no longer commit, so the
+ * first failure in order is the sequence's, as when each waited for the one before. Nothing is sent after a statement
+ * whose text holds NUL, which fails as `run` fails it.
+ */
+async function pipelineSequence(
+	handle: SqliteExecutor,
+	{ repeat, statements, signal }: SqliteSequence,
+): Promise<number> {
+	let repeated = 0;
+	if (repeat !== undefined) {
+		for (let done = 0; done < repeat.times; done++) {
+			signal?.throwIfAborted();
+			const { changes } = await handle.run(repeat.statement.sql, ...repeat.statement.params);
+			if (changes < repeat.minChanges) break;
+			repeated++;
+		}
+	}
+	const pending = statements[Symbol.iterator]();
+	for (let next = pending.next(); next.done !== true; ) {
+		const sent: Promise<unknown>[] = [];
+		for (; next.done !== true && sent.length < MAX_SEQUENCE_REQUEST_STATEMENTS; next = pending.next()) {
+			if (signal?.aborted === true) break;
+			const statement = next.value;
+			sent.push(
+				statement.script === true ? handle.exec(statement.sql) : handle.run(statement.sql, ...statement.params),
+			);
+			// `run` refuses it without sending it, so the sequence fails with that below.
+			if (hasInvalidText(statement)) break;
+		}
+		const outcomes = await Promise.allSettled(sent);
+		const failed = outcomes.find((outcome) => outcome.status === "rejected");
+		if (failed !== undefined) throw failed.reason;
+		signal?.throwIfAborted();
+	}
+	return repeated;
+}
+
 class DriverDatabase implements SqliteDatabase {
 	readonly descriptor: StorageDescriptor;
 	readonly dialect: StorageDialect;
@@ -534,14 +837,7 @@ class DriverDatabase implements SqliteDatabase {
 	/** Fenced transactions a concurrent driver runs outside the queue; closing waits for them. */
 	private readonly concurrent = new Set<Promise<unknown>>();
 	private readonly redact: (text: string) => string;
-	private readonly queue = new LaneQueue(
-		(ranMs) =>
-			new StorageUnavailableError(
-				this.descriptor,
-				undefined,
-				`the call was queued behind an earlier call that ran ${Math.round(ranMs / 1000)} seconds without settling, and did not run; nothing was written, retry it`,
-			),
-	);
+	private readonly queue: CallLanes;
 	private closePromise?: Promise<void>;
 	/** End the waits before calls run again, when closing begins during them. */
 	private readonly wakeRetries = new Set<() => void>();
@@ -550,20 +846,47 @@ class DriverDatabase implements SqliteDatabase {
 	readonly batch?: (statements: readonly SqliteStatement[], options?: SqliteBatchOptions) => Promise<SqliteRow[][]>;
 	readonly notifications?: StorageNotifications;
 	readonly freeBytes?: () => Promise<number | undefined>;
+	readonly openReader?: () => Promise<SqliteDatabase>;
+	/** Readers this database opened and that are not closed; closing closes them. */
+	private readonly readers = new Set<DriverDatabase>();
+	private readonly closed?: () => void;
 
-	constructor(driver: SqliteDriver, redact: (text: string) => string) {
+	constructor(driver: SqliteDriver, redact: (text: string) => string, closed?: () => void) {
 		this.driver = driver;
+		this.closed = closed;
+		const openReader = driver.openReader?.bind(driver);
+		if (openReader) this.openReader = () => this.startReader(openReader);
 		if (driver.notifications !== undefined) this.notifications = driver.notifications;
 		const freeBytes = driver.freeBytes?.bind(driver);
 		if (freeBytes) this.freeBytes = async () => freeBytes();
 		this.redact = redact;
 		this.descriptor = { adapter: driver.descriptor.adapter, location: redact(driver.descriptor.location) };
+		const stalled = (ranMs: number) =>
+			new StorageUnavailableError(
+				this.descriptor,
+				undefined,
+				`the call was queued behind an earlier call that ran ${Math.round(ranMs / 1000)} seconds without settling, and did not run; nothing was written, retry it`,
+			);
+		const maxReads = concurrentReads(driver);
+		this.queue =
+			driver.concurrentTransactions === true || maxReads !== undefined
+				? new ScopeQueue(stalled, maxReads)
+				: new LaneQueue(stalled);
 		this.dialect = driver.dialect ?? sqliteDialect;
+		const readsOnly = driver.readsOnly?.bind(driver);
+		const scopeOf =
+			readsOnly !== undefined && (driver.concurrentTransactions === true || maxReads !== undefined)
+				? (sql: string) => (readsOnly(sql) ? READ_SCOPE : PLAIN_SCOPE)
+				: () => PLAIN_SCOPE;
 		this.executor = this.createExecutor(
 			driver,
-			(operation) => {
+			(operation, sql) => {
 				if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
-				return this.queue.push(() => this.retrying(operation, true));
+				return this.queue.push(
+					() => this.retrying(operation, true),
+					false,
+					sql === undefined ? PLAIN_SCOPE : scopeOf(sql),
+				);
 			},
 			true,
 		);
@@ -710,7 +1033,7 @@ class DriverDatabase implements SqliteDatabase {
 						this.descriptor,
 						{
 							code: transient.code,
-							outcome: applies ? transient.outcome : "not-applied",
+							outcome: applies || attempt.committing === true ? transient.outcome : "not-applied",
 							attempts: attempt.number,
 							...(transient.hop === undefined
 								? {}
@@ -733,7 +1056,7 @@ class DriverDatabase implements SqliteDatabase {
 
 	private createExecutor(
 		connection: SqliteDriverExecutor,
-		admit: <T>(operation: (attempt: Attempt) => Promise<T>) => Promise<T>,
+		admit: <T>(operation: (attempt: Attempt) => Promise<T>, sql?: string) => Promise<T>,
 		applies: boolean,
 	): SqliteExecutor {
 		const statement = (sql: string, params: readonly SqliteValue[]) => {
@@ -742,7 +1065,7 @@ class DriverDatabase implements SqliteDatabase {
 				const invalidIndex = bound.findIndex((value) => typeof value === "string" && value.includes("\0"));
 				if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
 				return this.call(() => connection.execute(sql, bound), attempt, applies, bound);
-			});
+			}, sql);
 		};
 		return {
 			exec: (sql) => admit((attempt) => this.call(() => connection.executeMultiple(sql), attempt, applies)),
@@ -788,13 +1111,21 @@ class DriverDatabase implements SqliteDatabase {
 		} catch (error) {
 			return Promise.reject(error);
 		}
+		const leading = this.driver.pipelinedTransactions === true ? leadingStatements(options?.leading) : [];
 		const begin: SqliteDriverTransactionOptions = {
 			concurrency,
 			...(options?.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }),
 			...(options?.readOnly === true ? { readOnly: true } : {}),
+			...(leading.length === 0 ? {} : { leading }),
 		};
 		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
-		if (concurrency.kind === "serial" || this.driver.concurrentTransactions !== true) return this.queue.push(run);
+		const concurrentWrites = this.driver.concurrentTransactions === true;
+		if (concurrency.kind === "serial" || !concurrentWrites)
+			return this.queue.push(
+				run,
+				false,
+				transactionScope(concurrency, options?.readOnly === true, concurrentWrites),
+			);
 		const result = run();
 		const settled = result.then(
 			() => {},
@@ -815,27 +1146,52 @@ class DriverDatabase implements SqliteDatabase {
 		const handleQueue = pipelined ? new PipelineQueue() : new CallQueue();
 		let active = true;
 		let result: T;
+		/** Set once `finish` sent the callback's last calls: the transaction takes no more. */
+		let finished = false;
 		const handle = this.createExecutor(
 			connection,
 			(operation) =>
-				active ? handleQueue.push(() => operation(attempt)) : Promise.reject(new StorageTransactionClosedError()),
+				active && !finished
+					? handleQueue.push(() => operation(attempt))
+					: Promise.reject(new StorageTransactionClosedError()),
 			false,
 		);
+		if (pipelined) {
+			offerSequences(handle, (sequence) => pipelineSequence(handle, sequence));
+			offerFinish(handle, (statements) => {
+				if (!active || finished) return false;
+				if (statements.length > MAX_SEQUENCE_REQUEST_STATEMENTS || statements.some(hasInvalidText)) return false;
+				// Their failures are the transaction's, reported once the commit is answered.
+				for (const statement of statements) {
+					const sent =
+						statement.script === true
+							? handle.exec(statement.sql)
+							: handle.run(statement.sql, ...statement.params);
+					sent.catch(() => {});
+				}
+				finished = true;
+				return true;
+			});
+		}
 		const close = () => this.call(() => connection.close?.());
 		// Once the callback has returned, the commit's own failure decides whether the transaction runs again: a commit
 		// that may have applied, or that failed for a reason the driver does not recognize, never does, whatever the
 		// callback met before it. A committed transaction never runs again either.
 		const commit = () => {
 			attempt.transient = undefined;
+			attempt.committing = true;
 			return this.call(() => connection.commit(), attempt, true);
 		};
+		let returned = false;
 		try {
 			let committing: Promise<void> | undefined;
 			try {
 				result = await callback(handle);
-				// A pipelined connection takes the commit behind statements the callback left unanswered, so locks they take
-				// are held for one round trip. The driver's commit fails when one of them failed, so nothing commits then;
-				// a statement that fails as transient after this point lets the transaction run again, having written nothing.
+				returned = true;
+				// A pipelined connection takes the commit behind statements the callback left unanswered, such as those sent by
+				// `finish`, so locks they take are held for one round trip. The driver's commit fails when one of them failed,
+				// so nothing commits then, and the first of them to fail is the failure. One that the server refused lets the
+				// transaction run again, having written nothing; one whose connection broke may have committed, so it does not.
 				if (pipelined) {
 					committing = commit();
 					committing.catch(() => {});
@@ -844,9 +1200,26 @@ class DriverDatabase implements SqliteDatabase {
 				active = false;
 				await handleQueue.drained();
 			}
+			// A read-only transaction on a connection of its own has its answer once its reads are answered: its commit only
+			// ends the snapshot, so the connection goes back once the commit is answered, while the caller goes on.
+			if (
+				begin.readOnly === true &&
+				(this.driver.concurrentTransactions === true || concurrentReads(this.driver) !== undefined)
+			) {
+				this.endInBackground(committing ?? commit(), connection, close);
+				return result;
+			}
 			await (committing ?? commit());
 		} catch (cause) {
 			let failure = cause as StorageFailureCause;
+			// A commit that came back as a rollback names no reason: the statement that failed is the transaction's failure,
+			// and whether it may run again is that failure's, as when the callback awaited it.
+			const unanswered =
+				returned && handleQueue instanceof PipelineQueue ? await handleQueue.firstFailure() : undefined;
+			if (unanswered !== undefined) {
+				failure = unanswered as StorageFailureCause;
+				if (unanswered instanceof StorageTransientError) attempt.transient = unanswered;
+			}
 			try {
 				await this.call(() => connection.rollback());
 			} catch (rollbackCause) {
@@ -860,10 +1233,47 @@ class DriverDatabase implements SqliteDatabase {
 		return result;
 	}
 
-	close(): Promise<void> {
-		this.closePromise ??= Promise.all([this.queue.drained(), ...this.concurrent]).then(() =>
-			this.call(() => this.driver.close()),
+	/**
+	 * Ends a read-only transaction whose reads were all answered once `committing` settles: rolls it back when the commit
+	 * failed, then closes it. Closing the database waits for it.
+	 */
+	private endInBackground(
+		committing: Promise<void>,
+		connection: SqliteDriverTransaction,
+		close: () => Promise<void>,
+	): void {
+		const ended = committing
+			.catch(() => this.call(() => connection.rollback()).catch(() => {}))
+			.then(close)
+			.catch(() => {});
+		this.concurrent.add(ended);
+		void ended.then(() => this.concurrent.delete(ended));
+	}
+
+	private startReader(openReader: () => Awaitable<SqliteDriver>): Promise<SqliteDatabase> {
+		if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
+		const opening = this.call(openReader).then((driver) => {
+			const reader: DriverDatabase = new DriverDatabase(driver, this.redact, () => this.readers.delete(reader));
+			this.readers.add(reader);
+			if (this.closePromise) throw new StoreClosedError(this.descriptor);
+			return reader;
+		});
+		const settled = opening.then(
+			() => {},
+			() => {},
 		);
+		this.concurrent.add(settled);
+		void settled.then(() => this.concurrent.delete(settled));
+		return opening;
+	}
+
+	close(): Promise<void> {
+		const closeReaders = () => Promise.allSettled([...this.readers].map((reader) => reader.close()));
+		// Readers stop taking calls now; one that finished opening meanwhile is closed after the drain.
+		this.closePromise ??= Promise.all([this.queue.drained(), ...this.concurrent, closeReaders()])
+			.then(closeReaders)
+			.then(() => this.call(() => this.driver.close()))
+			.finally(() => this.closed?.());
 		for (const wake of this.wakeRetries) wake();
 		return this.closePromise;
 	}
@@ -871,7 +1281,8 @@ class DriverDatabase implements SqliteDatabase {
 
 /**
  * Wraps a SQLite-compatible driver as a `SqliteDatabase`. The facade queues operations in call order and keeps them
- * outside active transactions, snapshots binary parameters at call time, rejects NUL text, returns safe-range integers
+ * outside active transactions (on a driver that runs transactions concurrently, only operations that conflict wait for
+ * each other), snapshots binary parameters at call time, rejects NUL text, returns safe-range integers
  * as numbers and blobs as `Uint8Array` copies, expires transaction handles when their callback settles, maps driver
  * failures to `StorageUnavailableError` with credentials redacted, and reports failed rollbacks with
  * `StorageRollbackError`. A failure the driver recognizes as transient is a `StorageTransientError`; a statement, a

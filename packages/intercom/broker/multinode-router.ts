@@ -2775,21 +2775,22 @@ export class MultiNodeRouter {
 	 */
 	private async sweepLostRecipients(): Promise<void> {
 		const { afterRestartMs, afterStaleLeaseMs } = this.lostBounds;
-		const presences = await this.state.leases.listLive("presence", Number.MAX_SAFE_INTEGER);
-		const live = new Set<string>();
+		const { leases } = this.state;
+		const lostAfterMs = BROKER_LEASE_STALE_AFTER_MS + afterStaleLeaseMs;
+		// #6560: only the leases stale past the bound, which while every broker renews its sessions' is none: every
+		// broker sweeps every backup poll, and reading every lease each time grew with the square of the swarm.
+		const aged =
+			leases.listAged === undefined
+				? (await leases.listLive("presence", Number.MAX_SAFE_INTEGER)).filter((lease) => lease.ageMs >= lostAfterMs)
+				: await leases.listAged("presence", lostAfterMs);
 		const lost = new Map<string, { from: SessionInfo; targetIdentity: string; boundMs: number }>();
-		for (const lease of presences) {
+		for (const lease of aged) {
 			const subject = lease.subject as RecipientPresenceSubject;
-			if (lease.ageMs <= BROKER_LEASE_STALE_AFTER_MS) {
-				live.add(subject.session.id);
-				live.add(subject.targetIdentity);
-			} else if (lease.ageMs >= BROKER_LEASE_STALE_AFTER_MS + afterStaleLeaseMs) {
-				lost.set(subject.session.id, {
-					from: subject.session,
-					targetIdentity: subject.targetIdentity,
-					boundMs: afterStaleLeaseMs,
-				});
-			}
+			lost.set(subject.session.id, {
+				from: subject.session,
+				targetIdentity: subject.targetIdentity,
+				boundMs: afterStaleLeaseMs,
+			});
 		}
 		for (const known of await this.state.knownSessions.listLost(afterRestartMs)) {
 			const from: SessionInfo = {
@@ -2804,6 +2805,14 @@ export class MultiNodeRouter {
 				lastActivity: Date.now(),
 			};
 			lost.set(known.intercomSessionId, { from, targetIdentity: known.targetIdentity, boundMs: afterRestartMs });
+		}
+		if (lost.size === 0) return;
+		// A session lost under one identity may be present under another: the live leases, read only when one is lost.
+		const live = new Set<string>();
+		for (const lease of await leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)) {
+			const subject = lease.subject as RecipientPresenceSubject;
+			live.add(subject.session.id);
+			live.add(subject.targetIdentity);
 		}
 		for (const [sessionId, { from, targetIdentity, boundMs }] of lost) {
 			if (live.has(sessionId) || live.has(targetIdentity) || this.host.sessions.has(sessionId)) continue;
@@ -4221,8 +4230,18 @@ export class MultiNodeRouter {
 		if (await this.routeReleasedReply(request, undefined, ticket)) return;
 		if (this.closed) return;
 		const from = request.from;
+		const leases = this.state.leases;
+		// Presences are stored with every string well formed (#6560): a target ending in half a surrogate pair names them
+		// as their stored strings do.
+		const target = request.target.toWellFormed();
 		for (;;) {
-			const live = (await this.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)).filter(
+			// Only the presences the target may name, by index, where the store can (#6560): what follows resolves the
+			// target among those alone, as it would among every live presence.
+			const candidates =
+				leases.listLiveFor === undefined
+					? leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)
+					: leases.listLiveFor(target, BROKER_LEASE_STALE_AFTER_MS);
+			const live = (await candidates).filter(
 				(lease) =>
 					lease.subject.kind === "presence" &&
 					lease.holderId !== this.brokerId &&
@@ -4234,8 +4253,8 @@ export class MultiNodeRouter {
 			// #5607: a plain send to an id a session holds as an alias reaches that session.
 			const plain = isPlainSend(request);
 			const exact =
-				live.find((lease) => presenceOf(lease).session.id === request.target) ??
-				(plain ? await this.aliasHolder(live, request.target) : undefined);
+				live.find((lease) => presenceOf(lease).session.id === target) ??
+				(plain ? await this.aliasHolder(live, target) : undefined);
 			if (this.closed) return;
 			let resolved: LeaseState | undefined = exact;
 			if (resolved === undefined) {
@@ -4255,15 +4274,17 @@ export class MultiNodeRouter {
 				const nonAgentNamed = visible.some(
 					(lease) =>
 						!isAgentRecipient(presenceOf(lease).session) &&
-						presenceOf(lease).session.name?.toLowerCase() === request.target.toLowerCase(),
+						presenceOf(lease).session.name?.toLowerCase() === target.toLowerCase(),
 				);
 				const agents = visible.filter((lease) => isAgentRecipient(presenceOf(lease).session));
 				const infos = agents.map((lease) => presenceOf(lease).session);
-				let resolution: SessionTargetResolution = resolveSessionTarget(infos, request.target);
+				let resolution: SessionTargetResolution = resolveSessionTarget(infos, target);
 				if (resolution.kind === "not_found") {
-					resolution = resolveSessionTargetByHostSessionId(infos, request.target, (info) => {
+					resolution = resolveSessionTargetByHostSessionId(infos, target, (info) => {
 						const lease = agents.find((candidate) => presenceOf(candidate).session === info);
-						return lease === undefined ? undefined : returnAddressOf(presenceOf(lease).targetIdentity);
+						return lease === undefined
+							? undefined
+							: returnAddressOf(presenceOf(lease).targetIdentity)?.toWellFormed();
 					});
 				}
 				// A sender this one holds a return path to answers to its name only when nothing visible does.
@@ -4282,7 +4303,7 @@ export class MultiNodeRouter {
 				if (answerable.length > 0) {
 					const answered = resolveSessionTarget(
 						answerable.map((lease) => presenceOf(lease).session),
-						request.target,
+						target,
 					);
 					if (answered.kind !== "not_found") {
 						resolution = answered;

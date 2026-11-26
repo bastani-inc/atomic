@@ -18,6 +18,7 @@ import {
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
+import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
 import { dumpLegacyWorkflowTables, LEGACY_STORE, seedLegacyStore } from "../helpers/legacy-store-0990.js";
 import {
 	openPostgresAdmin,
@@ -296,12 +297,54 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			const open = async () => recording(await roles.open("runtime"), statements);
 			await (await SqlSessionStore.open(await open(), { prefix: PREFIX })).close();
 			const broker = await openIntercomBrokerState({ prefix: PREFIX, openDatabase: open });
+			// #6560: the ended-child queue, which a broker opens only when a subagent ends, finds its tables too.
+			const queue = await broker.state.openEndedChildQueue!({ home: "runtime-home", holder: "runtime-broker" });
+			await queue.close();
 			await broker.bus.close();
 			await broker.state.close();
 			assert.deepEqual(statements.flatMap(ddl), []);
 			// Again, as after an upgrade with nothing new: still nothing to change.
 			const again = await migrateAs(roles, "owner");
 			assert.equal(again.code, 0, again.err);
+		});
+	});
+
+	test("atomic storage migrate creates the chat records' table, which a runtime role then writes and reads without DDL (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const owner = await roles.open("owner");
+			await grantRuntime(owner, roles);
+			for (const name of ["r5218_session_chat_v1", "r5218_session_chat_v1_anchor"])
+				assert.notEqual(
+					(await owner.get<{ found: string | null }>("SELECT to_regclass(?) AS found", `atomic.${name}`))?.found,
+					null,
+					name,
+				);
+			const statements: string[] = [];
+			const open = async () => recording(await roles.open("runtime"), statements);
+			const write = async (id: string) => {
+				const sessions = await SqlSessionStore.open(await open(), { prefix: PREFIX });
+				try {
+					const { epoch } = await sessions.create(
+						{ id, version: 4, createdAt: new Date(0).toISOString(), cwd: "/repo" },
+						[],
+					);
+					assert.ok(epoch);
+					const chat = sessions.chatRecords!;
+					await chat.append({ id, epoch }, "", { kind: "line", level: "error", text: "saved" });
+					assert.deepEqual(await chat.read({ id, epoch }, [""]), [
+						{ anchor: "", record: { kind: "line", level: "error", text: "saved" } },
+					]);
+				} finally {
+					await sessions.close();
+				}
+			};
+			await write("after-migrate");
+			// As on a database where an earlier build created the table at a first chat record and recorded nothing.
+			await owner.run("DELETE FROM r5218_atomic_migrations WHERE domain = 'schema:session-chat'");
+			await write("unrecorded");
+			assert.deepEqual(statements.flatMap(ddl), []);
 		});
 	});
 
@@ -647,6 +690,154 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 				ownerBroker: "broker-third",
 			});
 			assert.deepEqual(statements.flatMap(ddl), [], "the runtime role ran no DDL");
+		});
+	});
+
+	test("a runtime role acquires leases in a unique order on a schema without the order sequence, and takes the sequence once migrate creates it, without DDL (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const row = await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema");
+			const schema = String(row?.schema);
+			// As an earlier release left the schema: no order sequence, and no ledger record of it.
+			await ownerDatabase.exec(`DROP SEQUENCE ${schema}.${PREFIX}intercom_leases_order`);
+			await ownerDatabase.run(
+				`DELETE FROM ${schema}.${PREFIX}atomic_migrations WHERE domain = ?`,
+				"schema:intercom-lease-order",
+			);
+			await grantRuntime(ownerDatabase, roles);
+			const presence = (targetIdentity: string) =>
+				({
+					kind: "presence",
+					targetIdentity,
+					session: {
+						id: targetIdentity,
+						name: targetIdentity,
+						cwd: "/",
+						model: "m",
+						pid: 1,
+						startedAt: 1,
+						lastActivity: 1,
+					},
+				}) as const;
+			const acquireAll = async (targets: readonly string[]) => {
+				const stores = await Promise.all(
+					[0, 1, 2].map(async () =>
+						openSqlBrokerLeaseStore({ database: await roles.open("runtime"), prefix: PREFIX }),
+					),
+				);
+				const acquired = await Promise.all(
+					targets.map((target, index) =>
+						stores[index % stores.length]!.acquire(presence(target), "broker-a", 60_000),
+					),
+				);
+				assert.deepEqual(new Set(acquired.map((result) => result.status)), new Set(["acquired"]));
+			};
+			await acquireAll(Array.from({ length: 12 }, (_, index) => `before-${index}`));
+
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			const statements: string[] = [];
+			const after = await openSqlBrokerLeaseStore({
+				database: recording(await roles.open("runtime"), statements),
+				prefix: PREFIX,
+			});
+			assert.equal((await after.acquire(presence("after-first"), "broker-a", 60_000)).status, "acquired");
+			await acquireAll(Array.from({ length: 12 }, (_, index) => `after-${index}`));
+			assert.deepEqual(statements.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.ok(
+				statements.some((statement) => statement.includes(`nextval('${PREFIX}intercom_leases_order')`)),
+				"the acquisition took its order from the sequence",
+			);
+			const orders = await ownerDatabase.all<{ first_acquired_order: number | bigint }>(
+				`SELECT first_acquired_order FROM ${schema}.${PREFIX}intercom_leases WHERE kind = 'presence'`,
+			);
+			assert.equal(orders.length, 25);
+			assert.equal(new Set(orders.map((order) => Number(order.first_acquired_order))).size, 25);
+		});
+	});
+
+	test("migrate sets the fillfactor of the sessions and lease tables, which a runtime role leaves alone without DDL, and a warm open does not check again (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const row = await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema");
+			const schema = String(row?.schema);
+			const tables = [`${PREFIX}session_sessions`, `${PREFIX}intercom_leases`];
+			const steps = ["schema:session-fillfactor", "schema:intercom-lease-fillfactor"];
+			const fillfactors = async () =>
+				Object.fromEntries(
+					(
+						await ownerDatabase.all<{ name: string; options: string | null }>(
+							`SELECT c.relname AS name, array_to_string(c.reloptions, ',') AS options FROM pg_class c
+							JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ? AND c.relname IN (?, ?)`,
+							schema,
+							...tables,
+						)
+					).map((table) => [table.name, table.options]),
+				);
+			const recorded = async () =>
+				(
+					await ownerDatabase.all<{ domain: string }>(
+						`SELECT domain FROM ${schema}.${PREFIX}atomic_migrations WHERE domain IN (?, ?) ORDER BY domain`,
+						...steps,
+					)
+				).map((step) => step.domain);
+			const tuned = Object.fromEntries(tables.map((table) => [table, "fillfactor=80"]));
+			assert.deepEqual(await fillfactors(), tuned);
+			assert.deepEqual(await recorded(), [...steps].sort());
+
+			// As an earlier release left the schema: the default fillfactor, and no ledger record of the steps.
+			for (const table of tables) await ownerDatabase.exec(`ALTER TABLE ${schema}.${table} RESET (fillfactor)`);
+			await ownerDatabase.run(`DELETE FROM ${schema}.${PREFIX}atomic_migrations WHERE domain IN (?, ?)`, ...steps);
+			await grantRuntime(ownerDatabase, roles);
+			const openAsRuntime = async (statements: string[]) => {
+				const sessions = await SqlSessionStore.open(recording(await roles.open("runtime"), statements), {
+					prefix: PREFIX,
+				});
+				const header = (id: string): SessionRecordHeader => ({
+					id,
+					version: SESSION_FORMAT_VERSION,
+					cwd: "/work",
+					createdAt: "2026-11-25T00:00:00.000Z",
+				});
+				const id = `s-${statements.length}-${randomUUID()}`;
+				const created = await sessions.create(header(id), []);
+				const entry = {
+					type: "message",
+					id: "m1",
+					parentId: null,
+					timestamp: "2026-11-25T00:00:01.000Z",
+					message: { role: "user", content: "hello", timestamp: 1 },
+				} as SessionEntry;
+				await sessions.append(id, [entry], { expectSeq: created.lastSeq, epoch: created.epoch });
+				await sessions.close();
+				const broker = await openIntercomBrokerState({
+					prefix: PREFIX,
+					openDatabase: async () => recording(await roles.open("runtime"), statements),
+				});
+				await broker.bus.close();
+				await broker.state.close();
+			};
+			const before: string[] = [];
+			await openAsRuntime(before);
+			assert.deepEqual(before.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.deepEqual(await fillfactors(), { [tables[0]!]: null, [tables[1]!]: null });
+
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.deepEqual(await fillfactors(), tuned);
+			assert.deepEqual(await recorded(), [...steps].sort());
+			const warm: string[] = [];
+			await openAsRuntime(warm);
+			assert.deepEqual(warm.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.deepEqual(
+				warm.filter((statement) => statement.includes("reloptions")),
+				[],
+				"a warm open finds the steps in the catalog it read",
+			);
 		});
 	});
 

@@ -578,6 +578,11 @@ interface BrokerStateModule {
 		readonly prefix?: string;
 		readonly openDatabase: () => Promise<SqliteDatabase>;
 	}): Promise<{ readonly state: { close(): Promise<void> }; readonly bus: { close(): Promise<void> } }>;
+	/** Creates the tables a broker creates only on first use (#6560). */
+	ensureLazyIntercomSchemas(source: {
+		readonly prefix?: string;
+		readonly openDatabase: () => Promise<SqliteDatabase>;
+	}): Promise<void>;
 }
 
 /** Loads the bundled Intercom package's broker state opener, as extensions see the host's modules. */
@@ -655,19 +660,26 @@ async function migrate(
 	}
 	const sessions = await new StorageProvider().openSessionStore(selection, { agentDir, domain: "sessions" });
 	try {
-		// The fork staging table, which a runtime role without DDL cannot create when its first bounded clone needs it (#5594).
+		// The fork staging table, which a runtime role without DDL cannot create when its first bounded clone needs it
+		// (#5594), and the chat records' table, which it cannot create at the first chat record.
 		const { SqlSessionStore } = await import("../core/storage/session/sql-session-store.js");
-		if (sessions instanceof SqlSessionStore) await sessions.prepareForkStaging();
+		if (sessions instanceof SqlSessionStore) {
+			await sessions.prepareForkStaging();
+			await sessions.prepareChatRecords();
+		}
 	} finally {
 		await sessions.close();
 	}
 	const intercom = await (options.loadBrokerState ?? loadBrokerStateModule)();
-	const broker = await intercom.openIntercomBrokerState({
+	const intercomSource = {
 		...(selection.prefix === undefined ? {} : { prefix: selection.prefix }),
 		openDatabase: () => open("intercom"),
-	});
+	};
+	const broker = await intercom.openIntercomBrokerState(intercomSource);
 	await broker.bus.close();
 	await broker.state.close();
+	// The ended-child queue's tables, which a broker creates only when it first keeps a message (#6560).
+	await intercom.ensureLazyIntercomSchemas(intercomSource);
 	// Tables created in public after the move hold state the moved ones do not (#5218).
 	const checked = await open("sessions");
 	let strays: string[];

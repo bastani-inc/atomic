@@ -12,7 +12,11 @@ import { ensureForkStagingTable } from "../../packages/coding-agent/src/core/sto
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SqlSnapshotBlobStore } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
-import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
+import {
+	ensureLazyIntercomSchemas,
+	openIntercomBrokerState,
+} from "../../packages/intercom/broker/open-broker-state.js";
+import { ensureEndedChildQueueSchema } from "../../packages/intercom/broker/sql-ended-child-queue-store.js";
 import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
@@ -81,30 +85,40 @@ const INTERCOM_STORES = [
 	openSqlReleasedAskStore,
 	openSqlSentMessageAuthority,
 	openSqlKnownSessionStore,
+	ensureEndedChildQueueSchema,
 ] as const;
 
 /**
- * Opens every store Atomic keeps on a PostgreSQL database, sessions and the Intercom broker state, as a broker does,
- * over an earlier release's workflow tables whose snapshot index triggers this build still names and upgrades.
+ * Opens every store Atomic keeps on a PostgreSQL database, sessions with their chat records and the Intercom broker
+ * state, as `atomic storage migrate` does, over an earlier release's workflow tables whose snapshot index triggers this
+ * build still names and upgrades.
  */
 async function openEveryStore(scope: PostgresScope, prefix: string): Promise<void> {
 	const database = await scope.open();
 	await seedLegacyWorkflowTables(database, { prefix });
-	await (await SqlSessionStore.open(database, { prefix })).close();
+	const sessions = await SqlSessionStore.open(database, { prefix });
+	await sessions.prepareChatRecords();
+	await sessions.close();
 	await ensureForkStagingTable(database, postgresDialect, `${prefix}session_fork_staging`);
 	const intercom = await openIntercomBrokerState({ prefix, openDatabase: () => scope.open() });
 	await intercom.bus.close();
 	await intercom.state.close();
+	// The tables a broker creates only on first use, as `atomic storage migrate` creates them (#6560).
+	await ensureLazyIntercomSchemas({ prefix, openDatabase: () => scope.open() });
 }
 
 /**
- * Every identifier Atomic named in the database: tables, indexes, triggers and trigger functions. Constraint names,
- * the indexes behind them and identity sequences are left out: Postgres chooses those itself and keeps them unique.
+ * Every identifier Atomic named in the database: tables, indexes, sequences of their own (#6560), triggers and trigger
+ * functions. Constraint names, the indexes behind them and the sequences of serial and identity columns are left out:
+ * Postgres chooses those itself and keeps them unique.
  */
 async function createdIdentifiers(database: SqliteDatabase): Promise<string[]> {
 	const rows = await database.all(`
 		SELECT relname AS name FROM pg_class c WHERE relnamespace = current_schema()::regnamespace AND (relkind = 'r'
-			OR relkind = 'i' AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conindid = c.oid))
+			OR relkind = 'i' AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conindid = c.oid)
+			OR relkind = 'S' AND NOT EXISTS (
+				SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype IN ('a', 'i')
+			))
 		UNION SELECT tgname FROM pg_trigger WHERE NOT tgisinternal
 		UNION SELECT proname FROM pg_proc p WHERE pronamespace = current_schema()::regnamespace
 			AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')

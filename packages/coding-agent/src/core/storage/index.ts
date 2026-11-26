@@ -1,6 +1,8 @@
 export type { SnapshotIndexTables } from "../worktree-snapshot/blob-store.ts";
 export { MemorySnapshotBlobStore, SqlSnapshotBlobStore, snapshotIndexTables } from "../worktree-snapshot/blob-store.ts";
 export type { SnapshotBlob, SnapshotBlobStore } from "../worktree-snapshot/types.ts";
+/** @internal How a transaction of a pipelined connection sends its last writes with its commit (#6560). */
+export { transactionFinisher } from "./added-exports.js";
 export type {
 	FencedPathId,
 	SqliteBatchOptions,
@@ -60,6 +62,7 @@ export {
 } from "./prefix.js";
 export * from "./provider.js";
 export { assertStorageSchemaVersion, assertStoredSchemaVersion } from "./schema.js";
+export * from "./schema-catalog.js";
 export {
 	getTeamProfile,
 	type InMemorySecretRef,

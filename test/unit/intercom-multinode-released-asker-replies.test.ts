@@ -422,6 +422,12 @@ describe("replies to released askers across nodes (#4386)", () => {
 		let lookups = 0;
 		let presenceReads = 0;
 		const stalledReads: Array<() => void> = [];
+		const presenceRead = <T>(answer: () => Promise<T>): Promise<T> => {
+			presenceReads++;
+			if (presence === "fails") return Promise.reject(new Error("presence read failed"));
+			if (presence === "answers") return answer();
+			return new Promise((resolve) => stalledReads.push(() => resolve(answer())));
+		};
 		const { a, b, owner, replier, children } = await releasedScene({
 			wrapB: (state) => ({
 				...state,
@@ -436,15 +442,15 @@ describe("replies to released askers across nodes (#4386)", () => {
 				},
 				leases: {
 					...state.leases,
-					listLive: (kind, staleAfterMs) => {
-						if (kind !== "presence") return state.leases.listLive(kind, staleAfterMs);
-						presenceReads++;
-						if (presence === "fails") return Promise.reject(new Error("presence read failed"));
-						if (presence === "answers") return state.leases.listLive(kind, staleAfterMs);
-						return new Promise((resolve) =>
-							stalledReads.push(() => resolve(state.leases.listLive(kind, staleAfterMs))),
-						);
-					},
+					listLive: (kind, staleAfterMs) =>
+						kind === "presence"
+							? presenceRead(() => state.leases.listLive(kind, staleAfterMs))
+							: state.leases.listLive(kind, staleAfterMs),
+					// The presences a send's target may name, and one presence by its key, are presence reads too (#6560).
+					listLiveFor: (target, staleAfterMs) =>
+						presenceRead(() => state.leases.listLiveFor!(target, staleAfterMs)),
+					read: (key) =>
+						key.kind === "presence" ? presenceRead(() => state.leases.read(key)) : state.leases.read(key),
 				},
 			}),
 		});
@@ -521,6 +527,15 @@ describe("replies to released askers across nodes (#4386)", () => {
 					listLive: (kind, staleAfterMs) => {
 						if (kind === "presence") presenceReads++;
 						return state.leases.listLive(kind, staleAfterMs);
+					},
+					// The presences a send's target may name, and one presence by its key, are presence reads too (#6560).
+					listLiveFor: (target, staleAfterMs) => {
+						presenceReads++;
+						return state.leases.listLiveFor!(target, staleAfterMs);
+					},
+					read: (key) => {
+						if (key.kind === "presence") presenceReads++;
+						return state.leases.read(key);
 					},
 				},
 			}),
