@@ -584,6 +584,11 @@ export interface SessionForkRow {
 	readonly edits?: Readonly<Record<string, string | null>>;
 	readonly extraToolCalls?: number;
 	readonly inlineSnapshot?: true;
+	/**
+	 * Where the source stores this row unchanged: no edits, the source's own bytes. A destination that shares the source's
+	 * tables may copy the stored row instead of writing `entry` (#6560).
+	 */
+	readonly stored?: { readonly sessionId: string; readonly seq: number };
 }
 export interface SessionForkStream {
 	/** A whole saved session in append order, with sibling branches and labels unchanged. */

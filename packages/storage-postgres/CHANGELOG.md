@@ -19,6 +19,7 @@
 - A pool's last connection stays open for 5 minutes after the pool's last call instead of 10 seconds, with TCP keepalive after 60 seconds, so a call after a pause skips the connection and TLS handshakes. Connections opened for a burst still close after 10 seconds idle. Unused connections no longer keep the process from exiting ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - Opening a database reads the server version and the schema that holds Atomic's tables in one query instead of two ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - A read-only transaction returns its connection to the pool as soon as its `COMMIT` is sent instead of when it is answered. The connection sends the next transaction's statements after the `COMMIT`, so reads made one after another reuse one connection instead of opening a second one, whose handshakes cost several round trips ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- A database now tells Atomic which server, database, role and schema it reaches. Atomic uses this to recognize two handles on the same database, and copies a session fork between them inside the database instead of staging it through another table ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ## [0.10.10] - 2026-11-24
 

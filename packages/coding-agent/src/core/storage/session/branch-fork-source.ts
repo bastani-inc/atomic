@@ -2,12 +2,20 @@ import { createLabelEntry } from "../../session-manager-entries.ts";
 import { SessionEntryError } from "../../session-manager-errors.js";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { historyPages, readSessionHistoryChunks } from "./history-pages.js";
-import type { SessionForkRow, SessionForkStream, SessionHistoryItem, SessionStore } from "./types.js";
+import {
+	SESSION_HISTORY_SCAN_ENTRIES,
+	type SessionForkRow,
+	type SessionForkStream,
+	type SessionHistoryItem,
+	type SessionStore,
+} from "./types.js";
 
-async function forkRow(reader: SessionStore, item: SessionHistoryItem): Promise<SessionForkRow> {
-	if ("entry" in item) return { entry: item.entry };
+/** The row of `item`, which the stream read from session `id` and yields as the source stores it. */
+async function forkRow(reader: SessionStore, id: string, item: SessionHistoryItem): Promise<SessionForkRow> {
+	const stored = { sessionId: id, seq: item.seq };
+	if ("entry" in item) return { entry: item.entry, stored };
 	const { forkSeedFields } = await import("./chunked-resume-projection.js");
-	return { ...(await forkSeedFields(() => readSessionHistoryChunks(reader, item))), reference: item };
+	return { ...(await forkSeedFields(() => readSessionHistoryChunks(reader, item))), reference: item, stored };
 }
 
 /** The SDK/CLI same-store clone keeps the original append log, including abandoned branches,
@@ -27,16 +35,19 @@ export function completeSessionForkStream(
 				for (const entry of resident) yield { entry };
 				return;
 			}
-			for await (const { items } of historyPages(reader, id, epoch, through, {}))
+			// Pages as large as a scan reads, so a long session takes a few reads, not one for each 64 entries (#6560).
+			for await (const { items } of historyPages(reader, id, epoch, through, {
+				pageEntries: SESSION_HISTORY_SCAN_ENTRIES,
+			}))
 				for (const item of items) {
 					if ("kind" in item && inlineSnapshot) {
 						const entry = await inlineSnapshot(item);
 						if (entry) {
-							yield { entry, reference: item, inlineSnapshot: true };
+							yield { entry, reference: item, inlineSnapshot: true, stored: { sessionId: id, seq: item.seq } };
 							continue;
 						}
 					}
-					yield await forkRow(reader, item);
+					yield await forkRow(reader, id, item);
 				}
 		},
 	};
@@ -64,8 +75,13 @@ export function humanForkStream(
 					const snapshot = "kind" in item ? await inlineSnapshot?.(item) : undefined;
 					const row: SessionForkRow =
 						snapshot && "kind" in item
-							? { entry: snapshot, reference: item, inlineSnapshot: true }
-							: await forkRow(reader, item);
+							? {
+									entry: snapshot,
+									reference: item,
+									inlineSnapshot: true,
+									stored: { sessionId: id, seq: item.seq },
+								}
+							: await forkRow(reader, id, item);
 					const entry = row.entry;
 					if (item.seq === leaf && entry.id === leafId) found = true;
 					if (entry.type === "label") continue;
@@ -81,7 +97,7 @@ export function humanForkStream(
 							let target = false;
 							search: for await (const earlier of pages(start, item.seq))
 								for (const x of earlier.items) {
-									const e = (await forkRow(reader, x)).entry;
+									const e = (await forkRow(reader, id, x)).entry;
 									if (!target) {
 										if (x.seq !== start || e.type !== "label" || e.id !== entry.firstKeptEntryId)
 											break search;
@@ -94,7 +110,12 @@ export function humanForkStream(
 						}
 					}
 					previous = entry.id;
-					yield Object.keys(edits).length ? { ...row, entry: { ...entry, ...edits }, edits } : row;
+					if (Object.keys(edits).length === 0) yield row;
+					else {
+						// An edited row is no longer the one the source stores.
+						const { stored: _stored, ...edited } = row;
+						yield { ...edited, entry: { ...entry, ...edits }, edits };
+					}
 				}
 			if (!found) throw new SessionEntryError(leafId, "missing");
 			for (const [target, label] of labels) {

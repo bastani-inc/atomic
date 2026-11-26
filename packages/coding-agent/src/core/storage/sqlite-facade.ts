@@ -179,6 +179,12 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	 * database in a file this process can see, such as a local SQLite or libSQL file.
 	 */
 	freeBytes?(): Awaitable<number | undefined>;
+	/**
+	 * @internal Optional. Which database the driver reaches, which the facade exposes as
+	 * `SqliteDatabase.databaseIdentity`: the same string from two drivers only when each one's transactions read and write
+	 * the very tables the other's do. Undefined where that cannot be told, as for a database in memory.
+	 */
+	databaseIdentity?(): string | undefined;
 }
 
 /**
@@ -846,6 +852,7 @@ class DriverDatabase implements SqliteDatabase {
 	readonly batch?: (statements: readonly SqliteStatement[], options?: SqliteBatchOptions) => Promise<SqliteRow[][]>;
 	readonly notifications?: StorageNotifications;
 	readonly freeBytes?: () => Promise<number | undefined>;
+	readonly databaseIdentity?: () => string | undefined;
 	readonly openReader?: () => Promise<SqliteDatabase>;
 	/** Readers this database opened and that are not closed; closing closes them. */
 	private readonly readers = new Set<DriverDatabase>();
@@ -859,6 +866,8 @@ class DriverDatabase implements SqliteDatabase {
 		if (driver.notifications !== undefined) this.notifications = driver.notifications;
 		const freeBytes = driver.freeBytes?.bind(driver);
 		if (freeBytes) this.freeBytes = async () => freeBytes();
+		const databaseIdentity = driver.databaseIdentity?.bind(driver);
+		if (databaseIdentity) this.databaseIdentity = databaseIdentity;
 		this.redact = redact;
 		this.descriptor = { adapter: driver.descriptor.adapter, location: redact(driver.descriptor.location) };
 		const stalled = (ranMs: number) =>

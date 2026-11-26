@@ -142,6 +142,13 @@ export interface SqliteDatabase extends SqliteExecutor {
 	 */
 	readonly readOnly?: boolean;
 	readonly descriptor: StorageDescriptor;
+	/**
+	 * @internal Which database this handle reaches, for comparison only: two handles this process opened answer the same
+	 * string only when a transaction of either reads and writes the very tables the other does (the same adapter, server
+	 * or file, database, schema or namespace). Undefined, or absent, where that cannot be told, as for a database in
+	 * memory: such a handle is the same database as itself alone.
+	 */
+	databaseIdentity?(): string | undefined;
 	/** @internal Checks whether this embedded connection can prepare a JSONB extraction without issuing a read. */
 	supportsJsonbExtract?(): Promise<boolean>;
 	/** The SQL dialect the database speaks; absent means SQLite. Read it through `dialectOf(database)`. */

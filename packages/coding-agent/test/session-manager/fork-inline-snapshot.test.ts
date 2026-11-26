@@ -12,7 +12,13 @@ import { SqlSessionStore } from "../../src/core/storage/session/sql-session-stor
 
 useTemporaryAgentDir();
 
-test("a human fork releases each oversized inline SQL snapshot before reading the next one (#5594)", async () => {
+/**
+ * A donor whose four 2 MiB snapshot entries are stored whole, as builds before chunked entries stored them, forked by
+ * a human fork to its leaf. With `relinked`, a label before each snapshot makes the fork relink it to the entry before
+ * the label, so the fork writes each snapshot itself; otherwise it keeps each one as stored. Resolves with how many
+ * of the snapshots' bodies were read whole, the most that were alive at once, and the child's entry IDs.
+ */
+async function forkInlineSnapshots(relinked: boolean) {
 	const dir = await mkdtemp(join(tmpdir(), "fork-inline-snapshot-"));
 	const db = await openNodeSqliteDatabase(join(dir, "test.db"));
 	const tracked: WeakRef<object>[] = [];
@@ -74,6 +80,18 @@ test("a human fork releases each oversized inline SQL snapshot before reading th
 			prior = "first";
 		for (let i = 0; i < 4; i++) {
 			const id = `snap-${i}`;
+			if (relinked) {
+				const label = {
+					type: "label",
+					id: `label-${i}`,
+					parentId: prior,
+					timestamp: stamp,
+					targetId: "first",
+					label: `mark ${i}`,
+				} as SessionEntry;
+				await store.append("donor", [label], { expectSeq: seq++ });
+				prior = label.id;
+			}
 			await store.append("donor", [record(id, prior, 2 * 1024 * 1024)], { expectSeq: seq++ });
 			prior = id;
 		}
@@ -118,12 +136,11 @@ test("a human fork releases each oversized inline SQL snapshot before reading th
 		recording = true;
 		await manager.createBranchedSession("leaf");
 		recording = false;
-		assert.equal(snapshotReads, 4);
-		assert.equal(maxDecoded, 1, "more than one legacy snapshot was live at the next read");
-		assert.deepEqual(
-			(await store.load(manager.getSessionId())).entries.map((entry) => entry.id),
-			["first", "snap-0", "snap-1", "snap-2", "snap-3", "latest", "giant-user", "cut", "leaf"],
-		);
+		return {
+			snapshotReads,
+			maxDecoded,
+			ids: (await store.load(manager.getSessionId())).entries.map((entry) => entry.id),
+		};
 	} finally {
 		recording = false;
 		JSON.parse = parse;
@@ -131,4 +148,28 @@ test("a human fork releases each oversized inline SQL snapshot before reading th
 		await db.close();
 		await rm(dir, { recursive: true, force: true });
 	}
+}
+
+test("a human fork releases each oversized inline SQL snapshot it rewrites before reading the next one (#5594)", async () => {
+	const { snapshotReads, maxDecoded, ids } = await forkInlineSnapshots(true);
+	assert.equal(snapshotReads, 4);
+	assert.equal(maxDecoded, 1, "more than one legacy snapshot was live at the next read");
+	assert.deepEqual(ids.slice(0, -1), [
+		"first",
+		"snap-0",
+		"snap-1",
+		"snap-2",
+		"snap-3",
+		"latest",
+		"giant-user",
+		"cut",
+		"leaf",
+	]);
+	assert.equal(ids.length, 10, "the label of the first entry follows the leaf");
+});
+
+test("a human fork copies each oversized inline SQL snapshot it keeps unchanged without reading it (#6560)", async () => {
+	const { snapshotReads, ids } = await forkInlineSnapshots(false);
+	assert.equal(snapshotReads, 0, "the database copied the stored snapshots");
+	assert.deepEqual(ids, ["first", "snap-0", "snap-1", "snap-2", "snap-3", "latest", "giant-user", "cut", "leaf"]);
 });
