@@ -7,6 +7,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 ### Changed
 
 - With multi-node routing, a broker now renews all the messages it is delivering in one statement every 10 seconds. It used to renew them one transaction at a time, waiting for each before the next. A broker delivering 20 messages to sessions that are still saving them now makes 1 round trip per renewal instead of 20. A message whose delivery another broker has taken over, or that was settled meanwhile, is still left alone, as before ([#6693](https://github.com/bastani-inc/atomic/pull/6693), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- With multi-node routing, a broker now renews all of its membership and presence leases in one update statement per heartbeat, and all of its mirrored restoring reservations in one update statement per heartbeat, instead of one update per lease (plus a separate read for each stale lease) and one transaction per reservation. On PostgreSQL, each batch finishes in 1 round trip, even when some leases or reservations have gone stale. A lease or reservation whose ownership or fencing token another broker has taken over is never extended. In an interleaved PostgreSQL benchmark with 200 brokers renewing 11 leases and 4 restoring reservations each, round trips dropped from 19.05 to 2 per broker tick, updates dropped from 15 to 2, and median broker tick time dropped from 1,254 ms to 102 ms ([#6714](https://github.com/bastani-inc/atomic/issues/6714)).
 
 ## [0.10.11-alpha.3] - 2026-11-26
 

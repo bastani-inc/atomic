@@ -63,6 +63,7 @@ import {
 	type ReleasedAskRecord,
 	type RestoringReservation,
 	type RestoringReservationLease,
+	type RestoringReservationRenewResult,
 	reservationKeyFor,
 	returnAddressOf,
 	type SentMessageReservation,
@@ -6480,9 +6481,21 @@ export class MultiNodeRouter {
 			const renewed = await outbox.renewClaims(inflights.map((inflight) => inflight.claim));
 			inflights.forEach((inflight, index) => dropUnrenewed(inflight, renewed[index]!));
 		} else for (const inflight of inflights) dropUnrenewed(inflight, await outbox.renewClaim(inflight.claim));
-		for (const [key, mirror] of this.mirrored) {
-			const renewed = await this.state.reservations.renew(mirror.lease);
+		const mirrors = [...this.mirrored];
+		const dropUnrenewedMirror = (
+			key: string,
+			mirror: MirroredReservation,
+			renewed: RestoringReservationRenewResult,
+		) => {
 			if (renewed.status !== "renewed" && this.mirrored.get(key) === mirror) this.mirrored.delete(key);
+		};
+		const reservations = this.state.reservations;
+		if (mirrors.length > 0 && reservations.renewMany !== undefined) {
+			const renewed = await reservations.renewMany(mirrors.map(([, mirror]) => mirror.lease));
+			mirrors.forEach(([key, mirror], index) => dropUnrenewedMirror(key, mirror, renewed[index]!));
+		} else {
+			for (const [key, mirror] of mirrors)
+				dropUnrenewedMirror(key, mirror, await reservations.renew(mirror.lease));
 		}
 		// #5352: a reservation whose write failed or did not answer is written again, in order behind its key's steps.
 		for (const [key, pending] of this.unpublished) {
