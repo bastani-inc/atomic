@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
@@ -411,9 +412,52 @@ describe.skipIf(postgresSkipReason !== undefined)(
 				}
 			});
 		});
+
+		test("a clone of a live session shares the entries it appended through the function (#6560)", async () => {
+			await withPostgresDatabase(async (scope) => {
+				await migrate(scope);
+				const database = await scope.open();
+				const store = await SqlSessionStore.open(database);
+				try {
+					const parent = await SessionManager.create(store, "/work");
+					const trips = countRoundTrips();
+					const perAppend: number[] = [];
+					for (let index = 0; index < 20; index++) {
+						trips.take();
+						await parent.appendMessage({ role: "user", content: `turn ${index}`, timestamp: index });
+						perAppend.push(trips.take());
+					}
+					assert.deepEqual(new Set(perAppend), new Set([1]), "every append went through the function");
+
+					const clone = (await parent.forkTo("/work", store)).getSessionId();
+
+					assert.deepEqual(await storedEntries(database, clone), [], "the clone stores none of them");
+					const segments = await database.all<{
+						source_id: string;
+						from_seq: number;
+						to_seq: number;
+						base_seq: number;
+					}>(
+						"SELECT source_id, from_seq, to_seq, base_seq FROM session_fork_segments WHERE session_id = ? ORDER BY idx",
+						clone,
+					);
+					assert.deepEqual(
+						segments.map((row) => [
+							row.source_id,
+							Number(row.from_seq),
+							Number(row.to_seq),
+							Number(row.base_seq),
+						]),
+						[[parent.getSessionId(), 1, 20, 0]],
+					);
+					assert.deepEqual((await store.load(clone)).entries, (await store.load(parent.getSessionId())).entries);
+				} finally {
+					await store.close();
+				}
+			});
+		});
 	},
 );
-
 /** `value` with every `epoch`, a random revision of the session's resume index, left out. */
 function withoutEpochs(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(withoutEpochs);
