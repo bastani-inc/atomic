@@ -249,7 +249,7 @@ try {
 }
 ```
 
-See [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) for `maxConnections`, `statementTimeoutMs`, `listenUrl`, `schema`, `proxy`, `socket`, `sdkSearchPaths`, TLS, and cloud IAM role setup.
+See [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) for `maxConnections`, `statementTimeoutMs`, `idleTimeoutMs`, `listenUrl`, `schema`, `proxy`, `socket`, `sdkSearchPaths`, TLS, and cloud IAM role setup.
 
 **Option B — Adapter selection `{ kind: "adapter", module: POSTGRES_ADAPTER_PACKAGE, ... }`:**
 

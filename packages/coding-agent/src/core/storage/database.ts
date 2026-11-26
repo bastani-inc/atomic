@@ -48,6 +48,15 @@ export interface SqliteTransactionOptions {
 	 * `BEGIN IMMEDIATE` unless `readOnly` is set; only a driver that runs transactions concurrently (Postgres) tells them apart.
 	 */
 	readonly concurrency?: TransactionConcurrency;
+	/**
+	 * @internal The statements the callback makes first, in this order, before it acts on any answer. A driver whose
+	 * transactions are pipelined sends them with the transaction's start, so they cost no round trip of their own, and
+	 * starts the callback once they are answered; each call of the callback that makes the next of them gets its answer.
+	 * Name only reads: a call that differs from the next of them ends the lead, and the answers of the rest go unused,
+	 * though they ran. A write may lead only as the callback's first call, made on every run whatever it reads, such as a
+	 * fenced path's one guarded write: it never runs unused. Other drivers ignore it.
+	 */
+	readonly leading?: readonly SqliteStatement[];
 }
 
 /** How one batch waits for a busy write lock, and whether it goes ahead of the database's queued calls. */

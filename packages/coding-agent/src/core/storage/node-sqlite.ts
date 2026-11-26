@@ -26,7 +26,7 @@ import {
 import { createRequire } from "node:module";
 import { platform } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { isSharedArrayBuffer, isUint8Array } from "node:util/types";
@@ -85,6 +85,7 @@ import {
 	type ConnectionRequest,
 	type SequenceAnswer,
 	type SequenceRequest,
+	STATEMENT_CACHE_SIZE,
 	ThreadConnection,
 } from "./node-sqlite-thread.js";
 import {
@@ -1279,9 +1280,13 @@ class CallerThreadConnection {
 	readonly connection: DatabaseSync;
 	private readonly ownsConnection: boolean;
 
+	/** Statements kept for reuse; only on a connection of its own, so a caller's connection holds none of them. */
+	private readonly prepared?: Map<string, StatementSync>;
+
 	constructor(connection: DatabaseSync, ownsConnection: boolean) {
 		this.connection = connection;
 		this.ownsConnection = ownsConnection;
+		if (ownsConnection) this.prepared = new Map();
 	}
 
 	request(request: SingleRequest): ConnectionAnswer {
@@ -1317,15 +1322,26 @@ class CallerThreadConnection {
 					throw error;
 				}
 			case "close":
+				this.prepared?.clear();
 				if (this.ownsConnection) this.connection.close();
 				finalizeReleasedStatements();
 				return undefined;
 		}
 	}
 
-	private statement(sql: string) {
+	private statement(sql: string): StatementSync {
+		const cached = this.prepared?.get(sql);
+		if (cached !== undefined) {
+			this.prepared!.delete(sql);
+			this.prepared!.set(sql, cached);
+			return cached;
+		}
 		const prepared = this.connection.prepare(sql);
 		prepared.setReadBigInts(true);
+		if (this.prepared !== undefined) {
+			this.prepared.set(sql, prepared);
+			if (this.prepared.size > STATEMENT_CACHE_SIZE) this.prepared.delete(this.prepared.keys().next().value!);
+		}
 		return prepared;
 	}
 
@@ -1459,6 +1475,11 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private closing = false;
 	private closePromise?: Promise<void>;
 	private readonly executor: ReturnType<NodeSqliteDatabase["createExecutor"]>;
+	openReader?: () => Promise<SqliteDatabase>;
+	/** Readers this database opened and that are not closed; closing closes them. */
+	private readonly readers = new Set<NodeSqliteDatabase>();
+	/** Called once this database closed. */
+	private closed?: () => void;
 
 	private readonly transactionIdentity: string | object;
 	private readonly lockWaitMs: number;
@@ -2302,10 +2323,29 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
+	/**
+	 * Offers `openReader`: each reader is a connection of its own to the database's file, which `open` opens, with a
+	 * call queue of its own; in WAL mode it reads the last commit without waiting for this connection's writes.
+	 */
+	offerReaders(open: () => Promise<SqliteDatabase>): void {
+		this.openReader = async () => {
+			if (this.closing) throw new StoreClosedError(this.descriptor);
+			const reader = (await open()) as NodeSqliteDatabase;
+			if (this.closing) {
+				await reader.close();
+				throw new StoreClosedError(this.descriptor);
+			}
+			this.readers.add(reader);
+			reader.closed = () => this.readers.delete(reader);
+			return reader;
+		};
+	}
+
 	close(): Promise<void> {
 		if (!this.closePromise) {
 			this.closing = true;
-			this.closePromise = this.tail.then(async () => {
+			const readers = Promise.allSettled([...this.readers].map((reader) => reader.close()));
+			this.closePromise = Promise.all([this.tail, readers]).then(async () => {
 				try {
 					if (this.fileGate?.role === "waits") forgetPlans(this.fileGate.file, this.connection);
 					await this.holderRecord?.close();
@@ -2314,6 +2354,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 					this.wrappedUse?.release();
 					this.fileLock?.release();
 					await releaseOpenLock(this.openLock);
+					this.closed?.();
 				}
 			});
 		}
@@ -2469,6 +2510,8 @@ export async function openNodeSqliteDatabase(
 			gateFile === undefined ? undefined : { file: gateFile, role: "holds" },
 		);
 		Object.defineProperty(database, "readOnly", { value: readOnly });
+		if (!isInMemoryDatabase(path))
+			database.offerReaders(() => openNodeSqliteDatabase(path, { busyTimeoutMs, readOnly: true }));
 		opening = database;
 		const [configuredSettings] = await Promise.allSettled([
 			settings,

@@ -19,7 +19,7 @@ import type {
 } from "./multinode-state-store.js";
 import { SETTLED_ASK_RETENTION_MS } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema } from "./sql-schema.js";
+import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type AskRow = SqliteRow & { sender_session_id: string; target_session_id: string; message_id: string };
 
@@ -49,12 +49,23 @@ function invalidRoute(route: ReplyRoute): InvalidStateInput | undefined {
 }
 
 /** S3: `PendingAskStore` on the shared storage adapter's database, table `<prefix>intercom_pending_asks`. */
-export async function openSqlPendingAskStore({
+export function openSqlPendingAskStore(options: IntercomBrokerStateOptions): Promise<PendingAskStore> {
+	// Its schema checks answer from one read of the catalog, shared with an open around it: a current schema costs
+	// no transaction and no lock, also when the store is opened on its own (#6560).
+	return withBrokerSchemaCatalog(options.database, options.prefix, () => openPendingAskStoreInCatalog(options));
+}
+
+async function openPendingAskStoreInCatalog({
 	database,
 	prefix,
 }: IntercomBrokerStateOptions): Promise<PendingAskStore> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_pending_asks`;
 	const { types, nowMs, greatest } = dialectOf(database);
+	/**
+	 * Its transactions read and write this table and the settled asks alone, which no other store touches, so they
+	 * exclude one another, not every writer of the database (#6560).
+	 */
+	const serial = { concurrency: { kind: "serial", domain: table } } as const;
 	await ensureBrokerSchema(database, prefix, "pending-asks", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
@@ -112,7 +123,7 @@ export async function openSqlPendingAskStore({
 					...params,
 				);
 				return changes === 0 ? ({ status: "duplicate" } as const) : ({ status: "recorded" } as const);
-			});
+			}, serial);
 		},
 		async matchesReply(route): Promise<PendingAskMatchResult> {
 			const bad = invalidRoute(route);
@@ -132,7 +143,7 @@ export async function openSqlPendingAskStore({
 				);
 				await tx.run(`DELETE FROM ${settled} WHERE settled_at < ${nowMs} - ?`, SETTLED_ASK_RETENTION_MS);
 				return changes === 0 ? ({ status: "no-match" } as const) : ({ status: "cleared" } as const);
-			});
+			}, serial);
 		},
 		async isSettled(route): Promise<boolean> {
 			if (invalidRoute(route) !== undefined) return false;
@@ -177,7 +188,7 @@ export async function openSqlPendingAskStore({
 				);
 				await tx.run(`DELETE FROM ${table} WHERE target_session_id = ?`, targetSessionId);
 				return taken;
-			});
+			}, serial);
 			return { status: "taken", asks: rows.map(toAsk) };
 		},
 		async listForTarget(targetSessionId): Promise<PendingAskListResult> {
@@ -220,7 +231,7 @@ export async function openSqlPendingAskStore({
 					...parked.params,
 				);
 				return found;
-			});
+			}, serial);
 			return {
 				status: "rebound",
 				asks: rows.map((row) => ({
@@ -241,7 +252,7 @@ export async function openSqlPendingAskStore({
 				);
 				await tx.run(`DELETE FROM ${table} WHERE ${parked.where}`, ...parked.params);
 				return taken;
-			});
+			}, serial);
 			return { status: "taken", asks: rows.map(toAsk) };
 		},
 		async listParked(ownerSessionId, reservationKey): Promise<PendingAskListResult> {
@@ -292,7 +303,7 @@ export async function openSqlPendingAskStore({
 					if (Number(changes) === 1) marked.push(row);
 				}
 				return marked;
-			});
+			}, serial);
 			return { status: "listed", asks: rows.map(toAsk) };
 		},
 		async unmarkEnded(route): Promise<PendingAskMarkResult> {
@@ -318,7 +329,7 @@ export async function openSqlPendingAskStore({
 				 WHERE ${where} AND replied IS NULL AND ended_at IS NOT NULL ORDER BY "order"`,
 				...params,
 			);
-		});
+		}, serial);
 		return { status: "listed", asks: rows.map(toAsk) };
 	}
 }

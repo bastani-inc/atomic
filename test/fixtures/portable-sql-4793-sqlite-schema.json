@@ -37,6 +37,36 @@
 	},
 	{
 		"type": "index",
+		"name": "intercom_leases_presence_alias",
+		"tbl_name": "intercom_leases",
+		"sql": "CREATE INDEX intercom_leases_presence_alias ON intercom_leases(presence_alias)"
+	},
+	{
+		"type": "index",
+		"name": "intercom_leases_presence_host",
+		"tbl_name": "intercom_leases",
+		"sql": "CREATE INDEX intercom_leases_presence_host ON intercom_leases(presence_host)"
+	},
+	{
+		"type": "index",
+		"name": "intercom_leases_presence_id",
+		"tbl_name": "intercom_leases",
+		"sql": "CREATE INDEX intercom_leases_presence_id ON intercom_leases(presence_id)"
+	},
+	{
+		"type": "index",
+		"name": "intercom_leases_presence_id_head",
+		"tbl_name": "intercom_leases",
+		"sql": "CREATE INDEX intercom_leases_presence_id_head ON intercom_leases(presence_id_head)"
+	},
+	{
+		"type": "index",
+		"name": "intercom_leases_presence_name",
+		"tbl_name": "intercom_leases",
+		"sql": "CREATE INDEX intercom_leases_presence_name ON intercom_leases(presence_name)"
+	},
+	{
+		"type": "index",
 		"name": "intercom_outbox_target",
 		"tbl_name": "intercom_outbox",
 		"sql": "CREATE INDEX intercom_outbox_target ON intercom_outbox(target_identity, state, sequence)"
@@ -139,6 +169,36 @@
 	},
 	{
 		"type": "index",
+		"name": "team_intercom_leases_presence_alias",
+		"tbl_name": "team_intercom_leases",
+		"sql": "CREATE INDEX team_intercom_leases_presence_alias ON team_intercom_leases(presence_alias)"
+	},
+	{
+		"type": "index",
+		"name": "team_intercom_leases_presence_host",
+		"tbl_name": "team_intercom_leases",
+		"sql": "CREATE INDEX team_intercom_leases_presence_host ON team_intercom_leases(presence_host)"
+	},
+	{
+		"type": "index",
+		"name": "team_intercom_leases_presence_id",
+		"tbl_name": "team_intercom_leases",
+		"sql": "CREATE INDEX team_intercom_leases_presence_id ON team_intercom_leases(presence_id)"
+	},
+	{
+		"type": "index",
+		"name": "team_intercom_leases_presence_id_head",
+		"tbl_name": "team_intercom_leases",
+		"sql": "CREATE INDEX team_intercom_leases_presence_id_head ON team_intercom_leases(presence_id_head)"
+	},
+	{
+		"type": "index",
+		"name": "team_intercom_leases_presence_name",
+		"tbl_name": "team_intercom_leases",
+		"sql": "CREATE INDEX team_intercom_leases_presence_name ON team_intercom_leases(presence_name)"
+	},
+	{
+		"type": "index",
 		"name": "team_intercom_outbox_target",
 		"tbl_name": "team_intercom_outbox",
 		"sql": "CREATE INDEX team_intercom_outbox_target ON team_intercom_outbox(target_identity, state, sequence)"
@@ -219,7 +279,7 @@
 		"type": "table",
 		"name": "intercom_leases",
 		"tbl_name": "intercom_leases",
-		"sql": "CREATE TABLE intercom_leases(\n\t\t\tkind TEXT NOT NULL, key TEXT NOT NULL, holder_id TEXT, fencing_token INTEGER,\n\t\t\tlast_token INTEGER NOT NULL, subject_json TEXT, renewed_at INTEGER,\n\t\t\tfirst_acquired_order INTEGER NOT NULL, PRIMARY KEY(kind, key)\n\t\t)"
+		"sql": "CREATE TABLE intercom_leases(\n\t\t\tkind TEXT NOT NULL, key TEXT NOT NULL, holder_id TEXT, fencing_token INTEGER,\n\t\t\tlast_token INTEGER NOT NULL, subject_json TEXT, renewed_at INTEGER,\n\t\t\tfirst_acquired_order INTEGER NOT NULL, presence_id TEXT GENERATED ALWAYS AS (CASE WHEN kind = 'presence' AND json_valid(subject_json) AND NOT (subject_json GLOB '*\\u0000*' OR subject_json GLOB '*\\u[dD][89a-fA-F]*') THEN json_extract(subject_json, '$.session.id') END) VIRTUAL, presence_id_head TEXT GENERATED ALWAYS AS (CASE WHEN kind = 'presence' AND json_valid(subject_json) AND NOT (subject_json GLOB '*\\u0000*' OR subject_json GLOB '*\\u[dD][89a-fA-F]*') THEN lower(substr(json_extract(subject_json, '$.session.id'), 1, 8)) END) VIRTUAL, presence_name TEXT GENERATED ALWAYS AS (CASE WHEN kind <> 'presence' OR subject_json IS NULL THEN NULL\n\t\t\tWHEN NOT json_valid(subject_json) OR (subject_json GLOB '*\\u0000*' OR subject_json GLOB '*\\u[dD][89a-fA-F]*') OR (key GLOB '*\\u0000*' OR key GLOB '*\\u[dD][89a-fA-F]*') THEN '*'\n\t\t\tWHEN CASE WHEN json_type(subject_json, '$.aliases') = 'array' THEN json_array_length(subject_json, '$.aliases') END > 1 THEN '*'\n\t\t\tWHEN json_extract(subject_json, '$.session.name') IS NULL THEN NULL\n\t\t\tWHEN length(CAST(json_extract(subject_json, '$.session.name') AS BLOB)) <> length(json_extract(subject_json, '$.session.name')) THEN '*'\n\t\t\tELSE '=' || lower(json_extract(subject_json, '$.session.name')) END) VIRTUAL, presence_host TEXT GENERATED ALWAYS AS (CASE WHEN kind = 'presence' AND substr(key, 1, 10) = '[\"return\",' AND json_valid(key)\n\t\t\tAND NOT (key GLOB '*\\u0000*' OR key GLOB '*\\u[dD][89a-fA-F]*') THEN json_extract(key, '$[1]') END) VIRTUAL, presence_alias TEXT GENERATED ALWAYS AS (CASE WHEN kind = 'presence' AND json_valid(subject_json) AND NOT (subject_json GLOB '*\\u0000*' OR subject_json GLOB '*\\u[dD][89a-fA-F]*') AND CASE WHEN json_type(subject_json, '$.aliases') = 'array' THEN json_array_length(subject_json, '$.aliases') END = 1 THEN json_extract(subject_json, '$.aliases[0].id') END) VIRTUAL, PRIMARY KEY(kind, key)\n\t\t)"
 	},
 	{
 		"type": "table",
@@ -297,7 +357,7 @@
 		"type": "table",
 		"name": "team_intercom_leases",
 		"tbl_name": "team_intercom_leases",
-		"sql": "CREATE TABLE team_intercom_leases(\n\t\t\tkind TEXT NOT NULL, key TEXT NOT NULL, holder_id TEXT, fencing_token INTEGER,\n\t\t\tlast_token INTEGER NOT NULL, subject_json TEXT, renewed_at INTEGER,\n\t\t\tfirst_acquired_order INTEGER NOT NULL, PRIMARY KEY(kind, key)\n\t\t)"
+		"sql": "CREATE TABLE team_intercom_leases(\n\t\t\tkind TEXT NOT NULL, key TEXT NOT NULL, holder_id TEXT, fencing_token INTEGER,\n\t\t\tlast_token INTEGER NOT NULL, subject_json TEXT, renewed_at INTEGER,\n\t\t\tfirst_acquired_order INTEGER NOT NULL, presence_id TEXT GENERATED ALWAYS AS (CASE WHEN kind = 'presence' AND json_valid(subject_json) AND NOT (subject_json GLOB '*\\u0000*' OR subject_json GLOB '*\\u[dD][89a-fA-F]*') THEN json_extract(subject_json, '$.session.id') END) VIRTUAL, presence_id_head TEXT GENERATED ALWAYS AS (CASE WHEN kind = 'presence' AND json_valid(subject_json) AND NOT (subject_json GLOB '*\\u0000*' OR subject_json GLOB '*\\u[dD][89a-fA-F]*') THEN lower(substr(json_extract(subject_json, '$.session.id'), 1, 8)) END) VIRTUAL, presence_name TEXT GENERATED ALWAYS AS (CASE WHEN kind <> 'presence' OR subject_json IS NULL THEN NULL\n\t\t\tWHEN NOT json_valid(subject_json) OR (subject_json GLOB '*\\u0000*' OR subject_json GLOB '*\\u[dD][89a-fA-F]*') OR (key GLOB '*\\u0000*' OR key GLOB '*\\u[dD][89a-fA-F]*') THEN '*'\n\t\t\tWHEN CASE WHEN json_type(subject_json, '$.aliases') = 'array' THEN json_array_length(subject_json, '$.aliases') END > 1 THEN '*'\n\t\t\tWHEN json_extract(subject_json, '$.session.name') IS NULL THEN NULL\n\t\t\tWHEN length(CAST(json_extract(subject_json, '$.session.name') AS BLOB)) <> length(json_extract(subject_json, '$.session.name')) THEN '*'\n\t\t\tELSE '=' || lower(json_extract(subject_json, '$.session.name')) END) VIRTUAL, presence_host TEXT GENERATED ALWAYS AS (CASE WHEN kind = 'presence' AND substr(key, 1, 10) = '[\"return\",' AND json_valid(key)\n\t\t\tAND NOT (key GLOB '*\\u0000*' OR key GLOB '*\\u[dD][89a-fA-F]*') THEN json_extract(key, '$[1]') END) VIRTUAL, presence_alias TEXT GENERATED ALWAYS AS (CASE WHEN kind = 'presence' AND json_valid(subject_json) AND NOT (subject_json GLOB '*\\u0000*' OR subject_json GLOB '*\\u[dD][89a-fA-F]*') AND CASE WHEN json_type(subject_json, '$.aliases') = 'array' THEN json_array_length(subject_json, '$.aliases') END = 1 THEN json_extract(subject_json, '$.aliases[0].id') END) VIRTUAL, PRIMARY KEY(kind, key)\n\t\t)"
 	},
 	{
 		"type": "table",

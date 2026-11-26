@@ -13,10 +13,34 @@ export interface PostgresDatabaseOptions {
 	 * the platform's own credentials for each new connection, and refuse a `password` beside them.
 	 */
 	auth?: "password" | "azure-entra" | "aws-iam" | "gcp-iam";
-	/** Connections kept open at most, in this process. Default 8. */
+	/**
+	 * Connections kept open at most, in this process. Default 8. Every database this process opens with the same URL,
+	 * role, password, schema and pool options shares one pool, one readers' pool of up to `readerMaxConnections` connections, and one
+	 * listening connection, which the last of them to close closes (#6560).
+	 */
 	maxConnections?: number;
 	/** How long one statement may run before the server cancels it, in milliseconds. Default 30000. */
 	statementTimeoutMs?: number;
+	/**
+	 * How long a pool's last connection may stay idle before it is closed, in milliseconds: the time since the pool's
+	 * last call. Default 300000. The pool's other connections close after `SURGE_IDLE_TIMEOUT_MS` idle, or after
+	 * `idleTimeoutMs` when it is shorter (#6560).
+	 */
+	idleTimeoutMs?: number;
+	/**
+	 * Connections each reader handle's pool keeps open at most. Default 2, never more than
+	 * `maxConnections`. 0 opens no separate pool, so reads share the main pool.
+	 */
+	readerMaxConnections?: number;
+	/** How long opening a connection, or waiting for a free pooled one, may take, in milliseconds. Default 10000. */
+	connectTimeoutMs?: number;
+	/** How long a pooled connection stays idle before TCP keepalive probes start, in milliseconds. Default 60000. */
+	keepAliveIdleMs?: number;
+	/**
+	 * Statements each pooled connection keeps prepared at most, so the server parses and plans each once per connection.
+	 * Default 256; `0` sends every statement unnamed, for a transaction-mode pooler without prepared-statement support.
+	 */
+	maxPreparedStatements?: number;
 	/**
 	 * A direct (session) endpoint for the connection that listens for wake-ups, when `url` goes through a transaction
 	 * pooler. Default `url`. Without notifications, Intercom brokers find work by polling alone.
@@ -52,6 +76,12 @@ export interface PostgresDatabaseOptions {
 
 export const DEFAULT_MAX_CONNECTIONS: 8;
 export const DEFAULT_STATEMENT_TIMEOUT_MS: 30000;
+export const DEFAULT_IDLE_TIMEOUT_MS: 300000;
+export const DEFAULT_READER_MAX_CONNECTIONS: 2;
+export const DEFAULT_CONNECT_TIMEOUT_MS: 10000;
+export const DEFAULT_KEEPALIVE_IDLE_MS: 60000;
+export const DEFAULT_MAX_PREPARED_STATEMENTS: 256;
+export const SURGE_IDLE_TIMEOUT_MS: 10000;
 export const DEFAULT_SCHEMA: "atomic";
 
 /** `sql` with each positional `?` parameter outside literals, quoted identifiers and comments numbered `$1`, `$2`, .... */

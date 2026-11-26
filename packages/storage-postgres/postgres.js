@@ -1,4 +1,5 @@
 // @ts-check
+import { createHash } from "node:crypto";
 import { connect as connectSocket, isIP } from "node:net";
 import { join } from "node:path";
 import { connect as connectTls } from "node:tls";
@@ -35,6 +36,11 @@ import {
  *   auth?: PostgresAuth,
  *   maxConnections?: number,
  *   statementTimeoutMs?: number,
+ *   idleTimeoutMs?: number,
+ *   readerMaxConnections?: number,
+ *   connectTimeoutMs?: number,
+ *   keepAliveIdleMs?: number,
+ *   maxPreparedStatements?: number,
  *   listenUrl?: string,
  *   schema?: string,
  *   sdkSearchPaths?: readonly string[],
@@ -47,12 +53,36 @@ import {
 export const DEFAULT_MAX_CONNECTIONS = 8;
 /** How long one statement may run on the server before it is cancelled, in milliseconds. */
 export const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
-/** How long opening a connection, or waiting for a free one, may take. */
-const CONNECT_TIMEOUT_MS = 10_000;
+/** How long opening a connection, or waiting for a free one, may take, in milliseconds. */
+export const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 /** How long the listening connection stays idle before TCP keepalive probes start. */
 const LISTEN_KEEPALIVE_IDLE_MS = 10_000;
-/** An idle connection is closed after this long. */
-const IDLE_TIMEOUT_MS = 10_000;
+/**
+ * How long a pool's first connection may stay idle before it is closed, in milliseconds: the time the whole pool was
+ * idle. The others close after `SURGE_IDLE_TIMEOUT_MS` (#6560).
+ */
+export const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
+/**
+ * How long a connection beyond a pool's first may stay idle before it is closed, in milliseconds, and the idle timeout of
+ * every connection when `idleTimeoutMs` is shorter: node-postgres's own default. A burst's extra connections are given
+ * back within seconds, as HikariCP retires idle connections above its minimum, so a process holds one connection while
+ * it works one call at a time (#6560).
+ */
+export const SURGE_IDLE_TIMEOUT_MS = 10_000;
+/** How long a pooled connection stays idle before TCP keepalive probes start, in milliseconds. */
+export const DEFAULT_KEEPALIVE_IDLE_MS = 60_000;
+/** Statements one connection keeps prepared at most; past it, further statements go unnamed. */
+export const DEFAULT_MAX_PREPARED_STATEMENTS = 256;
+/** A statement gets a name once a process has sent it this many times, so one-off statements are never prepared. */
+const PREPARE_AFTER_USES = 2;
+/** Statements whose uses or names a database remembers at most. */
+const STATEMENTS_TRACKED = 4096;
+/** Data statements, the only ones worth preparing: no setup, schema change or transaction control. */
+const PREPARABLE = /^\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH)\b/i;
+/** The ports transaction poolers listen on by convention: PgBouncer's and Supavisor's. */
+const POOLER_PORTS = new Set([6432, 6543]);
+/** Connections the pool for reads keeps open at most, per process; never more than `maxConnections`. */
+export const DEFAULT_READER_MAX_CONNECTIONS = 2;
 /**
  * How much longer than the statement timeout a statement may take before the client gives up on its connection and
  * asks the server to cancel it: the server cancels a statement itself at the statement timeout, so this bounds only a
@@ -313,6 +343,18 @@ function positiveInteger(field, value, fallback) {
 }
 
 /**
+ * @param {string} field
+ * @param {unknown} value
+ * @param {number} fallback
+ */
+function nonNegativeInteger(field, value, fallback) {
+	if (value === undefined) return fallback;
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0)
+		throw configError(field, "non-negative-integer-required");
+	return value;
+}
+
+/**
  * Whether `character` can continue an identifier, so a `$` or `'` after it does not start a literal. Like Postgres's
  * lexer, any non-ASCII character counts; each UTF-16 code unit of one is at least U+0080.
  */
@@ -378,6 +420,120 @@ export function numberPlaceholders(sql) {
 		} else index++;
 	}
 	return numbered + sql.slice(copied);
+}
+
+/**
+ * @typedef {{
+ *   references: number,
+ *   pool: import("pg").Pool,
+ *   reader: { pool: import("pg").Pool, references: number } | undefined,
+ *   openReaderPool: () => import("pg").Pool,
+ *   listener: (import("@bastani/atomic/storage").StorageNotifications & { close(): Promise<void> }) | undefined,
+ *   lost: WeakSet<object>,
+ *   tokenProviders: Set<{ invalidate(): void }>,
+ *   passwords: Set<string>,
+ *   password: (() => Promise<string>) | undefined,
+ *   listenPassword: (() => Promise<string>) | undefined,
+ * }} SharedConnections The connections the databases a process opens with one identity share (#6560): the pool, the
+ *   readers' pool, opened by the first reader and closed by the last, and the listening connection, with what their
+ *   connections are opened and checked with. The last database to close closes them.
+ * @typedef {{
+ *   byDriver: WeakMap<object, Map<string, SharedConnections>>,
+ *   socketFactories: WeakMap<object, number>,
+ *   nextSocketFactory: number,
+ * }} SharedRegistry
+ */
+
+/**
+ * Where every load of this adapter in a process finds the connections it shares (#6560). The host evaluates the adapter
+ * afresh for each load, the session store's and the Intercom broker's, so a map of the module's own would hold one
+ * load's connections only. The key names the shape of the entries, so a load that keeps another shape never shares them.
+ */
+const SHARED_CONNECTIONS = Symbol.for("@bastani/atomic-storage-postgres/shared-connections@1");
+
+function sharedRegistry() {
+	const holder = /** @type {{ [SHARED_CONNECTIONS]?: SharedRegistry }} */ (globalThis);
+	holder[SHARED_CONNECTIONS] ??= { byDriver: new WeakMap(), socketFactories: new WeakMap(), nextSocketFactory: 0 };
+	return holder[SHARED_CONNECTIONS];
+}
+
+/**
+ * The shared connections of the databases opened with `pg`, by identity: only databases on the same `pg` share them, so
+ * a failure on a shared connection is always an error class of the `pg` that reads it.
+ * @param {object} pg
+ */
+function sharedConnectionsOf(pg) {
+	const { byDriver } = sharedRegistry();
+	let byIdentity = byDriver.get(pg);
+	if (byIdentity === undefined) {
+		byIdentity = new Map();
+		byDriver.set(pg, byIdentity);
+	}
+	return byIdentity;
+}
+
+/**
+ * A number for `factory` in a pool's identity: the same function is the same transport.
+ * @param {object} factory
+ */
+function socketFactoryId(factory) {
+	const registry = sharedRegistry();
+	let id = registry.socketFactories.get(factory);
+	if (id === undefined) {
+		id = ++registry.nextSocketFactory;
+		registry.socketFactories.set(factory, id);
+	}
+	return id;
+}
+
+/**
+ * What tells one password from another in a pool's identity: a hash of the password `source` gives now, never the
+ * password itself, with the password, which the redactor removes from failures. Undefined when the source fails or
+ * gives no password: such a database shares nothing, and its connections fail as they would alone (#6560).
+ * @param {string | (() => Promise<string>) | undefined} source
+ * @returns {Promise<{ key: string, value?: string } | undefined>}
+ */
+async function credentialOf(source) {
+	if (source === undefined) return { key: "none" };
+	/** @type {unknown} */
+	let value;
+	try {
+		value = typeof source === "string" ? source : await source();
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== "string" || value === "") return undefined;
+	return { key: createHash("sha256").update(value).digest("hex"), value };
+}
+
+/**
+ * Closes the connections `pool` keeps without an idle timeout of their own (its `min`) once the whole pool was idle for
+ * `idleMs` since a call last returned a connection (#6560). Each is taken from the idle ones, so none is opened here.
+ * @param {import("pg").Pool} pool
+ * @param {number} idleMs
+ */
+function closeWhenIdle(pool, idleMs) {
+	/** @type {NodeJS.Timeout | undefined} */
+	let timer;
+	let closing = false;
+	const close = async () => {
+		timer = undefined;
+		closing = true;
+		try {
+			while (!pool.ending && pool.waitingCount === 0 && pool.idleCount > 0 && pool.idleCount === pool.totalCount)
+				(await pool.connect()).release(true);
+		} catch {
+			// The pool ended meanwhile.
+		} finally {
+			closing = false;
+		}
+	};
+	pool.on("release", () => {
+		if (closing) return;
+		clearTimeout(timer);
+		timer = setTimeout(close, idleMs);
+		timer.unref();
+	});
 }
 
 /** The longest identifier Postgres keeps whole; it truncates a longer one. */
@@ -586,7 +742,23 @@ const TRANSIENT_SQLSTATES = new Map([
 	// read_only_sql_transaction: a write refused, nothing applied. A read replica refuses it every time; a primary does
 	// for a while during a failover, or when the service makes it read-only because its storage is nearly full.
 	["25006", { code: "read-only-server", outcome: "not-applied" }],
+	// invalid_sql_statement_name, duplicate_prepared_statement: a named statement the connection's server no longer
+	// has, or already has, as behind a pooler that moves connections; nothing ran, and the call goes again unnamed.
+	["26000", { code: "connection-lost", outcome: "not-applied" }],
+	["42P05", { code: "connection-lost", outcome: "not-applied" }],
 ]);
+
+/** A prepared statement whose plan a schema change invalidated: refused before it ran, and run again on a new connection. */
+const STALE_PLAN = /** @type {const} */ ({ code: "connection-lost", outcome: "not-applied" });
+
+/**
+ * Whether the server refused a prepared statement because a schema change altered its result columns ("cached plan
+ * must not change result type"): `feature_not_supported`, raised where the server checks a cached plan.
+ * @param {{ code?: string, routine?: string }} failure
+ */
+function isStalePlan(failure) {
+	return failure.code === "0A000" && failure.routine === "RevalidateCachedQuery";
+}
 
 /**
  * The failure, as one that passes, read from the server's SQLSTATE when the server answered, else from whether a
@@ -604,7 +776,8 @@ function transientFailureOf(DatabaseError) {
 		/** @type {unknown} */
 		let current = failure;
 		for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
-			if (current instanceof DatabaseError) return TRANSIENT_SQLSTATES.get(current.code ?? "");
+			if (current instanceof DatabaseError)
+				return isStalePlan(current) ? STALE_PLAN : TRANSIENT_SQLSTATES.get(current.code ?? "");
 			if (current instanceof PostgresConnectionFailure) connection ??= current;
 			else if (current instanceof ProxyTunnelError) tunnel ??= current;
 			else if (current instanceof StorageError) return undefined;
@@ -620,6 +793,21 @@ function transientFailureOf(DatabaseError) {
 					hop: { name: `the proxy ${tunnel.proxy}`, failure: tunnel.message },
 				};
 	};
+}
+
+/**
+ * Whether two statements' parameters are the same values.
+ * @param {readonly SqliteValue[]} first
+ * @param {readonly SqliteValue[]} second
+ */
+function sameParams(first, second) {
+	if (first.length !== second.length) return false;
+	return first.every((value, index) => {
+		const other = second[index];
+		if (value instanceof Uint8Array && other instanceof Uint8Array)
+			return value.length === other.length && value.every((byte, at) => byte === other[at]);
+		return value === other;
+	});
 }
 
 /**
@@ -712,6 +900,17 @@ export async function openPostgresDatabase(options) {
 		options.statementTimeoutMs,
 		DEFAULT_STATEMENT_TIMEOUT_MS,
 	);
+	const idleTimeoutMs = positiveInteger("idleTimeoutMs", options.idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS);
+	const readerMaxConnections = Math.min(
+		nonNegativeInteger("readerMaxConnections", options.readerMaxConnections, DEFAULT_READER_MAX_CONNECTIONS),
+		maxConnections,
+	);
+	const connectTimeoutMs = positiveInteger("connectTimeoutMs", options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
+	const keepAliveIdleMs = positiveInteger("keepAliveIdleMs", options.keepAliveIdleMs, DEFAULT_KEEPALIVE_IDLE_MS);
+	const configuredPrepared =
+		options.maxPreparedStatements === undefined
+			? undefined
+			: nonNegativeInteger("maxPreparedStatements", options.maxPreparedStatements, 0);
 	if (options.schema !== undefined && (typeof options.schema !== "string" || !SCHEMA_NAME.test(options.schema)))
 		throw configError("schema", "invalid-schema", "Use a lowercase identifier of letters, digits and _, such as atomic");
 	if (options.proxy !== undefined && typeof options.proxy !== "string")
@@ -758,6 +957,12 @@ export async function openPostgresDatabase(options) {
 	// Notifications reach only a session of their own: through a transaction pooler `listenUrl` names a direct endpoint.
 	const listenConnection =
 		options.listenUrl === undefined ? connection : parseConnection(connectionUrl(options.listenUrl, "listenUrl"));
+	// Behind a transaction pooler, a connection's prepared statements can land on another server connection, which
+	// only some poolers handle (PgBouncer 1.21 and later with `max_prepared_statements` set, not Supavisor's shared
+	// pooler), so unless configured they are off there: where `listenUrl` names a direct endpoint, or on the ports
+	// PgBouncer (6432) and Supavisor (6543) listen on.
+	const behindPooler = options.listenUrl !== undefined || POOLER_PORTS.has(endpointOf(connection).port);
+	const maxPreparedStatements = configuredPrepared ?? (behindPooler ? 0 : DEFAULT_MAX_PREPARED_STATEMENTS);
 
 	/**
 	 * How connections to `target` are opened (#5473): through the caller's socket factory, the `proxy` option, or the
@@ -791,11 +996,38 @@ export async function openPostgresDatabase(options) {
 	 */
 	const streamOption = (open) => (open === undefined ? {} : { stream: () => new OpenedSocket(open) });
 
+	// What decides whether two databases of this process share their connections (#6560): the same server, database,
+	// role and credential, schema and pool options. A database whose password source failed has no identity, and gets
+	// connections of its own that fail as they did before.
+	const credential = cloud === undefined ? await credentialOf(options.password) : { key: `auth:${cloud}` };
+	const identity =
+		credential === undefined
+			? undefined
+			: JSON.stringify([
+					connectionString,
+					options.listenUrl === undefined ? null : connectionUrl(options.listenUrl, "listenUrl"),
+					auth,
+					credential.key,
+					options.schema ?? DEFAULT_SCHEMA,
+					options.proxy ?? null,
+					options.socket === undefined ? null : socketFactoryId(options.socket),
+					maxConnections,
+					idleTimeoutMs,
+					readerMaxConnections,
+					connectTimeoutMs,
+					keepAliveIdleMs,
+					options.sdkSearchPaths ?? null,
+				]);
+	const sharing = sharedConnectionsOf(pg);
+	/** The connections an open database of this process with the same identity holds, which this one shares. */
+	const found = identity === undefined ? undefined : sharing.get(identity);
+
 	/** The cloud token providers of the pool's and the listening connection's hosts. */
 	/** @type {Set<{ invalidate(): void }>} */
-	const tokenProviders = new Set();
+	const tokenProviders = found?.tokenProviders ?? new Set();
 	/** Every password the pool was given, so the redactor can remove them from failures. */
-	const passwords = new Set(typeof options.password === "string" ? [options.password] : []);
+	const passwords = found?.passwords ?? new Set(typeof options.password === "string" ? [options.password] : []);
+	if (credential?.value !== undefined) passwords.add(credential.value);
 	/**
 	 * The password function for connections to `target`: cloud IAM tokens are issued per host.
 	 * @param {typeof connection} target
@@ -833,7 +1065,7 @@ export async function openPostgresDatabase(options) {
 					return value;
 				};
 	};
-	const password = passwordFor(connection);
+	const password = found === undefined ? passwordFor(connection) : found.password;
 
 	// pg leaves the socket of a connection that failed to start open, for instance when the password source failed while
 	// the server waited for the password; the server keeps that half-started backend until its authentication timeout,
@@ -848,26 +1080,62 @@ export async function openPostgresDatabase(options) {
 			});
 		}
 	}
-	const pool = new pg.Pool({
-		Client: /** @type {typeof pg.Client} */ (/** @type {unknown} */ (ClosingClient)),
-		...connection,
-		...streamOption(opener),
-		...(password === undefined ? {} : { password }),
-		max: maxConnections,
-		connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
-		idleTimeoutMillis: IDLE_TIMEOUT_MS,
-		keepAlive: true,
-		// Queries are written without waiting for the answer to the one before, so a statement outside a transaction
-		// sends its `BEGIN` and `COMMIT` in the same round trip; each query still ends with its own sync.
-		pipeline: true,
-		application_name: "atomic",
-		types: sqliteTypes(pg.types),
-	});
 	/** Connections that broke: they are closed, never returned to the pool. */
-	const lost = new WeakSet();
-	// An idle connection that breaks emits `error` on the pool, which would end the process unheard.
-	pool.on("error", (_error, client) => lost.add(client));
-	pool.on("connect", (client) => client.on("error", () => lost.add(client)));
+	const lost = found?.lost ?? new WeakSet();
+	/**
+	 * Whether the pool keeps its first connection longer than the others: with an idle timeout above
+	 * `SURGE_IDLE_TIMEOUT_MS`, a connection beyond the first closes after that much idle time, and the first one only
+	 * once the whole pool was idle for the idle timeout (#6560).
+	 */
+	const tiered = idleTimeoutMs > SURGE_IDLE_TIMEOUT_MS;
+	/**
+	 * A pool of up to `max` connections to the database, opened as calls need them. An idle connection stays open a
+	 * while, so the next call does not wait for a new connection's handshakes, and it does not keep the process from
+	 * exiting.
+	 * @param {number} max
+	 * @param {string} applicationName
+	 */
+	const openPool = (max, applicationName) => {
+		const opened = new pg.Pool({
+			Client: /** @type {typeof pg.Client} */ (/** @type {unknown} */ (ClosingClient)),
+			...connection,
+			...streamOption(opener),
+			...(password === undefined ? {} : { password }),
+			max,
+			connectionTimeoutMillis: connectTimeoutMs,
+			min: tiered ? 1 : 0,
+			idleTimeoutMillis: tiered ? SURGE_IDLE_TIMEOUT_MS : idleTimeoutMs,
+			allowExitOnIdle: true,
+			keepAlive: true,
+			keepAliveInitialDelayMillis: keepAliveIdleMs,
+			// Queries are written without waiting for the answer to the one before, so a statement outside a transaction
+			// sends its `BEGIN` and `COMMIT` in the same round trip; each query still ends with its own sync.
+			pipeline: true,
+			application_name: applicationName,
+			types: sqliteTypes(pg.types),
+		});
+		// An idle connection that breaks emits `error` on the pool, which would end the process unheard.
+		opened.on("error", (_error, client) => lost.add(client));
+		opened.on("connect", (client) => client.on("error", () => lost.add(client)));
+		if (tiered) closeWhenIdle(opened, idleTimeoutMs);
+		return opened;
+	};
+	/** @type {SharedConnections} */
+	const shared = found ?? {
+		references: 0,
+		pool: openPool(maxConnections, "atomic"),
+		reader: undefined,
+		openReaderPool: () => openPool(readerMaxConnections, "atomic-reader"),
+		listener: undefined,
+		lost,
+		tokenProviders,
+		passwords,
+		password,
+		listenPassword: passwordFor(listenConnection),
+	};
+	if (found === undefined && identity !== undefined) sharing.set(identity, shared);
+	shared.references++;
+	const { pool } = shared;
 
 	/**
 	 * The proxy's refusal or failure the latest attempt to connect ended in, kept here because the facade passes on a
@@ -875,10 +1143,14 @@ export async function openPostgresDatabase(options) {
 	 * @type {ProxyTunnelError | undefined}
 	 */
 	let tunnelFailure;
-	/** @returns {Promise<PoolClient>} */
-	const connect = async () => {
+	/**
+	 * A connection of `from`.
+	 * @param {import("pg").Pool} from
+	 * @returns {Promise<PoolClient>}
+	 */
+	const connect = async (from) => {
 		try {
-			const client = await pool.connect();
+			const client = await from.connect();
 			tunnelFailure = undefined;
 			return client;
 		} catch (cause) {
@@ -888,7 +1160,7 @@ export async function openPostgresDatabase(options) {
 			if (tokenProviders.size > 0 && cause instanceof pg.DatabaseError && REFUSED_TOKEN_SQLSTATES.has(cause.code ?? "")) {
 				for (const provider of tokenProviders) provider.invalidate();
 				try {
-					return await pool.connect();
+					return await from.connect();
 				} catch (retried) {
 					throw connectFailure(retried);
 				}
@@ -1005,8 +1277,86 @@ export async function openPostgresDatabase(options) {
 	 * @param {string} sql
 	 * @param {readonly SqliteValue[]} params
 	 */
-	const statement = (client, sql, params) =>
-		client.query({ text: numberPlaceholders(physicalIdentifiers(sql)), values: [...params], rowMode: "array" });
+	const statement = (client, sql, params) => {
+		const text = numberPlaceholders(physicalIdentifiers(sql));
+		const name = preparedName(client, text);
+		const query = { text, values: [...params], rowMode: /** @type {const} */ ("array") };
+		if (name === undefined) return client.query(query);
+		// Whether this connection's server had already confirmed the statement, read before the answer can change it.
+		const confirmed = parsedOn(client, name);
+		return client.query({ ...query, name }).catch((/** @type {unknown} */ cause) => {
+			forgetPrepared(client, cause, confirmed);
+			throw cause;
+		});
+	};
+
+	/** Whether this database still gives statements names: until a server or pooler loses or confuses them. */
+	let preparing = maxPreparedStatements > 0;
+	/** How often each statement not yet named was sent. */
+	const uses = new Map();
+	/** The name of each statement that has one: from its text alone, so it means the same statement in every process. */
+	const names = new Map();
+	/** @type {WeakMap<PoolClient, Set<string>>} The names each connection was asked to prepare. */
+	const preparedOn = new WeakMap();
+
+	/**
+	 * The name `text` is sent under on `client`, or undefined to send it unnamed. A named statement is parsed and planned
+	 * once per connection: pg sends its Parse with the first execution on that connection, in the same round trip, and
+	 * only Bind and Execute after. A statement is named from its second use in this process, and a connection prepares at
+	 * most `maxPreparedStatements`, so one-off statements never fill it.
+	 * @param {PoolClient} client
+	 * @param {string} text
+	 */
+	const preparedName = (client, text) => {
+		if (!preparing || !PREPARABLE.test(text)) return undefined;
+		let name = names.get(text);
+		if (name === undefined) {
+			const used = (uses.get(text) ?? 0) + 1;
+			if (used < PREPARE_AFTER_USES || names.size >= STATEMENTS_TRACKED) {
+				if (uses.size >= STATEMENTS_TRACKED) uses.clear();
+				uses.set(text, used);
+				return undefined;
+			}
+			uses.delete(text);
+			name = `atomic_${createHash("sha256").update(text).digest("hex").slice(0, 32)}`;
+			names.set(text, name);
+		}
+		let prepared = preparedOn.get(client);
+		if (prepared === undefined) preparedOn.set(client, (prepared = new Set()));
+		if (!prepared.has(name)) {
+			if (prepared.size >= maxPreparedStatements) return undefined;
+			prepared.add(name);
+		}
+		return name;
+	};
+
+	/**
+	 * Whether the server answered `client`'s Parse of `name`, as pg records it.
+	 * @param {PoolClient} client
+	 * @param {string} name
+	 */
+	const parsedOn = (client, name) =>
+		/** @type {{ connection: { parsedStatements: Record<string, string> } }} */ (
+			/** @type {unknown} */ (client)
+		).connection.parsedStatements[name] !== undefined;
+
+	/**
+	 * After a named statement failed because the server no longer has it, already has it, or planned it for tables a
+	 * migration has since changed, closes `client`, which drops every statement it prepared. A statement the server had
+	 * confirmed and then no longer has, or a name it has without being asked, means a pooler hands this connection's
+	 * statements to other server connections (PgBouncer before 1.21, or with `max_prepared_statements` 0), so this
+	 * database sends every statement unnamed from then on. A missing name the server never confirmed is only a sibling
+	 * of a Parse that failed in the same pipeline. The failed call applied nothing and may run again.
+	 * @param {PoolClient} client
+	 * @param {unknown} cause
+	 * @param {boolean} confirmed Whether the server had answered this connection's Parse of the statement.
+	 */
+	const forgetPrepared = (client, cause, confirmed) => {
+		if (!(cause instanceof pg.DatabaseError)) return;
+		if ((cause.code === "26000" && confirmed) || cause.code === "42P05") preparing = false;
+		else if (cause.code !== "26000" && !isStalePlan(cause)) return;
+		lost.add(client);
+	};
 
 	/**
 	 * Creates `schema` when it does not exist yet and `sql` creates something, before `sql` runs: on a connection of its
@@ -1044,7 +1394,7 @@ export async function openPostgresDatabase(options) {
 				...connection,
 				...streamOption(opener),
 				...(password === undefined ? {} : { password }),
-				connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+				connectionTimeoutMillis: connectTimeoutMs,
 				application_name: "atomic",
 			});
 			client.on("error", () => {});
@@ -1108,12 +1458,13 @@ export async function openPostgresDatabase(options) {
 	};
 
 	/**
-	 * Runs `body` on a pooled connection outside a transaction, and returns the connection, or closes it when it broke.
+	 * Runs `body` on a connection of `from` outside a transaction, and returns the connection, or closes it when it broke.
 	 * @template T
+	 * @param {import("pg").Pool} from
 	 * @param {(client: PoolClient) => Promise<T>} body
 	 */
-	const autocommit = async (body) => {
-		const client = await connect();
+	const autocommit = async (from, body) => {
+		const client = await connect(from);
 		try {
 			return await body(client);
 		} finally {
@@ -1203,14 +1554,15 @@ export async function openPostgresDatabase(options) {
 		);
 	};
 
-	const listenPassword = passwordFor(listenConnection);
-	const listener = createPostgresListener({
+	const { listenPassword } = shared;
+	// One listening connection for every database that shares the pool: each names its channels itself.
+	const listener = (shared.listener ??= createPostgresListener({
 		async connect() {
 			const client = new ClosingClient({
 				...listenConnection,
 				...streamOption(listenOpener),
 				...(listenPassword === undefined ? {} : { password: listenPassword }),
-				connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+				connectionTimeoutMillis: connectTimeoutMs,
 				// A short keepalive notices a peer that vanished without a reset sooner than the system's two hours; the
 				// listener's own health probe catches the rest.
 				keepAlive: true,
@@ -1225,14 +1577,55 @@ export async function openPostgresDatabase(options) {
 			return client;
 		},
 		send: async (channel, payload) => {
-			await autocommit((client) => client.query("SELECT pg_notify($1, $2)", [channel, payload]));
+			await autocommit(pool, (client) => client.query("SELECT pg_notify($1, $2)", [channel, payload]));
 		},
-		// Each schema's wake-ups are its own; `public` keeps the channels earlier releases listen on.
-		channelName: (channel) =>
-			postgresDialect.identifier(schema === LEGACY_SCHEMA ? channel : `${schema}_${channel}`),
-	});
+		channelName: (channel) => channel,
+	}));
+	/** This database's subscriptions, closed when it closes: the listening connection may outlive it. */
+	/** @type {Set<{ close(): void }>} */
+	const subscriptions = new Set();
+	/**
+	 * Each schema's wake-ups are its own; `public` keeps the channels earlier releases listen on.
+	 * @param {string} channel
+	 */
+	const channelName = (channel) =>
+		postgresDialect.identifier(schema === LEGACY_SCHEMA ? channel : `${schema}_${channel}`);
+	/** @type {import("@bastani/atomic/storage").StorageNotifications} */
+	const notifications = {
+		notify: (channel, payload) => listener.notify(channelName(channel), payload),
+		listen(channel, onEvent) {
+			const subscription = listener.listen(channelName(channel), onEvent);
+			const tracked = {
+				close() {
+					subscriptions.delete(tracked);
+					subscription.close();
+				},
+			};
+			subscriptions.add(tracked);
+			return tracked;
+		},
+		state: () => listener.state(),
+	};
+	/**
+	 * Gives up this database's share of the connections: the last database to close closes the listening connection,
+	 * then the pools.
+	 */
+	const release = async () => {
+		for (const subscription of [...subscriptions]) subscription.close();
+		if (--shared.references > 0) return;
+		if (identity !== undefined && sharing.get(identity) === shared) sharing.delete(identity);
+		await listener.close();
+		const reader = shared.reader;
+		shared.reader = undefined;
+		await Promise.all([pool.end(), reader?.pool.end()]);
+	};
 
-	const database = createSqliteDatabase({
+	/**
+	 * The driver of the calls that run on connections of `from`.
+	 * @param {import("pg").Pool} from
+	 * @returns {Omit<import("@bastani/atomic/storage").SqliteDriver, "close">}
+	 */
+	const driverOn = (from) => ({
 		descriptor: { adapter: "postgres", location: connectionString },
 		redact: (text) => {
 			let redacted = text;
@@ -1243,8 +1636,8 @@ export async function openPostgresDatabase(options) {
 		transientFailure: transientFailureOf(pg.DatabaseError),
 		// Postgres's largest field is 1 GB less one byte (#4954).
 		payloadLimits: { value: 1_073_741_823 },
-		execute: (sql, params) => autocommit((client) => executeAutocommit(client, sql, params)),
-		executeMultiple: (sql) => autocommit((client) => executeMultipleAutocommit(client, sql)),
+		execute: (sql, params) => autocommit(from, (client) => executeAutocommit(client, sql, params)),
+		executeMultiple: (sql) => autocommit(from, (client) => executeMultipleAutocommit(client, sql)),
 		concurrentTransactions: true,
 		// The connection is pipelined: a transaction's statements go out without waiting for the answers before them.
 		pipelinedTransactions: true,
@@ -1266,10 +1659,14 @@ export async function openPostgresDatabase(options) {
 					: concurrency.domain === undefined
 						? `SELECT pg_advisory_xact_lock(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}); `
 						: `SELECT pg_advisory_xact_lock_shared(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}), pg_advisory_xact_lock(${lockKey(inSchema(concurrency.domain))}); `;
-			const client = await connect();
+			const client = await connect(from);
+			/** @type {{ sql: string, params: readonly SqliteValue[], result: Promise<SqliteDriverResult>, failure?: unknown }[]} */
+			const lead = [];
 			try {
-				// One round trip, with nothing set outside the transaction, so a transaction-mode pooler can serve it.
-				await watched(
+				// One round trip, with nothing set outside the transaction, so a transaction-mode pooler can serve it. The
+				// transaction's leading reads go out behind it on the pipelined connection, so the server runs them once the
+				// locks are held, and the callback starts once all are answered: the reads cost no round trip of their own.
+				const opened = watched(
 					client,
 					() =>
 						client.query(
@@ -1277,15 +1674,45 @@ export async function openPostgresDatabase(options) {
 						),
 					lockWaitMs + clientTimeoutMs,
 				);
+				for (const { sql, params } of begin.leading ?? []) {
+					const result = execute(client, sql, params, lockWaitMs + clientTimeoutMs);
+					result.catch(() => {});
+					lead.push({ sql, params, result });
+				}
+				await opened;
+				const outcomes = await Promise.allSettled(lead.map(({ result }) => result));
+				outcomes.forEach((outcome, index) => {
+					if (outcome.status === "rejected") lead[index].failure = outcome.reason ?? new Error("leading read failed");
+				});
 			} catch (error) {
 				// The transaction may be open, so the connection is closed rather than reused.
 				client.release(true);
 				throw error;
 			}
+			/**
+			 * Ends the lead, and says why the call that ended it fails without being sent: a leading read the callback did
+			 * not make failed, which aborted the transaction. Calls go out in the order they are made, so this decides at once.
+			 */
+			const endLead = () => lead.splice(0).find((read) => "failure" in read)?.failure;
 			return {
-				execute: (sql, params) => execute(client, sql, params, clientTimeoutMs),
-				executeMultiple: (sql) => executeMultiple(client, sql, clientTimeoutMs),
+				execute: (sql, params) => {
+					const next = lead[0];
+					if (next !== undefined && next.sql === sql && sameParams(next.params, params)) {
+						lead.shift();
+						return next.result;
+					}
+					const failure = endLead();
+					return failure === undefined ? execute(client, sql, params, clientTimeoutMs) : Promise.reject(failure);
+				},
+				executeMultiple: (sql) => {
+					const failure = endLead();
+					return failure === undefined ? executeMultiple(client, sql, clientTimeoutMs) : Promise.reject(failure);
+				},
 				async commit() {
+					// A leading read the callback never made failed and aborted the transaction: nothing is sent, and its own
+					// failure, not a bare rollback, says whether the transaction may run again.
+					const failure = endLead();
+					if (failure !== undefined) throw failure;
 					const result = await watched(client, () => client.query("COMMIT"), clientTimeoutMs);
 					// A transaction a failed statement aborted ends in a rollback when committed, without an error.
 					if (result.command === "ROLLBACK")
@@ -1306,24 +1733,43 @@ export async function openPostgresDatabase(options) {
 				close: () => client.release(lost.has(client)),
 			};
 		},
-		notifications: listener,
-		close: async () => {
-			await listener.close();
-			await pool.end();
-		},
+	});
+
+	const database = createSqliteDatabase({
+		...driverOn(pool),
+		// Readers have a pool of their own, so their calls never wait for connections the writers' transactions hold. Every
+		// reader of the databases that share the pool shares it, and the last reader to close closes it (#6560). With
+		// `readerMaxConnections: 0` there is none, and reads share the main pool.
+		...(readerMaxConnections === 0
+			? {}
+			: {
+					openReader: () => {
+						shared.reader ??= { pool: shared.openReaderPool(), references: 0 };
+						const reader = shared.reader;
+						reader.references++;
+						let closed = false;
+						return {
+							...driverOn(reader.pool),
+							close: async () => {
+								if (closed) return;
+								closed = true;
+								// The readers' pool ended already when the last database closed before its readers.
+								if (--reader.references > 0 || reader.pool.ending) return;
+								if (shared.reader === reader) shared.reader = undefined;
+								await reader.pool.end();
+							},
+						};
+					},
+				}),
+		notifications,
+		close: release,
 	});
 	try {
-		const row = await database.get("SELECT current_setting('server_version_num') AS version");
-		const version = Number(row?.version);
-		if (!(version >= MINIMUM_SERVER_VERSION))
-			throw new StorageUnavailableError(
-				database.descriptor,
-				new StorageError(`PostgreSQL server version ${version} is older than 14`),
-				"PostgreSQL 14 or newer is required",
-			);
-		// Which schema holds Atomic's tables, read without creating anything (#5218).
+		// The server's version, and which schema holds Atomic's tables, read in one round trip without creating anything
+		// (#5218, #6560). The query runs on any server version, so an older server is refused by its answer.
 		const found = await database.get(
-			`SELECT (SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS present,
+			`SELECT current_setting('server_version_num') AS version,
+				(SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS present,
 				(SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS preferred,
 				(SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 					WHERE n.nspname = ? AND c.relkind = 'r' AND c.relname ~ ?
@@ -1334,6 +1780,13 @@ export async function openPostgresDatabase(options) {
 			LEGACY_MARKERS,
 			`${MOVED_FENCE_COMMENT}%`,
 		);
+		const version = Number(found?.version);
+		if (!(version >= MINIMUM_SERVER_VERSION))
+			throw new StorageUnavailableError(
+				database.descriptor,
+				new StorageError(`PostgreSQL server version ${version} is older than 14`),
+				"PostgreSQL 14 or newer is required",
+			);
 		if (options.schema === undefined && Number(found?.preferred) === 0 && Number(found?.legacy) > 0)
 		{
 			schema = LEGACY_SCHEMA;
@@ -1383,6 +1836,19 @@ const adapter = {
 			...(typeof options.auth === "string" ? { auth: /** @type {PostgresAuth} */ (options.auth) } : {}),
 			...(typeof options.maxConnections === "number" ? { maxConnections: options.maxConnections } : {}),
 			...(typeof options.statementTimeoutMs === "number" ? { statementTimeoutMs: options.statementTimeoutMs } : {}),
+			...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: /** @type {number} */ (options.idleTimeoutMs) }),
+			...(options.readerMaxConnections === undefined
+				? {}
+				: { readerMaxConnections: /** @type {number} */ (options.readerMaxConnections) }),
+			...(options.connectTimeoutMs === undefined
+				? {}
+				: { connectTimeoutMs: /** @type {number} */ (options.connectTimeoutMs) }),
+			...(options.keepAliveIdleMs === undefined
+				? {}
+				: { keepAliveIdleMs: /** @type {number} */ (options.keepAliveIdleMs) }),
+			...(options.maxPreparedStatements === undefined
+				? {}
+				: { maxPreparedStatements: /** @type {number} */ (options.maxPreparedStatements) }),
 			...(typeof options.listenUrl === "string" ? { listenUrl: options.listenUrl } : {}),
 			...(options.schema === undefined ? {} : { schema: /** @type {string} */ (options.schema) }),
 			// A value that is not a string reaches the option's check, which names it.

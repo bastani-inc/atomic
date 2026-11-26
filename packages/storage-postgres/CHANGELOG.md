@@ -6,6 +6,20 @@
 
 - This package now needs Node.js 24.20.0 or newer, in the Node.js 24 LTS line (`engines.node` is `>=24.20.0`, up from `>=22.19.0`). Check with `node --version`, and upgrade from [nodejs.org](https://nodejs.org/en/download) or with `nvm install 24`, `fnm install 24`, or `mise use -g node@24`. Node.js releases before 24.15.0 bundle a SQLite version with a [bug that can corrupt](https://www.sqlite.org/wal.html#walresetbug) a database opened by a writer and a reader at once, and Node.js 24.17.0 through 24.19.0 reject valid certificates for IPv6 addresses ([nodejs/node#64145](https://github.com/nodejs/node/pull/64145)) ([#6579](https://github.com/bastani-inc/atomic/pull/6579)).
 
+### Added
+
+- New connection options: `readerMaxConnections` (default `2`, where `0` turns the separate read pool off), `connectTimeoutMs` (default `10000`), `idleTimeoutMs` (default `300000`) and `keepAliveIdleMs` (default `60000`). The storage guide's [tuning section](https://docs.bastani.ai/storage#tuning-for-many-concurrent-agents) shows how to size them for many agents ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- The `maxPreparedStatements` option (default `256`) keeps statements a process sends repeatedly prepared on each connection, so the server parses and plans each one once instead of on every call, at no extra round trip. It is off by default behind a transaction pooler, when `listenUrl` is set or the port is `6432` or `6543`. A call that a pooler refuses for a missing or duplicate prepared statement, or that a schema change made stale, runs again on a new connection ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
+### Changed
+
+- Calls that cannot conflict, such as writes to different sessions and read-only transactions, run at the same time on separate connections. A transaction sends its first reads with its `BEGIN` and its last writes with its `COMMIT`, so saving entries to a session takes 2 round trips instead of 7 or more. If the server refuses one of those first reads, for example because it waited too long for a lock, the transaction runs again ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- `openReader()` returns a read handle on a separate pool of up to 2 connections, so reads do not wait for connections that writes are using. Reader connections show as `atomic-reader` in `pg_stat_activity`. Closing the database also closes its readers ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- Every database a process opens with the same URL, role, password, schema and pool options shares one pool, one reader pool and one listening connection. A process that opens a session store and an Intercom broker, or several session stores, holds one set of connections instead of one per store. The last database to close closes them. A `password` function is also called once when the database opens, to tell credentials apart {L}.
+- A pool's last connection stays open for 5 minutes after the pool's last call instead of 10 seconds, with TCP keepalive after 60 seconds, so a call after a pause skips the connection and TLS handshakes. Connections opened for a burst still close after 10 seconds idle. Unused connections no longer keep the process from exiting ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- Opening a database reads the server version and the schema that holds Atomic's tables in one query instead of two ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
+
 ## [0.10.10] - 2026-11-24
 
 ### Changed

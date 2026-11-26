@@ -12,6 +12,7 @@ import {
 	sqliteDialect,
 } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
+import { sequenceRunner, statementBatch } from "../../packages/coding-agent/src/core/storage/statement-sequence.js";
 
 /** Stands in for `fencedPath(name)`, whose registry is empty until a path is audited. */
 const AUDITED = "test-path" as FencedPathId;
@@ -249,4 +250,80 @@ test("a live secret's name is left out of options even when an option shares it 
 		password: "from-secret",
 		url: "postgres://example",
 	});
+});
+
+test("a pipelined transaction sends a statement batch's writes and reads before their answers (#6560)", async () => {
+	const { driver, events, release } = gatedDriver({ concurrentTransactions: true, pipelinedTransactions: true });
+	const database = createSqliteDatabase(driver);
+	const done = database.transaction(
+		async (tx) => {
+			assert.ok(sequenceRunner(tx));
+			await statementBatch(
+				tx,
+				[{ sql: "wait", params: [] }, { sql: "second", params: [1] }, false, { sql: "third", params: [] }],
+				[() => tx.get("read")],
+			);
+		},
+		{ concurrency: { kind: "serial", domain: "sessions:s1" } },
+	);
+	await settle();
+	assert.deepEqual(events, ["begin serial", "tx wait", "tx second", "tx third", "tx read"]);
+	release();
+	await done;
+	assert.deepEqual(events.at(-1), "commit serial");
+	await database.close();
+});
+
+test("a pipelined statement batch fails with its first failed statement, and the transaction commits nothing (#6560)", async () => {
+	const { driver, events } = gatedDriver({ concurrentTransactions: true, pipelinedTransactions: true });
+	const failing = driver.beginTransaction;
+	driver.beginTransaction = async (options) => {
+		const transaction = await failing.call(driver, options);
+		return {
+			...transaction,
+			execute: async (sql, params) => {
+				const result = await transaction.execute(sql, params);
+				if (sql === "refused" || sql === "after") throw new Error(`${sql} failed`);
+				return result;
+			},
+		};
+	};
+	const database = createSqliteDatabase(driver);
+	await assert.rejects(
+		database.transaction(async (tx) => {
+			await statementBatch(
+				tx,
+				[
+					{ sql: "first", params: [] },
+					{ sql: "refused", params: [] },
+					{ sql: "after", params: [] },
+				],
+				[],
+			);
+		}),
+		(error: Error) => (error.cause as Error | undefined)?.message === "refused failed",
+	);
+	assert.deepEqual(events, ["begin serial", "tx first", "tx refused", "tx after", "rollback serial"]);
+	await database.close();
+});
+
+test("a pipelined statement batch sends nothing after a statement whose text holds NUL (#6560)", async () => {
+	const { driver, events } = gatedDriver({ concurrentTransactions: true, pipelinedTransactions: true });
+	const database = createSqliteDatabase(driver);
+	await assert.rejects(
+		database.transaction(async (tx) => {
+			await statementBatch(
+				tx,
+				[
+					{ sql: "first", params: [] },
+					{ sql: "bad", params: ["a\0b"] },
+					{ sql: "after", params: [] },
+				],
+				[],
+			);
+		}),
+		(error: Error) => error.name === "StorageInvalidTextError",
+	);
+	assert.deepEqual(events, ["begin serial", "tx first", "rollback serial"]);
+	await database.close();
 });

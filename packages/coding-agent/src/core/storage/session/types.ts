@@ -639,6 +639,12 @@ export interface SessionStore {
 	/** The bytes the session stored under `hash`, or `undefined` when it holds none. Absent with `putBlob`. */
 	getBlob?(sessionId: string, hash: string): Promise<Uint8Array | undefined>;
 	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult>;
+	/**
+	 * Adds `entries` after `expectSeq`, or rejects with `SessionConflictError` when the session has moved past it. A
+	 * failure with the `unknown` outcome may have committed, even later than a read made after it. So a caller that sends
+	 * the same entries again must take a `SessionConflictError` as possibly its own commit: it checks the store for its
+	 * entry ids before it writes them after the new tail, as `SessionManager` does (#4970).
+	 */
 	append(
 		sessionId: string,
 		entries: readonly SessionEntry[],

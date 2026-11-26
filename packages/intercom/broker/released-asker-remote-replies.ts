@@ -92,14 +92,22 @@ function refusalFor(ask: ReleasedAskRecord, messageId: string): ReleasedReplyDec
 	return { kind: "refused", error: refusalOf(ask, messageId) };
 }
 
-/** The first live presence that matches, with the broker hosting it. */
+/** The first live presence of the session `sessionId`, with the broker hosting it. */
 async function liveSession(
 	state: Pick<ReleasedReplyState, "leases">,
-	matches: (subject: RecipientPresenceSubject) => boolean,
+	sessionId: string,
 ): Promise<ReleasedReplyOwner | undefined> {
-	for (const lease of await state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)) {
+	const { leases } = state;
+	// Only the presences that may be the session's, by index, where the store can (#6560).
+	const live =
+		leases.listLiveFor === undefined
+			? await leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)
+			: await leases.listLiveFor(sessionId, BROKER_LEASE_STALE_AFTER_MS);
+	// Presences are stored with every string well formed (#6560).
+	const id = sessionId.toWellFormed();
+	for (const lease of live) {
 		const subject = lease.subject as RecipientPresenceSubject;
-		if (matches(subject)) {
+		if (subject.session.id === id) {
 			return { identity: subject.targetIdentity, sessionId: subject.session.id, hostBrokerId: lease.holderId };
 		}
 	}
@@ -108,7 +116,7 @@ async function liveSession(
 
 /** The owner where it is connected now, or where it last was, so the reply waits there for it. */
 async function ownerOfSession(state: ReleasedReplyState, ownerSessionId: string): Promise<ReleasedReplyOwner | undefined> {
-	const live = await liveSession(state, (subject) => subject.session.id === ownerSessionId);
+	const live = await liveSession(state, ownerSessionId);
 	// A presence or record under the owner's id bound to another return address is not the owner (multi-node binding).
 	if (live !== undefined && (await holdsSessionId(state.knownSessions, ownerSessionId, returnAddressOf(live.identity))))
 		return live;
@@ -145,7 +153,11 @@ export async function ownerOfReleasedReplyRow(
 	row: Pick<OutboxRow, "targetIdentity">,
 ): Promise<ReleasedReplyOwner> {
 	const identity = row.targetIdentity;
-	return (await liveSession(state, (subject) => subject.targetIdentity === identity)) ?? { identity, sessionId: "" };
+	// The live presence of the row's identity: the one lease under that key (#6560).
+	const read = await state.leases.read({ kind: "presence", targetIdentity: identity });
+	if (read.status !== "found" || read.lease.ageMs > BROKER_LEASE_STALE_AFTER_MS) return { identity, sessionId: "" };
+	const subject = read.lease.subject as RecipientPresenceSubject;
+	return { identity, sessionId: subject.session.id, hostBrokerId: read.lease.holderId };
 }
 
 async function ownerOfRow(state: ReleasedReplyState, messageId: string): Promise<ReleasedReplyOwner | undefined> {

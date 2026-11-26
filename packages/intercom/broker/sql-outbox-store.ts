@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import {
 	dialectOf,
+	fencedPath,
+	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
+	type SqliteStatement,
+	type SqliteTransactionOptions,
 	type SqliteValue,
 	validateStoragePrefix,
 } from "@bastani/atomic/storage";
+import * as storage from "@bastani/atomic/storage";
 import {
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	OUTBOX_EXPIRED_REASON,
@@ -25,7 +30,7 @@ import {
 	type StateStoreInvalidReason,
 } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema } from "./sql-schema.js";
+import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 const UNDELIVERED = "state IN ('queued', 'claimed')";
 
@@ -80,14 +85,52 @@ export class OutboxWakeFailedError extends Error {
 	}
 }
 
+/**
+ * What an enqueue writes first and requires: a send's reservation of its message (#6560). `first` is written just
+ * before the row, in the same transaction, and the row is inserted only while `condition`, an SQL boolean expression
+ * with its parameters, holds; when it does not, and no row of the message is there, the enqueue reports a conflict.
+ */
+export interface OutboxEnqueueGuard {
+	readonly first: SqliteStatement;
+	readonly condition: SqliteStatement;
+}
+
 /** The SQL outbox, which can also enqueue inside a transaction the caller holds. */
 export interface SqlOutboxStore extends OutboxStore {
 	/**
 	 * `enqueue`, as part of `executor`'s transaction: the row is written only when that transaction commits. It throws
 	 * `OutboxWakeFailedError` when only the optional wake-up hint failed; run the transaction again without it then.
+	 * The transaction must hold the recipient's domain (`recipientTransaction`).
 	 */
-	enqueueIn(executor: SqliteExecutor, request: OutboxEnqueueRequest): Promise<OutboxEnqueueResult>;
+	enqueueIn(
+		executor: SqliteExecutor,
+		request: OutboxEnqueueRequest,
+		guard?: OutboxEnqueueGuard,
+	): Promise<OutboxEnqueueResult>;
+	/**
+	 * The reads `enqueueIn` makes first for `request`, in order, for a transaction's `leading` statements: a pipelined
+	 * connection sends them with the transaction's start instead of a round trip each (#6560).
+	 */
+	enqueueLeading(request: OutboxEnqueueRequest): readonly SqliteStatement[];
 }
+
+/**
+ * Runs `statements` as the last calls of `executor`'s transaction: on a pipelined connection they go out with the
+ * commit, in one round trip; elsewhere each runs in turn as `run` runs it. The transaction's callback must make no call
+ * after them (#6560).
+ */
+export async function runLast(executor: SqliteExecutor, ...statements: SqliteStatement[]): Promise<void> {
+	if (statements.length === 0 || finisherOf?.(executor)?.(statements) === true) return;
+	for (const { sql, params } of statements) await executor.run(sql, ...params);
+}
+
+/**
+ * `transactionFinisher` of the storage module, where the copy the process loaded has it: a host whose Atomic predates it
+ * runs every statement in turn (#6560).
+ */
+const finisherOf: (typeof storage)["transactionFinisher"] | undefined = (
+	storage as Partial<Pick<typeof storage, "transactionFinisher">>
+).transactionFinisher;
 
 /**
  * #5607: runs `write` for `request`, and once more for it without its wake-up hint when only that hint failed it.
@@ -106,13 +149,48 @@ export async function withoutFailedWake<T>(
 }
 
 /**
- * S2 outbox on the shared storage adapter's database, in `<prefix>intercom_outbox`. Every read-modify-write runs in
- * one `BEGIN IMMEDIATE` transaction, and every age is measured on the database clock.
+ * The lock domain of one recipient's sends, `<outbox>:<recipient>`: a send reserves its message and queues its row in
+ * one transaction of it (`reserveAndEnqueue`, `enqueue`), so sends to one recipient run one at a time, and commit their
+ * rows in the order of their sequence, and a send's checks of that recipient's queue (its size budget) hold until it
+ * commits. Sends to other recipients, claims and every write of one row run beside them (#6560).
  */
-export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): Promise<SqlOutboxStore> {
+export function recipientTransaction(
+	database: SqliteDatabase,
+	prefix: string | undefined,
+	targetIdentity: string,
+): SqliteTransactionOptions {
+	const outbox = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_outbox`;
+	return { concurrency: { kind: "serial", domain: `${outbox}:${targetIdentity}` } };
+}
+
+/**
+ * A transaction of the outbox or the sent-message table that takes no lock domain: each of its writes decides on the
+ * rows it locks itself (`fencedPath("intercom-outbox-row")`). It still waits for and excludes the database-wide
+ * transactions an older broker runs on these tables (#6560).
+ */
+export function rowTransaction(): SqliteTransactionOptions {
+	return { concurrency: { kind: "fenced", audit: fencedPath("intercom-outbox-row"), excludesSerial: true } };
+}
+
+/**
+ * S2 outbox on the shared storage adapter's database, in `<prefix>intercom_outbox`. Every read-modify-write runs in
+ * one `BEGIN IMMEDIATE` transaction, and every age is measured on the database clock. On a database whose transactions
+ * run concurrently (PostgreSQL), an enqueue holds its recipient's domain (`recipientTransaction`); a claim locks the
+ * recipient's rows in sequence order and every write of a claimed row is one statement guarded by its claim token
+ * (`rowTransaction`), so no write waits for another recipient's (#6560).
+ */
+export function openSqlOutboxStore(options: IntercomBrokerStateOptions): Promise<SqlOutboxStore> {
+	// Its schema checks answer from one read of the catalog, shared with an open around it: a current schema costs
+	// no transaction and no lock, also when the store is opened on its own (#6560).
+	return withBrokerSchemaCatalog(options.database, options.prefix, () => openOutboxStoreInCatalog(options));
+}
+
+async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Promise<SqlOutboxStore> {
 	const { database } = options;
 	const table = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_outbox`;
-	const { types, nowMs, greatest, name: dialect } = dialectOf(database);
+	const { types, nowMs, greatest, lockClause, name: dialect } = dialectOf(database);
+	/** Claims, claim writes and expiry: each decides on the rows it locks (#6560). */
+	const fenced = rowTransaction();
 	const ageSince = (column: string) => greatest("0", `${nowMs} - ${column}`);
 	// In a serial transaction, so brokers opening a new store at once take turns creating it (#5054).
 	const schema = `
@@ -148,70 +226,86 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		claim_attempts, claimant_id, claim_token, failure_reason,
 		CASE WHEN claim_renewed_at IS NULL THEN NULL ELSE ${ageSince("claim_renewed_at")} END AS claim_age,
 		CASE WHEN saving_at IS NULL THEN NULL ELSE ${ageSince("saving_at")} END AS saving_age`;
-	const select = (executor: SqliteExecutor, messageId: string) =>
-		executor.get<OutboxRecord>(`SELECT ${columns} FROM ${table} WHERE message_id = ?`, messageId);
+	const selectStatement = (messageId: string): SqliteStatement => ({
+		sql: `SELECT ${columns} FROM ${table} WHERE message_id = ?`,
+		params: [messageId],
+	});
+	const select = (executor: SqliteExecutor, messageId: string) => {
+		const { sql, params } = selectStatement(messageId);
+		return executor.get<OutboxRecord>(sql, ...params);
+	};
 	// #5607: the lease store's table, whose presence leases name the broker hosting a recipient, and the wake-up bus's
 	// hint log. The broker opens both before it enqueues anything.
 	const leases = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_leases`;
 	const wakeups = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_wakeups`;
-	const undelivered = (executor: SqliteExecutor, targetIdentity: string, limit?: number) =>
-		limit === undefined
-			? executor.all<OutboxRecord>(
-					`SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence`,
-					targetIdentity,
-				)
-			: executor.all<OutboxRecord>(
-					`SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence LIMIT ?`,
-					targetIdentity,
-					limit,
-				);
+	const allUndeliveredStatement = (targetIdentity: string): SqliteStatement => ({
+		sql: `SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence`,
+		params: [targetIdentity],
+	});
+	const undelivered = (executor: SqliteExecutor, targetIdentity: string, limit?: number) => {
+		if (limit === undefined) {
+			const { sql, params } = allUndeliveredStatement(targetIdentity);
+			return executor.all<OutboxRecord>(sql, ...params);
+		}
+		return executor.all<OutboxRecord>(
+			`SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence LIMIT ?`,
+			targetIdentity,
+			limit,
+		);
+	};
 	const isLive = (record: OutboxRecord, staleAfterMs: number): boolean =>
 		record.claim_age !== null && Number(record.claim_age) <= staleAfterMs;
 
-	/** Runs `write` only for the row's current claim; every other case is reported as the contract requires. */
+	/**
+	 * Applies `assignments` (with their parameters) to the row only while `claim` is its current claim: one UPDATE whose
+	 * WHERE names the claim, so the decision is made on the row's lock and its newest version, never on an earlier read.
+	 * The update is the transaction's first statement, sent with its start; only when it changed nothing is the row read,
+	 * to report why (#6560).
+	 */
 	const withClaim = <Result>(
 		claim: OutboxClaim,
-		write: (executor: SqliteExecutor) => Promise<Result>,
+		assignments: string,
+		params: readonly SqliteValue[],
+		answer: (written: OutboxRecord) => Result,
 	): Promise<Result | OutboxClaimWriteRejection> => {
 		if (claim.messageId.length === 0) return Promise.resolve(invalid("empty-message-id"));
 		if (claim.claimantId.length === 0) return Promise.resolve(invalid("empty-claimant-id"));
-		return database.transaction(async (executor) => {
-			const record = await select(executor, claim.messageId);
-			if (record === undefined) return { status: "unknown" } as const;
-			if (isSettled(record)) return { status: "settled", row: toRow(record) } as const;
-			if (record.claim_token !== claim.token || record.claimant_id !== claim.claimantId) {
+		const write: SqliteStatement = {
+			sql: `UPDATE ${table} SET ${assignments}
+				WHERE message_id = ? AND claim_token = ? AND claimant_id = ? AND state = 'claimed'
+				RETURNING ${columns}`,
+			params: [...params, claim.messageId, claim.token, claim.claimantId],
+		};
+		return database.transaction(
+			async (executor) => {
+				const written = await executor.get<OutboxRecord>(write.sql, ...write.params);
+				if (written !== undefined) return answer(written);
+				const record = await select(executor, claim.messageId);
+				if (record === undefined) return { status: "unknown" } as const;
+				if (isSettled(record)) return { status: "settled", row: toRow(record) } as const;
 				return { status: "stale" } as const;
-			}
-			return write(executor);
-		});
+			},
+			{ ...fenced, leading: [write] },
+		);
 	};
 
-	const settle = async (
-		executor: SqliteExecutor,
-		messageId: string,
-		state: "delivered" | "failed",
-		reason: string | null,
-	): Promise<OutboxRow> => {
-		await executor.run(
-			`UPDATE ${table} SET state = ?, failure_reason = ?, settled_at = ${nowMs},
-				claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL
-			WHERE message_id = ?`,
-			state,
-			reason === null ? null : JSON.stringify(reason),
-			messageId,
-		);
-		return toRow((await select(executor, messageId))!);
-	};
+	const settled = `failure_reason = ?, settled_at = ${nowMs},
+		claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL`;
 
 	/**
 	 * #4896: the recipient's undelivered rows and their frame bytes, read from `<table>_target_bytes` alone. Only rows an
 	 * older broker wrote, without `frame_bytes`, are measured from their frames.
 	 */
-	const queuedTotals = async (executor: SqliteExecutor, targetIdentity: string) => {
-		const sized = (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue; unsized: SqliteValue }>(
-			`SELECT COUNT(*) AS row_count, COALESCE(SUM(frame_bytes), 0) AS byte_count, COUNT(*) - COUNT(frame_bytes) AS unsized
+	const sizedTotalsStatement = (targetIdentity: string): SqliteStatement => ({
+		sql: `SELECT COUNT(*) AS row_count, COALESCE(SUM(frame_bytes), 0) AS byte_count, COUNT(*) - COUNT(frame_bytes) AS unsized
 			FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
-			targetIdentity,
+		params: [targetIdentity],
+	});
+	const queuedTotals = async (executor: SqliteExecutor, targetIdentity: string) => {
+		const totals = sizedTotalsStatement(targetIdentity);
+		const sized = (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue; unsized: SqliteValue }>(
+			totals.sql,
+			...totals.params,
 		))!;
 		const unsized =
 			Number(sized.unsized) === 0
@@ -226,7 +320,11 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		return { rows: Number(sized.row_count), bytes: Number(sized.byte_count) + unsized };
 	};
 
-	const enqueueIn = async (executor: SqliteExecutor, request: OutboxEnqueueRequest): Promise<OutboxEnqueueResult> => {
+	const enqueueIn = async (
+		executor: SqliteExecutor,
+		request: OutboxEnqueueRequest,
+		guard?: OutboxEnqueueGuard,
+	): Promise<OutboxEnqueueResult> => {
 		if (request.targetIdentity.length === 0) return invalid("empty-target-identity");
 		if (request.originBrokerId.length === 0) return invalid("empty-broker-id");
 		const messageId = request.frame.message.id;
@@ -246,38 +344,82 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		) {
 			return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES } as const;
 		}
+		// Inserted only while the guard holds, and never over a row of the message that another recipient's send, in a
+		// domain of its own, queued meanwhile: the unique message id makes that send's row, once it commits, the answer
+		// (#6560). The guard's first write and the insert go out together.
+		const condition = guard?.condition;
 		const insert = `INSERT INTO ${table}(message_id, target_identity, origin_broker_id, digest, frame_json, state, queued_at,
 				frame_bytes)
-			VALUES (?, ?, ?, ?, ?, 'queued', ${nowMs}, ?)`;
-		const values = [messageId, request.targetIdentity, request.originBrokerId, request.digest, frameJson, frameBytes];
+			SELECT ?, ?, ?, ?, ?, 'queued', ${nowMs}, CAST(? AS ${types.int})
+			WHERE ${condition === undefined ? "1 = 1" : condition.sql}
+			ON CONFLICT(message_id) DO NOTHING`;
+		const values = [
+			messageId,
+			request.targetIdentity,
+			request.originBrokerId,
+			request.digest,
+			frameJson,
+			frameBytes,
+			...(condition?.params ?? []),
+		];
+		const first = guard === undefined ? undefined : executor.run(guard.first.sql, ...guard.first.params);
+		first?.catch(() => {});
+		// The insert goes out behind the guard's write without waiting for its answer only on a pipelined transaction's
+		// own handle, which sends calls in the order they are made; any other executor, a wrapper included, may run a
+		// later call first, so the write is answered before the insert is made.
+		if (finisherOf?.(executor) === undefined) await first;
+		/** The answer of the insert, once the guard's write, sent before it, succeeded. */
+		const after = async <T>(inserting: Promise<T>): Promise<T> => {
+			inserting.catch(() => {});
+			await first;
+			return inserting;
+		};
+		/** Nothing was inserted: the message's row, which another send queued, or the guard's refusal. */
+		const notInserted = async (): Promise<OutboxEnqueueResult> => {
+			const queued = await select(executor, messageId);
+			if (queued !== undefined && queued.digest === request.digest)
+				return { status: "duplicate", row: toRow(queued) } as const;
+			return { status: "conflict", messageId } as const;
+		};
 		if (request.wakeHostWithinMs === undefined) {
-			await executor.run(insert, ...values);
-			return { status: "inserted", row: toRow((await select(executor, messageId))!) } as const;
+			// The row comes back from its insert, in the same round trip (#6560).
+			const row = await after(executor.get<OutboxRecord>(`${insert} RETURNING ${columns}`, ...values));
+			return row === undefined ? notInserted() : ({ status: "inserted", row: toRow(row) } as const);
 		}
 		// #5607: the row comes back from its insert, with the broker holding the recipient's live presence, read in this
 		// transaction: a presence lease committed before it is seen here; one committed after it was written after this row,
 		// and the registration that wrote it looks for the row next. Only when there is one does a second statement write
-		// its wake-up hint, in this transaction too.
-		const inserted = (await executor.get<OutboxRecord & { readonly presence_holder: string | null }>(
-			`${insert} RETURNING ${columns}, (
+		// its wake-up hint, in this transaction too. On PostgreSQL leases are acquired beside this transaction
+		// (#6560), so the read locks the lease: an acquisition under way commits first and is seen, and a later one
+		// waits for this row.
+		const inserted = await after(
+			executor.get<OutboxRecord & { readonly presence_holder: string | null }>(
+				`${insert} RETURNING ${columns}, (
 				SELECT presence.holder_id FROM ${leases} presence
 				WHERE presence.kind = 'presence' AND presence.key = ? AND presence.holder_id IS NOT NULL
-					AND ${greatest("0", `${nowMs} - presence.renewed_at`)} <= ?
+					AND ${greatest("0", `${nowMs} - presence.renewed_at`)} <= ?${lockClause("share")}
 			) AS presence_holder`,
-			...values,
-			request.targetIdentity,
-			request.wakeHostWithinMs,
-		))!;
+				...values,
+				request.targetIdentity,
+				request.wakeHostWithinMs,
+			),
+		);
+		if (inserted === undefined) return notInserted();
 		const host = inserted.presence_holder;
 		if (host !== null) {
 			const hint = async () => {
-				// PostgreSQL: never wait behind another session's lock on the hint log; such a hint goes without.
+				// PostgreSQL: never wait behind another session's lock on the hint log; such a hint goes without. The hint
+				// is a new row, so it needs no lock domain of its own (#6560): see `fencedPath("intercom-wakeup-hint")`.
 				if (dialect === "postgres") await executor.run(`LOCK TABLE ${wakeups} IN ROW EXCLUSIVE MODE NOWAIT`);
 				await executor.run(
 					`INSERT INTO ${wakeups}(broker_id, reason, version, created_at) VALUES (?, 'outbox', ?, ${nowMs})`,
 					host,
 					Number(inserted.sequence),
 				);
+				// Notified when it commits, as the wake-up bus's own hints are, so the host does not wait for its backup
+				// poll (#6560).
+				const notify = database.notifications?.notify(wakeups, host);
+				if (notify !== undefined) await executor.run(notify.sql, ...notify.params);
 			};
 			await hint().catch((cause: unknown) => {
 				throw new OutboxWakeFailedError(cause);
@@ -286,14 +428,23 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		return { status: "inserted", row: toRow(inserted), ...(host === null ? {} : { woke: host }) } as const;
 	};
 
+	const enqueueLeading = (request: OutboxEnqueueRequest): readonly SqliteStatement[] => [
+		selectStatement(request.frame.message.id),
+		...(request.owed === true ? [] : [sizedTotalsStatement(request.targetIdentity)]),
+	];
+
 	return {
 		enqueueIn,
+		enqueueLeading,
 		async enqueue(request) {
 			if (request.targetIdentity.length === 0) return invalid("empty-target-identity");
 			if (request.originBrokerId.length === 0) return invalid("empty-broker-id");
 			if (request.frame.message.id.length === 0) return invalid("empty-message-id");
 			return withoutFailedWake(request, (attempt) =>
-				database.transaction((executor) => enqueueIn(executor, attempt)),
+				database.transaction((executor) => enqueueIn(executor, attempt), {
+					...recipientTransaction(database, options.prefix, attempt.targetIdentity),
+					leading: enqueueLeading(attempt),
+				}),
 			);
 		},
 
@@ -307,8 +458,17 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 				request.targetIdentity,
 			);
 			if (pending === undefined) return { status: "claimed", rows: [] } as const;
+			// The recipient's rows are locked in sequence order, as every write of several rows locks them, and read in
+			// their newest versions: a renewal or settlement of one waits for this claim, or this claim for it, so what it
+			// decides on stays true until it commits (#6560). It does not skip a locked row (SKIP LOCKED): an earlier row
+			// passed over could be handed out after a later one, and another claimant's live claim would go unseen.
+			const locking: SqliteStatement = {
+				sql: `SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}
+					ORDER BY sequence${lockClause("update")}`,
+				params: [request.targetIdentity],
+			};
 			return database.transaction(async (executor) => {
-				const records = await undelivered(executor, request.targetIdentity);
+				const records = await executor.all<OutboxRecord>(locking.sql, ...locking.params);
 				const other = records.find(
 					(record) =>
 						record.state === "claimed" &&
@@ -317,78 +477,80 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 				);
 				if (other?.claimant_id) return { status: "held", claimantId: other.claimant_id } as const;
 				const rows: ClaimedOutboxRow[] = [];
+				const claims: SqliteStatement[] = [];
 				for (const record of records) {
 					if (record.state === "claimed" && isLive(record, request.staleAfterMs)) continue;
 					const token = randomUUID();
-					await executor.run(
-						`UPDATE ${table} SET state = 'claimed', claim_attempts = claim_attempts + 1, claimant_id = ?,
+					claims.push({
+						sql: `UPDATE ${table} SET state = 'claimed', claim_attempts = claim_attempts + 1, claimant_id = ?,
 							claim_token = ?, claim_renewed_at = ${nowMs}, saving_at = NULL
 						WHERE message_id = ?`,
-						request.claimantId,
-						token,
-						record.message_id,
-					);
-					const row = toRow((await select(executor, record.message_id))!);
+						params: [request.claimantId, token, record.message_id],
+					});
+					// The row as the update leaves it: this transaction holds its lock (#6560).
+					const row = toRow({
+						...record,
+						state: "claimed",
+						claim_attempts: Number(record.claim_attempts) + 1,
+						claimant_id: request.claimantId,
+						claim_token: token,
+						claim_age: 0,
+						saving_age: null,
+					});
 					rows.push({
 						row,
 						claim: { messageId: row.messageId, claimantId: request.claimantId, token, attempt: row.claimAttempts },
 					});
 				}
+				// Sent with the commit: one round trip for the claim's reads, one for its writes (#6560).
+				await runLast(executor, ...claims);
 				return { status: "claimed", rows } as const;
-			});
+			}, { ...fenced, leading: [locking] });
 		},
 
 		renewClaim(claim) {
-			return withClaim(claim, async (executor) => {
-				await executor.run(
-					`UPDATE ${table} SET claim_renewed_at = ${nowMs} WHERE message_id = ?`,
-					claim.messageId,
-				);
-				return { status: "renewed" } as const;
-			});
+			return withClaim(claim, `claim_renewed_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const);
 		},
 
 		reportSaving(claim) {
-			return withClaim(claim, async (executor) => {
-				await executor.run(`UPDATE ${table} SET saving_at = ${nowMs} WHERE message_id = ?`, claim.messageId);
-				return { status: "renewed" } as const;
-			});
+			return withClaim(claim, `saving_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const);
 		},
 
 		releaseClaim(claim, options) {
 			const attempts = options?.unwritten === true ? `, claim_attempts = ${greatest("0", "claim_attempts - 1")}` : "";
-			return withClaim(claim, async (executor) => {
-				await executor.run(
-					`UPDATE ${table} SET state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL,
-						saving_at = NULL${attempts}
-					WHERE message_id = ?`,
-					claim.messageId,
-				);
-				return { status: "released" } as const;
-			});
+			return withClaim(
+				claim,
+				`state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL${attempts}`,
+				[],
+				() => ({ status: "released" }) as const,
+			);
 		},
 
 		async releaseClaimsOf(claimantId) {
+			// Its rows locked in sequence order, as a claim locks them, so the two never wait for each other (#6560).
 			const { changes } = await database.run(
 				`UPDATE ${table} SET state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL,
 					saving_at = NULL
-				WHERE state = 'claimed' AND claimant_id = ?`,
+				WHERE message_id IN (
+					SELECT message_id FROM ${table} WHERE state = 'claimed' AND claimant_id = ?
+					ORDER BY sequence${lockClause("update")}
+				)`,
 				claimantId,
 			);
 			return changes;
 		},
 
 		markDelivered(claim) {
-			return withClaim(claim, async (executor) => ({
+			return withClaim(claim, `state = 'delivered', ${settled}`, [null], (written) => ({
 				status: "delivered" as const,
-				row: await settle(executor, claim.messageId, "delivered", null),
+				row: toRow(written),
 			}));
 		},
 
 		markFailed(claim, reason) {
-			return withClaim(claim, async (executor) => ({
+			return withClaim(claim, `state = 'failed', ${settled}`, [JSON.stringify(reason)], (written) => ({
 				status: "failed" as const,
-				row: await settle(executor, claim.messageId, "failed", reason),
+				row: toRow(written),
 			}));
 		},
 
@@ -422,19 +584,26 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 
 		async prune(settledOlderThanMs, queuedOlderThanMs) {
 			if (queuedOlderThanMs !== undefined) {
+				// Every recipient's rows, each locked in sequence order and decided on in its newest version, as a claim
+				// locks them: a renewal that commits first keeps its row, and expiry waits for no lock domain (#6560).
+				const lockedWhere = (where: string) =>
+					`message_id IN (SELECT message_id FROM ${table} WHERE ${where} ORDER BY sequence${lockClause("update")})`;
 				await database.transaction(async (executor) => {
 					// A row an older broker queued has no time: its retention starts now.
-					await executor.run(`UPDATE ${table} SET queued_at = ${nowMs} WHERE queued_at IS NULL AND ${UNDELIVERED}`);
 					await executor.run(
-						`UPDATE ${table} SET state = 'failed', failure_reason = ?, settled_at = ${nowMs},
-							claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL
-						WHERE ${UNDELIVERED} AND ${ageSince("queued_at")} > ?
+						`UPDATE ${table} SET queued_at = ${nowMs} WHERE ${lockedWhere(`queued_at IS NULL AND ${UNDELIVERED}`)}`,
+					);
+					await executor.run(
+						`UPDATE ${table} SET state = 'failed', ${settled}
+						WHERE ${lockedWhere(
+							`${UNDELIVERED} AND ${ageSince("queued_at")} > ?
 							AND (claim_renewed_at IS NULL OR ${ageSince("claim_renewed_at")} > ?)`,
+						)}`,
 						JSON.stringify(OUTBOX_EXPIRED_REASON),
 						queuedOlderThanMs,
 						OUTBOX_CLAIM_STALE_AFTER_MS,
 					);
-				});
+				}, fenced);
 			}
 			const result = await database.run(
 				`DELETE FROM ${table}

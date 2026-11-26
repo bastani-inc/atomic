@@ -1,8 +1,10 @@
+import { transactionFinisher } from "../storage/added-exports.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
 	SqliteStatement,
+	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
 } from "../storage/database.js";
@@ -58,6 +60,14 @@ export function snapshotBlobHashes(snapshot: WorktreeSnapshot): string[] {
 	const hashes = snapshot.chain.flatMap((link) => (link.patch === null ? [] : [link.patch]));
 	if (snapshot.bundle) hashes.push(snapshot.bundle.blob);
 	return [...new Set(hashes)];
+}
+
+/**
+ * Compares two blob hashes as `ORDER BY hash` with the dialect's `byteOrderCollation` does: the hashes are ASCII (hex
+ * digests), whose UTF-16 code unit order is their byte order.
+ */
+function byteOrder(first: string, second: string): number {
+	return first < second ? -1 : first > second ? 1 : 0;
 }
 
 /**
@@ -1458,7 +1468,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			dialect.schemaObjects([`${t.blobs}_chunks_delete_all`, `${t.blobs}_chunks_delete`]),
 			...SESSION_REF_COLUMNS.map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
-		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
+		// A versioned database checks its ledger whatever the probes find, so it does not ask them.
+		const found = dialect.versionedMigrations
+			? []
+			: await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
 		// A versioned database always checks its ledger: a newer schema with the same tables is refused, and a step it
 		// lacks, such as the index triggers, runs even when every table exists.
 		if (dialect.versionedMigrations || !found.every((row) => row !== undefined)) {
@@ -1596,8 +1609,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * binds more than one chunk (#4954); the chunks of a blob stored already are not written again. Unknown ages
 	 * remain protected until collection stamps them.
 	 */
-	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
-		if (blobs.length === 0) return;
+	async putBlobs(unordered: readonly SnapshotBlob[]): Promise<void> {
+		if (unordered.length === 0) return;
+		// In hash order, so the rows it locks are taken in the order every other write of them takes them.
+		const blobs = [...unordered].sort((first, second) => byteOrder(first.hash, second.hash));
 		const now = this.dialect.nowSeconds;
 		const header = `INSERT INTO ${this.table} (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, ${now}, ?) ON CONFLICT(hash) DO UPDATE SET created_at = ${now} WHERE ${this.table}.created_at > 0`;
 		const chunk = `INSERT INTO ${this.tables.blobChunks} (hash, idx, data) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ${this.table} WHERE hash = ?) ON CONFLICT DO NOTHING`;
@@ -1622,8 +1637,26 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			return;
 		}
 		await this.database.transaction(async (transaction) => {
+			// On a pipelined connection the statements go out with the commit: one round trip after the locks.
+			if (transactionFinisher(transaction)?.(statements) === true) return;
 			for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
-		});
+		}, this.blobWrite());
+	}
+
+	/**
+	 * How a put or a refresh of this table's blobs runs: a serial transaction of the blob table's own domain (#6560). On
+	 * PostgreSQL it holds the database-wide lock shared, so it waits for and excludes collection, whose writes hold that
+	 * lock exclusively, and the blob writers of this table exclude one another, but session writes, which hold the
+	 * database-wide lock shared with their session's domain, run beside it. Rows it writes again (`created_at`) are locked
+	 * in hash order, as an append's check of the blobs it records locks them (`missingBlob`), so neither waits on the
+	 * other in a cycle. Its callback only uses the transaction, so a transient failure runs it again.
+	 */
+	private blobWrite(leading?: readonly SqliteStatement[]): SqliteTransactionOptions {
+		return {
+			retryTransientFailures: true,
+			concurrency: { kind: "serial", domain: this.table },
+			...(leading === undefined ? {} : { leading }),
+		};
 	}
 	/**
 	 * The blob's bytes, read a chunk per statement when it has chunks, so no response holds more than one chunk. A
@@ -1666,10 +1699,21 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			]);
 			return rows!.length === unique.length;
 		}
-		return this.database.transaction(async (transaction) => {
-			await transaction.run(update, ...params);
-			return (await transaction.all(present, ...params)).length === unique.length;
-		});
+		// The rows present, locked in hash order before the update writes them (see `blobWrite`). On a pipelined connection
+		// this read goes out with the transaction's start and the update with its commit.
+		const locked = {
+			sql: `${present} ORDER BY hash${this.dialect.byteOrderCollation}${this.dialect.lockClause("update")}`,
+			params,
+		};
+		return this.database.transaction(
+			async (transaction) => {
+				const rows = await transaction.all(locked.sql, ...locked.params);
+				if (transactionFinisher(transaction)?.([{ sql: update, params }]) !== true)
+					await transaction.run(update, ...params);
+				return rows.length === unique.length;
+			},
+			this.blobWrite([locked]),
+		);
 	}
 	async listBlobHashes(): Promise<readonly string[]> {
 		const rows = await this.database.all<{ hash: string }>(`SELECT hash FROM ${this.table}`);
@@ -1704,12 +1748,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		};
 	}
 
-	/** The first of `snapshots`' blobs this table does not hold in full, read in `transaction`; undefined when none. */
+	/**
+	 * The first of `snapshots`' blobs this table does not hold in full, read in `transaction`; undefined when none. The
+	 * rows it finds stay locked FOR SHARE until the transaction ends, taken in hash order as a blob write takes them.
+	 */
 	async missingBlob(transaction: SqliteExecutor, snapshots: readonly WorktreeSnapshot[]): Promise<string | undefined> {
 		const hashes = [...new Set(snapshots.flatMap(wellFormedBlobHashes))];
 		if (hashes.length === 0) return undefined;
 		const rows = await transaction.all<SqliteRow & { hash: string }>(
-			`SELECT hash FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash))${this.dialect.lockClause("share")}`,
+			`SELECT hash FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash)) ORDER BY hash${this.dialect.byteOrderCollation}${this.dialect.lockClause("share")}`,
 			JSON.stringify(hashes),
 		);
 		const stored = new Set(rows.map((row) => row.hash));

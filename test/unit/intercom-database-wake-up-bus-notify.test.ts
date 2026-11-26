@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type {
 	SqliteDatabase,
 	SqliteTransactionOptions,
+	StorageListenerState,
 	StorageNotificationEvent,
 	StorageNotifications,
 } from "@bastani/atomic/storage";
@@ -10,6 +11,7 @@ import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
 	openDatabaseWakeUpBus,
+	WAKE_UP_LISTENING_POLL_INTERVAL_MS,
 	WAKE_UP_POLL_INTERVAL_MS,
 	type WakeUpPollScheduler,
 } from "../../packages/intercom/broker/database-wake-up-bus.js";
@@ -41,6 +43,8 @@ async function notifyingFile() {
 	const transactions: (SqliteTransactionOptions | undefined)[] = [];
 	const opened: SqliteDatabase[] = [];
 	const buses: WakeUpBus[] = [];
+	/** What the database reports of its listening connection; set it to `listening` to report notifications live. */
+	const listener: { state: StorageListenerState } = { state: { status: "connecting" } };
 	const notifications: StorageNotifications = {
 		notify: (channel, payload) => ({
 			sql: "INSERT INTO notices(channel, payload) VALUES (?, ?)",
@@ -55,7 +59,7 @@ async function notifyingFile() {
 				},
 			};
 		},
-		state: async () => ({ status: "listening" }),
+		state: async () => listener.state,
 	};
 	/** While set, every read of the bus waits for it. */
 	let gate: Promise<void> | undefined;
@@ -81,6 +85,7 @@ async function notifyingFile() {
 	};
 	return {
 		path,
+		listener,
 		listening,
 		transactions,
 		opened,
@@ -151,7 +156,7 @@ function recorder() {
 	return { events, listener: (event: WakeUpEvent) => events.push(event) };
 }
 
-test("a publish writes its hint and its notification in one transaction serial on the bus's table (#5103)", async () => {
+test("a publish writes its hint and its notification in one transaction on the fenced hint path (#5103, #6560)", async () => {
 	const file = await notifyingFile();
 	try {
 		const bus = await file.openBus();
@@ -159,7 +164,7 @@ test("a publish writes its hint and its notification in one transaction serial o
 		assert.deepEqual(await bus.publish({ brokerId: "broker-b", reason: "outbox", version: 3 }), {
 			status: "published",
 		});
-		assert.deepEqual(file.transactions, [{ concurrency: { kind: "serial", domain: TABLE } }]);
+		assert.deepEqual(file.transactions, [{ concurrency: { kind: "fenced", audit: "intercom-wakeup-hint" } }]);
 		const observer = await openNodeSqliteDatabase(file.path);
 		try {
 			assert.deepEqual(await observer.all("SELECT channel, payload FROM notices"), [
@@ -257,6 +262,56 @@ test("a bus listens again through the database it reopens, and a subscription ma
 			[false, true],
 		);
 		assert.ok(received.events.some((event) => event.kind === "resync" && event.cause === "reconnected"));
+		await bus.close();
+	} finally {
+		await file.close();
+	}
+});
+
+test("while the database reports its notifications live, the poll only backs them up at the slower interval (#6560)", async () => {
+	const file = await notifyingFile();
+	try {
+		const timers = scheduler();
+		file.listener.state = { status: "listening" };
+		const bus = await file.openBus(timers.schedule);
+		await bus.subscribe("broker-b", recorder().listener);
+		const [listening] = file.listening;
+		timers.fire();
+		await timers.settled();
+		assert.equal(timers.delays.at(-1), WAKE_UP_LISTENING_POLL_INTERVAL_MS, "notifications live: the backup interval");
+		listening!.listener({ kind: "notification", payload: "broker-b" });
+		assert.equal(timers.delays.at(-1), 0, "a notification still polls at once");
+		timers.fire();
+		await timers.settled();
+		assert.equal(timers.delays.at(-1), WAKE_UP_LISTENING_POLL_INTERVAL_MS);
+		file.listener.state = { status: "unavailable", reason: "connection-failed" };
+		timers.fire();
+		await timers.settled();
+		assert.equal(timers.delays.at(-1), WAKE_UP_POLL_INTERVAL_MS, "listening connection down: the fast interval");
+		file.listener.state = { status: "listening" };
+		listening!.listener({ kind: "listening" });
+		assert.equal(timers.delays.at(-1), 0, "listening again polls at once for the notifications lost meanwhile");
+		timers.fire();
+		await timers.settled();
+		assert.equal(timers.delays.at(-1), WAKE_UP_LISTENING_POLL_INTERVAL_MS);
+		await bus.close();
+	} finally {
+		await file.close();
+	}
+});
+
+test("through a transaction pooler, where no notification arrives, the poll keeps the fast interval (#6560)", async () => {
+	const file = await notifyingFile();
+	try {
+		const timers = scheduler();
+		file.listener.state = { status: "unavailable", reason: "pooler" };
+		const bus = await file.openBus(timers.schedule);
+		await bus.subscribe("broker-b", recorder().listener);
+		for (let poll = 0; poll < 2; poll++) {
+			timers.fire();
+			await timers.settled();
+			assert.equal(timers.delays.at(-1), WAKE_UP_POLL_INTERVAL_MS);
+		}
 		await bus.close();
 	} finally {
 		await file.close();

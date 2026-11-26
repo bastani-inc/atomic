@@ -53,6 +53,9 @@ const { database: db, readBytes } = countingReadBytes(opened);
 try {
 	const store = await SqlSessionStore.open(db);
 	await db.run("UPDATE session_sessions SET summary_state = '{}' WHERE id = 'session'");
+	// The store reads on a reader connection of its own, which its first read opens: open it before measuring, in both
+	// modes, so its thread and cache count against neither the rebuild nor the projection (#6560).
+	await store.load("absent").catch(() => undefined);
 	globalThis.gc?.();
 	const before = resourceUsage();
 	const bytesBefore = readBytes();

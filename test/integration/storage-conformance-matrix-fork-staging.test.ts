@@ -3,10 +3,12 @@ import { describe, test } from "vitest";
 import type { SqliteExecutor } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
+import { SessionExistsError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import {
 	FORK_STAGING_BATCH_BYTES,
 	forkStagingLegacyCut,
 } from "../../packages/coding-agent/src/core/storage/session/fork-staging.js";
+import { sessionWriteTransaction } from "../../packages/coding-agent/src/core/storage/session/session-transactions.js";
 import {
 	SESSION_BLOB_CHUNK_BYTES,
 	SESSION_TABLES,
@@ -42,6 +44,9 @@ import {
  * transaction, and what a stopped clone left is removed. Runs on every backend of the storage matrix; a server backend
  * runs when its URL is set (see test/helpers/storage-backends.ts).
  */
+
+/** How long a clone may take while an unrelated session's write holds its transaction open. */
+const UNBLOCKED_CLONE_MS = 20_000;
 
 /** The first summary a store lists. */
 async function firstSummary(store: SessionStore) {
@@ -335,6 +340,91 @@ for (const backend of storageBackends) {
 				}),
 			SERVER_TIMEOUT_MS,
 		);
+
+		test(
+			"clones from several connections publish each child once, beside appends to other sessions (#6560)",
+			() =>
+				withScope(async (scope) => {
+					const source = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}s_` });
+					await seedSource(source, "src", "shared");
+					const destPrefix = `${scope.prefix}d_`;
+					const dests = await Promise.all(
+						[0, 1, 2].map(async () => SqlSessionStore.open(await scope.connect(), { prefix: destPrefix })),
+					);
+					await dests[0]!.create(header("busy"), [user("b0", null, "busy", 1)]);
+					const appends = (async () => {
+						let parent = "b0";
+						for (let index = 1; index <= 8; index++) {
+							const id = `b${index}`;
+							await dests[index % dests.length]!.append("busy", [user(id, parent, `busy ${index}`, index + 1)], {
+								expectSeq: index,
+							});
+							parent = id;
+						}
+					})();
+					// Each connection clones its own child, and all three race for one more.
+					const clones = await within(
+						Promise.allSettled([
+							...dests.map((dest, index) => stagedClone(source, "src", dest, header(`child-${index}`, "src"))),
+							...dests.map((dest) => stagedClone(source, "src", dest, header("contested", "src"))),
+						]),
+						"the clones",
+					);
+					await appends;
+					assert.deepEqual(
+						clones.slice(0, 3).map((result) => result.status),
+						["fulfilled", "fulfilled", "fulfilled"],
+					);
+					const contested = clones.slice(3);
+					assert.equal(contested.filter((result) => result.status === "fulfilled").length, 1);
+					for (const result of contested)
+						if (result.status === "rejected")
+							assert.ok(result.reason instanceof SessionExistsError, String(result.reason));
+					const expected = (await source.load("src")).entries;
+					for (const id of ["child-0", "child-1", "child-2", "contested"])
+						assert.deepEqual((await dests[1]!.load(id)).entries, expected, id);
+					assert.equal((await dests[2]!.load("busy")).lastSeq, 9);
+					assert.equal(await stagedRows(await scope.connect(), destPrefix), 0);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		if (backend.name === "Postgres")
+			test(
+				"a clone publishes without waiting for another session's write (#6560)",
+				() =>
+					withScope(async (scope) => {
+						const source = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}s_` });
+						await seedSource(source, "src", "free");
+						const destPrefix = `${scope.prefix}d_`;
+						const dest = await SqlSessionStore.open(await scope.connect(), { prefix: destPrefix });
+						const sessions = renderStorageIdentifiers("sessions", SESSION_TABLES, destPrefix).sessions;
+						const holder = await scope.connect();
+						const held = gate();
+						// A writer of another session of the destination, stalled with its transaction open.
+						const stalled = holder.transaction(
+							async (tx) => {
+								await tx.get("SELECT 1 AS one");
+								await held.wait();
+							},
+							sessionWriteTransaction(sessions, "unrelated"),
+						);
+						await within(held.reached, "the unrelated write");
+						try {
+							const { created } = await within(
+								stagedClone(source, "src", dest, header("child", "src")),
+								"the clone beside the unrelated write",
+								UNBLOCKED_CLONE_MS,
+							);
+							assert.equal(created.lastSeq, 13);
+						} finally {
+							held.release();
+							await stalled;
+						}
+						assert.deepEqual((await dest.load("child")).entries, (await source.load("src")).entries);
+					}),
+				SERVER_TIMEOUT_MS,
+			);
 
 		test(
 			"inverse clones between two connections both finish within a bound",

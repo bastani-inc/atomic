@@ -1,6 +1,7 @@
 import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "./database.js";
 import { dialectOf, type StorageDialect } from "./dialect.js";
 import { StorageConfigError, StorageSchemaVersionError } from "./errors.js";
+import { schemaCatalogOf } from "./schema-catalog.js";
 
 /** One version of a domain's schema. */
 export interface StorageMigrationStep {
@@ -148,6 +149,13 @@ export async function applyStorageMigrations(
 	checkSteps(steps);
 	const dialect = dialectOf(database);
 	const table = options.table ?? DEFAULT_MIGRATION_TABLE;
+	const recorded = dialect.versionedMigrations ? await recordedInCatalog(database, table, domain) : undefined;
+	const supported = steps.at(-1)?.version ?? 0;
+	if (recorded !== undefined && recorded >= supported && supported > 0) {
+		if (recorded > supported && !options.acceptNewer)
+			throw new StorageSchemaVersionError(domain, recorded, supported);
+		return { applied: [], version: recorded };
+	}
 	return database.transaction(
 		async (transaction) => {
 			if (dialect.versionedMigrations)
@@ -157,6 +165,16 @@ export async function applyStorageMigrations(
 		},
 		{ retryTransientFailures: true, concurrency: { kind: "serial", domain: table } },
 	);
+}
+
+/**
+ * The version `table` records for `domain` in the catalog an open in progress read, or undefined outside one: an open
+ * that finds every step recorded neither locks nor runs a transaction, as the steps would change nothing (#6560).
+ */
+async function recordedInCatalog(database: SqliteDatabase, table: string, domain: string): Promise<number | undefined> {
+	const catalog = await schemaCatalogOf(database, table);
+	if (catalog === undefined || !catalog.hasTable(table)) return undefined;
+	return catalog.recordedVersion(domain);
 }
 
 /** One domain's migration for {@link applyStorageMigrationsTogether}: the arguments of {@link applyStorageMigrations}. */
@@ -265,6 +283,17 @@ export interface StorageSchemaSetup {
 }
 
 /**
+ * Whether the catalog an open in progress read (`withStorageSchemaCatalog`) records `schema.revision` for the
+ * store already, so {@link ensureStorageSchema} would run nothing: the store's open then skips its schema transaction
+ * and its lock (#6560). False outside such an open, on SQLite, and when the revision is not recorded.
+ */
+export async function storageSchemaCurrent(database: SqliteDatabase, schema: StorageSchemaSetup): Promise<boolean> {
+	if (!dialectOf(database).versionedMigrations) return false;
+	const recorded = await recordedInCatalog(database, schema.ledger, `schema:${schema.domain}`);
+	return recorded !== undefined && recorded >= schema.revision;
+}
+
+/**
  * Runs `setup`, a store's idempotent schema statements (`CREATE … IF NOT EXISTS`, guarded `ALTER TABLE … ADD COLUMN`),
  * in the caller's transaction `executor` unless the ledger already records `revision` for the store (#5218). On a
  * database with versioned migrations (PostgreSQL) a current schema runs no DDL at all, so a runtime role with only DML
@@ -299,5 +328,44 @@ export async function ensureStorageSchema(
 		`INSERT INTO ${ledger} (domain, version, applied_at) VALUES (?, ?, ${dialect.nowMs}) ON CONFLICT DO NOTHING`,
 		key,
 		revision,
+	);
+}
+
+/** What {@link ensureTableFillfactor} sets, and records under `schema:<domain>` in the ledger. */
+export interface StorageFillfactorSetup extends StorageSchemaSetup {
+	/** The table, already prefixed. */
+	readonly table: string;
+	/** The percentage of each new page the table fills on insert, leaving the rest for updated row versions. */
+	readonly fillfactor: number;
+}
+
+/**
+ * Sets `setup.table`'s fillfactor on PostgreSQL, once per database, recorded in the ledger as `schema:<domain>`: each
+ * page then keeps room for a new version of the rows on it, so updates of rows that change no indexed column stay on
+ * their page as HOT updates and touch no index (#6560). It applies to the pages written from then on; `VACUUM FULL`
+ * or pg_repack rewrites the existing ones with it. Nothing runs where the catalog an open read records the step, where
+ * the table has a fillfactor already, or where this role does not own the table: a runtime role without DDL opens as
+ * before, and `atomic storage migrate`, run as the owner, sets it. Does nothing on SQLite and libSQL.
+ */
+export async function ensureTableFillfactor(database: SqliteDatabase, setup: StorageFillfactorSetup): Promise<void> {
+	const dialect = dialectOf(database);
+	if (dialect.name !== "postgres" || database.readOnly === true) return;
+	const { ledger, domain, revision, table, fillfactor } = setup;
+	const schema = { ledger, domain, revision };
+	if (await storageSchemaCurrent(database, schema)) return;
+	const found = await database.get<SqliteRow & { owned: boolean | number; tuned: boolean | number }>(
+		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned,
+			coalesce(array_to_string(c.reloptions, ',') LIKE '%fillfactor=%', false) AS tuned
+		FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?`,
+		dialect.identifier(table),
+	);
+	const yes = (value: boolean | number | undefined) => value === true || Number(value) === 1;
+	if (found === undefined || yes(found.tuned) || !yes(found.owned)) return;
+	await database.transaction(
+		(tx) =>
+			ensureStorageSchema(tx, dialect, schema, async () => {
+				await tx.exec(`ALTER TABLE ${table} SET (fillfactor = ${Math.trunc(fillfactor)})`);
+			}),
+		{ retryTransientFailures: true, concurrency: { kind: "serial", domain: ledger } },
 	);
 }

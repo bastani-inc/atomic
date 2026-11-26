@@ -1,6 +1,8 @@
 import {
 	dialectOf,
+	fencedPath,
 	type SqliteDatabase,
+	type SqliteExecutor,
 	type SqliteRow,
 	type StorageNotificationSubscription,
 	validateStoragePrefix,
@@ -15,7 +17,7 @@ import type {
 	WakeUpSubscribeResult,
 	WakeUpSubscription,
 } from "./wake-up-bus.js";
-import { ensureBrokerSchema } from "./sql-schema.js";
+import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 /**
  * S4 wake-up bus (specs/2026-10-19-intercom-multi-node.md §5.6): a hint log in the shared storage database. Each
@@ -27,13 +29,25 @@ import { ensureBrokerSchema } from "./sql-schema.js";
  * On a database that delivers notifications (Postgres), a publish also notifies the channel named like the table, in
  * the transaction that writes the hint, and a subscribed connection polls as soon as a notification for one of its
  * brokers arrives (#5103). The interval poll stays: notifications are lost while the listening connection is down, and
- * none arrive through a transaction pooler.
+ * none arrive through a transaction pooler. While the database reports its listening connection live, the poll only
+ * backs the notifications up and runs at `WAKE_UP_LISTENING_POLL_INTERVAL_MS`; the listener's `listening` event, sent
+ * when it listens again after an outage, polls at once (#6560).
  */
 
-/** How often a connection with subscriptions reads its hints. */
+/** How often a connection with subscriptions reads its hints when no notification would announce them. */
 export const WAKE_UP_POLL_INTERVAL_MS = 500;
+/**
+ * How often a connection with subscriptions reads its hints while its notifications are live: only a notification lost
+ * in an outage the listener has not noticed yet waits for this poll.
+ */
+export const WAKE_UP_LISTENING_POLL_INTERVAL_MS = 5_000;
 /** Hints nobody consumed (their broker exited) are deleted after this age; the backup poll has covered them. */
 export const WAKE_UP_HINT_RETENTION_MS = OUTBOX_BACKUP_POLL_INTERVAL_MS;
+/**
+ * How often at most one connection deletes the hints past the retention, at a publish (#6560): a hint nobody consumed
+ * then stays at most this much longer than the retention.
+ */
+export const WAKE_UP_PRUNE_INTERVAL_MS = 10_000;
 /**
  * Hints read and deleted per statement; a poll repeats until a batch comes back short. Each batch's delete binds one
  * parameter per hint, so a backlog never exceeds SQLite's bound-parameter limit (999 on old builds).
@@ -51,7 +65,15 @@ export interface DatabaseWakeUpBusOptions {
 	/** The validated storage prefix; the table is `<prefix>intercom_wakeups`. */
 	readonly prefix?: string;
 	readonly pollIntervalMs?: number;
+	readonly listeningPollIntervalMs?: number;
 	readonly schedule?: WakeUpPollScheduler;
+	/**
+	 * A separate handle on the same database that the poll reads its hints through, so a poll never queues behind the
+	 * database's writes (#6560); the bus does not close it. On PostgreSQL the poll takes and deletes its hints through
+	 * it in one statement (`DELETE … RETURNING`), so it must accept writes. Absent: the poll runs on the database it
+	 * opened.
+	 */
+	readonly reader?: SqliteExecutor;
 }
 
 interface HintRow extends SqliteRow {
@@ -88,12 +110,22 @@ async function createSchema(database: SqliteDatabase, table: string, prefix: str
 	await ensureBrokerSchema(database, prefix, "wakeups", (tx) => tx.exec(schema));
 }
 
-async function openSchemaConnection(options: DatabaseWakeUpBusOptions, table: string): Promise<SqliteDatabase> {
+/**
+ * Opens a connection to the bus's database and sets up its table, checked against one read of the schema catalog, so a
+ * current table costs no transaction or lock (#6560). With `schemaSetUp`, this bus set the table up already, on an
+ * earlier connection: a schema only moves forward, so the connection runs no schema statement at all.
+ */
+async function openSchemaConnection(
+	options: DatabaseWakeUpBusOptions,
+	table: string,
+	schemaSetUp = false,
+): Promise<SqliteDatabase> {
 	const database = await options.openDatabase();
 	try {
 		// Refused before anything is created when the prefix is too long for this backend's identifiers (#5067).
 		validateStoragePrefix(options.prefix, dialectOf(database).name);
-		await createSchema(database, table, options.prefix);
+		if (!schemaSetUp)
+			await withBrokerSchemaCatalog(database, options.prefix, () => createSchema(database, table, options.prefix));
 	} catch (cause) {
 		await database.close().catch(() => {});
 		throw cause;
@@ -106,6 +138,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	private readonly options: DatabaseWakeUpBusOptions;
 	private readonly table: string;
 	private readonly pollIntervalMs: number;
+	private readonly listeningPollIntervalMs: number;
 	private readonly schedule: WakeUpPollScheduler;
 	private database: SqliteDatabase | undefined;
 	private opening: Promise<SqliteDatabase | undefined> | undefined;
@@ -117,15 +150,25 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	private reconnectFailures = 0;
 	private reconnectNotBefore = 0;
 	/** The notification channel this connection listens on, and the database it listens through. */
-	private listening: { readonly database: SqliteDatabase; readonly subscription: StorageNotificationSubscription } | undefined;
+	private listening:
+		| {
+				readonly database: SqliteDatabase;
+				readonly subscription: StorageNotificationSubscription;
+				/** The database reported its listening connection live, as of the latest check. */
+				live: boolean;
+		  }
+		| undefined;
 	/** A notification arrived during a poll: the next poll runs as soon as that one ends. */
 	private pollAgain = false;
+	/** When a publish last deleted the hints past the retention, by this process's clock. */
+	private prunedAt: number | undefined;
 
 	constructor(options: DatabaseWakeUpBusOptions, table: string, database: SqliteDatabase) {
 		this.options = options;
 		this.table = table;
 		this.database = database;
 		this.pollIntervalMs = options.pollIntervalMs ?? WAKE_UP_POLL_INTERVAL_MS;
+		this.listeningPollIntervalMs = options.listeningPollIntervalMs ?? WAKE_UP_LISTENING_POLL_INTERVAL_MS;
 		this.schedule = options.schedule ?? scheduleTimeout;
 	}
 
@@ -139,20 +182,26 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		try {
 			if (notifications === undefined) await database.run(insert, hint.brokerId, hint.reason, hint.version);
 			else {
-				// The notification goes out when the hint commits, so the poll it starts finds the hint.
+				// The notification goes out when the hint commits, so the poll it starts finds the hint. A hint is a new
+				// row that no write checks first, so its writers take no lock domain (#6560): see
+				// `fencedPath("intercom-wakeup-hint")`.
 				const notify = notifications.notify(this.table, hint.brokerId);
 				await database.transaction(
 					async (tx) => {
 						await tx.run(insert, hint.brokerId, hint.reason, hint.version);
 						await tx.run(notify.sql, ...notify.params);
 					},
-					{ concurrency: { kind: "serial", domain: this.table } },
+					{ concurrency: { kind: "fenced", audit: fencedPath("intercom-wakeup-hint") } },
 				);
 			}
-			await database.run(
-				`DELETE FROM ${this.table} WHERE created_at < ${nowMs} - ?`,
-				WAKE_UP_HINT_RETENTION_MS,
-			);
+			// #6560: at most once per interval, not at every publish: each prune is a write every broker would send.
+			if (this.prunedAt === undefined || Date.now() - this.prunedAt >= WAKE_UP_PRUNE_INTERVAL_MS) {
+				this.prunedAt = Date.now();
+				await database.run(
+					`DELETE FROM ${this.table} WHERE created_at < ${nowMs} - ?`,
+					WAKE_UP_HINT_RETENTION_MS,
+				);
+			}
 		} catch {
 			this.drop(database);
 			return { status: "unavailable" };
@@ -213,10 +262,25 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		const notifications = database.notifications;
 		if (notifications === undefined) return;
 		const subscription = notifications.listen(this.table, (event) => {
-			if (event.kind === "listening" || [...this.subscriptions].some((open) => open.brokerId === event.payload))
+			if (event.kind === "listening") {
+				if (this.listening?.subscription === subscription) this.listening.live = true;
 				this.pollNow();
+			} else if ([...this.subscriptions].some((open) => open.brokerId === event.payload)) this.pollNow();
 		});
-		this.listening = { database, subscription };
+		this.listening = { database, subscription, live: false };
+		void this.checkListening();
+	}
+
+	/** Asks the database whether its listening connection is live, for the interval of the next poll. */
+	private async checkListening(): Promise<void> {
+		const listening = this.listening;
+		const notifications = listening?.database.notifications;
+		if (listening === undefined || notifications === undefined) return;
+		const live = await notifications.state().then(
+			(state) => state.status === "listening",
+			() => false,
+		);
+		if (this.listening === listening) listening.live = live;
 	}
 
 	/** Polls at once, or as soon as the poll in progress ends, instead of at the next interval. */
@@ -237,7 +301,9 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		this.cancelPoll = this.schedule(() => {
 			this.cancelPoll = undefined;
 			this.pollAgain = false;
-			this.polling = this.poll().finally(() => {
+			this.polling = this.poll()
+				.then(() => this.checkListening())
+				.finally(() => {
 				this.polling = undefined;
 				this.armPoll(this.pollAgain ? 0 : this.nextPollDelayMs());
 			});
@@ -245,6 +311,8 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	}
 
 	private nextPollDelayMs(): number {
+		if (this.database !== undefined && this.listening?.database === this.database && this.listening.live)
+			return this.listeningPollIntervalMs;
 		if (this.database !== undefined || this.reconnectFailures === 0) return this.pollIntervalMs;
 		return Math.min(this.pollIntervalMs * 2 ** this.reconnectFailures, WAKE_UP_RECONNECT_MAX_DELAY_MS);
 	}
@@ -254,18 +322,27 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		const brokerIds = [...new Set([...this.subscriptions].map((subscription) => subscription.brokerId))];
 		if (database === undefined || brokerIds.length === 0) return;
 		const placeholders = brokerIds.map(() => "?").join(", ");
+		const batch = `FROM ${this.table} WHERE broker_id IN (${placeholders}) ORDER BY id LIMIT ${WAKE_UP_POLL_BATCH_SIZE}`;
+		const reader = this.options.reader ?? database;
 		for (;;) {
 			let rows: HintRow[];
 			try {
-				rows = await database.all<HintRow>(
-					`SELECT id, broker_id, reason, version FROM ${this.table} WHERE broker_id IN (${placeholders}) ORDER BY id LIMIT ${WAKE_UP_POLL_BATCH_SIZE}`,
-					...brokerIds,
-				);
-				if (rows.length > 0) {
-					await database.run(
-						`DELETE FROM ${this.table} WHERE id IN (${rows.map(() => "?").join(", ")})`,
-						...rows.map((row) => row.id),
+				if (dialectOf(database).name === "postgres") {
+					// #6560: one statement takes the batch and deletes it, through the reader, whose calls never queue
+					// behind this database's writes. It returns the hints in no particular order.
+					rows = await reader.all<HintRow>(
+						`DELETE FROM ${this.table} WHERE id IN (SELECT id ${batch}) RETURNING id, broker_id, reason, version`,
+						...brokerIds,
 					);
+					rows.sort((left, right) => Number(left.id) - Number(right.id));
+				} else {
+					rows = await reader.all<HintRow>(`SELECT id, broker_id, reason, version ${batch}`, ...brokerIds);
+					if (rows.length > 0) {
+						await database.run(
+							`DELETE FROM ${this.table} WHERE id IN (${rows.map(() => "?").join(", ")})`,
+							...rows.map((row) => row.id),
+						);
+					}
 				}
 			} catch {
 				this.drop(database);
@@ -299,7 +376,9 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	private async reconnect(): Promise<SqliteDatabase | undefined> {
 		let database: SqliteDatabase;
 		try {
-			database = await openSchemaConnection(this.options, this.table);
+			// The bus set its table up when it opened: replacing a dropped connection runs no schema statement, so it never
+			// takes the database's write lock, however many brokers lose their connections at once (#6560).
+			database = await openSchemaConnection(this.options, this.table, true);
 		} catch {
 			this.reconnectFailures++;
 			this.reconnectNotBefore = Date.now() + this.nextPollDelayMs();

@@ -107,6 +107,33 @@ test("storage migrate initializes sessions and Intercom without the workflow run
 	}
 });
 
+test("storage migrate creates the Intercom tables a broker otherwise creates only on first use (#6560)", async () => {
+	const path = join(root, "lazy.sqlite");
+	writeSettings({
+		storage: { adapter: resolve(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"), options: { path } },
+	});
+	const result = await storage(["migrate"]);
+	assert.equal(result.code, 0, result.err);
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		const objects = new Set(
+			(await database.all("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")).map((row) => row.name),
+		);
+		for (const name of [
+			"intercom_ended_child_queue",
+			"intercom_ended_child_queue_home",
+			"intercom_ended_child_queue_departure",
+			"intercom_ended_child_bodies",
+			"intercom_ended_child_wakes",
+			"intercom_ended_child_wakes_home",
+			"intercom_ended_child_meta",
+		])
+			assert.ok(objects.has(name), `${name} is missing after migrate`);
+	} finally {
+		await database.close();
+	}
+});
+
 describe("atomic storage and atomic intercom arguments", () => {
 	test("parse the storage subcommands and their options (#3857)", () => {
 		assert.deepEqual(parseStorageCommand([]), { kind: "help" });

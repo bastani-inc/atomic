@@ -21,7 +21,7 @@
   "keywords": ["atomic", "storage", "libsql", "turso", "sqlite", "bastani"],
   "atomic": { "storageAdapters": ["./libsql.js"] },
   "pi": { "storageAdapters": ["./libsql.js"] },
-  "dependencies": { "@libsql/client": "0.18.0", "@libsql/core": "0.18.0", "@libsql/hrana-client": "0.10.0" },
+  "dependencies": { "@libsql/client": "0.18.0", "@libsql/core": "0.18.0", "@libsql/hrana-client": "0.10.0", "undici": "8.12.3" },
   "peerDependencies": { "@bastani/atomic": "*" },
   "peerDependenciesMeta": { "@bastani/atomic": { "optional": true } }
 }

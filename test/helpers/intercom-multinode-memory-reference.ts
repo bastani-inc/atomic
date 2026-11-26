@@ -21,6 +21,7 @@ import type {
 	PendingAsk,
 	PendingAskPark,
 	PendingAskStore,
+	RecipientPresenceSubject,
 	ReleasedAsk,
 	ReleasedAskClaim,
 	ReleasedAskRecord,
@@ -36,6 +37,7 @@ import type {
 	SentQuestionRoute,
 	StateStoreInvalidReason,
 } from "../../packages/intercom/broker/multinode-state-store.js";
+import { returnAddressOf } from "../../packages/intercom/broker/multinode-state-store.js";
 import { isReleasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpListener } from "../../packages/intercom/broker/wake-up-bus.js";
 import type { SharedStoreFixture, WakeUpBusFixture } from "./intercom-multinode-contract.js";
@@ -71,6 +73,28 @@ function keyOf(subject: LeaseSubject): LeaseKey {
 	return subject.kind === "broker"
 		? { kind: "broker", brokerId: subject.brokerId }
 		: { kind: "presence", targetIdentity: subject.targetIdentity };
+}
+
+/** A copy of `subject` with every string well formed, as a shared database stores it (#6560). */
+function stored<Subject extends LeaseSubject>(subject: Subject): Subject {
+	return JSON.parse(JSON.stringify(subject), (_key, value: unknown) =>
+		typeof value === "string" ? value.toWellFormed() : value,
+	);
+}
+
+/** Whether a send to `named` may resolve to the presence `subject`: what `listLiveFor` lists, exactly. */
+function mayName(subject: RecipientPresenceSubject, named: string): boolean {
+	const target = named.toWellFormed();
+	const trimmed = target.trim();
+	const { id, name } = subject.session;
+	return (
+		id === target ||
+		id === trimmed ||
+		(name !== undefined && [target, trimmed].some((each) => name.toLowerCase() === each.toLowerCase())) ||
+		(/^[0-9a-f]{8}$/i.test(trimmed) && id.toLowerCase().startsWith(trimmed.toLowerCase())) ||
+		returnAddressOf(subject.targetIdentity)?.toWellFormed() === trimmed ||
+		subject.aliases?.some((alias) => alias.id === target) === true
+	);
 }
 
 function invalidKey(kind: LeaseKey["kind"], id: string): InvalidStateInput | undefined {
@@ -130,7 +154,7 @@ function leaseStore(records: Map<string, LeaseRecord>, nextOrder: { value: numbe
 			}
 			const holder = record.holder;
 			if (holder !== undefined && holder.holderId === holderId) {
-				holder.subject = structuredClone(subject);
+				holder.subject = stored(subject);
 				holder.renewedAt = Date.now();
 				return { status: "acquired", lease: lease(holder) };
 			}
@@ -141,7 +165,7 @@ function leaseStore(records: Map<string, LeaseRecord>, nextOrder: { value: numbe
 			record.holder = {
 				holderId,
 				fencingToken: record.lastToken,
-				subject: structuredClone(subject),
+				subject: stored(subject),
 				renewedAt: Date.now(),
 			};
 			return { status: "acquired", lease: lease(record.holder) };
@@ -157,7 +181,7 @@ function leaseStore(records: Map<string, LeaseRecord>, nextOrder: { value: numbe
 			}
 			if (!owns(record, candidate)) return stale(record);
 			const holder = record!.holder!;
-			if (subject !== undefined) holder.subject = structuredClone(subject);
+			if (subject !== undefined) holder.subject = stored(subject);
 			holder.renewedAt = Date.now();
 			return { status: "renewed" };
 		},
@@ -181,6 +205,22 @@ function leaseStore(records: Map<string, LeaseRecord>, nextOrder: { value: numbe
 					record.holder !== undefined &&
 					record.holder.subject.kind === kind &&
 					isLive(record.holder.renewedAt, staleAfterMs)
+						? [state(record.holder)]
+						: [],
+				);
+		},
+		async listLiveFor(target, staleAfterMs) {
+			return (await this.listLive("presence", staleAfterMs)).filter(
+				(lease) => lease.subject.kind === "presence" && mayName(lease.subject, target),
+			);
+		},
+		async listAged(kind, minAgeMs) {
+			return [...records.values()]
+				.sort((left, right) => left.order - right.order)
+				.flatMap((record) =>
+					record.holder !== undefined &&
+					record.holder.subject.kind === kind &&
+					ageOf(record.holder.renewedAt) >= minAgeMs
 						? [state(record.holder)]
 						: [],
 				);

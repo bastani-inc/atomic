@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import type { SqliteDatabase } from "@bastani/atomic/storage";
+import type { SqliteDatabase, SqliteExecutor } from "@bastani/atomic/storage";
 import { describe, test } from "vitest";
-import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
+import {
+	openDatabaseWakeUpBus,
+	type WakeUpPollScheduler,
+} from "../../packages/intercom/broker/database-wake-up-bus.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpHint } from "../../packages/intercom/broker/wake-up-bus.js";
 import { registerWakeUpBusConformance } from "../helpers/intercom-multinode-contract.js";
 import { type PostgresScope, postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
@@ -56,6 +59,22 @@ async function listening(scope: PostgresScope): Promise<void> {
 		assert.ok(Date.now() < deadline, "the bus never listened");
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
+}
+
+/** `database`, recording each statement it runs outside a transaction that names the wake-up table. */
+function recordingWakeUps<T extends SqliteExecutor>(database: T, statements: string[]): T {
+	return new Proxy(database, {
+		get(target, key) {
+			const value = Reflect.get(target, key, target);
+			if (typeof value !== "function") return value;
+			if (key === "run" || key === "get" || key === "all")
+				return (sql: string, ...params: unknown[]) => {
+					if (sql.includes("intercom_wakeups")) statements.push(sql.trim().split(/\s+/)[0]!);
+					return value.call(target, sql, ...params);
+				};
+			return value.bind(target);
+		},
+	});
 }
 
 describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on Postgres (#5103)", () => {
@@ -180,6 +199,61 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on Postgres
 				assert.deepEqual(
 					versions,
 					Array.from({ length: count }, (_, version) => version),
+				);
+			} finally {
+				await publisher.close();
+				await subscriber.close();
+			}
+		});
+	});
+
+	test("a poll takes and deletes its broker's hints in one statement, in the order they were published (#6560)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const unreachable = "postgres://atomic@127.0.0.1:1/atomic";
+			let poll: (() => void) | undefined;
+			const schedule: WakeUpPollScheduler = (callback) => {
+				poll = callback;
+				return () => {
+					if (poll === callback) poll = undefined;
+				};
+			};
+			const statements: string[] = [];
+			const publisher = await openBus(scope, NEVER_POLL_MS, unreachable);
+			const reader = recordingWakeUps(await scope.open(), statements);
+			const subscriber = await openDatabaseWakeUpBus({
+				openDatabase: async () => recordingWakeUps(await scope.open({ listenUrl: unreachable }), statements),
+				prefix: PREFIX,
+				schedule,
+				reader,
+			});
+			try {
+				const received = await collect(subscriber, "broker-b");
+				for (const version of [1, 2, 3])
+					await publisher.publish({ brokerId: "broker-b", reason: "outbox", version });
+				await publisher.publish({ brokerId: "broker-c", reason: "outbox", version: 9 });
+				const runPoll = async () => {
+					statements.length = 0;
+					const callback = poll;
+					assert.ok(callback, "a poll is armed");
+					poll = undefined;
+					callback();
+					const deadline = performance.now() + FALLBACK_WAKE_BOUND_MS;
+					while (poll === undefined && performance.now() < deadline)
+						await new Promise((resolve) => setTimeout(resolve, 5));
+					return [...statements];
+				};
+				assert.deepEqual(await runPoll(), ["DELETE"], "one statement takes and deletes the hints");
+				await received.until(3, FALLBACK_WAKE_BOUND_MS);
+				assert.deepEqual(
+					received.hints.map(({ hint }) => hint.version),
+					[1, 2, 3],
+				);
+				assert.deepEqual(await runPoll(), ["DELETE"], "an empty poll is one statement too");
+				assert.equal(received.hints.length, 3, "a hint is delivered once");
+				assert.deepEqual(
+					await (await scope.open()).all(`SELECT broker_id FROM ${PREFIX}intercom_wakeups`),
+					[{ broker_id: "broker-c" }],
+					"another broker's hint stays",
 				);
 			} finally {
 				await publisher.close();

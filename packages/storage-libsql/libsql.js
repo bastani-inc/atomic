@@ -7,7 +7,8 @@ import { runInNewContext } from "node:vm";
 import { createSqliteDatabase, redactSecrets, StorageAdapterLoadError, switchToWriteAheadLog } from "@bastani/atomic/storage";
 
 /**
- * @typedef {{ url: string, authToken?: string, namespace?: string, headers?: Readonly<Record<string, string>> }} LibsqlDatabaseOptions
+ * @typedef {{ url: string, authToken?: string, namespace?: string, headers?: Readonly<Record<string, string>>, keepAliveMs?: number, concurrency?: number }} LibsqlDatabaseOptions
+ * @typedef {{ fetch(request: Request, signal: AbortSignal): Promise<Response>, close(): Promise<void>, destroy(): Promise<void> }} KeptConnections
  * @typedef {[typeof import("@libsql/hrana-client"), typeof import("@libsql/core/config"), typeof import("@libsql/core/uri"), typeof import("@libsql/core/api")]} ServerProtocol
  */
 
@@ -40,6 +41,68 @@ function requestHeaders(url, namespace, headers) {
 			'The libSQL storage adapter sends "namespace" and "headers" only over HTTP: use a libsql:, https: or http: URL',
 		);
 	return added;
+}
+
+/**
+ * `keepAliveMs` checked: a positive integer, or undefined to keep the runtime's own idle timeout. It is honoured only for
+ * HTTP: a WebSocket URL keeps its one connection open anyway.
+ * @param {string} url
+ * @param {unknown} keepAliveMs
+ * @returns {number | undefined}
+ */
+function keptAliveMs(url, keepAliveMs) {
+	if (keepAliveMs === undefined) return undefined;
+	if (typeof keepAliveMs !== "number" || !Number.isInteger(keepAliveMs) || keepAliveMs <= 0)
+		throw new TypeError('The libSQL storage adapter\'s "keepAliveMs" option must be a positive integer of milliseconds');
+	if (!/^(libsql|https?):/i.test(url)) return undefined;
+	return keepAliveMs;
+}
+
+/**
+ * How long, on Bun, a connection to a server may sit idle before the next request opens a new one instead, unless
+ * `keepAliveMs` says otherwise: the 4 seconds of undici's `keepAliveTimeout`, which Node's fetch keeps an idle
+ * connection for. Turso closes an idle connection 5 seconds after its last response and sends no `Keep-Alive` header,
+ * while Bun keeps one in its pool for at least 8 seconds (oven-sh/bun#45138). A request Bun sends on a connection just
+ * as the server closes it fails with `ECONNRESET`, and the adapter cannot tell whether the server ran it.
+ */
+const BUN_IDLE_CONNECTION_MS = 4_000;
+
+/**
+ * Bun's connections for one driver's requests, in a `Bun.FetchSession` of their own that keeps at most one idle
+ * connection: the one whose answer came last. A request after `idleMs` without an answer first closes that connection,
+ * so it never goes over a connection the server may be closing. The idle time counts from when `fetch` resolved,
+ * before Bun had read the body and returned the connection, so it is never shorter than the connection's. Bun's own
+ * shortest idle timeout is 8 seconds (`keepAlive.idleTimeout` moves in 4-second steps), and it does not keep a request
+ * off the pool for a `Connection: close` header (oven-sh/bun#46027).
+ * @implements {KeptConnections}
+ */
+class IdleClosedConnections {
+	/** @param {number} idleMs */
+	constructor(idleMs) {
+		this.idleMs = idleMs;
+		this.session = new Bun.FetchSession({ keepAlive: { maxIdleSockets: 1 } });
+		/** When the last answer arrived. */
+		this.answered = Number.NEGATIVE_INFINITY;
+	}
+
+	/**
+	 * @param {Request} request
+	 * @param {AbortSignal} signal
+	 */
+	async fetch(request, signal) {
+		if (performance.now() - this.answered > this.idleMs) this.session.close();
+		const response = await this.session.fetch(request, { signal });
+		this.answered = performance.now();
+		return response;
+	}
+
+	async close() {
+		this.session.close();
+	}
+
+	async destroy() {
+		this.session.close();
+	}
 }
 
 /**
@@ -340,12 +403,14 @@ class AbandonedStreams {
 /**
  * `fetch` that adds `headers` to every request the libSQL HTTP client sends, sends the closes `abandoned` keeps ahead of
  * it (a write waits for them), abandons a request after `REQUEST_TIMEOUT_MS`, wait included, and hands a stream's close
- * that failed to `abandoned` for resending.
+ * that failed to `abandoned` for resending. With `kept`, requests go over its connections instead of the runtime's
+ * pool.
  * @param {[string, string][]} headers
  * @param {AbandonedStreams} abandoned
+ * @param {KeptConnections} [kept]
  * @returns {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>}
  */
-function fetchWith(headers, abandoned) {
+function fetchWith(headers, abandoned, kept) {
 	return async (input, init) => {
 		const request = new Request(input, init);
 		for (const [name, value] of headers) request.headers.set(name, value);
@@ -359,7 +424,7 @@ function fetchWith(headers, abandoned) {
 			else abandoned.start();
 		}
 		try {
-			return await fetch(request, { signal });
+			return await (kept === undefined ? fetch(request, { signal }) : kept.fetch(request, signal));
 		} catch (error) {
 			await abandoned.failed(copy).catch(() => {});
 			throw error;
@@ -1111,6 +1176,23 @@ function driverResult(result) {
  */
 const FILE_BUSY_TIMEOUT_MS = 5000;
 
+/** How many reads one handle on a libSQL server runs at once by default: the libSQL client's own default limit. */
+export const DEFAULT_CONCURRENCY = 20;
+
+/**
+ * `concurrency` checked: a positive integer, `DEFAULT_CONCURRENCY` when absent. The libSQL client turns 0 into its
+ * default of 20 rather than lifting the limit, so 0 is refused instead of meaning something it does not.
+ * @param {unknown} concurrency
+ */
+function readConcurrency(concurrency) {
+	if (concurrency === undefined) return DEFAULT_CONCURRENCY;
+	if (typeof concurrency !== "number" || !Number.isInteger(concurrency) || concurrency < 1)
+		throw new TypeError(
+			'The libSQL storage adapter\'s "concurrency" option must be a positive integer, the most reads one connection runs at once',
+		);
+	return concurrency;
+}
+
 /**
  * Normal wall-clock and cumulative backoff sleep budget for retrying `SQLITE_BUSY` or `SQLITE_SCHEMA` from a libSQL
  * server. sqld answers a writer that meets its checkpoint `SQLITE_BUSY` at once, without waiting and without running
@@ -1544,8 +1626,38 @@ async function freeBytesOfFile(url) {
  * @param {LibsqlDatabaseOptions} options
  * @returns {Promise<import("@bastani/atomic/storage").SqliteDatabase>}
  */
-export async function openLibsqlDatabase({ url, authToken, namespace, headers }) {
+export async function openLibsqlDatabase({ url, authToken, namespace, headers, keepAliveMs, concurrency }) {
 	const added = requestHeaders(url, namespace, headers);
+	const reads = readConcurrency(concurrency);
+	const keptMs = keptAliveMs(url, keepAliveMs);
+	/** @type {(() => KeptConnections) | undefined} */
+	let keepConnections;
+	if (typeof process.versions.bun === "string") {
+		// Bun before 1.4.3 has no `FetchSession`: its requests go over Bun's own pool.
+		if (/^(libsql|https?):/i.test(url) && typeof Bun.FetchSession === "function")
+			keepConnections = () => new IdleClosedConnections(keptMs ?? BUN_IDLE_CONNECTION_MS);
+	} else if (keptMs !== undefined) {
+		try {
+			const { EnvHttpProxyAgent } = await import("undici");
+			keepConnections = () => {
+				// The same proxy rules as Node's own fetch in Atomic: HTTP_PROXY, HTTPS_PROXY and NO_PROXY, and HTTP/1.1.
+				const agent = new EnvHttpProxyAgent({
+					keepAliveTimeout: keptMs,
+					keepAliveMaxTimeout: keptMs,
+					allowH2: false,
+					proxyTunnel: true,
+				});
+				return {
+					// `dispatcher` is an option of Node's fetch, which is undici's.
+					fetch: (request, signal) => fetch(request, /** @type {RequestInit} */ ({ signal, dispatcher: agent })),
+					close: () => agent.close(),
+					destroy: () => agent.destroy(),
+				};
+			};
+		} catch (cause) {
+			throw new StorageAdapterLoadError("undici", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
+		}
+	}
 	/** @type {typeof import("@libsql/client").createClient} */
 	let createClient;
 	try {
@@ -1579,10 +1691,9 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		}
 	}
 	const redact = redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]);
-	const connect = () => createConnection(url, authToken, added, redact, createClient, protocol);
-	const database = connect();
-	// The reader shares the checked route and credentials, but no client, stream or queue. Reads need no write setup.
-	if (!local) database.openReader = async () => connect();
+	const driver = () => createDriver(url, authToken, added, redact, createClient, protocol, keepConnections, reads);
+	// A reader shares the checked route and credentials, but no client, stream or queue. Reads need no write setup.
+	const database = createSqliteDatabase({ ...driver(), openReader: driver });
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");
 		// Readers and the one writer of a file share it through the write-ahead log, as in Atomic's own SQLite stores;
@@ -1603,18 +1714,23 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 }
 
 /**
+ * The driver of a client of its own to `url`.
  * @param {string} url
  * @param {string | undefined} authToken
  * @param {[string, string][]} added
  * @param {(text: string) => string} redact
  * @param {typeof import("@libsql/client").createClient} createClient
  * @param {ServerProtocol | undefined} protocol
+ * @param {(() => KeptConnections) | undefined} keepConnections opens the connections this driver's requests go over, when
+ *   idle connections are to be kept longer than the runtime keeps them, or on Bun closed sooner
+ * @param {number} concurrency how many reads a server's driver runs at once
  */
-function createConnection(url, authToken, added, redact, createClient, protocol) {
+function createDriver(url, authToken, added, redact, createClient, protocol, keepConnections, concurrency) {
 	const local = protocol === undefined;
 	/** @type {import("@libsql/client").Client | undefined} */
 	let client;
 	const abandoned = new AbandonedStreams();
+	const kept = local ? undefined : keepConnections?.();
 	// Create the client inside a driver call, so the facade redacts credentials from its failures. The busy timeout is a
 	// client option, not a PRAGMA, because the client opens more connections than the one that ran the PRAGMA, and
 	// each needs it; a connection waits for a lock on the calling thread.
@@ -1624,7 +1740,7 @@ function createConnection(url, authToken, added, redact, createClient, protocol)
 			authToken,
 			intMode: "bigint",
 			...(local ? { timeout: FILE_BUSY_TIMEOUT_MS } : {}),
-			...(local ? {} : { fetch: fetchWith(added, abandoned) }),
+			...(local ? {} : { fetch: fetchWith(added, abandoned, kept), concurrency }),
 		});
 	// The Hrana client whose stream statements outside a transaction reuse, made on first use inside a driver call, as the
 	// client is, so the facade redacts credentials from a failure to read the URL.
@@ -1641,7 +1757,7 @@ function createConnection(url, authToken, added, redact, createClient, protocol)
 			const base = encodeBaseUrl(config.scheme, config.authority, config.path);
 			if (config.scheme === "ws" || config.scheme === "wss") hranaClient = hrana.openWs(base, config.authToken);
 			else {
-				const send = fetchWith(added, abandoned);
+				const send = fetchWith(added, abandoned, kept);
 				/** @type {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>} */
 				const tracked = (input, init) => {
 					const sent = send(input, init);
@@ -1754,13 +1870,20 @@ function createConnection(url, authToken, added, redact, createClient, protocol)
 	};
 	/** The server's location as diagnostics show it, without credentials. */
 	const redacted = redact(url);
-	return createSqliteDatabase({
+	/** @type {import("@bastani/atomic/storage").SqliteDriver} */
+	const driver = {
 		descriptor: { adapter: "libsql", location: url },
 		redact,
 		transientFailure,
 		payloadLimits: local ? LOCAL_PAYLOAD_LIMITS : SERVER_PAYLOAD_LIMITS,
 		// A server's disk is not this process's to see.
 		...(local ? { freeBytes: () => freeBytesOfFile(url) } : {}),
+		// A server transaction's stream sends the statements made while a request is out together, in order.
+		...(local ? {} : { pipelinedTransactions: true }),
+		// A server runs each read-only transaction on a stream of its own, and a lone `SELECT` that finds the reused stream
+		// busy on a stream of its own, so reads overlap while writes keep their turn. A local file's driver runs every call
+		// on the calling thread, so its reads gain nothing from overlapping.
+		...(local ? {} : { concurrentReads: concurrency, readsOnly }),
 		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.
 		lockBusy: (failure) => !local && isLockBusy(failure),
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy
@@ -1826,12 +1949,15 @@ function createConnection(url, authToken, added, redact, createClient, protocol)
 					if (!transaction.closed) started = true;
 				}
 			};
-			return {
-				...statements(async () => transaction, inTransaction, inTransaction),
-				commit: () => watch(() => transaction.commit()),
-				rollback: () => watch(() => transaction.rollback()),
-				close: () => transaction.close(),
-			};
+			if (local)
+				return {
+					...statements(async () => transaction, inTransaction, inTransaction),
+					commit: () => watch(() => transaction.commit()),
+					rollback: () => watch(() => transaction.rollback()),
+					close: () => transaction.close(),
+				};
+			const [hrana, , , api] = /** @type {ServerProtocol} */ (protocol);
+			return pipelinedTransaction(hrana, api, () => transaction, inTransaction, watch, options?.leading ?? []);
 		},
 		async close() {
 			reused?.drop();
@@ -1854,8 +1980,278 @@ function createConnection(url, authToken, added, redact, createClient, protocol)
 			probe?.close();
 			abandoned.close();
 			if (local) await releaseClosedConnections();
+			// The kept connections close once their requests end, or at once after the wait a stream's close gets.
+			if (kept !== undefined) {
+				/** @type {ReturnType<typeof setTimeout> | undefined} */
+				let timer;
+				const closed = kept.close().catch(() => {});
+				const late = await Promise.race([
+					closed.then(() => false),
+					new Promise((resolve) => {
+						timer = setTimeout(() => resolve(true), STREAM_CLOSE_WAIT_MS);
+					}),
+				]);
+				clearTimeout(timer);
+				if (late) await kept.destroy().catch(() => {});
+			}
 		},
+	};
+	return driver;
+}
+
+/**
+ * A call of a pipelined server transaction: a statement, or with `script` SQL text of one or more statements.
+ * @typedef {{
+ *   readonly sql: string,
+ *   readonly params: readonly import("@bastani/atomic/storage").SqliteValue[],
+ *   readonly script: boolean,
+ *   readonly operation: () => Promise<import("@bastani/atomic/storage").SqliteDriverResult | void>,
+ *   overtaken: boolean,
+ *   resolve: (value: any) => void,
+ *   reject: (error: unknown) => void,
+ * }} PipelinedCall
+ */
+
+/**
+ * Whether two statements' parameters are the same values.
+ * @param {readonly import("@bastani/atomic/storage").SqliteValue[]} first
+ * @param {readonly import("@bastani/atomic/storage").SqliteValue[]} second
+ */
+function sameParams(first, second) {
+	if (first.length !== second.length) return false;
+	return first.every((value, index) => {
+		const other = second[index];
+		if (value instanceof Uint8Array && other instanceof Uint8Array)
+			return value.length === other.length && value.every((byte, at) => byte === other[at]);
+		return value === other;
 	});
+}
+
+/**
+ * A server transaction whose statements go out without waiting for the answers before them (`pipelinedTransactions`).
+ *
+ * The transaction begins with its `leading` reads, sent with the `BEGIN` in one request and answered to the calls that
+ * make them, in order, until a call differs; without them, with its first statement. That request is retried as
+ * `inTransaction` retries it while the server refuses the `BEGIN`. A statement made before it settled waits for it, since
+ * sent alongside it it would run outside the transaction such a refusal ended. Later statements are held until the
+ * calls made with them are made, then sent together: the stream carries the statements of one turn in one request, in
+ * the order they were made. A commit made while statements are held sends them and the `COMMIT` as one batch, where the
+ * `COMMIT` runs only when every statement before it succeeded and a `ROLLBACK` runs otherwise: a transaction's last
+ * writes and its commit cost one request.
+ *
+ * A failed statement leaves a SQLite transaction open. One made after it was sent, before its answer came back, had
+ * no chance to react to it, so the commit then fails with that failure instead of committing what the others wrote,
+ * as a pipelined connection's commit must. A failure the caller saw before making its next statement keeps SQLite's
+ * meaning: the caller may handle it and commit the rest.
+ * @param {typeof import("@libsql/hrana-client")} hrana
+ * @param {typeof import("@libsql/core/api")} api
+ * @param {() => import("@libsql/client").Transaction} current the transaction, which a refused `BEGIN` replaces
+ * @param {<T>(operation: () => Promise<T>) => Promise<T>} inTransaction
+ * @param {<T>(operation: () => Promise<T>) => Promise<T>} watch
+ * @param {readonly import("@bastani/atomic/storage").SqliteStatement[]} leading
+ * @returns {Promise<import("@bastani/atomic/storage").SqliteDriverTransaction>}
+ */
+async function pipelinedTransaction(hrana, api, current, inTransaction, watch, leading) {
+	/** @param {unknown} error */
+	const mapped = (error) =>
+		error instanceof hrana.ClientError
+			? new api.LibsqlError(error.message, hranaCode(hrana, error), undefined, undefined, error)
+			: error;
+	/** The request that began the transaction, once sent. @type {Promise<unknown> | undefined} */
+	let first;
+	/** Calls follow the first in the order they were made. @type {Promise<unknown>} */
+	let tail = Promise.resolve();
+	/** Calls made, not yet sent. @type {PipelinedCall[]} */
+	const held = [];
+	/** Calls sent, not yet answered. @type {Set<PipelinedCall>} */
+	const unanswered = new Set();
+	/** @type {Set<Promise<void>>} */
+	const settling = new Set();
+	/** @type {ReturnType<typeof setImmediate> | undefined} */
+	let flushing;
+	/** @type {{ readonly error: unknown } | undefined} */
+	let unseen;
+	/** Set once a batch with the `COMMIT` went out: the transaction ended there, committed or rolled back. */
+	let ended = false;
+	/** @type {{ sql: string, params: readonly import("@bastani/atomic/storage").SqliteValue[], result: import("@bastani/atomic/storage").SqliteDriverResult }[]} */
+	let lead = [];
+
+	/** @param {PipelinedCall} call @param {Promise<unknown>} answered */
+	const track = (call, answered) => {
+		unanswered.add(call);
+		const settled = answered.then(
+			() => {
+				unanswered.delete(call);
+			},
+			(error) => {
+				unanswered.delete(call);
+				if (call.overtaken) unseen ??= { error };
+			},
+		);
+		settling.add(settled);
+		void settled.then(() => settling.delete(settled));
+	};
+	/** @param {PipelinedCall} call */
+	const send = (call) => {
+		const answered = inTransaction(call.operation);
+		track(call, answered);
+		answered.then(call.resolve, call.reject);
+	};
+	const flush = () => {
+		flushing = undefined;
+		for (const call of held.splice(0)) send(call);
+	};
+	/** @param {PipelinedCall} call */
+	const hold = (call) => {
+		held.push(call);
+		flushing ??= setImmediate(flush);
+	};
+	/**
+	 * @param {string} sql
+	 * @param {readonly import("@bastani/atomic/storage").SqliteValue[]} params
+	 * @param {boolean} script
+	 * @param {PipelinedCall["operation"]} operation
+	 * @returns {Promise<any>}
+	 */
+	const make = (sql, params, script, operation) => {
+		const next = lead[0];
+		if (!script && next !== undefined && next.sql === sql && sameParams(next.params, params)) {
+			lead.shift();
+			return Promise.resolve(next.result);
+		}
+		lead = [];
+		for (const earlier of unanswered) earlier.overtaken = true;
+		for (const earlier of held) earlier.overtaken = true;
+		return new Promise((resolve, reject) => {
+			/** @type {PipelinedCall} */
+			const call = { sql, params, script, operation, overtaken: false, resolve, reject };
+			if (first === undefined) {
+				const answered = inTransaction(operation);
+				first = answered;
+				tail = answered.catch(() => {});
+				track(call, answered);
+				answered.then(resolve, reject);
+				return;
+			}
+			tail = tail.then(() => hold(call));
+		});
+	};
+
+	if (leading.length > 0) {
+		const began = inTransaction(() =>
+			current().batch(leading.map(({ sql, params }) => ({ sql, args: [...params] }))),
+		);
+		first = began;
+		tail = began.catch(() => {});
+		try {
+			const results = await began;
+			lead = leading.map(({ sql, params }, index) => ({ sql, params, result: driverResult(results[index]) }));
+		} catch (error) {
+			// A transaction the server never began fails here; one whose reads failed after it began goes on, and its
+			// callback makes the reads again.
+			if (current().closed) throw error;
+		}
+	}
+
+	/**
+	 * Sends `calls`, each one statement, and the `COMMIT` in one batch on the transaction's stream, where each runs only
+	 * after the one before it succeeded, and a `ROLLBACK` runs when the `COMMIT` did not.
+	 * @param {readonly PipelinedCall[]} calls
+	 */
+	const commitWith = async (calls) => {
+		ended = true;
+		const stream = /** @type {{ _getStream(): import("@libsql/hrana-client").Stream }} */ (
+			/** @type {unknown} */ (current())
+		)._getStream();
+		const batch = stream.batch(false);
+		/** @type {import("@libsql/hrana-client").BatchStep | undefined} */
+		let last;
+		const ran = calls.map(({ sql, params }) => {
+			const step = batch.step();
+			if (last !== undefined) step.condition(hrana.BatchCond.ok(last));
+			last = step;
+			const statement = new hrana.Stmt(sql);
+			statement.bindIndexes(/** @type {import("@libsql/hrana-client").InValue[]} */ ([...params]));
+			return settle(step.query(statement));
+		});
+		const commit = batch.step();
+		if (last !== undefined) commit.condition(hrana.BatchCond.ok(last));
+		const committed = settle(commit.run("COMMIT"));
+		void settle(batch.step().condition(hrana.BatchCond.not(hrana.BatchCond.ok(commit))).run("ROLLBACK"));
+		const executed = batch.execute();
+		stream.closeGracefully();
+		try {
+			await executed;
+		} catch (error) {
+			const failure = mapped(error);
+			for (const call of calls) call.reject(failure);
+			throw failure;
+		}
+		/** @type {unknown} */
+		let failed;
+		for (const [index, outcome] of (await Promise.all(ran)).entries()) {
+			const call = /** @type {PipelinedCall} */ (calls[index]);
+			if (!outcome.ok) {
+				const failure = mapped(outcome.error);
+				failed ??= failure;
+				call.reject(failure);
+			} else if (outcome.value === undefined) {
+				call.reject(
+					new api.LibsqlError(
+						"Statement in a transaction was not executed, probably because the transaction has been rolled back",
+						"TRANSACTION_CLOSED",
+					),
+				);
+			} else {
+				call.resolve({
+					columns: outcome.value.columnNames.map((name) => name ?? ""),
+					rows: /** @type {import("@bastani/atomic/storage").SqliteDriverResult["rows"]} */ (outcome.value.rows),
+					changes: outcome.value.affectedRowCount,
+				});
+			}
+		}
+		if (failed !== undefined) throw failed;
+		const commitment = await committed;
+		if (!commitment.ok) throw mapped(commitment.error);
+		if (commitment.value === undefined)
+			throw new api.LibsqlError(
+				"The transaction did not execute its COMMIT; it ended before completion could be confirmed",
+				"TRANSACTION_CLOSED",
+			);
+	};
+
+	return {
+		execute: (sql, params) =>
+			make(sql, params, false, async () => driverResult(await current().execute({ sql, args: [...params] }))),
+		executeMultiple: (sql) => make(sql, [], true, () => current().executeMultiple(sql)),
+		commit: async () => {
+			await tail;
+			if (flushing !== undefined) clearImmediate(flushing);
+			flushing = undefined;
+			const calls = held.splice(0);
+			// A statement already sent may still fail: the held ones and the commit go once it is answered.
+			if (calls.some(({ script }) => script)) {
+				for (const call of calls) send(call);
+				calls.length = 0;
+			}
+			while (settling.size > 0) await Promise.all(settling);
+			if (unseen !== undefined) {
+				for (const call of calls) call.reject(unseen.error);
+				throw unseen.error;
+			}
+			if (calls.length === 0) return watch(() => current().commit());
+			return watch(() => commitWith(calls));
+		},
+		rollback: async () => {
+			if (flushing !== undefined) clearImmediate(flushing);
+			flushing = undefined;
+			for (const call of held.splice(0))
+				call.reject(new api.LibsqlError("The transaction rolled back before the statement was sent", "TRANSACTION_CLOSED"));
+			if (ended) return;
+			return watch(() => current().rollback());
+		},
+		close: () => current().close(),
+	};
 }
 
 /** @satisfies {import("@bastani/atomic/storage").StorageAdapterModule} */
@@ -1872,6 +2268,9 @@ const adapter = {
 			url: options.url,
 			authToken: typeof options.authToken === "string" ? options.authToken : undefined,
 			...(options.namespace === undefined ? {} : { namespace: options.namespace }),
+			// A value that is not a number reaches the option's check, which names it.
+			...(options.keepAliveMs === undefined ? {} : { keepAliveMs: /** @type {number} */ (options.keepAliveMs) }),
+			...(options.concurrency === undefined ? {} : { concurrency: /** @type {number} */ (options.concurrency) }),
 		});
 	},
 };

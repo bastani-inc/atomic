@@ -62,10 +62,20 @@ function failure(error) {
 	};
 }
 
+const prepared = new Map();
+
 function statement(sql) {
-	const prepared = database.prepare(sql);
-	prepared.setReadBigInts(true);
-	return prepared;
+	const cached = prepared.get(sql);
+	if (cached !== undefined) {
+		prepared.delete(sql);
+		prepared.set(sql, cached);
+		return cached;
+	}
+	const made = database.prepare(sql);
+	made.setReadBigInts(true);
+	prepared.set(sql, made);
+	if (prepared.size > workerData.statementCacheSize) prepared.delete(prepared.keys().next().value);
+	return made;
 }
 
 // Node 22 binds an empty Uint8Array that arrived in a message as NULL; a new empty one binds as a zero-length blob.
@@ -168,6 +178,7 @@ const handlers = {
 		}
 	},
 	close: () => {
+		prepared.clear();
 		database?.close();
 		globalThis.Bun?.gc?.(true);
 	},
@@ -371,6 +382,9 @@ const WORKER_CODE_OPTIONS = new Set(["--require", "-r", "--import", "--loader", 
 /** The thread `startSpare` started for the next open, until an open takes it or `releaseSpare` ends it. */
 let spare: ThreadConnection | undefined;
 
+/** How many prepared statements a connection keeps for reuse, least recently used first out. */
+export const STATEMENT_CACHE_SIZE = 256;
+
 /** A node:sqlite connection running on its own worker thread. */
 export class ThreadConnection {
 	private readonly worker: Worker;
@@ -386,7 +400,7 @@ export class ThreadConnection {
 		this.worker = new Worker(CONNECTION_SOURCE, {
 			eval: true,
 			execArgv: [],
-			workerData: { nowSql: `SELECT ${sqliteDialect.nowMs} AS now` },
+			workerData: { nowSql: `SELECT ${sqliteDialect.nowMs} AS now`, statementCacheSize: STATEMENT_CACHE_SIZE },
 		});
 		this.worker.on("message", (reply: ConnectionReply) => this.receive(reply));
 		this.worker.on("error", (error: Error) => this.end(error));

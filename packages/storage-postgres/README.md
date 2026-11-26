@@ -64,8 +64,13 @@ chmod 600 ~/.atomic/postgres-password
 | `url` | Yes | A `postgres://` or `postgresql://` URL with a username and no embedded password. Any password in the URL or a `password=` query parameter is refused (`credential-in-url`). |
 | `password` | When using password auth | Pass through `secrets.password` (`{ "file": ... }`, `{ "env": ... }`, or `inMemorySecret()` in SDK `{ kind: "adapter" }` selections). Because the adapter declares `liveSecrets: ["password"]`, Atomic rereads `secrets.password` for every new connection and ignores `options.password`, throwing `StorageConfigError` (`reason: "secret-missing"`) when `secrets.password` is omitted. |
 | `auth` | No | `"password"` (default), or `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` for [cloud IAM authentication](#cloud-iam-authentication). Omit `secrets.password` when using cloud `auth`; direct SDK calls to `openPostgresDatabase()` reject combining cloud `auth` with `password` (`conflicting-token`). |
-| `maxConnections` | No | Maximum open connections per Atomic process. Default `8`. |
-| `statementTimeoutMs` | No | Maximum runtime for one statement in milliseconds before the server cancels it. Default `30000`. |
+| `maxConnections` | No | Most connections one Atomic process opens in its main pool. Default `8`. A positive integer. Every store a process opens on the same URL, role, password, schema and pool options shares one main pool and one reader pool. For high throughput, set it as high as the server's `max_connections` allows; see [Tuning](#tuning-for-many-agents). |
+| `readerMaxConnections` | No | Most connections in the process's separate pool for reads, capped at `maxConnections`. Default `2`. `0` turns the separate pool off, so reads share the main pool. |
+| `statementTimeoutMs` | No | How long one statement may run, in milliseconds, before the server cancels it. Default `30000`. |
+| `connectTimeoutMs` | No | How long opening a connection, or waiting for a free one, may take, in milliseconds. Default `10000`. |
+| `idleTimeoutMs` | No | How long, in milliseconds, a pool's last connection stays open after the pool's last call. Default `300000`. Connections opened for a burst close after 10 seconds idle. |
+| `keepAliveIdleMs` | No | How long a connection sits unused, in milliseconds, before TCP keepalive probes start. Default `60000`. |
+| `maxPreparedStatements` | No | How many statements each pooled connection keeps prepared, so the server parses and plans each one once per connection instead of on every call. Default `256`, or `0` (off) when `listenUrl` is set or the URL's port is `6432` or `6543`, where a transaction pooler usually sits. Set `0` to turn them off, for example behind a pooler without prepared-statement support. Each prepared statement uses some server memory on its connection. |
 | `listenUrl` | No | Direct session-mode endpoint for wake-up notifications when `url` goes through a transaction pooler. Defaults to `url`. Enforces the same URL, TLS, proxy, and no-embedded-password rules as `url` (`credential-in-url`). |
 | `schema` | No | Lowercase schema name for Atomic's tables. Default `atomic`. Databases with earlier tables in `public` and no `atomic` schema keep using `public` until `atomic storage migrate` moves them. Every transaction sets `SET LOCAL search_path`. |
 | `proxy` | No | An `http://` or `https://` proxy URL for `CONNECT` tunneling, or `"none"` to connect directly. Defaults to environment proxy settings. |
@@ -90,11 +95,25 @@ In environments that require an outbound HTTP proxy, every connection (pooled co
 - **Direct overrides:** Loopback hosts and Unix socket directories bypass environment proxies. Setting `options.proxy` overrides environment variables for TCP hosts, while socket directories always connect directly.
 - **Security and errors:** Proxy credentials are sent in `Proxy-Authorization` and redacted from logs and errors. TLS runs end to end through the tunnel, so keep `sslmode=verify-full` (or `verify-ca` with a private `sslrootcert` CA) to prevent proxy interception. A refused tunnel fails with `StorageUnavailableError` naming both the proxy and target `host:port`.
 
+### Connections and readers
+
+Calls from one process that cannot conflict run at the same time, each on its own connection. Writes to different sessions are one example, and read-only transactions are another. Calls that conflict, such as two writes to one session, run in the order they were made. A transaction sends its statements without waiting for each answer, so saving entries to a session takes 2 round trips.
+
+`openReader()` returns a handle for reads. Every reader of the process shares one pool of up to `readerMaxConnections` connections, so reads do not wait for connections that writes are using. Closing the database also closes its readers.
+
+Connections opened for a burst close after 10 seconds without use. A pool's last connection stays open for `idleTimeoutMs` after the pool's last call, with TCP keepalive, so the next call skips the connection and TLS handshakes. Unused connections never keep the process from exiting.
+
+### Tuning for many agents
+
+Every Atomic process on every machine shares the server's `max_connections`. For high throughput, give each process as many connections as that limit allows. When it cannot give each process at least 2, connect through PgBouncer in transaction mode, as the [PgBouncer guide](https://docs.bastani.ai/guides/postgres-pgbouncer) describes. The [tuning guide](https://docs.bastani.ai/storage#tuning-for-many-concurrent-agents) shows how to count connections, worked examples, and the queries and errors that tell you what to change.
+
 ### Connection poolers and wake-ups
 
-The adapter works through transaction-mode poolers such as PgBouncer and Supavisor. It avoids session-level state, session locks, and named prepared statements.
+The adapter works through transaction-mode poolers such as PgBouncer and Supavisor. It avoids session-level state and session locks.
 
-Each process also opens one connection outside the pool to `LISTEN` for wake-up notifications so Intercom brokers deliver new messages immediately. Because transaction-mode poolers do not forward `LISTEN`/`NOTIFY`, the adapter detects this automatically and falls back to polling unless `listenUrl` points to a direct endpoint. No messages are lost without wake-ups; run `atomic storage status` to see which mode is active.
+Prepared statements are off by default behind a pooler: when `listenUrl` is set, or the URL's port is `6432` (PgBouncer) or `6543` (Supavisor). PgBouncer 1.21 and later supports them in transaction mode once `max_prepared_statements` is above `0`, which is the default from 1.24; there, set `maxPreparedStatements` to turn them on. Supavisor's shared pooler does not support them in transaction mode. If a pooler on another port loses or mixes up prepared statements, the server reports `prepared statement "atomic_…" does not exist` or `already exists`: the adapter runs that call again and sends every later statement unprepared, and you can set `maxPreparedStatements` to `0` to avoid that first failure.
+
+Each Intercom broker also opens one connection outside the pools to `LISTEN` for wake-up notifications, so it delivers new messages immediately. Because transaction-mode poolers do not forward `LISTEN`/`NOTIFY`, the adapter detects this automatically and falls back to polling unless `listenUrl` points to a direct endpoint. No messages are lost without wake-ups; run `atomic storage status` to see which mode is active.
 
 ### Errors and retries
 
@@ -110,7 +129,7 @@ Each process also opens one connection outside the pool to `LISTEN` for wake-up 
 - Azure certificates chain to CAs trusted by Node.js, so no extra TLS parameter is required.
 - The administrator belongs to `azure_pg_admin` rather than superuser; the owner and runtime role setup in [Set up the database](https://docs.bastani.ai/storage#set-up-the-database) works without changes.
 - Add `PG_TRGM` to the `azure.extensions` server parameter before running `atomic storage migrate`. Without `pg_trgm`, session history search scans sessions page by page.
-- Watch the server's connection limit. A Burstable B1ms server allows 50 connections (15 reserved for administrators), and each Atomic process opens up to `maxConnections` (8) plus one wake-up connection. Lower `maxConnections`, use PgBouncer, or choose a larger tier when running many processes.
+- Watch the server's connection limit. A Burstable B1ms server allows 50 connections (15 reserved for administrators), and each Atomic process opens up to `maxConnections` (8), 2 reader connections, and one wake-up connection, however many stores it opens. Lower `maxConnections`, use PgBouncer, or choose a larger tier when running many processes.
 
 **Azure HorizonDB (preview), PostgreSQL 17:**
 

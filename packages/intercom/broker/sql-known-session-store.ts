@@ -13,7 +13,7 @@ import type {
 	SessionIdReclaim,
 	SessionIdReclaimResult,
 } from "./multinode-state-store.js";
-import { ensureBrokerSchema } from "./sql-schema.js";
+import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type BindingRow = SqliteRow & { return_address: string; owner_token?: string | null; owner_broker?: string | null };
 
@@ -66,9 +66,16 @@ function stateFromRow(row: KnownRow): KnownSessionState {
  * `toLowerCase` form the lookup compares. Table `<prefix>intercom_session_bindings` binds each Intercom id to the return
  * address of the session that registered it (`""` for none).
  */
-export async function openSqlKnownSessionStore({
+export function openSqlKnownSessionStore(options: IntercomBrokerStateOptions): Promise<KnownSessionStore> {
+	// Its schema checks answer from one read of the catalog, shared with an open around it: a current schema costs
+	// no transaction and no lock, also when the store is opened on its own (#6560).
+	return withBrokerSchemaCatalog(options.database, options.prefix, () => openKnownSessionStoreInCatalog(options));
+}
+
+async function openKnownSessionStoreInCatalog({
 	database,
 	prefix,
+	reader = database,
 }: IntercomBrokerStateOptions): Promise<KnownSessionStore> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_known_sessions`;
 	const bindings = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_session_bindings`;
@@ -349,7 +356,8 @@ export async function openSqlKnownSessionStore({
 		},
 		async lookup(target, retentionMs): Promise<KnownSessionLookupResult> {
 			if (target.length === 0) return { status: "invalid", reason: "empty-target" };
-			const rows = await database.all<KnownRow>(
+			// Through the reader, which never waits behind this database's writes (#6560).
+			const rows = await reader.all<KnownRow>(
 				// One reading of the clock, so a session found within the retention reports an age within it too.
 				`WITH clock AS (SELECT ${nowMs} AS now)
 				SELECT target_identity, intercom_session_id${aliasColumn}, name_json, atomic_session_id, group_name, groups_json,
@@ -375,7 +383,7 @@ export async function openSqlKnownSessionStore({
 		...(owned ? { owners } : {}),
 		async binding(intercomSessionId, retentionMs): Promise<KnownSessionBindingResult> {
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
-			const bound = await database.get<BindingRow>(
+			const bound = await reader.get<BindingRow>(
 				`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ? AND ${nowMs} - recorded_at <= ?`,
 				intercomSessionId,
 				retentionMs,
@@ -392,14 +400,18 @@ export async function openSqlKnownSessionStore({
 		},
 		async markLost(targetIdentities): Promise<void> {
 			if (targetIdentities.length === 0) return;
-			await database.transaction(async (tx) => {
-				for (const identity of targetIdentities) {
-					await tx.run(
-						`UPDATE ${table} SET lost_at = ${nowMs} WHERE target_identity = ? AND lost_at IS NULL`,
-						identity,
-					);
-				}
-			});
+			// Each row's write is guarded on its own: only other `markLost`s, locking the same rows, are excluded (#6560).
+			await database.transaction(
+				async (tx) => {
+					for (const identity of targetIdentities) {
+						await tx.run(
+							`UPDATE ${table} SET lost_at = ${nowMs} WHERE target_identity = ? AND lost_at IS NULL`,
+							identity,
+						);
+					}
+				},
+				{ concurrency: { kind: "serial", domain: table } },
+			);
 		},
 		async listLost(olderThanMs): Promise<KnownSessionState[]> {
 			const rows = await database.all<KnownRow>(

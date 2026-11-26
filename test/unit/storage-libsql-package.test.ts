@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { readlinkSync, writeFileSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { constants, PerformanceObserver } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
@@ -487,6 +489,34 @@ test("extra headers are sent and redacted from failures (#4083)", async () => {
 		assert.ok(server.seen.every((headers) => headers["x-proxy-key"] === secret));
 	} finally {
 		await server.close();
+	}
+});
+
+test("concurrency must be a positive integer, through the SDK and the adapter alike (#6565)", async () => {
+	const { openLibsqlDatabase, DEFAULT_CONCURRENCY } = await import("../../packages/storage-libsql/libsql.js");
+	assert.equal(DEFAULT_CONCURRENCY, 20);
+	for (const concurrency of [0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY])
+		await assert.rejects(
+			openLibsqlDatabase({ url: "libsql://example.invalid", concurrency }),
+			/"concurrency" option must be a positive integer/,
+		);
+	const adapter = await packageAdapter("sessions");
+	for (const concurrency of [0, "8", true])
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				adapter.openDatabase?.(
+					{ url: "libsql://example.invalid", concurrency },
+					{ agentDir: packageRoot, domain: "sessions" },
+				),
+			),
+			/"concurrency" option must be a positive integer/,
+		);
+	const file = `file:${join(await mkdtemp(join(tmpdir(), "libsql-concurrency-")), "db.sqlite")}`;
+	const database = await openLibsqlDatabase({ url: file, concurrency: 64 });
+	try {
+		assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+	} finally {
+		await database.close();
 	}
 });
 

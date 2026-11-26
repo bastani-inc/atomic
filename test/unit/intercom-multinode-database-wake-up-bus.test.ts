@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
 	openDatabaseWakeUpBus,
 	WAKE_UP_POLL_INTERVAL_MS,
+	WAKE_UP_PRUNE_INTERVAL_MS,
 	WAKE_UP_RECONNECT_MAX_DELAY_MS,
 	type WakeUpPollScheduler,
 } from "../../packages/intercom/broker/database-wake-up-bus.js";
@@ -168,6 +169,44 @@ test("database wake-up bus deletes hints nobody consumed once they are older tha
 		}
 	} finally {
 		await file.close();
+	}
+});
+
+test("database wake-up bus prunes old hints at most once per prune interval, not at every publish (#6560)", async () => {
+	vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+	const directory = makeTempDirectory("atomic-intercom-wakeups-");
+	const path = join(directory, "storage.sqlite");
+	const connections: SqliteDatabase[] = [];
+	const prunes: string[] = [];
+	try {
+		const publisher = await openDatabaseWakeUpBus({
+			openDatabase: async () => {
+				const database = await openNodeSqliteDatabase(path);
+				connections.push(database);
+				return new Proxy(database, {
+					get(target, key) {
+						const value = Reflect.get(target, key, target);
+						if (key === "run")
+							return (sql: string, ...params: unknown[]) => {
+								if (/^DELETE .* WHERE created_at </s.test(sql.trim())) prunes.push(sql);
+								return (value as SqliteDatabase["run"]).call(target, sql, ...(params as []));
+							};
+						return typeof value === "function" ? value.bind(target) : value;
+					},
+				});
+			},
+		});
+		const publish = (version: number) => publisher.publish({ brokerId: "broker-b", reason: "outbox", version });
+		for (const version of [1, 2, 3, 4]) assert.deepEqual(await publish(version), { status: "published" });
+		assert.equal(prunes.length, 1, "the publishes within one interval prune once");
+		vi.setSystemTime(Date.now() + WAKE_UP_PRUNE_INTERVAL_MS);
+		await publish(5);
+		await publish(6);
+		assert.equal(prunes.length, 2, "the first publish of the next interval prunes again");
+		await publisher.close();
+	} finally {
+		vi.useRealTimers();
+		await closeThenRemove(connections, directory);
 	}
 });
 

@@ -3,15 +3,23 @@ import { StoragePrefixError } from "./errors.js";
 
 /**
  * What follows the prefix in every identifier Atomic names on PostgreSQL: the tables, indexes, triggers and trigger
- * functions of sessions, worktree snapshots and the Intercom broker state (#5067), and those the workflow run journal and
+ * functions of sessions, worktree snapshots and the Intercom broker state (#5067), the Intercom lease order sequence
+ * and the lease table's address indexes (#6560), and those the workflow run journal and
  * worker pools (#4793) of earlier releases left under the same prefix, pooled-stage sessions under
  * `POSTGRES_POOL_SESSION_PREFIX` included. Prefixes stay checked against them all, so a database those releases share
  * keeps every name whole. The storage adapters name none of their own, and
- * Postgres chooses constraint and sequence names itself. Longer pool names are in
+ * Postgres chooses constraint names and the sequences of serial columns itself. Longer pool names are in
  * `POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES`.
  */
 export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.freeze([
 	"atomic_migrations",
+	"intercom_ended_child_bodies",
+	"intercom_ended_child_meta",
+	"intercom_ended_child_queue",
+	"intercom_ended_child_queue_departure",
+	"intercom_ended_child_queue_home",
+	"intercom_ended_child_wakes",
+	"intercom_ended_child_wakes_home",
 	"intercom_held_sends",
 	"intercom_held_sends_reservation",
 	"intercom_known_sessions",
@@ -21,6 +29,12 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"intercom_known_sessions_name",
 	"intercom_known_sessions_recorded",
 	"intercom_leases",
+	"intercom_leases_order",
+	"intercom_leases_presence_alias",
+	"intercom_leases_presence_host",
+	"intercom_leases_presence_id",
+	"intercom_leases_presence_id_head",
+	"intercom_leases_presence_name",
 	"intercom_outbox",
 	"intercom_outbox_target",
 	"intercom_outbox_target_bytes",
@@ -44,6 +58,8 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"intercom_wakeups_created",
 	"session_blob_chunks",
 	"session_blobs",
+	"session_chat_v1",
+	"session_chat_v1_anchor",
 	"session_entries",
 	"session_entries_search_forget",
 	"session_entries_search_forget_fn",

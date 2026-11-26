@@ -117,6 +117,12 @@ export interface FakeLibsqlServerOptions {
 	readonly streamTtlMs?: number;
 	/** The port to listen on; 0, the default, picks a free one. */
 	readonly port?: number;
+	/**
+	 * Drops, unanswered and with a reset, a request that arrives on a connection idle this long since its last answer:
+	 * what a client meets when it reuses a connection just as the server closes it for idling, as Turso closes one
+	 * 5 seconds after its last response. Unset keeps idle connections open.
+	 */
+	readonly idleCloseMs?: number;
 }
 
 export interface FakeLibsqlServer {
@@ -126,6 +132,10 @@ export interface FakeLibsqlServer {
 	readonly database: DatabaseSync;
 	/** Every pipeline request the server received, faulted ones included. */
 	readonly pipelines: FakeLibsqlPipeline[];
+	/** The connections the server accepted so far. */
+	readonly connections: number;
+	/** The connections still open. */
+	readonly openConnections: number;
 	/** The pipeline requests carrying SQL that were answered with `STREAM_EXPIRED` (a stream's closing is not counted). */
 	readonly expiredStatements: number;
 	/** Applies `faults` to the next pipeline requests, one each, in order. */
@@ -501,7 +511,18 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		answer(response, 200, { baton: closing ? null : stream.baton, base_url: null, results });
 	};
 
+	/** When each connection last finished an answer. */
+	const answered = new WeakMap<Socket, number>();
 	const server = createServer((request, response) => {
+		const { socket } = request;
+		const idleSince = answered.get(socket);
+		if (
+			options.idleCloseMs !== undefined &&
+			idleSince !== undefined &&
+			performance.now() - idleSince >= options.idleCloseMs
+		)
+			return void socket.resetAndDestroy();
+		response.once("finish", () => answered.set(socket, performance.now()));
 		if (request.method === "POST" && request.url === "/v2/pipeline") {
 			handlePipeline(request, response).catch((error: unknown) => {
 				if (!response.headersSent)
@@ -515,7 +536,9 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 	// Node closes an idle keep-alive connection after 5 s. A client stopped longer would then meet a closed connection
 	// instead of its expired stream, so idle connections stay open, however long a client stays stopped.
 	server.keepAliveTimeout = 0;
+	let connections = 0;
 	server.on("connection", (socket) => {
+		connections++;
 		sockets.add(socket);
 		socket.once("close", () => sockets.delete(socket));
 	});
@@ -531,6 +554,12 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		pipelines,
 		get expiredStatements() {
 			return expiredStatements;
+		},
+		get connections() {
+			return connections;
+		},
+		get openConnections() {
+			return sockets.size;
 		},
 		fail: (...planned) => void faults.push(...planned),
 		onBatch(next) {

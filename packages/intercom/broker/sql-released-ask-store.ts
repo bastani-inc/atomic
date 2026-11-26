@@ -17,7 +17,7 @@ import type {
 	ReleasedAskSupersede,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
-import { ensureBrokerSchema } from "./sql-schema.js";
+import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 interface ReleasedAskRow extends SqliteRow {
 	readonly question_id: string;
@@ -69,9 +69,17 @@ function toRecord(row: ReleasedAskRow): ReleasedAskRecord {
 }
 
 /** S3 (#4386): `ReleasedAskStore` on the shared storage adapter's database, table `<prefix>intercom_released_asks`. */
-export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrokerStateOptions): Promise<ReleasedAskStore> {
+export function openSqlReleasedAskStore(options: IntercomBrokerStateOptions): Promise<ReleasedAskStore> {
+	// Its schema checks answer from one read of the catalog, shared with an open around it: a current schema costs
+	// no transaction and no lock, also when the store is opened on its own (#6560).
+	return withBrokerSchemaCatalog(options.database, options.prefix, () => openReleasedAskStoreInCatalog(options));
+}
+
+async function openReleasedAskStoreInCatalog({ database, prefix }: IntercomBrokerStateOptions): Promise<ReleasedAskStore> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_released_asks`;
 	const { types, nowMs, greatest } = dialectOf(database);
+	/** Its transactions read and write this table alone, so they exclude one another, not every writer (#6560). */
+	const serial = { concurrency: { kind: "serial", domain: table } } as const;
 	await ensureBrokerSchema(database, prefix, "released-asks", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
@@ -124,7 +132,7 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 					inserted += changes;
 				}
 				return inserted;
-			});
+			}, serial);
 			return { status: "kept", kept };
 		},
 		async lookup(key) {
@@ -153,7 +161,7 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 					return { status: row.reply_message_id === claim.replyMessageId ? "claimed" : "taken", ask: toRecord(row) } as const;
 				}
 				return claimFor(tx, claim, row);
-			});
+			}, serial);
 		},
 		async supersede(claim) {
 			const bad = invalidReleasedAskSupersede(claim);
@@ -169,7 +177,7 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 					return { status: row.reply_message_id === claim.replyMessageId ? "claimed" : "taken", ask: toRecord(row) } as const;
 				}
 				return claimFor(tx, claim, row);
-			});
+			}, serial);
 		},
 		async answer(claim) {
 			const bad = invalidReleasedAskClaim(claim);
@@ -216,6 +224,6 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 				claim.replierSessionId,
 			);
 			return { status: "settled" } as const;
-		});
+		}, serial);
 	}
 }

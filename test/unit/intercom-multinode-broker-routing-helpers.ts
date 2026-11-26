@@ -49,6 +49,8 @@ export class Node {
 	router!: MultiNodeRouter;
 	opened!: OpenedBrokerState;
 	database!: SqliteDatabase;
+	/** The reader handles this node's broker opened on `database`, which its bounded reads go through (#6560). */
+	readonly readers: SqliteDatabase[] = [];
 
 	constructor(
 		readonly name: string,
@@ -70,11 +72,28 @@ export class Node {
 		directory: string,
 		shared: SqliteDatabase,
 		wrapBus?: (bus: WakeUpBus) => WakeUpBus,
+		/** The broker state's table prefix: a storage backend scope's, on a server other scopes share. */
+		prefix = "mn_",
 	): Promise<Node> {
 		const node = new Node(name, directory);
 		node.database = shared;
+		const openReader = shared.openReader?.bind(shared);
+		const borrowed = borrowedDatabase(shared);
+		const recording =
+			openReader === undefined
+				? borrowed
+				: new Proxy(borrowed, {
+						get: (target, key) =>
+							key === "openReader"
+								? async () => {
+										const reader = await openReader();
+										node.readers.push(reader);
+										return reader;
+									}
+								: Reflect.get(target, key),
+					});
 		node.opened = await openIntercomBrokerState(
-			{ openDatabase: async () => borrowedDatabase(shared), prefix: "mn_" },
+			{ openDatabase: async () => recording, prefix },
 			{ pollIntervalMs: BUS_POLL_INTERVAL_MS },
 		);
 		node.router = await MultiNodeRouter.start({

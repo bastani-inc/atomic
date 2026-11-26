@@ -1,4 +1,5 @@
 import { dialectOf, type SqliteDatabase } from "@bastani/atomic/storage";
+import { catalogHasColumns } from "./sql-schema.js";
 
 function isLineTerminatorCode(code: number): boolean {
 	return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
@@ -80,7 +81,7 @@ function isDuplicateColumn(error: unknown): boolean {
  * A statement the database refused for a privilege the role lacks: the PostgreSQL adapter's `missing-privilege`, which
  * the database facade reports as the cause of its `StorageUnavailableError`.
  */
-function isMissingPrivilege(error: unknown): boolean {
+export function isMissingPrivilege(error: unknown): boolean {
 	let at = error;
 	for (let depth = 0; depth < 4 && typeof at === "object" && at !== null; depth++) {
 		if ((at as { reason?: unknown }).reason === "missing-privilege") return true;
@@ -123,6 +124,8 @@ export async function addMissingColumns(
 	withColumn?: string,
 ): Promise<void> {
 	const dialect = dialectOf(database);
+	// An open that read the catalog and found every column there runs no transaction (#6560).
+	if (await catalogHasColumns(database, table, Object.keys(columns))) return;
 	for (const [column, definition] of Object.entries(columns)) {
 		const probe = dialect.columnExists(table, column);
 		try {
