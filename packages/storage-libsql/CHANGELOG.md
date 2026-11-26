@@ -15,6 +15,7 @@
 
 - A transaction on a libSQL server sends its statements without waiting for each answer. Its first reads go with its `BEGIN`, and its last writes go with its `COMMIT`, so saving entries to a session takes 2 requests instead of 6. If a statement fails while later ones are already on their way, nothing in the transaction commits ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - `openReader()` is now also available for local `file:` databases, and closing a database also closes the readers it opened ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- A database on a libSQL server now tells Atomic which server and namespace it reaches. Atomic uses this to recognize two handles on the same database, and copies a session fork between them inside the database instead of staging it through another table. Local `file:` databases are unchanged ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ### Fixed
 

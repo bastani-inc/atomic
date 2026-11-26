@@ -1,4 +1,5 @@
 // @ts-check
+import { createHash } from "node:crypto";
 import { statfs } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -1693,7 +1694,18 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers, k
 	const redact = redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]);
 	const driver = () => createDriver(url, authToken, added, redact, createClient, protocol, keepConnections, reads);
 	// A reader shares the checked route and credentials, but no client, stream or queue. Reads need no write setup.
-	const database = createSqliteDatabase({ ...driver(), openReader: driver });
+	// Which database this one reaches (#6560): a server's URL with the headers that pick its database, such as the
+	// namespace, digested so no header's secret is kept in it. A local file has none: its URL may name it relative to a
+	// directory that changes.
+	const identity = local
+		? undefined
+		: JSON.stringify(["libsql", createHash("sha256").update(JSON.stringify([url, added])).digest("hex")]);
+	const databaseIdentity = identity === undefined ? undefined : () => identity;
+	const database = createSqliteDatabase({
+		...driver(),
+		openReader: driver,
+		...(databaseIdentity === undefined ? {} : { databaseIdentity }),
+	});
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");
 		// Readers and the one writer of a file share it through the write-ahead log, as in Atomic's own SQLite stores;

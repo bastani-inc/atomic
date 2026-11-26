@@ -1544,6 +1544,13 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
+	/** The database file's canonical path; undefined for a database in memory or a caller's wrapped connection. */
+	databaseIdentity(): string | undefined {
+		return typeof this.transactionIdentity === "string"
+			? JSON.stringify(["sqlite", this.transactionIdentity])
+			: undefined;
+	}
+
 	supportsJsonbExtract(): Promise<boolean> {
 		// Bun on macOS loads the system SQLite. Its functions need not match the build-time version.
 		this.jsonbExtract ??= this.enqueueStatement(() => this.executor.checkJsonbExtract(), true).catch(() => {

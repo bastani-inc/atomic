@@ -26,8 +26,15 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import {
+	type CountedStatement,
+	type ForkBlobCopy,
+	ForkRowRuns,
+	forkBlobCopy,
+	incompleteEntryRead,
+} from "./fork-row-copy.js";
 import { tryCleanupForkStaging } from "./fork-staging-maintenance.js";
-import { nativeForkReader, registerForkScope } from "./fork-store-scope.js";
+import { forkStoreRelation, nativeForkReader, registerForkScope } from "./fork-store-scope.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import { registerHistorySnapshot } from "./history-snapshot.js";
 import {
@@ -493,11 +500,20 @@ class SentWrites {
 		this.tx = tx;
 	}
 
-	async send(statements: Iterable<SqliteStatement>): Promise<void> {
+	/** Sends `statements`; a counted one fails when its answer reports another number of changed rows. */
+	async send(statements: Iterable<CountedStatement>): Promise<void> {
 		for (const statement of statements) {
+			const { changes, mismatch } = statement;
 			this.sent.push(
 				this.tx.run(statement.sql, ...statement.params).then(
-					() => {},
+					(result) => {
+						if (changes !== undefined && result.changes !== changes)
+							this.failure ??= {
+								error:
+									mismatch?.() ??
+									new StorageError(`A write changed ${result.changes} rows where ${changes} were expected`),
+							};
+					},
 					(error: unknown) => {
 						this.failure ??= { error };
 					},
@@ -607,7 +623,15 @@ export class SqlSessionStore implements SessionStore {
 		this.entryByteLength = entryByteLength;
 		this.tables = tables;
 		this.prefix = prefix ?? "";
-		registerForkScope(this, () => ({ kind: "sql", backing: this.database, prefix: this.prefix }));
+		registerForkScope(this, () => {
+			const identity = this.database.databaseIdentity?.();
+			return {
+				kind: "sql",
+				backing: this.database,
+				prefix: this.prefix,
+				...(identity === undefined ? {} : { identity }),
+			};
+		});
 		this.cwdMatcher = cwdMatcher;
 		this.snapshotBlobs = snapshotBlobs;
 		this.blobTable = snapshotBlobs;
@@ -1091,7 +1115,7 @@ export class SqlSessionStore implements SessionStore {
 		// Use the original connection's snapshot. A different handle may share its queue; never wait
 		// for a separately scheduled read from inside a write transaction on that queue.
 		if (this.create !== SqlSessionStore.prototype.create) return undefined;
-		if (source.store !== this) {
+		if (!this.sharesTablesWith(source.store)) {
 			if ("read" in entries)
 				return entries.kind === "complete-session" ? this.createStagedFork(header, entries, source) : undefined;
 			if (source.receipts.size < 2) return undefined;
@@ -1109,55 +1133,125 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
 		return this.transaction(async (tx) => {
-			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, header.id))
-				throw new SessionExistsError(header.id);
-			const donor = await this.historyHead(tx, source.sessionId);
-			if (source.epoch !== undefined && donor.epoch !== source.epoch)
-				throw new SessionConflictError(source.sessionId, 0, donor.lastSeq);
-			const { texts, epoch } = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
-			await this.insertEntries(tx, header.id, entries, 0, texts, false);
-			for (const [i, entry] of entries.entries()) {
+			const donor = await this.forkDonor(tx, header.id, source);
+			for (const entry of entries) {
 				const ref = source.receipts.get(entry.id);
-				if (!ref) continue;
-				if (source.sessionId !== ref.sessionId || donor.epoch !== ref.epoch || donor.lastSeq < ref.seq)
+				if (ref && (source.sessionId !== ref.sessionId || donor.epoch !== ref.epoch || donor.lastSeq < ref.seq))
 					throw new SessionConflictError(ref.sessionId, ref.seq, donor.lastSeq);
-				const original = await tx.get<SqliteRow & { chunks: number }>(
-					`SELECT chunks FROM ${this.tables.entries} WHERE session_id=? AND seq=? AND entry_id=?`,
-					ref.sessionId,
-					ref.seq,
-					entry.id,
-				);
-				if (!original) throw new SessionConflictError(ref.sessionId, ref.seq, donor.lastSeq);
-				await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id=? AND seq=?`, header.id, i + 1);
-				await tx.run(
-					`INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json, chunks) SELECT ?, ?, entry_id,entry_json,chunks FROM ${this.tables.entries} WHERE session_id=? AND seq=?`,
-					header.id,
-					i + 1,
-					ref.sessionId,
-					ref.seq,
-				);
-				for (let part = 0; part < original.chunks; part++) {
-					const { changes } = await tx.run(
-						`INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) SELECT ?, ?, idx, data FROM ${this.tables.entryChunks} WHERE session_id=? AND seq=? AND idx=?`,
-						header.id,
-						i + 1,
-						ref.sessionId,
-						ref.seq,
-						part,
-					);
-					if (changes !== 1)
-						throw new StorageUnavailableError(
-							this.descriptor,
-							new Error(`Missing chunk of session entry ${ref.seq}`),
-						);
-				}
 			}
-			await this.forkVersionStep(tx, header.id);
-			const remainingBlobs: string[] = [];
-			for (const hash of source.hashes)
-				if (!(await this.copyForkBlob(tx, source.sessionId, header.id, hash))) remainingBlobs.push(hash);
-			return { lastSeq: entries.length, epoch, remainingBlobs };
+			const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
+			const blobs = this.forkBlobCopy(source.sessionId, header.id, source.hashes);
+			const writes = new SentWrites(tx);
+			const remainingBlobs = await writes.around(async () => {
+				await writes.send([summary.statement]);
+				await writes.send(this.receiptForkWrites(header.id, entries, source, donor.lastSeq));
+				await writes.send(this.entryWrites(header.id, [], 0, summary.texts, false));
+				return this.finishForkCopy(tx, writes, header.id, blobs, source.hashes);
+			});
+			await this.finishFork(tx, header.id);
+			return { lastSeq: entries.length, epoch: summary.epoch, remainingBlobs };
 		}, this.sessionWrite(header.id));
+	}
+
+	/**
+	 * The source session's head, its row locked for share, once the child is known to be new: both reads go out together,
+	 * one round trip (#6560). Fails as the source changed when it is no longer the generation the fork read.
+	 */
+	private async forkDonor(
+		tx: SqliteExecutor,
+		child: string,
+		source: ForkArchiveSource,
+	): Promise<{ lastSeq: number; epoch: string }> {
+		const existing = tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, child);
+		const head = this.historyHead(tx, source.sessionId).then(
+			(value) => ({ value }),
+			(error: unknown) => ({ error }),
+		);
+		if (await existing) throw new SessionExistsError(child);
+		const read = await head;
+		if ("error" in read) throw read.error;
+		const donor = read.value;
+		if (source.epoch !== undefined && donor.epoch !== source.epoch)
+			throw new SessionConflictError(source.sessionId, 0, donor.lastSeq);
+		return donor;
+	}
+
+	/**
+	 * The statements that store a fork's `entries`, in seq order: an entry with a receipt as the source stores it, its row
+	 * and chunks copied in two statements whatever their size, and any other as `create` stores it. A receipt's row that
+	 * names another entry fails the fork: the source changed under it.
+	 */
+	private *receiptForkWrites(
+		child: string,
+		entries: readonly SessionEntry[],
+		source: ForkArchiveSource,
+		donorLastSeq: number,
+	): Generator<CountedStatement> {
+		for (const [index, entry] of entries.entries()) {
+			const ref = source.receipts.get(entry.id);
+			if (ref === undefined) {
+				yield* this.entryWrites(child, [entry], index, [], false);
+				continue;
+			}
+			yield {
+				sql: `INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json, chunks) SELECT ?, ?, entry_id, entry_json, chunks FROM ${this.tables.entries} WHERE session_id = ? AND seq = ? AND entry_id = ?`,
+				params: [child, index + 1, ref.sessionId, ref.seq, entry.id],
+				changes: 1,
+				mismatch: () => new SessionConflictError(ref.sessionId, ref.seq, donorLastSeq),
+			};
+			yield {
+				sql: `INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) SELECT ?, ?, idx, data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? ORDER BY idx`,
+				params: [child, index + 1, ref.sessionId, ref.seq],
+			};
+		}
+	}
+
+	/**
+	 * The blob copy of a fork from session `source` of this store's tables (#6560), or undefined when a subclass stores
+	 * blobs its own way: `createForkArchive` then copies every one through it.
+	 */
+	private forkBlobCopy(source: string, child: string, hashes: Iterable<string>): ForkBlobCopy | undefined {
+		if (this.getBlob !== SqlSessionStore.prototype.getBlob || this.putBlob !== SqlSessionStore.prototype.putBlob)
+			return undefined;
+		return forkBlobCopy(
+			this.tables,
+			{ legacyBlobData: this.legacyBlobData, chunkBytes: SESSION_BLOB_CHUNK_BYTES },
+			source,
+			child,
+			[...new Set(hashes)],
+		);
+	}
+
+	/**
+	 * Sends a fork's blob copy behind its entries, then checks, in one round trip with them, that every stored entry of
+	 * the child has all its chunks and which blobs were copied whole. Resolves with the hashes left for
+	 * `copySessionBlobs`: those the source does not hold, or all of them where this store does not copy blobs itself.
+	 */
+	private async finishForkCopy(
+		tx: SqliteExecutor,
+		writes: SentWrites,
+		child: string,
+		blobs: ForkBlobCopy | undefined,
+		hashes: Iterable<string>,
+	): Promise<string[]> {
+		if (blobs) await writes.send(blobs.statements);
+		const incomplete = incompleteEntryRead(this.tables, child);
+		const [missing, ...answers] = await Promise.all([
+			tx.get<SqliteRow & { seq: number }>(incomplete.sql, ...incomplete.params),
+			...(blobs?.checks ?? []).map((check) => tx.all(check.sql, ...check.params)),
+		]);
+		if (missing !== undefined)
+			throw new StorageUnavailableError(this.descriptor, new Error(`Missing chunk of session entry ${missing.seq}`));
+		return blobs ? blobs.remaining(answers) : [...new Set(hashes)];
+	}
+
+	/**
+	 * Whether `store` keeps its sessions in this store's very tables, so that this store's transaction reads its rows: this
+	 * store, or another session store opened on the same database with the same prefix, such as through another handle
+	 * (#6560). A wrapper that serves sessions of its own does not.
+	 */
+	private sharesTablesWith(store: SessionStore): boolean {
+		return store === this || (store instanceof SqlSessionStore && forkStoreRelation(store, this) === "same");
 	}
 
 	/**
@@ -1238,6 +1332,12 @@ export class SqlSessionStore implements SessionStore {
 					? (sessionId, hash, offset, legacyBytes) => store.readBlobPart(sessionId, hash, offset, legacyBytes)
 					: undefined;
 			},
+			sourceBlobFirstParts: (source) => {
+				const store = nativeForkReader(source, "blob");
+				return store instanceof SqlSessionStore && store.getBlob === SqlSessionStore.prototype.getBlob
+					? (sessionId, hashes, maxBytes) => store.readBlobFirstParts(sessionId, hashes, maxBytes)
+					: undefined;
+			},
 		};
 	}
 
@@ -1287,6 +1387,39 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/**
+	 * The headers of the blobs `hashes` of session `sessionId` in one read (#6560), each with its first chunk row when it
+	 * is stored in chunks of at most `maxBytes` in all, as `readBlobPart` reads them at offset 0. A blob the session does
+	 * not hold is left out; one in the legacy one-row layout comes without its value.
+	 */
+	private async readBlobFirstParts(
+		sessionId: string,
+		hashes: readonly string[],
+		maxBytes: number,
+	): Promise<Map<string, { readonly bytes: number; readonly chunks: number; readonly data?: Uint8Array }>> {
+		this.assertOpen();
+		const parts = new Map<string, { readonly bytes: number; readonly chunks: number; readonly data?: Uint8Array }>();
+		if (hashes.length === 0) return parts;
+		const rows = await this.database.all<
+			SqliteRow & { hash: string; bytes: number; chunks: number; data: Uint8Array | null }
+		>(
+			`SELECT b.hash, b.bytes, b.chunks, CASE WHEN b.chunks >= 0 AND b.bytes <= ? THEN c.data END AS data
+				FROM ${this.tables.blobs} b LEFT JOIN ${this.tables.blobChunks} c
+				ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = 0
+				WHERE b.session_id = ? AND b.hash IN (${hashes.map(() => "?").join(", ")})`,
+			maxBytes,
+			sessionId,
+			...hashes,
+		);
+		for (const row of rows)
+			parts.set(String(row.hash), {
+				bytes: Number(row.bytes),
+				chunks: Number(row.chunks),
+				...(row.data == null ? {} : { data: row.data }),
+			});
+		return parts;
+	}
+
+	/**
 	 * The bytes of a blob from `offset`, a multiple of {@link SESSION_BLOB_CHUNK_BYTES}, so a staged clone never holds
 	 * the whole of a large one (#5594): the stored chunk row there, or for a blob in the legacy one-row layout (`chunks`
 	 * -1), at most `legacyBytes` cut from its data column by the database, which loads that one value itself for each
@@ -1314,56 +1447,13 @@ export class SqlSessionStore implements SessionStore {
 		return { bytes: Number(row.bytes), chunks: Number(row.chunks), ...(row.data == null ? {} : { data: row.data }) };
 	}
 
-	private async copyForkBlob(tx: SqliteExecutor, sessionId: string, childId: string, hash: string): Promise<boolean> {
-		if (this.getBlob !== SqlSessionStore.prototype.getBlob || this.putBlob !== SqlSessionStore.prototype.putBlob)
-			return false;
-		const blob = await tx.get<SqliteRow & { bytes: number; chunks: number }>(
-			`SELECT bytes,chunks FROM ${this.tables.blobs} WHERE session_id=? AND hash=?`,
-			sessionId,
-			hash,
-		);
-		if (!blob) return false;
-		const existing = await tx.get(
-			`SELECT hash FROM ${this.tables.blobs} WHERE session_id=? AND hash=?`,
-			childId,
-			hash,
-		);
-		if (existing) return true;
-		const columns = this.legacyBlobData ? ", data" : "";
-		const { changes } = await tx.run(
-			`INSERT INTO ${this.tables.blobs} (session_id,hash,bytes,chunks${columns}) SELECT ?,hash,bytes,chunks${columns} FROM ${this.tables.blobs} WHERE session_id=? AND hash=?${this.legacyBlobData ? " AND (chunks<>-1 OR length(data)=bytes)" : ""}`,
-			childId,
-			sessionId,
-			hash,
-		);
-		if (changes !== 1 || (blob.chunks >= 0 && blob.chunks !== Math.ceil(blob.bytes / SESSION_BLOB_CHUNK_BYTES)))
-			throw new SessionBlobError("blob-incomplete", { sessionId, hash, bytes: blob.bytes });
-		for (let part = 0; part < blob.chunks; part++) {
-			const copied = await tx.run(
-				`INSERT INTO ${this.tables.blobChunks} (session_id,hash,idx,data) SELECT ?,hash,idx,data FROM ${this.tables.blobChunks} WHERE session_id=? AND hash=? AND idx=? AND length(data)=?`,
-				childId,
-				sessionId,
-				hash,
-				part,
-				Math.min(SESSION_BLOB_CHUNK_BYTES, blob.bytes - part * SESSION_BLOB_CHUNK_BYTES),
-			);
-			if (copied.changes !== 1)
-				throw new SessionBlobError("blob-incomplete", { sessionId, hash, bytes: blob.bytes });
-		}
-		return true;
-	}
-
 	private async createStreamedFork(header: SessionRecordHeader, stream: SessionForkStream, source: ForkArchiveSource) {
 		this.assertOpen();
 		validateSessionHeader(header);
 		const { encodedForkRow } = await import("./fork-row-bytes.js");
 		const { foldForkRow } = await import("./fork-row-index.js");
 		return this.transaction(async (tx) => {
-			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id=?`, header.id))
-				throw new SessionExistsError(header.id);
-			const head = await this.historyHead(tx, source.sessionId);
-			if (source.epoch !== undefined && head.epoch !== source.epoch)
-				throw new SessionConflictError(source.sessionId, 0, head.lastSeq);
+			const head = await this.forkDonor(tx, header.id, source);
 			const reader = new SqlSessionStore(
 				{
 					descriptor: this.database.descriptor,
@@ -1386,11 +1476,14 @@ export class SqlSessionStore implements SessionStore {
 			);
 			const { index: donorIndex } = await reader.prepareResume(source.sessionId);
 			reader.readBranchSpan = async (id, cut) => transcriptBranchSpan(id, donorIndex, cut);
-			const lookup = (id: string) => this.seqOfEntry(tx, header.id, id);
+			reader.readEntryChunk = this.forkChunkReader(tx, reader, source.sessionId, head.epoch);
+			// The source's rows the child keeps unchanged, copied a run at a time rather than written a row at a time (#6560).
+			const copies = new ForkRowRuns(this.tables, header.id, source.sessionId);
+			const lookup = async (id: string) => copies.heldSeq(id) ?? this.seqOfEntry(tx, header.id, id);
 			let summary = applySessionSummaryEntries(undefined, []).state;
 			let index = foldSessionResume(undefined, []),
 				seq = 0;
-			const remainingBlobs = new Set<string>();
+			const hashes = new Set<string>();
 			const inlineSnapshot = async (ref: OversizedSessionEntry) => {
 				// v4 snapshot-GC triggers inspect inline JSON. Only this one original row may
 				// cross the usual page bound. Previously chunked snapshots remain streamed.
@@ -1431,7 +1524,8 @@ export class SqlSessionStore implements SessionStore {
 				} as SessionEntry;
 			};
 			const writes = new SentWrites(tx);
-			await writes.around(async () => {
+			const blobs: { copy?: ForkBlobCopy | undefined } = {};
+			const remainingBlobs = await writes.around(async () => {
 				for await (const row of stream.read(
 					reader,
 					async (id) => (await lookup(id)) !== undefined,
@@ -1443,13 +1537,17 @@ export class SqlSessionStore implements SessionStore {
 					summary = listed.state;
 					if (entry.type === "custom" && entry.customType === "atomic.tool-output") {
 						const hash = (entry.data as { hash?: string })?.hash;
-						if (
-							typeof hash === "string" &&
-							!remainingBlobs.has(hash) &&
-							!(await this.copyForkBlob(tx, source.sessionId, header.id, hash))
-						)
-							remainingBlobs.add(hash);
+						if (typeof hash === "string") hashes.add(hash);
 					}
+					if (row.stored?.sessionId === source.sessionId && row.edits === undefined) {
+						copies.add(row.stored.seq, seq + 1, entry.id);
+						await writes.send(this.entryWrites(header.id, [], seq, listed.texts, false));
+						if (copies.full) await writes.send(copies.drain());
+						seq++;
+						continue;
+					}
+					// What the child holds is in seq order, for the snapshot index's triggers: the runs before this row first.
+					await writes.send(copies.drain());
 					if (!row.reference) {
 						await writes.send(this.entryWrites(header.id, [entry], seq, listed.texts, false));
 					} else if (row.inlineSnapshot) {
@@ -1496,21 +1594,63 @@ export class SqlSessionStore implements SessionStore {
 							}
 						if (used) await write();
 						if (n !== chunks) throw new StorageError("Incomplete historical entry in fork");
-						for (const { text } of listed.texts)
-							await tx.run(
-								`INSERT INTO ${this.tables.searchTexts} (session_id,seq,text_json) VALUES (?,?,?)`,
-								header.id,
-								seq + 1,
-								this.encode(text),
-							);
+						await writes.send(this.entryWrites(header.id, [], seq, listed.texts, false));
 					}
 					seq++;
 				}
+				await writes.send(copies.drain());
+				blobs.copy = this.forkBlobCopy(source.sessionId, header.id, hashes);
+				const statement = this.summaryWrite(header.id, { header, entries: [], lastSeq: seq }, summary, index);
+				await writes.send([statement.statement]);
+				const remaining = await this.finishForkCopy(tx, writes, header.id, blobs.copy, hashes);
+				return { remaining, epoch: statement.epoch };
 			});
-			await this.forkVersionStep(tx, header.id);
-			const { epoch } = await this.saveSummary(tx, header.id, { header, entries: [], lastSeq: seq }, summary, index);
-			return { lastSeq: seq, epoch, remainingBlobs: [...remainingBlobs] };
+			await this.finishFork(tx, header.id);
+			return { lastSeq: seq, epoch: remainingBlobs.epoch, remainingBlobs: remainingBlobs.remaining };
 		}, this.sessionWrite(header.id));
+	}
+
+	/**
+	 * `readEntryChunk` for a fork's reader bound to transaction `tx`, reading session `source` in generation `epoch`: a
+	 * read of an entry fetches a whole stored chunk row, or a part as large of an entry stored whole, and answers the next
+	 * reads of it from that, so an entry costs a round trip a chunk, not one every 64 KiB (#6560). The fork holds the
+	 * source's row, so its generation cannot change meanwhile. Other reads go to `reader` as before.
+	 */
+	private forkChunkReader(
+		tx: SqliteExecutor,
+		reader: SqlSessionStore,
+		source: string,
+		epoch: string,
+	): NonNullable<SessionStore["readEntryChunk"]> {
+		const json = this.dialect.name === "sqlite" ? "CAST(e.entry_json AS BLOB)" : "convert_to(e.entry_json, 'UTF8')";
+		let held: { readonly seq: number; readonly start: number; readonly data: Uint8Array } | undefined;
+		return async (reference, offset, bytes = SESSION_HISTORY_CHUNK_BYTES) => {
+			if (reference.sessionId !== source || reference.epoch !== epoch)
+				return SqlSessionStore.prototype.readEntryChunk.call(reader, reference, offset, bytes);
+			const part = Math.floor(offset / SESSION_ENTRY_CHUNK_BYTES);
+			const start = part * SESSION_ENTRY_CHUNK_BYTES;
+			if (held?.seq !== reference.seq || held.start !== start) {
+				const row = await tx.get<SqliteRow & { data: Uint8Array | null }>(
+					`SELECT CASE WHEN e.chunks > 0
+						THEN (SELECT c.data FROM ${this.tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx = ?)
+						ELSE substr(${json}, CAST(? AS INTEGER), CAST(? AS INTEGER)) END AS data
+					FROM ${this.tables.entries} e WHERE e.session_id = ? AND e.seq = ?`,
+					part,
+					start + 1,
+					SESSION_ENTRY_CHUNK_BYTES,
+					source,
+					reference.seq,
+				);
+				if (row?.data == null || row.data.byteLength <= offset - start)
+					return SqlSessionStore.prototype.readEntryChunk.call(reader, reference, offset, bytes);
+				held = { seq: reference.seq, start, data: row.data };
+			}
+			const from = offset - start;
+			return held.data.subarray(
+				from,
+				from + Math.min(Math.max(1, Math.trunc(bytes) || 1), SESSION_HISTORY_PAGE_BYTES),
+			);
+		};
 	}
 
 	/** Keep the legacy inline payload outside the iterator's yielded value and the caller's async frame:
@@ -4134,17 +4274,17 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/**
-	 * A fork's version step, once every entry of the child is in: the same row order as an append, which takes the
-	 * snapshot index's progress rows with its entries inserts and the schema row after them, so the two never deadlock
-	 * (#6560).
+	 * A fork's version step, once every entry of the child is in, as the transaction's last write: the same row order as
+	 * an append, which takes the snapshot index's progress rows with its entries inserts and the schema row after them,
+	 * so the two never deadlock (#6560). The body makes no call after it.
 	 */
-	private async forkVersionStep(tx: SqliteExecutor, child: string): Promise<void> {
-		await tx.run(
-			`UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version = ? AND EXISTS (SELECT 1 FROM ${this.tables.entries} WHERE session_id = ? AND chunks > 0)`,
-			SESSION_SCHEMA_VERSION,
-			SESSION_SCHEMA_VERSION_UNCHUNKED,
-			child,
-		);
+	private async finishFork(tx: SqliteExecutor, child: string): Promise<void> {
+		const step: SqliteStatement = {
+			sql: `UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version = ? AND EXISTS (SELECT 1 FROM ${this.tables.entries} WHERE session_id = ? AND chunks > 0)`,
+			params: [SESSION_SCHEMA_VERSION, SESSION_SCHEMA_VERSION_UNCHUNKED, child],
+		};
+		// The transaction's last write: where its connection is pipelined, it goes out with the commit.
+		if (transactionFinisher(tx)?.([step]) !== true) await tx.run(step.sql, ...step.params);
 	}
 
 	/**

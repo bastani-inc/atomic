@@ -306,7 +306,8 @@ for (const backend of storageBackends) {
 										return paused.wait();
 									}
 								} else if (metaUpdate.test(sql)) {
-									if (entriesSeen >= 2) {
+									// The fork copies the source's rows in one statement for each run of them (#6560).
+									if (entriesSeen >= 1) {
 										pausing = false;
 										return paused.wait();
 									}

@@ -1655,12 +1655,31 @@ export async function openPostgresDatabase(options) {
 	};
 
 	/**
+	 * Which database and schema this one reaches (#6560): the server, the database, the role, the schema its statements
+	 * run in, and how connections reach the server. Every handle that answers the same reads and writes the same tables.
+	 */
+	const databaseIdentity = () => {
+		const { host, port } = endpointOf(connection);
+		return JSON.stringify([
+			"postgres",
+			host,
+			port,
+			connection.database ?? process.env.PGDATABASE ?? null,
+			connection.user ?? process.env.PGUSER ?? null,
+			schema,
+			options.proxy ?? null,
+			options.socket === undefined ? null : socketFactoryId(options.socket),
+		]);
+	};
+
+	/**
 	 * The driver of the calls that run on connections of `from`.
 	 * @param {import("pg").Pool} from
 	 * @returns {Omit<import("@bastani/atomic/storage").SqliteDriver, "close">}
 	 */
 	const driverOn = (from) => ({
 		descriptor: { adapter: "postgres", location: connectionString },
+		databaseIdentity,
 		redact: (text) => {
 			let redacted = text;
 			for (const secret of [...passwords].sort((first, second) => second.length - first.length))
