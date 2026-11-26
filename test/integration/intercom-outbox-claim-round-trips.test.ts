@@ -116,10 +116,15 @@ function countPostgresRoundTrips() {
 	};
 }
 
+/** How long the poll's session may take to run the statements sent before its held `COMMIT`. */
+const STATEMENTS_RUN_BOUND_MS = 10_000;
+
 /**
  * Runs `poll` while the first `COMMIT` the adapter sends is held back, and counts the advisory locks the sessions of
  * the database at `url` hold meanwhile, from a connection of the test's own: the locks of the poll's transaction, kept
- * open at its end.
+ * open at its end. A pipelined transaction sends its `COMMIT` right behind its other statements, before the server has
+ * run them, so the count waits until the poll's session has run them all and sits idle in its transaction: counted
+ * earlier, a poll that takes its locks in a statement still on its way would show none.
  */
 async function locksHeldBy<T>(url: string, poll: () => Promise<T>) {
 	const query = pg.Client.prototype.query;
@@ -156,6 +161,15 @@ async function locksHeldBy<T>(url: string, poll: () => Promise<T>) {
 		await counter.connect();
 		const answer = poll();
 		await Promise.race([committing, answer]);
+		for (const deadline = Date.now() + STATEMENTS_RUN_BOUND_MS; held; ) {
+			const { rows: idle } = await counter.query<{ sessions: string }>(
+				`SELECT count(*) AS sessions FROM pg_stat_activity
+				WHERE datname = current_database() AND pid <> pg_backend_pid() AND state = 'idle in transaction'`,
+			);
+			if (Number(idle[0]?.sessions) > 0) break;
+			assert.ok(Date.now() < deadline, "the poll's statements before its COMMIT never finished");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
 		const { rows } = await counter.query<{ locks: string }>(
 			`SELECT count(*) AS locks FROM pg_locks JOIN pg_database ON pg_database.oid = pg_locks.database
 			WHERE pg_locks.locktype = 'advisory' AND pg_database.datname = current_database()`,
