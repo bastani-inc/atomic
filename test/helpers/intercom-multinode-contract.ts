@@ -581,6 +581,120 @@ export function registerBrokerLeaseStoreConformance(
 		const reorderedMember = { ...memberLease, key: { brokerId: "broker-a", kind: "broker" as const } };
 		assert.deepEqual(await b.renew(reorderedMember, membership("broker-a")), { status: "renewed" });
 	});
+
+	check(
+		"renews leases together with renewMany, fencing swapped tokens and matching renew in input order (#6714)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			if (a.renewMany === undefined || b.renewMany === undefined) return;
+			assert.deepEqual(await a.renewMany([]), []);
+			const member = await acquire(a, "broker-a", membership("broker-a"));
+			const p1Subject = presence("batch-p1", sessionInfo("p1-id", "p1-orig"));
+			const p1 = await acquire(a, "broker-a", p1Subject);
+			// Release and re-acquire p2 so its fencing token differs from p1's.
+			const p2Subject = presence("batch-p2", sessionInfo("p2-id", "p2-orig"));
+			const p2First = await acquire(a, "broker-a", p2Subject);
+			expectStatus(await a.release(p2First), "released");
+			const p2 = await acquire(a, "broker-a", p2Subject);
+			assert.notEqual(p1.fencingToken, p2.fencingToken);
+			// p3 is stolen by broker-b; p4 is released; p5 is never acquired.
+			const p3Old = await acquire(a, "broker-a", presence("batch-p3", sessionInfo("p3-id", "p3-old")));
+			const p3Subject = presence("batch-p3", sessionInfo("p3-id", "p3-new"));
+			const p3Taken = expectStatus(await b.acquire(p3Subject, "broker-b", EXPIRED_MS), "acquired").lease;
+			const p4 = await acquire(a, "broker-a", presence("batch-p4", sessionInfo("p4-id", "p4")));
+			expectStatus(await a.release(p4), "released");
+			const p5: Lease = {
+				key: { kind: "presence", targetIdentity: "batch-p5-missing" },
+				holderId: "broker-a",
+				fencingToken: 1,
+			};
+
+			// Swapped fencing tokens between p1 and p2 must renew neither and must not overwrite either subject.
+			const swapped = await a.renewMany([
+				{
+					lease: { ...p1, fencingToken: p2.fencingToken },
+					subject: presence("batch-p1", sessionInfo("p1-id", "swapped-1")),
+				},
+				{
+					lease: { ...p2, fencingToken: p1.fencingToken },
+					subject: presence("batch-p2", sessionInfo("p2-id", "swapped-2")),
+				},
+			]);
+			assert.deepEqual(swapped, [
+				{ status: "stale", currentFencingToken: p1.fencingToken },
+				{ status: "stale", currentFencingToken: p2.fencingToken },
+			]);
+			assert.deepEqual(expectStatus(await b.read(p1.key), "found").lease.subject, p1Subject);
+			assert.deepEqual(expectStatus(await b.read(p2.key), "found").lease.subject, p2Subject);
+
+			// Mixed batch in non-sorted order: owned, stolen, released, missing, duplicates (same & differing
+			// holder/token with mixed subject/no-subject), non-integer token, and invalid entries.
+			const p1Updated = presence("batch-p1", sessionInfo("p1-id", "p1-updated"));
+			const p2FirstUpdate = presence("batch-p2", sessionInfo("p2-id", "p2-step-1"));
+			const p2SecondUpdate = presence("batch-p2", sessionInfo("p2-id", "p2-step-2"));
+			const mixed = await a.renewMany([
+				{ lease: p5 },
+				{ lease: p2, subject: p2FirstUpdate },
+				{ lease: p3Old, subject: presence("batch-p3", sessionInfo("p3-id", "stolen-overwrite")) },
+				{ lease: p1, subject: p1Updated },
+				{ lease: p1 },
+				{
+					lease: { ...p1, holderId: "broker-intruder" },
+					subject: presence("batch-p1", sessionInfo("p1-id", "intruder-overwrite")),
+				},
+				{ lease: p4 },
+				{ lease: { ...p2, fencingToken: 1.5 } },
+				{ lease: member },
+				{ lease: { ...member, holderId: "" } },
+				{ lease: member, subject: p1Updated },
+				{ lease: p2, subject: p2SecondUpdate },
+			]);
+			assert.deepEqual(mixed, [
+				{ status: "stale" },
+				{ status: "renewed" },
+				{ status: "stale", currentFencingToken: p3Taken.fencingToken },
+				{ status: "renewed" },
+				{ status: "renewed" },
+				{ status: "stale", currentFencingToken: p1.fencingToken },
+				{ status: "stale" },
+				{ status: "stale", currentFencingToken: p2.fencingToken },
+				{ status: "renewed" },
+				{ status: "invalid", reason: "empty-holder-id" },
+				{ status: "invalid", reason: "subject-key-mismatch" },
+				{ status: "renewed" },
+			]);
+			assert.deepEqual(expectStatus(await b.read(p1.key), "found").lease.subject, p1Updated);
+			assert.deepEqual(expectStatus(await b.read(p2.key), "found").lease.subject, p2SecondUpdate);
+			assert.deepEqual(expectStatus(await b.read(p3Taken.key), "found").lease.subject, p3Subject);
+			assert.deepEqual(expectStatus(await b.read(member.key), "found").lease.subject, membership("broker-a"));
+
+			// Age reset applies only to owned leases, never to a lost lease in the same batch.
+			await sleep(RENEWAL_GAP_MS);
+			const p1Before = expectStatus(await b.read(p1.key), "found").lease.ageMs;
+			const p3Before = expectStatus(await b.read(p3Taken.key), "found").lease.ageMs;
+			assert.ok(p1Before >= RENEWAL_GAP_MS - CLOCK_TOLERANCE_MS);
+			assert.ok(p3Before >= RENEWAL_GAP_MS - CLOCK_TOLERANCE_MS);
+			const renewStarted = Date.now();
+			assert.deepEqual(await a.renewMany([{ lease: p1 }, { lease: p3Old }]), [
+				{ status: "renewed" },
+				{ status: "stale", currentFencingToken: p3Taken.fencingToken },
+			]);
+			const p1After = expectStatus(await b.read(p1.key), "found").lease.ageMs;
+			const p3After = expectStatus(await b.read(p3Taken.key), "found").lease.ageMs;
+			assert.ok(p1After <= Date.now() - renewStarted + CLOCK_TOLERANCE_MS, `owned lease age ${p1After}`);
+			assert.ok(p3After >= p3Before - CLOCK_TOLERANCE_MS, `lost lease age ${p3After} reset from ${p3Before}`);
+
+			// Overlapping batches in opposite input orders lock in (kind, key) order without deadlocking.
+			const rounds = await Promise.all([
+				a.renewMany([{ lease: p2 }, { lease: p1 }, { lease: member }]),
+				b.renewMany([{ lease: member }, { lease: p1 }, { lease: p2 }]),
+				a.renewMany([{ lease: p1 }, { lease: member }, { lease: p2 }]),
+				b.renewMany([{ lease: p2 }, { lease: member }, { lease: p1 }]),
+			]);
+			for (const round of rounds)
+				assert.deepEqual(round, [{ status: "renewed" }, { status: "renewed" }, { status: "renewed" }]);
+		},
+	);
 }
 
 export function registerOutboxStoreConformance(
@@ -1798,6 +1912,109 @@ export function registerRestoringReservationStoreConformance(
 		assert.deepEqual(await a.read(""), empty("empty-reservation-key"));
 		assert.deepEqual(await a.read(RESERVATION_KEY), { status: "missing" });
 	});
+
+	check(
+		"renews restoring reservations together with renewMany, fencing swapped tokens and preserving gone markers (#6714)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			if (a.renewMany === undefined) return;
+			assert.deepEqual(await a.renewMany([]), []);
+			const k1 = reservationKeyFor("batch-resv-1");
+			const k2 = reservationKeyFor("batch-resv-2");
+			const k3 = reservationKeyFor("batch-resv-3");
+			const k4 = reservationKeyFor("batch-resv-4");
+			const k5 = reservationKeyFor("batch-resv-5");
+			const r1 = (await reserve(a, { reservationKey: k1, childTarget: "child-1", aliases: [] })).lease;
+			const r2 = (await reserve(a, { reservationKey: k2, childTarget: "child-2", aliases: [] })).lease;
+			assert.notEqual(r1.fencingToken, r2.fencingToken);
+			const r3 = (await reserve(a, { reservationKey: k3, childTarget: "child-3", aliases: [] })).lease;
+			expectStatus(await a.release(r3, { gone: "child exited" }), "gone");
+			const r4 = (await reserve(a, { reservationKey: k4, childTarget: "child-4", aliases: [] })).lease;
+			expectStatus(await a.release(r4), "released");
+			const r5Old = (await reserve(a, { reservationKey: k5, childTarget: "child-5", aliases: [] })).lease;
+			const r5Taken = (
+				await reserve(b, {
+					reservationKey: k5,
+					ownerSessionId: "other-supervisor",
+					ownerBrokerId: "broker-b",
+					childTarget: "child-5",
+					aliases: [],
+				})
+			).lease;
+			assert.ok(r5Taken.fencingToken > r5Old.fencingToken);
+
+			// Swapped fencing tokens must renew neither reservation.
+			assert.deepEqual(
+				await a.renewMany([
+					{ ...r1, fencingToken: r2.fencingToken },
+					{ ...r2, fencingToken: r1.fencingToken },
+				]),
+				[
+					{ status: "stale", currentFencingToken: r1.fencingToken },
+					{ status: "stale", currentFencingToken: r2.fencingToken },
+				],
+			);
+
+			// Mixed batch in non-sorted input order: active, gone marker, ended, stolen, missing, duplicates
+			// (matching & wrong owner), non-integer token, and invalid entries.
+			const missing = {
+				reservationKey: reservationKeyFor("batch-resv-missing"),
+				ownerSessionId: "s",
+				fencingToken: 1,
+			};
+			const mixed = await a.renewMany([
+				r3,
+				r4,
+				r5Old,
+				missing,
+				r2,
+				{ ...r1, ownerSessionId: "intruder" },
+				r1,
+				r1,
+				{ ...r2, fencingToken: 1.5 },
+				{ ...r1, reservationKey: "" },
+				{ ...r1, ownerSessionId: "" },
+			]);
+			assert.deepEqual(mixed, [
+				{ status: "renewed" },
+				{ status: "stale" },
+				{ status: "stale", currentFencingToken: r5Taken.fencingToken },
+				{ status: "stale" },
+				{ status: "renewed" },
+				{ status: "stale", currentFencingToken: r1.fencingToken },
+				{ status: "renewed" },
+				{ status: "renewed" },
+				{ status: "stale", currentFencingToken: r2.fencingToken },
+				{ status: "invalid", reason: "empty-reservation-key" },
+				{ status: "invalid", reason: "empty-session-id" },
+			]);
+
+			// Age reset applies to active and gone-marked owned reservations, never to stolen ones.
+			await sleep(RENEWAL_GAP_MS);
+			const r1Before = expectStatus(await b.read(k1), "active").ageMs;
+			const r3Before = expectStatus(await b.read(k3), "active").ageMs;
+			const r5Before = expectStatus(await b.read(k5), "active").ageMs;
+			assert.ok(r1Before >= RENEWAL_GAP_MS - CLOCK_TOLERANCE_MS);
+			assert.ok(r3Before >= RENEWAL_GAP_MS - CLOCK_TOLERANCE_MS);
+			assert.ok(r5Before >= RENEWAL_GAP_MS - CLOCK_TOLERANCE_MS);
+			const renewStarted = Date.now();
+			assert.deepEqual(await a.renewMany([r1, r3, r5Old]), [
+				{ status: "renewed" },
+				{ status: "renewed" },
+				{ status: "stale", currentFencingToken: r5Taken.fencingToken },
+			]);
+			const r1After = expectStatus(await b.read(k1), "active").ageMs;
+			const r3After = expectStatus(await b.read(k3), "active").ageMs;
+			const r5After = expectStatus(await b.read(k5), "active").ageMs;
+			const bound = Date.now() - renewStarted + CLOCK_TOLERANCE_MS;
+			assert.ok(r1After <= bound, `active reservation age ${r1After}`);
+			assert.ok(r3After <= bound, `gone marker reservation age ${r3After}`);
+			assert.ok(
+				r5After >= r5Before - CLOCK_TOLERANCE_MS,
+				`stolen reservation age ${r5After} reset from ${r5Before}`,
+			);
+		},
+	);
 }
 
 export function registerPendingAskStoreConformance(

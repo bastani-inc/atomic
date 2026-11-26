@@ -594,6 +594,11 @@ export interface RestoringReservationStore {
 	): Promise<RestoringReservationLookupResult>;
 	/** Reset the age, also of a gone marker. A superseded token or an ended reservation is `stale`. */
 	renew(lease: RestoringReservationLease): Promise<RestoringReservationRenewResult>;
+	/**
+	 * Reset the age of multiple reservations, also of gone markers, in a single shared-store transaction, returning one
+	 * result per entry in input order (#6714). Absent on custom stores that only implement `renew`.
+	 */
+	renewMany?(leases: readonly RestoringReservationLease[]): Promise<RestoringReservationRenewResult[]>;
 	/** Owner only: mark the reservation gone, or end it as `released`. */
 	release(
 		lease: RestoringReservationLease,

@@ -1486,6 +1486,90 @@ test("a renewal renews every message a broker is delivering in one call, not one
 	}
 });
 
+test("a renewal renews every mirrored restoring reservation in one call, dropping stale ones and falling back on custom stores (#6714)", async () => {
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+	try {
+		const [a, b] = await cluster();
+		const owner = await b!.connect("owner", { group: "crew" });
+		const caps = [0, 1, 2].map((index) => ({
+			capability: `${randomUUID()}.capability`,
+			child: `restored-child-${index}`,
+		}));
+		const keys = caps.map(({ capability }) => createHash("sha256").update(capability).digest("hex"));
+		for (const { capability, child } of caps)
+			await b!.router.restoringReserved(capability, owner.info.id, child, normalizeGroup("crew"), [], false);
+		// End the middle reservation remotely so the next renewal tick sees mixed renewed + stale answers.
+		const midRead = await a!.opened.state.reservations.read(keys[1]!);
+		assert.equal(midRead.status, "active");
+		if (midRead.status !== "active") return;
+		assert.equal(
+			(
+				await a!.opened.state.reservations.release({
+					reservationKey: keys[1]!,
+					ownerSessionId: midRead.reservation.ownerSessionId,
+					fencingToken: midRead.reservation.fencingToken,
+				})
+			).status,
+			"released",
+		);
+
+		const reservations = b!.opened.state.reservations;
+		const renewMany = reservations.renewMany!.bind(reservations);
+		const batchedCalls: Promise<Awaited<ReturnType<typeof renewMany>>>[] = [];
+		const renewManySpy = vi.spyOn(reservations, "renewMany").mockImplementation((leases) => {
+			const pending = renewMany(leases);
+			batchedCalls.push(pending);
+			return pending;
+		});
+		const renewAloneSpy = vi.spyOn(reservations, "renew");
+		try {
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(batchedCalls.length, 1), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				renewManySpy.mock.calls[0]![0].map((lease) => lease.reservationKey),
+				keys,
+			);
+			assert.deepEqual(
+				(await batchedCalls[0]!).map((result) => result.status),
+				["renewed", "stale", "renewed"],
+			);
+			assert.equal(renewAloneSpy.mock.calls.length, 0);
+
+			// Next tick only renews the two remaining live mirrored reservations (the stale one was dropped).
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(batchedCalls.length, 2), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				renewManySpy.mock.calls[1]![0].map((lease) => lease.reservationKey),
+				[keys[0]!, keys[2]!],
+			);
+			assert.deepEqual(
+				(await batchedCalls[1]!).map((result) => result.status),
+				["renewed", "renewed"],
+			);
+			assert.equal(renewAloneSpy.mock.calls.length, 0);
+		} finally {
+			renewManySpy.mockRestore();
+			renewAloneSpy.mockRestore();
+		}
+
+		// Custom store fallback: when `renewMany` is absent, the router falls back to serial `renew()` calls.
+		Object.assign(reservations, { renewMany: undefined });
+		const fallbackSpy = vi.spyOn(reservations, "renew");
+		try {
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(fallbackSpy.mock.calls.length, 2), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				fallbackSpy.mock.calls.map(([lease]) => lease.reservationKey),
+				[keys[0]!, keys[2]!],
+			);
+		} finally {
+			fallbackSpy.mockRestore();
+		}
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 test("a departing recipient releases all its in-flight messages in one releaseClaims call and keeps order (#6713)", async () => {
 	const [a, b] = await cluster();
 	const sender = await a!.connect("sender");
