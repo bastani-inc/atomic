@@ -68,15 +68,21 @@ async function openBroker(path: string) {
 	await state.close();
 }
 
-test("a broker reopened on a SQLite file whose schema is current takes no write lock (#6560)", async () => {
+test("a broker opened a third time on a SQLite file whose schema is current takes no write lock (#6560)", async () => {
 	const path = databasePath("broker.sqlite");
+	// The first open of a new database sets the schema up and stamps nothing, so it costs what it did before stamps:
+	// its later setups would leave earlier stamps behind. The second finds every store in the catalog and stamps them all
+	// in the one write transaction it takes anyway, to seed the restoring reservations' counters. From the third on, the
+	// stamps vouch for every store.
 	await openBroker(path);
+	const second = recordRequests();
+	await openBroker(path);
+	assert.equal(second.take().sent.filter((request) => request.kind === "begin").length, 1, "the second open");
 	const requests = recordRequests();
 	await openBroker(path);
 	const { sent, waits } = requests.take();
 	const begins = sent.filter((request) => request.kind === "begin");
-	// Each store's setup took the write lock at every open: 30 times, in 97 waits. The restoring reservations' counter
-	// seed then still took it once; its schema stamp now vouches for it.
+	// Each store's setup took the write lock at every open: 30 times, in 97 waits; then once, for the counter seed.
 	assert.equal(begins.length, 0, `${begins.length} write transactions`);
 	assert.deepEqual(probes(sent), [], "no table or column was probed on its own");
 	assert.ok(waits <= 12, `${waits} waits for the connection's thread`);

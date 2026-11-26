@@ -293,6 +293,11 @@ export interface SchemaStampAtOpenEnd {
 	 * rows nothing in the open reads, such as a counter's: it then shares the end's transaction instead of taking one.
 	 */
 	readonly deferred?: boolean;
+	/**
+	 * `setup` ran in this open, in a transaction that stamped nothing: it is stamped only when the end takes a transaction
+	 * for another store, never in one of its own, so a new database's first open takes none.
+	 */
+	readonly alongside?: boolean;
 }
 
 const scopes = new WeakMap<SqliteDatabase, CatalogScope>();
@@ -349,8 +354,7 @@ export async function schemaCatalogOf(
  * @internal The revisions the stamps under `ledger` record for the stores of `database` (SQLite and libSQL), by stamp
  * key (`schema:<domain>`), as the open of `database` in progress read them; only those whose schema version was the
  * database's then. Undefined outside such an open, and where none could be read, such as before any stamp. The first
- * question reads them, and the catalog with them where it was not read yet, so the two cost one wait: an open that asks
- * about stamps also asks about the catalog.
+ * question reads them after the open's catalog, and only where it holds their table.
  */
 export async function sqliteSchemaStampsOf(
 	database: SqliteDatabase,
@@ -358,13 +362,16 @@ export async function sqliteSchemaStampsOf(
 ): Promise<ReadonlyMap<string, number> | undefined> {
 	const scope = scopes.get(database);
 	if (scope === undefined || scope.ledger !== ledger || dialectOf(database).name !== "sqlite") return undefined;
-	if (scope.stamps === undefined) {
-		scope.stamps = readSqliteSchemaStamps(database, ledger).then(
-			(read) => read,
-			() => undefined,
-		);
-		scope.catalog ??= scope.read();
-	}
+	// Read once the catalog shows their table: a read of a missing table would fail, which costs a request, and makes a
+	// libSQL file driver replace its connection.
+	scope.stamps ??= schemaCatalogOf(database, ledger).then((catalog) =>
+		catalog?.hasTable(sqliteSchemaStampTable(ledger)) === true
+			? readSqliteSchemaStamps(database, ledger).then(
+					(read) => read,
+					() => undefined,
+				)
+			: undefined,
+	);
 	return scope.stamps;
 }
 
@@ -399,6 +406,7 @@ export function restampStorageSchemaAtOpenEnd(
 async function restamp(database: SqliteDatabase, scope: CatalogScope): Promise<void> {
 	const pending = [...scope.restamp.values()];
 	scope.restamp.clear();
+	if (pending.every((each) => each.alongside === true)) return;
 	const deferred = pending.some((each) => each.deferred === true);
 	try {
 		// Every setup this open checked was behind when it began. Where each is deferred or checked against the catalog,
