@@ -1,6 +1,6 @@
 import type { Api, Model } from "@bastani/atomic-ai/compat";
 
-/** Default model IDs for each known provider */
+/** Preferred model IDs. Resolve them against the available catalog before selection. */
 export const defaultModelPerProvider: Record<string, string> = {
 	"amazon-bedrock": "us.anthropic.claude-opus-5-5",
 	anthropic: "claude-opus-5-5",
@@ -47,7 +47,30 @@ export const defaultModelPerProvider: Record<string, string> = {
 	"xiaomi-token-plan-sgp": "mimo-v2.6-pro",
 };
 
-export function findPreferredAvailableModel(availableModels: Model<Api>[]): Model<Api> | undefined {
+export function findProviderDefaultModel(
+	provider: string,
+	availableModels: readonly Model<Api>[],
+): Model<Api> | undefined {
+	if (!Object.hasOwn(defaultModelPerProvider, provider)) return undefined;
+	const preferredId = defaultModelPerProvider[provider];
+	const namespace = preferredId.split("/").slice(0, -1);
+	let fallback: Model<Api> | undefined;
+	let bestSharedDepth = -1;
+	for (const model of availableModels) {
+		if (model.provider !== provider) continue;
+		if (model.id === preferredId) return model;
+		const modelNamespace = model.id.split("/").slice(0, -1);
+		let sharedDepth = 0;
+		while (sharedDepth < namespace.length && namespace[sharedDepth] === modelNamespace[sharedDepth]) sharedDepth++;
+		if (!fallback || sharedDepth > bestSharedDepth || (sharedDepth === bestSharedDepth && model.id < fallback.id)) {
+			fallback = model;
+			bestSharedDepth = sharedDepth;
+		}
+	}
+	return fallback;
+}
+
+export function findPreferredAvailableModel(availableModels: readonly Model<Api>[]): Model<Api> | undefined {
 	for (const [provider, defaultId] of Object.entries(defaultModelPerProvider)) {
 		const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
 		if (match) {
@@ -55,5 +78,6 @@ export function findPreferredAvailableModel(availableModels: Model<Api>[]): Mode
 		}
 	}
 
-	return availableModels[0];
+	const first = availableModels[0];
+	return first && (findProviderDefaultModel(first.provider, availableModels) ?? first);
 }

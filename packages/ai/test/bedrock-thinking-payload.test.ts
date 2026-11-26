@@ -5,7 +5,7 @@ import {
 	stream as streamBedrock,
 	streamSimple as streamSimpleBedrock,
 } from "../src/api/bedrock-converse-stream.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { getModel, getModels, normalizeContext } from "../src/compat.ts";
 import type { Context, Model } from "../src/types.ts";
 import { hasBedrockCredentials } from "./bedrock-utils.ts";
 
@@ -73,27 +73,29 @@ async function capturePayload(
 }
 
 describe("Bedrock thinking payload", () => {
-	it.each(["high", "xhigh", "max"] as const)(
+	const haikuProfiles = () => getModels("amazon-bedrock").filter((model) => model.id.endsWith("anthropic.claude-haiku-5-5"));
+
+	it.for(["high", "xhigh", "max"] as const)(
 		"uses adaptive thinking and native %s effort for Claude Haiku 5.5",
-		async (reasoning) => {
-			const model = getModel("amazon-bedrock", "global.anthropic.claude-haiku-5-5");
-			const payload = await capturePayload(model, { reasoning });
-			assert.deepEqual(payload.additionalModelRequestFields?.thinking, ADAPTIVE_WITH_BINDING);
-			assert.deepEqual(payload.additionalModelRequestFields?.output_config, { effort: reasoning });
-			assert.deepEqual(payload.additionalModelRequestFields?.anthropic_beta, [THINKING_BINDING_CONTROLS_BETA]);
+		async (reasoning, { skip }) => {
+			const profiles = haikuProfiles();
+			if (profiles.length === 0) return skip("The generated Bedrock catalog has no Claude Haiku 5.5 profiles");
+			for (const model of profiles) {
+				const payload = await capturePayload(model, { reasoning });
+				assert.deepEqual(payload.additionalModelRequestFields?.thinking, ADAPTIVE_WITH_BINDING, model.id);
+				assert.deepEqual(payload.additionalModelRequestFields?.output_config, { effort: reasoning }, model.id);
+				assert.deepEqual(payload.additionalModelRequestFields?.anthropic_beta, [THINKING_BINDING_CONTROLS_BETA], model.id);
+			}
 		},
 	);
 
-	it.each([
-		"anthropic.claude-haiku-5-5",
-		"au.anthropic.claude-haiku-5-5",
-		"eu.anthropic.claude-haiku-5-5",
-		"global.anthropic.claude-haiku-5-5",
-		"jp.anthropic.claude-haiku-5-5",
-		"us.anthropic.claude-haiku-5-5",
-	] as const)("omits unsupported temperature for catalog model %s", async (id) => {
-		const payload = await capturePayload(getModel("amazon-bedrock", id), { reasoning: "high", temperature: 0.5 });
-		assert.equal(payload.inferenceConfig?.temperature, undefined);
+	it("omits unsupported temperature for published Claude Haiku 5.5 profiles", async ({ skip }) => {
+		const profiles = haikuProfiles();
+		if (profiles.length === 0) return skip("The generated Bedrock catalog has no Claude Haiku 5.5 profiles");
+		for (const model of profiles) {
+			const payload = await capturePayload(model, { reasoning: "high", temperature: 0.5 });
+			assert.equal(payload.inferenceConfig?.temperature, undefined, model.id);
+		}
 	});
 
 	it("preserves caller temperature for Bedrock models that support it", async () => {

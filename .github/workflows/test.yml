@@ -35,9 +35,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
-# The work runs as five independent jobs. Root suites duplicate setup so neither
-# waits for the other; no shared producer sits on their critical path.
+# A catalog-only job selects one model data snapshot. All work jobs then run in parallel.
 #
+#   model-data          restore or hydrate one snapshot for this run
 #   unit-tests          build package -> one of eleven (Linux) or twelve (Windows) unit shards
 #   integration-tests   build package -> one of twelve integration shards (per OS)
 #   storage-conformance build package -> one of four Linux server-backed storage shards
@@ -47,19 +47,70 @@ on:
 #   static-checks       typecheck, docs, Mintlify, CI contracts (Linux)
 #   test                result gate; carries the required check contexts
 #
-# Nothing is passed between jobs as an artifact: waiting for a producer job
-# adds a serial dependency, regardless of how cheaply its output transfers.
-# The model data the jobs build atomic-ai from reaches them through a cache that `main` refreshes,
-# not from a producer job, for the same reason (docs/ci.md, "Model data cached, fetched live in one place").
-#
 # Every job runs on a `namespace-profile-atomic-ci-*` repository runner profile,
 # never an inline `nscloud-*` label: this workflow runs fork pull requests, and
 # only a profile can set Namespace's Access Level to Restricted, which disables
 # Namespace API access for the runner workload. The profiles hold the machine
 # shape; see docs/ci.md ("Runners") before resizing one.
 jobs:
+  model-data:
+    name: model-data (linux-x64)
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: namespace-profile-atomic-ci-linux-amd64-4x8;overrides.cache-tag=bastani-inc.atomic.ci.model-data.linux-amd64
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Restore model data from main
+        id: model-data
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
+          restore-keys: |
+            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
+          enableCrossOsArchive: true
+      - name: Select the model data for this run
+        id: selected-model-data
+        shell: bash
+        env:
+          MATCHED_KEY: ${{ steps.model-data.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          if [ -n "$MATCHED_KEY" ] && node packages/ai/scripts/check-model-data.ts; then
+            echo "Using the restored model data snapshot $MATCHED_KEY"
+          else
+            echo "Hydrating from the upstream catalogs"
+            node packages/ai/scripts/generate-models.ts --strict --data-only
+            node packages/ai/scripts/check-model-data.ts
+          fi
+          echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Save model data for future runs
+        if: github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-${{ steps.selected-model-data.outputs.day }}
+          enableCrossOsArchive: true
+      - name: Share the exact model data with the work jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: model-data
+          path: packages/ai/src/providers/data
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+
   unit-tests:
     name: unit-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
@@ -155,29 +206,11 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
         run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
-      # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
-      # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
-      # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
-      # generator inputs and builds offline, so a catalog outage can't fail a test shard. Only without a
-      # valid snapshot does the job hydrate itself: a cold cache, or a change to the generator or provider list.
-      - name: Restore model data
-        id: model-data
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download this run's model data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: model-data
           path: packages/ai/src/providers/data
-          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
-          restore-keys: |
-            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
-          enableCrossOsArchive: true
-      - name: Hydrate model data unless the restored snapshot is valid
-        shell: bash
-        run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
-            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
-          else
-            echo "No valid model data snapshot; hydrating from the upstream catalogs"
-            npm run hydrate:model-data
-          fi
       - name: Build @bastani/atomic-ai
         run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
@@ -239,6 +272,7 @@ jobs:
 
   integration-tests:
     name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/12)
+    needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
@@ -313,29 +347,11 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
         run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
-      # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
-      # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
-      # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
-      # generator inputs and builds offline, so a catalog outage can't fail a test shard. Only without a
-      # valid snapshot does the job hydrate itself: a cold cache, or a change to the generator or provider list.
-      - name: Restore model data
-        id: model-data
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download this run's model data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: model-data
           path: packages/ai/src/providers/data
-          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
-          restore-keys: |
-            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
-          enableCrossOsArchive: true
-      - name: Hydrate model data unless the restored snapshot is valid
-        shell: bash
-        run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
-            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
-          else
-            echo "No valid model data snapshot; hydrating from the upstream catalogs"
-            npm run hydrate:model-data
-          fi
       - name: Build @bastani/atomic-ai
         run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
@@ -372,6 +388,7 @@ jobs:
   # ordinary sqld tests ran past their 30 s budget.
   storage-conformance:
     name: storage-conformance (linux-x64, ${{ matrix.shard }}/4)
+    needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
@@ -449,24 +466,11 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
         run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
-      - name: Restore model data
-        id: model-data
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download this run's model data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: model-data
           path: packages/ai/src/providers/data
-          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
-          restore-keys: |
-            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
-          enableCrossOsArchive: true
-      - name: Hydrate model data unless the restored snapshot is valid
-        shell: bash
-        run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
-            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
-          else
-            echo "No valid model data snapshot; hydrating from the upstream catalogs"
-            npm run hydrate:model-data
-          fi
       - name: Build @bastani/atomic-ai
         run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
@@ -501,6 +505,7 @@ jobs:
 
   agent-suite:
     name: agent-suite (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
@@ -548,7 +553,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: ">=22.23.4 <23"
           package-manager-cache: false
       # The bindings depend only on these sources and the Rust compiler, and
       # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
@@ -587,29 +592,11 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
         run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
-      # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
-      # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
-      # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
-      # generator inputs and builds offline, so a catalog outage can't fail a test shard. Only without a
-      # valid snapshot does the job hydrate itself: a cold cache, or a change to the generator or provider list.
-      - name: Restore model data
-        id: model-data
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download this run's model data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: model-data
           path: packages/ai/src/providers/data
-          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
-          restore-keys: |
-            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
-          enableCrossOsArchive: true
-      - name: Hydrate model data unless the restored snapshot is valid
-        shell: bash
-        run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
-            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
-          else
-            echo "No valid model data snapshot; hydrating from the upstream catalogs"
-            npm run hydrate:model-data
-          fi
       - name: Build @bastani/atomic-ai
         run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
@@ -683,6 +670,7 @@ jobs:
 
   packages-suite:
     name: packages-suite (${{ matrix.binary_platform }})
+    needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
@@ -721,24 +709,11 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
         run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
-      - name: Restore model data
-        id: model-data
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download this run's model data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: model-data
           path: packages/ai/src/providers/data
-          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
-          restore-keys: |
-            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
-          enableCrossOsArchive: true
-      - name: Hydrate model data unless the restored snapshot is valid
-        shell: bash
-        run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
-            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
-          else
-            echo "No valid model data snapshot; hydrating from the upstream catalogs"
-            npm run hydrate:model-data
-          fi
       - name: Build @bastani/atomic-ai
         run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
@@ -750,6 +725,7 @@ jobs:
 
   release-archive:
     name: release-archive (${{ matrix.binary_platform }})
+    needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
@@ -823,29 +799,11 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
         run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
-      # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
-      # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
-      # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
-      # generator inputs and builds offline, so a catalog outage can't fail a test shard. Only without a
-      # valid snapshot does the job hydrate itself: a cold cache, or a change to the generator or provider list.
-      - name: Restore model data
-        id: model-data
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download this run's model data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: model-data
           path: packages/ai/src/providers/data
-          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
-          restore-keys: |
-            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
-          enableCrossOsArchive: true
-      - name: Hydrate model data unless the restored snapshot is valid
-        shell: bash
-        run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
-            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
-          else
-            echo "No valid model data snapshot; hydrating from the upstream catalogs"
-            npm run hydrate:model-data
-          fi
       # build-binaries.sh gets --offline-model-data below, so it doesn't regenerate the data a second time.
       - name: Build @bastani/atomic-ai
         run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
@@ -1005,6 +963,7 @@ jobs:
 
   static-checks:
     name: static-checks (linux-x64)
+    needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     # Platform-independent checks run once on Linux. The CI project's native
     # global setup still builds a missing binding, so a cold job needs Rust.
@@ -1061,25 +1020,15 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
         run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build:bundle
+      - name: Download this run's model data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: model-data
+          path: packages/ai/src/providers/data
       - name: Build @bastani/atomic-ai
-        run: npm --workspace=@bastani/atomic-ai run build && npm --workspace=@bastani/atomic-ai run build:bundle
+        run: npm run build:offline --workspace=@bastani/atomic-ai && npm run build:bundle --workspace=@bastani/atomic-ai
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
         run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core run build:bundle
-      - name: Check the generation left the committed provider shards unchanged
-        id: model-data-saveable
-        shell: bash
-        run: |
-          if git diff --quiet -- packages/ai/src; then echo "saveable=true" >> "$GITHUB_OUTPUT"; else echo "saveable=false" >> "$GITHUB_OUTPUT"; fi
-          echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
-      # Saved only from `main`, and only when the data matches the committed shards the key hashes. Pull
-      # requests restore main's snapshot and can never replace it.
-      - name: Save model data snapshot
-        if: github.event_name == 'push' && steps.model-data-saveable.outputs.saveable == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: packages/ai/src/providers/data
-          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-${{ steps.model-data-saveable.outputs.day }}
-          enableCrossOsArchive: true
       - name: Check
         run: npm run check
       - name: Docs link validation
@@ -1117,7 +1066,7 @@ jobs:
     # GitHub counts a skipped required check as satisfied, so in a draft this job is skipped under another name and
     # never reports the required context; see docs/ci.md ("Draft pull requests").
     name: ${{ github.event.pull_request.draft && 'test (draft, runs when marked ready)' || 'test (all platforms)' }}
-    needs: [unit-tests, integration-tests, storage-conformance, agent-suite, packages-suite, release-archive, static-checks]
+    needs: [model-data, unit-tests, integration-tests, storage-conformance, agent-suite, packages-suite, release-archive, static-checks]
     if: ${{ always() && !github.event.pull_request.draft }}
     runs-on: namespace-profile-atomic-ci-linux-amd64-4x8;overrides.cache-tag=bastani-inc.atomic.ci.result-gate.linux-amd64
     timeout-minutes: 1

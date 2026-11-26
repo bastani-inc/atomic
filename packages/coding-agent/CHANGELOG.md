@@ -14,6 +14,7 @@
 ### Fixed
 
 - On macOS, commands started by Atomic, including background servers, are now stopped when the Atomic process dies ([#5057](https://github.com/bastani-inc/atomic/issues/5057)).
+- If a provider retires Atomic's preferred chat model, Atomic selects another model from that provider's catalog instead of leaving you without a default after login.
 - The agent panel now remembers when you choose `main`. The next `↓` from an empty prompt selects `main` again instead of the subagent you had selected before it ([#6564](https://github.com/bastani-inc/atomic/pull/6564)).
 - Opening a subagent from `/tasks` with `Enter` or a click now makes it the agent panel's remembered row, so the next `↓` from an empty prompt selects it ([#6564](https://github.com/bastani-inc/atomic/pull/6564)).
 - Expanding the card of a subagent that is waiting on a tool call now shows its task and its tool calls, with the waited-on call marked `◌`, instead of only the card's first line. A card with no prompt to show leaves out the Prompt section instead of showing `(none)`, and a card with nothing more to show no longer offers to expand ([#6562](https://github.com/bastani-inc/atomic/pull/6562)).
