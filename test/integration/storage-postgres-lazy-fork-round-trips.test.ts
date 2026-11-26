@@ -242,8 +242,23 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL round trips of for
 					{ expectSeq: 3000 },
 				);
 				await clone(store, "c", "cc");
-				// Many sessions' segments, as a store that has made many forks holds.
-				for (let index = 0; index < 1000; index++) await clone(store, "c", `k${index}`);
+				// Many sessions' segments, as a store that has made many forks holds: one fork's, made by the store, copied to
+				// 999 more sessions in one statement. Making each by a fork took 6,000 round trips, which a loaded machine could
+				// not fit in the test's time.
+				await clone(store, "c", "k0");
+				const segments = sessionForkTables().forkSegments;
+				await database.run(
+					`INSERT INTO ${segments} (session_id, idx, source_id, from_seq, to_seq, base_seq)
+					SELECT 'k' || g, idx, source_id, from_seq, to_seq, base_seq FROM ${segments}, generate_series(1, 999) AS g
+					WHERE session_id = ?`,
+					"k0",
+				);
+				assert.equal(
+					Number(
+						(await database.get<{ n: number }>(`SELECT count(DISTINCT session_id) AS n FROM ${segments}`))?.n,
+					),
+					1002,
+				);
 				await database.run("ANALYZE");
 				const view = forkView(
 					{ segments: sessionForkTables().forkSegments, dialect: dialectOf(database) },
