@@ -262,12 +262,17 @@ interface SharedForkReads {
 	readonly segments: SqliteStatement;
 }
 
+/** What the read of a new session's ID found: its sessions row, and the tombstone a deleted session left where asked. */
+type NewSessionRow = SqliteRow & { id: string | null; tombstone?: string | null };
+
 /** A fork's donor, locked, with the segments that say where its view's rows are stored (#6560). */
 interface SharedForkDonor {
 	readonly lastSeq: number;
 	readonly epoch: string;
 	readonly segments: readonly ForkSegment[];
 	readonly state?: StoredSummaryState;
+	/** What the fork's read of the child's ID found. */
+	readonly child: NewSessionRow | undefined;
 }
 
 /** The donor's segments name a session the fork did not lock: the fork runs again, locking it too (#6560). */
@@ -1663,35 +1668,14 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
-		// Where this store has seen shared history, the session's lookup also tells whether a deleted session with this ID
-		// left rows forks still read, in the same statement.
-		const tombstones = this.sharedHistorySeen;
-		const existing: SqliteStatement = tombstones
-			? {
-					sql: `SELECT (SELECT id FROM ${this.tables.sessions} WHERE id = ?) AS id, (SELECT session_id FROM ${this.forkTables.forkTombstones} WHERE session_id = ?) AS tombstone`,
-					params: [header.id, header.id],
-				}
-			: { sql: `SELECT id FROM ${this.tables.sessions} WHERE id = ?`, params: [header.id] };
+		const existing = this.newSessionRead(header.id);
 		let written: WrittenEntry[] = [];
 		let writtenRow: WrittenRow | undefined;
 		const created = await this.transactionCheckedAlongside(
 			async (tx, checked) => {
 				writtenRow = undefined;
-				const found = await tx.get<SqliteRow & { id: string | null; tombstone?: string | null }>(
-					existing.sql,
-					...existing.params,
-				);
-				if (found?.id != null) throw new SessionExistsError(header.id);
-				// A deleted session with this ID may have left rows forks still read: they get their own copies first.
-				if (
-					(await this.sharedHistoryForks(tx)) &&
-					(tombstones ? found?.tombstone != null : await this.hasForkTombstone(tx, header.id))
-				)
-					// A fork whose copy a missing source chunk refuses keeps the old rows, and the create is refused with it.
-					await createOverTombstoneWithin(this.forkHost(), tx, header.id).catch((error: unknown) => {
-						noteForkCopyRefusal(error, "create");
-						throw error;
-					});
+				const found = await tx.get<NewSessionRow>(existing.sql, ...existing.params);
+				await this.startNewSession(tx, header.id, found, "create");
 				const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
 				await checked;
 				written = [];
@@ -1708,6 +1692,42 @@ export class SqlSessionStore implements SessionStore {
 		this.noteWritten(header.id, created.epoch, written);
 		this.rememberWritten(header.id, writtenRow);
 		return created;
+	}
+
+	/**
+	 * The read that begins a transaction writing a new session `id`, by `create` or by a fork: whether it exists and, where
+	 * this store has seen shared history, whether a deleted session with this ID left rows forks still read, in the same
+	 * statement.
+	 */
+	private newSessionRead(id: string): SqliteStatement {
+		return this.sharedHistorySeen
+			? {
+					sql: `SELECT (SELECT id FROM ${this.tables.sessions} WHERE id = ?) AS id, (SELECT session_id FROM ${this.forkTables.forkTombstones} WHERE session_id = ?) AS tombstone`,
+					params: [id, id],
+				}
+			: { sql: `SELECT id FROM ${this.tables.sessions} WHERE id = ?`, params: [id] };
+	}
+
+	/**
+	 * In the transaction that writes a new session `id`, before its writes, given what {@link newSessionRead} found:
+	 * refuses a session that exists. Where a deleted session with this ID left rows forks still read, those forks get
+	 * their own copies first and the rows go, so the new session starts empty and their sweep never takes its rows. A
+	 * fork whose copy a missing source chunk refuses keeps the old rows, and the new session is refused with it.
+	 */
+	private async startNewSession(
+		tx: SqliteExecutor,
+		id: string,
+		found: NewSessionRow | undefined,
+		operation: "create" | "fork",
+	): Promise<void> {
+		if (found?.id != null) throw new SessionExistsError(id);
+		if (!(await this.sharedHistoryForks(tx))) return;
+		// The read found the tombstone too where it asked for it.
+		if (!(found?.tombstone === undefined ? await this.hasForkTombstone(tx, id) : found.tombstone !== null)) return;
+		await createOverTombstoneWithin(this.forkHost(), tx, id).catch((error: unknown) => {
+			noteForkCopyRefusal(error, operation);
+			throw error;
+		});
 	}
 
 	async createFork(header: SessionRecordHeader, entries: SessionForkSeed, source: ForkArchiveSource) {
@@ -1812,6 +1832,9 @@ export class SqlSessionStore implements SessionStore {
 		}
 		const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
 		await checked;
+		// As `create`: the rows a deleted session with the child's ID left for forks go first. Without shared history, no
+		// session left any.
+		if (shared !== undefined) await this.startNewSession(tx, header.id, shared.child, "fork");
 		const tables = await this.viewTables(tx);
 		const writes = new SentWrites(tx);
 		if (!sharing) {
@@ -2184,6 +2207,8 @@ export class SqlSessionStore implements SessionStore {
 			summaryWrite: (header, lastSeq, summary, index) =>
 				this.summaryWrite(header.id, { header, entries: [], lastSeq }, summary, index),
 			create: (header, entries) => this.create(header, entries),
+			newSessionRead: (id) => this.newSessionRead(id),
+			startNewSession: (tx, id, found) => this.startNewSession(tx, id, found as NewSessionRow | undefined, "fork"),
 			sourceStoredEntryChunks: (source) => {
 				const store = nativeForkReader(source, "entry");
 				return store instanceof SqlSessionStore && store.readEntryChunk === SqlSessionStore.prototype.readEntryChunk
@@ -2390,6 +2415,9 @@ export class SqlSessionStore implements SessionStore {
 			: undefined;
 		const head = shared ?? (await this.forkDonor(tx, header.id, source));
 		await checked;
+		// As `create`: the rows a deleted session with the child's ID left for forks go first. Without shared history, no
+		// session left any.
+		if (shared !== undefined) await this.startNewSession(tx, header.id, shared.child, "fork");
 		const { encodedForkRow } = await import("./fork-row-bytes.js");
 		const { foldForkRow } = await import("./fork-row-index.js");
 		const prefix = stream.prefix;
@@ -2642,7 +2670,7 @@ export class SqlSessionStore implements SessionStore {
 		const epoch = `COALESCE(${this.dialect.jsonText("summary_state", "epoch")}, ${this.dialect.jsonText("summary_state", "resume", "epoch")}, revision)`;
 		return {
 			ids,
-			exists: { sql: `SELECT id FROM ${this.tables.sessions} WHERE id = ?`, params: [child] },
+			exists: this.newSessionRead(child),
 			lock: {
 				sql: `SELECT id, last_seq, CASE WHEN id = ? THEN ${epoch} END AS epoch${withState ? ", CASE WHEN id = ? THEN summary_state END AS summary_state" : ""}
 					FROM ${this.tables.sessions} WHERE (id IN (${ids.map(() => "?").join(", ")})
@@ -2683,7 +2711,7 @@ export class SqlSessionStore implements SessionStore {
 				(value) => ({ value }),
 				(error: unknown) => ({ error }),
 			);
-		const existing = settle(tx.get(reads.exists.sql, ...reads.exists.params));
+		const existing = settle(tx.get<NewSessionRow>(reads.exists.sql, ...reads.exists.params));
 		const locked = settle(tx.all<Locked>(reads.lock.sql, ...reads.lock.params));
 		const tombstones = settle(
 			tx.all<SqliteRow & { session_id: string }>(reads.tombstones.sql, ...reads.tombstones.params),
@@ -2694,7 +2722,8 @@ export class SqlSessionStore implements SessionStore {
 			if ("error" in answer) throw answer.error;
 		}
 		const answer = <T>(read: { value: T } | { error: unknown }) => (read as { value: T }).value;
-		if (answer(await existing)) throw new SessionExistsError(child);
+		const found = answer(await existing);
+		if (found?.id != null) throw new SessionExistsError(child);
 		const row = answer(await locked).find((candidate) => String(candidate.id) === source.sessionId);
 		if (row === undefined) throw new SessionNotFoundError(source.sessionId);
 		const segments = answer(await segmentRows).map((segment) => ({
@@ -2721,6 +2750,7 @@ export class SqlSessionStore implements SessionStore {
 			lastSeq,
 			epoch,
 			segments,
+			child: found,
 			...(typeof row.summary_state === "string"
 				? { state: JSON.parse(row.summary_state) as StoredSummaryState }
 				: {}),
