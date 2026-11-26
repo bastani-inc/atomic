@@ -20,8 +20,34 @@
  */
 
 import type { SqliteExecutor } from "../database.js";
+import { ForkSourceIncompleteError } from "./errors.js";
 import { reparentedSegments, splitSegment } from "./fork-detach-map.js";
 import { type ForkSegment, segmentLength } from "./fork-segments.js";
+
+/**
+ * Where a refused copy of shared rows is noted, for debugging: the application sets it once, to its debug log. A refusal
+ * also fails the write that needed the copy, so nothing is lost; the note says which fork and which source entry.
+ */
+let noteRefusedCopy: (fields: Readonly<Record<string, string | number>>) => void = () => {};
+
+export function setForkCopyRefusalNote(note: (fields: Readonly<Record<string, string | number>>) => void): void {
+	noteRefusedCopy = note;
+}
+
+/** Notes `error` once when it is a refused copy of shared rows; resolves nothing and never throws. */
+export function noteForkCopyRefusal(error: unknown, operation: string): void {
+	if (!(error instanceof ForkSourceIncompleteError)) return;
+	try {
+		noteRefusedCopy({
+			operation,
+			sessionId: error.sessionId,
+			sourceId: error.sourceId,
+			sourceSeq: error.sourceSeq,
+		});
+	} catch {
+		/* A note is for debugging only. */
+	}
+}
 
 /** Rows a detach copies in one transaction, which bounds how long it holds the write lock. */
 export const FORK_DETACH_PAGE_ROWS = 2_000;
@@ -251,19 +277,29 @@ export async function detachFork(
 	});
 	if (progress === undefined) return { detached: [], reparented: [] };
 	for (;;) {
-		const done = await host.forkTransaction(async (tx): Promise<readonly string[] | undefined> => {
-			await lockForUpdate(host, tx, [childId]);
-			const segments = await host.forkSegments(tx, childId);
-			const onParent = segments.filter((segment) => segment.sourceId === parentId);
-			const remaining = onParent.reduce((rows, segment) => rows + segmentLength(segment), 0);
-			if (remaining > pageRows) {
-				await host.materializeForkSegments(tx, childId, [splitSegment(onParent[0]!, pageRows).page]);
-				return undefined;
-			}
-			const reparented = await detachForkWithin(host, tx, parentId, childId, progress.reparent, progress);
-			await tx.run(`DELETE FROM ${table} WHERE parent_id = ? AND child_id = ?`, parentId, childId);
-			return reparented;
-		});
+		const done = await host
+			.forkTransaction(async (tx): Promise<readonly string[] | undefined> => {
+				await lockForUpdate(host, tx, [childId]);
+				const segments = await host.forkSegments(tx, childId);
+				const onParent = segments.filter((segment) => segment.sourceId === parentId);
+				const remaining = onParent.reduce((rows, segment) => rows + segmentLength(segment), 0);
+				if (remaining > pageRows) {
+					await host.materializeForkSegments(tx, childId, [splitSegment(onParent[0]!, pageRows).page]);
+					return undefined;
+				}
+				const reparented = await detachForkWithin(host, tx, parentId, childId, progress.reparent, progress);
+				await tx.run(`DELETE FROM ${table} WHERE parent_id = ? AND child_id = ?`, parentId, childId);
+				return reparented;
+			})
+			.catch(async (error: unknown) => {
+				// A copy a missing source chunk refused cannot finish later either: the detach is given up, and the fork keeps
+				// reading the rows it has not copied. Its pages so far stay, each a part of its view it now holds itself.
+				if (error instanceof ForkSourceIncompleteError)
+					await host.forkTransaction((tx) =>
+						tx.run(`DELETE FROM ${table} WHERE parent_id = ? AND child_id = ?`, parentId, childId),
+					);
+				throw error;
+			});
 		if (done !== undefined) return { detached: [childId], reparented: [...done] };
 	}
 }

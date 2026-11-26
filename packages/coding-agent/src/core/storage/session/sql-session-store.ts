@@ -31,6 +31,7 @@ import {
 	detachForkChildren,
 	type ForkDetachOptions,
 	type ForkDetachReport,
+	noteForkCopyRefusal,
 	resumeForkDetaches,
 } from "./fork-detach.js";
 import { forkDetachHost } from "./fork-detach-host.js";
@@ -1441,7 +1442,11 @@ export class SqlSessionStore implements SessionStore {
 					(await this.sharedHistoryForks(tx)) &&
 					(tombstones ? found?.tombstone != null : await this.hasForkTombstone(tx, header.id))
 				)
-					await createOverTombstoneWithin(this.forkHost(), tx, header.id);
+					// A fork whose copy a missing source chunk refuses keeps the old rows, and the create is refused with it.
+					await createOverTombstoneWithin(this.forkHost(), tx, header.id).catch((error: unknown) => {
+						noteForkCopyRefusal(error, "create");
+						throw error;
+					});
 				const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
 				await checked;
 				written = [];
@@ -1841,7 +1846,10 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		if (!(await this.transaction((tx) => this.sharedHistoryForks(tx), SESSION_TRANSACTION)))
 			return { detached: [], reparented: [] };
-		const report = await detachForkChildren(this.forkHost(), sessionId, options);
+		const report = await detachForkChildren(this.forkHost(), sessionId, options).catch((error: unknown) => {
+			noteForkCopyRefusal(error, "detach");
+			throw error;
+		});
 		await this.sweepReleasedForkRows([sessionId]);
 		return report;
 	}
@@ -2573,8 +2581,15 @@ export class SqlSessionStore implements SessionStore {
 				validateSessionHeader(header);
 				validateSessionEntries(entries);
 				if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
-				// Forks reading the rows about to go get their own copies; the session holds all of its new rows itself.
-				if (pins !== undefined) released = await replaceForkedSessionWithin(this.forkHost(), tx, sessionId, pins);
+				// Forks reading the rows about to go get their own copies; the session holds all of its new rows itself. A fork
+				// whose copy a missing chunk of these rows refuses keeps reading them, so the replace is refused instead.
+				if (pins !== undefined)
+					released = await replaceForkedSessionWithin(this.forkHost(), tx, sessionId, pins).catch(
+						(error: unknown) => {
+							noteForkCopyRefusal(error, "replace");
+							throw error;
+						},
+					);
 				await this.searchIndex?.forgetWithin(tx, sessionId);
 				await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 				await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
