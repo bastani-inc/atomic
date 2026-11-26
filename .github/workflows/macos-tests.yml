@@ -6,15 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       tests:
-        description: Repository-relative .test.ts paths, separated by spaces
+        description: Space-separated repository-relative .test.ts paths, or one Rust test name filter for native
         required: true
         type: string
       project:
-        description: The vitest project the files belong to
+        description: The Vitest project or native Rust test mode
         required: true
         default: unit
         type: choice
         options:
+          - native
           - unit
           - integration
           - agent
@@ -28,7 +29,7 @@ concurrency:
 
 jobs:
   tests:
-    if: github.repository == 'bastani-inc/atomic'
+    if: github.repository == 'bastani-inc/atomic' && inputs.project != 'native'
     # The only macOS profile this repository has. Nothing this job does is committed to its cache volume.
     runs-on: [namespace-profile-atomic-release-macos-arm64-6x14, nscloud-cache-exp-do-not-commit]
     timeout-minutes: 40
@@ -123,3 +124,32 @@ jobs:
             files=("${files[@]#packages/coding-agent/}")
           fi
           npx vitest --run --project "$PROJECT" "${files[@]}"
+
+  native-tests:
+    if: github.repository == 'bastani-inc/atomic' && inputs.project == 'native'
+    runs-on: [namespace-profile-atomic-release-macos-arm64-6x14, nscloud-cache-exp-do-not-commit]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        timeout-minutes: 4
+        with:
+          toolchain: stable
+      - name: Run the requested native tests
+        env:
+          TEST_FILTER: ${{ inputs.tests }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TEST_FILTER" =~ ^[A-Za-z0-9_:]+$ ]]; then
+            echo "::error::Expected one Rust test name filter"
+            exit 1
+          fi
+          results="$RUNNER_TEMP/native-test-results.txt"
+          cargo test --locked -p atomic-natives --lib "$TEST_FILTER" | tee "$results"
+          if ! grep -Eq '^running [1-9][0-9]* tests?$' "$results"; then
+            echo "::error::No native tests matched $TEST_FILTER"
+            exit 1
+          fi
