@@ -1,5 +1,11 @@
 import { dialectOf, type SqliteDatabase } from "@bastani/atomic/storage";
-import { catalogHasColumns, foundInCatalogAgain, RETRY_UNAPPLIED, setUpBrokerSchemaOnce } from "./sql-schema.js";
+import {
+	catalogHasColumns,
+	foundInCatalogAgain,
+	queueBrokerSqliteSetup,
+	RETRY_UNAPPLIED,
+	setUpBrokerSchemaOnce,
+} from "./sql-schema.js";
 
 function isLineTerminatorCode(code: number): boolean {
 	return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
@@ -128,6 +134,21 @@ export async function addMissingColumns(
 	const names = Object.keys(columns);
 	// An open that read the catalog and found every column there runs no transaction (#6560).
 	if (await catalogHasColumns(database, table, names)) return;
+	// Inside a SQLite open scope, queue missing column additions into the open's single write transaction (#6709).
+	if (
+		queueBrokerSqliteSetup(database, undefined, {
+			verify: (catalog) => names.every((column) => catalog.hasColumn(table, column)),
+			run(ctx) {
+				for (const [column, definition] of Object.entries(columns)) {
+					if (ctx.hasColumn(table, column)) continue;
+					ctx.enqueue(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`, { ignoreError: isDuplicateColumn });
+					ctx.noteColumnAdded(table, column);
+					if (withColumn !== undefined) ctx.enqueue(withColumn);
+				}
+			},
+		})
+	)
+		return;
 	const probes = names.map((column) => dialect.columnExists(table, column));
 	try {
 		await setUpBrokerSchemaOnce(

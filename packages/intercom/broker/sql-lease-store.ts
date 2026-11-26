@@ -25,8 +25,10 @@ import type {
 import { isMissingPrivilege } from "./sql-add-column.js";
 import { recipientTransaction } from "./sql-outbox-store.js";
 import {
+	brokerSchemaCurrent,
 	ensureBrokerSchema,
 	openCatalogOf,
+	queueBrokerSqliteSetup,
 	RETRY_UNAPPLIED,
 	stampBrokerSchemaAtOpenEnd,
 	withBrokerSchemaCatalog,
@@ -216,21 +218,41 @@ async function ensureAddressColumns(database: SqliteDatabase, prefix: string | u
 				);
 		await tx.exec(indexes);
 	};
-	// On SQLite, which records no step, the catalog an open read finds the columns and their indexes, so a current
-	// table costs no write transaction (#6560); the open's end stamps it, so the next open answers from the stamp.
-	const catalog = dialect.versionedMigrations ? undefined : await openCatalogOf(database);
-	if (
-		catalog?.sqliteObjectType !== undefined &&
-		ADDRESS_COLUMNS.every(
-			(column) => catalog.hasColumn(table, column) && catalog.sqliteObjectType?.(`${table}_${column}`) === "index",
-		)
-	) {
-		await stampBrokerSchemaAtOpenEnd(database, prefix, "lease-addresses", setup, (found) =>
+	// On SQLite, which records no step, the catalog or stamp an open read decides: a current table costs no write
+	// transaction (#6560), and missing columns/indexes queue into the open's single write transaction (#6709).
+	if (!dialect.versionedMigrations) {
+		if (await brokerSchemaCurrent(database, prefix, "lease-addresses")) return true;
+		const verify = (found: storage.StorageSchemaCatalog) =>
 			ADDRESS_COLUMNS.every(
 				(column) => found.hasColumn(table, column) && found.sqliteObjectType?.(`${table}_${column}`) === "index",
-			),
-		);
-		return true;
+			);
+		const schema = { ledger: storageMigrationTable(prefix), domain: "intercom-lease-addresses", revision: 1 };
+		if (
+			queueBrokerSqliteSetup(database, prefix ?? "", {
+				stamp: schema,
+				verify,
+				run(ctx) {
+					if (ctx.catalog !== undefined && verify(ctx.catalog)) return;
+					for (const column of ADDRESS_COLUMNS) {
+						if (ctx.hasColumn(table, column)) continue;
+						ctx.enqueue(
+							`ALTER TABLE ${table} ADD COLUMN ${column} TEXT GENERATED ALWAYS AS (${expressions[column]}) VIRTUAL`,
+						);
+						ctx.noteColumnAdded(table, column);
+					}
+					for (const column of ADDRESS_COLUMNS) {
+						if (ctx.catalog?.sqliteObjectType?.(`${table}_${column}`) === "index") continue;
+						ctx.enqueue(`CREATE INDEX IF NOT EXISTS ${table}_${column} ON ${table}(${column})`);
+					}
+				},
+			})
+		)
+			return true;
+		const catalog = await openCatalogOf(database);
+		if (catalog?.sqliteObjectType !== undefined && verify(catalog)) {
+			await stampBrokerSchemaAtOpenEnd(database, prefix, "lease-addresses", setup, verify);
+			return true;
+		}
 	}
 	try {
 		await ensureBrokerSchema(database, prefix, "lease-addresses", setup);

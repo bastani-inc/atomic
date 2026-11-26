@@ -1,13 +1,33 @@
 import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "./database.js";
 import { dialectOf } from "./dialect.js";
+import { StorageSchemaVersionError } from "./errors.js";
+import type { SequencedStatement } from "./statement-sequence.js";
 import * as statementSequence from "./statement-sequence.js";
 
 /**
- * `transactionFinisher` of `statement-sequence.ts`, which the copy of that module 0.10.3 and 0.10.4 loaded lacks: a
- * process an in-place update caught keeps that copy, where a named import would fail to link. Without it the stamps
- * go out on their own, before the commit.
+ * `transactionFinisher`, `sequenceRunner` and `statementBatch` of `statement-sequence.ts`, which the copies 0.10.3 and
+ * 0.10.4 loaded lack: a process an in-place update caught keeps those copies, where a named import would fail to link.
+ * Without `statementBatch`, 0.10.3's connection thread cannot run `{ script: true }` entries inside a sequence request,
+ * so multi-statement scripts run via `tx.exec` instead.
  */
-const finishers: Partial<Pick<typeof statementSequence, "transactionFinisher">> = statementSequence;
+const finishers: Partial<Pick<typeof statementSequence, "transactionFinisher" | "sequenceRunner" | "statementBatch">> =
+	statementSequence;
+
+/** Minimal AsyncLocalStorage surface, resolved portably without a static `node:` import. */
+interface AsyncScopeStore<T> {
+	getStore(): T | undefined;
+	run<R>(store: T, callback: () => R): R;
+}
+
+function createAsyncScopeStore<T>(): AsyncScopeStore<T> | undefined {
+	const proc = (
+		globalThis as {
+			process?: { getBuiltinModule?: (id: string) => { AsyncLocalStorage?: new <V>() => AsyncScopeStore<V> } };
+		}
+	).process;
+	const Ctor = proc?.getBuiltinModule?.("async_hooks")?.AsyncLocalStorage;
+	return Ctor === undefined ? undefined : new Ctor<T>();
+}
 
 /**
  * What a schema held when one open read it: its relations, triggers and columns, and on PostgreSQL the versions its
@@ -105,11 +125,37 @@ export interface SqliteSchemaStamp {
 	readonly revision: number;
 }
 
+/** The SQLite statements that create (unless `tableExists`) and upsert `stamps` at the current `PRAGMA schema_version`. */
+function sqliteStampStatements(
+	stamps: readonly SqliteSchemaStamp[],
+	tableExists: boolean,
+): readonly SequencedStatement[] {
+	const ledger = stamps[0]?.ledger;
+	if (ledger === undefined) return [];
+	const table = sqliteSchemaStampTable(ledger);
+	const upsert: SequencedStatement = {
+		sql: `INSERT INTO ${table} (domain, revision, schema_version)
+		SELECT column1, column2, (SELECT schema_version FROM pragma_schema_version)
+		FROM (VALUES ${stamps.map(() => "(?, ?)").join(", ")}) WHERE true
+		ON CONFLICT(domain) DO UPDATE SET revision = excluded.revision, schema_version = excluded.schema_version`,
+		params: stamps.flatMap(({ domain, revision }) => [stampKey(domain), revision]),
+	};
+	if (tableExists) return [upsert];
+	return [
+		{
+			sql: `CREATE TABLE IF NOT EXISTS ${table} (domain TEXT NOT NULL PRIMARY KEY, revision INTEGER NOT NULL, schema_version INTEGER NOT NULL)`,
+			params: [],
+			script: true,
+		},
+		upsert,
+	];
+}
+
 /**
  * @internal Stamps each of `stamps`, in the transaction `tx` that ran their setups, with the schema version as that
  * transaction leaves it: a later open believes their revisions until the schema changes again (#6560). Creates the
  * stamps table first, unless `options.tableExists`, so its own creation is part of the version recorded. With
- * `options.last`, the stamps are the transaction's last statement: where its connection is pipelined, they go out with
+ * `options.last`, the stamps are the transaction's last statements: where its connection is pipelined, they go out with
  * its commit. SQLite only; every stamp must share a ledger.
  */
 export async function recordSqliteSchemaStamps(
@@ -117,24 +163,14 @@ export async function recordSqliteSchemaStamps(
 	stamps: readonly SqliteSchemaStamp[],
 	options: { readonly tableExists?: boolean; readonly last?: boolean } = {},
 ): Promise<void> {
-	const ledger = stamps[0]?.ledger;
-	if (ledger === undefined) return;
-	const table = sqliteSchemaStampTable(ledger);
-	if (options.tableExists !== true)
-		await tx.exec(
-			`CREATE TABLE IF NOT EXISTS ${table} (domain TEXT NOT NULL PRIMARY KEY, revision INTEGER NOT NULL, schema_version INTEGER NOT NULL)`,
-		);
-	// The revision this transaction set up, even below a newer build's: the stamp says what was checked at this version.
-	// One statement for them all, so a server pays one request.
-	const upsert = {
-		sql: `INSERT INTO ${table} (domain, revision, schema_version)
-		SELECT column1, column2, (SELECT schema_version FROM pragma_schema_version)
-		FROM (VALUES ${stamps.map(() => "(?, ?)").join(", ")}) WHERE true
-		ON CONFLICT(domain) DO UPDATE SET revision = excluded.revision, schema_version = excluded.schema_version`,
-		params: stamps.flatMap(({ domain, revision }) => [stampKey(domain), revision]),
-	};
-	if (options.last === true && finishers.transactionFinisher?.(tx)?.([upsert]) === true) return;
-	await tx.run(upsert.sql, ...upsert.params);
+	const statements = sqliteStampStatements(stamps, options.tableExists === true);
+	if (statements.length === 0) return;
+	const canSequence = finishers.statementBatch !== undefined || statements.every((each) => each.script !== true);
+	if (options.last === true && canSequence && finishers.transactionFinisher?.(tx)?.(statements) === true) return;
+	for (const statement of statements) {
+		if (statement.script === true) await tx.exec(statement.sql);
+		else await tx.run(statement.sql, ...statement.params);
+	}
 }
 
 /** The catalog of a SQLite database, or undefined when it cannot be read, such as on a SQLite too old. */
@@ -262,6 +298,68 @@ export async function readStorageSchemaCatalog(
 	};
 }
 
+/** @internal Context passed to a queued SQLite schema setup inside an open's single write transaction (#6709). */
+export interface SqliteSchemaBatchContext {
+	/** The write transaction executor. */
+	readonly tx: SqliteExecutor;
+	/** The live schema catalog read at the start of the write transaction, authoritative under the write lock. */
+	readonly catalog: StorageSchemaCatalog | undefined;
+	/**
+	 * Queues a SQLite write statement or multi-statement SQL script to run in order inside the transaction. Consecutive
+	 * queued writes go out together to the connection thread, and the final run goes out with `COMMIT`. When
+	 * `options.ignoreError` returns true for a statement's failure, that error is ignored.
+	 */
+	enqueue(
+		statement: string | SequencedStatement,
+		options?: { readonly ignoreError?: (error: unknown) => boolean },
+	): void;
+	/** Executes any writes queued so far; call before issuing a read on `tx` that depends on them. */
+	flushWrites(): Promise<void>;
+	/** Notes that this transaction added `column` to `table`, so a later queued setup does not add it again. */
+	noteColumnAdded(table: string, column: string): void;
+	/** Whether `table` already has `column` in `catalog` or added earlier in this transaction. */
+	hasColumn(table: string, column: string): boolean;
+	/** Notes that this transaction created `table`. */
+	noteTableCreated(table: string): void;
+	/** Whether `table` was created earlier in this transaction. */
+	createdTable(table: string): boolean;
+	/** Whether `table` already existed in `catalog` before this transaction began. */
+	tableExisted(table: string): boolean;
+}
+
+/** @internal A SQLite schema setup queued inside an open scope (`withStorageSchemaCatalog`) to run in one transaction. */
+export interface SqliteSchemaBatchSetup {
+	/** Stamp recorded for this setup once the batched transaction commits, when the store uses SQLite schema stamps. */
+	readonly stamp?: SqliteSchemaStamp;
+	/** Whether the schema already holds everything this setup creates (for DDL-only setups without row seeds). */
+	readonly verify?: (catalog: StorageSchemaCatalog) => boolean;
+	/**
+	 * Checks outside any write lock whether another host completed this setup while we waited on `tryMaintenance`.
+	 * Throwing (such as `StorageSchemaVersionError` for a newer build's database) immediately rejects the open.
+	 */
+	readonly done?: (
+		catalog: StorageSchemaCatalog,
+		stamps: ReadonlyMap<string, number> | undefined,
+	) => boolean | Promise<boolean>;
+	/** Reset any mutable per-attempt JS state before each transaction attempt or retry. */
+	readonly reset?: () => void;
+	/** Runs this setup inside the batched write transaction. */
+	readonly run: (context: SqliteSchemaBatchContext) => Promise<void> | void;
+	/**
+	 * Optional setup (such as an FTS5 search index): if the transaction fails, the open retries with optional setups
+	 * isolated in savepoints, calling `onFailure` instead of failing the open.
+	 */
+	readonly optional?: boolean;
+	/** Called when an optional setup fails and its savepoint rolls back. */
+	readonly onFailure?: () => void;
+}
+
+interface OpenBatch {
+	readonly ledger: string;
+	readonly setups: SqliteSchemaBatchSetup[];
+	readonly restamp: Map<string, PendingRestamp>;
+}
+
 interface CatalogScope {
 	readonly ledger: string;
 	/** Read when the scope starts on PostgreSQL, whose opens always ask it; on SQLite at the first question. */
@@ -270,8 +368,8 @@ interface CatalogScope {
 	users: number;
 	/** The stamps valid when read, by stamp key, read at the first question: see {@link sqliteSchemaStampsOf}. */
 	stamps: Promise<ReadonlyMap<string, number> | undefined> | undefined;
-	/** The setups this open ran on SQLite, by domain, to stamp again at its end ({@link restampStorageSchemaAtOpenEnd}). */
-	readonly restamp: Map<string, PendingRestamp>;
+	/** Fallback batch used only on runtimes lacking `AsyncLocalStorage`. */
+	readonly fallbackBatch: OpenBatch;
 }
 
 interface PendingRestamp extends SchemaStampAtOpenEnd {
@@ -300,12 +398,26 @@ export interface SchemaStampAtOpenEnd {
 }
 
 const scopes = new WeakMap<SqliteDatabase, CatalogScope>();
+/**
+ * Tracks the root open batch active on each `CatalogScope` along the current async call chain: nested opens share their
+ * enclosing root's batch and commit together at the root's end, while concurrent sibling opens on the same database
+ * handle each own and commit their own batch before returning (#6709).
+ */
+const activeOpenBatches = createAsyncScopeStore<ReadonlyMap<CatalogScope, OpenBatch>>();
+
+/** How long a SQLite open batch polls `done` after `tryMaintenance` finds the lock busy before joining the queue. */
+const SQLITE_BATCH_WAIT_MS = 1_000;
+const SQLITE_BATCH_POLL_MS = 20;
+const SQLITE_BATCH_MAX_POLL_MS = 250;
+
+const pausePoll = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms * (0.5 + Math.random() / 2)));
 
 /**
  * Runs `body`, an open of one or more stores on `database`, with one catalog read for all of them: the schema checks
  * of the stores it opens ({@link schemaCatalogOf}) answer from it, so an open whose schema is current runs no schema
- * transaction and takes no lock. Opens on `database` that overlap share the read. `views` are other handles on the
- * same connection, such as a borrowed view, whose checks answer from the same read.
+ * transaction and takes no lock. Opens on `database` that overlap share the read. On SQLite, setups queued inside the
+ * open ({@link queueSqliteSchemaSetup}) run in one write transaction before the root open returns (#6709). `views` are
+ * other handles on the same connection, such as a borrowed view, whose checks answer from the same read.
  */
 export async function withStorageSchemaCatalog<T>(
 	database: SqliteDatabase,
@@ -317,17 +429,38 @@ export async function withStorageSchemaCatalog<T>(
 	if (scope === undefined || scope.ledger !== ledger) {
 		const read = () => readStorageSchemaCatalog(database, ledger);
 		const catalog = dialectOf(database).name === "sqlite" ? undefined : read();
-		scope = { ledger, catalog, read, users: 0, stamps: undefined, restamp: new Map() };
+		scope = {
+			ledger,
+			catalog,
+			read,
+			users: 0,
+			stamps: undefined,
+			fallbackBatch: { ledger, setups: [], restamp: new Map() },
+		};
 		scopes.set(database, scope);
 	}
 	const shared = scope;
 	const handles = [database, ...views.filter((view) => !scopes.has(view))];
 	for (const handle of handles.slice(1)) scopes.set(handle, shared);
 	shared.users += 1;
-	try {
+	const enclosing = activeOpenBatches?.getStore();
+	const isRoot = activeOpenBatches === undefined ? shared.users === 1 : enclosing?.has(shared) !== true;
+	const batch: OpenBatch =
+		activeOpenBatches === undefined
+			? shared.fallbackBatch
+			: isRoot
+				? { ledger, setups: [], restamp: new Map() }
+				: enclosing!.get(shared)!;
+	const run = async (): Promise<T> => {
 		const value = await body();
-		if (shared.users === 1 && shared.restamp.size > 0) await restamp(database, shared);
+		if (isRoot && (batch.setups.length > 0 || batch.restamp.size > 0)) await flushOpenBatch(database, shared, batch);
 		return value;
+	};
+	try {
+		if (!isRoot || activeOpenBatches === undefined) return await run();
+		const next = new Map(enclosing);
+		next.set(shared, batch);
+		return await activeOpenBatches.run(next, run);
 	} finally {
 		shared.users -= 1;
 		for (const handle of handles.slice(1)) if (scopes.get(handle) === shared) scopes.delete(handle);
@@ -341,7 +474,10 @@ export async function withStorageSchemaCatalog<T>(
  */
 export function refreshStorageSchemaCatalog(database: SqliteDatabase): void {
 	const scope = scopes.get(database);
-	if (scope !== undefined) scope.catalog = undefined;
+	if (scope !== undefined) {
+		scope.catalog = undefined;
+		scope.stamps = undefined;
+	}
 }
 
 /**
@@ -402,15 +538,53 @@ export async function sqliteSchemaStampsOf(
 	return scope.stamps;
 }
 
+/** Active root open batch for `database` on SQLite (matching `ledger` when given), or undefined outside one. */
+function activeBatchFor(
+	database: SqliteDatabase,
+	ledger?: string,
+): { readonly scope: CatalogScope; readonly batch: OpenBatch } | undefined {
+	if (dialectOf(database).name !== "sqlite") return undefined;
+	const scope = scopes.get(database);
+	if (scope === undefined || (ledger !== undefined && scope.ledger !== ledger)) return undefined;
+	const batch = activeOpenBatches === undefined ? scope.fallbackBatch : activeOpenBatches.getStore()?.get(scope);
+	return batch === undefined ? undefined : { scope, batch };
+}
+
+/**
+ * @internal Queues `setup` into the active SQLite open scope (`withStorageSchemaCatalog`) so that all needed setups of
+ * the open execute in one write transaction before the open returns (#6709). Returns `false` outside a SQLite open
+ * scope (or for a different `ledger`), in which case the caller runs `setup` immediately.
+ */
+export function queueSqliteSchemaSetup(
+	database: SqliteDatabase,
+	ledger: string | undefined,
+	setup: SqliteSchemaBatchSetup,
+): boolean {
+	const active = activeBatchFor(database, ledger);
+	if (active === undefined) return false;
+	active.batch.setups.push(setup);
+	return true;
+}
+
+/**
+ * @internal Executes and commits any SQLite schema setups queued so far in the active open scope, before the open
+ * needs their committed tables or evaluated outcomes (#6709). No-op when nothing is queued or outside a SQLite open.
+ */
+export async function flushStorageSchemaSetups(database: SqliteDatabase, ledger?: string): Promise<void> {
+	const active = activeBatchFor(database, ledger);
+	if (active === undefined) return;
+	if (active.batch.setups.length === 0 && active.batch.restamp.size === 0) return;
+	await flushOpenBatch(database, active.scope, active.batch);
+}
+
 /**
  * @internal Tells the open of `database` in progress that it checked `setup`, the schema setup `stamp` names, without
  * its stamp (SQLite only): it ran it in a transaction that stamped it, found every object it creates in the
  * catalog (with `verify`), or leaves it to the end (`deferred`). A schema change later in the same open, such as the
  * next store's setup or a column it adds, leaves a stamp behind the schema version, and a store found in the catalog has
- * none that is current, so the next open would check it again. The open's end reads the stamps once more and, where any
- * of these is behind, checks or runs them in one transaction and stamps them all with the version it leaves: the next
- * open of a current schema then takes no write lock and answers every such store from its stamp (#6560). False, and
- * nothing is kept, outside such an open: the caller then runs `setup` as it would without stamps.
+ * none that is current, so the next open would check it again. The open's end checks or runs them in one transaction
+ * and stamps them all with the version it leaves: the next open of a current schema then takes no write lock and answers
+ * every such store from its stamp (#6560, #6709). False, and nothing is kept, outside such an open.
  */
 export function restampStorageSchemaAtOpenEnd(
 	database: SqliteDatabase,
@@ -418,52 +592,248 @@ export function restampStorageSchemaAtOpenEnd(
 	setup: (tx: SqliteExecutor) => Promise<unknown>,
 	options: SchemaStampAtOpenEnd = {},
 ): boolean {
-	const scope = scopes.get(database);
-	if (scope === undefined || scope.ledger !== stamp.ledger || dialectOf(database).name !== "sqlite") return false;
-	scope.restamp.set(stamp.domain, { stamp, setup, ...options });
+	const active = activeBatchFor(database, stamp.ledger);
+	if (active === undefined) return false;
+	active.batch.restamp.set(stamp.domain, { stamp, setup, ...options });
+	return true;
+}
+
+interface QueuedBatchWrite {
+	readonly statement: SequencedStatement;
+	readonly ignoreError?: (error: unknown) => boolean;
+}
+
+/**
+ * Sends `writes` on `tx`, piggybacking onto `COMMIT` when `last` is true and the connection supports it. Returns
+ * `true` when sent via `transactionFinisher` (without per-statement `ignoreError` handling).
+ */
+async function sendBatchWrites(
+	tx: SqliteExecutor,
+	writes: readonly QueuedBatchWrite[],
+	last: boolean,
+): Promise<boolean> {
+	if (writes.length === 0) return false;
+	const statements = writes.map(({ statement }) => statement);
+	const canSequence = finishers.statementBatch !== undefined || statements.every((each) => each.script !== true);
+	if (last && canSequence && finishers.transactionFinisher?.(tx)?.(statements) === true) return true;
+	const runSequence = canSequence ? finishers.sequenceRunner?.(tx) : undefined;
+	if (runSequence !== undefined && writes.every(({ ignoreError }) => ignoreError === undefined)) {
+		await runSequence({ statements });
+		return false;
+	}
+	for (const { statement, ignoreError } of writes) {
+		try {
+			if (statement.script === true) await tx.exec(statement.sql);
+			else await tx.run(statement.sql, ...statement.params);
+		} catch (error) {
+			if (ignoreError?.(error) !== true) throw error;
+		}
+	}
+	return false;
+}
+
+/**
+ * Checks outside any write lock whether another host completed every queued setup and restamp in this open batch.
+ * Updates `scope.catalog` and `scope.stamps` when complete so later questions in the same open see the fresh schema.
+ */
+async function batchCompletedElsewhere(
+	database: SqliteDatabase,
+	scope: CatalogScope,
+	setups: readonly SqliteSchemaBatchSetup[],
+	restamps: readonly PendingRestamp[],
+): Promise<boolean> {
+	const catalog = await readSqliteCatalog(database, scope.ledger);
+	if (catalog === undefined) return false;
+	const stampTable = sqliteSchemaStampTable(scope.ledger);
+	const needsStamps = setups.some((each) => each.stamp !== undefined) || restamps.length > 0;
+	const stamps =
+		needsStamps && catalog.hasTable(stampTable)
+			? await readSqliteSchemaStamps(database, scope.ledger).catch(() => undefined)
+			: undefined;
+	for (const entry of setups) {
+		if (entry.done !== undefined) {
+			if (!(await entry.done(catalog, stamps))) return false;
+			continue;
+		}
+		if (entry.stamp !== undefined) {
+			if ((stamps?.get(stampKey(entry.stamp.domain)) ?? 0) < entry.stamp.revision) return false;
+			continue;
+		}
+		if (entry.verify !== undefined) {
+			if (!entry.verify(catalog)) return false;
+			continue;
+		}
+		return false;
+	}
+	for (const entry of restamps) {
+		if (entry.alongside === true && setups.length === 0) continue;
+		if ((stamps?.get(stampKey(entry.stamp.domain)) ?? 0) < entry.stamp.revision) return false;
+	}
+	scope.catalog = Promise.resolve(catalog);
+	scope.stamps = stamps === undefined ? undefined : Promise.resolve(stamps);
 	return true;
 }
 
 /**
- * Stamps again, in one transaction, the setups `scope`'s open checked whose stamps are behind: each with `verify` is
- * checked against the catalog the transaction reads, and runs where that finds something missing; each without runs.
- * Every deferred setup runs, and fails the open where the transaction fails. Otherwise housekeeping: a failure leaves the
- * stamps behind, and the next open checks those stores as it would without them.
+ * Runs every queued setup and restamp of `batch` in ONE SQLite write transaction through `tryMaintenance`, polling
+ * `batchCompletedElsewhere` when another host holds the lock and falling back to a normal serial transaction after
+ * {@link SQLITE_BATCH_WAIT_MS} (#6709).
  */
-async function restamp(database: SqliteDatabase, scope: CatalogScope): Promise<void> {
-	const pending = [...scope.restamp.values()];
-	scope.restamp.clear();
-	if (pending.every((each) => each.alongside === true)) return;
-	const deferred = pending.some((each) => each.deferred === true);
-	try {
-		// Every setup this open checked was behind when it began. Where each is deferred or checked against the catalog,
-		// the end's transaction checks it again anyway, so the stamps are not read again; otherwise they are, to spare an
-		// open that changed nothing since its setups a transaction. None where no setup made the table yet.
-		const reread = pending.some((each) => each.deferred !== true && each.verify === undefined);
-		const current = reread
-			? await readSqliteSchemaStamps(database, scope.ledger).catch(() => new Map<string, number>())
-			: new Map<string, number>();
-		const behind = pending.filter(
-			({ stamp, deferred }) => deferred === true || (current.get(stampKey(stamp.domain)) ?? 0) < stamp.revision,
-		);
-		if (behind.length === 0) return;
-		const table = sqliteSchemaStampTable(scope.ledger);
-		await database.transaction(
-			async (tx) => {
-				const catalog = await readSqliteCatalog(tx, scope.ledger);
-				for (const { setup, verify, deferred } of behind)
-					if (deferred === true || verify === undefined || catalog === undefined || !verify(catalog))
-						await setup(tx);
-				await recordSqliteSchemaStamps(
-					tx,
-					behind.map(({ stamp }) => stamp),
-					{ tableExists: catalog?.hasTable(table) === true, last: true },
-				);
+async function flushOpenBatch(database: SqliteDatabase, scope: CatalogScope, batch: OpenBatch): Promise<void> {
+	const setups = batch.setups.splice(0);
+	const pendingRestamps = [...batch.restamp.values()];
+	batch.restamp.clear();
+	if (setups.length === 0 && pendingRestamps.every((each) => each.alongside === true)) return;
+	const required = setups.length > 0 || pendingRestamps.some((each) => each.deferred === true);
+	const hasOptional = setups.some((each) => each.optional === true);
+	const stampTable = sqliteSchemaStampTable(scope.ledger);
+
+	let ignoreErrorPredicates: ((error: unknown) => boolean)[] = [];
+	let usedFinisher = false;
+	const runTransaction = async (tx: SqliteExecutor, isolateOptional: boolean): Promise<void> => {
+		ignoreErrorPredicates = [];
+		usedFinisher = false;
+		for (const entry of setups) entry.reset?.();
+		const catalog = await readSqliteCatalog(tx, scope.ledger);
+		const writes: QueuedBatchWrite[] = [];
+		const addedColumns = new Set<string>();
+		const createdTables = new Set<string>();
+		const flushWrites = async (): Promise<void> => {
+			if (writes.length === 0) return;
+			const batchWrites = writes.splice(0);
+			await sendBatchWrites(tx, batchWrites, false);
+		};
+		const context: SqliteSchemaBatchContext = {
+			tx,
+			catalog,
+			enqueue(statement, options) {
+				const sequenced: SequencedStatement =
+					typeof statement === "string" ? { sql: statement, params: [], script: true } : statement;
+				if (options?.ignoreError !== undefined) ignoreErrorPredicates.push(options.ignoreError);
+				writes.push({
+					statement: sequenced,
+					...(options?.ignoreError === undefined ? {} : { ignoreError: options.ignoreError }),
+				});
 			},
-			{ retryTransientFailures: true, concurrency: { kind: "serial", domain: scope.ledger } },
-		);
+			flushWrites,
+			noteColumnAdded(table, column) {
+				addedColumns.add(`${table}\0${column}`);
+			},
+			hasColumn(table, column) {
+				return catalog?.hasColumn(table, column) === true || addedColumns.has(`${table}\0${column}`);
+			},
+			noteTableCreated(table) {
+				createdTables.add(table);
+			},
+			createdTable(table) {
+				return createdTables.has(table);
+			},
+			tableExisted(table) {
+				return catalog?.hasTable(table) === true;
+			},
+		};
+
+		for (const entry of setups) {
+			if (!isolateOptional || entry.optional !== true) {
+				await entry.run(context);
+				continue;
+			}
+			await flushWrites();
+			await tx.exec("SAVEPOINT atomic_optional_schema_setup");
+			try {
+				await entry.run(context);
+				await flushWrites();
+			} catch {
+				writes.length = 0;
+				await tx.exec("ROLLBACK TO SAVEPOINT atomic_optional_schema_setup");
+				entry.onFailure?.();
+			}
+			await tx.exec("RELEASE SAVEPOINT atomic_optional_schema_setup");
+		}
+
+		for (const { setup, verify, deferred } of pendingRestamps) {
+			if (deferred === true || verify === undefined || catalog === undefined || !verify(catalog)) {
+				await flushWrites();
+				await setup(tx);
+			}
+		}
+
+		// Collect stamps for every stamped setup and restamp in this batch (deduplicated by domain, keeping highest revision).
+		const stampByDomain = new Map<string, SqliteSchemaStamp>();
+		for (const entry of setups) {
+			if (entry.stamp === undefined) continue;
+			const prev = stampByDomain.get(entry.stamp.domain);
+			if (prev === undefined || entry.stamp.revision > prev.revision)
+				stampByDomain.set(entry.stamp.domain, entry.stamp);
+		}
+		for (const entry of pendingRestamps) {
+			const prev = stampByDomain.get(entry.stamp.domain);
+			if (prev === undefined || entry.stamp.revision > prev.revision)
+				stampByDomain.set(entry.stamp.domain, entry.stamp);
+		}
+		if (stampByDomain.size > 0) {
+			const stampStmts = sqliteStampStatements([...stampByDomain.values()], catalog?.hasTable(stampTable) === true);
+			for (const statement of stampStmts) writes.push({ statement });
+		}
+
+		usedFinisher = await sendBatchWrites(tx, writes.splice(0), !isolateOptional);
+	};
+
+	const executeOnce = async (isolateOptional: boolean): Promise<void> => {
+		const waiting = () =>
+			database.transaction((tx) => runTransaction(tx, isolateOptional), {
+				retryTransientFailures: true,
+				concurrency: { kind: "serial", domain: scope.ledger },
+			});
+		const tryMaintenance = database.tryMaintenance?.bind(database);
+		if (tryMaintenance === undefined) {
+			await waiting();
+			scope.catalog = undefined;
+			scope.stamps = undefined;
+			return;
+		}
+		const deadline = performance.now() + SQLITE_BATCH_WAIT_MS;
+		for (let wait = SQLITE_BATCH_POLL_MS; ; wait = Math.min(wait * 2, SQLITE_BATCH_MAX_POLL_MS)) {
+			const won = await tryMaintenance((tx) => runTransaction(tx, isolateOptional));
+			if (won) {
+				scope.catalog = undefined;
+				scope.stamps = undefined;
+				return;
+			}
+			if (performance.now() >= deadline) {
+				await waiting();
+				scope.catalog = undefined;
+				scope.stamps = undefined;
+				return;
+			}
+			await pausePoll(wait);
+			if (await batchCompletedElsewhere(database, scope, setups, pendingRestamps)) return;
+		}
+	};
+
+	try {
+		// Pure restamp housekeeping (no queued setups, no deferred seeds): check current stamps first if any entry lacks
+		// `verify`, sparing an open that changed nothing since its setups a write transaction.
+		if (setups.length === 0 && !required && pendingRestamps.some((each) => each.verify === undefined)) {
+			const current = await readSqliteSchemaStamps(database, scope.ledger).catch(() => new Map<string, number>());
+			const behind = pendingRestamps.filter(
+				({ stamp }) => (current.get(stampKey(stamp.domain)) ?? 0) < stamp.revision,
+			);
+			if (behind.length === 0) return;
+		}
+		await executeOnce(false);
 	} catch (error) {
-		if (deferred) throw error;
-		// The next open checks them again.
+		const retryIgnored = usedFinisher && ignoreErrorPredicates.some((match) => match(error));
+		if ((hasOptional || retryIgnored) && !(error instanceof StorageSchemaVersionError)) {
+			try {
+				await executeOnce(true);
+				return;
+			} catch (retryError) {
+				if (required) throw retryError;
+				return;
+			}
+		}
+		if (required) throw error;
+		// Pure housekeeping restamp failure: the next open checks those stores again.
 	}
 }

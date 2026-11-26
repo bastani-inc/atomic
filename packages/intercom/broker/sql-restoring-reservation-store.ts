@@ -33,6 +33,7 @@ import {
 	ensureBrokerSchema,
 	foundInCatalogAgain,
 	openCatalogOf,
+	queueBrokerSqliteSetup,
 	RETRY_UNAPPLIED,
 	setUpBrokerSchemaOnce,
 	withBrokerSchemaCatalog,
@@ -220,13 +221,27 @@ async function openRestoringReservationStoreInCatalog({
 		!catalog.hasObject(`${table}_wake_requested`.slice(0, dialectOf(database).name === "postgres" ? 63 : undefined));
 	const catalog = await openCatalogOf(database);
 	// Brokers that open a new database at once create it once; the others wait for it without its lock (#6560).
-	if (catalog === undefined || !wakeIndexCurrent(catalog))
-		await setUpBrokerSchemaOnce(
-			database,
-			`${table}:wake-index`,
-			() => foundInCatalogAgain(database, wakeIndexCurrent),
-			(tx) => renameWakeIndex(tx, dialectOf(database), table),
-		);
+	// On SQLite inside an open scope, queue the wake index update into the open's single write transaction (#6709).
+	if (catalog === undefined || !wakeIndexCurrent(catalog)) {
+		const index = `${table}_wake`;
+		const earlier = `${table}_wake_requested`;
+		if (
+			!queueBrokerSqliteSetup(database, prefix ?? "", {
+				verify: wakeIndexCurrent,
+				run(ctx) {
+					if (ctx.catalog?.hasObject(earlier) === true) ctx.enqueue(`DROP INDEX IF EXISTS ${earlier}`);
+					if (ctx.catalog?.hasObject(index) !== true)
+						ctx.enqueue(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(owner_broker_id) WHERE wake_requested = 1`);
+				},
+			})
+		)
+			await setUpBrokerSchemaOnce(
+				database,
+				`${table}:wake-index`,
+				() => foundInCatalogAgain(database, wakeIndexCurrent),
+				(tx) => renameWakeIndex(tx, dialectOf(database), table),
+			);
+	}
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
 		targets_json, "group" AS reservation_group, dormant, wake, wake_generation, fencing_token, "order" AS reservation_order,
 		gone AS gone_json, end_json,

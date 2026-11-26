@@ -46,12 +46,12 @@ import {
  */
 
 /**
- * The transactions a new store's first open runs, as many as an open before shared-history forks runs, none of them a
- * switch: on SQLite and libSQL the sessions schema with its fork tables, the snapshot tables, their index and the
- * search index; on PostgreSQL also the read-only reads of the schema catalog and of the snapshot index's state, then
- * the sessions, open-session and fillfactor steps, the snapshot tables with their index, and the search index.
+ * The transactions a new store's first open runs, none of them a switch: on SQLite the sessions schema with its fork
+ * tables, snapshot tables, snapshot index triggers and search tables commit together in one write transaction (#6709);
+ * on PostgreSQL also the read-only reads of the schema catalog and of the snapshot index's state, then the sessions,
+ * open-session and fillfactor steps, the snapshot tables with their index, and the search index.
  */
-const TRANSACTIONS_OF_A_NEW_STORE: Record<string, number> = { sqlite: 4, postgres: 7 };
+const TRANSACTIONS_OF_A_NEW_STORE: Record<string, number> = { sqlite: 1, postgres: 7 };
 
 /**
  * What the open of a store already switched sends, as an open before shared-history forks does, nothing of it for the
@@ -176,6 +176,13 @@ function recording(database: SqliteDatabase) {
 				return (...args: unknown[]) => {
 					transactions++;
 					return (value as (...a: unknown[]) => unknown).apply(target, args);
+				};
+			}
+			if (key === "tryMaintenance" && typeof value === "function") {
+				return async (...args: unknown[]) => {
+					const won = await (value as (...a: unknown[]) => Promise<boolean>).apply(target, args);
+					if (won) transactions++;
+					return won;
 				};
 			}
 			if (key === "get" || key === "all" || key === "run" || key === "exec")
