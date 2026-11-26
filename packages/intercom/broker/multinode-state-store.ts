@@ -368,6 +368,14 @@ export interface OutboxStore {
 	 */
 	releaseClaim(claim: OutboxClaim, options?: { readonly unwritten?: boolean }): Promise<OutboxReleaseClaimResult>;
 	/**
+	 * `releaseClaim` for each of `claims`, in one transaction whose statement releases every claim still current,
+	 * answered in the order given (#6713). Optional: without it, a broker releases its claims one at a time.
+	 */
+	releaseClaims?(
+		claims: readonly OutboxClaim[],
+		options?: { readonly unwritten?: boolean },
+	): Promise<OutboxReleaseClaimResult[]>;
+	/**
 	 * #5038: return every row `claimantId` holds to `queued`, as its own `releaseClaim` would, so a dead broker's
 	 * claims stop holding its recipients' queues until they go stale. Resolves to the number of rows released.
 	 */
@@ -592,6 +600,11 @@ export interface RestoringReservationStore {
 	): Promise<RestoringReservationLookupResult>;
 	/** Reset the age, also of a gone marker. A superseded token or an ended reservation is `stale`. */
 	renew(lease: RestoringReservationLease): Promise<RestoringReservationRenewResult>;
+	/**
+	 * Reset the age of multiple reservations, also of gone markers, in a single shared-store transaction, returning one
+	 * result per entry in input order (#6714). Absent on custom stores that only implement `renew`.
+	 */
+	renewMany?(leases: readonly RestoringReservationLease[]): Promise<RestoringReservationRenewResult[]>;
 	/** Owner only: mark the reservation gone, or end it as `released`. */
 	release(
 		lease: RestoringReservationLease,

@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { openNodeSqliteDatabase, type SqliteDatabase, type StorageOpenContext } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
-import type { BrokerLeaseStore } from "../../packages/intercom/broker/multinode-state-store.js";
+import type {
+	BrokerLeaseStore,
+	LeaseRenewalRequest,
+	RestoringReservationLease,
+} from "../../packages/intercom/broker/multinode-state-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
+import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { useFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
 import {
 	registerBrokerLeaseStoreConformance,
@@ -115,6 +120,116 @@ test("only renewals commit without waiting for the disk: acquisitions and releas
 		txSpy.mockClear();
 		assert.equal((await store.release(acquired.lease)).status, "released");
 		assert.deepEqual(relaxed(), [false]);
+	} finally {
+		await database.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("renewMany runs one UPDATE on SQLite with zero follow-up reads when all leases renew, and one read when any miss (#6714)", async () => {
+	const directory = makeTempDirectory("intercom-sql-leases-stmts-");
+	const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+	try {
+		const store = await openSqlBrokerLeaseStore({ database, prefix: "" });
+		const resvStore = await openSqlRestoringReservationStore({ database, prefix: "" });
+		const leases: LeaseRenewalRequest[] = [];
+		for (let i = 0; i < 4; i++) {
+			const subject = {
+				kind: "presence" as const,
+				targetIdentity: `target-${i}`,
+				session: { id: `id-${i}`, name: `s-${i}`, cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
+			};
+			const acquired = await store.acquire(subject, "broker-a", 30_000);
+			assert.equal(acquired.status, "acquired");
+			if (acquired.status === "acquired") leases.push({ lease: acquired.lease, subject });
+		}
+		const countStatements = async <T>(
+			run: () => Promise<T>,
+		): Promise<{ result: T; statements: string[]; relaxed: boolean[] }> => {
+			const statements: string[] = [];
+			const relaxed: boolean[] = [];
+			const original = database.transaction.bind(database);
+			const spy = vi.spyOn(database, "transaction").mockImplementation((callback, options) => {
+				relaxed.push(options?.relaxedDurability === true);
+				return original(
+					(tx) =>
+						callback({
+							...tx,
+							all: (sql, ...params) => {
+								statements.push(sql);
+								return tx.all(sql, ...params);
+							},
+							get: (sql, ...params) => {
+								statements.push(sql);
+								return tx.get(sql, ...params);
+							},
+							run: (sql, ...params) => {
+								statements.push(sql);
+								return tx.run(sql, ...params);
+							},
+						}),
+					options,
+				);
+			});
+			try {
+				return { result: await run(), statements, relaxed };
+			} finally {
+				spy.mockRestore();
+			}
+		};
+
+		const allHit = await countStatements(() => store.renewMany!(leases));
+		assert.deepEqual(
+			allHit.result.map((r) => r.status),
+			["renewed", "renewed", "renewed", "renewed"],
+		);
+		assert.equal(allHit.statements.length, 1, "all-owned lease renewMany executes 1 statement on SQLite");
+
+		assert.equal((await store.release(leases[1]!.lease)).status, "released");
+		assert.equal((await store.release(leases[3]!.lease)).status, "released");
+		const withMisses = await countStatements(() => store.renewMany!(leases));
+		assert.deepEqual(withMisses.result, [
+			{ status: "renewed" },
+			{ status: "stale" },
+			{ status: "renewed" },
+			{ status: "stale" },
+		]);
+		assert.equal(withMisses.statements.length, 2, "missed leases execute 1 UPDATE + 1 SELECT on SQLite");
+
+		// Restoring reservations: 1 statement when all owned, 2 when any miss, and relaxedDurability enabled.
+		const resvLeases: RestoringReservationLease[] = [];
+		for (let i = 0; i < 4; i++) {
+			const reserved = await resvStore.reserve({
+				reservationKey: `resv-${i}`,
+				ownerSessionId: "owner-1",
+				ownerBrokerId: "broker-a",
+				childName: `child-${i}`,
+				childTarget: `child-${i}`,
+				aliases: [],
+				group: "team",
+				dormant: false,
+				wake: false,
+			});
+			assert.equal(reserved.status, "reserved");
+			if (reserved.status === "reserved") resvLeases.push(reserved.lease);
+		}
+		const resvAll = await countStatements(() => resvStore.renewMany!(resvLeases));
+		assert.deepEqual(resvAll.relaxed, [true]);
+		assert.deepEqual(
+			resvAll.result.map((r) => r.status),
+			["renewed", "renewed", "renewed", "renewed"],
+		);
+		assert.equal(resvAll.statements.length, 1, "all-owned reservation renewMany executes 1 statement on SQLite");
+
+		assert.equal((await resvStore.release(resvLeases[2]!)).status, "released");
+		const resvMiss = await countStatements(() => resvStore.renewMany!(resvLeases));
+		assert.deepEqual(resvMiss.result, [
+			{ status: "renewed" },
+			{ status: "renewed" },
+			{ status: "stale" },
+			{ status: "renewed" },
+		]);
+		assert.equal(resvMiss.statements.length, 2, "missed reservations execute 1 UPDATE + 1 SELECT on SQLite");
 	} finally {
 		await database.close();
 		removeTempDirectory(directory);

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a `leadingOnly` PostgreSQL transaction classifying a dropped connection after `COMMIT` was written as `"not-applied"` and retrying it. The adapter now notifies the facade immediately before writing `COMMIT` so any subsequent connection drop keeps an `"unknown"` outcome and is never retried, while genuine pre-commit refusals (such as lock timeouts) still retry. Also fixed `readOnly: true` with `leadingOnly: true` releasing its pooled client before `BEGIN` settled ([#6711](https://github.com/bastani-inc/atomic/issues/6711)).
+
 ## [0.10.11-alpha.3] - 2026-11-26
 
 ### Changed

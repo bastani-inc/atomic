@@ -493,11 +493,12 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 		async () => {
 			const evaluating = sandbox.path("evaluating.txt");
 			const startup = sandbox.path("bash-startup.sh");
-			// What a shell startup file can run in the evaluator's bash before anything else of the step.
+			// What a shell startup file can run in the evaluator's bash before anything else of the step. macOS's bash 3.2
+			// names the script in $0 only after its startup file ran, so there the evaluator is known by its script.
 			writeFileSync(
 				startup,
 				[
-					'if [ "$0" = atomic-blueprint-envrc ]; then',
+					`if [ "$0" = atomic-blueprint-envrc ] || case "$BASH_EXECUTION_STRING" in *'env -0'*) true ;; *) false ;; esac; then`,
 					`  echo evaluating >> "${shellPath(evaluating)}"`,
 					`  while [ ! -f "${shellPath(gate())}" ]; do sleep 0.05; done`,
 					"fi",
