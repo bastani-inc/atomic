@@ -12,7 +12,7 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
-import { schemaCatalogOf } from "../storage/schema-catalog.js";
+import { type StorageSchemaCatalog, schemaCatalogOf } from "../storage/schema-catalog.js";
 import { statementBatch } from "../storage/statement-batches.js";
 import type { BatchWrite } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
@@ -1295,15 +1295,30 @@ async function installMissingSources(
 	}
 }
 
-/** Which referencing tables exist, whether each has all its triggers and a source row, and whether its backfill is done. */
+/** The names of `sources`' tables and triggers, whose presence `readSourceStates` reads. */
+function sourceObjectNames(sources: readonly IndexSource[]): string[] {
+	return sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]);
+}
+
+/** The read of every source's progress rows. */
+function sourceProgressRead(t: SnapshotIndexTables): SqliteStatement {
+	return { sql: `SELECT source, watermark, backfilled_through FROM ${t.sources}`, params: [] };
+}
+
+/**
+ * Which referencing tables exist, whether each has all its triggers and a source row, and whether its backfill is done.
+ * `present`, when given, holds every table and trigger of `sources`, as an open's catalog found them: the objects are
+ * not read then (#6560).
+ */
 async function readSourceStates(
 	executor: SqliteExecutor,
 	dialect: StorageDialect,
 	t: SnapshotIndexTables,
 	sources: readonly IndexSource[],
 	listRetired = false,
+	present?: ReadonlySet<string>,
 ): Promise<SourceState[]> {
-	const names = sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]);
+	const names = sourceObjectNames(sources);
 	// Builds before 0.9.88 open SQLite and libSQL databases only, so only there can a trigger of this build's name be
 	// one that indexes less.
 	const sqlite = dialect.name === "sqlite";
@@ -1324,23 +1339,25 @@ async function readSourceStates(
 					sql: `SELECT name, ${holds(signatures)} AS signed, ${holds(markers)} AS marked FROM sqlite_schema WHERE name IN (${names.map(() => "?").join(", ")})`,
 					params: [...signatures, ...markers].flatMap((check) => [check.trigger, check.text]).concat(names),
 				};
+	const progressRead = sourceProgressRead(t);
+	type ObjectRow = SqliteRow & { name: string; signed?: number | null; marked?: number | null };
 	// Read together: the progress rows do not depend on the objects.
 	const [objectRows, progressRows] = await statementBatch(
 		executor,
 		[],
 		[
 			() =>
-				executor.all<SqliteRow & { name: string; signed?: number | null; marked?: number | null }>(
-					objects.sql,
-					...objects.params,
-				),
+				present === undefined
+					? executor.all<ObjectRow>(objects.sql, ...objects.params)
+					: Promise.resolve(names.filter((name) => present.has(name)).map((name): ObjectRow => ({ name }))),
 			() =>
 				executor.all<SqliteRow & { source: string; watermark: number; backfilled_through: number }>(
-					`SELECT source, watermark, backfilled_through FROM ${t.sources}`,
+					progressRead.sql,
+					...progressRead.params,
 				),
 		],
 	);
-	const present = new Set(objectRows.map((row) => row.name));
+	const found = new Set(objectRows.map((row) => row.name));
 	// Whether each checked trigger's SQL holds this build's text; every other object reads null.
 	const checked = (column: "signed" | "marked") =>
 		new Map(
@@ -1366,7 +1383,7 @@ async function readSourceStates(
 		}),
 	);
 	return sources
-		.filter((source) => present.has(source.table))
+		.filter((source) => found.has(source.table))
 		.map((source) => {
 			const row = progress.get(source.name);
 			const version = source.version === undefined ? undefined : progress.get(source.version);
@@ -1382,7 +1399,7 @@ async function readSourceStates(
 			// missing is not, even when its SQL is the same in every build otherwise (#5558).
 			const mine =
 				source.marker !== undefined &&
-				source.triggers.every((trigger) => !present.has(trigger.name) || marked.get(trigger.name) === true);
+				source.triggers.every((trigger) => !found.has(trigger.name) || marked.get(trigger.name) === true);
 			let foreign: boolean;
 			// Whether the backfill is done for this build, besides the source's own progress row.
 			let trusted: boolean;
@@ -1405,7 +1422,7 @@ async function readSourceStates(
 				row !== undefined &&
 				!foreign &&
 				Number(row.watermark) >= 0 &&
-				source.triggers.every((trigger) => present.has(trigger.name));
+				source.triggers.every((trigger) => found.has(trigger.name));
 			const backfilled =
 				row !== undefined &&
 				!foreign &&
@@ -1528,7 +1545,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			);
 		}
 		const store = new SqlSnapshotBlobStore(database, dialect, t, indexSources(prefix, t, dialect));
-		await store.installIndex();
+		await store.installIndex(undefined, false, await schemaCatalogOf(database));
 		return store;
 	}
 
@@ -1782,8 +1799,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * above it, indexed by the triggers. A table that has none yet, an empty one included, costs one watermark of 0.
 	 * Resolves with the state of every referencing table.
 	 */
-	private async installIndex(pace?: BackgroundCollectionPace, includeDeferred = false): Promise<SourceState[]> {
-		const states = await readSourceStates(this.database, this.dialect, this.tables, this.sources, includeDeferred);
+	private async installIndex(
+		pace?: BackgroundCollectionPace,
+		includeDeferred = false,
+		catalog?: StorageSchemaCatalog,
+	): Promise<SourceState[]> {
+		const states = await this.readStates(includeDeferred, catalog);
 		const missing = states.filter((state) => !state.installed && (includeDeferred || !state.deferred));
 		for (const { source } of missing) {
 			const reset =
@@ -1799,9 +1820,33 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				);
 			});
 		}
-		return missing.length === 0
-			? states
-			: readSourceStates(this.database, this.dialect, this.tables, this.sources, includeDeferred);
+		return missing.length === 0 ? states : this.readStates(includeDeferred);
+	}
+
+	/**
+	 * The state of every source, read outside a transaction. On PostgreSQL the objects and the progress rows are read in
+	 * one read-only transaction whose start carries both, so they cost one round trip, not one each. An open's
+	 * `catalog` answers which objects exist only when it found every one: only its positive answers are final, and a
+	 * source table it lacks may have been created since (#6560).
+	 */
+	private readStates(includeDeferred: boolean, catalog?: StorageSchemaCatalog): Promise<SourceState[]> {
+		if (this.dialect.name !== "postgres")
+			return readSourceStates(this.database, this.dialect, this.tables, this.sources, includeDeferred);
+		const names = sourceObjectNames(this.sources);
+		const present =
+			catalog !== undefined && names.every((name) => catalog.hasObject(name)) ? new Set(names) : undefined;
+		return this.database.transaction(
+			(transaction) =>
+				readSourceStates(transaction, this.dialect, this.tables, this.sources, includeDeferred, present),
+			{
+				readOnly: true,
+				retryTransientFailures: true,
+				leading: [
+					...(present === undefined ? [this.dialect.schemaObjects(names)] : []),
+					sourceProgressRead(this.tables),
+				],
+			},
+		);
 	}
 
 	/**

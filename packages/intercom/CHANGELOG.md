@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Changed
+
+- With multi-node routing on PostgreSQL, messages that recipients confirm at about the same time are now recorded as delivered together, in one transaction that takes 2 round trips, instead of 2 round trips for each message. Each message still gets its own answer, in the order the confirmations arrived, and a message is never recorded as delivered twice. At 80 ms latency, four confirmations took 0.19 s instead of 0.55 s, and no longer opened extra database connections ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.1] - 2026-11-25
 
 ### Changed

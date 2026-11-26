@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- On PostgreSQL, opening a session store whose tables are up to date now waits for 2 round trips instead of 5, and an Intercom broker for 1 instead of 3. The first query that opens the database also reads the list of Atomic's tables and their recorded versions, so the store does not read them again, and the snapshot index's two checks go out together. At 80 ms latency, reopening a session store takes about a quarter of a second less ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.1] - 2026-11-25
 
 Many agents can now share one PostgreSQL or libSQL database without waiting for each other, forks cost about the same however long the session is, and shell commands and history searches now run until they finish.
