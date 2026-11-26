@@ -68,21 +68,31 @@ function message(text: string, parentId: string | null): SessionEntry {
 	} as SessionEntry;
 }
 
-test("creating a session and appending to it each wait for the connection's thread four times", async () => {
+test("creating a session and appending to it each wait for the connection's thread twice (#6560)", async () => {
 	const { store } = await openStore();
 	const waits = countWaits();
 	const created = await store.create(header("s1"), []);
-	// The write lock, the version check with the session's lookup, the session's row, the commit.
-	assert.equal(waits.take(), 4);
+	// The write lock with the version check and the session's lookup; the session's row with the commit.
+	assert.deepEqual(
+		waits.sent.map((request) => request.kind),
+		["begin", "sequence"],
+	);
+	assert.equal(waits.take(), 2);
 	const first = message("first", null);
 	const appended = await store.append("s1", [first], { expectSeq: created.lastSeq, epoch: created.epoch });
-	// The write lock, the version check with the session's row, its rows with their search texts, the commit.
-	assert.equal(waits.take(), 4);
+	// The write lock with the version check and the session's row; its rows with their search texts and the commit.
+	const [begin, rows] = waits.sent;
+	assert.deepEqual(
+		begin?.kind === "begin" ? begin.statements?.map(({ sql }) => sql.split(" ").slice(0, 2).join(" ")) : begin,
+		["SELECT schema_version", "SELECT header_json,"],
+	);
+	assert.equal(rows?.kind === "sequence" ? rows.statements.at(-1)?.sql : rows, "COMMIT");
+	assert.equal(waits.take(), 2);
 	await store.append("s1", [message("second", first.id), message("third", first.id)], {
 		expectSeq: appended.lastSeq,
 		epoch: created.epoch,
 	});
-	assert.equal(waits.take(), 4);
+	assert.equal(waits.take(), 2);
 	const loaded = await store.load("s1");
 	assert.deepEqual(
 		loaded.entries.map((entry) =>
@@ -105,10 +115,10 @@ test("an append to a session of the default store waits for the connection's thr
 	const waits = countWaits();
 	const first = message("first", null);
 	await store.append("s1", [first], { expectSeq: created.lastSeq, epoch: created.epoch });
-	// The write lock, the version check with the session's row, its rows with their search texts, the commit.
-	assert.equal(waits.take(), 4);
+	// The write lock with the version check and the session's row; its rows with their search texts and the commit.
+	assert.equal(waits.take(), 2);
 	await store.append("s1", [message("second", first.id)], { expectSeq: created.lastSeq + 1 });
-	assert.equal(waits.take(), 4);
+	assert.equal(waits.take(), 2);
 	assert.deepEqual(
 		(await store.load("s1")).entries.map((entry) =>
 			entry.type === "message" && "content" in entry.message ? entry.message.content : "",

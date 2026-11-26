@@ -436,6 +436,206 @@ for (const route of postgresRoutes) {
 					}),
 				);
 			});
+
+			test("batched claim renewals match whole triples, reject swapped tokens, and take one round trip (#6712)", async () => {
+				await withPostgresDatabase(async (scope) => {
+					const user = decodeURIComponent(new URL(scope.url).username);
+					const url = route.url(scope, scope.name, user);
+					const { state, bus } = await openIntercomBrokerState({ openDatabase: () => scope.open({ url }) });
+					await bus.close();
+					const texts = new Set<string>();
+					const query = pg.Client.prototype.query;
+					pg.Client.prototype.query = function (this: pg.Client, ...args: unknown[]) {
+						const first = args[0] as string | { text?: string } | undefined;
+						const text = typeof first === "string" ? first : first?.text;
+						if (text?.includes("SET claim_renewed_at =")) texts.add(text);
+						return Reflect.apply(query, this, args);
+					} as pg.Client["query"];
+					restores.push(() => {
+						pg.Client.prototype.query = query;
+					});
+					try {
+						for (const id of ["r-1", "r-2", "r-3", "r-4", "r-5"]) await enqueue(state, id, "target-r");
+						const claimed = await claim(state, "broker-b", "target-r");
+						assert.equal(claimed.status, "claimed");
+						if (claimed.status !== "claimed") return;
+						const claims = claimed.rows.map(({ claim }) => claim);
+						const trips = countPostgresRoundTrips();
+						const allRenewed = await state.outbox.renewClaims!(claims);
+						const allTrips = trips.take();
+						assert.deepEqual(
+							allRenewed.map((answer) => answer.status),
+							["renewed", "renewed", "renewed", "renewed", "renewed"],
+						);
+						assert.equal(allTrips, 1);
+						const subset = await state.outbox.renewClaims!(claims.slice(0, 2));
+						const subsetTrips = trips.take();
+						assert.deepEqual(
+							subset.map((answer) => answer.status),
+							["renewed", "renewed"],
+						);
+						assert.equal(subsetTrips, 1);
+						const mixed = await state.outbox.renewClaims!([
+							claims[0]!,
+							{ ...claims[1]!, token: claims[2]!.token },
+							{ ...claims[2]!, token: claims[1]!.token },
+							{ messageId: "missing", claimantId: "broker-b", token: "t", attempt: 1 },
+						]);
+						const mixedTrips = trips.take();
+						assert.deepEqual(
+							mixed.map((answer) => answer.status),
+							["renewed", "stale", "stale", "unknown"],
+						);
+						assert.equal(mixedTrips, 1);
+						assert.equal(texts.size, 1, [...texts].join("\n---\n"));
+					} finally {
+						await state.close();
+					}
+				});
+			});
+
+			test("batched claim releases match whole triples, floor unwritten attempts at 0, stay durable, and take one round trip (#6713)", async () => {
+				await withPostgresDatabase(async (scope) => {
+					const user = decodeURIComponent(new URL(scope.url).username);
+					const url = route.url(scope, scope.name, user);
+					const { state, bus } = await openIntercomBrokerState({ openDatabase: () => scope.open({ url }) });
+					const direct = await scope.open();
+					await bus.close();
+					const writtenTexts = new Set<string>();
+					const unwrittenTexts = new Set<string>();
+					const missReadTexts = new Set<string>();
+					let relaxedDuringRelease = false;
+					let trackingRelease = false;
+					const query = pg.Client.prototype.query;
+					pg.Client.prototype.query = function (this: pg.Client, ...args: unknown[]) {
+						const first = args[0] as string | { text?: string } | undefined;
+						const text = typeof first === "string" ? first : first?.text;
+						if (trackingRelease && text?.includes("synchronous_commit = off")) relaxedDuringRelease = true;
+						if (text?.includes("SET state = 'queued'") && text.includes("atomic.intercom_release_misses")) {
+							if (text.includes("claim_attempts = GREATEST")) unwrittenTexts.add(text);
+							else writtenTexts.add(text);
+						} else if (text?.includes("current_setting('atomic.intercom_release_misses'")) {
+							missReadTexts.add(text);
+						}
+						return Reflect.apply(query, this, args);
+					} as pg.Client["query"];
+					restores.push(() => {
+						pg.Client.prototype.query = query;
+					});
+					try {
+						const ids = ["rel-1", "rel-2", "rel-3", "rel-4", "rel-5", "rel-6"];
+						for (const id of ids) await enqueue(state, id, "target-rel");
+						const claimed = await claim(state, "broker-b", "target-rel");
+						assert.equal(claimed.status, "claimed");
+						if (claimed.status !== "claimed") return;
+						const all = claimed.rows.map(({ claim }) => claim);
+
+						// Pin N -> 1 round trip (N = 4 releases in one statement vs 4 serial calls).
+						const trips = countPostgresRoundTrips();
+						trackingRelease = true;
+						const releasedFour = await state.outbox.releaseClaims!(all.slice(0, 4));
+						const batchFourTrips = trips.take();
+						const releasedTwo = await state.outbox.releaseClaims!(all.slice(4, 6));
+						const batchTwoTrips = trips.take();
+						trackingRelease = false;
+						assert.deepEqual(
+							releasedFour.map((answer) => answer.status),
+							["released", "released", "released", "released"],
+						);
+						assert.deepEqual(
+							releasedTwo.map((answer) => answer.status),
+							["released", "released"],
+						);
+						assert.equal(batchFourTrips, 1);
+						assert.equal(batchTwoTrips, 1);
+						assert.equal(relaxedDuringRelease, false, "releaseClaims commit must stay durable");
+						assert.equal(writtenTexts.size, 1, [...writtenTexts].join("\n---\n"));
+
+						// Re-claim and verify mixed batch (released, swapped tokens, settled, unknown, duplicate) in 1 round trip.
+						const again = await claim(state, "broker-b", "target-rel");
+						assert.equal(again.status, "claimed");
+						if (again.status !== "claimed") return;
+						const claims = again.rows.map(({ claim }) => claim);
+						assert.equal((await state.outbox.markDelivered(claims[5]!)).status, "delivered");
+						trips.take();
+						trackingRelease = true;
+						const mixed = await state.outbox.releaseClaims!(
+							[
+								claims[0]!,
+								{ ...claims[1]!, token: claims[2]!.token },
+								{ ...claims[2]!, token: claims[1]!.token },
+								claims[5]!,
+								{ messageId: "missing", claimantId: "broker-b", token: "t", attempt: 1 },
+								claims[0]!,
+							],
+							{ unwritten: true },
+						);
+						const mixedTrips = trips.take();
+						trackingRelease = false;
+						assert.deepEqual(
+							mixed.map((answer) => answer.status),
+							["released", "stale", "stale", "settled", "unknown", "stale"],
+						);
+						assert.equal(mixedTrips, 1);
+						assert.equal(relaxedDuringRelease, false);
+						// Swapped-token rows were untouched (still claimed with attempt 2); released row decremented once (2 -> 1).
+						const r0 = await state.outbox.read("rel-1");
+						const r1 = await state.outbox.read("rel-2");
+						const r2 = await state.outbox.read("rel-3");
+						assert.equal(r0.status === "found" && r0.row.state, "queued");
+						assert.equal(r0.status === "found" && r0.row.claimAttempts, 1);
+						assert.equal(r1.status === "found" && r1.row.state, "claimed");
+						assert.equal(r1.status === "found" && r1.row.claimAttempts, 2);
+						assert.equal(r2.status === "found" && r2.row.state, "claimed");
+						assert.equal(r2.status === "found" && r2.row.claimAttempts, 2);
+
+						// Explicit floor-0 check: claim_attempts = 0 released with unwritten: true stays at 0.
+						await direct.run("UPDATE intercom_outbox SET claim_attempts = 0 WHERE message_id = ?", "rel-4");
+						trips.take();
+						const floored = await state.outbox.releaseClaims!([claims[3]!], { unwritten: true });
+						assert.equal(trips.take(), 1);
+						assert.deepEqual(floored, [{ status: "released" }]);
+						const r3 = await state.outbox.read("rel-4");
+						assert.equal(r3.status === "found" && r3.row.state, "queued");
+						assert.equal(r3.status === "found" && r3.row.claimAttempts, 0);
+						assert.equal(unwrittenTexts.size, 1, [...unwrittenTexts].join("\n---\n"));
+						assert.equal(missReadTexts.size, 1, [...missReadTexts].join("\n---\n"));
+
+						// Concurrent settlement racing with releaseClaims: locking row 2 lets markDelivered commit first,
+						// and releaseClaims answers released for row 1 and settled for row 2 in one transaction.
+						let unlock!: () => void;
+						const unlocked = new Promise<void>((resolve) => {
+							unlock = resolve;
+						});
+						let locked!: () => void;
+						const holding = new Promise<void>((resolve) => {
+							locked = resolve;
+						});
+						const settler = direct.transaction(async (tx) => {
+							await tx.get(
+								"UPDATE intercom_outbox SET state = 'delivered', failure_reason = NULL, settled_at = 1, claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL WHERE message_id = ? RETURNING message_id",
+								"rel-3",
+							);
+							locked();
+							await unlocked;
+						}, rowTransaction());
+						await holding;
+						const racing = state.outbox.releaseClaims!([claims[1]!, claims[2]!]);
+						await waitForLockWaiter(direct);
+						unlock();
+						await settler;
+						const raced = await racing;
+						assert.deepEqual(
+							raced.map((answer) => answer.status),
+							["released", "settled"],
+						);
+						if (raced[1]?.status === "settled") assert.equal(raced[1].row.state, "delivered");
+					} finally {
+						await direct.close();
+						await state.close();
+					}
+				});
+			});
 		},
 	);
 }

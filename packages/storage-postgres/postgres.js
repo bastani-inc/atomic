@@ -1857,6 +1857,11 @@ export async function openPostgresDatabase(options) {
 	const coalescer = createNotifyCoalescer({
 		sendLater: (notices) => autocommit(pool, (client) => sendNotices(client, notices)),
 	});
+	/** Whether this database handle is closing; post-commit sends skip starting new pool checkouts after it. */
+	let closed = false;
+	/** In-flight `notifications.send` calls awaited before `release` ends the pool. */
+	/** @type {Set<Promise<void>>} */
+	const pendingNotices = new Set();
 	/** @type {import("@bastani/atomic/storage").StorageNotifications} */
 	const notifications = {
 		notify(channel, payload, unless) {
@@ -1869,6 +1874,22 @@ export async function openPostgresDatabase(options) {
 				conditionalNotices.add(sql);
 			}
 			return { sql, params: [...notice.params, ...unless.params] };
+		},
+		send(list) {
+			for (const statement of list)
+				if (!isNotice(statement.sql))
+					return Promise.reject(new StorageError("StorageNotifications.send accepts only statements from notify()"));
+			if (list.length === 0 || closed) return Promise.resolve();
+			const now = coalescer.take(
+				list.map(({ sql, params }) => ({ sql, params: [...params] })),
+				COMMITTED,
+			);
+			if (now.length === 0) return Promise.resolve();
+			const sending = autocommit(pool, (client) => sendNotices(client, now)).finally(() => {
+				pendingNotices.delete(sending);
+			});
+			pendingNotices.add(sending);
+			return sending;
 		},
 		listen(channel, onEvent) {
 			const subscription = listener.listen(channelName(channel), onEvent);
@@ -1888,8 +1909,9 @@ export async function openPostgresDatabase(options) {
 	 * the pools.
 	 */
 	const release = async () => {
+		closed = true;
 		for (const subscription of [...subscriptions]) subscription.close();
-		await coalescer.flush();
+		await Promise.all([coalescer.flush(), ...pendingNotices]);
 		if (--shared.references > 0) return;
 		if (identity !== undefined && sharing.get(identity) === shared) sharing.delete(identity);
 		const reader = shared.reader;
@@ -1984,6 +2006,13 @@ export async function openPostgresDatabase(options) {
 			const relaxed =
 				begin.relaxedDurability === true && begin.readOnly !== true ? "SET LOCAL synchronous_commit = off; " : "";
 			const client = await connect(from);
+			/** Whether the connection went back to the pool, which a read-only transaction's commit does as it is sent. */
+			let released = false;
+			const release = () => {
+				if (released) return;
+				released = true;
+				client.release(lost.has(client));
+			};
 			/** @type {Promise<void> | undefined} */
 			let pendingSubmission;
 			/**
@@ -1998,7 +2027,11 @@ export async function openPostgresDatabase(options) {
 						? schemaFor(client, sql)
 						: pendingSubmission.then(() => schemaFor(client, sql));
 				if (checked === undefined) return send();
-				const sent = checked.then(() => ({ answer: send() }));
+				const sent = checked.then(() => {
+					if (released)
+						throw new PostgresConnectionFailure("lost", new Error("The transaction ended before sending"));
+					return { answer: send() };
+				});
 				const submitted = sent.then(() => {
 					if (pendingSubmission === submitted) pendingSubmission = undefined;
 				});
@@ -2032,13 +2065,6 @@ export async function openPostgresDatabase(options) {
 			/** The notify statements the transaction ran, sent after its `COMMIT` (`sendCommit`). */
 			/** @type {import("./listen.js").Notice[]} */
 			const notices = [];
-			/** Whether the connection went back to the pool, which a read-only transaction's commit does as it is sent. */
-			let released = false;
-			const release = () => {
-				if (released) return;
-				released = true;
-				client.release(lost.has(client));
-			};
 			/**
 			 * Sends the `COMMIT`. A read-only transaction's connection goes back to the pool once its `COMMIT` is written, not
 			 * once it is answered: the connection is pipelined, so the next transaction's `BEGIN` goes out behind the `COMMIT`
@@ -2048,6 +2074,7 @@ export async function openPostgresDatabase(options) {
 			 */
 			const sendCommit = (timeoutMs) =>
 				submit("", () => {
+					begin.onCommit?.();
 					const answer = watched(client, () => client.query("COMMIT"), timeoutMs);
 					// The notifications go right behind the `COMMIT`, in the same round trip, in a transaction of their own
 					// (`sendNotices`). Its answer is not waited for: the next call on the connection goes behind it. When the
@@ -2060,7 +2087,7 @@ export async function openPostgresDatabase(options) {
 						const now = coalescer.take(notices.splice(0), committed);
 						if (now.length > 0) void sendNotices(client, now);
 					}
-					if (begin.readOnly === true) release();
+					if (begin.readOnly === true && begin.leadingOnly !== true) release();
 					return answer;
 				});
 			/**
@@ -2100,7 +2127,8 @@ export async function openPostgresDatabase(options) {
 				});
 			} catch (error) {
 				// The transaction may be open, so the connection is closed rather than reused.
-				client.release(true);
+				lost.add(client);
+				release();
 				throw error;
 			}
 			/**

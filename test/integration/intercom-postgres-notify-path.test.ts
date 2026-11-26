@@ -6,6 +6,7 @@ import {
 	brokerWakeUpChannel,
 	type DatabaseWakeUpBusOptions,
 	openDatabaseWakeUpBus,
+	wakeUpNotices,
 } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
@@ -32,6 +33,7 @@ import { countRoundTrips } from "../helpers/postgres-round-trips.js";
 
 const PREFIX = "np_";
 const TABLE = `${PREFIX}intercom_wakeups`;
+const LEASES = `${PREFIX}intercom_leases`;
 /** The schema the test databases keep Atomic's tables in, which names their channels. */
 const SCHEMA = "atomic";
 /** A poll interval no test waits for: a hint that arrives came by a notification. */
@@ -260,6 +262,85 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 				} finally {
 					await own.close();
 					await others.close();
+				}
+			} finally {
+				await bus.close();
+				await state.close();
+			}
+		});
+	});
+
+	test("an offline send's post-commit notification does not stall behind an unrelated serial transaction on the same database (#6712)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const database = await scope.open();
+			const { state, bus } = await openIntercomBrokerState(
+				{ openDatabase: async () => database, prefix: PREFIX },
+				{ pollIntervalMs: NEVER_POLL_MS, listeningPollIntervalMs: NEVER_POLL_MS },
+			);
+			const presence = {
+				kind: "presence",
+				targetIdentity: "alice",
+				session: { id: "alice", name: "alice", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
+			} as const;
+			try {
+				await members(scope, { "broker-b": "current" });
+				assert.equal(
+					(await state.leases.acquire(presence, "broker-b", BROKER_LEASE_STALE_AFTER_MS)).status,
+					"acquired",
+				);
+				const own = await rawListener(scope, [brokerWakeUpChannel(TABLE, "broker-b")]);
+				let releaseUnrelated!: () => void;
+				const unrelatedGate = new Promise<void>((resolve) => {
+					releaseUnrelated = resolve;
+				});
+				let enteredUnrelated!: () => void;
+				const unrelatedStarted = new Promise<void>((resolve) => {
+					enteredUnrelated = resolve;
+				});
+				const unrelated = database.transaction(
+					async () => {
+						enteredUnrelated();
+						await unrelatedGate;
+					},
+					{ concurrency: { kind: "serial", domain: `${PREFIX}unrelated-domain` } },
+				);
+				try {
+					await unrelatedStarted;
+					const sent = await state.outbox.enqueue({
+						targetIdentity: "alice",
+						originBrokerId: "broker-a",
+						digest: "m-unblocked",
+						frame: {
+							type: "message",
+							from: presence.session,
+							message: { id: "m-unblocked", timestamp: 1, content: { text: "hello" } },
+						},
+						wakeHostWithinMs: BROKER_LEASE_STALE_AFTER_MS,
+					});
+					assert.equal(sent.status === "inserted" && sent.woke, "broker-b");
+					// The notification must arrive while the unrelated serial transaction is still held open: going through
+					// `database.run` (PLAIN_SCOPE) would block behind it until releaseUnrelated().
+					const deadline = performance.now() + 1_500;
+					while (own.received.length === 0 && performance.now() < deadline)
+						await new Promise((resolve) => setTimeout(resolve, 10));
+					assert.deepEqual(own.received, [
+						{ channel: physical(brokerWakeUpChannel(TABLE, "broker-b")), payload: "broker-b" },
+					]);
+					// Sending wakeUpNotices directly batches both notices into one round trip, and rejects non-notice SQL.
+					await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 2));
+					const trips = countRoundTrips();
+					restores.push(trips.restore);
+					const notifications = database.notifications!;
+					await notifications.send!(wakeUpNotices(notifications, TABLE, LEASES, "broker-b"));
+					assert.equal(trips.take(), 1);
+					await assert.rejects(
+						() => notifications.send!([{ sql: "SELECT 1", params: [] }]),
+						/accepts only statements from notify/,
+					);
+				} finally {
+					releaseUnrelated();
+					await unrelated;
+					await own.close();
 				}
 			} finally {
 				await bus.close();

@@ -352,6 +352,11 @@ export interface OutboxStore {
 	claim(request: OutboxClaimRequest): Promise<OutboxClaimResult>;
 	renewClaim(claim: OutboxClaim): Promise<OutboxRenewClaimResult>;
 	/**
+	 * `renewClaim` for each of `claims`, of distinct rows, in one transaction whose one statement renews every claim still
+	 * current, answered in the order given (#6560). Optional: without it, a broker renews its claims one at a time.
+	 */
+	renewClaims?(claims: readonly OutboxClaim[]): Promise<OutboxRenewClaimResult[]>;
+	/**
 	 * #3983: the claim's recipient reports it is still saving the row, so the sender's broker keeps its sender
 	 * waiting. Optional: a store without it never extends a sender's wait.
 	 */
@@ -362,6 +367,14 @@ export interface OutboxStore {
 	 * never claimed, as it was before this claim.
 	 */
 	releaseClaim(claim: OutboxClaim, options?: { readonly unwritten?: boolean }): Promise<OutboxReleaseClaimResult>;
+	/**
+	 * `releaseClaim` for each of `claims`, in one transaction whose statement releases every claim still current,
+	 * answered in the order given (#6713). Optional: without it, a broker releases its claims one at a time.
+	 */
+	releaseClaims?(
+		claims: readonly OutboxClaim[],
+		options?: { readonly unwritten?: boolean },
+	): Promise<OutboxReleaseClaimResult[]>;
 	/**
 	 * #5038: return every row `claimantId` holds to `queued`, as its own `releaseClaim` would, so a dead broker's
 	 * claims stop holding its recipients' queues until they go stale. Resolves to the number of rows released.
@@ -381,6 +394,12 @@ export interface OutboxStore {
 	 * first `limit` of them.
 	 */
 	listUndelivered(targetIdentity: string, limit?: number): Promise<OutboxListResult>;
+	/**
+	 * Which of `targetIdentities` have `queued` or `claimed` rows, read in one statement, so a broker that scans every
+	 * recipient it hosts claims only for those (#6560). A row queued after the read is found by the claim its send's
+	 * wake-up hint starts, or by the next scan. Optional: without it, the broker claims for each recipient.
+	 */
+	withUndelivered?(targetIdentities: readonly string[]): Promise<ReadonlySet<string>>;
 	/**
 	 * #4896: where `messageId` stands in its recipient's undelivered rows, from 1 for the oldest, counted without
 	 * reading any row: `missing` when it is not one of them.
@@ -581,6 +600,11 @@ export interface RestoringReservationStore {
 	): Promise<RestoringReservationLookupResult>;
 	/** Reset the age, also of a gone marker. A superseded token or an ended reservation is `stale`. */
 	renew(lease: RestoringReservationLease): Promise<RestoringReservationRenewResult>;
+	/**
+	 * Reset the age of multiple reservations, also of gone markers, in a single shared-store transaction, returning one
+	 * result per entry in input order (#6714). Absent on custom stores that only implement `renew`.
+	 */
+	renewMany?(leases: readonly RestoringReservationLease[]): Promise<RestoringReservationRenewResult[]>;
 	/** Owner only: mark the reservation gone, or end it as `released`. */
 	release(
 		lease: RestoringReservationLease,
