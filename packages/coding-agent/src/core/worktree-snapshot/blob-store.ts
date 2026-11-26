@@ -1,4 +1,4 @@
-import { transactionFinisher } from "../storage/added-exports.js";
+import { storageSchemaCurrent, transactionFinisher } from "../storage/added-exports.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -10,7 +10,7 @@ import type {
 } from "../storage/database.js";
 import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTrigger } from "../storage/dialect.js";
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
-import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
+import { applyStorageMigrations, ensureStorageSchema, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
 import { type StorageSchemaCatalog, schemaCatalogOf } from "../storage/schema-catalog.js";
 import { statementBatch } from "../storage/statement-batches.js";
@@ -1114,7 +1114,7 @@ async function createSnapshotIndexTables(
 		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id ${text} NOT NULL, seq ${int} NOT NULL, root ${text} NOT NULL, snapshot_id ${text} NOT NULL, prev_seq ${int}, restore_from ${text}, restore_to ${text}, degraded_from ${text}, degraded_since ${int}, PRIMARY KEY (session_id, seq))${keyed};
 		CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id ${text} NOT NULL, seq ${int} NOT NULL, entry_id ${text} NOT NULL, parent_id ${text}, anchor_seq ${int}, children ${int} NOT NULL, broken ${int} NOT NULL, PRIMARY KEY (session_id, seq))${strict};
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_entry ON ${t.sessionLinks} (session_id, entry_id);
-		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL;
+		${sessionLinksLeafIndex(t, dialect)};
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_broken ON ${t.sessionLinks} (session_id) WHERE broken = 1;
 		CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id ${text} NOT NULL, seq ${int} NOT NULL, snapshot_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (session_id, seq, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.sessionRecords}_hash ON ${t.sessionRecords} (hash);
@@ -1149,6 +1149,70 @@ function blobMaintenanceIndexes(t: SnapshotIndexTables): string[] {
 
 async function addBlobMaintenanceIndexes(transaction: SqliteExecutor, t: SnapshotIndexTables): Promise<void> {
 	await statementBatch(transaction, blobMaintenanceIndexes(t), []);
+}
+
+/**
+ * The ledger step, `schema:snapshot-links-hot`, after which the session links table has no index that names
+ * `children` on PostgreSQL ({@link hotSessionLinks}).
+ */
+const SESSION_LINKS_HOT_DOMAIN = "snapshot-links-hot";
+
+function sessionLinksHotSchema(prefix: string) {
+	return { ledger: storageMigrationTable(prefix), domain: SESSION_LINKS_HOT_DOMAIN, revision: 1 };
+}
+
+/**
+ * The index the queries for the session tree's leaves read: on PostgreSQL every link with an anchor, whose leaves they
+ * pick by `children = 0` ({@link hotSessionLinks}); elsewhere only the leaves with an anchor.
+ */
+function sessionLinksLeafIndex(t: SnapshotIndexTables, dialect: StorageDialect): string {
+	return dialect.name === "postgres"
+		? `CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_anchored ON ${t.sessionLinks} (session_id, anchor_seq) WHERE anchor_seq IS NOT NULL`
+		: `CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL`;
+}
+
+/**
+ * Makes the update each append writes to its parent's session link a HOT update on PostgreSQL: one that stays on its
+ * page and writes no index entry. Each append raises its parent link's `children`, and PostgreSQL updates a row in
+ * place only when no index names a changed column, its condition included, which `_leaves` (`WHERE children = 0`)
+ * did. So every append wrote the parent link's new version into each of the table's indexes. `_anchored` indexes the
+ * same rows without that condition, and the queries for leaves, which only collection runs, check `children = 0` on
+ * the rows it finds. Older builds read and write the table as before, and none of them creates `_leaves` again: on
+ * PostgreSQL the step that creates it runs once per database. Recorded in the ledger, so it runs once. SQLite keeps
+ * `_leaves`, as it updates rows in place whatever their indexes.
+ */
+async function hotSessionLinks(
+	transaction: SqliteExecutor,
+	t: SnapshotIndexTables,
+	prefix: string,
+	dialect: StorageDialect,
+): Promise<void> {
+	await ensureStorageSchema(transaction, dialect, sessionLinksHotSchema(prefix), async () => {
+		await transaction.exec(sessionLinksLeafIndex(t, dialect));
+		await transaction.exec(`DROP INDEX IF EXISTS ${t.sessionLinks}_leaves`);
+	});
+}
+
+/**
+ * Runs {@link hotSessionLinks} on a PostgreSQL database whose ledger lacks it, in a transaction of its own. Nothing runs
+ * where the catalog the open read records it, or where this role does not own the links table: a runtime role without
+ * DDL opens as before, and `atomic storage migrate`, run as the owner, makes the change.
+ */
+async function ensureHotSessionLinks(database: SqliteDatabase, t: SnapshotIndexTables, prefix: string): Promise<void> {
+	const dialect = dialectOf(database);
+	if (dialect.name !== "postgres" || database.readOnly === true) return;
+	const schema = sessionLinksHotSchema(prefix);
+	if (await storageSchemaCurrent(database, schema)) return;
+	const found = await database.get<SqliteRow & { owned: boolean | number }>(
+		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned
+		FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?`,
+		dialect.identifier(t.sessionLinks),
+	);
+	if (found === undefined || !(found.owned === true || Number(found.owned) === 1)) return;
+	await database.transaction((transaction) => hotSessionLinks(transaction, t, prefix, dialect), {
+		retryTransientFailures: true,
+		concurrency: { kind: "serial", domain: schema.ledger },
+	});
 }
 
 /** The columns of {@link SnapshotIndexTables.sessionRefs} that later builds added, with their types. */
@@ -1538,12 +1602,22 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					);
 		// A versioned database always checks its ledger: a newer schema with the same tables is refused, and a step it
 		// lacks, such as the index triggers, runs even when every table exists.
+		// Whether this open created the tables on PostgreSQL, and with them the links indexes of {@link hotSessionLinks}.
+		let linksHot = false;
 		if (!current) {
 			await applyStorageMigrations(
 				database,
 				SNAPSHOT_BLOB_DOMAIN,
 				[
-					{ version: 1, up: (transaction, dialect) => createSnapshotIndexTables(transaction, t, prefix, dialect) },
+					{
+						version: 1,
+						up: async (transaction, dialect) => {
+							await createSnapshotIndexTables(transaction, t, prefix, dialect);
+							if (dialect.name !== "postgres") return;
+							await hotSessionLinks(transaction, t, prefix, dialect);
+							linksHot = true;
+						},
+					},
 					// Where a ledger records the steps, it records the index triggers too, installed under the migration lock.
 					// Without one, installIndex below installs each source in a transaction of its own, as it always has.
 					...(dialect.versionedMigrations
@@ -1578,6 +1652,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				{ table: storageMigrationTable(prefix) },
 			);
 		}
+		if (!linksHot) await ensureHotSessionLinks(database, t, prefix);
 		const store = new SqlSnapshotBlobStore(
 			database,
 			dialect,
