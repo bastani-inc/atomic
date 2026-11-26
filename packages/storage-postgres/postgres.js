@@ -199,6 +199,24 @@ const LEGACY_MARKERS = "(atomic_migrations|wf_runs|session_sessions|intercom_lea
  * `public` the schema to use, as after the `atomic` schema was dropped to start over (#5218).
  */
 const MOVED_FENCE_COMMENT = "atomic-moved-fence:";
+/** The ledger a store opened without a prefix records its schema versions in, whose versions the open reads. */
+const OPENED_LEDGER = "atomic_migrations";
+/**
+ * Every relation, trigger and column of the schema the statement runs in, as the coding agent's
+ * `readStorageSchemaCatalog` reads them: the open reads them with its own query, and the first store open takes them
+ * instead of reading them again (#6560).
+ */
+const OPENED_CATALOG_SQL = `SELECT 'relation' AS kind, c.relname::text AS name, c.relkind::text AS detail
+	FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace
+UNION ALL SELECT 'trigger', t.tgname::text, NULL
+	FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+	WHERE c.relnamespace = current_schema()::regnamespace AND NOT t.tgisinternal
+UNION ALL SELECT 'column', table_name::text, column_name::text
+	FROM information_schema.columns WHERE table_schema = current_schema()`;
+/** The highest version the ledger records for each domain. */
+const OPENED_VERSIONS_SQL = `SELECT domain, MAX(version) AS version FROM ${OPENED_LEDGER} GROUP BY domain`;
+/** The kinds of relation the catalog counts as tables: plain, partitioned and foreign tables, and views of each kind. */
+const TABLE_KINDS = new Set(["r", "p", "v", "m", "f"]);
 /** A schema name the adapter accepts: a lowercase identifier that needs no quotes. */
 const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 
@@ -951,6 +969,11 @@ export async function openPostgresDatabase(options) {
 	let legacy = false;
 	/** @type {Promise<void> | undefined} */
 	let creatingSchema;
+	/**
+	 * The schema's catalog and ledger versions the open read, until the first store open takes them (#6560).
+	 * @type {import("@bastani/atomic/storage").StorageOpenedCatalog | undefined}
+	 */
+	let openedCatalog;
 	const searchPathSql = () => `SET LOCAL search_path TO "${schema}"`;
 	/** A lock or channel name of this schema's own: unchanged for `public`, so earlier releases there share them. */
 	const inSchema = (/** @type {string} */ name) => (schema === LEGACY_SCHEMA ? name : `${schema}:${name}`);
@@ -1857,23 +1880,56 @@ export async function openPostgresDatabase(options) {
 					},
 				}),
 		notifications,
+		takeOpenedCatalog: () => {
+			const catalog = openedCatalog;
+			openedCatalog = undefined;
+			return catalog;
+		},
 		close: release,
 	});
 	try {
 		// The server's version, and which schema holds Atomic's tables, read in one round trip without creating anything
 		// (#5218, #6560). The query runs on any server version, so an older server is refused by its answer.
-		const found = await database.get(
-			`SELECT current_setting('server_version_num') AS version,
+		const probe = {
+			sql: `SELECT current_setting('server_version_num') AS version,
 				(SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS present,
 				(SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS preferred,
 				(SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 					WHERE n.nspname = ? AND c.relkind = 'r' AND c.relname ~ ?
 					AND coalesce(obj_description(c.oid, 'pg_class'), '') NOT LIKE ?) AS legacy`,
-			schema,
-			DEFAULT_SCHEMA,
-			LEGACY_SCHEMA,
-			LEGACY_MARKERS,
-			`${MOVED_FENCE_COMMENT}%`,
+			params: [schema, DEFAULT_SCHEMA, LEGACY_SCHEMA, LEGACY_MARKERS, `${MOVED_FENCE_COMMENT}%`],
+		};
+		/** @type {import("@bastani/atomic/storage").SqliteRow | undefined} */
+		let found;
+		// The schema's catalog and the ledger's versions go out with it, read as the schema checks of the first store open
+		// read them, which then reads nothing (`takeOpenedCatalog`): an open costs one round trip less (#6560). They are
+		// read in the schema the open expects, and kept only when it is the one the answer chose.
+		await database.transaction(
+			async (transaction) => {
+				openedCatalog = undefined;
+				found = await transaction.get(probe.sql, ...probe.params);
+				if (options.schema === undefined && Number(found?.preferred) === 0 && Number(found?.legacy) > 0) return;
+				try {
+					const rows = await transaction.all(OPENED_CATALOG_SQL);
+					const ledger = rows.some(
+						(row) => row.kind === "relation" && row.name === OPENED_LEDGER && TABLE_KINDS.has(String(row.detail)),
+					);
+					// Taken even where the ledger does not exist and the read failed, so the transaction ends with its commit,
+					// sent at once, rather than with a rollback after it.
+					const versions = await transaction.all(OPENED_VERSIONS_SQL).catch((error) => {
+						if (ledger) throw error;
+						return undefined;
+					});
+					openedCatalog = { ledger: OPENED_LEDGER, rows, versions };
+				} catch {
+					// The first store open reads them itself, as it would without them.
+				}
+			},
+			{
+				readOnly: true,
+				retryTransientFailures: true,
+				leading: [probe, { sql: OPENED_CATALOG_SQL, params: [] }, { sql: OPENED_VERSIONS_SQL, params: [] }],
+			},
 		);
 		const version = Number(found?.version);
 		if (!(version >= MINIMUM_SERVER_VERSION))
