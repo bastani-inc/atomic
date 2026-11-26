@@ -3,8 +3,8 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@bastani/atomic-agent-core";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage, type AuthStorageBackend } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -46,7 +46,7 @@ describe("AgentSession prompt preflight after an auth-storage load failure", () 
 
 	it("reports unavailable provider authentication through the runtime", async () => {
 		const loadError = Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED" });
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: "Test", tools: [] },

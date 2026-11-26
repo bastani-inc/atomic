@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * Integration: the post-tool clear, driven through the real prompt/tool/provider sequence rather than by calling
  * preflight directly. A mid-turn compaction makes no model call: it writes one boundary after the whole tool batch,
@@ -9,7 +10,7 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { Agent, type AgentTool, type StreamFn } from "@bastani/atomic-agent-core";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
-import { getModel } from "@bastani/atomic-ai/compat";
+
 import { Type } from "typebox";
 import { test } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
@@ -24,7 +25,7 @@ import { initTheme } from "../../packages/coding-agent/src/modes/interactive/the
 import { createFauxStreamFn } from "../../packages/coding-agent/test/test-harness.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 
-const SESSION_MODEL = getModel("anthropic", "claude-sonnet-4-5")!;
+const SESSION_MODEL = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 
 const largeResultTool: AgentTool = {
 	name: "large_result",

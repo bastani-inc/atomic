@@ -487,7 +487,11 @@ childProcess.spawn = function (command, args, ...rest) {
 		if (process.env.ATOMIC_TEST_SETTINGS_FILE && process.env.ATOMIC_TEST_SETTINGS_EDIT) {
 			fs.writeFileSync(process.env.ATOMIC_TEST_SETTINGS_FILE, process.env.ATOMIC_TEST_SETTINGS_EDIT);
 		}
-		return spawn.call(this, command, nextArgs, ...rest);
+		const child = spawn.call(this, command, nextArgs, ...rest);
+		if (process.env.ATOMIC_TEST_PREWARM_PID_FILE && child.pid !== undefined) {
+			fs.writeFileSync(process.env.ATOMIC_TEST_PREWARM_PID_FILE, String(child.pid));
+		}
+		return child;
 	}
 	return spawn.call(this, command, args, ...rest);
 };
@@ -602,6 +606,7 @@ test(
 		const altPackageDir = join(root, "alt-package");
 		const project = join(root, "project");
 		const trace = join(root, "startup.jsonl");
+		const prewarmPidFile = join(root, "prewarm.pid");
 		const preload = join(root, "intercept-prewarm.cjs");
 		let program: PtyProgram | undefined;
 		try {
@@ -642,6 +647,7 @@ test(
 					ATOMIC_STARTUP_BENCHMARK: "1",
 					NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
 					ATOMIC_TEST_ALT_CLI: join(altPackageDir, "dist", "cli.js"),
+					ATOMIC_TEST_PREWARM_PID_FILE: prewarmPidFile,
 					TERM: "xterm-256color",
 					CI: "0",
 				},
@@ -652,7 +658,16 @@ test(
 			const exited = await program.exited;
 			assert.equal(exited.timedOut, false, program.screen());
 			assert.equal(exited.exitCode, 0, program.screen());
-			assert.equal(engineChildren(readTrace(trace)).length, 2, "different-build prewarm child must be discarded");
+			const prewarmPid = Number(readTextSync(prewarmPidFile, "utf8"));
+			assert.ok(Number.isSafeInteger(prewarmPid) && prewarmPid > 0, "the different-build prewarm child spawned");
+			const lines = readTrace(trace);
+			const freshChildren = engineChildren(lines).filter((pid) => pid !== prewarmPid);
+			assert.equal(freshChildren.length, 1, "different-build prewarm child must be discarded");
+			assert.deepEqual(
+				lines.filter((line) => line.label === "engine-resources-ready").map((line) => line.pid),
+				freshChildren,
+				"only the fresh engine loaded its resources",
+			);
 		} finally {
 			program?.kill();
 			vi.unstubAllEnvs();

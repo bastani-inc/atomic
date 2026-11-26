@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * A session that falls back to another model tells that model its own name, also when the prompt is the session's
  * transformed prompt that a `before_agent_start` handler appended to (#4188). Real AgentSession and fallback machinery
@@ -7,7 +8,6 @@
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	getModel,
 	getSystemMessageText,
 	type Model,
 } from "@bastani/atomic-ai/compat";
@@ -39,7 +39,7 @@ function usage(): AssistantMessage["usage"] {
 }
 
 async function fallbackPrompts(transform: boolean, appendInHandler: boolean): Promise<Map<string, string>> {
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const model = (id: string, name: string): Model<"anthropic-messages"> => ({ ...base, provider: PROVIDER, id, name });
 	const primary = model("primary", "Primary Model");
 	const fallback = model("fallback", "Fallback Model");

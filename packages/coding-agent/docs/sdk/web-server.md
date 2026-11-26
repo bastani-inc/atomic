@@ -14,9 +14,7 @@ Read [TypeScript SDK](/sdk) first for `createAgentSession()`, `AgentSession`, `A
 npm install @bastani/atomic
 ```
 
-Atomic requires Node.js 22.19 or newer. Dependency install scripts are not required; if your package manager blocks install scripts, leave them disabled.
-
-On Node 22, pass `--experimental-async-context-frame` on the server's `node` command line (not in `NODE_OPTIONS`) to avoid `AsyncLocalStorage` promise-hook overhead across concurrent HTTP requests; see [Node 22 hosts](/sdk#node-22-hosts).
+Atomic requires Node.js 24.20 or newer. Dependency install scripts are not required; if your package manager blocks install scripts, leave them disabled.
 
 ## Keep Atomic out of the server bundle
 

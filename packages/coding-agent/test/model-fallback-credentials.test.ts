@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import { GitHubCopilotAuthenticationError, recordGitHubCopilotError } from "@bastani/atomic-ai";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Model,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { parseArgs } from "../src/cli/args.js";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
@@ -50,7 +46,7 @@ async function runSession(
 	failures?: ReadonlyMap<string, string | GitHubCopilotAuthenticationError>,
 	beforePrompt?: (session: AgentSession) => void,
 ) {
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
 		modelsPath: null,
@@ -403,7 +399,7 @@ describe("an auth failure takes its provider out of the chain", () => {
 	});
 
 	test("compaction on overflow after a 401 fallback clears the context and sends nothing to the rejected provider (#3326)", async () => {
-		const base = getModel("anthropic", "claude-sonnet-4-5")!;
+		const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory(),
 			modelsPath: null,

@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * #3987: forked-context children run through the real in-process runner and a real
  * AgentSession, against a local provider. No network is contacted.
@@ -12,12 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Message,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Message } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -73,7 +69,7 @@ function worker(cwd: string): AgentConfig {
 async function forkFixture(reply: Reply) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-fork-own-output-"));
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
-	const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, provider: "fork-own-output" };
+	const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-5")!, provider: "fork-own-output" };
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
 		modelsPath: null,

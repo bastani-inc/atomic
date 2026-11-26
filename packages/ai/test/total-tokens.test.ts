@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * Test totalTokens field across all providers.
  *
@@ -13,7 +14,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { complete, getModel } from "../src/compat.ts";
+import { complete } from "../src/compat.ts";
 import type { Api, Context, Model, StreamOptions, Usage } from "../src/types.ts";
 
 type StreamOptionsWithExtras = StreamOptions & Record<string, unknown>;
@@ -107,7 +108,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("anthropic", "claude-sonnet-4-5");
+			const llm = getFixtureModel("anthropic", "claude-sonnet-4-5");
 
 			console.log(`\nAnthropic / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.ANTHROPIC_API_KEY });
@@ -129,7 +130,7 @@ describe("totalTokens field", () => {
 			"claude-sonnet-4 - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("anthropic", "claude-sonnet-4-6");
+				const llm = getFixtureModel("anthropic", "claude-sonnet-4-6");
 
 				console.log(`\nAnthropic OAuth / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: anthropicOAuthToken });
@@ -156,7 +157,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+			const { compat: _compat, ...baseModel } = getFixtureModel("openai", "gpt-4o-mini")!;
 			void _compat;
 			const llm: Model<"openai-completions"> = {
 				...baseModel,
@@ -179,7 +180,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("openai", "gpt-4o");
+			const llm = getFixtureModel("openai", "gpt-4o");
 
 			console.log(`\nOpenAI Responses / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm);
@@ -197,7 +198,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("azure", "gpt-4o-mini");
+			const llm = getFixtureModel("azure", "gpt-4o-mini");
 			const azureDeploymentName = resolveAzureDeploymentName(llm.id);
 			const azureOptions = azureDeploymentName ? { azureDeploymentName } : {};
 
@@ -221,7 +222,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("google", "gemini-2.5-flash");
+			const llm = getFixtureModel("google", "gemini-2.5-flash");
 
 			console.log(`\nGoogle / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm);
@@ -240,7 +241,7 @@ describe("totalTokens field", () => {
 
 	describe.skipIf(!process.env.XAI_API_KEY)("xAI", () => {
 		it("grok-4.3 - should return totalTokens equal to sum of components", { retry: 3, timeout: 60000 }, async () => {
-			const llm = getModel("xai", "grok-4.3");
+			const llm = getFixtureModel("xai", "grok-4.3");
 
 			console.log(`\nxAI / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.XAI_API_KEY });
@@ -262,7 +263,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("groq", "openai/gpt-oss-120b");
+			const llm = getFixtureModel("groq", "openai/gpt-oss-120b");
 
 			console.log(`\nGroq / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.GROQ_API_KEY });
@@ -284,7 +285,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("cerebras", "gpt-oss-120b");
+			const llm = getFixtureModel("cerebras", "gpt-oss-120b");
 
 			console.log(`\nCerebras / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.CEREBRAS_API_KEY });
@@ -306,7 +307,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("cloudflare-workers-ai", "@cf/moonshotai/kimi-k2.6");
+			const llm = getFixtureModel("cloudflare-workers-ai", "@cf/moonshotai/kimi-k2.6");
 
 			console.log(`\nCloudflare Workers AI / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -330,7 +331,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");
+			const llm = getFixtureModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.6");
 
 			console.log(`\nCloudflare AI Gateway / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -351,7 +352,7 @@ describe("totalTokens field", () => {
 
 	describe.skipIf(!process.env.HF_TOKEN)("Hugging Face", () => {
 		it("Kimi-K2.5 - should return totalTokens equal to sum of components", { retry: 3, timeout: 60000 }, async () => {
-			const llm = getModel("huggingface", "moonshotai/Kimi-K2.5");
+			const llm = getFixtureModel("huggingface", "moonshotai/Kimi-K2.5");
 
 			console.log(`\nHugging Face / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.HF_TOKEN });
@@ -370,7 +371,7 @@ describe("totalTokens field", () => {
 
 	describe.skipIf(!process.env.TOGETHER_API_KEY)("Together AI", () => {
 		it("Kimi-K3 - should return totalTokens equal to sum of components", { retry: 3, timeout: 60000 }, async () => {
-			const llm = getModel("together", "moonshotai/Kimi-K3");
+			const llm = getFixtureModel("together", "moonshotai/Kimi-K3");
 
 			console.log(`\nTogether AI / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -392,7 +393,7 @@ describe("totalTokens field", () => {
 
 	describe.skipIf(!process.env.BASETEN_API_KEY)("Baseten", () => {
 		it("GLM 5.2 - should return totalTokens equal to sum of components", { retry: 3, timeout: 60000 }, async () => {
-			const llm = getModel("baseten", "zai-org/GLM-5.2");
+			const llm = getFixtureModel("baseten", "zai-org/GLM-5.2");
 
 			console.log(`\nBaseten / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -414,7 +415,7 @@ describe("totalTokens field", () => {
 
 	describe.skipIf(!process.env.ZAI_API_KEY)("z.ai", () => {
 		it("glm-5.2 - should return totalTokens equal to sum of components", { retry: 3, timeout: 60000 }, async () => {
-			const llm = getModel("zai", "glm-5.2");
+			const llm = getFixtureModel("zai", "glm-5.2");
 
 			console.log(`\nz.ai / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.ZAI_API_KEY });
@@ -436,7 +437,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("mistral", "mistral-medium-latest");
+			const llm = getFixtureModel("mistral", "mistral-medium-latest");
 
 			console.log(`\nMistral / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.MISTRAL_API_KEY });
@@ -458,7 +459,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("minimax", "MiniMax-M2.7");
+			const llm = getFixtureModel("minimax", "MiniMax-M2.7");
 
 			console.log(`\nMiniMax / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.MINIMAX_API_KEY });
@@ -480,7 +481,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("xiaomi", "mimo-v2.6-pro");
+			const llm = getFixtureModel("xiaomi", "mimo-v2.6-pro");
 
 			console.log(`\nXiaomi MiMo / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.XIAOMI_API_KEY });
@@ -502,7 +503,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("xiaomi-token-plan-cn", "mimo-v2.6-pro");
+			const llm = getFixtureModel("xiaomi-token-plan-cn", "mimo-v2.6-pro");
 
 			console.log(`\nXiaomi MiMo Token Plan CN / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -526,7 +527,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("xiaomi-token-plan-ams", "mimo-v2.6-pro");
+			const llm = getFixtureModel("xiaomi-token-plan-ams", "mimo-v2.6-pro");
 
 			console.log(`\nXiaomi MiMo Token Plan AMS / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -550,7 +551,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("xiaomi-token-plan-sgp", "mimo-v2.6-pro");
+			const llm = getFixtureModel("xiaomi-token-plan-sgp", "mimo-v2.6-pro");
 
 			console.log(`\nXiaomi MiMo Token Plan SGP / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -574,7 +575,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("qwen-token-plan", "qwen3.7-max");
+			const llm = getFixtureModel("qwen-token-plan", "qwen3.7-max");
 
 			console.log(`\nQwen Token Plan / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -598,7 +599,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("qwen-token-plan-individual", "qwen3.8-max");
+			const llm = getFixtureModel("qwen-token-plan-individual", "qwen3.8-max");
 
 			console.log(`\nQwen Token Plan Individual / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -614,24 +615,23 @@ describe("totalTokens field", () => {
 	});
 
 	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_CN_API_KEY)("Qwen Token Plan Individual (CN)", () => {
-		it(
-			"qwen3.8-max - should return totalTokens equal to sum of components",
-			{ retry: 3, timeout: 60000 },
-			async () => {
-				const llm = getModel("qwen-token-plan-individual-cn", "qwen3.8-max");
+		it("qwen3.8-max - should return totalTokens equal to sum of components", {
+			retry: 3,
+			timeout: 60000,
+		}, async () => {
+			const llm = getFixtureModel("qwen-token-plan-individual-cn", "qwen3.8-max");
 
-				console.log(`\nQwen Token Plan Individual CN / ${llm.id}:`);
-				const { first, second } = await testTotalTokensWithCache(llm, {
-					apiKey: process.env.QWEN_TOKEN_PLAN_CN_API_KEY,
-				});
+			console.log(`\nQwen Token Plan Individual CN / ${llm.id}:`);
+			const { first, second } = await testTotalTokensWithCache(llm, {
+				apiKey: process.env.QWEN_TOKEN_PLAN_CN_API_KEY,
+			});
 
-				logUsage("First request", first);
-				logUsage("Second request", second);
+			logUsage("First request", first);
+			logUsage("Second request", second);
 
-				assertTotalTokensEqualsComponents(first);
-				assertTotalTokensEqualsComponents(second);
-			},
-		);
+			assertTotalTokensEqualsComponents(first);
+			assertTotalTokensEqualsComponents(second);
+		});
 	});
 
 	// =========================================================================
@@ -643,7 +643,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("qwen-token-plan-cn", "qwen3.7-max");
+			const llm = getFixtureModel("qwen-token-plan-cn", "qwen3.7-max");
 
 			console.log(`\nQwen Token Plan CN / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, {
@@ -667,7 +667,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("kimi-coding", "kimi-for-coding");
+			const llm = getFixtureModel("kimi-coding", "kimi-for-coding");
 
 			console.log(`\nKimi For Coding / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.KIMI_API_KEY });
@@ -689,7 +689,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("vercel-ai-gateway", "google/gemini-2.5-flash");
+			const llm = getFixtureModel("vercel-ai-gateway", "google/gemini-2.5-flash");
 
 			console.log(`\nVercel AI Gateway / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.AI_GATEWAY_API_KEY });
@@ -711,7 +711,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("openrouter", "anthropic/claude-sonnet-4.6");
+			const llm = getFixtureModel("openrouter", "anthropic/claude-sonnet-4.6");
 
 			console.log(`\nOpenRouter / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
@@ -727,7 +727,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("openrouter", "deepseek/deepseek-chat");
+			const llm = getFixtureModel("openrouter", "deepseek/deepseek-chat");
 
 			console.log(`\nOpenRouter / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
@@ -743,7 +743,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("openrouter", "mistralai/mistral-small-3.2-24b-instruct");
+			const llm = getFixtureModel("openrouter", "mistralai/mistral-small-3.2-24b-instruct");
 
 			console.log(`\nOpenRouter / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
@@ -759,7 +759,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("openrouter", "google/gemini-2.5-flash");
+			const llm = getFixtureModel("openrouter", "google/gemini-2.5-flash");
 
 			console.log(`\nOpenRouter / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
@@ -775,7 +775,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("openrouter", "deepseek/deepseek-chat");
+			const llm = getFixtureModel("openrouter", "deepseek/deepseek-chat");
 
 			console.log(`\nOpenRouter / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
@@ -797,7 +797,7 @@ describe("totalTokens field", () => {
 			"claude-haiku-4.5 - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("github-copilot", "claude-haiku-4.5");
+				const llm = getFixtureModel("github-copilot", "claude-haiku-4.5");
 
 				console.log(`\nGitHub Copilot / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: githubCopilotToken });
@@ -814,7 +814,7 @@ describe("totalTokens field", () => {
 			"claude-sonnet-4 - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("github-copilot", "claude-sonnet-4.6");
+				const llm = getFixtureModel("github-copilot", "claude-sonnet-4.6");
 
 				console.log(`\nGitHub Copilot / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: githubCopilotToken });
@@ -839,7 +839,7 @@ describe("totalTokens field", () => {
 			retry: 3,
 			timeout: 60000,
 		}, async () => {
-			const llm = getModel("amazon-bedrock", "global.anthropic.claude-sonnet-4-5-20250929-v1:0");
+			const llm = getFixtureModel("amazon-bedrock", "global.anthropic.claude-sonnet-4-5-20250929-v1:0");
 
 			console.log(`\nAmazon Bedrock / ${llm.id}:`);
 			const { first, second } = await testTotalTokensWithCache(llm);
@@ -861,7 +861,7 @@ describe("totalTokens field", () => {
 			"gpt-6.1-sol - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("openai-codex", "gpt-6.1-sol");
+				const llm = getFixtureModel("openai-codex", "gpt-6.1-sol");
 
 				console.log(`\nOpenAI Codex / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: openaiCodexToken });

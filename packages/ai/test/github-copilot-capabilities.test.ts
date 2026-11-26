@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "vitest";
-import { getModel } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+
 import { parseGitHubCopilotDiscoveredModels } from "../src/providers/github-copilot.ts";
 import {
 	describeGitHubCopilotModel,
@@ -21,7 +22,7 @@ function discovered(id: string): Model<Api> {
 }
 
 function catalog(id: string): Model<Api> {
-	const model = getModel("github-copilot", id as never) as Model<Api> | undefined;
+	const model = getFixtureModel("github-copilot", id as never) as Model<Api> | undefined;
 	if (!model) throw new Error(`Expected github-copilot/${id} in the built-in catalog`);
 	return model;
 }

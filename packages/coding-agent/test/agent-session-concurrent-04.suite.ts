@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * Tests for AgentSession concurrent prompt guard.
  */
@@ -6,12 +7,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage } from "@bastani/atomic-agent-core";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type TextContent,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type TextContent } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
@@ -106,7 +102,7 @@ describe("AgentSession concurrent prompt guard", () => {
 	});
 
 	async function _createSession() {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let abortSignal: AbortSignal | undefined;
 
 		// Use a stream function that responds to abort
@@ -159,7 +155,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 	it("should allow prompt() after previous completes", async () => {
 		// Create session with a stream that completes immediately
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: {
@@ -206,7 +202,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await session.prompt("Second message");
 	});
 	it("should wait for queued agent events before emitting tool_call", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const tool = {
 			name: "dummy",
 			description: "Dummy tool",

@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 import "../helpers/provider-rate-limit-isolation.js";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -51,7 +52,7 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 });
 
 import { stream as streamBedrock } from "@bastani/atomic-ai/api/bedrock-converse-stream";
-import { getModel, normalizeContext } from "@bastani/atomic-ai/compat";
+import { normalizeContext } from "@bastani/atomic-ai/compat";
 import { normalizeModelFailureSignal } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 import {
 	providerCooldownMs,
@@ -59,7 +60,7 @@ import {
 } from "../../packages/coding-agent/src/core/provider-rate-limits.js";
 import { admitProviderStream } from "../../packages/coding-agent/src/core/provider-request-admission.js";
 
-const model = getModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
+const model = getFixtureModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
 const context = normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 0 }] });
 
 /** What the SDK throws for a non-2xx response: the modeled code as `name`, the raw HTTP response on `$response`. */

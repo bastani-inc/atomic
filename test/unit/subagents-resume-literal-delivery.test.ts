@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * #4027: a resumed subagent child receives its resume and held messages as written, through the real in-process
  * runner and a real AgentSession against a local provider. Only an original task keeps a fresh launch's handling.
@@ -7,12 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Message,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Message } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -73,7 +69,7 @@ export default function (pi) {
 }
 `,
 	);
-	const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, provider: "resume-literal" };
+	const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-5")!, provider: "resume-literal" };
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
 		modelsPath: null,

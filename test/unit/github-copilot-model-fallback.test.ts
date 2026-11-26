@@ -19,7 +19,7 @@ import {
 	serializeGitHubCopilotError,
 } from "@bastani/atomic-ai";
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
-import { getModel, streamSimple } from "@bastani/atomic-ai/compat";
+import { streamSimple } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { _isFallbackableError, _isRetryableError } from "../../packages/coding-agent/src/core/agent-session-retry.js";
 import {
@@ -29,6 +29,7 @@ import {
 	isUnrecognizedModelFailure,
 	normalizeModelFailureSignal,
 } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
 const context = { modelId: "gemini-4-argon", api: "openai-completions", status: 400 };
 
@@ -262,7 +263,7 @@ describe("typed GitHub Copilot failures drive retry and fallback (#4324)", () =>
 			sameModel: false,
 		},
 	])("decides $name the same with provider retries on and off", async ({ status, body, kind, sameModel }) => {
-		const model = getModel("github-copilot", "gemini-4-argon") as Model<Api>;
+		const model = getFixtureModel("github-copilot", "gemini-4-argon") as Model<Api>;
 		const respond = () =>
 			new Response(JSON.stringify({ error: body }), {
 				status,

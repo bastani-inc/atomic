@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { parseArgs } from "../src/cli/args.ts";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -47,7 +47,7 @@ test("memory and caller-owned databases keep the selected store in the host runt
 						...(await createAgentSessionFromServices({
 							services,
 							sessionManager: options.sessionManager,
-							model: getModel("anthropic", "claude-sonnet-4-5"),
+							model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 							noTools: true,
 						})),
 						services,

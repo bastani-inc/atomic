@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { streamSimple } from "../src/compat.ts";
 import type { Context, Model, SimpleStreamOptions } from "../src/types.ts";
 
 interface AnthropicTemperaturePayload {
@@ -66,31 +67,31 @@ async function capturePayload(
 
 describe("Anthropic temperature compatibility", () => {
 	it("omits temperature for Claude Opus 4.7", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-opus-4-7"), { temperature: 0 });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-opus-4-7"), { temperature: 0 });
 
 		expect(payload.temperature).toBeUndefined();
 	});
 
 	it("omits temperature for Claude Opus 4.8", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-opus-4-8"), { temperature: 0 });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-opus-4-8"), { temperature: 0 });
 
 		expect(payload.temperature).toBeUndefined();
 	});
 
 	it("omits default temperature for Claude Opus 4.7", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-opus-4-7"), { temperature: 1 });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-opus-4-7"), { temperature: 1 });
 
 		expect(payload.temperature).toBeUndefined();
 	});
 
 	it("omits temperature for Claude Sonnet 5", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-sonnet-5"), { temperature: 0 });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-sonnet-5"), { temperature: 0 });
 
 		expect(payload.temperature).toBeUndefined();
 	});
 
 	it("keeps temperature for Claude Opus 4.6", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-opus-4-6"), { temperature: 0 });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-opus-4-6"), { temperature: 0 });
 
 		expect(payload.temperature).toBe(0);
 	});
@@ -99,25 +100,25 @@ describe("Anthropic temperature compatibility", () => {
 	// `top_p`, or `top_k` values return a 400 error on every request, regardless of whether
 	// thinking is used." https://platform.claude.com/docs/en/build-with-claude/thinking
 	it("omits temperature for Claude Fable 5.1", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { temperature: 0 });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5-1"), { temperature: 0 });
 
 		expect(payload.temperature).toBeUndefined();
 	});
 
 	it("omits default temperature for Claude Fable 5.1", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { temperature: 1 });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5-1"), { temperature: 1 });
 
 		expect(payload.temperature).toBeUndefined();
 	});
 
 	it("omits temperature for Claude Fable 5", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5"), { temperature: 0 });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5"), { temperature: 0 });
 
 		expect(payload.temperature).toBeUndefined();
 	});
 
 	it("keeps temperature for Claude Sonnet 4.6", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-sonnet-4-6"), { temperature: 0 });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-sonnet-4-6"), { temperature: 0 });
 
 		expect(payload.temperature).toBe(0);
 	});

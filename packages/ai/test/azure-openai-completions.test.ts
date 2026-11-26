@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { normalizeContext } from "../src/compat.ts";
 import { azureProvider } from "../src/providers/azure.ts";
 import type { AssistantMessage, StreamOptions } from "../src/types.ts";
 
@@ -15,7 +16,7 @@ interface Payload {
 }
 
 const azure = azureProvider();
-const model = getModel("azure", "deepseek-v4-pro");
+const model = getFixtureModel("azure", "deepseek-v4-pro");
 const context = normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: 1 }] });
 
 function capture() {
@@ -140,6 +141,6 @@ test("Azure completions reports an unconfigured endpoint through the stream (#96
 
 test("Azure provider dispatches Responses models to the unchanged Responses API (#9645)", async () => {
 	const { requests, options } = capture();
-	await azure.stream(getModel("azure", "gpt-4o-mini"), context, options).result();
+	await azure.stream(getFixtureModel("azure", "gpt-4o-mini"), context, options).result();
 	assert.match(requests[0].url, /\/responses\?api-version=v1$/);
 });

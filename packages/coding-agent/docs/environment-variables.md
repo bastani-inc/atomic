@@ -87,7 +87,7 @@ Variables use different parsing rules depending on their category:
 | `ATOMIC_CODEMODE_MAX_WORKERS` | `PI_CODEMODE_MAX_WORKERS` | Positive integer maximum live codemode workers per Atomic process (default `2`, each capped at 256 MiB; invalid values fall back to `2`). Extra scripts queue until a slot opens. See [Codemode](/codemode) |
 | `ATOMIC_HOST_SPAWN` | None | Set to `child-process` to launch helper processes (Git snapshots, `rg`, `fd`, worktree setup, and standalone shell commands) through standard Node child spawning instead of Atomic's native spawner. Useful for troubleshooting process-spawning issues on Linux or Windows |
 | `ATOMIC_TASK_CGROUP` | None | Exact `0` disables Linux cgroup v2 process-tree containment for background shell tasks. See [Lifetime, retention, and cleanup](/background-tasks#lifetime-retention-and-cleanup) |
-| `NODE_COMPILE_CACHE` | None | Override the directory for Node's persistent compile cache, enabled automatically on Node 22.8+ to speed up startup. On Windows, a cold default cache warms in a background helper during interactive runs; setting `NODE_COMPILE_CACHE` lets Node write it on exit instead |
+| `NODE_COMPILE_CACHE` | None | Override the directory for Node's persistent compile cache, enabled automatically on Node.js to speed up startup. On Windows, a cold default cache warms in a background helper during interactive runs; setting `NODE_COMPILE_CACHE` lets Node write it on exit instead |
 | `NODE_DISABLE_COMPILE_CACHE` | None | Any defined value (including empty string `""`) prevents Node from enabling the compile cache |
 | `NAPI_RS_NATIVE_LIBRARY_PATH` | None | Path to a custom `@bastani/atomic-natives` `.node` addon binary; bypasses the release version check |
 

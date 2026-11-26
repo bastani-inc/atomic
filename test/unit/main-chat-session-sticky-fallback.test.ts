@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Agent, type StreamFn } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
-import { createAssistantMessageEventStream, getModel } from "@bastani/atomic-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
@@ -9,9 +9,10 @@ import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
-const PRIMARY = getModel("anthropic", "claude-sonnet-4-5")!;
-const FALLBACK = getModel("openai", "gpt-5.1")!;
+const PRIMARY = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
+const FALLBACK = getFixtureModel("openai", "gpt-5.1")!;
 
 const ZERO_USAGE: Usage = {
 	input: 0,

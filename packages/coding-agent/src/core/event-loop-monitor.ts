@@ -163,11 +163,11 @@ interface StackSampler {
 
 class ProfileSampler implements StackSampler {
 	readonly source = "profiler";
-	private startedUs = 0;
+	private profileStartedEpochUs = 0;
 	private observedUs: number;
 	private queue: Promise<void> = Promise.resolve();
 	private collectionScheduled = false;
-	private completed: Profiler.Profile[] = [];
+	private completed: { readonly profile: Profiler.Profile; readonly epochOffsetUs: number }[] = [];
 	private readonly requests: {
 		readonly sinceUs: number;
 		readonly untilUs: number;
@@ -175,22 +175,19 @@ class ProfileSampler implements StackSampler {
 	}[] = [];
 
 	private readonly session: Session;
-	private readonly profileTimeOffsetUs: number;
 
 	constructor(session: Session, nowUs: number) {
 		this.session = session;
 		this.observedUs = nowUs;
-		// Node profiles use the monotonic process clock; Bun profiles already use epoch microseconds.
-		this.profileTimeOffsetUs = isBunRuntime ? 0 : epochUs() - Number(process.hrtime.bigint() / 1000n);
 		session.post("Profiler.enable");
 		session.post("Profiler.setSamplingInterval", { interval: PROFILE_SAMPLING_INTERVAL_US });
-		this.restart(nowUs);
+		this.restart();
 	}
 
 	beat(nowUs: number): void {
 		this.observedUs = nowUs;
 		if (!this.collectionScheduled && this.requests.length === 0) this.releaseObservedProfiles();
-		if (nowUs - this.startedUs >= PROFILE_WINDOW_MS * 1000) this.scheduleCollection();
+		if (nowUs - this.profileStartedEpochUs >= PROFILE_WINDOW_MS * 1000) this.scheduleCollection();
 	}
 
 	stacksOf(sinceUs: number, untilUs: number): Promise<readonly (readonly string[])[]> {
@@ -208,16 +205,16 @@ class ProfileSampler implements StackSampler {
 		this.queue = this.queue.then(async () => {
 			// Requests arriving after this stop may need samples from the newly started profile.
 			const batch = this.requests.splice(0);
+			const profileStartedEpochUs = this.profileStartedEpochUs;
 			const profile = await this.stop();
-			if (profile !== undefined) this.completed.push(profile);
+			if (profile !== undefined) {
+				const epochOffsetUs = isBunRuntime ? 0 : profileStartedEpochUs - profile.startTime;
+				this.completed.push({ profile, epochOffsetUs });
+			}
 			for (const request of batch) {
 				request.settle(
-					this.completed.flatMap((completed) =>
-						profileStacksBetween(
-							completed,
-							request.sinceUs - this.profileTimeOffsetUs,
-							request.untilUs - this.profileTimeOffsetUs,
-						),
+					this.completed.flatMap(({ profile, epochOffsetUs }) =>
+						profileStacksBetween(profile, request.sinceUs - epochOffsetUs, request.untilUs - epochOffsetUs),
 					),
 				);
 			}
@@ -231,11 +228,13 @@ class ProfileSampler implements StackSampler {
 		// A phase can end before the next timer discovers a later stall in the same task. Keep that unread tail,
 		// including a rotation's tail, until every window through the last observed heartbeat has been served.
 		const nextWindowUs = this.requests[0]?.sinceUs ?? this.observedUs + HEARTBEAT_MS * 1000;
-		this.completed = this.completed.filter((profile) => profile.endTime + this.profileTimeOffsetUs >= nextWindowUs);
+		this.completed = this.completed.filter(
+			({ profile, epochOffsetUs }) => profile.endTime + epochOffsetUs >= nextWindowUs,
+		);
 	}
 
-	private restart(nowUs: number): void {
-		this.startedUs = nowUs;
+	private restart(): void {
+		this.profileStartedEpochUs = epochUs();
 		this.session.post("Profiler.start");
 	}
 
@@ -249,13 +248,13 @@ class ProfileSampler implements StackSampler {
 			try {
 				profile = stopProfile.call(this.session, "Profiler.stop").profile;
 			} catch {}
-			this.restart(epochUs());
+			this.restart();
 			return Promise.resolve(profile);
 		}
 		return new Promise((settle) =>
 			this.session.post("Profiler.stop", (error, result) => {
 				// Resume collection before another user microtask can run between stop and result processing.
-				this.restart(epochUs());
+				this.restart();
 				settle(error ? undefined : result.profile);
 			}),
 		);

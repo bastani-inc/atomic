@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getModel as getCompatModel } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+
 import {
 	createModels,
 	createProvider,
@@ -10,7 +11,7 @@ import {
 	type Provider,
 } from "../src/models.ts";
 import { InMemoryModelsStore, type ModelsStoreEntry } from "../src/models-store.ts";
-import { getBuiltinModel } from "../src/providers/all.ts";
+
 import { fauxAssistantMessage, fauxProvider } from "../src/providers/faux.ts";
 import type { Api, ImageApi, ImageModel, Model } from "../src/types.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
@@ -91,10 +92,10 @@ describe("chat models without a type", () => {
 describe("built-in catalog getters", () => {
 	it("return model shapes that can be reassigned within one api", () => {
 		// Compile-time regression check: the return type must not carry literal model ids.
-		const firstModel = getBuiltinModel("openai", "gpt-4o-mini");
-		const model: typeof firstModel = getBuiltinModel("openai", "gpt-4o");
-		const firstCompat = getCompatModel("openai", "gpt-4o-mini");
-		const compat: typeof firstCompat = getCompatModel("openai", "gpt-4o");
+		const firstModel = getFixtureModel("openai", "gpt-4o-mini");
+		const model: typeof firstModel = getFixtureModel("openai", "gpt-4o");
+		const firstCompat = getFixtureModel("openai", "gpt-4o-mini");
+		const compat: typeof firstCompat = getFixtureModel("openai", "gpt-4o");
 
 		expect(firstModel.id).toBe("gpt-4o-mini");
 		expect(firstCompat.id).toBe("gpt-4o-mini");

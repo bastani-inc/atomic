@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { parseArgs } from "../src/cli/args.ts";
 import {
 	type AgentSessionRuntime,
@@ -76,7 +76,7 @@ function hostRuntimeFactory(
 		const created = await createAgentSessionFromServices({
 			services,
 			sessionManager: options.sessionManager,
-			model: getModel("anthropic", "claude-sonnet-4-5"),
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 			noTools: true,
 		});
 		await beforeReturn();

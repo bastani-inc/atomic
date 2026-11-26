@@ -4,8 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { asyncScope } from "../src/core/async-scope.ts";
 import { withOwnResourceAdmission } from "../src/core/resource-admission-scope.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -57,7 +57,7 @@ test("SDK sessions, their tool calls and model requests share one async context 
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir,
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				sessionManager: SessionManager.inMemory(cwd),
 				builtins: { intercom: false },
 			});

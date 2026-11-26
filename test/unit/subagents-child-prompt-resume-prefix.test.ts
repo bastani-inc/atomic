@@ -10,7 +10,6 @@ import {
 	type AssistantMessage,
 	anthropicMessagesApi,
 	createAssistantMessageEventStream,
-	getModel,
 	type Model,
 } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
@@ -32,6 +31,7 @@ import {
 	createInProcessChildSystemPromptSectionsTransform,
 	createInProcessChildSystemPromptTransform,
 } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const PROVIDER = "child-prompt-cache";
@@ -104,7 +104,7 @@ function done(model: Model<"anthropic-messages">, text: string): AssistantMessag
 
 /** A model that takes system messages mid-conversation; every request is serialized by the Anthropic transport. */
 async function recordingRuntime(requests: AnthropicPayload[]) {
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const model: Model<"anthropic-messages"> = {
 		...base,
 		provider: PROVIDER,

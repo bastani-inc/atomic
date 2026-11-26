@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 
 const bedrockMock = vi.hoisted(() => {
 	/** Stands in for the SDK's service exception base class until the mocked module defines the real one. */
@@ -50,7 +51,7 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 });
 
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { AssistantMessage } from "../src/types.ts";
 
 const context = normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 0 }] });
@@ -66,7 +67,7 @@ function serviceException(name: string, headers: Record<string, string>): Error 
 }
 
 async function runBedrock(): Promise<AssistantMessage> {
-	return streamBedrock(getModel("amazon-bedrock", "us.anthropic.claude-opus-4-8"), context, {
+	return streamBedrock(getFixtureModel("amazon-bedrock", "us.anthropic.claude-opus-4-8"), context, {
 		cacheRetention: "none",
 		maxRetries: 0,
 	}).result();

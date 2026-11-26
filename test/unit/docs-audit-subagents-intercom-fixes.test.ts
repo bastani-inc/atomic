@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import type net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { type Api, getModel, type Model } from "@bastani/atomic-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import {
 	AuthStorage,
@@ -24,6 +24,7 @@ import {
 	type ModelScopeContext,
 	resolveSessionModelScope,
 } from "../../packages/subagents/src/runs/shared/model-scope.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
 const cleanups: Array<() => void> = [];
 const originalEnv = {
@@ -48,7 +49,7 @@ function makeTempDir(prefix: string): string {
 }
 
 function makeModel(provider: string, id: string): Model<Api> {
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	return { ...base, provider, id, name: `${provider}/${id}` };
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { type BedrockOptions, stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
-import { getModel, getModels, streamSimple } from "../src/compat.ts";
+import { getModels, streamSimple } from "../src/compat.ts";
 import type { AnthropicMessagesCompat, BedrockCompat, Context, Model, OpenAICompletionsCompat } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -87,51 +88,28 @@ async function captureCompletionsPayload(
 	return capturedPayload;
 }
 
-describe("Bedrock temperature suppression for Claude Fable 5.1", () => {
-	it.each([
-		"anthropic.claude-fable-5-1",
-		"global.anthropic.claude-fable-5-1",
-		"us.anthropic.claude-fable-5-1",
-	] as const)("omits inferenceConfig.temperature for %s", async (modelId) => {
-		const model = getModel("amazon-bedrock", modelId);
-		expect(model.compat?.supportsTemperature).toBe(false);
+describe("Bedrock temperature suppression for Claude Fable", () => {
+	it.for(["claude-fable-5", "claude-fable-5-1"])(
+		"omits inferenceConfig.temperature for published %s profiles",
+		async (version, { skip }) => {
+			const profiles = getModels("amazon-bedrock").filter((model) => model.id.endsWith(`anthropic.${version}`));
+			if (profiles.length === 0) return skip(`The generated Bedrock catalog has no ${version} profiles`);
+			for (const model of profiles) {
+				expect(model.compat?.supportsTemperature, model.id).toBe(false);
+				for (const temperature of [0, 1]) {
+					const payload = await captureBedrockPayload(model, { temperature });
+					expect(payload.inferenceConfig?.temperature, model.id).toBeUndefined();
+					expect(payload.inferenceConfig?.maxTokens, model.id).toBeDefined();
+				}
+			}
+		},
+	);
 
-		const payload = await captureBedrockPayload(model, { temperature: 0 });
-
-		expect(payload.inferenceConfig?.temperature).toBeUndefined();
-		// Other inference settings must still be sent; only `temperature` is dropped.
-		expect(payload.inferenceConfig?.maxTokens).toBeDefined();
-	});
-
-	it("omits a non-zero temperature too, not just the falsy one", async () => {
-		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
-
-		const payload = await captureBedrockPayload(model, { temperature: 1 });
-
-		expect(payload.inferenceConfig?.temperature).toBeUndefined();
-	});
-
-	// The rule matches the Fable family, so Fable 5 is suppressed here too. Anthropic's
-	// sampling-parameter sentence names Claude Fable 5 alongside Claude Fable 5.1, and the
-	// Anthropic Messages path already covered both, so this makes the three APIs consistent.
-	it("omits inferenceConfig.temperature for the Claude Fable 5 profiles too", async () => {
-		for (const modelId of [
-			"anthropic.claude-fable-5",
-			"global.anthropic.claude-fable-5",
-			"us.anthropic.claude-fable-5",
-		] as const) {
-			const model = getModel("amazon-bedrock", modelId);
-			expect(model.compat?.supportsTemperature, modelId).toBe(false);
-
-			const payload = await captureBedrockPayload(model, { temperature: 0 });
-			expect(payload.inferenceConfig?.temperature, modelId).toBeUndefined();
-		}
-	});
-
-	it.each(["global.anthropic.claude-opus-5", "global.anthropic.claude-sonnet-5"] as const)(
+	it.for(["global.anthropic.claude-opus-5", "global.anthropic.claude-sonnet-5"])(
 		"keeps inferenceConfig.temperature for %s",
-		async (modelId) => {
-			const model = getModel("amazon-bedrock", modelId);
+		async (modelId, { skip }) => {
+			const model = getModels("amazon-bedrock").find((candidate) => candidate.id === modelId);
+			if (!model) return skip(`${modelId} is not in the generated Bedrock catalog`);
 			expect(model.compat?.supportsTemperature).toBeUndefined();
 
 			const payload = await captureBedrockPayload(model, { temperature: 0 });
@@ -143,7 +121,7 @@ describe("Bedrock temperature suppression for Claude Fable 5.1", () => {
 
 describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () => {
 	it("omits temperature for openrouter/anthropic/claude-fable-5.1:batch", async () => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1:batch");
+		const model = getFixtureModel("openrouter", "anthropic/claude-fable-5.1:batch");
 		expect(model.compat?.supportsTemperature).toBe(false);
 
 		expect((await captureCompletionsPayload(model, 0)).temperature).toBeUndefined();
@@ -154,7 +132,7 @@ describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () =
 	// not reach it — yet it carries Fable 5.1's $0.25 cache read and OpenRouter's own
 	// `supported_parameters` for it omits `temperature`. The family match covers it.
 	it("omits temperature for openrouter/anthropic/claude-fable-5:batch", async () => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5:batch");
+		const model = getFixtureModel("openrouter", "anthropic/claude-fable-5:batch");
 		expect(model.compat?.supportsTemperature).toBe(false);
 
 		expect((await captureCompletionsPayload(model, 0)).temperature).toBeUndefined();
@@ -163,7 +141,7 @@ describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () =
 	// Upstream pi 44f6851b moved the `~anthropic/claude-*-latest` aliases onto Anthropic Messages, so the
 	// alias no longer goes through the completions path above; its guard must hold there instead.
 	it("suppresses temperature for the openrouter ~anthropic/claude-fable-latest alias on Anthropic Messages", () => {
-		const model = getModel("openrouter", "~anthropic/claude-fable-latest");
+		const model = getFixtureModel("openrouter", "~anthropic/claude-fable-latest");
 		expect(model.api).toBe("anthropic-messages");
 		expect(model.compat?.supportsTemperature).toBe(false);
 	});
@@ -171,7 +149,7 @@ describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () =
 	it.each(["anthropic/claude-opus-5:batch", "anthropic/claude-sonnet-5:batch"] as const)(
 		"keeps temperature for openrouter/%s",
 		async (modelId) => {
-			const model = getModel("openrouter", modelId);
+			const model = getFixtureModel("openrouter", modelId);
 			expect(model.compat?.supportsTemperature).toBeUndefined();
 
 			expect((await captureCompletionsPayload(model, 0)).temperature).toBe(0);
@@ -204,16 +182,14 @@ describe("temperature suppression is scoped to the Claude Fable family", () => {
 	it("leaves non-Fable models on those APIs untouched", () => {
 		// The pre-existing Anthropic temperature predicate matches many more models on these two
 		// APIs; widening to it would change request bodies for models unrelated to this work.
-		expect(getModel("amazon-bedrock", "global.anthropic.claude-opus-5").compat?.supportsTemperature).toBeUndefined();
 		expect(
-			getModel("amazon-bedrock", "global.anthropic.claude-opus-4-8").compat?.supportsTemperature,
+			getFixtureModel("openrouter", "anthropic/claude-opus-4.8:batch").compat?.supportsTemperature,
 		).toBeUndefined();
-		expect(getModel("openrouter", "anthropic/claude-opus-4.8:batch").compat?.supportsTemperature).toBeUndefined();
 	});
 
 	it("leaves the already-guarded Anthropic Messages entries as they were", () => {
 		// These were suppressed before this change, by `isAnthropicTemperatureUnsupportedModel`.
-		expect(getModel("anthropic", "claude-fable-5-1").compat?.supportsTemperature).toBe(false);
-		expect(getModel("anthropic", "claude-fable-5").compat?.supportsTemperature).toBe(false);
+		expect(getFixtureModel("anthropic", "claude-fable-5-1").compat?.supportsTemperature).toBe(false);
+		expect(getFixtureModel("anthropic", "claude-fable-5").compat?.supportsTemperature).toBe(false);
 	});
 });

@@ -21,6 +21,7 @@ import {
 
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/event-loop-block-monitor.ts");
+const PROFILE_CLOCK_PRELOAD = join(ROOT, "test/fixtures/event-loop-profile-clock-preload.cjs");
 
 const THRESHOLD_MS = 200;
 const LONG_BLOCK_MS = 1_000;
@@ -45,7 +46,8 @@ const CHILD_TEST_TIMEOUT_MS = CHILD_LOAD_TIMEOUT_MS + CHILD_RUN_TIMEOUT_MS + 10_
 const LOADED = "event-loop-block-monitor fixture loaded";
 
 const RUNTIMES = [
-	{ name: "Node", command: () => [process.execPath, "--import", "jiti/register"] },
+	// Node 26 deprecates the `module.register()` that jiti/register calls; its warning is not the monitor's output.
+	{ name: "Node", command: () => [process.execPath, "--disable-warning=DEP0205", "--import", "jiti/register"] },
 	{ name: "Bun", command: () => [bunExecutable()] },
 ] as const;
 
@@ -237,8 +239,10 @@ async function runChild(
 	runtime: (typeof RUNTIMES)[number],
 	env: Record<string, string | undefined>,
 	mode = "blocks",
+	requirePreload?: string,
 ): Promise<{ report: ChildReport | undefined; stderr: string }> {
 	const [executable, ...preload] = runtime.command();
+	if (requirePreload !== undefined) preload.push("--require", requirePreload);
 	const child = spawnProcess(
 		[executable, ...preload, FIXTURE, String(LONG_BLOCK_MS), String(SHORT_BLOCK_MS), String(SETTLE_MS), mode],
 		{
@@ -448,6 +452,22 @@ test(
 				);
 			}
 		}
+	},
+	CHILD_TEST_TIMEOUT_MS,
+);
+
+test(
+	"on Node, attributes samples even when the profiler clock starts at a different origin",
+	async () => {
+		const log = join(temp, "blocks.jsonl");
+		await runChild(
+			RUNTIMES[0],
+			{ ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS), ATOMIC_EVENT_LOOP_BLOCK_LOG: log },
+			"blocks",
+			PROFILE_CLOCK_PRELOAD,
+		);
+		const records = readLog(log);
+		assert.equal(blocksNaming(records, "holdTheEventLoopForLong").length, 1, JSON.stringify(records));
 	},
 	CHILD_TEST_TIMEOUT_MS,
 );

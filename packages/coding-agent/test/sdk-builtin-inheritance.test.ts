@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import * as builtinPackages from "../src/core/builtin-packages.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { createAgentSession } from "../src/core/sdk.js";
@@ -56,7 +56,7 @@ export default function (pi) {
 				agentDir: join(root, "agent"),
 				resourceLoader: loader,
 				settingsManager,
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				sessionManager: SessionManager.inMemory(root),
 			});
 			try {

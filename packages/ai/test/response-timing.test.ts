@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { lazyStream } from "../src/api/lazy.js";
-import { getBuiltinModel } from "../src/providers/all.js";
+
 import type { AssistantMessage } from "../src/types.js";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.js";
 
@@ -29,19 +30,22 @@ function message(timestamp = Date.now(), durationMs?: number): AssistantMessage 
 afterEach(() => vi.restoreAllMocks());
 
 describe("AssistantMessageEventStream timing", () => {
-	it.each(["done", "error", "end"] as const)("times the final %s message with a monotonic clock", async (completion) => {
-		vi.spyOn(Date, "now").mockReturnValue(1000);
-		const clock = vi.spyOn(performance, "now").mockReturnValue(100);
-		const stream = new AssistantMessageEventStream();
-		const result = message();
-		clock.mockReturnValue(125.6);
-		vi.mocked(Date.now).mockReturnValue(500);
-		if (completion === "done") stream.push({ type: "done", reason: "stop", message: result });
-		else if (completion === "error") stream.push({ type: "error", reason: "error", error: result });
-		else stream.end(result);
-		assert.equal((await stream.result()).durationMs, 26);
-		assert.equal(result.timestamp, 1000);
-	});
+	it.each(["done", "error", "end"] as const)(
+		"times the final %s message with a monotonic clock",
+		async (completion) => {
+			vi.spyOn(Date, "now").mockReturnValue(1000);
+			const clock = vi.spyOn(performance, "now").mockReturnValue(100);
+			const stream = new AssistantMessageEventStream();
+			const result = message();
+			clock.mockReturnValue(125.6);
+			vi.mocked(Date.now).mockReturnValue(500);
+			if (completion === "done") stream.push({ type: "done", reason: "stop", message: result });
+			else if (completion === "error") stream.push({ type: "error", reason: "error", error: result });
+			else stream.end(result);
+			assert.equal((await stream.result()).durationMs, 26);
+			assert.equal(result.timestamp, 1000);
+		},
+	);
 
 	it("preserves inner stream timing when forwarding a final message", async () => {
 		vi.spyOn(Date, "now").mockReturnValue(1000);
@@ -88,7 +92,7 @@ describe("AssistantMessageEventStream timing", () => {
 	it("keeps request-start timestamp and timing when lazy setup fails", async () => {
 		vi.spyOn(Date, "now").mockReturnValue(1000);
 		const clock = vi.spyOn(performance, "now").mockReturnValue(100);
-		const stream = lazyStream(getBuiltinModel("openai", "gpt-6-luna"), async () => {
+		const stream = lazyStream(getFixtureModel("openai", "gpt-6-luna"), async () => {
 			vi.mocked(Date.now).mockReturnValue(2000);
 			clock.mockReturnValue(175);
 			throw new Error("setup failed");

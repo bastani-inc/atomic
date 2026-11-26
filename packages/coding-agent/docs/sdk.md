@@ -4,7 +4,7 @@ sidebarTitle: "SDK"
 description: "Embed Atomic agent sessions in Node.js applications with programmatic control over models, tools, storage, and human input."
 ---
 
-Embed Atomic in Node.js applications (Node.js 22.19 or newer) to build custom UIs, power backend services, or drive automated workflows directly inside your Node.js process. Working examples live in [examples/sdk/](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/sdk).
+Embed Atomic in Node.js applications (Node.js 24.20 or newer) to build custom UIs, power backend services, or drive automated workflows directly inside your Node.js process. Working examples live in [examples/sdk/](https://github.com/bastani-inc/atomic/tree/main/packages/coding-agent/examples/sdk).
 
 - **Full options and exports:** [SDK API reference](/sdk/reference) (includes [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor), [Supervised command SDK](/sdk/reference#supervised-command-sdk), and [Task transcript references](/sdk/reference#task-transcript-references)).
 - **Typed decisions:** [Structured decisions API](/sdk/structured-decisions).
@@ -560,12 +560,6 @@ try {
 
 - **`NativeModuleUnavailableError` is exported from `@bastani/atomic`** (`code: "NativeModuleUnavailable"`). `createAgentSession()` throws it when `@bastani/atomic-natives` cannot load or came from a different Atomic release.
 - **`ShutdownFailed`, `HumanInputUnavailable`, `InvalidHostInput`, `BuiltinUnavailable`, and `SessionClosed` are NOT exported classes.** They are standard `Error` (or `AggregateError` for `ShutdownFailed`) instances tagged with string `.code` properties. Check `(error as { code?: string }).code === "HumanInputUnavailable"` (and `error instanceof AggregateError` for `ShutdownFailed`) rather than `instanceof`.
-
-### Node 22 hosts
-
-Atomic requires Node.js 22.19 or newer. On Node 22, `AsyncLocalStorage` uses promise hooks, which add small per-`await` overhead across the process once a session has run (Node 24 and Bun have no such overhead). Atomic stores all session context in one store so overhead stays flat regardless of active session count.
-
-To switch Node 22 to Node 24's faster `AsyncLocalStorage` implementation, launch your host with `node --experimental-async-context-frame`. Pass the flag on your host command line, not in `NODE_OPTIONS` (Node 24+ rejects the flag, and tool subprocesses inherit `NODE_OPTIONS`). Verify that your own code does not depend on Node 22 `AsyncLocalStorage.disable()` behavior.
 
 ### Updating Atomic while your program runs
 

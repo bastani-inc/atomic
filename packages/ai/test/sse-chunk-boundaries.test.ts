@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { stream as streamOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
 import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { AssistantMessage, FetchFunction, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -120,7 +121,7 @@ describe("Anthropic SSE chunk boundaries", () => {
 	}
 });
 
-const mistralModel = getModel("mistral", "mistral-medium-latest");
+const mistralModel = getFixtureModel("mistral", "mistral-medium-latest");
 
 function mistralEvents(texts: string[]): string[][] {
 	const chunk = (delta: object, finishReason: string | null) => [

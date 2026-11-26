@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 
 const googleGenAiMock = vi.hoisted(() => ({
 	streamError: undefined as Error | undefined,
@@ -31,7 +32,7 @@ vi.mock("@google/genai", () => {
 
 import { stream as streamGoogleGenerativeAi } from "../src/api/google-generative-ai.ts";
 import { retryGoogleRequest } from "../src/api/google-shared.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import { getProviderRetryAfterMs } from "../src/utils/retry-hints.ts";
 
 /** A Google API error body as the SDK serializes it into `ApiError.message`. */
@@ -80,7 +81,7 @@ describe("Google retry hints", () => {
 
 	it("reports the server's RetryInfo delay on a failed Google stream", async () => {
 		googleGenAiMock.streamError = googleApiError(googleErrorBody("17s"));
-		const message = await streamGoogleGenerativeAi(getModel("google", "gemini-2.5-flash"), context, {
+		const message = await streamGoogleGenerativeAi(getFixtureModel("google", "gemini-2.5-flash"), context, {
 			apiKey: "test-api-key",
 			maxRetries: 0,
 		}).result();

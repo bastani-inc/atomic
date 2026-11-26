@@ -140,8 +140,8 @@ export async function formatResumeCommand(
 	return args.join(" ");
 }
 
-export function hasDefaultModelProvider(providerId: string): providerId is keyof typeof defaultModelPerProvider {
-	return providerId in defaultModelPerProvider;
+export function hasDefaultModelProvider(providerId: string): boolean {
+	return Object.hasOwn(defaultModelPerProvider, providerId);
 }
 
 export const BEDROCK_PROVIDER_ID = "amazon-bedrock";

@@ -6,7 +6,7 @@ description: "libSQL and Turso storage adapter for Atomic sessions and Intercom 
 
 `@bastani/atomic-storage-libsql` is Atomic's standalone libSQL and [Turso](https://turso.tech) storage adapter. It stores sessions and Intercom multi-node routing in a shared Turso database, self-hosted `sqld` server, or local libSQL file with one URL and one auth token. Unlike the six core libraries in [Standalone libraries](/libraries), this package is not bundled inside `@bastani/atomic`; install it only when you use libSQL or Turso.
 
-- **Plain ESM with types:** Ships plain JavaScript ESM and TypeScript declarations (`libsql.d.ts`), requiring Node.js 22.19+ with no TypeScript loader.
+- **Plain ESM with types:** Ships plain JavaScript ESM and TypeScript declarations (`libsql.d.ts`), requiring Node.js 24.20+ with no TypeScript loader.
 - **Batched writes:** Sends statement batches to remote libSQL servers in a single request and redacts auth tokens and custom headers from error diagnostics.
 
 For operator setup, see [Turso and libSQL](/storage#turso-and-libsql). For sharing Intercom across a team while keeping personal sessions local, see [Team and CI setup](/guides/team-setup). For all five SDK storage backends and `createAgentSessionRuntime()`, see [SDK storage backends](/sdk/storage).

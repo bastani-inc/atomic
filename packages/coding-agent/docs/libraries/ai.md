@@ -4,7 +4,7 @@ sidebarTitle: "@bastani/atomic-ai"
 description: "Unified LLM API for providers, models, auth, streaming, tool calling, images, classification, and thinking."
 ---
 
-`@bastani/atomic-ai` is the LLM library Atomic runs on (requires Node.js 22.19+). It ships in every Atomic release at Atomic's version, and you can install it independently (see [Installation](#installation)).
+`@bastani/atomic-ai` is the LLM library Atomic runs on (requires Node.js 24.20+). It ships in every Atomic release at Atomic's version, and you can install it independently (see [Installation](#installation)).
 
 Inside an Atomic extension, import it without installing it because the host provides it. See [Standalone libraries](/libraries) for how the packages fit together and for legacy package names that still resolve inside Atomic.
 
@@ -56,7 +56,7 @@ Inside an Atomic extension, import it without installing it because the host pro
 npm install @bastani/atomic-ai
 ```
 
-Requires Node.js 22.19 or newer.
+Requires Node.js 24.20 or newer.
 
 Key root and subpath exports:
 

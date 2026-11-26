@@ -2,12 +2,12 @@ import type { Credential } from "@bastani/atomic-ai";
 import {
 	type Api,
 	getApiProvider,
-	getModel,
 	registerApiProvider,
 	streamSimple,
 	unregisterApiProviders,
 } from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 
@@ -151,7 +151,7 @@ describeModelRegistry((context) => {
 					});
 					registry.unregisterProvider("unrelated-runtime");
 
-					const builtInModel = getModel("ant-ling", "Ling-2.6-1T");
+					const builtInModel = getFixtureModel("ant-ling", "Ling-2.6-1T");
 					expect(() => streamSimple(builtInModel, emptyContext)).toThrow("active-override");
 					expect(customDispatches).toBe(1);
 				} finally {

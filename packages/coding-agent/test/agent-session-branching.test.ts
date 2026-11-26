@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * Tests for AgentSession forking behavior.
  *
@@ -10,7 +11,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import {
@@ -45,7 +46,7 @@ describe.skipIf(!API_KEY)("AgentSession forking", () => {
 	});
 
 	async function createSession(noSession: boolean = false) {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		sessionManager = noSession ? SessionManager.inMemory(tempDir) : await SessionManager.create(tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: API_KEY! }));

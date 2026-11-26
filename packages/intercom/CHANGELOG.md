@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Fixed
+
+- On Unix, Intercom now connects to the broker when a relative agent directory expands to an absolute path too long for a Unix socket. The launcher and the detached broker now use the same fallback socket.
+
 ## [0.10.10] - 2026-11-24
 
 ### Fixed

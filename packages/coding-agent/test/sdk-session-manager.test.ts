@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -88,7 +88,7 @@ describe("createAgentSession session manager defaults", () => {
 	});
 
 	it("uses agentDir for the shared default SQLite database (#4441)", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
 		const { session, extensionsResult } = await createAgentSession({
@@ -131,7 +131,7 @@ describe("createAgentSession session manager defaults", () => {
 				cwd,
 				agentDir,
 				settingsManager,
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				builtins: NO_BUILTINS,
 			});
 			try {
@@ -150,7 +150,7 @@ describe("createAgentSession session manager defaults", () => {
 		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(join(agentDir, "workflows"), "not a directory");
 		await assert.rejects(
-			createAgentSession({ cwd, agentDir, model: getModel("anthropic", "claude-sonnet-4-5")! }),
+			createAgentSession({ cwd, agentDir, model: getFixtureModel("anthropic", "claude-sonnet-4-5")! }),
 			(error: Error) => {
 				assert.ok(error instanceof StorageUnavailableError);
 				assert.equal(error.adapter, "node-sqlite");
@@ -194,7 +194,7 @@ describe("createAgentSession session manager defaults", () => {
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir,
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				settingsManager: SettingsManager.inMemory({ sessions: { storage: { path: "ignored.sqlite" } } }),
 				sessionStore,
 				builtins: NO_BUILTINS,
@@ -263,7 +263,7 @@ describe("createAgentSession session manager defaults", () => {
 	});
 
 	it("keeps an explicit sessionManager override", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
 		const sessionManager = SessionManager.inMemory(cwd);
@@ -287,7 +287,7 @@ describe("createAgentSession session manager defaults", () => {
 	});
 
 	it("derives cwd from an explicit sessionManager when cwd is omitted", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
 		const sessionCwd = join(tempDir, "session-project");
@@ -322,7 +322,7 @@ describe("createAgentSession session manager defaults", () => {
 	});
 
 	it("exposes current session state to the built-in bash tool", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 
 		const { session } = await createAgentSession({
@@ -359,7 +359,7 @@ describe("createAgentSession session manager defaults", () => {
 	});
 
 	it("enables ask_user_question and todo by default", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();
 		const { session } = await createAgentSession({ cwd, agentDir, model: model!, builtins: NO_BUILTINS });
 

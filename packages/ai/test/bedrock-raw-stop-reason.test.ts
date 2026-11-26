@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 
 const bedrockMock = vi.hoisted(() => ({
 	stopReason: "end_turn" as string,
@@ -56,14 +57,14 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 });
 
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { Api, Model } from "../src/types.ts";
 
 beforeEach(() => {
 	bedrockMock.streamEvents = undefined;
 });
 
-const model = getModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
+const model = getFixtureModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
 const context = normalizeContext({
 	messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
 });

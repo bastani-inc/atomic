@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { clampMaxTokensToContext } from "../src/api/simple-options.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { AssistantMessage, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 const WINDOW = 1_048_576;
 
 function modelWith(maxTokens: number, contextWindow = WINDOW): Model<"openai-completions"> {
-	const { compat: _compat, ...base } = getModel("openai", "gpt-4o-mini")!;
+	const { compat: _compat, ...base } = getFixtureModel("openai", "gpt-4o-mini")!;
 	return { ...base, api: "openai-completions", contextWindow, maxTokens };
 }
 

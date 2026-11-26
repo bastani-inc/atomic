@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * `model: "auto"` runs the user's configured default model (`defaultProvider`/`defaultModel`) at the default thinking
  * level, or the current session's model when no default is configured, with no routing or decision-model request.
@@ -23,7 +24,6 @@ import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	getModel,
 	type Model,
 } from "@bastani/atomic-ai/compat";
 import { Compile } from "typebox/compile";
@@ -108,7 +108,7 @@ async function models(
 		readonly failure?: string;
 	} = {},
 ) {
-	const base: Model<"anthropic-messages"> = { ...getModel("anthropic", "claude-sonnet-4-5")!, reasoning: true };
+	const base: Model<"anthropic-messages"> = { ...getFixtureModel("anthropic", "claude-sonnet-4-5")!, reasoning: true };
 	const model = (provider: string, id: string): Model<"anthropic-messages"> => ({
 		...base,
 		provider,

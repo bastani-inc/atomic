@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamAzureOpenAIResponses } from "../src/api/azure-openai-responses.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
@@ -9,7 +10,7 @@ import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { stream as streamOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { clampThinkingLevel, getModel, getSupportedThinkingLevels, streamSimple } from "../src/compat.ts";
+import { clampThinkingLevel, getModels, getSupportedThinkingLevels, streamSimple } from "../src/compat.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -100,16 +101,16 @@ function thinkingFields(payload: WirePayload) {
 	};
 }
 
-const opus55 = getModel("anthropic", "claude-opus-5-5");
+const opus55 = getFixtureModel("anthropic", "claude-opus-5-5");
 const anthropicApiOpus55Fast = anthropicFastMode({ ...opus55, provider: "anthropic-api" });
 
 describe("thinking off on the Anthropic Messages API (#4545)", () => {
 	it.each([
-		["anthropic/claude-opus-4-8", getModel("anthropic", "claude-opus-4-8")],
-		["anthropic/claude-opus-5", getModel("anthropic", "claude-opus-5")],
-		["anthropic/claude-sonnet-4-5", getModel("anthropic", "claude-sonnet-4-5")],
-		["github-copilot/claude-haiku-4.5", getModel("github-copilot", "claude-haiku-4.5")],
-		["github-copilot/claude-opus-4.8", getModel("github-copilot", "claude-opus-4.8")],
+		["anthropic/claude-opus-4-8", getFixtureModel("anthropic", "claude-opus-4-8")],
+		["anthropic/claude-opus-5", getFixtureModel("anthropic", "claude-opus-5")],
+		["anthropic/claude-sonnet-4-5", getFixtureModel("anthropic", "claude-sonnet-4-5")],
+		["github-copilot/claude-haiku-4.5", getFixtureModel("github-copilot", "claude-haiku-4.5")],
+		["github-copilot/claude-opus-4.8", getFixtureModel("github-copilot", "claude-opus-4.8")],
 	])("sends thinking disabled with no effort for %s", async (_name, model) => {
 		const { payload, reply, offFallbacks } = await captureRequest(model);
 
@@ -121,8 +122,8 @@ describe("thinking off on the Anthropic Messages API (#4545)", () => {
 	});
 
 	it.each([
-		["anthropic/claude-opus-4-8-fast", anthropicFastMode(getModel("anthropic", "claude-opus-4-8"))],
-		["anthropic/claude-opus-5-fast", anthropicFastMode(getModel("anthropic", "claude-opus-5"))],
+		["anthropic/claude-opus-4-8-fast", anthropicFastMode(getFixtureModel("anthropic", "claude-opus-4-8"))],
+		["anthropic/claude-opus-5-fast", anthropicFastMode(getFixtureModel("anthropic", "claude-opus-5"))],
 	])("sends thinking disabled in fast mode for %s", async (_name, model) => {
 		const { payload, offFallbacks } = await captureRequest(model);
 
@@ -146,11 +147,11 @@ describe("thinking off on the Anthropic Messages API (#4545)", () => {
 
 	it.each([
 		["anthropic-api/claude-opus-5-5-fast", "low", anthropicApiOpus55Fast],
-		["anthropic/claude-sonnet-5-5", "low", getModel("anthropic", "claude-sonnet-5-5")],
-		["anthropic/claude-fable-5-1", "low", getModel("anthropic", "claude-fable-5-1")],
-		["anthropic/claude-fable-5", "minimal", getModel("anthropic", "claude-fable-5")],
-		["github-copilot/claude-opus-5.5", "low", getModel("github-copilot", "claude-opus-5.5")],
-		["github-copilot/claude-fable-5", "minimal", getModel("github-copilot", "claude-fable-5")],
+		["anthropic/claude-sonnet-5-5", "low", getFixtureModel("anthropic", "claude-sonnet-5-5")],
+		["anthropic/claude-fable-5-1", "low", getFixtureModel("anthropic", "claude-fable-5-1")],
+		["anthropic/claude-fable-5", "minimal", getFixtureModel("anthropic", "claude-fable-5")],
+		["github-copilot/claude-opus-5.5", "low", getFixtureModel("github-copilot", "claude-opus-5.5")],
+		["github-copilot/claude-fable-5", "minimal", getFixtureModel("github-copilot", "claude-fable-5")],
 	] as const)("sends %s the same thinking request as its lowest level, %s", async (_name, level, model) => {
 		const off = await captureRequest(model);
 		const lowest = await captureRequest(model, { reasoning: level });
@@ -163,7 +164,7 @@ describe("thinking off on the Anthropic Messages API (#4545)", () => {
 	});
 
 	it("drops temperature, as at its lowest level, when github-copilot/claude-fable-5 runs thinking off", async () => {
-		const model = getModel("github-copilot", "claude-fable-5");
+		const model = getFixtureModel("github-copilot", "claude-fable-5");
 		const off = await captureRequest(model, { temperature: 0.2 });
 		const low = await captureRequest(model, { temperature: 0.2, reasoning: "low" });
 
@@ -174,7 +175,7 @@ describe("thinking off on the Anthropic Messages API (#4545)", () => {
 
 	it("leaves a budget-thinking model whose metadata denies off without a thinking field", async () => {
 		const model: Model<"anthropic-messages"> = {
-			...getModel("github-copilot", "claude-haiku-4.5"),
+			...getFixtureModel("github-copilot", "claude-haiku-4.5"),
 			thinkingLevelMap: { off: null, minimal: null },
 		};
 
@@ -187,7 +188,7 @@ describe("thinking off on the Anthropic Messages API (#4545)", () => {
 
 	it("leaves the effort to the API when an adaptive request turns thinking on without one", async () => {
 		let payload: WirePayload | undefined;
-		await streamAnthropic(offline(getModel("github-copilot", "claude-opus-5.5")), context, {
+		await streamAnthropic(offline(getFixtureModel("github-copilot", "claude-opus-5.5")), context, {
 			apiKey: "test-key",
 			thinkingEnabled: true,
 			onPayload: (request) => {
@@ -219,7 +220,7 @@ describe("thinking off on the Anthropic Messages API (#4545)", () => {
 		["medium", "medium"],
 		["high", "high"],
 	] as const)("keeps %s reasoning on github-copilot/claude-opus-5.5 at effort %s", async (reasoning, effort) => {
-		const { payload, offFallbacks } = await captureRequest(getModel("github-copilot", "claude-opus-5.5"), {
+		const { payload, offFallbacks } = await captureRequest(getFixtureModel("github-copilot", "claude-opus-5.5"), {
 			reasoning,
 		});
 
@@ -231,11 +232,11 @@ describe("thinking off on the Anthropic Messages API (#4545)", () => {
 
 describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 	it.each([
-		["openai/gpt-6-luna", getModel("openai", "gpt-6-luna")],
-		["azure/gpt-6-luna", getModel("azure", "gpt-6-luna")],
-		["azure/gpt-5.1", getModel("azure", "gpt-5.1")],
-		["azure/gpt-5.5", getModel("azure", "gpt-5.5")],
-		["github-copilot/gpt-6-luna", getModel("github-copilot", "gpt-6-luna")],
+		["openai/gpt-6-luna", getFixtureModel("openai", "gpt-6-luna")],
+		["azure/gpt-6-luna", getFixtureModel("azure", "gpt-6-luna")],
+		["azure/gpt-5.1", getFixtureModel("azure", "gpt-5.1")],
+		["azure/gpt-5.5", getFixtureModel("azure", "gpt-5.5")],
+		["github-copilot/gpt-6-luna", getFixtureModel("github-copilot", "gpt-6-luna")],
 	])("sends the listed off effort none for %s", async (_name, model) => {
 		const { payload, offFallbacks } = await captureRequest(model);
 
@@ -244,15 +245,15 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 	});
 
 	it.each([
-		["openai/gpt-5", "minimal", "minimal", getModel("openai", "gpt-5")],
-		["openai/o3", "low", "low", getModel("openai", "o3")],
-		["xai/grok-4.5", "low", "low", getModel("xai", "grok-4.5")],
-		["github-copilot/gpt-6.1-sol", "low", "low", getModel("github-copilot", "gpt-6.1-sol")],
-		["github-copilot/gpt-5.3-codex", "minimal", "low", getModel("github-copilot", "gpt-5.3-codex")],
-		["azure/gpt-6.1-sol", "low", "low", getModel("azure", "gpt-6.1-sol")],
-		["azure/gpt-5", "minimal", "minimal", getModel("azure", "gpt-5")],
-		["openai-codex/gpt-6.1-sol", "minimal", "low", getModel("openai-codex", "gpt-6.1-sol")],
-		["openai-codex/gpt-6-astra", "low", "low", getModel("openai-codex", "gpt-6-astra")],
+		["openai/gpt-5", "minimal", "minimal", getFixtureModel("openai", "gpt-5")],
+		["openai/o3", "low", "low", getFixtureModel("openai", "o3")],
+		["xai/grok-4.5", "low", "low", getFixtureModel("xai", "grok-4.5")],
+		["github-copilot/gpt-6.1-sol", "low", "low", getFixtureModel("github-copilot", "gpt-6.1-sol")],
+		["github-copilot/gpt-5.3-codex", "minimal", "low", getFixtureModel("github-copilot", "gpt-5.3-codex")],
+		["azure/gpt-6.1-sol", "low", "low", getFixtureModel("azure", "gpt-6.1-sol")],
+		["azure/gpt-5", "minimal", "minimal", getFixtureModel("azure", "gpt-5")],
+		["openai-codex/gpt-6.1-sol", "minimal", "low", getFixtureModel("openai-codex", "gpt-6.1-sol")],
+		["openai-codex/gpt-6-astra", "low", "low", getFixtureModel("openai-codex", "gpt-6-astra")],
 	] as const)(
 		"sends %s its lowest level, %s, at effort %s when it cannot disable reasoning",
 		async (_name, level, effort, model) => {
@@ -268,7 +269,7 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 	);
 
 	it("keeps omitting reasoning for a model whose map lists no effort to fall back to", async () => {
-		const model = { ...getModel("openai", "gpt-6.1-sol"), thinkingLevelMap: { off: null, minimal: null } };
+		const model = { ...getFixtureModel("openai", "gpt-6.1-sol"), thinkingLevelMap: { off: null, minimal: null } };
 
 		const { payload, offFallbacks } = await captureRequest(model);
 
@@ -277,7 +278,10 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 	});
 
 	it("sends none to a reasoning model whose thinking map does not mention off", async () => {
-		const model: Model<"openai-responses"> = { ...getModel("openai", "gpt-6-luna"), thinkingLevelMap: undefined };
+		const model: Model<"openai-responses"> = {
+			...getFixtureModel("openai", "gpt-6-luna"),
+			thinkingLevelMap: undefined,
+		};
 
 		const { payload, offFallbacks } = await captureRequest(model);
 
@@ -287,7 +291,7 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 
 	it("sends no reasoning and records no fallback for a model whose map denies every level", async () => {
 		const model: Model<"openai-responses"> = {
-			...getModel("openai", "gpt-6-luna"),
+			...getFixtureModel("openai", "gpt-6-luna"),
 			thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: null },
 		};
 
@@ -298,9 +302,12 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 	});
 
 	it.each([
-		["openai", () => streamOpenAIResponses(offline(getModel("openai", "gpt-6.1-sol")), context)],
-		["azure", () => streamAzureOpenAIResponses(offline(getModel("azure", "gpt-6.1-sol")), context)],
-		["openai-codex", () => streamOpenAICodexResponses(offline(getModel("openai-codex", "gpt-6.1-sol")), context)],
+		["openai", () => streamOpenAIResponses(offline(getFixtureModel("openai", "gpt-6.1-sol")), context)],
+		["azure", () => streamAzureOpenAIResponses(offline(getFixtureModel("azure", "gpt-6.1-sol")), context)],
+		[
+			"openai-codex",
+			() => streamOpenAICodexResponses(offline(getFixtureModel("openai-codex", "gpt-6.1-sol")), context),
+		],
 	] as const)("reports the missing %s API key for a request made without options", async (provider, request) => {
 		const reply = await request().result();
 
@@ -309,7 +316,7 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 	});
 
 	it("sends a managed-effort model's lowest effort as its configuration update", async () => {
-		const model = getModel("openai", "gpt-6.1-sol");
+		const model = getFixtureModel("openai", "gpt-6.1-sol");
 		const off = await captureRequest(model);
 		const low = await captureRequest(model, { reasoning: "low" });
 
@@ -324,15 +331,19 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 		"runs explicit Codex effort %s at the lowest effort when off is unsupported",
 		async (reasoningEffort) => {
 			let payload: WirePayload | undefined;
-			const reply = await streamOpenAICodexResponses(offline(getModel("openai-codex", "gpt-6-astra")), context, {
-				apiKey: CODEX_TOKEN,
-				transport: "sse",
-				reasoningEffort,
-				onPayload: (request) => {
-					payload = request as WirePayload;
-					throw new Error("payload captured");
+			const reply = await streamOpenAICodexResponses(
+				offline(getFixtureModel("openai-codex", "gpt-6-astra")),
+				context,
+				{
+					apiKey: CODEX_TOKEN,
+					transport: "sse",
+					reasoningEffort,
+					onPayload: (request) => {
+						payload = request as WirePayload;
+						throw new Error("payload captured");
+					},
 				},
-			}).result();
+			).result();
 
 			expect(payload?.reasoning).toEqual({ effort: "low", summary: "auto" });
 			expect(reply.diagnostics).toContainEqual(offFallbackDiagnostic("low", "low"));
@@ -340,13 +351,13 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 	);
 
 	it.each([
-		["openai/gpt-5", "medium", "medium", getModel("openai", "gpt-5")],
-		["openai/o3", "high", "high", getModel("openai", "o3")],
-		["github-copilot/gpt-6-luna", "low", "low", getModel("github-copilot", "gpt-6-luna")],
-		["xai/grok-4.5", "xhigh", "xhigh", getModel("xai", "grok-4.5")],
-		["azure/gpt-6.1-sol", "medium", "medium", getModel("azure", "gpt-6.1-sol")],
-		["azure/gpt-5.1", "minimal", "minimal", getModel("azure", "gpt-5.1")],
-		["openai-codex/gpt-6.1-sol", "high", "high", getModel("openai-codex", "gpt-6.1-sol")],
+		["openai/gpt-5", "medium", "medium", getFixtureModel("openai", "gpt-5")],
+		["openai/o3", "high", "high", getFixtureModel("openai", "o3")],
+		["github-copilot/gpt-6-luna", "low", "low", getFixtureModel("github-copilot", "gpt-6-luna")],
+		["xai/grok-4.5", "xhigh", "xhigh", getFixtureModel("xai", "grok-4.5")],
+		["azure/gpt-6.1-sol", "medium", "medium", getFixtureModel("azure", "gpt-6.1-sol")],
+		["azure/gpt-5.1", "minimal", "minimal", getFixtureModel("azure", "gpt-5.1")],
+		["openai-codex/gpt-6.1-sol", "high", "high", getFixtureModel("openai-codex", "gpt-6.1-sol")],
 	] as const)("keeps %s at an explicit %s level, effort %s", async (_name, reasoning, effort, model) => {
 		const { payload, offFallbacks } = await captureRequest(model, { reasoning });
 
@@ -357,10 +368,15 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 
 describe("thinking off on the Google APIs (#4545)", () => {
 	it.each([
-		["google/gemini-3.8-flash", getModel("google", "gemini-3.8-flash"), "low", "LOW"],
-		["google-vertex/gemini-3.8-flash", getModel("google-vertex", "gemini-3.8-flash"), "low", "LOW"],
-		["google/gemini-3-flash-preview", getModel("google", "gemini-3-flash-preview"), "minimal", "MINIMAL"],
-		["google-vertex/gemini-3.1-pro-preview", getModel("google-vertex", "gemini-3.1-pro-preview"), "low", "LOW"],
+		["google/gemini-3.8-flash", getFixtureModel("google", "gemini-3.8-flash"), "low", "LOW"],
+		["google-vertex/gemini-3.8-flash", getFixtureModel("google-vertex", "gemini-3.8-flash"), "low", "LOW"],
+		["google/gemini-3-flash-preview", getFixtureModel("google", "gemini-3-flash-preview"), "minimal", "MINIMAL"],
+		[
+			"google-vertex/gemini-3.1-pro-preview",
+			getFixtureModel("google-vertex", "gemini-3.1-pro-preview"),
+			"low",
+			"LOW",
+		],
 	] as const)("records %s running thinking off at its lowest level", async (_name, model, level, apiLevel) => {
 		const { payload, offFallbacks } = await captureRequest(model);
 
@@ -369,8 +385,8 @@ describe("thinking off on the Google APIs (#4545)", () => {
 	});
 
 	it.each([
-		["google/gemini-2.5-flash", getModel("google", "gemini-2.5-flash")],
-		["google-vertex/gemini-2.5-flash", getModel("google-vertex", "gemini-2.5-flash")],
+		["google/gemini-2.5-flash", getFixtureModel("google", "gemini-2.5-flash")],
+		["google-vertex/gemini-2.5-flash", getFixtureModel("google-vertex", "gemini-2.5-flash")],
 	])("disables thinking with a zero budget for %s", async (_name, model) => {
 		const { payload, offFallbacks } = await captureRequest(model);
 
@@ -379,7 +395,7 @@ describe("thinking off on the Google APIs (#4545)", () => {
 	});
 
 	it("keeps the zero thinking budget for a level-based model whose map allows off", async () => {
-		const model = { ...getModel("google", "gemini-3.8-flash"), thinkingLevelMap: {} };
+		const model = { ...getFixtureModel("google", "gemini-3.8-flash"), thinkingLevelMap: {} };
 
 		const { payload, offFallbacks } = await captureRequest(model);
 
@@ -388,7 +404,7 @@ describe("thinking off on the Google APIs (#4545)", () => {
 	});
 
 	it("records no fallback for Google options that leave thinking unset", () => {
-		const model = getModel("google", "gemini-3.8-flash");
+		const model = getFixtureModel("google", "gemini-3.8-flash");
 		const reply = { diagnostics: undefined } as AssistantMessage;
 
 		recordGoogleThinkingOffFallback(model, undefined, reply, () => 128);
@@ -398,8 +414,8 @@ describe("thinking off on the Google APIs (#4545)", () => {
 	});
 
 	it.each([
-		["google/gemini-3.8-flash", getModel("google", "gemini-3.8-flash")],
-		["google-vertex/gemini-3.8-flash", getModel("google-vertex", "gemini-3.8-flash")],
+		["google/gemini-3.8-flash", getFixtureModel("google", "gemini-3.8-flash")],
+		["google-vertex/gemini-3.8-flash", getFixtureModel("google-vertex", "gemini-3.8-flash")],
 	])("keeps an explicit low level on %s without a fallback diagnostic", async (_name, model) => {
 		const { payload, offFallbacks } = await captureRequest(model, { reasoning: "low" });
 
@@ -424,93 +440,59 @@ async function captureStream(
 describe("thinking off on Bedrock Converse (#4552)", () => {
 	const claudeLowEffort = { thinking: { type: "adaptive" }, output_config: { effort: "low" } };
 
-	it.each([
-		["anthropic.claude-fable-5", "minimal", claudeLowEffort, getModel("amazon-bedrock", "anthropic.claude-fable-5")],
-		[
-			"us.anthropic.claude-fable-5",
-			"minimal",
-			claudeLowEffort,
-			getModel("amazon-bedrock", "us.anthropic.claude-fable-5"),
-		],
-		[
-			"global.anthropic.claude-fable-5",
-			"minimal",
-			claudeLowEffort,
-			getModel("amazon-bedrock", "global.anthropic.claude-fable-5"),
-		],
-		["anthropic.claude-fable-5-1", "low", claudeLowEffort, getModel("amazon-bedrock", "anthropic.claude-fable-5-1")],
-		[
-			"us.anthropic.claude-fable-5-1",
-			"low",
-			claudeLowEffort,
-			getModel("amazon-bedrock", "us.anthropic.claude-fable-5-1"),
-		],
-		[
-			"global.anthropic.claude-fable-5-1",
-			"low",
-			claudeLowEffort,
-			getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1"),
-		],
-		["openai.gpt-6-astra", "low", { reasoning_effort: "low" }, getModel("amazon-bedrock", "openai.gpt-6-astra")],
-		[
-			"us.openai.gpt-6-astra",
-			"low",
-			{ reasoning_effort: "low" },
-			getModel("amazon-bedrock", "us.openai.gpt-6-astra"),
-		],
-		[
-			"global.openai.gpt-6-astra",
-			"low",
-			{ reasoning_effort: "low" },
-			getModel("amazon-bedrock", "global.openai.gpt-6-astra"),
-		],
-		["openai.gpt-6.1-sol", "low", { reasoning: { effort: "low" } }, getModel("amazon-bedrock", "openai.gpt-6.1-sol")],
-		[
-			"us.openai.gpt-6.1-sol",
-			"low",
-			{ reasoning: { effort: "low" } },
-			getModel("amazon-bedrock", "us.openai.gpt-6.1-sol"),
-		],
-		[
-			"global.openai.gpt-6.1-sol",
-			"low",
-			{ reasoning: { effort: "low" } },
-			getModel("amazon-bedrock", "global.openai.gpt-6.1-sol"),
-		],
-	] as const)(
-		"sends amazon-bedrock/%s its lowest level, %s, when it cannot disable thinking",
-		async (_id, level, fields, model) => {
-			const off = await captureRequest(model);
-			const lowest = await captureRequest(model, { reasoning: level });
+	function bedrockProfiles(id: string) {
+		return getModels("amazon-bedrock").filter((model) => model.id === id || model.id.endsWith(`.${id}`));
+	}
 
-			expect(off.payload.additionalModelRequestFields).toMatchObject(fields);
-			expect(off.payload.additionalModelRequestFields).toEqual(lowest.payload.additionalModelRequestFields);
-			expect(off.offFallbacks).toEqual([offFallbackDiagnostic(level, "low")]);
-			expect(lowest.offFallbacks).toEqual([]);
+	it.for([
+		["anthropic.claude-fable-5", "minimal", claudeLowEffort],
+		["anthropic.claude-fable-5-1", "low", claudeLowEffort],
+		["openai.gpt-6-astra", "low", { reasoning_effort: "low" }],
+		["openai.gpt-6.1-sol", "low", { reasoning: { effort: "low" } }],
+	] as const)(
+		"sends Bedrock %s profiles their lowest level, %s, when they cannot disable thinking",
+		async ([id, level, fields], { skip }) => {
+			const profiles = bedrockProfiles(id);
+			if (profiles.length === 0) return skip(`The generated Bedrock catalog has no ${id} profiles`);
+			for (const model of profiles) {
+				const off = await captureRequest(model);
+				const lowest = await captureRequest(model, { reasoning: level });
+
+				expect(off.payload.additionalModelRequestFields, model.id).toMatchObject(fields);
+				expect(off.payload.additionalModelRequestFields, model.id).toEqual(
+					lowest.payload.additionalModelRequestFields,
+				);
+				expect(off.offFallbacks, model.id).toEqual([offFallbackDiagnostic(level, "low")]);
+				expect(lowest.offFallbacks, model.id).toEqual([]);
+			}
 		},
 	);
 
-	it.each([
-		[
-			"global.openai.gpt-6-sol",
-			{ reasoning: { effort: "none" } },
-			getModel("amazon-bedrock", "global.openai.gpt-6-sol"),
-		],
-		["global.openai.gpt-5.6-sol", undefined, getModel("amazon-bedrock", "global.openai.gpt-5.6-sol")],
-		["us.anthropic.claude-opus-4-8", undefined, getModel("amazon-bedrock", "us.anthropic.claude-opus-4-8")],
+	it.for([
+		["openai.gpt-6-sol", { reasoning: { effort: "none" } }],
+		["openai.gpt-5.6-sol", undefined],
+		["anthropic.claude-opus-4-8", undefined],
 	] as const)(
-		"keeps the off request of amazon-bedrock/%s, which can turn thinking off",
-		async (_id, fields, model) => {
-			const { payload, offFallbacks } = await captureRequest(model);
+		"keeps the off request of Bedrock %s profiles that can turn thinking off",
+		async ([id, fields], { skip }) => {
+			const profiles = bedrockProfiles(id);
+			if (profiles.length === 0) return skip(`The generated Bedrock catalog has no ${id} profiles`);
+			for (const model of profiles) {
+				const { payload, offFallbacks } = await captureRequest(model);
 
-			expect(payload.additionalModelRequestFields).toEqual(fields);
-			expect(offFallbacks).toEqual([]);
+				expect(payload.additionalModelRequestFields, model.id).toEqual(fields);
+				expect(offFallbacks, model.id).toEqual([]);
+			}
 		},
 	);
 
-	it("leaves a budget-thinking Claude model whose map denies off without thinking fields, as the Anthropic API does", async () => {
+	it("leaves a budget-thinking Claude model whose map denies off without thinking fields, as the Anthropic API does", async ({
+		skip,
+	}) => {
+		const profile = bedrockProfiles("anthropic.claude-sonnet-4-5-20250929-v1:0")[0];
+		if (!profile) return skip("The generated Bedrock catalog has no Claude Sonnet 4.5 profiles");
 		const model: Model<"bedrock-converse-stream"> = {
-			...getModel("amazon-bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+			...profile,
 			thinkingLevelMap: { off: null },
 		};
 
@@ -523,7 +505,7 @@ describe("thinking off on Bedrock Converse (#4552)", () => {
 
 	it("records no fallback for a model whose lowest level sends no thinking fields", async () => {
 		const model: Model<"bedrock-converse-stream"> = {
-			...getModel("amazon-bedrock", "deepseek.v3.2"),
+			...getFixtureModel("amazon-bedrock", "deepseek.v3.2"),
 			thinkingLevelMap: { off: null },
 		};
 
@@ -533,9 +515,11 @@ describe("thinking off on Bedrock Converse (#4552)", () => {
 		expect(offFallbacks).toEqual([]);
 	});
 
-	it("runs a low-level request without a reasoning level at the lowest level", async () => {
+	it("runs a low-level request without a reasoning level at the lowest level", async ({ skip }) => {
+		const profile = bedrockProfiles("openai.gpt-6-astra")[0];
+		if (!profile) return skip("The generated Bedrock catalog has no GPT-6 Astra profiles");
 		const { payload, offFallbacks } = await captureStream((onPayload) =>
-			streamBedrock(offline(getModel("amazon-bedrock", "us.openai.gpt-6-astra")), context, {
+			streamBedrock(offline(profile), context, {
 				apiKey: "test-key",
 				onPayload,
 			}),
@@ -545,18 +529,17 @@ describe("thinking off on Bedrock Converse (#4552)", () => {
 		expect(offFallbacks).toEqual([offFallbackDiagnostic("low", "low")]);
 	});
 
-	it.each([
-		["low", "low"],
-		["medium", "medium"],
-		["high", "high"],
-	] as const)("keeps an explicit %s level on Bedrock GPT-6 Astra at effort %s", async (reasoning, effort) => {
-		const { payload, offFallbacks } = await captureRequest(getModel("amazon-bedrock", "us.openai.gpt-6-astra"), {
-			reasoning,
-		});
+	it.for(["low", "medium", "high"] as const)(
+		"keeps an explicit %s level on Bedrock GPT-6 Astra",
+		async (reasoning, { skip }) => {
+			const profile = bedrockProfiles("openai.gpt-6-astra")[0];
+			if (!profile) return skip("The generated Bedrock catalog has no GPT-6 Astra profiles");
+			const { payload, offFallbacks } = await captureRequest(profile, { reasoning });
 
-		expect(payload.additionalModelRequestFields).toEqual({ reasoning_effort: effort });
-		expect(offFallbacks).toEqual([]);
-	});
+			expect(payload.additionalModelRequestFields).toEqual({ reasoning_effort: reasoning });
+			expect(offFallbacks).toEqual([]);
+		},
+	);
 });
 
 describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
@@ -565,60 +548,65 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 			"openrouter/openai/gpt-5.1-codex",
 			"low",
 			{ reasoning: { effort: "low" } },
-			getModel("openrouter", "openai/gpt-5.1-codex"),
+			getFixtureModel("openrouter", "openai/gpt-5.1-codex"),
 		],
 		[
 			"openrouter/openai/gpt-5.2-pro",
 			"medium",
 			{ reasoning: { effort: "medium" } },
-			getModel("openrouter", "openai/gpt-5.2-pro"),
+			getFixtureModel("openrouter", "openai/gpt-5.2-pro"),
 		],
 		[
 			"openrouter/openai/gpt-5-pro",
 			"high",
 			{ reasoning: { effort: "high" } },
-			getModel("openrouter", "openai/gpt-5-pro"),
+			getFixtureModel("openrouter", "openai/gpt-5-pro"),
 		],
 		[
 			"openrouter/google/gemini-3.5-flash",
 			"minimal",
 			{ reasoning: { effort: "minimal" } },
-			getModel("openrouter", "google/gemini-3.5-flash"),
+			getFixtureModel("openrouter", "google/gemini-3.5-flash"),
 		],
-		["ant-ling/Ring-2.6-1T", "high", { reasoning: { effort: "high" } }, getModel("ant-ling", "Ring-2.6-1T")],
+		["ant-ling/Ring-2.6-1T", "high", { reasoning: { effort: "high" } }, getFixtureModel("ant-ling", "Ring-2.6-1T")],
 		[
 			"zai/glm-5.3",
 			"low",
 			{ thinking: { type: "enabled", clear_thinking: false }, reasoning_effort: "low" },
-			getModel("zai", "glm-5.3"),
+			getFixtureModel("zai", "glm-5.3"),
 		],
 		[
 			"qwen-token-plan/glm-5.3",
 			"low",
 			{ enable_thinking: true, reasoning_effort: "low" },
-			getModel("qwen-token-plan", "glm-5.3"),
+			getFixtureModel("qwen-token-plan", "glm-5.3"),
 		],
 		[
 			"opencode-go/deepseek-v4.1-flash",
 			"low",
 			{ thinking: { type: "enabled" }, reasoning_effort: "low" },
-			getModel("opencode-go", "deepseek-v4.1-flash"),
+			getFixtureModel("opencode-go", "deepseek-v4.1-flash"),
 		],
-		["baseten/zai-org/GLM-5.3", "low", { reasoning_effort: "low" }, getModel("baseten", "zai-org/GLM-5.3")],
-		["cerebras/gpt-oss-120b", "low", { reasoning_effort: "low" }, getModel("cerebras", "gpt-oss-120b")],
+		["baseten/zai-org/GLM-5.3", "low", { reasoning_effort: "low" }, getFixtureModel("baseten", "zai-org/GLM-5.3")],
+		["cerebras/gpt-oss-120b", "low", { reasoning_effort: "low" }, getFixtureModel("cerebras", "gpt-oss-120b")],
 		[
 			"github-copilot/gemini-3.8-flash",
 			"low",
 			{ reasoning_effort: "low" },
-			getModel("github-copilot", "gemini-3.8-flash"),
+			getFixtureModel("github-copilot", "gemini-3.8-flash"),
 		],
-		["opencode-go/kimi-k3", "max", { reasoning_effort: "max" }, getModel("opencode-go", "kimi-k3")],
-		["openrouter/openai/o3", "minimal", { reasoning: { effort: "minimal" } }, getModel("openrouter", "openai/o3")],
+		["opencode-go/kimi-k3", "max", { reasoning_effort: "max" }, getFixtureModel("opencode-go", "kimi-k3")],
+		[
+			"openrouter/openai/o3",
+			"minimal",
+			{ reasoning: { effort: "minimal" } },
+			getFixtureModel("openrouter", "openai/o3"),
+		],
 		[
 			"openrouter/google/gemini-2.5-pro",
 			"minimal",
 			{ reasoning: { effort: "minimal" } },
-			getModel("openrouter", "google/gemini-2.5-pro"),
+			getFixtureModel("openrouter", "google/gemini-2.5-pro"),
 		],
 	] as const)(
 		"sends %s its lowest level, %s, when it cannot disable thinking",
@@ -634,10 +622,10 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 	);
 
 	it.each([
-		["moonshotai/kimi-k2.7-code", getModel("moonshotai", "kimi-k2.7-code")],
+		["moonshotai/kimi-k2.7-code", getFixtureModel("moonshotai", "kimi-k2.7-code")],
 		[
 			"a model on the default format whose map lists no effort",
-			{ ...getModel("cerebras", "gpt-oss-120b"), thinkingLevelMap: { off: null } },
+			{ ...getFixtureModel("cerebras", "gpt-oss-120b"), thinkingLevelMap: { off: null } },
 		],
 	])("keeps omitting reasoning for %s, whose map lists no effort to fall back to", async (_name, model) => {
 		const { payload, offFallbacks } = await captureRequest(model);
@@ -653,7 +641,7 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 		thinkingLevelMap: ThinkingLevelMap,
 		compat: OpenAICompletionsCompat = {},
 	): Model<"openai-completions"> {
-		const model = getModel("cerebras", "gpt-oss-120b");
+		const model = getFixtureModel("cerebras", "gpt-oss-120b");
 		return { ...model, thinkingLevelMap, compat: { ...model.compat, ...compat, thinkingFormat } };
 	}
 
@@ -681,7 +669,7 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 	);
 
 	it("sends an OpenRouter model the effort its map gives its lowest level", async () => {
-		const model = { ...getModel("openrouter", "openai/o3"), thinkingLevelMap: { off: null, minimal: "low" } };
+		const model = { ...getFixtureModel("openrouter", "openai/o3"), thinkingLevelMap: { off: null, minimal: "low" } };
 
 		const off = await captureRequest(model);
 		const minimal = await captureRequest(model, { reasoning: "minimal" });
@@ -692,7 +680,7 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 	});
 
 	it("keeps sending the off effort to a model that can disable reasoning", async () => {
-		const { payload, offFallbacks } = await captureRequest(getModel("openrouter", "openai/gpt-5.1"));
+		const { payload, offFallbacks } = await captureRequest(getFixtureModel("openrouter", "openai/gpt-5.1"));
 
 		expect(payload.reasoning).toEqual({ effort: "none" });
 		expect(offFallbacks).toEqual([]);
@@ -700,7 +688,7 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 
 	it("runs a low-level request without a reasoning effort at the lowest listed level", async () => {
 		const { payload, offFallbacks } = await captureStream((onPayload) =>
-			streamOpenAICompletions(offline(getModel("openrouter", "openai/gpt-5.1-codex")), context, {
+			streamOpenAICompletions(offline(getFixtureModel("openrouter", "openai/gpt-5.1-codex")), context, {
 				apiKey: "test-key",
 				onPayload,
 			}),
@@ -716,7 +704,7 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 	] as const)(
 		"keeps an explicit %s level on openrouter/openai/gpt-5.1-codex at effort %s",
 		async (reasoning, effort) => {
-			const { payload, offFallbacks } = await captureRequest(getModel("openrouter", "openai/gpt-5.1-codex"), {
+			const { payload, offFallbacks } = await captureRequest(getFixtureModel("openrouter", "openai/gpt-5.1-codex"), {
 				reasoning,
 			});
 
@@ -728,10 +716,10 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 
 describe("thinking off on the Mistral API (#4552)", () => {
 	it.each([
-		["mistral/mistral-large-4", getModel("mistral", "mistral-large-4")],
-		["mistral/mistral-large-latest", getModel("mistral", "mistral-large-latest")],
-		["mistral/zai-glm-5-3", getModel("mistral", "zai-glm-5-3")],
-		["mistral/zai-glm-5-3-flash", getModel("mistral", "zai-glm-5-3-flash")],
+		["mistral/mistral-large-4", getFixtureModel("mistral", "mistral-large-4")],
+		["mistral/mistral-large-latest", getFixtureModel("mistral", "mistral-large-latest")],
+		["mistral/zai-glm-5-3", getFixtureModel("mistral", "zai-glm-5-3")],
+		["mistral/zai-glm-5-3-flash", getFixtureModel("mistral", "zai-glm-5-3-flash")],
 	])("sends %s its lowest listed level, low, when it cannot disable thinking", async (_name, model) => {
 		const off = await captureRequest(model);
 		const low = await captureRequest(model, { reasoning: "low" });
@@ -743,14 +731,14 @@ describe("thinking off on the Mistral API (#4552)", () => {
 	});
 
 	it("keeps sending the off effort to a model that can disable reasoning", async () => {
-		const { payload, offFallbacks } = await captureRequest(getModel("mistral", "mistral-medium-3.5"));
+		const { payload, offFallbacks } = await captureRequest(getFixtureModel("mistral", "mistral-medium-3.5"));
 
 		expect(payload.reasoningEffort).toBe("none");
 		expect(offFallbacks).toEqual([]);
 	});
 
 	it("keeps a prompt-mode reasoning model's off request without reasoning fields", async () => {
-		const { payload, offFallbacks } = await captureRequest(getModel("mistral", "magistral-medium-latest"));
+		const { payload, offFallbacks } = await captureRequest(getFixtureModel("mistral", "magistral-medium-latest"));
 
 		expect(payload).not.toHaveProperty("promptMode");
 		expect(payload).not.toHaveProperty("reasoningEffort");
@@ -759,7 +747,10 @@ describe("thinking off on the Mistral API (#4552)", () => {
 
 	it("runs a low-level request without a reasoning setting at the lowest listed level", async () => {
 		const { payload, offFallbacks } = await captureStream((onPayload) =>
-			streamMistral(offline(getModel("mistral", "mistral-large-4")), context, { apiKey: "test-key", onPayload }),
+			streamMistral(offline(getFixtureModel("mistral", "mistral-large-4")), context, {
+				apiKey: "test-key",
+				onPayload,
+			}),
 		);
 
 		expect(payload.reasoningEffort).toBe("low");
@@ -768,7 +759,7 @@ describe("thinking off on the Mistral API (#4552)", () => {
 
 	it("leaves a low-level request that sets a prompt mode unchanged", async () => {
 		const { payload, offFallbacks } = await captureStream((onPayload) =>
-			streamMistral(offline(getModel("mistral", "mistral-large-4")), context, {
+			streamMistral(offline(getFixtureModel("mistral", "mistral-large-4")), context, {
 				apiKey: "test-key",
 				promptMode: "reasoning",
 				onPayload,
@@ -783,15 +774,15 @@ describe("thinking off on the Mistral API (#4552)", () => {
 
 describe("thinking off on Azure OpenAI deployments (#4552)", () => {
 	it.each([
-		["azure/gpt-5-pro", "high", getModel("azure", "gpt-5-pro")],
-		["azure/gpt-5.2-pro", "medium", getModel("azure", "gpt-5.2-pro")],
-		["azure/gpt-5.4-pro", "medium", getModel("azure", "gpt-5.4-pro")],
-		["azure/gpt-5.5-pro", "medium", getModel("azure", "gpt-5.5-pro")],
-		["azure/gpt-6.1-sol", "low", getModel("azure", "gpt-6.1-sol")],
-		["azure/gpt-6.2-astra", "low", getModel("azure", "gpt-6.2-astra")],
-		["azure/gpt-6.2-sol", "low", getModel("azure", "gpt-6.2-sol")],
-		["azure/o3", "low", getModel("azure", "o3")],
-		["azure/o3-pro", "low", getModel("azure", "o3-pro")],
+		["azure/gpt-5-pro", "high", getFixtureModel("azure", "gpt-5-pro")],
+		["azure/gpt-5.2-pro", "medium", getFixtureModel("azure", "gpt-5.2-pro")],
+		["azure/gpt-5.4-pro", "medium", getFixtureModel("azure", "gpt-5.4-pro")],
+		["azure/gpt-5.5-pro", "medium", getFixtureModel("azure", "gpt-5.5-pro")],
+		["azure/gpt-6.1-sol", "low", getFixtureModel("azure", "gpt-6.1-sol")],
+		["azure/gpt-6.2-astra", "low", getFixtureModel("azure", "gpt-6.2-astra")],
+		["azure/gpt-6.2-sol", "low", getFixtureModel("azure", "gpt-6.2-sol")],
+		["azure/o3", "low", getFixtureModel("azure", "o3")],
+		["azure/o3-pro", "low", getFixtureModel("azure", "o3-pro")],
 	] as const)("sends %s its lowest listed level, %s, instead of none or no effort", async (_name, level, model) => {
 		const off = await captureRequest(model);
 		const lowest = await captureRequest(model, { reasoning: level });
@@ -804,10 +795,10 @@ describe("thinking off on Azure OpenAI deployments (#4552)", () => {
 	});
 
 	it.each([
-		["azure/o3", "low", getModel("azure", "o3")],
-		["azure/o3", "high", getModel("azure", "o3")],
-		["azure/gpt-5-pro", "high", getModel("azure", "gpt-5-pro")],
-		["azure/gpt-5.2-pro", "xhigh", getModel("azure", "gpt-5.2-pro")],
+		["azure/o3", "low", getFixtureModel("azure", "o3")],
+		["azure/o3", "high", getFixtureModel("azure", "o3")],
+		["azure/gpt-5-pro", "high", getFixtureModel("azure", "gpt-5-pro")],
+		["azure/gpt-5.2-pro", "xhigh", getFixtureModel("azure", "gpt-5.2-pro")],
 	] as const)("keeps %s at an explicit %s level", async (_name, reasoning, model) => {
 		const { payload, offFallbacks } = await captureRequest(model, { reasoning });
 
@@ -816,7 +807,7 @@ describe("thinking off on Azure OpenAI deployments (#4552)", () => {
 	});
 
 	it("falls back past unlisted levels to the lowest level whose effort the map lists", async () => {
-		const model = { ...getModel("openai", "gpt-6.1-sol"), thinkingLevelMap: { off: null, medium: "medium" } };
+		const model = { ...getFixtureModel("openai", "gpt-6.1-sol"), thinkingLevelMap: { off: null, medium: "medium" } };
 
 		const { payload, offFallbacks } = await captureRequest(model);
 
@@ -830,56 +821,56 @@ const untypedThinkingOff = "off" as ModelThinkingLevel as ThinkingLevel;
 const azureDeploymentsThatCannotDisableThinking = [
 	{
 		name: "azure/gpt-5-pro",
-		model: getModel("azure", "gpt-5-pro"),
-		openAIModel: getModel("openai", "gpt-5-pro"),
+		model: getFixtureModel("azure", "gpt-5-pro"),
+		openAIModel: getFixtureModel("openai", "gpt-5-pro"),
 		levels: ["high"],
 	},
 	{
 		name: "azure/gpt-5.2-pro",
-		model: getModel("azure", "gpt-5.2-pro"),
-		openAIModel: getModel("openai", "gpt-5.2-pro"),
+		model: getFixtureModel("azure", "gpt-5.2-pro"),
+		openAIModel: getFixtureModel("openai", "gpt-5.2-pro"),
 		levels: ["medium", "high", "xhigh"],
 	},
 	{
 		name: "azure/gpt-5.4-pro",
-		model: getModel("azure", "gpt-5.4-pro"),
-		openAIModel: getModel("openai", "gpt-5.4-pro"),
+		model: getFixtureModel("azure", "gpt-5.4-pro"),
+		openAIModel: getFixtureModel("openai", "gpt-5.4-pro"),
 		levels: ["medium", "high", "xhigh"],
 	},
 	{
 		name: "azure/gpt-5.5-pro",
-		model: getModel("azure", "gpt-5.5-pro"),
-		openAIModel: getModel("openai", "gpt-5.5-pro"),
+		model: getFixtureModel("azure", "gpt-5.5-pro"),
+		openAIModel: getFixtureModel("openai", "gpt-5.5-pro"),
 		levels: ["medium", "high", "xhigh"],
 	},
 	{
 		name: "azure/gpt-6.1-sol",
-		model: getModel("azure", "gpt-6.1-sol"),
-		openAIModel: getModel("openai", "gpt-6.1-sol"),
+		model: getFixtureModel("azure", "gpt-6.1-sol"),
+		openAIModel: getFixtureModel("openai", "gpt-6.1-sol"),
 		levels: ["low", "medium", "high", "xhigh", "max"],
 	},
 	{
 		name: "azure/gpt-6.2-astra",
-		model: getModel("azure", "gpt-6.2-astra"),
-		openAIModel: getModel("openai", "gpt-6.2-astra"),
+		model: getFixtureModel("azure", "gpt-6.2-astra"),
+		openAIModel: getFixtureModel("openai", "gpt-6.2-astra"),
 		levels: ["low", "medium", "high", "xhigh", "max"],
 	},
 	{
 		name: "azure/gpt-6.2-sol",
-		model: getModel("azure", "gpt-6.2-sol"),
-		openAIModel: getModel("openai", "gpt-6.2-sol"),
+		model: getFixtureModel("azure", "gpt-6.2-sol"),
+		openAIModel: getFixtureModel("openai", "gpt-6.2-sol"),
 		levels: ["low", "medium", "high", "xhigh", "max"],
 	},
 	{
 		name: "azure/o3",
-		model: getModel("azure", "o3"),
-		openAIModel: getModel("openai", "o3"),
+		model: getFixtureModel("azure", "o3"),
+		openAIModel: getFixtureModel("openai", "o3"),
 		levels: ["low", "medium", "high"],
 	},
 	{
 		name: "azure/o3-pro",
-		model: getModel("azure", "o3-pro"),
-		openAIModel: getModel("openai", "o3-pro"),
+		model: getFixtureModel("azure", "o3-pro"),
+		openAIModel: getFixtureModel("openai", "o3-pro"),
 		levels: ["low", "medium", "high"],
 	},
 ] as const;
@@ -921,40 +912,45 @@ describe("thinking levels on Azure deployments that cannot disable thinking (#45
 	);
 
 	it("gives the Azure catalog the OpenAI masks below the lowest accepted effort (#4556)", () => {
-		expect(getModel("azure", "o3").thinkingLevelMap).toEqual({
+		expect(getFixtureModel("azure", "o3").thinkingLevelMap).toEqual({
 			off: null,
 			minimal: null,
 			low: "low",
 			medium: "medium",
 			high: "high",
 		});
-		expect(getModel("azure", "gpt-5-pro").thinkingLevelMap).toEqual({
+		expect(getFixtureModel("azure", "gpt-5-pro").thinkingLevelMap).toEqual({
 			off: null,
 			minimal: null,
 			low: null,
 			medium: null,
 			high: "high",
 		});
-		expect(getModel("azure", "gpt-5.1").thinkingLevelMap).not.toHaveProperty("minimal");
-		expect(getSupportedThinkingLevels(getModel("azure", "gpt-5"))).toEqual(["minimal", "low", "medium", "high"]);
+		expect(getFixtureModel("azure", "gpt-5.1").thinkingLevelMap).not.toHaveProperty("minimal");
+		expect(getSupportedThinkingLevels(getFixtureModel("azure", "gpt-5"))).toEqual([
+			"minimal",
+			"low",
+			"medium",
+			"high",
+		]);
 	});
 });
 
 describe("thinking off on budget-thinking Gemini models (#4552)", () => {
 	it.each([
-		["google/gemini-2.5-pro", "minimal", 128, getModel("google", "gemini-2.5-pro")],
-		["google-vertex/gemini-2.5-pro", "minimal", 128, getModel("google-vertex", "gemini-2.5-pro")],
+		["google/gemini-2.5-pro", "minimal", 128, getFixtureModel("google", "gemini-2.5-pro")],
+		["google-vertex/gemini-2.5-pro", "minimal", 128, getFixtureModel("google-vertex", "gemini-2.5-pro")],
 		[
 			"google/gemini-2.5-flash-lite whose map denies off",
 			"minimal",
 			512,
-			{ ...getModel("google", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
+			{ ...getFixtureModel("google", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
 		],
 		[
 			"google-vertex/gemini-2.5-flash-lite whose map denies off",
 			"minimal",
 			128,
-			{ ...getModel("google-vertex", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
+			{ ...getFixtureModel("google-vertex", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
 		],
 	] as const)("runs %s at its lowest level's budget, %s, %d tokens", async (_name, level, budget, model) => {
 		const off = await captureRequest(model);
@@ -967,23 +963,25 @@ describe("thinking off on budget-thinking Gemini models (#4552)", () => {
 	});
 
 	it("denies off for Gemini 2.5 Pro only, in the catalog", () => {
-		expect(getModel("google", "gemini-2.5-pro").thinkingLevelMap).toEqual({ off: null });
-		expect(getModel("google-vertex", "gemini-2.5-pro").thinkingLevelMap).toEqual({ off: null });
-		expect(getModel("google", "gemini-2.5-flash").thinkingLevelMap).toBeUndefined();
+		expect(getFixtureModel("google", "gemini-2.5-pro").thinkingLevelMap).toEqual({ off: null });
+		expect(getFixtureModel("google-vertex", "gemini-2.5-pro").thinkingLevelMap).toEqual({ off: null });
+		expect(getFixtureModel("google", "gemini-2.5-flash").thinkingLevelMap).toBeUndefined();
 	});
 
 	it.each([
 		["low", 2048],
 		["high", 32768],
 	] as const)("keeps an explicit %s level on google/gemini-2.5-pro at budget %d", async (reasoning, budget) => {
-		const { payload, offFallbacks } = await captureRequest(getModel("google", "gemini-2.5-pro"), { reasoning });
+		const { payload, offFallbacks } = await captureRequest(getFixtureModel("google", "gemini-2.5-pro"), {
+			reasoning,
+		});
 
 		expect(payload.config?.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: budget });
 		expect(offFallbacks).toEqual([]);
 	});
 });
 
-const googleProLatest = getModel("google", "gemini-pro-latest");
+const googleProLatest = getFixtureModel("google", "gemini-pro-latest");
 const vertexProLatest: Model<"google-vertex"> = { ...googleProLatest, api: "google-vertex", provider: "google-vertex" };
 
 describe("thinking levels on gemini-pro-latest (#4556)", () => {
@@ -1036,27 +1034,27 @@ describe("thinking off with custom thinkingBudgets on budget-thinking Gemini mod
 	const thinkingBudgets = { minimal: 4000, low: 5000, medium: 6000, high: 7000 } as const;
 
 	it.each([
-		["google/gemini-2.5-pro", "minimal", getModel("google", "gemini-2.5-pro")],
-		["google-vertex/gemini-2.5-pro", "minimal", getModel("google-vertex", "gemini-2.5-pro")],
+		["google/gemini-2.5-pro", "minimal", getFixtureModel("google", "gemini-2.5-pro")],
+		["google-vertex/gemini-2.5-pro", "minimal", getFixtureModel("google-vertex", "gemini-2.5-pro")],
 		[
 			"google/gemini-2.5-flash-lite whose map denies off",
 			"minimal",
-			{ ...getModel("google", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
+			{ ...getFixtureModel("google", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
 		],
 		[
 			"google-vertex/gemini-2.5-flash-lite whose map denies off",
 			"minimal",
-			{ ...getModel("google-vertex", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
+			{ ...getFixtureModel("google-vertex", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
 		],
 		[
 			"google/gemini-2.5-pro whose map also denies minimal",
 			"low",
-			{ ...getModel("google", "gemini-2.5-pro"), thinkingLevelMap: { off: null, minimal: null } },
+			{ ...getFixtureModel("google", "gemini-2.5-pro"), thinkingLevelMap: { off: null, minimal: null } },
 		],
 		[
 			"google-vertex/gemini-2.5-pro whose map also denies minimal",
 			"low",
-			{ ...getModel("google-vertex", "gemini-2.5-pro"), thinkingLevelMap: { off: null, minimal: null } },
+			{ ...getFixtureModel("google-vertex", "gemini-2.5-pro"), thinkingLevelMap: { off: null, minimal: null } },
 		],
 	] as const)("runs %s at the custom budget of its lowest level, %s (#4556)", async (_name, level, model) => {
 		const off = await captureRequest(model, { thinkingBudgets });
@@ -1076,7 +1074,7 @@ describe("thinking off with custom thinkingBudgets on budget-thinking Gemini mod
 		[
 			"google",
 			(onPayload: (payload: unknown) => never) =>
-				streamGoogle(offline(getModel("google", "gemini-2.5-pro")), context, {
+				streamGoogle(offline(getFixtureModel("google", "gemini-2.5-pro")), context, {
 					apiKey: "test-key",
 					thinking: { enabled: false },
 					thinkingBudgets,
@@ -1086,7 +1084,7 @@ describe("thinking off with custom thinkingBudgets on budget-thinking Gemini mod
 		[
 			"google-vertex",
 			(onPayload: (payload: unknown) => never) =>
-				streamVertex(offline(getModel("google-vertex", "gemini-2.5-pro")), context, {
+				streamVertex(offline(getFixtureModel("google-vertex", "gemini-2.5-pro")), context, {
 					apiKey: "test-key",
 					thinking: { enabled: false },
 					thinkingBudgets,
@@ -1107,7 +1105,10 @@ describe("thinking off with custom thinkingBudgets on budget-thinking Gemini mod
 		vi.stubEnv("GOOGLE_CLOUD_PROJECT", "");
 		vi.stubEnv("GCLOUD_PROJECT", "");
 		try {
-			const reply = await streamSimpleVertex(offline(getModel("google-vertex", "gemini-2.5-pro")), context).result();
+			const reply = await streamSimpleVertex(
+				offline(getFixtureModel("google-vertex", "gemini-2.5-pro")),
+				context,
+			).result();
 
 			expect(reply.stopReason).toBe("error");
 			expect(reply.errorMessage).toContain("Vertex AI requires a project ID");
@@ -1117,8 +1118,8 @@ describe("thinking off with custom thinkingBudgets on budget-thinking Gemini mod
 	});
 
 	it.each([
-		["google/gemini-2.5-flash", getModel("google", "gemini-2.5-flash")],
-		["google-vertex/gemini-2.5-flash", getModel("google-vertex", "gemini-2.5-flash")],
+		["google/gemini-2.5-flash", getFixtureModel("google", "gemini-2.5-flash")],
+		["google-vertex/gemini-2.5-flash", getFixtureModel("google-vertex", "gemini-2.5-flash")],
 	])("keeps disabling thinking with a zero budget on %s, which can turn it off (#4556)", async (_name, model) => {
 		const { payload, offFallbacks } = await captureRequest(model, { thinkingBudgets });
 

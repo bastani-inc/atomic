@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Container } from "@bastani/atomic-tui";
 import { beforeAll, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
 import {
 	type AgentSessionServices,
@@ -53,7 +53,7 @@ test.each([
 		const { session } = await createAgentSessionFromServices({
 			services,
 			sessionManager: SessionManager.inMemory(cwd),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			tools,
 		});
@@ -84,7 +84,7 @@ async function withSession<T>(
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir: join(cwd, "agent"),
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		settingsManager: SettingsManager.inMemory(),
 		sessionManager: SessionManager.inMemory(cwd),

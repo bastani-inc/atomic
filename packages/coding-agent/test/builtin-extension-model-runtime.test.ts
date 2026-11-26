@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { Api, AssistantMessage, Model, ProviderHeaders } from "@bastani/atomic-ai";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { generateSummaryDraft, type SummaryGenerationContext } from "../../web-access/summary-review.js";
 import { rewriteSearchQuery } from "../../web-access/web-search-summary.js";
 import { ModelRegistry } from "../src/core/model-registry.ts";
@@ -51,7 +51,7 @@ function customModel(): Model<Api> {
 
 test("web-access summary calls use the coding-agent model runtime", async () => {
 	const summaryModel = customModel();
-	const rewriteModel = getModel("anthropic", "claude-haiku-4-5");
+	const rewriteModel = getFixtureModel("anthropic", "claude-haiku-4-5");
 	assert.ok(rewriteModel, "expected the bundled Anthropic rewrite model");
 	const calls: RuntimeCall[] = [];
 	const registry = new ModelRegistry(

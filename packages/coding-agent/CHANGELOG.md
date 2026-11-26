@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Atomic now needs Node.js 24.20.0 or newer, in the Node.js 24 LTS line, when you install it with npm, pnpm, Yarn, or Bun. Check with `node --version`. If it is older, install the current Node.js 24 LTS release from [nodejs.org](https://nodejs.org/en/download) or with `nvm install 24`, `fnm install 24`, or `mise use -g node@24`, then reinstall Atomic with `npm install -g @bastani/atomic`. The release archive (`install.sh` or `install.ps1`) ships its own runtime and needs no Node.js. Node.js releases before 24.15.0 bundle a SQLite version with a [bug that can corrupt](https://www.sqlite.org/wal.html#walresetbug) Atomic's session database, because Atomic opens it with a writer and a reader at once. Node.js 24.17.0 through 24.19.0 reject valid certificates for IPv6 addresses, such as an `https://[::1]` proxy ([nodejs/node#64145](https://github.com/nodejs/node/pull/64145)). See [Node.js version](docs/getting-started/installation.md#nodejs-version) ([#6579](https://github.com/bastani-inc/atomic/pull/6579)).
+
 ### Added
 
 - Slow reads and searches of past sessions (`history://`) now keep running in the background instead of stopping after 3 seconds. If one is still running after 10 seconds (the default wait), the agent gets a task ID such as `history-3` and can keep working, and the result arrives later as a completion notice. It has no time limit: it runs until it finishes, the agent stops it, or the session closes; a result past the size limits still ends with a `continue with` link. The agent can wait for it with `search({ action: "wait", id: "history-3" })` or stop it with `kill({ id: "history-3" })`. A session runs at most 4 at once; a fifth is refused with a message saying how to free a place ([#6563](https://github.com/bastani-inc/atomic/pull/6563), [#6574](https://github.com/bastani-inc/atomic/pull/6574)).
@@ -13,6 +17,8 @@
 
 ### Fixed
 
+- On macOS, commands started by Atomic, including background servers, are now stopped when the Atomic process dies ([#5057](https://github.com/bastani-inc/atomic/issues/5057)).
+- If a provider retires Atomic's preferred chat model, Atomic selects another model from that provider's catalog instead of leaving you without a default after login.
 - The agent panel now remembers when you choose `main`. The next `↓` from an empty prompt selects `main` again instead of the subagent you had selected before it ([#6564](https://github.com/bastani-inc/atomic/pull/6564)).
 - Opening a subagent from `/tasks` with `Enter` or a click now makes it the agent panel's remembered row, so the next `↓` from an empty prompt selects it ([#6564](https://github.com/bastani-inc/atomic/pull/6564)).
 - Expanding the card of a subagent that is waiting on a tool call now shows its task and its tool calls, with the waited-on call marked `◌`, instead of only the card's first line. A card with no prompt to show leaves out the Prompt section instead of showing `(none)`, and a card with nothing more to show no longer offers to expand ([#6562](https://github.com/bastani-inc/atomic/pull/6562)).

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { getModel, getSupportedThinkingLevels } from "../src/compat.ts";
+import { getSupportedThinkingLevels } from "../src/compat.ts";
+import { publishedModel } from "./live-catalog-model.ts";
 
 describe("Claude Haiku 5.5 catalog", () => {
-	it("publishes Anthropic limits, inputs, and prompt-length pricing", () => {
-		const model = getModel("anthropic", "claude-haiku-5-5");
+	it("publishes Anthropic limits, inputs, and prompt-length pricing", (ctx) => {
+		const model = publishedModel("anthropic", "claude-haiku-5-5", ctx);
 		assert.equal(model.contextWindow, 1_000_000);
 		assert.equal(model.maxTokens, 128_000);
 		assert.deepEqual(model.input, ["text", "image", "pdf"]);
@@ -17,8 +18,8 @@ describe("Claude Haiku 5.5 catalog", () => {
 		});
 	});
 
-	it("supports off, adaptive effort, and mid-conversation changes without temperature (#10753)", () => {
-		const model = getModel("anthropic", "claude-haiku-5-5");
+	it("supports off, adaptive effort, and mid-conversation changes without temperature (#10753)", (ctx) => {
+		const model = publishedModel("anthropic", "claude-haiku-5-5", ctx);
 		assert.equal(model.reasoning, true);
 		assert.deepEqual(getSupportedThinkingLevels(model), ["off", "low", "medium", "high", "xhigh", "max"]);
 		assert.equal(model.compat?.forceAdaptiveThinking, true);

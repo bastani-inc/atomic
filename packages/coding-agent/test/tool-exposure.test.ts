@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { createAgentSession } from "../src/core/sdk.js";
@@ -40,7 +40,7 @@ test("tool exposure preserves activation and prevents hidden tools from being ac
 		settingsManager,
 		// Exercise inline extension exposure without loading unrelated shipped packages.
 		builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
-		model: getModel("openai-codex", "gpt-6-sol"),
+		model: getFixtureModel("openai-codex", "gpt-6-sol"),
 		sessionManager: SessionManager.inMemory(),
 	});
 	try {

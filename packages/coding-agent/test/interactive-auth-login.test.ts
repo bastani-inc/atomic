@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { type Api, getModel, type Model } from "@bastani/atomic-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { collectOAuthProviderMetadata } from "../src/core/oauth-provider-metadata.ts";
 import { LoginDialogComponent } from "../src/modes/interactive/components/login-dialog.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
@@ -356,6 +357,38 @@ describe("interactive OAuth cancellation", () => {
 	});
 });
 describe("post-login model refresh", () => {
+	it("selects an available default when a provider retires its preferred model (#6580)", async () => {
+		const providerId = "cloudflare-ai-gateway";
+		const firstById = { provider: providerId, id: "workers-ai/@cf/moonshotai/example-a" } as Model<Api>;
+		const lastById = { provider: providerId, id: "workers-ai/@cf/moonshotai/example-z" } as Model<Api>;
+		const otherRoute = { provider: providerId, id: "claude-example" } as Model<Api>;
+		const anotherProvider = { provider: "anthropic", id: "example" } as Model<Api>;
+		const harness = {
+			session: {
+				modelRuntime: { getAvailableSnapshot: () => [anotherProvider, otherRoute, lastById, firstById] },
+				setModel: vi.fn(),
+			},
+			updateAvailableProviderCount: vi.fn(),
+			setupAutocompleteProvider: vi.fn(),
+			footer: { invalidate: vi.fn() },
+			updateEditorBorderColor: vi.fn(),
+			showStatus: vi.fn(),
+			showError: vi.fn(),
+			maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
+		};
+		const loggedOutModel = { provider: "unknown", id: "unknown", api: "unknown" } as Model<Api>;
+		await InteractiveModeBase.prototype.completeProviderAuthentication.call(
+			harness as unknown as InteractiveModeBase,
+			providerId,
+			"Cloudflare AI Gateway",
+			"api_key",
+			loggedOutModel,
+			{ modelsRefreshed: true },
+		);
+		expect(harness.session.setModel).toHaveBeenCalledWith(firstById);
+		expect(harness.showError).not.toHaveBeenCalled();
+	});
+
 	it("does not select or recommend a chat model after Jev login", async () => {
 		const harness = {
 			session: { modelRuntime: { refresh: vi.fn(), getAvailableSnapshot: vi.fn(() => []) }, setModel: vi.fn() },
@@ -385,7 +418,7 @@ describe("post-login model refresh", () => {
 		{ provider: "anthropic", name: "Anthropic", authType: "oauth" as const, modelId: "claude-opus-5-5" },
 	]) {
 		it(`selects the ${scenario.provider} default immediately after ${scenario.authType} login`, async () => {
-			const model = getModel(scenario.provider, scenario.modelId);
+			const model = getFixtureModel(scenario.provider, scenario.modelId);
 			const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
 			const getAvailable = vi.fn(() => [model as Model<Api>]);
 			const setModel = vi.fn(async () => {});

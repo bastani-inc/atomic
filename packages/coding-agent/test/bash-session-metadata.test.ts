@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -18,8 +18,8 @@ function packageExtensionPaths(extensionsResult: { extensions: ReadonlyArray<{ p
 }
 
 const roots: string[] = [];
-const model = getModel("anthropic", "claude-sonnet-4-5")!;
-const switchedModel = getModel("openai", "gpt-4o")!;
+const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
+const switchedModel = getFixtureModel("openai", "gpt-4o")!;
 
 function makeRoot(): { root: string; cwd: string; agentDir: string } {
 	const root = join(tmpdir(), `atomic-bash-session-${Date.now()}-${Math.random().toString(36).slice(2)}`);

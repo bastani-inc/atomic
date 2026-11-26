@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { convertMessages } from "../src/api/openai-completions.ts";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { streamSimple } from "../src/compat.ts";
 import type { Api, AssistantMessage, Context, Model, Tool, ToolResultMessage, UserMessage } from "../src/types.ts";
 import { estimateContextTokens } from "../src/utils/estimate.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
@@ -189,7 +190,7 @@ function findAnthropicToolResult(payload: AnthropicPayload): AnthropicContentBlo
 
 function nativeAnthropic(): Model<"anthropic-messages"> {
 	return {
-		...getModel("anthropic", "claude-fable-5-1"),
+		...getFixtureModel("anthropic", "claude-fable-5-1"),
 		compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true },
 	};
 }
@@ -218,10 +219,13 @@ describe("deferred tools", () => {
 			messages: context.messages.slice(0, 1),
 		});
 		assert.deepEqual(payload.tools, initial.tools);
-		assert.deepEqual(payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })), [
-			{ name: "base_tool", defer_loading: undefined },
-			{ name: "__pi_deferred_placeholder__", defer_loading: true },
-		]);
+		assert.deepEqual(
+			payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })),
+			[
+				{ name: "base_tool", defer_loading: undefined },
+				{ name: "__pi_deferred_placeholder__", defer_loading: true },
+			],
+		);
 		assert.deepEqual(toolAdditions(payload), [
 			{
 				type: "tool_addition",
@@ -281,10 +285,13 @@ describe("deferred tools", () => {
 
 		const payload = await capturePayload<AnthropicPayload>(nativeAnthropic(), context);
 
-		assert.deepEqual(payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })), [
-			{ name: "base_tool", defer_loading: undefined },
-			{ name: "__pi_deferred_placeholder__", defer_loading: true },
-		]);
+		assert.deepEqual(
+			payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })),
+			[
+				{ name: "base_tool", defer_loading: undefined },
+				{ name: "__pi_deferred_placeholder__", defer_loading: true },
+			],
+		);
 		assert.deepEqual(toolAdditions(payload), [
 			{
 				type: "tool_addition",
@@ -304,7 +311,7 @@ describe("deferred tools", () => {
 
 	it("does not invent definitions for unavailable tools", async () => {
 		const context = makeContext([makeTool("base_tool")]);
-		const payload = await capturePayload<AnthropicPayload>(getModel("anthropic", "claude-opus-4-6"), context);
+		const payload = await capturePayload<AnthropicPayload>(getFixtureModel("anthropic", "claude-opus-4-6"), context);
 
 		expect(payload.tools?.map((tool) => tool.name)).toEqual(["base_tool"]);
 		const content = findAnthropicToolResult(payload).content;
@@ -315,7 +322,7 @@ describe("deferred tools", () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
 		const assistant = context.messages[1] as AssistantMessage;
 		assistant.content = [{ type: "toolCall", id: "call_1", name: "late_tool", arguments: {} }];
-		const payload = await capturePayload<AnthropicPayload>(getModel("anthropic", "claude-opus-4-6"), context);
+		const payload = await capturePayload<AnthropicPayload>(getFixtureModel("anthropic", "claude-opus-4-6"), context);
 
 		expect(payload.tools?.map((tool) => tool.name)).toEqual(["base_tool", "late_tool"]);
 		expect(payload.tools?.every((tool) => !tool.defer_loading)).toBe(true);
@@ -326,7 +333,7 @@ describe("deferred tools", () => {
 		const assistant = context.messages[1] as AssistantMessage;
 		assistant.content = [{ type: "toolCall", id: "call_1", name: "Read", arguments: {} }];
 		const payload = await capturePayload<AnthropicPayload>(
-			getModel("anthropic", "claude-opus-4-6"),
+			getFixtureModel("anthropic", "claude-opus-4-6"),
 			context,
 			"sk-ant-oat-fake",
 		);
@@ -341,10 +348,13 @@ describe("deferred tools", () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("read")], ["Read"]);
 		const payload = await capturePayload<AnthropicPayload>(nativeAnthropic(), context, "sk-ant-oat-fake");
 
-		assert.deepEqual(payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })), [
-			{ name: "base_tool", defer_loading: undefined },
-			{ name: "__pi_deferred_placeholder__", defer_loading: true },
-		]);
+		assert.deepEqual(
+			payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })),
+			[
+				{ name: "base_tool", defer_loading: undefined },
+				{ name: "__pi_deferred_placeholder__", defer_loading: true },
+			],
+		);
 		assert.deepEqual(toolAdditions(payload), [
 			{
 				type: "tool_addition",
@@ -368,7 +378,7 @@ describe("deferred tools", () => {
 			tools: [makeTool("read"), { ...makeTool("Read"), description: "Canonical definition" }],
 		};
 		const payload = await capturePayload<AnthropicPayload>(
-			getModel("anthropic", "claude-opus-4-6"),
+			getFixtureModel("anthropic", "claude-opus-4-6"),
 			context,
 			"sk-ant-oat-fake",
 		);
@@ -379,8 +389,8 @@ describe("deferred tools", () => {
 	it("uses the normal tool list when Anthropic tool references are unsupported", async () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
 		const models: Model<"anthropic-messages">[] = [
-			getModel("anthropic", "claude-haiku-4-5"),
-			{ ...getModel("anthropic", "claude-opus-4-6"), id: "claude-sonnet-4-20250514" },
+			getFixtureModel("anthropic", "claude-haiku-4-5"),
+			{ ...getFixtureModel("anthropic", "claude-opus-4-6"), id: "claude-sonnet-4-20250514" },
 		];
 
 		for (const model of models) {
@@ -392,7 +402,7 @@ describe("deferred tools", () => {
 
 	it("keeps one immediate Anthropic tool when every current tool is marked", async () => {
 		const context = makeContext([makeTool("late_tool")]);
-		const payload = await capturePayload<AnthropicPayload>(getModel("anthropic", "claude-opus-4-6"), context);
+		const payload = await capturePayload<AnthropicPayload>(getFixtureModel("anthropic", "claude-opus-4-6"), context);
 
 		expect(payload.tools).toMatchObject([{ name: "late_tool" }]);
 		expect(payload.tools?.[0]?.defer_loading).toBeUndefined();
@@ -402,17 +412,20 @@ describe("deferred tools", () => {
 
 	it("supports explicit Anthropic compatibility overrides", async () => {
 		const model: Model<"anthropic-messages"> = {
-			...getModel("anthropic", "claude-opus-4-6"),
+			...getFixtureModel("anthropic", "claude-opus-4-6"),
 			provider: "anthropic-proxy",
 			compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true },
 		};
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
 		const payload = await capturePayload<AnthropicPayload>(model, context);
 
-		assert.deepEqual(payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })), [
-			{ name: "base_tool", defer_loading: undefined },
-			{ name: "__pi_deferred_placeholder__", defer_loading: true },
-		]);
+		assert.deepEqual(
+			payload.tools?.map(({ name, defer_loading }) => ({ name, defer_loading })),
+			[
+				{ name: "base_tool", defer_loading: undefined },
+				{ name: "__pi_deferred_placeholder__", defer_loading: true },
+			],
+		);
 		assert.deepEqual(toolAdditions(payload), [
 			{
 				type: "tool_addition",
@@ -515,7 +528,7 @@ describe("deferred tools", () => {
 
 	it("loads an OpenAI Responses tool through additional_tools", async () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
-		const payload = await capturePayload<OpenAIPayload>(getModel("openai", "gpt-5.6-luna"), context);
+		const payload = await capturePayload<OpenAIPayload>(getFixtureModel("openai", "gpt-5.6-luna"), context);
 		const additionalTools = payload.input?.filter(
 			(item): item is OpenAIAdditionalTools => item.type === "additional_tools",
 		);
@@ -545,7 +558,7 @@ describe("deferred tools", () => {
 			toolName: "late_tool",
 		});
 
-		const payload = await capturePayload<OpenAIPayload>(getModel("openai", "gpt-5.6-luna"), context);
+		const payload = await capturePayload<OpenAIPayload>(getFixtureModel("openai", "gpt-5.6-luna"), context);
 		const additionalToolIndexes = (payload.input ?? []).flatMap((item, index) =>
 			item.type === "additional_tools" ? [index] : [],
 		);
@@ -560,7 +573,7 @@ describe("deferred tools", () => {
 
 	it("falls back to client tool search when additional_tools is unsupported", async () => {
 		const model: Model<"openai-responses"> = {
-			...getModel("openai", "gpt-5.4"),
+			...getFixtureModel("openai", "gpt-5.4"),
 			provider: "openai-proxy",
 			compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: false, supportsToolSearch: true },
 		};
@@ -582,7 +595,7 @@ describe("deferred tools", () => {
 		"uses the normal tool list for unsupported OpenAI model %s",
 		async (modelId) => {
 			const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
-			const payload = await capturePayload<OpenAIPayload>(getModel("openai", modelId), context);
+			const payload = await capturePayload<OpenAIPayload>(getFixtureModel("openai", modelId), context);
 
 			expect(openAIToolNames(payload)).toEqual(["base_tool", "late_tool"]);
 			expect(payload.input?.some((item) => item.type === "tool_search_output")).toBe(false);
@@ -591,7 +604,7 @@ describe("deferred tools", () => {
 
 	it("uses the normal tool list when OpenAI tool search is explicitly disabled", async () => {
 		const model: Model<"openai-responses"> = {
-			...getModel("openai", "gpt-5.4"),
+			...getFixtureModel("openai", "gpt-5.4"),
 			provider: "openai-proxy",
 			compat: { supportsToolSearch: false },
 		};
@@ -604,7 +617,7 @@ describe("deferred tools", () => {
 
 	it("selects additional tools, tool search, or top-level tools for Codex models", async () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
-		const codexModel = getModel("openai-codex", "gpt-5.6-sol");
+		const codexModel = getFixtureModel("openai-codex", "gpt-5.6-sol");
 		const additionalTools = await capturePayload<OpenAIPayload>(codexModel, context, makeCodexToken());
 		// Every catalog Codex model supports additional_tools; compat overrides select the other transports.
 		const toolSearch = await capturePayload<OpenAIPayload>(
@@ -630,7 +643,7 @@ describe("deferred tools", () => {
 
 	it("leaves providers without deferred loading unchanged", async () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
-		const payload = await capturePayload<OpenAIPayload>(getModel("groq", "llama-3.3-70b-versatile"), context);
+		const payload = await capturePayload<OpenAIPayload>(getFixtureModel("groq", "llama-3.3-70b-versatile"), context);
 		expect(openAIToolNames(payload)).toEqual(["base_tool", "late_tool"]);
 	});
 

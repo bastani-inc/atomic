@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { createAgentSessionFromServices, prepareAgentSessionServices } from "../src/core/agent-session-services.js";
 import { inheritChildSessionOptions } from "../src/core/child-session-options.js";
@@ -84,7 +84,7 @@ async function createFileSession(
 		agentDir,
 		settingsManager,
 		resourceLoader,
-		model: getModel("anthropic", "claude-sonnet-4-5"),
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 		sessionManager: SessionManager.inMemory(tempDir),
 		builtins: NO_BUILTINS,
 		...options,
@@ -514,7 +514,7 @@ async function createDeferredTrustSession(options: {
 	});
 	const { session } = await createAgentSessionFromServices({
 		services: await completeServices(),
-		model: getModel("anthropic", "claude-sonnet-4-5"),
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 		sessionManager: options.sessionManager,
 		...options.sessionOptions,
 	});

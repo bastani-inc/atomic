@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getModel, stream, streamSimple } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { stream, streamSimple } from "../src/compat.ts";
 import type { Api, Context, Model, SimpleStreamOptions, StreamOptions, ThinkingLevel } from "../src/types.ts";
 
 type DirectSamplingOptions = StreamOptions & {
@@ -316,7 +317,7 @@ describe("restricted sampling params on models that reject them", () => {
 	});
 
 	it("strips them for the generated OpenRouter Claude Fable 5.1 entry", async () => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1");
+		const model = getFixtureModel("openrouter", "anthropic/claude-fable-5.1");
 		expect(model.compat?.supportsTemperature).toBe(false);
 
 		const payload = await capturePayload(

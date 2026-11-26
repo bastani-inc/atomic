@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { createAgentSession, DefaultResourceLoader } from "@bastani/atomic";
 import { Agent, type AgentMessage } from "@bastani/atomic-agent-core";
-import { type AssistantMessage, getModel } from "@bastani/atomic-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { AssistantMessageEventStream } from "@bastani/atomic-ai/utils/event-stream";
 import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
@@ -24,6 +24,7 @@ import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/i
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
 
@@ -150,7 +151,7 @@ async function followingPage(session: TaskTranscriptSource): Promise<TaskAgentTr
 
 async function queuedRunner() {
 	const root = mkdtempSync(join(tmpdir(), "atomic-transcript-races-"));
-	const model = getModel("anthropic", "claude-sonnet-4-5")!;
+	const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const credentials = AuthStorage.inMemory();
 	await credentials.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 	const modelRuntime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });

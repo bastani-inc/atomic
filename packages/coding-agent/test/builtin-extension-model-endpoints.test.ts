@@ -6,8 +6,9 @@ import {
 	type Model,
 	type ProviderHeaders,
 } from "@bastani/atomic-ai";
-import { complete, getModel, registerApiProvider, unregisterApiProviders } from "@bastani/atomic-ai/compat";
+import { complete, registerApiProvider, unregisterApiProviders } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { generateSummaryDraft, type SummaryGenerationContext } from "../../web-access/summary-review.js";
 import { rewriteSearchQuery } from "../../web-access/web-search-summary.js";
 import { ModelRegistry } from "../src/core/model-registry.ts";
@@ -117,7 +118,7 @@ test("web summary model overrides apply credential endpoints without dropping nu
 });
 
 test("web preferred summaries and query rewrites apply credential endpoints without dropping null headers", async () => {
-	const requestModel = getModel("anthropic", "claude-haiku-4-5");
+	const requestModel = getFixtureModel("anthropic", "claude-haiku-4-5");
 	assert.ok(requestModel, "expected the bundled Anthropic summary model");
 	const context: SummaryGenerationContext = { model: undefined, modelRegistry: registryFor(requestModel) };
 	const captured: CapturedRequest[] = [];

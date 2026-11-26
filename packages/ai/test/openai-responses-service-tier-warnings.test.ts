@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { AssistantMessage, Model } from "../src/types.ts";
 
 const context = normalizeContext({
@@ -11,7 +12,7 @@ const context = normalizeContext({
 
 function ultrafastVariant(baseModelId: "gpt-5.6-sol" | "gpt-6.1-sol"): Model<"openai-responses"> {
 	return {
-		...getModel("openai", baseModelId),
+		...getFixtureModel("openai", baseModelId),
 		id: `${baseModelId}-ultrafast`,
 		fastRoute: { baseModelId, upstreamModelId: baseModelId, serviceTier: "ultrafast" },
 	};
@@ -19,7 +20,7 @@ function ultrafastVariant(baseModelId: "gpt-5.6-sol" | "gpt-6.1-sol"): Model<"op
 
 function fastVariant(baseModelId: "gpt-5.6-sol" | "gpt-6.1-sol"): Model<"openai-responses"> {
 	return {
-		...getModel("openai", baseModelId),
+		...getFixtureModel("openai", baseModelId),
 		id: `${baseModelId}-fast`,
 		fastRoute: { baseModelId, upstreamModelId: baseModelId, serviceTier: "priority" },
 	};
@@ -139,18 +140,18 @@ afterEach(() => {
 describe("catalog ultrafast tiers (#3529)", () => {
 	test("gpt-6.1-sol and gpt-5.6-sol advertise ultrafast next to priority on openai (#3529)", () => {
 		for (const id of ["gpt-6.1-sol", "gpt-5.6-sol"] as const) {
-			const tierIds = getModel("openai", id).serviceTiers?.map((tier) => tier.id);
+			const tierIds = getFixtureModel("openai", id).serviceTiers?.map((tier) => tier.id);
 			assert.deepEqual(tierIds, ["priority", "ultrafast"]);
 		}
 	});
 
 	test("openai-codex advertises ultrafast for gpt-6.1-sol but only priority for gpt-5.6-sol (#3529)", () => {
 		assert.deepEqual(
-			getModel("openai-codex", "gpt-6.1-sol").serviceTiers?.map((tier) => tier.id),
+			getFixtureModel("openai-codex", "gpt-6.1-sol").serviceTiers?.map((tier) => tier.id),
 			["priority", "ultrafast"],
 		);
 		assert.deepEqual(
-			getModel("openai-codex", "gpt-5.6-sol").serviceTiers?.map((tier) => tier.id),
+			getFixtureModel("openai-codex", "gpt-5.6-sol").serviceTiers?.map((tier) => tier.id),
 			["priority"],
 		);
 	});
@@ -294,7 +295,7 @@ describe("service tier rejection (#3529)", () => {
 	});
 
 	test("does not retry a request that sent no service tier (#3529)", async () => {
-		const { result, payloads } = await run(getModel("openai", "gpt-5.6-sol"), [
+		const { result, payloads } = await run(getFixtureModel("openai", "gpt-5.6-sol"), [
 			rejection(400, "Invalid service_tier argument"),
 		]);
 
@@ -408,7 +409,7 @@ describe("reported service tier downgrade (#3529)", () => {
 		const unreported = await run(ultrafastVariant("gpt-6.1-sol"), [completedResponse(undefined)]);
 		assert.deepEqual(serviceTierWarnings(unreported.result), []);
 
-		const unrequested = await run(getModel("openai", "gpt-6.1-sol"), [completedResponse("default")]);
+		const unrequested = await run(getFixtureModel("openai", "gpt-6.1-sol"), [completedResponse("default")]);
 		assert.deepEqual(serviceTierWarnings(unrequested.result), []);
 	});
 });

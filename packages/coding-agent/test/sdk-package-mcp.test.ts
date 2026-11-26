@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -99,7 +99,7 @@ test(
 				settingsManager,
 				resourceLoader: loader,
 				sessionManager: SessionManager.inMemory(cwd),
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			});
 			try {
 				await vi.waitFor(() => assert.ok(session.getActiveToolNames().includes("mcp__sdk_package_fixture__echo")), {
@@ -180,7 +180,7 @@ test(
 				settingsManager,
 				resourceLoader: loader,
 				sessionManager: SessionManager.inMemory(cwd),
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			});
 			try {
 				assert.equal(

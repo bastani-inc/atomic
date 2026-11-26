@@ -1,8 +1,9 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /// <reference path="../../packages/coding-agent/src/utils/highlight-js-lib-index.d.ts" />
 
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
+
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import { getBuiltinPackagePaths } from "../../packages/coding-agent/src/core/builtin-packages.js";
@@ -99,7 +100,7 @@ async function createSessionFromManager(
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir,
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		settingsManager,
 		sessionManager: SessionManager.inMemory(cwd),
 		resourceLoader,
