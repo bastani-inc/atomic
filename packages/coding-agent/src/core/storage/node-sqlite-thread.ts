@@ -1,7 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { startupNodeOptions } from "@bastani/atomic-codemode/node-options";
 import { EVAL_WORKER_BUILTIN } from "../../utils/worker-threads.js";
-import type { SqliteRow, SqliteValue } from "./database.js";
+import type { SqliteRow, SqliteStatement, SqliteValue } from "./database.js";
 import { sqliteDialect } from "./dialect.js";
 import type { SequencedStatement, SqliteSequence } from "./statement-sequence.js";
 
@@ -110,6 +110,33 @@ const handlers = {
 		return row === undefined ? undefined : table([row]);
 	},
 	all: (request) => table(statement(request.sql).all(...bind(request.params))),
+	// A read transaction's start: BEGIN, then its leading reads, in one request. A BEGIN that fails fails the request and
+	// leaves no transaction. The reads answer up to the first that fails, which, with the ones after it, the caller then
+	// sends on its own in the same transaction, so it fails or answers there as it always would.
+	read: (request) => {
+		database.exec("BEGIN");
+		const answers = [];
+		for (const { sql, params } of request.statements) {
+			try {
+				answers.push(table(statement(sql).all(...bind(params))));
+			} catch {
+				break;
+			}
+		}
+		return answers;
+	},
+	// A read transaction's end, which its caller does not wait for: COMMIT, or ROLLBACK where COMMIT fails, so the
+	// connection is never left inside it.
+	endRead: () => {
+		try {
+			database.exec("COMMIT");
+		} catch (error) {
+			try {
+				database.exec("ROLLBACK");
+			} catch {}
+			throw error;
+		}
+	},
 	// One non-blocking BEGIN IMMEDIATE, the connection's busy timeout restored before answering.
 	begin: (request) => {
 		// The file's lock word (see FREE in node-sqlite-file-gate.ts): taken before BEGIN, after waiting here for a
@@ -245,7 +272,16 @@ export type ConnectionRequest =
 	| { readonly kind: "run" | "get" | "all"; readonly sql: string; readonly params: readonly SqliteValue[] }
 	| { readonly kind: "begin"; readonly lockState?: SharedArrayBuffer; readonly lockTag?: number }
 	| { readonly kind: "dataVersion" | "now" | "jsonbExtract" | "close" }
+	| ReadTransactionRequest
 	| SequenceRequest;
+
+/**
+ * A read-only transaction's start with its leading reads, and its end, which only a connection on a thread of its own
+ * is sent: see the thread's `read` and `endRead`.
+ */
+export type ReadTransactionRequest =
+	| { readonly kind: "read"; readonly statements: readonly SqliteStatement[] }
+	| { readonly kind: "endRead" };
 
 /** Rows as they cross from a connection's thread: the column names, then each row's values in their order. */
 interface RowTable {
@@ -256,6 +292,7 @@ interface RowTable {
 /** What a request's answer carries as it crosses, before rows are rebuilt. */
 type ConnectionValue =
 	| RowTable
+	| readonly RowTable[]
 	| { readonly changes: number }
 	| SequenceAnswer
 	| string
@@ -265,13 +302,14 @@ type ConnectionValue =
 	| undefined;
 
 /**
- * What a request is answered with: `get` a row or undefined, `all` rows, `run` the changes, `sequence` a
- * `SequenceAnswer`, `open` the location, `dataVersion` and `now` a number, `jsonbExtract` a boolean, the others
- * undefined.
+ * What a request is answered with: `get` a row or undefined, `all` rows, `read` the rows of each leading read up to
+ * the first that failed, `run` the changes, `sequence` a `SequenceAnswer`, `open` the location, `dataVersion` and `now`
+ * a number, `jsonbExtract` a boolean, the others undefined.
  */
 export type ConnectionAnswer =
 	| SqliteRow
 	| SqliteRow[]
+	| SqliteRow[][]
 	| { readonly changes: number }
 	| SequenceAnswer
 	| string
@@ -484,6 +522,7 @@ export class ThreadConnection {
 		if (request.kind === "get")
 			return answer.then((value) => (value === undefined ? undefined : rowsOf(value as RowTable)[0]));
 		if (request.kind === "all") return answer.then((value) => rowsOf(value as RowTable));
+		if (request.kind === "read") return answer.then((value) => (value as readonly RowTable[]).map(rowsOf));
 		return answer as Promise<ConnectionAnswer>;
 	}
 
