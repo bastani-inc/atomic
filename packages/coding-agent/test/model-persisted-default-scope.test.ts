@@ -1,6 +1,7 @@
 import { Agent } from "@bastani/atomic-agent-core";
-import { getModel, streamSimple } from "@bastani/atomic-ai/compat";
+import { streamSimple } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -8,8 +9,8 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
-const sonnet = getModel("anthropic", "claude-sonnet-4-5")!;
-const opus = getModel("anthropic", "claude-opus-4-8")!;
+const sonnet = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
+const opus = getFixtureModel("anthropic", "claude-opus-4-8")!;
 
 describe("persisted default model scoping", () => {
 	const sessions: AgentSession[] = [];

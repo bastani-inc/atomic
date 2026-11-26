@@ -1,10 +1,11 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@bastani/atomic";
-import { getModel } from "@bastani/atomic-ai/compat";
+
 
 // #3105: real built Node exports, independent callback release and natural exit.
 const mode = process.argv[2];
@@ -80,7 +81,7 @@ export default function(pi) {
    atomic.on("session_shutdown", () => { shutdowns++; active = 0; });
   }] });
   await loader.reload();
-  ({ session } = await createAgentSession({ ...options, resourceLoader: loader, model: getModel("anthropic", "claude-sonnet-4-5") }));
+  ({ session } = await createAgentSession({ ...options, resourceLoader: loader, model: getFixtureModel("anthropic", "claude-sonnet-4-5") }));
   let mutation;
   if (mode === "thinking") mutation = session.setThinkingLevel("high");
   else if (mode === "name") mutation = session.setSessionName("raw name  ");

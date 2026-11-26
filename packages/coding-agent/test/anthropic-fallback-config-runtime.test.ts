@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model, Provider } from "@bastani/atomic-ai";
 import { stream } from "@bastani/atomic-ai/api/anthropic-messages";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { ModelConfig } from "../src/core/model-config.ts";
 import { composeModelProvider } from "../src/core/provider-composer.ts";
 
@@ -18,7 +18,7 @@ const configured = [
 test("models.json fallbacks replace catalog defaults, reach the HTTP request and price the serving model; [] disables", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-fallback-runtime-"));
 	try {
-		const generated = getModel("anthropic", "claude-fable-5-1");
+		const generated = getFixtureModel("anthropic", "claude-fable-5-1");
 		assert.ok(generated.compat?.allowedFallbackModels?.length);
 		const base: Provider = {
 			id: "anthropic",

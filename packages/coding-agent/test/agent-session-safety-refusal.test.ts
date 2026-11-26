@@ -6,9 +6,9 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	createAssistantMessageEventStream,
-	getModel,
 } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -56,7 +56,7 @@ describe("AgentSession safety-refusal retry", () => {
 	});
 
 	async function createSession(streamFn: () => AssistantMessageEventStream) {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: "Test", tools: [] },

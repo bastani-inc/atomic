@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, expect, it } from "vitest";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { streamSimple } from "../src/compat.ts";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.ts";
 import { getSupportedThinkingLevels } from "../src/models.ts";
+import { publishedModel } from "./live-catalog-model.ts";
 
 const originalBasetenApiKey = process.env.BASETEN_API_KEY;
 
@@ -15,13 +17,13 @@ afterEach(() => {
 });
 
 describe("Baseten models", () => {
-	it("keeps both GLM 5.2 endpoints text-only", () => {
-		assert.deepEqual(getModel("baseten", "zai-org/GLM-5.2").input, ["text"]);
-		assert.deepEqual(getModel("baseten", "zai-org/GLM-5.2-Fast").input, ["text"]);
+	it("keeps both GLM 5.2 endpoints text-only", (ctx) => {
+		assert.deepEqual(publishedModel("baseten", "zai-org/GLM-5.2", ctx).input, ["text"]);
+		assert.deepEqual(publishedModel("baseten", "zai-org/GLM-5.2-Fast", ctx).input, ["text"]);
 	});
 
 	it("sends toggle-only Baseten reasoning as an explicit off/on chat template switch", async () => {
-		const current = getModel("baseten", "moonshotai/Kimi-K3");
+		const current = getFixtureModel("baseten", "moonshotai/Kimi-K3");
 		const model = {
 			...current,
 			thinkingLevelMap: { off: "off", minimal: null, low: null, medium: null, high: "high", xhigh: null, max: null },
@@ -54,7 +56,7 @@ describe("Baseten models", () => {
 	});
 
 	it("sends Baseten chat_template_args with reasoning effort", async () => {
-		const model = getModel("baseten", "zai-org/GLM-5.2");
+		const model = getFixtureModel("baseten", "zai-org/GLM-5.2");
 		let payload: Record<string, unknown> | undefined;
 
 		await streamSimple(
@@ -75,7 +77,7 @@ describe("Baseten models", () => {
 	});
 
 	it("disables Baseten opt-in reasoning when thinking is off", async () => {
-		const model = getModel("baseten", "zai-org/GLM-5.2");
+		const model = getFixtureModel("baseten", "zai-org/GLM-5.2");
 		let payload: Record<string, unknown> | undefined;
 
 		await streamSimple(

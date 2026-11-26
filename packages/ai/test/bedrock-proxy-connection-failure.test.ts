@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import diagnosticsChannel from "node:diagnostics_channel";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { type ClientRequest, type Server as HttpServer, createServer as createHttpServer } from "node:http";
-import { type Server as NetServer, createServer as createNetServer, type Socket } from "node:net";
+import { type ClientRequest, createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import { createServer as createNetServer, type Server as NetServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -11,11 +11,12 @@ import { createSecureContext, createServer as createTlsServer, TLSSocket } from 
 import { crc32 } from "node:zlib";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { afterEach, describe, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { createTestCertificate } from "../../../test/helpers/tls-certificates.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { Api, AssistantMessage, Model } from "../src/types.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
@@ -98,7 +99,10 @@ async function closingProxy(): Promise<{ port: number; connections(): number }> 
 }
 
 function bedrockTurn(baseUrl: string, proxyUrl: string): Promise<AssistantMessage> {
-	const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+	const model = getFixtureModel(
+		"amazon-bedrock",
+		"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+	) as Model<"bedrock-converse-stream">;
 	return streamBedrock({ ...model, baseUrl }, context, {
 		cacheRetention: "none",
 		maxRetries: SDK_RETRIES,
@@ -343,7 +347,10 @@ describe("Amazon Bedrock through a proxy whose connection fails", () => {
 
 describe("a Bedrock failure that is not its connection's", () => {
 	it("keeps its own message and is not retried, though it carries a connection error's code", async () => {
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const model = getFixtureModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		for (const code of ["ERR_SOCKET_CLOSED", "ECONNRESET", "EACCES"]) {
 			// A hook that stops the request before anything is sent, with a code of its own.
 			const message = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
@@ -365,7 +372,10 @@ describe("a Bedrock failure that is not its connection's", () => {
 		// The HTTP handler fails the first request with an error object that a hook throws again in the next one.
 		const shared = Object.assign(new Error("Transport stopped"), { code: "ECONNRESET" });
 		const handle = vi.spyOn(NodeHttpHandler.prototype, "handle").mockRejectedValue(shared);
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const model = getFixtureModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		const turn = (hooks: { onPayload?: () => Promise<undefined> }) =>
 			streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
 				cacheRetention: "none",
@@ -402,7 +412,10 @@ describe("a Bedrock failure that is not its connection's", () => {
 			.mockResolvedValueOnce({
 				response: { statusCode: 400, reason: "Bad Request", headers: {}, body: Readable.from([]) },
 			} as Awaited<ReturnType<NodeHttpHandler["handle"]>>);
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const model = getFixtureModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		try {
 			const message = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
 				cacheRetention: "none",
@@ -426,7 +439,10 @@ describe("a Bedrock failure that is not its connection's", () => {
 			response.writeHead(400, { "content-type": "application/json" }).end('{"message":"bad request"}');
 		});
 		const port = await listen(endpoint);
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const model = getFixtureModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		for (const code of ["ERR_SOCKET_CLOSED", "ECONNRESET", "EACCES"]) {
 			const message = await streamBedrock({ ...model, baseUrl: `http://127.0.0.1:${port}` }, context, {
 				cacheRetention: "none",
@@ -467,18 +483,27 @@ describe("Bedrock's tunnel request and connection errors", () => {
 	});
 
 	it("names each connection error by its own code, and Bun's closed socket as the reset it is", async () => {
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const model = getFixtureModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		const failures: [Error, string][] = [
 			[Object.assign(new Error("Transport stopped"), { code: "ECONNREFUSED" }), "Transport stopped (ECONNREFUSED)"],
 			[Object.assign(new Error("Transport stopped"), { code: "ETIMEDOUT" }), "Transport stopped (ETIMEDOUT)"],
 			[Object.assign(new Error("Transport stopped"), { code: "EPIPE" }), "Transport stopped (EPIPE)"],
 			[Object.assign(new Error("Transport stopped"), { code: "ECONNRESET" }), "Transport stopped (ECONNRESET)"],
-			[Object.assign(new Error("Transport stopped"), { code: "ERR_SOCKET_CLOSED" }), "Transport stopped (ECONNRESET)"],
+			[
+				Object.assign(new Error("Transport stopped"), { code: "ERR_SOCKET_CLOSED" }),
+				"Transport stopped (ECONNRESET)",
+			],
 			[Object.assign(new Error(""), { code: "ERR_SOCKET_CLOSED" }), "ECONNRESET"],
 			[
-				Object.assign(new Error("Transport stopped", { cause: Object.assign(new Error("inner"), { code: "EPIPE" }) }), {
-					code: "ERR_SOCKET_CLOSED",
-				}),
+				Object.assign(
+					new Error("Transport stopped", { cause: Object.assign(new Error("inner"), { code: "EPIPE" }) }),
+					{
+						code: "ERR_SOCKET_CLOSED",
+					},
+				),
 				"Transport stopped: inner (EPIPE) (ECONNRESET)",
 			],
 			// Node.js on Windows can report a refused connection to localhost with no message of its own.
@@ -504,7 +529,10 @@ describe("Bedrock's tunnel request and connection errors", () => {
 	it("retries a closed-socket transport failure at the SDK level without mutating the original error or retrying hooks", async () => {
 		const shared = Object.assign(new Error("Socket is closed"), { code: "ERR_SOCKET_CLOSED" });
 		const handle = vi.spyOn(NodeHttpHandler.prototype, "handle").mockRejectedValue(shared);
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const model = getFixtureModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		try {
 			const first = await streamBedrock({ ...model, baseUrl: "https://localhost:9" }, context, {
 				cacheRetention: "none",
@@ -553,7 +581,10 @@ describe("Bedrock's tunnel request and connection errors", () => {
 	});
 
 	it("never normalizes or SDK-retries ERR_SOCKET_CLOSED after response headers arrive, with response metadata, on abort, or for other codes", async () => {
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const model = getFixtureModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		const handle = vi.spyOn(NodeHttpHandler.prototype, "handle");
 		try {
 			// 1. Mid-stream ERR_SOCKET_CLOSED after a 200 response's headers arrived: must never replay the request.
@@ -659,11 +690,17 @@ describe("a provider's answer that names a connection error", () => {
 			contextWindow: 10_000,
 			maxTokens: 1_000,
 		});
-		const bedrock = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const bedrock = getFixtureModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		const answers: [string, AssistantMessage][] = [
 			[
 				"Anthropic",
-				await streamAnthropic(model("anthropic-messages", baseUrl), context, { apiKey: "test-key", maxRetries: 0 }).result(),
+				await streamAnthropic(model("anthropic-messages", baseUrl), context, {
+					apiKey: "test-key",
+					maxRetries: 0,
+				}).result(),
 			],
 			[
 				"OpenAI Completions",
@@ -878,8 +915,14 @@ describe("Amazon Bedrock TLS SNI through an https:// proxy", () => {
 
 			assert.equal(results.wrongHost?.stopReason, "error");
 			assert.equal(results.wrongHost?.retryable, false);
-			assert.ok(results.wrongHost?.errorMessage?.includes("ERR_TLS_CERT_ALTNAME_INVALID"), results.wrongHost?.errorMessage);
-			assert.ok(results.wrongHost?.errorMessage?.includes(`proxy localhost:${wrongHostPort}`), results.wrongHost?.errorMessage);
+			assert.ok(
+				results.wrongHost?.errorMessage?.includes("ERR_TLS_CERT_ALTNAME_INVALID"),
+				results.wrongHost?.errorMessage,
+			);
+			assert.ok(
+				results.wrongHost?.errorMessage?.includes(`proxy localhost:${wrongHostPort}`),
+				results.wrongHost?.errorMessage,
+			);
 
 			assert.equal(results.ipv4Ok?.stopReason, "stop", results.ipv4Ok?.errorMessage);
 			assert.equal(results.ipv4Ok?.text, "sni-ok");
@@ -887,8 +930,14 @@ describe("Amazon Bedrock TLS SNI through an https:// proxy", () => {
 
 			assert.equal(results.ipv4Wrong?.stopReason, "error");
 			assert.equal(results.ipv4Wrong?.retryable, false);
-			assert.ok(results.ipv4Wrong?.errorMessage?.includes("ERR_TLS_CERT_ALTNAME_INVALID"), results.ipv4Wrong?.errorMessage);
-			assert.ok(results.ipv4Wrong?.errorMessage?.includes(`proxy 127.0.0.1:${ipv4WrongPort}`), results.ipv4Wrong?.errorMessage);
+			assert.ok(
+				results.ipv4Wrong?.errorMessage?.includes("ERR_TLS_CERT_ALTNAME_INVALID"),
+				results.ipv4Wrong?.errorMessage,
+			);
+			assert.ok(
+				results.ipv4Wrong?.errorMessage?.includes(`proxy 127.0.0.1:${ipv4WrongPort}`),
+				results.ipv4Wrong?.errorMessage,
+			);
 
 			assert.equal(results.ipv6Ok?.stopReason, "stop", results.ipv6Ok?.errorMessage);
 			assert.equal(results.ipv6Ok?.text, "sni-ok");
@@ -896,10 +945,19 @@ describe("Amazon Bedrock TLS SNI through an https:// proxy", () => {
 
 			assert.equal(results.ipv6Wrong?.stopReason, "error");
 			assert.equal(results.ipv6Wrong?.retryable, false);
-			assert.ok(results.ipv6Wrong?.errorMessage?.includes("ERR_TLS_CERT_ALTNAME_INVALID"), results.ipv6Wrong?.errorMessage);
-			assert.ok(results.ipv6Wrong?.errorMessage?.includes(`proxy [::1]:${ipv6WrongPort}`), results.ipv6Wrong?.errorMessage);
+			assert.ok(
+				results.ipv6Wrong?.errorMessage?.includes("ERR_TLS_CERT_ALTNAME_INVALID"),
+				results.ipv6Wrong?.errorMessage,
+			);
+			assert.ok(
+				results.ipv6Wrong?.errorMessage?.includes(`proxy [::1]:${ipv6WrongPort}`),
+				results.ipv6Wrong?.errorMessage,
+			);
 
-			assert.deepEqual(warnings.filter((w) => w.includes("RFC 6066")), []);
+			assert.deepEqual(
+				warnings.filter((w) => w.includes("RFC 6066")),
+				[],
+			);
 		},
 		NODE_CA_CHILD_TIMEOUT_MS,
 	);

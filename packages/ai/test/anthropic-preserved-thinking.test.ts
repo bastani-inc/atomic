@@ -1,8 +1,9 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { transformMessages } from "../src/api/transform-messages.ts";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { streamSimple } from "../src/compat.ts";
 import type {
 	AssistantMessage,
 	Context,
@@ -147,7 +148,7 @@ describe("preserved thinking across mid-conversation model switches", () => {
 	// Direction 1: another Claude model -> Claude Fable 5.1. Fable 5.1 reads every earlier Claude
 	// model's blocks, so the reasoning must survive the switch instead of being flattened to text.
 	it("replays an earlier Claude model's signed thinking unchanged when switching up to Fable 5.1", () => {
-		const target = getModel("anthropic", "claude-fable-5-1");
+		const target = getFixtureModel("anthropic", "claude-fable-5-1");
 		const result = transformMessages(historyFrom("claude-opus-5"), target);
 
 		const thinking = thinkingBlocks(result);
@@ -162,7 +163,7 @@ describe("preserved thinking across mid-conversation model switches", () => {
 	// Fable 5.1's blocks, but the API drops them itself, unbilled and without an error. The client
 	// passes them back unchanged rather than rewriting the transcript.
 	it("replays Fable 5.1 signed thinking unchanged when switching down to an earlier Claude model", () => {
-		const target = getModel("anthropic", "claude-opus-5");
+		const target = getFixtureModel("anthropic", "claude-opus-5");
 		const result = transformMessages(historyFrom("claude-fable-5-1"), target);
 
 		const thinking = thinkingBlocks(result);
@@ -176,7 +177,7 @@ describe("preserved thinking across mid-conversation model switches", () => {
 			["claude-opus-5", "claude-fable-5-1"],
 			["claude-fable-5-1", "claude-opus-5"],
 		] as const) {
-			const result = transformMessages(historyFrom(sourceModelId), getModel("anthropic", targetModelId));
+			const result = transformMessages(historyFrom(sourceModelId), getFixtureModel("anthropic", targetModelId));
 
 			const assistant = result.find((msg): msg is AssistantMessage => msg.role === "assistant");
 			expect(assistant, `${sourceModelId} -> ${targetModelId}`).toBeDefined();
@@ -197,7 +198,7 @@ describe("preserved thinking across mid-conversation model switches", () => {
 		// opencode zen rides `anthropic-messages` but is not documented to adjudicate signatures,
 		// so it never receives the capability. Uses Claude Fable 5 rather than 5.1 because a
 		// third-party mirror of a specific version can disappear from its provider's catalog.
-		const target = getModel("opencode", "claude-fable-5");
+		const target = getFixtureModel("opencode", "claude-fable-5");
 		expect(target.compat?.delegatesThinkingModelBinding).toBeUndefined();
 
 		const history = historyFrom("claude-opus-5").map((msg) =>
@@ -210,7 +211,7 @@ describe("preserved thinking across mid-conversation model switches", () => {
 	});
 
 	it("does not replay thinking across providers", () => {
-		const target = getModel("anthropic", "claude-fable-5-1");
+		const target = getFixtureModel("anthropic", "claude-fable-5-1");
 		const history = historyFrom("claude-fable-5-1").map((msg) =>
 			msg.role === "assistant" ? { ...msg, provider: "opencode" as AssistantMessage["provider"] } : msg,
 		);
@@ -222,7 +223,7 @@ describe("preserved thinking across mid-conversation model switches", () => {
 
 describe("Fable 5.1 prefix-mismatch handling", () => {
 	it("sends the block-binding beta header and drop_block on a reasoning turn", async () => {
-		const { payload, betaHeader } = await capturePayloadAndHeaders(getModel("anthropic", "claude-fable-5-1"), {
+		const { payload, betaHeader } = await capturePayloadAndHeaders(getFixtureModel("anthropic", "claude-fable-5-1"), {
 			reasoning: "high",
 		});
 
@@ -236,7 +237,7 @@ describe("Fable 5.1 prefix-mismatch handling", () => {
 	// reasoning level is requested, so a no-reasoning turn must still carry the field or the
 	// session fails on exactly the prefix change the beta was sent to absorb.
 	it("sends drop_block on a no-reasoning turn, where the header would otherwise be inert", async () => {
-		const { payload, betaHeader } = await capturePayloadAndHeaders(getModel("anthropic", "claude-fable-5-1"));
+		const { payload, betaHeader } = await capturePayloadAndHeaders(getFixtureModel("anthropic", "claude-fable-5-1"));
 
 		expect(betaHeader).toContain("thinking-binding-controls-2026-08-01");
 		expect(payload.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
@@ -251,7 +252,9 @@ describe("Fable 5.1 prefix-mismatch handling", () => {
 	it.each(["low", "medium", "high", "xhigh", "max"] as const)(
 		"keeps drop_block alongside effort=%s",
 		async (reasoning) => {
-			const { payload } = await capturePayloadAndHeaders(getModel("anthropic", "claude-fable-5-1"), { reasoning });
+			const { payload } = await capturePayloadAndHeaders(getFixtureModel("anthropic", "claude-fable-5-1"), {
+				reasoning,
+			});
 
 			expect(payload.thinking?.block_binding).toEqual({ prefix_mismatch_behavior: "drop_block" });
 			expect(payload.output_config).toEqual({ effort: "low" });
@@ -263,7 +266,10 @@ describe("Fable 5.1 prefix-mismatch handling", () => {
 		"does not opt %s into the conversation check, on reasoning or no-reasoning turns",
 		async (modelId) => {
 			for (const options of [undefined, { reasoning: "high" as const }]) {
-				const { payload, betaHeader } = await capturePayloadAndHeaders(getModel("anthropic", modelId), options);
+				const { payload, betaHeader } = await capturePayloadAndHeaders(
+					getFixtureModel("anthropic", modelId),
+					options,
+				);
 
 				expect(betaHeader).not.toContain("thinking-binding-controls-2026-08-01");
 				expect(payload.thinking?.block_binding).toBeUndefined();
@@ -274,7 +280,7 @@ describe("Fable 5.1 prefix-mismatch handling", () => {
 	// Never merged onto `thinking.type: "disabled"`; the docs scope `block_binding` to the
 	// `adaptive` and `enabled` shapes only.
 	it("does not attach block_binding to a disabled-thinking payload", async () => {
-		const { payload } = await capturePayloadAndHeaders(getModel("anthropic", "claude-sonnet-4-5"));
+		const { payload } = await capturePayloadAndHeaders(getFixtureModel("anthropic", "claude-sonnet-4-5"));
 
 		expect(payload.thinking).toEqual({ type: "disabled" });
 	});
@@ -333,7 +339,7 @@ describe("dropped thinking blocks are observable", () => {
 	const context: Context = { messages: [{ role: "user", content: "hi", timestamp: Date.now() }] };
 
 	it("records dropped blocks reported in input_transformations as a diagnostic", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(
 			eventsWithInputTransformations([
 				{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" },
@@ -354,7 +360,7 @@ describe("dropped thinking blocks are observable", () => {
 	});
 
 	it("records no diagnostic when the API reports no transformations", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(eventsWithInputTransformations(undefined));
 		const result = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(response),
@@ -364,7 +370,7 @@ describe("dropped thinking blocks are observable", () => {
 	});
 
 	it("records no diagnostic for an empty input_transformations array", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(eventsWithInputTransformations([]));
 		const result = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(response),
@@ -379,7 +385,7 @@ describe("dropped thinking blocks are observable", () => {
 	// Reachable for Claude Fable 5.1 specifically, because its generated metadata supplies
 	// `fallbacks` and the provider sends the server-side-fallback beta for it.
 	it("records dropped blocks reported only on the final message_delta", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(
 			eventsWithInputTransformations(undefined, [
 				{ type: "thinking_dropped", path: "messages.2.content.0", reason: "model_binding_mismatch" },
@@ -399,7 +405,7 @@ describe("dropped thinking blocks are observable", () => {
 
 	// A fallback delta describes the serving model and supersedes the request-start report.
 	it("records only the serving model report when both events carry entries", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(
 			eventsWithInputTransformations(
 				[{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" }],
@@ -418,7 +424,7 @@ describe("dropped thinking blocks are observable", () => {
 	// An empty serving report does not erase a real request-start report. There is still only one
 	// diagnostic because the reports are reconciled before emission.
 	it("preserves the request-start diagnostic when the serving report is empty", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(
 			eventsWithInputTransformations(
 				[{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" }],
@@ -435,7 +441,7 @@ describe("dropped thinking blocks are observable", () => {
 	});
 
 	it("preserves the request-start diagnostic when the stream fails mid-response", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const events = eventsWithInputTransformations([
 			{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" },
 		]);

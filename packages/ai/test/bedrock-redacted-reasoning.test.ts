@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 
 /**
  * OpenAI models served through Bedrock Converse return encrypted reasoning as the opaque
@@ -63,7 +64,7 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 });
 
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { Context, Message, Model, ThinkingContent } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -152,7 +153,7 @@ describe("Bedrock redacted reasoning", () => {
 	it.each(["openai.gpt-6-astra", "global.openai.gpt-6-astra", "us.openai.gpt-6-astra"] as const)(
 		"passes %s unchanged to ConverseStreamCommand",
 		async (modelId) => {
-			const model = getModel("amazon-bedrock", modelId);
+			const model = getFixtureModel("amazon-bedrock", modelId);
 			expect(model).toBeDefined();
 			const payload = await capturePayload(
 				{ messages: [{ role: "user", content: "hello", timestamp: Date.now() }] },

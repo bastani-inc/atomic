@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { classify } from "../src/api/cloudflare-workers-ai-system-one.js";
 import { createModels } from "../src/models.ts";
-import { getBuiltinClassifierModel } from "../src/providers/all.ts";
+import { getBuiltinClassifierModels } from "../src/providers/all.ts";
+
 import { cloudflareWorkersAIProvider } from "../src/providers/cloudflare-workers-ai.ts";
 import type { ClassifierContext } from "../src/types.ts";
 
@@ -76,7 +77,7 @@ const auth = { apiKey: "cf-key", env: { CLOUDFLARE_ACCOUNT_ID: "account-id" } };
 describe("Cloudflare Workers AI System One", () => {
 	it("exposes Jev only through classifier catalog accessors", () => {
 		const { models, jev } = setup();
-		expect(jev).toEqual(getBuiltinClassifierModel("cloudflare-workers-ai", "typesafe/jev"));
+		expect(jev).toEqual(getBuiltinClassifierModels("cloudflare-workers-ai").find((model) => model.id === jev.id));
 		expect(jev).toMatchObject({ type: "classifier", api: "cloudflare-workers-ai-system-one" });
 		expect(models.getModel("cloudflare-workers-ai", "typesafe/jev")).toBeUndefined();
 	});

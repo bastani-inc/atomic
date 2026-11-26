@@ -3,8 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
-import { type AssistantMessage, getModel, type Usage } from "@bastani/atomic-ai/compat";
+import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { scrubPreCompactionAssistantUsage } from "../src/core/provider-context-usage.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
@@ -17,7 +18,7 @@ const NO_BUILTINS = { subagents: false, mcp: false, "web-access": false, interco
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
-const model = getModel("anthropic", "claude-sonnet-4-5")!;
+const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 
 function createUsage(tokens: number): Usage {
 	return {

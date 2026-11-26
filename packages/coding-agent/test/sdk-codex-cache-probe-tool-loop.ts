@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+
 /**
  * Manual SDK probe for OpenAI Codex prompt caching through the tool loop.
  *
@@ -16,11 +17,12 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type Context,
-	getModel,
+	hasApi,
 	type Model,
 	type SimpleStreamOptions,
 	Type,
 } from "@bastani/atomic-ai/compat";
+import { builtinModels } from "@bastani/atomic-ai/providers/all";
 import {
 	getOpenAICodexWebSocketDebugStats,
 	streamSimpleOpenAICodexResponses,
@@ -277,7 +279,10 @@ async function main(): Promise<void> {
 	const authStorage = AuthStorage.create();
 	const modelRegistry = await createModelRegistry(authStorage);
 
-	const model = getModel("openai-codex", "gpt-6.1-sol");
+	const model = builtinModels().getModel("openai-codex", "gpt-6.1-sol");
+	if (!model || !hasApi(model, "openai-codex-responses")) {
+		throw new Error("openai-codex/gpt-6.1-sol is unavailable for the live cache probe");
+	}
 	if (!model) {
 		throw new Error("Model openai-codex/gpt-6.1-sol not found");
 	}

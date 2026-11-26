@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { type AnthropicOptions, stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { type BedrockOptions, stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { type OpenAICompletionsOptions, stream as streamCompletions } from "../src/api/openai-completions.ts";
-import { getModel, getModels, getProviders } from "../src/compat.ts";
+import { getModels, getProviders } from "../src/compat.ts";
 import type { Api, Context, Model, Tool } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -203,7 +204,7 @@ describe("forced tool choice is rejected on Claude Fable 5.1", () => {
 		"global.anthropic.claude-fable-5-1",
 		"us.anthropic.claude-fable-5-1",
 	] as const)("marks Bedrock %s as rejecting forced tool choice", (modelId) => {
-		expect(getModel("amazon-bedrock", modelId).compat?.supportsForcedToolChoice).toBe(false);
+		expect(getFixtureModel("amazon-bedrock", modelId).compat?.supportsForcedToolChoice).toBe(false);
 	});
 
 	it("rejects tool_choice any on every mirror instead of rewriting it", async () => {
@@ -216,7 +217,7 @@ describe("forced tool choice is rejected on Claude Fable 5.1", () => {
 	});
 
 	it("rejects a named forced tool and names the remedy", async () => {
-		const message = await anthropicErrorMessage(getModel("anthropic", "claude-fable-5-1"), {
+		const message = await anthropicErrorMessage(getFixtureModel("anthropic", "claude-fable-5-1"), {
 			type: "tool",
 			name: "double_number",
 		});
@@ -228,7 +229,10 @@ describe("forced tool choice is rejected on Claude Fable 5.1", () => {
 	});
 
 	it("rejects forced tool choice on the Bedrock profiles too", async () => {
-		const message = await bedrockErrorMessage(getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1"), "any");
+		const message = await bedrockErrorMessage(
+			getFixtureModel("amazon-bedrock", "global.anthropic.claude-fable-5-1"),
+			"any",
+		);
 
 		expect(message).toMatch(FORCED_TOOL_CHOICE_ERROR);
 	});
@@ -241,7 +245,7 @@ describe("forced tool choice is rejected on Claude Fable 5.1", () => {
 		["an empty tool list", [] as Tool[]],
 		["no tool list", undefined],
 	] as const)("rejects forced tool choice on Bedrock with %s", async (_label, tools) => {
-		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
+		const model = getFixtureModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
 
 		expect(await bedrockErrorMessage(model, "any", tools)).toMatch(FORCED_TOOL_CHOICE_ERROR);
 		expect(await bedrockErrorMessage(model, { type: "tool", name: "double_number" }, tools)).toMatch(
@@ -255,19 +259,19 @@ describe("forced tool choice is rejected on Claude Fable 5.1", () => {
 		["an empty tool list", [] as Tool[]],
 		["no tool list", undefined],
 	] as const)("still accepts toolChoice none on Bedrock with %s", async (_label, tools) => {
-		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
+		const model = getFixtureModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
 
 		expect(await bedrockErrorMessage(model, "none", tools)).not.toMatch(FORCED_TOOL_CHOICE_ERROR);
 	});
 
 	it.each(["auto", "none"] as const)("passes %s through unchanged", async (toolChoice) => {
-		const payload = await captureAnthropicPayload(getModel("anthropic", "claude-fable-5-1"), toolChoice);
+		const payload = await captureAnthropicPayload(getFixtureModel("anthropic", "claude-fable-5-1"), toolChoice);
 
 		expect(payload.tool_choice).toEqual({ type: toolChoice });
 	});
 
 	it("omits tool_choice entirely when none is requested", async () => {
-		const payload = await captureAnthropicPayload(getModel("anthropic", "claude-fable-5-1"), undefined);
+		const payload = await captureAnthropicPayload(getFixtureModel("anthropic", "claude-fable-5-1"), undefined);
 
 		expect(payload.tool_choice).toBeUndefined();
 	});
@@ -279,7 +283,7 @@ describe("forced tool choice on models that accept it", () => {
 	it.each(["claude-fable-5", "claude-opus-5", "claude-sonnet-4-5"] as const)(
 		"passes forced tool choice through unchanged for %s",
 		async (modelId) => {
-			const model = getModel("anthropic", modelId);
+			const model = getFixtureModel("anthropic", modelId);
 			expect(model.compat?.supportsForcedToolChoice).toBeUndefined();
 
 			expect(await captureAnthropicPayload(model, "any")).toMatchObject({ tool_choice: { type: "any" } });
@@ -290,7 +294,7 @@ describe("forced tool choice on models that accept it", () => {
 	);
 
 	it("passes forced tool choice through unchanged for Bedrock Claude Fable 5", async () => {
-		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5");
+		const model = getFixtureModel("amazon-bedrock", "global.anthropic.claude-fable-5");
 		expect(model.compat?.supportsForcedToolChoice).toBeUndefined();
 
 		const payload = await captureBedrockPayload(model, "any");
@@ -310,7 +314,9 @@ describe("forced tool choice on models that accept it", () => {
  */
 describe("forced tool choice on the OpenAI-completions mirror", () => {
 	it("marks openrouter/anthropic/claude-fable-5.1 as rejecting forced tool choice", () => {
-		expect(getModel("openrouter", "anthropic/claude-fable-5.1:batch").compat?.supportsForcedToolChoice).toBe(false);
+		expect(getFixtureModel("openrouter", "anthropic/claude-fable-5.1:batch").compat?.supportsForcedToolChoice).toBe(
+			false,
+		);
 	});
 
 	/**
@@ -335,7 +341,7 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 	] as const;
 
 	it.each(forcingShapes)("rejects a %s tool choice and names it", async (_label, toolChoice, expectedLabel) => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1:batch");
+		const model = getFixtureModel("openrouter", "anthropic/claude-fable-5.1:batch");
 
 		const message = await completionsErrorMessage(model, toolChoice as OpenAICompletionsOptions["toolChoice"]);
 
@@ -345,7 +351,7 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 	});
 
 	it.each(["auto", "none"] as const)("passes %s through unchanged", async (toolChoice) => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1:batch");
+		const model = getFixtureModel("openrouter", "anthropic/claude-fable-5.1:batch");
 
 		const payload = await captureCompletionsPayload(model, toolChoice);
 
@@ -355,7 +361,7 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 	// The case that pins the `mode` distinction and would catch an over-broad fix: narrowing the
 	// candidate set is not forcing, so this shape must still reach the wire untouched.
 	it("passes allowed_tools with mode auto through unchanged", async () => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1:batch");
+		const model = getFixtureModel("openrouter", "anthropic/claude-fable-5.1:batch");
 		const toolChoice: OpenAICompletionsOptions["toolChoice"] = {
 			type: "allowed_tools",
 			allowed_tools: { mode: "auto", tools: [{ type: "function", function: { name: "double_number" } }] },
@@ -371,7 +377,7 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 	// own `supported_parameters` agrees: `claude-fable-5` lists `tool_choice`, `claude-fable-5.1`
 	// does not. A Fable-family match — correct for temperature — would be wrong here.
 	it.each(forcingShapes)("leaves Claude Fable 5 able to force a tool (%s)", async (_label, toolChoice) => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5:batch");
+		const model = getFixtureModel("openrouter", "anthropic/claude-fable-5:batch");
 		expect(model.compat?.supportsForcedToolChoice).toBeUndefined();
 
 		const payload = await captureCompletionsPayload(model, toolChoice as OpenAICompletionsOptions["toolChoice"]);
@@ -383,7 +389,9 @@ describe("forced tool choice on the OpenAI-completions mirror", () => {
 	// Leaving it unguarded is deliberate and documented, and is the opposite trade from
 	// temperature, where the family match was widened specifically to reach it.
 	it("deliberately leaves the unversioned latest alias unguarded", () => {
-		expect(getModel("openrouter", "~anthropic/claude-fable-latest").compat?.supportsForcedToolChoice).toBeUndefined();
+		expect(
+			getFixtureModel("openrouter", "~anthropic/claude-fable-latest").compat?.supportsForcedToolChoice,
+		).toBeUndefined();
 	});
 });
 

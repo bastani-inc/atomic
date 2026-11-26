@@ -1,5 +1,6 @@
 import type { ConverseStreamCommand } from "@aws-sdk/client-bedrock-runtime";
 import { describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 
 // Include incomplete service metadata to exercise missing-count handling.
 const state = vi.hoisted(() => ({ details: undefined as { ttl?: string; inputTokens?: number }[] | undefined }));
@@ -35,9 +36,9 @@ vi.mock("@aws-sdk/client-bedrock-runtime", async (importOriginal) => {
 });
 
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 
-const model = getModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
+const model = getFixtureModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
 
 describe("Bedrock 1h cache write cost", () => {
 	it.each([

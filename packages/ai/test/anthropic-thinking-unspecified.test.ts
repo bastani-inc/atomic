@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -49,8 +50,8 @@ afterEach(() => {
 
 describe("Anthropic requests that leave thinking unspecified (#4545)", () => {
 	it.each<[string, Model<"anthropic-messages">, string | undefined]>([
-		["a managed-effort model, at the default high marker", getModel("anthropic", "claude-opus-5-5"), "high"],
-		["an adaptive model, with no effort", getModel("anthropic", "claude-opus-4-8"), undefined],
+		["a managed-effort model, at the default high marker", getFixtureModel("anthropic", "claude-opus-5-5"), "high"],
+		["an adaptive model, with no effort", getFixtureModel("anthropic", "claude-opus-4-8"), undefined],
 	])("keeps the API default for %s when a low-level request passes no options", async (_case, model, marker) => {
 		const reply = await streamAnthropic(model, context).result();
 

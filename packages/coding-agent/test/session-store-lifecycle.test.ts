@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { parseArgs } from "../src/cli/args.ts";
 import {
 	AgentSessionRuntime,
@@ -35,7 +35,7 @@ async function servicesFor(cwd: string) {
 	});
 }
 
-const sessionOptions = { model: getModel("anthropic", "claude-sonnet-4-5"), noTools: true };
+const sessionOptions = { model: getFixtureModel("anthropic", "claude-sonnet-4-5"), noTools: true };
 
 test("SDK-owned SQLite survives new, fork and switch, and closes with its runtime", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "session-store-lifetime-"));

@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * Tests for AgentSession concurrent prompt guard.
  */
@@ -7,12 +8,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage } from "@bastani/atomic-agent-core";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type TextContent,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type TextContent } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -108,7 +104,7 @@ describe("AgentSession concurrent prompt guard", () => {
 	});
 
 	async function createSession(extensions: Parameters<typeof createTestExtensionsResult>[0] = []) {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let abortSignal: AbortSignal | undefined;
 
 		// Use a stream function that responds to abort
@@ -240,7 +236,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await firstPrompt.catch(() => {});
 	});
 	it("should queue extension-origin steering messages while streaming", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let abortSignal: AbortSignal | undefined;
 		let sawSteeringMessage = false;
 		let lastInputSource: string | undefined;
@@ -344,7 +340,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		expect(sawSteeringMessage).toBe(true);
 	});
 	it("should interrupt a streaming turn for triggerTurn custom messages", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let abortObserved = false;
 		let interruptTurnStarted = false;
 		let finishInterruptTurn: (() => void) | undefined;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { streamSimple as streamSimpleOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
-import { clampThinkingLevel, getModel, getSupportedThinkingLevels, normalizeContext } from "../src/compat.ts";
+import { clampThinkingLevel, getSupportedThinkingLevels, normalizeContext } from "../src/compat.ts";
 import type { Model } from "../src/types.ts";
 
 function mockToken(): string {
@@ -33,7 +34,7 @@ describe("max thinking level", () => {
 	it.each(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-luna", "gpt-6-sol"] as const)(
 		"exposes xhigh and max for openai-codex/%s",
 		(modelId) => {
-			const model = getModel("openai-codex", modelId);
+			const model = getFixtureModel("openai-codex", modelId);
 			expect(model).toBeDefined();
 			expect(model?.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
 			expect(getSupportedThinkingLevels(model!)).toEqual([
@@ -49,7 +50,7 @@ describe("max thinking level", () => {
 	);
 
 	it.each(["openai", "openai-codex"] as const)("exposes exactly low through max for %s/gpt-6-astra", (provider) => {
-		const model = getModel(provider, "gpt-6-astra");
+		const model = getFixtureModel(provider, "gpt-6-astra");
 		expect(model).toBeDefined();
 		expect(getSupportedThinkingLevels(model!)).toEqual(["low", "medium", "high", "xhigh", "max"]);
 	});
@@ -82,7 +83,7 @@ describe("max thinking level", () => {
 		"gpt-6.2-astra",
 		"gpt-6.2-sol",
 	] as const)("sends max to the Codex Responses API for %s", async (modelId) => {
-		const model = getModel("openai-codex", modelId)!;
+		const model = getFixtureModel("openai-codex", modelId)!;
 		const context = normalizeContext({
 			systemPrompt: "You are a helpful assistant.",
 			messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
@@ -101,7 +102,7 @@ describe("max thinking level", () => {
 		expect(payload).toMatchObject({ reasoning: { effort: "max", summary: "auto" } });
 	});
 	it.each(["minimal", "low", "max"] as const)("maps Sol 6.1 %s to supported Codex wire effort", async (reasoning) => {
-		const base = getModel("openai-codex", "gpt-6.1-sol")!;
+		const base = getFixtureModel("openai-codex", "gpt-6.1-sol")!;
 		for (const fast of [false, true]) {
 			const model = fast
 				? {

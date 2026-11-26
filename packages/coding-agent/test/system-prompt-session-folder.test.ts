@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * The default prompt names the project's session folder in a section near its end, so the guidelines read the same in
  * every project (#6121). A session recorded with the folder in its guidelines keeps that prompt. Real AgentSession
@@ -8,7 +9,6 @@ import type { AgentMessage } from "@bastani/atomic-agent-core";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	getModel,
 	getSystemMessageText,
 	type Model,
 } from "@bastani/atomic-ai/compat";
@@ -46,7 +46,7 @@ function usage(): AssistantMessage["usage"] {
 }
 
 async function createRuntime(prompts: string[]) {
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const model: Model<"anthropic-messages"> = { ...base, provider: PROVIDER, id: "claude", name: "Claude" };
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),

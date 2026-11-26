@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { getBuiltinPackageLocations } from "../../packages/coding-agent/src/core/builtin-packages.js";
@@ -16,6 +15,7 @@ import { LATEST_PROTOCOL_VERSION } from "../../packages/coding-agent/src/extensi
 import { loadMcpConfig, type McpExposure } from "../../packages/coding-agent/src/extensions/mcp/config.js";
 import { createMcpExtension } from "../../packages/coding-agent/src/extensions/mcp/index.js";
 import { closeServers, listen, readBody } from "../../packages/coding-agent/test/mcp-client/helpers.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
 const NATIVE_CHILD_SESSION_TIMEOUT_MS = 120_000;
 const roots: string[] = [];
@@ -124,7 +124,7 @@ async function nativeChild(
 		settingsManager,
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(root),
-		model: getModel("anthropic", "claude-sonnet-4-5"),
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 		tools: options.tools,
 		excludedTools: options.excludedTools,
 		noTools: options.noTools,
@@ -386,7 +386,7 @@ test(
 			agentDir: join(root, "agent"),
 			settingsManager: SettingsManager.inMemory(),
 			sessionManager: SessionManager.inMemory(root),
-			model: getModel("anthropic", "claude-sonnet-4-5"),
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			tools: ["re*", "subagent"],
 		});

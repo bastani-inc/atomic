@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import {
 	AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
 const warning = "unsupported configured provider";
 const createRuntime = (async () => {
@@ -24,8 +24,8 @@ function lockedRuntime(): AgentSessionRuntime {
 }
 
 test("explicit changed model selection resolves fallback by provider and id", () => {
-	const previous = getModel("anthropic", "claude-sonnet-4-5");
-	const selected = getModel("openai", "gpt-5.6-sol");
+	const previous = getFixtureModel("anthropic", "claude-sonnet-4-5");
+	const selected = getFixtureModel("openai", "gpt-5.6-sol");
 	assert.ok(previous);
 	assert.ok(selected);
 	const runtime = lockedRuntime();
@@ -37,7 +37,7 @@ test("explicit changed model selection resolves fallback by provider and id", ()
 });
 
 test("null, undefined, and same provider/id selections preserve fallback", () => {
-	const previous = getModel("anthropic", "claude-sonnet-4-5");
+	const previous = getFixtureModel("anthropic", "claude-sonnet-4-5");
 	assert.ok(previous);
 	for (const selected of [null, undefined, { ...previous, contextWindow: previous.contextWindow + 1 }]) {
 		const runtime = lockedRuntime();

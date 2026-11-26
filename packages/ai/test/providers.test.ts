@@ -33,6 +33,7 @@ import type {
 } from "../src/types.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
+import { publishedModel } from "./live-catalog-model.ts";
 
 function fakeAuthContext(env: Record<string, string>, files: string[] = []): AuthContext {
 	return {
@@ -80,7 +81,9 @@ describe("builtin providers", () => {
 		const missing: string[] = [];
 		for (const provider of models.getProviders()) {
 			for (const model of models.getModels(provider.id)) {
-				const result = await provider.streamSimple(model, context, { signal: aborted, apiKey: "test-key" }).result();
+				const result = await provider
+					.streamSimple(model, context, { signal: aborted, apiKey: "test-key" })
+					.result();
 				if (result.errorMessage?.includes("no API implementation")) missing.push(`${provider.id}/${model.id}`);
 			}
 		}
@@ -102,15 +105,15 @@ describe("builtin providers", () => {
 		expect(getCompatModels(unknownProvider)).toEqual([]);
 	});
 
-	it("stores native constrained-sampling capabilities in model metadata", () => {
-		const gpt4o = getBuiltinModel("openai", "gpt-4o");
+	it("stores native constrained-sampling capabilities in model metadata", (ctx) => {
+		const gpt4o = publishedModel("openai", "gpt-4o", ctx);
 		expect(gpt4o.compat?.supportsStrictMode).toBe(true);
 		expect(gpt4o.compat?.supportsOpenAIGrammarTools).toBeUndefined();
-		expect(getBuiltinModel("openai", "gpt-5.4").compat).toMatchObject({
+		expect(publishedModel("openai", "gpt-5.4", ctx).compat).toMatchObject({
 			supportsStrictMode: true,
 			supportsOpenAIGrammarTools: true,
 		});
-		expect(getBuiltinModel("anthropic", "claude-haiku-4-5").compat?.supportsStrictTools).toBe(true);
+		expect(publishedModel("anthropic", "claude-haiku-4-5", ctx).compat?.supportsStrictTools).toBe(true);
 	});
 
 	it("keeps the conservative resize profile on every vision model", () => {
@@ -123,20 +126,22 @@ describe("builtin providers", () => {
 		}
 	});
 
-	it("records known direct-provider image request limits", () => {
-		expect(getBuiltinModel("anthropic", "claude-haiku-4-5").inputLimits).toMatchObject({
+	it("records known direct-provider image request limits", (ctx) => {
+		expect(publishedModel("anthropic", "claude-haiku-4-5", ctx).inputLimits).toMatchObject({
 			maxRequestBytes: 32 * 1024 * 1024,
 			images: { maxPerRequest: 100 },
 		});
-		expect(getBuiltinModel("anthropic", "claude-opus-5").inputLimits?.images?.maxPerRequest).toBe(600);
-		expect(getBuiltinModel("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0").inputLimits).toMatchObject({
+		expect(publishedModel("anthropic", "claude-opus-5", ctx).inputLimits?.images?.maxPerRequest).toBe(600);
+		expect(
+			publishedModel("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0", ctx).inputLimits,
+		).toMatchObject({
 			images: { maxPerMessage: 20 },
 		});
-		expect(getBuiltinModel("openai", "gpt-4o").inputLimits).toMatchObject({
+		expect(publishedModel("openai", "gpt-4o", ctx).inputLimits).toMatchObject({
 			maxRequestBytes: 512 * 1024 * 1024,
 			images: { maxPerRequest: 1500 },
 		});
-		expect(getBuiltinModel("google", "gemini-2.5-flash").inputLimits).toMatchObject({
+		expect(publishedModel("google", "gemini-2.5-flash", ctx).inputLimits).toMatchObject({
 			maxRequestBytes: 20 * 1024 * 1024,
 			images: { maxPerRequest: 3600 },
 		});
@@ -147,27 +152,27 @@ describe("builtin providers", () => {
 		expect(openRouterModel?.inputLimits).toEqual({ images: { resize: DEFAULT_IMAGE_RESIZE } });
 	});
 
-	it("uses models.dev effort levels for Google thinking models", () => {
+	it("uses models.dev effort levels for Google thinking models", (ctx) => {
 		// Regression test for https://github.com/earendil-works/pi/issues/9455
 		for (const provider of ["google", "google-vertex"] as const) {
-			expect(getSupportedThinkingLevels(getBuiltinModel(provider, "gemini-3.6-flash"))).toContain("minimal");
-			expect(getSupportedThinkingLevels(getBuiltinModel(provider, "gemini-3.8-flash"))).toEqual([
+			expect(getSupportedThinkingLevels(publishedModel(provider, "gemini-3.6-flash", ctx))).toContain("minimal");
+			expect(getSupportedThinkingLevels(publishedModel(provider, "gemini-3.8-flash", ctx))).toEqual([
 				"low",
 				"medium",
 				"high",
 			]);
-			expect(getSupportedThinkingLevels(getBuiltinModel(provider, "gemini-3.1-pro-preview"))).toEqual([
+			expect(getSupportedThinkingLevels(publishedModel(provider, "gemini-3.1-pro-preview", ctx))).toEqual([
 				"low",
 				"medium",
 				"high",
 			]);
 		}
-		expect(getSupportedThinkingLevels(getBuiltinModel("opencode", "gemini-3.8-flash"))).toEqual([
+		expect(getSupportedThinkingLevels(publishedModel("opencode", "gemini-3.8-flash", ctx))).toEqual([
 			"low",
 			"medium",
 			"high",
 		]);
-		expect(getSupportedThinkingLevels(getBuiltinModel("google", "gemma-4-31b-it"))).toEqual(["minimal", "high"]);
+		expect(getSupportedThinkingLevels(publishedModel("google", "gemma-4-31b-it", ctx))).toEqual(["minimal", "high"]);
 	});
 
 	it("enables mid-conversation system messages only for verified models", () => {
@@ -202,7 +207,9 @@ describe("builtin providers", () => {
 			["deepseek", "deepseek-v4-pro"],
 			["openrouter", "openai/gpt-5.6-terra"],
 		] as const;
-		const fireworksMessagesModels = getBuiltinModels("fireworks").filter((model) => model.api === "anthropic-messages");
+		const fireworksMessagesModels = getBuiltinModels("fireworks").filter(
+			(model) => model.api === "anthropic-messages",
+		);
 		expect(
 			fireworksMessagesModels.length,
 			"Expected fireworks catalog models using anthropic-messages for system-message compatibility coverage (#4548)",

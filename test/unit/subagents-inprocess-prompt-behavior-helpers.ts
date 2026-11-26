@@ -7,7 +7,6 @@ import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	getModel,
 	type Message,
 	type Model,
 } from "@bastani/atomic-ai/compat";
@@ -22,6 +21,7 @@ import type { Skill } from "../../packages/coding-agent/src/core/skills.js";
 import { createSyntheticSourceInfo } from "../../packages/coding-agent/src/core/source-info.js";
 import { createInProcessChildPromptBehavior } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
 export const tempDirs: string[] = [];
 
@@ -103,7 +103,7 @@ export interface PayloadMessage {
 	content: unknown;
 }
 
-export const copilotOpus = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
+export const copilotOpus = getFixtureModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
 
 export const zeroUsage = {
 	input: 0,

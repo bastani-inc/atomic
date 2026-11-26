@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /// <reference path="../../packages/coding-agent/src/utils/highlight-js-lib-index.d.ts" />
 
 import assert from "node:assert/strict";
@@ -12,7 +13,7 @@ import {
 	normalizeContext,
 	type ProviderHeaders,
 } from "@bastani/atomic-ai";
-import { getModel } from "@bastani/atomic-ai/compat";
+
 import { afterEach, describe, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
@@ -70,7 +71,7 @@ async function createChildSession(options: {
 	readonly model?: Model<Api>;
 	readonly modelRuntime?: CreateAgentSessionOptions["modelRuntime"];
 }) {
-	const model = options.model ?? getModel("anthropic", "claude-sonnet-4-5");
+	const model = options.model ?? getFixtureModel("anthropic", "claude-sonnet-4-5");
 	assert.notEqual(model, undefined);
 	const settingsManager = SettingsManager.create(options.cwd, options.agentDir);
 	const loaderOptions = inProcessChildResourceLoaderOptions({

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
-import { getModel, getModels, getProviders } from "../src/compat.ts";
+import { getModels, getProviders } from "../src/compat.ts";
 import type { Api, Context, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
+import { publishedModel } from "./live-catalog-model.ts";
 
 /**
  * Catalog regressions for Claude Fable 5.1.
@@ -54,8 +56,8 @@ async function capturePayload(model: Model<"anthropic-messages">): Promise<Anthr
 }
 
 describe("Claude Fable 5.1 catalog metadata", () => {
-	it("publishes the documented Anthropic limits, pricing, and capabilities", () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+	it("publishes the documented Anthropic limits, pricing, and capabilities", (ctx) => {
+		const model = publishedModel("anthropic", "claude-fable-5-1", ctx);
 
 		expect(model).toBeDefined();
 		expect(model.id).toBe("claude-fable-5-1");
@@ -75,8 +77,8 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 		expect(model.compat?.supportsTemperature).toBe(false);
 	});
 
-	it("denies thinking off in the generated thinking level map", () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+	it("denies thinking off in the generated thinking level map", (ctx) => {
+		const model = publishedModel("anthropic", "claude-fable-5-1", ctx);
 
 		expect(model.thinkingLevelMap?.off).toBeNull();
 		expect(model.thinkingLevelMap?.xhigh).toBe("xhigh");
@@ -85,18 +87,20 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 
 	// Fable 5.1 cache reads cost 0.025x base input, against 0.1x on Fable 5. This is the headline
 	// pricing change between the two models and must never be mirrored from the predecessor.
-	it("prices cache reads at a quarter of the Claude Fable 5 rate", () => {
-		expect(getModel("anthropic", "claude-fable-5-1").cost.cacheRead).toBe(0.25);
-		expect(getModel("anthropic", "claude-fable-5").cost.cacheRead).toBe(1);
+	it("prices cache reads at a quarter of the Claude Fable 5 rate", (ctx) => {
+		expect(publishedModel("anthropic", "claude-fable-5-1", ctx).cost.cacheRead).toBe(0.25);
+		expect(publishedModel("anthropic", "claude-fable-5", ctx).cost.cacheRead).toBe(1);
 	});
 
 	// Asserted as relations, not amounts: on 2026-11-19 models.dev moved the in-region
 	// `anthropic.claude-fable-5-1` profile from the global rates to the US-only rates, and a
 	// catalog refresh like that must not fail the build.
 	it("uses Fable 5.1's rate ratios for each published Bedrock profile", ({ skip }) => {
-		const profiles = getModels("amazon-bedrock").filter((model) => /(?:^|\.)anthropic\.claude-fable-5-1$/.test(model.id));
+		const profiles = getModels("amazon-bedrock").filter((model) =>
+			/(?:^|\.)anthropic\.claude-fable-5-1$/.test(model.id),
+		);
 		if (profiles.length === 0) return skip("The generated Bedrock catalog has no Fable 5.1 profiles");
-		const anthropic = getModel("anthropic", "claude-fable-5-1").cost;
+		const anthropic = publishedModel("anthropic", "claude-fable-5-1", { skip }).cost;
 		for (const { id, cost } of profiles) {
 			const factor = cost.input / anthropic.input;
 			expect(factor, id).toBeGreaterThan(0);
@@ -124,14 +128,13 @@ describe("Claude Fable 5.1 catalog metadata", () => {
 			expect(model.reasoning, `${model.provider}/${model.id}`).toBe(true);
 		}
 	});
-
 });
 
 describe("Claude Fable 5.1 server-side fallback", () => {
 	// Per-turn effort markers require fallback targets that support the same transport contract.
 	// https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
-	it("advertises only the per-turn-effort-compatible fallback target", () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+	it("advertises only the per-turn-effort-compatible fallback target", (ctx) => {
+		const model = publishedModel("anthropic", "claude-fable-5-1", ctx);
 		const allowed = model.compat?.allowedFallbackModels ?? [];
 
 		expect(new Set(allowed.map((fallback) => fallback.model))).toEqual(new Set(["claude-opus-5"]));
@@ -141,7 +144,7 @@ describe("Claude Fable 5.1 server-side fallback", () => {
 	});
 
 	it("sends those fallbacks on the request payload", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"));
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5-1"));
 
 		expect(payload.fallbacks).toEqual([{ model: "claude-opus-5" }]);
 	});

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { migrateCompactionModelSettings, resolveCompactionModel } from "../src/core/compaction/model-resolver.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
@@ -70,7 +70,7 @@ describe("compaction settings after the clear-and-recover change", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(tempDir),
 			authStorage,
@@ -162,7 +162,7 @@ describe("compaction settings after the clear-and-recover change", () => {
 	it("a project selection is migrated once the project is trusted", async () => {
 		writeSettings({}, { compactionModel: CHAT });
 		const settingsManager = SettingsManager.create(tempDir, agentDir, { projectTrusted: false });
-		const models = [{ ...getModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<
+		const models = [{ ...getFixtureModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<
 			typeof migrateCompactionModelSettings
 		>[1];
 		assert.deepEqual(migrateCompactionModelSettings(settingsManager, models), []);
@@ -202,7 +202,7 @@ describe("compaction settings after the clear-and-recover change", () => {
 				else state.global = model;
 			},
 		};
-		const models = [{ ...getModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<
+		const models = [{ ...getFixtureModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<
 			typeof migrateCompactionModelSettings
 		>[1];
 		assert.deepEqual(migrateCompactionModelSettings(settings, models), [{ scope: "global", from: CHAT }]);
@@ -212,7 +212,7 @@ describe("compaction settings after the clear-and-recover change", () => {
 	});
 
 	it("a value that cannot be persisted still resolves to auto at compaction time", () => {
-		const models = [{ ...getModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<
+		const models = [{ ...getFixtureModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<
 			typeof resolveCompactionModel
 		>[1];
 		assert.deepEqual(resolveCompactionModel(CHAT, models), {
@@ -231,7 +231,9 @@ describe("compaction settings after the clear-and-recover change", () => {
 		let catalogCalls = 0;
 		const lazyModels = () => {
 			catalogCalls += 1;
-			return [{ ...getModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<typeof resolveCompactionModel>[1];
+			return [{ ...getFixtureModel("anthropic", "claude-sonnet-4-5")! }] as Parameters<
+				typeof resolveCompactionModel
+			>[1];
 		};
 		const state: { global?: string; project?: string } = { global: undefined, project: "auto" };
 		const writes: Array<[string, string | undefined]> = [];

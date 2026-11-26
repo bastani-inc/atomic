@@ -3,9 +3,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getModel, type Model } from "@bastani/atomic-ai/compat";
+import type { Model } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import type { EventBus } from "../src/core/event-bus.ts";
 import { sessionScopedExtensionState } from "../src/core/extension-session-state.ts";
 import type { ExtensionCommandContextActions } from "../src/core/extensions/index.ts";
@@ -112,7 +113,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 				resourceLoader,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(),
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			});
 			try {
@@ -177,7 +178,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager,
 			resourceLoader,
@@ -321,7 +322,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
@@ -395,7 +396,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 			const { session } = await createAgentSession({
 				cwd: tempDir,
 				agentDir,
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(),
 				resourceLoader,
@@ -445,7 +446,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
@@ -489,7 +490,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
@@ -526,7 +527,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
@@ -583,7 +584,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
@@ -661,7 +662,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
@@ -735,7 +736,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,

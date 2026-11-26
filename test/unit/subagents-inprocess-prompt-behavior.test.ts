@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage } from "@bastani/atomic-agent-core";
 import { normalizeContext } from "@bastani/atomic-ai";
-import { getModel, type Message, type Model } from "@bastani/atomic-ai/compat";
+import type { Message, Model } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
@@ -22,6 +22,7 @@ import {
 	stripParentOnlySubagentMessages,
 } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 import {
 	assistantTurns,
 	childFirstRequest,
@@ -312,7 +313,7 @@ describe("child context refresh (#5481)", () => {
 
 	test("an unchanged fresh child still sends its scheduled cache warm after refresh (#5481)", async () => {
 		const manager = forkParent();
-		const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, promptCache: { short: 60, long: 60 } };
+		const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-5")!, promptCache: { short: 60, long: 60 } };
 		const answer = {
 			...parentTurn([{ type: "thinking", thinking: "Answer", thinkingSignature: "sig" }]),
 			provider: model.provider,
@@ -553,7 +554,7 @@ describe("forked child's first request replays the parent's thinking (#5481)", (
 				],
 			]);
 			assert.doesNotMatch(JSON.stringify(same), /Launched reviewer/);
-			const other = getModel("anthropic", "claude-opus-5-5") as Model<"anthropic-messages">;
+			const other = getFixtureModel("anthropic", "claude-opus-5-5") as Model<"anthropic-messages">;
 			assert.deepEqual(assistantTurns(await childFirstRequest(session, other)), [[tool]]);
 
 			// Once the child has answered, this is no longer its latest assistant turn.

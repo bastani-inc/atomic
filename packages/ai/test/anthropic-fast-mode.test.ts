@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { Model } from "../src/types.ts";
 
 interface CapturedRequest {
@@ -21,8 +22,14 @@ function sseResponse(speed: "fast" | "standard" | undefined): Response {
 			event: "message_start",
 			data: { type: "message_start", message: { id: "msg_fast", model: "claude-opus-5-5", usage } },
 		},
-		{ event: "content_block_start", data: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } },
-		{ event: "content_block_delta", data: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } } },
+		{
+			event: "content_block_start",
+			data: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+		},
+		{
+			event: "content_block_delta",
+			data: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi" } },
+		},
 		{ event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
 		{
 			event: "message_delta",
@@ -38,10 +45,7 @@ function sseResponse(speed: "fast" | "standard" | undefined): Response {
 	return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
-function capturingFetch(
-	captured: CapturedRequest[],
-	speed: "fast" | "standard" | undefined,
-): typeof globalThis.fetch {
+function capturingFetch(captured: CapturedRequest[], speed: "fast" | "standard" | undefined): typeof globalThis.fetch {
 	return async (_input, init) => {
 		captured.push({
 			headers: new Headers(init?.headers),
@@ -52,7 +56,7 @@ function capturingFetch(
 }
 
 function fastVariant(baseId: "claude-opus-5-5" | "claude-opus-5" | "claude-opus-4-8"): Model<"anthropic-messages"> {
-	const base = getModel("anthropic", baseId);
+	const base = getFixtureModel("anthropic", baseId);
 	return {
 		...base,
 		id: `${baseId}-fast`,
@@ -95,7 +99,7 @@ describe("Anthropic fast mode", () => {
 
 	it("sends neither speed nor the fast-mode beta for the normal model", async () => {
 		const captured: CapturedRequest[] = [];
-		await streamAnthropic(getModel("anthropic", "claude-opus-5-5"), context, {
+		await streamAnthropic(getFixtureModel("anthropic", "claude-opus-5-5"), context, {
 			apiKey: "sk-ant-api-test",
 			fetch: capturingFetch(captured, undefined),
 		}).result();
@@ -130,7 +134,7 @@ describe("Anthropic fast mode", () => {
 	});
 
 	it("does not reprice a normal model", async () => {
-		const result = await streamAnthropic(getModel("anthropic", "claude-opus-5-5"), context, {
+		const result = await streamAnthropic(getFixtureModel("anthropic", "claude-opus-5-5"), context, {
 			apiKey: "sk-ant-api-test",
 			fetch: capturingFetch([], "standard"),
 		}).result();

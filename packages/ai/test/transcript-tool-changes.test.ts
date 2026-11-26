@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { streamSimple } from "../src/compat.ts";
 import type { Api, AssistantMessage, Context, Message, Model, SystemMessage, Tool } from "../src/types.ts";
 import { resolveTranscriptTools } from "../src/utils/transcript.ts";
 
@@ -134,7 +135,12 @@ const anthropicNativeModel: Model<"anthropic-messages"> = {
 interface AnthropicPayload {
 	betas?: string[];
 	system?: Array<{ text: string }>;
-	tools?: Array<{ name: string; description?: string; defer_loading?: boolean; cache_control?: { type: "ephemeral" } }>;
+	tools?: Array<{
+		name: string;
+		description?: string;
+		defer_loading?: boolean;
+		cache_control?: { type: "ephemeral" };
+	}>;
 	messages: Array<{
 		role: string;
 		content: Array<{
@@ -144,7 +150,12 @@ interface AnthropicPayload {
 			tool?: {
 				type?: string;
 				name?: string;
-				definition?: { name: string; description?: string; cache_control?: { type: "ephemeral" }; defer_loading?: boolean };
+				definition?: {
+					name: string;
+					description?: string;
+					cache_control?: { type: "ephemeral" };
+					defer_loading?: boolean;
+				};
 			};
 		}>;
 	}>;
@@ -385,7 +396,9 @@ describe("transcript system messages", () => {
 
 		expect(payload.tools?.map((value) => value.name)).toEqual(["late_tool"]);
 		expect(payload.input.map((item) => item.type ?? item.role)).toEqual(["developer", "user"]);
-		expect(payload.input[0]?.content).toBe("base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>");
+		expect(payload.input[0]?.content).toBe(
+			"base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>",
+		);
 		expect(JSON.stringify(payload.input[1])).toContain(updateText);
 	});
 
@@ -572,7 +585,9 @@ describe("transcript system messages", () => {
 
 	// Kimi tool messages cannot remove tools, so a removal rewrites the prefix once.
 	test("keeps the Kimi prefix across loads after a removal (#10940)", async () => {
-		const [beforeRemoval, ...afterRemoval] = await captureToolHistory<KimiPayload>(getModel("kimi-coding", "k3"));
+		const [beforeRemoval, ...afterRemoval] = await captureToolHistory<KimiPayload>(
+			getFixtureModel("kimi-coding", "k3"),
+		);
 
 		expect(beforeRemoval?.tools?.map((value) => value.function?.name)).toEqual(["base_tool", "drop_tool"]);
 		for (const payload of afterRemoval) {
@@ -587,18 +602,21 @@ describe("transcript system messages", () => {
 		).toEqual(["late_tool", "later_tool"]);
 	});
 
-	test.each(["k3", "k3-256k", "kimi-for-coding"] as const)("anchors additions for Kimi Coding %s (#10720)", async (modelId) => {
-		const payload = await capturePayload<KimiPayload>(getModel("kimi-coding", modelId), additionContext);
+	test.each(["k3", "k3-256k", "kimi-for-coding"] as const)(
+		"anchors additions for Kimi Coding %s (#10720)",
+		async (modelId) => {
+			const payload = await capturePayload<KimiPayload>(getFixtureModel("kimi-coding", modelId), additionContext);
 
-		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool"]);
-		expect(payload.messages.find((message) => message.tools)?.tools?.map((value) => value.function?.name)).toEqual([
-			"late_tool",
-		]);
-	});
+			expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool"]);
+			expect(payload.messages.find((message) => message.tools)?.tools?.map((value) => value.function?.name)).toEqual(
+				["late_tool"],
+			);
+		},
+	);
 
 	test("keeps Kimi Coding Highspeed additions in top-level tools (#10720)", async () => {
 		const payload = await capturePayload<KimiPayload>(
-			getModel("kimi-coding", "kimi-for-coding-highspeed"),
+			getFixtureModel("kimi-coding", "kimi-for-coding-highspeed"),
 			additionContext,
 		);
 
@@ -643,7 +661,9 @@ describe("transcript system messages", () => {
 
 		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["late_tool"]);
 		expect(payload.messages.map((message) => message.role)).toEqual(["system", "user"]);
-		expect(payload.messages[0]?.content).toBe("base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>");
+		expect(payload.messages[0]?.content).toBe(
+			"base prompt\n\n<rules>\nold rules\n</rules>\n\n<docs>\nread docs\n</docs>",
+		);
 		expect(JSON.stringify(payload.messages[1])).toContain(updateText);
 	});
 });

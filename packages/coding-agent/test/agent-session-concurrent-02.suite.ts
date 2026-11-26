@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * Tests for AgentSession concurrent prompt guard.
  */
@@ -6,12 +7,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentMessage } from "@bastani/atomic-agent-core";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type TextContent,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type TextContent } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -106,7 +102,7 @@ describe("AgentSession concurrent prompt guard", () => {
 	});
 
 	async function _createSession() {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let abortSignal: AbortSignal | undefined;
 
 		// Use a stream function that responds to abort
@@ -158,7 +154,7 @@ describe("AgentSession concurrent prompt guard", () => {
 	}
 
 	it("should replace generic abort events for interrupt custom messages", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: {
@@ -224,7 +220,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		expect(assistantMessage.errorMessage).toBe(abortMessage);
 	});
 	it("should deliver concurrent interrupt custom messages serially", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const startedInterrupts: string[] = [];
 		const finishInterrupts: Array<() => void> = [];
 
@@ -310,7 +306,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		await firstPrompt.catch(() => {});
 	});
 	it("should restore messages queued before and during interrupt in FIFO order", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let interruptTurnStarted = false;
 		let finishInterruptTurn: (() => void) | undefined;
 

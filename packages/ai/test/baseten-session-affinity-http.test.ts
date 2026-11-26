@@ -1,8 +1,9 @@
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import type { OpenAICompletionsOptions } from "../src/api/openai-completions.ts";
 import { stream } from "../src/api/openai-completions.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -30,7 +31,7 @@ afterAll(async () => {
 });
 
 async function request(options: OpenAICompletionsOptions = {}, overrides: Partial<Model<"openai-completions">> = {}) {
-	const model = { ...getModel("baseten", "zai-org/GLM-5.2"), ...overrides, baseUrl };
+	const model = { ...getFixtureModel("baseten", "zai-org/GLM-5.2"), ...overrides, baseUrl };
 	const result = await stream(model, normalizeContext({ messages: [{ role: "user", content: "hi", timestamp: 0 }] }), {
 		apiKey: "test",
 		sessionId: "baseten-session",
@@ -44,7 +45,7 @@ async function request(options: OpenAICompletionsOptions = {}, overrides: Partia
 describe("Baseten catalog session affinity over HTTP", () => {
 	it("sends both affinity headers through the real SDK", async () => {
 		// Regression for upstream #9629: capture the actual outgoing HTTP request.
-		expect(getModel("baseten", "zai-org/GLM-5.2").compat?.sendSessionAffinityHeaders).toBe(true);
+		expect(getFixtureModel("baseten", "zai-org/GLM-5.2").compat?.sendSessionAffinityHeaders).toBe(true);
 		const captured = await request();
 		expect(captured["x-session-affinity"]).toBe("baseten-session");
 		expect(captured["x-client-request-id"]).toBe("baseten-session");
@@ -58,7 +59,7 @@ describe("Baseten catalog session affinity over HTTP", () => {
 		},
 	);
 	it("respects the compatibility opt-out", async () => {
-		const catalog = getModel("baseten", "zai-org/GLM-5.2");
+		const catalog = getFixtureModel("baseten", "zai-org/GLM-5.2");
 		const captured = await request({}, { compat: { ...catalog.compat, sendSessionAffinityHeaders: false } });
 		expect(captured["x-session-affinity"]).toBeUndefined();
 		expect(captured["x-client-request-id"]).toBeUndefined();

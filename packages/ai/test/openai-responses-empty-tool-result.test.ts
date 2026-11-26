@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { convertResponsesMessages } from "../src/api/openai-responses-shared.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { AssistantMessage, ToolResultMessage, Usage } from "../src/types.ts";
 
 const usage: Usage = {
@@ -25,7 +26,7 @@ function buildEmptyToolResult(toolCallId: string, timestamp: number, text = ""):
 
 describe("OpenAI Responses convertResponsesMessages empty tool result", () => {
 	it.each(["", "\r\n", " \n\t", " \nvalue\t"])("handles tool result text %j without images (#8720)", (text) => {
-		const model = getModel("openai", "gpt-4o-mini");
+		const model = getFixtureModel("openai", "gpt-4o-mini");
 		const now = Date.now();
 		const assistant: AssistantMessage = {
 			role: "assistant",

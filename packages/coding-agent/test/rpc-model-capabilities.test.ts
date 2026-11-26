@@ -1,5 +1,6 @@
-import { type Api, getModel, type Model } from "@bastani/atomic-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import type { AtomicProviderCompat } from "../src/core/model-capabilities.ts";
 import { RpcClientApi, type RpcCommandBody } from "../src/modes/rpc/rpc-client-api.ts";
 import type { RpcResponse } from "../src/modes/rpc/rpc-types.ts";
@@ -31,7 +32,7 @@ class CatalogClient extends RpcClientApi {
 
 describe("RPC model capability metadata", () => {
 	test("returns constrained-sampling compatibility without narrowing or cloning it", async () => {
-		const base = getModel("anthropic", "claude-opus-5");
+		const base = getFixtureModel("anthropic", "claude-opus-5");
 		expect(base).toBeDefined();
 		const compat: AtomicProviderCompat = {
 			...base!.compat,

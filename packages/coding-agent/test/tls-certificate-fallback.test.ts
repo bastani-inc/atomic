@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * A model request refused for its endpoint's TLS certificate is sent once: no same-model retry, and, like a rejected
  * credential, it moves on to the next fallback model, which is tried once too (#6114). Real AgentSession retry and
@@ -7,12 +8,7 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { createServer, type Server } from "node:https";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Model,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { createTestCertificate } from "../../../test/helpers/tls-certificates.js";
 import { parseArgs } from "../src/cli/args.js";
@@ -74,7 +70,7 @@ test("a refused certificate is sent once and moves to the next fallback model, w
 	});
 	cleanups.push(() => runtime.unregisterProvider("self-hosted"));
 	// The fallback refuses its credential: a failure of its own, not a certificate.
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const backup: Model<"anthropic-messages"> = { ...base, provider: "backup", id: "backup-model", name: "Backup" };
 	let backupRequests = 0;
 	runtime.registerProvider("backup", {

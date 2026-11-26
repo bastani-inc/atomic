@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream } from "../src/api/openai-responses.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 
 for (const apiKey of ["chatgpt-access-token", "sk-api-key"] as const) {
 	test(`direct OpenAI ${apiKey.startsWith("sk-") ? "API key retains" : "ChatGPT omits"} unsupported fields`, async () => {
-		const base = getModel("openai", "gpt-6.1-sol")!;
+		const base = getFixtureModel("openai", "gpt-6.1-sol")!;
 		const model = {
 			...base,
 			compat: { ...base.compat, supportsLongCacheRetention: true, supportsExplicitPromptCacheMode: false },

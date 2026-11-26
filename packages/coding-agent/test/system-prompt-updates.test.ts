@@ -10,9 +10,9 @@ import {
 	getSystemMessageText,
 	type TranscriptContext,
 } from "@bastani/atomic-ai";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -110,7 +110,7 @@ describe("system prompt updates", () => {
 			const created = await createAgentSession({
 				cwd: tempDir,
 				agentDir: join(tempDir, "agent"),
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				settingsManager: SettingsManager.inMemory(),
 				sessionManager,
 				noTools: "all",

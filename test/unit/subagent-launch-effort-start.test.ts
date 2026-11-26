@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * A subagent explicitly launched as `provider/model:effort` starts at once and runs at that effort on each model that
  * supports it, and at that model's default level on one that does not. Real in-process runner and AgentSession
@@ -12,7 +13,6 @@ import { stripVTControlCharacters } from "node:util";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	getModel,
 	type Model,
 	type ThinkingLevel,
 } from "@bastani/atomic-ai/compat";
@@ -151,7 +151,7 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-effort-"));
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
 	const model: Model<"anthropic-messages"> = {
-		...getModel("anthropic", "claude-sonnet-4-5")!,
+		...getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		provider: "effort-fixture",
 		reasoning: true,
 		thinkingLevelMap: options.requestedModelLevels ?? UP_TO_XHIGH,

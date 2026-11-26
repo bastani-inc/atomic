@@ -6,13 +6,14 @@ import { stream as streamVertex } from "@bastani/atomic-ai/api/google-vertex";
 import { stream as streamMistral } from "@bastani/atomic-ai/api/mistral-conversations";
 import { stream as streamCompletions } from "@bastani/atomic-ai/api/openai-completions";
 import { stream as streamResponses } from "@bastani/atomic-ai/api/openai-responses";
-import { type AssistantMessage, getModel, type Model, normalizeContext } from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, type Model, normalizeContext } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import {
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	normalizeModelFailureSignal,
 } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
 const context = normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 0 }] });
 
@@ -47,18 +48,22 @@ async function failedTurn(adapter: Adapter, status: number, body: unknown): Prom
 	let message: AssistantMessage;
 	switch (adapter) {
 		case "google":
-			message = await streamGoogle({ ...getModel("google", "gemini-2.5-pro"), baseUrl }, context, options).result();
+			message = await streamGoogle(
+				{ ...getFixtureModel("google", "gemini-2.5-pro"), baseUrl },
+				context,
+				options,
+			).result();
 			break;
 		case "google-vertex":
 			message = await streamVertex(
-				{ ...getModel("google-vertex", "gemini-2.5-pro"), baseUrl },
+				{ ...getFixtureModel("google-vertex", "gemini-2.5-pro"), baseUrl },
 				context,
 				options,
 			).result();
 			break;
 		case "openai-completions": {
 			const model: Model<"openai-completions"> = {
-				...getModel("openai", "gpt-4o"),
+				...getFixtureModel("openai", "gpt-4o"),
 				api: "openai-completions",
 				baseUrl: `${baseUrl}/v1`,
 			};
@@ -67,20 +72,20 @@ async function failedTurn(adapter: Adapter, status: number, body: unknown): Prom
 		}
 		case "openai-responses":
 			message = await streamResponses(
-				{ ...getModel("openai", "gpt-4o"), baseUrl: `${baseUrl}/v1` },
+				{ ...getFixtureModel("openai", "gpt-4o"), baseUrl: `${baseUrl}/v1` },
 				context,
 				options,
 			).result();
 			break;
 		case "anthropic":
-			message = await streamAnthropic({ ...getModel("anthropic", "claude-sonnet-4-5"), baseUrl }, context, {
+			message = await streamAnthropic({ ...getFixtureModel("anthropic", "claude-sonnet-4-5"), baseUrl }, context, {
 				...options,
 				apiKey: "sk-ant-api03-test",
 			}).result();
 			break;
 		case "mistral":
 			message = await streamMistral(
-				{ ...getModel("mistral", "mistral-large-latest"), baseUrl },
+				{ ...getFixtureModel("mistral", "mistral-large-latest"), baseUrl },
 				context,
 				options,
 			).result();

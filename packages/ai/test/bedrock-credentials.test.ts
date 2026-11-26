@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 
 const bedrockMock = vi.hoisted(() => ({
 	constructorCalls: [] as Array<Record<string, unknown>>,
@@ -46,7 +47,7 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 
 import type { BedrockOptions } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamBedrock } from "../src/compat.ts";
-import { getBuiltinModel } from "../src/providers/all.ts";
+
 import type { Context, Model } from "../src/types.ts";
 
 const context: Context = {
@@ -71,7 +72,7 @@ describe("bedrock credential priority", () => {
 	it("prefers explicit and scoped profiles over ambient AWS access keys", async () => {
 		vi.stubEnv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE");
 		vi.stubEnv("AWS_SECRET_ACCESS_KEY", "secretexample");
-		const model = getBuiltinModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
+		const model = getFixtureModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
 
 		let config = await captureClientConfig(model, { profile: "explicit-profile" });
 
@@ -87,7 +88,7 @@ describe("bedrock credential priority", () => {
 	it("uses ambient AWS access keys when no profile is configured", async () => {
 		vi.stubEnv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE");
 		vi.stubEnv("AWS_SECRET_ACCESS_KEY", "secretexample");
-		const model = getBuiltinModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
+		const model = getFixtureModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
 
 		const config = await captureClientConfig(model);
 
@@ -102,7 +103,7 @@ describe("bedrock credential priority", () => {
 		vi.stubEnv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE");
 		vi.stubEnv("AWS_SECRET_ACCESS_KEY", "secretexample");
 		vi.stubEnv("AWS_PROFILE", "ambient-profile");
-		const model = getBuiltinModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
+		const model = getFixtureModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
 
 		const config = await captureClientConfig(model);
 

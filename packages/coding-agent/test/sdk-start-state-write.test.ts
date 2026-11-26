@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel, type Model } from "@bastani/atomic-ai/compat";
+import type { Model } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -19,7 +20,7 @@ async function newSession(withModel: boolean) {
 	const cwd = mkdtempSync(join(tmpdir(), "sdk-start-state-"));
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
 	const model: Model<"anthropic-messages"> = {
-		...getModel("anthropic", "claude-sonnet-4-5")!,
+		...getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		provider: "start-state-fixture",
 		reasoning: true,
 	};

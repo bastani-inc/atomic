@@ -1,10 +1,11 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@bastani/atomic";
-import { createAssistantMessageEventStream, getModel } from "@bastani/atomic-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 
 // #3105: built Node public lifecycle proof, independent release, no forced exit.
 const mode = process.argv[2];
@@ -15,7 +16,7 @@ const completed = Promise.withResolvers();
 const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth"), modelsPath: null, allowModelNetwork: false });
 await modelRuntime.setRuntimeApiKey("anthropic", "fixture", {});
 const settingsManager = SettingsManager.inMemory({ sessionSummary: { enabled: mode.startsWith("summary") }, retry: { enabled: false }, compaction: { enabled: false } });
-const options = { cwd, agentDir: cwd, modelRuntime, model: getModel("anthropic", "claude-sonnet-4-5"), settingsManager, sessionManager: mode.startsWith("summary") ? await SessionManager.create(cwd, join(cwd, "sessions")) : SessionManager.inMemory(cwd), tools: [], builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false } };
+const options = { cwd, agentDir: cwd, modelRuntime, model: getFixtureModel("anthropic", "claude-sonnet-4-5"), settingsManager, sessionManager: mode.startsWith("summary") ? await SessionManager.create(cwd, join(cwd, "sessions")) : SessionManager.inMemory(cwd), tools: [], builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false } };
 const active = new Set();
 const signals = [];
 let serial = 0;

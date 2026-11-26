@@ -2,10 +2,11 @@ import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { stream as streamCodex } from "../src/api/openai-codex-responses.ts";
 import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { Context, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -109,7 +110,7 @@ describe("provider stream deadlines for native SSE routes (#2553)", () => {
 		const { baseUrl, connections } = await startStalledServer(
 			'data: {"id":"response-1","choices":[{"index":0,"finish_reason":null,"delta":{"content":"partial"}}]}\n\n',
 		);
-		const model = { ...getModel("mistral", "mistral-large-latest"), baseUrl };
+		const model = { ...getFixtureModel("mistral", "mistral-large-latest"), baseUrl };
 
 		const message = await streamMistral(model, normalizeContext(context), {
 			apiKey: "test-key",

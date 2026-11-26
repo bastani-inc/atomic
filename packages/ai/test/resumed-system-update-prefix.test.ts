@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamAzure } from "../src/api/azure-openai-responses.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
@@ -8,7 +9,7 @@ import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { stream as streamCodex } from "../src/api/openai-codex-responses.ts";
 import { stream as streamCompletions } from "../src/api/openai-completions.ts";
 import { stream as streamResponses } from "../src/api/openai-responses.ts";
-import { getModel } from "../src/compat.ts";
+
 import type {
 	Api,
 	AssistantMessage,
@@ -38,7 +39,11 @@ import {
 class PayloadCaptured extends Error {}
 
 type Payload = Record<string, unknown>;
-type StreamFunction = (model: Model<Api>, context: TranscriptContext, options: StreamOptions) => AssistantMessageEventStream;
+type StreamFunction = (
+	model: Model<Api>,
+	context: TranscriptContext,
+	options: StreamOptions,
+) => AssistantMessageEventStream;
 
 function codexToken(): string {
 	const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } }));
@@ -61,27 +66,27 @@ interface Transport {
 const transports: Transport[] = [
 	{
 		name: "Anthropic Messages without mid-conversation system messages",
-		model: { ...getModel("anthropic", "claude-sonnet-4-6"), ...offline },
+		model: { ...getFixtureModel("anthropic", "claude-sonnet-4-6"), ...offline },
 		stream: streamAnthropic as StreamFunction,
 		apiKey: "test-key",
 		conversation: "messages",
 	},
 	{
 		name: "Bedrock Converse",
-		model: getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1"),
+		model: getFixtureModel("amazon-bedrock", "global.anthropic.claude-fable-5-1"),
 		stream: streamBedrock as StreamFunction,
 		conversation: "messages",
 	},
 	{
 		name: "Google Generative AI",
-		model: { ...getModel("google", "gemini-2.5-flash"), ...offline },
+		model: { ...getFixtureModel("google", "gemini-2.5-flash"), ...offline },
 		stream: streamGoogle as StreamFunction,
 		apiKey: "test-key",
 		conversation: "contents",
 	},
 	{
 		name: "Google Vertex",
-		model: { ...getModel("google-vertex", "gemini-2.5-flash"), ...offline },
+		model: { ...getFixtureModel("google-vertex", "gemini-2.5-flash"), ...offline },
 		stream: streamVertex as StreamFunction,
 		apiKey: "test-key",
 		conversation: "contents",
@@ -157,7 +162,7 @@ const transports: Transport[] = [
 	},
 	{
 		name: "Mistral Conversations",
-		model: { ...getModel("mistral", "mistral-medium-latest"), ...offline },
+		model: { ...getFixtureModel("mistral", "mistral-medium-latest"), ...offline },
 		stream: streamMistral as StreamFunction,
 		apiKey: "test-key",
 		conversation: "messages",
@@ -186,17 +191,13 @@ const transports: Transport[] = [
 
 async function capture(transport: Transport, messages: Message[]): Promise<Payload> {
 	let payload: Payload | undefined;
-	const result = transport.stream(
-		transport.model,
-		{ messages } as TranscriptContext,
-		{
-			...(transport.apiKey ? { apiKey: transport.apiKey } : {}),
-			onPayload: (request) => {
-				payload = structuredClone(request) as Payload;
-				throw new PayloadCaptured();
-			},
+	const result = transport.stream(transport.model, { messages } as TranscriptContext, {
+		...(transport.apiKey ? { apiKey: transport.apiKey } : {}),
+		onPayload: (request) => {
+			payload = structuredClone(request) as Payload;
+			throw new PayloadCaptured();
 		},
-	);
+	});
 	for await (const event of result) if (event.type === "error" || event.type === "done") break;
 	if (!payload) throw new Error(`${transport.name}: no request was built`);
 	return payload;
@@ -315,7 +316,11 @@ describe("prompt updates keep user and assistant turns alternating, outside tool
 				{ role: "toolResult", toolCallId: "call_1", toolName: "read", content: [], isError: false, timestamp: 4 },
 				resumeUpdate,
 			];
-			const secondUpdate: SystemMessage = { ...resumeUpdate, sections: { model: "<model>\nB\n</model>" }, timestamp: 6 };
+			const secondUpdate: SystemMessage = {
+				...resumeUpdate,
+				sections: { model: "<model>\nB\n</model>" },
+				timestamp: 6,
+			};
 			const twoUpdatesThenInput: Message[] = [
 				...toolUpdate,
 				secondUpdate,
@@ -330,11 +335,14 @@ describe("prompt updates keep user and assistant turns alternating, outside tool
 				// Gemini's own shape for tool results with images is a user turn after the function responses.
 				const adjacent = roles.findIndex(
 					(role, index) =>
-						role === "user" && roles[index - 1] === "user" && !JSON.stringify(conversation[index - 1]).includes("functionResponse"),
+						role === "user" &&
+						roles[index - 1] === "user" &&
+						!JSON.stringify(conversation[index - 1]).includes("functionResponse"),
 				);
 				expect(adjacent, JSON.stringify(roles)).toBe(-1);
 				// The model reads text inside a tool result as tool output, with less authority than a prompt update.
-				for (const result of toolResults(conversation)) expect(JSON.stringify(result)).not.toContain("Current date");
+				for (const result of toolResults(conversation))
+					expect(JSON.stringify(result)).not.toContain("Current date");
 				if (transport.conversation === "contents") {
 					// Gemini gets the update as a user turn of its own after the function responses' turn.
 					for (const item of conversation)
@@ -469,7 +477,12 @@ function expectExtends(before: readonly Message[], after: readonly Message[]): v
 
 describe("appendSystemMessageUpdates", () => {
 	test("folds the system messages that open the conversation into the prompt, as the first request sent them", () => {
-		const update: SystemMessage = { role: "system", content: "", sections: { extra: "<extra>\nx\n</extra>" }, timestamp: 2 };
+		const update: SystemMessage = {
+			role: "system",
+			content: "",
+			sections: { extra: "<extra>\nx\n</extra>" },
+			timestamp: 2,
+		};
 		const messages: Message[] = [prompt, update, { role: "user", content: "first", timestamp: 3 }];
 		const projected = appendSystemMessageUpdates({ messages } as TranscriptContext).messages;
 		expect(projected.map((message) => message.role)).toEqual(["system", "user"]);
@@ -500,7 +513,12 @@ describe("appendSystemMessageUpdates", () => {
 	});
 
 	test("an update keeps its place when input follows it later, as after an interrupted request", () => {
-		const update: SystemMessage = { role: "system", content: "", sections: { model: "<model>\nB\n</model>" }, timestamp: 4 };
+		const update: SystemMessage = {
+			role: "system",
+			content: "",
+			sections: { model: "<model>\nB\n</model>" },
+			timestamp: 4,
+		};
 		const sent: Message[] = [
 			prompt,
 			{ role: "user", content: "first", timestamp: 2 },
@@ -516,7 +534,12 @@ describe("appendSystemMessageUpdates", () => {
 	});
 
 	test("an update after the first input keeps its place when the first request got no reply", () => {
-		const update: SystemMessage = { role: "system", content: "", sections: { extra: "<extra>\nx\n</extra>" }, timestamp: 3 };
+		const update: SystemMessage = {
+			role: "system",
+			content: "",
+			sections: { extra: "<extra>\nx\n</extra>" },
+			timestamp: 3,
+		};
 		const sent: Message[] = [prompt, { role: "user", content: "first", timestamp: 2 }];
 		const before = appendSystemMessageUpdates({ messages: sent } as TranscriptContext).messages;
 		const after = appendSystemMessageUpdates({
@@ -562,7 +585,11 @@ describe("tool declarations", () => {
 			description: "Query docs",
 			parameters: {
 				type: "object",
-				properties: { query: schema, list: { type: "array", items: schema }, either: { anyOf: [schema, { type: "null" }] } },
+				properties: {
+					query: schema,
+					list: { type: "array", items: schema },
+					either: { anyOf: [schema, { type: "null" }] },
+				},
 				additionalProperties: schema,
 				$defs: { query: schema },
 				required,

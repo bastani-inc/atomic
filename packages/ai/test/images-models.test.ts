@@ -15,7 +15,6 @@ import {
 	builtinModels,
 	getAllBuiltinModels,
 	getBuiltinClassifierModels,
-	getBuiltinImageModel,
 	getBuiltinImageModels,
 	getBuiltinModels,
 } from "../src/providers/all.ts";
@@ -383,7 +382,10 @@ describe("Models with image models", () => {
 		expect(compat).toEqual(chat);
 		expect(chat.every((model) => model.contextWindow > 0)).toBe(true);
 		expect(chat.length + images.length + getBuiltinClassifierModels("openrouter").length).toBe(all.length);
-		expect(getBuiltinImageModel("openrouter", "black-forest-labs/flux.2-pro").type).toBe("image");
+		const typed = builtinModels();
+		for (const entry of images) {
+			expect(typed.getModelOfType("image", "openrouter", entry.id)).toEqual(entry);
+		}
 	});
 
 	it("exposes the Pi 0.85.1 MAI-Image-2.6 variants with upstream capabilities and input prices", () => {

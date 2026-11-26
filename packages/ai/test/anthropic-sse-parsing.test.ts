@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import type Anthropic from "@anthropic-ai/sdk";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { transformMessages } from "../src/api/transform-messages.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { Api, Context, FetchFunction, Model, ToolCall } from "../src/types.ts";
 
 function createSseResponse(events: Array<{ event: string; data: string }>): Response {
@@ -124,7 +125,7 @@ function createResponseModelSseResponse(model: string, contentBlock: ResponseCon
 
 describe("Anthropic raw SSE parsing", () => {
 	it("forwards parsed provider stream events in order", async () => {
-		const model = getModel("anthropic", "claude-haiku-4-5");
+		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 		const providerEvents: unknown[] = [];
 		const eventModels: Model<Api>[] = [];
 		const result = await streamAnthropic(
@@ -168,7 +169,7 @@ describe("Anthropic raw SSE parsing", () => {
 		events[4].data = JSON.stringify(delta);
 
 		const model = {
-			...getModel("openrouter", "anthropic/claude-haiku-4.5"),
+			...getFixtureModel("openrouter", "anthropic/claude-haiku-4.5"),
 			provider: "openrouter-work",
 		};
 		const result = await streamAnthropic(
@@ -190,7 +191,7 @@ describe("Anthropic raw SSE parsing", () => {
 
 	it("keeps signed thinking replayable when a proxy relabels the model", async () => {
 		// Regression test for earendil-works/pi#9188.
-		const model = getModel("anthropic", "claude-opus-5");
+		const model = getFixtureModel("anthropic", "claude-opus-5");
 		const responseModel = "kimi-for-coding";
 		const initialContext = normalizeContext({
 			messages: [{ role: "user", content: "Hello", timestamp: 1 }],
@@ -218,7 +219,7 @@ describe("Anthropic raw SSE parsing", () => {
 	it("uses a returned fallback model for cost attribution", async () => {
 		const fallbackModel = "fallback-model";
 		const model: Model<"anthropic-messages"> = {
-			...getModel("anthropic", "claude-opus-5"),
+			...getFixtureModel("anthropic", "claude-opus-5"),
 			compat: {
 				allowedFallbackModels: [
 					{
@@ -266,7 +267,7 @@ describe("Anthropic raw SSE parsing", () => {
 		];
 		events[4].data = JSON.stringify(delta);
 		const result = await streamAnthropic(
-			getModel("anthropic", "claude-fable-5-1"),
+			getFixtureModel("anthropic", "claude-fable-5-1"),
 			normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
 			{ client: createFakeAnthropicClient(createSseResponse(events)) },
 		).result();
@@ -284,18 +285,18 @@ describe("Anthropic raw SSE parsing", () => {
 	});
 
 	it("omits the interleaved-thinking beta when thinking is disabled", async () => {
-		const betaHeader = await captureBetaHeader(getModel("openrouter", "anthropic/claude-haiku-4.5"), false);
+		const betaHeader = await captureBetaHeader(getFixtureModel("openrouter", "anthropic/claude-haiku-4.5"), false);
 
 		expect(betaHeader).not.toContain("interleaved-thinking-2025-05-14");
 	});
 
 	it("sends the interleaved-thinking beta when supported thinking is enabled", async () => {
-		const betaHeader = await captureBetaHeader(getModel("anthropic", "claude-sonnet-4-5"), true);
+		const betaHeader = await captureBetaHeader(getFixtureModel("anthropic", "claude-sonnet-4-5"), true);
 
 		expect(betaHeader).toContain("interleaved-thinking-2025-05-14");
 	});
 	it("repairs malformed SSE JSON and malformed streamed tool JSON", async () => {
-		const model = getModel("anthropic", "claude-haiku-4-5");
+		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 		const context = normalizeContext({
 			messages: [{ role: "user", content: "Use the edit tool.", timestamp: Date.now() }],
 			tools: [
@@ -382,7 +383,7 @@ describe("Anthropic raw SSE parsing", () => {
 	});
 
 	it("keeps tool input sent complete in content_block_start when no input_json_delta follows (#4899)", async () => {
-		const model = getModel("anthropic", "claude-haiku-4-5");
+		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 		const context = normalizeContext({
 			messages: [{ role: "user", content: "Read a.txt.", timestamp: Date.now() }],
 			tools: [{ name: "read", description: "Read a file.", parameters: Type.Object({ path: Type.String() }) }],
@@ -442,7 +443,7 @@ describe("Anthropic raw SSE parsing", () => {
 	});
 
 	it("preserves content from content_block_start events", async () => {
-		const model = getModel("anthropic", "claude-haiku-4-5");
+		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 		const context = normalizeContext({
 			messages: [{ role: "user", content: "Say hello.", timestamp: Date.now() }],
 		});
@@ -540,7 +541,7 @@ describe("Anthropic raw SSE parsing", () => {
 	});
 
 	it("preserves refusal stop details from message_delta", async () => {
-		const model = getModel("anthropic", "claude-fable-5");
+		const model = getFixtureModel("anthropic", "claude-fable-5");
 		const context = normalizeContext({
 			messages: [{ role: "user", content: "blocked request", timestamp: Date.now() }],
 		});
@@ -599,7 +600,7 @@ describe("Anthropic raw SSE parsing", () => {
 	});
 
 	it("preserves sensitive stop reasons with a descriptive error message", async () => {
-		const model = getModel("anthropic", "claude-haiku-4-5");
+		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 		const context = normalizeContext({
 			messages: [{ role: "user", content: "blocked request", timestamp: Date.now() }],
 		});
@@ -649,7 +650,7 @@ describe("Anthropic raw SSE parsing", () => {
 	});
 
 	it("treats message_delta without usage as a no-op for usage accumulation", async () => {
-		const model = getModel("anthropic", "claude-haiku-4-5");
+		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 		const context = normalizeContext({
 			messages: [{ role: "user", content: "Say hello.", timestamp: Date.now() }],
 		});
@@ -677,7 +678,7 @@ describe("Anthropic raw SSE parsing", () => {
 	});
 
 	it("cancels a stalled SSE body when the stream deadline aborts", async () => {
-		const model = getModel("anthropic", "claude-haiku-4-5");
+		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 		const context: Context = {
 			messages: [{ role: "user", content: "Say hello.", timestamp: Date.now() }],
 		};
@@ -712,7 +713,7 @@ describe("Anthropic raw SSE parsing", () => {
 	});
 
 	it("ignores unknown SSE events after message_stop", async () => {
-		const model = getModel("anthropic", "claude-haiku-4-5");
+		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 		const context = normalizeContext({
 			messages: [{ role: "user", content: "Say hello.", timestamp: Date.now() }],
 		});

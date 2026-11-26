@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * #4319: a subagent launched from a top-level session starts within a bounded number of event-loop turns, so a main
  * thread that other work saturates slows its start in proportion to that count instead of exhausting its start
@@ -14,12 +15,7 @@ import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BroadcastChannel, MessagePort } from "node:worker_threads";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Model,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/atomic-ai/compat";
 import { afterAll, afterEach, beforeAll, test, vi } from "vitest";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { SubagentStartupHooks } from "../../packages/coding-agent/src/core/extensions/index.js";
@@ -240,7 +236,7 @@ async function startFixture(
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
 	const agentDir = join(cwd, "agent");
 	const model: Model<"anthropic-messages"> = {
-		...getModel("anthropic", "claude-sonnet-4-5")!,
+		...getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		provider: "start-fixture",
 		reasoning: true,
 	};

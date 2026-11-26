@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * A compaction during a child's attempt removes the turns before its boundary, and the child's launch point among
  * them, from the session the child holds in memory. The child's result is still decided by every turn it ran in that
@@ -9,12 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Message,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Message } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import type { ExtensionAPI } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
@@ -125,7 +121,7 @@ async function fixture(storeKind: StoreKind, turns: readonly Turn[], options: Fi
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-child-own-turns-"));
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
 	const model = {
-		...getModel("anthropic", "claude-sonnet-4-5")!,
+		...getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		provider: "child-own-turns",
 		contextWindow: CONTEXT_WINDOW,
 	};

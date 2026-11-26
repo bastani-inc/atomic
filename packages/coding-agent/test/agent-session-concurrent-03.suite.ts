@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * Tests for AgentSession concurrent prompt guard.
  */
@@ -6,12 +7,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage } from "@bastani/atomic-agent-core";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type TextContent,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type TextContent } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -106,7 +102,7 @@ describe("AgentSession concurrent prompt guard", () => {
 	});
 
 	async function _createSession() {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let abortSignal: AbortSignal | undefined;
 
 		// Use a stream function that responds to abort
@@ -158,7 +154,7 @@ describe("AgentSession concurrent prompt guard", () => {
 	}
 
 	it("should hold messages queued immediately after interrupt enqueue before the interrupt turn starts", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let interruptTurnStarted = false;
 		let finishInterruptTurn: (() => void) | undefined;
 
@@ -252,7 +248,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 	});
 	it("should restore only messages queued after clearQueue during an interrupt", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let interruptTurnStarted = false;
 		let finishInterruptTurn: (() => void) | undefined;
 
@@ -334,7 +330,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		expect(drainQueuedTexts(session.agent)).toEqual({ steering: ["Queued C"], followUp: [] });
 	});
 	it("should clear interrupt-held queues while the interrupt custom-message turn is pending", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		let abortObserved = false;
 		let interruptTurnStarted = false;
 		let finishInterruptTurn: (() => void) | undefined;

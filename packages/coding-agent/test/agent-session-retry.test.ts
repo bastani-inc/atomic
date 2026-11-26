@@ -3,9 +3,10 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@bastani/atomic-agent-core";
-import { type AssistantMessage, createAssistantMessageEventStream, getModel } from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -69,7 +70,7 @@ describe("AgentSession retry", () => {
 		const delayAssistantMessageEndMs = options?.delayAssistantMessageEndMs ?? 0;
 		let callCount = 0;
 
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: "Test", tools: [] },
@@ -133,7 +134,7 @@ describe("AgentSession retry", () => {
 	}
 
 	async function createSessionWithStream(streamFn: StreamFn): Promise<AgentSession> {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: "Test", tools: [] },
@@ -231,7 +232,7 @@ describe("AgentSession retry", () => {
 		};
 		created.session.dispose();
 
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: "Test", tools: [] },
@@ -283,7 +284,7 @@ describe("AgentSession retry", () => {
 			},
 		};
 
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: "Test", tools: [] },

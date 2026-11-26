@@ -6,7 +6,6 @@ import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	getModel,
 	type Model,
 } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
@@ -31,6 +30,7 @@ import { clearSubagentControls } from "../../packages/subagents/src/runs/inproce
 import { filterSpawnableModelCandidates } from "../../packages/subagents/src/runs/shared/model-candidate-filter.js";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
 /** Builds a real parent AgentSession and in-process child AgentSession with local stub providers. */
 const REAL_CHILD_SESSION_TIMEOUT_MS = 60_000;
@@ -48,7 +48,7 @@ function tempDir(prefix: string): string {
 }
 
 function makeModel(provider: string, id: string): Model<Api> {
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	return { ...base, provider, id, name: `${provider}/${id}` };
 }
 

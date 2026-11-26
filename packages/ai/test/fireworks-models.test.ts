@@ -2,11 +2,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
-import { getModel, getModels, normalizeContext, streamSimple } from "../src/compat.ts";
+import { getModels, normalizeContext, streamSimple } from "../src/compat.ts";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.ts";
 import { getSupportedThinkingLevels, hasApi } from "../src/models.ts";
 import type { Context, Model, Tool } from "../src/types.ts";
+import { publishedModel } from "./live-catalog-model.ts";
 
 const originalFireworksApiKey = process.env.FIREWORKS_API_KEY;
 const fireworksMessagesModels = getModels("fireworks").filter((model) => hasApi(model, "anthropic-messages"));
@@ -24,8 +26,8 @@ afterEach(() => {
 });
 
 describe("Fireworks models", () => {
-	it("registers non-GLM, non-Kimi-K3 models via Anthropic-compatible Messages API", () => {
-		const model = getModel("fireworks", "accounts/fireworks/models/deepseek-v4p1-flash");
+	it("registers non-GLM, non-Kimi-K3 models via Anthropic-compatible Messages API", (ctx) => {
+		const model = publishedModel("fireworks", "accounts/fireworks/models/deepseek-v4p1-flash", ctx);
 
 		expect(model).toBeDefined();
 		expect(model.api).toBe("anthropic-messages");
@@ -35,9 +37,9 @@ describe("Fireworks models", () => {
 		expect(model.input).toEqual(["text", "image"]);
 	});
 
-	it("aligns GLM 5.3 Fast with GLM 5.3's OpenAI-compatible config", () => {
-		const base = getModel("fireworks", "accounts/fireworks/models/glm-5p3");
-		const fast = getModel("fireworks", "accounts/fireworks/routers/glm-5p3-fast");
+	it("aligns GLM 5.3 Fast with GLM 5.3's OpenAI-compatible config", (ctx) => {
+		const base = publishedModel("fireworks", "accounts/fireworks/models/glm-5p3", ctx);
+		const fast = publishedModel("fireworks", "accounts/fireworks/routers/glm-5p3-fast", ctx);
 
 		expect(fast.api).toBe(base.api);
 		expect(fast.baseUrl).toBe(base.baseUrl);
@@ -48,7 +50,7 @@ describe("Fireworks models", () => {
 	it.each(["accounts/fireworks/models/glm-5p3", "accounts/fireworks/routers/glm-5p3-fast"] as const)(
 		"omits unsupported long cache retention for %s",
 		async (modelId) => {
-			const model = getModel("fireworks", modelId);
+			const model = getFixtureModel("fireworks", modelId);
 			let payload: Record<string, unknown> | undefined;
 			const response = streamSimple(
 				model,
@@ -71,8 +73,8 @@ describe("Fireworks models", () => {
 	);
 
 	it("routes Kimi K3 through the OpenAI-compatible API with native effort controls", async () => {
-		const base = getModel("fireworks", "accounts/fireworks/models/kimi-k3");
-		const fast = getModel("fireworks", "accounts/fireworks/routers/kimi-k3-fast");
+		const base = getFixtureModel("fireworks", "accounts/fireworks/models/kimi-k3");
+		const fast = getFixtureModel("fireworks", "accounts/fireworks/routers/kimi-k3-fast");
 		const compat = {
 			supportsStore: false,
 			supportsDeveloperRole: false,
@@ -127,7 +129,7 @@ describe("Fireworks models", () => {
 		["accounts/fireworks/models/qwen3p8-max", ["off", "low", "medium", "xhigh"]],
 		["accounts/fireworks/models/qwen3p8-2p4t-a95b", ["off", "low", "medium", "xhigh"]],
 	] as const)("sends native Messages effort levels for %s", async (modelId, levels) => {
-		const model = getModel("fireworks", modelId);
+		const model = getFixtureModel("fireworks", modelId);
 		expect(model.api).toBe("anthropic-messages");
 		expect(model.compat?.forceAdaptiveThinking).toBe(true);
 		expect(getSupportedThinkingLevels(model)).toEqual(levels);
@@ -161,7 +163,7 @@ describe("Fireworks models", () => {
 		["accounts/fireworks/models/kimi-k3", ["low", "high", "max"]],
 		["accounts/fireworks/routers/kimi-k3-fast", ["low", "high", "max"]],
 	] as const)("exposes distinct native effort levels for %s", (modelId, levels) => {
-		expect(getSupportedThinkingLevels(getModel("fireworks", modelId))).toEqual(levels);
+		expect(getSupportedThinkingLevels(getFixtureModel("fireworks", modelId))).toEqual(levels);
 	});
 
 	it("keeps Messages models without native effort on budget-based thinking (#4548)", async () => {

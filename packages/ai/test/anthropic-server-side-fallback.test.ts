@@ -1,8 +1,9 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { transformMessages } from "../src/api/transform-messages.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { AssistantMessage, Context, FallbackContent, Message, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -165,7 +166,7 @@ function midOutputFallbackEvents(): Array<{ event: string; data: string }> {
 
 describe("mid-output server-side fallback", () => {
 	it("records the boundary marker in place rather than dropping it", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const result = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
 		}).result();
@@ -182,7 +183,7 @@ describe("mid-output server-side fallback", () => {
 	});
 
 	it("re-attributes the response to the serving model", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const result = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
 		}).result();
@@ -192,7 +193,7 @@ describe("mid-output server-side fallback", () => {
 	});
 
 	it("prices the returned message at the serving model's rates", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const opus = model.compat?.allowedFallbackModels?.find((f) => f.model === "claude-opus-5");
 		expect(opus, "expected Opus 5 among the generated fallback targets").toBeDefined();
 		// The two models are priced differently, which is what makes this assertion meaningful.
@@ -211,7 +212,7 @@ describe("mid-output server-side fallback", () => {
 	// when the decline happens before any output, and on a sticky-routed later turn there is no
 	// fallback block at all.
 	it("leaves a turn with no fallback block attributed to the model that message_start named", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const events = midOutputFallbackEvents().filter((e) => !e.data.includes('"type":"fallback"'));
 		const result = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(createSseResponse(events)),
@@ -226,7 +227,7 @@ describe("mid-output server-side fallback", () => {
 	// message." The `fallback_message` entry *is* that attempt, so adding it again would double
 	// count; the declining `message` entry is the one the top-level usage omits.
 	it("bills an earlier attempt that produced output before declining", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const withoutIterations = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
 		}).result();
@@ -251,7 +252,7 @@ describe("mid-output server-side fallback", () => {
 	// "An attempt that declined before producing any output is not billed: its tokens are reported
 	// on its `usage.iterations` entry but not charged."
 	it("does not bill an attempt that declined before producing output", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const baseline = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
 		}).result();
@@ -273,7 +274,7 @@ describe("mid-output server-side fallback", () => {
 	// The serving attempt is already priced from the top-level usage; counting its `iterations`
 	// entry as well would bill it twice.
 	it("does not double-count the serving attempt", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const baseline = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
 		}).result();
@@ -299,7 +300,7 @@ describe("mid-output server-side fallback", () => {
 		["one-hour", { ephemeral_1h_input_tokens: 1_000_000, ephemeral_5m_input_tokens: 0 }, "long"],
 		["five-minute", { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 1_000_000 }, "short"],
 	] as const)("prices an earlier attempt's %s cache write at its own rate", async (_label, split, kind) => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const baseline = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
 		}).result();
@@ -328,7 +329,7 @@ describe("mid-output server-side fallback", () => {
 
 	// A mixed split must charge each portion at its own rate rather than all of it at either one.
 	it("prices a mixed cache-write split proportionally", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const baseline = await streamAnthropic(model, normalizeContext(context), {
 			client: createFakeAnthropicClient(createSseResponse(midOutputFallbackEvents())),
 		}).result();
@@ -406,7 +407,7 @@ function replay(): Message[] {
 				timestamp: Date.now(),
 			},
 		],
-		getModel("anthropic", "claude-fable-5-1"),
+		getFixtureModel("anthropic", "claude-fable-5-1"),
 	);
 }
 
@@ -459,7 +460,7 @@ describe("replaying a turn that straddles a fallback boundary", () => {
 		turn.content = turn.content.filter((block) => block.type !== "fallback");
 		turn.model = "claude-fable-5-1";
 
-		const result = transformMessages([turn], getModel("anthropic", "claude-fable-5-1"));
+		const result = transformMessages([turn], getFixtureModel("anthropic", "claude-fable-5-1"));
 		const assistant = result.find((msg): msg is AssistantMessage => msg.role === "assistant");
 
 		expect(assistant!.content.map((block) => block.type)).toEqual([
@@ -481,7 +482,7 @@ describe("replaying a turn that straddles a fallback boundary", () => {
  */
 describe("the fallback marker reaches the request body", () => {
 	it("serializes the marker at its original position", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), [
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5-1"), [
 			{ role: "user", content: "Double 1 and 2.", timestamp: Date.now() },
 			straddlingTurn(),
 			{
@@ -513,7 +514,7 @@ describe("the fallback marker reaches the request body", () => {
 	// Dropping the pre-boundary `tool_use` leaves its `tool_result` with nothing to match, and
 	// Anthropic rejects an unmatched `tool_result`. Both must go together.
 	it("drops the tool result belonging to a dropped pre-boundary tool call", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), [
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5-1"), [
 			{ role: "user", content: "Double 1 and 2.", timestamp: Date.now() },
 			straddlingTurn(),
 			{

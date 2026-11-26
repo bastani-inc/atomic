@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { FetchFunction } from "../src/types.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.js";
 
-const model = getModel("mistral", "mistral-medium-latest");
+const model = getFixtureModel("mistral", "mistral-medium-latest");
 const context = normalizeContext({
 	messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
 });

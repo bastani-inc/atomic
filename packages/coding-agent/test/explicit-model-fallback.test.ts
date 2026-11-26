@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * A main session started on an explicit `--model` runs only that model and the models named with `--fallback-models`
  * (#4223). Real CLI option building, real AgentSession retry and fallback machinery, and fake providers that fail the
@@ -9,12 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCurrentSystemPrompt } from "@bastani/atomic-ai";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Model,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { parseArgs } from "../src/cli/args.js";
 import { ignoredProjectSettingsWarning } from "../src/cli/project-trust.js";
@@ -84,7 +80,7 @@ async function runSession(
 		beforePrompt?: () => void;
 	} = {},
 ) {
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
 		modelsPath: null,

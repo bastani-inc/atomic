@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
-import { getModel, getModels, normalizeContext } from "../src/compat.ts";
+import { getModels, normalizeContext } from "../src/compat.ts";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.ts";
 import { createModels } from "../src/models.ts";
 import { builtinModels } from "../src/providers/all.ts";
@@ -11,12 +12,11 @@ import { azureOpenAIResponsesProvider } from "../src/providers/azure-openai-resp
 import type { Model, StreamOptions } from "../src/types.ts";
 
 test("legacy Azure provider references resolve to the canonical catalog and credentials", async () => {
-	const model = getModel("azure-openai-responses", "gpt-4o-mini");
-	assert.equal(model.provider, "azure");
-	assert.equal(model.api, "azure-openai-responses");
 	assert.equal(azureOpenAIResponsesProvider().id, "azure");
-	assert.equal(AZURE_OPENAI_RESPONSES_MODELS["gpt-4o-mini"]?.provider, "azure");
-	assert.ok(getModels("azure-openai-responses").every((entry) => entry.provider === "azure"));
+	const catalog = getModels("azure-openai-responses");
+	assert.ok(catalog.length > 0);
+	assert.deepEqual(Object.values(AZURE_OPENAI_RESPONSES_MODELS), catalog);
+	assert.ok(catalog.every((entry) => entry.provider === "azure"));
 	const env = { AZURE_OPENAI_API_KEY: "legacy-key" };
 	assert.equal(getEnvApiKey("azure-openai-responses", env), "legacy-key");
 	assert.deepEqual(findEnvKeys("azure-openai-responses", env), ["AZURE_OPENAI_API_KEY"]);
@@ -27,7 +27,7 @@ test("legacy Azure provider references resolve to the canonical catalog and cred
 		},
 	});
 	assert.equal(models.getProvider("azure-openai-responses")?.id, "azure");
-	assert.equal(models.getModel("azure-openai-responses", model.id)?.provider, "azure");
+	assert.equal(models.getModel("azure-openai-responses", catalog[0].id)?.provider, "azure");
 	assert.equal((await models.getAuth("azure-openai-responses"))?.auth.apiKey, "legacy-key");
 	assert.ok(await models.checkAuth("azure-openai-responses"));
 	assert.ok((await models.getAvailable("azure-openai-responses")).length > 0);
@@ -50,7 +50,7 @@ test("legacy Azure model objects stream with canonical identity without mutating
 	const models = builtinModels({
 		authContext: { env: async () => undefined, fileExists: async () => false },
 	});
-	const model = Object.freeze({ ...getModel("azure", "deepseek-v4-pro"), provider: "azure-openai-responses" });
+	const model = Object.freeze({ ...getFixtureModel("azure", "deepseek-v4-pro"), provider: "azure-openai-responses" });
 	const original = structuredClone(model);
 	let requests = 0;
 	const options: StreamOptions = {
@@ -146,7 +146,11 @@ test("legacy native Azure registrations share canonical lookup, auth and removal
 		authContext: { env: async () => undefined, fileExists: async () => false },
 	});
 	const azure = azureProvider();
-	const deployment = { ...getModel("azure", "deepseek-v4-pro"), id: "deployment", provider: "azure-openai-responses" };
+	const deployment = {
+		...getFixtureModel("azure", "deepseek-v4-pro"),
+		id: "deployment",
+		provider: "azure-openai-responses",
+	};
 	models.setProvider({ ...azure, id: "azure-openai-responses", getModels: () => [deployment] });
 	for (const id of ["azure", "azure-openai-responses"]) {
 		assert.equal(models.getProvider(id)?.id, "azure");

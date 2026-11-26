@@ -1,9 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { expect, it } from "vitest";
+import { getFixtureModel } from "../../../../test/helpers/catalog-model-fixtures.ts";
 import { DefaultResourceLoader } from "../../src/core/resource-loader.ts";
 import { createAgentSession } from "../../src/core/sdk.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
@@ -66,7 +66,7 @@ it.each([
 			agentDir,
 			settingsManager,
 			resourceLoader,
-			model: getModel("openai", "gpt-6.1-sol-fast"),
+			model: getFixtureModel("openai", "gpt-6.1-sol"),
 			sessionManager: SessionManager.inMemory(cwd),
 			builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 			tools,
@@ -142,7 +142,7 @@ it("candidate tool inspection and activation honor permissions and remain isolat
 		agentDir,
 		settingsManager,
 		resourceLoader,
-		model: getModel("openai", "gpt-6.1-sol-fast"),
+		model: getFixtureModel("openai", "gpt-6.1-sol"),
 		sessionManager: SessionManager.inMemory(cwd),
 		builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
 		tools: ["read", "candidate_tool", "excluded_tool", "hidden_tool"],

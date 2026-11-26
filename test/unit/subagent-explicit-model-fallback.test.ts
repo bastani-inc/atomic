@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * A subagent launched on an explicit model never moves to another model the launch did not opt into, whatever ends
  * the model's turn (#4188). Real in-process runner and AgentSession against local providers; no network is
@@ -14,7 +15,6 @@ import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	getModel,
 	type Model,
 } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
@@ -144,7 +144,7 @@ async function fixture(options: FixtureOptions) {
 		writeFileSync(join(childCwd, "notes.txt"), `${CHILD_SENTINEL}\n`);
 	}
 	const base: Model<"anthropic-messages"> = {
-		...getModel("anthropic", "claude-sonnet-4-5")!,
+		...getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		reasoning: true,
 		contextWindow: 1_048_576,
 	};

@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../../../test/helpers/catalog-model-fixtures.ts";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
@@ -76,7 +76,7 @@ describe("SDK tool exclusions", () => {
 			agentDir,
 			// #3105: this fixture isolates coding-tool exclusions and Intercom.
 			builtins: { subagents: false, mcp: false, "web-access": false },
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager,
 			resourceLoader,
@@ -222,7 +222,7 @@ describe("SDK tool exclusions", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager: SettingsManager.create(tempDir, agentDir),
 			sessionManager: SessionManager.inMemory(tempDir),
 			tools: ["read", "intercom"],
@@ -339,7 +339,7 @@ describe("SDK tool exclusions", () => {
 		const { session } = await createAgentSessionFromServices({
 			services,
 			sessionManager,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			excludedTools: ["ask_user_question"],
 		});
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { streamSimple } from "../src/compat.ts";
 import type { Context, Model, SimpleStreamOptions } from "../src/types.ts";
 
 interface AnthropicThinkingPayload {
@@ -112,49 +113,49 @@ async function runWithoutReasoning(model: Model<"anthropic-messages">): Promise<
 
 describe("Anthropic thinking disable payload", () => {
 	it("sends thinking.type=disabled for budget-based reasoning models when thinking is off", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-sonnet-4-5"));
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-sonnet-4-5"));
 
 		expect(payload.thinking).toEqual({ type: "disabled" });
 		expect(payload.output_config).toBeUndefined();
 	});
 
 	it("sends thinking.type=disabled for adaptive reasoning models when thinking is off", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-opus-4-6"));
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-opus-4-6"));
 
 		expect(payload.thinking).toEqual({ type: "disabled" });
 		expect(payload.output_config).toBeUndefined();
 	});
 
 	it("sends thinking.type=disabled for Claude Opus 4.8 when thinking is off", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-opus-4-8"));
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-opus-4-8"));
 
 		expect(payload.thinking).toEqual({ type: "disabled" });
 		expect(payload.output_config).toBeUndefined();
 	});
 
 	it("runs Claude Fable 5, which cannot disable thinking, at its lowest effort when thinking is off (#4545)", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5"));
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5"));
 
 		expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(payload.output_config).toEqual({ effort: "low" });
 	});
 
 	it("uses adaptive thinking for Claude Opus 4.8 when reasoning is enabled", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-opus-4-8"), { reasoning: "high" });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-opus-4-8"), { reasoning: "high" });
 
 		expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(payload.output_config).toEqual({ effort: "high" });
 	});
 
 	it("uses adaptive thinking for Claude Sonnet 5 when reasoning is enabled", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-sonnet-5"), { reasoning: "high" });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-sonnet-5"), { reasoning: "high" });
 
 		expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(payload.output_config).toEqual({ effort: "high" });
 	});
 
 	it("maps xhigh reasoning to effort=xhigh for Claude Opus 4.8", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-opus-4-8"), { reasoning: "xhigh" });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-opus-4-8"), { reasoning: "xhigh" });
 
 		expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(payload.output_config).toEqual({ effort: "xhigh" });
@@ -166,7 +167,7 @@ describe("Anthropic thinking disable payload", () => {
 	// carry `block_binding`. See anthropic-preserved-thinking.test.ts for why that matters.
 	// https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1
 	it("never sends thinking.type=disabled for Claude Fable 5.1 when thinking is off", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"));
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5-1"));
 
 		expect(payload.thinking?.type).not.toBe("disabled");
 		expect(payload.thinking?.budget_tokens).toBeUndefined();
@@ -177,7 +178,7 @@ describe("Anthropic thinking disable payload", () => {
 	});
 
 	it("never sends a thinking budget for Claude Fable 5.1", async () => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { reasoning: "high" });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5-1"), { reasoning: "high" });
 
 		// `block_binding` also rides on this object; see anthropic-preserved-thinking.test.ts.
 		expect(payload.thinking).toMatchObject({ type: "adaptive", display: "summarized" });
@@ -191,7 +192,7 @@ describe("Anthropic thinking disable payload", () => {
 		["xhigh", "xhigh"],
 		["max", "max"],
 	] as const)("maps %s reasoning to effort=%s for Claude Fable 5.1", async (reasoning, effort) => {
-		const payload = await capturePayload(getModel("anthropic", "claude-fable-5-1"), { reasoning });
+		const payload = await capturePayload(getFixtureModel("anthropic", "claude-fable-5-1"), { reasoning });
 
 		expect(payload.thinking).toMatchObject({ type: "adaptive", display: "summarized" });
 		expect(payload.output_config).toEqual({ effort: "low" });
@@ -201,7 +202,7 @@ describe("Anthropic thinking disable payload", () => {
 
 describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic thinking disable E2E", () => {
 	it("disables thinking for Claude reasoning models", { retry: 2, timeout: 30000 }, async () => {
-		const result = await runWithoutReasoning(getModel("anthropic", "claude-sonnet-4-5"));
+		const result = await runWithoutReasoning(getFixtureModel("anthropic", "claude-sonnet-4-5"));
 
 		expect(result.thinkingEventCount).toBe(0);
 		expect(result.thinkingCharCount).toBe(0);
