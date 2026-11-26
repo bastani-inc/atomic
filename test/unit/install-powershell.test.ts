@@ -1048,6 +1048,8 @@ function New-HealthyInstall {
     $executable = Join-Path $versionPath "atomic.exe"
     [IO.File]::WriteAllText($executable, "#!/bin/sh" + [char]10 + "echo $Tag" + [char]10)
     & chmod +x $executable
+    # A healthy install records its launcher's hash; without the record the installer asks GitHub before it skips.
+    [IO.File]::WriteAllText((Join-Path $versionPath ".atomic-launcher.sha256"), (Get-FileHash -Algorithm SHA256 -LiteralPath $executable).Hash.ToLowerInvariant())
     foreach ($companionFile in @("package.json", "app.js", "native-modifiers.js", "native-module-path.js", "native-platform.js")) {
         [IO.File]::WriteAllText((Join-Path $versionPath $companionFile), "fixture " + $companionFile)
     }

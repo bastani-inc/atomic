@@ -40,6 +40,8 @@ const earlierBroker = resolve(moduleDir(import.meta.url), "../fixtures/intercom-
 const PREFIX = "r5218_";
 /** Long enough for a local server to answer a read-only transaction's commit, which an open does not wait for. */
 const COMMIT_SETTLE_MS = 200;
+/** How long a wake-up hint may take to reach its broker, by notification or by the poll. */
+const HINT_ARRIVAL_BOUND_MS = 5_000;
 /** Hosts that start together on a new database in the concurrent setup test. */
 const CONCURRENT_HOSTS = 16;
 /** Each host opens every store; they set the schema up one after another under its lock, then open it as it is. */
@@ -910,6 +912,77 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 				warm.filter((statement) => statement.includes("reloptions")),
 				[],
 				"a warm open finds the steps in the catalog it read",
+			);
+		});
+	});
+
+	test("migrate makes the wake-up hint log unlogged, which a runtime role leaves logged without DDL, and a warm open does not check again (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const row = await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema");
+			const schema = String(row?.schema);
+			const table = `${PREFIX}intercom_wakeups`;
+			const step = "schema:intercom-wakeups-unlogged";
+			const persistence = async () =>
+				(
+					await ownerDatabase.get<{ persistence: string }>(
+						`SELECT c.relpersistence AS persistence FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+						WHERE n.nspname = ? AND c.relname = ?`,
+						schema,
+						table,
+					)
+				)?.persistence;
+			const recorded = async () =>
+				(await ownerDatabase.get(
+					`SELECT 1 AS found FROM ${schema}.${PREFIX}atomic_migrations WHERE domain = ?`,
+					step,
+				)) !== undefined;
+			assert.equal(await persistence(), "u", "a new hint log is unlogged");
+			assert.equal(await recorded(), true);
+
+			// As an earlier release left the schema: a logged hint log, and no ledger record of the step.
+			await ownerDatabase.exec(`ALTER TABLE ${schema}.${table} SET LOGGED`);
+			await ownerDatabase.run(`DELETE FROM ${schema}.${PREFIX}atomic_migrations WHERE domain = ?`, step);
+			await grantRuntime(ownerDatabase, roles);
+			const wakeUpAsRuntime = async (statements: string[]) => {
+				const open = async () => recording(await roles.open("runtime"), statements);
+				const bus = await openDatabaseWakeUpBus({ openDatabase: open, prefix: PREFIX });
+				try {
+					const hints: number[] = [];
+					const subscribed = await bus.subscribe("broker-a", (event) => {
+						if (event.kind === "hint") hints.push(event.hint.version);
+					});
+					assert.equal(subscribed.status, "subscribed");
+					assert.equal(
+						(await bus.publish({ brokerId: "broker-a", reason: "outbox", version: 7 })).status,
+						"published",
+					);
+					const deadline = Date.now() + HINT_ARRIVAL_BOUND_MS;
+					while (hints.length === 0 && Date.now() < deadline)
+						await new Promise((resolve) => setTimeout(resolve, 10));
+					assert.deepEqual(hints, [7], "the hint reached its broker");
+				} finally {
+					await bus.close();
+				}
+			};
+			const before: string[] = [];
+			await wakeUpAsRuntime(before);
+			assert.deepEqual(before.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.equal(await persistence(), "p", "a runtime role leaves the hint log logged");
+
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.equal(await persistence(), "u");
+			assert.equal(await recorded(), true);
+			const warm: string[] = [];
+			await wakeUpAsRuntime(warm);
+			assert.deepEqual(warm.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.deepEqual(
+				warm.filter((statement) => statement.includes("relpersistence")),
+				[],
+				"a warm open finds the step in the catalog it read",
 			);
 		});
 	});

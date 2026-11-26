@@ -15,7 +15,6 @@ import {
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 
 interface Release0987BlobStore {
 	collectGarbage(options: { readonly graceSeconds: number }): Promise<readonly string[]>;
@@ -141,14 +140,11 @@ test.each(["", "custom_"].flatMap((prefix) => [true, undefined].map((readOnly) =
 	},
 );
 
-for (const adapter of ["node-sqlite", "libsql"] as const) {
+for (const adapter of ["node-sqlite"] as const) {
 	describe(adapter, () => {
 		async function openDatabase(name = "journal.sqlite"): Promise<SqliteDatabase> {
 			const path = join(directory, name);
-			const database =
-				adapter === "node-sqlite"
-					? await openNodeSqliteDatabase(path)
-					: await openLibsqlDatabase({ url: pathToFileURL(path).href });
+			const database = await openNodeSqliteDatabase(path);
 			closers.push(() => database.close());
 			return database;
 		}

@@ -350,7 +350,7 @@ test("configured relative storage paths and secret files at the legacy parent ar
 		await legacyTeamStore.close();
 	}
 
-	writeFileSync(join(parent, "turso-token"), "secret-value\n");
+	writeFileSync(join(parent, "db-token"), "secret-value\n");
 	const settings = { storage: { path: "team.sqlite" } };
 	writeFileSync(join(first, "settings.json"), JSON.stringify(settings));
 	writeFileSync(join(second, "settings.json"), JSON.stringify(settings));
@@ -368,8 +368,8 @@ test("configured relative storage paths and secret files at the legacy parent ar
 		await firstStore.close();
 		await secondStore.close();
 	}
-	assert.equal(secretFilePath("turso-token", first), join(parent, "turso-token"));
-	assert.equal(secretFilePath("turso-token", second), join(parent, "turso-token"));
+	assert.equal(secretFilePath("db-token", first), join(parent, "db-token"));
+	assert.equal(secretFilePath("db-token", second), join(parent, "db-token"));
 
 	const jsonlParent = join(root, "configured-jsonl");
 	const jsonlFirst = join(jsonlParent, "a1");

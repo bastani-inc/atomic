@@ -13,8 +13,9 @@ import { historyTaskTimeBudget } from "./history-session.js";
 
 /**
  * History calls one session runs at once with no time limit; a call past it is refused. They are scans in this process,
- * on the session's own store and one shared pattern-matching worker, not processes like shell commands, so they keep a
- * limit of their own: more of them at once only slow each other down.
+ * on the session's own store and a shared pattern-matching worker (a pattern step that runs long moves to a worker of
+ * its own), not processes like shell commands, so they keep a limit of their own: more of them at once only slow each
+ * other down.
  */
 export const MAX_ACTIVE_HISTORY_TASKS = 4;
 /** Why a history call was refused at {@link MAX_ACTIVE_HISTORY_TASKS}, worded as the shell commands' limit is. */

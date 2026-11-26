@@ -85,6 +85,8 @@ plugins/**/run.cmd text eol=lf
 
 # Serialisation
 *.json     text eol=lf
+# Session exports and other JSON lines: tests compare them byte for byte on every platform.
+*.jsonl    text eol=lf
 *.toml     text eol=lf
 *.xml      text eol=lf
 *.yaml     text eol=lf

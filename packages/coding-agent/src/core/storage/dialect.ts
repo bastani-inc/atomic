@@ -233,7 +233,7 @@ const columnList = (columns: readonly string[]) => `(${columns.join(", ")})`;
 
 const namedPlaceholders = (names: readonly string[]) => names.map(() => "?").join(", ");
 
-/** SQLite and libSQL: renders exactly the SQL the stores have always run, so schemas and statements stay unchanged. */
+/** SQLite: renders exactly the SQL the stores have always run, so schemas and statements stay unchanged. */
 export const sqliteDialect: StorageDialect = Object.freeze({
 	name: "sqlite",
 	textByteLength: (expression: string) => `length(CAST(${expression} AS BLOB))`,

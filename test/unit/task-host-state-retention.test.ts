@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +20,7 @@ import {
 	taskHostStateSizesForTesting,
 } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
+import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
 import { sleep } from "../helpers/runtime.js";
 
 /** Several times the retention, so per-task host state that is never pruned cannot pass. */
@@ -381,6 +383,32 @@ test("finished commands keep their launching session and launch time only until 
 				evicted: { launchers: 0, launchedAt: 0 },
 			},
 		);
+	} finally {
+		await supervisor.closeTaskOwner(owner, "session-close");
+	}
+});
+
+test("a finished command's remembered start keeps nothing of the async context it was launched in", async () => {
+	const supervisor = new TaskSupervisor();
+	const owner = finishingOwner(supervisor);
+	const contexts = new AsyncLocalStorage<object>();
+	const launchContexts = trackCollection();
+	const intent: C.CommandIntent = { kind: "command", command: "echo launched", terminal: { kind: "pipe" } };
+	const operation = "remembered-command" as C.OperationId;
+	try {
+		// A session that launches a command and ends, as a released session's context does.
+		const task = value(
+			await (async () => {
+				const session = { transcript: Array.from({ length: 1_000 }, (_, index) => `entry ${index}`) };
+				launchContexts.track(session);
+				return contexts.run(session, () => supervisor.startCommandTask(owner, intent, operation));
+			})(),
+		);
+		assert.equal(value(await supervisor.waitForTask(task, CONVERGE_TIMEOUT_MS)).kind, "settled");
+		await collectEverythingTracked(launchContexts);
+		assert.deepEqual(launchContexts.uncollected(), [], "the remembered start keeps its launching context");
+		// The owner still remembers the start: the same operation gives back the same task.
+		assert.equal(value(await supervisor.startCommandTask(owner, intent, operation)), task);
 	} finally {
 		await supervisor.closeTaskOwner(owner, "session-close");
 	}

@@ -40,9 +40,16 @@ export function makeTempDirectory(prefix: string): string {
 	return nodeRealpathSync(nodeMkdtempSync(join(tmpdir(), prefix)));
 }
 
+/**
+ * Windows refuses for a moment to remove a directory a process that just ended was using, as its working directory
+ * or through an open handle (EBUSY, EPERM). Node's rm retries those errors with a linearly growing delay: about
+ * 5.5 seconds in all.
+ */
+const REMOVE_RETRIES = { maxRetries: 10, retryDelay: 100 } as const;
+
 /** Remove a temporary test directory and everything it contains. */
 export function removeTempDirectory(path: string): void {
-	nodeRmSync(path, { recursive: true, force: true });
+	nodeRmSync(path, { recursive: true, force: true, ...REMOVE_RETRIES });
 }
 
 /** Synchronous filesystem adapters for root suites that need setup before a test starts. */

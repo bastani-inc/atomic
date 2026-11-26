@@ -583,6 +583,8 @@ function createFixture(): InstallerFixture {
 		"gzip",
 		"wc",
 		"sleep",
+		// Without /proc (macOS), the installer reads a lock owner's start time with ps and tr.
+		...(existsSync("/proc/self") ? [] : ["ps", "tr"]),
 	]) {
 		const source = resolveExecutable(command);
 		symlinkSync(source, join(tools, command));

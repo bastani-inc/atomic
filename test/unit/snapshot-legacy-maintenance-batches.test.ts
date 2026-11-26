@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
@@ -13,7 +12,6 @@ import {
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 
 let directory: string;
 const closers: Array<() => Promise<void>> = [];
@@ -72,14 +70,11 @@ function hooked(
 	};
 }
 
-for (const adapter of ["node-sqlite", "libsql"] as const) {
+for (const adapter of ["node-sqlite"] as const) {
 	describe(adapter, () => {
 		async function legacyDatabase(sizes: readonly number[]) {
 			const path = join(directory, "journal.sqlite");
-			const database =
-				adapter === "node-sqlite"
-					? await openNodeSqliteDatabase(path)
-					: await openLibsqlDatabase({ url: pathToFileURL(path).href });
+			const database = await openNodeSqliteDatabase(path);
 			closers.push(() => database.close());
 			await database.exec(
 				"CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT",

@@ -31,7 +31,7 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 ```
 
-Once `@bastani/atomic` is external, its dependencies load from `node_modules`. List any other Atomic packages your application imports directly, including [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) or [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql) when using remote SQL storage (see [SDK storage guide](/sdk/storage)).
+Once `@bastani/atomic` is external, its dependencies load from `node_modules`. List any other Atomic packages your application imports directly, including [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) when using remote SQL storage (see [SDK storage guide](/sdk/storage)).
 
 Import TypeBox for custom tool schemas from `@bastani/atomic/typebox` (and its subpaths such as `/value`, `/compile`, and `/format`) rather than `typebox` directly so custom formats and settings share Atomic's TypeBox registry.
 
@@ -126,7 +126,7 @@ if (!state.shutdownRegistered) {
 }
 ```
 
-`SessionManager.inMemory()` keeps history in process memory. To persist conversations across restarts, pass a SQLite, JSONL, libSQL, or PostgreSQL `SessionManager` or `sessionStore` (see [SDK storage guide](/sdk/storage)). Call `closeConversation()` when a conversation finishes or goes idle, and run `closeAllConversations()` on `SIGTERM`/`SIGINT` so session stores and child processes close cleanly.
+`SessionManager.inMemory()` keeps history in process memory. To persist conversations across restarts, pass a SQLite, JSONL, or PostgreSQL `SessionManager` or `sessionStore` (see [SDK storage guide](/sdk/storage)). Call `closeConversation()` when a conversation finishes or goes idle, and run `closeAllConversations()` on `SIGTERM`/`SIGINT` so session stores and child processes close cleanly.
 
 Sessions on `globalThis` live in one server process. Run this on a long-lived Node.js server with sticky routing per conversation if you scale to multiple instances; short-lived serverless functions discard process memory between requests.
 
@@ -278,7 +278,7 @@ Any route driving an agent session lets callers run tools with the server proces
 ## Next steps
 
 - [TypeScript SDK](/sdk): sessions, prompting, storage, and events.
-- [SDK storage guide](/sdk/storage): persist server sessions in SQLite, JSONL, libSQL, or PostgreSQL and wire `createAgentSessionRuntime()`.
+- [SDK storage guide](/sdk/storage): persist server sessions in SQLite, JSONL, or PostgreSQL and wire `createAgentSessionRuntime()`.
 - [SDK API reference](/sdk/reference): every `createAgentSession()` option and export.
 - [Orchestration](/orchestration): multi-step workflows with codemode and subagents.
 - [Migrating workflows](/orchestration/migrating-workflows): replacing older workflow definitions.

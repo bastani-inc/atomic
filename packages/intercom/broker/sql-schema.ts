@@ -42,8 +42,8 @@ export async function withBrokerSchemaCatalog<T>(
  * Runs `setup`, a broker store's idempotent schema statements, in a transaction of its own, unless the prefix's ledger
  * records `revision` for `store` already (#5218): on PostgreSQL a current schema runs no DDL, so a role with only DML
  * privileges opens the store. Raise `revision` whenever `setup` creates or alters anything new. Inside an open that read
- * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560). On SQLite and
- * libSQL the store's stamp records it. A setup that runs stamps nothing: later setups of the same open would leave its
+ * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560). On SQLite the
+ * store's stamp records it. A setup that runs stamps nothing: later setups of the same open would leave its
  * stamp behind, and stamping costs a new database's first open statements and a transaction. The next open finds the
  * store in the catalog instead; there a setup whose objects the catalog holds is checked again, and a counter it seeds
  * seeded, in the one transaction the open's end stamps every such store in, so later opens of a current schema take no
@@ -82,7 +82,7 @@ export async function ensureBrokerSchema(
 }
 
 /**
- * Asks the open of `database` in progress to stamp `store`'s `setup` at its end, on SQLite and libSQL, where the open
+ * Asks the open of `database` in progress to stamp `store`'s `setup` at its end, on SQLite, where the open
  * found the store current in the catalog, `verify` says, rather than by its stamp, which a schema change since left
  * behind: the next open then answers from the stamp (#6560). Does nothing where the stamp is current, elsewhere, and
  * outside an open.
@@ -101,7 +101,7 @@ export async function stampBrokerSchemaAtOpenEnd(
 }
 
 /**
- * What `setup` creates on a SQLite or libSQL database, where it only runs `CREATE TABLE` and `CREATE INDEX` statements
+ * What `setup` creates on a SQLite database, where it only runs `CREATE TABLE` and `CREATE INDEX` statements
  * with `IF NOT EXISTS` and seeds rows with `INSERT … ON CONFLICT … DO NOTHING`: `present`, whether the catalog an open
  * in progress read found each object, as a table or an index as the statement names it; `verify`, the same check
  * against another catalog; and `seeds`, whether it seeds rows, which still have to be written. SQLite records no

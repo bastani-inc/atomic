@@ -13,7 +13,6 @@ import {
 	SNAPSHOT_INDEX_BACKFILL_BATCH,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import {
 	createSession,
 	messageEntry,
@@ -64,7 +63,6 @@ afterEach(async () => {
 /** Two connections to one store, as two processes have: one for a released build, one for this build. */
 const drivers: Record<string, () => Promise<SqliteDatabase>> = {
 	"node:sqlite": () => openNodeSqliteDatabase(join(directory, "store.sqlite")),
-	libSQL: () => openLibsqlDatabase({ url: pathToFileURL(join(directory, "store.sqlite")).href }),
 };
 async function connect(driver: () => Promise<SqliteDatabase>): Promise<SqliteDatabase> {
 	const database = await driver();

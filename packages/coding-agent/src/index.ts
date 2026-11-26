@@ -411,7 +411,6 @@ export {
 	type SerializedAgentErrorCause,
 	type SerializedAgentRehydrateError,
 	serializeAgentRehydrateError,
-	TEAM_JOIN_COMMAND,
 } from "./core/agent-rehydrate-errors.ts";
 export {
 	AgentSession,
@@ -483,6 +482,8 @@ export {
 	createGatewayBindingFetch,
 	type GatewayBindingFetchOptions,
 } from "./core/cloudflare-gateway-binding.ts";
+/** Removed with libSQL support; see `core/storage/libsql-removed.ts` for why it is still exported. */
+export { TEAM_JOIN_COMMAND } from "./core/storage/libsql-removed.js";
 /**
  * @deprecated No longer injected into compactor requests; kept only so running 0.10.x processes survive an in-place
  * update without an ESM missing-export error.

@@ -329,38 +329,58 @@ interface PendingTask {
 	readonly deadline: number;
 	readonly settle: (outcome: TaskOutcome) => void;
 	dispatched: boolean;
+	/** Hands a task with no time limit the shared worker as its own once it has run {@link OWN_WORKER_AFTER_MS}. */
+	handOff?: ReturnType<typeof setTimeout>;
 }
+
+/**
+ * How long a task with no time limit (a background history task's) runs on the shared worker before it gets that
+ * worker to itself and the tasks after it get a new one. Its pattern may backtrack for minutes, and nothing but its
+ * own stop would end it, so every other history call would otherwise wait behind it.
+ */
+const OWN_WORKER_AFTER_MS = 200;
 
 let activeWorker: Worker | undefined;
 let activeTask: PendingTask | undefined;
 const waitingQueue: PendingTask[] = [];
+/** Workers handed to one long task with no time limit; each runs only that task and ends with it. */
+const ownWorkers = new Map<Worker, PendingTask>();
 let nextRequestId = 1;
 
-function getWorker(): Worker {
-	if (!activeWorker) {
-		const worker = new Worker(WORKER_SCRIPT, { eval: true, execArgv: evalWorkerExecArgv() });
-		worker.on("message", (message: WorkerReply) => {
-			if (!activeTask || !message || message.id !== activeTask.id) return;
-			const task = activeTask;
-			activeTask = undefined;
-			if (message.error !== undefined) {
-				task.settle({ error: new Error(message.error) });
-			} else {
-				task.settle({ reply: message });
-			}
-			pumpQueue();
-		});
-		worker.on("error", (error: Error) => {
-			if (worker !== activeWorker) return;
+function spawnWorker(): Worker {
+	const worker = new Worker(WORKER_SCRIPT, { eval: true, execArgv: evalWorkerExecArgv() });
+	worker.on("message", (message: WorkerReply) => {
+		const task = worker === activeWorker ? activeTask : ownWorkers.get(worker);
+		if (!task || !message || message.id !== task.id) return;
+		if (worker === activeWorker) activeTask = undefined;
+		else endOwnWorker(worker);
+		if (message.error !== undefined) {
+			task.settle({ error: new Error(message.error) });
+		} else {
+			task.settle({ reply: message });
+		}
+		pumpQueue();
+	});
+	worker.on("error", (error: Error) => {
+		let task: PendingTask | undefined;
+		if (worker === activeWorker) {
 			killActiveWorker();
-			const task = activeTask;
+			task = activeTask;
 			activeTask = undefined;
-			task?.settle({ error });
-			pumpQueue();
-		});
-		worker.unref();
-		activeWorker = worker;
-	}
+		} else {
+			task = ownWorkers.get(worker);
+			if (!task) return;
+			endOwnWorker(worker);
+		}
+		task?.settle({ error });
+		pumpQueue();
+	});
+	worker.unref();
+	return worker;
+}
+
+function getWorker(): Worker {
+	activeWorker ??= spawnWorker();
 	return activeWorker;
 }
 
@@ -368,6 +388,19 @@ function killActiveWorker(): void {
 	const current = activeWorker;
 	activeWorker = undefined;
 	if (current) void current.terminate();
+}
+
+function endOwnWorker(worker: Worker): void {
+	ownWorkers.delete(worker);
+	void worker.terminate();
+}
+
+function handOffActiveWorker(task: PendingTask): void {
+	if (activeTask !== task || !activeWorker) return;
+	ownWorkers.set(activeWorker, task);
+	activeWorker = undefined;
+	activeTask = undefined;
+	pumpQueue();
 }
 
 function pumpQueue(): void {
@@ -382,6 +415,10 @@ function pumpQueue(): void {
 			worker.postMessage({ ...next.payload, id: next.id }, next.transfer ? [...next.transfer] : []);
 			next.dispatched = true;
 			activeTask = next;
+			if (!Number.isFinite(next.deadline)) {
+				next.handOff = setTimeout(() => handOffActiveWorker(next), OWN_WORKER_AFTER_MS);
+				next.handOff.unref?.();
+			}
 		} catch (error) {
 			activeTask = undefined;
 			next.dispatched = false;
@@ -414,6 +451,7 @@ function runWorkerTask<Op extends WorkerOp>(
 				if (settled) return;
 				settled = true;
 				clearTimeout(timer);
+				clearTimeout(task.handOff);
 				signal?.removeEventListener("abort", onAbort);
 				if ("error" in outcome) reject(outcome.error);
 				else if ("timedOut" in outcome) resolve(outcome);
@@ -433,6 +471,13 @@ function runWorkerTask<Op extends WorkerOp>(
 				killActiveWorker();
 				task.settle(outcome);
 				pumpQueue();
+				return;
+			}
+			for (const [worker, owner] of ownWorkers) {
+				if (owner !== task) continue;
+				endOwnWorker(worker);
+				task.settle(outcome);
+				return;
 			}
 		};
 		const onAbort = () => {

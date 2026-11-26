@@ -14,7 +14,6 @@ import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecy
 import { engineHeapRuntimeArgsForHost } from "./modes/interactive-engine/engine-heap.ts";
 import { ATOMIC_AI_AGENT } from "./utils/agent-attribution.ts";
 import {
-	COMPILE_CACHE_ENGINE_MATCH_HOST_ENV,
 	COMPILE_CACHE_ENGINE_WARMUP_ENV,
 	compileCacheDeferral,
 	enablePersistentCompileCache,
@@ -32,6 +31,11 @@ import { isPlainInteractiveSessionInvocation } from "./utils/interactive-invocat
 import { startStartupPrefetch } from "./utils/startup-prefetch.js";
 import { updatedInstallError } from "./utils/updated-install.ts";
 
+// Read by nothing here. A process of 0.10.4 that an in-place update caught imports them from the shared file holding this
+// entry's startup modules, so the build keeps them in that file's exports.
+export { COMPILE_CACHE_ENGINE_MATCH_HOST_ENV } from "./utils/compile-cache.ts";
+export { engineCompileCacheMatchHostEnv } from "./utils/compile-cache-deferral.ts";
+
 installLifecycleTraceFromEnv();
 markLifecycleTiming("process-entry");
 
@@ -43,14 +47,11 @@ const terminal = { stdinIsTTY: process.stdin.isTTY === true, stdoutIsTTY: proces
 
 const engineCacheWarmedByHost = process.env[COMPILE_CACHE_ENGINE_WARMUP_ENV] === "1";
 delete process.env[COMPILE_CACHE_ENGINE_WARMUP_ENV];
-const engineMatchHostCache = process.env[COMPILE_CACHE_ENGINE_MATCH_HOST_ENV] === "1";
-delete process.env[COMPILE_CACHE_ENGINE_MATCH_HOST_ENV];
 // An interactive session, and the engine of one that warms the engine's cache, leave a cold compile cache to a helper
-// instead of writing it when they exit. An auto-sized engine also aligns its Node 22 cache tag with the untouched host.
+// instead of writing it when they exit.
 enablePersistentCompileCache({
 	interactive: engineChild ? engineCacheWarmedByHost : isPlainInteractiveSessionInvocation(args, terminal),
 	build: VERSION,
-	matchHostTag: engineChild && engineMatchHostCache,
 });
 // A session that ends before it starts its compile-cache helpers starts them as it exits; they outlive it.
 if (compileCacheDeferral() && !engineChild) {

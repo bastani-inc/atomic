@@ -50,7 +50,7 @@ Read the job's `timeout-minutes` in the workflow. It covers setup, tests and tea
 
 ### Storage backend matrix
 
-`storage-conformance` runs the [storage matrix](../test/integration/storage-conformance-matrix.test.ts) with libSQL and PostgreSQL service containers, in addition to SQLite. `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1` makes missing server configuration fail instead of skipping coverage. See [`test/helpers/storage-backends.ts`](../test/helpers/storage-backends.ts) for local configuration.
+`storage-conformance` runs the [storage matrix](../test/integration/storage-conformance-matrix.test.ts) with a PostgreSQL service container, in addition to SQLite, together with the multi-node resume tests that need PostgreSQL. `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1` makes missing server configuration fail instead of skipping coverage. See [`test/helpers/storage-backends.ts`](../test/helpers/storage-backends.ts) for local configuration.
 
 ### macOS test dispatch
 

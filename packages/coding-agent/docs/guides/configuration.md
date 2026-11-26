@@ -18,7 +18,7 @@ Atomic splits configuration by scope and purpose:
 | Custom models, local servers, proxies, overrides, and remote compactors | `~/.atomic/agent/models.json` | [Configure custom models](/models) |
 | Custom provider APIs, OAuth flows, dynamic catalogs, and account aliases | Extension calling `atomic.registerProvider()` | [Build custom providers](/custom-provider) |
 | Persistent defaults, `enabledModels`, `fallbackModels`, `decisionModel`, `compactionModel`, tools, and storage | `~/.atomic/agent/settings.json` and `.atomic/settings.json` | [Settings reference](/settings) |
-| Local SQLite, JSONL, PostgreSQL, or libSQL/Turso session and Intercom backends | `storage` / `sessions.storage`, `atomic storage join`, or SDK storage options | [Storage](/storage) and [SDK storage](/sdk/storage) |
+| Local SQLite, JSONL, or PostgreSQL session and Intercom backends | `storage` / `sessions.storage`, `atomic storage join`, or SDK storage options | [Storage](/storage) and [SDK storage](/sdk/storage) |
 | One-run overrides for a single command | CLI flags (`--model`, `--models`, `--tools`, `--storage`) | [CLI reference](/reference/cli) |
 | Process, CI, terminal, and diagnostic overrides | `ATOMIC_*` environment variables | [Environment variables](/environment-variables) |
 | Programmatic session setup in TypeScript | `createAgentSession()` and `SettingsManager` options | [SDK](/sdk) |

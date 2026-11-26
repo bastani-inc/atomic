@@ -49,6 +49,6 @@ Use `--mode rpc` to keep a session alive so another process can send prompts, an
 ## Next steps
 
 - [CLI reference](/reference/cli) for every flag, model-matching rule, and exit code.
-- [Environment variables](/environment-variables) for `ATOMIC_STDIN_TIMEOUT_MS`, `ATOMIC_STORAGE`, `ATOMIC_PROFILE=ci`, and CI overrides.
+- [Environment variables](/environment-variables) for `ATOMIC_STDIN_TIMEOUT_MS`, `ATOMIC_STORAGE`, and CI overrides.
 - [Programmatic use](/programmatic) to choose between the SDK, RPC, and the JSON event stream.
 - [Background tasks](/background-tasks) when work should continue while you keep chatting interactively.

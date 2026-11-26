@@ -295,13 +295,12 @@ export type TrustedTaskHost = {
 type HeldPermit = { readonly admission: ResourceAdmission; readonly release: ResourcePermit };
 type HostState = { native: native.HostSession; binding: TrustedTaskHost };
 /**
- * A command start remembered for its operation: the launch while it runs, then its settled result and task. The owner
- * keeps a successful start until its task is evicted, so it keeps the value and not the launch's promise: on Node 22 a
- * promise keeps the async context it was created in, here the launching session's.
+ * A command start remembered for its operation: its launch, and its task once it started. The owner keeps a successful
+ * start until its task is evicted.
  */
 type CommandStart = {
 	readonly intent: C.CommandIntent;
-	result: Promise<C.Result<TaskLease, C.StartFailure>> | C.Result<TaskLease, C.StartFailure>;
+	readonly result: Promise<C.Result<TaskLease, C.StartFailure>>;
 	task?: TaskLease;
 };
 /**
@@ -1463,10 +1462,8 @@ export class TaskSupervisor {
 			if (state.commandStarts.get(operation) === start) state.commandStarts.delete(operation);
 		};
 		result.then((started) => {
-			if (started.ok) {
-				start.result = started;
-				start.task = started.value;
-			} else forget();
+			if (started.ok) start.task = started.value;
+			else forget();
 		}, forget);
 		return result;
 	}

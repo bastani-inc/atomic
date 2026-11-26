@@ -46,6 +46,7 @@ import {
 	readFileChatRecords,
 } from "./jsonl-chat-records.js";
 import { entryProjector, jsonlEntryProjection, type ProjectedEntry } from "./jsonl-entry-projection.js";
+import { EPOCH_HAS_BIRTHTIME, fileEpochOf, legacyFileEpochOf } from "./jsonl-file-epoch.js";
 import {
 	isCurrentSessionHeader,
 	legacyVersion,
@@ -280,7 +281,13 @@ interface IndexedSession {
 	readonly jsonl: JsonlIndex;
 }
 
-export const JSONL_INDEX_VERSION = 2;
+/** The sidecar version an older build reads, whose epochs all hold the file's creation time. */
+const BIRTHTIME_INDEX_VERSION = 2;
+/**
+ * The version of the sidecars this build writes. One whose epoch leaves out the creation time is version 3, so an older
+ * build, which compares it with an epoch that has one, indexes the file again rather than read it. Both are read.
+ */
+export const JSONL_INDEX_VERSION = EPOCH_HAS_BIRTHTIME ? BIRTHTIME_INDEX_VERSION : 3;
 const SIDECAR_SUFFIX = ".idx";
 const SIDECAR_REFRESH_BYTES = 1024 * 1024;
 const INDEX_BATCH_ENTRIES = 512;
@@ -913,7 +920,7 @@ export class JsonlSessionStore implements SessionStore {
 						held &&
 						held.stats.birthtimeNs > 0n &&
 						held.path === owner.file &&
-						epochOf(held.stats, JSON.stringify(held.header)) === owner.epoch
+						fileEpochOf(held.stats, JSON.stringify(held.header)) === owner.epoch
 					)
 						await appendFileChatRecord(owner, anchor, record);
 				});
@@ -1055,7 +1062,7 @@ export class JsonlSessionStore implements SessionStore {
 			const stats = await this.remember(path, state);
 			// Only successful creation of a new generation of the bound ID moves this handle's association.
 			if (this.selectedFile?.id === header.id) this.selectedFile = { id: header.id, path };
-			return { lastSeq: entries.length, epoch: epochOf(stats, state.headerStamp) };
+			return { lastSeq: entries.length, epoch: fileEpochOf(stats, state.headerStamp) };
 		}, true);
 	}
 
@@ -1154,7 +1161,7 @@ export class JsonlSessionStore implements SessionStore {
 					witness,
 					summaryState: summary,
 				});
-				const epoch = epochOf(stats, headerStamp);
+				const epoch = fileEpochOf(stats, headerStamp);
 				await this.keepIndex(path, {
 					identity: `${stats.dev}:${stats.ino}`,
 					birthtimeNs: String(stats.birthtimeNs),
@@ -1241,7 +1248,7 @@ export class JsonlSessionStore implements SessionStore {
 				sessionId,
 				path,
 				identity: state.identity,
-				epoch: epochOf(stats, JSON.stringify(header)),
+				epoch: fileEpochOf(stats, JSON.stringify(header)),
 				before: state,
 				entries: [],
 				lines: [],
@@ -1395,7 +1402,7 @@ export class JsonlSessionStore implements SessionStore {
 					torn: false,
 					terminated: state.lastSeq === 0 || state.terminated,
 				});
-				return { lastSeq: state.lastSeq, epoch: epochOf(stats, headerStamp) };
+				return { lastSeq: state.lastSeq, epoch: fileEpochOf(stats, headerStamp) };
 			} finally {
 				await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
 					if (cause.code !== "ENOENT") throw cause;
@@ -1418,7 +1425,7 @@ export class JsonlSessionStore implements SessionStore {
 			});
 		}
 		const state = this.contentState(header, entries, payload);
-		return epochOf(await this.remember(path, state), state.headerStamp);
+		return fileEpochOf(await this.remember(path, state), state.headerStamp);
 	}
 
 	load(sessionId: string): Promise<SessionSnapshot> {
@@ -1792,7 +1799,7 @@ export class JsonlSessionStore implements SessionStore {
 				const header = await this.readHeaderAt(path, stored);
 				const input: FileWindowInput = { handle, legacy: isCurrentSessionHeader(stored) ? undefined : stored };
 				const headerStamp = JSON.stringify(header);
-				const topology = await this.foldFile(path, epochOf(stats, headerStamp), () => true, input);
+				const topology = await this.foldFile(path, fileEpochOf(stats, headerStamp), () => true, input);
 				// Positions need only the topology pass. The active branch is folded again only for the window.
 				const jsonl = await this.buildIndex(path, headerStamp, stats, input, { topology, branch: false });
 				const { epoch, seq: lastSeq } = jsonl.index;
@@ -2068,12 +2075,21 @@ export class JsonlSessionStore implements SessionStore {
 	private async indexFor(path: string, header: SessionRecordHeader, stats: BigIntStats): Promise<JsonlIndex> {
 		const identity = `${stats.dev}:${stats.ino}`;
 		const headerStamp = JSON.stringify(header);
-		const cached = this.indexes.get(path) ?? (await readSidecar(path));
+		const epoch = fileEpochOf(stats, headerStamp);
+		let cached = this.indexes.get(path) ?? (await readSidecar(path));
+		// An older build's sidecar holds the epoch with the creation time in it. It is this file's when the file's
+		// identity, creation time and header still match it, and is read once with this build's epoch then rewritten.
+		const older =
+			cached !== undefined &&
+			cached.index.epoch !== epoch &&
+			cached.index.epoch === legacyFileEpochOf(stats, headerStamp);
+		if (cached !== undefined && older) cached = { ...cached, index: { ...cached.index, epoch } };
 		if (
 			cached !== undefined &&
 			cached.identity === identity &&
 			cached.birthtimeNs === String(stats.birthtimeNs) &&
-			cached.headerStamp === headerStamp
+			cached.headerStamp === headerStamp &&
+			cached.index.epoch === epoch
 		) {
 			const fileSize = Number(stats.size);
 			const kept = this.keptFor(path, identity);
@@ -2082,6 +2098,7 @@ export class JsonlSessionStore implements SessionStore {
 				cached.mtimeNs === String(stats.mtimeNs) &&
 				(await witnessHolds(path, cached, kept))
 			) {
+				if (older) return this.keepIndex(path, cached);
 				this.indexes.set(path, cached);
 				return cached;
 			}
@@ -2129,7 +2146,7 @@ export class JsonlSessionStore implements SessionStore {
 			}
 		}
 		const birthtimeNs = String(stats.birthtimeNs);
-		const epoch = epochOf(stats, headerStamp);
+		const epoch = fileEpochOf(stats, headerStamp);
 		const topology = folded?.topology ?? (await this.foldFile(path, epoch, () => true, input));
 		const ranges =
 			folded?.branch === false || topology.index.jumps.length === 0
@@ -2514,7 +2531,7 @@ export class JsonlSessionStore implements SessionStore {
 			const owner: ChatRecordOwner = {
 				file: located.path,
 				id: sessionId,
-				epoch: epochOf(located.stats, JSON.stringify(located.header)),
+				epoch: fileEpochOf(located.stats, JSON.stringify(located.header)),
 			};
 			await this.closeKept(located.path);
 			await unlink(located.path);
@@ -3004,7 +3021,7 @@ export class JsonlSessionStore implements SessionStore {
 			},
 			torn ? size : undefined,
 		);
-		bindChatEpoch(header, epochOf(stats, JSON.stringify(header)));
+		bindChatEpoch(header, fileEpochOf(stats, JSON.stringify(header)));
 		return { header, entries, lastSeq: entries.length };
 	}
 
@@ -3182,7 +3199,7 @@ export class JsonlSessionStore implements SessionStore {
 		}
 		if (
 			state.lastSeq !== options.expectSeq ||
-			(options.epoch !== undefined && epochOf(stats, JSON.stringify(header)) !== options.epoch)
+			(options.epoch !== undefined && fileEpochOf(stats, JSON.stringify(header)) !== options.epoch)
 		)
 			throw new SessionConflictError(sessionId, options.expectSeq, state.lastSeq);
 		return { path, state, stats, header };
@@ -3247,10 +3264,6 @@ function decodeIdHashes(text: string): number[] | undefined {
 	const hashes: number[] = [];
 	for (let offset = 0; offset < bytes.length; offset += 4) hashes.push(bytes.readUInt32LE(offset));
 	return hashes;
-}
-
-function epochOf(stats: BigIntStats, headerStamp: string): string {
-	return `${stats.dev}:${stats.ino}:${stats.birthtimeNs}:${createHash("sha256").update(headerStamp).digest("hex").slice(0, 16)}`;
 }
 
 async function readFrom(
@@ -3401,7 +3414,7 @@ async function readSidecar(path: string): Promise<JsonlIndex | undefined> {
 		return undefined;
 	}
 	if (
-		stored.version !== JSONL_INDEX_VERSION ||
+		(stored.version !== JSONL_INDEX_VERSION && stored.version !== BIRTHTIME_INDEX_VERSION) ||
 		typeof stored.identity !== "string" ||
 		typeof stored.birthtimeNs !== "string" ||
 		typeof stored.headerStamp !== "string" ||

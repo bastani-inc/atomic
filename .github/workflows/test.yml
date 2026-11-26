@@ -389,11 +389,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Every store's conformance suite on the server backends (test/integration/storage-conformance-matrix.test.ts),
-  # plus the integration files that need a libSQL server. The integration shards run the same matrix on SQLite
-  # files only. Linux only: service containers need a Linux runner. See docs/ci.md ("Storage backend matrix").
-  # Two shards, each with its own libSQL server and PostgreSQL: on one server for every file, sqld was saturated and
-  # ordinary sqld tests ran past their 30 s budget.
+  # Every store's conformance suite on PostgreSQL (test/integration/storage-conformance-matrix.test.ts), plus the
+  # PostgreSQL adapter, Intercom and multi-node resume files. The integration shards run the same matrix on SQLite
+  # files only and skip the files that need PostgreSQL. Linux only: service containers need a Linux runner. See
+  # docs/ci.md ("Storage backend matrix").
   storage-conformance:
     name: storage-conformance (linux-x64, ${{ matrix.shard }}/4)
     needs: model-data
@@ -417,17 +416,8 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 30
-      sqld:
-        # libsql-server 0.24.33 can stop taking writes under contention unless it checkpoints on a timer
-        # (tursodatabase/libsql#2286, #4790).
-        image: ghcr.io/tursodatabase/libsql-server:v0.24.33@sha256:f8ca0134cdded747793888e48591aece07647d9d598d3ac229aabfa93159ca88
-        env:
-          SQLD_CHECKPOINT_INTERVAL_S: "60"
-        ports:
-          - 8080:8080
     env:
       ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED: "1"
-      ATOMIC_TEST_LIBSQL_URL: http://127.0.0.1:8080
       ATOMIC_TEST_POSTGRES_URL: postgresql://postgres@127.0.0.1:5432/postgres
       ATOMIC_TEST_POSTGRES_PASSWORD: postgres
     steps:
@@ -489,16 +479,12 @@ jobs:
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
-      - name: Wait for the libSQL server
-        shell: bash
-        timeout-minutes: 1
-        run: until curl -fsS "$ATOMIC_TEST_LIBSQL_URL/health"; do sleep 1; done
-      # Run the adapter conformance matrix, the Postgres adapter and Intercom tests, all libSQL server tests, and
-      # forks on PostgreSQL in a process an in-place update caught.
-      - name: Storage conformance and libSQL server tests
+      # Run the adapter conformance matrix, the PostgreSQL adapter, Intercom and multi-node resume tests, and forks
+      # on PostgreSQL in a process an in-place update caught.
+      - name: Storage conformance and PostgreSQL tests
         run: >-
           bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64 ${{ matrix.shard }} of 4)"
-          -- npm run test:integration -- storage-conformance-matrix storage-postgres intercom-postgres sqld
+          -- npm run test:integration -- storage-conformance-matrix storage-postgres intercom-postgres multinode-resume
           in-place-update-forks --shard=${{ matrix.shard }}/4
       - name: Upload test diagnostics
         if: always()

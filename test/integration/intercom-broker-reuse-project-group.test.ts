@@ -7,7 +7,6 @@ import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
-import { setCliStorageSelection } from "../../packages/coding-agent/src/core/storage/process-selection.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { queryIntercomBroker, restartIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { createMessageReader, type JsonWireValue, writeMessage } from "../../packages/intercom/broker/framing.js";
@@ -584,7 +583,7 @@ for (const [label, code, breakGit] of [
 }
 
 test(
-	"a session start still fails on an invalid storage profile while it names its home group, instead of starting without one (#4320)",
+	"a session start still fails on a variable of the removed team profile while it names its home group, instead of starting without one (#4320)",
 	async () => {
 		startBrokerWithStorage(sharedStorage());
 		await brokerRouting("on");
@@ -596,40 +595,10 @@ test(
 		await assert.rejects(alpha.start(alphaContext), (error: Error) => {
 			assert.deepEqual(
 				[error.name, (error as Error & { readonly code?: string }).code],
-				["TeamProfileConfigError", "unknown-profile"],
+				["TeamProfileConfigError", "libsql-removed"],
 			);
 			return true;
 		});
-		assert.equal(await sessionsOnBroker(), 0);
-	},
-	REAL_BROKER_TEST_TIMEOUT_MS,
-);
-
-test(
-	"a CI-profile session is refused by a reused broker that has a storage selection but does not route across machines (#4320)",
-	async () => {
-		startBrokerWithStorage(JSON.stringify({ adapter: "@example/adapter-that-is-not-installed" }));
-		await vi.waitFor(
-			async () => {
-				const broker = await queryIntercomBroker(agentDir);
-				assert.equal(broker.state, "running");
-				if (broker.state === "running") {
-					assert.equal(broker.report.multiNode.status, "off");
-					assert.notEqual(broker.report.storage, undefined);
-				}
-			},
-			{ timeout: BROKER_WAIT_MS, interval: 50 },
-		);
-		vi.stubEnv("ATOMIC_PROFILE", "ci");
-		vi.stubEnv("ATOMIC_TEAM_URL", `file://${join(root, "team.db")}`);
-		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "ci-profile");
-		const alpha = await loadExtension();
-		cleanups.push(() => alpha.stop(alphaContext));
-		await alpha.start(alphaContext);
-
-		const refused = await alpha.status(alphaContext);
-		assert.equal(refused.isError, true, refused.content[0]?.text);
-		assert.equal(refused.details?.code, "broker-routing-mismatch");
 		assert.equal(await sessionsOnBroker(), 0);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
@@ -827,43 +796,6 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
-for (const [override, select] of [
-	[
-		"ATOMIC_STORAGE",
-		() => {
-			vi.stubEnv("ATOMIC_STORAGE", JSON.stringify({ memory: true }));
-		},
-	],
-	[
-		"--storage",
-		() => {
-			setCliStorageSelection({ flag: "--storage", value: JSON.stringify({ memory: true }) });
-			cleanups.push(() => setCliStorageSelection(undefined));
-		},
-	],
-] as const) {
-	test(
-		`a CI-profile session whose ${override} selects memory storage registers with a single-machine broker instead of being refused (#4320)`,
-		async () => {
-			startBrokerWithStorage("");
-			await brokerRouting("off");
-			vi.stubEnv("ATOMIC_PROFILE", "ci");
-			vi.stubEnv("ATOMIC_TEAM_URL", `file://${join(root, "team.db")}`);
-			select();
-			const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "ci-memory");
-			const alpha = await loadExtension();
-			cleanups.push(() => alpha.stop(alphaContext));
-			await alpha.start(alphaContext);
-
-			const status = await alpha.status(alphaContext);
-			assert.equal(status.isError, false, status.content[0]?.text);
-			assert.deepEqual(status.details?.groups, ["default"]);
-			assert.equal(await sessionsOnBroker(), 1);
-		},
-		REAL_BROKER_TEST_TIMEOUT_MS,
-	);
-}
-
 interface RawFrames {
 	readonly frames: unknown[];
 	readonly closed: Promise<void>;
@@ -1013,7 +945,7 @@ async function waitForOffBrokerWithStorage(): Promise<void> {
 }
 
 test(
-	"a session that selects shared storage without the CI profile may use a reused broker that holds a selection but does not route across machines (#4320)",
+	"a session that selects shared storage may use a reused broker that holds a selection but does not route across machines (#4320)",
 	async () => {
 		startBrokerWithStorage(JSON.stringify({ adapter: "@example/adapter-that-is-not-installed" }));
 		await waitForOffBrokerWithStorage();

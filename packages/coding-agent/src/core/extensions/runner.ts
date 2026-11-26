@@ -832,8 +832,6 @@ export class ExtensionRunner {
 		} finally {
 			if (!this.staleMessage) {
 				this.staleMessage = message;
-				// Node 22 keeps every enabled store in a process-wide hook list, even after its runner is collected.
-				this.nestedTool.disable();
 				this.runtime.invalidate(message);
 			}
 		}
@@ -973,7 +971,7 @@ export class ExtensionRunner {
 	private readonly nestedTool = new AsyncLocalStorage<{ id: string; parentId: string }>();
 
 	runNestedTool<T>(id: string, parentId: string, run: () => T): T {
-		this.assertActive(); // A late invocation must not re-enable a retired runner's store.
+		this.assertActive(); // A retired runner runs no more nested tool calls.
 		return this.nestedTool.run({ id, parentId }, run);
 	}
 

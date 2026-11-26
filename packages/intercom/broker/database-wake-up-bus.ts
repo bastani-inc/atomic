@@ -1,10 +1,13 @@
+import * as storage from "@bastani/atomic/storage";
 import {
 	dialectOf,
+	ensureStorageSchema,
 	fencedPath,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
 	type StorageNotificationSubscription,
+	storageMigrationTable,
 	validateStoragePrefix,
 } from "@bastani/atomic/storage";
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
@@ -69,9 +72,9 @@ export interface DatabaseWakeUpBusOptions {
 	readonly schedule?: WakeUpPollScheduler;
 	/**
 	 * A separate handle on the same database that the poll reads its hints through, so a poll never queues behind the
-	 * database's writes (#6560); the bus does not close it. On PostgreSQL the poll takes and deletes its hints through
-	 * it in one statement (`DELETE … RETURNING`), so it must accept writes. Absent: the poll runs on the database it
-	 * opened.
+	 * database's writes (#6560); the bus does not close it, and writes nothing through it. On PostgreSQL the poll reads
+	 * nothing through it: it takes and deletes its hints in one statement (`DELETE … RETURNING`) on the database it
+	 * opened. Absent: the poll runs on the database it opened.
 	 */
 	readonly reader?: SqliteExecutor;
 }
@@ -95,10 +98,23 @@ const scheduleTimeout: WakeUpPollScheduler = (callback, delayMs) => {
 	return () => clearTimeout(timer);
 };
 
+/**
+ * `storageSchemaCurrent` of the storage API, which an Atomic installation older than #6560 lacks: a named import would
+ * fail to link there, so it is taken from the module namespace, and without it the hint log's persistence is read from
+ * the catalog at every open.
+ */
+const schemaApi: Partial<Pick<typeof storage, "storageSchemaCurrent">> = storage;
+
+/** The ledger step, `schema:intercom-wakeups-unlogged`, that makes a hint log created as a logged table unlogged. */
+const UNLOGGED_HINTS_DOMAIN = "intercom-wakeups-unlogged";
+
 async function createSchema(database: SqliteDatabase, table: string, prefix: string | undefined): Promise<void> {
-	const { types } = dialectOf(database);
-	// In a serial transaction, so brokers opening a new bus at once take turns creating it (#5054).
-	const schema = `CREATE TABLE IF NOT EXISTS ${table} (
+	const { types, name } = dialectOf(database);
+	// On PostgreSQL the hint log is unlogged: its rows skip the write-ahead log, so a hint costs no log write and its
+	// commit no flush to disk. A crash of the server empties it, which loses only hints, and the backup poll finds
+	// every message they announced. In a serial transaction, so brokers opening a new bus at once take turns creating
+	// it (#5054).
+	const schema = `CREATE ${name === "postgres" ? "UNLOGGED " : ""}TABLE IF NOT EXISTS ${table} (
 			id ${types.serialKey},
 			broker_id TEXT NOT NULL,
 			reason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),
@@ -108,6 +124,40 @@ async function createSchema(database: SqliteDatabase, table: string, prefix: str
 		CREATE INDEX IF NOT EXISTS ${table}_broker ON ${table} (broker_id, id);
 		CREATE INDEX IF NOT EXISTS ${table}_created ON ${table} (created_at);`;
 	await ensureBrokerSchema(database, prefix, "wakeups", (tx) => tx.exec(schema));
+	await ensureUnloggedHints(database, table, prefix);
+}
+
+/**
+ * Makes a hint log that an earlier Atomic created as a logged table unlogged on PostgreSQL, once per database, recorded
+ * in the ledger as `schema:intercom-wakeups-unlogged`. `ALTER TABLE … SET UNLOGGED` needs the table's owner, so a
+ * runtime role without DDL leaves it logged, as before, until `atomic storage migrate` runs as the owner. Earlier
+ * Atomic releases use the unlogged table unchanged. The rewrite locks the table, which holds only hints younger than
+ * the retention: when another broker holds it longer than the schema lock wait, the next open tries again.
+ */
+async function ensureUnloggedHints(database: SqliteDatabase, table: string, prefix: string | undefined): Promise<void> {
+	const dialect = dialectOf(database);
+	if (dialect.name !== "postgres" || database.readOnly === true) return;
+	const schema = { ledger: storageMigrationTable(prefix), domain: UNLOGGED_HINTS_DOMAIN, revision: 1 };
+	if (await schemaApi.storageSchemaCurrent?.(database, schema)) return;
+	const found = await database.get<SqliteRow & { owned: boolean | number; unlogged: boolean | number }>(
+		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned, c.relpersistence = 'u' AS unlogged
+		FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?`,
+		dialect.identifier(table),
+	);
+	const yes = (value: boolean | number | undefined) => value === true || Number(value) === 1;
+	// An unlogged table only needs the step recorded, which any role that writes the ledger may do.
+	if (found === undefined || (!yes(found.unlogged) && !yes(found.owned))) return;
+	try {
+		await database.transaction(
+			(tx) =>
+				ensureStorageSchema(tx, dialect, schema, async () => {
+					if (!yes(found.unlogged)) await tx.exec(`ALTER TABLE ${table} SET UNLOGGED`);
+				}),
+			{ concurrency: { kind: "serial", domain: schema.ledger } },
+		);
+	} catch {
+		// The table stays as it was: hints work the same in a logged table.
+	}
 }
 
 /**
@@ -328,12 +378,19 @@ class DatabaseWakeUpBus implements WakeUpBus {
 			let rows: HintRow[];
 			try {
 				if (dialectOf(database).name === "postgres") {
-					// #6560: one statement takes the batch and deletes it, through the reader, whose calls never queue
-					// behind this database's writes. It returns the hints in no particular order.
-					rows = await reader.all<HintRow>(
-						`DELETE FROM ${this.table} WHERE id IN (SELECT id ${batch}) RETURNING id, broker_id, reason, version`,
-						...brokerIds,
-					);
+					// #6560: one statement takes the batch and deletes it. It is a write, so it goes through the database,
+					// never the reader, as a statement of its own in the wake-up table's domain: one round trip, queued
+					// behind neither other domains' writes nor read-only transactions. It returns the hints in no
+					// particular order.
+					const take = {
+						sql: `DELETE FROM ${this.table} WHERE id IN (SELECT id ${batch}) RETURNING id, broker_id, reason, version`,
+						params: brokerIds,
+					};
+					rows = (
+						database.autocommit === undefined
+							? await database.all(take.sql, ...take.params)
+							: await database.autocommit(take, { kind: "serial", domain: this.table })
+					) as HintRow[];
 					rows.sort((left, right) => Number(left.id) - Number(right.id));
 				} else {
 					rows = await reader.all<HintRow>(`SELECT id, broker_id, reason, version ${batch}`, ...brokerIds);

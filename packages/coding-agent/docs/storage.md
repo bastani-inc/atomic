@@ -4,7 +4,7 @@ sidebarTitle: "Overview"
 description: "Choose where Atomic saves sessions and Intercom state, share a database across machines, move sessions between stores, and handle storage errors."
 ---
 
-Atomic saves sessions in a local SQLite database (`~/.atomic/workflows/journal.sqlite`) by default. You can switch to another SQLite file, a JSONL directory, an in-memory store, PostgreSQL, Turso/libSQL, or a custom database adapter through [storage settings](/settings#sessions) or [per-process overrides](#selecting-storage-per-process).
+Atomic saves sessions in a local SQLite database (`~/.atomic/workflows/journal.sqlite`) by default. You can switch to another SQLite file, a JSONL directory, an in-memory store, PostgreSQL, or a custom database adapter through [storage settings](/settings#sessions) or [per-process overrides](#selecting-storage-per-process).
 
 This page covers what every store shares: choosing a store, the `atomic storage` commands, moving sessions between stores, and storage errors. Each backend has its own page:
 
@@ -62,24 +62,14 @@ If Atomic warns that a lock takeover file (such as `settings.json.lock.takeover.
 
 Share sessions and Intercom across machines or CI fleets by pointing every host at the same [PostgreSQL](/storage/postgres) database with the same `prefix`. Never put a local SQLite file on a network filesystem.
 
-- **Shared `storage` vs. `sessions.storage`.** Configuring top-level `storage` (in global settings, `--storage`, `--storage-file`, or `ATOMIC_STORAGE`) enables multi-node Intercom routing across hosts. Setting only `sessions.storage` shares sessions without enabling multi-node Intercom. On libSQL, single Intercom messages over 5,000,000 bytes fail with `StoragePayloadTooLargeError`.
-- **Data stored and access.** The shared database holds sessions, tool-output blobs, [worktree snapshot](/worktree-snapshots) blobs, and transient Intercom messages. Treat database read access as full read access. To share Intercom while keeping personal sessions local, use `atomic team join` as described in [Set up teams and CI](/guides/team-setup). To resume sessions across machines, see [Resume sessions on any machine](/guides/resume-on-any-machine).
+- **Shared `storage` vs. `sessions.storage`.** Configuring top-level `storage` (in global settings, `--storage`, `--storage-file`, or `ATOMIC_STORAGE`) enables multi-node Intercom routing across hosts. Setting only `sessions.storage` shares sessions without enabling multi-node Intercom.
+- **Data stored and access.** The shared database holds sessions, tool-output blobs, [worktree snapshot](/worktree-snapshots) blobs, and transient Intercom messages. Treat database read access as full read access. To share Intercom while keeping personal sessions local, see [Set up teams and CI](/guides/team-setup). To resume sessions across machines, see [Resume sessions on any machine](/guides/resume-on-any-machine).
 
 ### Joining a machine to a shared database
 
-> Want shared Intercom while keeping personal sessions local? Use `atomic team join` instead ([Set up teams and CI](/guides/team-setup)).
+> Want shared Intercom while keeping personal sessions local? See [Set up teams and CI](/guides/team-setup).
 
-**libSQL / Turso:**
-
-```bash
-atomic install npm:@bastani/atomic-storage-libsql
-turso db tokens create <db> > ~/turso-token
-atomic storage join libsql://<db>.turso.io --token-file ~/turso-token
-atomic intercom restart
-atomic storage status
-```
-
-**PostgreSQL (PostgreSQL 16 or newer for sessions):**
+Shared databases are PostgreSQL 16 or newer:
 
 In two-role deployments, run `atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password` once as the owner role, and after Atomic upgrades, before joining machines with the runtime role. See [Set up the database](/storage/postgres#set-up-the-database).
 
@@ -93,22 +83,22 @@ atomic storage status
 `atomic storage join <url> [options]` runs four steps:
 
 1. Validates the URL, adapter installation, and credentials, then runs a read-only `SELECT 1` within 15 seconds. If any check fails, nothing is written.
-2. Stores static credentials (`--token-file` for libSQL, trimming surrounding whitespace; `--password-file` for PostgreSQL) in a mode-`600` `~/.atomic/agent/storage-token.<id>` file, reusing an existing identical file and leaving older files intact for running sessions.
+2. Stores a `--password-file` password in a mode-`600` `~/.atomic/agent/storage-token.<id>` file, reusing an existing identical file and leaving older files intact for running sessions.
 3. Updates only the top-level `storage` key in `~/.atomic/agent/settings.json` (plus optional `--prefix`), preserving all other settings.
 4. Lists any higher-precedence environment variables or project settings and notes if the running Intercom broker still uses the previous store. Run `atomic intercom restart` to switch the broker ([Running Intercom across machines](/intercom/operations#running-intercom-across-machines)).
 
 URL and credential rules:
 
 - **No embedded secrets.** Userinfo passwords and `authToken=` or `password=` query parameters are refused.
-- **libSQL schemes.** Accepts `libsql://`, `https://`, `http://`, `wss://`, `ws://`, or an absolute `file:` URL (which needs no token). Prefer TLS (`libsql://`, `https://`, or `wss://`) for remote hosts; `http://` and `ws://` are intended for local or private-network `sqld`. Relative `file:` URLs, `--password-file`, and `--auth` are refused.
-- **PostgreSQL credentials.** Pass exactly one of `--password-file <path>` (copied to a private file), `--token-file <path>` (external rotated file referenced by path and reread per connection, stripping only one trailing `\n` or `\r\n`), or `--auth azure|aws|gcp` (also accepts `azure-entra`, `aws-iam`, `gcp-iam`). The same flags work with `atomic storage migrate --db`.
+- **PostgreSQL only.** Accepts `postgres://` and `postgresql://` URLs. A libSQL URL (`libsql://`, `https://`, `http://`, `wss://`, `ws://`, or `file:`) is refused with `libsql-removed` and a pointer to [Moving off libSQL](#moving-off-libsql).
+- **Credentials.** Pass exactly one of `--password-file <path>` (copied to a private file), `--token-file <path>` (external rotated file referenced by path and reread per connection, stripping only one trailing `\n` or `\r\n`), or `--auth azure|aws|gcp` (also accepts `azure-entra`, `aws-iam`, `gcp-iam`). The same flags work with `atomic storage migrate --db`.
 
 ### Checking the selected storage
 
 Run `atomic storage status` (or `atomic storage status --json`) inside your project directory to inspect effective storage for sessions and Intercom.
 
 - Reports the active source (environment variable, project settings, global `storage` or `sessions.storage`, or default), overridden selections, untrusted project settings, and project `storage` settings (ignored by Intercom).
-- Verifies adapter loading and runs `SELECT 1` with a 15-second timeout per phase. Local SQLite and `file:` URLs probe read-only without creating missing files. PostgreSQL also reports the server version.
+- Verifies adapter loading and runs `SELECT 1` with a 15-second timeout per phase. Local SQLite files are probed read-only without creating missing files. PostgreSQL also reports the server version.
 - Shows live Intercom broker status, session count, multi-node routing state, and active peer brokers in the shared database.
 
 Exits `1` if settings cannot load, a selection is invalid, an adapter fails to load, or the database does not answer. CLI sessions also warn at startup when shared `storage` names an unloadable adapter.
@@ -123,10 +113,9 @@ A host launching Atomic processes (such as `atomic --mode rpc` children) can ove
 | `--storage-file <path>` | Sessions and Intercom (reads JSON from a file; cannot use `{ "dir": "..." }`) | Shared `storage` |
 | `ATOMIC_STORAGE` | Sessions and Intercom (cannot use `{ "dir": "..." }`) | Shared `storage` |
 | `ATOMIC_SESSIONS_STORAGE` | Sessions only (also accepts `{ "dir": "..." }` for JSONL) | `sessions.storage` |
-| `ATOMIC_PROFILE=ci` with `ATOMIC_TEAM_URL`, `ATOMIC_TEAM_TOKEN` or `ATOMIC_TEAM_TOKEN_FILE`, and optional `ATOMIC_TEAM_PREFIX` | Sessions and Intercom on the team libSQL database | See [CI and swarms](/guides/team-setup#ci-and-swarms) |
 
 ```bash
-ATOMIC_STORAGE='{"adapter":"@example/atomic-sqlite","options":{"url":"libsql://team.example"},"secrets":{"authToken":{"env":"TEAM_DB_TOKEN"}},"prefix":"svc_"}' \
+ATOMIC_STORAGE='{"adapter":"@bastani/atomic-storage-postgres","options":{"url":"postgresql://atomic_runtime@db.example.com:5432/atomic"},"secrets":{"password":{"env":"ATOMIC_DB_PASSWORD"}},"prefix":"svc_"}' \
   atomic --mode rpc
 
 atomic --mode rpc --storage-file /etc/atomic/storage.json
@@ -145,10 +134,9 @@ Precedence for sessions, highest first:
 5. `--storage` or `--storage-file`
 6. `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`
 7. `ATOMIC_STORAGE`
-8. `ATOMIC_PROFILE=ci`
-9. `sessions.storage` setting
-10. Shared `storage` setting
-11. Default local SQLite file (`~/.atomic/workflows/journal.sqlite`)
+8. `sessions.storage` setting
+9. Shared `storage` setting
+10. Default local SQLite file (`~/.atomic/workflows/journal.sqlite`)
 
 Override conflicts and path rules:
 
@@ -157,15 +145,15 @@ Override conflicts and path rules:
 - Combining `ATOMIC_SESSIONS_STORAGE` or `--storage` / `--storage-file` with a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` fails startup with `StorageConfigError` (`reason: "conflicting-overrides"`). Unset one variable or pass an explicit session flag.
 - Relative `path`, `dir`, and `secrets.file` values resolve against [storage home](#storage-home). Relative adapter specifiers resolve from the agent directory. Relative `--storage-file` paths resolve from the current working directory. Empty variables are ignored.
 
-Before starting any session (in every mode, including RPC and SDK `createAgentSession()`), Atomic validates `--storage`, `--storage-file`, `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, and `ATOMIC_PROFILE=ci`, even when outranked by a higher-precedence override. Invalid JSON, schema violations, unreadable files, or incomplete CI variables exit cleanly with `Error: ...` (exit code `1`) on the CLI or throw `StorageConfigError` / `TeamProfileConfigError` in the SDK without falling back to another store. Errors name only the variable or flag, never secret values.
+Before starting any session (in every mode, including RPC and SDK `createAgentSession()`), Atomic validates `--storage`, `--storage-file`, `ATOMIC_STORAGE`, and `ATOMIC_SESSIONS_STORAGE`, even when outranked by a higher-precedence override. Invalid JSON, schema violations, unreadable files, a libSQL selection, or a variable of the removed `ATOMIC_PROFILE=ci` team profile (`ATOMIC_PROFILE`, `ATOMIC_TEAM_URL`, `ATOMIC_TEAM_TOKEN`, `ATOMIC_TEAM_TOKEN_FILE`, `ATOMIC_TEAM_PREFIX`) exit cleanly with `Error: ...` (exit code `1`) on the CLI or throw `StorageConfigError` / `TeamProfileConfigError` in the SDK without falling back to another store. Errors name only the variable or flag, never secret values.
 
 Process-level storage options bypass [project trust](/security) because they come from the launching host. Because adapter modules execute code with Atomic's privileges, select only trusted modules and pass credentials through `secrets` instead of `options`. Prefer `--storage-file` or environment variables over `--storage` when the selection itself is sensitive, because command-line arguments can be visible to other local users.
 
-SDK callers can also keep a token strictly in memory with `inMemorySecret(token)` or `teamProfileSelection({ token })` (`{ "value": token }`), which serializes as `[redacted]` and is refused in settings, CLI flags, or environment variables.
+SDK callers can also keep a password strictly in memory with `inMemorySecret(password)` (`{ "value": password }`), which serializes as `[redacted]` and is refused in settings, CLI flags, or environment variables.
 
 ## Tuning for many concurrent agents
 
-How many agents can write at once depends on the store. On PostgreSQL it depends on how many connections each process may open. Writes to different sessions run in parallel, each on its own connection. Writes to one session wait for each other. On libSQL and local SQLite, one writer at a time writes a database, and no setting changes that.
+How many agents can write at once depends on the store. On PostgreSQL it depends on how many connections each process may open. Writes to different sessions run in parallel, each on its own connection. Writes to one session wait for each other. On local SQLite, one writer at a time writes a database, and no setting changes that.
 
 Each backend's page covers its own settings:
 
@@ -218,21 +206,23 @@ If an import fails partway through writing multiple sessions, it exits `1` and l
 
 ### Selecting storage for export and import
 
-Both commands use `ATOMIC_CODING_AGENT_DIR` and the active session storage for the current directory. Exporting from or importing into a shared libSQL, Turso, or PostgreSQL database (or an in-memory store) is refused by default because joined machines already share that database.
+Both commands use `ATOMIC_CODING_AGENT_DIR` and the active session storage for the current directory. Exporting from or importing into a shared PostgreSQL database (or an in-memory store) is refused by default because joined machines already share that database.
 
 Pass `--storage <json>` or `--storage-file <path>` to target a specific store explicitly, including a shared database:
 
 - Relative `"path"` values inside `atomic storage export` / `import --storage` (or `--storage-file`) resolve against the **current working directory (`cwd`)**, not storage home. If you copy a `storage` object from `settings.json` whose `"path"` is relative, convert it to an absolute path first.
 - JSONL `{ "dir": "..." }` and empty `{}` selections are rejected by `export` and `import --storage`.
 
-For example, to migrate sessions from libSQL to PostgreSQL:
+For example, to move sessions from one machine's local store to a PostgreSQL database:
 
 ```bash
-atomic storage export ~/moved --storage-file old-storage.json
+atomic storage export ~/moved
 atomic storage join postgres://atomic@db.example.com/atomic --password-file ~/pg-password
 jq .storage ~/.atomic/agent/settings.json > new-storage.json
 atomic storage import ~/moved --storage-file new-storage.json
 ```
+
+To move sessions off a libSQL database, see [Moving off libSQL](#moving-off-libsql).
 
 ### Session file format and redaction
 
@@ -269,16 +259,24 @@ Use `--since` or `--limit` to bound cache size. Imported sessions continue with 
 
 ## Moving off libSQL
 
-Atomic no longer supports Turso and libSQL. To keep your sessions, export them with Atomic 0.10.10 or 0.10.11-alpha.2, the last releases with libSQL support, then import them into PostgreSQL or local SQLite.
+Atomic 0.10.11 removed libSQL support: Turso, self-hosted `sqld`, and libSQL `file:` databases. A settings file, environment variable, or URL that still selects libSQL now stops Atomic with a `libsql-removed` error that links here. To keep your sessions, export them with Atomic 0.10.11-alpha.2, the last release with libSQL support, then import them into PostgreSQL or local SQLite with this release. Forks keep their whole history, and worktree snapshots keep their content.
+
+Export with 0.10.11-alpha.2 even if you last ran 0.10.10: it reads libSQL databases written by every release, including ones it already switched to [shared-history forks](#shared-history-forks), which 0.10.10 refuses. It needs Node.js 24.20 or newer.
 
 First save the libSQL selection to a file, before you change any settings. If `sessions.storage` points at the libSQL database rather than top-level `storage`, save that value instead with `jq '.sessions.storage'`. Then export the sessions:
 
 ```bash
 jq .storage ~/.atomic/agent/settings.json > old-storage.json
-npx -y @bastani/atomic@0.10.10 storage export ~/moved --storage-file old-storage.json
+npx -y @bastani/atomic@0.10.11-alpha.2 storage export ~/moved --storage-file old-storage.json
 ```
 
-To move them to PostgreSQL, join the database and import them there:
+It prints `Exported <n> sessions to <dir>/sessions (<n> written, 0 unchanged).` If it fails with `Could not load storage adapter: @bastani/atomic-storage-libsql`, install the adapter for that release, then run the export again:
+
+```bash
+npx -y @bastani/atomic@0.10.11-alpha.2 install npm:@bastani/atomic-storage-libsql@0.10.11-alpha.2
+```
+
+To move the sessions to PostgreSQL, join the database and import them there:
 
 ```bash
 atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
@@ -294,15 +292,21 @@ atomic storage import ~/moved
 atomic intercom restart
 ```
 
+Importing prints `Imported <n> sessions from <dir>/sessions (<n> added, 0 updated, 0 already up to date).`, and running it again adds nothing. Finally, remove the libSQL adapter, which this release never loads:
+
+```bash
+atomic remove npm:@bastani/atomic-storage-libsql
+```
+
 ## Size limits
 
-Single-value limits vary by backend: `sqld` 0.24 defaults to 5,000,000 bytes (`max_row_size`) and 10 MB responses (`--max-response-size`), local SQLite allows about 1 GB per value, and PostgreSQL allows about 1 GB per field. Atomic chunks large data automatically so large sessions and snapshots work across every backend:
+Single-value limits vary by backend: local SQLite allows about 1 GB per value, and PostgreSQL allows about 1 GB per field. Atomic chunks large data automatically so large sessions and snapshots work across every backend:
 
 - Session entries over 1 MiB (such as large pasted logs or inline images) split into 1 MiB chunk rows in one transaction, and sessions load in 1 MiB pages.
 - Session search indexes the first 64 KiB (65,536 UTF-16 code units) of each message across all stores.
 - Worktree snapshot blobs and session tool-output blobs over 1 MiB split into 1 MiB chunk rows.
 
-Payloads that still exceed a backend's limit fail non-retryably with `StoragePayloadTooLargeError`. Store less in a single value or raise the server's limit (for `sqld`, `max_row_size` and `--max-response-size`).
+Payloads that still exceed a backend's limit fail non-retryably with `StoragePayloadTooLargeError`. Store less in a single value or raise the backend's limit.
 
 ### Upgrading older SQLite and shared stores
 
@@ -384,7 +388,7 @@ Coded storage errors carry a stable `code` and actionable `hint`:
 | `StorageWriterQueueDegradedError` | `writer-queue-degraded` | Recorded once per reason (via `getWriterQueueDegradation` and process warning), never thrown. Covers `watch-unavailable`, `wake-failed`, `stale-ticket-kept`, and `holder-record-unavailable`. | `reason`, `adapter`, `location`, `cause`, `hint` | Raise file-watch limits, fix permissions on the writer queue directories beside the database file, or remove abandoned entries. |
 | `StorageWriterQueueUnusableError` (subclass of `StorageUnavailableError`) | `writer-queue-unusable` | A node-sqlite transaction could not use its writer queue directories. Nothing ran. | `adapter`, `location`, `errno`, `cause` | Make the database directory and writer queue directories readable and writable for all writers. |
 | `StorageTransientError` (subclass of `StorageUnavailableError`) | `stream-expired`, `transaction-timeout`, `connection-refused`, `connection-lost`, `lock-conflict`, `read-only-server` | A temporary server or network failure ended a call (after up to 5 attempts if nothing was written, or immediately if `outcome` is `"unknown"`). | `adapter`, `location`, `outcome` (`"not-applied"` or `"unknown"`), `attempts`, `retryable: true`, `cause`, optional `hop` and `hopFailure` | Check connectivity to the server or named `hop`, then retry. For `"unknown"`, read state back before retrying non-idempotent writes. |
-| `SessionBlobError` | `blobs-unsupported` | The session store lacks `putBlob` and `getBlob` needed for an import, fork, branch, or `tool-output://` read. | `sessionId`, `adapter` | Use SQLite, libSQL, or PostgreSQL, or implement `putBlob` and `getBlob` on your custom store. |
+| `SessionBlobError` | `blobs-unsupported` | The session store lacks `putBlob` and `getBlob` needed for an import, fork, branch, or `tool-output://` read. | `sessionId`, `adapter` | Use SQLite or PostgreSQL, or implement `putBlob` and `getBlob` on your custom store. |
 | `SessionBlobError` | `blob-missing` | A `tool-output://<sha256>` blob is missing. Copies, forks, and exports continue without it and emit a warning (or call `onMissingBlob`). | `sessionId`, `hash`, optional `missing` count | Run the tool again to regenerate the output. |
 | `SessionBlobError` | `blob-incomplete` | A blob record exists, but part of its content is missing. | `sessionId`, `hash`, `bytes` | Run the tool again to regenerate the output. |
 | `SessionBlobError` | `blob-corrupt` | Imported tool output failed its SHA-256 check. Nothing was written. | `sessionId`, `hash`, `actualHash` | Export the session again from its source. |
@@ -403,38 +407,33 @@ Coded storage errors carry a stable `code` and actionable `hint`:
 
 ### Team setup errors
 
-`joinTeam()`, `leaveTeam()`, `getTeamProfile()`, `teamProfileSelection()`, `atomic storage join`, `atomic team`, and `ATOMIC_PROFILE=ci` validation throw these classes from `@bastani/atomic/storage`. Cross-process guards `isTeamProfileError()`, `isTeamProfileTimeoutError()`, and `isTeamProfileConfigError()` match by `name` and `code`, and `isRetryableTeamProfileError()` inspects up to 8 cause levels. Messages and fields name variables, flags, and files, never token values.
+`getTeamProfile()`, `atomic storage join`, `atomic storage migrate --db`, `atomic team`, and the refusal of a removed libSQL selection or team variable throw these classes from `@bastani/atomic/storage`. Cross-process guards `isTeamProfileError()`, `isTeamProfileTimeoutError()`, and `isTeamProfileConfigError()` match by `name` and `code`, and `isRetryableTeamProfileError()` inspects up to 8 cause levels. Messages and fields name variables, flags, and files, never token values.
 
 `TeamProfileConfigError` extends `StorageConfigError` (`source`: `"sdk"`, `"cli"`, or `"env"`, `field`, `code`, `reason`, `hint`, optional `path` and `missing`, `retryable: false`). Nothing changes when it is thrown:
 
 | Code | When |
 | --- | --- |
-| `unknown-profile` | `ATOMIC_PROFILE` or SDK `profile` is not `ci` |
-| `incomplete-profile` | A team variable is set without `ATOMIC_PROFILE`, or `ATOMIC_PROFILE=ci` lacks a URL or token (`missing` lists all missing variables) |
-| `missing-url` | No database URL was passed |
-| `unsupported-url` | URL is not `libsql://`, `https://`, `http://`, `wss://`, `ws://`, or `file:` |
-| `relative-file-url` | A `file:` URL is relative |
-| `credential-in-url` | URL contains a username, password, or `authToken` |
-| `missing-token` | Non-`file:` URL has no token, or `tokenEnv` names an unset variable |
-| `conflicting-token` | More than one token source was passed |
-| `unreadable-token-file` | Token file cannot be read (`path` names it) |
-| `relative-token-file` | `ATOMIC_TEAM_TOKEN_FILE` is relative instead of absolute |
-| `empty-token` | Token, token file, or `tokenEnv` name is empty |
+| `libsql-removed` | A libSQL URL, `atomic team join` or `atomic team leave`, or a variable of the removed `ATOMIC_PROFILE=ci` profile. The hint says how to [move off libSQL](#moving-off-libsql) |
+| `unsupported-url` | URL is not `postgres://` or `postgresql://` |
+| `credential-in-url` | URL contains a password |
+| `missing-token` | No `--password-file`, `--token-file`, or `--auth` was passed |
+| `conflicting-token` | More than one credential source was passed |
+| `unsupported-auth` | `--auth` is not `azure`, `aws`, or `gcp` |
+| `unreadable-token-file` | Password or token file cannot be read (`path` names it) |
+| `empty-token` | Password or token file is empty |
 | `invalid-prefix` | Prefix breaks storage prefix rules |
-| `unknown-command`, `unknown-option`, `missing-value`, `unexpected-argument` | Invalid `atomic team` CLI arguments |
+| `unknown-command`, `unknown-option`, `unexpected-argument` | Invalid `atomic team` CLI arguments |
 
 `TeamProfileError` (`code`, `subject`, `hint`, optional `detail` and `cause`, `retryable`):
 
 | Code | When | What to do |
 | --- | --- | --- |
 | `settings-unreadable` | Settings file cannot be read or parsed (`subject` names it). Nothing changed. | Fix the settings file and rerun. |
-| `adapter-not-installed` | libSQL adapter cannot load. Nothing changed. | Run `atomic install npm:@bastani/atomic-storage-libsql`. |
-| `connection-failed` | Database refused or failed `SELECT 1` (`retryable: true`). Nothing changed. | Check URL, token, and network, then retry. |
+| `adapter-not-installed` | PostgreSQL adapter cannot load. Nothing changed. | Run `atomic install npm:@bastani/atomic-storage-postgres`. |
+| `connection-failed` | Database refused or failed `SELECT 1` (`retryable: true`). Nothing changed. | Check URL, credential, and network, then retry. |
 | `connection-timeout` | Database did not answer within 15 seconds. Thrown as `TeamProfileTimeoutError` with `timeoutMs`, `elapsedMs`, `phase: "connect"`, `retryable: true`. Nothing changed. | Check database reachability and retry. |
-| `token-write-failed` | Private token file could not be written. Nothing changed. | Make the agent directory writable. |
+| `token-write-failed` | Private password file could not be written. Nothing changed. | Make the agent directory writable. |
 | `settings-write-failed` | Settings could not be written (previous selection and token are kept). | Make the settings file writable or free disk space. |
 | `settings-locked` | Another process held the settings lock (`retryable: true`). Nothing changed. | Retry in a few seconds; stale locks expire after 10 seconds. |
-| `broker-restart-failed` | Returned in `broker`, not thrown: settings saved, but Intercom broker failed to restart (`retryable: true`). | Run `atomic intercom restart`. |
-| `token-delete-failed` | `leaveTeam` removed settings, but could not delete the token file. | Delete the file manually. |
 
-`SHARED_STORAGE_JOIN_HINT` exports the canonical hint string `atomic team join <url> --token-file <path>`. Use `serializeTeamError(error)` and `rehydrateTeamError(json)` to preserve team error classes, fields, and up to 8 cause levels across processes without leaking credentials (non-team causes keep only `name` and `code`).
+`POSTGRES_STORAGE_JOIN_HINT` exports the canonical hint string `atomic storage join <postgres-url> --password-file <path>`. Use `serializeTeamError(error)` and `rehydrateTeamError(json)` to preserve team error classes, fields, and up to 8 cause levels across processes without leaking credentials (non-team causes keep only `name` and `code`).

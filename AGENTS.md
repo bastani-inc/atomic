@@ -12,15 +12,17 @@ In the `atomic-monorepo` npm workspace:
   They compile with `tsc` and publish as `@bastani/atomic-*`, with `packages/agent` publishing as `@bastani/atomic-agent-core`.
   The CLI pins them to its release version. The loader resolves `@earendil-works/pi-*`, `@mariozechner/pi-*`, and `@bastani/pi-ai` aliases.
 - `packages/natives` builds the `@bastani/atomic-natives` N-API module from Rust code in `crates/`.
-- `packages/storage-libsql` and `packages/storage-postgres` publish separately as JSDoc-checked ESM with type declarations.
-  They have no compile step. Keep them out of the CLI's dependencies and `dist/builtin`.
-  Install with `atomic install npm:@bastani/atomic-storage-libsql` or `atomic install npm:@bastani/atomic-storage-postgres`.
+- `packages/storage-postgres` publishes separately as JSDoc-checked ESM with type declarations.
+  It has no compile step. Keep it out of the CLI's dependencies and `dist/builtin`.
+  Install with `atomic install npm:@bastani/atomic-storage-postgres`.
 
 ## Tech stack
 
 - Install with `npm ci --ignore-scripts`. Add dependencies with `npm install <pkg>`. Never use `yarn install`, `pnpm install`, or `bun install`.
   Keep `package-lock.json` as the only lockfile. Use exact versions for dependencies of published packages and keep `.npmrc` at `save-exact=true`.
   Keep `.npmrc`'s `min-release-age=0` in sync with `.github/dependabot.yml`'s `cooldown.default-days: 0`.
+- Set up a new Git worktree with `node scripts/worktree-setup.mjs` from inside it. Don't link its whole `node_modules` to another checkout;
+  see [Git worktrees](DEV_SETUP.md#git-worktrees).
 - Run `npm run build` after installing in a fresh checkout or pulling changes to the CLI, the pi forks, `packages/natives`, or `crates/`.
   Force a full rebuild with `npm run build -- --force` or `ATOMIC_BUILD_FORCE=1`. For a missing native binding alone, run `npm run build --workspace=@bastani/atomic-natives`.
 - Run `npm run check` regularly. It runs Biome, the typechecks, and the interactive event-loop check. Format with `npm run format`.

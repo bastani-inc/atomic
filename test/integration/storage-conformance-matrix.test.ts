@@ -9,7 +9,11 @@ import type {
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
 import { registerSessionStoreConformance } from "../../packages/coding-agent/src/core/storage/session/conformance.js";
-import { SessionConflictError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
+import {
+	SessionConflictError,
+	SessionNotFoundError,
+} from "../../packages/coding-agent/src/core/storage/session/errors.js";
+import { readSessionHistory } from "../../packages/coding-agent/src/core/storage/session/history-pages.js";
 import { sessionWriteTransaction } from "../../packages/coding-agent/src/core/storage/session/session-transactions.js";
 import {
 	SESSION_ENTRY_CHUNK_BYTES,
@@ -30,7 +34,7 @@ import { backendLabel, runnerFor, withSqlSessionStore } from "./storage-conforma
 
 /**
  * Every store's behavioural contract on every storage backend (#4793): the database facade and same-handle sessions
- * on a SQLite file, a libSQL server and Postgres. Reopen sessions and Intercom's multi-node routing state run in
+ * on a SQLite file and on PostgreSQL. Reopen sessions and Intercom's multi-node routing state run in
  * sibling `storage-conformance-matrix-*.test.ts` files.
  */
 
@@ -229,6 +233,48 @@ for (const backend of storageBackends) {
 		},
 		CONCURRENT_SESSION_WRITES_TIMEOUT_MS,
 	);
+
+	run(`a read on ${name} sees each write of the session its store started before it, awaited or not`, async () => {
+		const scope = await backend.openScope();
+		try {
+			const database = await scope.connect();
+			// The reads go through a reader handle of their own, which no write of the store is queued on.
+			assert.ok(database.openReader, "the backend offers a reader");
+			const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+			const created = store.create(sessionHeader("ryw"), [textEntry("ryw-0", null, "first")]);
+			assert.equal((await store.load("ryw")).lastSeq, 1, "a load after a create");
+			await created;
+			for (let seq = 1; seq <= 8; seq++) {
+				const appended = store.append("ryw", [textEntry(`ryw-${seq}`, `ryw-${seq - 1}`, `entry ${seq}`)], {
+					expectSeq: seq,
+				});
+				const [loaded, tail, sizes, history] = await Promise.all([
+					store.load("ryw"),
+					store.readTail("ryw", seq + 1),
+					store.readEntrySizes("ryw", 1, 0),
+					readSessionHistory(store, "ryw", { direction: "backward" }).next(),
+				]);
+				await appended;
+				assert.equal(loaded.lastSeq, seq + 1, `load after append ${seq}`);
+				assert.deepEqual(
+					tail.entries.map((entry) => entry.id),
+					[`ryw-${seq}`],
+					`tail after append ${seq}`,
+				);
+				assert.equal(sizes.lastSeq, seq + 1, `entry sizes after append ${seq}`);
+				assert.equal(history.value?.items.at(-1)?.seq, seq + 1, `history after append ${seq}`);
+			}
+			const updated = store.updateHeader({ ...sessionHeader("ryw"), cwd: "/elsewhere" }, { expectSeq: 9 });
+			assert.equal((await store.load("ryw")).header.cwd, "/elsewhere", "a load after a header update");
+			await updated;
+			const deleted = store.delete("ryw");
+			await assert.rejects(store.load("ryw"), SessionNotFoundError, "a load after a delete");
+			await deleted;
+			await store.close();
+		} finally {
+			await scope.close();
+		}
+	});
 
 	if (backend.name === "Postgres")
 		run(`a write of one session on ${name} waits for neither other sessions' writes nor loads`, async () => {

@@ -35,7 +35,7 @@ A compaction boundary never lands mid-stream or between a tool call and its resu
 
 When nothing new has entered context since the last boundary, compaction does nothing and `/compact` reports `Nothing to compact`. Automatic compaction also skips when the system prompt and boundary message together would reach or exceed the automatic trigger (`systemPrompt + boundary >= trigger`), letting [`fallbackModels`](/settings#fallbackmodels) handle any provider overflow.
 
-**Pre-compaction backups (JSONL stores only).** Before writing a boundary in a JSONL session store, Atomic saves a best-effort backup alongside the session file at `<sessionFile>.<timestamp>.<label>.bak`. These backup files are not deleted automatically. If a backup cannot be written (for example on a full disk), Atomic still writes the boundary without `backupPath`. SQLite, libSQL, PostgreSQL, and in-memory stores do not write separate backup files (see [Storage backends](/storage)).
+**Pre-compaction backups (JSONL stores only).** Before writing a boundary in a JSONL session store, Atomic saves a best-effort backup alongside the session file at `<sessionFile>.<timestamp>.<label>.bak`. These backup files are not deleted automatically. If a backup cannot be written (for example on a full disk), Atomic still writes the boundary without `backupPath`. SQLite, PostgreSQL, and in-memory stores do not write separate backup files (see [Storage backends](/storage)).
 
 **Cancellation and queuing.** Pressing `Escape` cancels compaction before the boundary commits and leaves the session unchanged. If a compactor request is already running, `Escape` stops that request and clears the context instead. Queued user messages wait in arrival order and resume automatically once compaction ends.
 

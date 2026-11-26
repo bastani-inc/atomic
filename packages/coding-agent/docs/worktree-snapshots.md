@@ -28,7 +28,7 @@ Patches and bundles are stored once by content hash in the session's database (`
 
 ## When snapshots are taken
 
-Snapshots require a Git checkout with at least one commit and a SQL database store (local SQLite, PostgreSQL, or Turso/libSQL; see [Storage backends](/storage)). Directories outside Git repositories, in-memory sessions, JSONL directory stores, and custom stores without blob tables record nothing. A new session in a blob-less store reports `blob-store-unsupported` once; a transient store failure reports `blob-store-failed` once without failing the turn.
+Snapshots require a Git checkout with at least one commit and a SQL database store (local SQLite or PostgreSQL; see [Storage backends](/storage)). Directories outside Git repositories, in-memory sessions, JSONL directory stores, and custom stores without blob tables record nothing. A new session in a blob-less store reports `blob-store-unsupported` once; a transient store failure reports `blob-store-failed` once without failing the turn.
 
 Atomic captures snapshots at the end of any turn that ran `bash`, `edit`, `write`, `powershell`, or an extension tool declaring `writesFiles: true`. It captures the session's working directory along with the directories of files targeted by `edit` and `write`.
 
@@ -205,7 +205,7 @@ To trigger collection immediately from code, call `collectSnapshotGarbage()`. Fo
 
 ## SDK
 
-Open a `SqliteDatabase` handle with `openNodeSqliteDatabase()`, `openPostgresDatabase()`, or `openLibsqlDatabase()` (see [SDK session storage](/sdk/storage) and [SDK and local SQLite API](/storage/sqlite#sdk-and-local-sqlite-api)), then open a `SqlSnapshotBlobStore` on that database:
+Open a `SqliteDatabase` handle with `openNodeSqliteDatabase()` or `openPostgresDatabase()` (see [SDK session storage](/sdk/storage) and [SDK and local SQLite API](/storage/sqlite#sdk-and-local-sqlite-api)), then open a `SqlSnapshotBlobStore` on that database:
 
 ```typescript
 import {

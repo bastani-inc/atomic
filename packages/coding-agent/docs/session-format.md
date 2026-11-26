@@ -446,7 +446,7 @@ Repository state of one checkout at the end of a turn that ran a file-writing to
 
 Built-in stores save turn-ending diagnostic lines, such as cancelled retry errors, separately from session entries so reopening a session can display them in place. Each saved line is capped at 4,096 UTF-8 bytes and ends with `... [diagnostic truncated]` if trimmed, while the live terminal error stays intact.
 
-These records are not session entries. `/tree`, model requests, compaction, token totals, conversation exports, and continuation logic ignore them. Copying a JSONL file or importing a session does not transfer them, and local libSQL `file:` databases do not store them.
+These records are not session entries. `/tree`, model requests, compaction, token totals, conversation exports, and continuation logic ignore them. Copying a JSONL file or importing a session does not transfer them.
 
 Cache-miss and dropped-thinking notices are derived from saved assistant replies. When a compacted session opens on its active context window, Atomic does not reload discarded history to reconstruct earlier notice counts.
 
@@ -540,7 +540,7 @@ for (const line of lines) {
 
 Await `create`, `open`, `continueRecent`, `forkFrom`, and every session mutation. A resolved mutation has committed to its store, and a failed write rejects with a typed storage error without publishing the entry. There is no `flush` method.
 
-`inMemory()` selects memory storage explicitly without filesystem I/O. Factories without an explicit store or directory resolve configured storage, defaulting to the shared local SQLite database. Passing a directory selects JSONL explicitly. Store-open failures never fall back to memory. To open SQLite, PostgreSQL, libSQL, JSONL, or memory stores, see [SDK session storage](/sdk/storage), [Storage backends](/storage), and [Session management](/sdk/reference#session-management).
+`inMemory()` selects memory storage explicitly without filesystem I/O. Factories without an explicit store or directory resolve configured storage, defaulting to the shared local SQLite database. Passing a directory selects JSONL explicitly. Store-open failures never fall back to memory. To open SQLite, PostgreSQL, JSONL, or memory stores, see [SDK session storage](/sdk/storage), [Storage backends](/storage), and [Session management](/sdk/reference#session-management).
 
 **Store ownership and closing.** `SessionManager` has no `close()` method. Calling `SessionManager.create(cwd)`, `SessionManager.continueRecent(cwd)`, or `SessionManager.open(filePath)` without passing a `SessionStore` opens an internal store that `createAgentSession({ sessionManager })` does **not** close during `session.dispose()`. Close `sessionManager.getSessionStore().close()` when finished, or open and close a `SessionStore` explicitly and pass it to `SessionManager.create(store, cwd)` or `SessionManager.open(store, sessionId)`. Calling `close()` twice on a direct `SqlSessionStore`, `JsonlSessionStore`, or `MemorySessionStore` throws `StoreClosedError`, and `SqlSessionStore.close()` leaves a caller-owned `database` open. See [SDK session storage](/sdk/storage) for the ownership matrix.
 
@@ -550,8 +550,8 @@ By default, opening an existing session loads only the active tail window (entri
 
 - `SessionManager.create(cwd, sessionDir?, options?)`: create a new session in configured storage, or in flat-layout JSONL when `sessionDir` is provided.
 - `SessionManager.create(store, cwd, options?)`: create a new session in a supplied `SessionStore`.
-- `SessionManager.open(store, sessionId, cwdOverride?, options?)`: open an existing session by exact ID in any `SessionStore` (required for SQLite, PostgreSQL, and libSQL sessions), raising `SessionNotFoundError` if missing. Defaults to `{ history: "tail" }`, loading from the latest compaction window; pass `{ history: "full" }` only when every stored entry must be loaded into memory. `continueRecent(store, cwd, options?)` and instance method `openSessionById()` share the same behavior.
-- `SessionManager.open(path, sessionDir?, cwdOverride?, options?)`: open a JSONL file directly by filesystem path, creating it if missing. This is a JSONL file API only and cannot open a SQLite, PostgreSQL, or libSQL session ID.
+- `SessionManager.open(store, sessionId, cwdOverride?, options?)`: open an existing session by exact ID in any `SessionStore` (required for SQLite and PostgreSQL sessions), raising `SessionNotFoundError` if missing. Defaults to `{ history: "tail" }`, loading from the latest compaction window; pass `{ history: "full" }` only when every stored entry must be loaded into memory. `continueRecent(store, cwd, options?)` and instance method `openSessionById()` share the same behavior.
+- `SessionManager.open(path, sessionDir?, cwdOverride?, options?)`: open a JSONL file directly by filesystem path, creating it if missing. This is a JSONL file API only and cannot open a SQLite or PostgreSQL session ID.
 - `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)`: continue the most recent regular session or create a new one. Pass `{ includeInternal: true }` to include internal sessions.
 - `SessionManager.inMemory(cwd?, options?)`: create an empty memory-only session synchronously. To seed entries, await `SessionManager.inMemory(cwd, options, entries)` without mutating the supplied array until it resolves.
 - `SessionManager.forkFrom(sourcePath, targetCwd, sessionDir?, options?)`: fork a JSONL file into the target store. For database sessions, open the session by ID and await `manager.forkTo(targetCwd, targetStore?, options?)`.

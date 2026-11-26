@@ -14,11 +14,13 @@ const previousAgentDirEnv = {
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 delete process.env.PI_CODING_AGENT_DIR;
 
-type SpawnModule = typeof import("../../packages/intercom/broker/spawn.js");
-type PathsModule = typeof import("../../packages/intercom/broker/paths.js");
-
-let spawnModule: SpawnModule;
-let pathsModule: PathsModule;
+/*
+ * Imported after ATOMIC_CODING_AGENT_DIR is set, at the top level rather than in a hook: spawn.ts loads all of
+ * @bastani/atomic, which a loaded machine can take longer than a hook's timeout to transform. Collecting the file
+ * has no timeout, and a failed import fails the file.
+ */
+const pathsModule = await import("../../packages/intercom/broker/paths.js");
+const spawnModule = await import("../../packages/intercom/broker/spawn.js");
 
 function createBundledJitiCli(extensionDir: string): string {
 	const jitiPkg = join(extensionDir, "node_modules", "jiti", "package.json");
@@ -29,9 +31,7 @@ function createBundledJitiCli(extensionDir: string): string {
 	return jitiCli;
 }
 
-beforeAll(async () => {
-	pathsModule = await import("../../packages/intercom/broker/paths.js");
-	spawnModule = await import("../../packages/intercom/broker/spawn.js");
+beforeAll(() => {
 	mkdirSync(pathsModule.getIntercomDirPath(), { recursive: true });
 });
 

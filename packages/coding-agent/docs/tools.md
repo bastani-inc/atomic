@@ -314,7 +314,7 @@ code_search({ repoName: "facebook/react", query: "How does useEffect cleanup wor
 Text tool results over 50,000 characters are saved automatically and replaced inline with a 2,000-byte preview inside `<persisted-output>` tags, referencing `Full output: <path>` (for `bash`) or `Full output saved to: <path>`. Tool results that contain images are not redirected.
 
 - **Session-directory sessions.** Saved under `<sessionDir>/tool-results/`, content-addressed by SHA-256 (`Content: sha256:<hex>`).
-- **Blob-capable session stores.** When a background subagent or detached tool result runs on SQLite, libSQL, or an in-memory store, output is saved as a session blob addressed by `tool-output://<sha256>` (readable via `read` with line ranges such as `tool-output://<sha256>:1-200`, or `search`). Blobs share across hosts and branches, export with the session, and delete when the session is deleted. Custom stores without blob storage fall back to the temp tree below.
+- **Blob-capable session stores.** When a background subagent or detached tool result runs on SQLite, PostgreSQL, or an in-memory store, output is saved as a session blob addressed by `tool-output://<sha256>` (readable via `read` with line ranges such as `tool-output://<sha256>:1-200`, or `search`). Blobs share across hosts and branches, export with the session, and delete when the session is deleted. Custom stores without blob storage fall back to the temp tree below.
 - **Bash overflow, spill files, and sessions without a session directory.** Stored in a session-scoped temp tree (POSIX `0700` directories and `0600` files; unsafe shared or symlinked temp paths are refused; Windows uses an account-specific name instead of `<uid>`):
 
 ```text

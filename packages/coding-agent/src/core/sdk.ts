@@ -107,7 +107,6 @@ import { defaultSessionDatabasePath } from "./storage/file-identity.js";
 import { validateProcessStorageAsync } from "./storage/process-selection.js";
 import { selectStorage } from "./storage/selection.js";
 import type { SessionStore } from "./storage/session/types.js";
-import { assertTeamAdapterInstalled } from "./storage/team.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { isToolDeclarationHidden } from "./tool-loadout.js";
@@ -373,10 +372,6 @@ async function constructAgentSession(
 	if (workspace !== undefined) await assertSessionManagerInWorktreeAsync(workspace, options.sessionManager);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	await validateProcessStorageAsync(agentDir);
-	// `storage` backs the sessions only without `sessionManager` and `sessionStore`; an unused selection needs no
-	// adapter, while the process's own profile is still checked.
-	const storageUsed = options.sessionManager === undefined && options.sessionStore === undefined;
-	await assertTeamAdapterInstalled(agentDir, storageUsed ? options.storage : undefined);
 	const suppliedSession =
 		options.cwd === undefined && workspace === undefined
 			? await sessionResumedOnThisNode(options.sessionManager, agentDir, options.settingsManager, options.snapshots)
