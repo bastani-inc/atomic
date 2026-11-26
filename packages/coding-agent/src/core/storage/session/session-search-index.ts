@@ -436,6 +436,13 @@ const sqliteFts: TrigramEngine = {
 	},
 };
 
+/**
+ * The search indexes this process found it does not own, by database (`databaseIdentity`, which names the role and
+ * schema too), ledger and index: their tuning is left to `atomic storage migrate`, so later opens do not read the
+ * catalog for it again.
+ */
+const unownedSearchIndexes = new Set<string>();
+
 async function createTrigramIndex(tx: SqliteExecutor, dialect: StorageDialect, tables: SearchTables): Promise<void> {
 	await tx.exec("SAVEPOINT atomic_session_search_trgm");
 	try {
@@ -505,6 +512,10 @@ const postgresTrigrams: TrigramEngine = {
 		if (database.readOnly === true) return;
 		const schema = { ledger, domain: SESSION_SEARCH_TUNING_DOMAIN, revision: SESSION_SEARCH_TUNING_REVISION };
 		if (await storageSchemaCurrent(database, schema)) return;
+		// A role that does not own the index finds that once per process, not at every open (as the fillfactor check).
+		const identity = database.databaseIdentity?.();
+		const key = identity === undefined ? undefined : JSON.stringify([identity, ledger, tables.trigrams]);
+		if (key !== undefined && unownedSearchIndexes.has(key)) return;
 		const found = await database.get<SqliteRow & { owned: boolean | number }>(
 			`SELECT pg_catalog.pg_has_role(current_user, i.relowner, 'USAGE')
 				AND pg_catalog.pg_has_role(current_user, t.relowner, 'USAGE') AS owned
@@ -514,7 +525,11 @@ const postgresTrigrams: TrigramEngine = {
 			WHERE i.relnamespace = current_schema()::regnamespace AND i.relname = ?`,
 			dialect.identifier(tables.trigrams),
 		);
-		if (found === undefined || (found.owned !== true && Number(found.owned) !== 1)) return;
+		if (found === undefined) return;
+		if (found.owned !== true && Number(found.owned) !== 1) {
+			if (key !== undefined) unownedSearchIndexes.add(key);
+			return;
+		}
 		await database.transaction(
 			(tx) =>
 				ensureStorageSchema(tx, dialect, schema, async () => {
@@ -681,18 +696,17 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 						version: 1,
 						up: async (tx, dialect) => {
 							const { int, text, rowKey } = dialect.types;
+							// Tables and indexes created here carry their tuning already: recorded with the first table, in
+							// the same request, so no open tunes them and creating them costs no round trip more.
+							const tuned =
+								engine.tune === undefined
+									? ""
+									: `; INSERT INTO ${ledger} (domain, version, applied_at) VALUES ('schema:${SESSION_SEARCH_TUNING_DOMAIN}', ${SESSION_SEARCH_TUNING_REVISION}, ${dialect.nowMs}) ON CONFLICT DO NOTHING`;
 							await tx.exec(
-								`CREATE TABLE IF NOT EXISTS ${tables.state} (sid ${rowKey}, session_id ${text} NOT NULL UNIQUE, format ${int} NOT NULL, indexed_seq ${int} NOT NULL, revision ${text} NOT NULL, entry_id ${text} NOT NULL)${dialect.tableOptions}`,
+								`CREATE TABLE IF NOT EXISTS ${tables.state} (sid ${rowKey}, session_id ${text} NOT NULL UNIQUE, format ${int} NOT NULL, indexed_seq ${int} NOT NULL, revision ${text} NOT NULL, entry_id ${text} NOT NULL)${dialect.tableOptions}${tuned}`,
 							);
 							await engine.create(tx, dialect, tables, sessionTables);
 							created = true;
-							// Tables and indexes created here carry their tuning already: recorded, so no open tunes them.
-							if (engine.tune !== undefined)
-								await tx.run(
-									`INSERT INTO ${ledger} (domain, version, applied_at) VALUES (?, ?, ${dialect.nowMs}) ON CONFLICT DO NOTHING`,
-									`schema:${SESSION_SEARCH_TUNING_DOMAIN}`,
-									SESSION_SEARCH_TUNING_REVISION,
-								);
 						},
 					},
 				],
