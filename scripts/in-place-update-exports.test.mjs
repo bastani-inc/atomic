@@ -10,6 +10,7 @@ import {
 	checkRelease,
 	latestPublishedReleases,
 	recordRelease,
+	releasesBefore,
 	resolveReleaseRecords,
 } from "./in-place-update-exports.mjs";
 
@@ -322,4 +323,14 @@ test("a build is checked before release against the newest published release and
 	assert.deepEqual(latestPublishedReleases(["0.10.10-alpha.1", "0.10.9", "0.10.10"]), ["0.10.10"]);
 	assert.deepEqual(latestPublishedReleases(["0.1.0-alpha.1"]), ["0.1.0-alpha.1"]);
 	assert.deepEqual(latestPublishedReleases([]), []);
+});
+
+test("a packed release is checked against the newest published release before it and the newest stable one", () => {
+	const published = ["0.10.9", "0.10.10", "0.10.11-alpha.1", "0.10.11-alpha.2", "0.10.11-alpha.3"];
+	// Most installations a stable 0.10.11 replaces in place run 0.10.10, not the last prerelease.
+	assert.deepEqual(releasesBefore("0.10.11", published), ["0.10.11-alpha.3", "0.10.10"]);
+	// The release itself, already on npm when a failed publication is run again, and anything newer are left out.
+	assert.deepEqual(releasesBefore("0.10.11-alpha.2", published), ["0.10.11-alpha.1", "0.10.10"]);
+	assert.deepEqual(releasesBefore("0.10.12-alpha.1", [...published, "0.10.11"]), ["0.10.11"]);
+	assert.deepEqual(releasesBefore("0.1.0", published), []);
 });
