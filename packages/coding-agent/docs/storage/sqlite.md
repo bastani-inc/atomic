@@ -9,7 +9,7 @@ Local SQLite works out of the box with no external server. Atomic enables WAL mo
 - Passing an empty object `{}` in top-level `storage` selects `<storageHome>/storage.sqlite`. Passing `{}` in `sessions.storage` selects `<storageHome>/workflows/journal.sqlite` (overriding any shared `storage`).
 - Relative `path` settings resolve against the [storage home](/storage#storage-home).
 
-Never put a local SQLite file on a network filesystem. To share sessions across machines, use [PostgreSQL](/storage/postgres) or [Turso and libSQL](/storage/libsql).
+Never put a local SQLite file on a network filesystem. To share sessions across machines, use [PostgreSQL](/storage/postgres).
 
 ## Tuning for many concurrent agents
 

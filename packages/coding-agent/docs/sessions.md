@@ -295,7 +295,7 @@ Supported store objects:
 - `{ "dir": "sessions" }`: JSONL directory store. Allowed **only** in `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. Passing `"dir"` in top-level `storage`, `--storage`, `--storage-file`, or `ATOMIC_STORAGE` fails with `StorageConfigError`.
 - `{ "memory": true }`: ephemeral in-memory store.
 - `{}` (empty object): selects the default session SQLite file (`<storageHome>/workflows/journal.sqlite`) in `sessions.storage` (overriding any shared `storage`), or `<storageHome>/storage.sqlite` in top-level `storage`.
-- Database adapter: [PostgreSQL](/storage/postgres), [Turso and libSQL](/storage/libsql), or a [custom adapter](/storage/custom-adapters#selecting-an-adapter).
+- Database adapter: [PostgreSQL](/storage/postgres), [Turso and libSQL](/storage#moving-off-libsql), or a [custom adapter](/storage/custom-adapters#selecting-an-adapter).
 
 Legacy `sessionDir` has been removed.
 

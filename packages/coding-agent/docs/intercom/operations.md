@@ -122,7 +122,7 @@ By default, each machine's broker serves only sessions on that machine. With mul
 
 For a team, run `atomic team join <url> --token-file <path>` to configure the team database for Intercom while keeping session transcripts local and restarting the broker. CI runners use `ATOMIC_PROFILE=ci` instead. See [Team and CI setup](/guides/team-setup).
 
-To configure multi-node routing with a shared database for both sessions and Intercom, install either `@bastani/atomic-storage-libsql` ([Turso and libSQL](/storage/libsql), [libSQL adapter library](/libraries/storage-libsql)) or `@bastani/atomic-storage-postgres` ([PostgreSQL](/storage/postgres), [PostgreSQL adapter library](/libraries/storage-postgres)) on every machine and run `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for all flags and options.
+To configure multi-node routing with a shared database for both sessions and Intercom, install either `@bastani/atomic-storage-libsql` ([Turso and libSQL](/storage#moving-off-libsql), [libSQL adapter library](/libraries/storage-libsql)) or `@bastani/atomic-storage-postgres` ([PostgreSQL](/storage/postgres), [PostgreSQL adapter library](/libraries/storage-postgres)) on every machine and run `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for all flags and options.
 
 ```bash
 # Turso / libSQL

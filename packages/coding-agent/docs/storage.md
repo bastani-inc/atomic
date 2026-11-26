@@ -9,8 +9,7 @@ Atomic saves sessions in a local SQLite database (`~/.atomic/workflows/journal.s
 This page covers what every store shares: choosing a store, the `atomic storage` commands, moving sessions between stores, and storage errors. Each backend has its own page:
 
 - [Local SQLite](/storage/sqlite): the default, with nothing to set up.
-- [Turso and libSQL](/storage/libsql): one URL and one token for a few machines.
-- [PostgreSQL](/storage/postgres): many machines and many agents, with guides for [PgBouncer](/storage/postgres/pgbouncer) and [server tuning](/storage/postgres/tuning).
+- [PostgreSQL](/storage/postgres): a database shared by many machines and many agents, with guides for [PgBouncer](/storage/postgres/pgbouncer) and [server tuning](/storage/postgres/tuning).
 - [Custom adapters](/storage/custom-adapters): select an adapter package or wrap your own driver.
 
 For SDK apps, see [SDK session storage](/sdk/storage) and the [SessionManager API](/session-format#sessionmanager-api).
@@ -24,9 +23,10 @@ For SDK apps, see [SDK session storage](/sdk/storage) and the [SessionManager AP
 | Situation | Choose | Why |
 | --- | --- | --- |
 | One machine, one person | **[Local SQLite](/storage/sqlite)** (default) | Requires no setup |
-| Sessions and Intercom shared across cloud machines, or a team already running managed PostgreSQL | **[PostgreSQL](/storage/postgres)** | Supports concurrent writers across many machines, with managed high availability, backups, and cloud identities |
-| A few machines, a small team, or CI caches | **[Turso and libSQL](/storage/libsql)** | Lightweight setup with one URL and one token. Supports one writer at a time, suited to a small number of concurrent machines |
 | Data that must stay on one machine | **Local SQLite** | Nothing leaves the machine |
+| Sessions and Intercom shared across machines, a team, or CI | **[PostgreSQL](/storage/postgres)** | Supports concurrent writers across many machines, with managed high availability, backups, and cloud identities |
+
+Atomic no longer supports Turso and libSQL. To move sessions off a libSQL database, see [Moving off libSQL](#moving-off-libsql).
 
 To move existing sessions between stores, see [Exporting and importing sessions](#exporting-and-importing-sessions). For CLI selection and resume flags, see [Choosing a store](/sessions#choosing-a-store).
 
@@ -58,7 +58,7 @@ If Atomic warns that a lock takeover file (such as `settings.json.lock.takeover.
 
 ## Sharing storage across hosts
 
-Share sessions and Intercom across machines or CI fleets by pointing every host at the same [PostgreSQL](/storage/postgres) or [Turso / libSQL](/storage/libsql) database with the same `prefix`. Never put a local SQLite file on a network filesystem.
+Share sessions and Intercom across machines or CI fleets by pointing every host at the same [PostgreSQL](/storage/postgres) database with the same `prefix`. Never put a local SQLite file on a network filesystem.
 
 - **Shared `storage` vs. `sessions.storage`.** Configuring top-level `storage` (in global settings, `--storage`, `--storage-file`, or `ATOMIC_STORAGE`) enables multi-node Intercom routing across hosts. Setting only `sessions.storage` shares sessions without enabling multi-node Intercom. On libSQL, single Intercom messages over 5,000,000 bytes fail with `StoragePayloadTooLargeError`.
 - **Data stored and access.** The shared database holds sessions, tool-output blobs, [worktree snapshot](/worktree-snapshots) blobs, and transient Intercom messages. Treat database read access as full read access. To share Intercom while keeping personal sessions local, use `atomic team join` as described in [Set up teams and CI](/guides/team-setup). To resume sessions across machines, see [Resume sessions on any machine](/guides/resume-on-any-machine).
@@ -168,7 +168,6 @@ How many agents can write at once depends on the store. On PostgreSQL it depends
 Each backend's page covers its own settings:
 
 - [Tuning PostgreSQL](/storage/postgres#tuning-for-many-concurrent-agents): count connections and size `maxConnections`. For the server itself, see [PostgreSQL server tuning](/storage/postgres/tuning).
-- [Tuning libSQL and Turso](/storage/libsql#tuning-for-many-concurrent-agents): the `concurrency` and `keepAliveMs` options.
 - [Tuning local SQLite](/storage/sqlite#tuning-for-many-concurrent-agents): nothing to set.
 
 ## Exporting and importing sessions
@@ -264,6 +263,33 @@ atomic storage export "$STATE_DIR"
 ```
 
 Use `--since` or `--limit` to bound cache size. Imported sessions continue with `atomic --session <id>`.
+
+## Moving off libSQL
+
+Atomic no longer supports Turso and libSQL. To keep your sessions, export them with Atomic 0.10.10 or 0.10.11-alpha.2, the last releases with libSQL support, then import them into PostgreSQL or local SQLite.
+
+First save the libSQL selection to a file, before you change any settings. If `sessions.storage` points at the libSQL database rather than top-level `storage`, save that value instead with `jq '.sessions.storage'`. Then export the sessions:
+
+```bash
+jq .storage ~/.atomic/agent/settings.json > old-storage.json
+npx -y @bastani/atomic@0.10.10 storage export ~/moved --storage-file old-storage.json
+```
+
+To move them to PostgreSQL, join the database and import them there:
+
+```bash
+atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+jq .storage ~/.atomic/agent/settings.json > new-storage.json
+atomic storage import ~/moved --storage-file new-storage.json
+atomic intercom restart
+```
+
+To keep them on one machine instead, remove the libSQL `storage` setting, and any `sessions.storage` setting that points at libSQL, from `~/.atomic/agent/settings.json`. Then import them into the default local SQLite store:
+
+```bash
+atomic storage import ~/moved
+atomic intercom restart
+```
 
 ## Size limits
 

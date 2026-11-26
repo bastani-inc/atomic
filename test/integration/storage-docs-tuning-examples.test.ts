@@ -5,7 +5,6 @@ import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { describe, test } from "vitest";
 import { openAdapterSelectionDatabase } from "../../packages/coding-agent/src/core/storage/adapter-open.js";
 import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
-import libsqlAdapter, { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import postgresAdapter, { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import { postgresSkipReason, postgresTestPassword, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
@@ -22,7 +21,6 @@ function tuningSection(page: string): string {
 }
 
 const tuning = tuningSection("storage/postgres.md");
-const libsqlTuning = tuningSection("storage/libsql.md");
 const pgbouncerGuide = readFileSync(join(docs, "storage/postgres/pgbouncer.md"), "utf8");
 
 function blocks(language: string, text = tuning): string[] {
@@ -30,8 +28,6 @@ function blocks(language: string, text = tuning): string[] {
 }
 
 const POSTGRES = "@bastani/atomic-storage-postgres";
-const LIBSQL = "@bastani/atomic-storage-libsql";
-const libsqlTestUrl = process.env.ATOMIC_TEST_LIBSQL_URL || undefined;
 
 type Example = {
 	storage: { adapter: string; options: Record<string, unknown>; secrets: Record<string, { file: string }> };
@@ -75,7 +71,7 @@ async function openSettingsExamples(
 	examples: readonly Example[],
 	url: string,
 	secretValue: string,
-	adapter: typeof postgresAdapter | typeof libsqlAdapter,
+	adapter: typeof postgresAdapter,
 	check: (database: SqliteDatabase, options: Record<string, unknown>) => Promise<void>,
 ): Promise<void> {
 	const agentDir = makeTempDirectory("storage-docs-tuning-");
@@ -191,28 +187,5 @@ describe.skipIf(postgresSkipReason !== undefined)("storage guide PostgreSQL tuni
 			const database = await open();
 			for (const statement of statements) await database.all(statement.replaceAll("'atomic'", `'${name}'`));
 		});
-	});
-});
-
-describe.skipIf(libsqlTestUrl === undefined)("storage guide libSQL tuning examples (#6560)", () => {
-	test("every libSQL settings.json and SDK example opens with its options", async () => {
-		const examples = settingsExamples(LIBSQL, libsqlTuning);
-		assert.equal(examples.length, 1);
-		const url = libsqlTestUrl!;
-		await openSettingsExamples(examples, url, "", libsqlAdapter, async (database) => {
-			assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
-		});
-		const sources = sdkExamples("openLibsqlDatabase", libsqlTuning);
-		assertTwins(sources, "openLibsqlDatabase", examples, "authToken");
-		for (const source of sources) {
-			const database = await openLibsqlDatabase(
-				onTestDatabase(sdkOptions(source, "openLibsqlDatabase"), url) as never,
-			);
-			try {
-				assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
-			} finally {
-				await database.close();
-			}
-		}
 	});
 });

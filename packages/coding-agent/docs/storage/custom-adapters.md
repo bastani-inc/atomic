@@ -4,7 +4,7 @@ sidebarTitle: "Custom adapters"
 description: "Select a storage adapter, ship one in an Atomic package, wrap your own SQL driver, implement a session store, and test it with the conformance suites."
 ---
 
-Atomic opens every store other than its built-in SQLite, JSONL and in-memory stores through a storage adapter. The [PostgreSQL](/storage/postgres) and [Turso and libSQL](/storage/libsql) backends are adapters too. This page covers selecting an adapter, shipping one in an Atomic package, wrapping your own driver, and testing it.
+Atomic opens every store other than its built-in SQLite, JSONL and in-memory stores through a storage adapter. The [PostgreSQL](/storage/postgres) backend is an adapter too. This page covers selecting an adapter, shipping one in an Atomic package, wrapping your own driver, and testing it.
 
 ## Selecting an adapter
 
