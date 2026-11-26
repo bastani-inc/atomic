@@ -170,7 +170,7 @@ function tlsVerificationFailure(cause) {
 	const fix =
 		code === "ERR_TLS_CERT_ALTNAME_INVALID" || code === "HOSTNAME_MISMATCH"
 			? "Connect by a host name the certificate names, or, for an address it does not name such as a private IP address, add sslmode=verify-ca with sslrootcert=<CA file> to the URL"
-			: "Add sslrootcert=<CA file> with the server's CA to the URL; see TLS in docs/storage.md";
+			: "Add sslrootcert=<CA file> with the server's CA to the URL; see TLS in docs/storage/postgres.md";
 	return new StorageError(
 		`The server's TLS certificate was not accepted (${code}: ${message}). ${fix}. It is not retried`,
 		{ cause: /** @type {Error} */ (cause) },
@@ -290,7 +290,7 @@ function missingPrivilege(cause, role, schema, database, sql = "") {
 	return configError(
 		"privileges",
 		"missing-privilege",
-		`${who} lacks a privilege PostgreSQL requires: ${denied} (SQLSTATE ${/** @type {{ code?: string }} */ (cause).code ?? "42501"}). ${fix} See "Set up the database" in docs/storage.md`,
+		`${who} lacks a privilege PostgreSQL requires: ${denied} (SQLSTATE ${/** @type {{ code?: string }} */ (cause).code ?? "42501"}). ${fix} See "Set up the database" in docs/storage/postgres.md`,
 	);
 }
 

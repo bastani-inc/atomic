@@ -292,10 +292,10 @@ Configure `sessions.storage` (sessions only) or top-level `storage` (shared defa
 Supported store objects:
 
 - `{ "path": "sessions.sqlite" }`: local SQLite database. Works in both `sessions.storage` and `storage`.
-- `{ "dir": "sessions" }`: JSONL directory store. Allowed **only** in `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. Passing `"dir"` in top-level `storage`, `--storage`, `--storage-file`, or `ATOMIC_STORAGE` fails with `StorageConfigError`.
+- `{ "dir": "sessions" }`: [JSONL directory store](/storage/jsonl). Allowed **only** in `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. Passing `"dir"` in top-level `storage`, `--storage`, `--storage-file`, or `ATOMIC_STORAGE` fails with `StorageConfigError`.
 - `{ "memory": true }`: ephemeral in-memory store.
 - `{}` (empty object): selects the default session SQLite file (`<storageHome>/workflows/journal.sqlite`) in `sessions.storage` (overriding any shared `storage`), or `<storageHome>/storage.sqlite` in top-level `storage`.
-- Database adapter: [PostgreSQL](/storage#postgresql), [Turso and libSQL](/storage#turso-and-libsql), or a [custom adapter](/storage#selecting-an-adapter).
+- Database adapter: [PostgreSQL](/storage/postgres), [Turso and libSQL](/storage#moving-off-libsql), or a [custom adapter](/storage/custom-adapters#selecting-an-adapter).
 
 Legacy `sessionDir` has been removed.
 
@@ -330,4 +330,4 @@ const { session } = await createAgentSession({
 });
 ```
 
-See [SDK session storage](/sdk/storage) for PostgreSQL, libSQL, direct `SessionStore`, and store-closing recipes, [SDK and local SQLite API](/storage#sdk-and-local-sqlite-api) for low-level SQLite handles, and [Session file format](/session-format) for JSONL schemas, entry types, and the `SessionManager` API.
+See [SDK session storage](/sdk/storage) for PostgreSQL, libSQL, direct `SessionStore`, and store-closing recipes, [SDK and local SQLite API](/storage/sqlite#sdk-and-local-sqlite-api) for low-level SQLite handles, and [Session file format](/session-format) for JSONL schemas, entry types, and the `SessionManager` API.

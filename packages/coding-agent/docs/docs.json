@@ -46,8 +46,6 @@
               "background-tasks",
               "guides/intercom",
               "guides/team-setup",
-              "guides/postgres-pgbouncer",
-              "guides/postgres-tuning",
               "computer-use",
               "verification"
             ]
@@ -202,7 +200,33 @@
               "models-configuration",
               "session-format",
               "compaction/reference",
-              "storage"
+              {
+                "group": "Storage",
+                "pages": [
+                  "storage",
+                  {
+                    "group": "SQLite",
+                    "pages": [
+                      "storage/sqlite"
+                    ]
+                  },
+                  {
+                    "group": "JSONL",
+                    "pages": [
+                      "storage/jsonl"
+                    ]
+                  },
+                  {
+                    "group": "PostgreSQL",
+                    "pages": [
+                      "storage/postgres",
+                      "storage/postgres/pgbouncer",
+                      "storage/postgres/tuning"
+                    ]
+                  },
+                  "storage/custom-adapters"
+                ]
+              }
             ]
           },
           {
@@ -275,7 +299,9 @@
     { "source": "/workflows/operations", "destination": "/orchestration/migrating-workflows" },
     { "source": "/workflows/api-reference", "destination": "/orchestration/migrating-workflows" },
     { "source": "/guides/worker-hosts", "destination": "/orchestration" },
-    { "source": "/guides/worker-fleets-postgres", "destination": "/storage#postgresql" },
+    { "source": "/guides/worker-fleets-postgres", "destination": "/storage/postgres" },
+    { "source": "/guides/postgres-pgbouncer", "destination": "/storage/postgres/pgbouncer" },
+    { "source": "/guides/postgres-tuning", "destination": "/storage/postgres/tuning" },
     {
       "source": "/session",
       "destination": "/session-format"
@@ -312,10 +338,11 @@
       "source": "/models/model-selection",
       "destination": "/models"
     },
-    { "source": "/postgres", "destination": "/storage#postgresql" },
-    { "source": "/postgresql", "destination": "/storage#postgresql" },
-    { "source": "/libsql", "destination": "/storage#turso-and-libsql" },
-    { "source": "/turso", "destination": "/storage#turso-and-libsql" },
+    { "source": "/postgres", "destination": "/storage/postgres" },
+    { "source": "/postgresql", "destination": "/storage/postgres" },
+    { "source": "/storage/libsql", "destination": "/storage#moving-off-libsql" },
+    { "source": "/libsql", "destination": "/storage#moving-off-libsql" },
+    { "source": "/turso", "destination": "/storage#moving-off-libsql" },
     { "source": "/decisions", "destination": "/sdk/structured-decisions" },
     { "source": "/structured-decisions", "destination": "/sdk/structured-decisions" },
     { "source": "/compactors", "destination": "/compaction#customize-morph-or-add-a-remote-compactor" },

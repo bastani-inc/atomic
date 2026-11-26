@@ -99,7 +99,7 @@ Contribute [MCP servers](/mcp-servers) via `mcpServers` in the manifest (manifes
 
 ## Storage adapters
 
-Expose [storage adapters](/storage#selecting-an-adapter) via `storageAdapters` (manifest-only, paths relative to the package root). Put database drivers in `dependencies` and `@bastani/atomic` in `peerDependencies`:
+Expose [storage adapters](/storage/custom-adapters#selecting-an-adapter) via `storageAdapters` (manifest-only, paths relative to the package root). Put database drivers in `dependencies` and `@bastani/atomic` in `peerDependencies`:
 
 ```json
 {
@@ -112,7 +112,7 @@ Expose [storage adapters](/storage#selecting-an-adapter) via `storageAdapters` (
 
 - Select an adapter by package name (`"storage": { "adapter": "@example/atomic-libsql" }`), which selects the first entry in `storageAdapters` when a package lists multiple adapters.
 - Select a specific adapter from a multi-adapter package with `<package>/<file-stem>`, where `<file-stem>` is the filename without its extension (for example `"@example/atomic-libsql/libsql-adapter"`).
-- Storage adapters load only from user-settings packages or explicit extension paths (`--extension <dir>` in [CLI resource options](/reference/cli#resource-options) or [`DefaultResourceLoader({ additionalExtensionPaths })`](/sdk/reference#extensions), which take precedence over settings). Project-installed packages cannot supply storage adapters, and global npm adapter lookup checks `~/.atomic/agent/npm/` only (not the system global npm root). See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
+- Storage adapters load only from user-settings packages or explicit extension paths (`--extension <dir>` in [CLI resource options](/reference/cli#resource-options) or [`DefaultResourceLoader({ additionalExtensionPaths })`](/sdk/reference#extensions), which take precedence over settings). Project-installed packages cannot supply storage adapters, and global npm adapter lookup checks `~/.atomic/agent/npm/` only (not the system global npm root). See [Adapters from Atomic packages](/storage/custom-adapters#adapters-from-atomic-packages).
 
 ## Gallery metadata
 

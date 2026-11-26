@@ -28,7 +28,7 @@ const SETUP_TIMEOUT_MS = 600_000;
 const TEST_TIMEOUT_MS = 180_000;
 
 const guide = readFileSync(
-	resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs/guides/postgres-pgbouncer.md"),
+	resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs/storage/postgres/pgbouncer.md"),
 	"utf8",
 );
 

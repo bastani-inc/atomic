@@ -9,7 +9,7 @@ description: "PostgreSQL storage adapter for Atomic sessions and Intercom multi-
 - **PostgreSQL version requirement:** Atomic sessions require **PostgreSQL 16 or later** (for session JSON query functions). The adapter accepts **PostgreSQL 14 or later** on connect for non-session tables and rejects servers older than PostgreSQL 14.
 - **Plain ESM with types:** Ships plain JavaScript ESM and TypeScript declarations (`postgres.d.ts`), requiring Node.js 24.20+ with no TypeScript loader.
 
-For operator setup, role creation SQL, migrations, and troubleshooting, see [PostgreSQL setup](/storage#postgresql). For all five SDK storage backends and `createAgentSessionRuntime()`, see [SDK storage backends](/sdk/storage).
+For operator setup, role creation SQL, migrations, and troubleshooting, see [PostgreSQL setup](/storage/postgres). For all five SDK storage backends and `createAgentSessionRuntime()`, see [SDK storage backends](/sdk/storage).
 
 ## Installation
 
@@ -27,7 +27,7 @@ If you use [cloud IAM authentication](#cloud-iam-authentication), also install t
 
 ## SDK quick start
 
-Create your database roles and run `atomic storage migrate` as the owner role first (see [Set up the database](/storage#set-up-the-database)), then connect from your Node.js application with `openPostgresDatabase()`:
+Create your database roles and run `atomic storage migrate` as the owner role first (see [Set up the database](/storage/postgres#set-up-the-database)), then connect from your Node.js application with `openPostgresDatabase()`:
 
 ```typescript
 import { readFile } from "node:fs/promises";
@@ -64,7 +64,7 @@ Pass the returned `SqliteDatabase` to `createAgentSession({ sessionStore: { kind
 | `url` | `string` *(required)* | — | A `postgres://` or `postgresql://` URL with a username and no embedded password. Any password in the URL or a `password=` query parameter is rejected with `credential-in-url`. |
 | `password` | `string \| (() => Promise<string>)` | — | Password string or async callback invoked for each new connection, and once when the database opens to tell its credential apart from other databases' in the shared pool. Omit when using cloud `auth`; combining cloud `auth` with `password` throws `conflicting-token`. |
 | `auth` | `"password" \| "azure-entra" \| "aws-iam" \| "gcp-iam"` | `"password"` | Credential strategy. Cloud modes request short-lived tokens per new connection via the provider's SDK. |
-| `maxConnections` | `number` | `8` (`DEFAULT_MAX_CONNECTIONS`) | Most connections the process's main pool opens. A positive integer. Every database the process opens with the same `url`, role, password, `listenUrl`, `auth`, `schema`, `proxy`, `socket` and pool options shares one main pool, one reader pool and one listening connection, and the last one to close closes them. For high throughput, set it as high as the server's `max_connections` allows. See [Tuning for many concurrent agents](/storage#tuning-for-many-concurrent-agents). |
+| `maxConnections` | `number` | `8` (`DEFAULT_MAX_CONNECTIONS`) | Most connections the process's main pool opens. A positive integer. Every database the process opens with the same `url`, role, password, `listenUrl`, `auth`, `schema`, `proxy`, `socket` and pool options shares one main pool, one reader pool and one listening connection, and the last one to close closes them. For high throughput, set it as high as the server's `max_connections` allows. See [Tuning for many concurrent agents](/storage/postgres#tuning-for-many-concurrent-agents). |
 | `readerMaxConnections` | `number` | `2` (`DEFAULT_READER_MAX_CONNECTIONS`) | Most connections in the reader pool that every handle `openReader()` returns shares, capped at `maxConnections`. A non-negative integer. `0` leaves `openReader` undefined, so reads share the main pool. |
 | `statementTimeoutMs` | `number` | `30000` (`DEFAULT_STATEMENT_TIMEOUT_MS`) | How long one statement may run, in milliseconds, before the server cancels it. A positive integer. |
 | `connectTimeoutMs` | `number` | `10000` (`DEFAULT_CONNECT_TIMEOUT_MS`) | How long opening a connection, or waiting for a free pooled one, may take, in milliseconds. A positive integer. |
@@ -96,13 +96,13 @@ On Azure, AWS, and Google Cloud, set `auth` and omit `password` / `secrets.passw
 | `aws-iam` | `@aws-sdk/rds-signer` | `atomic install npm:@aws-sdk/rds-signer@3.1169.0` | RDS `Signer` using the AWS default credential chain (`AWS_*`, profiles, IRSA, instance profile) |
 | `gcp-iam` | `google-auth-library` | `atomic install npm:google-auth-library@11.3.4` | `GoogleAuth` for `https://www.googleapis.com/auth/sqlservice.login` (ADC, GKE/GCE/Cloud Run metadata) |
 
-For Azure Database for PostgreSQL Flexible Server (PostgreSQL 16+), Azure HorizonDB (PostgreSQL 17, read/write endpoint), Amazon RDS/Aurora, and Google Cloud SQL role-grant SQL, see [PostgreSQL setup](/storage#azure) and [Cloud identities](/storage#cloud-identities).
+For Azure Database for PostgreSQL Flexible Server (PostgreSQL 16+), Azure HorizonDB (PostgreSQL 17, read/write endpoint), Amazon RDS/Aurora, and Google Cloud SQL role-grant SQL, see [PostgreSQL setup](/storage/postgres#azure) and [Cloud identities](/storage/postgres#cloud-identities).
 
 ## TLS, HTTP proxies, and connection poolers
 
 - **TLS defaults:** When `url` omits `sslmode`, Atomic applies `sslmode=verify-full` for remote hosts (checking `PGHOST` if omitted from the URL). Add `sslrootcert=/path/to/ca.pem` for private CAs. Without `sslrootcert`, `require` verifies both certificate and hostname like `verify-full` (stricter than libpq). TLS parameter names are case-sensitive; unknown `sslmode` values are rejected.
 - **HTTP `CONNECT` proxies:** Without `options.proxy`, remote TCP hosts check `HTTPS_PROXY` (`https_proxy`), then `ALL_PROXY` (when HTTP/HTTPS), then `HTTP_PROXY`, respecting `NO_PROXY`. Loopback hosts and Unix socket directories connect directly. Keep `sslmode=verify-full` (or `verify-ca` with a private CA) so TLS runs end to end through the tunnel.
-- **Connection poolers and wake-ups:** Works with transaction-mode poolers (PgBouncer, Azure port `6432`, Supabase Supavisor, Neon `-pooler`) with no session-level state. Prepared statements are off by default behind a pooler, when `listenUrl` is set or the port is `6432` or `6543`. On PgBouncer 1.21 and later with `max_prepared_statements` above `0`, the default from 1.24, set `maxPreparedStatements` to turn them on. A process that listens for wake-ups, as an Intercom broker does, opens one extra `LISTEN` connection outside its pools. When `url` uses a transaction pooler, set `listenUrl` to a direct endpoint, or Atomic falls back to polling. See the [PgBouncer guide](/guides/postgres-pgbouncer).
+- **Connection poolers and wake-ups:** Works with transaction-mode poolers (PgBouncer, Azure port `6432`, Supabase Supavisor, Neon `-pooler`) with no session-level state. Prepared statements are off by default behind a pooler, when `listenUrl` is set or the port is `6432` or `6543`. On PgBouncer 1.21 and later with `max_prepared_statements` above `0`, the default from 1.24, set `maxPreparedStatements` to turn them on. A process that listens for wake-ups, as an Intercom broker does, opens one extra `LISTEN` connection outside its pools. When `url` uses a transaction pooler, set `listenUrl` to a direct endpoint, or Atomic falls back to polling. See the [PgBouncer guide](/storage/postgres/pgbouncer).
 - **Retries and errors:** Connection drops, lock conflicts (`40001`, `40P01`, `55P03`), and canceled statements (`57014`) throw `StorageTransientError` (read-only and unwritten calls retry automatically). Invalid credentials (`28P01`), missing databases (`3D000`), and certificate errors fail immediately. Missing privileges (`42501`) fail immediately with `StorageConfigError` (`reason: "missing-privilege"`) naming the exact `GRANT` or migration command.
 
 ## CLI configuration
@@ -119,6 +119,6 @@ atomic storage status
 
 ## Related docs
 
-- [PostgreSQL operator guide](/storage#postgresql): role creation SQL, migrations, Azure/RDS/Cloud SQL setup, and troubleshooting.
+- [PostgreSQL operator guide](/storage/postgres): role creation SQL, migrations, Azure/RDS/Cloud SQL setup, and troubleshooting.
 - [SDK storage backends](/sdk/storage): complete `createAgentSession()`, `createAgentSessionRuntime()`, and error-handling recipes.
 - [Standalone libraries](/libraries): all published `@bastani/atomic-*` packages.

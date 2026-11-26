@@ -61,7 +61,7 @@ Ambiguous prefixes list only authorized candidates and require the full UUID. Is
 
 Reopened sessions and restored background subagents reclaim their previous Intercom session ID so peers can keep using the ID printed by `intercom list`. The session persists this ID as an `intercom_session_identity` entry. While a live session holds an ID, another registration receives a fresh ID instead; once released, only that same Atomic session can reclaim it while the broker remembers its previous holder.
 
-With [multi-node routing](/intercom/operations#running-intercom-across-machines), session ID reclaim works across machines once the shared database has the current schema (on [PostgreSQL storage](/storage#postgresql), run `atomic storage migrate` as the schema owner role):
+With [multi-node routing](/intercom/operations#running-intercom-across-machines), session ID reclaim works across machines once the shared database has the current schema (on [PostgreSQL storage](/storage/postgres), run `atomic storage migrate` as the schema owner role):
 
 - A session that disconnects cleanly reclaims its ID immediately on any machine.
 - A session whose broker crashed reclaims its ID immediately on the same machine, or on another machine after the crashed broker's 30-second lease expires (until then it receives a fresh ID and automatically rebinds once the lease lapses).

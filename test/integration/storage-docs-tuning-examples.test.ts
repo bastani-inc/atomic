@@ -5,29 +5,29 @@ import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { describe, test } from "vitest";
 import { openAdapterSelectionDatabase } from "../../packages/coding-agent/src/core/storage/adapter-open.js";
 import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
-import libsqlAdapter, { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import postgresAdapter, { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import { postgresSkipReason, postgresTestPassword, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
-const guide = readFileSync(resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs/storage.md"), "utf8");
-const tuning = guide.slice(
-	guide.indexOf("## Tuning for many concurrent agents"),
-	guide.indexOf("## Exporting and importing sessions"),
-);
+const docs = resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs");
 
-const pgbouncerGuide = readFileSync(
-	resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs/guides/postgres-pgbouncer.md"),
-	"utf8",
-);
+/** The "Tuning for many concurrent agents" section of a backend's storage page, up to the next section. */
+function tuningSection(page: string): string {
+	const text = readFileSync(join(docs, page), "utf8");
+	const start = text.indexOf("\n## Tuning for many concurrent agents\n");
+	assert.ok(start >= 0, `${page} has a tuning section`);
+	const end = text.indexOf("\n## ", start + 1);
+	return text.slice(start, end < 0 ? undefined : end);
+}
+
+const tuning = tuningSection("storage/postgres.md");
+const pgbouncerGuide = readFileSync(join(docs, "storage/postgres/pgbouncer.md"), "utf8");
 
 function blocks(language: string, text = tuning): string[] {
 	return [...text.matchAll(new RegExp("```" + language + "\\n([\\s\\S]*?)```", "g"))].map((match) => match[1]!);
 }
 
 const POSTGRES = "@bastani/atomic-storage-postgres";
-const LIBSQL = "@bastani/atomic-storage-libsql";
-const libsqlTestUrl = process.env.ATOMIC_TEST_LIBSQL_URL || undefined;
 
 type Example = {
 	storage: { adapter: string; options: Record<string, unknown>; secrets: Record<string, { file: string }> };
@@ -71,7 +71,7 @@ async function openSettingsExamples(
 	examples: readonly Example[],
 	url: string,
 	secretValue: string,
-	adapter: typeof postgresAdapter | typeof libsqlAdapter,
+	adapter: typeof postgresAdapter,
 	check: (database: SqliteDatabase, options: Record<string, unknown>) => Promise<void>,
 ): Promise<void> {
 	const agentDir = makeTempDirectory("storage-docs-tuning-");
@@ -187,28 +187,5 @@ describe.skipIf(postgresSkipReason !== undefined)("storage guide PostgreSQL tuni
 			const database = await open();
 			for (const statement of statements) await database.all(statement.replaceAll("'atomic'", `'${name}'`));
 		});
-	});
-});
-
-describe.skipIf(libsqlTestUrl === undefined)("storage guide libSQL tuning examples (#6560)", () => {
-	test("every libSQL settings.json and SDK example opens with its options", async () => {
-		const examples = settingsExamples(LIBSQL);
-		assert.equal(examples.length, 1);
-		const url = libsqlTestUrl!;
-		await openSettingsExamples(examples, url, "", libsqlAdapter, async (database) => {
-			assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
-		});
-		const sources = sdkExamples("openLibsqlDatabase");
-		assertTwins(sources, "openLibsqlDatabase", examples, "authToken");
-		for (const source of sources) {
-			const database = await openLibsqlDatabase(
-				onTestDatabase(sdkOptions(source, "openLibsqlDatabase"), url) as never,
-			);
-			try {
-				assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
-			} finally {
-				await database.close();
-			}
-		}
 	});
 });

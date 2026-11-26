@@ -201,7 +201,7 @@ Before connecting from an SDK host:
 
 - **PostgreSQL version:** Atomic sessions require **PostgreSQL 16 or later** (the adapter accepts PostgreSQL 14+ on connect for non-session tables).
 - **Table prefix rules:** On PostgreSQL, `prefix` must be **lowercase** and at most **24 characters** (`POSTGRES_MAX_STORAGE_PREFIX_LENGTH`). Uppercase or oversized prefixes fail with `StoragePrefixError`.
-- **Owner-role migrations:** Run `atomic storage migrate` once as the database owner role before connecting with a least-privilege runtime role. See [Set up the database](/storage#set-up-the-database).
+- **Owner-role migrations:** Run `atomic storage migrate` once as the database owner role before connecting with a least-privilege runtime role. See [Set up the database](/storage/postgres#set-up-the-database).
 
 **Option A — Caller-owned `openPostgresDatabase()` (recommended for SDK hosts sharing one pool):**
 

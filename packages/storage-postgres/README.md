@@ -24,7 +24,7 @@ npm install @bastani/atomic-storage-postgres
 
 ### Join with the CLI
 
-After creating your database and roles (see [Set up the database](https://docs.bastani.ai/storage#set-up-the-database)), run `atomic storage migrate` as the owner role to create or upgrade the schema, then join each machine as the runtime role:
+After creating your database and roles (see [Set up the database](https://docs.bastani.ai/storage/postgres#set-up-the-database)), run `atomic storage migrate` as the owner role to create or upgrade the schema, then join each machine as the runtime role:
 
 ```bash
 printf '%s' "$PASSWORD" > ~/atomic-db-password
@@ -105,7 +105,7 @@ Connections opened for a burst close after 10 seconds without use. A pool's last
 
 ### Tuning for many agents
 
-Every Atomic process on every machine shares the server's `max_connections`. For high throughput, give each process as many connections as that limit allows. When it cannot give each process at least 2, connect through PgBouncer in transaction mode, as the [PgBouncer guide](https://docs.bastani.ai/guides/postgres-pgbouncer) describes. The [tuning guide](https://docs.bastani.ai/storage#tuning-for-many-concurrent-agents) shows how to count connections, worked examples, and the queries and errors that tell you what to change.
+Every Atomic process on every machine shares the server's `max_connections`. For high throughput, give each process as many connections as that limit allows. When it cannot give each process at least 2, connect through PgBouncer in transaction mode, as the [PgBouncer guide](https://docs.bastani.ai/storage/postgres/pgbouncer) describes. The [tuning guide](https://docs.bastani.ai/storage/postgres#tuning-for-many-concurrent-agents) shows how to count connections, worked examples, and the queries and errors that tell you what to change.
 
 ### Connection poolers and wake-ups
 
@@ -127,7 +127,7 @@ Each Intercom broker also opens one connection outside the pools to `LISTEN` for
 
 - Connect to `<server>.postgres.database.azure.com`. Port `5432` reaches PostgreSQL directly; port `6432` reaches the built-in PgBouncer when `pgbouncer.enabled` is turned on (General Purpose and Memory Optimized tiers; Burstable tiers do not include PgBouncer). When using port `6432`, set `listenUrl` to port `5432` so wake-ups stay enabled.
 - Azure certificates chain to CAs trusted by Node.js, so no extra TLS parameter is required.
-- The administrator belongs to `azure_pg_admin` rather than superuser; the owner and runtime role setup in [Set up the database](https://docs.bastani.ai/storage#set-up-the-database) works without changes.
+- The administrator belongs to `azure_pg_admin` rather than superuser; the owner and runtime role setup in [Set up the database](https://docs.bastani.ai/storage/postgres#set-up-the-database) works without changes.
 - Add `PG_TRGM` to the `azure.extensions` server parameter before running `atomic storage migrate`. Without `pg_trgm`, session history search scans sessions page by page.
 - Watch the server's connection limit. A Burstable B1ms server allows 50 connections (15 reserved for administrators), and each Atomic process opens up to `maxConnections` (8), 2 reader connections, and one wake-up connection, however many stores it opens. Lower `maxConnections`, use PgBouncer, or choose a larger tier when running many processes.
 
@@ -173,7 +173,7 @@ Cloud tokens require TLS; keep `sslmode=verify-full` (the remote default) or at 
 
 ### Least-privilege roles
 
-Atomic uses an owner role to own the database and `atomic` schema and run `atomic storage migrate`, plus a runtime role for sessions and Intercom brokers that runs no DDL. Grant the cloud identity runtime privileges after running `atomic storage migrate` as the owner role (see [Set up the database](https://docs.bastani.ai/storage#set-up-the-database)):
+Atomic uses an owner role to own the database and `atomic` schema and run `atomic storage migrate`, plus a runtime role for sessions and Intercom brokers that runs no DDL. Grant the cloud identity runtime privileges after running `atomic storage migrate` as the owner role (see [Set up the database](https://docs.bastani.ai/storage/postgres#set-up-the-database)):
 
 ```sql
 GRANT CONNECT ON DATABASE atomic TO "<identity>";

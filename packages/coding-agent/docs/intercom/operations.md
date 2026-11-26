@@ -122,7 +122,7 @@ By default, each machine's broker serves only sessions on that machine. With mul
 
 For a team, run `atomic team join <url> --token-file <path>` to configure the team database for Intercom while keeping session transcripts local and restarting the broker. CI runners use `ATOMIC_PROFILE=ci` instead. See [Team and CI setup](/guides/team-setup).
 
-To configure multi-node routing with a shared database for both sessions and Intercom, install either `@bastani/atomic-storage-libsql` ([Turso and libSQL](/storage#turso-and-libsql), [libSQL adapter library](/libraries/storage-libsql)) or `@bastani/atomic-storage-postgres` ([PostgreSQL](/storage#postgresql), [PostgreSQL adapter library](/libraries/storage-postgres)) on every machine and run `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for all flags and options.
+To configure multi-node routing with a shared database for both sessions and Intercom, install either `@bastani/atomic-storage-libsql` ([Turso and libSQL](/storage#moving-off-libsql), [libSQL adapter library](/libraries/storage-libsql)) or `@bastani/atomic-storage-postgres` ([PostgreSQL](/storage/postgres), [PostgreSQL adapter library](/libraries/storage-postgres)) on every machine and run `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for all flags and options.
 
 ```bash
 # Turso / libSQL
@@ -136,7 +136,7 @@ atomic storage join postgres://atomic@db.example.com:5432/atomic?sslmode=verify-
 atomic intercom restart
 ```
 
-You can also give every machine the same top-level `storage` selection and `prefix` manually, using any database-backed [storage adapter](/storage#selecting-an-adapter) installed as an [Atomic package](/storage#adapters-from-atomic-packages). Both npm installations and standalone binaries support multi-node routing.
+You can also give every machine the same top-level `storage` selection and `prefix` manually, using any database-backed [storage adapter](/storage/custom-adapters#selecting-an-adapter) installed as an [Atomic package](/storage/custom-adapters#adapters-from-atomic-packages). Both npm installations and standalone binaries support multi-node routing.
 
 The broker reads its storage selection from:
 

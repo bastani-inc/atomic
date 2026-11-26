@@ -26,7 +26,7 @@ const DOCKER_TIMEOUT_MS = 240_000;
 const TEST_TIMEOUT_MS = 300_000;
 
 const guide = readFileSync(
-	resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs/guides/postgres-tuning.md"),
+	resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs/storage/postgres/tuning.md"),
 	"utf8",
 );
 

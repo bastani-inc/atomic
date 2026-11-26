@@ -14,7 +14,7 @@ New to Atomic? Follow the [Quickstart](/quickstart) to install, authenticate, ru
 - **[Sessions](/sessions).** Save, resume, name, search, and branch sessions.
 - **[Worktree snapshots](/worktree-snapshots).** Capture and restore repository state alongside your session history.
 - **[Resume on any machine and blueprints](/guides/resume-on-any-machine).** Continue a session on another machine that shares your storage, and automate dependency rebuilds with [`.atomic/blueprint.yaml` blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint).
-- **[Storage backends](/storage).** Choose local SQLite, PostgreSQL, or Turso/libSQL, run migrations, and export or import sessions. For programmatic apps, see [SDK storage backends](/sdk/storage).
+- **[Storage backends](/storage).** Choose [local SQLite](/storage/sqlite), [JSONL files](/storage/jsonl), or [PostgreSQL](/storage/postgres), run migrations, and export or import sessions. To run many agents on PostgreSQL, see [PgBouncer](/storage/postgres/pgbouncer) and [server tuning](/storage/postgres/tuning). For programmatic apps, see [SDK storage backends](/sdk/storage).
 - **[Context and compaction](/compaction).** Keep long sessions inside the model's context window, or plug in a [custom remote compactor](/compaction#customize-morph-or-add-a-remote-compactor).
 - **[MCP servers](/mcp-servers).** Connect external tools and data sources over Model Context Protocol.
 
@@ -25,8 +25,6 @@ New to Atomic? Follow the [Quickstart](/quickstart) to install, authenticate, ru
 - **[Background tasks](/background-tasks).** Launch, inspect, steer, and stop background subagents and shells.
 - **[Intercom](/guides/intercom).** Coordinate live sessions and subagents on one machine or across a shared database (see the full [Intercom guide](/intercom)).
 - **[Team and CI setup](/guides/team-setup).** Share Intercom with a team through one database while sessions stay private, and configure CI runners from environment variables.
-- **[PostgreSQL with PgBouncer](/guides/postgres-pgbouncer).** Run many agents on one PostgreSQL server by putting PgBouncer in front of it.
-- **[Tune PostgreSQL](/guides/postgres-tuning).** Tune the PostgreSQL server that many agents share: distance, connections, memory, monitoring, and busy tables.
 - **[Structured decisions](/sdk/structured-decisions).** Make typed classifier or chat decisions with `decide()` and `generateStructuredOutput()`.
 - **[Computer use](/computer-use).** Automate desktop apps, browsers, and terminals across macOS, Linux, and Windows.
 - **[Verification](/verification).** Reproduce bugs and collect verifiable evidence across terminal, browser, and desktop environments.
