@@ -78,11 +78,6 @@ function statement(sql) {
 	return made;
 }
 
-// Node 22 binds an empty Uint8Array that arrived in a message as NULL; a new empty one binds as a zero-length blob.
-function bind(params) {
-	return params.map((value) => (value instanceof Uint8Array && value.byteLength === 0 ? new Uint8Array(0) : value));
-}
-
 function value(each) {
 	if (typeof each === "bigint") return each >= -BigInt(Number.MAX_SAFE_INTEGER) && each <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(each) : each;
 	// A copy of its own: a view of a larger buffer would send the whole buffer.
@@ -104,12 +99,12 @@ const handlers = {
 	exec: (request) => {
 		database.exec(request.sql);
 	},
-	run: (request) => ({ changes: Number(statement(request.sql).run(...bind(request.params)).changes) }),
+	run: (request) => ({ changes: Number(statement(request.sql).run(...request.params).changes) }),
 	get: (request) => {
-		const row = statement(request.sql).get(...bind(request.params));
+		const row = statement(request.sql).get(...request.params);
 		return row === undefined ? undefined : table([row]);
 	},
-	all: (request) => table(statement(request.sql).all(...bind(request.params))),
+	all: (request) => table(statement(request.sql).all(...request.params)),
 	// A read transaction's start: BEGIN, then its leading reads, in one request. A BEGIN that fails fails the request and
 	// leaves no transaction. The reads answer up to the first that fails, which, with the ones after it, the caller then
 	// sends on its own in the same transaction, so it fails or answers there as it always would.
@@ -118,7 +113,7 @@ const handlers = {
 		const answers = [];
 		for (const { sql, params } of request.statements) {
 			try {
-				answers.push(table(statement(sql).all(...bind(params))));
+				answers.push(table(statement(sql).all(...params)));
 			} catch {
 				break;
 			}
@@ -180,7 +175,7 @@ const handlers = {
 			while (repeated < times) {
 				if (aborted()) return { aborted: true };
 				const before = Number(statement("SELECT total_changes() AS changes").get().changes);
-				statement(repeat.sql).run(...bind(repeat.params));
+				statement(repeat.sql).run(...repeat.params);
 				const after = Number(statement("SELECT total_changes() AS changes").get().changes);
 				if (after - before < minChanges) break;
 				repeated++;
@@ -189,7 +184,7 @@ const handlers = {
 		for (const { sql, params, script } of request.statements) {
 			if (aborted()) return { aborted: true };
 			if (script === true) database.exec(sql);
-			else statement(sql).run(...bind(params));
+			else statement(sql).run(...params);
 		}
 		return { repeated };
 	},
