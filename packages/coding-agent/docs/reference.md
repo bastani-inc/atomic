@@ -25,6 +25,7 @@ Look up exact commands, settings, configuration schemas, tool behaviors, and API
 - [Session format](/session-format) specifies the JSONL format, entry types, and `SessionManager` API.
 - [Compaction reference](/compaction/reference) covers parameters, saved boundaries, custom compactor contracts, hooks, exports, settings, and historical formats.
 - [Storage](/storage) covers local SQLite, shared libSQL ([`@bastani/atomic-storage-libsql`](/libraries/storage-libsql)) and PostgreSQL ([`@bastani/atomic-storage-postgres`](/libraries/storage-postgres)) databases, adapters, CLI commands, and typed storage errors. For programmatic backend recipes, see [SDK storage backends](/sdk/storage).
+- [PostgreSQL with PgBouncer](/guides/postgres-pgbouncer) and [PostgreSQL server tuning](/guides/postgres-tuning) cover running many agents on one PostgreSQL server, with a pooler in front of it and the server's own settings tuned.
 - [Worktree snapshots SDK & errors](/worktree-snapshots#sdk) documents snapshot capture/restore functions, garbage collection, and `WorkspaceError` classes.
 - [Environment blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint) documents `.atomic/blueprint.yaml`, `atomic blueprint cache-key`, and `atomic blueprint prebuild`.
 

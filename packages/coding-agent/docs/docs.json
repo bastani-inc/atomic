@@ -46,8 +46,6 @@
               "background-tasks",
               "guides/intercom",
               "guides/team-setup",
-              "guides/postgres-pgbouncer",
-              "guides/postgres-tuning",
               "computer-use",
               "verification"
             ]
@@ -202,7 +200,14 @@
               "models-configuration",
               "session-format",
               "compaction/reference",
-              "storage"
+              "storage",
+              {
+                "group": "PostgreSQL",
+                "pages": [
+                  "guides/postgres-pgbouncer",
+                  "guides/postgres-tuning"
+                ]
+              }
             ]
           },
           {

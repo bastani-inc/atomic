@@ -527,17 +527,17 @@ const database = await openPostgresDatabase({
 });
 ```
 
-#### Example: 200 machines on a smaller server
+#### Example: 150 machines on a smaller server
 
-Two hundred CI runners each run one agent process and one Intercom broker, so *P* is 400 and *B* is 200. The server has `max_connections = 300`, 3 superuser slots, and 10 connections used by other clients, so *available* is 287.
+Here, 150 CI runners each run one agent process and one Intercom broker, so *P* is 300 and *B* is 150. The server has `max_connections = 300`, 3 superuser slots, and 10 connections used by other clients, so *available* is 287.
 
-Even at the smallest settings, `maxConnections: 1` and `readerMaxConnections: 0`, the processes need 400 × 1 + 200 = 600 connections. That is more than 287, so connect through a transaction pooler such as PgBouncer instead. Switch to a pooler whenever the arithmetic gives `maxConnections` below 2.
+Even at the smallest settings, `maxConnections: 1` and `readerMaxConnections: 0`, the processes need 300 × 1 + 150 = 450 connections. That is more than 287, so connect through a transaction pooler such as PgBouncer instead. Switch to a pooler whenever the arithmetic gives `maxConnections` below 2.
 
 With PgBouncer in transaction mode on port 6432:
 
-- Point `url` at PgBouncer. Connections to PgBouncer cost the server nothing, so keep `maxConnections` at its default of 8. Set PgBouncer's `max_client_conn` to at least *P* × (`maxConnections` + `readerMaxConnections`), here 400 × 10 = 4000.
+- Point `url` at PgBouncer. Connections to PgBouncer cost the server nothing, so keep `maxConnections` at its default of 8. Set PgBouncer's `max_client_conn` to at least *P* × (`maxConnections` + `readerMaxConnections`), here 300 × 10 = 3000.
 - PgBouncer cannot pass wake-up notifications. Either point `listenUrl` at the server directly, which uses one server connection per broker, or leave it out. With `listenUrl`, brokers are notified of new messages and check for missed ones every 5 seconds. Without it, they check the database every half second, 10 times as often.
-- Size PgBouncer's server pool (`default_pool_size`) to what is left. With `listenUrl`, that is 287 − 200 = 87. Without it, PgBouncer can use up to 287.
+- Size PgBouncer's server pool (`default_pool_size`) to what is left. With `listenUrl`, that is 287 − 150 = 137. Without it, PgBouncer can use up to 287.
 
 ```json
 {
