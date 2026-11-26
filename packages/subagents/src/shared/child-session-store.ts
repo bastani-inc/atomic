@@ -1,17 +1,23 @@
 import type { SessionStore } from "@bastani/atomic";
+import { warnDeprecationOnce } from "./removed-routing-warning.js";
 
 /**
- * The store a fresh child's own session is created in: the store its parent's session is in, the one Atomic was
- * configured with (SQLite by default, a database adapter, or memory), so a child is kept, resumed and woken wherever
- * its parent is. A parent kept in JSONL files has none: its children keep their own session files beside the parent's,
- * as a JSONL store keeps one file per session.
+ * The store a child's own session is created in: always the store its parent's session is in, whatever it is (SQLite
+ * by default, a database adapter, memory, or a JSONL directory), so a child is kept, resumed and woken wherever its
+ * parent is. The child's working directory, worktree or launch options never choose another store.
  */
 export function childSessionStore(parent: {
 	readonly getSessionStore?: () => SessionStore | undefined;
 }): SessionStore | undefined {
-	// A session manager that names no store of its own (an older or partial one) keeps its children in files, as before.
-	const store = typeof parent.getSessionStore === "function" ? parent.getSessionStore() : undefined;
-	return store === undefined || store.descriptor.adapter === "jsonl" ? undefined : store;
+	// Only a session manager that names no store of its own (an older or partial one) has none to share.
+	return typeof parent.getSessionStore === "function" ? parent.getSessionStore() : undefined;
+}
+
+/** Warn once that a session directory for subagents, the launch's `sessionDir` or config's `defaultSessionDir`, is ignored. */
+export function warnIgnoredSessionDir(option: "sessionDir" | "defaultSessionDir"): void {
+	warnDeprecationOnce(
+		`"${option}" is ignored: a subagent's session is always kept in the session store of the session that launched it.`,
+	);
 }
 
 /**

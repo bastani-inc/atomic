@@ -1,11 +1,13 @@
 /**
- * A subagent's own session is kept in the session storage its parent uses: the parent's SQLite store by default, its
- * memory store when the parent saves nothing, and files only when the parent's sessions are files or the launch names
- * a directory for them. Real parent and child sessions with the bundled subagents extension, on a local model.
+ * A subagent's own session is always kept in the session store its parent uses, whatever that store is (the parent's
+ * SQLite store by default, its memory store when the parent saves nothing, or its JSONL directory), whatever directory
+ * or worktree the child runs in, and whether it starts fresh or forked. Real parent and child sessions with the
+ * bundled subagents extension, on a local model.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { JsonObject } from "@bastani/atomic-ai";
 import {
 	type FauxResponseFactory,
 	fauxAssistantMessage,
@@ -23,10 +25,11 @@ import {
 	getAgentDir,
 	ModelRuntime,
 	SessionManager,
+	type SessionStore,
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 /** Structural cost: a real parent session runs a real subagent session through the subagent tool. */
 const REAL_SUBAGENT_TIMEOUT_MS = 120_000;
@@ -43,7 +46,7 @@ afterEach(async () => {
 });
 
 /** The parent delegates once, with `launch` as the subagent call's arguments; the child answers. */
-function scriptedModel(launch: Record<string, unknown>): FauxResponseFactory {
+function scriptedModel(launch: JsonObject): FauxResponseFactory {
 	return (context) => {
 		const parent = context.messages.some(
 			(message) => message.role === "user" && JSON.stringify(message.content).includes("Delegate the answer"),
@@ -65,15 +68,26 @@ function scriptedModel(launch: Record<string, unknown>): FauxResponseFactory {
 			);
 		if (last?.role !== "user" || !JSON.stringify(last.content).includes("Delegate the answer"))
 			return fauxAssistantMessage("done");
-		return fauxAssistantMessage([fauxToolCall("subagent", { agent: "helper-store", task: "Answer.", ...launch })], {
-			stopReason: "toolUse",
-		});
+		const fork: JsonObject = JSON.stringify(last.content).includes("with a fork") ? { context: "fork" } : {};
+		const call = launch.tasks
+			? { ...launch, ...fork }
+			: { agent: "helper-store", task: "Answer.", ...launch, ...fork };
+		return fauxAssistantMessage([fauxToolCall("subagent", call)], { stopReason: "toolUse" });
 	};
+}
+
+/** The project agent the parent launches, defined in `dir`. */
+function writeHelperAgent(dir: string): void {
+	mkdirSync(join(dir, ".atomic", "agents"), { recursive: true });
+	writeFileSync(
+		join(dir, ".atomic", "agents", "helper-store.md"),
+		`---\nname: helper-store\ndescription: Answers\ntools: read\nmodel: ${PROVIDER}/${CHILD_MODEL}\n---\n\nAnswer the task.\n`,
+	);
 }
 
 async function parentSession(
 	cwd: string,
-	launch: Record<string, unknown>,
+	launch: JsonObject,
 	storage: Pick<CreateAgentSessionOptions, "sessionManager" | "sessionStore"> = {},
 ): Promise<AgentSession> {
 	// Under NODE_ENV=test a child runs a scripted stand-in session instead of its model.
@@ -103,11 +117,7 @@ async function parentSession(
 			cost: registered.cost,
 		})),
 	});
-	mkdirSync(join(cwd, ".atomic", "agents"), { recursive: true });
-	writeFileSync(
-		join(cwd, ".atomic", "agents", "helper-store.md"),
-		`---\nname: helper-store\ndescription: Answers\ntools: read\nmodel: ${PROVIDER}/${CHILD_MODEL}\n---\n\nAnswer the task.\n`,
-	);
+	writeHelperAgent(cwd);
 	const { session } = await createAgentSession({
 		cwd,
 		modelRuntime,
@@ -141,22 +151,66 @@ function childRecords(session: AgentSession): ChildRecord[] {
 		);
 }
 
-/** The parent launches its child, which runs in the background; resolves with the child's record once it finished. */
-async function delegate(session: AgentSession): Promise<ChildRecord> {
-	await session.prompt("Delegate the answer.", { streamingBehavior: "followUp" });
+/**
+ * The parent sends `prompt` (it launches a child, which runs in the background, or resumes one); resolves with the
+ * record of the child that finished since, once it did.
+ */
+async function delegate(session: AgentSession, prompt = "Delegate the answer."): Promise<ChildRecord> {
+	const finished = () => childRecords(session).filter((record) => record.state === "terminal");
+	const before = finished().length;
+	await session.prompt(prompt, { streamingBehavior: "followUp" });
 	await vi.waitFor(
 		() => {
-			assert.ok(
-				childRecords(session).some((record) => record.state === "terminal"),
-				JSON.stringify(childRecords(session)),
-			);
+			assert.ok(finished().length > before, JSON.stringify(childRecords(session)));
 			assert.equal(session.isStreaming, false);
 		},
 		{ timeout: REAL_SUBAGENT_TIMEOUT_MS, interval: 20 },
 	);
-	const record = childRecords(session).findLast((candidate) => candidate.childSessionId !== undefined);
+	const record = finished().findLast((candidate) => candidate.childSessionId !== undefined);
 	assert.ok(record, `the parent recorded its child's session: ${JSON.stringify(childRecords(session))}`);
 	return record;
+}
+
+/** The child's session read back from `store`, its parent's: it is there, and internal like every subagent session. */
+async function childSessionIn(store: SessionStore, record: ChildRecord, cwd: string): Promise<SessionManager> {
+	assert.ok(record.childSessionId);
+	const reopened = await SessionManager.open(store, record.childSessionId, cwd);
+	assert.equal(reopened.getHeader()?.internal, true, "the child's session is internal");
+	const listed: string[] = [];
+	for await (const summary of store.list({})) listed.push(summary.id);
+	assert.ok(!listed.includes(record.childSessionId), "/resume and history:// do not list the child");
+	return reopened;
+}
+
+/** A parent kept in a JSONL directory of its own, outside `cwd`. */
+async function jsonlParent(cwd: string): Promise<{ manager: SessionManager; sessions: string }> {
+	const sessions = makeTempDirectory("atomic-child-store-parent-sessions-");
+	cleanups.push(() => removeTempDirectory(sessions));
+	return { manager: await SessionManager.create(cwd, sessions), sessions };
+}
+
+function git(cwd: string, args: readonly string[]): void {
+	const result = spawnSyncCollect(["git", ...args], { cwd });
+	assert.equal(result.exitCode, 0, `git ${args.join(" ")}: ${result.stderr.toString()}`);
+}
+
+/** A Git checkout at `cwd` with the parent's agent committed, so a worktree of it has the agent too. */
+function gitCheckout(cwd: string): void {
+	writeHelperAgent(cwd);
+	git(cwd, ["init", "--quiet", "-b", "main"]);
+	git(cwd, ["-c", "user.name=t", "-c", "user.email=t@example.com", "add", "."]);
+	git(cwd, [
+		"-c",
+		"user.name=t",
+		"-c",
+		"user.email=t@example.com",
+		"-c",
+		"commit.gpgsign=false",
+		"commit",
+		"--quiet",
+		"-m",
+		"agent",
+	]);
 }
 
 /** Every session file under `directory`, at any depth; a run's artifacts (its `run-history.jsonl`) are not sessions. */
@@ -261,41 +315,136 @@ test(
 );
 
 test(
-	"a subagent of a session kept in files keeps its own session file beside its parent's",
+	"a subagent of a session kept in files keeps its session in its parent's JSONL store",
 	async () => {
 		const cwd = makeTempDirectory("atomic-child-store-jsonl-");
 		cleanups.push(() => removeTempDirectory(cwd));
-		const sessions = join(cwd, "parent-sessions");
-		const parent = await SessionManager.create(cwd, sessions);
+		const { manager: parent, sessions } = await jsonlParent(cwd);
 		const session = await parentSession(cwd, {}, { sessionManager: parent });
 
 		const child = await delegate(session);
-		const parentFile = parent.getSessionFile();
-		assert.ok(parentFile);
-		assert.ok(child.childSessionFile, "the child has a session file of its own");
-		assert.ok(readFileSync(child.childSessionFile, "utf8").includes(CHILD_ANSWER), "its answer is in its file");
-		assert.ok(
-			child.childSessionFile.startsWith(join(sessions, parentFile.slice(sessions.length + 1, -".jsonl".length))),
-			`${child.childSessionFile} is beside ${parentFile}`,
+		const reopened = await childSessionIn(parent.getSessionStore(), child, cwd);
+		assert.ok(JSON.stringify(reopened.getEntries()).includes(CHILD_ANSWER), "its answer is in its session");
+		assert.ok(child.childSessionFile, "a JSONL store keeps the child's session in a file");
+		assert.equal(dirname(child.childSessionFile), sessions, "beside its parent's, not in a directory of its own");
+	},
+	REAL_SUBAGENT_TIMEOUT_MS,
+);
+
+test.each(["default SQLite", "JSONL"] as const)(
+	"a subagent launched with a session directory still keeps its session in its parent's %s store",
+	async (kind) => {
+		const cwd = makeTempDirectory("atomic-child-store-dir-");
+		cleanups.push(() => removeTempDirectory(cwd));
+		const chosen = join(cwd, "chosen-sessions");
+		const parent = kind === "JSONL" ? (await jsonlParent(cwd)).manager : undefined;
+		const session = await parentSession(cwd, { sessionDir: chosen }, parent ? { sessionManager: parent } : {});
+
+		const child = await delegate(session);
+		const reopened = await childSessionIn(session.sessionManager.getSessionStore(), child, cwd);
+		assert.ok(JSON.stringify(reopened.getEntries()).includes(CHILD_ANSWER), "its answer is in its session");
+		assert.deepEqual(sessionFilesUnder(chosen), [], "nothing is written to the directory the launch named");
+	},
+	REAL_SUBAGENT_TIMEOUT_MS,
+);
+
+test.each(["default SQLite", "JSONL"] as const)(
+	"a subagent launched in another directory with storage settings of its own keeps its session in its parent's %s store",
+	async (kind) => {
+		const cwd = makeTempDirectory("atomic-child-store-cwd-");
+		cleanups.push(() => removeTempDirectory(cwd));
+		const elsewhere = makeTempDirectory("atomic-child-store-elsewhere-");
+		cleanups.push(() => removeTempDirectory(elsewhere));
+		const own = join(elsewhere, "own-sessions");
+		writeHelperAgent(elsewhere);
+		writeFileSync(
+			join(elsewhere, ".atomic", "settings.json"),
+			JSON.stringify({ sessions: { storage: { dir: own } }, storage: { path: join(elsewhere, "own.sqlite") } }),
 		);
+		const parent = kind === "JSONL" ? (await jsonlParent(cwd)).manager : undefined;
+		const session = await parentSession(cwd, { cwd: elsewhere }, parent ? { sessionManager: parent } : {});
+
+		const child = await delegate(session);
+		const reopened = await childSessionIn(session.sessionManager.getSessionStore(), child, elsewhere);
+		assert.equal(reopened.getHeader()?.cwd, elsewhere, "the child ran in the other directory");
+		assert.ok(JSON.stringify(reopened.getEntries()).includes(CHILD_ANSWER), "its answer is in its session");
+		assert.ok(!existsSync(own), "the other directory's JSONL store is never opened");
+		assert.ok(!existsSync(join(elsewhere, "own.sqlite")), "the other directory's database is never opened");
+	},
+	REAL_SUBAGENT_TIMEOUT_MS,
+);
+
+test.each([
+	["a named worktree", { worktree: { branch: "child-store-wt" } }],
+	["a worktree: true task", { tasks: [{ agent: "helper-store", task: "Answer." }], worktree: true }],
+] as const)(
+	"a subagent in %s keeps its session in its parent's JSONL store",
+	async (_name, launch) => {
+		const cwd = makeTempDirectory("atomic-child-store-worktree-");
+		cleanups.push(() => removeTempDirectory(cwd));
+		gitCheckout(cwd);
+		const { manager: parent, sessions } = await jsonlParent(cwd);
+		const session = await parentSession(cwd, launch, { sessionManager: parent });
+
+		const child = await delegate(session);
+		const reopened = await childSessionIn(parent.getSessionStore(), child, cwd);
+		assert.notEqual(reopened.getHeader()?.cwd, cwd, "the child ran in a worktree");
+		assert.ok(JSON.stringify(reopened.getEntries()).includes(CHILD_ANSWER), "its answer is in its session");
+		assert.ok(child.childSessionFile?.startsWith(sessions), `${child.childSessionFile} is in ${sessions}`);
 	},
 	REAL_SUBAGENT_TIMEOUT_MS,
 );
 
 test(
-	"a subagent launched with a session directory keeps its session file there, whatever its parent's storage",
+	"a subagent resumed after its parent restarts reads and writes its session in the parent's store",
 	async () => {
-		const cwd = makeTempDirectory("atomic-child-store-dir-");
+		const cwd = makeTempDirectory("atomic-child-store-restart-");
 		cleanups.push(() => removeTempDirectory(cwd));
-		const chosen = join(cwd, "chosen-sessions");
-		const session = await parentSession(cwd, { sessionDir: chosen });
+		const { manager: parent } = await jsonlParent(cwd);
+		const first = await parentSession(cwd, {}, { sessionManager: parent });
+		const child = await delegate(first);
+		const parentFile = parent.getSessionFile();
+		assert.ok(parentFile);
+		await first.dispose();
+		clearSubagentControls();
 
-		const child = await delegate(session);
-		const file = child.childSessionFile;
-		assert.ok(file, "the child has a session file of its own");
-		assert.ok(file.startsWith(chosen), `${file} is in ${chosen}`);
-		assert.ok(readFileSync(file, "utf8").includes(CHILD_ANSWER), "its answer is in its file");
-		assert.equal(sessionFilesUnder(chosen).length, 1);
+		// The restarted parent opens its session from its file, as `atomic --session` does, and resumes its child.
+		const restarted = await SessionManager.open(parentFile);
+		const second = await parentSession(cwd, {}, { sessionManager: restarted });
+		const resumed = await delegate(second, `RESUME ${child.childId}`);
+		assert.equal(resumed.childSessionId, child.childSessionId, "the same child was resumed");
+		const reopened = await childSessionIn(restarted.getSessionStore(), resumed, cwd);
+		const entries = JSON.stringify(reopened.getEntries());
+		assert.ok(entries.includes(CHILD_ANSWER), "its earlier answer is read from the parent's store");
+		assert.ok(entries.includes("Answer again."), "the resume's message is written to the parent's store");
+	},
+	REAL_SUBAGENT_TIMEOUT_MS,
+);
+
+test.each(["default SQLite", "JSONL"] as const)(
+	"a fresh and a forked subagent of one parent both keep internal sessions in its %s store",
+	async (kind) => {
+		const cwd = makeTempDirectory("atomic-child-store-fork-");
+		cleanups.push(() => removeTempDirectory(cwd));
+		const parent = kind === "JSONL" ? (await jsonlParent(cwd)).manager : undefined;
+		const session = await parentSession(cwd, {}, parent ? { sessionManager: parent } : {});
+		const store = session.sessionManager.getSessionStore();
+
+		const fresh = await delegate(session);
+		const forked = await delegate(session, "Delegate the answer with a fork.");
+		assert.notEqual(forked.childSessionId, fresh.childSessionId);
+		const freshSession = await childSessionIn(store, fresh, cwd);
+		const forkSession = await childSessionIn(store, forked, cwd);
+		assert.equal(freshSession.getHeader()?.parentSessionId, undefined, "the fresh child starts on no context");
+		assert.equal(
+			forkSession.getHeader()?.parentSessionId,
+			session.sessionManager.getSessionId(),
+			"the forked child starts on its parent's context",
+		);
+		assert.ok(
+			JSON.stringify(forkSession.getEntries()).includes("Delegate the answer."),
+			"the forked child's session holds its parent's conversation",
+		);
 	},
 	REAL_SUBAGENT_TIMEOUT_MS,
 );

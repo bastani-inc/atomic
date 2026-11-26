@@ -75,7 +75,7 @@ Both fresh and forked (`context: "fork"`) subagents store their sessions in the 
 
 When a background subagent resumes on another machine, Atomic maps its recorded directory through the parent session's restored checkouts, then prepares the subagent's own checkouts from its snapshots and builds their blueprints. Its file tools resolve old absolute paths into the restored worktrees.
 
-Only subagents launched with an explicit `sessionDir`, subagents whose parent uses JSONL session files, or legacy file-backed subagents stay tied to the machine that launched them and report as unrestorable elsewhere.
+Only subagents whose parent uses JSONL session files, and file-backed subagents from earlier releases, stay tied to the machine that launched them and report as unrestorable elsewhere.
 
 ## Set the environment up with a blueprint
 

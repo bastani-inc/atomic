@@ -81,7 +81,8 @@ export function createForkContextResolver(
 	if (parentLeafId === null) throw new SubagentForkContextError(parentSessionId, "no_leaf");
 	const leafId = settledForkLeaf(sessionManager.getBranch(), parentLeafId);
 	if (leafId === null) throw new SubagentForkContextError(parentSessionId, "no_leaf");
-	const openFork = sessionManager.captureFork(leafId);
+	// Created in the parent's store and internal, as a fresh child's session is: a fork differs only in its context.
+	const openFork = sessionManager.captureFork(leafId, { internal: true });
 	const children = new Map<number, { id: string; manager: WeakRef<SessionManager> }>();
 	const opening = new Map<number, Promise<SessionManager>>();
 	return {
