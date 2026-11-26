@@ -21,6 +21,7 @@ import {
 
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/event-loop-block-monitor.ts");
+const PROFILE_CLOCK_PRELOAD = join(ROOT, "test/fixtures/event-loop-profile-clock-preload.cjs");
 
 const THRESHOLD_MS = 200;
 const LONG_BLOCK_MS = 1_000;
@@ -237,8 +238,10 @@ async function runChild(
 	runtime: (typeof RUNTIMES)[number],
 	env: Record<string, string | undefined>,
 	mode = "blocks",
+	requirePreload?: string,
 ): Promise<{ report: ChildReport | undefined; stderr: string }> {
 	const [executable, ...preload] = runtime.command();
+	if (requirePreload !== undefined) preload.push("--require", requirePreload);
 	const child = spawnProcess(
 		[executable, ...preload, FIXTURE, String(LONG_BLOCK_MS), String(SHORT_BLOCK_MS), String(SETTLE_MS), mode],
 		{
@@ -448,6 +451,22 @@ test(
 				);
 			}
 		}
+	},
+	CHILD_TEST_TIMEOUT_MS,
+);
+
+test(
+	"on Node, attributes samples even when the profiler clock starts at a different origin",
+	async () => {
+		const log = join(temp, "blocks.jsonl");
+		await runChild(
+			RUNTIMES[0],
+			{ ATOMIC_EVENT_LOOP_BLOCK_MS: String(THRESHOLD_MS), ATOMIC_EVENT_LOOP_BLOCK_LOG: log },
+			"blocks",
+			PROFILE_CLOCK_PRELOAD,
+		);
+		const records = readLog(log);
+		assert.equal(blocksNaming(records, "holdTheEventLoopForLong").length, 1, JSON.stringify(records));
 	},
 	CHILD_TEST_TIMEOUT_MS,
 );

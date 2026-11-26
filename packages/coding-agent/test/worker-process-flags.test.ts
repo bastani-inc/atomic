@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -33,7 +33,7 @@ const MISSING_NODE_SQLITE =
 let dir: string;
 let preloadLog: string;
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "atomic-worker-flags-"));
+	dir = realpathSync(mkdtempSync(join(tmpdir(), "atomic-worker-flags-")));
 	preloadLog = join(dir, "preload.log");
 	const db = new TestSqliteDatabase(join(dir, "data.sqlite"));
 	db.run("create table n (v integer)");
