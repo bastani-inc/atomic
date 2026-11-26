@@ -412,6 +412,7 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 					`  adapter:     ${probe.adapter.loaded ? "loaded" : "failed to load"}${probe.adapter.detail === undefined ? "" : ` (${probe.adapter.detail})`}`,
 				);
 			}
+			if (probe.library !== undefined) lines.push(`  library:     ${probe.library}`);
 			lines.push(`  connection:  ${probe.connection.status} (${probe.connection.detail})`);
 		}
 		if (domain.multiNode !== undefined) lines.push(`  multi-node:  ${domain.multiNode}`);

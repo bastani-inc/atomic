@@ -122,6 +122,8 @@ You should see a single version line (for example `0.10.5`). If your shell repor
 
 Package-manager installs run on Node.js (`#!/usr/bin/env node`), including global installs created with `bun add -g` unless you explicitly run with Bun (`--bun`). Standalone release archives run on Bun. Installing Bun separately does not switch an npm install to Bun. [Codemode scripts](/codemode) always run inside a sandboxed JavaScript VM with no direct Node or Bun APIs.
 
+Both runtimes use the same SQLite version for local storage. Node.js includes its own copy of SQLite. On macOS, Bun would otherwise use the SQLite that comes with macOS, whose version depends on your macOS release, so the macOS release archives include their own copy, in `lib/libsqlite3.dylib`. You don't need to do anything. `atomic storage status` shows the version in use on its `library:` line. If that copy can't be loaded, Atomic prints one warning and uses the system's SQLite instead.
+
 ## Git
 
 Atomic requires Git 2.30.0 or newer for worktrees, git packages, and the footer branch display. It uses the first `git` found in an absolute `PATH` directory (never the working directory) if that binary reports 2.30.0 or newer. Otherwise, Atomic downloads a verified portable Git (pinned to Git 2.56.0 from [desktop/dugite-native](https://github.com/desktop/dugite-native)), just as it does for `fd` and `rg`.

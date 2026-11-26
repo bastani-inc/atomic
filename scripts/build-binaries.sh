@@ -16,6 +16,11 @@
 #                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64,
 #                         linux-x64-musl, linux-arm64-musl, windows-x64, windows-arm64)
 #
+# Environment:
+#   ATOMIC_MACOS_SQLITE_DIR  Directory with libsqlite3.darwin-arm64.dylib and libsqlite3.darwin-x64.dylib, built by
+#                            scripts/build-macos-sqlite.sh, which the macOS archives ship as lib/libsqlite3.dylib.
+#                            Unset, a macOS host builds them itself; any other host cannot build macOS archives.
+#
 # Output:
 #   packages/coding-agent/binaries/
 #     atomic-darwin-arm64.tar.gz
@@ -33,6 +38,9 @@ set -euo pipefail
 if [[ -n "${TMPDIR:-}" && "$TMPDIR" != /* ]]; then
     TMPDIR="$(cd -- "$TMPDIR" && pwd -P)"
     export TMPDIR
+fi
+if [[ -n "${ATOMIC_MACOS_SQLITE_DIR:-}" ]]; then
+    ATOMIC_MACOS_SQLITE_DIR="$(cd -- "$ATOMIC_MACOS_SQLITE_DIR" && pwd -P)"
 fi
 cd -- "$(dirname -- "$0")/.."
 
@@ -459,6 +467,26 @@ stage_musl_runtime() {
     MUSL_RUNTIME_STAGE_DIR=""
 }
 
+# The macOS binaries load this SQLite instead of the system's (packages/coding-agent/src/bun/bundled-sqlite.ts).
+stage_macos_sqlite() {
+    local platform="$1"
+    local payload_dir="$2"
+    mkdir -p "$payload_dir/lib"
+    if [[ -n "${ATOMIC_MACOS_SQLITE_DIR:-}" ]]; then
+        local prebuilt="$ATOMIC_MACOS_SQLITE_DIR/libsqlite3.$platform.dylib"
+        [[ -f "$prebuilt" ]] || {
+            echo "Missing SQLite library for $platform: $prebuilt" >&2
+            return 1
+        }
+        cp "$prebuilt" "$payload_dir/lib/libsqlite3.dylib"
+    elif [[ "$(uname -s)" == Darwin ]]; then
+        bash ../../scripts/build-macos-sqlite.sh "${platform#darwin-}" "$payload_dir/lib/libsqlite3.dylib"
+    else
+        echo "The $platform archive ships a SQLite library built on macOS: build it there, or set ATOMIC_MACOS_SQLITE_DIR to a directory holding libsqlite3.$platform.dylib from scripts/build-macos-sqlite.sh" >&2
+        return 1
+    fi
+}
+
 for platform in "${PLATFORMS[@]}"; do
     cp package.json "binaries/$platform/"
     cp README.md "binaries/$platform/"
@@ -506,6 +534,11 @@ for platform in "${PLATFORMS[@]}"; do
 
     cp -r docs "binaries/$platform/"
     cp -r examples "binaries/$platform/"
+
+    if [[ "$platform" == darwin-* ]]; then
+        echo "==> Bundling SQLite for $platform..."
+        stage_macos_sqlite "$platform" "binaries/$platform"
+    fi
 
     if [[ "$platform" == linux-*-musl ]]; then
         echo "==> Bundling musl C++ runtime for $platform..."
