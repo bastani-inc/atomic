@@ -6,6 +6,8 @@ export interface ListenClient {
 	on(event: "notification", listener: (message: { channel: string; payload?: string }) => void): unknown;
 	on(event: "error" | "end", listener: () => void): unknown;
 	end(): Promise<void>;
+	/** Closes the session's socket at once, without waiting for the server; used once `CLOSE_WAIT_MS` passed. */
+	destroy?(): void;
 }
 
 export interface ListenerOptions {
@@ -21,11 +23,15 @@ export interface ListenerOptions {
 	retry?: { readonly firstMs: number; readonly maxMs: number };
 	/** Default `LISTEN_HEALTH_INTERVAL_MS`. */
 	healthIntervalMs?: number;
+	/** How long `close()` waits for the session to end before it destroys it. Default `CLOSE_WAIT_MS`. */
+	closeWaitMs?: number;
 }
 
 export const LISTEN_PROBE_TIMEOUT_MS: 2000;
 export const LISTEN_RETRY: { readonly firstMs: 1000; readonly maxMs: 30000 };
 export const LISTEN_HEALTH_INTERVAL_MS: 30000;
+/** How long closing waits for the server to let go of a connection before it drops it. */
+export const CLOSE_WAIT_MS: 5000;
 
 export function createPostgresListener(options: ListenerOptions): StorageNotifications & { close(): Promise<void> };
 

@@ -12,7 +12,7 @@ import {
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
 import { createCloudPasswordProvider } from "./auth.js";
-import { createNotifyCoalescer, createPostgresListener } from "./listen.js";
+import { CLOSE_WAIT_MS, createNotifyCoalescer, createPostgresListener } from "./listen.js";
 import {
 	isLocalTarget,
 	isRefusedCertificate,
@@ -116,8 +116,6 @@ export const DEFAULT_READER_MAX_CONNECTIONS = 2;
  * server or a network that stopped answering, and a statement that cannot run in a transaction block.
  */
 const CLIENT_TIMEOUT_GRACE_MS = 5_000;
-/** How long closing a database waits for the server to let go of each of its connections before it drops them. */
-const CLOSE_WAIT_MS = 5_000;
 /** Sends the notifications of a JSON array of `[channel, payload]` pairs, as Oban sends many in one statement. */
 const NOTIFY_MANY_SQL = "SELECT pg_notify(notice ->> 0, notice ->> 1) FROM json_array_elements(?::json) AS notice";
 /** The conditional notify statement texts a database sends after their commit, at most. */
@@ -1199,6 +1197,10 @@ export async function openPostgresDatabase(options) {
 	class ClosingClient extends pg.Client {
 		/** The `pgbouncer.*` parameters the server reported at login, which PgBouncer 1.26 and later report. */
 		poolerParameters = new Map();
+		/** Closes the socket at once, without waiting for the server to answer the goodbye (`CLOSE_WAIT_MS`). */
+		destroy() {
+			this.connection.stream.destroy();
+		}
 		/** @param {(error: Error | undefined) => void} callback */
 		// @ts-expect-error pg-pool always passes a callback, so the promise form is left out.
 		connect(callback) {
@@ -1882,18 +1884,22 @@ export async function openPostgresDatabase(options) {
 		state: () => listener.state(),
 	};
 	/**
-	 * Gives up this database's share of the connections: the last database to close closes the listening connection,
-	 * then the pools.
+	 * Gives up this database's share of the connections: the last database to close closes the listening connection and
+	 * the pools.
 	 */
 	const release = async () => {
 		for (const subscription of [...subscriptions]) subscription.close();
 		await coalescer.flush();
 		if (--shared.references > 0) return;
 		if (identity !== undefined && sharing.get(identity) === shared) sharing.delete(identity);
-		await listener.close();
 		const reader = shared.reader;
 		shared.reader = undefined;
-		await Promise.all([endPool(pool), reader === undefined ? undefined : endPool(reader.pool)]);
+		// At once, so a server that stopped answering costs one `CLOSE_WAIT_MS`, not one for each.
+		await Promise.all([
+			listener.close(),
+			endPool(pool),
+			reader === undefined ? undefined : endPool(reader.pool),
+		]);
 	};
 
 	/**
