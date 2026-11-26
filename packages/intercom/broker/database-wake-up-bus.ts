@@ -52,13 +52,19 @@ export const WAKE_UP_POLL_INTERVAL_MS = 500;
  * in an outage the listener has not noticed yet waits for this poll.
  */
 export const WAKE_UP_LISTENING_POLL_INTERVAL_MS = 5_000;
-/** Hints nobody consumed (their broker exited) are deleted after this age; the backup poll has covered them. */
+/**
+ * The longest a hint nobody consumed (its broker exited) stays in the table, while brokers publish: by then the backup
+ * poll has covered it. The prune runs at most every {@link WAKE_UP_PRUNE_INTERVAL_MS}, so it deletes the hints older
+ * than the retention less that interval: one that just missed a prune is gone by the next, at most the retention old.
+ */
 export const WAKE_UP_HINT_RETENTION_MS = OUTBOX_BACKUP_POLL_INTERVAL_MS;
 /**
- * How often at most one connection deletes the hints past the retention, at a publish (#6560): a hint nobody consumed
- * then stays at most this much longer than the retention.
+ * How often at most one connection deletes old hints, at a publish (#6560): each prune is a write every broker would
+ * otherwise send at every publish.
  */
 export const WAKE_UP_PRUNE_INTERVAL_MS = 10_000;
+/** The age past which a prune deletes a hint, so that no hint outlives {@link WAKE_UP_HINT_RETENTION_MS}. */
+const WAKE_UP_PRUNE_AGE_MS = WAKE_UP_HINT_RETENTION_MS - WAKE_UP_PRUNE_INTERVAL_MS;
 /**
  * Hints read and deleted per statement; a poll repeats until a batch comes back short, so a backlog is taken in
  * statements of bounded size.
@@ -315,7 +321,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 				// The clock is read once, in a subquery: PostgreSQL's is volatile, and a volatile bound uses no index.
 				await database.run(
 					`DELETE FROM ${this.table} WHERE created_at < (SELECT ${nowMs}) - ?`,
-					WAKE_UP_HINT_RETENTION_MS,
+					WAKE_UP_PRUNE_AGE_MS,
 				);
 			}
 		} catch {

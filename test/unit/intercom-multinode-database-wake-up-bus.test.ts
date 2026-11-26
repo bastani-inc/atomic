@@ -172,6 +172,32 @@ test("database wake-up bus deletes hints nobody consumed once they are older tha
 	}
 });
 
+test("database wake-up bus deletes a hint nobody consumed within the 30 s retention, though it prunes only every 10 s", async () => {
+	const file = openSqliteFile();
+	try {
+		const publisher = await file.connect();
+		const observer = await openNodeSqliteDatabase(file.path);
+		try {
+			const now = "CAST(round((julianday('now') - 2440587.5) * 86400000) AS INTEGER)";
+			// The next prune may come up to 10 s from now: a hint 25 s old would then be 35 s old. One 15 s old is not
+			// yet due.
+			await observer.run(
+				`INSERT INTO intercom_wakeups (broker_id, reason, version, created_at) VALUES
+				('broker-25s-ago', 'outbox', 1, ${now} - 25000), ('broker-15s-ago', 'outbox', 1, ${now} - 15000)`,
+			);
+			await publisher.publish({ brokerId: "broker-without-subscriber", reason: "outcome", version: 2 });
+			assert.deepEqual(await observer.all("SELECT broker_id FROM intercom_wakeups ORDER BY broker_id"), [
+				{ broker_id: "broker-15s-ago" },
+				{ broker_id: "broker-without-subscriber" },
+			]);
+		} finally {
+			await observer.close();
+		}
+	} finally {
+		await file.close();
+	}
+});
+
 test("database wake-up bus prunes old hints at most once per prune interval, not at every publish (#6560)", async () => {
 	vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
 	const directory = makeTempDirectory("atomic-intercom-wakeups-");
