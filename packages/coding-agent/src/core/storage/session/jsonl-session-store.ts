@@ -318,6 +318,25 @@ interface FileWindowInput {
 	readonly legacy?: StoredSessionHeader;
 }
 
+interface FirstLineRead {
+	readonly stored: StoredSessionHeader;
+	readonly headerEnd: number;
+	readonly headerWitness: Buffer;
+	readonly headerTerminated: boolean;
+	readonly remainder: Buffer;
+	readonly nextOffset: number;
+}
+
+interface OpenLocated {
+	readonly path: string;
+	readonly handle: FileHandle;
+	readonly owned: boolean;
+	readonly stats: BigIntStats;
+	readonly header: SessionRecordHeader;
+	readonly firstLine: FirstLineRead;
+	readonly state: SessionFileState | undefined;
+}
+
 interface IndexedSession {
 	readonly path: string;
 	readonly header: SessionRecordHeader;
@@ -754,6 +773,7 @@ async function scanEntries(
 	header: boolean,
 	take: (entry: SessionEntry, start: number, end: number, toolCalls: number) => boolean | Promise<boolean>,
 	legacy?: StoredSessionHeader,
+	reportTorn = true,
 ): Promise<{ readonly size: number; readonly terminated: boolean; readonly torn: boolean } | undefined> {
 	let invalidStructure: { readonly error: unknown } | undefined;
 	let invalidText: { readonly error: unknown } | undefined;
@@ -879,11 +899,12 @@ async function scanEntries(
 	if (nulTailAt !== undefined) {
 		await settle();
 		if (stopped) return undefined;
-		reportTornLine(path);
+		if (reportTorn) reportTornLine(path);
 		if (invalidStructure) throw invalidStructure.error;
 		if (invalidText) throw invalidText.error;
 		return { size: nulTailAt, terminated: true, torn: true };
 	}
+	if (end !== undefined && position < end) throw new Error(`Session file ended before byte ${end}`);
 	const terminated = lineStart === position;
 	const torn =
 		!terminated &&
@@ -892,7 +913,7 @@ async function scanEntries(
 			!(projector ? await longLine(projector.finish(), position, false) : await shortLine(position, false)));
 	await settle();
 	if (stopped) return undefined;
-	if (torn) reportTornLine(path);
+	if (torn && reportTorn) reportTornLine(path);
 	if (invalidStructure) throw invalidStructure.error;
 	if (invalidText) throw invalidText.error;
 	return { size: torn ? lineStart : position, terminated: torn || terminated, torn };
@@ -1595,7 +1616,7 @@ export class JsonlSessionStore implements SessionStore {
 				}
 				await this.forgetIndex(path);
 				await this.closeKept(path);
-				await rename(temporary, path);
+				await renameOver(temporary, path);
 				await syncDirectory(dirname(path));
 				const headerStamp = JSON.stringify(header);
 				const stats = await this.remember(path, {
@@ -1622,7 +1643,7 @@ export class JsonlSessionStore implements SessionStore {
 		try {
 			// Synced before it is renamed over the session, and the rename synced before the write is acknowledged.
 			await writeSynced(temporary, payload);
-			await rename(temporary, path);
+			await renameOver(temporary, path);
 			await syncDirectory(dirname(path));
 		} finally {
 			await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
@@ -1634,11 +1655,50 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	load(sessionId: string): Promise<SessionSnapshot> {
-		return this.run(async () => {
-			const located = await this.locate(sessionId);
-			if (!located) throw new SessionNotFoundError(sessionId);
-			return this.readPersisted(located.path, located.stored);
-		});
+		return this.run(
+			() =>
+				this.readUnlocked(
+					sessionId,
+					async ({ path, handle, stats, header, firstLine }) => {
+						const { entries, witness, terminated, torn, size } = await this.readEntriesFrom(
+							handle,
+							Number(stats.size),
+							firstLine,
+						);
+						validateSessionEntryStructure(entries, path);
+						validateSessionEntries(entries);
+						const headerStamp = JSON.stringify(header);
+						bindChatEpoch(header, fileEpochOf(stats, headerStamp));
+						return {
+							value: { header, entries, lastSeq: entries.length },
+							commit: async () => {
+								if (torn) reportTornLine(path);
+								await this.remember(
+									path,
+									{
+										headerStamp,
+										headerId: header.id,
+										lastSeq: entries.length,
+										lastEntryId: entries.at(-1)?.id,
+										witness,
+										terminated,
+										torn,
+										summaryState: applySessionSummaryEntries(undefined, entries).state,
+									},
+									torn ? size : undefined,
+									stats,
+								);
+							},
+						};
+					},
+					async () => {
+						const located = await this.locate(sessionId);
+						if (!located) throw new SessionNotFoundError(sessionId);
+						return this.readPersisted(located.path, located.stored);
+					},
+				),
+			false,
+		);
 	}
 
 	readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
@@ -1863,17 +1923,40 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
-		return this.run(async () => {
-			const { path, header, jsonl } = await this.indexed(sessionId);
-			const start = Math.max(1, fromSeq);
-			const read = await this.entriesAt(path, jsonl, [
-				...stateSeqsBefore(jsonl.index, start),
-				...seqRange(start, jsonl.index.seq),
-			]);
-			const state = read.filter((held) => held.seq < start);
-			const tail = read.filter((held) => held.seq >= start).map((held) => held.entry);
-			return sessionTailFrom(jsonl.index, header, start, state, tail);
-		});
+		return this.run(
+			() =>
+				this.readUnlocked(
+					sessionId,
+					async ({ path, handle, stats, header }) => {
+						const { jsonl, needsPersist } = await this.indexFor(path, header, stats, { handle, persist: false });
+						const start = Math.max(1, fromSeq);
+						const read = await this.entriesAt(
+							path,
+							jsonl,
+							[...stateSeqsBefore(jsonl.index, start), ...seqRange(start, jsonl.index.seq)],
+							{ handle },
+						);
+						const state = read.filter((held) => held.seq < start);
+						const tail = read.filter((held) => held.seq >= start).map((held) => held.entry);
+						return {
+							value: sessionTailFrom(jsonl.index, header, start, state, tail),
+							commit: () => this.commitIndexed(path, header, stats, jsonl, needsPersist),
+						};
+					},
+					async () => {
+						const { path, header, jsonl } = await this.indexed(sessionId);
+						const start = Math.max(1, fromSeq);
+						const read = await this.entriesAt(path, jsonl, [
+							...stateSeqsBefore(jsonl.index, start),
+							...seqRange(start, jsonl.index.seq),
+						]);
+						const state = read.filter((held) => held.seq < start);
+						const tail = read.filter((held) => held.seq >= start).map((held) => held.entry);
+						return sessionTailFrom(jsonl.index, header, start, state, tail);
+					},
+				),
+			false,
+		);
 	}
 
 	readChildDisplayCut(sessionId: string, launch: ChildDisplayLaunch) {
@@ -1930,22 +2013,48 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	readRange(sessionId: string, startSeq: number, endSeq: number, expectedEpoch?: string): Promise<SessionEntryRange> {
-		return this.run(async () => {
-			const { path, jsonl } = await this.indexed(sessionId);
-			if (expectedEpoch !== undefined && expectedEpoch !== jsonl.index.epoch)
-				throw new SessionConflictError(sessionId, endSeq, jsonl.index.seq);
-			const start = Math.max(1, startSeq);
-			const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq));
-			const read = await this.entriesAt(path, jsonl, seqs);
-			return {
-				startSeq: start,
-				entries: read.map((held) => held.entry),
-				lastSeq: jsonl.index.seq,
-				epoch: jsonl.index.epoch,
-				seqs,
-				lastEntryId: jsonl.index.lastId,
-			};
-		});
+		return this.run(
+			() =>
+				this.readUnlocked(
+					sessionId,
+					async ({ path, handle, stats, header }) => {
+						const { jsonl, needsPersist } = await this.indexFor(path, header, stats, { handle, persist: false });
+						if (expectedEpoch !== undefined && expectedEpoch !== jsonl.index.epoch)
+							throw new SessionConflictError(sessionId, endSeq, jsonl.index.seq);
+						const start = Math.max(1, startSeq);
+						const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq));
+						const read = await this.entriesAt(path, jsonl, seqs, { handle });
+						return {
+							value: {
+								startSeq: start,
+								entries: read.map((held) => held.entry),
+								lastSeq: jsonl.index.seq,
+								epoch: jsonl.index.epoch,
+								seqs,
+								lastEntryId: jsonl.index.lastId,
+							},
+							commit: () => this.commitIndexed(path, header, stats, jsonl, needsPersist),
+						};
+					},
+					async () => {
+						const { path, jsonl } = await this.indexed(sessionId);
+						if (expectedEpoch !== undefined && expectedEpoch !== jsonl.index.epoch)
+							throw new SessionConflictError(sessionId, endSeq, jsonl.index.seq);
+						const start = Math.max(1, startSeq);
+						const seqs = seqRange(start, Math.min(endSeq, jsonl.index.seq));
+						const read = await this.entriesAt(path, jsonl, seqs);
+						return {
+							startSeq: start,
+							entries: read.map((held) => held.entry),
+							lastSeq: jsonl.index.seq,
+							epoch: jsonl.index.epoch,
+							seqs,
+							lastEntryId: jsonl.index.lastId,
+						};
+					},
+				),
+			false,
+		);
 	}
 
 	findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
@@ -2185,33 +2294,76 @@ export class JsonlSessionStore implements SessionStore {
 	readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		return this.run(async () => {
 			if (leafId !== undefined) validateSessionText("entry.id", leafId);
-			const { path, header, jsonl } = await this.indexed(sessionId);
-			const leafSeq =
-				leafId === undefined ? jsonl.index.leafSeq : ((await this.seqInFile(path, jsonl, leafId)) ?? 0);
-			const index =
-				leafSeq === jsonl.index.leafSeq
-					? jsonl.index
-					: await selectResumeLeaf(
-							jsonl.index,
-							leafSeq,
-							branchStatePages(jsonl.index.seq, {
-								bytes: (seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
-								read: (seqs) => this.entriesAt(path, jsonl, seqs),
-								chunk: (seq, offset, length) => readBytes(path, spanStart(jsonl, seq) + offset, length),
-							}),
-						);
-			const result = await this.windowFromIndex(path, header, jsonl, index, undefined, options?.deferChildRecords);
-			if (leafSeq !== jsonl.index.leafSeq) {
-				const stats = await stat(path, { bigint: true });
-				if (
-					`${stats.dev}:${stats.ino}` !== jsonl.identity ||
-					String(stats.mtimeNs) !== jsonl.mtimeNs ||
-					Number(stats.size) !== jsonl.fileSize
-				)
-					throw new SessionConflictError(sessionId, index.seq, index.seq);
-			}
-			return result;
-		});
+			return this.readUnlocked(
+				sessionId,
+				async ({ path, handle, stats, header }) => {
+					const { jsonl, needsPersist } = await this.indexFor(path, header, stats, { handle, persist: false });
+					const leafSeq =
+						leafId === undefined
+							? jsonl.index.leafSeq
+							: ((await this.seqInFile(path, jsonl, leafId, handle)) ?? 0);
+					const index =
+						leafSeq === jsonl.index.leafSeq
+							? jsonl.index
+							: await selectResumeLeaf(
+									jsonl.index,
+									leafSeq,
+									branchStatePages(jsonl.index.seq, {
+										bytes: (seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+										read: (seqs) => this.entriesAt(path, jsonl, seqs, { handle }),
+										chunk: (seq, offset, length) => readFrom(handle, spanStart(jsonl, seq) + offset, length),
+									}),
+								);
+					const result = await this.windowFromIndex(
+						path,
+						header,
+						jsonl,
+						index,
+						{ handle },
+						options?.deferChildRecords,
+					);
+					return {
+						value: result,
+						commit: () => this.commitIndexed(path, header, stats, jsonl, needsPersist),
+					};
+				},
+				async () => {
+					const { path, header, jsonl } = await this.indexed(sessionId);
+					const leafSeq =
+						leafId === undefined ? jsonl.index.leafSeq : ((await this.seqInFile(path, jsonl, leafId)) ?? 0);
+					const index =
+						leafSeq === jsonl.index.leafSeq
+							? jsonl.index
+							: await selectResumeLeaf(
+									jsonl.index,
+									leafSeq,
+									branchStatePages(jsonl.index.seq, {
+										bytes: (seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
+										read: (seqs) => this.entriesAt(path, jsonl, seqs),
+										chunk: (seq, offset, length) => readBytes(path, spanStart(jsonl, seq) + offset, length),
+									}),
+								);
+					const result = await this.windowFromIndex(
+						path,
+						header,
+						jsonl,
+						index,
+						undefined,
+						options?.deferChildRecords,
+					);
+					if (leafSeq !== jsonl.index.leafSeq) {
+						const stats = await stat(path, { bigint: true });
+						if (
+							`${stats.dev}:${stats.ino}` !== jsonl.identity ||
+							String(stats.mtimeNs) !== jsonl.mtimeNs ||
+							Number(stats.size) !== jsonl.fileSize
+						)
+							throw new SessionConflictError(sessionId, index.seq, index.seq);
+					}
+					return result;
+				},
+			);
+		}, false);
 	}
 
 	private async windowFromIndex(
@@ -2254,7 +2406,7 @@ export class JsonlSessionStore implements SessionStore {
 				throw new SessionFormatVersionError(located.path, located.stored.version);
 		}
 		const { path, header, stats } = located;
-		const jsonl = await this.indexFor(path, header, stats);
+		const { jsonl } = await this.indexFor(path, header, stats);
 		// Indexing reads the file and writes none of it: the stat taken to find it is still the file's.
 		const prior = this.fileStates.get(path);
 		await this.remember(
@@ -2277,7 +2429,58 @@ export class JsonlSessionStore implements SessionStore {
 		return { path, header, jsonl };
 	}
 
-	private async indexFor(path: string, header: SessionRecordHeader, stats: BigIntStats): Promise<JsonlIndex> {
+	private async commitIndexed(
+		path: string,
+		header: SessionRecordHeader,
+		stats: BigIntStats,
+		jsonl: JsonlIndex,
+		needsPersist: boolean,
+	): Promise<void> {
+		if (jsonl.torn) reportTornLine(path);
+		this.indexes.set(path, jsonl);
+		const prior = this.fileStates.get(path);
+		await this.remember(
+			path,
+			{
+				headerStamp: jsonl.headerStamp,
+				headerId: header.id,
+				lastSeq: jsonl.index.seq,
+				lastEntryId: jsonl.index.lastId ?? undefined,
+				witness: jsonl.witness,
+				terminated: jsonl.terminated,
+				torn: jsonl.torn,
+				...(prior?.summaryState !== undefined && prior.stamp === this.stamp(stats)
+					? { summaryState: prior.summaryState }
+					: {}),
+			},
+			jsonl.torn ? jsonl.size : undefined,
+			stats,
+		);
+		if (needsPersist) await this.persistSidecarUnderLock(path, jsonl, stats);
+	}
+
+	private async persistSidecarUnderLock(path: string, jsonl: JsonlIndex, stats: BigIntStats): Promise<void> {
+		const expected = this.stamp(stats);
+		await this.exclusive(async () => {
+			const current = await stat(path, { bigint: true }).catch(() => undefined);
+			if (current !== undefined && this.stamp(current) === expected) {
+				const kept = this.keptFor(path, jsonl.identity);
+				await this.keepIndex(path, jsonl, {
+					synced: jsonl.synced,
+					handle: kept,
+					writable: kept !== undefined,
+				});
+			}
+		});
+	}
+
+	private async indexFor(
+		path: string,
+		header: SessionRecordHeader,
+		stats: BigIntStats,
+		options?: { readonly handle?: FileHandle; readonly persist?: boolean },
+	): Promise<{ readonly jsonl: JsonlIndex; readonly needsPersist: boolean }> {
+		const persist = options?.persist !== false;
 		const identity = `${stats.dev}:${stats.ino}`;
 		const headerStamp = JSON.stringify(header);
 		const epoch = fileEpochOf(stats, headerStamp);
@@ -2300,32 +2503,53 @@ export class JsonlSessionStore implements SessionStore {
 			cached.index.epoch === epoch
 		) {
 			const fileSize = Number(stats.size);
-			const kept = this.keptFor(path, identity);
-			const checkCached = () => (fromDisk ? integrityHolds(path, cached!, kept) : witnessHolds(path, cached!, kept));
+			const handle = options?.handle ?? this.keptFor(path, identity);
+			const writable = options?.handle === undefined && handle !== undefined;
+			const checkCached = () =>
+				fromDisk ? integrityHolds(path, cached!, handle) : witnessHolds(path, cached!, handle);
 			if (cached.fileSize === fileSize && cached.mtimeNs === String(stats.mtimeNs) && (await checkCached())) {
-				if (older)
-					return this.keepIndex(path, cached, {
-						synced: cached.synced,
-						handle: kept,
-						writable: kept !== undefined,
-					});
-				this.indexes.set(path, cached);
-				return cached;
+				if (older) {
+					if (!persist) return { jsonl: cached, needsPersist: true };
+					return {
+						jsonl: await this.keepIndex(path, cached, {
+							synced: cached.synced,
+							handle,
+							writable,
+						}),
+						needsPersist: false,
+					};
+				}
+				if (persist) this.indexes.set(path, cached);
+				return { jsonl: cached, needsPersist: false };
 			}
 			if (fileSize > cached.size && (await checkCached())) {
-				const grown = await this.catchUp(path, cached, stats, kept);
-				if (grown !== undefined) return this.keepIndex(path, grown, { handle: kept, writable: kept !== undefined });
+				const grown = await this.catchUp(path, cached, stats, handle, persist);
+				if (grown !== undefined) {
+					if (!persist) return { jsonl: grown, needsPersist: true };
+					return { jsonl: await this.keepIndex(path, grown, { handle, writable }), needsPersist: false };
+				}
 			}
+		}
+		if (!persist) {
+			const built = await this.buildIndex(
+				path,
+				headerStamp,
+				stats,
+				options?.handle ? { handle: options.handle } : undefined,
+				undefined,
+				false,
+			);
+			return { jsonl: built, needsPersist: true };
 		}
 		const kept = this.keptFor(path, identity);
 		if (kept !== undefined) {
 			const built = await this.buildIndex(path, headerStamp, stats, { handle: kept });
-			return this.keepIndex(path, built, { handle: kept, writable: true });
+			return { jsonl: await this.keepIndex(path, built, { handle: kept, writable: true }), needsPersist: false };
 		}
 		const handle = await open(path, "r");
 		try {
 			const built = await this.buildIndex(path, headerStamp, stats, { handle });
-			return await this.keepIndex(path, built, { handle });
+			return { jsonl: await this.keepIndex(path, built, { handle }), needsPersist: false };
 		} finally {
 			await handle.close();
 		}
@@ -2382,22 +2606,24 @@ export class JsonlSessionStore implements SessionStore {
 		stats: BigIntStats,
 		input?: FileWindowInput,
 		folded?: { readonly topology: FoldedFile; readonly branch: boolean },
+		reportTorn = true,
 	): Promise<JsonlIndex> {
 		const identity = `${stats.dev}:${stats.ino}`;
 		if (input === undefined) {
 			// One handle reads the file for the fold and its witness: the kept one when there is one.
 			const kept = this.keptFor(path, identity);
-			if (kept !== undefined) return this.buildIndex(path, headerStamp, stats, { handle: kept }, folded);
+			if (kept !== undefined) return this.buildIndex(path, headerStamp, stats, { handle: kept }, folded, reportTorn);
 			const handle = await open(path, "r");
 			try {
-				return await this.buildIndex(path, headerStamp, stats, { handle }, folded);
+				return await this.buildIndex(path, headerStamp, stats, { handle }, folded, reportTorn);
 			} finally {
 				await handle.close();
 			}
 		}
 		const birthtimeNs = String(stats.birthtimeNs);
 		const epoch = fileEpochOf(stats, headerStamp);
-		const topology = folded?.topology ?? (await this.foldFile(path, epoch, () => true, input));
+		const end = reportTorn ? undefined : Number(stats.size);
+		const topology = folded?.topology ?? (await this.foldFile(path, epoch, () => true, input, end, reportTorn));
 		const ranges =
 			folded?.branch === false || topology.index.jumps.length === 0
 				? undefined
@@ -2405,7 +2631,14 @@ export class JsonlSessionStore implements SessionStore {
 		const active =
 			ranges === undefined
 				? topology
-				: await this.foldFile(path, epoch, (seq) => ranges.some(([low, high]) => seq >= low && seq <= high), input);
+				: await this.foldFile(
+						path,
+						epoch,
+						(seq) => ranges.some(([low, high]) => seq >= low && seq <= high),
+						input,
+						end,
+						reportTorn,
+					);
 		const integrity = await captureIntegrity(input.handle, active.size, active.spans);
 		return {
 			identity,
@@ -2431,6 +2664,8 @@ export class JsonlSessionStore implements SessionStore {
 		epoch: string,
 		activeSeq: (seq: number) => boolean,
 		pinned?: FileWindowInput,
+		end?: number,
+		reportTorn = true,
 	): Promise<FoldedFile> {
 		let index: SessionResumeIndex = { ...foldSessionResume(undefined, [], undefined, activeSeq), epoch };
 		const spans: number[] = [];
@@ -2457,10 +2692,10 @@ export class JsonlSessionStore implements SessionStore {
 			batchBytes = 0;
 			extraToolCalls = 0;
 		};
-		const take = (entry: SessionEntry, start: number, end: number, toolCalls: number) => {
-			const bytes = end - start;
+		const take = (entry: SessionEntry, start: number, stop: number, toolCalls: number) => {
+			const bytes = stop - start;
 			if (batch.length && batchBytes + bytes > SCAN_WINDOW_BYTES) flush();
-			spans.push(start, end);
+			spans.push(start, stop);
 			hashes.push(idHash(entry.id));
 			ids.set(entry.id, spans.length / 2);
 			batch.push(entry);
@@ -2471,7 +2706,7 @@ export class JsonlSessionStore implements SessionStore {
 		};
 		const file = pinned?.handle ?? (await open(path, "r"));
 		try {
-			const scanned = (await scanEntries(path, file, 0, undefined, true, take, pinned?.legacy))!;
+			const scanned = (await scanEntries(path, file, 0, end, true, take, pinned?.legacy, reportTorn))!;
 			flush();
 			return { index, spans, ids: hashes, fork: fork(), ...scanned };
 		} finally {
@@ -2484,9 +2719,11 @@ export class JsonlSessionStore implements SessionStore {
 		cached: JsonlIndex,
 		stats: BigIntStats,
 		kept: FileHandle | undefined,
+		reportTorn = true,
 	): Promise<JsonlIndex | undefined> {
 		const from = cached.size - cached.witness.length;
-		if (Number(stats.size) - from > SCAN_WINDOW_BYTES) return this.streamCatchUp(path, cached, stats, kept);
+		if (Number(stats.size) - from > SCAN_WINDOW_BYTES)
+			return this.streamCatchUp(path, cached, stats, kept, reportTorn);
 		const bytes = await readBytes(path, from, Number(stats.size) - from, kept);
 		let offset = cached.size;
 		let appended = bytes.subarray(cached.witness.length);
@@ -2503,7 +2740,7 @@ export class JsonlSessionStore implements SessionStore {
 			const rawLine = appended.subarray(start, newline);
 			if (hasNulByte(rawLine)) {
 				stoppedAtNul = true;
-				reportTornLine(path);
+				if (reportTorn) reportTornLine(path);
 				break;
 			}
 			const text = rawLine.toString("utf8");
@@ -2527,14 +2764,14 @@ export class JsonlSessionStore implements SessionStore {
 					terminated = false;
 				} else {
 					torn = true;
-					reportTornLine(path);
+					if (reportTorn) reportTornLine(path);
 				}
 			}
 		}
 		validateSessionEntryStructure(entries, path);
 		validateSessionEntries(entries);
 		if (resumeIndexNeedsRefold(cached.index, entries)) return undefined;
-		const index = await this.foldAppended(path, cached, entries);
+		const index = await this.foldAppended(path, cached, entries, kept);
 		const witness = witnessOf(bytes.subarray(0, size - from));
 		let prefixHash: string | undefined;
 		let headWitness = cached.headWitness;
@@ -2594,6 +2831,7 @@ export class JsonlSessionStore implements SessionStore {
 		cached: JsonlIndex,
 		stats: BigIntStats,
 		kept?: FileHandle,
+		reportTorn = true,
 	): Promise<JsonlIndex | undefined> {
 		const file = kept ?? (await open(path, "r"));
 		try {
@@ -2640,7 +2878,7 @@ export class JsonlSessionStore implements SessionStore {
 					? flush().then(() => true)
 					: true;
 			};
-			const scanned = await scanEntries(path, file, start, Number(stats.size), false, take);
+			const scanned = await scanEntries(path, file, start, Number(stats.size), false, take, undefined, reportTorn);
 			if (!scanned) return undefined;
 			await flush();
 			const headWitness =
@@ -2680,10 +2918,11 @@ export class JsonlSessionStore implements SessionStore {
 		path: string,
 		cached: JsonlIndex,
 		entries: readonly SessionEntry[],
+		pinned?: FileHandle,
 	): Promise<SessionResumeIndex> {
 		const seqs = new Map<string, number>();
 		for (const id of foreignResumeIds(cached.index, entries)) {
-			const seq = await this.seqInFile(path, cached, id);
+			const seq = await this.seqInFile(path, cached, id, pinned);
 			if (seq !== undefined) seqs.set(id, seq);
 		}
 		return foldSessionResume(cached.index, entries, (id) => seqs.get(id));
@@ -3417,6 +3656,261 @@ export class JsonlSessionStore implements SessionStore {
 		return { entries, witness: witnessAfter(witness, lastBytes), terminated: false, torn: false, size };
 	}
 
+	private async isDirectoryLockPresent(directory = this.directory): Promise<boolean> {
+		const lockfilePath = join(directory, ".session.lock");
+		if (this.lockFs) {
+			return new Promise((resolve) => {
+				this.lockFs!.stat(lockfilePath, (error) => {
+					resolve((error as NodeJS.ErrnoException | null)?.code !== "ENOENT");
+				});
+			});
+		}
+		try {
+			await stat(lockfilePath);
+			return true;
+		} catch (cause) {
+			return (cause as NodeJS.ErrnoException).code !== "ENOENT";
+		}
+	}
+
+	/**
+	 * Checks that no writer held the lock and the file at `path` still matches `before`.
+	 * The lock check must run strictly before `stat(path)`: checking `stat(path)` first could match an
+	 * unsynced write right before a failed sync rolls it back and releases the lock.
+	 */
+	private async unlockedReadValid(path: string, before: BigIntStats): Promise<boolean> {
+		if (await this.isDirectoryLockPresent()) return false;
+		const after = await stat(path, { bigint: true }).catch(() => undefined);
+		return after !== undefined && this.stamp(after) === this.stamp(before);
+	}
+
+	private async readUnlocked<T>(
+		sessionId: string,
+		readOpen: (located: OpenLocated) => Promise<{
+			readonly value: T;
+			readonly commit: () => Promise<void>;
+		}>,
+		locked: () => Promise<T>,
+	): Promise<T> {
+		const found = await this.locateOpen(sessionId);
+		if (found.kind !== "found") return this.exclusive(locked);
+		const { located } = found;
+		let outcome: { readonly value: T; readonly commit: () => Promise<void> } | undefined;
+		let caught: { readonly error: unknown } | undefined;
+		let valid = false;
+		try {
+			try {
+				outcome = await readOpen(located);
+			} catch (error) {
+				caught = { error };
+			}
+			valid = await this.unlockedReadValid(located.path, located.stats);
+		} finally {
+			if (located.owned) await located.handle.close();
+		}
+		if (!valid) return this.exclusive(locked);
+		if (caught !== undefined) throw caught.error;
+		await outcome!.commit();
+		return outcome!.value;
+	}
+
+	private async openCandidate(
+		sessionId: string,
+		path: string,
+		firstReadBytes: number,
+		mode: "selected" | "known" | "scan",
+	): Promise<
+		| { readonly kind: "found"; readonly located: OpenLocated }
+		| { readonly kind: "legacy" }
+		| { readonly kind: "retry" }
+		| { readonly kind: "skip" }
+	> {
+		let handle: FileHandle;
+		try {
+			handle = await open(path, "r");
+		} catch {
+			return mode === "scan" ? { kind: "skip" } : { kind: "retry" };
+		}
+		let release = true;
+		try {
+			const stats = await handle.stat({ bigint: true });
+			let firstLine: FirstLineRead;
+			try {
+				firstLine = await readFirstLineWithTailFrom(handle, firstReadBytes, Number(stats.size));
+			} catch (cause) {
+				if (mode === "known") return { kind: "retry" };
+				const ownedBySession =
+					mode === "selected" || basename(path).match(/_([0-9a-f]{64})\.jsonl$/)?.[1] === this.key(sessionId);
+				if (!ownedBySession) return { kind: "skip" };
+				if (await this.unlockedReadValid(path, stats)) throw cause;
+				return { kind: "retry" };
+			}
+			const { stored } = firstLine;
+			if (stored.id !== sessionId) return mode === "scan" ? { kind: "skip" } : { kind: "retry" };
+			if (!isCurrentSessionHeader(stored)) return { kind: "legacy" };
+			let header: SessionRecordHeader;
+			try {
+				header = await this.readHeaderAt(path, stored);
+			} catch (cause) {
+				if (mode === "known") return { kind: "retry" };
+				if (await this.unlockedReadValid(path, stats)) throw cause;
+				return { kind: "retry" };
+			}
+			release = false;
+			return {
+				kind: "found",
+				located: {
+					path,
+					handle,
+					owned: true,
+					stats,
+					header,
+					firstLine,
+					state: this.fileStates.get(path),
+				},
+			};
+		} finally {
+			if (release) await handle.close();
+		}
+	}
+
+	private async locateOpen(
+		sessionId: string,
+	): Promise<{ readonly kind: "found"; readonly located: OpenLocated } | { readonly kind: "retry" }> {
+		validateSessionText("sessionId", sessionId);
+		if (this.selectedFile?.id === sessionId) {
+			const hit = await this.openCandidate(sessionId, this.selectedFile.path, HEADER_READ_CHUNK_BYTES, "selected");
+			return hit.kind === "found" ? hit : { kind: "retry" };
+		}
+		for (const [path, cached] of this.fileStates) {
+			if (cached.headerId !== sessionId) continue;
+			const parent = dirname(path);
+			if (parent !== this.directory && (this.exactDirectory || dirname(parent) !== this.directory))
+				return { kind: "retry" };
+			const kept = this.keptFiles.get(path);
+			if (kept !== undefined) {
+				let stats: BigIntStats;
+				try {
+					stats = await kept.handle.stat({ bigint: true });
+				} catch {
+					return { kind: "retry" };
+				}
+				let firstLine: FirstLineRead;
+				try {
+					firstLine = await readFirstLineWithTailFrom(
+						kept.handle,
+						headerLineBytes(cached.headerStamp),
+						Number(stats.size),
+					);
+				} catch {
+					return { kind: "retry" };
+				}
+				const { stored } = firstLine;
+				if (stored.id !== sessionId || !isCurrentSessionHeader(stored)) return { kind: "retry" };
+				let header: SessionRecordHeader;
+				try {
+					header = await this.readHeaderAt(path, stored);
+				} catch {
+					return { kind: "retry" };
+				}
+				this.armIdle(path, kept);
+				return {
+					kind: "found",
+					located: {
+						path,
+						handle: kept.handle,
+						owned: false,
+						stats,
+						header,
+						firstLine,
+						state: cached,
+					},
+				};
+			}
+			const hit = await this.openCandidate(sessionId, path, headerLineBytes(cached.headerStamp), "known");
+			return hit.kind === "found" ? hit : { kind: "retry" };
+		}
+		let paths: string[];
+		try {
+			paths = await this.paths();
+		} catch {
+			return { kind: "retry" };
+		}
+		const suffix = `_${this.key(sessionId)}.jsonl`;
+		const named = paths.filter((path) => basename(path).endsWith(suffix));
+		const others = paths.filter((path) => !named.includes(path));
+		for (const path of [...named, ...others]) {
+			const hit = await this.openCandidate(sessionId, path, HEADER_READ_CHUNK_BYTES, "scan");
+			if (hit.kind === "found") return hit;
+			if (hit.kind === "legacy" || hit.kind === "retry") return { kind: "retry" };
+		}
+		return { kind: "retry" };
+	}
+
+	private async readEntriesFrom(
+		file: FileHandle,
+		fileSize: number,
+		header: FirstLineRead,
+	): Promise<{
+		entries: SessionEntry[];
+		witness: Buffer;
+		terminated: boolean;
+		torn: boolean;
+		size: number;
+	}> {
+		let size = header.headerEnd;
+		let lineStart = header.headerEnd;
+		let witness = header.headerWitness;
+		const entries: SessionEntry[] = [];
+		let parts: Buffer[] = [];
+		let stoppedAtNul = false;
+		const consume = (bytes: Buffer): void => {
+			if (bytes.length === 0 || stoppedAtNul) return;
+			let start = 0;
+			for (let newline = bytes.indexOf(10); newline !== -1; newline = bytes.indexOf(10, start)) {
+				parts.push(bytes.subarray(start, newline));
+				const lineBytes = parts.length === 1 ? parts[0]! : Buffer.concat(parts);
+				parts = [];
+				const lineEnd = size + newline + 1;
+				if (hasNulByte(lineBytes)) {
+					stoppedAtNul = true;
+					return;
+				}
+				const text = lineBytes.toString(
+					"utf8",
+					0,
+					lineBytes.at(-1) === 0x0d ? lineBytes.length - 1 : lineBytes.length,
+				);
+				if (text.trim()) entries.push(JSON.parse(text) as SessionEntry);
+				witness = witnessAfter(witnessAfter(witness, lineBytes), NEWLINE);
+				lineStart = lineEnd;
+				start = newline + 1;
+			}
+			if (start < bytes.length) parts.push(Buffer.from(bytes.subarray(start)));
+			size += bytes.length;
+		};
+		consume(header.remainder);
+		let position = header.nextOffset;
+		while (position < fileSize && !stoppedAtNul) {
+			const length = Math.min(SCAN_WINDOW_BYTES, fileSize - position);
+			const buffer = Buffer.allocUnsafe(length);
+			const { bytesRead } = await file.read(buffer, 0, length, position);
+			if (bytesRead === 0) throw new Error(`Session file ended before byte ${fileSize}`);
+			consume(buffer.subarray(0, bytesRead));
+			position += bytesRead;
+		}
+		if (stoppedAtNul) return { entries, witness, terminated: true, torn: true, size: lineStart };
+		if (parts.length === 0)
+			return { entries, witness, terminated: header.headerTerminated || size > header.headerEnd, torn: false, size };
+		const lastBytes = parts.length === 1 ? parts[0]! : Buffer.concat(parts);
+		if (hasNulByte(lastBytes)) return { entries, witness, terminated: true, torn: true, size: lineStart };
+		const last = lastBytes.toString("utf8", 0, lastBytes.at(-1) === 0x0d ? lastBytes.length - 1 : lastBytes.length);
+		const entry = parseUnterminated(last);
+		if (!entry) return { entries, witness, terminated: true, torn: true, size: lineStart };
+		entries.push(entry);
+		return { entries, witness: witnessAfter(witness, lastBytes), terminated: false, torn: false, size };
+	}
+
 	private stamp(stats: BigIntStats): string {
 		return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
 	}
@@ -3449,10 +3943,13 @@ export class JsonlSessionStore implements SessionStore {
 		stats?: BigIntStats,
 	): Promise<BigIntStats> {
 		stats ??= await stat(path, { bigint: true });
+		const identity = `${stats.dev}:${stats.ino}`;
+		const kept = this.keptFiles.get(path);
+		if (kept !== undefined && kept.identity !== identity) await this.closeKept(path);
 		this.keepFileState(path, {
 			...state,
 			stamp: this.stamp(stats),
-			identity: `${stats.dev}:${stats.ino}`,
+			identity,
 			size: size ?? Number(stats.size),
 		});
 		return stats;
@@ -3654,6 +4151,24 @@ async function writeAll(file: FileHandle, bytes: Buffer): Promise<void> {
 	}
 }
 
+/**
+ * Renames `from` over `to`. On Windows, an unlocked reader that holds `to` open for a moment causes `rename` to fail
+ * with `EPERM`, `EBUSY` or `EACCES`, so retry with short backoff until the reader closes its handle.
+ */
+async function renameOver(from: string, to: string): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await rename(from, to);
+			return;
+		} catch (cause) {
+			const code = (cause as NodeJS.ErrnoException).code ?? "";
+			if (process.platform !== "win32" || !TRANSIENT_RELEASE_CODES.has(code) || attempt >= LOCK_BACKOFF_MS.length)
+				throw cause;
+			await delay(LOCK_BACKOFF_MS[attempt]);
+		}
+	}
+}
+
 /** Writes `payload` to a new file at `path` and syncs it, before the caller links or renames it into place. */
 async function writeSynced(path: string, payload: Buffer): Promise<void> {
 	const handle = await open(path, "wx");
@@ -3673,6 +4188,44 @@ async function makeDirectory(path: string): Promise<void> {
 		await syncDirectory(dirname(directory));
 		if (directory === made || dirname(directory) === directory) return;
 	}
+}
+
+async function readFirstLineWithTailFrom(
+	file: FileHandle,
+	firstReadBytes: number,
+	maxBytes: number,
+): Promise<FirstLineRead> {
+	const chunks: Buffer[] = [];
+	let position = 0;
+	let headerWitness: Buffer = Buffer.alloc(0);
+	let headerEnd = 0;
+	let headerTerminated = false;
+	let remainder: Buffer = Buffer.alloc(0);
+	for (let length = firstReadBytes; position < maxBytes; length = HEADER_READ_CHUNK_BYTES) {
+		const toRead = Math.min(length, maxBytes - position);
+		const buffer = Buffer.allocUnsafe(toRead);
+		const { bytesRead } = await file.read(buffer, 0, toRead, position);
+		if (!bytesRead) throw new Error(`Session file ended before byte ${maxBytes}`);
+		const slice = buffer.subarray(0, bytesRead);
+		const newline = slice.indexOf(10);
+		if (newline !== -1) {
+			chunks.push(slice.subarray(0, newline));
+			headerWitness = witnessAfter(headerWitness, slice.subarray(0, newline + 1));
+			headerEnd = position + newline + 1;
+			headerTerminated = true;
+			remainder = slice.subarray(newline + 1);
+			position += bytesRead;
+			break;
+		}
+		chunks.push(slice);
+		headerWitness = witnessAfter(headerWitness, slice);
+		position += bytesRead;
+		headerEnd = position;
+	}
+	const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonValue;
+	const stored =
+		value !== null && typeof value === "object" && !Array.isArray(value) ? (value as StoredSessionHeader) : {};
+	return { stored, headerEnd, headerWitness, headerTerminated, remainder, nextOffset: position };
 }
 
 async function readFirstLineFrom(
