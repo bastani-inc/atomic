@@ -12,7 +12,6 @@ import { applyStorageMigrations, ensureStorageSchema, withShortSchemaLockWaits }
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
 import { schemaCatalogOf } from "../schema-catalog.js";
 import { type RunSequence, sequenceRunner } from "../statement-sequence.js";
-import { sessionWriteTransaction } from "./session-transactions.js";
 import type {
 	SessionSearchCoverage,
 	SessionSearchExtendOptions,
@@ -752,7 +751,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		if (Number(row.format) === format && indexedSeq <= lastSeq && generation.startsWith("g:")) {
 			return withCoverageMeta({ indexedSeq, lastSeq }, generation, row.session_revision);
 		}
-		await this.database.transaction((tx) => this.forget(tx, sessionId), this.sessionWrite(sessionId));
+		await this.database.transaction((tx) => this.forget(tx, sessionId), this.searchWrite(sessionId));
 		return withCoverageMeta({ indexedSeq: 0, lastSeq }, newGeneration(), row.session_revision);
 	}
 
@@ -766,7 +765,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	): Promise<boolean> {
 		if (throughSeq >= SEQ_SPACE || throughSeq < afterSeq) return false;
 		options?.signal?.throwIfAborted();
-		const txOptions = this.sessionWrite(sessionId);
+		const txOptions = this.searchWrite(sessionId);
 		const { docs, oversizedSeqs } = prepareDocs(texts);
 		const totalChars = docs.reduce((sum, doc) => sum + doc.text.length, 0);
 		if (totalChars <= BATCH_CHARS) {
@@ -953,11 +952,30 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	}
 
 	/**
-	 * A write of the session `sessionId`'s index rows: the session's own domain, which the session store's writers take,
-	 * since `replace` and `delete` forget a session's index in their own transactions.
+	 * A write of the session `sessionId`'s index rows, in the domain of that session's index rather than the session's
+	 * own: saves to the session, which take the session's domain, run beside it. A rewrite of the session, which forgets
+	 * its index, takes this domain too ({@link writeLock}), so an index write commits wholly before the rewrite reads
+	 * the index or starts after it commits, and its checks then see the rewrite. `delete` holds the whole database.
 	 */
-	private sessionWrite(sessionId: string): SqliteTransactionOptions {
-		return sessionWriteTransaction(this.sessionTables.sessions, sessionId);
+	private searchWrite(sessionId: string): SqliteTransactionOptions {
+		return { retryTransientFailures: true, concurrency: { kind: "serial", domain: this.searchDomain(sessionId) } };
+	}
+
+	private searchDomain(sessionId: string): string {
+		return `${this.tables.state}:${sessionId}`;
+	}
+
+	/**
+	 * On PostgreSQL, the statement that takes, inside a transaction of the session's own domain, the advisory lock index
+	 * writes of the session `sessionId` hold ({@link searchWrite}), keyed as the driver keys a domain's lock. A rewrite
+	 * runs it before it touches the index. Undefined where transactions do not run beside each other.
+	 */
+	writeLock(sessionId: string): SqliteStatement | undefined {
+		if (this.dialect.name !== "postgres") return undefined;
+		return {
+			sql: "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(CASE WHEN current_schema() = 'public' THEN '' ELSE current_schema() || ':' END || ?, 0)) IS NULL AS locked",
+			params: [this.searchDomain(sessionId)],
+		};
 	}
 
 	private async writeTransaction<T>(sessionId: string, body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
@@ -968,7 +986,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 				prepared = true;
 			}
 			return body(tx);
-		}, this.sessionWrite(sessionId));
+		}, this.searchWrite(sessionId));
 		if (prepared) this.writesPrepared = true;
 		return result;
 	}
