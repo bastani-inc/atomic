@@ -1090,6 +1090,8 @@ async function createSnapshotIndexTables(
 	t: SnapshotIndexTables,
 	prefix: string,
 	dialect: StorageDialect,
+	/** Statements that run with the tables' own, in the same request: such as a ledger record of what they create. */
+	after: readonly string[] = [],
 ): Promise<void> {
 	const { int, text, blob } = dialect.types;
 	const strict = dialect.tableOptions;
@@ -1123,6 +1125,7 @@ async function createSnapshotIndexTables(
 		CREATE TABLE IF NOT EXISTS ${t.collection} (id ${int} PRIMARY KEY CHECK (id = 1), claimed_at ${int}, holder ${text}, finished_at ${int}, deleted ${int}, error_code ${text})${strict};
 		INSERT INTO ${t.collection} (id) VALUES (1) ON CONFLICT DO NOTHING;
 		CREATE TABLE IF NOT EXISTS ${t.sources} (source ${text} PRIMARY KEY, watermark ${int} NOT NULL, backfilled_through ${int} NOT NULL)${keyed};
+		${after.map((statement) => `${statement};`).join("\n")}
 	`,
 			chunkTableDefinition(t.blobChunks, dialect),
 		],
@@ -1169,6 +1172,12 @@ function sessionLinksLeafIndex(t: SnapshotIndexTables, dialect: StorageDialect):
 	return dialect.name === "postgres"
 		? `CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_anchored ON ${t.sessionLinks} (session_id, anchor_seq) WHERE anchor_seq IS NOT NULL`
 		: `CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL`;
+}
+
+/** The ledger record of {@link hotSessionLinks}, for a database whose links table this transaction created with it. */
+function hotSessionLinksRecord(prefix: string, dialect: StorageDialect): string {
+	const { ledger, domain, revision } = sessionLinksHotSchema(prefix);
+	return `INSERT INTO ${ledger} (domain, version, applied_at) VALUES ('schema:${domain}', ${revision}, ${dialect.nowMs}) ON CONFLICT DO NOTHING`;
 }
 
 /**
@@ -1612,10 +1621,20 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					{
 						version: 1,
 						up: async (transaction, dialect) => {
-							await createSnapshotIndexTables(transaction, t, prefix, dialect);
-							if (dialect.name !== "postgres") return;
-							await hotSessionLinks(transaction, t, prefix, dialect);
-							linksHot = true;
+							// On PostgreSQL the tables come with the links index of {@link hotSessionLinks}, without one an
+							// earlier build made, recorded in the ledger in the same request: a new database takes no extra
+							// round trip for it.
+							const hot = dialect.name === "postgres";
+							await createSnapshotIndexTables(
+								transaction,
+								t,
+								prefix,
+								dialect,
+								hot
+									? [`DROP INDEX IF EXISTS ${t.sessionLinks}_leaves`, hotSessionLinksRecord(prefix, dialect)]
+									: [],
+							);
+							linksHot = hot;
 						},
 					},
 					// Where a ledger records the steps, it records the index triggers too, installed under the migration lock.
