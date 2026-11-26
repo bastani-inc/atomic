@@ -2392,6 +2392,22 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		assert.ok(turnBlockedMs(turn, [{ start: 5, end: 25 }], 0.001) <= TURN_LIMIT_MS);
 	});
 
+	it("charges a turn that waits off the CPU none of the work done before it (#6614)", () => {
+		const waiting = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+		const charged: number[] = [];
+		for (let trial = 0; trial < 60; trial++) {
+			busyFor(1.5);
+			const before = cpuMs();
+			Atomics.wait(waiting, 0, 0, 6);
+			charged.push(cpuMs() - before);
+		}
+		charged.sort((a, b) => a - b);
+		const median = charged[Math.floor(charged.length / 2)]!;
+		// Linux adds a running thread's CPU time to its own clock only at a tick or a switch, so that clock read alone
+		// charged the wait for the work before it: a median 0.35 ms in a Linux container, up to a whole tick.
+		assert.ok(median < 0.15, `6 ms off the CPU was charged a median ${median.toFixed(3)} ms of CPU time`);
+	});
+
 	it("does not charge a clock step to a turn with no measured CPU time (#5624)", () => {
 		const windowsTick = 15.625;
 		for (const wall of [12, 200]) assert.equal(turnBlockedMs({ start: 0, end: wall, cpu: 0 }, [], windowsTick), 0);
