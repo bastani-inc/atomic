@@ -57,3 +57,53 @@ export async function observeRowsAndFailures(database: SqliteDatabase): Promise<
 		failures,
 	};
 }
+
+/**
+ * Rows and failures a read-only transaction gives back when its calls are named as its leading reads: the reads that
+ * answer, a read of a missing table, a parameter SQLite cannot bind, and a read made after them that is not one of
+ * them. A database on a thread of its own sends the leading reads with its `BEGIN` (#6560); one in memory runs each
+ * call as it is made. Both must give back the same.
+ */
+export async function observeLeadingReads(database: SqliteDatabase): Promise<unknown> {
+	await database.exec("CREATE TABLE leads (n, blob, text)");
+	await database.run("INSERT INTO leads VALUES (?, ?, ?)", 2n ** 60n, new Uint8Array([0, 1, 255]), "text \u{1F600}");
+	await database.run("INSERT INTO leads VALUES (?, ?, ?)", 7, new Uint8Array(0), "");
+	const all = "SELECT n, blob, typeof(blob) AS kind, text, 1 AS __proto__ FROM leads ORDER BY rowid";
+	const one = "SELECT text FROM leads WHERE n = ?";
+	const leading = [
+		{ sql: all, params: [] },
+		{ sql: one, params: [7] },
+		{ sql: "SELECT * FROM absent", params: [] },
+		{ sql: "SELECT ?", params: [2n ** 80n] },
+		{ sql: one, params: [2n ** 60n] },
+	];
+	return database.transaction(
+		async (tx) => {
+			const settle = (read: Promise<unknown>) =>
+				read.then(
+					(value) => ({ value }),
+					(error: unknown) => {
+						assert.ok(error instanceof Error);
+						return {
+							outer: error.constructor,
+							message: error.message.replace(database.descriptor.location, "<location>"),
+							cause: shapeOf(error.cause),
+						};
+					},
+				);
+			const rows = await tx.all(all);
+			const first = await tx.get(one, 7);
+			const failures = [await settle(tx.all("SELECT * FROM absent")), await settle(tx.get("SELECT ?", 2n ** 80n))];
+			const after = await tx.get(one, 2n ** 60n);
+			const unled = await tx.all("SELECT count(*) AS n FROM leads");
+			return {
+				rows: rows.map((row) => ({ row, prototype: Object.getPrototypeOf(row) === Object.prototype })),
+				first,
+				failures,
+				after,
+				unled,
+			};
+		},
+		{ readOnly: true, leading },
+	);
+}
