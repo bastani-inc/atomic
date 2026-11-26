@@ -21,6 +21,8 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
  * appends also syncs its lines once before it is acknowledged; on macOS the native plain fsync runs outside libuv.
  */
 const LOCK_REQUESTS = 3;
+/** An unlocked read checks that `.session.lock` is absent and re-stats the file path after reading (#6719). */
+const UNLOCKED_CHECK_REQUESTS = 2;
 /** Windows closes a session file's handle once its appends are written, so each append opens and closes it again. */
 const KEEPS_HANDLES = process.platform !== "win32";
 /** Native plain fsync on macOS runs on the addon's worker thread rather than libuv's FSREQPROMISE pool. */
@@ -108,7 +110,7 @@ describe("JSONL session store file-system requests (#6560)", () => {
 		}
 	});
 
-	it("reads an indexed session's tail with the lock, a stat, and its header, end and tail through the kept handle", async () => {
+	it("reads an indexed session's tail unlocked with fstat, header, end, tail and the two post-read checks (#6719)", async () => {
 		const { store, base } = await seeded();
 		try {
 			await store.append("seed", [message("first", base.at(-1)!.id)], { expectSeq: 40 });
@@ -118,8 +120,32 @@ describe("JSONL session store file-system requests (#6560)", () => {
 				result.entries.map((entry) => entry.id),
 				["e35", "e36", "e37", "e38", "e39", "first"],
 			);
-			if (KEEPS_HANDLES) assert.equal(requests, LOCK_REQUESTS + 4);
-			else assert.ok(requests <= LOCK_REQUESTS + 8, `${requests} requests`);
+			if (KEEPS_HANDLES) assert.equal(requests, UNLOCKED_CHECK_REQUESTS + 4);
+			else assert.ok(requests <= UNLOCKED_CHECK_REQUESTS + 6, `${requests} requests`);
+		} finally {
+			await store.close();
+		}
+	});
+
+	it("reads load, readRange and readResume unlocked with one fewer request than taking the lock (#6719)", async () => {
+		const { store, base } = await seeded();
+		try {
+			await store.append("seed", [message("first", base.at(-1)!.id)], { expectSeq: 40 });
+			await store.readResume("seed");
+			const loaded = await countFsRequests(() => store.load("seed"));
+			assert.equal(loaded.result.lastSeq, 41);
+			if (KEEPS_HANDLES) assert.equal(loaded.requests, UNLOCKED_CHECK_REQUESTS + 3);
+			else assert.ok(loaded.requests <= UNLOCKED_CHECK_REQUESTS + 5, `${loaded.requests} requests`);
+
+			const ranged = await countFsRequests(() => store.readRange("seed", 36, 41));
+			assert.equal(ranged.result.entries.length, 6);
+			if (KEEPS_HANDLES) assert.equal(ranged.requests, UNLOCKED_CHECK_REQUESTS + 4);
+			else assert.ok(ranged.requests <= UNLOCKED_CHECK_REQUESTS + 6, `${ranged.requests} requests`);
+
+			const resumed = await countFsRequests(() => store.readResume("seed"));
+			assert.equal(resumed.result.lastSeq, 41);
+			if (KEEPS_HANDLES) assert.equal(resumed.requests, UNLOCKED_CHECK_REQUESTS + 4);
+			else assert.ok(resumed.requests <= UNLOCKED_CHECK_REQUESTS + 6, `${resumed.requests} requests`);
 		} finally {
 			await store.close();
 		}
