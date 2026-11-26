@@ -1309,12 +1309,13 @@ async function installMissingSources(
 	prefix: string,
 	dialect: StorageDialect,
 	reset?: SessionIndexReset,
+	forkSegments?: string,
 ): Promise<void> {
 	for (const { source, installed, deferred } of await readSourceStates(
 		transaction,
 		dialect,
 		t,
-		indexSources(prefix, t, dialect),
+		indexSources(prefix, t, dialect, forkSegments),
 	)) {
 		if (!installed && !deferred) await installSource(transaction, dialect, t, source, reset);
 	}
@@ -1566,8 +1567,16 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 						? [
 								{
 									version: 2,
-									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
-										installMissingSources(transaction, t, prefix, dialect),
+									// With shared-history forks on, their links trigger too, so the open installs no source later.
+									up: async (transaction: SqliteExecutor, dialect: StorageDialect) =>
+										installMissingSources(
+											transaction,
+											t,
+											prefix,
+											dialect,
+											undefined,
+											(await shared) ? segments : undefined,
+										),
 								},
 								// The pins of partly restored worktrees (#4922); SQLite adds them in step 1, which runs every time.
 								{
