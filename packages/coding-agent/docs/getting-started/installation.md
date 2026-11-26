@@ -28,6 +28,7 @@ Package-manager installs need Node.js 24 LTS, version 24.20.0 or newer. The [rel
 
 - **Why 24.20.0:** Node.js releases before 24.15.0 bundle a SQLite version with a bug that can corrupt Atomic's session database ([SQLite WAL-reset bug](https://www.sqlite.org/wal.html#walresetbug)). Node.js 24.17.0 through 24.19.0 reject valid certificates for IPv6 addresses such as an `https://[::1]` proxy ([nodejs/node#64145](https://github.com/nodejs/node/pull/64145)); 24.20.0 fixes both.
 - **Check your version:** Run `node --version`. It must print `v24.20.0` or a later `v24` release, or a newer major version.
+- **On an older Node.js,** `atomic` stops at startup with `Atomic needs Node.js 24.20.0 or newer, but this is Node.js <version>.` and a link to this section.
 - **Upgrade:** Install the current Node.js 24 LTS release from [nodejs.org](https://nodejs.org/en/download), or with a version manager: `nvm install 24`, `fnm install 24`, or `mise use -g node@24`. Then reinstall Atomic with `npm install -g @bastani/atomic` so it runs on the new Node.js.
 
 ### Package manager troubleshooting
