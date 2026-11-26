@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Forking a session that still holds leftover attachment chunk rows from an older Atomic version no longer copies those rows into the fork or fails with `Missing chunk of session entry`. The fork copies only the chunks each entry uses, as it did before 0.10.11-alpha.1 ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- Forking a session that still holds leftover attachment chunk rows from an older Atomic version no longer copies those rows into the fork or fails with `Missing chunk of session entry`. The fork copies only the chunks each entry uses, as it did before 0.10.11-alpha.1 ([#6560](https://github.com/bastani-inc/atomic/issues/6560), [#6611](https://github.com/bastani-inc/atomic/pull/6611)).
 
 ## [0.10.11-alpha.1] - 2026-11-25
 
