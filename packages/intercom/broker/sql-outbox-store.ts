@@ -43,6 +43,15 @@ const UNDELIVERED = "state IN ('queued', 'claimed')";
  */
 const SEND_ROOM = "atomic.intercom_send_room";
 const SEND_FORGET = "atomic.intercom_send_forget";
+/**
+ * The settings a one-round-trip send to a recipient its sender found offline records, for the statements after the row's
+ * insert: the broker holding the recipient's live presence, read with the insert, the row's sequence and recipient, and whether the
+ * hint log took the send's lock without waiting, so its wake-up hint was written.
+ */
+const SEND_WAKE = "atomic.intercom_send_wake";
+const SEND_WAKE_VERSION = "atomic.intercom_send_wake_version";
+const SEND_WAKE_TARGET = "atomic.intercom_send_wake_target";
+const SEND_HINT = "atomic.intercom_send_hint";
 /** The setting a PostgreSQL claim transaction records in that its recipient has undelivered rows, and its locks are held. */
 const CLAIM_GATE = "atomic.intercom_outbox_claim";
 /** The most `markDelivered` calls one transaction settles together (#6560). */
@@ -127,21 +136,15 @@ export interface SqlOutboxStore extends OutboxStore {
 	 */
 	enqueueLeading(request: OutboxEnqueueRequest): readonly SqliteStatement[];
 	/**
-	 * PostgreSQL: a send that reserves its message with `reservation` and queues its row as `enqueueIn` does under its
-	 * guard, with every decision made by the database, so the transaction is one round trip and holds its recipient's
-	 * lock domain for no round trip at all: `leading` are its statements, to send with its start and its commit
-	 * (`leadingOnly`), and `answer` makes them on the transaction's handle and reads the outcome. Undefined for a request
-	 * that writes a wake-up hint or that `enqueueIn` refuses, which take `enqueueIn`'s way.
+	 * PostgreSQL: `enqueue`, and with `reservation` a send that reserves its message with it as `enqueueIn` does under
+	 * its guard, in one transaction of the recipient's domain whose every decision the database makes, so it is one round
+	 * trip and holds the recipient's lock domain for no round trip at all, a wake-up hint for an offline recipient's host
+	 * included. Undefined for a request that `enqueueIn` refuses, which takes `enqueueIn`'s way.
 	 */
 	enqueueAtOnce?(
 		request: OutboxEnqueueRequest,
-		reservation: OutboxReservation,
-	):
-		| {
-				readonly leading: readonly SqliteStatement[];
-				answer(executor: SqliteExecutor): Promise<OutboxEnqueueResult>;
-		  }
-		| undefined;
+		reservation?: OutboxReservation,
+	): Promise<OutboxEnqueueResult> | undefined;
 }
 
 /**
@@ -184,6 +187,13 @@ export async function withoutFailedWake<T>(
  * rows in the order of their sequence, and a send's checks of that recipient's queue (its size budget) hold until it
  * commits. Sends to other recipients, claims and every write of one row run beside them (#6560). A send that a lock
  * timeout ended runs again before the next send to that recipient this process makes starts (`RETRY_UNAPPLIED`).
+ *
+ * Sends to one recipient deliberately exclude one another, though a send holds the lock only while the database runs its
+ * statements, never across a round trip. Letting them share it (with a claim excluding them instead) would let them run
+ * side by side, but rows would then commit out of sequence order: a broker of an earlier release, which claims without
+ * waiting for sends, could hand a recipient's later message out before an earlier one during a rolling upgrade, and two
+ * sends could both see room for the last message the recipient's queue accepts and exceed its size budget. The time it
+ * would save, a few milliseconds per send, is not worth either.
  */
 export function recipientTransaction(
 	database: SqliteDatabase,
@@ -563,27 +573,32 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 	];
 
 	/**
-	 * PostgreSQL: `reserveAndEnqueue`'s send in five statements that the database decides alone, sent together with the
-	 * transaction's start and commit. The recipient's lock domain, taken with the start, is held while the server runs them
-	 * and never across a round trip to the broker, so sends to one busy recipient wait for each other only that long. Under
-	 * the lock, as `enqueueIn` and the guard decide it across round trips:
+	 * PostgreSQL: a send in statements that the database decides alone, sent together with the transaction's start and
+	 * commit. The recipient's lock domain, taken with the start, is held while the server runs them and never across a
+	 * round trip to the broker, so sends to one busy recipient wait for each other only that long. Under the lock, as
+	 * `enqueueIn` and the guard decide it across round trips:
 	 * 1. `decide` reads the message's row and reservation and the recipient's queue, and records in the transaction whether
 	 *    the queue has room for the row, and whether the send's earlier reservation goes because it has not.
-	 * 2. The reservation is written only while no row of the message with another digest is queued, and either the queue has
-	 *    room or the send's own row is queued already; a reservation of the message already there is left as it is.
-	 * 3. The row is inserted only while the queue has room and the send's digest holds the reservation.
-	 * 4. A reservation the send wrote is deleted again when its row is not queued, and an earlier one when the queue was full.
-	 * 5. The message's row is read, to answer a send whose row was not inserted.
-	 * Each statement sees what every transaction that committed before it wrote, as each of `enqueueIn`'s does.
+	 * 2. With a reservation, it is written only while no row of the message with another digest is queued, and either the
+	 *    queue has room or the send's own row is queued already; a reservation of the message already there is left as it is.
+	 * 3. The row is inserted only while the queue has room and the send's digest holds the reservation. For a recipient its
+	 *    sender found offline (`wakeHostWithinMs`), the insert also reads, and locks shared, the recipient's live presence,
+	 *    as `enqueueIn` does, and records the broker holding it.
+	 * 4. With such a broker, a block locks the hint log without waiting and writes the hint, naming the broker and the row's
+	 *    sequence, and records that it did: a hint log another session holds locked leaves the send without its hint, as
+	 *    in `enqueueIn`, and fails nothing.
+	 * 5. A read of whether it did.
+	 * 6. A reservation the send wrote is deleted again when its row is not queued, and an earlier one when the queue was full.
+	 * 7. The message's row is read, to answer a send whose row was not inserted.
+	 * Each statement sees what every transaction that committed before it wrote, as each of `enqueueIn`'s does. The hint's
+	 * notification goes out after the commit, so the transaction ends without waiting for it.
 	 */
-	const enqueueAtOnce = (request: OutboxEnqueueRequest, reservation: OutboxReservation) => {
+	const enqueueAtOnce = (
+		request: OutboxEnqueueRequest,
+		reservation?: OutboxReservation,
+	): Promise<OutboxEnqueueResult> | undefined => {
 		const messageId = request.frame.message.id;
-		if (
-			request.wakeHostWithinMs !== undefined ||
-			request.targetIdentity.length === 0 ||
-			request.originBrokerId.length === 0 ||
-			messageId.length === 0
-		)
+		if (request.targetIdentity.length === 0 || request.originBrokerId.length === 0 || messageId.length === 0)
 			return undefined;
 		const frameJson = JSON.stringify(request.frame);
 		const frameBytes = Buffer.byteLength(frameJson);
@@ -605,6 +620,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 						sql: "CASE WHEN totals.row_count < ? AND totals.byte_count + ? <= ? THEN 1 ELSE 0 END",
 						params: [OUTBOX_TARGET_MAX_ROWS, frameBytes, OUTBOX_TARGET_MAX_BYTES],
 					};
+		const holder = reservation?.holder ?? { sql: "SELECT CAST(NULL AS TEXT)", params: [] };
 		const decide: SqliteStatement = {
 			sql: `SELECT decided.room, decided.queued_digest, decided.reserved_digest,
 				set_config('${SEND_ROOM}', CASE WHEN decided.room = 1 THEN 'room' ELSE 'full' END, true) AS room_gate,
@@ -612,13 +628,13 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 					AND decided.reserved_digest = ? THEN 'earlier' ELSE '' END, true) AS forget_gate
 			FROM (
 				SELECT ${room.sql} AS room, (SELECT digest FROM ${table} WHERE message_id = ?) AS queued_digest,
-					(${reservation.holder.sql}) AS reserved_digest
+					(${holder.sql}) AS reserved_digest
 				FROM ${queuedTotals.sql}
 			) AS decided`,
-			params: [reservation.digest, ...room.params, messageId, ...reservation.holder.params, ...queuedTotals.params],
+			params: [reservation?.digest ?? null, ...room.params, messageId, ...holder.params, ...queuedTotals.params],
 		};
 		const hasRoom = `current_setting('${SEND_ROOM}', true) = 'room'`;
-		const reserve = reservation.reserveWhere(
+		const reserve = reservation?.reserveWhere(
 			{
 				sql: `NOT EXISTS (SELECT 1 FROM ${table} WHERE message_id = ? AND digest <> ?)
 					AND (${hasRoom} OR EXISTS (SELECT 1 FROM ${table} WHERE message_id = ? AND digest = ?))`,
@@ -626,13 +642,27 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			},
 			`set_config('${SEND_FORGET}', 'new', true) AS reserved`,
 		);
+		const held = reservation?.held ?? { sql: "1 = 1", params: [] };
+		const wakes = request.wakeHostWithinMs !== undefined;
+		// #5607: read in this transaction, under the row's insert, as `enqueueIn` reads it: see there.
+		const presence = wakes
+			? {
+					sql: `, set_config('${SEND_WAKE}', COALESCE((
+						SELECT presence.holder_id FROM ${leases} presence
+						WHERE presence.kind = 'presence' AND presence.key = ? AND presence.holder_id IS NOT NULL
+							AND ${greatest("0", `${nowMs} - presence.renewed_at`)} <= ?${lockClause("share")}
+					), ''), true) AS presence_holder, set_config('${SEND_WAKE_VERSION}', CAST(sequence AS TEXT), true) AS hint_version,
+						set_config('${SEND_WAKE_TARGET}', target_identity, true) AS hint_target`,
+					params: [request.targetIdentity, request.wakeHostWithinMs!] as SqliteValue[],
+				}
+			: { sql: "", params: [] as SqliteValue[] };
 		const insert: SqliteStatement = {
 			sql: `INSERT INTO ${table}(message_id, target_identity, origin_broker_id, digest, frame_json, state, queued_at,
 					frame_bytes)
 				SELECT ?, ?, ?, ?, ?, 'queued', ${nowMs}, CAST(? AS ${types.int})
-				WHERE ${hasRoom} AND ${reservation.held.sql}
+				WHERE ${hasRoom} AND ${held.sql}
 				ON CONFLICT(message_id) DO NOTHING
-				RETURNING ${columns}`,
+				RETURNING ${columns}${presence.sql}`,
 			params: [
 				messageId,
 				request.targetIdentity,
@@ -640,42 +670,97 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				request.digest,
 				frameJson,
 				frameBytes,
-				...reservation.held.params,
+				...held.params,
+				...presence.params,
 			],
 		};
-		const forget = reservation.forgetWhere({
+		const woken = `COALESCE(current_setting('${SEND_WAKE}', true), '')`;
+		// Locks the hint log and writes the hint only with such a broker, and never waits behind another session's lock on
+		// the log: such a send goes without its hint (#5607). A hint is a new row, so it needs no lock domain of its own
+		// (#6560): see `fencedPath("intercom-wakeup-hint")`. Even an insert of no row would wait for the log's lock, so the
+		// insert is made in the block, only once the lock is held.
+		const writeHint: SqliteStatement = {
+			sql: `DO $atomic_send$ BEGIN
+				IF ${woken} <> '' THEN
+					LOCK TABLE ${wakeups} IN ROW EXCLUSIVE MODE NOWAIT;
+					INSERT INTO ${wakeups}(broker_id, reason, version, created_at, target_identity)
+						VALUES (${woken}, 'outbox', CAST(current_setting('${SEND_WAKE_VERSION}') AS BIGINT), ${nowMs},
+							current_setting('${SEND_WAKE_TARGET}'));
+					PERFORM set_config('${SEND_HINT}', 'written', true);
+				END IF;
+			EXCEPTION WHEN lock_not_available THEN NULL;
+			END $atomic_send$`,
+			params: [],
+		};
+		const hint: SqliteStatement = {
+			sql: `SELECT ${woken} AS broker_id WHERE COALESCE(current_setting('${SEND_HINT}', true), '') = 'written'`,
+			params: [],
+		};
+		const forget = reservation?.forgetWhere({
 			sql: `current_setting('${SEND_FORGET}', true) = 'earlier' OR (current_setting('${SEND_FORGET}', true) = 'new'
 				AND NOT EXISTS (SELECT 1 FROM ${table} WHERE message_id = ? AND digest = ?))`,
 			params: [messageId, request.digest],
 		});
 		const queued = selectStatement(messageId);
-		const leading = [decide, reserve, insert, forget, queued];
-		return {
-			leading,
-			async answer(executor: SqliteExecutor): Promise<OutboxEnqueueResult> {
-				// In the order of `leading`, each answered with the transaction's start: no call waits for a round trip.
-				const decided = (await executor.get<SqliteRow & { room: SqliteValue; reserved_digest: string | null }>(
-					decide.sql,
-					...decide.params,
-				))!;
-				await executor.all(reserve.sql, ...reserve.params);
-				const row = await executor.get<OutboxRecord>(insert.sql, ...insert.params);
-				await executor.run(forget.sql, ...forget.params);
-				const found = await executor.get<OutboxRecord>(queued.sql, ...queued.params);
-				if (row !== undefined) return { status: "inserted", row: toRow(row) };
-				// Another digest held the message's reservation: the send is refused, as before it wrote anything.
-				if (decided.reserved_digest !== null && decided.reserved_digest !== reservation.digest)
-					return { status: "conflict", messageId };
-				if (found !== undefined)
-					return found.digest === request.digest
-						? { status: "duplicate", row: toRow(found) }
-						: { status: "conflict", messageId };
-				if (Number(decided.room) === 0)
-					return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES };
+		const leading = [
+			decide,
+			...(reserve === undefined ? [] : [reserve]),
+			insert,
+			...(wakes ? [writeHint, hint] : []),
+			...(forget === undefined ? [] : [forget]),
+			queued,
+		];
+		const answer = async (executor: SqliteExecutor): Promise<OutboxEnqueueResult> => {
+			// In the order of `leading`, each answered with the transaction's start: no call waits for a round trip.
+			const decided = (await executor.get<SqliteRow & { room: SqliteValue; reserved_digest: string | null }>(
+				decide.sql,
+				...decide.params,
+			))!;
+			if (reserve !== undefined) await executor.all(reserve.sql, ...reserve.params);
+			const row = await executor.get<OutboxRecord>(insert.sql, ...insert.params);
+			let woke: string | undefined;
+			if (wakes) {
+				// A database that cannot run the block (no PL/pgSQL for this role) writes the send again without its hint.
+				await executor.run(writeHint.sql).catch((cause: unknown) => {
+					throw new OutboxWakeFailedError(cause);
+				});
+				woke = (await executor.get<SqliteRow & { broker_id: string }>(hint.sql, ...hint.params))?.broker_id;
+			}
+			if (forget !== undefined) await executor.run(forget.sql, ...forget.params);
+			const found = await executor.get<OutboxRecord>(queued.sql, ...queued.params);
+			if (row !== undefined)
+				return { status: "inserted", row: toRow(row), ...(woke === undefined ? {} : { woke }) } as const;
+			// Another digest held the message's reservation: the send is refused, as before it wrote anything.
+			if (decided.reserved_digest !== null && decided.reserved_digest !== reservation?.digest)
 				return { status: "conflict", messageId };
-			},
+			if (found !== undefined)
+				return found.digest === request.digest
+					? { status: "duplicate", row: toRow(found) }
+					: { status: "conflict", messageId };
+			if (Number(decided.room) === 0)
+				return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES };
+			return { status: "conflict", messageId };
 		};
+		return database
+			.transaction(answer, {
+				...recipientTransaction(database, options.prefix, request.targetIdentity),
+				leading,
+				leadingOnly: true,
+			})
+			.then((result) => {
+				// Notified once the hint committed, on the host's own channel (and the shared one only for a host of an
+				// earlier release), as the wake-up bus's own hints are, so the host does not wait for its backup poll
+				// (#6560); the hint is there for its poll if a notification is lost.
+				const notifications = database.notifications;
+				if (result.status === "inserted" && result.woke !== undefined && notifications !== undefined)
+					for (const { sql, params } of wakeUpNotices(notifications, wakeups, leases, result.woke))
+						void database.run(sql, ...params).catch(() => {});
+				return result;
+			});
 	};
+
+	const enqueueAtOnceIfPostgres = (request: OutboxEnqueueRequest, reservation?: OutboxReservation) =>
+		dialect === "postgres" ? enqueueAtOnce(request, reservation) : undefined;
 
 	return {
 		enqueueIn,
@@ -686,7 +771,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			if (request.originBrokerId.length === 0) return invalid("empty-broker-id");
 			if (request.frame.message.id.length === 0) return invalid("empty-message-id");
 			return withoutFailedWake(request, (attempt) =>
-				database.transaction((executor) => enqueueIn(executor, attempt), {
+				enqueueAtOnceIfPostgres(attempt) ?? database.transaction((executor) => enqueueIn(executor, attempt), {
 					...recipientTransaction(database, options.prefix, attempt.targetIdentity),
 					leading: enqueueLeading(attempt),
 				}),

@@ -6,6 +6,7 @@ import {
 	type SqliteExecutor,
 	type SqliteRow,
 	type SqliteRunResult,
+	type SqliteStatement,
 	type StorageDialect,
 	storageMigrationTable,
 	validateStoragePrefix,
@@ -378,12 +379,14 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 		fillfactor: LEASE_FILLFACTOR,
 	});
 
-	const holderOf = (executor: SqliteExecutor, key: LeaseKey) =>
-		executor.get<HolderRow>(
-			`SELECT holder_id, fencing_token, last_token, ${leaseAge} AS age_ms FROM ${table} WHERE kind = ? AND key = ?`,
-			key.kind,
-			keyId(key),
-		);
+	const holderStatement = (key: LeaseKey): SqliteStatement => ({
+		sql: `SELECT holder_id, fencing_token, last_token, ${leaseAge} AS age_ms FROM ${table} WHERE kind = ? AND key = ?`,
+		params: [key.kind, keyId(key)],
+	});
+	const holderOf = (executor: SqliteExecutor, key: LeaseKey) => {
+		const { sql, params } = holderStatement(key);
+		return executor.get<HolderRow>(sql, ...params);
+	};
 	const stale = (row: HolderRow | undefined) =>
 		row?.holder_id === null || row?.holder_id === undefined
 			? ({ status: "stale" } as const)
@@ -490,12 +493,11 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 			// acquisition therefore waits, once it committed, for every send to that recipient under way, holding the
 			// recipient's lock domain for an instant: the registration's first outbox scan, which follows, then finds
 			// their rows; a later send reads the live presence and wakes its holder (#6560).
-			const taking = database.transaction(async (tx) => {
-				// One guarded statement takes the lease: a new key, or a row that is free, stale or already this
-				// holder's; a steal gets the key's next token, a re-acquisition keeps its own. Renewals run beside it,
-				// so the decision is never made on an earlier read (#6560).
-				const taken = await tx.get<SqliteRow & { fencing_token: number | bigint }>(
-					`${nextOrder.with}INSERT INTO ${table}(kind, key, holder_id, fencing_token, last_token, subject_json,
+			// One guarded statement takes the lease: a new key, or a row that is free, stale or already this holder's; a
+			// steal gets the key's next token, a re-acquisition keeps its own. Renewals run beside it, so the decision is
+			// never made on an earlier read (#6560).
+			const take: SqliteStatement = {
+				sql: `${nextOrder.with}INSERT INTO ${table}(kind, key, holder_id, fencing_token, last_token, subject_json,
 						renewed_at, first_acquired_order)
 					VALUES (?, ?, ?, 1, 1, ?, ${nowMs}, ${nextOrder.value})
 					ON CONFLICT(kind, key) DO UPDATE SET
@@ -504,23 +506,26 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 						holder_id = excluded.holder_id, subject_json = excluded.subject_json, renewed_at = excluded.renewed_at
 					WHERE ${table}.holder_id IS NULL OR ${mine} OR ${rowAge} > ?
 					RETURNING fencing_token`,
-					key.kind,
-					keyId(key),
-					holderId,
-					stored,
-					staleAfterMs,
-				);
-				if (taken !== undefined) {
-					return {
-						status: "acquired",
-						lease: { key, holderId, fencingToken: Number(taken.fencing_token) },
-					} as const;
-				}
-				// Held by another live holder. PostgreSQL locks the row whose guard failed until this transaction
-				// ends, so this reads the holder that refused it.
-				const row = (await holderOf(tx, key))!;
-				return { status: "held", holderId: row.holder_id!, fencingToken: Number(row.fencing_token) } as const;
-			}, fenced);
+				params: [key.kind, keyId(key), holderId, stored, staleAfterMs],
+			};
+			// Held by another live holder: PostgreSQL locks the row whose guard failed until the transaction ends, so this
+			// read, which follows the statement, finds the holder that refused it. The statement and the read go with the
+			// transaction's start and its commit, in one round trip, on a pipelined connection.
+			const holder = holderStatement(key);
+			const taking = database.transaction(
+				async (tx) => {
+					const taken = await tx.get<SqliteRow & { fencing_token: number | bigint }>(take.sql, ...take.params);
+					const row = (await tx.get<HolderRow>(holder.sql, ...holder.params))!;
+					if (taken !== undefined) {
+						return {
+							status: "acquired",
+							lease: { key, holderId, fencingToken: Number(taken.fencing_token) },
+						} as const;
+					}
+					return { status: "held", holderId: row.holder_id!, fencingToken: Number(row.fencing_token) } as const;
+				},
+				{ ...fenced, leading: [take, holder], leadingOnly: true },
+			);
 			const acquired = await holding(taking);
 			// The lock goes with the transaction's start and its commit, in one round trip, so it is held for none.
 			if (acquired.status === "acquired" && subject.kind === "presence" && dialect.name === "postgres")

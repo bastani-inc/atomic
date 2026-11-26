@@ -189,14 +189,16 @@ export async function openIntercomBrokerState(
 				const send = recipientTransaction(database, source.prefix, request.targetIdentity);
 				// PostgreSQL: one round trip, decided by the database, so the recipient's domain is held for no round trip
 				// and sends to a busy recipient do not queue for its lock past the lock timeout.
+				// A send to a recipient its sender found offline too, whose wake-up hint the same round trip writes.
 				const reserved = sentMessages.reservationOf(reservation);
-				const atOnce = reserved === undefined ? undefined : outbox.enqueueAtOnce?.(request, reserved);
-				if (atOnce !== undefined)
-					return database.transaction((tx) => atOnce.answer(tx), {
-						...send,
-						leading: atOnce.leading,
-						leadingOnly: true,
-					});
+				const enqueueAtOnce = outbox.enqueueAtOnce;
+				if (reserved !== undefined && enqueueAtOnce !== undefined) {
+					const first = enqueueAtOnce(request, reserved);
+					if (first !== undefined)
+						return withoutFailedWake(request, (attempt) =>
+							attempt === request ? first : enqueueAtOnce(attempt, reserved)!,
+						);
+				}
 				// The reservation's read and the enqueue's go out with the transaction's start, the reservation's write
 				// and the row's insert together, then the commit, on a pipelined connection: three round trips (#6560).
 				const leading = (attempt: typeof request) => [

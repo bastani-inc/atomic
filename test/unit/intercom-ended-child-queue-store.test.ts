@@ -606,6 +606,44 @@ test("a message whose delete failed, queued again and refused, is still deleted 
 	await database.close();
 });
 
+test("on a database without idle-only maintenance, a failed delete is tried again in the queue's own lock domain, not the whole database's", async () => {
+	const path = join(directory(), "ended-child-queue.sqlite");
+	const database = await openNodeSqliteDatabase(path, { lockWaitMs: 300 });
+	// As on a shared server database, which runs no step only while it is idle.
+	(database as { tryMaintenance?: unknown }).tryMaintenance = undefined;
+	const concurrency: unknown[] = [];
+	let recording = false;
+	const transaction = database.transaction.bind(database);
+	database.transaction = ((callback, options) => {
+		if (recording && options?.readOnly !== true) concurrency.push(options?.concurrency);
+		return transaction(callback, options);
+	}) as typeof database.transaction;
+	const store = await openSqlEndedChildQueueStore(
+		{ database, prefix: "" },
+		{ home: "local", holder: "broker-1", lockWaitMs: 300 },
+	);
+	recording = true;
+	await store.add(entry("m1"));
+	const { DatabaseSync } = await import("node:sqlite");
+	const other = new DatabaseSync(path);
+	other.exec("BEGIN IMMEDIATE");
+	try {
+		await assert.rejects(store.remove(["m1"]));
+	} finally {
+		other.exec("ROLLBACK");
+		other.close();
+	}
+	await vi.waitFor(async () => assert.deepEqual((await store.load()).rows, []), { timeout: 30_000, interval: 100 });
+	await store.close();
+	await database.close();
+	// The message writes, the failed delete and its retry: each in the queue's domain.
+	assert.ok(concurrency.length >= 3, `${concurrency.length} transactions`);
+	assert.deepEqual(
+		[...new Set(concurrency.map((each) => JSON.stringify(each)))],
+		[JSON.stringify({ kind: "serial", domain: "intercom_ended_child_queue" })],
+	);
+});
+
 test("counting what a store kept takes a few statements, however far apart the rows' sequence numbers are", async () => {
 	const path = join(directory(), "ended-child-queue.sqlite");
 	const earlier = await open(path, "broker-1");
