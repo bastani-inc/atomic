@@ -1,5 +1,6 @@
 import type { SqliteExecutor, SqliteRow } from "../storage/database.js";
 import { SESSION_INDEX_RETIRED_PREFIX, type SnapshotIndexTables } from "./blob-store.ts";
+import { forkInheritedBlobGuardName } from "./fork-blob-guard.ts";
 
 /** Old index rows a single cleanup transaction can release. */
 export const SESSION_RESET_BATCH = 1_000;
@@ -149,7 +150,15 @@ export async function detachSessionIndex(
 	let ok = false;
 	try {
 		for (const name of triggers) await tx.exec(`DROP TRIGGER IF EXISTS ${name}`);
+		// The guard of the blobs forks inherit (fork-blob-guard.ts) reads the session records: a rename would carry it to
+		// the retired table. It is dropped for the renames and created again as it was, over the new active tables.
+		const carried = await tx.all<Schema>(
+			"SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE type = 'trigger' AND name = ?",
+			forkInheritedBlobGuardName(t.blobs),
+		);
+		for (const { name } of carried) await tx.exec(`DROP TRIGGER ${name}`);
 		for (const family of TYPES) if (!(await detach(tx, t, family, token))) return false;
+		for (const { sql } of carried) if (sql !== null) await tx.exec(sql);
 		ok = true;
 		return true;
 	} catch (error) {

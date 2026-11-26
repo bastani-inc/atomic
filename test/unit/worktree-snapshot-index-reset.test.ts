@@ -62,6 +62,11 @@ for (const [driver, connect] of Object.entries(files)) {
 				undefined,
 				"the active index is already empty",
 			);
+			// The guard of the blobs forks inherit (#6560) reads the active session records, not the retired ones.
+			const guard = await db.get<{ sql: string }>(
+				"SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = 'snapshot_blobs_fork_keep'",
+			);
+			assert.match(String(guard?.sql), /FROM snapshot_session_records AS record/);
 			const stop = new AbortController();
 			const entry = messageEntry("written while old index rows still exist");
 			class StopAfterBatch extends BackgroundCollectionPace {
