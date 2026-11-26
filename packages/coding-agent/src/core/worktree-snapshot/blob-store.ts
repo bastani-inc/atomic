@@ -21,6 +21,8 @@ import {
 	forkSegmentsTable,
 	forkSessionLink,
 	legacyForkLinksTriggerName,
+	ownDuplicate,
+	ownParentSeq,
 	parentColumns,
 	snapshotEntryCondition,
 } from "./fork-snapshot-index.ts";
@@ -588,6 +590,14 @@ interface IndexSource {
 	 * `backfill`: a row's index depends on its parent's, which a statement over many rows cannot see.
 	 */
 	readonly rowwise?: readonly string[];
+	/** The fork segments table `rowwise` reads, where it links the entries of sessions with segments (#6560). */
+	readonly segments?: string;
+	/**
+	 * Of `rowwise`, what links a row linked already again (#6560): the statement that writes its link, the one that
+	 * writes it over for a session with fork segments, and the one that sets a snapshot entry's previous snapshot, its
+	 * parent's anchor. The children count, the snapshot's records and when a pin began stay.
+	 */
+	readonly relink?: { readonly link: string; readonly fork?: string; readonly refs: string };
 	/** Clears the source's index rows when its triggers are installed again, so no stale row outlives its entry. */
 	readonly reset?: readonly string[];
 	/**
@@ -848,19 +858,20 @@ function indexSources(
 	const parentType = "r.parent_type";
 	const parentId = "r.parent_id";
 	const isSnapshot = snapshotEntryCondition(d, entryRow);
+	// The parent is the first link before the entry with the parent's id, as `forkSessionLink` finds it (#6560).
 	const parentOf = (rows: string) =>
-		`${rows} AS r LEFT JOIN ${t.sessionLinks} AS parent ON parent.session_id = r.session_id AND parent.entry_id = ${parentId} AND ${parentType} = 'text'`;
+		`${rows} AS r LEFT JOIN ${t.sessionLinks} AS parent ON parent.session_id = r.session_id AND parent.seq = ${ownParentSeq(t.sessionLinks)}`;
 	/**
-	 * Indexes one session entry's link in the session tree. `rows` yields that one entry as `r`; its parent was indexed
-	 * before it.
+	 * Indexes one session entry's link in the session tree. `rows` yields that one entry as `r`. Only the links before
+	 * it count: its parent, an earlier entry of the same id, and the entries whose child it is, whose children it adds
+	 * to, once. A row linked again gets the same anchor and broken mark, so a session's rows linked in seq order end
+	 * the same whether a save or the index's rebuild linked them, and whatever links after them were there (#6560).
 	 */
 	const sessionLink = (rows: string) => [
-		`UPDATE ${t.sessionLinks} SET children = children + 1 FROM ${rows} AS r WHERE ${t.sessionLinks}.session_id = r.session_id AND ${t.sessionLinks}.entry_id = ${parentId} AND ${parentType} = 'text' AND NOT EXISTS (SELECT 1 FROM ${t.sessionLinks} AS own WHERE own.session_id = r.session_id AND own.seq = r.seq)`,
-		d.insertOrIgnore(
-			t.sessionLinks,
-			["session_id", "seq", "entry_id", "parent_id", "anchor_seq", "children", "broken"],
-			`SELECT r.session_id, r.seq, r.entry_id, CASE WHEN ${parentType} = 'text' THEN ${parentId} END, CASE WHEN ${isSnapshot} THEN r.seq ELSE parent.anchor_seq END, 0, CASE WHEN EXISTS (SELECT 1 FROM ${t.sessionLinks} AS other WHERE other.session_id = r.session_id AND other.entry_id = r.entry_id AND other.seq <> r.seq) THEN 1 WHEN ${parentType} IS NULL OR ${parentType} = 'null' THEN 0 WHEN ${parentType} = 'text' AND parent.entry_id IS NOT NULL THEN parent.broken ELSE 1 END FROM ${parentOf(rows)}`,
-		),
+		`UPDATE ${t.sessionLinks} SET children = children + 1 FROM ${rows} AS r WHERE ${t.sessionLinks}.session_id = r.session_id AND ${t.sessionLinks}.entry_id = ${parentId} AND ${parentType} = 'text' AND +${t.sessionLinks}.seq < r.seq AND NOT EXISTS (SELECT 1 FROM ${t.sessionLinks} AS own WHERE own.session_id = r.session_id AND own.seq = r.seq)`,
+		`INSERT INTO ${t.sessionLinks} (session_id, seq, entry_id, parent_id, anchor_seq, children, broken)
+			SELECT r.session_id, r.seq, r.entry_id, CASE WHEN ${parentType} = 'text' THEN ${parentId} END, CASE WHEN ${isSnapshot} THEN r.seq ELSE parent.anchor_seq END, 0, CASE WHEN ${ownDuplicate(t.sessionLinks)} THEN 1 WHEN ${parentType} IS NULL OR ${parentType} = 'null' THEN 0 WHEN parent.entry_id IS NOT NULL THEN parent.broken ELSE 1 END FROM ${parentOf(rows)} WHERE true
+			ON CONFLICT (session_id, seq) DO UPDATE SET anchor_seq = excluded.anchor_seq, broken = excluded.broken`,
 	];
 	/** Indexes a snapshot entry's reference and the blobs of its record; any other entry adds nothing. */
 	const sessionRecord = (rows: string) => {
@@ -984,6 +995,13 @@ function indexSources(
 		].map((trigger) => withMarker(trigger, ENTRIES_OWN_PROGRESS)),
 		backfill: [],
 		rowwise: [...sessionLink(storedEntry), ...forkLink(storedEntry), ...sessionRecord(storedEntry)],
+		...(forkSegments === undefined ? {} : { segments: forkSegments }),
+		relink: {
+			link: sessionLink(storedEntry)[1]!,
+			...(forkSegments === undefined ? {} : { fork: forkLink(storedEntry)[0]! }),
+			// The reference's previous snapshot only: when a pin began stays as its first indexing recorded it.
+			refs: `UPDATE ${t.sessionRefs} SET prev_seq = linked.anchor_seq FROM (SELECT r.session_id, r.seq, parent.anchor_seq FROM ${parentOf(storedEntry)} WHERE ${isSnapshot}) AS linked WHERE ${t.sessionRefs}.session_id = linked.session_id AND ${t.sessionRefs}.seq = linked.seq`,
+		},
 		// The triggers that index degraded pins (#4922). Older builds install theirs under the same names (#5065).
 		version: "session-entries@degraded-pins",
 		own: ENTRIES_OWN_PROGRESS,
@@ -1011,6 +1029,250 @@ function indexSources(
 		path: [],
 	});
 	return [eventsSource, runsSource, entriesSource, workSource, rootSource];
+}
+
+/** What {@link relinkSessionEntries} and {@link linkStoredEntry} read and run. */
+interface EntryLinking {
+	readonly dialect: StorageDialect;
+	readonly links: string;
+	readonly entries: string;
+	/** The sessions' fork segments table, where the statements link the entries of sessions with segments. */
+	readonly segments: string | undefined;
+	/** The statements that index one stored entry, bound to its row order: the session entries' `rowwise`. */
+	readonly statements: readonly string[];
+	/** Those that link a row linked already again: the session entries' `relink`. */
+	readonly relink: NonNullable<IndexSource["relink"]>;
+}
+
+/** The session entries' {@link EntryLinking} of `source`, with the dialect and links table it runs on. */
+function entryLinking(source: IndexSource, dialect: StorageDialect, links: string): EntryLinking {
+	return {
+		dialect,
+		links,
+		entries: source.table,
+		segments: source.segments,
+		statements: source.rowwise!,
+		relink: source.relink!,
+	};
+}
+
+/**
+ * Runs `statements` in order, each sent without waiting for the answer to the one before: a database runs a
+ * connection's calls in the order they are made, and a pipelined connection sends them together.
+ */
+async function runInOrder(executor: SqliteExecutor, statements: readonly SqliteStatement[]): Promise<void> {
+	await Promise.all(statements.map(({ sql, params }) => executor.run(sql, ...params)));
+}
+
+/**
+ * Links the rows session `sessionId` stores from seq `fromSeq` on again, in seq order, each behind the rows before it
+ * (#6560), then counts their children again: an entry's children are the rows after it in the session whose parent
+ * has its id. A materialization runs it once it copied rows in below the rows a fork appended, and the index's rebuild
+ * when it meets a row stored before rows below it: both link every row as a save in seq order did.
+ */
+async function relinkSessionEntries(
+	executor: SqliteExecutor,
+	linking: EntryLinking,
+	sessionId: string,
+	fromSeq: number,
+): Promise<void> {
+	const { dialect, links, entries, segments, statements, relink } = linking;
+	const rows = await executor.all<SqliteRow & { id: number; linked: number; snapshot: number }>(
+		`SELECT ${dialect.rowOrder("e")} AS id,
+			CASE WHEN EXISTS (SELECT 1 FROM ${links} AS l WHERE l.session_id = e.session_id AND l.seq = e.seq) THEN 1 ELSE 0 END AS linked,
+			CASE WHEN ${dialect.contains("e.entry_json", `'"worktree_snapshot"'`)} THEN 1 ELSE 0 END AS snapshot
+		FROM ${entries} AS e WHERE e.session_id = ? AND e.seq >= ? ORDER BY e.seq`,
+		sessionId,
+		fromSeq,
+	);
+	const forked =
+		segments !== undefined &&
+		relink.fork !== undefined &&
+		(await executor.get(`SELECT 1 AS found FROM ${segments} WHERE session_id = ? LIMIT 1`, sessionId)) !== undefined;
+	// A row not linked yet gets every statement; one linked already only those that write its link and reference again.
+	const again = (snapshot: boolean) => [
+		relink.link,
+		...(forked ? [relink.fork!] : []),
+		...(snapshot ? [relink.refs] : []),
+	];
+	await runInOrder(
+		executor,
+		rows.flatMap(({ id, linked, snapshot }) =>
+			(Number(linked) === 1 ? again(Number(snapshot) === 1) : statements).map((sql) => ({ sql, params: [id] })),
+		),
+	);
+	const linked = await executor.all<
+		SqliteRow & { seq: number; entry_id: string; parent_id: string | null; children: number }
+	>(
+		`SELECT seq, entry_id, parent_id, children FROM ${links} WHERE session_id = ? AND seq >= ? ORDER BY seq DESC`,
+		sessionId,
+		fromSeq,
+	);
+	const later = new Map<string, number>();
+	const counts: SqliteStatement[] = [];
+	for (const link of linked) {
+		const children = later.get(link.entry_id) ?? 0;
+		if (Number(link.children) !== children)
+			counts.push({
+				sql: `UPDATE ${links} SET children = ? WHERE session_id = ? AND seq = ?`,
+				params: [children, sessionId, Number(link.seq)],
+			});
+		if (link.parent_id !== null) later.set(link.parent_id, (later.get(link.parent_id) ?? 0) + 1);
+	}
+	await runInOrder(executor, counts);
+}
+
+/**
+ * Links, in seq order, every row session `sessionId` stores up to seq `seq` that is not linked yet, behind the rows of
+ * its sources that its segments before `seq` name, which are linked first, the same way. Where the session has a row
+ * linked already after the first row this links, the rows after it are linked again with it (see
+ * {@link relinkSessionEntries}). A session linked this way has every row before a linked row linked, so the link of a
+ * segment's last row tells that its source is linked through it.
+ */
+async function linkThrough(
+	executor: SqliteExecutor,
+	linking: EntryLinking,
+	sessionId: string,
+	seq: number,
+): Promise<void> {
+	const { dialect, links, entries, segments, statements } = linking;
+	const sources = async (through: number) => {
+		if (segments === undefined) return;
+		const pending = await executor.all<SqliteRow & { source_id: string; to_seq: number }>(
+			`SELECT seg.source_id, seg.to_seq FROM ${segments} AS seg WHERE seg.session_id = ? AND seg.base_seq < ? AND NOT EXISTS (SELECT 1 FROM ${links} AS l WHERE l.session_id = seg.source_id AND l.seq = seg.to_seq) ORDER BY seg.base_seq`,
+			sessionId,
+			through,
+		);
+		for (const segment of pending) await linkThrough(executor, linking, segment.source_id, Number(segment.to_seq));
+	};
+	await sources(seq);
+	const first = await executor.get<SqliteRow & { seq: number | null; later: number }>(
+		`SELECT f.seq, CASE WHEN EXISTS (SELECT 1 FROM ${links} AS l WHERE l.session_id = ? AND l.seq > f.seq) THEN 1 ELSE 0 END AS later
+		FROM (SELECT min(e.seq) AS seq FROM ${entries} AS e WHERE e.session_id = ? AND e.seq <= ? AND NOT EXISTS (SELECT 1 FROM ${links} AS l WHERE l.session_id = e.session_id AND l.seq = e.seq)) AS f`,
+		sessionId,
+		sessionId,
+		seq,
+	);
+	if (first?.seq === null || first?.seq === undefined) return;
+	if (Number(first.later) === 1) {
+		// The rows after it were linked before it: they are linked again, behind it.
+		await relinkFrom(executor, linking, sessionId, Number(first.seq));
+		return;
+	}
+	const rows = await executor.all<SqliteRow & { id: number }>(
+		`SELECT ${dialect.rowOrder()} AS id FROM ${entries} WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
+		sessionId,
+		Number(first.seq),
+		seq,
+	);
+	await runInOrder(
+		executor,
+		rows.flatMap(({ id }) => statements.map((sql) => ({ sql, params: [id] }))),
+	);
+}
+
+/**
+ * Links the rows session `sessionId` stores from seq `fromSeq` on again, behind the rows of the sources its segments
+ * name, and then the rows of every session that reads them through a segment and has a row linked after them: such a
+ * row took its parent's link, or its anchor, from the rows linked again (#6560).
+ */
+async function relinkFrom(
+	executor: SqliteExecutor,
+	linking: EntryLinking,
+	sessionId: string,
+	fromSeq: number,
+): Promise<void> {
+	const { links, segments } = linking;
+	if (segments !== undefined) {
+		const pending = await executor.all<SqliteRow & { source_id: string; to_seq: number }>(
+			`SELECT seg.source_id, seg.to_seq FROM ${segments} AS seg WHERE seg.session_id = ? AND NOT EXISTS (SELECT 1 FROM ${links} AS l WHERE l.session_id = seg.source_id AND l.seq = seg.to_seq) ORDER BY seg.base_seq`,
+			sessionId,
+		);
+		for (const segment of pending) await linkThrough(executor, linking, segment.source_id, Number(segment.to_seq));
+	}
+	await relinkSessionEntries(executor, linking, sessionId, fromSeq);
+	if (segments === undefined) return;
+	const readers = await executor.all<SqliteRow & { session_id: string; first: number }>(
+		`SELECT seg.session_id, min(seg.base_seq + 1 + CASE WHEN seg.from_seq < ? THEN ? - seg.from_seq ELSE 0 END) AS first
+		FROM ${segments} AS seg WHERE seg.source_id = ? AND seg.to_seq >= ? GROUP BY seg.session_id ORDER BY seg.session_id`,
+		fromSeq,
+		fromSeq,
+		sessionId,
+		fromSeq,
+	);
+	for (const reader of readers) {
+		const linked = await executor.get(
+			`SELECT 1 AS found FROM ${links} WHERE session_id = ? AND seq >= ? LIMIT 1`,
+			reader.session_id,
+			Number(reader.first),
+		);
+		if (linked !== undefined) await relinkFrom(executor, linking, reader.session_id, Number(reader.first));
+	}
+}
+
+/**
+ * Indexes the stored entry at row order `id`, as the index's backfill meets it. The backfill goes in row order, but a
+ * fork that copied in the rows it read stores them after the entries it appended, and a fork moved onto another
+ * session's copy reads rows stored after its own (#6560): a row with a row before it, of its session or of a source
+ * its segments name, not linked yet, or with a row after it linked already, is linked by {@link linkThrough}, so every
+ * row is linked behind the rows before it in its view, as a save links it.
+ */
+async function linkStoredEntry(executor: SqliteExecutor, linking: EntryLinking, id: number): Promise<void> {
+	const { dialect, links, entries, segments, statements } = linking;
+	const pendingSource =
+		segments === undefined
+			? "0"
+			: `CASE WHEN EXISTS (SELECT 1 FROM ${segments} AS seg WHERE seg.session_id = e.session_id AND seg.base_seq < e.seq AND NOT EXISTS (SELECT 1 FROM ${links} AS l WHERE l.session_id = seg.source_id AND l.seq = seg.to_seq)) THEN 1 ELSE 0 END`;
+	const row = await executor.get<
+		SqliteRow & {
+			session_id: string;
+			seq: number;
+			linked: number;
+			later: number;
+			previous: number | null;
+			linked_before: number | null;
+			pending_source: number;
+		}
+	>(
+		`SELECT e.session_id, e.seq,
+			CASE WHEN EXISTS (SELECT 1 FROM ${links} AS l WHERE l.session_id = e.session_id AND l.seq = e.seq) THEN 1 ELSE 0 END AS linked,
+			CASE WHEN EXISTS (SELECT 1 FROM ${links} AS l WHERE l.session_id = e.session_id AND l.seq > e.seq) THEN 1 ELSE 0 END AS later,
+			(SELECT max(p.seq) FROM ${entries} AS p WHERE p.session_id = e.session_id AND p.seq < e.seq) AS previous,
+			(SELECT max(l.seq) FROM ${links} AS l WHERE l.session_id = e.session_id AND l.seq < e.seq) AS linked_before,
+			${pendingSource} AS pending_source
+		FROM ${entries} AS e WHERE ${dialect.rowOrder("e")} = ?`,
+		id,
+	);
+	const inOrder =
+		row === undefined ||
+		Number(row.linked) === 1 ||
+		(Number(row.later) === 0 &&
+			Number(row.pending_source) === 0 &&
+			(row.previous === null || (row.linked_before !== null && Number(row.linked_before) === Number(row.previous))));
+	if (inOrder) for (const sql of statements) await executor.run(sql, id);
+	else await linkThrough(executor, linking, row.session_id, Number(row.seq));
+}
+
+/**
+ * The relinking of a session's entries for a session store under `prefix` whose fork segments table is
+ * `forkSegments` (#6560): see {@link relinkSessionEntries}. It does nothing until the index's backfill of the session
+ * entries is done, which links the rows in seq order itself.
+ */
+export function sessionEntryRelinker(
+	prefix: string,
+	dialect: StorageDialect,
+	forkSegments: string,
+): (executor: SqliteExecutor, sessionId: string, fromSeq: number) => Promise<void> {
+	const t = snapshotIndexTables(prefix);
+	const source = indexSources(prefix, t, dialect, forkSegments).find((source) => source.name === "session-entries")!;
+	const linking = entryLinking(source, dialect, t.sessionLinks);
+	return async (executor, sessionId, fromSeq) => {
+		const complete = await executor.get<SqliteRow & { done: number | boolean | null }>(
+			`SELECT ${entriesIndexComplete(t.sources)} AS done`,
+		);
+		if (complete?.done === true || Number(complete?.done) === 1)
+			await relinkFrom(executor, linking, sessionId, fromSeq);
+	};
 }
 
 /**
@@ -2072,10 +2334,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					from,
 					upper,
 				);
+				// The session entries are linked in each session's seq order, whatever order their rows are stored in (#6560).
+				const linking =
+					source.name === "session-entries" ? entryLinking(source, this.dialect, t.sessionLinks) : undefined;
 				for (const { id } of rows) {
 					// Stopping between rows rolls the whole batch back, progress included, so the pass stays resumable.
 					signal?.throwIfAborted();
-					for (const sql of source.rowwise) await transaction.run(sql, id);
+					if (linking !== undefined) await linkStoredEntry(transaction, linking, id);
+					else for (const sql of source.rowwise) await transaction.run(sql, id);
 				}
 			}
 			// Indexing rows again behind the source's progress, for this build's own, never moves the progress back.

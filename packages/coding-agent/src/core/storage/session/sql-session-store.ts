@@ -1,5 +1,5 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
-import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
+import { SqlSnapshotBlobStore, sessionEntryRelinker, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import {
 	type ForkLinkWrites,
 	forkLinkWrites,
@@ -756,6 +756,8 @@ export class SqlSessionStore implements SessionStore {
 	private readonly forkTables: SessionForkTables;
 	/** See {@link forkLinks}. */
 	private forkLinkStatements?: ForkLinkWrites;
+	/** See {@link entryRelinker}. */
+	private entryRelink?: ReturnType<typeof sessionEntryRelinker>;
 	/**
 	 * Whether a read of this store found its sessions schema at {@link SESSION_SCHEMA_VERSION_SHARED_HISTORY}: one way,
 	 * as the switch is. A read outside a transaction reads sessions through their views once it is set, and before that
@@ -2110,7 +2112,7 @@ export class SqlSessionStore implements SessionStore {
 			tables: this.tables,
 			forkTables: this.forkTables,
 			blobs: { legacyBlobData: this.legacyBlobData, chunkBytes: SESSION_BLOB_CHUNK_BYTES },
-			materializedLinks: this.forkLinks().materialized,
+			relinkEntries: (tx, sessionId, fromSeq) => this.entryRelinker()(tx, sessionId, fromSeq),
 			transaction: (body) => this.transaction(body, SESSION_TRANSACTION),
 		});
 	}
@@ -2128,6 +2130,12 @@ export class SqlSessionStore implements SessionStore {
 			this.dialect,
 		);
 		return this.forkLinkStatements;
+	}
+
+	/** Links a session's stored rows again in the snapshot index, from a seq on, in seq order (#6560). */
+	private entryRelinker(): ReturnType<typeof sessionEntryRelinker> {
+		this.entryRelink ??= sessionEntryRelinker(this.prefix, this.dialect, this.forkTables.forkSegments);
+		return this.entryRelink;
 	}
 
 	/**
