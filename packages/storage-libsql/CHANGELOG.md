@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- On a libSQL server, single `SELECT` statements made at the same time no longer each open a stream, and possibly a new connection, of their own. The first uses the connection the adapter keeps open, and the others go together in one request on one other stream. Each statement still reads the database as of its own run, and one that fails does not fail the others. With 8 reads at once, the server got 2 requests instead of 8, and the first such burst opened no new connection instead of 5 ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.1] - 2026-11-25
 
 ### Breaking Changes

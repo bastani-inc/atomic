@@ -480,6 +480,13 @@ export interface SessionEntriesQuery {
 	readonly maxChars?: number;
 	readonly largeEntryBytes?: number;
 	readonly skipTypes?: readonly string[];
+	/**
+	 * Only these sequences, in ascending order, between `fromSeq` and `toSeq`: every store returns no other entry, so a
+	 * reader that knows which entries it needs reads them all in one call, not one call each. `history://` searches always
+	 * read this way. `throughSeq` keeps its meaning. A store may end the page sooner than it would for these entries
+	 * alone, and should end it before an entry that would take it past `maxChars`, unless that entry comes first.
+	 */
+	readonly seqs?: readonly number[];
 	readonly signal?: AbortSignal;
 }
 
@@ -487,6 +494,16 @@ export interface SessionEntriesPage {
 	readonly lastSeq: number;
 	readonly entries: readonly SessionEntryAt[];
 	readonly throughSeq: number;
+}
+
+/** `entries` without those `seqs` (`SessionEntriesQuery.seqs`) leaves out: what a store that reads the whole range returns. */
+export function onlySeqs<T extends SessionEntryAt>(
+	entries: readonly T[],
+	seqs: readonly number[] | undefined,
+): readonly T[] {
+	if (seqs === undefined) return entries;
+	const wanted = new Set(seqs);
+	return entries.filter((item) => wanted.has(item.seq));
 }
 
 export interface SessionSearchText {

@@ -705,6 +705,81 @@ class ReusedStream {
 }
 
 /**
+ * Lone reads that find the reused stream busy, sent together (#6560). Each such read used to open a stream of its own,
+ * one request each, so reads made at once opened as many streams, and as many connections, as the client allows. Now
+ * the reads made while one turn of the event loop runs go out in one pipeline request, on one stream of their own that
+ * the same request closes. The server runs a pipeline's requests in turn, each `execute` outside any transaction on
+ * its own, so each read still reads the snapshot of its own statement, as on a stream of its own. A failure of the
+ * request fails each read in it, as it would have failed each request; a read's own failure is its own.
+ */
+class MergedReads {
+	/** @type {{ statement: import("@libsql/hrana-client").Stmt, resolve: (result: import("@bastani/atomic/storage").SqliteDriverResult) => void, reject: (error: unknown) => void }[] | undefined} */
+	pending;
+
+	/**
+	 * @param {typeof import("@libsql/hrana-client")} hrana
+	 * @param {typeof import("@libsql/core/api").LibsqlError} LibsqlError
+	 * @param {() => import("@libsql/hrana-client").Client} client
+	 */
+	constructor(hrana, LibsqlError, client) {
+		this.hrana = hrana;
+		this.LibsqlError = LibsqlError;
+		this.client = client;
+	}
+
+	/**
+	 * Runs `sql`, one `SELECT`, with the other reads made in this turn of the event loop.
+	 * @param {string} sql
+	 * @param {readonly unknown[]} params
+	 * @returns {Promise<import("@bastani/atomic/storage").SqliteDriverResult>}
+	 */
+	execute(sql, params) {
+		const statement = new this.hrana.Stmt(sql);
+		statement.bindIndexes(/** @type {import("@libsql/hrana-client").InValue[]} */ ([...params]));
+		return new Promise((resolve, reject) => {
+			if (this.pending === undefined) {
+				this.pending = [];
+				setImmediate(() => this.send());
+			}
+			this.pending.push({ statement, resolve, reject });
+		});
+	}
+
+	/** Sends the reads made since the last request, in one request on a stream that request also closes. */
+	send() {
+		const reads = this.pending ?? [];
+		this.pending = undefined;
+		/** @param {unknown} error */
+		const mapped = (error) =>
+			error instanceof this.hrana.ClientError
+				? new this.LibsqlError(error.message, hranaCode(this.hrana, error), undefined, undefined, error)
+				: error;
+		/** @type {import("@libsql/hrana-client").Stream} */
+		let stream;
+		try {
+			stream = this.client().openStream();
+		} catch (error) {
+			for (const read of reads) read.reject(mapped(error));
+			return;
+		}
+		try {
+			for (const read of reads)
+				stream.query(read.statement).then(
+					(rows) =>
+						read.resolve({
+							columns: rows.columnNames.map((name) => name ?? ""),
+							rows: /** @type {import("@bastani/atomic/storage").SqliteDriverResult["rows"]} */ (rows.rows),
+							changes: rows.affectedRowCount,
+						}),
+					(error) => read.reject(mapped(error)),
+				);
+		} finally {
+			stream.closeGracefully();
+		}
+	}
+}
+
+/**
  * @template T
  * @param {Promise<T>} promise
  * @returns {Promise<{ ok: true, value: T } | { ok: false, error: unknown }>}
@@ -818,9 +893,18 @@ async function writeBatch(hrana, api, client, batched) {
  *   runs statements in one write transaction, where no other connection can change the schema
  * @param {(separate: readonly string[]) => Promise<StoppedStatement | undefined>} [stepped] runs statements in order
  *   in one request, each committing on its own (`stepBatch`)
+ * @param {() => Promise<MergedReads | undefined>} [merged] what runs a lone read that finds the reused stream busy
  * @returns {import("@bastani/atomic/storage").SqliteDriverExecutor}
  */
-function statements(connection, watch, single = watch, shared = async () => undefined, locked, stepped) {
+function statements(
+	connection,
+	watch,
+	single = watch,
+	shared = async () => undefined,
+	locked,
+	stepped,
+	merged = async () => undefined,
+) {
 	/**
 	 * An `exec` of one statement, which wrote nothing when it fails, as one `execute` did.
 	 * @param {string} sql
@@ -839,7 +923,10 @@ function statements(connection, watch, single = watch, shared = async () => unde
 			single(
 				async () => {
 					const reused = reusable(sql) ? await (await shared())?.execute(sql, params) : undefined;
-					return reused ?? driverResult(await (await connection()).execute({ sql, args: [...params] }));
+					if (reused !== undefined) return reused;
+					// A read that finds the reused stream busy goes with the other reads made meanwhile, not on a stream of its own.
+					const beside = readsOnly(sql) ? await (await merged())?.execute(sql, params) : undefined;
+					return beside ?? driverResult(await (await connection()).execute({ sql, args: [...params] }));
 				},
 				// A write that commits on its own and that the server answered `SQLITE_SCHEMA` runs again in a write
 				// transaction of its own: no other connection changes the schema while the transaction holds the write lock,
@@ -1788,6 +1875,13 @@ function createDriver(url, authToken, added, redact, createClient, protocol, kee
 		const [hrana, , , { LibsqlError }] = protocol;
 		return (reused ??= new ReusedStream(hrana, LibsqlError, remote));
 	};
+	/** @type {MergedReads | undefined} */
+	let merged;
+	const mergedReads = async () => {
+		if (protocol === undefined) return undefined;
+		const [hrana, , , { LibsqlError }] = protocol;
+		return (merged ??= new MergedReads(hrana, LibsqlError, remote));
+	};
 	// A local statement that fails part way, as a write does when another process holds the lock past the busy timeout,
 	// stays active on its connection: the driver resets and finalizes a statement only when it is garbage collected.
 	// Until then that connection commits nothing ("cannot commit transaction - SQL statements in progress"), and a
@@ -1892,8 +1986,8 @@ function createDriver(url, authToken, added, redact, createClient, protocol, kee
 		...(local ? { freeBytes: () => freeBytesOfFile(url) } : {}),
 		// A server transaction's stream sends the statements made while a request is out together, in order.
 		...(local ? {} : { pipelinedTransactions: true }),
-		// A server runs each read-only transaction on a stream of its own, and a lone `SELECT` that finds the reused stream
-		// busy on a stream of its own, so reads overlap while writes keep their turn. A local file's driver runs every call
+		// A server runs each read-only transaction on a stream of its own, and the lone `SELECT`s that find the reused stream
+		// busy together on another (`MergedReads`), so reads overlap while writes keep their turn. A local file's driver runs every call
 		// on the calling thread, so its reads gain nothing from overlapping.
 		...(local ? {} : { concurrentReads: concurrency, readsOnly }),
 		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.
@@ -1908,6 +2002,7 @@ function createDriver(url, authToken, added, redact, createClient, protocol, kee
 			shared,
 			local ? undefined : writeTransaction,
 			protocol === undefined ? undefined : (separate) => stepBatch(protocol[0], protocol[3], remote(), separate),
+			mergedReads,
 		),
 		// One request for the whole batch, in a write transaction. Only its `BEGIN IMMEDIATE` waits for the write lock,
 		// so a batch the busy timeout ended wrote nothing (`lockBusy`). A server's batch counts against this process's

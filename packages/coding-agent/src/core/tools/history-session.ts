@@ -9,6 +9,7 @@ import {
 } from "../storage/session/session-search-index.js";
 import type {
 	SessionEntriesPage,
+	SessionEntriesQuery,
 	SessionEntryAt,
 	SessionSearchIndex,
 	SessionSearchText,
@@ -249,6 +250,8 @@ export function cutTextToUtf8Bytes(text: string, maxBytes: number): string {
 
 interface EntryPager {
 	page(fromSeq: number, toSeq: number, budget: HistoryCallBudget, maxChars?: number): Promise<SessionEntriesPage>;
+	/** The entries at `seqs`, in ascending order, up to a page of them, in one read. */
+	pick(seqs: readonly number[], budget: HistoryCallBudget): Promise<SessionEntriesPage>;
 }
 
 export function entryPager(store: SessionStore, sessionId: string): EntryPager {
@@ -257,18 +260,19 @@ export function entryPager(store: SessionStore, sessionId: string): EntryPager {
 			`history:// cannot read session ${sessionId}: its session store (${store.descriptor.adapter}) does not implement SessionStore.readEntryRange`,
 		);
 	}
+	const read = (query: SessionEntriesQuery, budget: HistoryCallBudget) =>
+		budget.race(
+			store.readEntryRange!(sessionId, {
+				...query,
+				largeEntryBytes: LARGE_ENTRY_BYTES,
+				skipTypes: SKIPPED_TYPES,
+				signal: budget.storeSignal,
+			}),
+		);
 	return {
-		page: (fromSeq, toSeq, budget, maxChars = PAGE_CHARS) =>
-			budget.race(
-				store.readEntryRange!(sessionId, {
-					fromSeq,
-					toSeq,
-					maxChars,
-					largeEntryBytes: LARGE_ENTRY_BYTES,
-					skipTypes: SKIPPED_TYPES,
-					signal: budget.storeSignal,
-				}),
-			),
+		page: (fromSeq, toSeq, budget, maxChars = PAGE_CHARS) => read({ fromSeq, toSeq, maxChars }, budget),
+		pick: (seqs, budget) =>
+			read({ fromSeq: seqs[0] ?? 1, toSeq: seqs.at(-1) ?? 0, seqs, maxChars: PAGE_CHARS }, budget),
 	};
 }
 
@@ -1218,6 +1222,10 @@ class SessionSearcher {
 	private startTimedOut = false;
 	private readonly lines: string[] = [];
 	private readonly entryCache = new Map<number, RenderedEntry | null>();
+	/** Entries read ahead of the search, each as the page a read of it alone returns (`readAheadFrom`). */
+	private readonly readAhead = new Map<number, SessionEntriesPage>();
+	/** The entries the search expects to read next, in ascending order: the index's candidates and their context. */
+	private planned: readonly number[] = [];
 	private shown = 0;
 	private more = 0;
 	private firstMore: SearchResume | undefined;
@@ -1380,11 +1388,18 @@ class SessionSearcher {
 		const to = Math.min(this.lastSeq, toSeq, from + rowsLeft - 1);
 		if (from > to) return "ok";
 		let page: SessionEntriesPage;
-		try {
-			page = await this.pager.page(from, to, budget);
-		} catch (error) {
-			if (isHistoryDeadlineError(error)) return "timedOut";
-			throw error;
+		if (from === to && !this.readAhead.has(from)) await this.readAheadFrom(from);
+		const ahead = from === to ? this.readAhead.get(from) : undefined;
+		if (ahead !== undefined) {
+			this.readAhead.delete(from);
+			page = ahead;
+		} else {
+			try {
+				page = await this.pager.page(from, to, budget);
+			} catch (error) {
+				if (isHistoryDeadlineError(error)) return "timedOut";
+				throw error;
+			}
 		}
 		const span = page.throughSeq - from + 1;
 		if (this.multiline) {
@@ -1438,6 +1453,7 @@ class SessionSearcher {
 			this.indexing = false;
 			return { next: pos };
 		}
+		this.planReads(seqs);
 		for (const seq of seqs) {
 			const reason = budget.spent();
 			if (reason && this.examined) return { stop: { reason, resume: { seq, matchIndex: 0 } } };
@@ -1468,6 +1484,56 @@ class SessionSearcher {
 			return { next: through + 1 };
 		}
 		return { next: seqs.at(-1)! + 1 };
+	}
+
+	/**
+	 * Plans to read ahead the entries at `candidates` and the ones next to them that their context lines may show: an
+	 * entry shows at least one line, so at most as many on each side as context lines asked for.
+	 */
+	private planReads(candidates: readonly number[]): void {
+		const { contextBefore, contextAfter } = this.search.request;
+		const before = Math.min(Math.max(0, contextBefore), CONTEXT_SPAN_SEQS);
+		const after = Math.min(Math.max(0, contextAfter), CONTEXT_SPAN_SEQS);
+		const seqs = new Set<number>();
+		for (const candidate of candidates)
+			for (let seq = Math.max(1, candidate - before); seq <= Math.min(this.lastSeq, candidate + after); seq++)
+				seqs.add(seq);
+		this.planned = [...seqs].sort((a, b) => a - b);
+		this.readAhead.clear();
+	}
+
+	/**
+	 * Reads the planned entries from `seq`'s context on that the search has not read, a page of them in one read, as a database
+	 * reads ahead the pages an index scan will visit: each candidate the index names, and each entry its context shows,
+	 * used to cost a read, and a round trip, of its own. Each entry is kept as the page a read of it alone returns, and
+	 * taken in that read's place when the search reaches it, so the search counts rows, stops and resumes as it did. A
+	 * failed read keeps nothing: the search then reads each entry alone, as before, and meets the failure, or the time
+	 * budget, there.
+	 */
+	private async readAheadFrom(seq: number): Promise<void> {
+		if (!this.planned.includes(seq)) return;
+		// From the context before `seq` on, which the search reads next when `seq` is a candidate.
+		const from = seq - Math.min(Math.max(0, this.search.request.contextBefore), CONTEXT_SPAN_SEQS);
+		const wanted = this.planned.filter(
+			(each) => each >= from && (each === seq || (!this.entryCache.has(each) && !this.readAhead.has(each))),
+		);
+		if (wanted.length < 2) return;
+		let page: SessionEntriesPage;
+		try {
+			page = await this.pager.pick(wanted, this.search.budget);
+		} catch {
+			return;
+		}
+		const found = new Map(page.entries.map((item) => [item.seq, item]));
+		for (const each of wanted) {
+			if (each > page.throughSeq) break;
+			const item = found.get(each);
+			this.readAhead.set(each, {
+				lastSeq: page.lastSeq,
+				entries: item === undefined ? [] : [item],
+				throughSeq: each,
+			});
+		}
 	}
 
 	private timeoutOnEntry(seq: number, completedMatches = 0): SearchStep {
