@@ -239,7 +239,7 @@ WHERE relname IN ('session_sessions', 'intercom_leases', 'snapshot_session_links
 
 Atomic indexes session text for history search with a trigram index, `atomic.session_search_trgm`. This kind of index (GIN) does not add new text to the index right away. It first puts it in a holding area, the pending list, and later moves the whole list into the index in one go. That move is called a merge. Searches read the pending list as well as the index, so new text is found as soon as it is written, merged or not.
 
-PostgreSQL merges the list when it grows past the index's `gin_pending_list_limit`, 4 MB by default, and the write that pushes it past the limit does the whole merge itself. In Atomic, that write holds the lock of the session it indexes, so the write and every save to that session waited for the merge, now and then for a second or more.
+PostgreSQL merges the list when it grows past the index's `gin_pending_list_limit`, 4 MB by default, and the write that pushes it past the limit does the whole merge itself, so that write is slow now and then.
 
 Atomic now keeps merges out of those writes:
 
@@ -250,6 +250,8 @@ Atomic now keeps merges out of those writes:
 `atomic storage migrate`, run as the owner role, sets the limit and the autovacuum settings on a database that already has the index. You do not set them yourself. If you set a 1 MB limit as an earlier version of this guide suggested, `atomic storage migrate` replaces it with 64 MB.
 
 Only the index's owner may run `gin_clean_pending_list`. Agents that connect as a runtime role leave the merges to autovacuum, so keep autovacuum on. Without either, the list grows to 64 MB, and the write that crosses that limit merges all of it.
+
+Writes to the search index don't hold the lock of the session they index. A history search that indexes a session takes a lock of that session's index instead, so the agent writing the session goes on saving while the search writes. When Atomic rewrites a session's whole history, it waits for an index write in progress and then removes that session's index, and an index write that starts during the rewrite waits for it and then finds the index outdated and writes nothing.
 
 Check the settings with:
 

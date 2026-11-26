@@ -3153,12 +3153,16 @@ $grant$`);
 		const pinReads = this.sharedHistorySeen
 			? forkPinReads(this.forkHost(), this.tables.sessions, sessionId)
 			: undefined;
+		// The lock index writes of this session hold, which they take instead of the session's (#6638): taken first, with
+		// the transaction's start, so the rewrite forgets an index write that committed and one that starts later sees it.
+		const searchLock = this.searchIndex?.writeLock(sessionId);
 		const written = await this.transactionCheckedAlongside(
 			async (tx, checked) => {
 				released = [];
 				entriesWritten = [];
 				// The session's row and its fork history are read beside the schema check, in one wait for the connection.
-				const [, pins] = await Promise.all([
+				const [, , pins] = await Promise.all([
+					searchLock === undefined ? undefined : tx.get(searchLock.sql, ...searchLock.params),
 					this.forWrite(tx, sessionId, options),
 					this.readForkPinsWithin(tx, sessionId, pinReads),
 				]);
@@ -3189,6 +3193,7 @@ $grant$`);
 			},
 			this.sessionWrite(
 				sessionId,
+				...(searchLock === undefined ? [] : [searchLock]),
 				...(pinReads === undefined ? [] : [this.headRead(sessionId, options, false), ...pinReads]),
 			),
 		);
