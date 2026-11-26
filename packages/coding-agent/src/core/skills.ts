@@ -6,6 +6,7 @@ import { isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import { NestedGitignore } from "./gitignore-rules.ts";
 import { createSyntheticSourceInfo, getResourcePathKey, type SourceInfo } from "./source-info.ts";
+import { skillUri } from "./tools/skill-protocol.ts";
 
 /** Max name length per spec */
 const MAX_NAME_LENGTH = 64;
@@ -330,11 +331,11 @@ export function formatSkillsForPrompt(skills: Skill[], fileReadTool: "read" | "b
 	const lines = [
 		"\n\nThe following skills provide specialized instructions for specific tasks.",
 		fileReadTool === "read"
-			? "Use the read tool to load a skill's file when the task matches its description."
+			? "When the task matches a skill's description, use the read tool on the skill's location, skill://<name>, to load it."
 			: fileReadTool === "bash"
-				? "Use bash to load a skill's file when the task matches its description."
-				: "Load a skill's file when the task matches its description.",
-		"Resolve relative paths against the skill's directory (parent of SKILL.md). Use absolute paths in tool calls.",
+				? "When the task matches a skill's description, use bash to load the skill's location, for example `cat skill://<name>`."
+				: "When the task matches a skill's description, load the skill's location, skill://<name>.",
+		"A file the skill references relative to its own directory is skill://<name>/<relative path>. Shell commands accept an unquoted skill:// URI in place of the file's path, for example to run a script the skill includes.",
 		"",
 		"<available_skills>",
 	];
@@ -343,7 +344,7 @@ export function formatSkillsForPrompt(skills: Skill[], fileReadTool: "read" | "b
 		lines.push("  <skill>");
 		lines.push(`    <name>${escapeXml(skill.name)}</name>`);
 		lines.push(`    <description>${escapeXml(skill.description)}</description>`);
-		lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
+		lines.push(`    <location>${escapeXml(skillUri(skill.name))}</location>`);
 		lines.push("  </skill>");
 	}
 

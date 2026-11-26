@@ -713,6 +713,14 @@ async function fallbackInternalPath(value: string, cwd: string): Promise<string 
 export async function resolveInternalSelector(value: string, cwd: string): Promise<string | undefined> {
 	return fallbackInternalPath(value, cwd);
 }
+/** The filesystem path an internal URL names, asking the session's routers before the workspace fallback. */
+export function resolveInternalPath(
+	value: string,
+	cwd: string,
+	context?: InternalResourceContext,
+): Promise<string | undefined> {
+	return resolveViaRouter(value, cwd, context);
+}
 export async function readInternalSelector(
 	value: string,
 	cwd: string,

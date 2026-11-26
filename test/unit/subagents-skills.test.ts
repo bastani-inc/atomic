@@ -77,7 +77,7 @@ describe("subagent skill resolution", () => {
 		assert.match(herdr?.content ?? "", /If the check fails.*stop/);
 		assert.match(herdr?.content ?? "", /HERDR_ENV/);
 		assert.match(herdr?.content ?? "", /Do not run bare `herdr` for discovery/);
-		assert.match(buildSkillInjection(result.resolved), /<skill name="herdr">/);
+		assert.match(buildSkillInjection(result.resolved), /<skill name="herdr" location="skill:\/\/herdr">/);
 	});
 
 	test("builds skill injection for builtin skills without YAML frontmatter", async () => {
@@ -85,10 +85,14 @@ describe("subagent skill resolution", () => {
 		const injection = buildSkillInjection(result.resolved);
 
 		assert.equal(result.missing.length, 0);
-		assert.match(injection, /<skill name="tdd">/);
-		assert.match(injection, /<skill name="agent-browser">/);
-		assert.doesNotMatch(injection, /<skill name="tdd">\n---\nname: tdd/);
-		assert.doesNotMatch(injection, /<skill name="agent-browser">\n---\nname: agent-browser/);
+		assert.match(
+			injection,
+			/<skill name="tdd" location="skill:\/\/tdd">\nReferences are relative to skill:\/\/tdd\/\./,
+		);
+		assert.ok(!injection.includes(repoRoot), "the injection names no absolute skill path");
+		assert.match(injection, /<skill name="agent-browser" location="skill:\/\/agent-browser">/);
+		assert.doesNotMatch(injection, /\n---\nname: tdd/);
+		assert.doesNotMatch(injection, /\n---\nname: agent-browser/);
 	});
 
 	test("prefers a project tdd skill over the builtin tdd skill", async () => {

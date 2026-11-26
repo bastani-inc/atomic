@@ -130,12 +130,85 @@ Setting `builtins: { subagents: false }` on `createAgentSession()` removes the 2
 
 1. At startup, Atomic scans skill locations and reads each skill's name and description.
 2. The system prompt includes available skills (except those with `disable-model-invocation: true`) in XML format per the [Agent Skills integration specification](https://agentskills.io/integrate-skills).
-3. When a task matches, the agent uses `read` (or `bash` when `read` is unavailable) to load the full `SKILL.md`. Models do not always load a skill automatically, so use explicit prompting or `/skill:name` to force it.
-4. The agent follows the instructions and resolves relative paths against the skill's directory.
+3. When a task matches, the agent uses `read` (or `bash` when `read` is unavailable) to load the skill from its `skill://` address. Models do not always load a skill automatically, so use explicit prompting or `/skill:name` to force it.
+4. The agent follows the instructions. When they mention another file in the skill's folder, such as `references/guide.md`, the agent opens it as `skill://<name>/references/guide.md`.
 
 This is progressive disclosure. Only descriptions stay in context by default, and full instructions load on demand.
 
-You can also inspect loaded skills directly with read-only `skill://<name>` URLs in `read`, `search`, and `find` (for example `skill://tdd`, `skill://demo:1-40`, or `skill://demo/*.md`). Writes to `skill://` paths are rejected.
+## Skill addresses
+
+Every loaded skill has a short address that starts with `skill://` followed by the skill's name, such as `skill://tdd`. The address names the skill, not the folder it is stored in. That has three benefits:
+
+- The skill list in the model's instructions stays short.
+- Your home folder and other private paths stay out of the model's instructions.
+- The address keeps working if you move a skill or resume a session on another computer.
+
+### What the model sees
+
+The model's instructions list each skill by name, description, and address. With one skill installed, that part of the instructions reads:
+
+```xml
+The following skills provide specialized instructions for specific tasks.
+When the task matches a skill's description, use the read tool on the skill's location, skill://<name>, to load it.
+A file the skill references relative to its own directory is skill://<name>/<relative path>. Shell commands accept an unquoted skill:// URI in place of the file's path, for example to run a script the skill includes.
+
+<available_skills>
+  <skill>
+    <name>tdd</name>
+    <description>Test-driven development with a red-green-refactor loop.</description>
+    <location>skill://tdd</location>
+  </skill>
+</available_skills>
+```
+
+Earlier versions gave the full file path, such as `/Users/you/.atomic/agent/skills/tdd/SKILL.md`, in place of `skill://tdd`.
+
+### Reading a skill, a file inside it, or a few lines
+
+The agent, or you in a prompt, can use these addresses with the `read`, `search`, and `find` tools:
+
+| To get | Use |
+| --- | --- |
+| The skill's instructions (its `SKILL.md`) | `skill://tdd` |
+| Another file in the skill's folder | `skill://tdd/references/mocking.md` |
+| A few lines of either | `skill://tdd:10-40` or `skill://tdd/references/mocking.md:1-20` |
+| Lines that mention a word | `search` for the word in `skill://tdd` |
+| Files in the skill's folder | `find` with `skill://tdd/references/*.md` |
+
+When the agent reads a whole skill, the result begins with `Base directory for this skill: skill://tdd/`. Paths in the skill's instructions are relative to that folder.
+
+### Running a skill's scripts
+
+Shell commands can use an address in place of a file path. Before the command runs, Atomic swaps each address for the file's real path:
+
+```bash
+bash skill://my-skill/scripts/check.sh
+python3 skill://my-skill/scripts/report.py --summary
+```
+
+Write the address as a separate word, not inside quotes. Quoted text is passed to the shell as typed.
+
+### Two skills with the same name
+
+If only one skill uses a name, its address is `skill://<name>`.
+
+Two skills can share a name. For example, you might have your own `tdd` skill while Atomic also ships one. In that case, the model's skill list shows each skill under a longer name with its source after an `@`, such as `tdd@user` and `tdd@builtin`. Their addresses are `skill://tdd@user` and `skill://tdd@builtin`. These are the same names the [`/skill:` commands](#skill-commands) use.
+
+The short address `skill://tdd` still works. It opens the skill that wins under the [precedence order](#precedence-order).
+
+A longer name must match exactly one skill. Suppose two project folders each have a `tdd` skill. Then `skill://tdd@project` could mean either, so Atomic refuses it and lists the addresses that tell them apart.
+
+Some characters, such as a slash, a colon, or a space, would break an address. In a skill's name, Atomic writes them as percent codes, the way web addresses do. A skill named `acme:deploy` has the address `skill://acme%3Adeploy`. The skill list always shows the ready-to-use address.
+
+### Addresses are read-only
+
+A `skill://` address is only for reading. Atomic won't write or edit through it, and it refuses an address that leads outside the skill's folder, such as `skill://tdd/../other`. To change a skill, edit its files where they are stored.
+
+### Subagents and older sessions
+
+A subagent given a skill receives the skill's instructions together with its address. It opens the skill's other files the same way.
+
+Sessions recorded by earlier versions list skills by their full file path. Those paths keep working when you resume such a session.
 
 ### Skills as workflows
 
@@ -209,11 +282,11 @@ Qualified selection is exact. An unknown or ambiguous qualified selector reports
 
 Subagent definitions and per-call `skills` overrides accept these same selectors. Running subagents resolve them from their own loaded skill list; a missing or ambiguous selector is reported in the child result instead of falling back to the bare skill. The parent-only `subagent` orchestration skill cannot be injected into a child, including qualified aliases such as `subagent@builtin`. Extensions can read the same catalog through `ctx.getSkillCatalog()`.
 
-When expanded, Atomic wraps the skill body in a `<skill>` block recording the selector, file location, candidate ID, and base directory for relative references:
+When expanded, Atomic wraps the skill body in a `<skill>` block recording the selector, the skill's [address](#skill-addresses), a candidate ID, and the folder that relative references start from:
 
 ```xml
-<skill name="brave-search" location="/path/to/brave-search/SKILL.md" candidate="user:brave-search">
-References are relative to /path/to/brave-search.
+<skill name="brave-search" location="skill://brave-search" candidate="skill_0123456789abcdef0123">
+References are relative to skill://brave-search/.
 
 ...skill instructions...
 </skill>

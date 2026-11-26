@@ -12,6 +12,7 @@ import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
 import { createHistoryRouter, type ProjectHistory } from "../tools/history-protocol.ts";
 import { composeInternalRouters } from "../tools/resource-selectors.ts";
+import { createSkillRouter } from "../tools/skill-protocol.ts";
 import { createToolOutputRouter } from "../tools/tool-output-protocol.ts";
 import type {
 	ForkHandler,
@@ -294,6 +295,7 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 				projectSessionStore: () => source.getProjectHistory().sessionStore(),
 			});
 			const sessionRouters = composeInternalRouters(
+				createSkillRouter(() => source.getSkillCatalog?.()),
 				createToolOutputRouter({
 					sessionId: () => manager.getSessionId(),
 					sessionStore: () => manager.getSessionStore(),

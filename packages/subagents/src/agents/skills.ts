@@ -5,7 +5,7 @@
 import type { Dirent, Stats } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
-import type { SkillCatalog } from "@bastani/atomic";
+import { type SkillCatalog, skillUri } from "@bastani/atomic";
 import { pathExists } from "../shared/path-exists.js";
 import {
 	buildSkillPaths,
@@ -360,7 +360,12 @@ export async function resolveSkillsWithFallback(
 export function buildSkillInjection(skills: ResolvedSkill[]): string {
 	if (skills.length === 0) return "";
 
-	return skills.map((s) => `<skill name="${s.name}">\n${s.content}\n</skill>`).join("\n\n");
+	return skills
+		.map((s) => {
+			const location = skillUri(s.name);
+			return `<skill name="${s.name}" location="${location}">\nReferences are relative to ${location}/.\n\n${s.content}\n</skill>`;
+		})
+		.join("\n\n");
 }
 
 export function normalizeSkillInput(input: string | string[] | boolean | undefined): string[] | false | undefined {

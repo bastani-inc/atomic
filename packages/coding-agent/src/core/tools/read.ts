@@ -67,9 +67,11 @@ import {
 	readInternalSelector,
 	readSqliteSelector,
 	resolveArchiveSelector,
+	resolveInternalPath,
 	resolveInternalSelector,
 	sqliteSelectorForPath,
 } from "./resource-selectors.ts";
+import { parseSkillUri } from "./skill-protocol.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
@@ -408,6 +410,14 @@ function splitSelectorOr(pathValue: string, whole: string): ReadLineSelector {
 		return { path: whole };
 	}
 }
+/** A whole read of `skill://<name>` names the skill's directory first, so the skill's relative references resolve. */
+function withSkillBaseDirectory<T extends AgentToolResult<ReadToolDetails | undefined>>(url: string, result: T): T {
+	const skill = parseSkillUri(url);
+	const first = result.content[0];
+	if (!skill || skill.subpath || first?.type !== "text") return result;
+	const header = `Base directory for this skill: ${url.replace(/\/+$/, "")}/`;
+	return { ...result, content: [{ ...first, text: `${header}\n\n${first.text}` }, ...result.content.slice(1)] };
+}
 function appendReadSelectors(pathValue: string, selector: ReadLineSelector): string {
 	const range =
 		selector.ranges
@@ -615,17 +625,20 @@ export function createReadToolDefinition(
 						if (isInternalUrl(effectivePath)) {
 							const sourcePath = effectivePath.startsWith("local://")
 								? await resolveInternalSelector(effectivePath, executionCwd)
-								: undefined;
+								: effectivePath.startsWith("skill://")
+									? await resolveInternalPath(effectivePath, executionCwd, resourceCtx)
+									: undefined;
 							if (sourcePath) {
-								resolve(
-									await createReadToolDefinition(executionCwd, options).execute(
-										toolCallId,
-										{ path: appendReadSelectors(sourcePath, selector) },
-										signal,
-										undefined,
-										ctx as never,
-									),
+								const result = await createReadToolDefinition(executionCwd, options).execute(
+									toolCallId,
+									{ path: appendReadSelectors(sourcePath, selector) },
+									signal,
+									undefined,
+									ctx as never,
 								);
+								const wholeRead =
+									!effectiveRanges && !effectiveOffset && effectiveLimit === undefined && !rawOutput;
+								resolve(wholeRead ? withSkillBaseDirectory(effectivePath, result) : result);
 								return;
 							}
 							const selected = await readInternalSelected(
