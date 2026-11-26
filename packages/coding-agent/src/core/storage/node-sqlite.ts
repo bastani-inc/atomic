@@ -85,6 +85,8 @@ import {
 import {
 	type ConnectionAnswer,
 	type ConnectionRequest,
+	type LeadAnswer,
+	type LeadRequest,
 	type ReadTransactionRequest,
 	type SequenceAnswer,
 	type SequenceRequest,
@@ -93,6 +95,7 @@ import {
 } from "./node-sqlite-thread.js";
 import {
 	MAX_SEQUENCE_REQUEST_STATEMENTS,
+	offerFinish,
 	offerSequences,
 	type SequencedStatement,
 	type SqliteSequence,
@@ -1180,6 +1183,69 @@ interface QueuedTransaction {
 	readonly lockWaitMs?: number;
 	/** The transaction callbacks it was requested in; its own callback runs inside them (see `runInHold`). */
 	readonly scope: HoldScope | undefined;
+	/** Its leading statements, sent with `BEGIN IMMEDIATE` on a connection thread; see `writeLead`. */
+	readonly lead?: WriteLead;
+}
+
+/**
+ * A write transaction's leading statements (`SqliteTransactionOptions.leading`), parameters snapshotted, up to the first
+ * holding text SQLite refuses: the `begin` request that takes the lock runs them, so the callback's first calls are
+ * answered without a wait for the thread of their own (#6560). With `only` (`leadingOnly`, every one of them sent), a
+ * transaction that commits on its own sends its COMMIT in that request too.
+ */
+interface WriteLead {
+	readonly statements: readonly SqliteStatement[];
+	readonly only: boolean;
+}
+
+/** The `WriteLead` of `options`, or undefined where it names no statement this adapter can send ahead. */
+function writeLead(options: SqliteTransactionOptions | undefined): WriteLead | undefined {
+	const statements: SqliteStatement[] = [];
+	for (const { sql, params } of options?.leading ?? []) {
+		if (invalidTextParam(params) !== -1) break;
+		statements.push({ sql, params: snapshotParams(params) });
+	}
+	if (statements.length === 0) return undefined;
+	return { statements, only: options?.leadingOnly === true && statements.length === options.leading?.length };
+}
+
+/**
+ * The COMMIT a transaction's `begin` or last request sends behind its statements: a prepared statement, as every
+ * connection thread since sequences runs one, including one an older build started before an in-place update.
+ */
+const COMMIT: SequencedStatement = { sql: "COMMIT", params: [] };
+
+/**
+ * What a write transaction's callback is answered from while it makes its leading statements: each statement that
+ * succeeded with its answer, in order, taken by the call that makes the same statement next. A call that makes any other
+ * ends the lead and is sent on its own, as is the call of a statement that failed: SQLite undid only that statement, so
+ * running it again where the callback makes it is running it unbatched (a `get` may then succeed where all its rows did
+ * not). `aborted` is a failure that ended the whole transaction instead (a full disk, an I/O error): every call after
+ * the answers, and the transaction's end, fail with it, since a statement sent then would run outside any transaction.
+ * `ended` is set when the `begin` request also ran the COMMIT: the transaction then takes no more calls, and
+ * `commitFailure` is that COMMIT's failure, if it failed.
+ */
+interface TransactionLead {
+	readonly answered: {
+		readonly sql: string;
+		readonly params: readonly SqliteValue[];
+		readonly rows: SqliteRow[];
+		readonly changes: number;
+	}[];
+	readonly ended: boolean;
+	readonly commitFailure?: Error;
+	/** Whether SQLite left the transaction open when a bundled `COMMIT` failed (e.g. deferred foreign key). */
+	readonly commitOpen?: boolean;
+	readonly aborted?: Error;
+}
+
+/**
+ * Where a transaction's callback hands its last statements (`transactionFinisher`): kept until the callback returns,
+ * then sent in one request with `end`, its COMMIT or its savepoint's RELEASE. A callback that throws instead sends none.
+ */
+interface TransactionFinish {
+	readonly end: SequencedStatement;
+	statements?: SequencedStatement[];
 }
 
 /**
@@ -1431,10 +1497,10 @@ function releaseOnExit(connection: ThreadConnection, current: { hold?: FileHold 
 type SqliteConnection = ThreadConnection | CallerThreadConnection;
 
 /**
- * A request either connection answers. Only a connection on a thread of its own runs sequences and read transactions
- * started with their leading reads.
+ * A request either connection answers. Only a connection on a thread of its own runs sequences, mid-transaction leads,
+ * and read transactions started with their leading reads.
  */
-type SingleRequest = Exclude<ConnectionRequest, SequenceRequest | ReadTransactionRequest>;
+type SingleRequest = Exclude<ConnectionRequest, SequenceRequest | ReadTransactionRequest | LeadRequest>;
 
 /**
  * Sends one request to `connection`: a promise of its answer from a connection on a thread of its own, and the answer
@@ -1563,6 +1629,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly fileLock?: FileLock;
 	/** That this wrapped connection to its file is open, which scopes the holds of threaded ones (see `FileHold`). */
 	private readonly wrappedUse?: { release(): void };
+	/** What the `begin` request that took the lock answered for its leading statements, until `takeLed`. */
+	private led?: LeadAnswer;
 	/** The ticket of the writer holding the lock, on its way out of the queue while the transaction runs. */
 	private leaving?: { readonly ticket: string; readonly left: Promise<void> };
 	/** What the writers' queue gave up on, once per reason, in the order it first happened. */
@@ -1671,11 +1739,15 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * Callers reach this only through `enqueue` and the transaction gate, so nothing else runs on the connection in
 	 * between.
 	 */
-	private tryBegin(): undefined | Promise<undefined> {
+	private tryBegin(
+		statements: readonly SequencedStatement[] | undefined,
+	): undefined | LeadAnswer | Promise<undefined | LeadAnswer> {
 		const lock = this.fileLock;
-		return this.call(
-			lock === undefined ? { kind: "begin" } : { kind: "begin", lockState: lock.buffer, lockTag: lock.tag },
-		) as undefined | Promise<undefined>;
+		return this.call({
+			kind: "begin",
+			...(lock === undefined ? {} : { lockState: lock.buffer, lockTag: lock.tag }),
+			...(statements === undefined ? {} : { statements }),
+		}) as undefined | LeadAnswer | Promise<undefined | LeadAnswer>;
 	}
 
 	/** Changes whenever another connection commits to the database: the lock is being used, not held idle. */
@@ -1693,7 +1765,10 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * `StorageWriteLockTimeoutError` of a writer that gives up names the process holding the lock. Every other failure,
 	 * including a writers' queue that cannot be used, rejects at once with its cause.
 	 */
-	private async begin(lockWaitMs = this.lockWaitMs): Promise<void> {
+	private async begin(
+		lockWaitMs = this.lockWaitMs,
+		statements?: readonly SequencedStatement[],
+	): Promise<LeadAnswer | undefined> {
 		const waitStarted = performance.now();
 		let ticket: SqliteWriteTicket | undefined;
 		let notices: ReleaseNotices | undefined;
@@ -1718,12 +1793,12 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				if (ticket !== undefined) notices = await this.watchTicket(ticket, notices);
 				const behind = ticket !== undefined && (await this.queueFileOp(() => ticket!.behindOthers()));
 				if (!behind) {
-					const attempt = this.attemptBegin();
+					const attempt = this.attemptBegin(statements);
 					const refused = attempt instanceof Promise ? await attempt : attempt;
 					if (refused === undefined) {
 						holding = true;
 						this.acquired(waitStarted);
-						return;
+						return this.takeLed();
 					}
 					lastCause = refused;
 					if (ticket === undefined && queue !== undefined) {
@@ -1742,10 +1817,10 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				}
 				const stalledMs = performance.now() - stalledSince;
 				if (stalledMs >= lockWaitMs) throw await this.lockWaitTimeout(lockWaitMs, stalledMs, behind, lastCause);
-				if (!behind && committed && (await this.attemptThroughRelease())) {
+				if (!behind && committed && (await this.attemptThroughRelease(statements))) {
 					holding = true;
 					this.acquired(waitStarted);
-					return;
+					return this.takeLed();
 				}
 				const recheckMs =
 					notices?.watching === true || stalledMs >= this.lockWaitMs
@@ -1769,7 +1844,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * One attempt at the lock: `undefined` once it is taken, or the SQLITE_BUSY that refused it. Anything else fails.
 	 * Answered at once on the calling thread, and as a promise by a connection on a thread of its own.
 	 */
-	private attemptBegin(): unknown {
+	private attemptBegin(statements?: readonly SequencedStatement[]): unknown {
 		const refusal = (error: unknown): unknown => {
 			const cause = error instanceof StorageUnavailableError ? error.cause : undefined;
 			if (!isSqliteBusy(cause)) throw error;
@@ -1777,20 +1852,22 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		};
 		// Open from the moment BEGIN is sent: the connection's thread may take the lock while this thread runs on.
 		const hold = this.fileGate?.role === "holds" ? holdFile(this.fileGate.file) : undefined;
-		let attempt: undefined | Promise<undefined>;
+		let attempt: undefined | LeadAnswer | Promise<undefined | LeadAnswer>;
 		try {
-			attempt = this.tryBegin();
+			attempt = this.tryBegin(statements);
 		} catch (error) {
 			releaseHold(hold);
 			return refusal(error);
 		}
 		if (!(attempt instanceof Promise)) {
 			this.current.hold = hold;
+			this.led = attempt;
 			return undefined;
 		}
 		return attempt.then(
-			() => {
+			(led) => {
 				this.current.hold = hold;
+				this.led = led;
 				return undefined;
 			},
 			(error: unknown) => {
@@ -1809,13 +1886,20 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * free while that writer kept committing. Trying on every turn for a tick finds the lock the moment such a
 	 * writer's commit lets go of it.
 	 */
-	private async attemptThroughRelease(): Promise<boolean> {
+	private async attemptThroughRelease(statements: readonly SequencedStatement[] | undefined): Promise<boolean> {
 		const until = performance.now() + LOCK_RELEASE_RETRY_MS;
 		for (let attempt = 0; attempt < LOCK_RELEASE_RETRY_ATTEMPTS && performance.now() < until; attempt++) {
 			await new Promise<void>((resolve) => setImmediate(resolve));
-			if ((await this.attemptBegin()) === undefined) return true;
+			if ((await this.attemptBegin(statements)) === undefined) return true;
 		}
 		return false;
+	}
+
+	/** The answer of the `begin` request that took the lock, for the transaction that took it, once. */
+	private takeLed(): LeadAnswer | undefined {
+		const led = this.led;
+		this.led = undefined;
+		return led;
 	}
 
 	/**
@@ -1918,9 +2002,39 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * Statements on the connection, each sent the moment it is called, so calls a transaction makes without awaiting
 	 * the ones before run in the order it made them, as on a connection that runs each one as it is called.
 	 */
-	private createExecutor(active: () => boolean): SqliteExecutor & { checkJsonbExtract(): Promise<boolean> } {
-		const execute = async <T>(request: SingleRequest, params: readonly SqliteValue[] = []): Promise<T> => {
+	private createExecutor(
+		active: () => boolean,
+		lead?: TransactionLead,
+		finish?: TransactionFinish,
+		writeTx = false,
+	): SqliteExecutor & { checkJsonbExtract(): Promise<boolean> } {
+		/** Whether the transaction takes no more calls: its COMMIT went with its start, or its callback finished it. */
+		const ended = () => lead?.ended === true || finish?.statements !== undefined;
+		/** The next leading statement's answer when `sql` and `params` make it; otherwise the lead ends. */
+		const ledBy = (sql: string, params: readonly SqliteValue[]) => {
+			if (lead === undefined) return undefined;
+			const next = lead.answered[0];
+			if (next !== undefined && next.sql === sql && sameParams(next.params, params)) {
+				lead.answered.shift();
+				return next;
+			}
+			lead.answered.length = 0;
+			return undefined;
+		};
+		const closedTransactionError = () =>
+			unavailable(this.descriptor, new Error("SQLite transaction is no longer active"));
+		const execute = async <T>(
+			request: SingleRequest,
+			params: readonly SqliteValue[] = [],
+			answer?: (rows: SqliteRow[], changes: number) => T,
+		): Promise<T> => {
 			if (!active()) throw new StorageTransactionClosedError();
+			const led = "sql" in request && answer !== undefined ? ledBy(request.sql, params) : ledBy("", []);
+			if (led !== undefined) return answer!(led.rows, led.changes);
+			if (lead?.aborted !== undefined) throw unavailable(this.descriptor, lead.aborted);
+			if (ended()) throw new StorageTransactionClosedError();
+			if (writeTx && this.connection instanceof ThreadConnection && this.connection.inTransaction === false)
+				throw closedTransactionError();
 			const invalidIndex = invalidTextParam(params);
 			if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
 			return this.call(request) as T | Promise<T>;
@@ -1929,17 +2043,106 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			checkJsonbExtract: () => execute<boolean>({ kind: "jsonbExtract" }),
 			exec: (sql: string) => execute<void>({ kind: "exec", sql }),
 			run: (sql: string, ...params: readonly SqliteValue[]) =>
-				execute<{ changes: number }>({ kind: "run", sql, params }, params),
+				execute<{ changes: number }>({ kind: "run", sql, params }, params, (_rows, changes) => ({ changes })),
 			get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
-				execute<T | undefined>({ kind: "get", sql, params }, params),
+				execute<T | undefined>({ kind: "get", sql, params }, params, (rows) => rows[0] as T | undefined),
 			all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
-				execute<T[]>({ kind: "all", sql, params }, params),
+				execute<T[]>({ kind: "all", sql, params }, params, (rows) => rows as T[]),
 		};
 		// On the calling thread a sequence would hold the event loop for all of its statements.
 		const connection = this.connection;
-		if (connection instanceof ThreadConnection)
-			offerSequences(executor, (sequence) => this.sendSequence(connection, sequence, active));
+		if (connection instanceof ThreadConnection) {
+			offerSequences(executor, (sequence) => {
+				ledBy("", []);
+				if (active() && lead?.aborted !== undefined)
+					return Promise.reject(unavailable(this.descriptor, lead.aborted));
+				if (active() && ended()) return Promise.reject(new StorageTransactionClosedError());
+				if (active() && writeTx && connection.inTransaction === false)
+					return Promise.reject(closedTransactionError());
+				return this.sendSequence(connection, sequence, active);
+			});
+			if (finish !== undefined)
+				offerFinish(executor, (statements) => {
+					// One request carries them with the end: the end is the last of its statements.
+					if (!active() || ended() || lead?.aborted !== undefined) return false;
+					if (writeTx && connection.inTransaction === false) return false;
+					if (statements.some(({ params }) => invalidTextParam(params) !== -1)) return false;
+					// Strip any matching prefix already executed by `begin` or `lead` so those statements never run twice.
+					let skip = 0;
+					if (lead !== undefined) {
+						while (skip < statements.length && skip < lead.answered.length) {
+							const next = lead.answered[skip]!;
+							const statement = statements[skip]!;
+							if (
+								statement.script === true ||
+								next.sql !== statement.sql ||
+								!sameParams(next.params, statement.params)
+							)
+								break;
+							skip += 1;
+						}
+					}
+					const remaining = skip === 0 ? statements : statements.slice(skip);
+					if (remaining.length >= MAX_SEQUENCE_REQUEST_STATEMENTS) return false;
+					ledBy("", []);
+					finish.statements = remaining.map(({ sql, params, script }) =>
+						sendableStatement({ sql, params: snapshotParams(params), ...(script === true ? { script } : {}) }),
+					);
+					return true;
+				});
+		}
 		return executor;
+	}
+
+	/**
+	 * The lead a transaction's callback is answered from, out of `led`, the answer of the `begin` or `lead` request that
+	 * sent `statements`; undefined when that request sent none. `offset` skips prefix statements such as a `SAVEPOINT`
+	 * prepended ahead of `statements`. `withCommit` says the request sent the COMMIT behind them, which ran unless a
+	 * statement before it failed.
+	 */
+	private transactionLead(
+		statements: readonly SqliteStatement[] | undefined,
+		led: LeadAnswer | undefined,
+		withCommit: boolean,
+		offset = 0,
+	): TransactionLead | undefined {
+		if (led === undefined || statements === undefined) return undefined;
+		const answered: TransactionLead["answered"] = led.answers
+			.slice(offset, offset + statements.length)
+			.map((answer, index) => ({ ...statements[index]!, ...answer }));
+		const failedAt = led.failure === undefined ? undefined : led.answers.length - offset;
+		const reachedCommit = withCommit && (failedAt === undefined || failedAt === statements.length);
+		return {
+			answered,
+			ended: reachedCommit,
+			...(reachedCommit && failedAt !== undefined
+				? { commitFailure: led.failure, commitOpen: led.open === true }
+				: {}),
+			...(!reachedCommit && failedAt !== undefined && led.open !== true ? { aborted: led.failure } : {}),
+		};
+	}
+
+	/**
+	 * Ends the transaction its callback returned from: sends `end` (COMMIT or a savepoint's RELEASE), behind the statements
+	 * the callback finished it with, in one request, or where its `begin` request sent the COMMIT already, reports that
+	 * COMMIT's failure. A statement that fails there fails the transaction, as the COMMIT does.
+	 */
+	private async endTransaction(
+		end: SequencedStatement,
+		lead: TransactionLead | undefined,
+		finish: TransactionFinish | undefined,
+	): Promise<void> {
+		if (lead?.aborted !== undefined) throw unavailable(this.descriptor, lead.aborted);
+		if (lead?.ended === true) {
+			if (lead.commitFailure !== undefined) throw unavailable(this.descriptor, lead.commitFailure);
+			return;
+		}
+		const statements = finish?.statements;
+		if (statements === undefined || statements.length === 0 || !(this.connection instanceof ThreadConnection)) {
+			await this.executor.exec(end.sql);
+			return;
+		}
+		await this.sendSequence(this.connection, { statements: [...statements, end] }, () => true);
 	}
 
 	/**
@@ -2219,6 +2422,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			});
 		}
 		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
+		// Only a connection thread takes statements with its BEGIN; one on the calling thread runs each call as it is made.
+		const lead = this.connection instanceof ThreadConnection ? writeLead(options) : undefined;
 		return new Promise<T>((resolve, reject) => {
 			const queued: QueuedTransaction = {
 				callback,
@@ -2226,6 +2431,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				reject,
 				lockWaitMs: options?.lockWaitMs,
 				scope: currentHoldScope(),
+				...(lead === undefined ? {} : { lead }),
 			};
 			const last = this.waitingBatches.at(-1);
 			if (last?.open === true && last.members.length < MAX_GROUP_COMMIT_TRANSACTIONS) {
@@ -2327,16 +2533,45 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * transactions requested directly behind it while it waited join it: otherwise they would queue for the lock all
 	 * over again once it lets go. Members left after the hold budget take the lock again with nothing new, so other
 	 * connections to the file wait for at most one batch of this one's.
+	 *
+	 * The first member's leading statements go in the request that takes the lock, and so does its COMMIT where it names
+	 * only those (`leadingOnly`) and nothing is queued to join it: that transaction is then one request (#6560).
 	 */
 	private async runBatch(batch: PendingBatch, firstAcquisition: boolean): Promise<void> {
+		const first = batch.members[0]!;
+		const willGroup =
+			batch.members.length > 1 || (firstAcquisition && this.waitingBatches[0]?.position === batch.position + 1);
+		const withCommit = first.lead?.only === true && !willGroup;
+		const withSavepoint =
+			first.lead !== undefined &&
+			willGroup &&
+			this.connection instanceof ThreadConnection &&
+			this.connection.inTransaction !== undefined;
+		const statements =
+			first.lead === undefined
+				? undefined
+				: withCommit
+					? [...first.lead.statements, COMMIT]
+					: withSavepoint
+						? [{ sql: "SAVEPOINT atomic_group_0", params: [] }, ...first.lead.statements]
+						: first.lead.statements;
+		let led: LeadAnswer | undefined;
 		try {
-			await this.begin(this.lockWait(batch.members));
+			led = await this.begin(this.lockWait(batch.members), statements);
 		} catch (cause) {
 			for (const queued of batch.members.splice(0)) queued.reject(cause);
 			return;
 		}
-		if (firstAcquisition) this.absorbNext(batch);
-		await (batch.members.length === 1 ? this.commitAlone(batch.members.pop()!) : this.commitMembers(batch));
+		const savepointRan = withSavepoint && led !== undefined && led.answers.length >= 1;
+		const lead =
+			withSavepoint && led !== undefined && led.answers.length === 0 && led.failure !== undefined
+				? { answered: [], ended: false, ...(led.open === true ? {} : { aborted: led.failure }) }
+				: this.transactionLead(first.lead?.statements, led, withCommit, savepointRan ? 1 : 0);
+		// A transaction its start committed takes nobody along: they wait for the lock once more.
+		if (firstAcquisition && lead?.ended !== true) this.absorbNext(batch);
+		await (batch.members.length === 1
+			? this.commitAlone(batch.members.pop()!, lead)
+			: this.commitMembers(batch, lead, savepointRan));
 	}
 
 	/**
@@ -2356,21 +2591,37 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		return Math.max(...batch.map((queued) => queued.lockWaitMs ?? this.lockWaitMs));
 	}
 
-	/** A transaction with nobody queued with it commits on its own, without savepoints. */
-	private async commitAlone(queued: QueuedTransaction): Promise<void> {
+	/**
+	 * A transaction with nobody queued with it commits on its own, without savepoints. `lead` answers its first calls; a
+	 * COMMIT its start sent already let go of the lock, which is handed on before the callback reads the answers.
+	 */
+	private async commitAlone(queued: QueuedTransaction, lead?: TransactionLead): Promise<void> {
 		let active = true;
+		const finish: TransactionFinish = { end: COMMIT };
+		const executor = () => this.createExecutor(() => active, lead, finish, true);
+		if (lead?.ended === true && lead.commitFailure === undefined) {
+			await this.released(true);
+			try {
+				queued.resolve(await runInHold(undefined, queued.scope, () => queued.callback(executor())));
+			} catch (cause) {
+				queued.reject(cause);
+			} finally {
+				active = false;
+			}
+			return;
+		}
 		try {
-			const value = await runInHold(this.current.hold, queued.scope, () =>
-				queued.callback(this.createExecutor(() => active)),
-			);
+			const value = await runInHold(this.current.hold, queued.scope, () => queued.callback(executor()));
 			active = false;
-			await this.executor.exec("COMMIT");
+			await this.endTransaction(COMMIT, lead, finish);
 			await this.released(true);
 			queued.resolve(value);
 		} catch (cause) {
 			active = false;
 			try {
-				await this.executor.exec("ROLLBACK");
+				// A failure of its leading statements, or of a bundled COMMIT that SQLite rolled back itself, left nothing to roll back.
+				if (lead?.aborted === undefined && !(lead?.ended === true && lead.commitOpen !== true))
+					await this.executor.exec("ROLLBACK");
 			} catch (rollbackCause) {
 				await this.released(false);
 				queued.reject(new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause));
@@ -2383,22 +2634,80 @@ class NodeSqliteDatabase implements SqliteDatabase {
 
 	/**
 	 * Runs the batch's members in one transaction, for at most `groupCommitHoldMs`: members left when it runs out
-	 * wait for the lock again, still ahead of anything queued after them.
+	 * wait for the lock again, still ahead of anything queued after them. `lead` answers the first member's first calls:
+	 * when `firstHasSavepoint` is false, its leading statements ran before any savepoint (later members arrived while
+	 * `begin` ran), so its failure rolls back the transaction, in which nothing else has run, and the others take the
+	 * lock again. Each member with a savepoint bundles its `SAVEPOINT` with its leading statements in one request when
+	 * supported by the connection thread.
 	 */
-	private async commitMembers(batch: PendingBatch): Promise<void> {
+	private async commitMembers(batch: PendingBatch, lead?: TransactionLead, firstHasSavepoint = false): Promise<void> {
 		const began = performance.now();
 		const outcomes: TransactionOutcome[] = [];
-		for (const queued of batch.members) {
-			if (outcomes.length > 0 && performance.now() - began >= this.groupCommitHoldMs) break;
-			const savepoint = `atomic_group_${outcomes.length}`;
+		if (lead !== undefined && !firstHasSavepoint) {
+			const first = batch.members[0]!;
 			let active = true;
 			try {
-				await this.executor.exec(`SAVEPOINT ${savepoint}`);
-				const value = await runInHold(this.current.hold, queued.scope, () =>
-					queued.callback(this.createExecutor(() => active)),
+				const value = await runInHold(this.current.hold, first.scope, () =>
+					first.callback(this.createExecutor(() => active, lead, undefined, true)),
 				);
 				active = false;
-				await this.executor.exec(`RELEASE ${savepoint}`);
+				// A transaction that already ended runs nobody else, whatever the callback made of the failure.
+				if (lead.aborted !== undefined) throw unavailable(this.descriptor, lead.aborted);
+				if (this.connection instanceof ThreadConnection && this.connection.inTransaction === false)
+					throw unavailable(this.descriptor, new Error("SQLite transaction is no longer active"));
+				outcomes.push({ ok: true, value });
+			} catch (cause) {
+				active = false;
+				let failure = cause;
+				try {
+					if (lead.aborted === undefined) await this.executor.exec("ROLLBACK");
+				} catch (rollbackCause) {
+					failure = new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause);
+				}
+				await this.released(false);
+				batch.members.shift()!.reject(failure);
+				if (batch.members.length > 0) await this.runBatch(batch, false);
+				return;
+			}
+		}
+		for (const queued of batch.members.slice(outcomes.length)) {
+			if (outcomes.length > 0 && performance.now() - began >= this.groupCommitHoldMs) break;
+			const savepoint = `atomic_group_${outcomes.length}`;
+			const release: SequencedStatement = { sql: `RELEASE ${savepoint}`, params: [] };
+			const finish: TransactionFinish = { end: release };
+			let active = true;
+			let memberLead: TransactionLead | undefined;
+			try {
+				if (outcomes.length === 0 && firstHasSavepoint) {
+					memberLead = lead;
+				} else if (
+					queued.lead !== undefined &&
+					this.connection instanceof ThreadConnection &&
+					this.connection.inTransaction !== undefined
+				) {
+					const led = (await this.connection
+						.request({
+							kind: "lead",
+							statements: [{ sql: `SAVEPOINT ${savepoint}`, params: [] }, ...queued.lead.statements],
+						})
+						.catch((cause: unknown) => {
+							throw unavailable(this.descriptor, cause);
+						})) as LeadAnswer | undefined;
+					if (led === undefined) {
+						await this.executor.exec(`SAVEPOINT ${savepoint}`);
+					} else {
+						if (led.answers.length === 0 && led.failure !== undefined)
+							throw unavailable(this.descriptor, led.failure);
+						memberLead = this.transactionLead(queued.lead.statements, led, false, 1);
+					}
+				} else {
+					await this.executor.exec(`SAVEPOINT ${savepoint}`);
+				}
+				const value = await runInHold(this.current.hold, queued.scope, () =>
+					queued.callback(this.createExecutor(() => active, memberLead, finish, true)),
+				);
+				active = false;
+				await this.endTransaction(release, memberLead, finish);
 				outcomes.push({ ok: true, value });
 			} catch (cause) {
 				active = false;
