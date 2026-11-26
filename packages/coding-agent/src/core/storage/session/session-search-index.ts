@@ -1,3 +1,4 @@
+import { storageSchemaCurrent } from "../added-exports.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -7,7 +8,7 @@ import type {
 	SqliteValue,
 } from "../database.js";
 import { dialectOf, type StorageDialect, type StorageTrigger } from "../dialect.js";
-import { applyStorageMigrations, withShortSchemaLockWaits } from "../migrations.js";
+import { applyStorageMigrations, ensureStorageSchema, withShortSchemaLockWaits } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
 import { schemaCatalogOf } from "../schema-catalog.js";
 import { type RunSequence, sequenceRunner } from "../statement-sequence.js";
@@ -30,6 +31,33 @@ export const SESSION_SEARCH_TABLES = Object.freeze({
 	trigrams: "search_trgm",
 	entriesForget: "entries_search_forget",
 });
+
+/**
+ * The ledger step, `schema:session-search-tuning`, that gives an existing PostgreSQL trigram index the pending-list
+ * limit below and its entries table the autovacuum settings below.
+ */
+export const SESSION_SEARCH_TUNING_DOMAIN = "session-search-tuning";
+const SESSION_SEARCH_TUNING_REVISION = 1;
+/**
+ * The PostgreSQL trigram index's `gin_pending_list_limit`, in kB: 64 MB rather than the server's default 4 MB. An insert
+ * that finds the pending list over this limit merges the whole list into the index itself, inside its transaction and
+ * the session's lock; the background merge (`SEARCH_PENDING_MERGE_CHARS`) and autovacuum keep the list far below it.
+ */
+export const SEARCH_PENDING_LIST_LIMIT_KB = 65_536;
+/**
+ * The characters of search text one search index writes on PostgreSQL between background merges of the trigram
+ * index's pending list (`gin_clean_pending_list`): about 1 MB of pending list for text with many distinct trigrams.
+ * A merge empties the list of every writer's text, so with many processes writing, the list holds about this much
+ * text between merges whatever their number.
+ */
+export const SEARCH_PENDING_MERGE_CHARS = 131_072;
+/**
+ * Autovacuum of the search entries table after this many inserted rows, whatever the table's size: a vacuum merges the
+ * pending list too, for a role that does not own the index and so cannot merge it itself. A row holds up to
+ * `SEARCH_PART_CHARS + SEARCH_PART_OVERLAP` characters.
+ */
+const SEARCH_AUTOVACUUM_INSERT_ROWS = 1_000;
+const SEARCH_ENTRIES_AUTOVACUUM = `autovacuum_vacuum_insert_threshold = ${SEARCH_AUTOVACUUM_INSERT_ROWS}, autovacuum_vacuum_insert_scale_factor = 0`;
 
 export const SEARCH_PART_CHARS = 4_096;
 export const SEARCH_PART_OVERLAP = 512;
@@ -189,6 +217,16 @@ interface TrigramEngine {
 		signal?: AbortSignal,
 	): Promise<boolean>;
 	forget(tx: SqliteExecutor, tables: SearchTables, sessionId: string): Promise<void>;
+	/**
+	 * Sets the index's tuning on a database this role owns the index of, once, recorded in `ledger`. Absent where
+	 * there is none.
+	 */
+	tune?(database: SqliteDatabase, dialect: StorageDialect, tables: SearchTables, ledger: string): Promise<void>;
+	/**
+	 * Merges what the index holds aside into the index itself, outside any session's lock: false when this role may not.
+	 * Absent where the engine keeps nothing aside.
+	 */
+	mergePending?(database: SqliteDatabase, dialect: StorageDialect, tables: SearchTables): Promise<boolean>;
 	candidates(
 		database: SqliteDatabase,
 		tables: SearchTables,
@@ -407,7 +445,7 @@ async function createTrigramIndex(tx: SqliteExecutor, dialect: StorageDialect, t
 			"SELECT n.nspname AS schema FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'pg_trgm'",
 		);
 		await tx.exec(
-			`CREATE INDEX IF NOT EXISTS ${tables.trigrams} ON ${tables.entries} USING gin (body ${dialect.identifier(String(found?.schema))}.gin_trgm_ops)`,
+			`CREATE INDEX IF NOT EXISTS ${tables.trigrams} ON ${tables.entries} USING gin (body ${dialect.identifier(String(found?.schema))}.gin_trgm_ops) WITH (gin_pending_list_limit = ${SEARCH_PENDING_LIST_LIMIT_KB})`,
 		);
 		await tx.exec("RELEASE SAVEPOINT atomic_session_search_trgm");
 	} catch {
@@ -433,7 +471,7 @@ const postgresTrigrams: TrigramEngine = {
 	async create(tx, dialect, tables, sessionTables) {
 		const { int, text } = dialect.types;
 		await tx.exec(
-			`CREATE TABLE IF NOT EXISTS ${tables.entries} (sid ${int} NOT NULL, seq ${int} NOT NULL, part ${int} NOT NULL, body ${text} NOT NULL, PRIMARY KEY (sid, seq, part))`,
+			`CREATE TABLE IF NOT EXISTS ${tables.entries} (sid ${int} NOT NULL, seq ${int} NOT NULL, part ${int} NOT NULL, body ${text} NOT NULL, PRIMARY KEY (sid, seq, part)) WITH (${SEARCH_ENTRIES_AUTOVACUUM})`,
 		);
 		await tx.exec(dialect.renderTrigger(forgetTrigger(tables, sessionTables, postgresTrigrams)));
 		await createTrigramIndex(tx, dialect, tables);
@@ -463,6 +501,50 @@ const postgresTrigrams: TrigramEngine = {
 	async prepareWrites() {},
 	async merge() {
 		return false;
+	},
+	async tune(database, dialect, tables, ledger) {
+		if (database.readOnly === true) return;
+		const schema = { ledger, domain: SESSION_SEARCH_TUNING_DOMAIN, revision: SESSION_SEARCH_TUNING_REVISION };
+		if (await storageSchemaCurrent(database, schema)) return;
+		const found = await database.get<SqliteRow & { owned: boolean | number }>(
+			`SELECT pg_catalog.pg_has_role(current_user, i.relowner, 'USAGE')
+				AND pg_catalog.pg_has_role(current_user, t.relowner, 'USAGE') AS owned
+			FROM pg_catalog.pg_class i
+			JOIN pg_catalog.pg_index x ON x.indexrelid = i.oid
+			JOIN pg_catalog.pg_class t ON t.oid = x.indrelid
+			WHERE i.relnamespace = current_schema()::regnamespace AND i.relname = ?`,
+			dialect.identifier(tables.trigrams),
+		);
+		if (found === undefined || (found.owned !== true && Number(found.owned) !== 1)) return;
+		await database.transaction(
+			(tx) =>
+				ensureStorageSchema(tx, dialect, schema, async () => {
+					await tx.exec(
+						`ALTER INDEX ${tables.trigrams} SET (gin_pending_list_limit = ${SEARCH_PENDING_LIST_LIMIT_KB})`,
+					);
+					await tx.exec(`ALTER TABLE ${tables.entries} SET (${SEARCH_ENTRIES_AUTOVACUUM})`);
+				}),
+			{ retryTransientFailures: true, concurrency: { kind: "serial", domain: ledger } },
+		);
+	},
+	async mergePending(database, dialect, tables) {
+		// By itself, so it holds no session's lock, and in a domain of its own, so it runs beside this process's other
+		// calls. `gin_clean_pending_list` needs the index's owner, as VACUUM does. A merge another process runs already
+		// empties the list, so this one then does nothing rather than wait for it.
+		const rows =
+			(await database.autocommit?.(
+				{
+					sql: `SELECT CASE WHEN pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE')
+							AND pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtextextended(current_schema() || '.' || c.relname || ':pending', 0))
+						THEN pg_catalog.gin_clean_pending_list(c.oid) END AS pages,
+						pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned
+					FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?`,
+					params: [dialect.identifier(tables.trigrams)],
+				},
+				{ kind: "serial", domain: `${tables.trigrams}:pending` },
+			)) ?? [];
+		const owned: unknown = rows[0]?.owned;
+		return owned === true || Number(owned) === 1;
 	},
 	async insert(tx, tables, sid, docs, signal) {
 		for (let start = 0; start < docs.length; start += INSERT_ROWS_PER_STATEMENT) {
@@ -565,6 +647,12 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	private readonly tables: SearchTables;
 	private readonly engine: TrigramEngine;
 	private writesPrepared = false;
+	/** Characters of search text written since the last background merge of the pending list began. */
+	private pendingChars = 0;
+	/** The background merge of the pending list in flight, if any. */
+	private merging: Promise<void> | undefined;
+	/** False once a merge found that this role may not merge the pending list, which autovacuum then merges. */
+	private mayMerge = true;
 
 	private constructor(database: SqliteDatabase, sessionTables: SessionTables, tables: SearchTables) {
 		this.database = database;
@@ -581,6 +669,8 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	): Promise<SqlSessionSearchIndex | undefined> {
 		const tables = renderStorageIdentifiers("sessions", SESSION_SEARCH_TABLES, prefix);
 		const engine = engineFor(dialectOf(database));
+		const ledger = storageMigrationTable(prefix);
+		let created = false;
 		try {
 			if (await SqlSessionSearchIndex.tablesExist(database, tables))
 				return new SqlSessionSearchIndex(database, sessionTables, tables);
@@ -596,12 +686,22 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 								`CREATE TABLE IF NOT EXISTS ${tables.state} (sid ${rowKey}, session_id ${text} NOT NULL UNIQUE, format ${int} NOT NULL, indexed_seq ${int} NOT NULL, revision ${text} NOT NULL, entry_id ${text} NOT NULL)${dialect.tableOptions}`,
 							);
 							await engine.create(tx, dialect, tables, sessionTables);
+							created = true;
+							// Tables and indexes created here carry their tuning already: recorded, so no open tunes them.
+							if (engine.tune !== undefined)
+								await tx.run(
+									`INSERT INTO ${ledger} (domain, version, applied_at) VALUES (?, ?, ${dialect.nowMs}) ON CONFLICT DO NOTHING`,
+									`schema:${SESSION_SEARCH_TUNING_DOMAIN}`,
+									SESSION_SEARCH_TUNING_REVISION,
+								);
 						},
 					},
 				],
-				{ table: storageMigrationTable(prefix), acceptNewer: true },
+				{ table: ledger, acceptNewer: true },
 			);
 			if (!(await engine.ready(database, dialectOf(database), tables))) return undefined;
+			// Tuning is for speed only: a failure leaves the index as it was, and searches go on using it.
+			if (!created) await engine.tune?.(database, dialectOf(database), tables, ledger).catch(() => undefined);
 		} catch {
 			return undefined;
 		}
@@ -722,6 +822,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 				);
 				return updated.changes === 1;
 			});
+			this.notePendingChars(totalChars);
 			if (extended && backlog) await this.mergeBacklog(options?.signal);
 			return extended;
 		}
@@ -788,6 +889,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 				return true;
 			}, txOptions);
 			if (!written) return false;
+			this.notePendingChars(batch.reduce((sum, doc) => sum + doc.text.length, 0));
 			if (backlog) await this.mergeBacklog(options?.signal);
 			start = end;
 			await yieldTurn();
@@ -813,6 +915,30 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			);
 			return published.changes === 1;
 		}, txOptions);
+	}
+
+	/**
+	 * Counts `chars` of search text a committed write added, and once `SEARCH_PENDING_MERGE_CHARS` of them have, starts a
+	 * background merge of the pending list, which this write and the writes after it do not wait for. So no write merges
+	 * the list inside its transaction, which holds the session's lock (PostgreSQL only).
+	 */
+	private notePendingChars(chars: number): void {
+		if (this.engine.mergePending === undefined || !this.mayMerge || this.database.readOnly === true) return;
+		this.pendingChars += chars;
+		if (this.pendingChars < SEARCH_PENDING_MERGE_CHARS || this.merging !== undefined) return;
+		this.pendingChars = 0;
+		this.merging = this.engine
+			.mergePending(this.database, this.dialect, this.tables)
+			.then(
+				(merged) => {
+					if (!merged) this.mayMerge = false;
+				},
+				// A merge that failed, or that the database closing ended, leaves the list for the next merge or autovacuum.
+				() => undefined,
+			)
+			.finally(() => {
+				this.merging = undefined;
+			});
 	}
 
 	private async mergeBacklog(signal?: AbortSignal): Promise<void> {

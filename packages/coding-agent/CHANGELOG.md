@@ -16,6 +16,10 @@
 
 - Storage adapters receive a new transaction option, `relaxedDurability`, for writes whose loss in a server crash is harmless, such as lease renewals. A driver may answer the commit before the write reaches disk, or ignore the option. The PostgreSQL adapter turns `synchronous_commit` off for that transaction only. See [custom storage adapters](docs/storage/custom-adapters.md) ([#6633](https://github.com/bastani-inc/atomic/pull/6633), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
+### Changed
+
+- On PostgreSQL, writing history-search text no longer stalls now and then. PostgreSQL keeps new search text in a holding list and later moves the whole list into the index. The write that filled the list, about 4 MB, used to do that move itself while it held the session's lock, so that write and the session's saves waited for it. In a benchmark that indexed 4 to 8 sessions while agents wrote to them, 10 to 15 writes per run did this. Atomic now raises the list's limit to 64 MB and empties it in the background, on a connection that holds no session's lock, after every 128,000 characters of search text. Autovacuum also empties it after every 1,000 new rows. In the same benchmark the list never grew past 7 MB, so no write emptied it. Searches find new text as before, whether it has been moved or not. Run `atomic storage migrate` as the owner role to apply the settings to an existing database. Agents that connect as a runtime role leave the emptying to autovacuum, so keep autovacuum on ([#6638](https://github.com/bastani-inc/atomic/pull/6638)).
+
 ### Fixed
 
 - A session read now sees a write to that session that the same store started earlier, even if the caller did not wait for the write to finish. Since 0.10.11-alpha.1, reads in a SQLite file or PostgreSQL session store go through a separate reader connection. Because of that, calling `store.append(...)` without awaiting it and then `store.load(...)` could return the session without the appended entries. A read now waits for the same store's unfinished writes to that session first. With none pending, it waits for nothing ([#6632](https://github.com/bastani-inc/atomic/pull/6632)).
