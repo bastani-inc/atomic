@@ -24,6 +24,8 @@ export default defineConfig({
 		fileParallelism: false,
 		setupFiles: ["./test/helpers/provider-rate-limit-isolation.ts", "./test/helpers/checkout-snapshot-isolation.ts"],
 		globalSetup: [
+			// Node processes run this checkout's sources and build; stop when node_modules belongs to another checkout.
+			"./test/global-setup-workspace-links.ts",
 			"./test/global-setup-lost-workers.ts",
 			"./test/global-setup-herdr-isolation.ts",
 			"./test/global-setup-provider-credential-isolation.ts",
