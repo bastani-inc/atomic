@@ -354,14 +354,14 @@ describe("AgentRehydrateError (#4326)", () => {
 			error.message,
 			`Session s-1 is not in this node's node-sqlite storage (session-not-found). This node keeps sessions in local-only storage (node-sqlite) and is not joined to shared storage, so a session saved on another node is not here. Join shared storage with ${SESSION_STORAGE_JOIN}, or pass the id of a session saved on this node.`,
 		);
-		assert.ok(error.hint.includes("atomic storage join <url> --token-file <path>"));
+		assert.ok(error.hint.includes("atomic storage join <postgres-url> --password-file <path>"));
 		const shared = new AgentRehydrateError("session-not-found", {
 			sessionId: "s-1",
-			storage: "libsql",
+			storage: "postgres",
 			localOnly: false,
 		});
 		assert.ok(!shared.hint.includes("team join"));
-		assert.ok(shared.hint.includes("libsql"));
+		assert.ok(shared.hint.includes("postgres"));
 	});
 
 	test("every code has a hint, a message built from its fields, and only session-busy is retryable", () => {
@@ -518,7 +518,7 @@ describe("AgentRehydrateError (#4326)", () => {
 
 	test("local-only storage is the node's own stores, not shared adapters", () => {
 		for (const adapter of ["node-sqlite", "jsonl", "memory"]) assert.ok(isLocalOnlySessionStorage(adapter));
-		for (const adapter of ["libsql", "postgres", ""]) assert.ok(!isLocalOnlySessionStorage(adapter));
+		for (const adapter of ["postgres", "postgres", ""]) assert.ok(!isLocalOnlySessionStorage(adapter));
 	});
 });
 
@@ -770,8 +770,8 @@ describe("AgentRehydrateError messages and serialization (#4326)", () => {
 				"Session s-3 cannot be released while its background tasks are running (session-busy). Wait until the session's background tasks finish, or cancel them, then release it again.",
 			],
 			[
-				new AgentRehydrateError("session-not-found", { sessionId: "s-2", storage: "libsql", localOnly: false }),
-				"Session s-2 is not in this node's libsql storage (session-not-found). Check the session id: the libsql storage this node uses has no session with it.",
+				new AgentRehydrateError("session-not-found", { sessionId: "s-2", storage: "postgres", localOnly: false }),
+				"Session s-2 is not in this node's postgres storage (session-not-found). Check the session id: the postgres storage this node uses has no session with it.",
 			],
 			[
 				new AgentRehydrateError("not-reopenable", { sessionId: "s-4", storage: "memory" }),

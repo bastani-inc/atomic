@@ -26,6 +26,9 @@ const setupFiles = [
  * `global-setup-intercom-startup-join` keeps interactive test sessions from joining Intercom at startup, so they
  * start no broker unless the test uses Intercom.
  *
+ * `global-setup-workspace-links` stops the run when `node_modules` belongs to another checkout, because
+ * child-process tests would then run that checkout's build (see scripts/worktree-setup.mjs).
+ *
  * `global-setup-natives` builds `@bastani/atomic-natives` only when no
  * compiled binding exists, because a missing binding no longer degrades
  * gracefully: `packages/subagents` imports the Rust control plane statically,
@@ -34,6 +37,7 @@ const setupFiles = [
  * single `existsSync`, so CI — which builds the binding in an explicit step
  * first — and any warm worktree pay nothing.
  */
+const workspaceLinksSetup = "./test/global-setup-workspace-links.ts";
 const lostWorkersSetup = "./test/global-setup-lost-workers.ts";
 const herdrSetup = "./test/global-setup-herdr-isolation.ts";
 const providerCredentialSetup = "./test/global-setup-provider-credential-isolation.ts";
@@ -64,6 +68,7 @@ const project = (
 		sequence: { groupOrder: options.groupOrder ?? 0 },
 		setupFiles,
 		globalSetup: [
+			workspaceLinksSetup,
 			lostWorkersSetup,
 			herdrSetup,
 			providerCredentialSetup,

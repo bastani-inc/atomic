@@ -21,7 +21,7 @@ const params: QuestionParams = {
 			header: "Storage",
 			options: [
 				{ label: "SQLite", description: "A local file" },
-				{ label: "libSQL", description: "A shared database" },
+				{ label: "PostgreSQL", description: "A shared database" },
 			],
 		},
 		{
@@ -60,7 +60,7 @@ test("an RPC client that opted in gets the whole questionnaire as one request an
 	assert.ok(request?.method === "questionnaire");
 	assert.deepEqual(request.questions, params.questions);
 	const answers = [
-		{ questionIndex: 0, question: params.questions[0]!.question, kind: "option" as const, answer: "libSQL" },
+		{ questionIndex: 0, question: params.questions[0]!.question, kind: "option" as const, answer: "PostgreSQL" },
 		{
 			questionIndex: 1,
 			question: params.questions[1]!.question,
@@ -140,7 +140,7 @@ test("ask_user_question returns the RPC client's answers as its tool result", as
 		type: "extension_ui_response",
 		id: request.id,
 		answers: [
-			{ questionIndex: 0, question: params.questions[0]!.question, kind: "option", answer: "libSQL" },
+			{ questionIndex: 0, question: params.questions[0]!.question, kind: "option", answer: "PostgreSQL" },
 			{
 				questionIndex: 1,
 				question: params.questions[1]!.question,
@@ -152,7 +152,7 @@ test("ask_user_question returns the RPC client's answers as its tool result", as
 	});
 	const result = await running;
 	const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
-	assert.match(text, /libSQL/);
+	assert.match(text, /PostgreSQL/);
 	assert.match(text, /Unit/);
 	assert.equal((result.details as { cancelled: boolean }).cancelled, false);
 });

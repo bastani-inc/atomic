@@ -119,7 +119,7 @@ describe.skipIf(postgresSkipReason !== undefined)("the PostgreSQL tuning guide's
 				const tuned = await database.all<{ relname: string; reloptions: string }>(
 					`SELECT c.relname, array_to_string(c.reloptions, ',') AS reloptions FROM pg_class c
 					JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'atomic'
-					AND c.relname IN ('session_sessions', 'intercom_leases', 'snapshot_session_links', 'session_search_trgm')
+					AND c.relname IN ('session_sessions', 'intercom_leases', 'snapshot_session_links', 'session_search_trgm', 'session_search_entries')
 					ORDER BY 1`,
 				);
 				const options = Object.fromEntries(tuned.map((row) => [row.relname, row.reloptions]));
@@ -130,7 +130,12 @@ describe.skipIf(postgresSkipReason !== undefined)("the PostgreSQL tuning guide's
 				);
 				assert.match(options.intercom_leases ?? "", /fillfactor=80/);
 				assert.match(options.snapshot_session_links ?? "", /autovacuum_vacuum_threshold=1000/);
-				assert.match(options.session_search_trgm ?? "", /gin_pending_list_limit=1024/);
+				assert.match(
+					options.session_search_trgm ?? "",
+					/gin_pending_list_limit=65536/,
+					"migrate set the search index's limit",
+				);
+				assert.match(options.session_search_entries ?? "", /autovacuum_vacuum_insert_threshold=1000/);
 			});
 		},
 		TEST_TIMEOUT_MS,

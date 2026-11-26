@@ -25,8 +25,8 @@ Select an adapter in `sessions.storage` or top-level `storage` in [settings](/se
 
 Choose the installation method that matches how you open the adapter:
 
-- **Direct SDK database handles (`{ kind: "database", database }`).** Install the package in your project with `npm install`, call `openPostgresDatabase()` or `openLibsqlDatabase()`, and pass the handle to `sessionStore: { kind: "database", database, prefix? }` or `SqlSessionStore.open(database, { prefix? })`. See [SDK session storage](/sdk/storage).
-- **Adapter-resolved selections (`{ kind: "adapter", module }`, `settings.json`, `ATOMIC_STORAGE`, `ATOMIC_PROFILE=ci`).** Install the package in user scope with `atomic install npm:<package>` (without `-l`), or register a local package directory with `DefaultResourceLoader({ additionalExtensionPaths })` or `--extension`.
+- **Direct SDK database handles (`{ kind: "database", database }`).** Install the package in your project with `npm install`, call `openPostgresDatabase()` (or your own adapter's open function), and pass the handle to `sessionStore: { kind: "database", database, prefix? }` or `SqlSessionStore.open(database, { prefix? })`. See [SDK session storage](/sdk/storage).
+- **Adapter-resolved selections (`{ kind: "adapter", module }`, `settings.json`, `ATOMIC_STORAGE`).** Install the package in user scope with `atomic install npm:<package>` (without `-l`), or register a local package directory with `DefaultResourceLoader({ additionalExtensionPaths })` or `--extension`.
 
 Adapter modules can import `@bastani/atomic/storage` and `@bastani/atomic` directly in both npm installs and standalone binaries. This works for the adapter entry file and any ES module or TypeScript file it imports relatively (including `.mjs` files and `.js` files in `"type": "module"` packages). CommonJS files outside the entry file resolve from `node_modules` instead. List `@bastani/atomic` under `peerDependencies`, not `dependencies`.
 
@@ -49,26 +49,26 @@ An [Atomic package](/packages) can bundle storage adapters and their driver depe
 
 ```json
 {
-  "name": "@example/atomic-libsql",
-  "dependencies": { "@libsql/client": "0.18.0" },
+  "name": "@example/atomic-mydb",
+  "dependencies": { "mydb-client": "1.0.0" },
   "peerDependencies": { "@bastani/atomic": "*" },
-  "atomic": { "storageAdapters": ["./libsql-adapter.ts"] }
+  "atomic": { "storageAdapters": ["./mydb-adapter.ts"] }
 }
 ```
 
-Install the package with `atomic install npm:@example/atomic-libsql` and select it by package name:
+Install the package with `atomic install npm:@example/atomic-mydb` and select it by package name:
 
 ```json
 {
   "storage": {
-    "adapter": "@example/atomic-libsql",
-    "options": { "url": "libsql://team.example" },
-    "secrets": { "authToken": { "file": "turso-token" } }
+    "adapter": "@example/atomic-mydb",
+    "options": { "url": "mydb://team.example" },
+    "secrets": { "authToken": { "file": "mydb-token" } }
   }
 }
 ```
 
-The bare package name selects the first listed adapter. When a package exports several adapters, select one with `<package>/<name>` using the adapter filename without its extension (such as `@example/atomic-libsql/libsql-adapter`).
+The bare package name selects the first listed adapter. When a package exports several adapters, select one with `<package>/<name>` using the adapter filename without its extension (such as `@example/atomic-mydb/mydb-adapter`).
 
 Host applications embedding Atomic can expose their own adapter without installing it separately. Pass the package directory via `--extension <dir>` or `additionalExtensionPaths: [packageRoot]` on `DefaultResourceLoader` before opening storage, then select `"adapter": "@example/app"` or `"@example/app/<name>"`.
 
@@ -93,10 +93,11 @@ To wrap a SQLite-compatible driver into a `SqliteDatabase`, call `createSqliteDa
 - `redact(text)` (optional) strips credentials from error text. Use `redactSecrets(secrets)` to build one that removes raw, URI-encoded, and decoded forms.
 - `transientFailure(failure)` (optional) classifies retryable driver errors from structured fields (never message text) and returns `{ code, outcome, hop? }`. Set `outcome` to `"not-applied"` when the database cannot have changed, or `"unknown"` when the write may have committed. Set `hop: { name, failure }` when an intermediate hop such as a proxy failed before reaching the database.
 - `freeBytes()` (optional) returns writable free bytes on the filesystem holding a local database file, or `undefined`.
-- `openReader()` (optional) returns a driver with connections of its own on the same database, for reads. The facade exposes it as `SqliteDatabase.openReader()`. The reader gets its own call queue and closes when the main database closes.
+- `openReader()` (optional) returns a driver with connections of its own on the same database, for reads. The facade exposes it as `SqliteDatabase.openReader()`. The reader gets its own call queue and closes when the main database closes. Atomic's stores send only reads through it, so its connections may refuse writes. A store's read through it first waits for that store's own writes it reads that have started but not finished, so a caller that starts a write and then reads without awaiting the write still reads it.
 - `concurrentTransactions` (optional) marks a driver that runs each transaction on its own connection, as the PostgreSQL adapter does. The facade then runs calls that cannot conflict at the same time. See the queue rules below.
-- `pipelinedTransactions` (optional) marks a transaction connection that accepts a statement before the previous one is answered. The PostgreSQL adapter and the libSQL adapter's server connections set it. The facade then sends each statement of a transaction without waiting for the answer before it. It can also send a transaction's last writes together with its commit.
+- `pipelinedTransactions` (optional) marks a transaction connection that accepts a statement before the previous one is answered. The PostgreSQL adapter sets it. The facade then sends each statement of a transaction without waiting for the answer before it. It can also send a transaction's last writes together with its commit.
   - `beginTransaction` receives `leading`, the reads the transaction makes first. The driver may send them with the begin and answer the transaction's first calls from them.
+- `beginTransaction` receives `relaxedDurability: true` for a write whose loss in a server crash is harmless, such as a lease renewal. The driver may then answer the commit before the transaction reaches disk, as the PostgreSQL adapter does with `synchronous_commit = off`. Drivers may ignore it.
   - If a statement sent ahead of an earlier answer, or with the commit, fails, the driver's commit must fail, so nothing commits. The transaction then fails with that statement's error.
   - A statement whose connection broke after the commit was sent reports `outcome: "unknown"`, because the commit may have applied.
 - `concurrentReads` (optional) is a positive integer for a driver that runs reads on connections or streams of their own, up to that many at once. The facade then runs read-only transactions, and statements outside a transaction that `readsOnly` accepts, beside each other. Every other call still waits for each call before it, and a read waits for the writes queued before it. With `concurrentTransactions` as well, the facade runs at most this many reads at once.
@@ -117,10 +118,10 @@ You can also implement `SqliteDatabase` directly. In either case, verify your im
 
 ### Custom driver adapter example
 
-For production Turso or `sqld` deployments, install `@bastani/atomic-storage-libsql` (which includes abandoned-stream cleanup, namespace headers, and Windows local-file close safeguards). The minimal example below shows the `createSqliteDatabase` and `StorageAdapterModule` structure for wrapping any SQLite-compatible client:
+The minimal example below shows the `createSqliteDatabase` and `StorageAdapterModule` structure for wrapping any SQLite-compatible client, here a hypothetical `mydb-client` driver:
 
 ```typescript
-import { createClient, type Client, type Transaction } from "@libsql/client";
+import { connect, type Client, type Transaction } from "mydb-client";
 import {
   createSqliteDatabase,
   redactSecrets,
@@ -146,9 +147,9 @@ function executor(connection: () => Client | Transaction): SqliteDriverExecutor 
 
 export async function openCustomDatabase({ url, authToken }: CustomDriverOptions): Promise<SqliteDatabase> {
   let client: Client | undefined;
-  const connection = () => (client ??= createClient({ url, authToken, intMode: "bigint" }));
+  const connection = () => (client ??= connect({ url, authToken }));
   const database = createSqliteDatabase({
-    descriptor: { adapter: "custom-libsql", location: url },
+    descriptor: { adapter: "mydb", location: url },
     redact: redactSecrets(authToken ? [authToken] : []),
     ...executor(connection),
     async beginTransaction() {
@@ -184,8 +185,8 @@ The default export lets settings select this module as an [adapter](#selecting-a
 import { openCustomDatabase } from "./custom-adapter.js";
 
 const database = await openCustomDatabase({
-  url: "libsql://your-database.turso.io",
-  authToken: process.env.TURSO_TOKEN,
+  url: "mydb://db.example.com",
+  authToken: process.env.MYDB_TOKEN,
 });
 try {
   const { session } = await createAgentSession({

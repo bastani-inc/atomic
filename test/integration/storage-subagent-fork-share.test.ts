@@ -28,7 +28,7 @@ import {
 	watchEventLoopTurns,
 } from "../../packages/coding-agent/test/helpers/event-loop-turns.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
-import { libsqlFileBackend, storageBackends } from "../helpers/storage-backends.js";
+import { storageBackends } from "../helpers/storage-backends.js";
 import { countStorageRoundTrips } from "../helpers/storage-round-trips.js";
 import {
 	bytesOf,
@@ -831,7 +831,7 @@ async function writtenElsewhere(scope: { connect(): Promise<SqliteDatabase>; rea
 	return made;
 }
 
-for (const backend of [...storageBackends, libsqlFileBackend]) {
+for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
 	describe.skipIf(backend.skipReason !== undefined)(`a reopened session's fork on ${name} (#6560)`, () => {
 		test(

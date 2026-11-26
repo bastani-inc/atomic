@@ -1,0 +1,3 @@
+{"type":"session","version":4,"id":"01a218b8-6b71-7e53-b401-50ea444d6161","createdAt":"2026-11-26T16:37:49.041Z","cwd":"/tmp/rmlibsql/repo-fixture","parentSessionId":"01a218b8-6a9d-7eb3-ad24-87efd28e59c8"}
+{"type":"message","id":"ab10ed21","parentId":null,"timestamp":"2026-11-26T16:37:48.831Z","message":{"role":"user","content":"first question","timestamp":1}}
+{"type":"message","id":"82253b1a","parentId":"ab10ed21","timestamp":"2026-11-26T16:37:49.041Z","message":{"role":"user","content":"question asked in the fork of the first entry","timestamp":6}}

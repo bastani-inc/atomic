@@ -67,7 +67,7 @@ test("a PostgreSQL prefix leaves room for the longest identifier Atomic creates 
 				return true;
 			},
 		);
-		// SQLite and libSQL have no identifier limit.
+		// SQLite has no identifier limit.
 		assert.equal(validateStoragePrefix(prefix, "sqlite"), prefix);
 		assert.equal(validateStoragePrefix(prefix), prefix);
 	}

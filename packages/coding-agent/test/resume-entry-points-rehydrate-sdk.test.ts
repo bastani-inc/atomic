@@ -304,7 +304,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const { runtime } = await runtimeOn(fixture.sandbox.path("agent"), {});
 		const store = runtime.session.sessionManager.getSessionStore();
 		Object.defineProperty(store, "descriptor", {
-			value: { ...store.descriptor, adapter: "libsql" },
+			value: { ...store.descriptor, adapter: "postgres" },
 			configurable: true,
 		});
 		store.readHeader = () => new Promise(() => {});

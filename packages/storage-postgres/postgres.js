@@ -1854,6 +1854,11 @@ export async function openPostgresDatabase(options) {
 					: concurrency.domain === undefined
 						? `SELECT pg_advisory_xact_lock(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}); `
 						: `SELECT pg_advisory_xact_lock_shared(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}), pg_advisory_xact_lock(${lockKey(inSchema(concurrency.domain))}); `;
+			// A write whose loss in a server crash is harmless, such as a lease renewal, commits without waiting for its
+			// write-ahead log to reach disk: the commit answers sooner and the server flushes its log less often. Its
+			// changes still go to disk within a moment, and any durable commit after it writes them first.
+			const relaxed =
+				begin.relaxedDurability === true && begin.readOnly !== true ? "SET LOCAL synchronous_commit = off; " : "";
 			const client = await connect(from);
 			/** @type {Promise<void> | undefined} */
 			let pendingSubmission;
@@ -1934,7 +1939,7 @@ export async function openPostgresDatabase(options) {
 					client,
 					() =>
 						client.query(
-							`${begin.readOnly === true ? "BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ" : "BEGIN"}; SET LOCAL lock_timeout = ${lockWaitMs}; ${lock}SET LOCAL statement_timeout = ${statementTimeoutMs}; ${searchPathSql()}`,
+							`${begin.readOnly === true ? "BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ" : "BEGIN"}; SET LOCAL lock_timeout = ${lockWaitMs}; ${lock}SET LOCAL statement_timeout = ${statementTimeoutMs}; ${relaxed}${searchPathSql()}`,
 						),
 					lockWaitMs + clientTimeoutMs,
 				);

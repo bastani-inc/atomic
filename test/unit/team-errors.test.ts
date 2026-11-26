@@ -19,7 +19,7 @@ import {
 	TeamProfileError,
 	TeamProfileTimeoutError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
-import { getTeamProfile, leaveTeam } from "../../packages/coding-agent/src/core/storage/index.js";
+import { getTeamProfile } from "../../packages/coding-agent/src/core/storage/index.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 test("team errors carry an explicit name, a stable code, safe fields and a hint (#4320)", () => {
@@ -78,7 +78,7 @@ test("a team config error is a StorageConfigError whose reason is its code (#432
 });
 
 test("guards match the class or, across realms and processes, its name and a known code (#4320)", () => {
-	const operation = new TeamProfileError("connection-failed", { subject: "libsql://db", hint: "h" });
+	const operation = new TeamProfileError("connection-failed", { subject: "postgres://atomic@db/atomic", hint: "h" });
 	const config = new TeamProfileConfigError("missing-url", { source: "sdk", field: "url", hint: "h" });
 	assert.equal(isTeamProfileError(operation), true);
 	assert.equal(isTeamProfileError(config), false);
@@ -129,7 +129,7 @@ test("retryability walks the cause chain up to eight levels (#4320)", () => {
 
 test("a timeout is a retryable team error carrying its deadline, elapsed time and phase (#4320)", () => {
 	const timeout = new TeamProfileTimeoutError({
-		subject: "libsql://db",
+		subject: "postgres://atomic@db/atomic",
 		hint: "Retry.",
 		timeoutMs: 15000,
 		elapsedMs: 15003,
@@ -187,6 +187,7 @@ test("the code lists, summaries and usage prefixes are the documented ones (#432
 	assert.deepEqual(
 		[...TEAM_PROFILE_CONFIG_ERROR_CODES],
 		[
+			"libsql-removed",
 			"unknown-profile",
 			"incomplete-profile",
 			"missing-url",
@@ -245,7 +246,7 @@ test("a team error crosses a process boundary as the same class with its code, f
 		cause: "socket closed",
 	});
 	const failed = new TeamProfileError("connection-failed", {
-		subject: "libsql://team.example.turso.io",
+		subject: "postgres://atomic@team.example.com/atomic",
 		detail: "connect ECONNREFUSED 10.0.0.5:8443",
 		hint: "Check the URL.",
 		cause: socket,
@@ -258,7 +259,7 @@ test("a team error crosses a process boundary as the same class with its code, f
 		hint: "Check the URL.",
 		fields: {
 			retryable: true,
-			subject: "libsql://team.example.turso.io",
+			subject: "postgres://atomic@team.example.com/atomic",
 			detail: "connect ECONNREFUSED 10.0.0.5:8443",
 		},
 		cause: {
@@ -288,7 +289,7 @@ test("a team error crosses a process boundary as the same class with its code, f
 	assert.equal((cause.cause as Error).name, "Error");
 
 	const timeout = new TeamProfileTimeoutError({
-		subject: "libsql://team.example.turso.io",
+		subject: "postgres://atomic@team.example.com/atomic",
 		hint: "Retry.",
 		timeoutMs: 15_000,
 		elapsedMs: 15_004,
@@ -335,7 +336,7 @@ test("an unknown team error name keeps its name, code and retryable, and causes 
 		code: "quota-exceeded",
 		message: "The team database is full (quota-exceeded). Free space.",
 		hint: "Free space.",
-		fields: { retryable: true, subject: "libsql://team.example.turso.io" },
+		fields: { retryable: true, subject: "postgres://atomic@team.example.com/atomic" },
 	});
 	assert.ok(future instanceof TeamProfileError);
 	assert.deepEqual(
@@ -345,7 +346,7 @@ test("an unknown team error name keeps its name, code and retryable, and causes 
 			"quota-exceeded",
 			true,
 			"The team database is full (quota-exceeded). Free space.",
-			"libsql://team.example.turso.io",
+			"postgres://atomic@team.example.com/atomic",
 		],
 	);
 	let deep: Error = new Error("level 12");
@@ -503,7 +504,7 @@ test("a cause from another realm or a callable cause serializes from its name an
 
 test("a nested team error crosses a process boundary as its own class, so retry decisions do not change (#4320)", () => {
 	const failed = new TeamProfileError("connection-failed", {
-		subject: "libsql://team.example.invalid",
+		subject: "postgres://atomic@team.example.invalid/atomic",
 		detail: "ECONNREFUSED",
 		hint: "Check the URL.",
 		cause: Object.assign(new Error("raw sk-synthetic-value"), { code: "ECONNREFUSED" }),
@@ -524,7 +525,7 @@ test("a nested team error crosses a process boundary as its own class, so retry 
 	assert.deepEqual([driver.name, driver.message, driver.code], ["Error", "ECONNREFUSED", "ECONNREFUSED"]);
 
 	const timeout = new TeamProfileTimeoutError({
-		subject: "libsql://team.example.invalid",
+		subject: "postgres://atomic@team.example.invalid/atomic",
 		hint: "Retry.",
 		timeoutMs: 300,
 		elapsedMs: 301,
@@ -535,7 +536,7 @@ test("a nested team error crosses a process boundary as its own class, so retry 
 		code: "quota-exceeded",
 		message: "The team database is full (quota-exceeded). Free space.",
 		hint: "Free space.",
-		fields: { retryable: true, subject: "libsql://team.example.invalid" },
+		fields: { retryable: true, subject: "postgres://atomic@team.example.invalid/atomic" },
 	});
 	for (const inner of [timeout, future]) {
 		const wrapped = new TeamProfileError("token-delete-failed", {
@@ -615,7 +616,7 @@ function serializedNestedCause(cause: unknown): SerializedTeamError["cause"] {
 
 test("a team error from another realm with complete fields crosses a process boundary as its own class (#4320)", () => {
 	const local = new TeamProfileError("connection-failed", {
-		subject: "libsql://team.example.invalid",
+		subject: "postgres://atomic@team.example.invalid/atomic",
 		detail: "ECONNREFUSED",
 		hint: "Check the URL.",
 	});
@@ -730,7 +731,7 @@ test("a team error from another realm with complete fields crosses a process bou
 test("only a cause in the team error family with complete fields is serialized as a team error (#4320)", () => {
 	const lookalike = Object.assign(new Error("raw sk-synthetic-value"), {
 		code: "ECONNREFUSED",
-		subject: "libsql://team.example.invalid",
+		subject: "postgres://atomic@team.example.invalid/atomic",
 		hint: "Check the URL.",
 		retryable: true,
 	});
@@ -803,7 +804,7 @@ test("a serialized cause rehydrates as a team error only with a string code and 
 	assert.equal(levels, 8);
 });
 
-test("a malformed settings file reaches getTeamProfile and leaveTeam callers, serialized, without its content (#4320)", async () => {
+test("a malformed settings file reaches getTeamProfile callers, serialized, without its content (#4320)", async () => {
 	const credential = "sk-synthetic-team-credential";
 	const root = makeTempDirectory("team-errors-");
 	try {
@@ -812,16 +813,12 @@ test("a malformed settings file reaches getTeamProfile and leaveTeam callers, se
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(cwd, { recursive: true });
 		const settingsPath = join(agentDir, "settings.json");
-		const malformed = `{"storage": {"adapter": "libsql", "token": ${credential}}}`;
+		const malformed = `{"storage": {"adapter": "custom", "token": ${credential}}}`;
 		writeFileSync(settingsPath, malformed);
 
 		const thrown = [
 			await getTeamProfile({ agentDir, cwd }).then(
 				() => assert.fail("read malformed settings"),
-				(error: unknown) => error,
-			),
-			await leaveTeam({ agentDir, cwd }).then(
-				() => assert.fail("left with malformed settings"),
 				(error: unknown) => error,
 			),
 		];

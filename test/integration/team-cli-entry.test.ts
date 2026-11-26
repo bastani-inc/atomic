@@ -38,10 +38,7 @@ test(
 			});
 		const help = run("team", "--help");
 		assert.equal(help.exitCode, 0, help.stderr.toString());
-		assert.match(
-			help.stdout.toString(),
-			/^Usage:\n {2}atomic team join <url> \[--token-file <path>\] \[--prefix <prefix>\]/,
-		);
+		assert.match(help.stdout.toString(), /^Usage:\n {2}atomic team status \[--json\]\n/);
 		const unknown = run("team", "doctor");
 		assert.equal(unknown.exitCode, 1);
 		assert.match(unknown.stderr.toString(), /^Invalid team command: <command> \(unknown-command\)\./);
@@ -67,11 +64,11 @@ test(
 				},
 				timeout: CLI_TIMEOUT_MS,
 			});
-		const unknownProfile = start({ ATOMIC_PROFILE: "staging" });
-		assert.equal(unknownProfile.exitCode, 1);
-		assert.equal(
-			unknownProfile.stderr.toString(),
-			"Error: Invalid storage configuration: ATOMIC_PROFILE (unknown-profile). Set ATOMIC_PROFILE to ci, or unset it.\n",
+		const removedProfile = start({ ATOMIC_PROFILE: "staging" });
+		assert.equal(removedProfile.exitCode, 1);
+		assert.match(
+			removedProfile.stderr.toString(),
+			/^Error: Invalid storage configuration: ATOMIC_PROFILE \(libsql-removed\)\. ATOMIC_PROFILE is set, but the ATOMIC_PROFILE=ci team profile/,
 		);
 		const invalid: Record<string, string>[] = [
 			{ ATOMIC_TEAM_URL: "libsql://team.example.turso.io" },
@@ -83,7 +80,7 @@ test(
 			assert.equal(failed.exitCode, 1, stderr);
 			assert.match(
 				stderr,
-				/^Error: Invalid storage configuration: ATOMIC_(PROFILE|STORAGE) \((incomplete-profile|invalid-json)\)/,
+				/^Error: Invalid storage configuration: ATOMIC_(TEAM_URL|STORAGE) \((libsql-removed|invalid-json)\)/,
 			);
 			assert.equal(stderr.trimEnd().split("\n").length, 1, stderr);
 		}

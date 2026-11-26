@@ -1,7 +1,7 @@
 /**
  * `atomic storage status` shows which storage each domain (sessions, Intercom) selects, where the selection comes
  * from, whether its adapter loads and its database answers, and what the running Intercom broker uses. `atomic storage
- * join` points this machine's global `storage` setting at a shared libSQL / Turso or PostgreSQL database. `atomic
+ * join` points this machine's global `storage` setting at a shared PostgreSQL database. `atomic
  * storage export` and `atomic storage import` move sessions between their storage and JSONL files (#4716, #4720).
  */
 
@@ -27,10 +27,6 @@ import { StorageProvider, type StorageSelection } from "../core/storage/provider
 import {
 	type CheckedSharedDatabase,
 	checkSharedDatabaseArguments,
-	isFileUrl,
-	isPostgresUrl,
-	LIBSQL_ADAPTER_PACKAGE,
-	missingTeamToken,
 	POSTGRES_ADAPTER_PACKAGE,
 	type PostgresAuth,
 	STORAGE_TOKEN_FILE,
@@ -56,7 +52,9 @@ import {
 } from "../core/storage/transfer-files.js";
 import { importStorage, sessionsTransferDirectory } from "../core/storage-transfer.ts";
 
-export { LIBSQL_ADAPTER_PACKAGE, STORAGE_TOKEN_FILE };
+/** Removed with libSQL support; see `core/storage/libsql-removed.ts` for why it is still exported. */
+export { LIBSQL_ADAPTER_PACKAGE } from "../core/storage/libsql-removed.js";
+export { STORAGE_TOKEN_FILE };
 
 const JOIN_USAGE = `${APP_NAME} storage join <url> [--token-file <path> | --password-file <path> | --auth azure|aws|gcp]
                             [--prefix <prefix>]`;
@@ -79,9 +77,8 @@ Commands:
            whether its adapter loads, whether its database answers a SELECT 1, and what the running
            Intercom broker uses. Exits 1 when a selection is invalid, an adapter cannot load, or a
            database does not answer. Nothing is created or changed.
-  join     Use a shared database on this machine: a libSQL / Turso database (libsql://, https://,
-           wss:// or file:) through ${LIBSQL_ADAPTER_PACKAGE}, or a PostgreSQL database
-           (postgres:// or postgresql://) through ${POSTGRES_ADAPTER_PACKAGE}. Checks the credential
+  join     Use a shared PostgreSQL database (postgres:// or postgresql://) on this machine through
+           ${POSTGRES_ADAPTER_PACKAGE}. Checks the credential
            and the connection (SELECT 1, within 15 seconds), then writes only the global \`storage\`
            setting; nothing is written when a check fails. A token or --password-file is stored in
            the agent directory (mode 600); --token-file is referenced where it is, and read again
@@ -100,7 +97,7 @@ Commands:
   export   Write sessions to <dir>/sessions/<sessionId>.jsonl (session format version
            ${SESSION_FORMAT_VERSION}, the format \`${APP_NAME} --import\` reads), one file per session.
            Each file is replaced whole, one that already holds the same bytes is not rewritten, and
-           no file is deleted. Sessions kept in a shared libSQL / Turso or PostgreSQL database are
+           no file is deleted. Sessions kept in a shared PostgreSQL database are
            refused: every machine joined to it reads them already. Name the database with
            --storage or --storage-file to export from it anyway.
   import   Restore the sessions in <dir>/sessions into this directory's storage, or the one
@@ -111,17 +108,14 @@ Commands:
 
 Options:
   --json                Print the status as JSON
-  --token-file <path>   libSQL: file holding the database token, for example from \`turso db tokens create\`;
-                        surrounding whitespace is removed. Required except for file: URLs.
-                        PostgreSQL: a password or token file another process keeps fresh (a Vault agent,
-                        a workload-identity sidecar); its path is saved and it is read for every new connection
+  --token-file <path>   A password or token file another process keeps fresh (a Vault agent, a
+                        workload-identity sidecar); its path is saved and it is read for every new connection
   --password-file <path>
-                        PostgreSQL: file holding the database password; it is copied to the agent directory
-                        (mode 600)
-  --auth azure|aws|gcp  PostgreSQL: use the platform's identity (Microsoft Entra ID, AWS IAM, Google Cloud
-                        IAM) instead of a password
-                        PostgreSQL URLs take exactly one of --password-file, --token-file and --auth, and
-                        never a password in the URL
+                        File holding the database password; it is copied to the agent directory (mode 600)
+  --auth azure|aws|gcp  Use the platform's identity (Microsoft Entra ID, AWS IAM, Google Cloud IAM)
+                        instead of a password
+                        A URL takes exactly one of --password-file, --token-file and --auth, and never a
+                        password in the URL
   --prefix <prefix>     Table prefix, to share one database between projects or teams
   --sessions            export, import: sessions, which is all they move
   --limit <n>           export: at most n sessions, most recently modified first
@@ -246,7 +240,6 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 			passwordFile: values.get("--password-file"),
 			auth: values.get("--auth"),
 		});
-		if (!isPostgresUrl(url) && checked.tokenFile === undefined && !isFileUrl(url)) throw missingTeamToken(url, "cli");
 		const prefix = values.get("--prefix");
 		return { kind: "join", ...checked, ...(prefix === undefined ? {} : { prefix }) };
 	}
@@ -419,6 +412,7 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 					`  adapter:     ${probe.adapter.loaded ? "loaded" : "failed to load"}${probe.adapter.detail === undefined ? "" : ` (${probe.adapter.detail})`}`,
 				);
 			}
+			if (probe.library !== undefined) lines.push(`  library:     ${probe.library}`);
 			lines.push(`  connection:  ${probe.connection.status} (${probe.connection.detail})`);
 		}
 		if (domain.multiNode !== undefined) lines.push(`  multi-node:  ${domain.multiNode}`);
@@ -448,7 +442,7 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 			lines.push(
 				broker.matchesCurrent
 					? "  storage:     matches the selection above"
-					: `  storage:     differs from the selection above${broker.source === "env" ? " (a session started it with ATOMIC_STORAGE, ATOMIC_PROFILE=ci or --storage)" : ""}; run \`${APP_NAME} intercom restart\` to use the current one`,
+					: `  storage:     differs from the selection above${broker.source === "env" ? " (a session started it with ATOMIC_STORAGE or --storage)" : ""}; run \`${APP_NAME} intercom restart\` to use the current one`,
 			);
 			if (broker.multiNodeLine !== undefined) lines.push(`  multi-node:  ${broker.multiNodeLine}`);
 		}
@@ -478,14 +472,13 @@ async function joinStorage(
 	log: (...lines: string[]) => void,
 ): Promise<number> {
 	const { agentDir, cwd } = options;
-	const joined = await joinSharedDatabase({ ...command, agentDir, cwd, pinLocalSessions: false }, "cli");
+	const joined = await joinSharedDatabase({ ...command, agentDir, cwd }, "cli");
 	log(`Connected to ${command.url}.`);
-	const secret = command.passwordFile === undefined ? "token" : "password";
 	if (joined.tokenPath !== undefined) {
 		log(
 			joined.token === "reused"
-				? `Kept the ${secret} in ${joined.tokenPath}; it already holds this ${secret}.`
-				: `Stored the ${secret} in ${joined.tokenPath} (mode 600).`,
+				? `Kept the password in ${joined.tokenPath}; it already holds this password.`
+				: `Stored the password in ${joined.tokenPath} (mode 600).`,
 		);
 	}
 	if (joined.referencedFile !== undefined)
@@ -603,14 +596,11 @@ async function loadBrokerStateModule(): Promise<BrokerStateModule> {
 
 /** Select an explicit migration target without reading credentials into settings or command output. */
 function migrateDatabaseSelection(database: MigrationDatabase, cwd: string): StorageSettingsSelection {
-	const postgres = isPostgresUrl(database.url);
 	const credentialFile = database.passwordFile ?? database.tokenFile;
 	return {
-		adapter: postgres ? POSTGRES_ADAPTER_PACKAGE : LIBSQL_ADAPTER_PACKAGE,
+		adapter: POSTGRES_ADAPTER_PACKAGE,
 		options: { url: database.url, ...(database.auth === undefined ? {} : { auth: database.auth }) },
-		...(credentialFile === undefined
-			? {}
-			: { secrets: { [postgres ? "password" : "authToken"]: { file: resolve(cwd, credentialFile) } } }),
+		...(credentialFile === undefined ? {} : { secrets: { password: { file: resolve(cwd, credentialFile) } } }),
 		...(database.prefix === undefined ? {} : { prefix: database.prefix }),
 	};
 }
@@ -630,7 +620,7 @@ async function migrate(
 		settings === undefined ? effectiveSharedSelection(cwd, agentDir) : selectStorage(settings, "cli", "--db", "");
 	if (selection === undefined) {
 		log(
-			`No shared storage is selected here (the \`storage\` setting, --storage, ATOMIC_STORAGE or ATOMIC_PROFILE=ci), so there is nothing to migrate; name a database with --db.`,
+			`No shared storage is selected here (the \`storage\` setting, --storage or ATOMIC_STORAGE), so there is nothing to migrate; name a database with --db.`,
 		);
 		return 0;
 	}
@@ -721,7 +711,7 @@ type Transfer<T> = { readonly target: T } | { readonly refused: string };
 
 /**
  * The session storage this directory selects, as a session started here would open it: the default database, a JSONL
- * directory, a SQLite file or an adapter. A shared libSQL / Turso or PostgreSQL database is refused, and so is
+ * directory, a SQLite file or an adapter. A shared PostgreSQL database is refused, and so is
  * in-memory storage, which keeps nothing. Undefined target for an export when nothing has been stored yet, so an
  * export creates no database.
  */
@@ -753,10 +743,7 @@ async function sessionTransfer(
 			return {
 				refused: `${APP_NAME} storage ${command} needs stored sessions, but sessions here use ${describeStorageSelection(selection)}, which keeps nothing.`,
 			};
-		if (
-			selection.kind === "adapter" &&
-			(selection.module === LIBSQL_ADAPTER_PACKAGE || selection.module === POSTGRES_ADAPTER_PACKAGE)
-		)
+		if (selection.kind === "adapter" && selection.module === POSTGRES_ADAPTER_PACKAGE)
 			return {
 				refused: `${APP_NAME} storage ${command} works with local session storage, but sessions here use ${describeStorageSelection(selection)}. A shared database already holds the sessions of every machine joined to it, so there is nothing to export or import; use its own backups, or name it with --storage or --storage-file to copy sessions out of it or into it.`,
 			};

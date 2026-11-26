@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
@@ -10,10 +11,8 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { countingDatabase } from "../helpers/counting-database.js";
 import { seedLegacyWorkflowTables } from "../helpers/legacy-store-0990.js";
-import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { ageBlobs, dropSnapshotIndex, syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -26,10 +25,6 @@ useTemporaryAgentDir();
 
 const subjects = [
 	{ name: "SQLite", open: (directory: string) => openNodeSqliteDatabase(join(directory, "journal.sqlite")) },
-	{
-		name: "libSQL",
-		open: (directory: string) => openLibsqlDatabase({ url: pathToFileURL(join(directory, "journal.db")).href }),
-	},
 ] as const;
 
 type Subject = (typeof subjects)[number];
@@ -37,11 +32,11 @@ type Subject = (typeof subjects)[number];
 let directory: string;
 const closers: Array<() => Promise<void>> = [];
 beforeEach(() => {
-	directory = makeLibsqlDirectory("snapshot-carried-refs-");
+	directory = mkdtempSync(join(tmpdir(), "snapshot-carried-refs-"));
 });
 afterEach(async () => {
 	while (closers.length > 0) await closers.pop()?.();
-	await removeLibsqlDirectory(directory);
+	rmSync(directory, { recursive: true, force: true });
 });
 
 /** Write raw legacy pool rows; assertions inspect the current snapshot store, not a workflow worker. */

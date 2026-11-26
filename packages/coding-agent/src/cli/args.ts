@@ -377,7 +377,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} auth <command>            Log in or out, print credentials, or check provider readiness
   ${APP_NAME} mcp <command>             Configure MCP servers, check connections, and sign in
   ${APP_NAME} storage <command>         Show storage selections and connectivity, or join a shared database
-  ${APP_NAME} team <command>            Join or leave a team database (shared Intercom, private sessions)
+  ${APP_NAME} team <command>            Show the storage layout in effect (individual, team, ci or custom)
   ${APP_NAME} intercom <command>        Show or restart this machine's Intercom broker
   ${APP_NAME} blueprint cache-key       Print cache keys and paths for a runner's cache action (actions/cache)
   ${APP_NAME} blueprint prebuild        Prebuild a repository into an idle worktree for later resume
@@ -565,11 +565,6 @@ ${chalk.bold("Environment Variables:")}
   PI_* aliases are also supported for app-specific variables above.
   ATOMIC_STORAGE                   - Shared storage selection JSON for sessions and Intercom (overridden by --storage)
   ATOMIC_SESSIONS_STORAGE          - Session-only storage selection JSON (cannot be combined with ${ENV_SESSION_DIR})
-  ATOMIC_PROFILE                   - ci: use the team database for sessions and Intercom without settings
-  ATOMIC_TEAM_URL                  - Team database URL for ATOMIC_PROFILE=ci
-  ATOMIC_TEAM_TOKEN                - Team database token for ATOMIC_PROFILE=ci (or ATOMIC_TEAM_TOKEN_FILE)
-  ATOMIC_TEAM_TOKEN_FILE           - File holding the team database token for ATOMIC_PROFILE=ci
-  ATOMIC_TEAM_PREFIX               - Team table prefix for ATOMIC_PROFILE=ci
 
 ${chalk.bold("Built-in Tool Names:")}
 ${formatBuiltinToolHelpLines()}

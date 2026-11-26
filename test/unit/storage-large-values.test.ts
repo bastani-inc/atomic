@@ -23,15 +23,14 @@ import {
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
 
-import { withLibsqlDatabase } from "../helpers/libsql-database.js";
 import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { rowLimitedDatabase } from "../helpers/row-limited-database.js";
 import { withCallerThreadSqliteDatabase, withNodeSqliteDatabase } from "../helpers/storage-database.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 /**
- * Values larger than a libSQL server takes (#4954), on a SQLite file behind a wrapper that refuses what such a server
- * refuses for size: values over one chunk, and responses over two and a half. Every store must stay within both.
+ * Values larger than a database server takes (#4954), on a SQLite file behind a wrapper that refuses what such a
+ * server refuses for size: values over one chunk, and responses over two and a half. Every store must stay within both.
  */
 
 useTemporaryAgentDir();
@@ -59,7 +58,7 @@ async function list(store: SqlSessionStore): Promise<SessionSummary[]> {
 	return Array.fromAsync(store.list({ includeInternal: true }));
 }
 
-describe("a session store under a libSQL server's size limits (#4954)", () => {
+describe("a session store under a database server's size limits (#4954)", () => {
 	test("long entries are stored in chunks of at most 1 MiB and a long session loads in pages (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
 			const limited = rowLimitedDatabase(database, LIMITS);
@@ -633,7 +632,7 @@ describe("listing text is bounded the same way by every store (#4954)", () => {
 	});
 });
 
-describe("snapshot blobs under a libSQL server's size limits (#4954)", () => {
+describe("snapshot blobs under a database server's size limits (#4954)", () => {
 	const blobOf = (hash: string, size: number) => ({
 		hash,
 		data: Uint8Array.from({ length: size }, (_, index) => (index * 7 + size) % 251),
@@ -703,7 +702,7 @@ describe("snapshot blobs under a libSQL server's size limits (#4954)", () => {
 
 describe("a database written with chunked entries is refused by older builds (#4954)", () => {
 	/**
-	 * What an older build checks when it opens the session tables of a SQLite or libSQL database: every row of the
+	 * What an older build checks when it opens the session tables of a SQLite database: every row of the
 	 * sessions meta table must hold the one schema version it knows, 1. Builds before 2 check the same row on Postgres.
 	 */
 	async function openAsOlderBuild(database: SqliteDatabase): Promise<void> {
@@ -713,10 +712,7 @@ describe("a database written with chunked entries is refused by older builds (#4
 		for (const row of rows) assertStorageSchemaVersion("sessions", row.schema_version, 1);
 	}
 
-	for (const [name, withDatabase] of [
-		["SQLite", withNodeSqliteDatabase],
-		["libSQL", withLibsqlDatabase],
-	] as const) {
+	for (const [name, withDatabase] of [["SQLite", withNodeSqliteDatabase]] as const) {
 		test(`a 2 MB entry written to ${name} cannot be read by an older build as a stub (#4954)`, async () => {
 			await withDatabase(async ({ database, reopen }) => {
 				const store = await SqlSessionStore.open(database);

@@ -105,6 +105,11 @@ export interface SqliteDriverTransactionOptions {
 	 * row it returns, instead of with the begin.
 	 */
 	readonly lockIfLeadingFinds?: boolean;
+	/**
+	 * Optional. `SqliteTransactionOptions.relaxedDurability`, never set on a read-only transaction: the driver may answer
+	 * the commit before the transaction reaches disk.
+	 */
+	readonly relaxedDurability?: boolean;
 }
 
 /** The driver calls `createSqliteDatabase` turns into a `SqliteDatabase`. */
@@ -188,7 +193,7 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	/**
 	 * Optional. The bytes this process may still write on the file system that holds the database's file, or undefined
 	 * when the file system does not say; the facade exposes it as `SqliteDatabase.freeBytes`. Provide it only for a
-	 * database in a file this process can see, such as a local SQLite or libSQL file.
+	 * database in a file this process can see, such as a local SQLite file.
 	 */
 	freeBytes?(): Awaitable<number | undefined>;
 	/**
@@ -1178,6 +1183,7 @@ class DriverDatabase implements SqliteDatabase {
 				: {}),
 			// `leading` holds the first statement whenever it holds any.
 			...(options?.lockIfLeadingFinds === true && leading.length > 0 ? { lockIfLeadingFinds: true } : {}),
+			...(options?.relaxedDurability === true && options.readOnly !== true ? { relaxedDurability: true } : {}),
 		};
 		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
 		const concurrentWrites = this.driver.concurrentTransactions === true;

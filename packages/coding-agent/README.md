@@ -19,7 +19,7 @@
 
 Atomic is a terminal coding-agent runtime. Use built-in tools for file edits and shell commands, [codemode](docs/codemode.md) to script multi-step checks, and [subagents](docs/subagents.md) to delegate work to isolated contexts. Extend Atomic with TypeScript [extensions](#extensions), [skills](#skills), [prompt templates](#prompt-templates), and [themes](#themes), or share them as [Atomic packages](#atomic-packages) via npm or git.
 
-Atomic bundles first-party integrations for [subagents](docs/subagents.md), [MCP servers](docs/mcp-servers.md), [web access](docs/web-access.md), and [Intercom](docs/intercom.md). Sessions save to local SQLite by default or share state across machines over PostgreSQL or libSQL/Turso ([Storage](docs/storage.md)), with [worktree snapshots](docs/worktree-snapshots.md) and [environment blueprints](docs/guides/resume-on-any-machine.md#set-the-environment-up-with-a-blueprint) for cross-machine resume. See [Orchestration](docs/orchestration.md) for multi-step tasks and [Migrating workflows](docs/orchestration/migrating-workflows.md) to convert an earlier workflow file to a skill.
+Atomic bundles first-party integrations for [subagents](docs/subagents.md), [MCP servers](docs/mcp-servers.md), [web access](docs/web-access.md), and [Intercom](docs/intercom.md). Sessions save to local SQLite by default or share state across machines over PostgreSQL ([Storage](docs/storage.md)), with [worktree snapshots](docs/worktree-snapshots.md) and [environment blueprints](docs/guides/resume-on-any-machine.md#set-the-environment-up-with-a-blueprint) for cross-machine resume. See [Orchestration](docs/orchestration.md) for multi-step tasks and [Migrating workflows](docs/orchestration/migrating-workflows.md) to convert an earlier workflow file to a skill.
 
 Run Atomic interactively, in print or JSON mode, over RPC for process integration, or embedded through the TypeScript SDK.
 
@@ -215,7 +215,7 @@ Sessions store an append-only tree of entries (`id` and `parentId`), enabling in
 
 ### Management
 
-Sessions auto-save per working directory in the default local SQLite store (`~/.atomic/workflows/journal.sqlite`), or in a shared PostgreSQL or Turso/libSQL database via [Storage backends](docs/storage.md). Legacy `~/.atomic/agent/sessions/` and `~/.pi/agent/sessions/` JSONL files remain readable.
+Sessions auto-save per working directory in the default local SQLite store (`~/.atomic/workflows/journal.sqlite`), or in a shared PostgreSQL database via [Storage backends](docs/storage.md). Legacy `~/.atomic/agent/sessions/` and `~/.pi/agent/sessions/` JSONL files remain readable.
 
 ```bash
 atomic -c                    # Continue the most recent session
@@ -428,7 +428,7 @@ See [docs/packages.md](docs/packages.md).
 import { createAgentSession } from "@bastani/atomic";
 
 // Builds a ModelRuntime from the active agent directory's auth.json and models.json by default.
-// Pass `sessionStore` for SQLite, JSONL, in-memory, libSQL/Turso, or PostgreSQL persistence.
+// Pass `sessionStore` for SQLite, JSONL, in-memory, or PostgreSQL persistence.
 const { session } = await createAgentSession({
   sessionStore: { kind: "sqlite", path: "./sessions.sqlite" },
 });
@@ -440,7 +440,7 @@ try {
 }
 ```
 
-- **Storage backends:** Configure SQLite, JSONL, in-memory, libSQL/Turso (`@bastani/atomic-storage-libsql`), and PostgreSQL 16+ (`@bastani/atomic-storage-postgres`) with `createAgentSession()` or `createAgentSessionRuntime()`. See [SDK storage backends](docs/sdk/storage.md) ([docs.bastani.ai/sdk/storage](https://docs.bastani.ai/sdk/storage)).
+- **Storage backends:** Configure SQLite, JSONL, in-memory, and PostgreSQL 16+ (`@bastani/atomic-storage-postgres`) with `createAgentSession()` or `createAgentSessionRuntime()`. See [SDK storage backends](docs/sdk/storage.md) ([docs.bastani.ai/sdk/storage](https://docs.bastani.ai/sdk/storage)).
 - **Structured decisions:** Make typed, schema-validated classifier or chat decisions without starting a session using `decide()` and `generateStructuredOutput()`. See [Structured decisions](docs/sdk/structured-decisions.md).
 - **Multi-session runtimes and guides:** See [docs/sdk.md](docs/sdk.md), [docs/sdk/web-server.md](docs/sdk/web-server.md), and [examples/sdk/](examples/sdk/).
 
@@ -627,8 +627,6 @@ When both an `ATOMIC_*` variable and its legacy `PI_*` alias are set, the `ATOMI
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | Non-empty value selects a JSONL session directory (overridden by `--session-dir` and `--no-session`; no legacy `PI_*` alias). |
 | `ATOMIC_STORAGE` | Shared storage selection JSON for sessions and Intercom. |
 | `ATOMIC_SESSIONS_STORAGE` | Session-only storage selection JSON (conflicts with `ATOMIC_CODING_AGENT_SESSION_DIR`). |
-| `ATOMIC_PROFILE` | Set to `ci` to select the team database from `ATOMIC_TEAM_*` without writing settings. |
-| `ATOMIC_TEAM_URL`, `ATOMIC_TEAM_TOKEN`, `ATOMIC_TEAM_TOKEN_FILE`, `ATOMIC_TEAM_PREFIX` | Team database settings used with `ATOMIC_PROFILE=ci`. |
 | `ATOMIC_PACKAGE_DIR` | Override package directory (for Nix/Guix store paths; legacy `PI_PACKAGE_DIR`). |
 | `ATOMIC_OFFLINE` | Set to `1`, `true`, or `yes` to disable startup network calls (`0`/`false` stays online; legacy `PI_OFFLINE`). |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip startup version check (legacy `PI_SKIP_VERSION_CHECK`). |
@@ -666,5 +664,4 @@ MIT
 - [@bastani/atomic-codemode](https://www.npmjs.com/package/@bastani/atomic-codemode): Sandboxed JavaScript execution for tool scripting
 - [@bastani/atomic-schema](https://www.npmjs.com/package/@bastani/atomic-schema): TypeScript-first JSON Schema builder and validator
 - [@bastani/atomic-telemetry](https://www.npmjs.com/package/@bastani/atomic-telemetry): Vendor-neutral telemetry contracts, metrics, and trace renderers ([docs](docs/libraries/telemetry.md))
-- [@bastani/atomic-storage-libsql](https://www.npmjs.com/package/@bastani/atomic-storage-libsql): Optional Turso / libSQL storage adapter ([docs](docs/libraries/storage-libsql.md))
 - [@bastani/atomic-storage-postgres](https://www.npmjs.com/package/@bastani/atomic-storage-postgres): Optional PostgreSQL 16+ storage adapter ([docs](docs/libraries/storage-postgres.md))

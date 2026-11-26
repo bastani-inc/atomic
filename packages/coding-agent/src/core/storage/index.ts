@@ -43,6 +43,19 @@ export {
 	workflowsStorageDir,
 	workflowsStorageDirAsync,
 } from "./file-identity.js";
+// Removed with libSQL support; see libsql-removed.ts for why they are still exported.
+export {
+	joinTeam,
+	LIBSQL_ADAPTER_PACKAGE,
+	leaveTeam,
+	SHARED_STORAGE_JOIN_HINT,
+	TEAM_PREFIX_ENV,
+	TEAM_PROFILE_ENV,
+	TEAM_TOKEN_ENV,
+	TEAM_TOKEN_FILE_ENV,
+	TEAM_URL_ENV,
+	teamProfileSelection,
+} from "./libsql-removed.js";
 export * from "./migrations.js";
 export {
 	DEFAULT_GROUP_COMMIT_HOLD_MS,
@@ -69,24 +82,13 @@ export {
 	type InMemorySecretRef,
 	inMemorySecret,
 	isPostgresUrl,
-	joinTeam,
-	LIBSQL_ADAPTER_PACKAGE,
 	LOCAL_SESSIONS_STORAGE,
-	leaveTeam,
 	POSTGRES_ADAPTER_PACKAGE,
 	REDACTED_SECRET,
 	type StorageInputSelection,
 	type StorageSettingsSelection,
 	selectStorage,
 	selectStorageAsync,
-	TEAM_PREFIX_ENV,
-	TEAM_PROFILE_ENV,
-	TEAM_TOKEN_ENV,
-	TEAM_TOKEN_FILE_ENV,
-	TEAM_URL_ENV,
-	type TeamProfileSelectionOptions,
-	type TeamStorageSelection,
-	teamProfileSelection,
 } from "./selection.js";
 export type { ExpandedChildCall, ExpandedChildDetails } from "./session/expanded-child-details.js";
 export async function readExpandedChildDetails(
@@ -153,16 +155,5 @@ export type {
 	SessionUsageTotals,
 } from "./session/types.js";
 export * from "./sqlite-facade.js";
-export type {
-	JoinTeamOptions,
-	LeaveTeamOptions,
-	TeamBrokerRestart,
-	TeamJoinResult,
-	TeamKeptSetting,
-	TeamLeaveResult,
-	TeamProfile,
-	TeamProfileName,
-	TeamProfileOptions,
-	TeamSettingKey,
-} from "./team.js";
+export type { TeamProfile, TeamProfileName, TeamProfileOptions } from "./team.js";
 export { switchToWriteAheadLog } from "./write-ahead-log.js";

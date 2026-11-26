@@ -92,3 +92,31 @@ test("renewMany renews membership and multiple presence leases in a single SQLit
 		removeTempDirectory(directory);
 	}
 });
+
+test("only renewals commit without waiting for the disk: acquisitions and releases stay durable (#6560)", async () => {
+	const directory = makeTempDirectory("intercom-sql-leases-durability-");
+	const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+	try {
+		const store = await openSqlBrokerLeaseStore({ database, prefix: "" });
+		const txSpy = vi.spyOn(database, "transaction");
+		const relaxed = () => txSpy.mock.calls.map(([, options]) => options?.relaxedDurability === true);
+		const subject = { kind: "broker", brokerId: "broker-a", nodeId: "host-a", startedAt: 1 } as const;
+		const acquired = await store.acquire(subject, "broker-a", 30_000);
+		assert.equal(acquired.status, "acquired");
+		assert.ok(relaxed().length > 0 && relaxed().every((flag) => !flag), "an acquisition is durable");
+		txSpy.mockClear();
+		assert.equal((await store.renew(acquired.lease)).status, "renewed");
+		assert.equal((await store.renew(acquired.lease, subject)).status, "renewed");
+		assert.deepEqual(
+			(await store.renewMany!([{ lease: acquired.lease }])).map((result) => result.status),
+			["renewed"],
+		);
+		assert.deepEqual(relaxed(), [true, true, true]);
+		txSpy.mockClear();
+		assert.equal((await store.release(acquired.lease)).status, "released");
+		assert.deepEqual(relaxed(), [false]);
+	} finally {
+		await database.close();
+		removeTempDirectory(directory);
+	}
+});

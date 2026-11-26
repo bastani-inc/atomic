@@ -22,6 +22,20 @@ Use `npm install` to add dependencies. Keep `package-lock.json` as the only lock
 
 `npm ci --ignore-scripts` skips Git hook setup. Run `npm run hooks:install` to install the hooks from [`prek.toml`](prek.toml).
 
+## Git worktrees
+
+To work on several branches at once, add a [Git worktree](https://git-scm.com/docs/git-worktree) and set it up from inside it:
+
+```bash
+git worktree add -b my-branch ../atomic-worktrees/my-branch origin/main
+cd ../atomic-worktrees/my-branch
+node scripts/worktree-setup.mjs
+```
+
+When the worktree's `package-lock.json` matches the main checkout's, the script links the main checkout's installed packages instead of installing them again. The workspace packages, `.bin` entries, Vitest and the build caches stay in the worktree. When the lockfiles differ, it runs `npm ci --ignore-scripts` in the worktree instead. Either way it finishes with `npm run build`; pass `--no-build` to skip that. Rerun it after the lockfile changes on either side.
+
+Don't link the whole `node_modules` directory to the main checkout. The workspace packages would then resolve to the main checkout's `packages/`, so tests that start child processes would run the main checkout's build. Vitest also fails some imports with `Cannot find module '<worktree>/string_decoder'`. The test suites refuse to start in a worktree set up that way.
+
 ## Build
 
 ```bash

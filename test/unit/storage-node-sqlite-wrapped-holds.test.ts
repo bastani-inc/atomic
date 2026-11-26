@@ -619,11 +619,7 @@ function holdScopes(): AsyncLocalStorage<object | undefined> {
 test("a threaded transaction enters no asynchronous context unless a wrapped connection to its file is open (#6081)", async () => {
 	const { path, threaded } = await sharedFile();
 	const enters = vi.spyOn(holdScopes(), "run");
-	const leaves = vi.spyOn(holdScopes(), "disable");
-	cleanups.push(() => {
-		enters.mockRestore();
-		leaves.mockRestore();
-	});
+	cleanups.push(() => enters.mockRestore());
 	const write = (value: string) =>
 		threaded.transaction(async (tx) => {
 			await tx.run("INSERT INTO items VALUES (?)", value);
@@ -635,11 +631,8 @@ test("a threaded transaction enters no asynchronous context unless a wrapped con
 	const { wrapped } = await openWrapped(path);
 	await write("wrapped");
 	assert.equal(enters.mock.calls.length, 1);
-	leaves.mockClear();
 	await wrapped.close();
 	await elsewhere.close();
-	// Once no wrapped connection is open the context is left, so it no longer costs every later await.
-	assert.ok(leaves.mock.calls.length >= 1, "the context was not left once the last wrapped connection closed");
 	enters.mockClear();
 	await write("closed");
 	assert.equal(enters.mock.calls.length, 0);

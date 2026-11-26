@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { runIntercomCommand } from "../../packages/coding-agent/src/cli/intercom-command.js";
 import { runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
@@ -12,38 +10,26 @@ import type {
 	RestartOutcome,
 } from "../../packages/coding-agent/src/core/intercom-broker-control.js";
 import {
-	LIBSQL_ADAPTER_PACKAGE,
 	LOCAL_SESSIONS_STORAGE,
+	POSTGRES_ADAPTER_PACKAGE,
 } from "../../packages/coding-agent/src/core/storage/selection.js";
 import { ProjectTrustStore } from "../../packages/coding-agent/src/core/trust-manager.js";
-import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
-import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
-/** Loading the libSQL package adapter through jiti and opening a `file:` database. */
-const LIBSQL_SCENARIO_TIMEOUT_MS = 60_000;
-const packageRoot = resolve(moduleDir(import.meta.url), "../../packages/storage-libsql");
 const VARIABLES = [
 	"ATOMIC_STORAGE",
 	"ATOMIC_SESSIONS_STORAGE",
 	"ATOMIC_WORKFLOWS_JOURNAL",
 	"ATOMIC_CODING_AGENT_SESSION_DIR",
 	"ATOMIC_WORKFLOW_JOURNAL_PATH",
-	"ATOMIC_PROFILE",
-	"ATOMIC_TEAM_URL",
-	"ATOMIC_TEAM_TOKEN",
-	"ATOMIC_TEAM_TOKEN_FILE",
-	"ATOMIC_TEAM_PREFIX",
 ];
 
 let root: string;
 let agentDir: string;
 let project: string;
-let databaseDirectory: string;
-let databaseUrl: string;
-let tokenFile: string;
 let restarts: string[];
 
-beforeEach(async () => {
+beforeEach(() => {
 	for (const name of VARIABLES) vi.stubEnv(name, "");
 	root = makeTempDirectory("team-transcript-");
 	agentDir = join(root, "agent");
@@ -51,19 +37,12 @@ beforeEach(async () => {
 	mkdirSync(agentDir, { recursive: true });
 	mkdirSync(project, { recursive: true });
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
-	databaseDirectory = makeLibsqlDirectory();
-	const path = join(databaseDirectory, "team.sqlite");
-	databaseUrl = pathToFileURL(path).href;
-	await (await openNodeSqliteDatabase(path)).close();
-	tokenFile = join(root, "token");
-	writeFileSync(tokenFile, "transcript-token\n");
 	restarts = [];
 });
 
-afterEach(async () => {
+afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
-	await removeLibsqlDirectory(databaseDirectory);
 	removeTempDirectory(root);
 });
 
@@ -115,19 +94,11 @@ function writeSettings(settings: object): void {
 
 describe("atomic team output (#4320)", () => {
 	test("parses every command and option exactly (#4320)", () => {
-		for (const args of [[], ["help"], ["--help"], ["status", "-h"], ["leave", "--help"]]) {
+		for (const args of [[], ["help"], ["--help"], ["status", "-h"], ["join", "--help"]]) {
 			assert.deepEqual(parseTeamCommand(args), { kind: "help" }, args.join(" "));
 		}
 		assert.deepEqual(parseTeamCommand(["status"]), { kind: "status", json: false });
 		assert.deepEqual(parseTeamCommand(["status", "--json"]), { kind: "status", json: true });
-		assert.deepEqual(parseTeamCommand(["leave"]), { kind: "leave" });
-		assert.deepEqual(parseTeamCommand(["join", "libsql://db"]), { kind: "join", url: "libsql://db" });
-		assert.deepEqual(parseTeamCommand(["join", "--prefix", "t_", "libsql://db", "--token-file", "f"]), {
-			kind: "join",
-			url: "libsql://db",
-			tokenFile: "f",
-			prefix: "t_",
-		});
 		const rejects = (args: string[], message: string) =>
 			assert.throws(
 				() => parseTeamCommand(args),
@@ -136,28 +107,31 @@ describe("atomic team output (#4320)", () => {
 			);
 		rejects(
 			["doctor"],
-			'Invalid team command: <command> (unknown-command). Use join, status or leave. Use "atomic team --help" for usage.',
+			'Invalid team command: <command> (unknown-command). Use status. Use "atomic team --help" for usage.',
 		);
 		rejects(
 			["status", "--prefix", "x"],
 			'Invalid team command: --prefix (unknown-option). "atomic team status" does not take it. Use "atomic team --help" for usage.',
 		);
 		rejects(
-			["leave", "--json"],
-			'Invalid team command: --json (unknown-option). "atomic team leave" does not take it. Use "atomic team --help" for usage.',
-		);
-		rejects(
-			["join", "libsql://db", "--prefix"],
-			"Invalid team command: --prefix (missing-value). Pass a value after --prefix.",
-		);
-		rejects(
-			["join"],
-			"Invalid storage configuration: <url> (missing-url). Pass the team database URL: atomic team join <url> [--token-file <path>] [--prefix <prefix>]",
-		);
-		rejects(
 			["status", "now"],
 			'Invalid team command: arguments after status (unexpected-argument). "atomic team status" takes none. Use "atomic team --help" for usage.',
 		);
+	});
+
+	test("team join and team leave were removed with libSQL and point to storage join on PostgreSQL", async () => {
+		for (const command of ["join", "leave"]) {
+			for (const args of [[command], [command, "libsql://db.example.turso.io", "--token-file", "token"]]) {
+				const result = await team(args, control({ status: "not-running" }));
+				assert.equal(result.code, 1, args.join(" "));
+				assert.equal(result.out, "");
+				assert.equal(
+					result.err,
+					`Invalid storage configuration: atomic team ${command} (libsql-removed). \`atomic team join\` and \`atomic team leave\` were removed with libSQL support in Atomic 0.10.11. To share sessions or Intercom routing, join a PostgreSQL database with atomic storage join postgres://…; to leave it, remove the \`storage\` setting. To move sessions off libSQL, see https://docs.bastani.ai/storage#moving-off-libsql`,
+				);
+			}
+		}
+		assert.deepEqual(restarts, []);
 	});
 
 	test("paths under the temp root are named <root> with forward slashes whatever the platform separator (#4320)", () => {
@@ -170,175 +144,12 @@ describe("atomic team output (#4320)", () => {
 	test("help goes to standard output by default (#4320)", async () => {
 		const printed = vi.spyOn(console, "log").mockImplementation(() => {});
 		assert.equal(await runTeamCommand(["--help"], { cwd: project, agentDir }), 0);
-		assert.match(String(printed.mock.calls[0]?.[0]), /^Usage:\n {2}atomic team join <url>/);
+		assert.match(String(printed.mock.calls[0]?.[0]), /^Usage:\n {2}atomic team status \[--json\]\n/);
+		assert.doesNotMatch(String(printed.mock.calls[0]?.[0]), /team join|team leave|libSQL/);
 		const failed = vi.spyOn(console, "error").mockImplementation(() => {});
 		assert.equal(await runTeamCommand(["doctor"], { cwd: project, agentDir }), 1);
 		assert.match(String(failed.mock.calls[0]?.[0]), /\(unknown-command\)/);
 	});
-
-	test(
-		"join prints what it wrote, the replaced selections, the restarted broker and the full status (#4320)",
-		async () => {
-			writeSettings({
-				packages: [packageRoot],
-				storage: { path: "old.sqlite" },
-				sessions: { storage: { dir: "sessions" } },
-			});
-			const restarted: RestartOutcome = {
-				status: "restarted",
-				previous: { pid: 101, sessions: 2 },
-				current: {
-					state: "running",
-					report: { pid: 202, sessions: 2, multiNode: { status: "on" } },
-				},
-			};
-			const result = await team(
-				["join", databaseUrl, "--token-file", tokenFile, "--prefix", "team_"],
-				control(restarted, "project:acme/alpha"),
-			);
-			assert.equal(result.err, "");
-			assert.equal(result.code, 0);
-			const url = databaseUrl.replaceAll(root, "<root>");
-			const lines = result.out.split("\n");
-			assert.deepEqual(lines.slice(0, 13), [
-				`Connected to ${url}.`,
-				"Stored the token in <root>/agent/storage-token.<id> (mode 600).",
-				"Set `storage` to the team database and `sessions.storage` to the local store in <root>/agent/settings.json; other settings are unchanged.",
-				"It replaces the previous selection: SQLite old.sqlite.",
-				"It replaces the previous `sessions.storage`: JSONL directory <root>/agent/sessions.",
-				"Stopping the Intercom broker (pid 101)",
-				"Restarted the Intercom broker: pid 101 → 202.",
-				"",
-				"Profile: team (sessions on this machine; Intercom on the team database)",
-				'Intercom group: sessions in <root>/project join "project:acme/alpha" unless ATOMIC_INTERCOM_GROUP or the Intercom config sets a group; sessions that are already running keep theirs until they restart.',
-				"",
-				"Agent directory: <root>/agent",
-				"Project: <root>/project",
-			]);
-			assert.deepEqual(restarts, [agentDir]);
-
-			const again = await team(
-				["join", databaseUrl, "--token-file", tokenFile, "--prefix", "team_"],
-				control({
-					status: "stopped",
-					previous: { pid: 101 },
-				}),
-			);
-			assert.equal(again.code, 0);
-			assert.deepEqual(again.out.split("\n").slice(0, 6), [
-				`Connected to ${url}.`,
-				"Kept the token in <root>/agent/storage-token.<id>; it already holds this token.",
-				"Set `storage` to the team database and `sessions.storage` to the local store in <root>/agent/settings.json; other settings are unchanged.",
-				"Stopping the Intercom broker (pid 101)",
-				"Stopped the Intercom broker (pid 101); the next session that uses Intercom starts one with these settings.",
-				"",
-			]);
-			assert.doesNotMatch(again.out, /It replaces/);
-			assert.doesNotMatch(again.out, /Intercom group:/);
-		},
-		LIBSQL_SCENARIO_TIMEOUT_MS,
-	);
-
-	test(
-		"join without a token for a file URL, and a broker whose new pid is unknown (#4320)",
-		async () => {
-			writeSettings({ packages: [packageRoot] });
-			const result = await team(
-				["join", databaseUrl],
-				control({
-					status: "restarted",
-					previous: { pid: 101 },
-					current: { state: "legacy" },
-				}),
-			);
-			assert.equal(result.code, 0, result.err);
-			assert.doesNotMatch(result.out, /token/i);
-			assert.match(result.out, /^Restarted the Intercom broker: pid 101 → unknown\.$/m);
-			const legacy = await team(
-				["join", databaseUrl],
-				control({
-					status: "restarted",
-					previous: { pid: 101 },
-					current: { state: "legacy", pid: 303 },
-				}),
-			);
-			assert.match(legacy.out, /^Restarted the Intercom broker: pid 101 → 303\.$/m);
-			const saved = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-			assert.deepEqual(saved.storage, { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url: databaseUrl } });
-		},
-		LIBSQL_SCENARIO_TIMEOUT_MS,
-	);
-
-	test(
-		"leave prints every removed, kept and deleted item and the resulting profile (#4320)",
-		async () => {
-			writeSettings({ packages: [packageRoot] });
-			assert.equal(
-				(await team(["join", databaseUrl, "--token-file", tokenFile], control({ status: "not-running" }))).code,
-				0,
-			);
-			const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-			writeSettings({ ...settings, workflows: { journal: settings.storage } });
-			const left = await team(["leave"], control({ status: "not-running" }));
-			assert.equal(left.code, 0, left.err);
-			assert.deepEqual(left.out.split("\n"), [
-				"Removed `storage` and `sessions.storage` from <root>/agent/settings.json; other settings are unchanged.",
-				"Stopping the Intercom broker (pid 101)",
-				"Kept the token file <root>/agent/storage-token.<id>: another setting still references it.",
-				"No Intercom broker was running; the next session that uses Intercom starts one with these settings.",
-				// The journal selection an earlier release kept still holds its token file, and selects nothing.
-				"Profile: individual (sessions on this machine; Intercom on this machine only)",
-			]);
-
-			writeSettings({
-				packages: [packageRoot],
-				storage: { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url: databaseUrl, tls: false } },
-				sessions: { storage: LOCAL_SESSIONS_STORAGE },
-			});
-			const partial = await team(["leave"], control(new Error("never called")));
-			assert.equal(partial.code, 0, partial.err);
-			assert.deepEqual(partial.out.split("\n"), [
-				"Nothing to remove: <root>/agent/settings.json holds no settings that `atomic team join` wrote.",
-				"Left `storage` in place: it holds something other than what team join writes.",
-				"Left `sessions.storage` in place: `storage` is still set, and without it new sessions would move to that store.",
-				"Profile: team (sessions on this machine; Intercom on the team database)",
-			]);
-			assert.deepEqual(restarts, [agentDir, agentDir]);
-
-			writeSettings({
-				packages: [packageRoot],
-				storage: { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url: databaseUrl, tls: false } },
-			});
-			const none = await team(["leave"], undefined);
-			assert.deepEqual(none.out.split("\n"), [
-				"Nothing to remove: <root>/agent/settings.json holds no settings that `atomic team join` wrote.",
-				"Left `storage` in place: it holds something other than what team join writes.",
-				"Profile: ci (sessions and Intercom on the team database)",
-			]);
-		},
-		LIBSQL_SCENARIO_TIMEOUT_MS,
-	);
-
-	test(
-		"a leave whose broker cannot restart exits 1 after removing the settings (#4320)",
-		async () => {
-			writeSettings({ packages: [packageRoot] });
-			await team(["join", databaseUrl, "--token-file", tokenFile], control({ status: "not-running" }));
-			const left = await team(["leave"], control(new Error("socket refused")));
-			assert.equal(left.code, 1);
-			assert.match(
-				left.err,
-				/^Could not restart the Intercom broker: <root>\/agent \(broker-restart-failed\): socket refused\./,
-			);
-			assert.match(left.out, /^Deleted the token file <root>\/agent\/storage-token\.<id>\.$/m);
-			assert.match(left.out, /^Profile: individual \(sessions on this machine; Intercom on this machine only\)$/m);
-			assert.deepEqual(
-				readdirSync(agentDir).filter((name) => name.startsWith("storage-token.")),
-				[],
-			);
-		},
-		LIBSQL_SCENARIO_TIMEOUT_MS,
-	);
 
 	test("status reports an invalid selection as an unknown profile and exits 1 (#4320)", async () => {
 		vi.stubEnv("ATOMIC_STORAGE", "{not json");
@@ -399,45 +210,25 @@ describe("atomic storage join and broker reports (#4320)", () => {
 		return { code, out: normalize(out.join("\n")), err: normalize(err.join("\n")) };
 	}
 
-	test(
-		"storage join reports a stored, kept or absent token and the replaced selection (#4320)",
-		async () => {
-			writeSettings({ packages: [packageRoot], storage: { path: "old.sqlite" } });
-			const first = await storage(["join", databaseUrl, "--token-file", tokenFile]);
-			assert.equal(first.code, 0, first.err);
-			assert.deepEqual(first.out.split("\n").slice(0, 4), [
-				`Connected to ${databaseUrl.replaceAll(root, "<root>")}.`,
-				"Stored the token in <root>/agent/storage-token.<id> (mode 600).",
-				"Set `storage` in <root>/agent/settings.json; other settings are unchanged.",
-				"It replaces the previous selection: SQLite old.sqlite.",
-			]);
-			const again = await storage(["join", databaseUrl, "--token-file", tokenFile]);
-			assert.deepEqual(again.out.split("\n").slice(1, 3), [
-				"Kept the token in <root>/agent/storage-token.<id>; it already holds this token.",
-				"Set `storage` in <root>/agent/settings.json; other settings are unchanged.",
-			]);
-			assert.doesNotMatch(again.out, /It replaces/);
-			const fileOnly = await storage(["join", databaseUrl]);
-			assert.deepEqual(fileOnly.out.split("\n").slice(1, 3), [
-				"Set `storage` in <root>/agent/settings.json; other settings are unchanged.",
-				`It replaces the previous selection: adapter ${LIBSQL_ADAPTER_PACKAGE}.`,
-			]);
-		},
-		LIBSQL_SCENARIO_TIMEOUT_MS,
-	);
-
 	test("storage join prints typed errors as their message alone (#4320)", async () => {
 		writeSettings({ theme: "dark" });
-		const relative = await storage(["join", "file:relative.sqlite"]);
-		assert.equal(relative.code, 1);
+		const unsupported = await storage(["join", "mysql://db.example.com/atomic", "--token-file", "t"]);
+		assert.equal(unsupported.code, 1);
 		assert.equal(
-			relative.err,
-			"Invalid storage configuration: <url> (relative-file-url). Use an absolute file: URL (for example file:///path/to/shared.sqlite), so every working directory uses the same database.",
+			unsupported.err,
+			"Invalid storage configuration: <url> (unsupported-url). Use a postgres:// or postgresql:// URL, for example postgres://atomic@db.example.com:5432/atomic.",
 		);
-		const missing = await storage(["join", databaseUrl]);
+		const passwordFile = join(root, "password");
+		writeFileSync(passwordFile, "secret\n");
+		const missing = await storage([
+			"join",
+			"postgres://atomic@db.example.com/atomic",
+			"--password-file",
+			passwordFile,
+		]);
 		assert.equal(
 			missing.err,
-			`The storage adapter is not installed: ${LIBSQL_ADAPTER_PACKAGE} for <root>/agent (adapter-not-installed). Install it, then run this command again: atomic install npm:${LIBSQL_ADAPTER_PACKAGE}`,
+			`The storage adapter is not installed: ${POSTGRES_ADAPTER_PACKAGE} for <root>/agent (adapter-not-installed). Install it, then run this command again: atomic install npm:${POSTGRES_ADAPTER_PACKAGE}`,
 		);
 	});
 
@@ -459,7 +250,7 @@ describe("atomic storage join and broker reports (#4320)", () => {
 		const fromEnv = await storage(["status"], running("env"));
 		assert.match(
 			fromEnv.out,
-			/^ {2}storage: {5}differs from the selection above \(a session started it with ATOMIC_STORAGE, ATOMIC_PROFILE=ci or --storage\); run `atomic intercom restart` to use the current one$/m,
+			/^ {2}storage: {5}differs from the selection above \(a session started it with ATOMIC_STORAGE or --storage\); run `atomic intercom restart` to use the current one$/m,
 		);
 		assert.match(fromEnv.out, /^ {2}multi-node: {2}off: the shared storage selection is in memory$/m);
 		const fromSettings = await storage(["status"], running("settings"));
@@ -478,7 +269,7 @@ describe("atomic storage join and broker reports (#4320)", () => {
 		);
 		assert.equal(
 			lines[1],
-			"Storage: differs from the current selection (a session started it with ATOMIC_STORAGE, ATOMIC_PROFILE=ci or --storage); run `atomic intercom restart`",
+			"Storage: differs from the current selection (a session started it with ATOMIC_STORAGE or --storage); run `atomic intercom restart`",
 		);
 		lines.length = 0;
 		await runIntercomCommand(["status"], {
@@ -535,12 +326,6 @@ describe("atomic storage join and broker reports (#4320)", () => {
 				["intercom", false],
 			],
 		);
-		const left = await team(["leave"], control({ status: "not-running" }));
-		assert.match(
-			left.out,
-			/^Left `sessions\.storage` in place: `storage` is still set, and without it new sessions would move to that store\.$/m,
-		);
-		assert.match(left.out, /^Profile: custom /m);
 		const usage = (() => {
 			try {
 				parseTeamCommand(["doctor"]);

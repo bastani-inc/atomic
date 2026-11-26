@@ -26,14 +26,12 @@ import {
 	type StorageSelection,
 	storageSelectionKey,
 } from "./provider.js";
-import {
-	POSTGRES_ADAPTER_PACKAGE,
-	type StorageSettingsSelection,
-	selectStorage,
-	TEAM_PROFILE_ENV,
-} from "./selection.js";
+import { POSTGRES_ADAPTER_PACKAGE, type StorageSettingsSelection, selectStorage } from "./selection.js";
 
 export type StorageStatusDomain = "sessions" | "intercom";
+
+/** Removed with libSQL support; see libsql-removed.ts for why it is still exported. */
+export { TEAM_PROFILE_SOURCE } from "./libsql-removed.js";
 
 /** How long one database connectivity check may take, from opening the database to the answer of its `SELECT 1`. */
 export const STORAGE_PROBE_TIMEOUT_MS = 15_000;
@@ -46,6 +44,8 @@ export const STORAGE_ADAPTER_LOAD_TIMEOUT_MS = 15_000;
 
 export interface StorageProbe {
 	readonly adapter?: { readonly module: string; readonly loaded: boolean; readonly detail?: string };
+	/** A SQLite file's: the SQLite library this process runs, such as `SQLite 3.53.4`. */
+	readonly library?: string;
 	readonly connection: { readonly status: "ok" | "failed" | "skipped"; readonly detail: string };
 	/** The adapter loaded but has no `openDatabase` hook, so nothing was opened. */
 	readonly noDatabaseHook?: true;
@@ -163,6 +163,24 @@ function withTimeout<T>(operation: Promise<T>, label: string, timeoutMs: number)
 }
 
 /**
+ * The version of the SQLite library this process runs: the one Node bundles, or under Bun the one it loaded, which the
+ * macOS standalone binary ships next to it. Undefined where it cannot be read.
+ */
+async function sqliteLibraryVersion(): Promise<string | undefined> {
+	try {
+		const { openNodeSqliteDatabase } = await import("./node-sqlite.js");
+		const database = await openNodeSqliteDatabase(":memory:");
+		try {
+			return (await database.get<SqliteRow & { version: string }>("SELECT sqlite_version() AS version"))?.version;
+		} finally {
+			await database.close();
+		}
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Load the selection's adapter and run `SELECT 1` on its database; `inspect` reads it before it closes. Nothing is
  * created: a SQLite file that does not exist yet is not opened, and no Atomic table is touched.
  */
@@ -183,14 +201,20 @@ async function probeSelection(
 	}
 	if (selection.kind === "database") return { connection: { status: "skipped", detail: "caller-owned database" } };
 	if (selection.kind === "sqlite") {
+		const version = await sqliteLibraryVersion();
+		const library = version === undefined ? {} : { library: `SQLite ${version}` };
 		if (selection.path === "" || selection.path === ":memory:") {
-			return { connection: { status: "skipped", detail: "in memory; nothing to open" } };
+			return { ...library, connection: { status: "skipped", detail: "in memory; nothing to open" } };
 		}
 		if (!existsSync(selection.path)) {
-			return { connection: { status: "skipped", detail: "file not created yet; Atomic creates it on first use" } };
+			return {
+				...library,
+				connection: { status: "skipped", detail: "file not created yet; Atomic creates it on first use" },
+			};
 		}
 		const { openNodeSqliteDatabase } = await import("./node-sqlite.js");
 		return {
+			...library,
 			connection: await roundTrip(
 				() => openNodeSqliteDatabase(selection.path, { readOnly: true }),
 				"SQLite file",
@@ -345,12 +369,9 @@ function sourceOf(layers: readonly Layer[]): { source: string; overridden: strin
 	return { source: present[0] ?? "default", overridden: present.slice(1) };
 }
 
-/** The source label of the `ATOMIC_PROFILE=ci` team database. */
-export const TEAM_PROFILE_SOURCE = `${TEAM_PROFILE_ENV}=ci`;
-
 /**
- * The shared selection this process and these settings make: `--storage`, `ATOMIC_STORAGE` or the
- * `ATOMIC_PROFILE=ci` team database, else the `storage` setting; `undefined` when none of them is set.
+ * The shared selection this process and these settings make: `--storage` or `ATOMIC_STORAGE`, else the `storage`
+ * setting; `undefined` when none of them is set.
  */
 export function selectSharedStorage(agentDir: string, settings: Settings): StorageSelection | undefined {
 	const processChoice = selectProcessStorage("shared", agentDir, undefined, settings);
@@ -364,8 +385,8 @@ export function selectSharedStorage(agentDir: string, settings: Settings): Stora
 }
 
 /**
- * The raw shared selection a broker started from this process would read: `--storage`, `ATOMIC_STORAGE` or the
- * `ATOMIC_PROFILE=ci` team database, else global `storage`.
+ * The raw shared selection a broker started from this process would read: `--storage` or `ATOMIC_STORAGE`, else
+ * global `storage`.
  */
 function sharedSelection(
 	globalStorage: StorageSettingsSelection | undefined,
@@ -443,7 +464,6 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 		);
 	}
 	const env = (name: string): Layer => ({ label: name, present: envSet(name) });
-	const teamProfile: Layer = { label: TEAM_PROFILE_SOURCE, present: envSet(TEAM_PROFILE_ENV) };
 	const sessionsSetting = (settings: Settings) => settings.sessions?.storage;
 	const storageSetting = (settings: Settings) => settings.storage;
 	const layers: Record<StorageStatusDomain, Layer[]> = {
@@ -451,15 +471,10 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 			env(SESSIONS_STORAGE_ENV),
 			env(ENV_SESSION_DIR),
 			env(STORAGE_ENV),
-			teamProfile,
 			...settingLayers(global, project, projectTrusted, sessionsSetting, "sessions.storage"),
 			...settingLayers(global, project, projectTrusted, storageSetting, "storage"),
 		],
-		intercom: [
-			env(STORAGE_ENV),
-			teamProfile,
-			{ label: "global settings: storage", present: global.storage !== undefined },
-		],
+		intercom: [env(STORAGE_ENV), { label: "global settings: storage", present: global.storage !== undefined }],
 	};
 
 	const checked = new Map<string, { domain: StorageStatusDomain; probe: StorageProbe }>();
@@ -516,7 +531,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 				overridden: intercom.overridden,
 				multiNode:
 					sharedSelection(global.storage) === undefined
-						? "off: no shared storage selection (top-level `storage` in global settings, ATOMIC_STORAGE, or ATOMIC_PROFILE=ci)"
+						? "off: no shared storage selection (top-level `storage` in global settings, or ATOMIC_STORAGE)"
 						: "off: the shared storage selection is in memory",
 			});
 		} else {

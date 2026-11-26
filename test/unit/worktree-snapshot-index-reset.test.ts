@@ -16,7 +16,6 @@ import {
 	BackgroundCollectionPace,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { createSession, messageEntry } from "../helpers/snapshot-reference-index.js";
 
 const release0989 = (await import(
@@ -26,7 +25,6 @@ const release0989 = (await import(
 };
 const files = {
 	"node:sqlite": (path: string) => openNodeSqliteDatabase(path),
-	libSQL: (path: string) => openLibsqlDatabase({ url: pathToFileURL(path).href }),
 };
 
 async function staleLinks(db: SqliteDatabase, rows: number) {

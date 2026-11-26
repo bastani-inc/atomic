@@ -15,7 +15,6 @@ const PUBLISHED_PACKAGE_DIRS = [
 	"packages/schema",
 	"packages/telemetry",
 	"packages/tui",
-	"packages/storage-libsql",
 	"packages/storage-postgres",
 ] as const;
 

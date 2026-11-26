@@ -285,7 +285,7 @@ export interface StorageSchemaSetup {
 /**
  * Whether the catalog an open in progress read (`withStorageSchemaCatalog`) records `schema.revision` for the
  * store already, so {@link ensureStorageSchema} would run nothing: the store's open then skips its schema transaction
- * and its lock (#6560). On SQLite and libSQL the store's schema stamp records it, and only while nothing changed the
+ * and its lock (#6560). On SQLite the store's schema stamp records it, and only while nothing changed the
  * schema since (`sqliteSchemaStampTable`). False outside such an open, and when the revision is not recorded.
  */
 export async function storageSchemaCurrent(database: SqliteDatabase, schema: StorageSchemaSetup): Promise<boolean> {
@@ -305,7 +305,7 @@ export async function storageSchemaCurrent(database: SqliteDatabase, schema: Sto
  * database with versioned migrations (PostgreSQL) a current schema runs no DDL at all, so a runtime role with only DML
  * privileges opens it; a schema that is behind runs `setup` under the store's advisory lock, then records the revision,
  * so concurrent processes set it up once. A role that may not run the DDL then fails with
- * `StorageConfigError` reason `missing-privilege` from the adapter. On SQLite and libSQL, which keep no ledger, `setup`
+ * `StorageConfigError` reason `missing-privilege` from the adapter. On SQLite, which keep no ledger, `setup`
  * runs every time it is called, as before, and then stamps the store with the schema version the transaction leaves,
  * which {@link storageSchemaCurrent} believes until the schema changes again (#6560).
  */
@@ -348,19 +348,56 @@ export interface StorageFillfactorSetup extends StorageSchemaSetup {
 }
 
 /**
+ * The fillfactor checks this process made that found nothing for it to do, by database (`databaseIdentity`, which
+ * names the role and schema too), ledger and table, and the ones under way: the table had a fillfactor, or this role
+ * does not own it (#6560). Such a check is not made again. One that set the fillfactor, or found no table, is.
+ */
+const fillfactorChecks = new Map<string, Promise<boolean>>();
+
+/**
  * Sets `setup.table`'s fillfactor on PostgreSQL, once per database, recorded in the ledger as `schema:<domain>`: each
  * page then keeps room for a new version of the rows on it, so updates of rows that change no indexed column stay on
  * their page as HOT updates and touch no index (#6560). It applies to the pages written from then on; `VACUUM FULL`
- * or pg_repack rewrites the existing ones with it. Nothing runs where the catalog an open read records the step, where
- * the table has a fillfactor already, or where this role does not own the table: a runtime role without DDL opens as
- * before, and `atomic storage migrate`, run as the owner, sets it. Does nothing on SQLite and libSQL.
+ * or pg_repack rewrites the existing ones with it. Nothing runs where the catalog an open read records the step.
+ * Otherwise one read of the table's catalog entry decides: nothing runs where the table has a fillfactor already, or
+ * where this role does not own the table, so a runtime role without DDL opens as before, and `atomic storage migrate`,
+ * run as the owner, sets it. A process reads that once for each database and table, so until migrate records the step
+ * only its first open pays the read. Does nothing on SQLite.
  */
 export async function ensureTableFillfactor(database: SqliteDatabase, setup: StorageFillfactorSetup): Promise<void> {
 	const dialect = dialectOf(database);
 	if (dialect.name !== "postgres" || database.readOnly === true) return;
+	const { ledger, domain, revision, table } = setup;
+	if (await storageSchemaCurrent(database, { ledger, domain, revision })) return;
+	const identity = database.databaseIdentity?.();
+	if (identity === undefined) {
+		await checkTableFillfactor(database, setup);
+		return;
+	}
+	const key = JSON.stringify([identity, ledger, table]);
+	let check = fillfactorChecks.get(key);
+	if (check === undefined) {
+		const made = checkTableFillfactor(database, setup);
+		check = made;
+		fillfactorChecks.set(key, made);
+		const forget = () => {
+			if (fillfactorChecks.get(key) === made) fillfactorChecks.delete(key);
+		};
+		made.then((settled) => {
+			if (!settled) forget();
+		}, forget);
+	}
+	await check;
+}
+
+/**
+ * {@link ensureTableFillfactor}'s read of the table's catalog entry, and the change where it is due. True where it
+ * found nothing this role can do: the table has a fillfactor, or this role does not own it.
+ */
+async function checkTableFillfactor(database: SqliteDatabase, setup: StorageFillfactorSetup): Promise<boolean> {
+	const dialect = dialectOf(database);
 	const { ledger, domain, revision, table, fillfactor } = setup;
 	const schema = { ledger, domain, revision };
-	if (await storageSchemaCurrent(database, schema)) return;
 	const found = await database.get<SqliteRow & { owned: boolean | number; tuned: boolean | number }>(
 		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned,
 			coalesce(array_to_string(c.reloptions, ',') LIKE '%fillfactor=%', false) AS tuned
@@ -368,7 +405,8 @@ export async function ensureTableFillfactor(database: SqliteDatabase, setup: Sto
 		dialect.identifier(table),
 	);
 	const yes = (value: boolean | number | undefined) => value === true || Number(value) === 1;
-	if (found === undefined || yes(found.tuned) || !yes(found.owned)) return;
+	if (found === undefined) return false;
+	if (yes(found.tuned) || !yes(found.owned)) return true;
 	await database.transaction(
 		(tx) =>
 			ensureStorageSchema(tx, dialect, schema, async () => {
@@ -376,4 +414,5 @@ export async function ensureTableFillfactor(database: SqliteDatabase, setup: Sto
 			}),
 		{ retryTransientFailures: true, concurrency: { kind: "serial", domain: ledger } },
 	);
+	return false;
 }

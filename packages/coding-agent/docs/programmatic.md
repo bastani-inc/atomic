@@ -21,7 +21,7 @@ Atomic provides three programmatic integration modes plus a component API for in
 ## SDK guides and APIs
 
 - [SDK overview](/sdk): create sessions, bind workspaces, configure Intercom policies, and handle lifecycle events.
-- [SDK storage backends](/sdk/storage): configure SQLite, JSONL, in-memory, libSQL/Turso, and PostgreSQL for `createAgentSession()`, `createAgentSessionRuntime()`, and `SessionManager`.
+- [SDK storage backends](/sdk/storage): configure SQLite, JSONL, in-memory, and PostgreSQL for `createAgentSession()`, `createAgentSessionRuntime()`, and `SessionManager`.
 - [Structured decisions API](/sdk/structured-decisions): run typed classifier or chat decisions with `decide()` and `generateStructuredOutput()`.
 - [Embed Atomic in a web server](/sdk/web-server): build a streaming HTTP API with Next.js App Router and `createAgentSession()`.
 - [SDK API reference](/sdk/reference): complete session options, loaders, tool status, task supervision, run modes, and exports.
@@ -36,4 +36,4 @@ Atomic provides three programmatic integration modes plus a component API for in
 ## Terminal UI and standalone libraries
 
 - [Build TUI components](/tui) walks through custom interactive components and common patterns, and [TUI API reference](/tui/reference) documents the component, focus, input, and rendering contracts.
-- [Standalone libraries](/libraries) covers the six core `@bastani/atomic-*` packages (`ai`, `agent-core`, `tui`, `codemode`, `schema`, and `telemetry`) plus the optional storage adapter packages ([`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) and [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql)).
+- [Standalone libraries](/libraries) covers the six core `@bastani/atomic-*` packages (`ai`, `agent-core`, `tui`, `codemode`, `schema`, and `telemetry`) plus the optional storage adapter packages ([`@bastani/atomic-storage-postgres`](/libraries/storage-postgres)).

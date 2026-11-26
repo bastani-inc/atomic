@@ -41,8 +41,7 @@ export interface CreateAgentSessionOptions {
 	/** Global config directory. Default: ~/.atomic/agent */
 	agentDir?: string;
 	/**
-	 * Storage for this session's sessions, in the form of the top-level `storage` setting, for example the selection
-	 * `teamProfileSelection()` returns. Outranks process-level selections and settings; `sessionStore` and
+	 * Storage for this session's sessions, in the form of the top-level `storage` setting. Outranks process-level selections and settings; `sessionStore` and
 	 * `sessionManager` outrank it. Intercom keeps the process's selection.
 	 */
 	storage?: SessionStorageOption;

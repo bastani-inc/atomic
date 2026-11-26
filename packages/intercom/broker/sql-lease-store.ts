@@ -408,6 +408,14 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 		concurrency: { kind: "fenced", audit: fencedPath("intercom-lease") },
 	} as const;
 	/**
+	 * A renewal only moves `renewed_at` forward, and its holder renews again within the renewal interval, far inside the
+	 * staleness limit: one lost in a crash of the database server leaves the lease a renewal older, still live, and no
+	 * fencing token changes. A renewal that carries a subject writes all of it, and the next renewal writes it again. So
+	 * its commit does not wait for the disk (PostgreSQL's `synchronous_commit = off`), which
+	 * spares the server a log flush per broker and per session every interval. Acquisitions and releases stay durable.
+	 */
+	const renewal = { ...fenced, relaxedDurability: true } as const;
+	/**
 	 * The order of a key acquired for the first time. A serial database runs one acquisition at a time, so the
 	 * largest order so far, plus one, is unique. PostgreSQL runs acquisitions beside one another, so each takes the
 	 * next value of the order sequence, which no acquisition waits for (#6560). Where the sequence is missing, because
@@ -435,6 +443,23 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 			: { with: "", value: `${largestOrder} + 1` };
 	/** Latency-bound reads, which must not queue behind this database's writes (#6560). */
 	const reader = options.reader ?? database;
+	/**
+	 * This store's acquisitions and releases, and retirements of a holder, started and not committed. The reads go
+	 * through the reader, which no write of this store is queued on, so they first wait for these: a caller that starts
+	 * one and then reads, without awaiting it, reads who holds the lease after it. With none unfinished they wait for
+	 * nothing. Renewals are not among them: one only moves a held lease's age, which the renewal before it keeps within
+	 * the bound every read applies, and they run every few seconds, so reads would often wait for one.
+	 */
+	const unfinished = new Set<Promise<void>>();
+	const holding = <T>(write: Promise<T>): Promise<T> => {
+		const settled = write.then(
+			() => {},
+			() => {},
+		);
+		unfinished.add(settled);
+		void settled.then(() => unfinished.delete(settled));
+		return write;
+	};
 	const clockAge = dialect.greatest("0", "(SELECT now FROM clock) - renewed_at");
 	/**
 	 * `listLiveFor`'s read: each term is one indexed column's lookup, so SQLite takes the union of five index searches
@@ -448,6 +473,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 		AND holder_id IS NOT NULL AND ${clockAge} <= ? ORDER BY first_acquired_order, key`;
 
 	const listLive = async (kind: LeaseKind, staleAfterMs: number): Promise<LeaseState[]> => {
+		if (unfinished.size > 0) await Promise.all(unfinished);
 		const rows = await reader.all<StateRow>(liveLeases(dialect, table), kind, staleAfterMs);
 		return rows.map(stateFromRow);
 	};
@@ -464,7 +490,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 			// acquisition therefore waits, once it committed, for every send to that recipient under way, holding the
 			// recipient's lock domain for an instant: the registration's first outbox scan, which follows, then finds
 			// their rows; a later send reads the live presence and wakes its holder (#6560).
-			const acquired = await database.transaction(async (tx) => {
+			const taking = database.transaction(async (tx) => {
 				// One guarded statement takes the lease: a new key, or a row that is free, stale or already this
 				// holder's; a steal gets the key's next token, a re-acquisition keeps its own. Renewals run beside it,
 				// so the decision is never made on an earlier read (#6560).
@@ -495,6 +521,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 				const row = (await holderOf(tx, key))!;
 				return { status: "held", holderId: row.holder_id!, fencingToken: Number(row.fencing_token) } as const;
 			}, fenced);
+			const acquired = await holding(taking);
 			// The lock goes with the transaction's start and its commit, in one round trip, so it is held for none.
 			if (acquired.status === "acquired" && subject.kind === "presence" && dialect.name === "postgres")
 				await database.transaction((tx) => tx.get(SENDS_PASSED.sql), {
@@ -520,7 +547,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 								...ownedParams(lease),
 							);
 				return changes === 1 ? ({ status: "renewed" } as const) : stale(await holderOf(tx, lease.key));
-			}, fenced);
+			}, renewal);
 		},
 		async renewMany(requests) {
 			if (requests.length === 0) return [];
@@ -569,13 +596,13 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 						renewed[position]!.changes === 1
 							? ({ status: "renewed" } as const)
 							: stale(await holderOf(tx, requests[i]!.lease.key));
-			}, fenced);
+			}, renewal);
 			return results as LeaseRenewResult[];
 		},
 		async release(lease) {
 			const bad = validLease(lease);
 			if (bad !== undefined) return bad;
-			return database.transaction(async (tx) => {
+			const releasing = database.transaction(async (tx) => {
 				const { changes } = await tx.run(
 					`UPDATE ${table} SET holder_id = NULL, fencing_token = NULL, subject_json = NULL, renewed_at = NULL
 					WHERE ${owned}`,
@@ -583,10 +610,12 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 				);
 				return changes === 1 ? ({ status: "released" } as const) : stale(await holderOf(tx, lease.key));
 			}, fenced);
+			return holding(releasing);
 		},
 		async read(key) {
 			const bad = invalidKey(key);
 			if (bad !== undefined) return bad;
+			if (unfinished.size > 0) await Promise.all(unfinished);
 			const row = await reader.get<StateRow>(
 				`SELECT kind, key, holder_id, fencing_token, subject_json, ${leaseAge} AS age_ms FROM ${table}
 				WHERE kind = ? AND key = ? AND holder_id IS NOT NULL`,
@@ -606,6 +635,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 						const target = named.toWellFormed();
 						const trimmed = target.trim();
 						const head = /^[0-9a-f]{8}$/i.test(trimmed) ? trimmed.toLowerCase() : null;
+						if (unfinished.size > 0) await Promise.all(unfinished);
 						const rows = await reader.all<StateRow>(
 							liveAddressed,
 							target,
@@ -622,15 +652,17 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 				}
 			: {}),
 		async listAged(kind, minAgeMs) {
+			if (unfinished.size > 0) await Promise.all(unfinished);
 			const rows = await reader.all<StateRow>(leasesByAge(dialect, table, ">="), kind, minAgeMs);
 			return rows.map(stateFromRow);
 		},
 		async retireHolder(holderId) {
-			const { changes } = await database.run(
+			const retiring = database.run(
 				`UPDATE ${table} SET holder_id = NULL, fencing_token = NULL, subject_json = NULL, renewed_at = NULL
 				WHERE holder_id = ?`,
 				holderId,
 			);
+			const { changes } = await holding(retiring);
 			return changes;
 		},
 	};

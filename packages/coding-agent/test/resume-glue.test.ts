@@ -9,7 +9,7 @@ import { STORAGE_JOIN_COMMAND } from "../src/core/agent-rehydrate-errors.ts";
 import { StorageAdapterLoadError, StorageTransientError, StorageUnavailableError } from "../src/core/storage/errors.js";
 import { resetStorageHomeCacheForTests } from "../src/core/storage/file-identity.js";
 import type { StorageSelection } from "../src/core/storage/provider.js";
-import { inMemorySecret, LIBSQL_ADAPTER_PACKAGE } from "../src/core/storage/selection.js";
+import { inMemorySecret, POSTGRES_ADAPTER_PACKAGE } from "../src/core/storage/selection.js";
 import { GitUnavailableError, isGitUnavailableError } from "../src/core/worktree-snapshot/errors.ts";
 import {
 	checkResumeStoragePreconditions,
@@ -54,12 +54,12 @@ const PROBLEM: ResumePreconditionProblem = {
 	fix: "Install Git with `sudo apt-get install git`, then retry.",
 };
 
-const CATALOG_FIELDS = { subject: "session", id: null, storage: "libsql", phase: "catalog-lookup" } as const;
+const CATALOG_FIELDS = { subject: "session", id: null, storage: "postgres", phase: "catalog-lookup" } as const;
 
 describe("resume error family (#4329)", () => {
 	test("every concrete error is a ResumeError with its stable code and a hint embedded once in the message", () => {
 		const errors: ResumeError[] = [
-			new ResumeNotFoundError({ subject: "session", id: "s1", reason: "shared-miss", storage: "libsql" }),
+			new ResumeNotFoundError({ subject: "session", id: "s1", reason: "shared-miss", storage: "postgres" }),
 			new ResumePreconditionError({ entryPoint: "cli", problems: [PROBLEM] }),
 			new ResumeCatalogUnavailableError(CATALOG_FIELDS),
 		];
@@ -88,11 +88,11 @@ describe("resume error family (#4329)", () => {
 		});
 		assert.equal(
 			error.message,
-			"No session found matching 'abc': this node uses local-only storage (node-sqlite at /home/u/.atomic/workflows/journal.sqlite) and is not joined to the shared storage where other nodes record their work (not-found). Join this node's sessions to the shared storage with `atomic storage join <url> --token-file <path>` (after `atomic team leave` on a machine joined with `atomic team join`, which keeps sessions on each machine), then resume again.",
+			"No session found matching 'abc': this node uses local-only storage (node-sqlite at /home/u/.atomic/workflows/journal.sqlite) and is not joined to the shared storage where other nodes record their work (not-found). Join this node's sessions to the shared storage with `atomic storage join <postgres-url> --password-file <path>`, then resume again.",
 		);
 		assert.equal(
 			error.hint,
-			"Join this node's sessions to the shared storage with `atomic storage join <url> --token-file <path>` (after `atomic team leave` on a machine joined with `atomic team join`, which keeps sessions on each machine), then resume again.",
+			"Join this node's sessions to the shared storage with `atomic storage join <postgres-url> --password-file <path>`, then resume again.",
 		);
 		assert.deepEqual(error.fields, {
 			subject: "session",
@@ -103,8 +103,13 @@ describe("resume error family (#4329)", () => {
 	});
 
 	test("a shared-storage miss points at storage status, not at joining", () => {
-		const error = new ResumeNotFoundError({ subject: "session", id: "s1", reason: "shared-miss", storage: "libsql" });
-		assert.ok(error.message.startsWith("No session found matching 's1' in the shared storage (libsql)"));
+		const error = new ResumeNotFoundError({
+			subject: "session",
+			id: "s1",
+			reason: "shared-miss",
+			storage: "postgres",
+		});
+		assert.ok(error.message.startsWith("No session found matching 's1' in the shared storage (postgres)"));
 		assert.match(error.hint, /atomic storage status/);
 		assert.doesNotMatch(error.hint, /team join/);
 	});
@@ -172,7 +177,12 @@ describe("resume error family (#4329)", () => {
 	});
 
 	test("findResumeError walks the cause chain at most eight levels below the error", () => {
-		const error = new ResumeNotFoundError({ subject: "session", id: "r", reason: "shared-miss", storage: "libsql" });
+		const error = new ResumeNotFoundError({
+			subject: "session",
+			id: "r",
+			reason: "shared-miss",
+			storage: "postgres",
+		});
 		let chain: Error = error;
 		for (let depth = 0; depth < 8; depth++) chain = new Error(`wrap ${depth}`, { cause: chain });
 		assert.equal(findResumeError(chain), error);
@@ -249,7 +259,7 @@ describe("resume error family (#4329)", () => {
 describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 	test("an unreachable store during the lookup becomes a retryable typed error that keeps the cause", () => {
 		const cause = new StorageTransientError(
-			{ adapter: "libsql", location: "https://db?authToken=s" },
+			{ adapter: "postgres", location: "https://db?authToken=s" },
 			{ code: "connection-refused", outcome: "not-applied", attempts: 1 },
 			new Error("ECONNREFUSED"),
 		);
@@ -258,13 +268,13 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 		assert.equal(error.code, "catalog-unavailable");
 		assert.equal(error.retryable, true);
 		assert.equal(error.phase, "catalog-lookup");
-		assert.equal(error.storage, "libsql");
+		assert.equal(error.storage, "postgres");
 		assert.equal(error.cause, cause);
 		assert.ok(isRetryableResumeError(error));
 		assert.ok(isRetryableResumeError(new Error("wrapped", { cause: error })));
 		assert.equal(
 			error.message,
-			"Cannot look up the session abc: the storage (libsql) could not be reached (catalog-unavailable). Check that this node can reach the shared storage (`atomic storage status`), then resume again; nothing was changed.",
+			"Cannot look up the session abc: the storage (postgres) could not be reached (catalog-unavailable). Check that this node can reach the shared storage (`atomic storage status`), then resume again; nothing was changed.",
 		);
 		assert.doesNotMatch(error.message, /authToken/);
 	});
@@ -272,7 +282,7 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 	test("a network that cannot reach the storage is a retryable lookup failure even when the adapter does not call it transient", () => {
 		const route = Object.assign(new Error("connect ENETUNREACH"), { code: "ENETUNREACH" });
 		const unreachable = new StorageUnavailableError(
-			{ adapter: "libsql", location: "remote" },
+			{ adapter: "postgres", location: "remote" },
 			new Error("fetch failed", { cause: route }),
 		);
 		const error = resumeLookupError(unreachable, "run", "r");
@@ -285,7 +295,7 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 		const failureWithCodeAt = (depth: number) => {
 			let cause: Error = Object.assign(new Error("connect EHOSTUNREACH"), { code: "EHOSTUNREACH" });
 			for (let level = 1; level < depth; level++) cause = new Error(`wrapped ${level}`, { cause });
-			return new StorageUnavailableError({ adapter: "libsql", location: "remote" }, cause);
+			return new StorageUnavailableError({ adapter: "postgres", location: "remote" }, cause);
 		};
 		assert.ok(resumeLookupError(failureWithCodeAt(8), "run", "r") instanceof ResumeCatalogUnavailableError);
 		const tooDeep = failureWithCodeAt(9);
@@ -300,7 +310,7 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 		const picker = resumeLookupError(cause, "session", null) as ResumeCatalogUnavailableError;
 		assert.match(picker.message, /^Cannot look up the session: the storage \(node-sqlite\)/);
 		const missingToken = new StorageUnavailableError(
-			{ adapter: "@bastani/atomic-storage-libsql", location: "team-token" },
+			{ adapter: "@bastani/atomic-storage-postgres", location: "team-token" },
 			Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
 		);
 		assert.equal(resumeLookupError(missingToken, "run", "r"), missingToken);
@@ -309,7 +319,7 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 		assert.equal(isRetryableResumeError(other), false);
 		assert.equal(
 			isRetryableResumeError(
-				new ResumeNotFoundError({ subject: "session", id: "r", reason: "shared-miss", storage: "libsql" }),
+				new ResumeNotFoundError({ subject: "session", id: "r", reason: "shared-miss", storage: "postgres" }),
 			),
 			false,
 		);
@@ -319,7 +329,7 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 		const original = new ResumeCatalogUnavailableError({
 			subject: "session",
 			id: null,
-			storage: "libsql",
+			storage: "postgres",
 			phase: "catalog-lookup",
 		});
 		const copy = rehydrateResumeError(JSON.parse(JSON.stringify(serializeResumeError(original))));
@@ -344,11 +354,11 @@ describe("resume not-found classification (#4329)", () => {
 
 	test("a shared adapter miss never exposes the storage location", () => {
 		const error = resumeNotFoundError("s", {
-			adapter: "libsql",
+			adapter: "postgres",
 			location: "https://db.example?authToken=s",
 		});
 		assert.equal(error.reason, "shared-miss");
-		assert.equal(error.storage, "libsql");
+		assert.equal(error.storage, "postgres");
 		assert.equal(error.subject, "session");
 		assert.doesNotMatch(error.message, /authToken|db\.example/);
 	});
@@ -405,9 +415,9 @@ describe("resume storage preconditions (#4329)", () => {
 		else process.env.USERPROFILE = prevUserProfile;
 		resetStorageHomeCacheForTests();
 	});
-	const libsql = (secrets?: Extract<StorageSelection, { kind: "adapter" }>["secrets"]): StorageSelection => ({
+	const shared = (secrets?: Extract<StorageSelection, { kind: "adapter" }>["secrets"]): StorageSelection => ({
 		kind: "adapter",
-		module: LIBSQL_ADAPTER_PACKAGE,
+		module: POSTGRES_ADAPTER_PACKAGE,
 		options: { url: "https://db" },
 		...(secrets ? { secrets } : {}),
 	});
@@ -415,12 +425,12 @@ describe("resume storage preconditions (#4329)", () => {
 	test("a secret held in this process's memory needs no check and costs no I/O", async () => {
 		const io = new CountingIo();
 		const problems = await storagePreconditionProblems(
-			[{ domain: "sessions", selection: libsql({ authToken: inMemorySecret("in-memory-token") }) }],
+			[{ domain: "sessions", selection: shared({ authToken: inMemorySecret("in-memory-token") }) }],
 			agentDir,
 			io,
 		);
 		assert.deepEqual(problems, []);
-		assert.deepEqual(io.calls, [`load:${LIBSQL_ADAPTER_PACKAGE}`]);
+		assert.deepEqual(io.calls, [`load:${POSTGRES_ADAPTER_PACKAGE}`]);
 	});
 
 	test("local selections need nothing and cost no I/O", async () => {
@@ -440,8 +450,8 @@ describe("resume storage preconditions (#4329)", () => {
 
 	test("a missing adapter, an unset variable and a missing token file are reported together in one pass", async () => {
 		const io = new CountingIo();
-		io.missingModules.add(LIBSQL_ADAPTER_PACKAGE);
-		const selection = libsql({ authToken: { file: "agent/team-token" }, other: { env: "TEAM_TOKEN" } });
+		io.missingModules.add(POSTGRES_ADAPTER_PACKAGE);
+		const selection = shared({ authToken: { file: "agent/team-token" }, other: { env: "TEAM_TOKEN" } });
 		await assert.rejects(
 			checkResumeStoragePreconditions("cli", [{ domain: "sessions", selection }], agentDir, io),
 			(error: unknown) => {
@@ -451,18 +461,18 @@ describe("resume storage preconditions (#4329)", () => {
 				assert.deepEqual(
 					error.problems.map((problem) => [problem.code, problem.subject]),
 					[
-						["adapter-not-installed", `storage adapter ${LIBSQL_ADAPTER_PACKAGE}`],
+						["adapter-not-installed", `storage adapter ${POSTGRES_ADAPTER_PACKAGE}`],
 						["credential-missing", `token file ${join("/home/u/.atomic", "agent/team-token")}`],
 						["credential-missing", "environment variable TEAM_TOKEN"],
 					],
 				);
-				assert.match(error.hint, /atomic install npm:@bastani\/atomic-storage-libsql/);
-				assert.match(error.hint, /atomic storage join <url> --token-file <path>/);
+				assert.match(error.hint, /atomic install npm:@bastani\/atomic-storage-postgres/);
+				assert.match(error.hint, /atomic storage join <postgres-url> --password-file <path>/);
 				return true;
 			},
 		);
 		assert.deepEqual(io.calls, [
-			`load:${LIBSQL_ADAPTER_PACKAGE}`,
+			`load:${POSTGRES_ADAPTER_PACKAGE}`,
 			`read:${join("/home/u/.atomic", "agent/team-token")}`,
 			"env:TEAM_TOKEN",
 		]);
@@ -470,7 +480,7 @@ describe("resume storage preconditions (#4329)", () => {
 
 		const customIo = new CountingIo();
 		const customProblems = await storagePreconditionProblems(
-			[{ domain: "sessions", selection: libsql({ authToken: { file: "team-token" } }) }],
+			[{ domain: "sessions", selection: shared({ authToken: { file: "team-token" } }) }],
 			"/srv/node-a",
 			customIo,
 		);
@@ -489,7 +499,7 @@ describe("resume storage preconditions (#4329)", () => {
 			[
 				{
 					domain: "sessions",
-					selection: libsql({
+					selection: shared({
 						a: { file: "/abs/token" },
 						b: { env: "EMPTY_TOKEN" },
 						c: { env: "GOOD_TOKEN" },
@@ -515,7 +525,7 @@ describe("resume storage preconditions (#4329)", () => {
 		const io = new CountingIo();
 		io.files.set("/abs/token", Object.assign(new Error("EACCES"), { code: "EACCES" }));
 		const [problem] = await storagePreconditionProblems(
-			[{ domain: "sessions", selection: libsql({ authToken: { file: "/abs/token" } }) }],
+			[{ domain: "sessions", selection: shared({ authToken: { file: "/abs/token" } }) }],
 			agentDir,
 			io,
 		);
@@ -527,7 +537,7 @@ describe("resume storage preconditions (#4329)", () => {
 	test("each adapter loads once and each secret is read once across targets", async () => {
 		const io = new CountingIo();
 		io.variables.set("TOKEN", "t");
-		const selection = libsql({ authToken: { env: "TOKEN" } });
+		const selection = shared({ authToken: { env: "TOKEN" } });
 		const problems = await storagePreconditionProblems(
 			[
 				{ domain: "sessions", selection },
@@ -537,7 +547,7 @@ describe("resume storage preconditions (#4329)", () => {
 			io,
 		);
 		assert.deepEqual(problems, []);
-		assert.deepEqual(io.calls, [`load:${LIBSQL_ADAPTER_PACKAGE}`, "env:TOKEN"]);
+		assert.deepEqual(io.calls, [`load:${POSTGRES_ADAPTER_PACKAGE}`, "env:TOKEN"]);
 	});
 
 	test("an adapter given by path is fixed by making it loadable, and by package name by installing it", async () => {
@@ -562,7 +572,7 @@ describe("resume storage preconditions (#4329)", () => {
 		const io = new CountingIo();
 		io.thrown = new TypeError("bug");
 		await assert.rejects(
-			storagePreconditionProblems([{ domain: "sessions", selection: libsql() }], agentDir, io),
+			storagePreconditionProblems([{ domain: "sessions", selection: shared() }], agentDir, io),
 			TypeError,
 		);
 	});
@@ -572,11 +582,11 @@ describe("resume storage preconditions (#4329)", () => {
 		io.files.set("/abs/token", "token\n");
 		await checkResumeStoragePreconditions(
 			"switch-session",
-			[{ domain: "sessions", selection: libsql({ authToken: { file: "/abs/token" } }) }],
+			[{ domain: "sessions", selection: shared({ authToken: { file: "/abs/token" } }) }],
 			agentDir,
 			io,
 		);
-		assert.deepEqual(io.calls, [`load:${LIBSQL_ADAPTER_PACKAGE}`, "read:/abs/token"]);
+		assert.deepEqual(io.calls, [`load:${POSTGRES_ADAPTER_PACKAGE}`, "read:/abs/token"]);
 	});
 });
 
@@ -762,7 +772,7 @@ describe("resume error family edge cases (#4329)", () => {
 			subject: "session",
 			id: "r",
 			reason: "shared-miss",
-			storage: "libsql",
+			storage: "postgres",
 		});
 		assert.equal(isResumePreconditionError(notFound), false);
 		assert.equal(isResumeCatalogUnavailableError(notFound), false);
@@ -826,13 +836,13 @@ describe("resume storage precondition messages (#4329)", () => {
 	const agentDir = "/home/u/.atomic/agent";
 	const adapter = (secrets: Extract<StorageSelection, { kind: "adapter" }>["secrets"]): StorageSelection => ({
 		kind: "adapter",
-		module: LIBSQL_ADAPTER_PACKAGE,
+		module: POSTGRES_ADAPTER_PACKAGE,
 		secrets,
 	});
 
 	test("each problem says exactly what is missing and why", async () => {
 		const io = new CountingIo();
-		io.missingModules.add(LIBSQL_ADAPTER_PACKAGE);
+		io.missingModules.add(POSTGRES_ADAPTER_PACKAGE);
 		io.variables.set("EMPTY", "");
 		io.files.set("/notdir/token", Object.assign(new Error("ENOTDIR"), { code: "ENOTDIR" }));
 		io.files.set("/odd/token", new Error("no code"));
@@ -854,33 +864,33 @@ describe("resume storage precondition messages (#4329)", () => {
 		assert.deepEqual(problems, [
 			{
 				code: "adapter-not-installed",
-				subject: `storage adapter ${LIBSQL_ADAPTER_PACKAGE}`,
+				subject: `storage adapter ${POSTGRES_ADAPTER_PACKAGE}`,
 				why: "this node's sessions storage selects it, and resuming reads sessions recorded on other nodes through it, but it cannot be loaded",
-				fix: `Install it with \`atomic install npm:${LIBSQL_ADAPTER_PACKAGE}\`.`,
+				fix: `Install it with \`atomic install npm:${POSTGRES_ADAPTER_PACKAGE}\`.`,
 			},
 			{
 				code: "credential-missing",
 				subject: "environment variable UNSET",
-				why: `storage secret a of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is not set`,
-				fix: `Set UNSET for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the token in a file.`,
+				why: `storage secret a of ${POSTGRES_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is not set`,
+				fix: `Set UNSET for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the password in a file.`,
 			},
 			{
 				code: "credential-missing",
 				subject: "environment variable EMPTY",
-				why: `storage secret b of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is empty`,
-				fix: `Set EMPTY for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the token in a file.`,
+				why: `storage secret b of ${POSTGRES_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is empty`,
+				fix: `Set EMPTY for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the password in a file.`,
 			},
 			{
 				code: "credential-missing",
 				subject: "token file /notdir/token",
-				why: `storage secret c of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it does not exist`,
-				fix: `Write the token to /notdir/token (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`,
+				why: `storage secret c of ${POSTGRES_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it does not exist`,
+				fix: `Write the password or token to /notdir/token (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`,
 			},
 			{
 				code: "credential-unreadable",
 				subject: "token file /odd/token",
-				why: `storage secret d of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it cannot be read (read failed)`,
-				fix: `Write the token to /odd/token (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`,
+				why: `storage secret d of ${POSTGRES_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it cannot be read (read failed)`,
+				fix: `Write the password or token to /odd/token (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`,
 			},
 		]);
 	});
@@ -898,14 +908,14 @@ describe("resume storage precondition messages (#4329)", () => {
 			{
 				code: "credential-missing",
 				subject: "environment variable BLANK",
-				why: `storage secret a of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is empty`,
-				fix: `Set BLANK for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the token in a file.`,
+				why: `storage secret a of ${POSTGRES_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is empty`,
+				fix: `Set BLANK for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the password in a file.`,
 			},
 			{
 				code: "credential-missing",
 				subject: "token file /blank/token",
-				why: `storage secret b of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is empty`,
-				fix: `Write the token to /blank/token (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`,
+				why: `storage secret b of ${POSTGRES_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is empty`,
+				fix: `Write the password or token to /blank/token (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`,
 			},
 		]);
 	});
@@ -1005,7 +1015,13 @@ describe("resume glue: remaining edge cases (#4329)", () => {
 		async () => {
 			const { defaultResumePreflightIo } = await import("../src/core/resume/preflight.ts");
 			const { setWorktreeSnapshotGit } = await import("../src/core/worktree-snapshot/git.ts");
-			const adapter = join(dirname(new URL(import.meta.url).pathname), "..", "..", "storage-libsql", "libsql.js");
+			const adapter = join(
+				dirname(new URL(import.meta.url).pathname),
+				"..",
+				"..",
+				"storage-postgres",
+				"postgres.js",
+			);
 			await defaultResumePreflightIo.loadAdapter(adapter, "/home/u/.atomic/agent", "sessions");
 			const previous = setWorktreeSnapshotGit(async () => ({ path: "/bin/false", env: {} }));
 			try {
@@ -1038,14 +1054,14 @@ test("the catalog timeout error crosses process boundaries intact and is retryab
 	const original = new ResumeCatalogTimeoutError({
 		subject: "session",
 		id: null,
-		storage: "libsql",
+		storage: "postgres",
 		phase: "catalog-lookup",
 		timeoutMs: 15000,
 		elapsedMs: 15003,
 	});
 	assert.match(
 		original.message,
-		/^Cannot look up the session: the storage \(libsql\) did not answer within 15000 ms \(catalog-timeout\)\./,
+		/^Cannot look up the session: the storage \(postgres\) did not answer within 15000 ms \(catalog-timeout\)\./,
 	);
 	const copy = rehydrateResumeError(JSON.parse(JSON.stringify(serializeResumeError(original))));
 	assert.ok(copy instanceof ResumeCatalogTimeoutError);

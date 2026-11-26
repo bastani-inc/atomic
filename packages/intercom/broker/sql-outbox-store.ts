@@ -298,6 +298,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		assignments: string,
 		params: readonly SqliteValue[],
 		answer: (written: OutboxRecord) => Result,
+		relaxedDurability = false,
 	): Promise<Result | OutboxClaimWriteRejection> => {
 		if (claim.messageId.length === 0) return Promise.resolve(invalid("empty-message-id"));
 		if (claim.claimantId.length === 0) return Promise.resolve(invalid("empty-claimant-id"));
@@ -316,7 +317,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				if (isSettled(record)) return { status: "settled", row: toRow(record) } as const;
 				return { status: "stale" } as const;
 			},
-			{ ...fenced, leading: [write] },
+			{ ...fenced, leading: [write], ...(relaxedDurability ? { relaxedDurability } : {}) },
 		);
 	};
 
@@ -764,7 +765,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 					},
 				);
 			}
-			// SQLite and libSQL: a write statement takes the database's write lock even when it changes nothing, so a read
+			// SQLite: a write statement takes the database's write lock even when it changes nothing, so a read
 			// decides first, without it, whether there is anything to claim: empty scans (such as fan-out wake-up polls across
 			// idle sessions) cost one read. Linearizable: if a row commits after this snapshot, its enqueue writes a new
 			// wake-up hint. The same read answers a claim another claimant holds, or one of only the claimant's own rows in
@@ -810,7 +811,10 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		},
 
 		renewClaim(claim) {
-			return withClaim(claim, `claim_renewed_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const);
+			// Its claimant renews again within the renewal interval, far inside the claim's staleness limit: a renewal lost
+			// in a crash of the database server leaves the claim a renewal older and still current, so its commit does not
+			// wait for the disk.
+			return withClaim(claim, `claim_renewed_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const, true);
 		},
 
 		reportSaving(claim) {

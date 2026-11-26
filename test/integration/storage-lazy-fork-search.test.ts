@@ -36,7 +36,7 @@ import { type StorageBackend, storageBackends } from "../helpers/storage-backend
 const SERVER_TIMEOUT_MS = 240_000;
 const PROJECT = resolve("/projects/lazy-fork-search");
 const CREATED = "2026-11-01T00:00:00.000Z";
-const SEEDS: Record<string, number> = { "SQLite file": 8, "libSQL server (sqld)": 3, Postgres: 4 };
+const SEEDS: Record<string, number> = { "SQLite file": 8, Postgres: 4 };
 const WORDS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"];
 const PATTERNS = ["alpha bravo", "charlie", "no such needle", "\\b(echo|golf) [a-j]+\\b", "juliet$"];
 

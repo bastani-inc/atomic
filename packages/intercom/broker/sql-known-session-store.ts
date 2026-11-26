@@ -255,11 +255,27 @@ async function openKnownSessionStoreInCatalog({
 		return { status: "bound" };
 	};
 
+	/**
+	 * The writes of this store that `lookup` and `binding` read, started and not finished. Those reads go through the
+	 * reader, which no write of this store is queued on, so they first wait for these: a caller that starts a write and
+	 * then reads, without awaiting the write, reads it. With none unfinished they wait for nothing.
+	 */
+	const unfinished = new Set<Promise<void>>();
+	const writing = <T>(write: Promise<T>): Promise<T> => {
+		const settled = write.then(
+			() => {},
+			() => {},
+		);
+		unfinished.add(settled);
+		void settled.then(() => unfinished.delete(settled));
+		return write;
+	};
+
 	const reclaim = async (request: SessionIdReclaim): Promise<SessionIdReclaimResult> => {
 		if (request.intercomSessionId.length === 0 || request.freshId.length === 0)
 			return { status: "invalid", reason: "empty-session-id" };
 		const owning = owned ? request.owner : undefined;
-		return database.transaction(
+		const reclaiming = database.transaction(
 			async (tx) => {
 				// A session of this return address that another broker presents, in any group, holds the id there.
 				const identities = returnIdentityPrefix(request.returnAddress);
@@ -317,6 +333,7 @@ async function openKnownSessionStoreInCatalog({
 			},
 			{ ...RETRY_UNAPPLIED, concurrency: { kind: "serial", domain: bindings } },
 		);
+		return writing(reclaiming);
 	};
 
 	return {
@@ -325,7 +342,7 @@ async function openKnownSessionStoreInCatalog({
 			if (session.targetIdentity.length === 0) return { status: "invalid", reason: "empty-target-identity" };
 			if (session.intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
 			if (session.group.length === 0) return { status: "invalid", reason: "empty-group" };
-			await database.run(
+			const recording = database.run(
 				`INSERT INTO ${table}(target_identity, intercom_session_id, name_json, name_key, atomic_session_id,
 					group_name, groups_json, recipient_purpose, reply_capability, recorded_at${aliasColumn})
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${nowMs}${aliased ? ", ?" : ""})
@@ -352,11 +369,13 @@ async function openKnownSessionStoreInCatalog({
 				// #5607: last, so every earlier value keeps its place.
 				...(aliased ? [session.aliasSessionId ?? null] : []),
 			);
+			await writing(recording);
 			return { status: "recorded" };
 		},
 		async lookup(target, retentionMs): Promise<KnownSessionLookupResult> {
 			if (target.length === 0) return { status: "invalid", reason: "empty-target" };
-			// Through the reader, which never waits behind this database's writes (#6560).
+			// Through the reader, which never waits behind this database's writes (#6560), only for this store's own.
+			if (unfinished.size > 0) await Promise.all(unfinished);
 			const rows = await reader.all<KnownRow>(
 				// One reading of the clock, so a session found within the retention reports an age within it too.
 				`WITH clock AS (SELECT ${nowMs} AS now)
@@ -376,14 +395,17 @@ async function openKnownSessionStoreInCatalog({
 		},
 		async bind(intercomSessionId, returnAddress, retentionMs, claim, owner): Promise<KnownSessionBindResult> {
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
-			return database.transaction((tx) => bindIn(tx, intercomSessionId, returnAddress, retentionMs, claim, owner), {
-				...RETRY_UNAPPLIED,
-				concurrency: { kind: "serial", domain: bindings },
-			});
+			return writing(
+				database.transaction((tx) => bindIn(tx, intercomSessionId, returnAddress, retentionMs, claim, owner), {
+					...RETRY_UNAPPLIED,
+					concurrency: { kind: "serial", domain: bindings },
+				}),
+			);
 		},
 		...(owned ? { owners } : {}),
 		async binding(intercomSessionId, retentionMs): Promise<KnownSessionBindingResult> {
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
+			if (unfinished.size > 0) await Promise.all(unfinished);
 			const bound = await reader.get<BindingRow>(
 				`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ? AND ${nowMs} - recorded_at <= ?`,
 				intercomSessionId,

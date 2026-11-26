@@ -5,6 +5,7 @@ import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION, type SessionStore } from "../src/core/storage/session/types.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
+import { DEFAULT_HISTORY_BUDGET } from "../src/core/tools/history-session.js";
 import { type HistoryTaskCompletionMessage, HistoryTaskRegistry } from "../src/core/tools/history-tasks.js";
 import { createKillToolDefinition } from "../src/core/tools/kill.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
@@ -24,6 +25,8 @@ const SETTLE_WAIT_MS = 5_000;
 const OLD_TIME_LIMIT_MS = 300_000;
 /** Entries in a session that takes several store reads to scan. */
 const LONG_SESSION_ENTRIES = 1_000;
+/** How long a background search is given to reach its backtracking pattern before a foreground search starts. */
+const BACKTRACKING_HEAD_START_MS = 300;
 /** The refusal past the history tasks a session runs at once, worded as the shell commands' limit is. */
 const LIMIT_MESSAGE =
 	"4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.";
@@ -80,7 +83,7 @@ async function gatedStore(
 	};
 }
 
-function tools(store: SessionStore) {
+function tools(store: SessionStore, routerTimeBudgetMs = ROUTER_TIME_BUDGET_MS) {
 	const notices: HistoryTaskCompletionMessage[] = [];
 	let delivered: () => void = () => {};
 	const noticeArrived = new Promise<void>((resolve) => {
@@ -96,7 +99,7 @@ function tools(store: SessionStore) {
 	const router = createHistoryRouter({
 		cwd: PROJECT,
 		sessionStore: () => store,
-		budget: { timeMs: ROUTER_TIME_BUDGET_MS },
+		budget: { timeMs: routerTimeBudgetMs },
 	});
 	const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
 	const historyTasks = () => registry;
@@ -310,6 +313,41 @@ describe("background history tasks", () => {
 		}
 		assert.equal(taskIdOf(await t.search({ action: "wait", id, budgetMs: 0 })), id, "it is still running");
 		assert.match(await t.kill(id), new RegExp(`History search ${id} was stopped`));
+		assert.equal(t.notices.length, 0);
+	});
+
+	it("a background search stuck on a backtracking pattern leaves a foreground search its whole budget", async () => {
+		const { store, open } = await gatedStore([entry(1, `${"a".repeat(40)}!`), entry(2, "the NEEDLE is here")]);
+		open();
+		const t = tools(store, DEFAULT_HISTORY_BUDGET.timeMs);
+		// The lookaheads keep both patterns off the native engine, so each runs on a pattern worker.
+		const stuck = taskIdOf(
+			await t.search({ pattern: "(?=a)(a+)+$", paths: "history://sessions/slow", wait: { kind: "background" } }),
+		);
+		try {
+			await new Promise((resolve) => setTimeout(resolve, BACKTRACKING_HEAD_START_MS));
+			assert.equal(
+				taskIdOf(await t.search({ action: "wait", id: stuck, budgetMs: 0 })),
+				stuck,
+				"it is still running",
+			);
+
+			const args = { pattern: "(?=N)NEEDLE", paths: "history://sessions/slow" };
+			// One search under the router's own time budget, and one observed in the foreground with none.
+			for (const search of [
+				() => t.plainSearch(args),
+				async () => t.textOf(await t.search({ ...args, wait: { kind: "foreground" } })),
+			]) {
+				const started = performance.now();
+				const foreground = await search();
+				const elapsed = performance.now() - started;
+				assert.match(foreground, /^history:\/\/sessions\/slow:2: the NEEDLE is here$/m);
+				assert.doesNotMatch(foreground, /budget ran out/);
+				assert.ok(elapsed < DEFAULT_HISTORY_BUDGET.timeMs, `the foreground search took ${Math.round(elapsed)} ms`);
+			}
+		} finally {
+			assert.match(await t.kill(stuck), new RegExp(`History search ${stuck} was stopped`));
+		}
 		assert.equal(t.notices.length, 0);
 	});
 

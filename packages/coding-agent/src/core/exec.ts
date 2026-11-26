@@ -21,7 +21,11 @@ import {
 	signalIfSame,
 	signalIfSameNow,
 } from "./process-descendants.js";
-import { holdProcessDescendants } from "./process-tree-containment.ts";
+import {
+	canWatchProcessUntilHostDies,
+	holdProcessDescendants,
+	watchProcessUntilHostDies,
+} from "./process-tree-containment.ts";
 
 const DEFAULT_EXEC_MAX_BUFFER = Math.min(256 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 const FORCE_KILL_DELAY_MS = 5000;
@@ -258,15 +262,23 @@ export async function execCommand(
 			return { stdout: "", stderr: "", code: 128 + osConstants.signals.SIGTERM, killed: true, truncated: false };
 		}
 	}
+	// A command a quit would stop must not outlive this process when it is killed instead. On Linux and macOS the
+	// host-death guardian ends it, with the processes it started in its group. Only where no guardian can watch it does
+	// Linux's parent-death signal end it instead: that signal ends the command itself before the guardian could read
+	// what it started. Windows ends it with this process.
+	const endsWithHost = onQuit !== undefined;
+	const guardianEndsIt = endsWithHost && canWatchProcessUntilHostDies();
 	// Without fork where that costs the host time in proportion to its memory (#5345).
 	const proc = spawnHostProcess(launch.file, argv, {
 		cwd,
 		env,
 		stdio: ["ignore", "pipe", "pipe"],
-		// A command a quit would stop must not outlive this process when it is killed instead.
-		endWithParent: onQuit !== undefined,
+		endWithParent: endsWithHost && !guardianEndsIt,
 		...missingHelperOptions(launch),
 	});
+	// Watched while it runs: what a command that exited by itself left running keeps running.
+	const hostDeathWatch = guardianEndsIt && proc.pid !== undefined ? watchProcessUntilHostDies(proc.pid) : undefined;
+	if (hostDeathWatch !== undefined) proc.once("exit", () => hostDeathWatch.release());
 	// Until it settles; one that exited by then is left alone (see killQuitStoppableCommandsNow).
 	if (onQuit !== undefined && proc.pid !== undefined) quitStoppableCommands.add(proc);
 
@@ -414,6 +426,7 @@ export async function execCommand(
 			stderr = error.message;
 		}
 	} finally {
+		hostDeathWatch?.release();
 		clearTimeout(timeoutId);
 		options?.signal?.removeEventListener("abort", abort);
 		stopOnQuit?.();

@@ -50,7 +50,7 @@ Read the job's `timeout-minutes` in the workflow. It covers setup, tests and tea
 
 ### Storage backend matrix
 
-`storage-conformance` runs the [storage matrix](../test/integration/storage-conformance-matrix.test.ts) with libSQL and PostgreSQL service containers, in addition to SQLite. `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1` makes missing server configuration fail instead of skipping coverage. See [`test/helpers/storage-backends.ts`](../test/helpers/storage-backends.ts) for local configuration.
+`storage-conformance` runs the [storage matrix](../test/integration/storage-conformance-matrix.test.ts) with a PostgreSQL service container, in addition to SQLite, together with the multi-node resume tests that need PostgreSQL. `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1` makes missing server configuration fail instead of skipping coverage. See [`test/helpers/storage-backends.ts`](../test/helpers/storage-backends.ts) for local configuration.
 
 ### macOS test dispatch
 
@@ -126,7 +126,7 @@ bun run scripts/cut-release.ts 0.9.10 --base main --push --yes
 The script stamps a detached `Release <version>` commit and pushes only its tag. Check the resulting `Publish <version>` run. Do not dispatch a second run during normal publication.
 
 1. `integrity` checks that the source resolves to the tag commit, the subject is `Release <tag>` and `packages/coding-agent/package.json` matches the tag. Build jobs use that verified commit.
-2. `native-artifacts` builds the native bindings. `build` packs the npm tarballs and builds release archives and notes. It then checks that people who update in place from an earlier release keep a working installation. It compares the packed packages with the releases recorded in `packages/coding-agent/in-place-update/`, the newest release on npm before this one and the newest stable release on npm. The newest release is often a prerelease, while most people update from the newest stable one. The check downloads the releases from npm and fails if npm cannot be reached. `linux-binary-smoke`, `windows-binary-smoke` and `alpine-binary-smoke` test release binaries. The Windows smoke job also produces the Windows archives.
+2. `native-artifacts` builds the native bindings. Its macOS legs also build the SQLite library the macOS archives ship (`scripts/build-macos-sqlite.sh`). `build` packs the npm tarballs and builds release archives and notes. It then checks that people who update in place from an earlier release keep a working installation. It compares the packed packages with the releases recorded in `packages/coding-agent/in-place-update/`, the newest release on npm before this one and the newest stable release on npm. The newest release is often a prerelease, while most people update from the newest stable one. The check downloads the releases from npm and fails if npm cannot be reached. `linux-binary-smoke`, `windows-binary-smoke`, `alpine-binary-smoke` and `macos-binary-smoke` test release binaries. The Windows smoke job also produces the Windows archives. The macOS smoke job runs both macOS archives from `build` on a Mac (Intel under Rosetta) and checks that `atomic storage status` reports the SQLite version pinned in `scripts/bundled-sqlite.json`.
 3. `stage-github-release` waits for the build and smoke jobs. It stages the archives and `SHA256SUMS` in a verified draft. It does not change a public release.
 4. `publish-npm` uses OIDC and provenance. It publishes the native leaves before their dependents and `@bastani/atomic` last. It skips versions already on npm.
 5. `publish-github-release` makes the draft public only after npm succeeds. `register-published-version` then records the published version using a tag-scoped OIDC token.
@@ -177,7 +177,12 @@ Keep third-party actions pinned to full commit SHAs. Validate workflow changes w
 
 ### Node.js version
 
-The root `package.json` `engines.node` is the one source for the Node.js version. Every `actions/setup-node` step and `.atomic/blueprint.yaml` read it with `node-version-file`. Jobs with a sparse `release-tooling` checkout read `release-tooling/package.json`. CI therefore runs the newest Node.js release that satisfies the floor. The root and every published package declare the same `engines.node`. The one exception is the Mintlify step in `static-checks`, which switches to the newest Node 24 release because Mintlify refuses Node 25 and later. `test/ci/node-version-source.test.ts` enforces these rules.
+The root `package.json` `engines.node` is the one source for the Node.js version. Every `actions/setup-node` step and `.atomic/blueprint.yaml` read it with `node-version-file`. Jobs with a sparse `release-tooling` checkout read `release-tooling/package.json`. CI therefore runs the newest Node.js release that satisfies the floor. The root and every published package declare the same `engines.node`. There are two exceptions:
+
+- One Linux `unit-tests` shard and one Linux `agent-suite` shard run on exactly the floor (24.20.0), the oldest Node.js an npm install accepts. They are extra matrix entries with `node: "24.20.0"`, named for example `unit-tests (linux-x64, 2/11, Node.js 24.20.0)`, and their diagnostics artifacts end in `-node-24.20.0`. They run in parallel with the other shards, and the result gate requires them like any other shard. When you raise the floor, update the version in both matrix entries and in both `Node.js at the engines.node floor` steps.
+- The Mintlify step in `static-checks` switches to the newest Node 24 release because Mintlify refuses Node 25 and later.
+
+`test/ci/node-version-source.test.ts` enforces these rules.
 
 ### Dependabot and the pi sync
 

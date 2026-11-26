@@ -94,11 +94,11 @@ async function secretProblem(
 			code: "credential-missing",
 			subject: `environment variable ${ref.env}`,
 			why: `${why}, and it is ${value === undefined ? "not set" : "empty"}`,
-			fix: `Set ${ref.env} for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the token in a file.`,
+			fix: `Set ${ref.env} for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the password in a file.`,
 		};
 	}
 	const path = secretFilePath(ref.file, agentDir);
-	const fix = `Write the token to ${path} (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`;
+	const fix = `Write the password or token to ${path} (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`;
 	let text: string;
 	try {
 		text = await io.readText(path);

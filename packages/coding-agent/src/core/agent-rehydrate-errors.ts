@@ -44,7 +44,7 @@ export interface AgentRehydrateErrorFields {
 	readonly namespace?: string;
 	/** What was still running when a release was refused. */
 	readonly activity?: AgentSessionActivity;
-	/** The session store's adapter, for example `node-sqlite`, `jsonl`, `memory` or `libsql`. */
+	/** The session store's adapter, for example `node-sqlite`, `jsonl`, `memory` or `postgres`. */
 	readonly storage?: string;
 	/** True when the store holds only this node's sessions: it is not shared storage. */
 	readonly localOnly?: boolean;
@@ -96,17 +96,11 @@ export function isLocalOnlySessionStorage(adapter: string): boolean {
 	return LOCAL_ONLY_STORAGE.has(adapter);
 }
 
-/** The command that joins this node to shared storage, named in hints when a lookup misses on local-only storage. */
-export const TEAM_JOIN_COMMAND = "atomic team join <url> --token-file <path>";
-
 /** The command that points this node's storage at a shared database, keeping the rest of its layout. */
-export const STORAGE_JOIN_COMMAND = "atomic storage join <url> --token-file <path>";
+export const STORAGE_JOIN_COMMAND = "atomic storage join <postgres-url> --password-file <path>";
 
-/**
- * How a node puts its sessions in shared storage, named in hints when a session lookup misses on local-only storage.
- * `atomic team join` keeps sessions on each machine, so a machine joined that way leaves the team first.
- */
-export const SESSION_STORAGE_JOIN = `\`${STORAGE_JOIN_COMMAND}\` (after \`atomic team leave\` on a machine joined with \`atomic team join\`, which keeps sessions on each machine)`;
+/** How a node puts its sessions in shared storage, named in hints when a session lookup misses on local-only storage. */
+export const SESSION_STORAGE_JOIN = `\`${STORAGE_JOIN_COMMAND}\``;
 
 /** How deep cause chains are serialized and walked. */
 const MAX_CAUSE_DEPTH = 8;

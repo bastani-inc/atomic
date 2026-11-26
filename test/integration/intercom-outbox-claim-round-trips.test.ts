@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import pg from "pg";
 import { afterEach, describe, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
@@ -10,7 +9,6 @@ import {
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { rowTransaction } from "../../packages/intercom/broker/sql-outbox-store.js";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { checkClaimantlessRow } from "../helpers/outbox-claimantless-row.js";
 import {
 	type PostgresScope,
@@ -18,7 +16,6 @@ import {
 	postgresTestPassword,
 	withPostgresDatabase,
 } from "../helpers/postgres-database.js";
-import { dropLibsqlScope } from "../helpers/storage-backends.js";
 
 const restores: (() => void)[] = [];
 afterEach(() => {
@@ -123,26 +120,6 @@ async function locksHeldBy<T>(url: string, poll: () => Promise<T>) {
 		restore();
 		await counter.end();
 	}
-}
-
-/** Counts the HTTP requests sent to a libSQL server until the test ends. */
-function countRequests() {
-	const original = globalThis.fetch;
-	let sent = 0;
-	globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-		sent += 1;
-		return original(input, init);
-	}) as typeof fetch;
-	restores.push(() => {
-		globalThis.fetch = original;
-	});
-	return {
-		take() {
-			const counted = sent;
-			sent = 0;
-			return counted;
-		},
-	};
 }
 
 describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claims on PostgreSQL (#6560)", () => {
@@ -552,62 +529,3 @@ async function waitForLockWaiter(watcher: SqliteDatabase, kind: "row" | "advisor
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 }
-
-const serverUrl = process.env.ATOMIC_TEST_LIBSQL_URL;
-const tokenFile = process.env.ATOMIC_TEST_LIBSQL_TOKEN_FILE;
-
-describe.skipIf(serverUrl === undefined)("Intercom outbox claims on a libSQL server (#6560)", () => {
-	test("a claimed row without a claimant is not held, and is taken over once stale (#6560)", async () => {
-		const authToken = tokenFile === undefined ? undefined : readFileSync(tokenFile, "utf8").trim();
-		const open = () => openLibsqlDatabase({ url: serverUrl!, ...(authToken === undefined ? {} : { authToken }) });
-		const prefix = `claim_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
-		const database = await open();
-		try {
-			const { state, bus } = await openIntercomBrokerState({ openDatabase: open, prefix });
-			try {
-				await checkClaimantlessRow(state, database, `${prefix}intercom_outbox`);
-			} finally {
-				await bus.close();
-				await state.close();
-			}
-		} finally {
-			await dropLibsqlScope(database, prefix);
-			await database.close();
-		}
-	});
-
-	test("an empty poll is one request, and a claim of queued messages two, with one write (#6560)", async () => {
-		const authToken = tokenFile === undefined ? undefined : readFileSync(tokenFile, "utf8").trim();
-		const open = () => openLibsqlDatabase({ url: serverUrl!, ...(authToken === undefined ? {} : { authToken }) });
-		const prefix = `claim_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
-		try {
-			const { state, bus } = await openIntercomBrokerState({ openDatabase: open, prefix });
-			// Only the outbox's calls are counted: the wake-up bus, which polls on its own, is closed first.
-			await bus.close();
-			try {
-				await enqueue(state, "m-warm", "target-w");
-				assert.deepEqual(claimedIds(await claim(state, "broker-b", "target-w")), ["m-warm"]);
-				const requests = countRequests();
-				assert.deepEqual(claimedIds(await claim(state, "broker-b", "target-a")), []);
-				const emptyRequests = requests.take();
-				for (const id of ["m-1", "m-2", "m-3"]) await enqueue(state, id, "target-a");
-				requests.take();
-				const claimed = await claim(state, "broker-b", "target-a");
-				const claimRequests = requests.take();
-				assert.deepEqual(claimedIds(claimed), ["m-1", "m-2", "m-3"]);
-				assert.deepEqual(await claim(state, "broker-c", "target-a"), { status: "held", claimantId: "broker-b" });
-				const heldRequests = requests.take();
-				// Three requests before for a claim of queued messages and for a held claim.
-				assert.equal(emptyRequests, 1);
-				assert.equal(claimRequests, 2);
-				assert.equal(heldRequests, 1);
-			} finally {
-				await state.close();
-			}
-		} finally {
-			const database = await open();
-			await dropLibsqlScope(database, prefix);
-			await database.close();
-		}
-	});
-});

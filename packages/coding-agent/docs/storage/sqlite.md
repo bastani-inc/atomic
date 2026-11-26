@@ -9,6 +9,8 @@ Local SQLite works out of the box with no external server. Atomic enables WAL mo
 - Passing an empty object `{}` in top-level `storage` selects `<storageHome>/storage.sqlite`. Passing `{}` in `sessions.storage` selects `<storageHome>/workflows/journal.sqlite` (overriding any shared `storage`).
 - Relative `path` settings resolve against the [storage home](/storage#storage-home).
 
+Atomic uses the SQLite included with its runtime. Package-manager installs use the copy Node.js includes. The macOS release archives include their own copy of the version Node.js 24.20 includes, so they don't depend on the SQLite that comes with macOS. `atomic storage status` shows the version in use on its `library:` line.
+
 Never put a local SQLite file on a network filesystem. To share sessions across machines, use [PostgreSQL](/storage/postgres).
 
 ## Tuning for many concurrent agents
@@ -17,7 +19,7 @@ A local SQLite file has one writer at a time. Atomic queues the writers of every
 
 ## SDK and local SQLite API
 
-For full SDK recipes covering `createAgentSession`, `createAgentSessionRuntime`, `SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`, `openPostgresDatabase`, `openLibsqlDatabase`, and store ownership rules, see [SDK session storage](/sdk/storage). For direct session reading, branching, and listing, see [SessionManager API](/session-format#sessionmanager-api).
+For full SDK recipes covering `createAgentSession`, `createAgentSessionRuntime`, `SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`, `openPostgresDatabase`, and store ownership rules, see [SDK session storage](/sdk/storage). For direct session reading, branching, and listing, see [SessionManager API](/session-format#sessionmanager-api).
 
 This section covers the low-level local SQLite API and storage path helpers exported from `@bastani/atomic` and `@bastani/atomic/storage`, with an example:
 

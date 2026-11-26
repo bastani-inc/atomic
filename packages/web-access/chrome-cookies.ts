@@ -249,13 +249,6 @@ process.emitWarning = (warning, ...args) => {
 	return origEmitWarning(warning, ...args);
 };
 
-function supportsReadBigInts() {
-	const [major, minor] = process.versions.node.split(".").map(Number);
-	if (major > 24) return true;
-	if (major < 24) return false;
-	return minor >= 4;
-}
-
 function readMetaVersion(sqlite, dbPath, opts) {
 	const db = new sqlite.DatabaseSync(dbPath, opts);
 	try {
@@ -299,8 +292,7 @@ try {
 if (!sqlite) {
 	parentPort?.postMessage({ metaVersion: 0, rows: null });
 } else {
-	const opts = { readOnly: true };
-	if (supportsReadBigInts()) opts.readBigInts = true;
+	const opts = { readOnly: true, readBigInts: true };
 	let metaVersion = 0;
 	try {
 		metaVersion = readMetaVersion(sqlite, workerData.dbPath, opts);

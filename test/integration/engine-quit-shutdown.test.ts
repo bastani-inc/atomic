@@ -71,7 +71,10 @@ export default (pi) => {
 			writeFileSync(fixture.files.groupChild, String(child.pid));
 		}
 		if (fixture.execGrandchild) {
-			const command = 'const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
+			// Both ignore a hangup: what ends them when the host dies must not be the SIGHUP the system sends the terminal's
+			// foreground group when the host, as the leader of this test's terminal session, exits. Linux sends it and macOS
+			// does not, and in a real terminal the shell leads the session, so no hangup comes on either.
+			const command = 'process.on("SIGHUP", () => {}); const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", "process.on(\\'SIGHUP\\', () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(process.argv[1] + ".root", String(process.pid)); require("node:fs").writeFileSync(process.argv[1], String(child.pid)); setInterval(() => {}, 1000);';
 			const run = () => void pi.exec(process.execPath, ["-e", command, fixture.files.execChild], fixture.execTimeoutMs === undefined ? {} : { timeout: fixture.execTimeoutMs });
 			// A command with a timeout starts once the test watches for it, so the timeout cannot pass before its pid is read.
 			if (fixture.execTimeoutMs === undefined) run();

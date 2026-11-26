@@ -28,6 +28,7 @@ Package-manager installs need Node.js 24 LTS, version 24.20.0 or newer. The [rel
 
 - **Why 24.20.0:** Node.js releases before 24.15.0 bundle a SQLite version with a bug that can corrupt Atomic's session database ([SQLite WAL-reset bug](https://www.sqlite.org/wal.html#walresetbug)). Node.js 24.17.0 through 24.19.0 reject valid certificates for IPv6 addresses such as an `https://[::1]` proxy ([nodejs/node#64145](https://github.com/nodejs/node/pull/64145)); 24.20.0 fixes both.
 - **Check your version:** Run `node --version`. It must print `v24.20.0` or a later `v24` release, or a newer major version.
+- **On an older Node.js,** `atomic` stops at startup with `Atomic needs Node.js 24.20.0 or newer, but this is Node.js <version>.` and a link to this section.
 - **Upgrade:** Install the current Node.js 24 LTS release from [nodejs.org](https://nodejs.org/en/download), or with a version manager: `nvm install 24`, `fnm install 24`, or `mise use -g node@24`. Then reinstall Atomic with `npm install -g @bastani/atomic` so it runs on the new Node.js.
 
 ### Package manager troubleshooting
@@ -120,6 +121,8 @@ You should see a single version line (for example `0.10.5`). If your shell repor
 ## Which runtime runs Atomic
 
 Package-manager installs run on Node.js (`#!/usr/bin/env node`), including global installs created with `bun add -g` unless you explicitly run with Bun (`--bun`). Standalone release archives run on Bun. Installing Bun separately does not switch an npm install to Bun. [Codemode scripts](/codemode) always run inside a sandboxed JavaScript VM with no direct Node or Bun APIs.
+
+Both runtimes use the same SQLite version for local storage. Node.js includes its own copy of SQLite. On macOS, Bun would otherwise use the SQLite that comes with macOS, whose version depends on your macOS release, so the macOS release archives include their own copy, in `lib/libsqlite3.dylib`. You don't need to do anything. `atomic storage status` shows the version in use on its `library:` line. If that copy can't be loaded, Atomic prints one warning and uses the system's SQLite instead.
 
 ## Git
 
