@@ -102,24 +102,27 @@ function sourceRows(
 }
 
 /**
- * Every session's rows of `table` through its view, as a derived table with `columns`, `session_id` and `seq`, and no
- * parameters: for a statement that reads the rows of many sessions, each by `session_id`, which the database applies
- * to both halves of the union.
+ * The rows of `table` through the view of the session that `session`, an SQL expression such as a column of an outer
+ * query, names: a derived table with `columns`, `session_id` and `seq`, and no parameters, for a statement that reads
+ * the rows of many sessions, each in a subquery of its own. Each half of the union looks the session up by its key
+ * itself, so neither reads the rows of every session to find one's.
  */
-export function forkViewAll(
+export function forkViewOf(
 	tables: ForkViewTables,
 	view: { readonly table: string; readonly columns: readonly string[] },
+	session: string,
 ): string {
 	const { table } = view;
-	if (tables.segments === undefined)
-		return tables.guard === undefined ? table : `(SELECT * FROM ${table} WHERE ${tables.guard})`;
+	const guard = tables.guard === undefined ? "" : ` AND ${tables.guard}`;
 	const columns = view.columns.map((column) => `, ${column}`).join("");
-	const guard = tables.guard === undefined ? "" : ` WHERE ${tables.guard}`;
+	const own = `SELECT session_id, seq${columns} FROM ${table} WHERE session_id = ${session}${guard}`;
+	if (tables.segments === undefined) return `(${own})`;
 	return `(SELECT f.session_id AS session_id, f.base_seq + (x.seq - f.from_seq) + 1 AS seq${view.columns
 		.map((column) => `, x.${column} AS ${column}`)
 		.join("")}
-		FROM ${sourceRows(tables, table, view.columns, (x) => `${x}.seq >= f.from_seq AND ${x}.seq <= f.to_seq`)}${guard}
-		UNION ALL SELECT session_id, seq${columns} FROM ${table}${guard})`;
+		FROM ${sourceRows(tables, table, view.columns, (x) => `${x}.seq >= f.from_seq AND ${x}.seq <= f.to_seq`)}
+		WHERE f.session_id = ${session}${guard}
+		UNION ALL ${own})`;
 }
 
 /** `sql`, a statement that may begin with `WITH`, with `views` first in its `WITH`. */
