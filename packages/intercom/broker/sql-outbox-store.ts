@@ -45,11 +45,12 @@ const SEND_ROOM = "atomic.intercom_send_room";
 const SEND_FORGET = "atomic.intercom_send_forget";
 /**
  * The settings a one-round-trip send to a recipient its sender found offline records, for the statements after the row's
- * insert: the broker holding the recipient's live presence, read with the insert, the row's sequence, and whether the
+ * insert: the broker holding the recipient's live presence, read with the insert, the row's sequence and recipient, and whether the
  * hint log took the send's lock without waiting, so its wake-up hint was written.
  */
 const SEND_WAKE = "atomic.intercom_send_wake";
 const SEND_WAKE_VERSION = "atomic.intercom_send_wake_version";
+const SEND_WAKE_TARGET = "atomic.intercom_send_wake_target";
 const SEND_HINT = "atomic.intercom_send_hint";
 /** The setting a PostgreSQL claim transaction records in that its recipient has undelivered rows, and its locks are held. */
 const CLAIM_GATE = "atomic.intercom_outbox_claim";
@@ -650,7 +651,8 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 						SELECT presence.holder_id FROM ${leases} presence
 						WHERE presence.kind = 'presence' AND presence.key = ? AND presence.holder_id IS NOT NULL
 							AND ${greatest("0", `${nowMs} - presence.renewed_at`)} <= ?${lockClause("share")}
-					), ''), true) AS presence_holder, set_config('${SEND_WAKE_VERSION}', CAST(sequence AS TEXT), true) AS hint_version`,
+					), ''), true) AS presence_holder, set_config('${SEND_WAKE_VERSION}', CAST(sequence AS TEXT), true) AS hint_version,
+						set_config('${SEND_WAKE_TARGET}', target_identity, true) AS hint_target`,
 					params: [request.targetIdentity, request.wakeHostWithinMs!] as SqliteValue[],
 				}
 			: { sql: "", params: [] as SqliteValue[] };
@@ -681,8 +683,9 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			sql: `DO $atomic_send$ BEGIN
 				IF ${woken} <> '' THEN
 					LOCK TABLE ${wakeups} IN ROW EXCLUSIVE MODE NOWAIT;
-					INSERT INTO ${wakeups}(broker_id, reason, version, created_at)
-						VALUES (${woken}, 'outbox', CAST(current_setting('${SEND_WAKE_VERSION}') AS BIGINT), ${nowMs});
+					INSERT INTO ${wakeups}(broker_id, reason, version, created_at, target_identity)
+						VALUES (${woken}, 'outbox', CAST(current_setting('${SEND_WAKE_VERSION}') AS BIGINT), ${nowMs},
+							current_setting('${SEND_WAKE_TARGET}'));
 					PERFORM set_config('${SEND_HINT}', 'written', true);
 				END IF;
 			EXCEPTION WHEN lock_not_available THEN NULL;
@@ -745,12 +748,13 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				leadingOnly: true,
 			})
 			.then((result) => {
-				// Notified once the hint committed, as the wake-up bus's own hints are, so the host does not wait for its
-				// backup poll (#6560); the hint is there for its poll if the notification is lost.
-				const notify = result.status === "inserted" && result.woke !== undefined
-					? database.notifications?.notify(wakeups, result.woke)
-					: undefined;
-				if (notify !== undefined) void database.run(notify.sql, ...notify.params).catch(() => {});
+				// Notified once the hint committed, on the host's own channel (and the shared one only for a host of an
+				// earlier release), as the wake-up bus's own hints are, so the host does not wait for its backup poll
+				// (#6560); the hint is there for its poll if a notification is lost.
+				const notifications = database.notifications;
+				if (result.status === "inserted" && result.woke !== undefined && notifications !== undefined)
+					for (const { sql, params } of wakeUpNotices(notifications, wakeups, leases, result.woke))
+						void database.run(sql, ...params).catch(() => {});
 				return result;
 			});
 	};

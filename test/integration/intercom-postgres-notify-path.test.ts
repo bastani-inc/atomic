@@ -176,10 +176,10 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 		});
 	});
 
-	test("an offline recipient's send writes its hint and notifies after its commit, at no extra round trip", async () => {
+	test("an offline recipient's send writes its hint and notifies after its commit, at no extra round trip, on its host's channel alone", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const { state, bus } = await openIntercomBrokerState(
-				{ openDatabase: () => scope.open() },
+				{ openDatabase: () => scope.open(), prefix: PREFIX },
 				{
 					pollIntervalMs: NEVER_POLL_MS,
 				},
@@ -190,6 +190,8 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 				session: { id: "alice", name: "alice", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
 			} as const;
 			try {
+				// broker-b hosts alice and listens on its own channel; broker-c is another broker of this release.
+				await members(scope, { "broker-b": "current", "broker-c": "current" });
 				assert.equal(
 					(await state.leases.acquire(presence, "broker-b", BROKER_LEASE_STALE_AFTER_MS)).status,
 					"acquired",
@@ -207,23 +209,49 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 						...(wakeHostWithinMs === undefined ? {} : { wakeHostWithinMs }),
 					});
 				assert.equal((await send("m-warm", BROKER_LEASE_STALE_AFTER_MS)).status, "inserted");
-				const trips = countRoundTrips();
-				restores.push(trips.restore);
-				assert.equal((await send("m-plain")).status, "inserted");
-				const plainTrips = trips.take();
-				const texts = recordStatements();
-				// Past the window in which the warm-up's notification to the same broker would hold this one back.
-				await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 2));
-				const woken = await send("m-woken", BROKER_LEASE_STALE_AFTER_MS);
-				const wokenTrips = trips.take();
-				assert.equal(woken.status === "inserted" && woken.woke, "broker-b");
-				assert.equal(wokenTrips, plainTrips + 1, "the hint and its notifications together, in one round trip");
-				const commit = texts.indexOf("COMMIT");
-				assert.ok(texts.findIndex((text) => text.includes("pg_notify")) > commit);
-				const hint = await (await scope.open()).get<{ target_identity: string }>(
-					"SELECT target_identity FROM intercom_wakeups ORDER BY id DESC LIMIT 1",
-				);
-				assert.equal(hint?.target_identity, "alice", "the hint names its recipient");
+				// The host's own bus, as its broker subscribes: the hints it is handed name the recipient whose queue it reads.
+				const hosted = await collect(bus, "broker-b");
+				const own = await rawListener(scope, [brokerWakeUpChannel(TABLE, "broker-b")]);
+				const others = await rawListener(scope, [TABLE, brokerWakeUpChannel(TABLE, "broker-c")]);
+				try {
+					const trips = countRoundTrips();
+					restores.push(trips.restore);
+					assert.equal((await send("m-plain")).status, "inserted");
+					const plainTrips = trips.take();
+					const texts = recordStatements();
+					// Past the window in which the warm-up's notification to the same broker would hold this one back.
+					await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 2));
+					const woken = await send("m-woken", BROKER_LEASE_STALE_AFTER_MS);
+					const wokenTrips = trips.take();
+					assert.equal(woken.status === "inserted" && woken.woke, "broker-b");
+					// The hint goes with the row, in the send's one round trip; its notification follows the commit.
+					assert.equal(plainTrips, 1);
+					assert.equal(wokenTrips, plainTrips, "the hint in the send's own round trip");
+					const deadline = performance.now() + NOTIFIED_BOUND_MS;
+					while (own.received.length === 0 && performance.now() < deadline)
+						await new Promise((resolve) => setTimeout(resolve, 5));
+					assert.deepEqual(own.received, [
+						{ channel: physical(brokerWakeUpChannel(TABLE, "broker-b")), payload: "broker-b" },
+					]);
+					const commit = texts.indexOf("COMMIT");
+					assert.ok(commit >= 0 && texts.findIndex((text) => text.includes("pg_notify")) > commit);
+					// The host is handed the hint, naming alice, so it reads alice's queue alone.
+					const sequence = woken.status === "inserted" ? woken.row.sequence : -1;
+					const deadlineHint = performance.now() + NOTIFIED_BOUND_MS;
+					while (!hosted.hints.some((hint) => hint.version === sequence) && performance.now() < deadlineHint)
+						await new Promise((resolve) => setTimeout(resolve, 5));
+					assert.deepEqual(
+						hosted.hints.find((hint) => hint.version === sequence),
+						{ brokerId: "broker-b", reason: "outbox", version: sequence, targetIdentity: "alice" },
+					);
+					assert.ok(hosted.hints.every((hint) => hint.targetIdentity === "alice"));
+					// Nothing on the shared channel, which only brokers of earlier releases need, nor on another broker's.
+					await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 4));
+					assert.deepEqual(others.received, []);
+				} finally {
+					await own.close();
+					await others.close();
+				}
 			} finally {
 				await bus.close();
 				await state.close();

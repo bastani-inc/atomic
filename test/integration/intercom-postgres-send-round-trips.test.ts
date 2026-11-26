@@ -255,10 +255,13 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom send round trips on 
 				trips.take();
 				const hosted = await state.reserveAndEnqueue!(...offline("m-hosted"));
 				assert.equal(hosted.status === "inserted" ? hosted.woke : hosted.status, "broker-host");
-				// One for the transaction; its notification goes once it committed, and the send does not wait for it.
+				// One for the transaction. Its notifications go once it committed (the host's own channel, and the shared one a
+				// host of an earlier release listens on, as no membership lease says this one has its own), and the send does
+				// not wait for them.
 				assert.equal(trips.take(), 1);
 				await sleep(200);
-				assert.equal(trips.take(), 1);
+				const notified = trips.take();
+				assert.ok(notified >= 1 && notified <= 2, `${notified} round trips to notify`);
 				const database = await open();
 				try {
 					const hints = await database.all<{ broker_id: string; version: number | bigint }>(
