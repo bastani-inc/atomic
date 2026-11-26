@@ -379,6 +379,20 @@ for (const backend of storageBackends) {
 					const table = stagingTable(destPrefix);
 					const database = await scope.connect();
 					await (await SqlSessionStore.open(database, { prefix: destPrefix })).prepareForkStaging();
+					// Record committed takeovers from explicit cleanups and from the clones' own cleanups alike.
+					const claims: string[] = [];
+					const cleaners = await Promise.all(
+						[0, 1, 2, 3].map(async () => recordingTakeovers(await scope.connect(), table, claims)),
+					);
+					// Finish opening the cloners before seeding. SQLite's idle cleanup on open can otherwise
+					// sweep a lapsed transfer before any of the concurrent cleanups under test start.
+					const cloners = await Promise.all(
+						[0, 1].map(async () =>
+							SqlSessionStore.open(recordingTakeovers(await scope.connect(), table, claims), {
+								prefix: destPrefix,
+							}),
+						),
+					);
 					const lapsed = ["l0", "l1", "l2", "l3", "l4"];
 					const live = ["v0", "v1"];
 					const rows = FORK_STAGING_CLEANUP_ROWS + 3;
@@ -398,17 +412,10 @@ for (const backend of storageBackends) {
 								);
 						}
 					});
-					// Every committed takeover, by transfer, from the cleanups and from the clones' own cleanups alike.
-					const claims: string[] = [];
-					const cleaners = await Promise.all(
-						[0, 1, 2, 3].map(async () => recordingTakeovers(await scope.connect(), table, claims)),
-					);
-					const cloners = await Promise.all(
-						[0, 1].map(async () =>
-							SqlSessionStore.open(recordingTakeovers(await scope.connect(), table, claims), {
-								prefix: destPrefix,
-							}),
-						),
+					assert.equal(
+						await stagedRows(database, destPrefix),
+						(rows + 1) * (lapsed.length + live.length),
+						"every seeded row must be present when the concurrent cleanup begins",
 					);
 					const dialect = dialectOf(database);
 					const results = await within(
