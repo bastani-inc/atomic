@@ -31,7 +31,7 @@ import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/ru
 
 /**
  * PostgreSQL with two roles (#5218): an owner role that sets up and migrates Atomic's schema, and a runtime role with
- * only the privileges docs/storage.md ("PostgreSQL roles") grants it, which must open sessions and Intercom without DDL.
+ * only the privileges docs/storage/postgres.md ("Set up the database") grants it, which must open sessions and Intercom without DDL.
  */
 
 const postgresPackage = resolve(moduleDir(import.meta.url), "../../packages/storage-postgres");
@@ -103,7 +103,7 @@ async function openEveryStore(open: () => Promise<SqliteDatabase>, prefix: strin
 }
 
 /**
- * The runtime role's grants as docs/storage.md gives them, run as the owner on the schema the owner's tables are in:
+ * The runtime role's grants as docs/storage/postgres.md gives them, run as the owner on the schema the owner's tables are in:
  * schema USAGE, DML on every table, the sequences and EXECUTE on the trigger functions, and the same by default on those
  * created later.
  */

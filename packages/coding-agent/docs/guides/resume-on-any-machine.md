@@ -12,7 +12,7 @@ Every machine must use the same shared database, either PostgreSQL or Turso / li
 
 **PostgreSQL (PostgreSQL 16 or newer for sessions):**
 
-In two-role deployments, run `atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password` once as the owner role (and after Atomic upgrades), then grant the runtime role its privileges before joining machines as `atomic_runtime`. See [Set up the database](/storage#set-up-the-database).
+In two-role deployments, run `atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password` once as the owner role (and after Atomic upgrades), then grant the runtime role its privileges before joining machines as `atomic_runtime`. See [Set up the database](/storage/postgres#set-up-the-database).
 
 ```bash
 atomic install npm:@bastani/atomic-storage-postgres
@@ -21,7 +21,7 @@ atomic intercom restart
 atomic storage status
 ```
 
-See [PostgreSQL](/storage#postgresql) for database roles, TLS, and cloud identities.
+See [PostgreSQL](/storage/postgres) for database roles, TLS, and cloud identities.
 
 **libSQL / Turso:**
 

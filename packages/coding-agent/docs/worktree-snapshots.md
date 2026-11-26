@@ -205,7 +205,7 @@ To trigger collection immediately from code, call `collectSnapshotGarbage()`. Fo
 
 ## SDK
 
-Open a `SqliteDatabase` handle with `openNodeSqliteDatabase()`, `openPostgresDatabase()`, or `openLibsqlDatabase()` (see [SDK session storage](/sdk/storage) and [SDK and local SQLite API](/storage#sdk-and-local-sqlite-api)), then open a `SqlSnapshotBlobStore` on that database:
+Open a `SqliteDatabase` handle with `openNodeSqliteDatabase()`, `openPostgresDatabase()`, or `openLibsqlDatabase()` (see [SDK session storage](/sdk/storage) and [SDK and local SQLite API](/storage/sqlite#sdk-and-local-sqlite-api)), then open a `SqlSnapshotBlobStore` on that database:
 
 ```typescript
 import {

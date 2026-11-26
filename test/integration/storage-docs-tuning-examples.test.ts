@@ -10,16 +10,20 @@ import postgresAdapter, { openPostgresDatabase } from "../../packages/storage-po
 import { postgresSkipReason, postgresTestPassword, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
-const guide = readFileSync(resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs/storage.md"), "utf8");
-const tuning = guide.slice(
-	guide.indexOf("## Tuning for many concurrent agents"),
-	guide.indexOf("## Exporting and importing sessions"),
-);
+const docs = resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs");
 
-const pgbouncerGuide = readFileSync(
-	resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs/guides/postgres-pgbouncer.md"),
-	"utf8",
-);
+/** The "Tuning for many concurrent agents" section of a backend's storage page, up to the next section. */
+function tuningSection(page: string): string {
+	const text = readFileSync(join(docs, page), "utf8");
+	const start = text.indexOf("\n## Tuning for many concurrent agents\n");
+	assert.ok(start >= 0, `${page} has a tuning section`);
+	const end = text.indexOf("\n## ", start + 1);
+	return text.slice(start, end < 0 ? undefined : end);
+}
+
+const tuning = tuningSection("storage/postgres.md");
+const libsqlTuning = tuningSection("storage/libsql.md");
+const pgbouncerGuide = readFileSync(join(docs, "storage/postgres/pgbouncer.md"), "utf8");
 
 function blocks(language: string, text = tuning): string[] {
 	return [...text.matchAll(new RegExp("```" + language + "\\n([\\s\\S]*?)```", "g"))].map((match) => match[1]!);
@@ -192,13 +196,13 @@ describe.skipIf(postgresSkipReason !== undefined)("storage guide PostgreSQL tuni
 
 describe.skipIf(libsqlTestUrl === undefined)("storage guide libSQL tuning examples (#6560)", () => {
 	test("every libSQL settings.json and SDK example opens with its options", async () => {
-		const examples = settingsExamples(LIBSQL);
+		const examples = settingsExamples(LIBSQL, libsqlTuning);
 		assert.equal(examples.length, 1);
 		const url = libsqlTestUrl!;
 		await openSettingsExamples(examples, url, "", libsqlAdapter, async (database) => {
 			assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
 		});
-		const sources = sdkExamples("openLibsqlDatabase");
+		const sources = sdkExamples("openLibsqlDatabase", libsqlTuning);
 		assertTwins(sources, "openLibsqlDatabase", examples, "authToken");
 		for (const source of sources) {
 			const database = await openLibsqlDatabase(

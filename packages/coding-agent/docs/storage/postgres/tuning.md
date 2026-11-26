@@ -4,7 +4,7 @@ sidebarTitle: "Server tuning"
 description: "Server-side tuning for a PostgreSQL database shared by many Atomic agents: where the time goes, distance, connections, memory, monitoring, busy tables, and what to leave alone."
 ---
 
-This guide is for the person who runs the PostgreSQL server that Atomic's agents share. Use it after you set up the database as in [PostgreSQL storage](/storage#postgresql).
+This guide is for the person who runs the PostgreSQL server that Atomic's agents share. Use it after you set up the database as in [PostgreSQL storage](/storage/postgres).
 
 The table names below assume Atomic's default schema, `atomic`, and no `prefix`. With a prefix, each table name starts with it, for example `atomic.team_session_sessions`.
 
@@ -64,13 +64,13 @@ Run the server in the same region as the agents, and ideally the same zone. No s
 
 ## Connections
 
-Each Atomic process opens up to `maxConnections` plus `readerMaxConnections` connections to the server, 10 by default. An Intercom broker process opens one more, for wake-ups. [Count the connections Atomic needs](/storage#count-the-connections-atomic-needs) explains the arithmetic, and [Tuning for many concurrent agents](/storage#tuning-for-many-concurrent-agents) shows how to size `maxConnections`.
+Each Atomic process opens up to `maxConnections` plus `readerMaxConnections` connections to the server, 10 by default. An Intercom broker process opens one more, for wake-ups. [Count the connections Atomic needs](/storage/postgres#count-the-connections-atomic-needs) explains the arithmetic, and [Tuning for many concurrent agents](/storage/postgres#tuning-for-many-concurrent-agents) shows how to size `maxConnections`.
 
 On the server:
 
 - **`max_connections`** is the total the server accepts. Each connection uses memory for its own work, so the server cannot accept unlimited connections. Set it high enough for Atomic's connections, or PgBouncer's pool, plus one wake-up connection per broker and room for administrators. Changing it needs a restart.
 - **Per-role limits.** `ALTER ROLE atomic_runtime CONNECTION LIMIT 300;` caps one role, so a runaway fleet cannot take every slot. Count every broker's direct wake-up connection in the cap.
-- **PgBouncer.** When agents need more connections than the server can give, put [PgBouncer](/guides/postgres-pgbouncer) in front.
+- **PgBouncer.** When agents need more connections than the server can give, put [PgBouncer](/storage/postgres/pgbouncer) in front.
 
 ```sql
 SHOW max_connections;
@@ -287,6 +287,6 @@ On a managed service, such as Amazon RDS, Azure Database for PostgreSQL or Googl
 
 ## Related pages
 
-- [PostgreSQL storage](/storage#postgresql): set up the database and roles.
-- [Tuning for many concurrent agents](/storage#tuning-for-many-concurrent-agents): size Atomic's connection settings.
-- [Run many agents on PostgreSQL with PgBouncer](/guides/postgres-pgbouncer).
+- [PostgreSQL storage](/storage/postgres): set up the database and roles.
+- [Tuning for many concurrent agents](/storage/postgres#tuning-for-many-concurrent-agents): size Atomic's connection settings.
+- [Run many agents on PostgreSQL with PgBouncer](/storage/postgres/pgbouncer).

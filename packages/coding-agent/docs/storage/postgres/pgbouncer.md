@@ -6,7 +6,7 @@ description: "Put PgBouncer between Atomic and PostgreSQL when your agents need 
 
 PgBouncer is a small server that sits between Atomic and PostgreSQL. Thousands of connections from Atomic go to PgBouncer, and PgBouncer runs their work over a few dozen connections to PostgreSQL. Use it when your agents need more connections than PostgreSQL allows.
 
-This guide assumes you already set up the database and roles as in [PostgreSQL storage](/storage#postgresql). It uses these names, which you replace with your own:
+This guide assumes you already set up the database and roles as in [PostgreSQL storage](/storage/postgres). It uses these names, which you replace with your own:
 
 | Name | Meaning |
 | --- | --- |
@@ -18,7 +18,7 @@ This guide assumes you already set up the database and roles as in [PostgreSQL s
 
 ## When you need PgBouncer
 
-Every connection an Atomic process opens counts against PostgreSQL's `max_connections`. [Count the connections Atomic needs](/storage#count-the-connections-atomic-needs) with this rule:
+Every connection an Atomic process opens counts against PostgreSQL's `max_connections`. [Count the connections Atomic needs](/storage/postgres#count-the-connections-atomic-needs) with this rule:
 
 - An agent process uses up to `maxConnections` plus `readerMaxConnections`.
 - An Intercom broker uses the same, plus 1 for wake-ups.
@@ -242,7 +242,7 @@ atomic storage join 'postgresql://atomic_runtime@pgbouncer.internal:6432/atomic'
 atomic intercom restart
 ```
 
-Atomic checks the certificate and host name of both PgBouncer and PostgreSQL. If PgBouncer's certificate comes from a private certificate authority, add `?sslrootcert=/path/to/root.crt` to `url`. See [TLS](/storage#tls).
+Atomic checks the certificate and host name of both PgBouncer and PostgreSQL. If PgBouncer's certificate comes from a private certificate authority, add `?sslrootcert=/path/to/root.crt` to `url`. See [TLS](/storage/postgres#tls).
 
 The same options in an SDK app:
 
@@ -299,7 +299,7 @@ Atomic reports these as `StorageUnavailableError` or `StorageTransientError`. Th
 | Message | Cause | Fix |
 | --- | --- | --- |
 | `no more connections allowed (max_client_conn)` | More clients connected to PgBouncer than `max_client_conn` allows. | Raise `max_client_conn`, and the open-file limit with it. |
-| `query_wait_timeout` | A client waited `query_wait_timeout` seconds for a PostgreSQL connection. | Check `cl_waiting` and `maxwait` in `SHOW POOLS`. Raise `default_pool_size` if PostgreSQL has room, or look for long transactions with the queries in [Tuning](/storage#check-the-effect). |
+| `query_wait_timeout` | A client waited `query_wait_timeout` seconds for a PostgreSQL connection. | Check `cl_waiting` and `maxwait` in `SHOW POOLS`. Raise `default_pool_size` if PostgreSQL has room, or look for long transactions with the queries in [Tuning](/storage/postgres#check-the-effect). |
 | `SSL required` | Atomic connected without TLS. Atomic leaves TLS off for addresses on the same machine, such as `localhost`. | Add `?sslmode=verify-full&sslrootcert=/path/to/root.crt` to `url`. |
 | `SASL authentication failed` | The password is wrong, the role does not exist, or the database is not listed in `[databases]`. | Check the password file, the role, and the database name. Check that the lookup function exists in that database. |
 | `wake-ups: polling only, notifications do not pass the URL's transaction pooler` in `atomic storage status` | `listenUrl` is missing or points at PgBouncer. | Set `listenUrl` to PostgreSQL's own address. |
@@ -323,7 +323,7 @@ On a managed service where you cannot create a superuser function, use the servi
 
 ## Related pages
 
-- [Tuning for many concurrent agents](/storage#tuning-for-many-concurrent-agents): count connections and size `maxConnections`.
-- [Tune PostgreSQL for many agents](/guides/postgres-tuning): the server-side settings that go with PgBouncer.
-- [Connection poolers](/storage#connection-poolers) and [Wake-ups](/storage#wake-ups) in the storage guide.
+- [Tuning for many concurrent agents](/storage/postgres#tuning-for-many-concurrent-agents): count connections and size `maxConnections`.
+- [Tune PostgreSQL for many agents](/storage/postgres/tuning): the server-side settings that go with PgBouncer.
+- [Connection poolers](/storage/postgres#connection-poolers) and [Wake-ups](/storage/postgres#wake-ups) on the PostgreSQL setup page.
 - [PgBouncer's configuration reference](https://www.pgbouncer.org/config.html).

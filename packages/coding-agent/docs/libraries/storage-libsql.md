@@ -9,7 +9,7 @@ description: "libSQL and Turso storage adapter for Atomic sessions and Intercom 
 - **Plain ESM with types:** Ships plain JavaScript ESM and TypeScript declarations (`libsql.d.ts`), requiring Node.js 24.20+ with no TypeScript loader.
 - **Batched writes:** Sends statement batches to remote libSQL servers in a single request and redacts auth tokens and custom headers from error diagnostics.
 
-For operator setup, see [Turso and libSQL](/storage#turso-and-libsql). For sharing Intercom across a team while keeping personal sessions local, see [Team and CI setup](/guides/team-setup). For all five SDK storage backends and `createAgentSessionRuntime()`, see [SDK storage backends](/sdk/storage).
+For operator setup, see [Turso and libSQL](/storage/libsql). For sharing Intercom across a team while keeping personal sessions local, see [Team and CI setup](/guides/team-setup). For all five SDK storage backends and `createAgentSessionRuntime()`, see [SDK storage backends](/sdk/storage).
 
 ## Installation
 
@@ -73,7 +73,7 @@ Pass the returned `SqliteDatabase` to `createAgentSession({ sessionStore: { kind
 - **Remote `sqld` servers:** When `sqld` hits a WAL checkpoint, it returns `SQLITE_BUSY` immediately without running the write. The adapter retries single statements, single-statement `exec`, batches, and transaction starts with jittered exponential backoff for up to 5 seconds within a 10-second wall-clock ceiling (one 5-second lock timeout plus one 5-second checkpoint window). For self-hosted `sqld`, start with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`).
 - **Server transactions:** A transaction sends its first reads with its `BEGIN` and its last writes with its `COMMIT`, so saving entries to a session takes 2 requests. The commit runs only if every write before it succeeded; otherwise nothing commits.
 - **Readers:** `openReader()` returns a handle with its own client, for local files and servers. Its reads do not wait behind the main handle's calls. Closing the database closes its readers.
-- **Throughput:** On a server, a connection runs up to `concurrency` reads at the same time. Writes run one at a time, in call order, and a libSQL database has one writer at a time. See [Tuning for many concurrent agents](/storage#tuning-libsql-and-turso).
+- **Throughput:** On a server, a connection runs up to `concurrency` reads at the same time. Writes run one at a time, in call order, and a libSQL database has one writer at a time. See [Tuning for many concurrent agents](/storage/libsql#tuning-for-many-concurrent-agents).
 
 ## CLI configuration
 
@@ -91,7 +91,7 @@ To share Intercom across machines while keeping personal sessions in local SQLit
 
 ## Related docs
 
-- [Turso and libSQL operator guide](/storage#turso-and-libsql): CLI setup, manual `settings.json`, size limits, and storage errors.
+- [Turso and libSQL operator guide](/storage/libsql): CLI setup, manual `settings.json`, size limits, and storage errors.
 - [Team and CI setup](/guides/team-setup): shared team Intercom, CI runner profiles, and `teamProfileSelection()`.
 - [SDK storage backends](/sdk/storage): complete `createAgentSession()`, `createAgentSessionRuntime()`, and error-handling recipes.
 - [Standalone libraries](/libraries): all published `@bastani/atomic-*` packages.

@@ -14,7 +14,7 @@ New to Atomic? Follow the [Quickstart](/quickstart) to install, authenticate, ru
 - **[Sessions](/sessions).** Save, resume, name, search, and branch sessions.
 - **[Worktree snapshots](/worktree-snapshots).** Capture and restore repository state alongside your session history.
 - **[Resume on any machine and blueprints](/guides/resume-on-any-machine).** Continue a session on another machine that shares your storage, and automate dependency rebuilds with [`.atomic/blueprint.yaml` blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint).
-- **[Storage backends](/storage).** Choose local SQLite, PostgreSQL, or Turso/libSQL, run migrations, and export or import sessions. For programmatic apps, see [SDK storage backends](/sdk/storage).
+- **[Storage backends](/storage).** Choose [local SQLite](/storage/sqlite), [PostgreSQL](/storage/postgres), or [Turso/libSQL](/storage/libsql), run migrations, and export or import sessions. To run many agents on PostgreSQL, see [PgBouncer](/storage/postgres/pgbouncer) and [server tuning](/storage/postgres/tuning). For programmatic apps, see [SDK storage backends](/sdk/storage).
 - **[Context and compaction](/compaction).** Keep long sessions inside the model's context window, or plug in a [custom remote compactor](/compaction#customize-morph-or-add-a-remote-compactor).
 - **[MCP servers](/mcp-servers).** Connect external tools and data sources over Model Context Protocol.
 
@@ -47,5 +47,4 @@ New to Atomic? Follow the [Quickstart](/quickstart) to install, authenticate, ru
 - **[Settings](/settings).** Browse the full `settings.json` reference.
 - **[Environment variables](/environment-variables).** Look up Atomic variables, legacy aliases, color controls, and provider credentials.
 - **[Keybindings](/keybindings).** Look up default shortcuts and custom bindings.
-- **[PostgreSQL with PgBouncer](/guides/postgres-pgbouncer)** and **[PostgreSQL server tuning](/guides/postgres-tuning).** Run many agents on one PostgreSQL server with PgBouncer in front of it, and tune the server's connections, memory, monitoring, and busy tables.
 - **[Diagnostics and debugging](/development).** Capture debug snapshots, trace UI stalls, and report bugs.

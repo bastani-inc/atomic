@@ -4,7 +4,7 @@ sidebarTitle: "Atomic packages"
 description: "Install, update, remove, and configure Atomic packages from npm, git, or local directories."
 ---
 
-Atomic packages bundle extensions, skills, [subagents](/packages/authoring#subagents), prompt templates, themes, MCP servers, and [storage adapters](/storage#adapters-from-atomic-packages) for distribution over npm, git, or local paths. Declare resources under the `atomic` key in `package.json`, or use convention directories.
+Atomic packages bundle extensions, skills, [subagents](/packages/authoring#subagents), prompt templates, themes, MCP servers, and [storage adapters](/storage/custom-adapters#adapters-from-atomic-packages) for distribution over npm, git, or local paths. Declare resources under the `atomic` key in `package.json`, or use convention directories.
 
 ## Where to go next
 

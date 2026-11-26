@@ -20,7 +20,7 @@ Work down this list and stop at the first mechanism that solves your problem.
 6. [Orchestration](/orchestration). Use codemode to launch children, check results, and pick up after an interruption.
 7. [Environment blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint). Define `.atomic/blueprint.yaml` so restored worktrees rebuild dependencies and caches automatically on any machine or CI runner.
 8. [Extensions](/extensions). Write TypeScript that adds tools, commands, events, and custom UI when nothing lighter fits.
-9. [Atomic packages](/packages). Bundle and distribute your extensions, skills, prompt templates, themes, subagents, MCP servers, or [storage adapters](/storage#adapters-from-atomic-packages).
+9. [Atomic packages](/packages). Bundle and distribute your extensions, skills, prompt templates, themes, subagents, MCP servers, or [storage adapters](/storage/custom-adapters#adapters-from-atomic-packages).
 
 ## Change the model layer
 

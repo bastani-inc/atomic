@@ -436,7 +436,7 @@ On Windows, write JSON paths with forward slashes or escaped backslashes:
 
 #### Storage adapters
 
-Install an adapter [Atomic package](/storage#adapters-from-atomic-packages) (such as [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) or [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql)), or pass its directory via `--extension` or SDK `additionalExtensionPaths` (which takes precedence over settings), and reference it in `storage` or `sessions.storage`:
+Install an adapter [Atomic package](/storage/custom-adapters#adapters-from-atomic-packages) (such as [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) or [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql)), or pass its directory via `--extension` or SDK `additionalExtensionPaths` (which takes precedence over settings), and reference it in `storage` or `sessions.storage`:
 
 ```json
 {
@@ -451,7 +451,7 @@ Install an adapter [Atomic package](/storage#adapters-from-atomic-packages) (suc
 
 - An empty shared `storage: {}` uses `<storageHome>/storage.sqlite`.
 - `secrets` accepts `{ "env": "VAR" }` or `{ "file": "token.txt" }` (relative paths resolve from [storage home](/storage#storage-home), falling back to parent if an existing file lives there; one trailing `\n` or `\r\n` is stripped).
-- Adapter modules execute code; review them before trusting project settings. See [Selecting an adapter](/storage#selecting-an-adapter).
+- Adapter modules execute code; review them before trusting project settings. See [Selecting an adapter](/storage/custom-adapters#selecting-an-adapter).
 
 ### Snapshots
 

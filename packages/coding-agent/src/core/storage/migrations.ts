@@ -84,7 +84,7 @@ async function assertSchemaUsage(executor: SqliteExecutor, dialect: StorageDiale
 		"sdk",
 		"privileges",
 		"missing-privilege",
-		`Role "${access.role}" has no USAGE on schema ${access.schema}, so it can neither find Atomic's tables there nor create them. Grant it as the schema's owner: GRANT USAGE ON SCHEMA ${access.schema} TO "${access.role}"; and, for a runtime role, the table grants in "Set up the database" in docs/storage.md`,
+		`Role "${access.role}" has no USAGE on schema ${access.schema}, so it can neither find Atomic's tables there nor create them. Grant it as the schema's owner: GRANT USAGE ON SCHEMA ${access.schema} TO "${access.role}"; and, for a runtime role, the table grants in "Set up the database" in docs/storage/postgres.md`,
 	);
 }
 
