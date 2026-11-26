@@ -188,7 +188,8 @@ describe("SQL reservation store wake schema (#4326)", () => {
 			await openSqlRestoringReservationStore({ database, prefix: "" });
 			const wrapped = failingAlter(database, wording, true);
 			await openSqlRestoringReservationStore({ database: wrapped.database, prefix: "" });
-			assert.equal(wrapped.alters.length, 3);
+			// The three columns go in one transaction, which the first duplicate ends; then each goes in one of its own.
+			assert.equal(wrapped.alters.length, 4);
 		}
 	});
 

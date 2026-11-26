@@ -161,7 +161,7 @@ const scheduleTimeout: WakeUpPollScheduler = (callback, delayMs) => {
  * fail to link there, so it is taken from the module namespace, and without it the hint log's persistence is read from
  * the catalog at every open.
  */
-const schemaApi: Partial<Pick<typeof storage, "storageSchemaCurrent">> = storage;
+const schemaApi: Partial<Pick<typeof storage, "storageSchemaCurrent" | "ensureStorageSchemaOnce">> = storage;
 
 /** The ledger step, `schema:intercom-wakeups-unlogged`, that makes a hint log created as a logged table unlogged. */
 const UNLOGGED_HINTS_DOMAIN = "intercom-wakeups-unlogged";
@@ -197,29 +197,50 @@ async function createSchema(database: SqliteDatabase, table: string, prefix: str
  * in the ledger as `schema:intercom-wakeups-unlogged`. `ALTER TABLE … SET UNLOGGED` needs the table's owner, so a
  * runtime role without DDL leaves it logged, as before, until `atomic storage migrate` runs as the owner. Earlier
  * Atomic releases use the unlogged table unchanged. The rewrite locks the table, which holds only hints younger than
- * the retention: when another broker holds it longer than the schema lock wait, the next open tries again.
+ * the retention: when another broker holds it longer than the schema lock wait, the next open tries again. A table
+ * that is unlogged already, as every table this build creates, needs only the step recorded: the statement that reads
+ * the table's persistence records it too, so a new database's open pays one round trip for it and no transaction
+ * (#6560).
  */
 async function ensureUnloggedHints(database: SqliteDatabase, table: string, prefix: string | undefined): Promise<void> {
 	const dialect = dialectOf(database);
 	if (dialect.name !== "postgres" || database.readOnly === true) return;
 	const schema = { ledger: storageMigrationTable(prefix), domain: UNLOGGED_HINTS_DOMAIN, revision: 1 };
 	if (await schemaApi.storageSchemaCurrent?.(database, schema)) return;
-	const found = await database.get<SqliteRow & { owned: boolean | number; unlogged: boolean | number }>(
-		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned, c.relpersistence = 'u' AS unlogged
-		FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?`,
-		dialect.identifier(table),
-	);
 	const yes = (value: boolean | number | undefined) => value === true || Number(value) === 1;
-	// An unlogged table only needs the step recorded, which any role that writes the ledger may do.
-	if (found === undefined || (!yes(found.unlogged) && !yes(found.owned))) return;
+	let found: (SqliteRow & { owned: boolean | number; unlogged: boolean | number }) | undefined;
 	try {
-		await database.transaction(
-			(tx) =>
-				ensureStorageSchema(tx, dialect, schema, async () => {
-					if (!yes(found.unlogged)) await tx.exec(`ALTER TABLE ${table} SET UNLOGGED`);
-				}),
-			{ concurrency: { kind: "serial", domain: schema.ledger } },
+		// The ledger exists: the hint log's own setup recorded itself there. Recording a step that holds, whoever else
+		// records it at once, needs no lock.
+		found = await database.get(
+			`WITH found AS (
+				SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned, c.relpersistence = 'u' AS unlogged
+				FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?
+			), recorded AS (
+				INSERT INTO ${schema.ledger} (domain, version, applied_at)
+				SELECT ?, ?, ${dialect.nowMs} FROM found WHERE found.unlogged ON CONFLICT DO NOTHING RETURNING 1
+			)
+			SELECT owned, unlogged FROM found`,
+			dialect.identifier(table),
+			`schema:${schema.domain}`,
+			schema.revision,
 		);
+	} catch {
+		// A role that may not write the ledger leaves the step to `atomic storage migrate`.
+		return;
+	}
+	if (found === undefined || yes(found.unlogged) || !yes(found.owned)) return;
+	const setup = async (tx: SqliteExecutor) => {
+		await tx.exec(`ALTER TABLE ${table} SET UNLOGGED`);
+	};
+	try {
+		// Brokers that open the database at once make it unlogged once: the others wait for it without its lock (#6560).
+		const ensureOnce = schemaApi.ensureStorageSchemaOnce;
+		if (ensureOnce !== undefined) await ensureOnce(database, schema, setup);
+		else
+			await database.transaction((tx) => ensureStorageSchema(tx, dialect, schema, () => setup(tx)), {
+				concurrency: { kind: "serial", domain: schema.ledger },
+			});
 	} catch {
 		// The table stays as it was: hints work the same in a logged table.
 	}

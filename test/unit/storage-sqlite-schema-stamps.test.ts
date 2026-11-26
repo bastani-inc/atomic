@@ -230,7 +230,8 @@ test("a broker's first open of a new database stamps nothing, so it costs what i
 	await withBroker(current, path);
 	const first = sent.take();
 	// Its setups' transactions only: no stamps statement, no end-of-open transaction, no read of a missing stamps table.
-	assert.equal(first.filter((kind) => kind === "begin").length, 30);
+	// Each call that adds columns adds them all in one, where it took one for each column before (#6560).
+	assert.equal(first.filter((kind) => kind === "begin").length, 24);
 	assert.equal(
 		await onFile(path, (database) =>
 			database.get("SELECT name FROM sqlite_master WHERE name = 'atomic_schema_stamps'"),

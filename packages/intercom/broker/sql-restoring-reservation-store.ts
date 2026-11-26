@@ -1,6 +1,7 @@
 import {
 	dialectOf,
 	type StorageDialect,
+	type StorageSchemaCatalog,
 	type SqliteExecutor,
 	type SqliteRow,
 	validateStoragePrefix,
@@ -27,7 +28,14 @@ import type {
 import { reservationAdmitsSender } from "./group-membership.js";
 import { isReleasedReservationKey } from "./released-children.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema, openCatalogOf, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
+import {
+	ensureBrokerSchema,
+	foundInCatalogAgain,
+	openCatalogOf,
+	RETRY_UNAPPLIED,
+	setUpBrokerSchemaOnce,
+	withBrokerSchemaCatalog,
+} from "./sql-schema.js";
 
 type ReservationRow = SqliteRow & {
 	reservation_key: string;
@@ -185,11 +193,18 @@ async function openRestoringReservationStoreInCatalog({
 	);
 	// Probed every time, as an earlier broker may recreate its index meanwhile; a current one runs no DDL (#5218). The
 	// catalog an open read answers that probe, so a current index costs no transaction (#6560).
-	const catalog = await openCatalogOf(database);
-	const wakeIndexCurrent =
-		catalog?.hasObject(`${table}_wake`) === true &&
+	const wakeIndexCurrent = (catalog: StorageSchemaCatalog) =>
+		catalog.hasObject(`${table}_wake`) &&
 		!catalog.hasObject(`${table}_wake_requested`.slice(0, dialectOf(database).name === "postgres" ? 63 : undefined));
-	if (!wakeIndexCurrent) await database.transaction((tx) => renameWakeIndex(tx, dialectOf(database), table));
+	const catalog = await openCatalogOf(database);
+	// Brokers that open a new database at once create it once; the others wait for it without its lock (#6560).
+	if (catalog === undefined || !wakeIndexCurrent(catalog))
+		await setUpBrokerSchemaOnce(
+			database,
+			`${table}:wake-index`,
+			() => foundInCatalogAgain(database, wakeIndexCurrent),
+			(tx) => renameWakeIndex(tx, dialectOf(database), table),
+		);
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
 		targets_json, "group" AS reservation_group, dormant, wake, wake_generation, fencing_token, "order" AS reservation_order,
 		gone AS gone_json, end_json,

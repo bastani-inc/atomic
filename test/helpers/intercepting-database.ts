@@ -38,8 +38,14 @@ function intercepted<Executor extends SqliteExecutor>(executor: Executor, hooks:
  */
 export function interceptingDatabase(database: SqliteDatabase, hooks: StatementInterceptors): SqliteDatabase {
 	const outer = intercepted(database, hooks);
+	const tryMaintenance = database.tryMaintenance?.bind(database);
 	return overriding(outer, {
 		transaction: (callback, options) =>
 			database.transaction((transaction) => callback(intercepted(transaction, hooks)), options),
+		...(tryMaintenance === undefined
+			? {}
+			: {
+					tryMaintenance: (callback) => tryMaintenance((transaction) => callback(intercepted(transaction, hooks))),
+				}),
 	});
 }

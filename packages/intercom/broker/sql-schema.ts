@@ -1,5 +1,12 @@
 import * as storage from "@bastani/atomic/storage";
-import { dialectOf, ensureStorageSchema, type SqliteDatabase, type SqliteExecutor, storageMigrationTable } from "@bastani/atomic/storage";
+import {
+	dialectOf,
+	ensureStorageSchema,
+	type SqliteDatabase,
+	type SqliteExecutor,
+	type SqliteStatement,
+	storageMigrationTable,
+} from "@bastani/atomic/storage";
 
 /**
  * `storageSchemaCurrent`, `schemaCatalogOf` and `withStorageSchemaCatalog` of the storage API, which an Atomic
@@ -9,7 +16,13 @@ import { dialectOf, ensureStorageSchema, type SqliteDatabase, type SqliteExecuto
 const catalogApi: Partial<
 	Pick<
 		typeof storage,
-		"storageSchemaCurrent" | "schemaCatalogOf" | "withStorageSchemaCatalog" | "restampStorageSchemaAtOpenEnd"
+		| "storageSchemaCurrent"
+		| "schemaCatalogOf"
+		| "withStorageSchemaCatalog"
+		| "restampStorageSchemaAtOpenEnd"
+		| "refreshStorageSchemaCatalog"
+		| "setUpStorageOnce"
+		| "ensureStorageSchemaOnce"
 	>
 > = storage;
 
@@ -59,25 +72,43 @@ export async function ensureBrokerSchema(
 	const schema = { ledger: storageMigrationTable(prefix), domain: `intercom-${store}`, revision };
 	if (await catalogApi.storageSchemaCurrent?.(database, schema)) return;
 	const found = await foundInCatalog(database, setup);
-	if (found?.present === true) {
-		const options = { verify: found.verify, deferred: found.seeds };
-		if (catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup, options) === true) return;
-		if (!found.seeds) return;
-	}
+	if (foundSetUp(database, schema, setup, found)) return;
 	const dialect = dialectOf(database);
-	// Idempotent, and run again when a busy database ended it before it wrote anything, as brokers opening together on a
-	// new database wait for each other's setup.
-	await database.transaction(async (tx) => {
-		if (!dialect.versionedMigrations) {
-			await setup(tx);
-			return;
-		}
-		await ensureStorageSchema(tx, dialect, schema, async () => {
+	// Idempotent, and run again when a busy database ended it before it wrote anything. Brokers that open a new
+	// database at once set each store up once: the others wait for it without its lock, and find
+	// it set up in the catalog they read again (#6560).
+	const ensureOnce = catalogApi.ensureStorageSchemaOnce;
+	if (dialect.versionedMigrations && ensureOnce !== undefined) {
+		await ensureOnce(database, schema, async (tx) => {
 			await setup(tx);
 		});
-	}, RETRY_UNAPPLIED);
+		return;
+	}
+	const once = catalogApi.setUpStorageOnce;
+	const refresh = catalogApi.refreshStorageSchemaCatalog;
+	const run = async (tx: SqliteExecutor) => {
+		if (!dialect.versionedMigrations) await setup(tx);
+		else
+			await ensureStorageSchema(tx, dialect, schema, async () => {
+				await setup(tx);
+			});
+		return "ran" as const;
+	};
+	const outcome =
+		dialect.versionedMigrations || once === undefined || refresh === undefined
+			? await database.transaction(run, RETRY_UNAPPLIED)
+			: await once(database, {
+					locks: [],
+					done: async () => {
+						refresh(database);
+						if (await catalogApi.storageSchemaCurrent?.(database, schema)) return "found" as const;
+						return foundSetUp(database, schema, setup, await foundInCatalog(database, setup)) ? "found" : undefined;
+					},
+					setup: run,
+					concurrency: { kind: "serial" },
+				});
 	// Stamped where the end of the open takes a transaction for other stores anyway, as after a repair or an upgrade.
-	if (!dialect.versionedMigrations)
+	if (outcome === "ran" && !dialect.versionedMigrations)
 		catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup, { verify: found?.verify, alongside: true });
 }
 
@@ -93,6 +124,67 @@ export async function brokerSchemaCurrent(
 ): Promise<boolean> {
 	const schema = { ledger: storageMigrationTable(prefix), domain: `intercom-${store}`, revision };
 	return (await catalogApi.storageSchemaCurrent?.(database, schema)) === true;
+}
+
+/**
+ * Whether `found`, what the open's catalog holds of a setup on SQLite ({@link foundInCatalog}), leaves the setup nothing
+ * to do now: every object it creates is there, and the open's end stamps it, or it seeds no rows. A setup that seeds
+ * rows, outside an open, still runs.
+ */
+function foundSetUp(
+	database: SqliteDatabase,
+	schema: { readonly ledger: string; readonly domain: string; readonly revision: number },
+	setup: (tx: SqliteExecutor) => Promise<unknown>,
+	found: Awaited<ReturnType<typeof foundInCatalog>>,
+): boolean {
+	if (found?.present !== true) return false;
+	const options = { verify: found.verify, deferred: found.seeds };
+	return catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup, options) === true || !found.seeds;
+}
+
+/**
+ * Runs `setup`, schema statements no ledger records, such as columns a store adds, once among the brokers that open a
+ * new database at once: the one that takes the lock `scope` names runs it, and the others wait without it until `done`,
+ * read again outside any transaction, finds it done (#6560). Without the storage API for it, an installation older than
+ * #6560, it runs in a serial transaction of the whole database, as before.
+ */
+export async function setUpBrokerSchemaOnce(
+	database: SqliteDatabase,
+	scope: string,
+	done: () => Promise<boolean>,
+	setup: (tx: SqliteExecutor) => Promise<unknown>,
+	/** The reads `setup` makes first, in this order: on PostgreSQL they go out with the transaction's start. */
+	leading: readonly SqliteStatement[] = [],
+): Promise<void> {
+	const once = catalogApi.setUpStorageOnce;
+	if (once === undefined) {
+		await database.transaction(setup, RETRY_UNAPPLIED);
+		return;
+	}
+	await once(database, {
+		locks: [{ scope }],
+		leading,
+		done: async () => ((await done()) ? true : undefined),
+		setup: async (tx) => {
+			await setup(tx);
+			return true;
+		},
+		concurrency: { kind: "serial" },
+	});
+}
+
+/**
+ * Whether the schema, read again into the catalog of the open in progress, satisfies `check`: for a setup another broker
+ * may have run since the open read it. False outside an open, and without the storage API to read it again.
+ */
+export async function foundInCatalogAgain(
+	database: SqliteDatabase,
+	check: (catalog: storage.StorageSchemaCatalog) => boolean,
+): Promise<boolean> {
+	if (catalogApi.refreshStorageSchemaCatalog === undefined) return false;
+	catalogApi.refreshStorageSchemaCatalog(database);
+	const catalog = await openCatalogOf(database);
+	return catalog !== undefined && check(catalog);
 }
 
 /**

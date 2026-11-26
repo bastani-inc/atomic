@@ -328,7 +328,13 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 											value: (sql: string) => {
 												if (sql.includes("CREATE OR REPLACE TRIGGER")) {
 													const concurrency = options?.concurrency;
-													installs.push(concurrency?.kind === "serial" ? concurrency.domain : undefined);
+													installs.push(
+														concurrency?.kind === "serial"
+															? concurrency.domain
+															: concurrency?.kind === "fenced"
+																? concurrency.audit
+																: undefined,
+													);
 												}
 												return transaction.exec(sql);
 											},
@@ -340,8 +346,9 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 				},
 			});
 			await SqlSnapshotBlobStore.open(recording);
-			// The five index sources and the chunk cleanup of chunked blobs (#4954), each under the migration lock.
-			assert.deepEqual(installs, Array(6).fill("atomic_migrations"));
+			// The five index sources and the chunk cleanup of chunked blobs (#4954), each in the migration's setup, which
+			// holds the locks of the migration's domain (#6560).
+			assert.deepEqual(installs, Array(6).fill("schema-setup"));
 		});
 	});
 

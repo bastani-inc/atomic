@@ -8,6 +8,7 @@ import type {
 	SqliteValue,
 } from "../database.js";
 import { dialectOf, type StorageDialect, type StorageTrigger } from "../dialect.js";
+import * as migrations from "../migrations.js";
 import { applyStorageMigrations, ensureStorageSchema, withShortSchemaLockWaits } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
 import { schemaCatalogOf } from "../schema-catalog.js";
@@ -19,6 +20,12 @@ import type {
 	SessionSearchText,
 } from "./types.js";
 import { yieldTurn } from "./yield-turn.js";
+
+/**
+ * `ensureStorageSchemaOnce` of `migrations.ts`, which the copies earlier releases loaded lack: taken from the module
+ * namespace, so this module links against them too. Without it the tuning runs in a transaction of its own, as before.
+ */
+const setupOnce: Partial<Pick<typeof migrations, "ensureStorageSchemaOnce">> = migrations;
 
 export { yieldTurn };
 
@@ -530,16 +537,18 @@ const postgresTrigrams: TrigramEngine = {
 			if (key !== undefined) unownedSearchIndexes.add(key);
 			return;
 		}
-		await database.transaction(
-			(tx) =>
-				ensureStorageSchema(tx, dialect, schema, async () => {
-					await tx.exec(
-						`ALTER INDEX ${tables.trigrams} SET (gin_pending_list_limit = ${SEARCH_PENDING_LIST_LIMIT_KB})`,
-					);
-					await tx.exec(`ALTER TABLE ${tables.entries} SET (${SEARCH_ENTRIES_AUTOVACUUM})`);
-				}),
-			{ retryTransientFailures: true, concurrency: { kind: "serial", domain: ledger } },
-		);
+		const setup = async (tx: SqliteExecutor) => {
+			await tx.exec(`ALTER INDEX ${tables.trigrams} SET (gin_pending_list_limit = ${SEARCH_PENDING_LIST_LIMIT_KB})`);
+			await tx.exec(`ALTER TABLE ${tables.entries} SET (${SEARCH_ENTRIES_AUTOVACUUM})`);
+		};
+		// Hosts that open a new database at once tune it once: the others wait for it without its lock (#6560).
+		const once = setupOnce.ensureStorageSchemaOnce;
+		if (once !== undefined) await once(database, schema, setup);
+		else
+			await database.transaction((tx) => ensureStorageSchema(tx, dialect, schema, () => setup(tx)), {
+				retryTransientFailures: true,
+				concurrency: { kind: "serial", domain: ledger },
+			});
 	},
 	async mergePending(database, dialect, tables) {
 		// By itself, so it holds no session's lock, and in a domain of its own, so it runs beside this process's other

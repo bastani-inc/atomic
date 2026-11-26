@@ -1,7 +1,17 @@
-import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "./database.js";
+import { refreshStorageSchemaCatalog } from "./added-exports-0-10-11.js";
+import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteStatement, TransactionConcurrency } from "./database.js";
 import { dialectOf, type StorageDialect } from "./dialect.js";
 import { StorageConfigError, StorageSchemaVersionError } from "./errors.js";
+import { fencedPath } from "./fenced-paths.js";
 import { recordSqliteSchemaStamps, schemaCatalogOf, sqliteSchemaStampsOf } from "./schema-catalog.js";
+import type { SequencedStatement } from "./statement-sequence.js";
+import * as statementSequence from "./statement-sequence.js";
+
+/**
+ * `transactionFinisher` of `statement-sequence.ts`, which the copies 0.10.3 and 0.10.4 loaded lack: taken from the module
+ * namespace, so this module links against them too. Without it a setup's last statements go out before its commit.
+ */
+const finishers: Partial<Pick<typeof statementSequence, "transactionFinisher">> = statementSequence;
 
 /** One version of a domain's schema. */
 export interface StorageMigrationStep {
@@ -61,12 +71,19 @@ async function tableExists(executor: SqliteExecutor, dialect: StorageDialect, ta
  */
 async function assertSchemaUsage(executor: SqliteExecutor, dialect: StorageDialect): Promise<void> {
 	if (dialect.name !== "postgres") return;
-	const access = await executor.get<SqliteRow & { schema: string; role: string; present: number; usage: number }>(
-		`SELECT s.name AS schema, current_user AS role, (n.oid IS NOT NULL)::int AS present,
+	refuseWithoutSchemaUsage(await executor.get<SchemaAccess>(SCHEMA_USAGE_SQL));
+}
+
+type SchemaAccess = SqliteRow & { schema: string; role: string; present: number; usage: number };
+
+/** The schema the transaction runs in, whether it exists, and whether this role may use it: PostgreSQL only. */
+const SCHEMA_USAGE_SQL = `SELECT s.name AS schema, current_user AS role, (n.oid IS NOT NULL)::int AS present,
 			coalesce(has_schema_privilege(n.oid, 'USAGE'), false)::int AS usage
 		FROM (SELECT trim(both '"' from split_part(current_setting('search_path'), ',', 1)) AS name) s
-		LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = s.name`,
-	);
+		LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = s.name`;
+
+/** Throws for `access`, a row of {@link SCHEMA_USAGE_SQL}, where the schema exists and this role may not use it. */
+function refuseWithoutSchemaUsage(access: SchemaAccess | undefined): void {
 	if (access === undefined || Number(access.present) === 0 || Number(access.usage) === 1) return;
 	throw new StorageConfigError(
 		"sdk",
@@ -77,11 +94,17 @@ async function assertSchemaUsage(executor: SqliteExecutor, dialect: StorageDiale
 }
 
 /** Creates the ledger `table` unless it exists, so a current schema runs no DDL (#5218). */
-async function createLedger(executor: SqliteExecutor, dialect: StorageDialect, table: string): Promise<void> {
+async function createLedger(
+	executor: SqliteExecutor,
+	dialect: StorageDialect,
+	table: string,
+	/** The transaction holds the prefix's setup lock, exclusive, already: a {@link setUpStorageOnce} try took it. */
+	locked = false,
+): Promise<void> {
 	if (await tableExists(executor, dialect, table)) return;
 	await assertSchemaUsage(executor, dialect);
 	// Two stores that set up their schemas at once never race to create the ledger they share.
-	if (dialect.name === "postgres") {
+	if (dialect.name === "postgres" && !locked) {
 		await executor.get("SELECT pg_advisory_xact_lock(hashtextextended(?, 0)) AS locked", `${table}:schema`);
 		if (await tableExists(executor, dialect, table)) return;
 	}
@@ -97,12 +120,11 @@ async function recordedVersion(
 	dialect: StorageDialect,
 	table: string,
 	domain: string,
+	/** The ledger is known to exist: it is not looked up first. */
+	exists = false,
 ): Promise<number> {
-	if (!(await tableExists(executor, dialect, table))) return 0;
-	const row = await executor.get<SqliteRow & { version: number | null }>(
-		`SELECT MAX(version) AS version FROM ${table} WHERE domain = ?`,
-		domain,
-	);
+	if (!exists && !(await tableExists(executor, dialect, table))) return 0;
+	const row = await executor.get<SqliteRow & { version: number | null }>(...versionRead(table, domain));
 	return Number(row?.version ?? 0);
 }
 
@@ -113,8 +135,17 @@ async function applyVersioned(
 	domain: string,
 	steps: readonly StorageMigrationStep[],
 	acceptNewer = false,
+	/** The ledger is known to exist, as a catalog read before the transaction found it: it is read, not looked up. */
+	ledgerExists = false,
+	/** The transaction holds the setup's locks already: see {@link setUpStorageOnce}. */
+	locked = false,
 ): Promise<StorageMigrationResult> {
-	const current = await recordedVersion(transaction, dialect, table, domain);
+	const current = ledgerExists
+		? Number(
+				(await transaction.get<SqliteRow & { version: number | null }>(...versionRead(table, domain)))?.version ??
+					0,
+			)
+		: await recordedVersion(transaction, dialect, table, domain);
 	const supported = steps.at(-1)?.version ?? 0;
 	if (current > supported) {
 		if (acceptNewer) return { applied: [], version: current };
@@ -122,14 +153,25 @@ async function applyVersioned(
 	}
 	const applied: number[] = [];
 	// Probed first: a current schema, whose ledger exists, runs no DDL (#5218).
-	await createLedger(transaction, dialect, table);
+	if (!ledgerExists) await createLedger(transaction, dialect, table, locked);
+	// Each step's record goes out with the next step's first statement, on a connection that pipelines a transaction's
+	// statements; a failed one fails the migration.
+	const records: Promise<unknown>[] = [];
 	for (const step of steps) {
 		if (step.version <= current) continue;
 		await step.up(transaction, dialect);
-		await transaction.run(`INSERT INTO ${table} VALUES (?, ?, ${dialect.nowMs})`, domain, step.version);
+		const recorded = transaction.run(`INSERT INTO ${table} VALUES (?, ?, ${dialect.nowMs})`, domain, step.version);
+		recorded.catch(() => {});
+		records.push(recorded);
 		applied.push(step.version);
 	}
+	await Promise.all(records);
 	return { applied, version: Math.max(current, supported) };
+}
+
+/** The read of the highest version `table` records for `domain`, as arguments of `get`. */
+function versionRead(table: string, domain: string): [string, string] {
+	return [`SELECT MAX(version) AS version FROM ${table} WHERE domain = ?`, domain];
 }
 
 /**
@@ -156,6 +198,46 @@ export async function applyStorageMigrations(
 			throw new StorageSchemaVersionError(domain, recorded, supported);
 		return { applied: [], version: recorded };
 	}
+	// One process sets a new database up while the others that open it at once wait for it to finish, without holding a
+	// lock or a connection: the locks are those an earlier build's migration and setup take, so it waits for those too.
+	if (dialect.name === "postgres" && supported > 0) {
+		let ledgerExists = await ledgerInCatalog(database, table);
+		return setUpStorageOnce(database, {
+			// An earlier build migrates in a serial transaction of the ledger's domain: the database's lock and the domain's,
+			// which this takes shared, so the domains migrate beside one another but never beside an earlier build's.
+			get locks() {
+				return [
+					...setupLocks(table, domain, ledgerExists),
+					{ scope: POSTGRES_DATABASE_LOCK_SCOPE, inSchema: true, shared: true },
+					{ scope: table, inSchema: true, shared: true },
+				];
+			},
+			done: async () => {
+				const version = await recordedNow(database, table, domain, ledgerExists);
+				ledgerExists ||= await ledgerInCatalog(database, table);
+				if (version < supported) return undefined;
+				if (version > supported && !options.acceptNewer)
+					throw new StorageSchemaVersionError(domain, version, supported);
+				return { applied: [], version };
+			},
+			get leading() {
+				const [sql, key] = versionRead(table, domain);
+				return ledgerExists ? [{ sql, params: [key] }] : [];
+			},
+			setup: (transaction, locked) =>
+				applyVersioned(
+					transaction,
+					dialect,
+					table,
+					domain,
+					steps,
+					options.acceptNewer,
+					locked && ledgerExists,
+					locked,
+				),
+			concurrency: { kind: "serial", domain: table },
+		});
+	}
 	return database.transaction(
 		async (transaction) => {
 			if (dialect.versionedMigrations)
@@ -175,6 +257,178 @@ async function recordedInCatalog(database: SqliteDatabase, table: string, domain
 	const catalog = await schemaCatalogOf(database, table);
 	if (catalog === undefined || !catalog.hasTable(table)) return undefined;
 	return catalog.recordedVersion(domain);
+}
+
+/**
+ * The version `ledger` records for `domain` now, read without a lock or a transaction of its own; 0 where the ledger
+ * does not exist. Where `ledgerExists`, one read of the ledger answers; otherwise, inside an open
+ * (`withStorageSchemaCatalog`), the open's catalog is read again. Either way, once the version is found, the open's
+ * catalog is read again at its next question, so the stores the open sets up next find what another process set up.
+ */
+async function recordedNow(
+	database: SqliteDatabase,
+	ledger: string,
+	domain: string,
+	ledgerExists: boolean,
+): Promise<number> {
+	if (ledgerExists) {
+		const version = Number(
+			(await database.get<SqliteRow & { version: number | null }>(...versionRead(ledger, domain)))?.version ?? 0,
+		);
+		if (version > 0) refreshStorageSchemaCatalog(database);
+		return version;
+	}
+	refreshStorageSchemaCatalog(database);
+	const catalog = await schemaCatalogOf(database, ledger);
+	if (catalog !== undefined) return catalog.recordedVersion(domain);
+	return recordedVersion(database, dialectOf(database), ledger, domain);
+}
+
+/** Whether the catalog of the open in progress on `database` holds `ledger`: once it does, it always will. */
+async function ledgerInCatalog(database: SqliteDatabase, ledger: string): Promise<boolean> {
+	return (await schemaCatalogOf(database, ledger))?.hasTable(ledger) === true;
+}
+
+/**
+ * The advisory lock a serial transaction without a domain takes on PostgreSQL, and one with a domain takes shared: the
+ * adapter's `DATABASE_LOCK_SCOPE`, named in the transaction's schema.
+ */
+const POSTGRES_DATABASE_LOCK_SCOPE = "atomic";
+
+/**
+ * How long a setup that another process holds the lock for waits, polling, before it waits for the lock itself: only a
+ * holder that stalls keeps it that long on PostgreSQL, since setting a schema up takes a few round trips.
+ */
+const SETUP_WAIT_MS = 15_000;
+/**
+ * The same on a SQLite file, whose write lock a try also finds taken while other writers wait in its queue, as every
+ * process's own writes do when many open at once: after this long it joins the queue, which hands the lock on in turn.
+ */
+const SQLITE_SETUP_WAIT_MS = 1_000;
+/** The first pause between two polls of a setup that another process runs; each later one doubles, up to the last. */
+const SETUP_POLL_MS = 20;
+const SETUP_MAX_POLL_MS = 250;
+
+/** @internal An advisory lock a {@link setUpStorageOnce} setup takes on PostgreSQL, without waiting for it. */
+export interface StorageSetupLock {
+	/** The lock's name. */
+	readonly scope: string;
+	/**
+	 * The name is qualified by the transaction's schema, as the adapter names the locks of a serial transaction's domain
+	 * (`<schema>:<scope>`, and `<scope>` alone in `public`): one that excludes such transactions, as an earlier build runs.
+	 */
+	readonly inSchema?: boolean;
+	/** Taken shared, as a serial transaction with a domain takes the database's lock. */
+	readonly shared?: boolean;
+}
+
+/** @internal A schema setup that {@link setUpStorageOnce} runs once among the processes that start it together. */
+export interface StorageSetupOnce<T> {
+	/**
+	 * The advisory locks the setup holds on PostgreSQL: every lock a setup of the same objects by an earlier build takes,
+	 * so the two never run at once.
+	 */
+	readonly locks: readonly StorageSetupLock[];
+	/**
+	 * On PostgreSQL, the reads the setup makes first, in this order, sent with the try's start: see the transaction
+	 * option `leading`. Read, with `locks`, at each try.
+	 */
+	readonly leading?: readonly SqliteStatement[];
+	/**
+	 * Reads, without a lock or a transaction, whether the setup is done, such as by another process meanwhile: its answer
+	 * then, or undefined while it is not. Asked only after a try found the lock held.
+	 */
+	readonly done: () => Promise<T | undefined>;
+	/**
+	 * The setup, in its transaction: it checks again, under the lock, what it would change, and changes only that.
+	 * `locked` tells that the transaction holds `locks`, which it does not where it waited in the transaction
+	 * `concurrency` names.
+	 */
+	readonly setup: (transaction: SqliteExecutor, locked: boolean) => Promise<T>;
+	/** How the setup's transaction waits for the lock after polling for {@link SETUP_WAIT_MS}, as it did before. */
+	readonly concurrency: TransactionConcurrency;
+}
+
+/** The schema the transaction runs in, as `<schema>:`, and empty in `public`: what the adapter prefixes its locks with. */
+const SCHEMA_LOCK_PREFIX = `(SELECT CASE WHEN name = 'public' THEN '' ELSE name || ':' END
+	FROM (SELECT trim(both '"' from split_part(current_setting('search_path'), ',', 1)) AS name) AS search)`;
+
+/** One read that takes every one of `locks` it can without waiting, and tells whether it took them all. */
+function tryLocksStatement(locks: readonly StorageSetupLock[]): SqliteStatement {
+	const taken = locks.map(
+		({ inSchema, shared }) =>
+			`pg_try_advisory_xact_lock${shared === true ? "_shared" : ""}(hashtextextended(${inSchema === true ? `${SCHEMA_LOCK_PREFIX} || ` : ""}?, 0))`,
+	);
+	return { sql: `SELECT (${taken.join(" AND ")})::int AS won`, params: locks.map(({ scope }) => scope) };
+}
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms * (0.5 + Math.random() / 2)));
+
+/**
+ * @internal Runs `once.setup`, a schema setup, so that of the processes that start it at once, on a new database say,
+ * one runs it and the others wait for it without queueing for its lock (#6560). The setup's transaction tries its locks
+ * without waiting: an advisory lock on PostgreSQL (`once.locks`), the database's write lock on a SQLite file. A process
+ * that finds them taken holds no lock and no connection while it waits: it polls `once.done`, with growing pauses,
+ * until the setup is done, and tries again whenever it is not, so a holder that set up something else, or failed, or
+ * died, leaves the setup to the next try. After {@link SETUP_WAIT_MS} ({@link SQLITE_SETUP_WAIT_MS} on SQLite) it
+ * waits for the lock in the transaction `once.concurrency` names, as before. Where the database tries no lock without waiting, the setup runs in that
+ * transaction at once.
+ */
+export async function setUpStorageOnce<T>(database: SqliteDatabase, once: StorageSetupOnce<T>): Promise<T> {
+	const attempt = trySetup(database, once);
+	const waiting = () =>
+		database.transaction((transaction) => once.setup(transaction, false), {
+			retryTransientFailures: true,
+			concurrency: once.concurrency,
+		});
+	if (attempt === undefined) return waiting();
+	const deadline =
+		performance.now() + (dialectOf(database).name === "postgres" ? SETUP_WAIT_MS : SQLITE_SETUP_WAIT_MS);
+	for (let wait = SETUP_POLL_MS; ; wait = Math.min(wait * 2, SETUP_MAX_POLL_MS)) {
+		const tried = await attempt();
+		if (tried.won) return tried.value as T;
+		if (performance.now() >= deadline) return waiting();
+		await pause(wait);
+		const done = await once.done();
+		if (done !== undefined) return done;
+	}
+}
+
+/** One try at `once`'s setup that does not wait for its locks, or undefined where `database` cannot try one. */
+function trySetup<T>(
+	database: SqliteDatabase,
+	once: StorageSetupOnce<T>,
+): (() => Promise<{ readonly won: boolean; readonly value?: T }>) | undefined {
+	if (dialectOf(database).name === "postgres") {
+		// A fenced transaction takes no lock with its start: the try is its first statement, sent with that start.
+		return () => {
+			const lock = tryLocksStatement(once.locks);
+			return database.transaction(
+				async (transaction) => {
+					const row = await transaction.get<SqliteRow & { won: number | boolean | null }>(
+						lock.sql,
+						...lock.params,
+					);
+					if (row?.won !== true && Number(row?.won) !== 1) return { won: false };
+					return { won: true, value: await once.setup(transaction, true) };
+				},
+				{
+					retryTransientFailures: true,
+					concurrency: { kind: "fenced", audit: fencedPath("schema-setup") },
+					leading: [lock, ...(once.leading ?? [])],
+				},
+			);
+		};
+	}
+	const tryMaintenance = database.tryMaintenance?.bind(database);
+	if (tryMaintenance === undefined) return undefined;
+	return async () => {
+		let value: T | undefined;
+		const won = await tryMaintenance(async (transaction) => {
+			value = await once.setup(transaction, false);
+		});
+		return won ? { won, value } : { won };
+	};
 }
 
 /** One domain's migration for {@link applyStorageMigrationsTogether}: the arguments of {@link applyStorageMigrations}. */
@@ -250,14 +504,24 @@ export async function withShortSchemaLockWaits(
 	return underShortLockWaits(executor, setup);
 }
 
-async function underShortLockWaits(executor: SqliteExecutor, setup: () => Promise<void>): Promise<void> {
-	const previous = await executor.get<SqliteRow & { wait: string }>("SELECT current_setting('lock_timeout') AS wait");
+async function underShortLockWaits(
+	executor: SqliteExecutor,
+	setup: () => Promise<void>,
+	known?: SqliteRow & { wait: string | null },
+	after: readonly SequencedStatement[] = [],
+	last = false,
+): Promise<void> {
+	const previous = known ?? (await executor.get<SqliteRow & { wait: string }>(LOCK_WAIT_SQL));
 	for (let attempt = 1; ; attempt++) {
-		await executor.exec("SAVEPOINT atomic_schema_setup");
-		await executor.exec(`SET LOCAL lock_timeout = ${SCHEMA_SETUP_LOCK_WAIT_MS}`);
+		// Sent with the setup's first statement, on a connection that pipelines a transaction's statements: no round trip
+		// of its own. A failure of either fails the setup.
+		const saved = executor.exec(
+			`SAVEPOINT atomic_schema_setup; SET LOCAL lock_timeout = ${SCHEMA_SETUP_LOCK_WAIT_MS}`,
+		);
+		saved.catch(() => {});
 		try {
 			await setup();
-			await executor.exec("RELEASE SAVEPOINT atomic_schema_setup");
+			await saved;
 			break;
 		} catch (error) {
 			if (!isLockTimeout(error) || attempt >= SCHEMA_SETUP_ATTEMPTS) throw error;
@@ -266,8 +530,34 @@ async function underShortLockWaits(executor: SqliteExecutor, setup: () => Promis
 			await new Promise((resolve) => setTimeout(resolve, pause * (0.5 + Math.random() / 2)));
 		}
 	}
-	await executor.exec(`SET LOCAL lock_timeout = '${String(previous?.wait ?? "0").replaceAll("'", "''")}'`);
+	// The savepoint's release, the lock wait restored, unless nothing follows in the transaction, and `after` go out
+	// together: with the commit, where they are the transaction's `last` statements and its connection allows it.
+	const statements: SequencedStatement[] = [
+		{ sql: "RELEASE SAVEPOINT atomic_schema_setup", params: [], script: true },
+		...(last
+			? []
+			: [
+					{
+						sql: `SET LOCAL lock_timeout = '${String(previous?.wait ?? "0").replaceAll("'", "''")}'`,
+						params: [],
+						script: true,
+					},
+				]),
+		...after,
+	];
+	if (last && finishers.transactionFinisher?.(executor)?.(statements) === true) return;
+	await Promise.all(
+		statements.map((statement) =>
+			statement.script === true ? executor.exec(statement.sql) : executor.run(statement.sql, ...statement.params),
+		),
+	);
 }
+
+/** The transaction's lock wait, which a setup lowers while it runs and then restores. */
+const LOCK_WAIT_SQL = "SELECT current_setting('lock_timeout') AS wait";
+
+/** The prefix's setup lock, which every schema setup holds on PostgreSQL: see {@link ensureStorageSchema}. */
+const SETUP_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(?, 0)) AS locked";
 
 /** What {@link ensureStorageSchema} records a store's schema setup under. */
 export interface StorageSchemaSetup {
@@ -314,6 +604,7 @@ export async function ensureStorageSchema(
 	dialect: StorageDialect,
 	schema: StorageSchemaSetup,
 	setup: () => Promise<void>,
+	options: EnsureStorageSchemaOptions = {},
 ): Promise<void> {
 	if (!dialect.versionedMigrations) {
 		await setup();
@@ -322,21 +613,139 @@ export async function ensureStorageSchema(
 	}
 	const { ledger, domain, revision } = schema;
 	const key = `schema:${domain}`;
-	if ((await recordedVersion(executor, dialect, ledger, key)) >= revision) return;
-	if (dialect.name === "postgres") {
-		// Serialized per prefix, so hosts that start together on a new database set each store up once, and two stores
-		// that create a table they share never race to create it.
-		await executor.get("SELECT pg_advisory_xact_lock(hashtextextended(?, 0)) AS locked", `${ledger}:schema`);
+	const record = {
+		sql: `INSERT INTO ${ledger} (domain, version, applied_at) VALUES (?, ?, ${dialect.nowMs}) ON CONFLICT DO NOTHING`,
+		params: [key, revision],
+	};
+	if (dialect.name !== "postgres") {
 		if ((await recordedVersion(executor, dialect, ledger, key)) >= revision) return;
-		await assertSchemaUsage(executor, dialect);
-		await underShortLockWaits(executor, setup);
-	} else await setup();
-	await createLedger(executor, dialect, ledger);
-	await executor.run(
-		`INSERT INTO ${ledger} (domain, version, applied_at) VALUES (?, ?, ${dialect.nowMs}) ON CONFLICT DO NOTHING`,
-		key,
-		revision,
+		await setup();
+		await createLedger(executor, dialect, ledger);
+		await executor.run(record.sql, ...record.params);
+		return;
+	}
+	let ledgerFound = options.locked === true && options.ledgerExists === true;
+	if (options.locked !== true) {
+		ledgerFound = await tableExists(executor, dialect, ledger);
+		if (ledgerFound && (await recordedVersion(executor, dialect, ledger, key, true)) >= revision) return;
+	}
+	// Serialized per prefix, so hosts that start together on a new database set each store up once, and two stores
+	// that create a table they share never race to create it. The reads go out with the lock, and each runs after it:
+	// what a holder before it recorded, whether this role may use the schema, and the lock wait the setup restores.
+	const [first, usage, lockWait] = postgresSetupReads(dialect, ledger, key, ledgerFound);
+	const [, found, access, wait] = await Promise.all([
+		options.locked === true ? undefined : executor.get(SETUP_LOCK_SQL, `${ledger}:schema`),
+		executor.get<SqliteRow & { version: number | string | null }>(first.sql, ...first.params),
+		executor.get<SchemaAccess>(usage.sql, ...usage.params),
+		executor.get<SqliteRow & { wait: string }>(lockWait.sql, ...lockWait.params),
+	]);
+	const ledgerExists = ledgerFound || found !== undefined;
+	const recorded = ledgerFound
+		? Number(found?.version ?? 0)
+		: ledgerExists
+			? await recordedVersion(executor, dialect, ledger, key, true)
+			: 0;
+	if (recorded >= revision) return;
+	refuseWithoutSchemaUsage(access);
+	const { int, text } = dialect.types;
+	// The ledger, created where it is missing, and the record go out with the savepoint's release.
+	const createLedgerStatement = {
+		sql: `CREATE TABLE IF NOT EXISTS ${ledger} (domain ${text} NOT NULL, version ${int} NOT NULL, applied_at ${int} NOT NULL, PRIMARY KEY (domain, version))${dialect.tableOptions}`,
+		params: [],
+		script: true,
+	};
+	await underShortLockWaits(
+		executor,
+		setup,
+		wait,
+		ledgerExists ? [record] : [createLedgerStatement, record],
+		options.last === true,
 	);
+}
+
+/** How {@link ensureStorageSchema} runs in a transaction that holds the setup's locks already. */
+export interface EnsureStorageSchemaOptions {
+	/**
+	 * The transaction holds the setup's locks already, as a {@link setUpStorageOnce} setup does: the ledger is read only
+	 * under them, and the prefix's setup lock is not taken again.
+	 */
+	readonly locked?: boolean;
+	/** With `locked`: the ledger exists, so its version is the first read, as {@link postgresSetupReads} lists them. */
+	readonly ledgerExists?: boolean;
+	/** The setup is the transaction's last call: its last statements go out with the commit. */
+	readonly last?: boolean;
+}
+
+/**
+ * The reads a PostgreSQL setup of the ledger key `key` makes first, under its locks, in this order: the version the
+ * ledger records, where it is known to exist, or else whether it does; the schema's usage; and the lock wait the setup
+ * restores. A {@link setUpStorageOnce} try sends them with its start.
+ */
+function postgresSetupReads(
+	dialect: StorageDialect,
+	ledger: string,
+	key: string,
+	ledgerExists: boolean,
+): readonly SqliteStatement[] {
+	return [
+		ledgerExists ? { sql: versionRead(ledger, key)[0], params: [key] } : dialect.tableExists(ledger),
+		{ sql: SCHEMA_USAGE_SQL, params: [] },
+		{ sql: LOCK_WAIT_SQL, params: [] },
+	];
+}
+
+/**
+ * The advisory locks a PostgreSQL setup recorded in `ledger` under `key` tries: the prefix's setup lock, exclusive while
+ * the ledger may be missing, so one setup creates it, and shared once it exists, so the setups of other stores run
+ * beside it while an earlier build's setup, which takes it exclusive, runs alone; and a lock of the key's own, so one
+ * process sets each store up.
+ */
+function setupLocks(ledger: string, key: string, ledgerExists: boolean): StorageSetupLock[] {
+	return [{ scope: `${ledger}:schema`, shared: ledgerExists }, { scope: `${ledger}:schema:${key}` }];
+}
+
+/**
+ * Runs `setup`, a store's idempotent schema statements, as {@link ensureStorageSchema} does, in a transaction of its own:
+ * of the processes that open a new database at once, one runs it and the others wait for the ledger to record it,
+ * without its lock (`setUpStorageOnce`, #6560). Inside an open, a revision the open's catalog records runs nothing; the
+ * caller checks that first (`storageSchemaCurrent`). PostgreSQL; elsewhere the setup runs in a serial transaction of the
+ * ledger's domain.
+ */
+export async function ensureStorageSchemaOnce(
+	database: SqliteDatabase,
+	schema: StorageSchemaSetup,
+	setup: (transaction: SqliteExecutor) => Promise<void>,
+): Promise<void> {
+	const dialect = dialectOf(database);
+	const { ledger, domain, revision } = schema;
+	const concurrency = { kind: "serial", domain: ledger } as const;
+	if (dialect.name !== "postgres") {
+		await database.transaction((tx) => ensureStorageSchema(tx, dialect, schema, () => setup(tx)), {
+			retryTransientFailures: true,
+			concurrency,
+		});
+		return;
+	}
+	const key = `schema:${domain}`;
+	let ledgerExists = await ledgerInCatalog(database, ledger);
+	await setUpStorageOnce(database, {
+		get locks() {
+			return setupLocks(ledger, key, ledgerExists);
+		},
+		get leading() {
+			return postgresSetupReads(dialect, ledger, key, ledgerExists);
+		},
+		done: async () => {
+			const recorded = await recordedNow(database, ledger, key, ledgerExists);
+			ledgerExists ||= await ledgerInCatalog(database, ledger);
+			return recorded >= revision ? true : undefined;
+		},
+		setup: async (tx, locked) => {
+			await ensureStorageSchema(tx, dialect, schema, () => setup(tx), { locked, ledgerExists, last: true });
+			return true;
+		},
+		concurrency,
+	});
 }
 
 /** What {@link ensureTableFillfactor} sets, and records under `schema:<domain>` in the ledger. */
@@ -407,12 +816,9 @@ async function checkTableFillfactor(database: SqliteDatabase, setup: StorageFill
 	const yes = (value: boolean | number | undefined) => value === true || Number(value) === 1;
 	if (found === undefined) return false;
 	if (yes(found.tuned) || !yes(found.owned)) return true;
-	await database.transaction(
-		(tx) =>
-			ensureStorageSchema(tx, dialect, schema, async () => {
-				await tx.exec(`ALTER TABLE ${table} SET (fillfactor = ${Math.trunc(fillfactor)})`);
-			}),
-		{ retryTransientFailures: true, concurrency: { kind: "serial", domain: ledger } },
-	);
+	// Hosts that open a new database at once set it once, and the others wait for that without the lock.
+	await ensureStorageSchemaOnce(database, schema, async (tx) => {
+		await tx.exec(`ALTER TABLE ${table} SET (fillfactor = ${Math.trunc(fillfactor)})`);
+	});
 	return false;
 }
