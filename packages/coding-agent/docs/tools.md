@@ -55,14 +55,14 @@ Each URL scheme has a fixed set of supported tools and permissions:
 | Scheme | Supported tools | Access | Purpose |
 | --- | --- | --- | --- |
 | `local://` | `read`, `search`, `write`, `find`, `bash` | Read and write | Workspace-relative local resources mapped to their underlying filesystem paths. |
-| `skill://` | `read`, `search`, `find`, `bash` | Read-only | `skill://<name>` reads `<skill-dir>/SKILL.md`; `skill://<name>/<subpath>` reads files inside the skill directory. Edit skills by filesystem path. |
+| `skill://` | `read`, `search`, `find`, `bash` | Read-only | Loaded skills by name, as the model's skill list shows them: `skill://tdd` is the skill's `SKILL.md`, `skill://tdd/references/guide.md` is a file in its folder, and `skill://tdd:10-40` is a few lines. A plain name means the winning skill when two share it; `skill://tdd@user` picks one. See [Skill addresses](/skills#skill-addresses). Edit skills where they are stored. |
 | `artifact://<id>` | `read`, `search`, `find`, `bash` | Read-only | Saved tool output artifacts. |
 | `conflict://` | `read`, `search`, `write` | Read and write | Inspect and resolve Git merge conflicts under the working directory (individual sides are read-only; rejected by `find`; stays literal in `bash`). |
 | `history://` | `read`, `search` | Read-only | Past sessions for this project ([Recalling earlier work](/sessions#recalling-earlier-work)) (rejected by `find` and `write`; stays literal in `bash`). |
 | `tool-output://<sha256>` | `read`, `search` | Read-only | Persisted session-blob tool output, including line ranges like `tool-output://<sha256>:1-200` (rejected by `find` and `write`; stays literal in `bash`). |
 | `http://`, `https://` | `read` | Read-only | Public web pages (rejected by `search` and `write`; stays literal in `bash`). |
 
-Any other `scheme://` is rejected by `read`, `search`, and `write`, and stays literal text in `bash`. Workspace-scoped selectors block lexical and symlink escapes outside the workspace or skill root. Cancelling `read` or `find` throws `FileToolAbortedError` (see [Edit and write errors](#edit-and-write-errors)).
+Any other `scheme://` is rejected by `read`, `search`, and `write`, and stays literal text in `bash`. `local://` paths cannot leave the workspace, even through symlinks, and `skill://` paths cannot leave the skill's folder. Cancelling `read` or `find` throws `FileToolAbortedError` (see [Edit and write errors](#edit-and-write-errors)).
 
 ### SQLite limits and writes
 
@@ -169,7 +169,7 @@ The call returns at once with a task ID such as `task-1-0-5`. Nothing stops the 
 See [Long-running servers and watchers](/background-tasks#long-running-servers-and-watchers).
 
 **Internal URL expansion (`skill://`, `local://`, `artifact://`):**
-- Only unquoted URLs starting a plain shell word expand to shell-quoted filesystem paths (for example `printf %s local://notes.txt`). Other schemes (`conflict://`, `history://`, `tool-output://`, `http://`, `https://`) stay literal text.
+- Only unquoted URLs starting a plain shell word expand to shell-quoted filesystem paths (for example `printf %s local://notes.txt`, or `bash skill://my-skill/scripts/check.sh` to run a script that ships with a skill). Other schemes (`conflict://`, `history://`, `tool-output://`, `http://`, `https://`) stay literal text.
 - URLs inside quotes, heredocs, comments, escapes, command substitutions, or directly after `$`, `[`, or quotes stay verbatim. Expansion also stops after the first `((`, `=(`, or non-test `[` (arithmetic, array subscripts, compound assignments). In PowerShell, typographic single and double quotes (`U+2018` to `U+201B` and `U+201C` to `U+201F`), `<#...#>` block comments, and anything after `--%` are not expanded.
 - Structured `cwd` and `env` values always expand supported URLs.
 - Avoid combining URL expansion with custom command prefixes or spawn wrappers that leave quotes, substitutions, or heredocs open; pass paths in structured `cwd` or `env` instead.

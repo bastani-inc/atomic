@@ -59,7 +59,7 @@ describe("issue #2328 exact skill command resolution", () => {
 
 		expect(parsed).toMatchObject({
 			name: "tdd@builtin",
-			location: builtin.filePath,
+			location: "skill://tdd@builtin",
 			candidateId: catalog.resolve("tdd@builtin").ok ? catalog.resolve("tdd@builtin").candidate.id : undefined,
 			userMessage: "use exact source",
 		});

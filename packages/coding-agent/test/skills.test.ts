@@ -246,7 +246,45 @@ describe("skills", () => {
 			expect(result).toContain("<skill>");
 			expect(result).toContain("<name>test-skill</name>");
 			expect(result).toContain("<description>A test skill.</description>");
-			expect(result).toContain("<location>/path/to/skill/SKILL.md</location>");
+			expect(result).toContain("<location>skill://test-skill</location>");
+			expect(result).not.toContain("/path/to/skill");
+		});
+
+		it("lists each skill at a skill:// location, escaping characters that would end the name", () => {
+			const skills: Skill[] = [
+				createTestSkill({
+					name: "tdd@user",
+					description: "A qualified selector.",
+					filePath: "/u/tdd/SKILL.md",
+					baseDir: "/u/tdd",
+				}),
+				createTestSkill({
+					name: "docs.v2",
+					description: "A dotted name.",
+					filePath: "/p/docs/SKILL.md",
+					baseDir: "/p/docs",
+				}),
+				createTestSkill({
+					name: "acme:deploy now",
+					description: "Needs escaping.",
+					filePath: "/x/a/SKILL.md",
+					baseDir: "/x/a",
+				}),
+				createTestSkill({
+					name: "tdd@scope/pkg",
+					description: "Package qualifier.",
+					filePath: "/n/t/SKILL.md",
+					baseDir: "/n/t",
+				}),
+			];
+
+			const result = formatSkillsForPrompt(skills);
+
+			expect(result).toContain("<location>skill://tdd@user</location>");
+			expect(result).toContain("<location>skill://docs.v2</location>");
+			expect(result).toContain("<location>skill://acme%3Adeploy%20now</location>");
+			expect(result).toContain("<location>skill://tdd@scope%2Fpkg</location>");
+			expect(result).not.toMatch(/SKILL\.md|Use absolute paths/);
 		});
 
 		it("should include intro text before XML", () => {
@@ -264,7 +302,12 @@ describe("skills", () => {
 			const introText = result.substring(0, xmlStart);
 
 			expect(introText).toContain("The following skills provide specialized instructions");
-			expect(introText).toContain("Use the read tool to load a skill's file");
+			expect(introText).toContain(
+				"When the task matches a skill's description, use the read tool on the skill's location, skill://<name>, to load it.",
+			);
+			expect(introText).toContain(
+				"A file the skill references relative to its own directory is skill://<name>/<relative path>.",
+			);
 		});
 
 		it("should escape XML special characters", () => {

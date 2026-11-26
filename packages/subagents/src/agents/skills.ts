@@ -357,10 +357,26 @@ export async function resolveSkillsWithFallback(
 	};
 }
 
+/**
+ * The `skill://` address the host resolves for a skill name, encoded the way the host's skill list writes it. Kept
+ * here rather than imported: a builtin extension may only name host exports an older running process already has.
+ */
+function skillUri(name: string): string {
+	const encoded = encodeURIComponent(name)
+		.replace(/%40/g, "@")
+		.replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+	return `skill://${encoded}`;
+}
+
 export function buildSkillInjection(skills: ResolvedSkill[]): string {
 	if (skills.length === 0) return "";
 
-	return skills.map((s) => `<skill name="${s.name}">\n${s.content}\n</skill>`).join("\n\n");
+	return skills
+		.map((s) => {
+			const location = skillUri(s.name);
+			return `<skill name="${s.name}" location="${location}">\nReferences are relative to ${location}/.\n\n${s.content}\n</skill>`;
+		})
+		.join("\n\n");
 }
 
 export function normalizeSkillInput(input: string | string[] | boolean | undefined): string[] | false | undefined {

@@ -405,12 +405,10 @@ describe("buildSystemPrompt", () => {
 			});
 			assert.match(prompt, /<available_skills>/);
 			assert.match(prompt, /<name>test-skill<\/name>/);
-			assert.match(prompt, /Use bash to load a skill's file/);
-			assert.ok(
-				prompt.includes(
-					"Resolve relative paths against the skill's directory (parent of SKILL.md). Use absolute paths in tool calls.",
-				),
-			);
+			assert.ok(prompt.includes("use bash to load the skill's location, for example `cat skill://<name>`."));
+			assert.ok(prompt.includes("Shell commands accept an unquoted skill:// URI in place of the file's path"));
+			assert.ok(prompt.includes("<location>skill://test-skill</location>"));
+			assert.ok(!prompt.includes(testSkill.filePath));
 		});
 
 		test("omits skills without read or bash", () => {
@@ -790,9 +788,15 @@ describe("buildSystemPrompt", () => {
 		});
 
 		test("keeps skills without naming a hidden reader", () => {
-			assert(build(["read", "bash"]).includes("\nLoad a skill's file when the task matches its description."));
-			assert(build(["read"]).includes("Use bash to load a skill's file"));
-			assert(build([]).includes("Use the read tool to load a skill's file"));
+			const indirect = build(["read", "bash"]);
+			assert(
+				indirect.includes(
+					"\nWhen the task matches a skill's description, load the skill's location, skill://<name>.",
+				),
+			);
+			assert(!indirect.includes("read tool") && !indirect.includes("use bash"));
+			assert(build(["read"]).includes("use bash to load the skill's location, for example `cat skill://<name>`."));
+			assert(build([]).includes("use the read tool on the skill's location, skill://<name>, to load it."));
 		});
 	});
 });

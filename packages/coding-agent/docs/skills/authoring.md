@@ -55,7 +55,7 @@ Use relative paths from the skill directory:
 See the API reference at `references/api-reference.md` for details.
 ```
 
-Atomic tells the model to resolve relative paths against the skill's directory (the parent of `SKILL.md`) and pass absolute paths to tools. Make helper scripts executable (`chmod +x scripts/process.sh`) or document running them with an explicit interpreter such as `node`, `bash`, or `python3`.
+The model opens that file as `skill://<your-skill>/references/api-reference.md`, an [address](/skills#skill-addresses) relative to the skill's folder, so you never need to write a full path. Make helper scripts executable (`chmod +x scripts/process.sh`) or document running them with an explicit interpreter such as `node`, `bash`, or `python3`.
 
 Keep instructions concise and lead with the intended outcome:
 

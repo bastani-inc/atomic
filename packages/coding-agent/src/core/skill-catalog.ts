@@ -7,6 +7,7 @@ import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { ResourceLoader } from "./resource-loader-types.ts";
 import type { Skill } from "./skills.ts";
 import { parseSlashCommand } from "./slash-commands.js";
+import { skillUri } from "./tools/skill-protocol.ts";
 
 export interface SkillCandidate {
 	readonly id: string;
@@ -387,7 +388,8 @@ export async function expandSkillCommand(
 	try {
 		const content = await readFile(skill.filePath, "utf-8");
 		const body = stripFrontmatter(content).trim();
-		const skillBlock = `<skill name="${selector}" location="${skill.filePath}" candidate="${id}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+		const location = skillUri(selector);
+		const skillBlock = `<skill name="${selector}" location="${location}" candidate="${id}">\nReferences are relative to ${location}/.\n\n${body}\n</skill>`;
 		return args ? `${skillBlock}\n\n${args}` : skillBlock;
 	} catch (err) {
 		onError({ path: skill.filePath, message: err instanceof Error ? err.message : String(err) });
