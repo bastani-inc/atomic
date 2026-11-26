@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import type { SqliteDatabase } from "@bastani/atomic/storage";
+import type { SqliteDatabase, SqliteExecutor } from "@bastani/atomic/storage";
 import { describe, it } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import {
@@ -56,6 +56,30 @@ async function indexSession(store: SqlSessionStore, id: string, texts: readonly 
 		const batch = texts.slice(after, through).map((text, offset) => ({ seq: after + offset + 1, text }));
 		assert.equal(await index.extend(id, FORMAT, after, through, batch), true, `index write through ${through}`);
 	}
+}
+
+/** `database`, with every statement it and its transactions send added to `statements`. */
+function recording(database: SqliteDatabase, statements: string[]): SqliteDatabase {
+	const executor = <E extends SqliteExecutor>(target: E): E =>
+		new Proxy(target, {
+			get(object, key, receiver) {
+				const value = Reflect.get(object, key, receiver);
+				if (key === "exec" || key === "run" || key === "get" || key === "all")
+					return (sql: string, ...params: unknown[]) => {
+						statements.push(sql);
+						return (value as (...args: unknown[]) => unknown).call(object, sql, ...params);
+					};
+				if (key === "transaction")
+					return (body: (tx: SqliteExecutor) => Promise<unknown>, ...rest: unknown[]) =>
+						(value as (...args: unknown[]) => unknown).call(
+							object,
+							(tx: SqliteExecutor) => body(executor(tx)),
+							...rest,
+						);
+				return typeof value === "function" ? value.bind(object) : value;
+			},
+		});
+	return executor(database);
 }
 
 async function pendingList(database: SqliteDatabase): Promise<{ pages: number; tuples: number }> {
@@ -148,6 +172,63 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL search index pendi
 					);
 					await runtimeStore.close();
 					await ownerStore.close();
+				});
+			} finally {
+				const admin = await openPostgresAdmin();
+				try {
+					await admin.exec(`DROP ROLE IF EXISTS ${runtime}`);
+				} finally {
+					await admin.close();
+				}
+			}
+		},
+		TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"a new store records its search tuning in the request that creates its tables, and a runtime role checks an unrecorded index's owner once per process",
+		async () => {
+			const runtime = `atomic_pending_${randomBytes(4).toString("hex")}`;
+			const password = `pw-${randomBytes(8).toString("hex")}`;
+			try {
+				await withPostgresDatabase(async (scope) => {
+					const created: string[] = [];
+					const owner = await scope.open();
+					await (await SqlSessionStore.open(recording(owner, created), { prefix: PREFIX })).close();
+					const tuning = created.filter((sql) => sql.includes("session-search-tuning"));
+					assert.equal(tuning.length, 1, "one statement records the tuning");
+					assert.match(tuning[0]!, /CREATE TABLE IF NOT EXISTS \S*session_search_state/, "with the first table");
+					assert.deepEqual(
+						created.filter((sql) => /x\.indexrelid|ALTER INDEX/.test(sql)),
+						[],
+						"a new store checks and alters nothing for its tuning",
+					);
+					// As before `atomic storage migrate` records the step on a database an earlier release set up.
+					await owner.run(
+						`DELETE FROM ${PREFIX}atomic_migrations WHERE domain = ?`,
+						"schema:session-search-tuning",
+					);
+					const schema = String(
+						(await owner.get<{ schema: string }>("SELECT current_schema() AS schema"))?.schema,
+					);
+					for (const statement of [
+						`CREATE ROLE ${runtime} LOGIN PASSWORD '${password}'`,
+						`GRANT USAGE ON SCHEMA ${schema} TO ${runtime}`,
+						`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${schema} TO ${runtime}`,
+						`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${schema} TO ${runtime}`,
+						`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA ${schema} TO ${runtime}`,
+					])
+						await owner.exec(statement);
+					const url = new URL(scope.url);
+					url.username = runtime;
+					const ownerChecks = async () => {
+						const statements: string[] = [];
+						const database = recording(await scope.open({ url: url.href, password }), statements);
+						await (await SqlSessionStore.open(database, { prefix: PREFIX })).close();
+						return statements.filter((sql) => sql.includes("x.indexrelid")).length;
+					};
+					assert.equal(await ownerChecks(), 1, "the process's first open checks who owns the index");
+					assert.equal(await ownerChecks(), 0, "its later opens do not");
 				});
 			} finally {
 				const admin = await openPostgresAdmin();
