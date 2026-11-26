@@ -3,6 +3,7 @@ import { SessionEntryError } from "./session-manager-errors.js";
 import type { FileEntry, LabelEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
 import { createSessionId } from "./session-manager-validation.ts";
 import { TOOL_OUTPUT_ENTRY_TYPE } from "./session-tool-output.ts";
+import { copyStoredEntry } from "./storage/session/stored-entries.js";
 
 export interface BranchedSessionStateInput {
 	leafId: string;
@@ -87,7 +88,7 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 		}
 		for (const labelId of pendingLabelIds) replacementByLabelId.set(labelId, entry.id);
 		pendingLabelIds.length = 0;
-		pathWithoutLabels.push(
+		const copy: SessionEntry =
 			entry.type === "compaction"
 				? {
 						...entry,
@@ -99,8 +100,10 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 					}
 				: input.preserveReceiptLinks && entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE
 					? entry
-					: { ...entry, parentId: pathParentId },
-		);
+					: { ...entry, parentId: pathParentId };
+		// A copy whose JSON is still the stored entry's can share the parent's row in the store (#6560).
+		if (copy !== entry) copyStoredEntry(entry, copy);
+		pathWithoutLabels.push(copy);
 		pathParentId = entry.id;
 	}
 	const newSessionId = createSessionId();

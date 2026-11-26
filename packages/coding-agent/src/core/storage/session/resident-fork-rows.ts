@@ -1,5 +1,6 @@
 import { isProxy } from "node:util/types";
 import type { FileEntry, SessionEntry } from "../../session-manager-types.ts";
+import { copyStoredEntry } from "./stored-entries.js";
 import { yieldSessionTurn } from "./types.js";
 
 /** A published whole clone can reuse the immutable text its parent already holds. Give the child its own plain
@@ -54,6 +55,8 @@ export async function residentForkRows(
 				}
 			}
 		}
+		// The copy has the entry's JSON: where the store read the entry, a fork may share its row (#6560).
+		copyStoredEntry(entry as SessionEntry, copy as SessionEntry);
 		rows.push(copy as SessionEntry);
 	}
 	return rows;
