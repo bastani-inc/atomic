@@ -26,6 +26,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { type ForkLineageTables, ForkSegmentRuns, forkLineageWrite, forkSegmentInserts } from "./fork-lineage.js";
 import {
 	type CountedStatement,
 	type ForkBlobCopy,
@@ -34,6 +35,7 @@ import {
 	incompleteEntryRead,
 } from "./fork-row-copy.js";
 import { createSharedHistoryTables, type SessionForkTables, sessionForkTables } from "./fork-schema.js";
+import { assertForkSegments, type ForkSegment, prefixForkSegments } from "./fork-segments.js";
 import { tryCleanupForkStaging } from "./fork-staging-maintenance.js";
 import { forkStoreRelation, nativeForkReader, registerForkScope } from "./fork-store-scope.js";
 import {
@@ -203,6 +205,30 @@ export const SESSION_PRESENCE_DOMAIN = "session-presence";
 export const SESSION_PRESENCE_TABLES = Object.freeze({ open: "open" });
 
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
+
+/** The reads that begin a fork with shared history: see `SqlSessionStore.sharedForkReads`. */
+interface SharedForkReads {
+	/** The sessions the lock read locks, in id order. */
+	readonly ids: readonly string[];
+	readonly exists: SqliteStatement;
+	readonly lock: SqliteStatement;
+	readonly segments: SqliteStatement;
+}
+
+/** A fork's donor, locked, with the segments that say where its view's rows are stored (#6560). */
+interface SharedForkDonor {
+	readonly lastSeq: number;
+	readonly epoch: string;
+	readonly segments: readonly ForkSegment[];
+	readonly state?: StoredSummaryState;
+}
+
+/** The donor's segments name a session the fork did not lock: the fork runs again, locking it too (#6560). */
+class ForkSourcesMoved extends Error {
+	constructor() {
+		super("The fork's source moved its history while the fork read it");
+	}
+}
 type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
 type SummaryStateRow = HeaderRow & { summary_state: string };
 type ResumeRow = SummaryStateRow & { revision: string };
@@ -598,6 +624,8 @@ export class SqlSessionStore implements SessionStore {
 	 * reads the tables themselves on the condition, checked in the read's own snapshot, that the schema is older.
 	 */
 	private sharedHistorySeen = false;
+	/** The sessions each recently forked session's segments named when this store last read them (#6560). */
+	private readonly forkSources = new Map<string, readonly string[]>();
 	/**
 	 * Absent on a local libSQL file, which then behaves as before: @libsql/client waits for another process's write
 	 * lock on the calling thread, even to begin a transaction, so a side write would stop the event loop where an
@@ -1752,179 +1780,364 @@ export class SqlSessionStore implements SessionStore {
 		return { bytes: Number(row.bytes), chunks: Number(row.chunks), ...(row.data == null ? {} : { data: row.data }) };
 	}
 
+	/**
+	 * A fork from a stream of the source's rows. Where the database has shared history (#6560), the child stores no copy
+	 * of the rows the source stores unchanged: its segments name them, and it stores only the rows the stream changed or
+	 * added. A stream of the source's whole history, as it stands, reads no row at all.
+	 */
 	private async createStreamedFork(header: SessionRecordHeader, stream: SessionForkStream, source: ForkArchiveSource) {
 		this.assertOpen();
 		validateSessionHeader(header);
+		for (let attempt = 0; ; attempt++) {
+			// Once this store has seen shared history, the reads that lock the source go out with the transaction's start.
+			const reads = this.sharedHistorySeen
+				? this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined)
+				: undefined;
+			try {
+				return await this.transaction(
+					(tx) => this.writeStreamedFork(tx, header, stream, source, reads),
+					this.sessionWrite(header.id, ...(reads === undefined ? [] : [reads.exists, reads.lock, reads.segments])),
+				);
+			} catch (error) {
+				if (!(error instanceof ForkSourcesMoved) || attempt >= 3) throw error;
+			}
+		}
+	}
+
+	private async writeStreamedFork(
+		tx: SqliteExecutor,
+		header: SessionRecordHeader,
+		stream: SessionForkStream,
+		source: ForkArchiveSource,
+		reads: SharedForkReads | undefined,
+	) {
 		const { encodedForkRow } = await import("./fork-row-bytes.js");
 		const { foldForkRow } = await import("./fork-row-index.js");
-		return this.transaction(async (tx) => {
-			const head = await this.forkDonor(tx, header.id, source);
-			const reader = new SqlSessionStore(
-				{
-					descriptor: this.database.descriptor,
-					dialect: this.dialect,
-					readOnly: true,
-					exec: tx.exec.bind(tx),
-					get: tx.get.bind(tx),
-					run: tx.run.bind(tx),
-					all: tx.all.bind(tx),
-					transaction: async (cb) => cb(tx),
-					close: async () => {},
-				},
-				this.tables,
-				this.prefix,
-				this.cwdMatcher,
-				this.blobTable,
-				this.legacyBlobData,
-				undefined,
-				this.entryByteLength,
+		const shared = (await this.sharedHistoryForks(tx))
+			? await this.sharedForkDonor(
+					tx,
+					header.id,
+					source,
+					reads ?? this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined),
+				)
+			: undefined;
+		const head = shared ?? (await this.forkDonor(tx, header.id, source));
+		const prefix = stream.prefix;
+		if (
+			shared !== undefined &&
+			prefix !== undefined &&
+			prefix.sessionId === source.sessionId &&
+			prefix.through === shared.lastSeq &&
+			(prefix.epoch === undefined || prefix.epoch === shared.epoch)
+		) {
+			const whole = await this.writeSharedPrefixFork(tx, header, source.sessionId, shared);
+			if (whole !== undefined) return whole;
+		}
+		const reader = new SqlSessionStore(
+			{
+				descriptor: this.database.descriptor,
+				dialect: this.dialect,
+				readOnly: true,
+				exec: tx.exec.bind(tx),
+				get: tx.get.bind(tx),
+				run: tx.run.bind(tx),
+				all: tx.all.bind(tx),
+				transaction: async (cb) => cb(tx),
+				close: async () => {},
+			},
+			this.tables,
+			this.prefix,
+			this.cwdMatcher,
+			this.blobTable,
+			this.legacyBlobData,
+			undefined,
+			this.entryByteLength,
+		);
+		// The reader's reads outside a transaction run in this one, which has read the schema already.
+		reader.sharedHistorySeen = await this.sharedHistoryForks(tx);
+		const { index: donorIndex } = await reader.prepareResume(source.sessionId);
+		reader.readBranchSpan = async (id, cut) => transcriptBranchSpan(id, donorIndex, cut);
+		reader.readEntryChunk = this.forkChunkReader(tx, await this.viewTables(tx), reader, source.sessionId, head.epoch);
+		// The source's rows the child keeps unchanged, copied a run at a time rather than written a row at a time (#6560),
+		// or, with shared history, named by the child's segments.
+		const copies = new ForkRowRuns(this.tables, header.id, source.sessionId);
+		const lineage = this.lineageTables();
+		const runs =
+			shared === undefined
+				? undefined
+				: new ForkSegmentRuns(lineage, header.id, {
+						id: source.sessionId,
+						segments: shared.segments,
+						length: shared.lastSeq,
+					});
+		const viewTables = await this.viewTables(tx);
+		const lookup = async (id: string) =>
+			(runs ?? copies).heldSeq(id) ?? this.seqOfEntry(tx, viewTables, header.id, id);
+		let summary = applySessionSummaryEntries(undefined, []).state;
+		let index = foldSessionResume(undefined, []),
+			seq = 0;
+		const hashes = new Set<string>();
+		const inlineSnapshot = async (ref: OversizedSessionEntry) => {
+			// v4 snapshot-GC triggers inspect inline JSON. Only this one original row may
+			// cross the usual page bound. Previously chunked snapshots remain streamed.
+			const text = (key: string) => this.dialect.jsonText("entry_json", key);
+			const ty = (key: string) => this.dialect.jsonType("entry_json", key);
+			const view = this.entriesView(await this.viewTables(tx), ref.sessionId, ref.seq - 1, ref.seq);
+			const s = await tx.get<
+				SqliteRow & {
+					id: string;
+					parent: string | null;
+					stamp: string;
+					root: string;
+					snapshot: string;
+					capture: number | null;
+					record: string | null;
+					restore: string | null;
+					unrestored: string | null;
+					degraded: string | null;
+				}
+			>(
+				withForkViews(
+					[view],
+					`SELECT entry_id AS id,${text("parentId")} AS parent,${text("timestamp")} AS stamp,${text("root")} AS root,${text("snapshotId")} AS snapshot,${text("captureMs")} AS capture,${ty("snapshot")} AS record,${ty("restore")} AS restore,${ty("unrestored")} AS unrestored,${text("degradedFrom")} AS degraded FROM ${view.name} WHERE chunks=0 AND ${text("type")}='worktree_snapshot'`,
+				),
+				...view.params,
 			);
-			// The reader's reads outside a transaction run in this one, which has read the schema already.
-			reader.sharedHistorySeen = await this.sharedHistoryForks(tx);
-			const { index: donorIndex } = await reader.prepareResume(source.sessionId);
-			reader.readBranchSpan = async (id, cut) => transcriptBranchSpan(id, donorIndex, cut);
-			reader.readEntryChunk = this.forkChunkReader(
-				tx,
-				await this.viewTables(tx),
-				reader,
-				source.sessionId,
-				head.epoch,
-			);
-			// The source's rows the child keeps unchanged, copied a run at a time rather than written a row at a time (#6560).
-			const copies = new ForkRowRuns(this.tables, header.id, source.sessionId);
-			const lookup = async (id: string) =>
-				copies.heldSeq(id) ?? this.seqOfEntry(tx, await this.viewTables(tx), header.id, id);
-			let summary = applySessionSummaryEntries(undefined, []).state;
-			let index = foldSessionResume(undefined, []),
-				seq = 0;
-			const hashes = new Set<string>();
-			const inlineSnapshot = async (ref: OversizedSessionEntry) => {
-				// v4 snapshot-GC triggers inspect inline JSON. Only this one original row may
-				// cross the usual page bound. Previously chunked snapshots remain streamed.
-				const text = (key: string) => this.dialect.jsonText("entry_json", key);
-				const ty = (key: string) => this.dialect.jsonType("entry_json", key);
-				const view = this.entriesView(await this.viewTables(tx), ref.sessionId, ref.seq - 1, ref.seq);
-				const s = await tx.get<
-					SqliteRow & {
-						id: string;
-						parent: string | null;
-						stamp: string;
-						root: string;
-						snapshot: string;
-						capture: number | null;
-						record: string | null;
-						restore: string | null;
-						unrestored: string | null;
-						degraded: string | null;
-					}
-				>(
-					withForkViews(
-						[view],
-						`SELECT entry_id AS id,${text("parentId")} AS parent,${text("timestamp")} AS stamp,${text("root")} AS root,${text("snapshotId")} AS snapshot,${text("captureMs")} AS capture,${ty("snapshot")} AS record,${ty("restore")} AS restore,${ty("unrestored")} AS unrestored,${text("degradedFrom")} AS degraded FROM ${view.name} WHERE chunks=0 AND ${text("type")}='worktree_snapshot'`,
-					),
-					...view.params,
-				);
-				if (!s) return undefined;
-				// These flags are consumed only by the resume index. The writer copies the original v4 row.
-				return {
-					type: "worktree_snapshot",
-					id: s.id,
-					parentId: s.parent,
-					timestamp: s.stamp,
-					root: s.root,
-					snapshotId: s.snapshot,
-					...(s.capture !== null ? { captureMs: Number(s.capture) } : {}),
-					...(s.record === "object" ? { snapshot: {} } : {}),
-					...(s.restore === "object" ? { restore: {} } : {}),
-					...(s.unrestored === "object" ? { unrestored: {} } : {}),
-					...(s.degraded ? { degradedFrom: s.degraded } : {}),
-				} as SessionEntry;
-			};
-			const writes = new SentWrites(tx);
-			const blobs: { copy?: ForkBlobCopy | undefined } = {};
-			const remainingBlobs = await writes.around(async () => {
-				for await (const row of stream.read(
-					reader,
-					async (id) => (await lookup(id)) !== undefined,
-					inlineSnapshot,
-				)) {
-					index = await foldForkRow(index, row, lookup);
-					const entry = row.entry;
-					const listed = applySessionSummaryEntries(summary, [entry]);
-					summary = listed.state;
-					if (entry.type === "custom" && entry.customType === "atomic.tool-output") {
-						const hash = (entry.data as { hash?: string })?.hash;
-						if (typeof hash === "string") hashes.add(hash);
-					}
-					if (row.stored?.sessionId === source.sessionId && row.edits === undefined) {
-						copies.add(row.stored.seq, seq + 1, entry.id);
-						await writes.send(this.entryWrites(header.id, [], seq, listed.texts, false));
-						if (copies.full) await writes.send(copies.drain());
-						seq++;
-						continue;
-					}
-					// What the child holds is in seq order, for the snapshot index's triggers: the runs before this row first.
-					await writes.send(copies.drain());
-					if (!row.reference) {
-						await writes.send(this.entryWrites(header.id, [entry], seq, listed.texts, false));
-					} else if (row.inlineSnapshot) {
-						await this.writeInlineForkSnapshot(
-							tx,
-							reader,
-							row.reference,
-							header.id,
-							seq,
-							listed.texts,
-							row.edits,
-						);
-					} else {
-						const encoded = await encodedForkRow(reader, row);
-						const chunks = Math.ceil(encoded.size / SESSION_ENTRY_CHUNK_BYTES);
+			if (!s) return undefined;
+			// These flags are consumed only by the resume index. The writer copies the original v4 row.
+			return {
+				type: "worktree_snapshot",
+				id: s.id,
+				parentId: s.parent,
+				timestamp: s.stamp,
+				root: s.root,
+				snapshotId: s.snapshot,
+				...(s.capture !== null ? { captureMs: Number(s.capture) } : {}),
+				...(s.record === "object" ? { snapshot: {} } : {}),
+				...(s.restore === "object" ? { restore: {} } : {}),
+				...(s.unrestored === "object" ? { unrestored: {} } : {}),
+				...(s.degraded ? { degradedFrom: s.degraded } : {}),
+			} as SessionEntry;
+		};
+		const writes = new SentWrites(tx);
+		const blobs: { copy?: ForkBlobCopy | undefined } = {};
+		const remainingBlobs = await writes.around(async () => {
+			for await (const row of stream.read(reader, async (id) => (await lookup(id)) !== undefined, inlineSnapshot)) {
+				index = await foldForkRow(index, row, lookup);
+				const entry = row.entry;
+				const listed = applySessionSummaryEntries(summary, [entry]);
+				summary = listed.state;
+				const unchanged = row.stored?.sessionId === source.sessionId && row.edits === undefined;
+				// A shared row's blob is read where its source stores it; only the child's own rows copy theirs.
+				if (entry.type === "custom" && entry.customType === "atomic.tool-output" && !(unchanged && runs)) {
+					const hash = (entry.data as { hash?: string })?.hash;
+					if (typeof hash === "string") hashes.add(hash);
+				}
+				if (unchanged && runs !== undefined) {
+					// Its search texts too are the source's, read through the child's view.
+					runs.add(row.stored!.seq, seq + 1, entry.id);
+					if (runs.full) await writes.send(runs.drain());
+					seq++;
+					continue;
+				}
+				if (row.stored?.sessionId === source.sessionId && row.edits === undefined) {
+					copies.add(row.stored.seq, seq + 1, entry.id);
+					await writes.send(this.entryWrites(header.id, [], seq, listed.texts, false));
+					if (copies.full) await writes.send(copies.drain());
+					seq++;
+					continue;
+				}
+				// What the child holds is in seq order, for the snapshot index's triggers: the runs before this row first.
+				await writes.send(runs?.drain() ?? copies.drain());
+				if (!row.reference) {
+					await writes.send(this.entryWrites(header.id, [entry], seq, listed.texts, false));
+				} else if (row.inlineSnapshot) {
+					await this.writeInlineForkSnapshot(tx, reader, row.reference, header.id, seq, listed.texts, row.edits);
+				} else {
+					const encoded = await encodedForkRow(reader, row);
+					const chunks = Math.ceil(encoded.size / SESSION_ENTRY_CHUNK_BYTES);
+					await tx.run(
+						`INSERT INTO ${this.tables.entries} (session_id,seq,entry_id,entry_json,chunks) VALUES (?,?,?,?,?)`,
+						header.id,
+						seq + 1,
+						entry.id,
+						JSON.stringify({ type: entry.type, id: entry.id, parentId: entry.parentId ?? null }),
+						chunks,
+					);
+					let n = 0,
+						used = 0,
+						buffer = new Uint8Array(SESSION_ENTRY_CHUNK_BYTES);
+					const write = async () => {
 						await tx.run(
-							`INSERT INTO ${this.tables.entries} (session_id,seq,entry_id,entry_json,chunks) VALUES (?,?,?,?,?)`,
+							`INSERT INTO ${this.tables.entryChunks} (session_id,seq,idx,data) VALUES (?,?,?,?)`,
 							header.id,
 							seq + 1,
-							entry.id,
-							JSON.stringify({ type: entry.type, id: entry.id, parentId: entry.parentId ?? null }),
-							chunks,
+							n++,
+							buffer.subarray(0, used),
 						);
-						let n = 0,
-							used = 0,
-							buffer = new Uint8Array(SESSION_ENTRY_CHUNK_BYTES);
-						const write = async () => {
-							await tx.run(
-								`INSERT INTO ${this.tables.entryChunks} (session_id,seq,idx,data) VALUES (?,?,?,?)`,
-								header.id,
-								seq + 1,
-								n++,
-								buffer.subarray(0, used),
-							);
-							used = 0;
-						};
-						for await (const part of encoded.chunks())
-							for (let start = 0; start < part.length; ) {
-								const count = Math.min(part.length - start, buffer.length - used);
-								buffer.set(part.subarray(start, start + count), used);
-								start += count;
-								used += count;
-								if (used === buffer.length) await write();
-							}
-						if (used) await write();
-						if (n !== chunks) throw new StorageError("Incomplete historical entry in fork");
-						await writes.send(this.entryWrites(header.id, [], seq, listed.texts, false));
-					}
-					seq++;
+						used = 0;
+					};
+					for await (const part of encoded.chunks())
+						for (let start = 0; start < part.length; ) {
+							const count = Math.min(part.length - start, buffer.length - used);
+							buffer.set(part.subarray(start, start + count), used);
+							start += count;
+							used += count;
+							if (used === buffer.length) await write();
+						}
+					if (used) await write();
+					if (n !== chunks) throw new StorageError("Incomplete historical entry in fork");
+					await writes.send(this.entryWrites(header.id, [], seq, listed.texts, false));
 				}
-				await writes.send(copies.drain());
-				blobs.copy = this.forkBlobCopy(source.sessionId, header.id, hashes);
-				const statement = this.summaryWrite(header.id, { header, entries: [], lastSeq: seq }, summary, index);
-				await writes.send([statement.statement]);
-				const remaining = await this.finishForkCopy(tx, writes, header.id, blobs.copy, hashes);
-				return { remaining, epoch: statement.epoch };
-			});
-			await this.finishFork(tx, header.id);
-			return { lastSeq: seq, epoch: remainingBlobs.epoch, remainingBlobs: remainingBlobs.remaining };
-		}, this.sessionWrite(header.id));
+				seq++;
+			}
+			await writes.send(runs?.drain() ?? copies.drain());
+			if (runs !== undefined) {
+				assertForkSegments(header.id, runs.segments, seq);
+				await writes.send([
+					forkLineageWrite(lineage, header.id, { parentId: source.sessionId, cutSeq: head.lastSeq }),
+				]);
+			}
+			blobs.copy = this.forkBlobCopy(source.sessionId, header.id, hashes);
+			const statement = this.summaryWrite(header.id, { header, entries: [], lastSeq: seq }, summary, index);
+			await writes.send([statement.statement]);
+			const remaining = await this.finishForkCopy(tx, writes, header.id, blobs.copy, hashes);
+			return { remaining, epoch: statement.epoch };
+		});
+		await this.finishFork(tx, header.id);
+		return { lastSeq: seq, epoch: remainingBlobs.epoch, remainingBlobs: remainingBlobs.remaining };
+	}
+
+	/** Notes the sessions session `id`'s segments name, which a fork of it locks. */
+	private noteForkSources(id: string, sources: readonly string[]): void {
+		this.forkSources.delete(id);
+		this.forkSources.set(id, sources);
+		while (this.forkSources.size > 16) this.forkSources.delete(this.forkSources.keys().next().value!);
+	}
+
+	/** The fork tables of this store's database, which exist once it has shared history (#6560). */
+	private lineageTables(): ForkLineageTables {
+		return {
+			sessions: this.tables.sessions,
+			forkSegments: this.forkTables.forkSegments,
+			forkLineage: this.forkTables.forkLineage,
+		};
+	}
+
+	/**
+	 * The reads that begin a fork of session `donor` into `child` with shared history (#6560), in order: whether the child
+	 * exists; the rows of the donor and of the sessions its segments name, as the statement starts or as this store last
+	 * saw them, each locked `key-share` in id order, unless the child exists, with the donor's watermark and generation,
+	 * and with `withState` its summary state; then the donor's segments, read once those locks are held.
+	 */
+	private sharedForkReads(child: string, donor: string, withState: boolean): SharedForkReads {
+		const ids = [...new Set([donor, ...(this.forkSources.get(donor) ?? [])])].sort();
+		const epoch = `COALESCE(${this.dialect.jsonText("summary_state", "epoch")}, ${this.dialect.jsonText("summary_state", "resume", "epoch")}, revision)`;
+		return {
+			ids,
+			exists: { sql: `SELECT id FROM ${this.tables.sessions} WHERE id = ?`, params: [child] },
+			lock: {
+				sql: `SELECT id, last_seq, CASE WHEN id = ? THEN ${epoch} END AS epoch${withState ? ", CASE WHEN id = ? THEN summary_state END AS summary_state" : ""}
+					FROM ${this.tables.sessions} WHERE (id IN (${ids.map(() => "?").join(", ")})
+						OR id IN (SELECT source_id FROM ${this.forkTables.forkSegments} WHERE session_id = ?))
+					AND NOT EXISTS (SELECT 1 FROM ${this.tables.sessions} c WHERE c.id = ?) ORDER BY id${this.dialect.lockClause("key-share")}`,
+				params: [donor, ...(withState ? [donor] : []), ...ids, donor, child],
+			},
+			segments: {
+				sql: `SELECT source_id, from_seq, to_seq, base_seq FROM ${this.forkTables.forkSegments} WHERE session_id = ? ORDER BY idx`,
+				params: [donor],
+			},
+		};
+	}
+
+	/**
+	 * The donor of a fork with shared history (#6560), from `reads`: its watermark, as the locking read found it, is the
+	 * fork's cut-off. Throws `ForkSourcesMoved`, for the fork to run again, when the donor's segments name a session the
+	 * reads did not lock: the donor's segments changed since this store last forked it.
+	 */
+	private async sharedForkDonor(
+		tx: SqliteExecutor,
+		child: string,
+		source: ForkArchiveSource,
+		reads: SharedForkReads,
+	): Promise<SharedForkDonor> {
+		type Locked = SqliteRow & { id: string; last_seq: number; epoch: string | null; summary_state?: string | null };
+		type Segment = SqliteRow & { source_id: string; from_seq: number; to_seq: number; base_seq: number };
+		const settle = <T>(read: Promise<T>) =>
+			read.then(
+				(value) => ({ value }),
+				(error: unknown) => ({ error }),
+			);
+		const existing = settle(tx.get(reads.exists.sql, ...reads.exists.params));
+		const locked = settle(tx.all<Locked>(reads.lock.sql, ...reads.lock.params));
+		const segmentRows = settle(tx.all<Segment>(reads.segments.sql, ...reads.segments.params));
+		for (const read of [existing, locked, segmentRows]) {
+			const answer = await read;
+			if ("error" in answer) throw answer.error;
+		}
+		const answer = <T>(read: { value: T } | { error: unknown }) => (read as { value: T }).value;
+		if (answer(await existing)) throw new SessionExistsError(child);
+		const row = answer(await locked).find((candidate) => String(candidate.id) === source.sessionId);
+		if (row === undefined) throw new SessionNotFoundError(source.sessionId);
+		const segments = answer(await segmentRows).map((segment) => ({
+			sourceId: String(segment.source_id),
+			fromSeq: Number(segment.from_seq),
+			toSeq: Number(segment.to_seq),
+			baseSeq: Number(segment.base_seq),
+		}));
+		const sources = [...new Set(segments.map((segment) => segment.sourceId))].sort();
+		this.noteForkSources(source.sessionId, sources);
+		// The lock read found the donor's sources as its statement began. One that moved the donor's history while the read
+		// waited for the donor's lock may have named others since: the fork then runs again, locking those.
+		const lockedIds = new Set([...reads.ids, ...answer(await locked).map((candidate) => String(candidate.id))]);
+		if (sources.some((id) => !lockedIds.has(id))) throw new ForkSourcesMoved();
+		const lastSeq = Number(row.last_seq);
+		const epoch = String(row.epoch);
+		if (source.epoch !== undefined && epoch !== source.epoch)
+			throw new SessionConflictError(source.sessionId, 0, lastSeq);
+		return {
+			lastSeq,
+			epoch,
+			segments,
+			...(typeof row.summary_state === "string"
+				? { state: JSON.parse(row.summary_state) as StoredSummaryState }
+				: {}),
+		};
+	}
+
+	/**
+	 * A fork with shared history of the donor's whole view as it stands (#6560): its segments, its lineage and its
+	 * session row, whose summary is the donor's in a generation of its own, and no row of any entry. Undefined, for
+	 * the fork to read the donor's rows, when the donor's resume index does not cover its watermark.
+	 */
+	private async writeSharedPrefixFork(
+		tx: SqliteExecutor,
+		header: SessionRecordHeader,
+		donorId: string,
+		donor: SharedForkDonor,
+	): Promise<(SessionWriteResult & { readonly remainingBlobs: readonly string[] }) | undefined> {
+		const index = donor.state === undefined ? undefined : windowIndex(donor.state, donor.lastSeq);
+		if (donor.state === undefined || index === undefined) return undefined;
+		const epoch = newRevision();
+		const segments = prefixForkSegments(donorId, donor.segments, donor.lastSeq, donor.lastSeq);
+		const { resume: _resume, windowResume: _window, epoch: _epoch, ...listed } = donor.state;
+		const summary = this.summaryWrite(
+			header.id,
+			{ header, entries: [], lastSeq: donor.lastSeq },
+			{ ...listed, epoch } as StoredSummaryState,
+			{ ...index, epoch },
+		);
+		const lineage = this.lineageTables();
+		assertForkSegments(header.id, segments, donor.lastSeq);
+		const statements = [
+			...forkSegmentInserts(lineage, header.id, 0, segments),
+			forkLineageWrite(lineage, header.id, { parentId: donorId, cutSeq: donor.lastSeq }),
+			summary.statement,
+		];
+		// The transaction's last writes: where its connection is pipelined, they go out with its commit.
+		if (transactionFinisher(tx)?.(statements) !== true)
+			for (const { sql, params } of statements) await tx.run(sql, ...params);
+		return { lastSeq: donor.lastSeq, epoch: summary.epoch, remainingBlobs: [] };
 	}
 
 	/**

@@ -54,28 +54,51 @@ export function forkView(
 ): ForkView {
 	const { name, table, sessionId, after, through, match } = view;
 	const int = tables.dialect.types.int;
-	const conditions = (alias: string) =>
-		`${match === undefined ? "" : ` AND ${alias}${match.column} = ?`}${tables.guard === undefined ? "" : ` AND ${tables.guard}`}`;
+	const guard = tables.guard === undefined ? "" : ` AND ${tables.guard}`;
+	const matching = (alias: string) => (match === undefined ? "" : ` AND ${alias}${match.column} = ?`);
 	const matched = match === undefined ? [] : [match.value];
 	const own = `SELECT session_id, seq${view.columns.map((column) => `, ${column}`).join("")}, session_id AS src_id, seq AS src_seq
-		FROM ${table} WHERE session_id = ? AND seq > CAST(? AS ${int}) AND seq <= CAST(? AS ${int})${conditions("")}`;
+		FROM ${table} WHERE session_id = ? AND seq > CAST(? AS ${int}) AND seq <= CAST(? AS ${int})${matching("")}${guard}`;
 	if (tables.segments === undefined)
 		return { cte: `${name} AS NOT MATERIALIZED (${own})`, params: [sessionId, after, through, ...matched] };
 	const { greatest, least } = tables.dialect;
 	// A segment's source row at seq s is view seq base_seq + (s - from_seq) + 1: the view seqs after `after` and at most
 	// `through` are the source's seqs from `after` + from_seq - base_seq through `through` + from_seq - base_seq - 1.
+	const rows = sourceRows(
+		tables,
+		table,
+		view.columns,
+		(x) =>
+			`${x}.seq >= ${greatest("f.from_seq", `CAST(? AS ${int}) + f.from_seq - f.base_seq`)}
+			AND ${x}.seq <= ${least("f.to_seq", `CAST(? AS ${int}) + f.from_seq - f.base_seq - 1`)}${matching(`${x}.`)}`,
+	);
 	const inherited = `SELECT f.session_id AS session_id, f.base_seq + (x.seq - f.from_seq) + 1 AS seq${view.columns
 		.map((column) => `, x.${column} AS ${column}`)
 		.join("")}, x.session_id AS src_id, x.seq AS src_seq
-		FROM ${tables.segments} f JOIN ${table} x ON x.session_id = f.source_id
-			AND x.seq >= ${greatest("f.from_seq", `CAST(? AS ${int}) + f.from_seq - f.base_seq`)}
-			AND x.seq <= ${least("f.to_seq", `CAST(? AS ${int}) + f.from_seq - f.base_seq - 1`)}
+		FROM ${rows}
 		WHERE f.session_id = ? AND f.base_seq < CAST(? AS ${int})
-			AND f.base_seq + (f.to_seq - f.from_seq) + 1 > CAST(? AS ${int})${conditions("x.")}`;
+			AND f.base_seq + (f.to_seq - f.from_seq) + 1 > CAST(? AS ${int})${guard}`;
 	return {
 		cte: `${name} AS NOT MATERIALIZED (${inherited} UNION ALL ${own})`,
-		params: [after, through, sessionId, through, after, ...matched, sessionId, after, through, ...matched],
+		params: [after, through, ...matched, sessionId, through, after, sessionId, after, through, ...matched],
 	};
+}
+
+/**
+ * The segments `f` joined with the rows `x` of `table` each names that hold to `condition`, of the rows' alias and
+ * `f`. On PostgreSQL the rows are read per segment through the table's index, as a lateral subquery
+ * behind `OFFSET 0`, rather than by a hash join that would read the whole table; SQLite joins them that way itself.
+ */
+function sourceRows(
+	tables: ForkViewTables,
+	table: string,
+	columns: readonly string[],
+	condition: (rows: string) => string,
+): string {
+	if (tables.dialect.name !== "postgres")
+		return `${tables.segments} f JOIN ${table} x ON x.session_id = f.source_id AND ${condition("x")}`;
+	return `${tables.segments} f CROSS JOIN LATERAL (SELECT r.session_id, r.seq${columns.map((column) => `, r.${column}`).join("")}
+		FROM ${table} r WHERE r.session_id = f.source_id AND ${condition("r")} OFFSET 0) x`;
 }
 
 /**
@@ -95,7 +118,7 @@ export function forkViewAll(
 	return `(SELECT f.session_id AS session_id, f.base_seq + (x.seq - f.from_seq) + 1 AS seq${view.columns
 		.map((column) => `, x.${column} AS ${column}`)
 		.join("")}
-		FROM ${tables.segments} f JOIN ${table} x ON x.session_id = f.source_id AND x.seq >= f.from_seq AND x.seq <= f.to_seq${guard}
+		FROM ${sourceRows(tables, table, view.columns, (x) => `${x}.seq >= f.from_seq AND ${x}.seq <= f.to_seq`)}${guard}
 		UNION ALL SELECT session_id, seq${columns} FROM ${table}${guard})`;
 }
 

@@ -28,6 +28,7 @@ export function completeSessionForkStream(
 ): SessionForkStream {
 	return {
 		kind: "complete-session",
+		...(resident === undefined ? { prefix: { sessionId: id, epoch, through } } : {}),
 		async *read(reader, _hasWritten, inlineSnapshot) {
 			// These isolated, already resident rows are the SDK's captured view. The stored child and its
 			// live manager must both see a plain-data edit made before the clone. No archive is loaded for it.
