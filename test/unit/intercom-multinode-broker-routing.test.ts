@@ -2004,3 +2004,60 @@ test("an ask to an offline terminal child is refused like an ask to a live one",
 	a!.send(asker, "child", plain);
 	assert.equal((await waitFor(() => outcomeOf(asker, plain.id))).type, "queued", "a plain send is still queued");
 });
+
+test("settleDelivered wakes the origin inside markDelivered for non-replies and waits for clearReply on replies (#6715)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker", { group: "team-a" });
+	const replier = await b!.connect("replier", { group: "team-a" });
+
+	// Spy on broker b's bus.publish to verify a plain/ask settlement needs no separate outcome publish.
+	const bPublishes: { brokerId: string; reason: string }[] = [];
+	const origBPublish = b!.opened.bus.publish.bind(b!.opened.bus);
+	b!.opened.bus.publish = async (hint) => {
+		bPublishes.push({ brokerId: hint.brokerId, reason: hint.reason });
+		return origBPublish(hint);
+	};
+
+	const ask = message({ expectsReply: true, content: { text: "status?" } });
+	a!.send(asker, replier.info.id, ask);
+	await waitFor(() => messageFrames(replier, ask.id)[0]);
+	b!.router.received(replier, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+	assert.deepEqual(
+		bPublishes.filter((p) => p.reason === "outcome"),
+		[],
+		"settling an ask writes its outcome hint inside markDelivered without an extra bus.publish",
+	);
+
+	// For a reply, delay broker a's pendingAsks.clearReply and confirm broker b does NOT receive an outcome hint
+	// before clearReply commits, so a second reply sent right after `delivered` is always refused.
+	const clearStarted = Promise.withResolvers<void>();
+	const releaseClear = Promise.withResolvers<void>();
+	const origClear = a!.opened.state.pendingAsks.clearReply.bind(a!.opened.state.pendingAsks);
+	a!.opened.state.pendingAsks.clearReply = async (route) => {
+		clearStarted.resolve();
+		await releaseClear.promise;
+		return origClear(route);
+	};
+
+	const reply = message({ replyTo: ask.id, content: { text: "green" } });
+	b!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+	await waitFor(() => messageFrames(asker, reply.id)[0]);
+	a!.router.received(asker, reply.id);
+	await clearStarted.promise;
+	// While clearReply is still in flight, replier must not have been woken by an inline outcome hint.
+	await new Promise((resolve) => setTimeout(resolve, BUS_POLL_INTERVAL_MS * 4));
+	assert.equal(outcomeOf(replier, reply.id), undefined, "reply outcome waits until clearReply commits");
+
+	releaseClear.resolve();
+	assert.equal((await waitFor(() => outcomeOf(replier, reply.id))).type, "delivered");
+
+	const again = message({ replyTo: ask.id, content: { text: "second" } });
+	b!.send(replier, asker.info.id, again, { requirePendingReply: true });
+	const refused = await waitFor(() => outcomeOf(replier, again.id));
+	assert.equal(refused.type, "delivery_failed");
+	assert.equal(
+		refused.type === "delivery_failed" && refused.reason,
+		"Pending question route does not authorize this public reply",
+	);
+});

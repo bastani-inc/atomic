@@ -328,8 +328,23 @@ export type OutboxClaimWriteRejection =
 
 export type OutboxRenewClaimResult = { readonly status: "renewed" } | OutboxClaimWriteRejection;
 export type OutboxReleaseClaimResult = { readonly status: "released" } | OutboxClaimWriteRejection;
+export interface OutboxMarkDeliveredOptions {
+	/**
+	 * Write the database wake-up bus's `outcome` hint for a settled row whose `originBrokerId` differs from
+	 * `claim.claimantId` inside the settlement itself, so settling and waking its origin commit together in one round
+	 * trip (#6715). A store that ignores it (or could not take the hint log's lock without waiting) omits `woke`, and
+	 * the caller wakes the origin itself.
+	 */
+	readonly wakeOrigin?: boolean;
+}
+
 export type OutboxDeliveredResult =
-	| { readonly status: "delivered"; readonly row: OutboxRow }
+	| {
+			readonly status: "delivered";
+			readonly row: OutboxRow;
+			/** With `wakeOrigin`, the origin broker the settlement sent an `outcome` wake-up hint to (#6715). */
+			readonly woke?: string;
+	  }
 	| OutboxClaimWriteRejection;
 export type OutboxFailedResult = { readonly status: "failed"; readonly row: OutboxRow } | OutboxClaimWriteRejection;
 export type OutboxReadResult =
@@ -385,7 +400,7 @@ export interface OutboxStore {
 	 * route with `PendingAskStore.record` first: a settled row is never claimed again, so a route written after it
 	 * would be lost if the broker stopped between the two writes.
 	 */
-	markDelivered(claim: OutboxClaim): Promise<OutboxDeliveredResult>;
+	markDelivered(claim: OutboxClaim, options?: OutboxMarkDeliveredOptions): Promise<OutboxDeliveredResult>;
 	/** The recipient's broker refused the row; `reason` is reported to the sender verbatim. */
 	markFailed(claim: OutboxClaim, reason: string): Promise<OutboxFailedResult>;
 	read(messageId: string): Promise<OutboxReadResult>;
