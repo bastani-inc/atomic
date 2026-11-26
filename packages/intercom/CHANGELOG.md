@@ -6,7 +6,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ### Fixed
 
-- With multi-node routing on PostgreSQL, a broker that started before `atomic storage migrate` added the sequence that numbers new session registrations now uses it as soon as it exists, like a broker started afterwards. Before, the two brokers could give two registrations the same number, and lists of sessions then put those two in name order instead of the order they registered in. If someone drops the sequence, registering a session keeps working instead of failing with `relation does not exist`, and the next `atomic storage migrate` creates the sequence again ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- With multi-node routing on PostgreSQL, a broker that started before `atomic storage migrate` added the sequence that numbers new session registrations now uses it as soon as it exists, like a broker started afterwards. Before, the two brokers could give two registrations the same number, and lists of sessions then put those two in name order instead of the order they registered in. If someone drops the sequence, registering a session keeps working instead of failing with `relation does not exist`, and the next `atomic storage migrate` creates the sequence again ([#6630](https://github.com/bastani-inc/atomic/pull/6630), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ## [0.10.11-alpha.2] - 2026-11-26
 
