@@ -18,6 +18,11 @@ export interface StorageSchemaCatalog {
 	/** Whether `table` had a column named `column`. */
 	hasColumn(table: string, column: string): boolean;
 	/**
+	 * Whether a function named `name` existed in the schema and this role may run it: PostgreSQL only, absent on SQLite
+	 * and libSQL.
+	 */
+	readonly hasFunction?: (name: string) => boolean;
+	/**
 	 * What kind of object `name` was on SQLite and libSQL (`table`, `index`, `view` or `trigger`), from one read of
 	 * `sqlite_schema`; undefined when there was none, and always on PostgreSQL.
 	 */
@@ -27,9 +32,9 @@ export interface StorageSchemaCatalog {
 const TABLE_KINDS = new Set(["r", "p", "v", "m", "f"]);
 
 /**
- * Every relation, trigger and column of the schema the statement runs in, in one statement and so one snapshot. The
- * catalog, not information_schema, finds relations, as `tableExists` does; columns come from information_schema, as
- * `columnExists` reads them.
+ * Every relation, trigger, column and function of the schema the statement runs in, in one statement and so one
+ * snapshot. The catalog, not information_schema, finds relations, as `tableExists` does; columns come from
+ * information_schema, as `columnExists` reads them. A function is listed with whether this role may execute it.
  */
 const CATALOG_SQL = `SELECT 'relation' AS kind, c.relname::text AS name, c.relkind::text AS detail
 	FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace
@@ -37,7 +42,9 @@ UNION ALL SELECT 'trigger', t.tgname::text, NULL
 	FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
 	WHERE c.relnamespace = current_schema()::regnamespace AND NOT t.tgisinternal
 UNION ALL SELECT 'column', table_name::text, column_name::text
-	FROM information_schema.columns WHERE table_schema = current_schema()`;
+	FROM information_schema.columns WHERE table_schema = current_schema()
+UNION ALL SELECT 'function', p.proname::text, CASE WHEN has_function_privilege(p.oid, 'EXECUTE') THEN 'executable' END
+	FROM pg_catalog.pg_proc p WHERE p.pronamespace = current_schema()::regnamespace`;
 
 type CatalogRow = SqliteRow & { kind: string; name: string; detail: string | null };
 
@@ -76,19 +83,22 @@ async function readSqliteCatalog(database: SqliteDatabase, ledger: string): Prom
 
 type VersionRow = SqliteRow & { domain: string; version: number | string | null };
 
-/** The tables, objects and columns of PostgreSQL catalog rows (`CATALOG_SQL`'s). */
+/** The tables, objects, columns and executable functions of PostgreSQL catalog rows (`CATALOG_SQL`'s). */
 function catalogSets(rows: readonly CatalogRow[]) {
 	const tables = new Set<string>();
 	const objects = new Set<string>();
 	const columns = new Set<string>();
+	const functions = new Set<string>();
 	for (const row of rows) {
 		if (row.kind === "column") columns.add(`${row.name}\0${row.detail}`);
-		else {
+		else if (row.kind === "function") {
+			if (row.detail === "executable") functions.add(row.name);
+		} else {
 			objects.add(row.name);
 			if (row.kind === "relation" && TABLE_KINDS.has(String(row.detail))) tables.add(row.name);
 		}
 	}
-	return { tables, objects, columns };
+	return { tables, objects, columns, functions };
 }
 
 /**
@@ -155,7 +165,7 @@ export async function readStorageSchemaCatalog(
 				}
 			: await readPostgresCatalog(database, ledger, physicalLedger);
 	if (read === undefined) return undefined;
-	const { tables, objects, columns } = catalogSets(read.rows);
+	const { tables, objects, columns, functions } = catalogSets(read.rows);
 	const recorded = new Map<string, number>();
 	if (tables.has(physicalLedger)) {
 		if (read.versions === undefined) return undefined;
@@ -167,6 +177,7 @@ export async function readStorageSchemaCatalog(
 		hasTable: (table) => tables.has(dialect.identifier(table)),
 		hasObject: (name) => objects.has(dialect.identifier(name)),
 		hasColumn: (table, column) => columns.has(`${dialect.identifier(table)}\0${column}`),
+		hasFunction: (name) => functions.has(dialect.identifier(name)),
 	};
 }
 
