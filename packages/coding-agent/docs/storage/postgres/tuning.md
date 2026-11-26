@@ -235,17 +235,38 @@ FROM pg_stat_user_tables
 WHERE relname IN ('session_sessions', 'intercom_leases', 'snapshot_session_links');
 ```
 
-### The search index (optional)
+### The search index
 
-Atomic indexes session text for search with a trigram index, `atomic.session_search_trgm`. This kind of index (GIN) collects new entries in a pending list and adds them to the index in one go when the list fills up. That flush happens inside one agent's save, so that save is slow now and then.
+Atomic indexes session text for history search with a trigram index, `atomic.session_search_trgm`. This kind of index (GIN) does not add new text to the index right away. It first puts it in a holding area, the pending list, and later moves the whole list into the index in one go. That move is called a merge. Searches read the pending list as well as the index, so new text is found as soon as it is written, merged or not.
 
-A smaller pending list makes each flush smaller. The slowest saves get faster, and total insert time grows a little. It does not make Atomic faster overall. If occasional slow saves matter to you, shrink the list from the default 4 MB to 1 MB:
+PostgreSQL merges the list when it grows past the index's `gin_pending_list_limit`, 4 MB by default, and the write that pushes it past the limit does the whole merge itself. In Atomic, that write holds the lock of the session it indexes, so the write and every save to that session waited for the merge, now and then for a second or more.
+
+Atomic now keeps merges out of those writes:
+
+- **A large limit.** Atomic gives the index a limit of 64 MB, so a write almost never reaches it.
+- **Merges in the background.** Each agent process, after it has written about 128,000 characters of search text, merges the list on a connection of its own, holding no session's lock, with PostgreSQL's `gin_clean_pending_list`. Nothing waits for it. Only one merge runs at a time across all agents, and a merge moves every agent's text, so the list stays at about 1 MB however many agents write.
+- **Autovacuum merges too.** A vacuum of the table also merges the list. Atomic sets the table behind the index, `atomic.session_search_entries`, to be vacuumed after every 1,000 new rows.
+
+`atomic storage migrate`, run as the owner role, sets the limit and the autovacuum settings on a database that already has the index. You do not set them yourself. If you set a 1 MB limit as an earlier version of this guide suggested, `atomic storage migrate` replaces it with 64 MB.
+
+Only the index's owner may run `gin_clean_pending_list`. Agents that connect as a runtime role leave the merges to autovacuum, so keep autovacuum on. Without either, the list grows to 64 MB, and the write that crosses that limit merges all of it.
+
+Check the settings with:
 
 ```sql
-ALTER INDEX atomic.session_search_trgm SET (gin_pending_list_limit = 1024);
+SELECT relname, reloptions
+FROM pg_class
+WHERE relname IN ('session_search_trgm', 'session_search_entries');
 ```
 
-Leave the index's `fastupdate` on. Turning it off adds every entry to the index at once, which makes every insert slower.
+To see how much text waits in the pending list, use the `pgstattuple` extension. Creating it needs a superuser, or the administrator role on a managed service. Each page is 8 kB:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pgstattuple;
+SELECT pending_pages, pending_tuples FROM pgstatginindex('atomic.session_search_trgm');
+```
+
+Leave the index's `fastupdate` on. Turning it off skips the pending list and adds every entry to the index as it is written, which made writing search text 16 to 19 times slower overall in our tests.
 
 ### Intercom's wake-up notices
 
@@ -274,7 +295,7 @@ atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomi
 Why it matters for performance:
 
 - **Fast starts.** An agent opens its storage quickly, in a few round trips and without taking locks, only when the database is already up to date. If it is not, each agent starts by checking and updating it, and many agents starting at once queue behind each other.
-- **New steps.** `atomic storage migrate` also applies changes a runtime role without DDL rights cannot make: the sequence Intercom uses to order new leases, `fillfactor` on the busy tables, an unlogged table for Intercom's wake-up notices, and the function that saves entries to a session in 1 round trip instead of 2. Until it runs, agents keep working, but without those gains. Agents find the function the next time they start.
+- **New steps.** `atomic storage migrate` also applies changes a runtime role without DDL rights cannot make: the sequence Intercom uses to order new leases, `fillfactor` on the busy tables, the search index settings, an unlogged table for Intercom's wake-up notices, and the function that saves entries to a session in 1 round trip instead of 2. Until it runs, agents keep working, but without those gains. Agents find the function the next time they start.
 
 ## Checklist
 
@@ -287,7 +308,7 @@ Why it matters for performance:
 | Preload `pg_stat_statements`, create it as a superuser, grant `pg_read_all_stats` | Yes |
 | Set per-table autovacuum on `session_sessions`, `intercom_leases` and `snapshot_session_links` | No |
 | Run `atomic storage migrate` after each Atomic upgrade | No |
-| Optionally, shrink the search index's pending list | No |
+| Keep autovacuum on, so it merges the search index's pending list for agents that use a runtime role | No |
 
 On a managed service, such as Amazon RDS, Azure Database for PostgreSQL or Google Cloud SQL, the server settings above may be fixed or set through the service's own parameters. The SQL statements work the same way there, except that creating `pg_stat_statements` needs the service's administrator role.
 
