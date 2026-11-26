@@ -8,6 +8,10 @@
 - Checking a detached fork's worktree snapshot links now reads the fork's links in one pass and looks up each entry's parent once, so the check takes about half the time it first did: 1.9 ms instead of 3.7 ms on SQLite, and 6.4 ms instead of 10.7 ms on PostgreSQL, for a fork of 1,000 entries ([#6692](https://github.com/bastani-inc/atomic/pull/6692), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - On file-backed SQLite stores, write transactions now run their leading statements in the same connection-thread request as `BEGIN IMMEDIATE`, bundle their final writes (`transactionFinisher`) in the same request as `COMMIT` (or a group-commit member's `RELEASE`), send single-step `leadingOnly` transactions (such as Intercom lease acquisitions) with `COMMIT` in one request, and send each group-commit member's `SAVEPOINT` with its leading statements. Creating a session and appending to it now wait for the connection thread 2 times instead of 4, `leadingOnly` lease writes wait once instead of 4 times, and 100 concurrent appenders wait 201 times per batch instead of 402, with durability unchanged (WAL, `synchronous=FULL`) ([#6698](https://github.com/bastani-inc/atomic/pull/6698), [#6706](https://github.com/bastani-inc/atomic/issues/6706)).
 
+### Fixed
+
+- On macOS, resuming a session whose blueprint build was cut off because Atomic was killed no longer waits 5 minutes for a build step that is still running. Atomic now reads when a process started on macOS too, so the next resume can tell the leftover step is that build's and stop it at once. Session claims, worktree leases and other locks on macOS also tell a process that died from a later one given its process ID. Locks written by earlier versions, which name no start, are judged by process ID as before ([#6704](https://github.com/bastani-inc/atomic/issues/6704)).
+
 ## [0.10.11-alpha.3] - 2026-11-26
 
 Atomic drops libSQL storage and keeps SQLite, PostgreSQL and JSONL, many agents open and share one PostgreSQL database with less waiting, and the storage docs get one page per backend.
