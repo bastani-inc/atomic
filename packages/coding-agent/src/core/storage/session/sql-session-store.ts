@@ -212,6 +212,7 @@ interface SharedForkReads {
 	readonly ids: readonly string[];
 	readonly exists: SqliteStatement;
 	readonly lock: SqliteStatement;
+	readonly tombstones: SqliteStatement;
 	readonly segments: SqliteStatement;
 }
 
@@ -1796,7 +1797,10 @@ export class SqlSessionStore implements SessionStore {
 			try {
 				return await this.transaction(
 					(tx) => this.writeStreamedFork(tx, header, stream, source, reads),
-					this.sessionWrite(header.id, ...(reads === undefined ? [] : [reads.exists, reads.lock, reads.segments])),
+					this.sessionWrite(
+						header.id,
+						...(reads === undefined ? [] : [reads.exists, reads.lock, reads.tombstones, reads.segments]),
+					),
 				);
 			} catch (error) {
 				if (!(error instanceof ForkSourcesMoved) || attempt >= 3) throw error;
@@ -2043,6 +2047,14 @@ export class SqlSessionStore implements SessionStore {
 					AND NOT EXISTS (SELECT 1 FROM ${this.tables.sessions} c WHERE c.id = ?) ORDER BY id${this.dialect.lockClause("key-share")}`,
 				params: [donor, ...(withState ? [donor] : []), ...ids, donor, child],
 			},
+			// A source deleted while forks still read it keeps only a tombstone, which the sweep that removes its rows locks:
+			// the fork locks it too, after the sessions rows, as every writer orders them.
+			tombstones: {
+				sql: `SELECT session_id FROM ${this.forkTables.forkTombstones} WHERE session_id IN (${ids.map(() => "?").join(", ")})
+					OR session_id IN (SELECT source_id FROM ${this.forkTables.forkSegments} WHERE session_id = ?)
+					ORDER BY session_id${this.dialect.lockClause("key-share")}`,
+				params: [...ids, donor],
+			},
 			segments: {
 				sql: `SELECT source_id, from_seq, to_seq, base_seq FROM ${this.forkTables.forkSegments} WHERE session_id = ? ORDER BY idx`,
 				params: [donor],
@@ -2070,8 +2082,11 @@ export class SqlSessionStore implements SessionStore {
 			);
 		const existing = settle(tx.get(reads.exists.sql, ...reads.exists.params));
 		const locked = settle(tx.all<Locked>(reads.lock.sql, ...reads.lock.params));
+		const tombstones = settle(
+			tx.all<SqliteRow & { session_id: string }>(reads.tombstones.sql, ...reads.tombstones.params),
+		);
 		const segmentRows = settle(tx.all<Segment>(reads.segments.sql, ...reads.segments.params));
-		for (const read of [existing, locked, segmentRows]) {
+		for (const read of [existing, locked, tombstones, segmentRows]) {
 			const answer = await read;
 			if ("error" in answer) throw answer.error;
 		}
@@ -2089,7 +2104,11 @@ export class SqlSessionStore implements SessionStore {
 		this.noteForkSources(source.sessionId, sources);
 		// The lock read found the donor's sources as its statement began. One that moved the donor's history while the read
 		// waited for the donor's lock may have named others since: the fork then runs again, locking those.
-		const lockedIds = new Set([...reads.ids, ...answer(await locked).map((candidate) => String(candidate.id))]);
+		const lockedIds = new Set([
+			...reads.ids,
+			...answer(await locked).map((candidate) => String(candidate.id)),
+			...answer(await tombstones).map((candidate) => String(candidate.session_id)),
+		]);
 		if (sources.some((id) => !lockedIds.has(id))) throw new ForkSourcesMoved();
 		const lastSeq = Number(row.last_seq);
 		const epoch = String(row.epoch);
