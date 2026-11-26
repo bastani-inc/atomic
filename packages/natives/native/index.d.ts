@@ -403,6 +403,12 @@ export declare enum FileType {
 }
 
 /**
+ * Syncs the file open at descriptor `fd` with `fsync(2)`, on a worker thread. The caller keeps `fd` open until the
+ * returned promise settles. A call interrupted by a signal is made again. Fails on non-Unix platforms.
+ */
+export declare function fsyncDescriptor(fd: number): Promise<void>
+
+/**
  * Find filesystem entries matching a glob pattern.
  *
  * Resolves the search root, scans entries, applies glob and optional file-type

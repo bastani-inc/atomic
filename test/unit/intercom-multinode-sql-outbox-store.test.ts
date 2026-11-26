@@ -285,3 +285,59 @@ test("releaseClaims with unwritten: true floors claim_attempts at 0 when already
 		removeTempDirectory(directory);
 	}
 });
+
+test("on SQLite, markDelivered with wakeOrigin writes the outcome hint atomically for remote origins and survives a missing hint log (#6715)", async () => {
+	const directory = makeTempDirectory("intercom-outbox-settle-wake-");
+	const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+	const opened = await openIntercomBrokerState({ openDatabase: async () => database });
+	try {
+		await opened.bus.close();
+		const { outbox } = opened.state;
+		const target = '["return","recipient","team"]';
+		const from: SessionInfo = { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+		const enqueue = (id: string, originBrokerId: string) =>
+			outbox.enqueue({
+				targetIdentity: target,
+				originBrokerId,
+				digest: id,
+				frame: { type: "message", from, message: { id, timestamp: 1, content: { text: id } } },
+			});
+		assert.equal((await enqueue("m-remote-1", "broker-a")).status, "inserted");
+		assert.equal((await enqueue("m-remote-2", "broker-a")).status, "inserted");
+		assert.equal((await enqueue("m-local", "broker-b")).status, "inserted");
+		assert.equal((await enqueue("m-dropped", "broker-a")).status, "inserted");
+		const claimed = await outbox.claim({ claimantId: "broker-b", targetIdentity: target, staleAfterMs: 30_000 });
+		assert.equal(claimed.status, "claimed");
+		if (claimed.status !== "claimed") return;
+		const [remote1, remote2, local, dropped] = claimed.rows;
+		assert.ok(remote1 && remote2 && local && dropped);
+
+		const [remote1Result, remote2Result, localResult] = await Promise.all([
+			outbox.markDelivered(remote1.claim, { wakeOrigin: true }),
+			outbox.markDelivered(remote2.claim, { wakeOrigin: true }),
+			outbox.markDelivered(local.claim, { wakeOrigin: true }),
+		]);
+		assert.equal(remote1Result.status, "delivered");
+		assert.equal(remote2Result.status, "delivered");
+		assert.equal(localResult.status, "delivered");
+		if (remote1Result.status === "delivered") assert.equal(remote1Result.woke, "broker-a");
+		if (remote2Result.status === "delivered") assert.equal(remote2Result.woke, "broker-a");
+		if (localResult.status === "delivered") assert.equal(localResult.woke, undefined);
+
+		const hints = await database.all<{ broker_id: string; reason: string; version: number }>(
+			"SELECT broker_id, reason, version FROM intercom_wakeups ORDER BY id",
+		);
+		assert.deepEqual(hints, [{ broker_id: "broker-a", reason: "outcome", version: remote2.row.sequence }]);
+
+		await database.exec("DROP TABLE intercom_wakeups");
+		const droppedResult = await outbox.markDelivered(dropped.claim, { wakeOrigin: true });
+		assert.equal(droppedResult.status, "delivered");
+		if (droppedResult.status === "delivered") assert.equal(droppedResult.woke, undefined);
+		const read = await outbox.read("m-dropped");
+		assert.equal(read.status === "found" ? read.row.state : read.status, "delivered");
+	} finally {
+		await opened.state.close();
+		await database.close().catch(() => {});
+		removeTempDirectory(directory);
+	}
+});

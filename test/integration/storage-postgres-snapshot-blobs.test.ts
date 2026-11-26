@@ -257,7 +257,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL snapshot blob writ
 		});
 	});
 
-	test("a snapshot blob put costs two round trips whatever it stores, and a refresh two, not one per statement (#6560)", async () => {
+	test("a small snapshot blob put costs one round trip, a larger or chunked put two, and a refresh two (#6560, #6708)", async () => {
 		await withPostgresDatabase(async ({ open }) => {
 			const store = await SqlSnapshotBlobStore.open(await open());
 			const trips = countRoundTrips();
@@ -265,6 +265,12 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL snapshot blob writ
 			const small = [textBlob("one"), textBlob("two"), textBlob("three")];
 			await store.putBlobs(small);
 			const smallTrips = trips.take();
+			const batch255 = Array.from({ length: 255 }, (_, index) => textBlob(`pg-255-${index}`));
+			await store.putBlobs(batch255);
+			const batch255Trips = trips.take();
+			const batch256 = Array.from({ length: 256 }, (_, index) => textBlob(`pg-256-${index}`));
+			await store.putBlobs(batch256);
+			const batch256Trips = trips.take();
 			const big = chunkedBlob(3);
 			await store.putBlobs([big, textBlob("four")]);
 			const chunkedTrips = trips.take();
@@ -273,10 +279,11 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL snapshot blob writ
 			assert.equal(await store.refreshBlobs([small[0]!.hash, "absent"]), false);
 			trips.take();
 			assert.deepEqual(
-				{ smallTrips, chunkedTrips, refreshTrips },
-				{ smallTrips: 2, chunkedTrips: 2, refreshTrips: 2 },
+				{ smallTrips, batch255Trips, batch256Trips, chunkedTrips, refreshTrips },
+				{ smallTrips: 1, batch255Trips: 1, batch256Trips: 2, chunkedTrips: 2, refreshTrips: 2 },
 			);
 			await assertWhole(store, [...small, big, textBlob("four")]);
+			assert.equal((await store.listBlobHashes()).length, small.length + 255 + 256 + 2);
 		});
 	});
 });

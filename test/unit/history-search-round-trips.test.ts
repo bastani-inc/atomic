@@ -363,10 +363,10 @@ test("a warm history:// search pins its reduced SQLite wait counts for single an
 		["get", "get", "read", "endRead"],
 	);
 
-	// All sessions (3 indexed: 2 matching + 1 non-matching): 4 listing waits + 3 + 3 + 2 = 12 waits (was 15).
+	// All sessions (3 indexed: 2 matching + 1 non-matching): 3 listing waits (after #6728) + 3 + 3 + 2 = 11 waits (was 15).
 	const allSessions = await measureWaits(async () => (await router.search?.("history://sessions", req)) ?? "");
 	assert.equal(allSessions.value, warmAll);
-	assert.equal(allSessions.waits, 12);
+	assert.equal(allSessions.waits, 11);
 });
 
 test("multi-window candidates on SQLite batch the first window and continue subsequent windows identically (#6708)", async () => {
