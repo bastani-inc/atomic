@@ -24,10 +24,10 @@ export type AgentTaskHostBinding = Omit<TrustedTaskHost, "createRunner"> & {
 };
 
 /**
- * The runner factory of one launch, handed to its dispatch once. The task runs in this launch's async context, and on
- * Node 22 every promise it creates keeps that context's store, including promises that outlive the task, such as a
- * module it imports first or its owner's session write chain. So the store keeps the factory, and the launch input
- * it closes over, only until the dispatch takes it.
+ * The runner factory of one launch, handed to its dispatch once. The task runs in this launch's async context, and every
+ * promise reaction it leaves waiting keeps that context's store until it runs, including reactions that outlive the
+ * task, such as one on its owner's session write chain. So the store keeps the factory, and the launch input it closes
+ * over, only until the dispatch takes it.
  */
 interface RunnerHandoff {
 	factory: AgentTaskRunnerFactory | undefined;

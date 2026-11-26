@@ -323,7 +323,7 @@ Use Intercom for coordinating your own sessions and for peer-to-peer agent swarm
 
 - [Operate Intercom](/intercom/operations) for broker lifecycles, upgrades, recovery, and multi-machine routing.
 - [Intercom reference](/intercom/reference) for tool parameters, targeting rules, reach policies, and error classes.
-- [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Set up teams and CI](/guides/team-setup) for shared PostgreSQL and libSQL databases.
+- [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Set up teams and CI](/guides/team-setup) for shared PostgreSQL databases.
 - [Intercom group and reach in the SDK](/sdk#intercom-group-and-reach) and [SDK tools](/sdk/reference#tools) for programmatic Intercom policies and `builtins.intercom`.
 - [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for `atomic intercom` and `atomic storage` subcommands.
 - [Run subagents](/subagents) for delegated subagent runs, supervisor coordination, and result delivery.

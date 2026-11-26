@@ -27,7 +27,7 @@ import {
 	withPostgresDatabase,
 } from "../helpers/postgres-database.js";
 import { countRoundTrips } from "../helpers/postgres-round-trips.js";
-import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, moduleDir, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 /**
  * PostgreSQL with two roles (#5218): an owner role that sets up and migrates Atomic's schema, and a runtime role with
@@ -38,6 +38,10 @@ const postgresPackage = resolve(moduleDir(import.meta.url), "../../packages/stor
 /** The Intercom broker state as main shipped it before #5218, vendored: an earlier release's broker. */
 const earlierBroker = resolve(moduleDir(import.meta.url), "../fixtures/intercom-pre-5218/broker/open-broker-state.ts");
 const PREFIX = "r5218_";
+/** Long enough for a local server to answer a read-only transaction's commit, which an open does not wait for. */
+const COMMIT_SETTLE_MS = 200;
+/** How long a wake-up hint may take to reach its broker, by notification or by the poll. */
+const HINT_ARRIVAL_BOUND_MS = 5_000;
 /** Hosts that start together on a new database in the concurrent setup test. */
 const CONCURRENT_HOSTS = 16;
 /** Each host opens every store; they set the schema up one after another under its lock, then open it as it is. */
@@ -909,6 +913,139 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 				[],
 				"a warm open finds the steps in the catalog it read",
 			);
+		});
+	});
+
+	test("migrate makes the wake-up hint log unlogged, which a runtime role leaves logged without DDL, and a warm open does not check again (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const row = await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema");
+			const schema = String(row?.schema);
+			const table = `${PREFIX}intercom_wakeups`;
+			const step = "schema:intercom-wakeups-unlogged";
+			const persistence = async () =>
+				(
+					await ownerDatabase.get<{ persistence: string }>(
+						`SELECT c.relpersistence AS persistence FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+						WHERE n.nspname = ? AND c.relname = ?`,
+						schema,
+						table,
+					)
+				)?.persistence;
+			const recorded = async () =>
+				(await ownerDatabase.get(
+					`SELECT 1 AS found FROM ${schema}.${PREFIX}atomic_migrations WHERE domain = ?`,
+					step,
+				)) !== undefined;
+			assert.equal(await persistence(), "u", "a new hint log is unlogged");
+			assert.equal(await recorded(), true);
+
+			// As an earlier release left the schema: a logged hint log, and no ledger record of the step.
+			await ownerDatabase.exec(`ALTER TABLE ${schema}.${table} SET LOGGED`);
+			await ownerDatabase.run(`DELETE FROM ${schema}.${PREFIX}atomic_migrations WHERE domain = ?`, step);
+			await grantRuntime(ownerDatabase, roles);
+			const wakeUpAsRuntime = async (statements: string[]) => {
+				const open = async () => recording(await roles.open("runtime"), statements);
+				const bus = await openDatabaseWakeUpBus({ openDatabase: open, prefix: PREFIX });
+				try {
+					const hints: number[] = [];
+					const subscribed = await bus.subscribe("broker-a", (event) => {
+						if (event.kind === "hint") hints.push(event.hint.version);
+					});
+					assert.equal(subscribed.status, "subscribed");
+					assert.equal(
+						(await bus.publish({ brokerId: "broker-a", reason: "outbox", version: 7 })).status,
+						"published",
+					);
+					const deadline = Date.now() + HINT_ARRIVAL_BOUND_MS;
+					while (hints.length === 0 && Date.now() < deadline)
+						await new Promise((resolve) => setTimeout(resolve, 10));
+					assert.deepEqual(hints, [7], "the hint reached its broker");
+				} finally {
+					await bus.close();
+				}
+			};
+			const before: string[] = [];
+			await wakeUpAsRuntime(before);
+			assert.deepEqual(before.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.equal(await persistence(), "p", "a runtime role leaves the hint log logged");
+
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.equal(await persistence(), "u");
+			assert.equal(await recorded(), true);
+			const warm: string[] = [];
+			await wakeUpAsRuntime(warm);
+			assert.deepEqual(warm.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.deepEqual(
+				warm.filter((statement) => statement.includes("relpersistence")),
+				[],
+				"a warm open finds the step in the catalog it read",
+			);
+		});
+	});
+
+	test("before migrate records the fillfactor, a runtime role's process checks each table once, and its later opens take the round trips of a current schema (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const schema = String(
+				(await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema"))?.schema,
+			);
+			// As an earlier release left the schema: the default fillfactor, and no ledger record of the steps.
+			for (const table of [`${PREFIX}session_sessions`, `${PREFIX}intercom_leases`])
+				await ownerDatabase.exec(`ALTER TABLE ${schema}.${table} RESET (fillfactor)`);
+			await ownerDatabase.run(
+				`DELETE FROM ${schema}.${PREFIX}atomic_migrations WHERE domain IN (?, ?)`,
+				"schema:session-fillfactor",
+				"schema:intercom-lease-fillfactor",
+			);
+			await grantRuntime(ownerDatabase, roles);
+			/** A process's open of its session store, then of its broker, each on handles of its own, as an agent's. */
+			const openAsRuntime = async () => {
+				const statements: string[] = [];
+				const open = async () => recording(await roles.open("runtime"), statements);
+				const trips = countRoundTrips();
+				try {
+					const sessions = await SqlSessionStore.open(await open(), { prefix: PREFIX });
+					// Each read-only transaction's commit is answered after the open returned: counted before the next open.
+					await sleep(COMMIT_SETTLE_MS);
+					const session = trips.take();
+					const broker = await openIntercomBrokerState(
+						{ prefix: PREFIX, openDatabase: open },
+						{ pollIntervalMs: 60_000 },
+					);
+					await sleep(COMMIT_SETTLE_MS);
+					const intercom = trips.take();
+					await broker.bus.close();
+					await broker.state.close();
+					await sessions.close();
+					return {
+						session,
+						intercom,
+						fillfactorChecks: statements.filter((statement) => statement.includes("reloptions")).length,
+					};
+				} finally {
+					trips.restore();
+				}
+			};
+			// The first open checks the sessions and lease tables. The session store's check takes a round trip of its own;
+			// the lease table's is sent behind the commit of the broker's catalog read, so it costs a statement but no
+			// round trip.
+			const first = await openAsRuntime();
+			assert.equal(first.fillfactorChecks, 2);
+			assert.equal(first.session, 5);
+			// Every later open of the process checks neither, and takes the round trips of an open after migrate. Before,
+			// each made both checks again, and the session store's open took 5 round trips.
+			const current = { session: 4, intercom: 3, fillfactorChecks: 0 };
+			assert.deepEqual(await openAsRuntime(), current);
+			assert.deepEqual(await openAsRuntime(), current);
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.deepEqual(await openAsRuntime(), current);
 		});
 	});
 

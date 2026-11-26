@@ -8,6 +8,7 @@ import {
 import type { WakeUpBus, WakeUpEvent, WakeUpHint } from "../../packages/intercom/broker/wake-up-bus.js";
 import { registerWakeUpBusConformance } from "../helpers/intercom-multinode-contract.js";
 import { type PostgresScope, postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
+import { countRoundTrips } from "../helpers/postgres-round-trips.js";
 
 /** How long a hint may take to reach its broker through a notification, with the poll an hour away. */
 const NOTIFIED_WAKE_BOUND_MS = 1_000;
@@ -71,6 +72,11 @@ function recordingWakeUps<T extends SqliteExecutor>(database: T, statements: str
 				return (sql: string, ...params: unknown[]) => {
 					if (sql.includes("intercom_wakeups")) statements.push(sql.trim().split(/\s+/)[0]!);
 					return value.call(target, sql, ...params);
+				};
+			if (key === "autocommit")
+				return (statement: { readonly sql: string }, ...rest: unknown[]) => {
+					if (statement.sql.includes("intercom_wakeups")) statements.push(statement.sql.trim().split(/\s+/)[0]!);
+					return value.call(target, statement, ...rest);
 				};
 			return value.bind(target);
 		},
@@ -218,14 +224,17 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on Postgres
 				};
 			};
 			const statements: string[] = [];
+			const read: string[] = [];
 			const publisher = await openBus(scope, NEVER_POLL_MS, unreachable);
-			const reader = recordingWakeUps(await scope.open(), statements);
+			// The reader is read-only, as a replica would be: the poll writes nothing through it.
+			const reader = recordingWakeUps(await scope.open(), read);
 			const subscriber = await openDatabaseWakeUpBus({
 				openDatabase: async () => recordingWakeUps(await scope.open({ listenUrl: unreachable }), statements),
 				prefix: PREFIX,
 				schedule,
 				reader,
 			});
+			const trips = countRoundTrips();
 			try {
 				const received = await collect(subscriber, "broker-b");
 				for (const version of [1, 2, 3])
@@ -236,10 +245,12 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on Postgres
 					const callback = poll;
 					assert.ok(callback, "a poll is armed");
 					poll = undefined;
+					trips.take();
 					callback();
 					const deadline = performance.now() + FALLBACK_WAKE_BOUND_MS;
 					while (poll === undefined && performance.now() < deadline)
 						await new Promise((resolve) => setTimeout(resolve, 5));
+					assert.equal(trips.take(), 1, "a poll is one round trip");
 					return [...statements];
 				};
 				assert.deepEqual(await runPoll(), ["DELETE"], "one statement takes and deletes the hints");
@@ -249,6 +260,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on Postgres
 					[1, 2, 3],
 				);
 				assert.deepEqual(await runPoll(), ["DELETE"], "an empty poll is one statement too");
+				assert.deepEqual(read, [], "nothing goes through the reader");
 				assert.equal(received.hints.length, 3, "a hint is delivered once");
 				assert.deepEqual(
 					await (await scope.open()).all(`SELECT broker_id FROM ${PREFIX}intercom_wakeups`),
@@ -256,6 +268,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on Postgres
 					"another broker's hint stays",
 				);
 			} finally {
+				trips.restore();
 				await publisher.close();
 				await subscriber.close();
 			}

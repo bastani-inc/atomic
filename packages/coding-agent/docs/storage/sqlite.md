@@ -19,7 +19,7 @@ A local SQLite file has one writer at a time. Atomic queues the writers of every
 
 ## SDK and local SQLite API
 
-For full SDK recipes covering `createAgentSession`, `createAgentSessionRuntime`, `SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`, `openPostgresDatabase`, `openLibsqlDatabase`, and store ownership rules, see [SDK session storage](/sdk/storage). For direct session reading, branching, and listing, see [SessionManager API](/session-format#sessionmanager-api).
+For full SDK recipes covering `createAgentSession`, `createAgentSessionRuntime`, `SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`, `openPostgresDatabase`, and store ownership rules, see [SDK session storage](/sdk/storage). For direct session reading, branching, and listing, see [SessionManager API](/session-format#sessionmanager-api).
 
 This section covers the low-level local SQLite API and storage path helpers exported from `@bastani/atomic` and `@bastani/atomic/storage`, with an example:
 

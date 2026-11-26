@@ -30,9 +30,17 @@ mod windows_pty;
 use resource::ProcessResource;
 type ProcessReader = Box<dyn Read + Send>;
 type ProcessWriter = Box<dyn Write + Send>;
+/// A spawned command's process, its input, its two outputs, a non-blocking setup failure, and the descriptors its
+/// outputs are read from, which the supervising loop waits on.
 #[cfg(unix)]
-type SpawnedProcess =
-	(ProcessResource, Option<ProcessWriter>, ProcessReader, ProcessReader, Option<String>);
+type SpawnedProcess = (
+	ProcessResource,
+	Option<ProcessWriter>,
+	ProcessReader,
+	ProcessReader,
+	Option<String>,
+	[std::os::fd::RawFd; 2],
+);
 
 #[napi(string_enum = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -508,6 +516,7 @@ impl Actor {
 	}
 	#[cfg(unix)]
 	fn run_command(&self, runner: &RunnerLease, command: &CommandTask) {
+		use std::os::fd::AsRawFd;
 		// A delegated cgroup v2 child, where there is one, that the pipe leader enters before exec (#5057).
 		#[cfg(target_os = "linux")]
 		let cgroup = cgroup::Cgroup::create();
@@ -518,7 +527,16 @@ impl Actor {
 				CommandTerminal::Pty { columns, rows } => {
 					let (pty, reader, writer) =
 						crate::pty::supervised_pty(&command.intent, columns, rows)?;
-					Ok((ProcessResource::Pty(pty), Some(writer), reader, Box::new(io::empty()), None))
+					// The reader is a duplicate of the master, so the master's descriptor shows when it can be read.
+					let fd = pty.master.as_raw_fd().unwrap_or(-1);
+					Ok((
+						ProcessResource::Pty(pty),
+						Some(writer),
+						reader,
+						Box::new(io::empty()),
+						None,
+						[fd, -1],
+					))
 				},
 				CommandTerminal::Pipe {} => {
 					if command.file_spool() {
@@ -583,17 +601,20 @@ impl Actor {
 						.and_then(|()| make_nonblocking(&stderr))
 						.err()
 						.map(|error| error.to_string());
+					let fds = [stdout.as_raw_fd(), stderr.as_raw_fd()];
 					Ok((
 						ProcessResource::Pipe(child),
 						Some(Box::new(stdin)),
 						Box::new(stdout),
 						Box::new(stderr),
 						error,
+						fds,
 					))
 				},
 			}
 		})();
-		let (mut child, mut stdin, mut stdout, mut stderr, setup_failure) = match spawned {
+		let (mut child, mut stdin, mut stdout, mut stderr, setup_failure, output_fds) = match spawned
+		{
 			Ok(resource) => resource,
 			Err(error) => {
 				self.command_spawn_failed(runner, command, error.to_string());
@@ -870,7 +891,16 @@ impl Actor {
 				}
 			}
 			if stopping.is_none() && !exited {
-				group.wait(PROCESS_POLL);
+				// Wake as soon as output arrives, not only on the poll: a macOS terminal holds about 1 KB, so a
+				// command printing more waits for each read, and sleeping through the poll held a terminal
+				// command's output to about 150 KB/s.
+				let open = [(output_fds[0], stdout_eof), (output_fds[1], stderr_eof)];
+				let readable: Vec<_> = open
+					.iter()
+					.filter(|(fd, eof)| *fd >= 0 && !*eof && setup_failure.is_none())
+					.map(|(fd, _)| *fd)
+					.collect();
+				group.wait(PROCESS_POLL, &readable);
 			} else {
 				std::thread::sleep(if quarantined && expires.is_none() {
 					PROCESS_QUARANTINE_POLL
@@ -1112,15 +1142,31 @@ impl ProcessGroup {
 			cgroup.remove();
 		}
 	}
-	fn wait(&self, timeout: Duration) {
+	/// Waits up to `timeout` for the leader to exit (where a pidfd shows it) or for one of `output` to be readable.
+	fn wait(&self, timeout: Duration, output: &[std::os::fd::RawFd]) {
+		let mut polled: Vec<libc::pollfd> =
+			output.iter().map(|&fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }).collect();
 		#[cfg(target_os = "linux")]
 		if let Some(pidfd) = &self.pidfd {
 			use std::os::fd::AsRawFd;
-			let mut poll = libc::pollfd { fd: pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-			let _ = unsafe { libc::poll(&mut poll, 1, timeout.as_millis() as libc::c_int) };
+			polled.push(libc::pollfd { fd: pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+		}
+		if polled.is_empty() {
+			std::thread::sleep(timeout);
 			return;
 		}
-		std::thread::sleep(timeout);
+		let started = Instant::now();
+		let ready = unsafe {
+			libc::poll(
+				polled.as_mut_ptr(),
+				polled.len() as libc::nfds_t,
+				timeout.as_millis() as libc::c_int,
+			)
+		};
+		// A descriptor poll cannot watch must not turn the wait into a busy loop.
+		if ready < 0 || polled.iter().any(|entry| entry.revents & libc::POLLNVAL != 0) {
+			std::thread::sleep(timeout.saturating_sub(started.elapsed()));
+		}
 	}
 }
 /// A pidfd of the leader that can signal its whole group, or None where it cannot: before Linux 6.9, which

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bash` with `pty: true` no longer slows to about 150 KB/s on macOS.** A macOS terminal holds about 1 KB of output, and the task supervisor read it only every 5 ms, so a command that printed 1 MB took about 6.5 seconds and waited on its own output. The supervisor now reads output as soon as it arrives: the same command takes under half a second ([#6634](https://github.com/bastani-inc/atomic/pull/6634)).
+
 ## [0.10.10] - 2026-11-24
 
 ### Fixed

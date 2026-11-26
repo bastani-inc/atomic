@@ -1,42 +1,28 @@
 /**
- * Team setup: one settings write that shares Intercom routing through a team database while
- * sessions stay in the local store (`joinTeam`), its exact undo (`leaveTeam`), the layout in effect
- * (`getTeamProfile`), and the shared-database join that `atomic storage join` and `atomic team join` both run.
+ * The layout in effect (`getTeamProfile`, `atomic team status`) and the shared PostgreSQL database join that
+ * `atomic storage join` runs.
  */
 
-import { createHash, randomUUID } from "node:crypto";
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../../config.js";
+import { getAgentDir } from "../../config.js";
 import { parseJsonFileContent } from "../../utils/json.ts";
-import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
 import { prepareLockTakeover } from "../lock-holder.js";
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
-import { selectSessionSetting, selectSessionStorageWithSettings } from "../session-storage.js";
+import { selectSessionStorageWithSettings } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
-import { deepMergeSettings } from "../settings-merge.js";
 import type { Settings } from "../settings-schema.ts";
 import { FileSettingsStorage, writeSettingsFile } from "../settings-storage.ts";
 import { openAdapterSelectionDatabase } from "./adapter-open.js";
 import {
 	describeStorageError,
-	StorageAdapterLoadError,
 	StorageConfigError,
 	StorageError,
 	TeamProfileError,
 	TeamProfileTimeoutError,
 } from "./errors.js";
 import { defaultSessionDatabasePath, storageHomeDir } from "./file-identity.js";
-import { processSharedStorageSelectionAsync } from "./process-selection.js";
 import {
 	loadStorageAdapter,
 	secretFilePath as resolveProviderSecretFilePath,
@@ -48,16 +34,7 @@ import {
 import {
 	checkSharedDatabaseArguments,
 	checkTeamPrefix,
-	checkTeamUrl,
-	conflictingTeamToken,
-	emptyTeamToken,
-	environmentTeamProfileAsync,
 	inMemorySecret,
-	isFileUrl,
-	isPostgresUrl,
-	LIBSQL_ADAPTER_PACKAGE,
-	LOCAL_SESSIONS_STORAGE,
-	missingTeamToken,
 	POSTGRES_ADAPTER_PACKAGE,
 	type PostgresAuth,
 	readTeamTokenFile,
@@ -73,94 +50,52 @@ import {
 	selectSharedStorage,
 } from "./storage-status.js";
 
-export interface JoinTeamOptions {
-	/** `libsql://`, `https://`, `wss://` or absolute `file:` URL, without a credential. */
-	readonly url: string;
-	/** The database token; it is stored in a private file in the agent directory. */
-	readonly token?: string;
-	/** A file holding the database token; surrounding whitespace is removed. Relative paths resolve against `cwd`. */
-	readonly tokenFile?: string;
-	/** Table prefix, to share one database between teams. */
-	readonly prefix?: string;
-	/** Default: the Atomic agent directory. */
-	readonly agentDir?: string;
-	/** Default: `process.cwd()`. */
-	readonly cwd?: string;
-	/** Progress lines while the Intercom broker restarts. */
-	readonly onProgress?: (line: string) => void;
-}
+// Removed with libSQL support; see libsql-removed.ts for why they are still exported.
+export {
+	assertTeamAdapterInstalled,
+	joinTeam,
+	joinTeamWith,
+	leaveTeam,
+	leaveTeamWith,
+	storageFingerprint,
+} from "./libsql-removed.js";
 
 export interface TeamProfileOptions {
 	readonly agentDir?: string;
 	readonly cwd?: string;
 }
 
-export interface LeaveTeamOptions {
+/** `atomic storage join`'s options. */
+export interface SharedDatabaseJoinOptions {
+	/** A `postgres://` or `postgresql://` URL, without a password. */
+	readonly url: string;
+	/** A password or token file another process keeps fresh, referenced in place and read for every new connection. */
+	readonly tokenFile?: string;
+	/** Table prefix, to share one database between projects or teams. */
+	readonly prefix?: string;
+	/** Default: the Atomic agent directory. */
 	readonly agentDir?: string;
+	/** Default: `process.cwd()`. */
 	readonly cwd?: string;
-	readonly onProgress?: (line: string) => void;
-}
-
-/** `atomic storage join`'s options: {@link JoinTeamOptions} plus the Postgres credential sources. */
-export interface SharedDatabaseJoinOptions extends JoinTeamOptions {
-	/** Also pin `sessions.storage` to the local default store, as `atomic team join` does; libSQL URLs only. */
-	readonly pinLocalSessions: boolean;
-	/** Postgres: a password file, copied to a private file in the agent directory. */
+	/** A password file, copied to a private file in the agent directory. */
 	readonly passwordFile?: string;
-	/** Postgres: the platform credential the adapter obtains instead of a password. */
+	/** The platform credential the adapter obtains instead of a password. */
 	readonly auth?: PostgresAuth;
 }
 
 /** What the shared-database join wrote. */
 export interface SharedDatabaseJoin {
 	readonly settingsPath: string;
-	/** The `storage` value written: the adapter, the URL, a token file reference and the prefix, never a token. */
+	/** The `storage` value written: the adapter, the URL, a password file reference and the prefix, never a password. */
 	readonly storage: StorageSettingsSelection;
-	/** The `sessions.storage` value written, when sessions were pinned to the local store. */
-	readonly sessionsStorage?: typeof LOCAL_SESSIONS_STORAGE;
-	/** The private token file the selection references. */
+	/** The private password file the selection references. */
 	readonly tokenPath?: string;
-	/** `new`: written now; `reused`: the file the previous selection referenced already held this token. */
+	/** `new`: written now; `reused`: the file the previous selection referenced already held this password. */
 	readonly token: "new" | "reused" | "none";
-	/** Postgres `--token-file`: the file the selection references in place, read again for every new connection. */
+	/** `--token-file`: the file the selection references in place, read again for every new connection. */
 	readonly referencedFile?: string;
 	/** The previous `storage` selection it replaced, described without its options or secrets. */
 	readonly replaced?: string;
-	/** The previous global `sessions.storage` the local pin replaced, when it was not already the local default store. */
-	readonly replacedSessionsStorage?: string;
-}
-
-/** The Intercom broker restart after a team settings change; a failed restart does not undo the change. */
-export type TeamBrokerRestart = RestartOutcome | { readonly status: "failed"; readonly error: TeamProfileError };
-
-export interface TeamJoinResult extends SharedDatabaseJoin {
-	readonly sessionsStorage: typeof LOCAL_SESSIONS_STORAGE;
-	readonly broker: TeamBrokerRestart;
-}
-
-export type TeamSettingKey = "storage" | "sessions.storage";
-
-/**
- * A key `team leave` left in place. `changed`: it holds something other than what `team join` writes.
- * `storage-remains`: it is the local sessions pin, kept because `storage` stays set and sessions would follow it.
- */
-export interface TeamKeptSetting {
-	readonly key: TeamSettingKey;
-	readonly reason: "changed" | "storage-remains";
-}
-
-export interface TeamLeaveResult {
-	readonly settingsPath: string;
-	/** Keys removed because they held exactly what `team join` writes. */
-	readonly removed: readonly TeamSettingKey[];
-	/** Keys left in place, and why. */
-	readonly kept: readonly TeamKeptSetting[];
-	/** The token file of the removed selection, deleted because no remaining setting references it. */
-	readonly deletedTokenFiles: readonly string[];
-	/** The token file of the removed selection, kept because another setting still references it. */
-	readonly keptTokenFiles: readonly string[];
-	/** Present when `storage` was removed. */
-	readonly broker?: TeamBrokerRestart;
 }
 
 export type TeamProfileName = "individual" | "team" | "ci" | "custom";
@@ -170,23 +105,13 @@ export interface TeamProfile {
 	/**
 	 * `individual`: sessions in the local default store, Intercom on this machine only.
 	 * `team`: sessions in the local default store; Intercom on one shared adapter database.
-	 * `ci`: sessions and Intercom on one shared adapter database (what `ATOMIC_PROFILE=ci` selects).
+	 * `ci`: sessions and Intercom on one shared adapter database.
 	 * `custom`: anything else.
 	 */
 	readonly profile: TeamProfileName;
 	readonly sessions: string;
 	/** `off` when Intercom has no shared selection. */
 	readonly intercom: string;
-}
-
-/** Test seam: the CLI and tests pass their broker control. */
-export interface TeamOperationContext {
-	readonly loadControl?: () => Promise<IntercomBrokerControl>;
-	readonly connectionTimeoutMs?: number;
-	/** Called once a join wrote its settings, before the broker restarts, so the CLI reports the join first. */
-	readonly onJoined?: (joined: SharedDatabaseJoin) => void;
-	/** Called once a leave wrote its settings, before the broker restarts, so the CLI reports the change first. */
-	readonly onLeft?: (left: Pick<TeamLeaveResult, "settingsPath" | "removed" | "kept">) => void;
 }
 
 function settingsPathOf(agentDir: string): string {
@@ -244,7 +169,7 @@ function writePrivateFile(path: string, token: string): void {
 interface JoinTarget {
 	readonly adapter: string;
 	readonly options: Readonly<Record<string, string>>;
-	readonly secretName: "authToken" | "password";
+	readonly secretName: "password";
 	readonly secret?: string;
 }
 
@@ -276,7 +201,7 @@ function storageConfigCause(error: unknown): StorageConfigError | undefined {
 	return undefined;
 }
 
-/** How long a join waits for the team database to connect and answer `SELECT 1`, after the adapter has loaded. */
+/** How long a join waits for the shared database to connect and answer `SELECT 1`, after the adapter has loaded. */
 export const TEAM_CONNECTION_TIMEOUT_MS = 15_000;
 
 /**
@@ -435,42 +360,24 @@ interface JoinPlan {
 }
 
 function joinPlan(options: SharedDatabaseJoinOptions, source: Exclude<TeamInputSource, "env">, cwd: string): JoinPlan {
-	if (!options.pinLocalSessions && isPostgresUrl(options.url)) {
-		const checked = checkSharedDatabaseArguments(options);
-		const target = { adapter: POSTGRES_ADAPTER_PACKAGE, secretName: "password" } as const;
-		if (checked.auth !== undefined)
-			return { target: { ...target, options: { url: checked.url, auth: checked.auth } } };
-		if (checked.passwordFile !== undefined) {
-			const password = readTeamTokenFile(resolve(cwd, checked.passwordFile), source, "--password-file");
-			return { target: { ...target, options: { url: checked.url }, secret: password }, copy: password };
-		}
-		const reference = resolve(cwd, checked.tokenFile as string);
-		const password = readTeamTokenFile(reference, source, undefined, "as-connections-read");
-		return { target: { ...target, options: { url: checked.url }, secret: password }, reference };
+	const checked = checkSharedDatabaseArguments(options);
+	const target = { adapter: POSTGRES_ADAPTER_PACKAGE, secretName: "password" } as const;
+	if (checked.auth !== undefined) return { target: { ...target, options: { url: checked.url, auth: checked.auth } } };
+	if (checked.passwordFile !== undefined) {
+		const password = readTeamTokenFile(resolve(cwd, checked.passwordFile), source, "--password-file");
+		return { target: { ...target, options: { url: checked.url }, secret: password }, copy: password };
 	}
-	const url = checkTeamUrl(options.url, source);
-	if (options.token !== undefined && options.tokenFile !== undefined) {
-		throw conflictingTeamToken(source, source === "cli" ? ["--token-file"] : ["token", "tokenFile"]);
-	}
-	let token: string | undefined;
-	if (options.tokenFile !== undefined) token = readTeamTokenFile(resolve(cwd, options.tokenFile), source);
-	else if (options.token !== undefined) {
-		token = options.token.trim();
-		if (token.length === 0) throw emptyTeamToken(source);
-	} else if (!isFileUrl(url)) throw missingTeamToken(url, source);
-	return {
-		target: { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url }, secretName: "authToken", secret: token },
-		copy: token,
-	};
+	const reference = resolve(cwd, checked.tokenFile as string);
+	const password = readTeamTokenFile(reference, source, undefined, "as-connections-read");
+	return { target: { ...target, options: { url: checked.url }, secret: password }, reference };
 }
 
 /**
- * Point the global `storage` setting at a shared libSQL / Turso or PostgreSQL database, as `atomic storage join` and
- * `atomic team join` do. Every input and precondition is checked before the first write: the URL, the token, the
- * prefix, readable global settings, the installed adapter and a `SELECT 1` on the database. The token is stored in a
- * private file in the agent directory (mode 600), reusing the file the current selection references when it already
- * holds the same token, and settings are written in one update; with `pinLocalSessions`, that update also sets
- * `sessions.storage` to the local default store. On failure nothing is changed.
+ * Point the global `storage` setting at a shared PostgreSQL database, as `atomic storage join` does. Every input and
+ * precondition is checked before the first write: the URL, the credential, the prefix, readable global settings, the
+ * installed adapter and a `SELECT 1` on the database. A `--password-file` password is stored in a private file in the
+ * agent directory (mode 600), reusing the file the current selection references when it already holds the same
+ * password, and settings are written in one update. On failure nothing is changed.
  */
 export async function joinSharedDatabase(
 	options: SharedDatabaseJoinOptions,
@@ -525,10 +432,6 @@ export async function joinSharedDatabase(
 			...(prefix === undefined ? {} : { prefix }),
 		};
 		const next: Settings = { ...settings, storage };
-		if (options.pinLocalSessions) {
-			next.sessions = { ...settings.sessions, storage: LOCAL_SESSIONS_STORAGE };
-			next.teamJoin = { storage: storageFingerprint(storage) };
-		}
 		try {
 			writeSettingsFile(settingsPath, JSON.stringify(next, null, 2));
 		} catch (error) {
@@ -536,26 +439,18 @@ export async function joinSharedDatabase(
 			if (created !== undefined) cleanupAfter(failure, () => rmSync(created, { force: true }));
 			throw failure;
 		}
-		return { storage, previous, previousPin: settings.sessions?.storage, tokenPath, reused };
+		return { storage, previous, tokenPath, reused };
 	});
-	const { storage, previous, previousPin, tokenPath, reused } = published;
+	const { storage, previous, tokenPath, reused } = published;
 	return {
 		settingsPath,
 		storage,
-		...(options.pinLocalSessions ? { sessionsStorage: LOCAL_SESSIONS_STORAGE } : {}),
 		...(tokenPath === undefined ? {} : { tokenPath }),
 		token: tokenPath === undefined ? "none" : reused === undefined ? "new" : "reused",
 		...(plan.reference === undefined ? {} : { referencedFile: plan.reference }),
 		...(previous === undefined || JSON.stringify(previous) === JSON.stringify(storage)
 			? {}
 			: { replaced: describePrevious(() => selectStorage(previous, "settings", "storage", "")) }),
-		...(options.pinLocalSessions && previousPin !== undefined && !isLocalSessionsPin(previousPin)
-			? {
-					replacedSessionsStorage: describePrevious(() =>
-						selectSessionSetting(previousPin, "sessions.storage", agentDir),
-					),
-				}
-			: {}),
 	};
 }
 
@@ -563,328 +458,11 @@ function describePrevious(select: () => StorageSelection): string {
 	try {
 		return describeStorageSelection(select());
 	} catch (error) {
+		if (error instanceof StorageConfigError && error.reason === "libsql-removed")
+			return "a libSQL database, which this release no longer opens";
 		if (error instanceof StorageError) return "an invalid selection";
 		throw error;
 	}
-}
-
-async function restartBroker(
-	agentDir: string,
-	context: TeamOperationContext,
-	onProgress: ((line: string) => void) | undefined,
-): Promise<TeamBrokerRestart> {
-	try {
-		const control = context.loadControl
-			? await context.loadControl()
-			: await (await import("../intercom-broker-control.js")).loadIntercomBrokerControl();
-		return await control.restartIntercomBroker(agentDir, onProgress === undefined ? {} : { onProgress });
-	} catch (error) {
-		return {
-			status: "failed",
-			error: new TeamProfileError("broker-restart-failed", {
-				subject: agentDir,
-				detail: describeStorageError(error as Error),
-				hint: "The settings are saved. Run `atomic intercom restart` so the broker uses them.",
-				cause: error as Error,
-			}),
-		};
-	}
-}
-
-const installedAdapters = new Map<string, Promise<void>>();
-
-async function loadTeamAdapter(agentDir: string, reason: string): Promise<void> {
-	try {
-		await loadStorageAdapter(LIBSQL_ADAPTER_PACKAGE, { agentDir, domain: "sessions" });
-	} catch (error) {
-		if (!(error instanceof StorageAdapterLoadError)) throw error;
-		throw new TeamProfileError("adapter-not-installed", {
-			subject: `${LIBSQL_ADAPTER_PACKAGE} for ${agentDir}`,
-			detail: describeStorageError(error.cause instanceof Error ? error.cause : error),
-			hint: `${reason} opens the team database through it. Install it, then run again: atomic install npm:${LIBSQL_ADAPTER_PACKAGE}`,
-			cause: error,
-		});
-	}
-}
-
-/**
- * Whether `ATOMIC_PROFILE=ci` still selects the team database in this process. `--storage` and `ATOMIC_STORAGE`
- * outrank it for sessions and the Intercom broker alike, while a domain variable outranks it only for
- * its own store. So the profile selects some store exactly when it is the shared selection the broker receives.
- */
-async function teamProfileInEffect(): Promise<boolean> {
-	const team = await environmentTeamProfileAsync();
-	return team !== undefined && (await processSharedStorageSelectionAsync()) === JSON.stringify(team);
-}
-
-/**
- * Fail fast, before any store opens, when this process selects the team database but cannot load the libSQL
- * adapter: `ATOMIC_PROFILE=ci` while it selects a store, or an SDK `storage` selection naming the adapter. The
- * adapter is loaded, not opened, once per agent directory and process. The CLI checks at startup and
- * `createAgentSession` before it creates a session.
- */
-export async function assertTeamAdapterInstalled(
-	agentDir: string,
-	selection?: { readonly adapter?: string } | object,
-): Promise<void> {
-	const reason = (await teamProfileInEffect())
-		? "ATOMIC_PROFILE=ci"
-		: selection !== undefined && "adapter" in selection && selection.adapter === LIBSQL_ADAPTER_PACKAGE
-			? "The storage selection"
-			: undefined;
-	if (reason === undefined) return;
-	const key = resolve(agentDir);
-	let check = installedAdapters.get(key);
-	if (check === undefined) {
-		const current = loadTeamAdapter(key, reason).catch((error: unknown) => {
-			if (installedAdapters.get(key) === current) installedAdapters.delete(key);
-			throw error;
-		});
-		installedAdapters.set(key, current);
-		check = current;
-	}
-	return check;
-}
-
-/** `joinTeam` with the input source its errors name and the CLI's broker control. */
-export async function joinTeamWith(
-	options: JoinTeamOptions,
-	source: Exclude<TeamInputSource, "env">,
-	context: TeamOperationContext = {},
-): Promise<TeamJoinResult> {
-	const joined = await joinSharedDatabase(
-		{ ...options, pinLocalSessions: true },
-		source,
-		context.connectionTimeoutMs ?? TEAM_CONNECTION_TIMEOUT_MS,
-	);
-	context.onJoined?.(joined);
-	const broker = await restartBroker(dirname(joined.settingsPath), context, options.onProgress);
-	return { ...joined, sessionsStorage: LOCAL_SESSIONS_STORAGE, broker };
-}
-
-/**
- * Use a team database for Intercom while sessions stay private: checks every input and the
- * connection first, then sets the global `storage` setting to the team database and `sessions.storage` to the local
- * default store in one settings write, and restarts the Intercom broker so it routes through the team database.
- * Throws {@link TeamProfileConfigError} for an invalid input and {@link TeamProfileError} otherwise; on any thrown
- * failure nothing was changed. A failed broker restart is reported in `broker`, not thrown.
- */
-export function joinTeam(options: JoinTeamOptions): Promise<TeamJoinResult> {
-	return joinTeamWith(options, "sdk");
-}
-
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (value !== null && typeof value === "object") {
-		const entries = Object.entries(value as Record<string, unknown>)
-			.filter(([, entry]) => entry !== undefined)
-			.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-		return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
-	}
-	return JSON.stringify(value);
-}
-
-export function storageFingerprint(storage: StorageSettingsSelection): string {
-	return `sha256:${createHash("sha256").update(canonicalJson(storage)).digest("hex")}`;
-}
-
-/** Whether `storage` is exactly the selection the last team join recorded, for this agent directory. */
-function isJoinedStorage(
-	storage: StorageSettingsSelection | undefined,
-	record: Settings["teamJoin"],
-	agentDir: string,
-): boolean {
-	if (storage === undefined || record?.storage !== storageFingerprint(storage)) return false;
-	if (storage.adapter !== LIBSQL_ADAPTER_PACKAGE) return false;
-	const keys = Object.keys(storage).filter((key) => key !== "prefix" && key !== "secrets");
-	if (keys.length !== 2 || !keys.includes("adapter") || !keys.includes("options")) return false;
-	const options = storage.options ?? {};
-	if (Object.keys(options).length !== 1 || typeof options.url !== "string") return false;
-	if (storage.secrets === undefined) return isFileUrl(options.url);
-	const names = Object.keys(storage.secrets);
-	const path = secretFilePath(storage.secrets.authToken, agentDir);
-	return names.length === 1 && path !== undefined && isJoinTokenFile(path, agentDir);
-}
-
-function isLocalSessionsPin(value: NonNullable<Settings["sessions"]>["storage"]): boolean {
-	return (
-		value !== undefined &&
-		JSON.stringify(Object.keys(value)) === JSON.stringify(["path"]) &&
-		"path" in value &&
-		value.path === LOCAL_SESSIONS_STORAGE.path
-	);
-}
-
-/** Every token file the given settings reference. */
-function referencedTokenFiles(settings: Settings, agentDir: string): string[] {
-	// A `workflows.journal` selection an earlier release used still references its token file, which leaving keeps.
-	const workflows = (settings as { readonly workflows?: unknown }).workflows;
-	const journal =
-		workflows !== null && typeof workflows === "object" && !Array.isArray(workflows)
-			? (workflows as { readonly journal?: StorageSettingsSelection }).journal
-			: undefined;
-	const sessions = settings.sessions?.storage;
-	const selections: (StorageSettingsSelection | undefined)[] = [
-		settings.storage,
-		journal,
-		sessions && !("dir" in sessions) ? sessions : undefined,
-	];
-	return selections.flatMap((selection) =>
-		Object.values(selection?.secrets ?? {}).flatMap((ref) => secretFilePath(ref, agentDir) ?? []),
-	);
-}
-
-function projectSettingsPathOf(cwd: string): string {
-	return getProjectConfigPaths(cwd, "settings.json")[0] as string;
-}
-
-function isSameFile(first: string, second: string): boolean {
-	return existsSync(first) && existsSync(second) && realpathSync(first) === realpathSync(second);
-}
-
-function readIndependentProjectSettings(cwd: string, settingsPath: string): Settings {
-	let merged: Settings = {};
-	for (const path of getProjectConfigPaths(cwd, "settings.json").reverse()) {
-		if (!existsSync(path) || isSameFile(settingsPath, path)) continue;
-		try {
-			merged = deepMergeSettings(merged, parseJsonFileContent(readFileSync(path, "utf-8")) as Settings);
-		} catch (error) {
-			throw unreadableSettingsError(path, error as Error);
-		}
-	}
-	return merged;
-}
-
-function readIndependentGlobalSettings(agentDir: string, settingsPath: string): Settings {
-	const paths = agentDir === getAgentDir() ? getAgentConfigPaths("settings.json") : [settingsPath];
-	let merged: Settings = {};
-	for (const path of paths.reverse()) {
-		if (!existsSync(path) || isSameFile(settingsPath, path)) continue;
-		try {
-			merged = deepMergeSettings(merged, parseJsonFileContent(readFileSync(path, "utf-8")) as Settings);
-		} catch (error) {
-			throw unreadableSettingsError(path, error as Error);
-		}
-	}
-	return merged;
-}
-
-function readProjectSettings(cwd: string, agentDir: string): Settings {
-	const projectPath = projectSettingsPathOf(cwd);
-	const storage = new FileSettingsStorage(cwd, agentDir, {
-		projectReadPaths: getProjectConfigPaths(cwd, "settings.json"),
-	});
-	try {
-		let merged: string | undefined;
-		storage.withLock("project", (current) => {
-			merged = current;
-			return undefined;
-		});
-		return merged === undefined ? {} : (parseJsonFileContent(merged) as Settings);
-	} catch (error) {
-		if (isLocked(error as Error)) throw lockedError(projectPath, error as Error, "Nothing was changed.");
-		throw unreadableSettingsError(projectPath, error as Error);
-	}
-}
-
-/** `leaveTeam` with the CLI's broker control. */
-export async function leaveTeamWith(
-	options: LeaveTeamOptions = {},
-	context: TeamOperationContext = {},
-): Promise<TeamLeaveResult> {
-	const agentDir = resolve(options.agentDir ?? getAgentDir());
-	const cwd = resolve(options.cwd ?? process.cwd());
-	const settingsPath = settingsPathOf(agentDir);
-	openGlobalSettings(cwd, agentDir);
-	const unchanged = "Nothing was changed.";
-	const empty: TeamLeaveResult = { settingsPath, removed: [], kept: [], deletedTokenFiles: [], keptTokenFiles: [] };
-	if (!existsSync(settingsPath)) return empty;
-	const trusted = projectTrust(cwd, agentDir);
-	await Promise.all([
-		prepareLockTakeover(`${settingsPath}.lock`),
-		prepareLockTakeover(`${projectSettingsPathOf(cwd)}.lock`),
-	]);
-	const outcome = withGlobalSettings(agentDir, unchanged, (global) => {
-		const project = isSameFile(settingsPath, projectSettingsPathOf(cwd))
-			? readIndependentProjectSettings(cwd, settingsPath)
-			: readProjectSettings(cwd, agentDir);
-		const inherited = readIndependentGlobalSettings(agentDir, settingsPath);
-		const storage: StorageSettingsSelection | undefined = global.storage;
-		const removed: TeamSettingKey[] = [];
-		const kept: TeamKeptSetting[] = [];
-		if (isJoinedStorage(storage, global.teamJoin, agentDir)) removed.push("storage");
-		else if (storage !== undefined) kept.push({ key: "storage", reason: "changed" });
-		const pin = global.sessions?.storage;
-		const storageRemains =
-			(storage !== undefined && !removed.includes("storage")) ||
-			inherited.storage !== undefined ||
-			(trusted && project.storage !== undefined);
-		if (isLocalSessionsPin(pin)) {
-			if (storageRemains) kept.push({ key: "sessions.storage", reason: "storage-remains" });
-			else removed.push("sessions.storage");
-		} else if (pin !== undefined) kept.push({ key: "sessions.storage", reason: "changed" });
-		if (removed.length === 0) return { ...empty, kept };
-
-		const tokenPath = removed.includes("storage") ? secretFilePath(storage?.secrets?.authToken, agentDir) : undefined;
-		const next: Settings = { ...global };
-		if (removed.includes("storage")) delete next.storage;
-		if (next.storage === undefined) delete next.teamJoin;
-		if (removed.includes("sessions.storage")) {
-			const { storage: _pin, ...sessions } = { ...global.sessions };
-			if (Object.keys(sessions).length === 0) delete next.sessions;
-			else next.sessions = sessions;
-		}
-		try {
-			writeSettingsFile(settingsPath, JSON.stringify(next, null, 2));
-		} catch (error) {
-			throw settingsWriteError(settingsPath, error as Error, unchanged);
-		}
-		const deletedTokenFiles: string[] = [];
-		const keptTokenFiles: string[] = [];
-		let tokenFailure: TeamProfileError | undefined;
-		if (tokenPath !== undefined) {
-			const references = [next, inherited, project].flatMap((settings) => referencedTokenFiles(settings, agentDir));
-			if (references.includes(tokenPath)) keptTokenFiles.push(tokenPath);
-			else {
-				try {
-					rmSync(tokenPath, { force: true });
-					deletedTokenFiles.push(tokenPath);
-				} catch (error) {
-					tokenFailure = new TeamProfileError("token-delete-failed", {
-						subject: tokenPath,
-						detail: describeStorageError(error as Error),
-						hint: "The team settings were removed. Delete the token file yourself.",
-						cause: error as Error,
-					});
-				}
-			}
-		}
-		return { settingsPath, removed, kept, deletedTokenFiles, keptTokenFiles, tokenFailure };
-	});
-	if (outcome.removed.length === 0) return outcome;
-	context.onLeft?.({ settingsPath, removed: outcome.removed, kept: outcome.kept });
-	const broker = outcome.removed.includes("storage")
-		? await restartBroker(agentDir, context, options.onProgress)
-		: undefined;
-	if ("tokenFailure" in outcome && outcome.tokenFailure !== undefined) throw outcome.tokenFailure;
-	return {
-		settingsPath,
-		removed: outcome.removed,
-		kept: outcome.kept,
-		deletedTokenFiles: outcome.deletedTokenFiles,
-		keptTokenFiles: outcome.keptTokenFiles,
-		...(broker === undefined ? {} : { broker }),
-	};
-}
-
-/**
- * Restore the individual layout: remove the global `storage` setting and the `sessions.storage` pin when they hold
- * exactly what `joinTeam` writes, leave every other value in place, delete the removed selection's token file unless
- * another setting references it, and restart the Intercom broker when `storage` was removed. The pin is kept while
- * another `storage` remains, because sessions would otherwise move to it. Running it again changes nothing.
- */
-export function leaveTeam(options: LeaveTeamOptions = {}): Promise<TeamLeaveResult> {
-	return leaveTeamWith(options);
 }
 
 function isLocalDefault(selection: StorageSelection, agentDir: string, settings?: Settings): boolean {

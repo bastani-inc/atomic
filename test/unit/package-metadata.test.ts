@@ -91,7 +91,6 @@ const ATOMIC_BUILD_DEPENDENCIES: DependencyMap = {
 const PUBLISHABLE_WORKSPACE_PACKAGES = new Set([
 	"@bastani/atomic",
 	"@bastani/atomic-natives",
-	"@bastani/atomic-storage-libsql",
 	"@bastani/atomic-storage-postgres",
 	"@bastani/atomic-ai",
 	"@bastani/atomic-agent-core",

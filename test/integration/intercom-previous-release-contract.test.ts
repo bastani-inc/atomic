@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type net from "node:net";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, test, vi } from "vitest";
@@ -15,7 +15,23 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
  * under test/fixtures/intercom-0.9.71: it accepts every frame that client sends, and writes it only frames it handles.
  */
 
-const agentDir = useTemporaryAgentDir();
+const { directBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+/**
+ * The 0.9.71 and 0.9.77-alpha.1 clients connect only to the socket inside the agent directory. Where that path is too
+ * long for a Unix socket, as under macOS's temporary directory (/var/folders/…), this version's broker listens
+ * elsewhere and those clients cannot reach it, so the agent directory then goes under /tmp.
+ */
+const agentDir = (() => {
+	const runAgentDir = useTemporaryAgentDir();
+	if (directBrokerSocketPath(process.platform, runAgentDir) !== undefined) return runAgentDir;
+	const home = mkdtempSync("/tmp/ic-prev-");
+	const shortAgentDir = join(home, ".atomic", "agent");
+	mkdirSync(shortAgentDir, { recursive: true });
+	// useTemporaryAgentDir restores the variable after the file; this hook runs after the file's broker cleanup.
+	process.env.ATOMIC_CODING_AGENT_DIR = shortAgentDir;
+	afterAll(() => rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+	return shortAgentDir;
+})();
 const brokerFixture = new IntercomBrokerFixture(agentDir);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const previousRelease = join(repoRoot, "test/fixtures/intercom-0.9.71");

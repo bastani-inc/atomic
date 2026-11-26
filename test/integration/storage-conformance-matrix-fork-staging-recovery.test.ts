@@ -25,7 +25,6 @@ import {
 	SESSION_TABLES,
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { postgresTestPassword, withPostgresDatabase } from "../helpers/postgres-database.js";
 import {
 	decodeStream,
@@ -34,7 +33,7 @@ import {
 	type SpawnedProcess,
 	spawnProcess,
 } from "../helpers/runtime.js";
-import { dropLibsqlScope, storageBackends } from "../helpers/storage-backends.js";
+import { storageBackends } from "../helpers/storage-backends.js";
 import {
 	gate,
 	header,
@@ -606,7 +605,6 @@ const CRASH_FIXTURE = fileURLToPath(new URL("../fixtures/fork-staging-crash.ts",
 
 type CrashDatabaseConfig =
 	| { readonly kind: "sqlite"; readonly path: string }
-	| { readonly kind: "libsql"; readonly url: string }
 	| { readonly kind: "postgres"; readonly url: string; readonly password?: string };
 
 interface CrashDatabase {
@@ -634,19 +632,6 @@ async function withCrashDatabase(backend: string, body: (database: CrashDatabase
 		} finally {
 			await closeAll();
 			removeTempDirectory(directory);
-		}
-	} else if (backend === "libSQL server (sqld)") {
-		const url = process.env.ATOMIC_TEST_LIBSQL_URL!;
-		try {
-			await body({ config: { kind: "libsql", url }, prefix, connect: tracked(() => openLibsqlDatabase({ url })) });
-		} finally {
-			await closeAll();
-			const database = await openLibsqlDatabase({ url });
-			try {
-				await dropLibsqlScope(database, prefix);
-			} finally {
-				await database.close();
-			}
 		}
 	} else {
 		await withPostgresDatabase((scope) =>

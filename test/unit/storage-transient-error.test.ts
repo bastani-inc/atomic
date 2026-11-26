@@ -13,7 +13,7 @@ import {
 	serializeStorageError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
 
-const descriptor = { adapter: "libsql", location: "http://127.0.0.1:8080" };
+const descriptor = { adapter: "postgres", location: "http://127.0.0.1:8080" };
 
 function viaJson(serialized: SerializedStorageError): SerializedStorageError {
 	return JSON.parse(JSON.stringify(serialized)) as SerializedStorageError;
@@ -27,7 +27,7 @@ test("a transient storage failure renders the failed call, its code, and the rem
 	);
 	assert.equal(
 		error.message,
-		"Storage unavailable: libsql at http://127.0.0.1:8080: the database server call failed on attempt 5 (stream-expired). Check that the database server is reachable and that this process is not stopped or starved of CPU, then retry; nothing was written",
+		"Storage unavailable: postgres at http://127.0.0.1:8080: the database server call failed on attempt 5 (stream-expired). Check that the database server is reachable and that this process is not stopped or starved of CPU, then retry; nothing was written",
 	);
 	assert.ok(error.message.endsWith(error.hint));
 });
@@ -45,7 +45,7 @@ test("a transient storage failure is a retryable StorageUnavailableError with it
 	assert.equal(notApplied.outcome, "not-applied");
 	assert.equal(notApplied.attempts, 3);
 	assert.equal(notApplied.retryable, true);
-	assert.equal(notApplied.adapter, "libsql");
+	assert.equal(notApplied.adapter, "postgres");
 	assert.equal(notApplied.location, "http://127.0.0.1:8080");
 	assert.equal(notApplied.cause, cause);
 	assert.equal(
@@ -77,7 +77,7 @@ test("a transient failure on the way to the database server names that hop, not 
 	});
 	assert.equal(
 		notApplied.message,
-		"Storage unavailable: libsql at http://127.0.0.1:8080: the proxy http://proxy.example:3128 could not be reached for the tunnel to db.example.com:5432 (ECONNREFUSED) on attempt 2 (connection-refused). Check that the proxy http://proxy.example:3128 is reachable and that this process is not stopped or starved of CPU, then retry; nothing was written",
+		"Storage unavailable: postgres at http://127.0.0.1:8080: the proxy http://proxy.example:3128 could not be reached for the tunnel to db.example.com:5432 (ECONNREFUSED) on attempt 2 (connection-refused). Check that the proxy http://proxy.example:3128 is reachable and that this process is not stopped or starved of CPU, then retry; nothing was written",
 	);
 	assert.ok(notApplied.message.endsWith(notApplied.hint));
 	assert.equal(notApplied.hop, hop.name);
@@ -161,7 +161,7 @@ test("a transient failure crosses a process boundary as the same class with its 
 	assert.equal(serialized.code, "transaction-timeout");
 	assert.equal(serialized.hint, original.hint);
 	assert.deepEqual(serialized.fields, {
-		adapter: "libsql",
+		adapter: "postgres",
 		location: "http://127.0.0.1:8080",
 		outcome: "not-applied",
 		attempts: 2,
@@ -173,7 +173,7 @@ test("a transient failure crosses a process boundary as the same class with its 
 	assert.ok(isRetryableStorageError(rehydrated));
 	assert.deepEqual(
 		[rehydrated.code, rehydrated.outcome, rehydrated.attempts, rehydrated.adapter, rehydrated.location],
-		["transaction-timeout", "not-applied", 2, "libsql", "http://127.0.0.1:8080"],
+		["transaction-timeout", "not-applied", 2, "postgres", "http://127.0.0.1:8080"],
 	);
 	assert.equal(rehydrated.message, original.message);
 	assert.equal(rehydrated.hint, original.hint);
@@ -194,7 +194,7 @@ test("a transient failure rehydrates conservatively from partial fields, and an 
 	const partial = rehydrateStorageError({
 		name: "StorageTransientError",
 		code: "stream-expired",
-		message: "Storage unavailable: libsql at somewhere",
+		message: "Storage unavailable: postgres at somewhere",
 		fields: { outcome: "maybe" },
 	}) as StorageTransientError;
 	assert.ok(partial instanceof StorageTransientError);
@@ -205,7 +205,7 @@ test("a transient failure rehydrates conservatively from partial fields, and an 
 	const newer = rehydrateStorageError({
 		name: "StorageTransientError",
 		code: "server-restarting",
-		message: "Storage unavailable: libsql at somewhere",
+		message: "Storage unavailable: postgres at somewhere",
 		fields: { outcome: "not-applied", attempts: 4 },
 	});
 	assert.equal(newer instanceof StorageTransientError, false);

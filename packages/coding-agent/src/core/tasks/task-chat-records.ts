@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { asyncScope } from "../async-scope.ts";
 import type { SessionHeader } from "../session-manager-types.ts";
 import type { ChatPosition } from "../storage/session/chat-records.js";
 import { type ChatRecordOwner, chatEpoch, type SessionChatRecords } from "../storage/session/chat-records.js";
 import { discoverChatFile, readFileChatRecords } from "../storage/session/jsonl-chat-records.js";
+import { fileEpochOf } from "../storage/session/jsonl-file-epoch.js";
 import type { SessionSnapshot, SessionStore } from "../storage/session/types.js";
 
 type Scope = { store: SessionChatRecords; owner: ChatRecordOwner };
@@ -81,7 +81,7 @@ export const captureTaskChatFile: CaptureTaskChatFile = async (file, id) => {
 	return (raw, stats) => {
 		if (stats.birthtimeNs <= 0n) return;
 		const { type: _type, ...header } = raw;
-		const epoch = `${stats.dev}:${stats.ino}:${stats.birthtimeNs}:${createHash("sha256").update(JSON.stringify(header)).digest("hex").slice(0, 16)}`;
+		const epoch = fileEpochOf(stats, JSON.stringify(header));
 		capture.scope = { store: fileReader, owner: { id: header.id, file, epoch } };
 	};
 };

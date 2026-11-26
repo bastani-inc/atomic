@@ -156,8 +156,7 @@ export interface StoragePayloadTooLargeOptions {
 	readonly cause?: StorageFailureCause;
 }
 
-const PAYLOAD_TOO_LARGE_HINT =
-	"Retrying does not help: store less in one value, or raise the backend's limit (sqld: max_row_size, --max-response-size)";
+const PAYLOAD_TOO_LARGE_HINT = "Retrying does not help: store less in one value, or raise the backend's limit";
 
 function byteCount(bytes: number): string {
 	return `${bytes.toLocaleString("en-US")} bytes`;
@@ -171,9 +170,8 @@ export function isStorageResponseRefusal(error: unknown): error is StoragePayloa
 }
 
 /**
- * The backend refused a payload larger than it accepts: a bound or computed value or row (a libSQL server's
- * `SQLITE_TOOBIG`, `ARGS_INVALID "string or blob too big"`, Postgres's `54000`), or a statement's response (a libSQL
- * server's `RESPONSE_TOO_LARGE`). Permanent: the same write fails again, so it is never `retryable` and never a
+ * The backend refused a payload larger than it accepts: a bound or computed value or row (SQLite's `SQLITE_TOOBIG`,
+ * Postgres's `54000`), or a statement's response, as a custom adapter can report. Permanent: the same write fails again, so it is never `retryable` and never a
  * `StorageUnavailableError` (#4954). `limitBytes` is the backend's default limit when the backend does not report its
  * own; `actualBytes` is the largest value the statement bound, or 0 when unknown (a response). A value refused while
  * the largest bound value is within the limit is one the backend built running the statement, a row of several values
@@ -229,20 +227,17 @@ export const SQLITE_PAYLOAD_LIMITS: StoragePayloadLimits = Object.freeze({ value
 
 /**
  * The kind of payload `failure`, or a cause of it, says the backend refused as too large, if it says so: read from
- * codes, never from a message, except libSQL's `ARGS_INVALID`, whose code covers other argument errors too.
+ * codes, never from a message.
  */
 export function payloadTooLargeKind(failure: StorageFailureCause | Error): StoragePayloadKind | undefined {
 	let current: unknown = failure;
 	for (let depth = 0; depth < MAX_STORAGE_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
-		const { code, errcode, message, cause } = current as {
+		const { code, errcode, cause } = current as {
 			readonly code?: unknown;
 			readonly errcode?: unknown;
-			readonly message?: unknown;
 			readonly cause?: unknown;
 		};
-		if (code === "RESPONSE_TOO_LARGE") return "response";
 		if (code === "SQLITE_TOOBIG" || code === "54000") return "value";
-		if (code === "ARGS_INVALID" && typeof message === "string" && /too big/i.test(message)) return "value";
 		if (typeof errcode === "number" && (errcode & 0xff) === SQLITE_TOOBIG) return "value";
 		current = cause;
 	}
@@ -599,7 +594,7 @@ export interface SessionBlobErrorFields {
 
 const SESSION_BLOB_HINTS: Readonly<Record<SessionBlobErrorCode, string>> = {
 	"blobs-unsupported":
-		"Keep the session in a SQLite or libSQL session store (the default sessions database, --session-store <path>, or a sessions.storage selection), or give a custom store putBlob and getBlob",
+		"Keep the session in a SQLite or PostgreSQL session store (the default sessions database, --session-store <path>, or a sessions.storage selection), or give a custom store putBlob and getBlob",
 	"blob-missing": "The session no longer holds this output; run the tool again to see it",
 	"blob-corrupt": "The exported session was changed after it was written; export it again from its source",
 	"blob-incomplete": "The store lost part of this output; run the tool again to see it",
@@ -857,9 +852,7 @@ export function findStorageWriteLockTimeoutError(error: unknown): StorageWriteLo
 
 const MAX_CAUSE_DEPTH = 8;
 
-/** The command that joins this machine to the team's shared storage; error hints across Atomic name it. */
-export const SHARED_STORAGE_JOIN_HINT = "atomic team join <url> --token-file <path>";
-/** The command that joins a machine to a shared PostgreSQL database, which `atomic team join` refuses (#5218). */
+/** The command that joins a machine to a shared PostgreSQL database (#5218). */
 export const POSTGRES_STORAGE_JOIN_HINT = "atomic storage join <postgres-url> --password-file <path>";
 
 function hasCode<Code extends string>(value: unknown, name: string, codes: readonly Code[]): boolean {
@@ -1157,8 +1150,12 @@ export type TeamProfileErrorCode =
 	| "broker-restart-failed"
 	| "token-delete-failed";
 
-/** Which team input was rejected: an SDK option, a CLI argument, or an `ATOMIC_PROFILE` / `ATOMIC_TEAM_*` variable. */
+/**
+ * Why a shared-database input was rejected: a CLI argument or SDK option, or, with `libsql-removed`, a libSQL URL or a
+ * variable of the removed `ATOMIC_PROFILE=ci` team profile.
+ */
 export type TeamProfileConfigErrorCode =
+	| "libsql-removed"
 	| "unknown-profile"
 	| "incomplete-profile"
 	| "missing-url"
@@ -1193,6 +1190,7 @@ export const TEAM_PROFILE_ERROR_CODES: ReadonlySet<TeamProfileErrorCode> = new S
 
 export const TEAM_PROFILE_CONFIG_ERROR_CODES: ReadonlySet<TeamProfileConfigErrorCode> =
 	new Set<TeamProfileConfigErrorCode>([
+		"libsql-removed",
 		"unknown-profile",
 		"incomplete-profile",
 		"missing-url",
@@ -1306,7 +1304,7 @@ export class TeamProfileTimeoutError extends TeamProfileError {
 
 export interface TeamProfileConfigErrorFields {
 	readonly source: "sdk" | "cli" | "env";
-	/** The option, argument or variable, for example `tokenFile`, `--token-file` or `ATOMIC_TEAM_URL`. */
+	/** The option, argument or variable, for example `--password-file`, `<url>` or `ATOMIC_PROFILE`. */
 	readonly field: string;
 	readonly hint: string;
 	/** The token file the input names, when the failure is about that file. */
@@ -1317,8 +1315,8 @@ export interface TeamProfileConfigErrorFields {
 }
 
 /**
- * An invalid team input. It is a {@link StorageConfigError} whose `reason` equals `code`, so hosts that already
- * handle invalid `ATOMIC_STORAGE` values handle an invalid `ATOMIC_PROFILE=ci` setup the same way.
+ * An invalid shared-database input. It is a {@link StorageConfigError} whose `reason` equals `code`, so hosts that
+ * already handle invalid `ATOMIC_STORAGE` values handle it the same way.
  */
 export class TeamProfileConfigError extends StorageConfigError {
 	override readonly name = "TeamProfileConfigError" as const;

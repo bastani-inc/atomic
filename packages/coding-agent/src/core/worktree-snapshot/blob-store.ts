@@ -335,7 +335,7 @@ export const SNAPSHOT_COLLECTION_SESSION_REFS = 2_048;
 
 /**
  * The most bytes of legacy blobs one write transaction of a collection stamps or moves. A blob stored before blob ages
- * has an unknown age, which collection stamps; changing one column rewrites the whole row on SQLite and libSQL, its
+ * has an unknown age, which collection stamps; changing one column rewrites the whole row on SQLite, its
  * blob included, and holds the writer for as long as that takes, so a stamping transaction stops at this many bytes of
  * blobs. An in-row blob larger than {@link SNAPSHOT_BLOB_CHUNK_BYTES} is moved to chunks regardless of age,
  * at most this many bytes per transaction. Publishing frees its old value while holding the writer, with time
@@ -351,7 +351,7 @@ export const SNAPSHOT_LEGACY_STAMP_BYTES = 16 * SNAPSHOT_BLOB_CHUNK_BYTES;
 export const SNAPSHOT_CHUNK_MOVE_ROWS = 4;
 
 /**
- * The free space a chunk table's move to the row layout leaves on the file system of a SQLite or libSQL database file
+ * The free space a chunk table's move to the row layout leaves on the file system of a SQLite database file
  * beyond its copy, at least (#5694): the move starts only when the disk has room for the copy, its write-ahead log and
  * this much more, so other writes keep room on the disk.
  */
@@ -1277,7 +1277,7 @@ async function installSource(
 
 /**
  * Whether this build writes `source`'s {@link IndexSource.version} row only once its own backfill of the source is done:
- * on SQLite and libSQL, which builds before 0.9.88 also open (#5558).
+ * on SQLite, which builds before 0.9.88 also open (#5558).
  */
 function withholdsVersion(dialect: StorageDialect, source: IndexSource): boolean {
 	return dialect.name === "sqlite" && source.version !== undefined && source.own !== undefined;
@@ -1338,7 +1338,7 @@ async function readSourceStates(
 ): Promise<SourceState[]> {
 	// `also` asks, in the same statement, which of other objects exist, as `also.found` tells.
 	const names = [...sourceObjectNames(sources), ...(also?.names ?? [])];
-	// Builds before 0.9.88 open SQLite and libSQL databases only, so only there can a trigger of this build's name be
+	// Builds before 0.9.88 open SQLite databases only, so only there can a trigger of this build's name be
 	// one that indexes less.
 	const sqlite = dialect.name === "sqlite";
 	const signatures = sqlite ? sources.flatMap((source) => source.signature ?? []) : [];
@@ -2636,7 +2636,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	}
 
 	/**
-	 * Whether the file system of a SQLite or libSQL database file has room to copy what is left of the chunk table to the
+	 * Whether the file system of a SQLite database file has room to copy what is left of the chunk table to the
 	 * row layout (#5694): the copy grows the file by the bytes its free pages do not hold, and the write-ahead log can
 	 * hold every page the copy writes until a checkpoint moves them into the file, with
 	 * {@link SNAPSHOT_CHUNK_MOVE_HEADROOM_BYTES} left over; the database's own `freeBytes` says how much the file system

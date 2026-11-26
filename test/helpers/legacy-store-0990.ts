@@ -12,7 +12,7 @@
  *
  * Both take a storage `prefix`, as 0.9.90 would have named the tables under it (on PostgreSQL through
  * `postgresDialect.identifier`), and do nothing when the database already holds the workflow tables. The full store
- * expects a database without Atomic's tables under the prefix; the workflow schema goes beside any. SQLite and libSQL get the
+ * expects a database without Atomic's tables under the prefix; the workflow schema goes beside any. SQLite gets the
  * SQLite dialect's statements, PostgreSQL its own, in the schema the connection selects.
  */
 

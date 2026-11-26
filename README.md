@@ -786,7 +786,7 @@ Large, mixed, or growing contexts can make attention harder. Specialized agents 
 
 ### 4. Platform capabilities
 
-- **Shared storage (PostgreSQL & libSQL/Turso):** Persist sessions and multi-node Intercom across machines and CI runners with [Storage backends](https://docs.bastani.ai/storage) and [SDK storage backends](https://docs.bastani.ai/sdk/storage).
+- **Shared storage (PostgreSQL):** Persist sessions and multi-node Intercom across machines and CI runners with [Storage backends](https://docs.bastani.ai/storage) and [SDK storage backends](https://docs.bastani.ai/sdk/storage).
 - **Worktree snapshots, cross-machine resume, and blueprints:** Capture repository state alongside session history and rebuild dependencies automatically with `.atomic/blueprint.yaml` ([Worktree snapshots](https://docs.bastani.ai/worktree-snapshots), [Resume anywhere & blueprints](https://docs.bastani.ai/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint)).
 - **MCP servers:** Connect external tools and data sources over Model Context Protocol ([MCP servers](https://docs.bastani.ai/mcp-servers)).
 - **Structured decisions:** Run typed classifier or chat decisions with `decide()` and `generateStructuredOutput()` without starting a full agent turn ([Structured decisions](https://docs.bastani.ai/sdk/structured-decisions)).
@@ -807,7 +807,6 @@ All public packages publish on npm under `@bastani/atomic*` (Node.js 24.20+):
 | `@bastani/atomic-schema` | Zero-`eval` JSON Schema builders and validators | [Library docs](https://docs.bastani.ai/libraries/schema) |
 | `@bastani/atomic-telemetry` | Vendor-neutral telemetry contracts, metrics, and trace renderers | [Library docs](https://docs.bastani.ai/libraries/telemetry) |
 | `@bastani/atomic-storage-postgres` | Optional PostgreSQL 16+ storage adapter for shared sessions and Intercom | [Library docs](https://docs.bastani.ai/libraries/storage-postgres) |
-| `@bastani/atomic-storage-libsql` | Optional Turso / libSQL storage adapter for shared sessions and Intercom | [Library docs](https://docs.bastani.ai/libraries/storage-libsql) |
 
 `@bastani/atomic-natives` is an internal N-API native module installed automatically with `@bastani/atomic`. See [Standalone libraries](https://docs.bastani.ai/libraries).
 

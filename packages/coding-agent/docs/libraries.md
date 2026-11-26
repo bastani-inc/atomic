@@ -21,14 +21,13 @@ The six core libraries are bundled inside `@bastani/atomic` and provided to exte
 
 ## Storage adapter packages
 
-Remote SQL storage adapters are **not** bundled into `@bastani/atomic` and must be installed separately when you use PostgreSQL or libSQL/Turso:
+Remote SQL storage adapters are **not** bundled into `@bastani/atomic` and must be installed separately when you use PostgreSQL:
 
 | Package | What it does |
 | --- | --- |
 | [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) | PostgreSQL 16+ storage adapter (`openPostgresDatabase()`, cloud IAM, proxies, poolers) for shared sessions and Intercom |
-| [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql) | libSQL and Turso storage adapter (`openLibsqlDatabase()`, namespaces, WAL/sqld retries) for shared sessions and Intercom |
 
-For CLI usage, install storage adapters in user scope with `atomic install npm:@bastani/atomic-storage-postgres` or `atomic install npm:@bastani/atomic-storage-libsql`. For TypeScript SDK applications, install them with `npm install` alongside `@bastani/atomic` (see [SDK storage backends](/sdk/storage)).
+For CLI usage, install storage adapters in user scope with `atomic install npm:@bastani/atomic-storage-postgres`. For TypeScript SDK applications, install them with `npm install` alongside `@bastani/atomic` (see [SDK storage backends](/sdk/storage)).
 
 > **Native bindings:** `@bastani/atomic-natives` is an internal N-API native module installed automatically as a runtime dependency of `@bastani/atomic` (with per-platform binary packages in its `optionalDependencies`) and is not intended as a standalone user library.
 

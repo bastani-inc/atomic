@@ -10,8 +10,7 @@ export interface RoundTrips {
 /**
  * Counts the round trips a storage backend of the matrix makes, as each pays for one: on PostgreSQL the queries a
  * connection sends while none of its own are unanswered; on a SQLite file the requests a connection sends its thread
- * while none of its own are unanswered; on a libSQL server the HTTP requests sent while none is unanswered. Requests
- * sent together, while others are out, ride on their round trip.
+ * while none of its own are unanswered. Requests sent together, while others are out, ride on their round trip.
  */
 export function countStorageRoundTrips(backend: { readonly name: string }): RoundTrips {
 	const name = backend.name.toLowerCase();
@@ -35,25 +34,6 @@ export function countStorageRoundTrips(backend: { readonly name: string }): Roun
 			}
 		});
 		return { take, restore: interception.restore };
-	}
-	if (name.includes("libsql")) {
-		const original = globalThis.fetch;
-		let unanswered = 0;
-		globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
-			if (unanswered === 0) trips++;
-			unanswered++;
-			try {
-				return await original(...args);
-			} finally {
-				unanswered--;
-			}
-		}) as typeof fetch;
-		return {
-			take,
-			restore: () => {
-				globalThis.fetch = original;
-			},
-		};
 	}
 	throw new Error(`No round-trip counter for the ${backend.name} backend`);
 }

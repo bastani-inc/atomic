@@ -135,7 +135,7 @@ describe("tool-output references in copies and exports (#4379)", () => {
 				assert.ok(isSessionBlobError(error));
 				assert.equal(error.code, "blobs-unsupported");
 				assert.equal(error.adapter, "jsonl");
-				assert.match(error.hint, /SQLite or libSQL/);
+				assert.match(error.hint, /SQLite or PostgreSQL/);
 				return true;
 			});
 			await assert.rejects(manager.rebindStore(jsonl, false), SessionBlobError);

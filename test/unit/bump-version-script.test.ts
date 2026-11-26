@@ -329,7 +329,7 @@ describe("scripts/bump-version.ts", () => {
 		}
 	});
 
-	test("stamping the repository's own manifests keeps every lock entry in step, including the libSQL adapter (#3857)", () => {
+	test("stamping the repository's own manifests keeps every lock entry in step, including the PostgreSQL adapter (#3857)", () => {
 		// `npm ci` on the tagged release commit refuses a lock whose workspace entries disagree with their
 		// package.json, so a package the stamp, or its dependency ranges, mishandles would break the release.
 		const repository = process.cwd();
@@ -369,13 +369,11 @@ describe("scripts/bump-version.ts", () => {
 				}
 			}
 
-			// The adapter is stamped like the rest, but it asks nothing of the exact Atomic version and keeps its
-			// own driver pin.
-			const adapter = readJson(join(root, "packages", "storage-libsql", "package.json"));
-			assert.equal(adapter.name, "@bastani/atomic-storage-libsql");
+			// The adapter is stamped like the rest, but it asks nothing of the exact Atomic version.
+			const adapter = readJson(join(root, "packages", "storage-postgres", "package.json"));
+			assert.equal(adapter.name, "@bastani/atomic-storage-postgres");
 			assert.equal(adapter.private, undefined);
-			assert.equal(adapter.peerDependencies?.["@bastani/atomic"], "*");
-			assert.equal(adapter.dependencies?.["@libsql/client"], "0.18.0");
+			assert.equal(adapter.version, "1.2.3-alpha.1");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
@@ -14,7 +14,8 @@ const CHILD_TIMEOUT_MS = 20_000;
 
 let dir = "";
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "atomic-spare-thread-"));
+	// Opens report the database's real path, and the temporary directory is reached through a link on macOS (/var).
+	dir = realpathSync(mkdtempSync(join(tmpdir(), "atomic-spare-thread-")));
 });
 afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });

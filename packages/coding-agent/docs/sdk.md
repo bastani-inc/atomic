@@ -146,7 +146,6 @@ Sessions default to local SQLite at `~/.atomic/workflows/journal.sqlite` with th
 | Local SQLite (default) | Built into `@bastani/atomic` (`@bastani/atomic/storage`) | `{ kind: "sqlite", path, prefix? }` or caller-owned `openNodeSqliteDatabase()` and `SqlSessionStore.open()` |
 | JSONL directory | Built into `@bastani/atomic` | `{ kind: "jsonl", dir }` or caller-owned `JsonlSessionStore.open()` |
 | In-memory | Built into `@bastani/atomic` | `new MemorySessionStore()` (caller-owned) or `{ kind: "memory" }` (discarded on `dispose()`) |
-| libSQL / Turso | [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql) | `{ kind: "adapter", module: LIBSQL_ADAPTER_PACKAGE, ... }` or caller-owned `openLibsqlDatabase()` |
 | PostgreSQL (16+ for sessions) | [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) | `{ kind: "adapter", module: POSTGRES_ADAPTER_PACKAGE, ... }` or caller-owned `openPostgresDatabase()` |
 
 Quick local SQLite session. Atomic opens the store and closes it in `dispose()`:
@@ -190,7 +189,7 @@ try {
 }
 ```
 
-- **`sessionStore` vs. `storage`:** `sessionStore` accepts a `SessionStore` instance (`SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`) or a tagged selection (`{ kind: "sqlite" | "jsonl" | "memory" | "database" | "adapter", ... }`). `storage` uses the `settings.json` shape returned by `teamProfileSelection()` (`{ path, prefix? }`, `{ database, prefix? }`, `{ memory: true }`, or `{ adapter, options?, secrets?, prefix? }`) and does not support JSONL.
+- **`sessionStore` vs. `storage`:** `sessionStore` accepts a `SessionStore` instance (`SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`) or a tagged selection (`{ kind: "sqlite" | "jsonl" | "memory" | "database" | "adapter", ... }`). `storage` uses the `settings.json` shape (`{ path, prefix? }`, `{ database, prefix? }`, `{ memory: true }`, or `{ adapter, options?, secrets?, prefix? }`) and does not support JSONL.
 - **Precedence:** Atomic resolves storage in order from `sessionManager`, `sessionStore`, `storage`, process flags and variables (`ATOMIC_SESSIONS_STORAGE` and `ATOMIC_STORAGE`), settings (`sessions.storage` before `storage`), and default SQLite. Memory is never an automatic fallback.
 - **Ownership and mutations:** Atomic closes stores it opened from selection objects during `dispose()`, while leaving caller-owned `SessionStore`, `SessionManager`, and `database` instances open. Await every `SessionManager` write and every `atomic.appendEntry`, `setSessionName`, `setLabel`, `setThinkingLevel`, and `cycleThinkingLevel` call; there is no `flush()` method. `ExtensionContext.sessionSignal` aborts when reload or shutdown starts so extensions can cancel waits while finishing in-flight writes.
 

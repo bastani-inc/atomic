@@ -54,7 +54,7 @@ function describeBroker(
 		`Intercom broker: running (pid ${report.pid}, ${report.sessions} session${report.sessions === 1 ? "" : "s"} connected)`,
 		report.storage?.digest === expected?.digest
 			? "Storage: matches the current selection"
-			: `Storage: differs from the current selection${report.storage?.source === "env" ? " (a session started it with ATOMIC_STORAGE, ATOMIC_PROFILE=ci or --storage)" : ""}; run \`${APP_NAME} intercom restart\``,
+			: `Storage: differs from the current selection${report.storage?.source === "env" ? " (a session started it with ATOMIC_STORAGE or --storage)" : ""}; run \`${APP_NAME} intercom restart\``,
 		`Multi-node routing: ${control.describeMultiNodeStatus(report.multiNode)}`,
 		`Protocol: ${describeProtocol(report.protocol ?? LEGACY_PROTOCOL)}${(report.protocol ?? LEGACY_PROTOCOL).max < control.BROKER_PROTOCOL.max ? `, older than this version's ${describeProtocol(control.BROKER_PROTOCOL)}; the next session of this version replaces it` : ""}`,
 	];

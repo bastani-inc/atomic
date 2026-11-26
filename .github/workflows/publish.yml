@@ -892,7 +892,7 @@ jobs:
               if (!existsSync(path)) continue;
               const pkg = await Bun.file(path).json();
               if (pkg.version !== process.env.VERSION) failures.push(`${path} has version ${pkg.version}`);
-              if (!["@bastani/atomic", "@bastani/atomic-natives", "@bastani/atomic-storage-libsql", "@bastani/atomic-storage-postgres", ...forkedPackages.keys()].includes(pkg.name) && pkg.private !== true) failures.push(`${pkg.name} must remain private`);
+              if (!["@bastani/atomic", "@bastani/atomic-natives", "@bastani/atomic-storage-postgres", ...forkedPackages.keys()].includes(pkg.name) && pkg.private !== true) failures.push(`${pkg.name} must remain private`);
             }
             const forks = [];
             for (const [name, dir] of forkedPackages) {
@@ -901,11 +901,9 @@ jobs:
               if (atomic.dependencies?.[name] !== undefined && atomic.dependencies[name] !== process.env.VERSION) failures.push(`@bastani/atomic must depend on ${name}@${process.env.VERSION}`);
               forks.push(fork);
             }
-            const storageLibsql = await Bun.file("packages/storage-libsql/package.json").json();
-            if (storageLibsql.name !== "@bastani/atomic-storage-libsql" || storageLibsql.version !== process.env.VERSION || storageLibsql.private) failures.push("invalid @bastani/atomic-storage-libsql identity");
             const storagePostgres = await Bun.file("packages/storage-postgres/package.json").json();
             if (storagePostgres.name !== "@bastani/atomic-storage-postgres" || storagePostgres.version !== process.env.VERSION || storagePostgres.private) failures.push("invalid @bastani/atomic-storage-postgres identity");
-            for (const pkg of [atomic, natives, ...forks, storageLibsql, storagePostgres]) for (const deps of [pkg.dependencies, pkg.optionalDependencies, pkg.peerDependencies]) for (const [name, range] of Object.entries(deps ?? {})) if (String(range).startsWith("workspace:")) failures.push(`workspace range: ${name}`);
+            for (const pkg of [atomic, natives, ...forks, storagePostgres]) for (const deps of [pkg.dependencies, pkg.optionalDependencies, pkg.peerDependencies]) for (const [name, range] of Object.entries(deps ?? {})) if (String(range).startsWith("workspace:")) failures.push(`workspace range: ${name}`);
             for (const path of [atomic.main, atomic.types, atomic.bin?.atomic, "dist/builtin", "dist/builtin/subagents/package.json", "dist/builtin/mcp/package.json", "dist/builtin/web-access/package.json", "dist/builtin/intercom/package.json"]) if (!path || !existsSync(`packages/coding-agent/${path}`)) failures.push(`missing ${path}`);
             for (const native of ["darwin-arm64","darwin-x64","linux-arm64-gnu","linux-arm64-musl","linux-x64-gnu","linux-x64-musl","win32-arm64-msvc","win32-x64-msvc"]) if (!existsSync(`packages/natives/native/atomic_natives.${native}.node`)) failures.push(`missing native ${native}`);
             if (failures.length) throw new Error(failures.join("\n"));
@@ -915,8 +913,8 @@ jobs:
           cp packages/coding-agent/binaries/atomic-*.tar.gz release-assets/
           bun run scripts/build-release-notes.ts "$VERSION" --out release-assets/RELEASE_NOTES.md
           bun run --cwd packages/ai build
-          for dir in packages/natives/npm/* packages/natives packages/schema packages/telemetry packages/ai packages/tui packages/agent packages/codemode packages/storage-libsql packages/storage-postgres packages/coding-agent; do npm pack "./$dir" --pack-destination npm-packages; done
-          test "$(find npm-packages -name '*.tgz' -type f | wc -l | tr -d ' ')" = 18
+          for dir in packages/natives/npm/* packages/natives packages/schema packages/telemetry packages/ai packages/tui packages/agent packages/codemode packages/storage-postgres packages/coding-agent; do npm pack "./$dir" --pack-destination npm-packages; done
+          test "$(find npm-packages -name '*.tgz' -type f | wc -l | tr -d ' ')" = 17
           bun -e '
             const expected = new Set(["@bastani/atomic-natives-darwin-arm64","@bastani/atomic-natives-darwin-x64","@bastani/atomic-natives-linux-arm64-gnu","@bastani/atomic-natives-linux-arm64-musl","@bastani/atomic-natives-linux-x64-gnu","@bastani/atomic-natives-linux-x64-musl","@bastani/atomic-natives-win32-arm64-msvc","@bastani/atomic-natives-win32-x64-msvc"]);
             const root = await Bun.file("packages/natives/package.json").json();
@@ -1059,10 +1057,10 @@ jobs:
         # from these lines before it tags a release, so they stay in this file.
         run: |
           set -euo pipefail
-          packages=(@bastani/atomic-natives-darwin-arm64 @bastani/atomic-natives-darwin-x64 @bastani/atomic-natives-linux-arm64-gnu @bastani/atomic-natives-linux-arm64-musl @bastani/atomic-natives-linux-x64-gnu @bastani/atomic-natives-linux-x64-musl @bastani/atomic-natives-win32-arm64-msvc @bastani/atomic-natives-win32-x64-msvc @bastani/atomic-natives @bastani/atomic-schema @bastani/atomic-telemetry @bastani/atomic-ai @bastani/atomic-tui @bastani/atomic-agent-core @bastani/atomic-codemode @bastani/atomic-storage-libsql @bastani/atomic-storage-postgres @bastani/atomic)
+          packages=(@bastani/atomic-natives-darwin-arm64 @bastani/atomic-natives-darwin-x64 @bastani/atomic-natives-linux-arm64-gnu @bastani/atomic-natives-linux-arm64-musl @bastani/atomic-natives-linux-x64-gnu @bastani/atomic-natives-linux-x64-musl @bastani/atomic-natives-win32-arm64-msvc @bastani/atomic-natives-win32-x64-msvc @bastani/atomic-natives @bastani/atomic-schema @bastani/atomic-telemetry @bastani/atomic-ai @bastani/atomic-tui @bastani/atomic-agent-core @bastani/atomic-codemode @bastani/atomic-storage-postgres @bastani/atomic)
           # A package name that has never been published has no npm trusted publisher yet, so an
           # OIDC publish of it would fail the release. These names publish only once they exist.
-          requires_registered_name=(@bastani/atomic-storage-libsql @bastani/atomic-storage-postgres)
+          requires_registered_name=(@bastani/atomic-storage-postgres)
           deferred=()
           for name in "${requires_registered_name[@]}"; do deferred+=(--requires-registered "$name"); done
           release-tooling/scripts/release/publish-npm.sh --payload-dir payload/npm-packages --registry https://registry.npmjs.org "${deferred[@]}" "${packages[@]}"

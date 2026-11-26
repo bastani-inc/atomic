@@ -10,35 +10,25 @@
 import type { CompileCacheDeferral } from "./compile-cache.ts";
 import * as compileCache from "./compile-cache.ts";
 
-const deferrals: Partial<
-	Pick<
-		typeof compileCache,
-		| "compileCacheDeferral"
-		| "COMPILE_CACHE_ENGINE_WARMUP_ENV"
-		| "COMPILE_CACHE_ENGINE_MATCH_HOST_ENV"
-		| "hostAutoSizedEngineHeap"
-	>
-> = compileCache;
+const deferrals: Partial<Pick<typeof compileCache, "compileCacheDeferral" | "COMPILE_CACHE_ENGINE_WARMUP_ENV">> =
+	compileCache;
 
 /** The cache this process left cold for a helper, if any. */
 export function processCompileCacheDeferral(): CompileCacheDeferral | undefined {
 	return deferrals.compileCacheDeferral?.();
 }
 
+/**
+ * Gives an engine child no environment. Node.js 22 engines needed it to align their compile-cache tag with their host's
+ * (#6222); still exported because a process of 0.10.4 that an in-place update caught imports it from this module's
+ * shared file.
+ */
+export function engineCompileCacheMatchHostEnv(_engineRuntimeArgs: readonly string[]): Record<string, string> {
+	return {};
+}
+
 /** The environment an engine child gets when this process leaves its cold cache to a helper that warms the engine's too. */
 export function engineCompileCacheWarmupEnv(): Record<string, string> {
 	const name = deferrals.COMPILE_CACHE_ENGINE_WARMUP_ENV;
 	return name !== undefined && processCompileCacheDeferral() ? { [name]: "1" } : {};
-}
-
-/**
- * The environment an auto-sized Node engine child gets so on Node 22 it aligns its compile-cache tag with the
- * untouched host (#6222). Omitted on Bun or when the host itself passed an explicit heap size.
- */
-export function engineCompileCacheMatchHostEnv(engineRuntimeArgs: readonly string[]): Record<string, string> {
-	if ("bun" in process.versions) return {};
-	const name = deferrals.COMPILE_CACHE_ENGINE_MATCH_HOST_ENV;
-	const check = deferrals.hostAutoSizedEngineHeap;
-	if (name === undefined || check === undefined) return {};
-	return check(process.execArgv, process.env.NODE_OPTIONS, engineRuntimeArgs) ? { [name]: "1" } : {};
 }

@@ -499,17 +499,11 @@ function wholeCountPerAgent(delta: number, agents: number): number {
 }
 
 /**
- * On Node before 24, AsyncLocalStorage runs on promise hooks, and the engine then keeps one more promise while the
- * call's promise adopts the tool's.
- */
-const ADOPTION_ON_PROMISE_HOOKS = Number(process.versions.node.split(".")[0]) < 24 ? 1 : 0;
-
-/**
  * What one released agent may keep beyond its stored history: the long tool's own promise, the call's promise and the
  * result it makes, and the host's forwarding reaction; no abort signal; and its history in at most log2 of its size
  * buffers, plus its header.
  */
-const RELEASED_AGENT_PROMISES = 4 + ADOPTION_ON_PROMISE_HOOKS;
+const RELEASED_AGENT_PROMISES = 4;
 
 describe("a released agent keeps its history and its long call's delivery, nothing else (#4403)", () => {
 	test(

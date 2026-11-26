@@ -26,12 +26,11 @@ export interface StorageSchemaCatalog {
 	/** Whether `table` had a column named `column`. */
 	hasColumn(table: string, column: string): boolean;
 	/**
-	 * Whether a function named `name` existed in the schema and this role may run it: PostgreSQL only, absent on SQLite
-	 * and libSQL.
+	 * Whether a function named `name` existed in the schema and this role may run it: PostgreSQL only, absent on SQLite.
 	 */
 	readonly hasFunction?: (name: string) => boolean;
 	/**
-	 * What kind of object `name` was on SQLite and libSQL (`table`, `index`, `view` or `trigger`), from one read of
+	 * What kind of object `name` was on SQLite (`table`, `index`, `view` or `trigger`), from one read of
 	 * `sqlite_schema`; undefined when there was none, and always on PostgreSQL.
 	 */
 	readonly sqliteObjectType?: (name: string) => string | undefined;
@@ -57,7 +56,7 @@ UNION ALL SELECT 'function', p.proname::text, CASE WHEN has_function_privilege(p
 type CatalogRow = SqliteRow & { kind: string; name: string; detail: string | null };
 
 /**
- * Every object of a SQLite or libSQL database and every column of its tables, generated ones included, in one
+ * Every object of a SQLite database and every column of its tables, generated ones included, in one
  * statement and so one snapshot: what `tableExists`, `columnExists` and `schemaObjects` ask one at a time (#6560).
  */
 const SQLITE_CATALOG_SQL = `SELECT 'object' AS kind, name, type AS detail FROM sqlite_master
@@ -65,7 +64,7 @@ UNION ALL SELECT 'column', m.name, c.name FROM sqlite_master AS m JOIN pragma_ta
 	WHERE m.type = 'table'`;
 
 /**
- * @internal The table under `ledger`'s prefix where SQLite and libSQL record which revision of each store's schema
+ * @internal The table under `ledger`'s prefix where SQLite record which revision of each store's schema
  * setup ran, and the database's schema version (`PRAGMA schema_version`) once it had: `domain`, `revision`,
  * `schema_version`. SQLite counts every change to the schema in that version, whoever makes it, an older Atomic that
  * records nothing included; a revision is believed only while the version still matches, so any later change is checked
@@ -111,7 +110,7 @@ export interface SqliteSchemaStamp {
  * transaction leaves it: a later open believes their revisions until the schema changes again (#6560). Creates the
  * stamps table first, unless `options.tableExists`, so its own creation is part of the version recorded. With
  * `options.last`, the stamps are the transaction's last statement: where its connection is pipelined, they go out with
- * its commit. SQLite and libSQL only; every stamp must share a ledger.
+ * its commit. SQLite only; every stamp must share a ledger.
  */
 export async function recordSqliteSchemaStamps(
 	tx: SqliteExecutor,
@@ -138,7 +137,7 @@ export async function recordSqliteSchemaStamps(
 	await tx.run(upsert.sql, ...upsert.params);
 }
 
-/** The catalog of a SQLite or libSQL database, or undefined when it cannot be read, such as on a SQLite too old. */
+/** The catalog of a SQLite database, or undefined when it cannot be read, such as on a SQLite too old. */
 async function readSqliteCatalog(database: SqliteExecutor, ledger: string): Promise<StorageSchemaCatalog | undefined> {
 	let rows: CatalogRow[];
 	try {
@@ -227,7 +226,7 @@ async function readPostgresCatalog(
 /**
  * Reads `database`'s schema and the versions `ledger` records, in one read-only transaction that takes no lock. On
  * PostgreSQL, an adapter that read them when it opened gives them once (`takeOpenedCatalog`), and the first open reads
- * nothing (#6560). On SQLite and libSQL, which record no versions, reads the schema alone in one statement. Undefined
+ * nothing (#6560). On SQLite, which record no versions, reads the schema alone in one statement. Undefined
  * when a read fails: the stores then check each object themselves.
  */
 export async function readStorageSchemaCatalog(
@@ -379,7 +378,7 @@ export async function schemaCatalogOf(
 }
 
 /**
- * @internal The revisions the stamps under `ledger` record for the stores of `database` (SQLite and libSQL), by stamp
+ * @internal The revisions the stamps under `ledger` record for the stores of `database` (SQLite), by stamp
  * key (`schema:<domain>`), as the open of `database` in progress read them; only those whose schema version was the
  * database's then. Undefined outside such an open, and where none could be read, such as before any stamp. The first
  * question reads them after the open's catalog, and only where it holds their table.
@@ -391,7 +390,7 @@ export async function sqliteSchemaStampsOf(
 	const scope = scopes.get(database);
 	if (scope === undefined || scope.ledger !== ledger || dialectOf(database).name !== "sqlite") return undefined;
 	// Read once the catalog shows their table: a read of a missing table would fail, which costs a request, and makes a
-	// libSQL file driver replace its connection.
+	// driver may replace its connection.
 	scope.stamps ??= schemaCatalogOf(database, ledger).then((catalog) =>
 		catalog?.hasTable(sqliteSchemaStampTable(ledger)) === true
 			? readSqliteSchemaStamps(database, ledger).then(
@@ -405,7 +404,7 @@ export async function sqliteSchemaStampsOf(
 
 /**
  * @internal Tells the open of `database` in progress that it checked `setup`, the schema setup `stamp` names, without
- * its stamp (SQLite and libSQL only): it ran it in a transaction that stamped it, found every object it creates in the
+ * its stamp (SQLite only): it ran it in a transaction that stamped it, found every object it creates in the
  * catalog (with `verify`), or leaves it to the end (`deferred`). A schema change later in the same open, such as the
  * next store's setup or a column it adds, leaves a stamp behind the schema version, and a store found in the catalog has
  * none that is current, so the next open would check it again. The open's end reads the stamps once more and, where any

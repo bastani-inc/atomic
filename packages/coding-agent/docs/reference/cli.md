@@ -374,16 +374,13 @@ Passing `--help` or `-h` after `--` (for example `atomic mcp add srv -- cmd --he
 
 ```bash
 atomic storage status [--json]                                       # Selection, source, adapter, and connection per domain
-atomic storage join <url> [--token-file <path>] [--prefix <prefix>]  # Use a shared libSQL or Turso database
 atomic storage join <postgres-url> --password-file <path>|--token-file <path>|--auth azure|aws|gcp [--prefix <prefix>]  # Use a shared PostgreSQL database
 atomic storage migrate [--db <url> [--password-file <path> | --token-file <path> | --auth azure|aws|gcp]] [--prefix <prefix>]
 atomic storage move-snapshot-chunks <sqlite-file> [--prefix <prefix>]
 atomic storage search-session <sqlite-file> <session-id> <pattern> [cursor]
 atomic storage export <dir> [--sessions] [--limit <n>] [--since <time>] [--storage <json> | --storage-file <path>]
 atomic storage import <dir> [--sessions] [--storage <json> | --storage-file <path>]
-atomic team join <url> [--token-file <path>] [--prefix <prefix>]     # Share Intercom (libSQL/Turso); sessions stay local
 atomic team status [--json]                                          # Profile in effect plus the storage report
-atomic team leave                                                    # Remove what team join wrote
 atomic intercom status                                               # This machine's Intercom broker and multi-node state
 atomic intercom restart                                              # Replace the broker so it reads the current selection
 atomic intercom upgrade                                              # Replace a broker an older Atomic started, when safe
@@ -391,14 +388,12 @@ atomic intercom upgrade                                              # Replace a
 
 `atomic storage status` reports the selected storage for sessions and Intercom, where each selection came from (environment variable, project settings, global settings, or default), any outranked selections, whether each adapter loads, and whether each database answers `SELECT 1`. It also shows the running Intercom broker, its multi-node routing state, and peer brokers live in the shared database. It modifies nothing and exits `1` if a selection is invalid, an adapter fails to load, or a database does not answer.
 
-`atomic storage join` verifies the credential and connection (`SELECT 1` with a 15-second timeout) using `@bastani/atomic-storage-libsql` (for libSQL or Turso) or `@bastani/atomic-storage-postgres` (for `postgres://` or `postgresql://`), writes only the global `storage` setting, and reports any environment variables or settings that override it. It creates no tables and prints the install command if the adapter package is missing.
+`atomic storage join` verifies the credential and connection (`SELECT 1` with a 15-second timeout) using `@bastani/atomic-storage-postgres` (for `postgres://` or `postgresql://` URLs), writes only the global `storage` setting, and reports any environment variables or settings that override it. It creates no tables and prints the install command if the adapter package is missing.
 
-- For libSQL, `--token-file` is required except for absolute `file:` URLs. Atomic copies the trimmed token into a new `storage-token.<id>` file (mode `600`) in the agent directory without overwriting earlier token files. Relative `file:` URLs and URLs carrying embedded credentials or `authToken` parameters are rejected.
-- For PostgreSQL, pass exactly one of `--password-file` (copied to a mode `600` `storage-token.<id>` file), `--token-file` (referenced in place and re-read on every new connection), or `--auth azure|aws|gcp`. Passwords in the URL are rejected, and settings store only file references.
+- Pass exactly one of `--password-file` (copied to a mode `600` `storage-token.<id>` file), `--token-file` (referenced in place and re-read on every new connection), or `--auth azure|aws|gcp`. Passwords in the URL are rejected, and settings store only file references.
+- A libSQL URL (`libsql://`, `https://`, `http://`, `wss://`, `ws://`, or `file:`) is refused with `libsql-removed`: Atomic 0.10.11 removed libSQL support. See [Moving off libSQL](/storage#moving-off-libsql).
 
-`atomic team join` supports **libSQL and Turso** databases (`--token-file` and `--prefix`; PostgreSQL `--password-file` and `--auth` options are only for `atomic storage join`). It runs the same validation and token handling, writes global `storage` (the team database) and `sessions.storage` (local default store) together, restarts the Intercom broker, and prints the profile and storage status. Nothing is written if validation fails.
-
-`atomic team status` adds the active profile (`individual`, `team`, `ci`, or `custom`) and project Intercom group. `atomic team leave` reverts only what `team join` wrote, deletes its token file unless another setting references it, and restarts the broker. See [Team and CI setup](/guides/team-setup).
+`atomic team status` adds the active profile (`individual`, `team`, `ci`, or `custom`) and project Intercom group. `atomic team join` and `atomic team leave` were removed with libSQL support in 0.10.11 and fail with `libsql-removed`. See [Team and CI setup](/guides/team-setup).
 
 `atomic storage migrate` creates or upgrades session and Intercom tables in the selected shared database (or `--db`). Run it as the database owner after joining or upgrading Atomic so runtime-only roles do not need schema-creation privileges (DDL).
 
@@ -406,7 +401,7 @@ atomic intercom upgrade                                              # Replace a
 
 `atomic storage search-session <sqlite-file> <session-id> <pattern> [cursor]` searches entries of a stored session in a local SQLite database by regex pattern, optionally resuming pagination from `cursor`. See [Recalling earlier work](/sessions#recalling-earlier-work).
 
-`atomic storage export` writes sessions to `<dir>/sessions/<sessionId>.jsonl` (compatible with `atomic --import`). Each file is replaced whole; identical files are skipped and no files are deleted. `--limit <n>` exports at most `n` most recently modified sessions, and `--since <time>` filters by modification date or timestamp. Exporting a shared libSQL or PostgreSQL database requires `--storage` or `--storage-file` explicitly.
+`atomic storage export` writes sessions to `<dir>/sessions/<sessionId>.jsonl` (compatible with `atomic --import`). Each file is replaced whole; identical files are skipped and no files are deleted. `--limit <n>` exports at most `n` most recently modified sessions, and `--since <time>` filters by modification date or timestamp. Exporting a shared PostgreSQL database requires `--storage` or `--storage-file` explicitly.
 
 `atomic storage import` validates every file in `<dir>/sessions` before writing, then adds new sessions and newer entries for existing sessions while ignoring other directories. Partial failures list what was and was not written so you can rerun safely. Both `export` and `import` accept `--sessions`, plus `--storage <json>` or `--storage-file <path>` to target a specific store.
 
@@ -435,7 +430,7 @@ Because `prebuild` executes project code, the project must be trusted or `--appr
 
 See [Environment variables](/environment-variables) for the complete registry, exact boolean parsing rules, legacy `PI_*` aliases, color controls, and diagnostic knobs. Key CLI variables:
 
-- **Config & storage:** `ATOMIC_CODING_AGENT_DIR`, `ATOMIC_CODING_AGENT_SESSION_DIR`, `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, `ATOMIC_PROFILE` + `ATOMIC_TEAM_*` ([Team and CI setup](/guides/team-setup#ci-and-swarms)), `ATOMIC_PACKAGE_DIR`.
+- **Config & storage:** `ATOMIC_CODING_AGENT_DIR`, `ATOMIC_CODING_AGENT_SESSION_DIR`, `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, `ATOMIC_PACKAGE_DIR`.
 - **Network & updates:** `ATOMIC_OFFLINE`, `ATOMIC_SKIP_VERSION_CHECK`, `ATOMIC_SELF_UPDATE_COMMAND` ([Custom update command](#custom-update-command)), `ATOMIC_TELEMETRY`, `ATOMIC_CACHE_RETENTION` ([Prompt-cache retention](/environment-variables#prompt-cache-retention)).
 - **Interactive & shell:** `NO_COLOR`, `FORCE_COLOR`, `ATOMIC_REDUCED_MOTION`, `ATOMIC_DEBUG`, `ATOMIC_NO_PTY`, `ATOMIC_STDIN_TIMEOUT_MS`, `VISUAL` / `EDITOR`, `AI_AGENT` (set to `atomic` on Atomic and its child processes).
 

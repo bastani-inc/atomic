@@ -167,8 +167,7 @@
                   "libraries/codemode",
                   "libraries/schema",
                   "libraries/telemetry",
-                  "libraries/storage-postgres",
-                  "libraries/storage-libsql"
+                  "libraries/storage-postgres"
                 ]
               }
             ]
@@ -343,6 +342,7 @@
     { "source": "/storage/libsql", "destination": "/storage#moving-off-libsql" },
     { "source": "/libsql", "destination": "/storage#moving-off-libsql" },
     { "source": "/turso", "destination": "/storage#moving-off-libsql" },
+    { "source": "/libraries/storage-libsql", "destination": "/storage#moving-off-libsql" },
     { "source": "/decisions", "destination": "/sdk/structured-decisions" },
     { "source": "/structured-decisions", "destination": "/sdk/structured-decisions" },
     { "source": "/compactors", "destination": "/compaction#customize-morph-or-add-a-remote-compactor" },

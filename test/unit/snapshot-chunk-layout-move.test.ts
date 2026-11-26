@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.ts";
 import type { SerializedWorkspaceError } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
-import { removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 
 /**
  * The free space the file system of a database file reports to the move, when a test sets it (#5694); otherwise what the
@@ -48,7 +47,6 @@ type WorkspaceCollectionError = InstanceType<typeof WorkspaceCollectionError>;
 const { collectSnapshotGarbage, resetSnapshotCollectionScheduleForTesting, scheduleSnapshotCollection } = await import(
 	"../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts"
 );
-const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");
 
 /** The snapshot blob store of Atomic 0.9.89, vendored unmodified (test/fixtures/snapshot-store-0.9.89/README.md). */
 interface Release0989BlobStore {
@@ -114,9 +112,7 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	resetSnapshotCollectionScheduleForTesting();
 	while (closers.length > 0) await closers.pop()?.();
-	// A closed libSQL connection can keep its file open until its statements are collected: Windows then refuses to
-	// delete the file for a moment.
-	await removeLibsqlDirectory(directory);
+	rmSync(directory, { recursive: true, force: true });
 });
 
 /** Calls `afterCommit` after each transaction `database` commits, and waits for it. */
@@ -236,7 +232,7 @@ test("offline maintenance moves a closed local chunk table with room for one cop
 	}
 });
 
-for (const adapter of ["node-sqlite", "libsql"] as const) {
+for (const adapter of ["node-sqlite"] as const) {
 	for (const prefix of ["", "custom_"]) {
 		describe(`${adapter}, prefix '${prefix}': moving a 0.9.89 chunk table to the row layout (#5541)`, () => {
 			const chunks = `${prefix}snapshot_blob_chunks`;
@@ -244,10 +240,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			let files = 0;
 
 			async function openDatabase(path = join(directory, `store-${files++}.sqlite`)): Promise<SqliteDatabase> {
-				const database =
-					adapter === "node-sqlite"
-						? await openNodeSqliteDatabase(path)
-						: await openLibsqlDatabase({ url: pathToFileURL(path).href });
+				const database = await openNodeSqliteDatabase(path);
 				closers.push(() => database.close());
 				return database;
 			}
@@ -753,8 +746,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 					// Collector A finds the partial copy; collector B, on another connection, then finishes the whole move, or
 					// finds no room for it and drops the copy, before A reads anything else.
 					const { location } = database.descriptor;
-					const path = adapter === "libsql" ? fileURLToPath(location) : location;
-					const collectorB = await SqlSnapshotBlobStore.open(await openDatabase(path), prefix);
+					const collectorB = await SqlSnapshotBlobStore.open(await openDatabase(location), prefix);
 					let interleaved = false;
 					const paused: SqliteDatabase = {
 						...database,

@@ -929,7 +929,7 @@ describe("WorkspaceCollectionError (#4355)", () => {
 
 	test("shows the reason of the innermost failure a storage error wraps, as a remote database reports it (#5622)", () => {
 		const storage = new StorageUnavailableError(
-			{ adapter: "libsql", location: "https://db.example" },
+			{ adapter: "postgres", location: "https://db.example" },
 			new Error("SQLITE_FULL: SQLite error: database or disk is full", {
 				cause: new Error("SQLite error: database or disk is full"),
 			}),
@@ -950,7 +950,7 @@ describe("WorkspaceCollectionError (#4355)", () => {
 
 	test("names no trigger or view from the storage failure's words alone, which can mean another object of a longer or shorter name (#5622)", () => {
 		const remote = new StorageUnavailableError(
-			{ adapter: "libsql", location: "https://db.example" },
+			{ adapter: "postgres", location: "https://db.example" },
 			new Error("SQLITE_UNKNOWN: SQLite error: error in trigger audit_log: no such table: main.audit", {
 				cause: new Error("SQLite error: error in trigger audit_log: no such table: main.audit"),
 			}),

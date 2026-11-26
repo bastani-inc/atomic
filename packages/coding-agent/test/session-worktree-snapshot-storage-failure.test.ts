@@ -36,7 +36,7 @@ afterEach(async () => {
 const writing = (path: string) =>
 	fauxAssistantMessage([fauxToolCall("write", { path, content: "x" })], { stopReason: "toolUse" });
 
-const where = { adapter: "libsql", location: "http://db" };
+const where = { adapter: "postgres", location: "http://db" };
 for (const [index, failure] of [
 	() => new StorageUnavailableError(where, new Error("connection reset")),
 	() => new StoragePayloadTooLargeError(5_000_000, 6_000_000, { descriptor: where }),

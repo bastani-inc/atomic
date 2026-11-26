@@ -51,7 +51,7 @@ Authenticate with `/login`, run `atomic auth login <provider>` in your shell, or
 
 ## Explore by capability
 
-- **Sessions, snapshots, and resume:** Save and branch in [Sessions](/sessions), capture repository state with [Worktree snapshots](/worktree-snapshots), resume across machines with [Environment blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint), and share state over PostgreSQL or Turso/libSQL in [Storage backends](/storage).
+- **Sessions, snapshots, and resume:** Save and branch in [Sessions](/sessions), capture repository state with [Worktree snapshots](/worktree-snapshots), resume across machines with [Environment blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint), and share state over PostgreSQL in [Storage backends](/storage).
 - **Multi-agent work:** Delegate focused tasks with [Subagents](/subagents), coordinate live sessions with [Intercom](/intercom), and script multi-step checks with [Orchestration](/orchestration).
 - **Tools and context:** Connect external tools through [MCP servers](/mcp-servers), keep long runs within budget with [Compaction and custom compactors](/compaction#customize-morph-or-add-a-remote-compactor), and inspect terminal integrations like [Herdr](/herdr).
 - **Embed and extend:** Drive Atomic from Node.js with the [TypeScript SDK](/sdk), [SDK storage backends](/sdk/storage), [Structured decisions (`decide()`)](/sdk/structured-decisions), [RPC mode](/rpc), and [Standalone libraries](/libraries).

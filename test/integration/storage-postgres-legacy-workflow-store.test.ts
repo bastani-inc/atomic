@@ -12,18 +12,15 @@ import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/wor
 import { dumpLegacyWorkflowTables, LEGACY_STORE, seedLegacyStore } from "../helpers/legacy-store-0990.js";
 import { postgresSkipReason, postgresTestPassword, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
-import { storageBackends } from "../helpers/storage-backends.js";
 
 /**
- * A database Atomic 0.9.90 shared, workflow tables included, on the server backends: this release opens its sessions,
+ * A database Atomic 0.9.90 shared, workflow tables included, on PostgreSQL: this release opens its sessions,
  * collects its snapshot blobs and migrates it without changing a workflow table, a row or a trigger on one, and on
  * PostgreSQL still moves those tables out of `public` with the rest and fences them there.
  */
 
 const postgresPackage = resolve(moduleDir(import.meta.url), "../../packages/storage-postgres");
-const libsql = storageBackends.find((backend) => backend.name === "libSQL server (sqld)")!;
 const postgresIt = postgresSkipReason === undefined && postgresTestPassword !== undefined ? it : it.skip;
-const libsqlIt = libsql.skipReason === undefined ? it : it.skip;
 const TIMEOUT_MS = 120_000;
 
 /** Lists the sessions, resumes the earlier one with a new entry, and collects snapshot blobs, as a session start does. */
@@ -137,23 +134,6 @@ describe("a database 0.9.90 shared, with its workflow tables", () => {
 					);
 				}
 			});
-		},
-		TIMEOUT_MS,
-	);
-
-	libsqlIt(
-		"on a libSQL server, sessions and snapshot collection leave every workflow table as it was",
-		async () => {
-			const scope = await libsql.openScope();
-			try {
-				const database = await scope.connect();
-				await seedLegacyStore(database, { prefix: scope.prefix });
-				const before = await dumpLegacyWorkflowTables(database, { prefix: scope.prefix });
-				await useStore(database, scope.prefix);
-				assert.equal(await dumpLegacyWorkflowTables(database, { prefix: scope.prefix }), before);
-			} finally {
-				await scope.close();
-			}
 		},
 		TIMEOUT_MS,
 	);

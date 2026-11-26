@@ -8,9 +8,9 @@ When several machines share one storage database, you can start a session on one
 
 ## Join each machine
 
-Every machine must use the same shared database, either PostgreSQL or Turso / libSQL. Do not embed passwords or auth tokens in the database URL; pass credentials through `--password-file`, `--token-file`, or `--auth` (`credential-in-url`).
+Every machine must use the same shared PostgreSQL database. Do not embed passwords or auth tokens in the database URL; pass credentials through `--password-file`, `--token-file`, or `--auth` (`credential-in-url`).
 
-**PostgreSQL (PostgreSQL 16 or newer for sessions):**
+PostgreSQL 16 or newer:
 
 In two-role deployments, run `atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password` once as the owner role (and after Atomic upgrades), then grant the runtime role its privileges before joining machines as `atomic_runtime`. See [Set up the database](/storage/postgres#set-up-the-database).
 
@@ -23,16 +23,7 @@ atomic storage status
 
 See [PostgreSQL](/storage/postgres) for database roles, TLS, and cloud identities.
 
-**libSQL / Turso:**
-
-```bash
-atomic install npm:@bastani/atomic-storage-libsql
-atomic storage join libsql://<db>.turso.io --token-file ~/turso-token
-atomic intercom restart
-atomic storage status
-```
-
-`atomic storage join` stores sessions in the shared database so they resume on any joined machine. By contrast, `atomic team join` ([Set up teams and CI](/guides/team-setup)) shares Intercom while keeping personal sessions local. To share sessions on a machine joined with `atomic team join`, run `atomic team leave` and then `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens, and `atomic storage status`.
+`atomic storage join` stores sessions in the shared database so they resume on any joined machine. By contrast, the team layout in [Set up teams and CI](/guides/team-setup) shares Intercom while keeping personal sessions local. To share sessions on such a machine, remove its `sessions.storage` setting. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens, and `atomic storage status`.
 
 Keep worktree snapshots enabled (`snapshots.enabled`, on by default). At the end of each turn that modifies files, Atomic saves uncommitted edits, untracked files, and unpushed commits in the shared database. If `snapshots.enabled` is set to `false`, no snapshots are captured, cross-machine resume cannot restore repository files, and `atomic blueprint prebuild` fails with `snapshots are disabled`.
 
@@ -274,7 +265,7 @@ For session resumes, missing Git never blocks opening the session. Instead, the 
 
 | Symptom | Fix | SDK error and code |
 | --- | --- | --- |
-| Session ID not found on this machine | If this machine uses local storage only (`local-storage-not-joined`), join shared storage with `atomic storage join` (run `atomic team leave` first if joined with `atomic team join`). If already joined (`shared-miss`), check the session ID, database URL, and prefix. | `ResumeNotFoundError` (`not-found`) |
+| Session ID not found on this machine | If this machine uses local storage only (`local-storage-not-joined`), join shared storage with `atomic storage join` (and remove a `sessions.storage` setting that keeps sessions local). If already joined (`shared-miss`), check the session ID, database URL, and prefix. | `ResumeNotFoundError` (`not-found`) |
 | Missing storage adapter, missing or unreadable credentials, or unavailable Git | Follow each fix listed in the error, such as running `atomic install`, creating the token or password file, or unsetting offline mode. | `ResumePreconditionError` (`preconditions-unmet`) |
 | Git cannot be started or downloaded | Follow the hint (install Git on `PATH` or unset `ATOMIC_OFFLINE`). Session resumes still open without restoring checkouts. | `GitUnavailableError` (`not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed`) |
 | Shared database unreachable during lookup | Check connectivity with `atomic storage status` and resume again. | `ResumeCatalogUnavailableError` (`catalog-unavailable`) |

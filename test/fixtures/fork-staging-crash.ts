@@ -4,7 +4,7 @@
  *
  *   node --import jiti/register fork-staging-crash.ts '<json>'
  *
- * `<json>`: `{ database: { kind: "sqlite", path } | { kind: "libsql", url } | { kind: "postgres", url, password? },
+ * `<json>`: `{ database: { kind: "sqlite", path } | { kind: "postgres", url, password? },
  * sourcePrefix, destPrefix, sourceId, childId }`.
  */
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
@@ -12,12 +12,10 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../../packages/coding-agent/src/core/storage/session/types.js";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 
 type DatabaseConfig =
 	| { readonly kind: "sqlite"; readonly path: string }
-	| { readonly kind: "libsql"; readonly url: string }
 	| { readonly kind: "postgres"; readonly url: string; readonly password?: string };
 
 const config = JSON.parse(process.argv[2]!) as {
@@ -30,7 +28,6 @@ const config = JSON.parse(process.argv[2]!) as {
 
 function open(database: DatabaseConfig): Promise<SqliteDatabase> {
 	if (database.kind === "sqlite") return openNodeSqliteDatabase(database.path);
-	if (database.kind === "libsql") return openLibsqlDatabase({ url: database.url });
 	return openPostgresDatabase({
 		url: database.url,
 		...(database.password === undefined ? {} : { password: database.password }),

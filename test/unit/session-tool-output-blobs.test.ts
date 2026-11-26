@@ -16,7 +16,6 @@ import { redirectOversizedToolResult } from "../../packages/coding-agent/src/cor
 import { MAX_PERSISTED_OUTPUT_BYTES } from "../../packages/coding-agent/src/core/tools/tool-limits.js";
 import { createToolOutputRouter } from "../../packages/coding-agent/src/core/tools/tool-output-protocol.js";
 import { countingDatabase } from "../helpers/counting-database.js";
-import { withLibsqlDatabase } from "../helpers/libsql-database.js";
 import { rowLimitedDatabase } from "../helpers/row-limited-database.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
@@ -145,7 +144,6 @@ describe("a released stage's oversized output is a blob of its session (#4379)",
 	type WithDatabase = (body: (subject: { readonly database: SqliteDatabase }) => Promise<void>) => Promise<void>;
 	const adapters: ReadonlyArray<readonly [string, WithDatabase]> = [
 		["SQLite", withNodeSqliteDatabase],
-		["libSQL", withLibsqlDatabase],
 		[
 			"SQLite behind a server's row and response limits",
 			(body) => withNodeSqliteDatabase(({ database }) => body({ database: rowLimitedDatabase(database).wrapped })),

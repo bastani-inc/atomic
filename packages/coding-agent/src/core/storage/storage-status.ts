@@ -26,14 +26,12 @@ import {
 	type StorageSelection,
 	storageSelectionKey,
 } from "./provider.js";
-import {
-	POSTGRES_ADAPTER_PACKAGE,
-	type StorageSettingsSelection,
-	selectStorage,
-	TEAM_PROFILE_ENV,
-} from "./selection.js";
+import { POSTGRES_ADAPTER_PACKAGE, type StorageSettingsSelection, selectStorage } from "./selection.js";
 
 export type StorageStatusDomain = "sessions" | "intercom";
+
+/** Removed with libSQL support; see libsql-removed.ts for why it is still exported. */
+export { TEAM_PROFILE_SOURCE } from "./libsql-removed.js";
 
 /** How long one database connectivity check may take, from opening the database to the answer of its `SELECT 1`. */
 export const STORAGE_PROBE_TIMEOUT_MS = 15_000;
@@ -371,12 +369,9 @@ function sourceOf(layers: readonly Layer[]): { source: string; overridden: strin
 	return { source: present[0] ?? "default", overridden: present.slice(1) };
 }
 
-/** The source label of the `ATOMIC_PROFILE=ci` team database. */
-export const TEAM_PROFILE_SOURCE = `${TEAM_PROFILE_ENV}=ci`;
-
 /**
- * The shared selection this process and these settings make: `--storage`, `ATOMIC_STORAGE` or the
- * `ATOMIC_PROFILE=ci` team database, else the `storage` setting; `undefined` when none of them is set.
+ * The shared selection this process and these settings make: `--storage` or `ATOMIC_STORAGE`, else the `storage`
+ * setting; `undefined` when none of them is set.
  */
 export function selectSharedStorage(agentDir: string, settings: Settings): StorageSelection | undefined {
 	const processChoice = selectProcessStorage("shared", agentDir, undefined, settings);
@@ -390,8 +385,8 @@ export function selectSharedStorage(agentDir: string, settings: Settings): Stora
 }
 
 /**
- * The raw shared selection a broker started from this process would read: `--storage`, `ATOMIC_STORAGE` or the
- * `ATOMIC_PROFILE=ci` team database, else global `storage`.
+ * The raw shared selection a broker started from this process would read: `--storage` or `ATOMIC_STORAGE`, else
+ * global `storage`.
  */
 function sharedSelection(
 	globalStorage: StorageSettingsSelection | undefined,
@@ -469,7 +464,6 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 		);
 	}
 	const env = (name: string): Layer => ({ label: name, present: envSet(name) });
-	const teamProfile: Layer = { label: TEAM_PROFILE_SOURCE, present: envSet(TEAM_PROFILE_ENV) };
 	const sessionsSetting = (settings: Settings) => settings.sessions?.storage;
 	const storageSetting = (settings: Settings) => settings.storage;
 	const layers: Record<StorageStatusDomain, Layer[]> = {
@@ -477,15 +471,10 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 			env(SESSIONS_STORAGE_ENV),
 			env(ENV_SESSION_DIR),
 			env(STORAGE_ENV),
-			teamProfile,
 			...settingLayers(global, project, projectTrusted, sessionsSetting, "sessions.storage"),
 			...settingLayers(global, project, projectTrusted, storageSetting, "storage"),
 		],
-		intercom: [
-			env(STORAGE_ENV),
-			teamProfile,
-			{ label: "global settings: storage", present: global.storage !== undefined },
-		],
+		intercom: [env(STORAGE_ENV), { label: "global settings: storage", present: global.storage !== undefined }],
 	};
 
 	const checked = new Map<string, { domain: StorageStatusDomain; probe: StorageProbe }>();
@@ -542,7 +531,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 				overridden: intercom.overridden,
 				multiNode:
 					sharedSelection(global.storage) === undefined
-						? "off: no shared storage selection (top-level `storage` in global settings, ATOMIC_STORAGE, or ATOMIC_PROFILE=ci)"
+						? "off: no shared storage selection (top-level `storage` in global settings, or ATOMIC_STORAGE)"
 						: "off: the shared storage selection is in memory",
 			});
 		} else {

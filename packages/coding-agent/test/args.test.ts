@@ -57,11 +57,11 @@ describe("parseArgs", () => {
 					help,
 					/storage <command>\s+Show storage selections and connectivity, or join a shared database/,
 				);
-				assert.match(help, /team <command>\s+Join or leave a team database \(shared Intercom, private sessions\)/);
+				assert.match(help, /team <command>\s+Show the storage layout in effect \(individual, team, ci or custom\)/);
 				assert.doesNotMatch(help, /worker <command>|\/worker\/|workflow/i);
 				assert.match(help, /intercom <command>\s+Show or restart this machine's Intercom broker/);
 				assert.match(help, /<command> --help\s+Show help for .*\/storage\/team\/intercom/);
-				assert.match(help, /ATOMIC_PROFILE\s+- ci: use the team database for sessions and Intercom/);
+				assert.doesNotMatch(help, /ATOMIC_PROFILE|ATOMIC_TEAM_|libSQL|team join/);
 			} finally {
 				output.mockRestore();
 			}

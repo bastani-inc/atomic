@@ -210,6 +210,13 @@ afterEach(async () => {
 		}
 	}
 	await brokerControl?.close();
+	// Closing the control connection makes each controlled broker kill itself, but not at once. One still running
+	// keeps its socket: on Windows the named pipe stays taken, and the next test cannot listen on it (EADDRINUSE).
+	const controlled = startedBrokerPids();
+	assert.ok(
+		await waitUntil(() => controlled.every((pid) => !isAlive(pid)), BROKER_BUDGET_MS),
+		`brokers still running after the test: ${controlled.filter(isAlive).join(", ")}`,
+	);
 	for (const broker of directBrokers.values()) await terminateDirectBroker(broker);
 	directBrokers.clear();
 	removePathSync(intercomDir, { recursive: true, force: true, ...CLEANUP_RETRIES });

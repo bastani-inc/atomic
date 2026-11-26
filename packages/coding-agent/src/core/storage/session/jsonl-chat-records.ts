@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, lstat, open, unlink } from "node:fs/promises";
+import { type FileHandle, lstat, open, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
 	type AnchoredChatRecord,
@@ -63,9 +63,23 @@ async function create(path: string, header: string): Promise<FileHandle> {
 		throw e;
 	}
 }
-/** Device, a known inode, a recorded creation time and the header: an unknown inode or creation time proves no owner. */
+/**
+ * Device, a known inode, a recorded creation time and the header: an unknown inode or creation time proves no owner.
+ * On macOS, which never reuses an inode number, the epoch has no creation time.
+ */
 export function hasStableFileOwner(epoch: string): boolean {
-	return /^\d+:[1-9]\d*:[1-9]\d*:[\da-f]{16}$/.test(epoch);
+	return /^\d+:[1-9]\d*:(?:[1-9]\d*:)?[\da-f]{16}$/.test(epoch);
+}
+/**
+ * The epoch an older build gave the owner's file on macOS, with its creation time in it, which the diagnostics it
+ * saved are kept under: only while the file is still the one `owner.epoch` names, and has a creation time.
+ */
+async function olderEpoch(owner: ChatRecordOwner): Promise<string | undefined> {
+	const current = /^(\d+:[1-9]\d*):([\da-f]{16})$/.exec(owner.epoch);
+	if (!current || !owner.file) return undefined;
+	const stats = await stat(owner.file, { bigint: true }).catch(() => undefined);
+	if (!stats || stats.birthtimeNs <= 0n || `${stats.dev}:${stats.ino}` !== current[1]) return undefined;
+	return `${current[1]}:${stats.birthtimeNs}:${current[2]}`;
 }
 export async function discoverChatFile(file: string, id: string): Promise<boolean> {
 	const { path } = files({ file, id, epoch: "" });
@@ -121,17 +135,27 @@ export async function readFileChatRecords(
 	anchors: readonly string[],
 ): Promise<AnchoredChatRecord[]> {
 	if (!hasStableFileOwner(owner.epoch)) return [];
+	const older = await olderEpoch(owner);
+	const owners = older === undefined ? [owner] : [{ ...owner, epoch: older }, owner];
 	const result: AnchoredChatRecord[] = [];
 	for (const anchor of anchors)
-		for (const line of await readSlot(owner, slotFor(owner, anchor))) {
-			const record = decodeChatRecord(line);
-			if (record) result.push({ anchor, record });
-		}
+		for (const each of owners)
+			for (const line of await readSlot(each, slotFor(each, anchor))) {
+				const record = decodeChatRecord(line);
+				if (record) result.push({ anchor, record });
+			}
 	return result;
 }
 export async function readFileChatOrders(owner: ChatRecordOwner, promptIds: readonly string[]): Promise<ChatOrder[]> {
 	if (!promptIds.length || !owner.file || !hasStableFileOwner(owner.epoch)) return [];
-	const orders = (await readSlot(owner, orderSlot(owner))).flatMap((line) => decodeChatOrder(line) ?? []);
+	const older = await olderEpoch(owner);
+	const owners = older === undefined ? [owner] : [{ ...owner, epoch: older }, owner];
+	const orders: ChatOrder[] = [];
+	for (const each of owners)
+		for (const line of await readSlot(each, orderSlot(each))) {
+			const order = decodeChatOrder(line);
+			if (order) orders.push(order);
+		}
 	return firstChatOrders(orders, promptIds);
 }
 export async function deleteFileChatRecords(owner: ChatRecordOwner): Promise<void> {
