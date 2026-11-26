@@ -7,6 +7,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 ### Changed
 
 - On PostgreSQL, the lease renewals each broker sends every 10 seconds, for itself, for each of its sessions and for each message it is delivering, no longer wait for the database server to write them to disk. Losing one in a server crash does no harm, because the next renewal repeats it. In a benchmark the server flushed its log about 90% less often for these writes, and each renewal skips a disk flush that takes about 1 to 3 ms on a typical cloud disk. Messages, registrations and every other write still wait for the disk ([#6633](https://github.com/bastani-inc/atomic/pull/6633), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- On PostgreSQL, the short notices that wake another broker when a message arrives for it are now kept in an unlogged table, which the server does not write to its write-ahead log. Each notice writes about 70% less to the log, and its commit no longer waits for a disk flush. A server crash or failover empties the table, which loses only notices: brokers still check for messages every 30 seconds, so every message arrives. New databases get the unlogged table at once. An existing one switches the next time `atomic storage migrate` runs as the owner role. Older Atomic versions keep working with it ([#6639](https://github.com/bastani-inc/atomic/pull/6639), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ### Fixed
 

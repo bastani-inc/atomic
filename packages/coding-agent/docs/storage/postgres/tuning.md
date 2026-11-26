@@ -247,6 +247,12 @@ ALTER INDEX atomic.session_search_trgm SET (gin_pending_list_limit = 1024);
 
 Leave the index's `fastupdate` on. Turning it off adds every entry to the index at once, which makes every insert slower.
 
+### Intercom's wake-up notices
+
+When one Intercom broker sends a message to another, it also writes a short notice to `atomic.intercom_wakeups` so the other broker checks for the message at once. Atomic makes this table unlogged: PostgreSQL does not write its rows to the write-ahead log, so each notice costs about a third of the log it used to and needs no disk flush when it commits.
+
+An unlogged table is emptied when the server crashes, and it is not copied to standby servers, so it is empty after a failover. Only notices are lost. Brokers also check for messages every 30 seconds, so every message still arrives, at worst that much later. Tables created by `atomic storage migrate` or by a broker start out unlogged. A table an earlier version created becomes unlogged the next time `atomic storage migrate` runs as the owner role.
+
 ## Settings you can usually leave alone
 
 These settings come up in tuning advice, but rarely help Atomic:
@@ -268,7 +274,7 @@ atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomi
 Why it matters for performance:
 
 - **Fast starts.** An agent opens its storage quickly, in a few round trips and without taking locks, only when the database is already up to date. If it is not, each agent starts by checking and updating it, and many agents starting at once queue behind each other.
-- **New steps.** `atomic storage migrate` also applies changes a runtime role without DDL rights cannot make: the sequence Intercom uses to order new leases, `fillfactor` on the busy tables, and the function that saves entries to a session in 1 round trip instead of 2. Until it runs, agents keep working, but without those gains. Agents find the function the next time they start.
+- **New steps.** `atomic storage migrate` also applies changes a runtime role without DDL rights cannot make: the sequence Intercom uses to order new leases, `fillfactor` on the busy tables, an unlogged table for Intercom's wake-up notices, and the function that saves entries to a session in 1 round trip instead of 2. Until it runs, agents keep working, but without those gains. Agents find the function the next time they start.
 
 ## Checklist
 
