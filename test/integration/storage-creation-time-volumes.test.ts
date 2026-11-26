@@ -17,6 +17,8 @@ import { makeTempDirectory, removeTempDirectory, sleep, spawnSyncCollect } from 
 const VOLUME_TEST_TIMEOUT_MS = 120_000;
 /** FAT keeps creation times to two seconds: a file made this much later has a later one. */
 const FAT_CREATION_TIME_STEP_MS = 2_100;
+/** New files made to find the one FAT gives the deleted database's inode number; it takes the first that fits. */
+const FAT_REUSE_CANDIDATES = 20;
 
 beforeEach(() => {
 	resetStorageHomeCacheForTests();
@@ -71,14 +73,17 @@ test.skipIf(process.platform !== "darwin")(
 			const { ino } = statSync(join(volume, "first.sqlite"), { bigint: true });
 			rmSync(join(volume, "first.sqlite"));
 			await sleep(FAT_CREATION_TIME_STEP_MS);
-			writeFileSync(join(volume, "second.sqlite"), "second history");
-			assert.equal(
-				statSync(join(volume, "second.sqlite"), { bigint: true }).ino,
-				ino,
-				"FAT reused the inode number",
-			);
+			// FAT numbers a file by where its directory entry is, and a new file takes the first free entries that fit it.
+			// Names as long as the deleted one's fit its entries: within a few new files, one gets its inode number.
+			let reused: string | undefined;
+			for (let candidate = 0; candidate < FAT_REUSE_CANDIDATES && reused === undefined; candidate++) {
+				const name = `new${String(candidate).padStart(2, "0")}.sqlite`;
+				writeFileSync(join(volume, name), "second history");
+				if (statSync(join(volume, name), { bigint: true }).ino === ino) reused = name;
+			}
+			assert.ok(reused, "FAT gave a new file the deleted database's inode number");
 			resetStorageHomeCacheForTests();
-			assert.deepEqual(select(second, "second.sqlite"), { kind: "sqlite", path: join(volume, "second.sqlite") });
+			assert.deepEqual(select(second, reused), { kind: "sqlite", path: join(volume, reused) });
 		});
 	},
 	VOLUME_TEST_TIMEOUT_MS,
