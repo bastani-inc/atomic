@@ -71,6 +71,13 @@ export interface SqliteTransactionOptions {
 	 * and committed. A driver that ignores it takes the locks with the start. Other drivers ignore it.
 	 */
 	readonly lockIfLeadingFinds?: boolean;
+	/**
+	 * The commit returns before the server has written the transaction to disk, so a crash of the database server just
+	 * after it may lose it, though never part of it, and never a transaction that committed after it without this flag.
+	 * Only for writes whose loss is harmless because a later write repeats them, such as a lease renewal. PostgreSQL
+	 * turns `synchronous_commit` off for the transaction; other drivers ignore it.
+	 */
+	readonly relaxedDurability?: boolean;
 }
 
 /** How one batch waits for a busy write lock, and whether it goes ahead of the database's queued calls. */

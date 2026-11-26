@@ -392,6 +392,14 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 		concurrency: { kind: "fenced", audit: fencedPath("intercom-lease") },
 	} as const;
 	/**
+	 * A renewal only moves `renewed_at` forward, and its holder renews again within the renewal interval, far inside the
+	 * staleness limit: one lost in a crash of the database server leaves the lease a renewal older, still live, and no
+	 * fencing token changes. A renewal that carries a subject writes all of it, and the next renewal writes it again. So
+	 * its commit does not wait for the disk (PostgreSQL's `synchronous_commit = off`), which
+	 * spares the server a log flush per broker and per session every interval. Acquisitions and releases stay durable.
+	 */
+	const renewal = { ...fenced, relaxedDurability: true } as const;
+	/**
 	 * The order of a key acquired for the first time. A serial database runs one acquisition at a time, so the
 	 * largest order so far, plus one, is unique. PostgreSQL runs acquisitions beside one another, so each takes the
 	 * next value of the order sequence, which no acquisition waits for (#6560). Where `atomic storage migrate` has not
@@ -499,7 +507,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 								...ownedParams(lease),
 							);
 				return changes === 1 ? ({ status: "renewed" } as const) : stale(await holderOf(tx, lease.key));
-			}, fenced);
+			}, renewal);
 		},
 		async renewMany(requests) {
 			if (requests.length === 0) return [];
@@ -548,7 +556,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 						renewed[position]!.changes === 1
 							? ({ status: "renewed" } as const)
 							: stale(await holderOf(tx, requests[i]!.lease.key));
-			}, fenced);
+			}, renewal);
 			return results as LeaseRenewResult[];
 		},
 		async release(lease) {

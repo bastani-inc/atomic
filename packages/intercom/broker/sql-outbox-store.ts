@@ -298,6 +298,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		assignments: string,
 		params: readonly SqliteValue[],
 		answer: (written: OutboxRecord) => Result,
+		relaxedDurability = false,
 	): Promise<Result | OutboxClaimWriteRejection> => {
 		if (claim.messageId.length === 0) return Promise.resolve(invalid("empty-message-id"));
 		if (claim.claimantId.length === 0) return Promise.resolve(invalid("empty-claimant-id"));
@@ -316,7 +317,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				if (isSettled(record)) return { status: "settled", row: toRow(record) } as const;
 				return { status: "stale" } as const;
 			},
-			{ ...fenced, leading: [write] },
+			{ ...fenced, leading: [write], ...(relaxedDurability ? { relaxedDurability } : {}) },
 		);
 	};
 
@@ -810,7 +811,10 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		},
 
 		renewClaim(claim) {
-			return withClaim(claim, `claim_renewed_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const);
+			// Its claimant renews again within the renewal interval, far inside the claim's staleness limit: a renewal lost
+			// in a crash of the database server leaves the claim a renewal older and still current, so its commit does not
+			// wait for the disk.
+			return withClaim(claim, `claim_renewed_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const, true);
 		},
 
 		reportSaving(claim) {

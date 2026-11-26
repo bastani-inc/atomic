@@ -395,6 +395,8 @@ async function openRestoringReservationStoreInCatalog({
 		async renew(lease): Promise<RestoringReservationRenewResult> {
 			const bad = invalidLease(lease);
 			if (bad !== undefined) return bad;
+			// Renewed again within the renewal interval, far inside the staleness limit: a renewal lost in a crash of the
+			// database server leaves the reservation a renewal older and still held, so its commit does not wait for the disk.
 			return database.transaction(async (tx) => {
 				const stale = await owned(tx, lease);
 				if (stale !== undefined) return stale;
@@ -403,7 +405,7 @@ async function openRestoringReservationStoreInCatalog({
 					lease.reservationKey,
 				);
 				return { status: "renewed" };
-			}, serial);
+			}, { ...serial, relaxedDurability: true });
 		},
 		async release(lease, outcome): Promise<RestoringReservationReleaseResult> {
 			const bad = invalidLease(lease);
