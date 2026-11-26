@@ -149,10 +149,11 @@ function underPageLimit(database: SqliteDatabase, limit: () => number): SqliteDa
 		all: database.all.bind(database),
 		close: database.close.bind(database),
 		transaction(callback, options) {
+			const { leading: _leading, leadingOnly: _leadingOnly, ...rest } = options ?? {};
 			return database.transaction(async (transaction) => {
 				await transaction.get(`PRAGMA max_page_count = ${limit()}`);
 				return callback(transaction);
-			}, options);
+			}, rest);
 		},
 	};
 }
