@@ -6,6 +6,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ### Changed
 
+- With multi-node routing on SQLite, messages that recipients confirm at about the same time are now recorded as delivered together in one batched statement and commit, matching PostgreSQL. A burst of N confirmations sent in the same turn now takes 3 requests to the connection thread with one write lock instead of 3N + 2 (with per-confirmation savepoints), while preserving per-message answers, call-order resolution, and full durability ([#6716](https://github.com/bastani-inc/atomic/issues/6716)).
 - With multi-node routing, a broker now renews all the messages it is delivering in one statement every 10 seconds. It used to renew them one transaction at a time, waiting for each before the next. A broker delivering 20 messages to sessions that are still saving them now makes 1 round trip per renewal instead of 20. A message whose delivery another broker has taken over, or that was settled meanwhile, is still left alone, as before ([#6693](https://github.com/bastani-inc/atomic/pull/6693), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ## [0.10.11-alpha.3] - 2026-11-26
