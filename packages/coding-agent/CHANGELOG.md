@@ -4,7 +4,7 @@
 
 ### Changed
 
-- On macOS, the standalone `atomic` binary now uses its own copy of SQLite 3.53.4, the version Node.js 24.20 includes, instead of the SQLite that comes with macOS, whose version depends on your macOS release. You don't need to do anything. The copy ships in the release archive as `lib/libsqlite3.dylib`. `atomic storage status` now shows the SQLite version in use on a `library:` line. If the copy can't be loaded, Atomic prints one warning and uses the system's SQLite instead.
+- On macOS, the standalone `atomic` binary now uses its own copy of SQLite 3.53.4, the version Node.js 24.20 includes, instead of the SQLite that comes with macOS, whose version depends on your macOS release. You don't need to do anything. The copy ships in the release archive as `lib/libsqlite3.dylib`. `atomic storage status` now shows the SQLite version in use on a `library:` line. If the copy can't be loaded, Atomic prints one warning and uses the system's SQLite instead ([#6641](https://github.com/bastani-inc/atomic/pull/6641)).
 
 ### Fixed
 
