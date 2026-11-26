@@ -1,8 +1,18 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
+import { transactionFinisher } from "../added-exports.js";
 import { attachCleanupCause } from "../cleanup.js";
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+	SqliteStatement,
+	SqliteTransactionOptions,
+	SqliteValue,
+} from "../database.js";
 import type { StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError } from "../errors.js";
+import { fencedPath } from "../fenced-paths.js";
+import { statementBatch } from "../statement-batches.js";
 import { SessionExistsError } from "./errors.js";
 import { encodedForkRow } from "./fork-row-bytes.js";
 import { foldForkRow } from "./fork-row-index.js";
@@ -98,17 +108,21 @@ export interface ForkStagingTarget {
 	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult>;
 	/**
 	 * A write of the session `sessionId` in the destination, which checks the sessions schema version first: the only
-	 * writer of that session, beside writers of other sessions (#6560).
+	 * writer of that session, beside writers of other sessions (#6560). `leading` names the calls the body makes first,
+	 * after the check, sent with the transaction's start where the connection is pipelined.
 	 */
-	transaction<T>(sessionId: string, body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
-	/** Writes the child's sessions row, as `create` does, from the summary and index the clone folded. */
-	saveSummary(
-		tx: SqliteExecutor,
+	transaction<T>(
+		sessionId: string,
+		body: (tx: SqliteExecutor) => Promise<T>,
+		leading: readonly SqliteStatement[],
+	): Promise<T>;
+	/** The statement that writes the child's sessions row, as `create` does, from the summary and index the clone folded. */
+	summaryWrite(
 		header: SessionRecordHeader,
 		lastSeq: number,
 		summary: SessionSummaryState,
 		index: SessionResumeIndex,
-	): Promise<{ readonly epoch: string }>;
+	): { readonly statement: SqliteStatement; readonly epoch: string };
 	/**
 	 * Builds the stored resume index of `sessionId` again, from its stored entries, as its first resume would: the one a
 	 * clone folded a page at a time cannot know which branch is active until its last entry.
@@ -145,10 +159,28 @@ export interface ForkStagingTarget {
 		| undefined;
 }
 
-/** Staging writes touch only the staging table: its own lock domain, never the sessions tables' schema check. */
+/** Creating the staging table: the table's own lock domain keeps concurrent creators apart. */
 function stagingTransaction(table: string): SqliteTransactionOptions {
 	return { retryTransientFailures: true, concurrency: { kind: "serial", domain: table } };
 }
+
+/**
+ * A write of the rows of one transfer, its owner's staged batches or a cleanup's removal of them: the transfer's own
+ * lock domain, so the transfers of different children never wait for each other (#6560). What decides between a
+ * transfer's owner and a cleanup that took it over is the lease row: every such write first locks it by its token.
+ */
+function transferTransaction(table: string, transfer: string): SqliteTransactionOptions {
+	return { retryTransientFailures: true, concurrency: { kind: "serial", domain: `${table}:${transfer}` } };
+}
+
+/**
+ * A cleanup's claim of a lapsed transfer: it takes no lock domain, only the lease row it claims, skipping one that is
+ * locked, since any lapsed transfer may be claimed in any order (`fencedPath("fork-staging-claim")`).
+ */
+const CLAIM_TRANSACTION: SqliteTransactionOptions = {
+	retryTransientFailures: true,
+	concurrency: { kind: "fenced", audit: fencedPath("fork-staging-claim") },
+};
 
 function randomId(): string {
 	return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -194,23 +226,30 @@ async function removeTransfer(
 ): Promise<number> {
 	while (budget > 0) {
 		budget--;
-		const done = await database.transaction(async (tx) => {
-			const held = await tx.get(
-				`SELECT transfer_id FROM ${table} WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?${dialect.lockClause("update")}`,
-				transfer,
-				token,
-			);
-			if (held === undefined) return true;
-			const { changes } = await tx.run(
-				`DELETE FROM ${table} WHERE transfer_id = ? AND kind > ${LEASE} AND (kind, seq, idx) IN (SELECT kind, seq, idx FROM ${table} WHERE transfer_id = ? AND kind > ${LEASE} LIMIT ?)`,
-				transfer,
-				transfer,
-				FORK_STAGING_CLEANUP_ROWS,
-			);
-			if (changes >= FORK_STAGING_CLEANUP_ROWS) return false;
-			await tx.run(`DELETE FROM ${table} WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`, transfer, token);
-			return true;
-		}, stagingTransaction(table));
+		const done = await database.transaction(
+			async (tx) => {
+				const held = await tx.get(
+					`SELECT transfer_id FROM ${table} WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?${dialect.lockClause("update")}`,
+					transfer,
+					token,
+				);
+				if (held === undefined) return true;
+				const { changes } = await tx.run(
+					`DELETE FROM ${table} WHERE transfer_id = ? AND kind > ${LEASE} AND (kind, seq, idx) IN (SELECT kind, seq, idx FROM ${table} WHERE transfer_id = ? AND kind > ${LEASE} LIMIT ?)`,
+					transfer,
+					transfer,
+					FORK_STAGING_CLEANUP_ROWS,
+				);
+				if (changes >= FORK_STAGING_CLEANUP_ROWS) return false;
+				await tx.run(
+					`DELETE FROM ${table} WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`,
+					transfer,
+					token,
+				);
+				return true;
+			},
+			transferTransaction(table, transfer),
+		);
 		if (done) return budget;
 	}
 	await database.run(
@@ -249,7 +288,7 @@ export async function cleanupForkStaging(
 				row.transfer_id,
 			);
 			return changes === 1 ? String(row.transfer_id) : undefined;
-		}, stagingTransaction(table));
+		}, CLAIM_TRANSACTION);
 		if (claimed === undefined) return;
 		budget = await removeTransfer(database, dialect, table, claimed, token, budget);
 	}
@@ -395,6 +434,47 @@ function chunkRowReader(
 	});
 }
 
+/** What a staged row counts for in the batch of a move, as `moveStaged` counts it. */
+function movedBytes(target: ForkStagingTarget, row: StagedRow): number {
+	if (row.kind === ENTRY_CHUNK) return target.entryChunkBytes;
+	if (row.kind === BLOB_CHUNK) return target.blobChunkBytes;
+	if (row.kind === BLOB) return 128 + STAGED_ROW_BYTES;
+	return Buffer.byteLength(row.body ?? "") + Buffer.byteLength(row.name ?? "") + STAGED_ROW_BYTES;
+}
+
+/**
+ * Moves every staged row of `kind`, which fit one batch, in one statement, and removes them: sent at once, without
+ * waiting for an answer, and settled once both are answered.
+ */
+function moveWhole(
+	target: ForkStagingTarget,
+	tx: SqliteExecutor,
+	transfer: string,
+	child: string,
+	kind: number,
+	count: number,
+	dest: string,
+	columns: string,
+	fields: string,
+	join = "",
+): Promise<void> {
+	const { table } = target;
+	const inserted = tx.run(
+		`INSERT INTO ${dest} (${columns}) SELECT ?, ${fields} FROM ${table} s ${join} WHERE s.transfer_id=? AND s.kind=${kind} ORDER BY s.seq,s.idx`,
+		child,
+		...(join ? [child] : []),
+		transfer,
+	);
+	const removed = tx.run(`DELETE FROM ${table} WHERE transfer_id=? AND kind=${kind}`, transfer);
+	return Promise.all([inserted, removed]).then(([{ changes }]) => {
+		if (changes !== count) throw missingRows(child, dest);
+	});
+}
+
+function missingRows(child: string, dest: string): StorageError {
+	return new StorageError(`The staged copy of session ${child} is missing ${dest} rows; nothing was published`);
+}
+
 /** Move the next key ranges in this transaction instead of copying a whole table while all its staged rows
  * still occupy pages. SQLite can reuse a deleted range for the next one without exposing a partial child.
  * For entry and search rows idx carries their byte cost; chunks have the store's fixed maximum size. */
@@ -466,8 +546,7 @@ async function moveStaged(
 		}
 		if (end === keys.length && end < batchRows) break;
 	}
-	if (copied !== count)
-		throw new StorageError(`The staged copy of session ${child} is missing ${dest} rows; nothing was published`);
+	if (copied !== count) throw missingRows(child, dest);
 }
 
 /**
@@ -503,7 +582,6 @@ async function stageAndPublish(
 	source: ForkArchiveSource,
 ) {
 	const { database, dialect, table } = target;
-	const options = stagingTransaction(table);
 	if ((await database.get(`SELECT id FROM ${target.tables.sessions} WHERE id = ?`, header.id)) !== undefined)
 		throw new SessionExistsError(header.id);
 	try {
@@ -520,48 +598,58 @@ async function stageAndPublish(
 	await cleanupForkStaging(database, dialect, table, Number.POSITIVE_INFINITY).catch(() => {});
 	const transfer = randomId();
 	const token = randomId();
-	await destinationWrite(
-		database.transaction(
-			(tx) =>
-				tx.run(
-					`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, ${LEASE}, 0, 0, ?, ${dialect.nowMs} + ?, ?)`,
-					transfer,
-					header.id,
-					FORK_STAGING_LEASE_MS,
-					token,
-				),
-			options,
-		),
-	);
+	const options = transferTransaction(table, transfer);
+	/** Renews the lease while `token` holds it, and locks its row to the commit: 0 rows once a cleanup took it over. */
+	const renewal: SqliteStatement = {
+		sql: `UPDATE ${table} SET size = ${dialect.nowMs} + ? WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`,
+		params: [FORK_STAGING_LEASE_MS, transfer, token],
+	};
+	/** The lease, inserted by the first write with its rows: no transfer has staged rows without one. */
+	const lease: SqliteStatement = {
+		sql: `INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, ${LEASE}, 0, 0, ?, ${dialect.nowMs} + ?, ?)`,
+		params: [transfer, header.id, FORK_STAGING_LEASE_MS, token],
+	};
+	let leased = false;
+	/** Bytes staged of each kind, as `moveStaged` counts them. */
+	const stagedBytes = new Map<number, number>();
 
-	/** Writes `rows` in one transaction of the destination, renewing the lease; never while a source read runs. */
+	/**
+	 * Writes `rows` in one transaction of the transfer's domain, inserting or renewing the lease first; never while a
+	 * source read runs. The lease statement goes with the transaction's start and the rows with its commit where the
+	 * connection is pipelined: two round trips whatever the batch holds.
+	 */
 	const write = async (rows: readonly StagedRow[]) => {
+		const first = leased ? renewal : lease;
 		await destinationWrite(
-			database.transaction(async (tx) => {
-				const { changes } = await tx.run(
-					`UPDATE ${table} SET size = ${dialect.nowMs} + ? WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`,
-					FORK_STAGING_LEASE_MS,
-					transfer,
-					token,
-				);
-				if (changes !== 1) throw lostTransfer(header);
-				for (const row of rows) {
-					await tx.run(
-						`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-						transfer,
-						row.kind,
-						row.seq,
-						row.kind === ENTRY || row.kind === SEARCH_TEXT
-							? Buffer.byteLength(row.body ?? "") + Buffer.byteLength(row.name ?? "")
-							: row.idx,
-						row.name ?? null,
-						row.size ?? null,
-						row.body ?? null,
-						(row.data ?? null) as SqliteValue,
+			database.transaction(
+				async (tx) => {
+					const { changes } = await tx.run(first.sql, ...first.params);
+					if (changes !== 1) throw lostTransfer(header);
+					const inserts = rows.map(
+						(row): SqliteStatement => ({
+							sql: `INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+							params: [
+								transfer,
+								row.kind,
+								row.seq,
+								row.kind === ENTRY || row.kind === SEARCH_TEXT
+									? Buffer.byteLength(row.body ?? "") + Buffer.byteLength(row.name ?? "")
+									: row.idx,
+								row.name ?? null,
+								row.size ?? null,
+								row.body ?? null,
+								(row.data ?? null) as SqliteValue,
+							],
+						}),
 					);
-				}
-			}, options),
+					if (inserts.length === 0 || transactionFinisher(tx)?.(inserts) === true) return;
+					await statementBatch(tx, inserts, []);
+				},
+				{ ...options, leading: [first] },
+			),
 		);
+		leased = true;
+		for (const row of rows) stagedBytes.set(row.kind, (stagedBytes.get(row.kind) ?? 0) + movedBytes(target, row));
 	};
 
 	try {
@@ -569,8 +657,9 @@ async function stageAndPublish(
 		let pending: StagedRow[] = [];
 		let pendingBytes = 0;
 		let pendingIds = new Map<string, number>();
+		/** Writes the batch; the first writes the lease even without rows, so publication finds one. */
 		const flush = async () => {
-			if (pending.length === 0) return;
+			if (pending.length === 0 && leased) return;
 			await write(pending);
 			pending = [];
 			pendingBytes = 0;
@@ -704,71 +793,96 @@ async function stageAndPublish(
 		}
 		await flush();
 
+		const { tables } = target;
+		const existing: SqliteStatement = { sql: `SELECT id FROM ${tables.sessions} WHERE id = ?`, params: [header.id] };
 		const { epoch } = await destinationWrite(
-			target.transaction(header.id, async (tx) => {
-				const { tables } = target;
-				// The lease decides between this publication and a cleanup that took the transfer over. Its row lock, taken
-				// first and held to the commit, keeps a cleanup from taking the transfer over meanwhile: a cleanup skips a
-				// locked lease, and its takeover's guarded update waits for this commit (#6560).
-				const { changes: held } = await tx.run(
-					`UPDATE ${table} SET size = ${dialect.nowMs} + ? WHERE transfer_id = ? AND kind = ${LEASE} AND body = ?`,
-					FORK_STAGING_LEASE_MS,
-					transfer,
-					token,
-				);
-				if (held !== 1) throw lostTransfer(header);
-				if ((await tx.get(`SELECT id FROM ${tables.sessions} WHERE id = ?`, header.id)) !== undefined)
-					throw new SessionExistsError(header.id);
-				const saved = await target.saveSummary(tx, header, seq, summary, index);
-				const move = (
-					kind: number,
-					count: number,
-					destination: string,
-					columns: string,
-					fields: string,
-					join?: string,
-				) => moveStaged(target, tx, transfer, header.id, kind, count, destination, columns, fields, join);
-				await move(
-					ENTRY,
-					seq,
-					tables.entries,
-					"session_id, seq, entry_id, entry_json, chunks",
-					"s.seq, s.name, s.body, s.size",
-				);
-				await move(
-					ENTRY_CHUNK,
-					entryChunkRows,
-					tables.entryChunks,
-					"session_id, seq, idx, data",
-					"s.seq, s.idx, s.data",
-				);
-				// As `create` does with its first chunked entry: a build that knows only version 1 refuses the database.
-				if (chunkedEntries > 0)
-					await tx.run(
-						`UPDATE ${tables.meta} SET schema_version = ? WHERE schema_version = ?`,
-						target.chunkedSchemaVersion,
-						target.unchunkedSchemaVersion,
+			target.transaction(
+				header.id,
+				async (tx) => {
+					// The lease decides between this publication and a cleanup that took the transfer over. Its row lock, taken
+					// first and held to the commit, keeps a cleanup from taking the transfer over meanwhile: a cleanup skips a
+					// locked lease, and its takeover's guarded update waits for this commit (#6560). It goes with the
+					// transaction's start, behind the schema check: a check that fails rolls it back with the rest.
+					const { changes: held } = await tx.run(renewal.sql, ...renewal.params);
+					if (held !== 1) throw lostTransfer(header);
+					if ((await tx.get(existing.sql, ...existing.params)) !== undefined)
+						throw new SessionExistsError(header.id);
+					const saved = target.summaryWrite(header, seq, summary, index);
+					// The child's writes go out together, each behind the one before, and are answered together: a kind whose
+					// staged rows fit one batch moves in one statement. A larger kind moves a batch at a time, after the rest.
+					const sent: Promise<unknown>[] = [];
+					const send = (work: Promise<unknown>) => {
+						work.catch(() => {});
+						sent.push(work);
+					};
+					send(tx.run(saved.statement.sql, ...saved.statement.params));
+					const move = async (
+						kind: number,
+						count: number,
+						destination: string,
+						columns: string,
+						fields: string,
+						join?: string,
+					) => {
+						if (!count) return;
+						if ((stagedBytes.get(kind) ?? 0) <= FORK_STAGING_BATCH_BYTES) {
+							send(moveWhole(target, tx, transfer, header.id, kind, count, destination, columns, fields, join));
+							return;
+						}
+						await Promise.all(sent.splice(0));
+						await moveStaged(target, tx, transfer, header.id, kind, count, destination, columns, fields, join);
+					};
+					await move(
+						ENTRY,
+						seq,
+						tables.entries,
+						"session_id, seq, entry_id, entry_json, chunks",
+						"s.seq, s.name, s.body, s.size",
 					);
-				await move(SEARCH_TEXT, textRows, tables.searchTexts, "session_id, seq, text_json", "s.seq, s.body");
-				await move(
-					BLOB,
-					blobRows,
-					tables.blobs,
-					`session_id, hash, bytes, chunks${target.legacyBlobData ? ", data" : ""}`,
-					`s.name, s.size, s.idx${target.legacyBlobData ? ", X''" : ""}`,
-				);
-				// A source removed mid-read can leave incomplete chunk rows, never a published blob header.
-				await move(
-					BLOB_CHUNK,
-					blobChunkRows,
-					tables.blobChunks,
-					"session_id, hash, idx, data",
-					"s.name, s.idx, s.data",
-					`JOIN ${tables.blobs} h ON h.session_id=? AND h.hash=s.name`,
-				);
-				await tx.run(`DELETE FROM ${table} WHERE transfer_id = ?`, transfer);
-				return saved;
-			}),
+					await move(
+						ENTRY_CHUNK,
+						entryChunkRows,
+						tables.entryChunks,
+						"session_id, seq, idx, data",
+						"s.seq, s.idx, s.data",
+					);
+					// As `create` does with its first chunked entry: a build that knows only version 1 refuses the database.
+					if (chunkedEntries > 0)
+						send(
+							tx.run(
+								`UPDATE ${tables.meta} SET schema_version = ? WHERE schema_version = ?`,
+								target.chunkedSchemaVersion,
+								target.unchunkedSchemaVersion,
+							),
+						);
+					await move(SEARCH_TEXT, textRows, tables.searchTexts, "session_id, seq, text_json", "s.seq, s.body");
+					await move(
+						BLOB,
+						blobRows,
+						tables.blobs,
+						`session_id, hash, bytes, chunks${target.legacyBlobData ? ", data" : ""}`,
+						`s.name, s.size, s.idx${target.legacyBlobData ? ", X''" : ""}`,
+					);
+					// A source removed mid-read can leave incomplete chunk rows, never a published blob header.
+					await move(
+						BLOB_CHUNK,
+						blobChunkRows,
+						tables.blobChunks,
+						"session_id, hash, idx, data",
+						"s.name, s.idx, s.data",
+						`JOIN ${tables.blobs} h ON h.session_id=? AND h.hash=s.name`,
+					);
+					await Promise.all(sent.splice(0));
+					// The lease and what is left of the transfer go, with the commit where the connection is pipelined.
+					const removal: SqliteStatement = {
+						sql: `DELETE FROM ${table} WHERE transfer_id = ?`,
+						params: [transfer],
+					};
+					if (transactionFinisher(tx)?.([removal]) !== true) await tx.run(removal.sql, ...removal.params);
+					return saved;
+				},
+				[renewal, existing],
+			),
 		);
 		// A session with branches: `create` folds every entry at once, knowing its leaf, and so does a resume's rebuild.
 		// The child is published already; a failure here leaves the rebuild to its first resume.

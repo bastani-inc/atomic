@@ -91,6 +91,19 @@ const FENCED_PATHS = {
 			"a send to one recipient does not wait while another recipient's claim holds its rows; sends to one recipient keep their order and suppress duplicates (#6560)",
 	},
 	/**
+	 * A cleanup's claim of a lapsed fork staging transfer (`cleanupForkStaging`): it reads one lapsed lease row `FOR
+	 * UPDATE SKIP LOCKED`, then takes it over with one `UPDATE` guarded by the lease still being lapsed, so it never waits
+	 * for a live transfer whose writer or publication holds its lease, and two claims never take one transfer. Any lapsed
+	 * transfer may be claimed in any order. The claim names no transfer before it reads, so it takes no lock domain; the
+	 * owner's writes and the cleanup's removals are serial transactions of the transfer's own domain, and each decides on
+	 * the lease row it locks by its token first (#6560).
+	 */
+	"fork-staging-claim": {
+		fences: ["one lapsed lease row of the staging table, FOR UPDATE SKIP LOCKED, then its guarded UPDATE"],
+		conformance:
+			"concurrent cleanups take each lapsed transfer over once and never a live one, beside staging clones (#6560)",
+	},
+	/**
 	 * `SqlRateBuckets.acquire` and `cooldown`: one `UPDATE … RETURNING` (or upsert) of the scope's bucket row, which locks
 	 * no pool row, so it orders after none of them (#4768).
 	 */

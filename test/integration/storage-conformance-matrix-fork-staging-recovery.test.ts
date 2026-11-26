@@ -3,11 +3,17 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "vitest";
-import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteTransactionOptions,
+	SqliteValue,
+} from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import {
+	cleanupForkStaging,
 	ensureForkStagingTable,
 	FORK_STAGING_BATCH_BYTES,
 } from "../../packages/coding-agent/src/core/storage/session/fork-staging.js";
@@ -51,6 +57,43 @@ import {
  * Runs on every backend of the storage matrix; a server backend runs when its URL is set (see
  * test/helpers/storage-backends.ts).
  */
+
+/**
+ * `database`, recording in `claims` the transfer of each takeover of a lapsed lease (a cleanup's claim) that changed a
+ * row, once its transaction committed.
+ */
+function recordingTakeovers(database: SqliteDatabase, table: string, claims: string[]): SqliteDatabase {
+	const takeover = `UPDATE ${table} SET body = ?`;
+	const bound = <T extends object>(target: T, key: string | symbol) => {
+		const value = Reflect.get(target, key, target) as unknown;
+		return typeof value === "function" ? value.bind(target) : value;
+	};
+	return new Proxy(database, {
+		get(target, key) {
+			if (key !== "transaction") return bound(target, key);
+			return <T>(callback: (tx: SqliteExecutor) => Promise<T>, options?: SqliteTransactionOptions) =>
+				target
+					.transaction(async (tx) => {
+						const made: string[] = [];
+						const recording = new Proxy(tx, {
+							get(inner, name) {
+								if (name !== "run") return bound(inner, name);
+								return async (sql: string, ...params: SqliteValue[]) => {
+									const result = await inner.run(sql, ...params);
+									if (sql.startsWith(takeover) && result.changes === 1) made.push(String(params[2]));
+									return result;
+								};
+							},
+						});
+						return { value: await callback(recording), made };
+					}, options)
+					.then(({ value, made }) => {
+						claims.push(...made);
+						return value;
+					});
+		},
+	});
+}
 
 /** A blob larger than one staging batch. */
 const BEYOND_ONE_BATCH = FORK_STAGING_BATCH_BYTES + SESSION_BLOB_CHUNK_BYTES + 7;
@@ -322,6 +365,75 @@ for (const backend of storageBackends) {
 					}
 					assert.ok(opens > 1, `the cleanup took ${opens} opens`);
 					assert.equal(await left("live"), rows + 1, "a clone whose lease runs keeps every row");
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"concurrent cleanups take each lapsed transfer over once and never a live one, beside staging clones (#6560)",
+			() =>
+				withScope(async (scope) => {
+					const source = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}s_` });
+					await seedSource(source, "src", "sweep");
+					const destPrefix = `${scope.prefix}d_`;
+					const table = stagingTable(destPrefix);
+					const database = await scope.connect();
+					await (await SqlSessionStore.open(database, { prefix: destPrefix })).prepareForkStaging();
+					const lapsed = ["l0", "l1", "l2", "l3", "l4"];
+					const live = ["v0", "v1"];
+					const rows = FORK_STAGING_CLEANUP_ROWS + 3;
+					await database.transaction(async (tx) => {
+						for (const transfer of [...lapsed, ...live]) {
+							await tx.run(
+								`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, 0, 0, 0, 'child', ?, 'token')`,
+								transfer,
+								live.includes(transfer) ? Number.MAX_SAFE_INTEGER : 0,
+							);
+							for (let seq = 1; seq <= rows; seq++)
+								await tx.run(
+									`INSERT INTO ${table} (transfer_id, kind, seq, idx, name, size, body) VALUES (?, 1, ?, 0, ?, 0, '{}')`,
+									transfer,
+									seq,
+									`e${seq}`,
+								);
+						}
+					});
+					// Every committed takeover, by transfer, from the cleanups and from the clones' own cleanups alike.
+					const claims: string[] = [];
+					const cleaners = await Promise.all(
+						[0, 1, 2, 3].map(async () => recordingTakeovers(await scope.connect(), table, claims)),
+					);
+					const cloners = await Promise.all(
+						[0, 1].map(async () =>
+							SqlSessionStore.open(recordingTakeovers(await scope.connect(), table, claims), {
+								prefix: destPrefix,
+							}),
+						),
+					);
+					const dialect = dialectOf(database);
+					const results = await within(
+						Promise.allSettled([
+							...cleaners.map((cleaner) =>
+								cleanupForkStaging(cleaner, dialect, table, Number.POSITIVE_INFINITY),
+							),
+							...cloners.map((dest, index) => stagedClone(source, "src", dest, header(`child-${index}`, "src"))),
+						]),
+						"the cleanups and the clones",
+					);
+					for (const result of results)
+						assert.equal(result.status, "fulfilled", result.status === "rejected" ? String(result.reason) : "");
+					assert.deepEqual(
+						[...claims].sort(),
+						lapsed,
+						"each lapsed transfer is taken over once, a live one never",
+					);
+					const left = async (transfer: string) =>
+						Number((await database.get(`SELECT count(*) AS n FROM ${table} WHERE transfer_id = ?`, transfer))!.n);
+					for (const transfer of lapsed) assert.equal(await left(transfer), 0, transfer);
+					for (const transfer of live) assert.equal(await left(transfer), rows + 1, transfer);
+					const expected = (await source.load("src")).entries;
+					for (const id of ["child-0", "child-1"])
+						assert.deepEqual((await cloners[0]!.load(id)).entries, expected, id);
 				}),
 			SERVER_TIMEOUT_MS,
 		);

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import type {
+	SqliteExecutor,
+	SqliteTransactionOptions,
+} from "../../packages/coding-agent/src/core/storage/database.js";
 import { SessionConflictError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
@@ -167,6 +171,59 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL session create and
 				);
 			} finally {
 				await store.close();
+			}
+		});
+	});
+
+	test("a fork staged from another store writes a batch in two round trips and publishes the child in three, not one per row (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const source = await SqlSessionStore.open(await open(), { prefix: "s_" });
+			const database = await open();
+			/** The round trips of each transaction of the destination, by its lock domain. */
+			const transactions: string[] = [];
+			let trips: ReturnType<typeof countRoundTrips> | undefined;
+			const counted = new Proxy(database, {
+				get(target, key) {
+					if (key !== "transaction") {
+						const value = Reflect.get(target, key, target) as unknown;
+						return typeof value === "function" ? value.bind(target) : value;
+					}
+					return async <T>(
+						callback: (tx: SqliteExecutor) => Promise<T>,
+						options?: SqliteTransactionOptions,
+					): Promise<T> => {
+						trips?.take();
+						const result = await target.transaction(callback, options);
+						const concurrency = options?.concurrency;
+						const domain = concurrency?.kind === "serial" ? (concurrency.domain ?? "") : "";
+						if (trips !== undefined) transactions.push(`${domain.replace(/:.*/, "")} ${trips.take()}`);
+						return result;
+					};
+				},
+			});
+			const dest = await SqlSessionStore.open(counted, { prefix: "d_" });
+			try {
+				const entries = thread(40);
+				const created = await source.create(header("s1"), entries);
+				await dest.prepareForkStaging();
+				trips = countRoundTrips();
+				const forked = await dest.createStagedFork({ ...header("c1"), parentSessionId: "s1" }, streamOf(entries), {
+					store: source,
+					sessionId: "s1",
+					epoch: created.epoch,
+					hashes: [],
+					receipts: new Map(),
+				});
+				assert.equal(forked.lastSeq, 40);
+				// One batch holds the 40 entries and their search texts; the lease goes with it.
+				assert.deepEqual(transactions, ["d_session_fork_staging 2", "d_session_sessions 3"]);
+				assert.deepEqual(
+					(await dest.load("c1")).entries.map((entry) => entry.id),
+					entries.map((entry) => entry.id),
+				);
+			} finally {
+				await dest.close();
+				await source.close();
 			}
 		});
 	});
