@@ -13,6 +13,7 @@ import {
 	firstChatOrders,
 	type SessionChatRecords,
 } from "./chat-records.js";
+import { inJsonList } from "./json-list.js";
 import { sessionWriteTransaction } from "./session-transactions.js";
 
 /** Rows one read fetches at most. */
@@ -143,13 +144,13 @@ export function sqlChatRecords(
 							row_number() OVER (ORDER BY position) AS page_row,
 							sum(${bytes("anchor")}+${bytes("data")}) OVER (ORDER BY position) AS page_bytes
 						FROM (SELECT position,anchor,data FROM ${table}
-							WHERE session_id=? AND epoch=? AND position>? AND anchor IN (${anchors.map(() => "?").join(",")})
+							WHERE session_id=? AND epoch=? AND position>? AND ${inJsonList(dialect, "anchor")}
 							ORDER BY position LIMIT ${READ_PAGE_ROWS}) AS candidates
 					) AS page WHERE page_row=1 OR page_bytes<=? ORDER BY position`,
 					owner.id,
 					owner.epoch,
 					after,
-					...anchors.map(lineKey),
+					JSON.stringify(anchors.map(lineKey)),
 					CHAT_READ_PAGE_BYTES,
 				);
 				for (const { anchor, data } of rows) {
@@ -167,10 +168,10 @@ export function sqlChatRecords(
 			for (let i = 0; i < promptIds.length; i += ORDER_BATCH) {
 				const keys = promptIds.slice(i, i + ORDER_BATCH).map(orderKey);
 				const rows = await database.all<{ data: string }>(
-					`SELECT data FROM ${table} WHERE session_id=? AND epoch=? AND anchor IN (${keys.map(() => "?").join(",")}) ORDER BY position`,
+					`SELECT data FROM ${table} WHERE session_id=? AND epoch=? AND ${inJsonList(dialect, "anchor")} ORDER BY position`,
 					owner.id,
 					owner.epoch,
-					...keys,
+					JSON.stringify(keys),
 				);
 				for (const { data } of rows) {
 					const order = decodeChatOrder(data);

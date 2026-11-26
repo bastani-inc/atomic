@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import pg from "pg";
 import { describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 
@@ -14,6 +15,38 @@ import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-da
  */
 
 describe.skipIf(postgresSkipReason !== undefined)("sessions and workflow runs on PostgreSQL (#4793)", () => {
+	test("a chat record read sends one statement text however many anchors it reads (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const store = await SqlSessionStore.open(await open());
+			const texts = new Set<string>();
+			const query = pg.Client.prototype.query;
+			try {
+				const { epoch } = await store.create(
+					{ id: "s", version: SESSION_FORMAT_VERSION, createdAt: "2026-11-26T00:00:00.000Z", cwd: "/p" },
+					[],
+				);
+				assert.ok(epoch);
+				const owner = { id: "s", epoch };
+				const chat = store.chatRecords;
+				assert.ok(chat);
+				for (const anchor of ["a", "b", "c"])
+					await chat.append(owner, anchor, { kind: "line", level: "error", text: anchor });
+				pg.Client.prototype.query = function (this: pg.Client, ...args: unknown[]) {
+					const first = args[0] as string | { text?: string } | undefined;
+					const text = typeof first === "string" ? first : first?.text;
+					if (text?.includes("page_bytes")) texts.add(text);
+					return Reflect.apply(query, this, args);
+				} as pg.Client["query"];
+				assert.equal((await chat.read(owner, ["a"])).length, 1);
+				assert.equal((await chat.read(owner, ["a", "b", "c"])).length, 3);
+				assert.equal(texts.size, 1, [...texts].join("\n---\n"));
+			} finally {
+				pg.Client.prototype.query = query;
+				await store.close();
+			}
+		});
+	});
+
 	test("a session keeps entries whose JSON carries NUL and lone surrogates, and indexes their snapshots", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const timestamp = "2026-10-15T00:00:00.000Z";

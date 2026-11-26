@@ -15,6 +15,7 @@ import {
 	writeForkSegments,
 } from "./fork-lineage.js";
 import type { SessionForkTables } from "./fork-schema.js";
+import { inJsonList } from "./json-list.js";
 
 /** What a store gives its fork host: its connection's dialect, its tables and how it runs a write transaction. */
 export interface ForkHostStore {
@@ -82,8 +83,8 @@ export function forkDetachHost(store: ForkHostStore): ForkDetachHost {
 			const sorted = [...new Set(ids)].sort();
 			if (dialect.name !== "sqlite" && sorted.length > 0)
 				await tx.all(
-					`SELECT session_id FROM ${forkTables.forkTombstones} WHERE session_id IN (${sorted.map(() => "?").join(", ")}) ORDER BY session_id${dialect.lockClause(mode)}`,
-					...sorted,
+					`SELECT session_id FROM ${forkTables.forkTombstones} WHERE ${inJsonList(dialect, "session_id")} ORDER BY session_id${dialect.lockClause(mode)}`,
+					JSON.stringify(sorted),
 				);
 		},
 		async forkRewriteEpoch(tx, sessionId) {

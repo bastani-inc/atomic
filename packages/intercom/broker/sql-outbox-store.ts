@@ -330,16 +330,22 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 	 * current. Only when it changed fewer rows than it was given are the others read, to report why (#6560).
 	 */
 	const markDeliveredTogether = (claims: readonly OutboxClaim[]): Promise<OutboxDeliveredResult[]> => {
-		const current = claims.map(() => "(message_id = ? AND claim_token = ? AND claimant_id = ?)").join(" OR ");
-		const keys = claims.flatMap((claim) => [claim.messageId, claim.token, claim.claimantId]);
+		// The claims go as one JSON parameter, so the statement's text is the same however many it settles: a server that
+		// keeps prepared statements, and pg_stat_statements, see one statement, not one per count (#6560). Each row is
+		// found by its key, then checked against its claim.
+		const current = "(message_id, claim_token, claimant_id) IN (SELECT message_id, claim_token, claimant_id FROM claims)";
 		const write: SqliteStatement = {
-			sql: `UPDATE ${table} SET state = 'delivered', ${settled}
-				WHERE message_id IN (
-					SELECT message_id FROM ${table} WHERE state = 'claimed' AND (${current})
+			sql: `WITH claims AS (
+					SELECT c ->> 0 AS message_id, c ->> 1 AS claim_token, c ->> 2 AS claimant_id FROM jsonb_array_elements(?::jsonb) AS c
+				)
+				UPDATE ${table} SET state = 'delivered', ${settled}
+				WHERE message_id = ANY(ARRAY(
+					SELECT message_id FROM ${table} WHERE state = 'claimed'
+						AND message_id = ANY(ARRAY(SELECT message_id FROM claims)) AND ${current}
 					ORDER BY sequence${lockClause("update")}
-				) AND state = 'claimed' AND (${current})
+				)) AND state = 'claimed' AND ${current}
 				RETURNING ${columns}`,
-			params: [null, ...keys, ...keys],
+			params: [JSON.stringify(claims.map((claim) => [claim.messageId, claim.token, claim.claimantId])), null],
 		};
 		return database.transaction(
 			async (executor) => {
@@ -353,8 +359,8 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 						: new Map(
 								(
 									await executor.all<OutboxRecord>(
-										`SELECT ${columns} FROM ${table} WHERE message_id IN (${others.map(() => "?").join(", ")})`,
-										...others.map((claim) => claim.messageId),
+										`SELECT ${columns} FROM ${table} WHERE message_id = ANY(ARRAY(SELECT jsonb_array_elements_text(?::jsonb)))`,
+										JSON.stringify(others.map((claim) => claim.messageId)),
 									)
 								).map((record) => [record.message_id, record]),
 							);

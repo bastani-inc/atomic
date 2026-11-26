@@ -80,6 +80,7 @@ import {
 } from "./fork-view.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import { registerHistorySnapshot } from "./history-snapshot.js";
+import { inJsonList } from "./json-list.js";
 import {
 	branchRanges,
 	childCatalogCut,
@@ -2036,6 +2037,7 @@ export class SqlSessionStore implements SessionStore {
 		if (this.getBlob !== SqlSessionStore.prototype.getBlob || this.putBlob !== SqlSessionStore.prototype.putBlob)
 			return undefined;
 		return forkBlobCopy(
+			this.dialect,
 			this.tables,
 			{ legacyBlobData: this.legacyBlobData, chunkBytes: SESSION_BLOB_CHUNK_BYTES },
 			source,
@@ -2311,13 +2313,13 @@ export class SqlSessionStore implements SessionStore {
 					`SELECT b.hash, b.bytes, b.chunks, CASE WHEN b.chunks >= 0 AND b.bytes <= ? THEN c.data END AS data,
 						CASE WHEN w.place = 0 THEN 1 ELSE 0 END AS own
 				FROM ${this.blobPlaces(tables)} w JOIN ${this.tables.blobs} b
-				ON b.session_id = w.owner AND b.hash IN (${hashes.map(() => "?").join(", ")})
+				ON b.session_id = w.owner AND ${inJsonList(this.dialect, "b.hash")}
 				LEFT JOIN ${this.tables.blobChunks} c ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = 0
 				${tables.guard === undefined ? "" : `WHERE ${tables.guard}`}
 				ORDER BY own DESC, b.session_id`,
 					maxBytes,
 					...this.blobPlaceParams(tables, sessionId),
-					...hashes,
+					JSON.stringify(hashes),
 				),
 			(found) => found.length > 0,
 		);
@@ -2673,18 +2675,18 @@ export class SqlSessionStore implements SessionStore {
 			exists: this.newSessionRead(child),
 			lock: {
 				sql: `SELECT id, last_seq, CASE WHEN id = ? THEN ${epoch} END AS epoch${withState ? ", CASE WHEN id = ? THEN summary_state END AS summary_state" : ""}
-					FROM ${this.tables.sessions} WHERE (id IN (${ids.map(() => "?").join(", ")})
+					FROM ${this.tables.sessions} WHERE (${inJsonList(this.dialect, "id")}
 						OR id IN (SELECT source_id FROM ${this.forkTables.forkSegments} WHERE session_id = ?))
 					AND NOT EXISTS (SELECT 1 FROM ${this.tables.sessions} c WHERE c.id = ?) ORDER BY id${this.dialect.lockClause("key-share")}`,
-				params: [donor, ...(withState ? [donor] : []), ...ids, donor, child],
+				params: [donor, ...(withState ? [donor] : []), JSON.stringify(ids), donor, child],
 			},
 			// A source deleted while forks still read it keeps only a tombstone, which the sweep that removes its rows locks:
 			// the fork locks it too, after the sessions rows, as every writer orders them.
 			tombstones: {
-				sql: `SELECT session_id FROM ${this.forkTables.forkTombstones} WHERE session_id IN (${ids.map(() => "?").join(", ")})
+				sql: `SELECT session_id FROM ${this.forkTables.forkTombstones} WHERE ${inJsonList(this.dialect, "session_id")}
 					OR session_id IN (SELECT source_id FROM ${this.forkTables.forkSegments} WHERE session_id = ?)
 					ORDER BY session_id${this.dialect.lockClause("key-share")}`,
-				params: [...ids, donor],
+				params: [JSON.stringify(ids), donor],
 			},
 			segments: {
 				sql: `SELECT source_id, from_seq, to_seq, base_seq FROM ${this.forkTables.forkSegments} WHERE session_id = ? ORDER BY idx`,
@@ -3915,10 +3917,10 @@ $grant$`);
 		}
 		const idPrefix = query.idPrefix?.toLowerCase();
 		return {
-			where: `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`,
+			where: `(? = 1 OR internal = 0)${projectCwds ? ` AND ${inJsonList(this.dialect, "cwd")}` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`,
 			params: [
 				query.includeInternal ? 1 : 0,
-				...(projectCwds ?? []),
+				...(projectCwds ? [JSON.stringify(projectCwds)] : []),
 				...(idPrefix === undefined ? [] : [idPrefix.length, idPrefix]),
 			],
 			inScope: (row: ListingRow) => !matchesCwd || matchesCwd(row.cwd),
@@ -3943,7 +3945,9 @@ $grant$`);
 				for (let start = 0; start < stale.length; start += LISTING_FETCH_BATCH) {
 					const ids = stale.slice(start, start + LISTING_FETCH_BATCH).map((row) => row.id);
 					const fetched = new Set(
-						(await this.readSummaries(`id IN (${ids.map(() => "?").join(", ")})`, ids)).map((row) => row.id),
+						(await this.readSummaries(inJsonList(this.dialect, "id"), [JSON.stringify(ids)])).map(
+							(row) => row.id,
+						),
 					);
 					// A session deleted after the light read must not be listed from an older cached copy.
 					for (const id of ids) if (!fetched.has(id)) this.summaries.delete(id);
@@ -4169,7 +4173,7 @@ $grant$`);
 	): Promise<SessionStoredEntry[]> {
 		const tables = viewTables ?? (await this.viewTables(tx, sessionId));
 		const through = range.through ?? FORK_VIEW_END;
-		const filter = seqs === undefined ? "" : ` AND seq IN (${seqs.map(() => "?").join(", ")})`;
+		const filter = seqs === undefined ? "" : ` AND ${inJsonList(this.dialect, "seq", true)}`;
 		const entries: SessionStoredEntry[] = [];
 		for (let after = Math.max(0, (range.from ?? 1) - 1), limit: number = SESSION_READ_FETCH.first; ; ) {
 			// A view's seqs are dense, so the next batch of a shared history is its next `limit + 1` seqs: each source's
@@ -4207,7 +4211,7 @@ $grant$`);
 				...forkViewParams([view]),
 				SESSION_READ_INLINE_BYTES,
 				after,
-				...(seqs ?? []),
+				...(seqs === undefined ? [] : [JSON.stringify(seqs)]),
 				limit + 1,
 				limit,
 				SESSION_READ_PAGE_CHARS,
@@ -5112,12 +5116,12 @@ $grant$`);
 			const rows = await tx.all<{ seq: number; bytes: number }>(
 				withForkViews(
 					[view],
-					`SELECT seq,CASE WHEN chunks=0 THEN ${this.entryByteLength("entry_json")} ELSE (chunks-1)*?+${tail} END bytes FROM ${view.name} e WHERE session_id=? AND seq IN (${wanted.map(() => "?").join(",")}) ORDER BY seq`,
+					`SELECT seq,CASE WHEN chunks=0 THEN ${this.entryByteLength("entry_json")} ELSE (chunks-1)*?+${tail} END bytes FROM ${view.name} e WHERE session_id=? AND ${inJsonList(this.dialect, "seq", true)} ORDER BY seq`,
 				),
 				...view.params,
 				SESSION_ENTRY_CHUNK_BYTES,
 				sessionId,
-				...wanted,
+				JSON.stringify(wanted),
 			);
 			const sizes = new Map(rows.map((row) => [Number(row.seq), row.bytes == null ? undefined : Number(row.bytes)]));
 			const plan = selectedPagePlan(
@@ -5686,11 +5690,11 @@ $grant$`);
 				const rows = await tx.all<SqliteRow & { seq: number; chunks: number; bytes: number; body: string | null }>(
 					withForkViews(
 						[view],
-						`SELECT seq,chunks,${size} AS bytes,CASE WHEN chunks=0 AND ${size}<=512 THEN entry_json END AS body FROM ${view.name} WHERE session_id=? AND seq IN (${seqs.map(() => "?").join(",")}) ORDER BY seq`,
+						`SELECT seq,chunks,${size} AS bytes,CASE WHEN chunks=0 AND ${size}<=512 THEN entry_json END AS body FROM ${view.name} WHERE session_id=? AND ${inJsonList(this.dialect, "seq", true)} ORDER BY seq`,
 					),
 					...view.params,
 					sessionId,
-					...seqs,
+					JSON.stringify(seqs),
 				);
 				for (const row of rows) {
 					const seq = Number(row.seq);
@@ -5722,6 +5726,7 @@ $grant$`);
 				return result;
 			};
 			const j = (field: string) => this.dialect.jsonText("entry_json", field);
+			const dialect = this.dialect;
 			// A shared history is scanned a window of seqs at a time, so each source's index reads only those (#6560).
 			const scanWindow = (from: number, through: number) => {
 				const end = tables.segments === undefined ? through : Math.min(through, from - 1 + SCAN_SELECT_WINDOW);
@@ -5801,10 +5806,10 @@ $grant$`);
 									const prefixes = await tx.all<SqliteRow & { seq: number; prefix: Uint8Array }>(
 										withForkViews(
 											[view],
-											`SELECT v.seq,substr(c.data,1,${FORK_ROLE_PREFIX_BYTES}) AS prefix FROM ${view.name} v JOIN ${this.tables.entryChunks} c ON c.session_id=v.src_id AND c.seq=v.src_seq AND c.idx=0 WHERE v.seq IN (${batch.map(() => "?").join(",")})`,
+											`SELECT v.seq,substr(c.data,1,${FORK_ROLE_PREFIX_BYTES}) AS prefix FROM ${view.name} v JOIN ${this.tables.entryChunks} c ON c.session_id=v.src_id AND c.seq=v.src_seq AND c.idx=0 WHERE ${inJsonList(this.dialect, "v.seq", true)}`,
 										),
 										...view.params,
-										...batch,
+										JSON.stringify(batch),
 									);
 									for (const row of prefixes) roles.set(Number(row.seq), messageRoleIn(row.prefix));
 								}
@@ -5851,11 +5856,9 @@ $grant$`);
 				metadata,
 				async function* (ranges, kinds, types = []) {
 					const filters: string[] = [];
-					if (types.length) filters.push(`${j("type")} IN (${types.map(() => "?").join(",")})`);
+					if (types.length) filters.push(inJsonList(dialect, j("type")));
 					if (kinds.length)
-						filters.push(
-							`(${j("type")}='custom' AND (chunks>0 OR ${j("customType")} IN (${kinds.map(() => "?").join(",")})))`,
-						);
+						filters.push(`(${j("type")}='custom' AND (chunks>0 OR ${inJsonList(dialect, j("customType"))}))`);
 					for (const [lo, hi] of ranges)
 						for (let seq = lo; seq <= hi; ) {
 							const labels = types.length === 1 && types[0] === "label";
@@ -5870,8 +5873,8 @@ $grant$`);
 								sessionId,
 								seq,
 								end,
-								...types,
-								...kinds,
+								...(types.length ? [JSON.stringify(types)] : []),
+								...(kinds.length ? [JSON.stringify(kinds)] : []),
 							);
 							const deferred = rows
 								.filter((r) => r.kind === "custom" || (r.kind === "label" && !r.body))
