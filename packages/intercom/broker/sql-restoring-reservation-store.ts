@@ -27,7 +27,7 @@ import type {
 import { reservationAdmitsSender } from "./group-membership.js";
 import { isReleasedReservationKey } from "./released-children.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema, openCatalogOf, withBrokerSchemaCatalog } from "./sql-schema.js";
+import { ensureBrokerSchema, openCatalogOf, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type ReservationRow = SqliteRow & {
 	reservation_key: string;
@@ -142,7 +142,7 @@ async function openRestoringReservationStoreInCatalog({
 	 * Its transactions read and write this table, its counters and its wake claims alone, which no other store
 	 * touches, so they exclude one another, not every writer of the database (#6560).
 	 */
-	const serial = { concurrency: { kind: "serial", domain: table } } as const;
+	const serial = { ...RETRY_UNAPPLIED, concurrency: { kind: "serial", domain: table } } as const;
 	await ensureBrokerSchema(database, prefix, "restoring-reservations", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(

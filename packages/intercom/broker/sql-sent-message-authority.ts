@@ -53,6 +53,27 @@ export interface SqlSentMessageAuthority extends SentMessageAuthority {
 	 * send's outbox row is inserted only under it, after the send's own `reserveStatement` (#6560).
 	 */
 	reservedCondition(key: SentMessageKey): SqliteStatement;
+	/**
+	 * The writes and reads of `reservation`'s row a send makes in one round trip on PostgreSQL, each decided by the
+	 * database (`OutboxReservation`); undefined for a reservation `reserveIn` refuses without writing.
+	 */
+	reservationOf(reservation: SentMessageReservation): OutboxReservation | undefined;
+}
+
+/**
+ * The statements of the sent-message table a send's one-round-trip transaction makes (`SqlOutboxStore.enqueueAtOnce`):
+ * the reservation's insert and delete, each made only while a condition the caller gives holds, and reads of it.
+ */
+export interface OutboxReservation {
+	readonly digest: string;
+	/** Inserts the reservation as `reserveStatement` does, only while `condition` holds, answering `returning` if it did. */
+	reserveWhere(condition: SqliteStatement, returning: string): SqliteStatement;
+	/** Deletes the reservation, only while it holds this digest and `condition` holds. */
+	forgetWhere(condition: SqliteStatement): SqliteStatement;
+	/** A read, usable as a scalar subquery, of the digest that holds the message now, or null. */
+	readonly holder: SqliteStatement;
+	/** An SQL condition that holds while this digest holds the message (`reservedCondition`). */
+	readonly held: SqliteStatement;
 }
 
 /**
@@ -100,19 +121,51 @@ async function openSentMessageAuthorityInCatalog({
 		return executor.get<SentRow>(sql, ...params);
 	};
 
+	/** The values of `reservation`'s row, in the order of `reserveStatement`'s columns. */
+	const reservedValues = (reservation: SentMessageReservation) => [
+		reservation.messageId,
+		reservation.digest,
+		reservation.targetIdentity,
+		reservation.questionRoute === undefined
+			? null
+			: JSON.stringify({
+					targetSessionId: reservation.questionRoute.targetSessionId,
+					senderGroupIdentity: reservation.questionRoute.senderGroupIdentity,
+				}),
+	];
+	const reserved = `INSERT INTO ${table}(message_id, digest, target_identity, question_route_json, state, recorded_at)`;
+
 	const reserveStatement = (reservation: SentMessageReservation): SqliteStatement | undefined => {
 		if (reservation.messageId.length === 0 || reservation.targetIdentity.length === 0) return undefined;
-		const route =
-			reservation.questionRoute === undefined
-				? null
-				: JSON.stringify({
-						targetSessionId: reservation.questionRoute.targetSessionId,
-						senderGroupIdentity: reservation.questionRoute.senderGroupIdentity,
-					});
 		return {
-			sql: `INSERT INTO ${table}(message_id, digest, target_identity, question_route_json, state, recorded_at)
+			sql: `${reserved}
 			 VALUES (?, ?, ?, ?, 'reserved', ${nowMs}) ON CONFLICT(message_id) DO NOTHING`,
-			params: [reservation.messageId, reservation.digest, reservation.targetIdentity, route],
+			params: reservedValues(reservation),
+		};
+	};
+
+	const reservedCondition = (key: SentMessageKey): SqliteStatement => ({
+		sql: `EXISTS (SELECT 1 FROM ${table} WHERE message_id = ? AND digest = ?)`,
+		params: [key.messageId, key.digest],
+	});
+
+	const reservationOf = (reservation: SentMessageReservation): OutboxReservation | undefined => {
+		if (reservation.messageId.length === 0 || reservation.targetIdentity.length === 0) return undefined;
+		const { messageId, digest } = reservation;
+		return {
+			digest,
+			reserveWhere: (condition, returning) => ({
+				sql: `${reserved}
+				 SELECT ?, ?, ?, ?, 'reserved', ${nowMs} WHERE ${condition.sql} ON CONFLICT(message_id) DO NOTHING
+				 RETURNING ${returning}`,
+				params: [...reservedValues(reservation), ...condition.params],
+			}),
+			forgetWhere: (condition) => ({
+				sql: `DELETE FROM ${table} WHERE message_id = ? AND digest = ? AND (${condition.sql})`,
+				params: [messageId, digest, ...condition.params],
+			}),
+			holder: { sql: `SELECT digest FROM ${table} WHERE message_id = ?`, params: [messageId] },
+			held: reservedCondition({ messageId, digest }),
 		};
 	};
 
@@ -179,10 +232,8 @@ async function openSentMessageAuthorityInCatalog({
 		forgetIn,
 		lookupStatement,
 		reserveStatement,
-		reservedCondition: (key) => ({
-			sql: `EXISTS (SELECT 1 FROM ${table} WHERE message_id = ? AND digest = ?)`,
-			params: [key.messageId, key.digest],
-		}),
+		reservedCondition,
+		reservationOf,
 		async reserve(reservation): Promise<SentMessageReserveResult> {
 			if (reservation.messageId.length === 0) return emptyMessageId;
 			if (reservation.targetIdentity.length === 0) return { status: "invalid", reason: "empty-target-identity" };

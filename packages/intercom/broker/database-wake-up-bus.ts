@@ -17,7 +17,7 @@ import type {
 	WakeUpSubscribeResult,
 	WakeUpSubscription,
 } from "./wake-up-bus.js";
-import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
+import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 /**
  * S4 wake-up bus (specs/2026-10-19-intercom-multi-node.md §5.6): a hint log in the shared storage database. Each
@@ -191,7 +191,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 						await tx.run(insert, hint.brokerId, hint.reason, hint.version);
 						await tx.run(notify.sql, ...notify.params);
 					},
-					{ concurrency: { kind: "fenced", audit: fencedPath("intercom-wakeup-hint") } },
+					{ ...RETRY_UNAPPLIED, concurrency: { kind: "fenced", audit: fencedPath("intercom-wakeup-hint") } },
 				);
 			}
 			// #6560: at most once per interval, not at every publish: each prune is a write every broker would send.

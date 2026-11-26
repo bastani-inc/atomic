@@ -1,5 +1,5 @@
 import { dialectOf, type SqliteDatabase } from "@bastani/atomic/storage";
-import { catalogHasColumns } from "./sql-schema.js";
+import { catalogHasColumns, RETRY_UNAPPLIED } from "./sql-schema.js";
 
 function isLineTerminatorCode(code: number): boolean {
 	return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
@@ -133,7 +133,7 @@ export async function addMissingColumns(
 				if ((await tx.all(probe.sql, ...probe.params)).length > 0) return;
 				await tx.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 				if (withColumn !== undefined) await tx.exec(withColumn);
-			});
+			}, RETRY_UNAPPLIED);
 		} catch (error) {
 			if (!isDuplicateColumn(error)) throw error;
 		}

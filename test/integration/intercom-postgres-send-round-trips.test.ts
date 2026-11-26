@@ -4,6 +4,8 @@ import { afterEach, describe, test } from "vitest";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
+	OUTBOX_TARGET_MAX_BYTES,
+	OUTBOX_TARGET_MAX_ROWS,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
@@ -45,11 +47,11 @@ afterEach(() => {
 
 const from = { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
 
-function send(messageId: string) {
+function send(messageId: string, targetIdentity = "target-a") {
 	return [
-		{ messageId, digest: messageId, targetIdentity: "target-a" },
+		{ messageId, digest: messageId, targetIdentity },
 		{
-			targetIdentity: "target-a",
+			targetIdentity,
 			originBrokerId: "broker-a",
 			digest: messageId,
 			frame: { type: "message", from, message: { id: messageId, timestamp: 1, content: { text: messageId } } },
@@ -166,7 +168,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom send round trips on 
 		});
 	});
 
-	test("a send costs three round trips: its reads with the start, its row, its reservation with the commit (#6560)", async () => {
+	test("a send costs one round trip: its statements go with its start and its commit, decided by the database", async () => {
 		await withPostgresDatabase(async ({ open }) => {
 			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });
 			try {
@@ -185,10 +187,73 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom send round trips on 
 				trips.take();
 				assert.equal((await state.outbox.renewClaim(claimed.rows[0]!.claim)).status, "renewed");
 				const renewTrips = trips.take();
-				assert.equal(sendTrips, 3);
+				// Three before: the reads with the start, the row, the reservation with the commit, the recipient's lock held
+				// across the two round trips between them.
+				assert.equal(sendTrips, 1);
 				assert.equal(renewTrips, 2);
 				assert.equal((await state.outbox.read("m-1")).status, "found");
 				assert.equal((await state.sentMessages.lookup({ messageId: "m-1", digest: "m-1" })).status, "match");
+			} finally {
+				await bus.close();
+				await state.close();
+			}
+		});
+	});
+
+	test("a send in one round trip answers as one decided across round trips: full, resent, refused", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });
+			const database = await open();
+			try {
+				assert.equal((await state.reserveAndEnqueue!(...send("m-big"))).status, "inserted");
+				// The recipient's queue holds as many bytes as it may.
+				await database.run(
+					"UPDATE intercom_outbox SET frame_bytes = ? WHERE message_id = 'm-big'",
+					OUTBOX_TARGET_MAX_BYTES,
+				);
+				const full = { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES };
+				const reservation = (messageId: string, digest = messageId) =>
+					state.sentMessages.lookup({ messageId, digest });
+				// Refused, and its message stays unreserved.
+				assert.deepEqual(await state.reserveAndEnqueue!(...send("m-new")), full);
+				assert.equal((await reservation("m-new")).status, "miss");
+				// A send whose message was reserved before is refused too, and its reservation goes.
+				assert.equal((await state.sentMessages.reserve(send("m-earlier")[0])).status, "reserved");
+				assert.deepEqual(await state.reserveAndEnqueue!(...send("m-earlier")), full);
+				assert.equal((await reservation("m-earlier")).status, "miss");
+				// A queued message sent again is answered with its row, full queue or not, and stays reserved.
+				const resent = await state.reserveAndEnqueue!(...send("m-big"));
+				assert.equal(resent.status === "duplicate" ? resent.row.messageId : resent.status, "m-big");
+				assert.equal((await reservation("m-big")).status, "match");
+				// Another digest's reservation refuses the send and is left as it was.
+				assert.equal(
+					(await state.sentMessages.reserve({ messageId: "m-rival", digest: "rival", targetIdentity: "target-c" }))
+						.status,
+					"reserved",
+				);
+				assert.deepEqual(await state.reserveAndEnqueue!(...send("m-rival", "target-c")), {
+					status: "conflict",
+					messageId: "m-rival",
+				});
+				assert.equal((await reservation("m-rival", "rival")).status, "match");
+				assert.equal((await state.outbox.read("m-rival")).status, "missing");
+				// Another recipient's row of the message, of another digest, refuses it, and no reservation of it is left.
+				const elsewhere = send("m-shared", "target-b")[1];
+				assert.equal((await state.outbox.enqueue({ ...elsewhere, digest: "elsewhere" })).status, "inserted");
+				assert.deepEqual(await state.reserveAndEnqueue!(...send("m-shared", "target-c")), {
+					status: "conflict",
+					messageId: "m-shared",
+				});
+				assert.equal((await reservation("m-shared")).status, "miss");
+				// Room again: the next send is queued behind the first.
+				await database.run("UPDATE intercom_outbox SET frame_bytes = 1 WHERE message_id = 'm-big'");
+				const queued = await state.reserveAndEnqueue!(...send("m-after"));
+				assert.equal(queued.status, "inserted");
+				const listed = await state.outbox.listUndelivered("target-a");
+				assert.deepEqual(listed.status === "listed" ? listed.rows.map((row) => row.messageId) : listed, [
+					"m-big",
+					"m-after",
+				]);
 			} finally {
 				await bus.close();
 				await state.close();
