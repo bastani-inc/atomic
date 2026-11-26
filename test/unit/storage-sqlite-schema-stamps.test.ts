@@ -176,7 +176,10 @@ test("a broker store whose dropped column an open adds again is stamped again in
 	await withBroker(current, path);
 	const stamped = await stampsOf(path);
 	assert.equal(stamped.behind, 0);
-	await onFile(path, (database) => database.exec("ALTER TABLE intercom_known_sessions DROP COLUMN lost_at"));
+	// The sweep's index on the column goes with it, as SQLite drops no column an index names.
+	await onFile(path, (database) =>
+		database.exec("DROP INDEX intercom_known_sessions_lost; ALTER TABLE intercom_known_sessions DROP COLUMN lost_at"),
+	);
 	assert.equal((await stampsOf(path)).behind, stamped.domains.length, "the drop left every stamp behind");
 	await withBroker(current, path);
 	const columns = await onFile(path, (database) =>
