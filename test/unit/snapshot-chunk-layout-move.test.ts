@@ -47,6 +47,8 @@ type WorkspaceCollectionError = InstanceType<typeof WorkspaceCollectionError>;
 const { collectSnapshotGarbage, resetSnapshotCollectionScheduleForTesting, scheduleSnapshotCollection } = await import(
 	"../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts"
 );
+// Loaded here rather than in its test, so its module graph's transform never counts against that test's timeout.
+const { runStorageCommand } = await import("../../packages/coding-agent/src/cli/storage-command.ts");
 
 /** The snapshot blob store of Atomic 0.9.89, vendored unmodified (test/fixtures/snapshot-store-0.9.89/README.md). */
 interface Release0989BlobStore {
@@ -174,7 +176,6 @@ test("offline maintenance leaves a customized chunk layout alone (#5700)", async
 });
 
 test("offline maintenance moves a closed local chunk table with room for one copy, not two (#5700)", async () => {
-	const { runStorageCommand } = await import("../../packages/coding-agent/src/cli/storage-command.js");
 	const path = join(directory, "store.sqlite");
 	const prefix = "test_";
 	const chunked = blob(40 * SNAPSHOT_BLOB_CHUNK_BYTES, 99);

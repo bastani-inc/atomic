@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterAll, beforeAll, describe, onTestFinished, test, vi } from "vitest";
+import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import {
 	expectedBrokerStorage,
 	queryIntercomBroker,
@@ -275,7 +276,6 @@ describe("brokers sharing a SQLite selection", () => {
 	test(
 		"a session's intercom status shows multi-node routing and its peers (#3857)",
 		async () => {
-			const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 			const client = new IntercomClient(undefined, {
 				brokerSocketPath: getBrokerSocketPath(process.platform, first.agentDir),
 			});
