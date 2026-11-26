@@ -496,6 +496,34 @@ for (const backend of storageBackends) {
 					}),
 				SERVER_TIMEOUT_MS,
 			);
+
+			test(
+				"a store that saw shared history copies its forks on a database whose schema no longer has it (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const database = await scope.connect();
+						const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+						await enable(store);
+						const parent = await SessionManager.create(store, CWD);
+						const id = parent.getSessionId();
+						for (let index = 0; index < 20; index++)
+							await parent.appendMessage({ role: "user", content: `turn ${index}`, timestamp: index });
+						// What a build before shared history reads: the fork's own transaction finds schema 2, whatever this
+						// store saw before.
+						const meta = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).meta;
+						await database.run(`UPDATE ${meta} SET schema_version = 2`);
+
+						const forked = (await parent.captureFork(parent.getLeafId()!, { internal: true })()).getSessionId();
+						const clone = (await parent.forkTo(CWD, store)).getSessionId();
+
+						for (const child of [forked, clone]) {
+							assert.deepEqual(await segments(database, scope.prefix, child), [], child);
+							assert.equal((await ownRows(database, scope.prefix, child)).length, 20, child);
+						}
+						assert.deepEqual((await store.load(clone)).entries, (await store.load(id)).entries);
+					}),
+				SERVER_TIMEOUT_MS,
+			);
 		},
 	);
 }
