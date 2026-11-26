@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import pg from "pg";
 import { afterEach, describe, test } from "vitest";
+import { fencedPath } from "../../packages/coding-agent/src/core/storage/fenced-paths.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
@@ -9,6 +10,7 @@ import {
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
+import { sleep } from "../helpers/runtime.js";
 
 /**
  * Counts the round trips to the server: queries a connection sent while none of its own were unanswered. The adapter's
@@ -193,6 +195,111 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom send round trips on 
 				assert.equal(renewTrips, 2);
 				assert.equal((await state.outbox.read("m-1")).status, "found");
 				assert.equal((await state.sentMessages.lookup({ messageId: "m-1", digest: "m-1" })).status, "match");
+			} finally {
+				await bus.close();
+				await state.close();
+			}
+		});
+	});
+
+	test("a lease acquisition costs one round trip, and a presence one more to wait for the sends under way", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });
+			const broker = (brokerId: string) => ({ kind: "broker", brokerId, nodeId: "n", startedAt: 1 }) as const;
+			const presence = { kind: "presence", targetIdentity: "target-a", session: { ...from, id: "r" } } as const;
+			try {
+				assert.equal(
+					(await state.leases.acquire(broker("warm"), "warm", BROKER_LEASE_STALE_AFTER_MS)).status,
+					"acquired",
+				);
+				const trips = countRoundTrips();
+				const first = await state.leases.acquire(broker("broker-a"), "broker-a", BROKER_LEASE_STALE_AFTER_MS);
+				assert.equal(first.status === "acquired" ? first.lease.fencingToken : first.status, 1);
+				// Before: the start, the statement, the commit.
+				assert.equal(trips.take(), 1);
+				const held = await state.leases.acquire(broker("broker-a"), "broker-b", BROKER_LEASE_STALE_AFTER_MS);
+				assert.deepEqual(held, { status: "held", holderId: "broker-a", fencingToken: 1 });
+				assert.equal(trips.take(), 1);
+				assert.equal(
+					(await state.leases.acquire(presence, "broker-a", BROKER_LEASE_STALE_AFTER_MS)).status,
+					"acquired",
+				);
+				assert.equal(trips.take(), 2);
+			} finally {
+				await bus.close();
+				await state.close();
+			}
+		});
+	});
+
+	test("a send to a recipient found offline costs one round trip too, its host's wake-up hint included", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });
+			const presence = { kind: "presence", targetIdentity: "target-a", session: { ...from, id: "r" } } as const;
+			const offline = (messageId: string) => {
+				const [reservation, request] = send(messageId);
+				return [reservation, { ...request, wakeHostWithinMs: BROKER_LEASE_STALE_AFTER_MS }] as const;
+			};
+			try {
+				assert.equal((await state.reserveAndEnqueue!(...offline("m-warm"))).status, "inserted");
+				const trips = countRoundTrips();
+				const unhosted = await state.reserveAndEnqueue!(...offline("m-unhosted"));
+				assert.equal(unhosted.status === "inserted" ? (unhosted.woke ?? "none") : unhosted.status, "none");
+				// Before: the reads with the start, the row with the presence read, the hint log's lock, the hint and its
+				// notification, the reservation with the commit, the recipient's lock held across every round trip between.
+				assert.equal(trips.take(), 1);
+				assert.equal(
+					(await state.leases.acquire(presence, "broker-host", BROKER_LEASE_STALE_AFTER_MS)).status,
+					"acquired",
+				);
+				trips.take();
+				const hosted = await state.reserveAndEnqueue!(...offline("m-hosted"));
+				assert.equal(hosted.status === "inserted" ? hosted.woke : hosted.status, "broker-host");
+				// One for the transaction; its notification goes once it committed, and the send does not wait for it.
+				assert.equal(trips.take(), 1);
+				await sleep(200);
+				assert.equal(trips.take(), 1);
+				const database = await open();
+				try {
+					const hints = await database.all<{ broker_id: string; version: number | bigint }>(
+						"SELECT broker_id, version FROM intercom_wakeups ORDER BY id",
+					);
+					const read = await state.outbox.read("m-hosted");
+					assert.deepEqual(
+						hints.map((hint) => [hint.broker_id, Number(hint.version)]),
+						[["broker-host", read.status === "found" ? read.row.sequence : -1]],
+					);
+					// Another session holds the hint log locked: the send queues its row at once, without its hint.
+					let locked!: () => void;
+					const holding = new Promise<void>((resolve) => {
+						locked = resolve;
+					});
+					let release!: () => void;
+					const released = new Promise<void>((resolve) => {
+						release = resolve;
+					});
+					const holder = database.transaction(
+						async (tx) => {
+							await tx.exec("LOCK TABLE intercom_wakeups IN SHARE MODE");
+							locked();
+							await released;
+						},
+						{ concurrency: { kind: "fenced", audit: fencedPath("intercom-wakeup-hint") } },
+					);
+					await holding;
+					try {
+						trips.take();
+						const sent = await state.reserveAndEnqueue!(...offline("m-locked"));
+						assert.equal(sent.status === "inserted" ? (sent.woke ?? "none") : sent.status, "none");
+						assert.equal(trips.take(), 1);
+					} finally {
+						release();
+						await holder;
+					}
+					assert.equal((await database.all("SELECT id FROM intercom_wakeups")).length, 1);
+				} finally {
+					await database.close();
+				}
 			} finally {
 				await bus.close();
 				await state.close();

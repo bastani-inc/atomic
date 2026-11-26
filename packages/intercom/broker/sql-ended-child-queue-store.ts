@@ -919,11 +919,12 @@ export async function openSqlEndedChildQueueStore(
 		if (!counting && !ledger.holdsMessages()) recountSoon();
 	};
 	// A step that runs only while the database is idle and its lock free at once; a database that cannot say so runs it
-	// as a transaction of its own, apart from the message writes.
+	// as a transaction of its own, apart from the message writes. It touches the queue's own tables alone, so on a shared
+	// database it excludes the queue's writers, as they exclude one another, not every writer of the database.
 	const maintain: (callback: (tx: SqliteExecutor) => Promise<void>) => Promise<boolean> =
 		database.tryMaintenance?.bind(database) ??
 		((callback) =>
-			database.transaction(callback).then(
+			database.transaction(callback, { concurrency: { kind: "serial", domain: queue } }).then(
 				() => true,
 				() => false,
 			));
