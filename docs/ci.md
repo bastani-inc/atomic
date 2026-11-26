@@ -147,6 +147,14 @@ A maintainer must publish the first version of a new public package by hand. Run
 
 A tag push starts `publish.yml` directly. Recover a failed release before cutting another on the same channel. Retrying an older release after a newer one has shipped can move `latest` or `next` backwards. Never delete, recreate or move a release tag.
 
+### Dry run
+
+A dry run builds and smokes every release archive from a branch, without a tag, and stages or publishes nothing. It runs the native artifacts (with the macOS SQLite library), the payload build and every smoke job, including `macos-binary-smoke`, then stops before `stage-github-release`. It does not wait for a publication or hold one up. Pass the branch as `source_ref` and its package version as `tag`. That version is `0.0.0` on `main`, so the dry run skips the release notes and the in-place update checks, which need a released version.
+
+```sh
+gh workflow run publish.yml --ref main -f tag=0.0.0 -f source_ref=main -f dry_run=true
+```
+
 ### Recovering a failed publication
 
 1. Start with **Re-run failed jobs** on the failed run. A successfully staged draft stays in place, and npm skips versions it already serves.

@@ -1,5 +1,5 @@
 name: Publish
-run-name: Publish ${{ github.event.inputs.tag || github.ref_name }}
+run-name: Publish ${{ github.event.inputs.tag || github.ref_name }}${{ github.event.inputs.dry_run == 'true' && ' (dry run)' || '' }}
 
 on:
   push:
@@ -16,6 +16,11 @@ on:
         description: "Source ref to build (defaults to tag); must resolve to the tag's commit or the run fails"
         required: false
         type: string
+      dry_run:
+        description: "Dry run: build and smoke every release archive from source_ref without a tag, and stage or publish nothing. tag is then source_ref's package version."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,13 +30,15 @@ permissions:
 # and they could also race on which release GitHub marks latest. A later run
 # waits instead of being cancelled; `queue: max` keeps every waiting run in line
 # rather than letting a newer one replace the one already pending.
+# A dry run publishes nothing, so it waits for no publication and holds none up.
 concurrency:
-  group: publish
+  group: ${{ github.event.inputs.dry_run == 'true' && 'publish-dry-run' || 'publish' }}
   cancel-in-progress: false
   queue: max
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
   SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
   PACKAGE_DIR: packages/coding-agent
   GLIBC_FLOOR: "2.17"
@@ -68,14 +75,19 @@ jobs:
           set -euo pipefail
           version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
           [[ "$RELEASE_TAG" =~ ^$version_re$ ]] || { echo "Invalid release tag: $RELEASE_TAG" >&2; exit 1; }
-          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           sha=$(git rev-parse 'HEAD^{commit}')
-          tag_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
-          [[ "$sha" == "$tag_sha" ]] || { echo "Source ref $SOURCE_REF resolves to $sha, not tag commit $tag_sha" >&2; exit 1; }
+          # A dry run builds source_ref as it is: it has no tag, and its commit is no release commit.
+          if [[ "$DRY_RUN" != true ]]; then
+            git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            tag_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+            [[ "$sha" == "$tag_sha" ]] || { echo "Source ref $SOURCE_REF resolves to $sha, not tag commit $tag_sha" >&2; exit 1; }
+          fi
           version=$(bun -e 'console.log((await Bun.file("packages/coding-agent/package.json").json()).version)')
           [[ "$version" == "$RELEASE_TAG" ]] || { echo "Package version $version does not match tag $RELEASE_TAG" >&2; exit 1; }
-          subject=$(git show -s --format=%s HEAD)
-          [[ "$subject" == "Release $RELEASE_TAG" ]] || { echo "Commit subject must be Release $RELEASE_TAG; found: $subject" >&2; exit 1; }
+          if [[ "$DRY_RUN" != true ]]; then
+            subject=$(git show -s --format=%s HEAD)
+            [[ "$subject" == "Release $RELEASE_TAG" ]] || { echo "Commit subject must be Release $RELEASE_TAG; found: $subject" >&2; exit 1; }
+          fi
           npm_tag=latest
           [[ "$version" == *-alpha.* ]] && npm_tag=next
           {
@@ -177,7 +189,7 @@ jobs:
       # Release checkout does not use the Namespace git mirror.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ env.DRY_RUN == 'true' && needs.integrity.outputs.sha || format('refs/tags/{0}', env.RELEASE_TAG) }}
           persist-credentials: false
       - name: Require the verified tag commit
         shell: bash
@@ -496,7 +508,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ env.DRY_RUN == 'true' && needs.integrity.outputs.sha || format('refs/tags/{0}', env.RELEASE_TAG) }}
           persist-credentials: false
       - name: Require the verified tag commit
         shell: bash
@@ -589,7 +601,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ env.DRY_RUN == 'true' && needs.integrity.outputs.sha || format('refs/tags/{0}', env.RELEASE_TAG) }}
           persist-credentials: false
       - name: Require the verified tag commit
         shell: bash
@@ -717,7 +729,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ env.DRY_RUN == 'true' && needs.integrity.outputs.sha || format('refs/tags/{0}', env.RELEASE_TAG) }}
           persist-credentials: false
       - name: Require the verified tag commit
         shell: bash
@@ -800,7 +812,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ env.DRY_RUN == 'true' && needs.integrity.outputs.sha || format('refs/tags/{0}', env.RELEASE_TAG) }}
           persist-credentials: false
       - name: Require the verified tag commit
         shell: bash
@@ -911,7 +923,8 @@ jobs:
           rm -rf release-assets npm-packages
           mkdir release-assets npm-packages
           cp packages/coding-agent/binaries/atomic-*.tar.gz release-assets/
-          bun run scripts/build-release-notes.ts "$VERSION" --out release-assets/RELEASE_NOTES.md
+          # A dry run's version is its source's placeholder, which no changelog documents.
+          if [[ "$DRY_RUN" != true ]]; then bun run scripts/build-release-notes.ts "$VERSION" --out release-assets/RELEASE_NOTES.md; fi
           bun run --cwd packages/ai build
           for dir in packages/natives/npm/* packages/natives packages/schema packages/telemetry packages/ai packages/tui packages/agent packages/codemode packages/storage-postgres packages/coding-agent; do npm pack "./$dir" --pack-destination npm-packages; done
           test "$(find npm-packages -name '*.tgz' -type f | wc -l | tr -d ' ')" = 17
@@ -922,11 +935,14 @@ jobs:
             if (actual.length !== 8 || actual.some((name) => !expected.has(name) || root.optionalDependencies[name] !== process.env.VERSION)) throw new Error("native optionalDependencies must be the eight exact-version platform packages");'
       # Against the committed records and, from npm, the newest release published before this one and the newest stable
       # one, which most installations an update replaces run. It fails when npm cannot be reached.
+      # A dry run's placeholder version has no earlier release to compare with.
       - name: Check in-place updates from earlier releases
+        if: env.DRY_RUN != 'true'
         env:
           VERSION: ${{ needs.integrity.outputs.version }}
         run: node scripts/in-place-update-exports.mjs release "$VERSION" packages/coding-agent/in-place-update npm-packages
       - name: Update running processes of earlier releases in place
+        if: env.DRY_RUN != 'true'
         run: node scripts/in-place-update-e2e.mjs packages/coding-agent/in-place-update npm-packages
       - name: Upload GitHub release assets
         uses: namespace-actions/upload-artifact@f6ccaacc655aec41b93af180d1d7eef21af862d2 # v1.0.3
@@ -956,7 +972,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: ${{ env.DRY_RUN == 'true' && needs.integrity.outputs.sha || format('refs/tags/{0}', env.RELEASE_TAG) }}
           persist-credentials: false
           sparse-checkout: scripts
       - name: Require the verified tag commit
@@ -984,6 +1000,8 @@ jobs:
   stage-github-release:
     name: Stage draft GitHub Release
     needs: [integrity, build, linux-binary-smoke, windows-binary-smoke, alpine-binary-smoke, macos-binary-smoke]
+    # A dry run ends with the smoke jobs: nothing is staged, and the publication jobs after this one are skipped with it.
+    if: ${{ github.event.inputs.dry_run != 'true' }}
     # Release archives move through Namespace artifact storage, which only
     # Namespace runners can read, so this job must stay on a Namespace runner.
     runs-on: nscloud-ubuntu-24.04-amd64-4x16
