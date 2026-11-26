@@ -20,6 +20,7 @@ import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-st
 import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pending-ask-store.js";
 import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
+import { ensureRetentionIndexes } from "../../packages/intercom/broker/sql-retention.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import { physicalIdentifiers } from "../../packages/storage-postgres/postgres.js";
 import { seedLegacyWorkflowTables } from "./legacy-store-0990.js";
@@ -126,6 +127,7 @@ async function openEveryStore(
 	await openSqlReleasedAskStore(options);
 	await openSqlSentMessageAuthority(options);
 	await openSqlKnownSessionStore(options);
+	await ensureRetentionIndexes(database, prefix);
 	await ensureEndedChildQueueSchema(options);
 	await (await openDatabaseWakeUpBus({ openDatabase: connect, prefix })).close();
 }

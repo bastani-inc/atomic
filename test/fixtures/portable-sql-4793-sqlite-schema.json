@@ -25,6 +25,12 @@
 	},
 	{
 		"type": "index",
+		"name": "intercom_known_sessions_lost",
+		"tbl_name": "intercom_known_sessions",
+		"sql": "CREATE INDEX intercom_known_sessions_lost ON intercom_known_sessions(lost_at) WHERE lost_at IS NOT NULL"
+	},
+	{
+		"type": "index",
 		"name": "intercom_known_sessions_name",
 		"tbl_name": "intercom_known_sessions",
 		"sql": "CREATE INDEX intercom_known_sessions_name ON intercom_known_sessions(name_key)"
@@ -67,21 +73,33 @@
 	},
 	{
 		"type": "index",
-		"name": "intercom_outbox_target",
+		"name": "intercom_outbox_settled",
 		"tbl_name": "intercom_outbox",
-		"sql": "CREATE INDEX intercom_outbox_target ON intercom_outbox(target_identity, state, sequence)"
+		"sql": "CREATE INDEX intercom_outbox_settled ON intercom_outbox(settled_at) WHERE state IN ('delivered', 'failed')"
 	},
 	{
 		"type": "index",
-		"name": "intercom_outbox_target_bytes",
+		"name": "intercom_outbox_undelivered",
 		"tbl_name": "intercom_outbox",
-		"sql": "CREATE INDEX intercom_outbox_target_bytes ON intercom_outbox(target_identity, state, frame_bytes)"
+		"sql": "CREATE INDEX intercom_outbox_undelivered ON intercom_outbox(target_identity, sequence, frame_bytes) WHERE state IN ('queued', 'claimed')"
+	},
+	{
+		"type": "index",
+		"name": "intercom_pending_asks_ended",
+		"tbl_name": "intercom_pending_asks",
+		"sql": "CREATE INDEX intercom_pending_asks_ended ON intercom_pending_asks(ended_at) WHERE ended_at IS NOT NULL AND replied IS NULL"
 	},
 	{
 		"type": "index",
 		"name": "intercom_pending_asks_target",
 		"tbl_name": "intercom_pending_asks",
 		"sql": "CREATE INDEX intercom_pending_asks_target ON intercom_pending_asks(target_session_id, \"order\")"
+	},
+	{
+		"type": "index",
+		"name": "intercom_released_asks_expires",
+		"tbl_name": "intercom_released_asks",
+		"sql": "CREATE INDEX intercom_released_asks_expires ON intercom_released_asks(expires_at)"
 	},
 	{
 		"type": "index",
@@ -157,6 +175,12 @@
 	},
 	{
 		"type": "index",
+		"name": "team_intercom_known_sessions_lost",
+		"tbl_name": "team_intercom_known_sessions",
+		"sql": "CREATE INDEX team_intercom_known_sessions_lost ON team_intercom_known_sessions(lost_at) WHERE lost_at IS NOT NULL"
+	},
+	{
+		"type": "index",
 		"name": "team_intercom_known_sessions_name",
 		"tbl_name": "team_intercom_known_sessions",
 		"sql": "CREATE INDEX team_intercom_known_sessions_name ON team_intercom_known_sessions(name_key)"
@@ -199,21 +223,33 @@
 	},
 	{
 		"type": "index",
-		"name": "team_intercom_outbox_target",
+		"name": "team_intercom_outbox_settled",
 		"tbl_name": "team_intercom_outbox",
-		"sql": "CREATE INDEX team_intercom_outbox_target ON team_intercom_outbox(target_identity, state, sequence)"
+		"sql": "CREATE INDEX team_intercom_outbox_settled ON team_intercom_outbox(settled_at) WHERE state IN ('delivered', 'failed')"
 	},
 	{
 		"type": "index",
-		"name": "team_intercom_outbox_target_bytes",
+		"name": "team_intercom_outbox_undelivered",
 		"tbl_name": "team_intercom_outbox",
-		"sql": "CREATE INDEX team_intercom_outbox_target_bytes ON team_intercom_outbox(target_identity, state, frame_bytes)"
+		"sql": "CREATE INDEX team_intercom_outbox_undelivered ON team_intercom_outbox(target_identity, sequence, frame_bytes) WHERE state IN ('queued', 'claimed')"
+	},
+	{
+		"type": "index",
+		"name": "team_intercom_pending_asks_ended",
+		"tbl_name": "team_intercom_pending_asks",
+		"sql": "CREATE INDEX team_intercom_pending_asks_ended ON team_intercom_pending_asks(ended_at) WHERE ended_at IS NOT NULL AND replied IS NULL"
 	},
 	{
 		"type": "index",
 		"name": "team_intercom_pending_asks_target",
 		"tbl_name": "team_intercom_pending_asks",
 		"sql": "CREATE INDEX team_intercom_pending_asks_target ON team_intercom_pending_asks(target_session_id, \"order\")"
+	},
+	{
+		"type": "index",
+		"name": "team_intercom_released_asks_expires",
+		"tbl_name": "team_intercom_released_asks",
+		"sql": "CREATE INDEX team_intercom_released_asks_expires ON team_intercom_released_asks(expires_at)"
 	},
 	{
 		"type": "index",

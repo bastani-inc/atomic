@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
 	KNOWN_SESSION_RETENTION_MS,
+	MAINTENANCE_INTERVAL_MS,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	OUTBOX_EXPIRED_REASON,
@@ -506,7 +507,8 @@ test(
 				KNOWN_SESSION_RETENTION_MS - 60_000,
 				recent.id,
 			);
-			vi.advanceTimersByTime(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+			// The swarm's maintainer expires it at its next maintenance.
+			vi.advanceTimersByTime(MAINTENANCE_INTERVAL_MS);
 			const expired = await vi.waitFor(
 				async () => {
 					const read = await a!.opened.state.outbox.read(old.id);

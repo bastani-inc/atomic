@@ -13,6 +13,7 @@ import type {
 	SessionIdReclaim,
 	SessionIdReclaimResult,
 } from "./multinode-state-store.js";
+import { deleteInBatches, storeNow } from "./sql-retention.js";
 import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type BindingRow = SqliteRow & { return_address: string; owner_token?: string | null; owner_broker?: string | null };
@@ -83,6 +84,8 @@ async function openKnownSessionStoreInCatalog({
 	const leases = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_leases`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const age = greatest("0", `${nowMs} - recorded_at`);
+	/** The database clock, read once per statement: `recorded_at` compared with it is answered by its index. */
+	const now = storeNow(database);
 	/** `age` at the statement's one reading of the clock, from `WITH clock`. */
 	const clockAge = greatest("0", "(SELECT now FROM clock) - recorded_at");
 	await ensureBrokerSchema(database, prefix, "known-sessions", (tx) =>
@@ -196,7 +199,7 @@ async function openKnownSessionStoreInCatalog({
 		owner: KnownSessionOwner | undefined,
 	): Promise<KnownSessionBindResult> => {
 		await tx.run(
-			`DELETE FROM ${bindings} WHERE intercom_session_id = ? AND ${nowMs} - recorded_at > ?`,
+			`DELETE FROM ${bindings} WHERE intercom_session_id = ? AND recorded_at < ${now} - ?`,
 			intercomSessionId,
 			retentionMs,
 		);
@@ -283,7 +286,7 @@ async function openKnownSessionStoreInCatalog({
 					`UPDATE ${bindings} SET recorded_at = ${nowMs}${
 						owning === undefined ? "" : `, owner_token = ?, owner_broker = ?, owner_renewed_at = ${nowMs}`
 					}
-					 WHERE intercom_session_id = ? AND return_address = ? AND latest_claim = ? AND ${nowMs} - recorded_at <= ?
+					 WHERE intercom_session_id = ? AND return_address = ? AND latest_claim = ? AND recorded_at >= ${now} - ?
 						AND NOT EXISTS (
 							SELECT 1 FROM ${leases} presence
 							WHERE presence.kind = 'presence' AND substr(presence.key, 1, length(?)) = ? AND presence.holder_id IS NOT NULL
@@ -407,19 +410,17 @@ async function openKnownSessionStoreInCatalog({
 			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
 			if (unfinished.size > 0) await Promise.all(unfinished);
 			const bound = await reader.get<BindingRow>(
-				`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ? AND ${nowMs} - recorded_at <= ?`,
+				`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ? AND recorded_at >= ${now} - ?`,
 				intercomSessionId,
 				retentionMs,
 			);
 			return bound === undefined ? { status: "unbound" } : { status: "bound", returnAddress: bound.return_address };
 		},
 		async prune(olderThanMs): Promise<number> {
-			await database.run(`DELETE FROM ${bindings} WHERE ${nowMs} - recorded_at > ?`, olderThanMs);
-			const { changes } = await database.run(
-				`DELETE FROM ${table} WHERE ${nowMs} - recorded_at > ?`,
-				olderThanMs,
-			);
-			return changes;
+			// Oldest first, from each table's `_recorded` index, in batches.
+			const older = { where: `recorded_at < ${now} - ?`, params: [olderThanMs], orderBy: "recorded_at" };
+			await deleteInBatches(database, { table: bindings, key: "intercom_session_id", ...older });
+			return deleteInBatches(database, { table, key: "record_order", ...older });
 		},
 		async markLost(targetIdentities): Promise<void> {
 			if (targetIdentities.length === 0) return;
@@ -439,7 +440,7 @@ async function openKnownSessionStoreInCatalog({
 		async listLost(olderThanMs): Promise<KnownSessionState[]> {
 			const rows = await database.all<KnownRow>(
 				`SELECT ${columns} FROM ${table}
-				 WHERE lost_at IS NOT NULL AND ${greatest("0", `${nowMs} - lost_at`)} >= ?
+				 WHERE lost_at IS NOT NULL AND lost_at <= ${now} - ?
 				 ORDER BY record_order`,
 				olderThanMs,
 			);

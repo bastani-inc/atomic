@@ -46,6 +46,9 @@ import {
 	type LeaseRenewalRequest,
 	type LeaseRenewResult,
 	type LeaseState,
+	MAINTENANCE_INTERVAL_MS,
+	MAINTENANCE_STALE_AFTER_MS,
+	type MaintenanceSubject,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxClaim,
@@ -1093,6 +1096,8 @@ export class MultiNodeRouter {
 	private readonly processStartedAt: (pid: number) => number | null | undefined | Promise<number | null | undefined>;
 	private readonly lostBounds: LostRecipientBounds;
 	private membership: Lease | undefined;
+	/** The maintenance lease while this broker is the swarm's maintainer (`maintain`). */
+	private maintenance: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
 	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
 	private readonly inflight = new Map<string, Inflight>();
@@ -1317,6 +1322,7 @@ export class MultiNodeRouter {
 		if (subscribed.status === "subscribed") router.subscription = subscribed.subscription;
 		router.every(BROKER_LEASE_RENEW_INTERVAL_MS, () => router.renew());
 		router.every(OUTBOX_BACKUP_POLL_INTERVAL_MS, () => router.backupPoll());
+		router.every(MAINTENANCE_INTERVAL_MS, () => router.maintain());
 		// #4992: what a broker that stopped mid-departure left is finished now, and at every backup poll.
 		// #5154: and the asks to recipients lost long enough.
 		void router
@@ -6495,6 +6501,33 @@ export class MultiNodeRouter {
 				this.wakeWaitingChild(reservationKey).finally(() => this.pendingWakeChecks.delete(reservationKey)),
 			);
 		}
+	}
+
+	/**
+	 * The shared state's maintenance: the rows past their retention deleted, and outbox rows left queued past the
+	 * known-session retention expired. One broker of the swarm runs it each `MAINTENANCE_INTERVAL_MS`, the one holding
+	 * the maintenance lease, as Oban's pruner runs on its leader and River's on its maintenance leader: when every broker
+	 * ran it at every backup poll, a swarm of brokers sent the same deletes over and over. A broker that is not the
+	 * maintainer reads the lease and goes on while another holds it live; the maintainer takes it again, which renews
+	 * it, and so stays the maintainer while it runs. Once it stops, its lease goes stale after
+	 * `MAINTENANCE_STALE_AFTER_MS` (or is free at once, when it closed) and the next broker to check takes it over.
+	 * Nothing here is needed for delivery: a broker's own scans and the sweeps for a stopped broker's recipients stay in
+	 * `backupPoll`, on every broker.
+	 */
+	private async maintain(): Promise<void> {
+		const { leases } = this.state;
+		if (this.maintenance === undefined) {
+			const found = await leases.read({ kind: "maintenance", task: RETENTION_MAINTENANCE.task });
+			if (
+				found.status === "found" &&
+				found.lease.holderId !== this.brokerId &&
+				found.lease.ageMs <= MAINTENANCE_STALE_AFTER_MS
+			)
+				return;
+		}
+		const acquired = await leases.acquire(RETENTION_MAINTENANCE, this.brokerId, MAINTENANCE_STALE_AFTER_MS);
+		this.maintenance = acquired.status === "acquired" ? acquired.lease : undefined;
+		if (this.maintenance === undefined || this.closed) return;
 		await this.state.outbox.prune(DELIVERED_MESSAGE_TTL_MS, KNOWN_SESSION_RETENTION_MS);
 		await this.state.sentMessages.prune(DELIVERED_MESSAGE_TTL_MS);
 		await this.state.reservations.prune(DELIVERED_MESSAGE_TTL_MS);
@@ -6644,6 +6677,8 @@ export class MultiNodeRouter {
 			// #5607: its sessions' ids are free for them to take again on another broker, as their presences are.
 			await this.state.knownSessions.owners?.retireBroker(this.brokerId);
 			if (this.membership !== undefined) await this.state.leases.release(this.membership);
+			// Free for the next broker to check, rather than once it went stale.
+			if (this.maintenance !== undefined) await this.state.leases.release(this.maintenance);
 		} catch (error) {
 			this.report(error);
 		}
@@ -6654,6 +6689,9 @@ export class MultiNodeRouter {
 		await this.state.close();
 	}
 }
+
+/** The maintenance lease of the shared state's retention (`maintain`). */
+const RETENTION_MAINTENANCE: MaintenanceSubject = { kind: "maintenance", task: "retention" };
 
 /** A target identity a return path can bind: a registration's return address, never a reusable bare session id. */
 function stableIdentity(targetIdentity: string): string | undefined {

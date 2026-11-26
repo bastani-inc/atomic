@@ -82,6 +82,20 @@ export async function ensureBrokerSchema(
 }
 
 /**
+ * Whether the ledger, or the catalog an open in progress read, records `revision` of `store`'s setup, without a
+ * transaction; false where the storage API cannot tell.
+ */
+export async function brokerSchemaCurrent(
+	database: SqliteDatabase,
+	prefix: string | undefined,
+	store: string,
+	revision = 1,
+): Promise<boolean> {
+	const schema = { ledger: storageMigrationTable(prefix), domain: `intercom-${store}`, revision };
+	return (await catalogApi.storageSchemaCurrent?.(database, schema)) === true;
+}
+
+/**
  * Asks the open of `database` in progress to stamp `store`'s `setup` at its end, on SQLite, where the open
  * found the store current in the catalog, `verify` says, rather than by its stamp, which a schema change since left
  * behind: the next open then answers from the stamp (#6560). Does nothing where the stamp is current, elsewhere, and

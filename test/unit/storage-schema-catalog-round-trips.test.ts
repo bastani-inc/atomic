@@ -92,17 +92,17 @@ test("a broker reopened after a table or index of its schema was dropped creates
 	const path = databasePath("broker.sqlite");
 	await openBroker(path);
 	const database = await openNodeSqliteDatabase(path);
-	await database.exec("DROP INDEX intercom_outbox_target_bytes; DROP TABLE intercom_pending_asks");
+	await database.exec("DROP INDEX intercom_outbox_undelivered; DROP TABLE intercom_pending_asks");
 	await database.close();
 	await openBroker(path);
 	const reopened = await openNodeSqliteDatabase(path);
 	cleanups.push(() => reopened.close());
 	const names = await reopened.all<SqliteRow & { name: string }>(
-		"SELECT name FROM sqlite_master WHERE name IN ('intercom_outbox_target_bytes', 'intercom_pending_asks') ORDER BY name",
+		"SELECT name FROM sqlite_master WHERE name IN ('intercom_outbox_undelivered', 'intercom_pending_asks') ORDER BY name",
 	);
 	assert.deepEqual(
 		names.map((row) => row.name),
-		["intercom_outbox_target_bytes", "intercom_pending_asks"],
+		["intercom_outbox_undelivered", "intercom_pending_asks"],
 	);
 });
 
