@@ -1389,11 +1389,20 @@ export async function openPostgresDatabase(options) {
 	 * @param {PoolClient} client
 	 * @param {string} sql
 	 */
-	const schemaFor = async (client, sql) => {
-		if (!/(?:^|;)\s*CREATE\s/i.test(sql)) return;
+	const schemaFor = (client, sql) => {
+		if ((schemaReady && !legacy) || !/(?:^|;)\s*CREATE\s/i.test(sql)) return undefined;
 		// A statement that names `public` itself, as `atomic storage migrate` does for the fences it leaves there, or
 		// that creates a schema, is meant for where it says.
-		if (legacy && !/\bpublic\./i.test(sql) && !/^\s*CREATE\s+SCHEMA\b/i.test(sql)) {
+		const checkMove = legacy && !/\bpublic\./i.test(sql) && !/^\s*CREATE\s+SCHEMA\b/i.test(sql);
+		return checkMove || !schemaReady ? prepareSchema(client, checkMove) : undefined;
+	};
+
+	/**
+	 * @param {PoolClient} client
+	 * @param {boolean} checkMove
+	 */
+	const prepareSchema = async (client, checkMove) => {
+		if (checkMove) {
 			const moved = await watched(
 				client,
 				() =>
@@ -1461,8 +1470,7 @@ export async function openPostgresDatabase(options) {
 	 * @param {number} timeoutMs
 	 * @returns {Promise<SqliteDriverResult>}
 	 */
-	const execute = async (client, sql, params, timeoutMs) => {
-		await schemaFor(client, sql);
+	const sendStatement = async (client, sql, params, timeoutMs) => {
 		return driverResult(await watched(client, () => statement(client, sql, params), timeoutMs, sql));
 	};
 
@@ -1471,9 +1479,8 @@ export async function openPostgresDatabase(options) {
 	 * @param {string} sql
 	 * @param {number} timeoutMs
 	 */
-	const executeMultiple = async (client, sql, timeoutMs) => {
+	const sendScript = async (client, sql, timeoutMs) => {
 		if (isPragma(sql)) return;
-		await schemaFor(client, sql);
 		await watched(client, () => client.query(physicalIdentifiers(sql)), timeoutMs, sql);
 	};
 
@@ -1557,7 +1564,10 @@ export async function openPostgresDatabase(options) {
 				);
 				return driverResult(result);
 			},
-			() => inSearchPath(client, () => execute(client, sql, params, clientTimeoutMs)),
+			() => inSearchPath(client, async () => {
+				await schemaFor(client, sql);
+				return sendStatement(client, sql, params, clientTimeoutMs);
+			}),
 		);
 
 	/**
@@ -1568,9 +1578,13 @@ export async function openPostgresDatabase(options) {
 	 */
 	const executeMultipleAutocommit = async (client, sql) => {
 		if (isPragma(sql)) return;
+		const executeScript = async (/** @type {string} */ text) => {
+			await schemaFor(client, text);
+			await sendScript(client, text, clientTimeoutMs);
+		};
 		await withTimeout(
-			() => executeMultiple(client, `${setTimeoutSql}; ${searchPathSql()}; ${sql}`, clientTimeoutMs),
-			() => inSearchPath(client, () => executeMultiple(client, sql, clientTimeoutMs)),
+			() => executeScript(`${setTimeoutSql}; ${searchPathSql()}; ${sql}`),
+			() => inSearchPath(client, () => executeScript(sql)),
 		);
 	};
 
@@ -1680,6 +1694,28 @@ export async function openPostgresDatabase(options) {
 						? `SELECT pg_advisory_xact_lock(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}); `
 						: `SELECT pg_advisory_xact_lock_shared(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}), pg_advisory_xact_lock(${lockKey(inSchema(concurrency.domain))}); `;
 			const client = await connect(from);
+			/** @type {Promise<void> | undefined} */
+			let pendingSubmission;
+			/**
+			 * @template T
+			 * @param {string} sql
+			 * @param {() => Promise<T>} send
+			 * @returns {Promise<T>}
+			 */
+			const submit = (sql, send) => {
+				const checked =
+					pendingSubmission === undefined
+						? schemaFor(client, sql)
+						: pendingSubmission.then(() => schemaFor(client, sql));
+				if (checked === undefined) return send();
+				const sent = checked.then(() => ({ answer: send() }));
+				const submitted = sent.then(() => {
+					if (pendingSubmission === submitted) pendingSubmission = undefined;
+				});
+				submitted.catch(() => {});
+				pendingSubmission = submitted;
+				return sent.then(({ answer }) => answer);
+			};
 			/** @type {{ sql: string, params: readonly SqliteValue[], result: Promise<SqliteDriverResult>, failure?: unknown }[]} */
 			const lead = [];
 			try {
@@ -1695,7 +1731,7 @@ export async function openPostgresDatabase(options) {
 					lockWaitMs + clientTimeoutMs,
 				);
 				for (const { sql, params } of begin.leading ?? []) {
-					const result = execute(client, sql, params, lockWaitMs + clientTimeoutMs);
+					const result = submit(sql, () => sendStatement(client, sql, params, lockWaitMs + clientTimeoutMs));
 					result.catch(() => {});
 					lead.push({ sql, params, result });
 				}
@@ -1722,18 +1758,22 @@ export async function openPostgresDatabase(options) {
 						return next.result;
 					}
 					const failure = endLead();
-					return failure === undefined ? execute(client, sql, params, clientTimeoutMs) : Promise.reject(failure);
+					return failure === undefined
+						? submit(sql, () => sendStatement(client, sql, params, clientTimeoutMs))
+						: Promise.reject(failure);
 				},
 				executeMultiple: (sql) => {
 					const failure = endLead();
-					return failure === undefined ? executeMultiple(client, sql, clientTimeoutMs) : Promise.reject(failure);
+					return failure === undefined
+						? submit(sql, () => sendScript(client, sql, clientTimeoutMs))
+						: Promise.reject(failure);
 				},
 				async commit() {
 					// A leading read the callback never made failed and aborted the transaction: nothing is sent, and its own
 					// failure, not a bare rollback, says whether the transaction may run again.
 					const failure = endLead();
 					if (failure !== undefined) throw failure;
-					const result = await watched(client, () => client.query("COMMIT"), clientTimeoutMs);
+					const result = await submit("", () => watched(client, () => client.query("COMMIT"), clientTimeoutMs));
 					// A transaction a failed statement aborted ends in a rollback when committed, without an error.
 					if (result.command === "ROLLBACK")
 						throw new StorageError("The transaction was rolled back because a statement in it failed");

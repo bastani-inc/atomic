@@ -274,6 +274,44 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 		});
 	});
 
+	test("connections opened before a concurrent PostgreSQL schema bootstrap can initialize their snapshot store (#5218)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const hosts = await Promise.all(Array.from({ length: 16 }, () => scope.open({ maxPreparedStatements: 0 })));
+			const bootstrap = await scope.open();
+			await bootstrap.exec(
+				"CREATE TABLE atomic_migrations (domain TEXT NOT NULL, version BIGINT NOT NULL, applied_at BIGINT NOT NULL, PRIMARY KEY (domain, version))",
+			);
+			await Promise.all(hosts.map((database) => SqlSnapshotBlobStore.open(database)));
+		});
+	});
+
+	test("concurrent snapshot stores upgrade an old PostgreSQL schema and preserve its blobs (#5218)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const earlier = await scope.open({ schema: "public" });
+			await createReferencingTables(earlier);
+			const bytes = new TextEncoder().encode("saved before the upgrade");
+			await earlier.exec(
+				"CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes BIGINT NOT NULL, data BYTEA NOT NULL)",
+			);
+			await earlier.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", "old-blob", bytes.length, bytes);
+
+			await Promise.all(
+				Array.from({ length: 16 }, async () => {
+					const store = await SqlSnapshotBlobStore.open(await scope.open());
+					assert.deepEqual(await store.getBlob("old-blob"), bytes);
+				}),
+			);
+			const versions = await earlier.all(
+				"SELECT version FROM atomic_migrations WHERE domain = ? ORDER BY version",
+				SNAPSHOT_BLOB_DOMAIN,
+			);
+			assert.deepEqual(
+				versions.map(({ version }) => Number(version)),
+				[1, 2, 3, 4, 5],
+			);
+		});
+	});
+
 	test("the triggers are installed by the migration, under its lock (#4793)", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const database = await scope.open();
