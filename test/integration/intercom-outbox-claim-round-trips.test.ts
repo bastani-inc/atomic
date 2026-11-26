@@ -91,6 +91,8 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claims on Pos
 	test("an empty poll, a claim of queued messages and a held claim each take one round trip (#6560)", async () => {
 		await withPostgresDatabase(async ({ open }) => {
 			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });
+			// Only the outbox's calls are counted: the wake-up bus, which polls on its own, is closed first.
+			await bus.close();
 			try {
 				// The connection is opened and the outbox's tables exist before counting starts.
 				await enqueue(state, "m-warm", "target-w");
@@ -117,7 +119,6 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claims on Pos
 					["delivered", "delivered", "delivered"],
 				);
 			} finally {
-				await bus.close();
 				await state.close();
 			}
 		});
@@ -305,6 +306,8 @@ describe.skipIf(serverUrl === undefined)("Intercom outbox claims on a libSQL ser
 		const prefix = `claim_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
 		try {
 			const { state, bus } = await openIntercomBrokerState({ openDatabase: open, prefix });
+			// Only the outbox's calls are counted: the wake-up bus, which polls on its own, is closed first.
+			await bus.close();
 			try {
 				await enqueue(state, "m-warm", "target-w");
 				assert.deepEqual(claimedIds(await claim(state, "broker-b", "target-w")), ["m-warm"]);
@@ -323,7 +326,6 @@ describe.skipIf(serverUrl === undefined)("Intercom outbox claims on a libSQL ser
 				assert.equal(claimRequests, 2);
 				assert.equal(heldRequests, 1);
 			} finally {
-				await bus.close();
 				await state.close();
 			}
 		} finally {

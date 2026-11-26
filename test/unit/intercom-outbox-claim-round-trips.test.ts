@@ -21,10 +21,9 @@ async function openBroker(): Promise<IntercomBrokerStateStore> {
 	cleanups.push(() => removeTempDirectory(directory));
 	const path = join(directory, "broker.sqlite");
 	const { state, bus } = await openIntercomBrokerState({ openDatabase: () => openNodeSqliteDatabase(path) });
-	cleanups.push(async () => {
-		await bus.close();
-		await state.close();
-	});
+	// Only the outbox's calls are counted: the wake-up bus, which polls on its own, is closed first.
+	await bus.close();
+	cleanups.push(() => state.close());
 	return state;
 }
 
