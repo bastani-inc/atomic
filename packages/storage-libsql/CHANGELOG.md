@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.11-alpha.1] - 2026-11-25
+
 ### Breaking Changes
 
 - This package now needs Node.js 24.20.0 or newer, in the Node.js 24 LTS line (`engines.node` is `>=24.20.0`, up from `>=22.19.0`). Check with `node --version`, and upgrade from [nodejs.org](https://nodejs.org/en/download) or with `nvm install 24`, `fnm install 24`, or `mise use -g node@24`. Node.js releases before 24.15.0 bundle a SQLite version with a [bug that can corrupt](https://www.sqlite.org/wal.html#walresetbug) a database opened by a writer and a reader at once, and Node.js 24.17.0 through 24.19.0 reject valid certificates for IPv6 addresses ([nodejs/node#64145](https://github.com/nodejs/node/pull/64145)) ([#6579](https://github.com/bastani-inc/atomic/pull/6579)).
@@ -15,7 +17,7 @@
 
 - A transaction on a libSQL server sends its statements without waiting for each answer. Its first reads go with its `BEGIN`, and its last writes go with its `COMMIT`, so saving entries to a session takes 2 requests instead of 6. If a statement fails while later ones are already on their way, nothing in the transaction commits ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - `openReader()` is now also available for local `file:` databases, and closing a database also closes the readers it opened ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
-- A database on a libSQL server now tells Atomic which server and namespace it reaches. Atomic uses this to recognize two handles on the same database, and copies a session fork between them inside the database instead of staging it through another table. Local `file:` databases are unchanged ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- A database on a libSQL server now tells Atomic which server and namespace it reaches. Atomic uses this to recognize two handles on the same database, and copies a session fork between them inside the database instead of staging it through another table. Local `file:` databases are unchanged ([#6596](https://github.com/bastani-inc/atomic/pull/6596), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ### Fixed
 

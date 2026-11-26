@@ -4,6 +4,8 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+## [0.10.11-alpha.1] - 2026-11-25
+
 ### Changed
 
 - With multi-node routing on a shared PostgreSQL database, a broker whose tables are up to date checks them with one read instead of a schema transaction per table and column, which took the database's write lock. A broker now starts in about 3 round trips instead of about 100, so brokers that start together no longer wait for each other or for other writers. The schema checks a broker runs after it starts use the same read. At 80 ms latency, opening every store separately takes 1.5 seconds instead of 8.3. A broker that replaces a dropped database connection runs no schema check, so the reconnect takes 0.8 seconds instead of waiting for a busy writer ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
