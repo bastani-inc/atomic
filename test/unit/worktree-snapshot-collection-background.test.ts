@@ -222,8 +222,7 @@ describe("a background collection stops when it is aborted (#4355)", () => {
 			get: (sql, ...params) => executor.get(sql, ...params),
 			all: (sql, ...params) => executor.all(sql, ...params),
 			run: async (sql, ...params) => {
-				if (sql.startsWith("INSERT OR IGNORE INTO snapshot_session_links") && ++links === 5)
-					controller.abort(reason);
+				if (sql.startsWith("INSERT INTO snapshot_session_links") && ++links === 5) controller.abort(reason);
 				return executor.run(sql, ...params);
 			},
 		});

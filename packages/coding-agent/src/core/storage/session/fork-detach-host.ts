@@ -23,8 +23,11 @@ export interface ForkHostStore {
 	readonly tables: Omit<ForkMaterializeTables, "forkSegments" | "forkLineage">;
 	readonly forkTables: SessionForkTables;
 	readonly blobs: { readonly legacyBlobData: boolean; readonly chunkBytes: number };
-	/** The statement that links the rows a materialization copies into a fork: see `materializedForkLinks`. */
-	readonly materializedLinks: string;
+	/**
+	 * Links the rows session `sessionId` stores from seq `fromSeq` on again in the snapshot index, in seq order: see
+	 * `sessionEntryRelinker`.
+	 */
+	relinkEntries(tx: SqliteExecutor, sessionId: string, fromSeq: number): Promise<void>;
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
 }
 
@@ -67,7 +70,7 @@ export function forkDetachHost(store: ForkHostStore): ForkDetachHost {
 				dialect,
 				materialize,
 				store.blobs,
-				store.materializedLinks,
+				(tx, sessionId, fromSeq) => store.relinkEntries(tx, sessionId, fromSeq),
 				childId,
 				await length(tx, childId),
 				pieces,
@@ -76,6 +79,10 @@ export function forkDetachHost(store: ForkHostStore): ForkDetachHost {
 		async writeForkSegments(tx, sessionId, segments) {
 			if (segments.length > 0 || (await readForkSegments(tx, lineage, sessionId)).length > 0)
 				await writeForkSegments(tx, lineage, sessionId, segments, await length(tx, sessionId));
+			// A fork moved onto another session's copy of its rows reads that copy's links, which that session linked in its
+			// own view: the rows it stores after them are linked again (#6560).
+			if (segments.length > 0)
+				await store.relinkEntries(tx, sessionId, Math.min(...segments.map((segment) => segment.baseSeq + 1)));
 		},
 		async lockForkSources(tx, ids, mode) {
 			await lockForkSources(tx, dialect, lineage, ids, mode);
