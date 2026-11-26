@@ -381,6 +381,53 @@ export function registerSessionStoreConformance(
 			});
 
 			check(
+				"commits each of the appends made together at its own sequence, or rejects it (#6560)",
+				async (store, reload) => {
+					const first = message("first", "first");
+					await store.create(header(), [first]);
+					store = await reload(store);
+					const made = [1, 2, 1, 3, 4].map((expectSeq, index) => ({
+						entries: [message(`together-${index}`, `together ${index}`)],
+						expectSeq,
+					}));
+					made.push({
+						entries: [message("pair-a", "pair a"), message("pair-b", "pair b")],
+						expectSeq: 5,
+					});
+					const attempts = await Promise.allSettled(
+						made.map(({ entries, expectSeq }) => store.append("session", entries, { expectSeq })),
+					);
+					const committed = new Map<number, SessionEntry[]>();
+					for (const [index, attempt] of attempts.entries()) {
+						const { entries, expectSeq } = made[index]!;
+						if (attempt.status === "rejected") {
+							assert.ok(attempt.reason instanceof SessionConflictError, String(attempt.reason));
+							assert.equal(attempt.reason.expectedSeq, expectSeq);
+							continue;
+						}
+						assert.equal(attempt.value.lastSeq, expectSeq + entries.length);
+						committed.set(expectSeq, entries);
+					}
+					// Two of them expect sequence 1: at most one commits there, so the counts differ when both did.
+					assert.equal(attempts.filter((attempt) => attempt.status === "fulfilled").length, committed.size);
+					assert.ok(committed.size <= 5);
+					store = await reload(store);
+					const expected = [first];
+					while (committed.has(expected.length)) expected.push(...committed.get(expected.length)!);
+					assert.equal(
+						expected.length - 1,
+						[...committed.values()].flat().length,
+						"every commit continues the last",
+					);
+					assert.deepEqual(await store.load("session"), {
+						header: header(),
+						entries: expected,
+						lastSeq: expected.length,
+					});
+				},
+			);
+
+			check(
 				"a header-only change preserves every entry and fences earlier writers (#5554)",
 				async (store, reload) => {
 					const entries = [message("first", "一\u2028\u2029"), message("last", "e\u0301")];

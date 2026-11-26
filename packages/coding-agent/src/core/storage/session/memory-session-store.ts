@@ -132,7 +132,8 @@ interface StoredSession {
 	starts: number[];
 	totalBytes: number;
 	index: SessionResumeIndex;
-	blocks: number[];
+	/** Replaced, never changed in place, so a read holds the array it started with. */
+	blocks: readonly number[];
 }
 
 interface HeldBytes {
@@ -1299,7 +1300,7 @@ export class MemorySessionStore implements SessionStore {
 			directory: record.directory,
 			file: record.file,
 			spilledBytes: record.spilledBytes,
-			blocks: [...record.blocks],
+			blocks: record.blocks,
 			chunks: [...record.entries],
 			lastSeq: record.lastSeq,
 			totalBytes: record.totalBytes,
