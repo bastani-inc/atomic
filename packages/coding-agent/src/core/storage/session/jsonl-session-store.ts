@@ -18,11 +18,17 @@ import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
-import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { learnCreationTime } from "../creation-time.js";
+import { syncDirectory, syncFile, syncPath } from "../file-sync.js";
 import { branchStatePages } from "./branch-state-pages.js";
-import { bindChatEpoch, boundedChatRecord, type ChatRecordOwner, type SessionChatRecords } from "./chat-records.js";
+import {
+	bindChatEpoch,
+	boundedChatRecord,
+	type ChatRecord,
+	type ChatRecordOwner,
+	type SessionChatRecords,
+} from "./chat-records.js";
 import { validateSessionEntryStructure } from "./entry-structure.js";
 import { EntryTypeReader, JsonTextChecker } from "./entry-type.js";
 import {
@@ -40,7 +46,7 @@ import {
 import { registerForkScope } from "./fork-store-scope.js";
 import type { SessionHistorySource } from "./history-pages.js";
 import {
-	appendFileChatRecord,
+	appendFileChatRecords,
 	deleteFileChatRecords,
 	hasFileChatRecords,
 	readFileChatOrders,
@@ -170,6 +176,21 @@ interface AppendGroup {
 	started: boolean;
 }
 
+interface ChatAppendRequest {
+	readonly owner: ChatRecordOwner;
+	readonly anchor: string;
+	readonly record: ChatRecord;
+	readonly resolve: () => void;
+	readonly reject: (cause: unknown) => void;
+	answer?: { readonly ok: true } | { readonly error: unknown };
+}
+
+interface ChatAppendGroup {
+	readonly requests: ChatAppendRequest[];
+	queued: number;
+	started: boolean;
+}
+
 /** The appends of one group to one session file, written together. */
 interface StagedFile {
 	readonly sessionId: string;
@@ -202,6 +223,8 @@ const KEEP_APPEND_FILES = process.platform !== "win32";
 const KEPT_FILE_IDLE_MS = 30_000;
 /** The most handles one store keeps open; the least recently used is closed first. */
 const KEPT_FILES = 16;
+/** The most session files a multi-session append group syncs in parallel, keeping open handles well below OS limits. */
+const MAX_PARALLEL_SYNCS = 32;
 
 type JsonValue = SessionJsonValue;
 
@@ -244,6 +267,20 @@ function appendedForkIndex(
 	return labels || catalog ? { labels: labels ?? previous.labels, catalog: catalog ?? previous.catalog } : previous;
 }
 
+/** A straddling 32-byte slice at `offset` (`[offset - 16, min(size, offset + 16))`), catching lost earlier pages. */
+interface IndexCheckpoint {
+	readonly offset: number;
+	readonly bytes: Buffer;
+}
+
+interface IndexIntegrity {
+	readonly witness: Buffer;
+	readonly prefixHash?: string;
+	readonly headWitness?: Buffer;
+	readonly checkpointStride: number;
+	readonly checkpoints: readonly IndexCheckpoint[];
+}
+
 interface JsonlIndex {
 	readonly fork?: JsonlForkIndex;
 	readonly identity: string;
@@ -253,6 +290,11 @@ interface JsonlIndex {
 	readonly mtimeNs: string;
 	readonly size: number;
 	readonly witness: Buffer;
+	readonly synced: boolean;
+	readonly prefixHash?: string;
+	readonly headWitness?: Buffer;
+	readonly checkpointStride: number;
+	readonly checkpoints: readonly IndexCheckpoint[];
 	readonly terminated: boolean;
 	readonly torn: boolean;
 	readonly spans: readonly number[];
@@ -294,6 +336,21 @@ const SIDECAR_REFRESH_BYTES = 1024 * 1024;
 const INDEX_BATCH_ENTRIES = 512;
 const READ_GAP_BYTES = 64 * 1024;
 const SCAN_WINDOW_BYTES = 1024 * 1024;
+/** Files up to this size carry a full prefix SHA-256 in `.idx`, checked in one read on cold sidecar load. */
+const PREFIX_HASH_MAX_BYTES = 256 * 1024;
+/** Each 32-byte straddling checkpoint at `k * 8192` checks the end of page `2k-1` and start of page `2k`. */
+const CHECKPOINT_INITIAL_STRIDE = 8192;
+const MAX_CHECKPOINTS = 64;
+const CHECKPOINT_HALF_BYTES = 16;
+const HEAD_WITNESS_BYTES = 32;
+
+/**
+ * Valid JSONL lines never contain raw NUL bytes (`JSON.stringify` escapes U+0000 and session text forbids it), so one
+ * marks an unwritten zero-filled page left by out-of-order page writeback and power loss.
+ */
+function hasNulByte(bytes: Buffer): boolean {
+	return bytes.includes(0);
+}
 
 /** The last 64 bytes, which locate the boundary a later append starts from. */
 function witnessOf(bytes: Buffer): Buffer {
@@ -387,6 +444,7 @@ async function rangeIndexHolds(
 
 function isBlankLine(line: Buffer): boolean {
 	for (const byte of line) {
+		if (byte === 0) return false;
 		if (byte > 0x20 && byte < 0x80) return false;
 		if (byte >= 0x80) return line.toString("utf8").trim() === "";
 	}
@@ -446,6 +504,7 @@ async function scanSessionLines(
 	let parts: Buffer[] = [];
 	let partsBytes = 0;
 	let completeLineRetained = true;
+	let lineHasNul = false;
 	let reader: EntryTypeReader | undefined;
 	let mode = (header ? "header" : "blank") as "header" | "blank" | "typing" | LineAction;
 	const startLine = (offset: number): void => {
@@ -455,6 +514,7 @@ async function scanSessionLines(
 		parts = [];
 		partsBytes = 0;
 		completeLineRetained = true;
+		lineHasNul = false;
 		reader = undefined;
 		mode = header ? "header" : "blank";
 	};
@@ -499,6 +559,7 @@ async function scanSessionLines(
 	const take = (segment: Buffer): boolean => {
 		lineBytes += segment.length;
 		if (linePrefixBytes < linePrefix.length) linePrefixBytes += segment.copy(linePrefix, linePrefixBytes);
+		if (mode !== "header" && !lineHasNul && hasNulByte(segment)) lineHasNul = true;
 		if (mode === "header" || mode === "pass") return true;
 		keep(segment);
 		if (mode === "typing" && reader !== undefined) {
@@ -521,11 +582,12 @@ async function scanSessionLines(
 		completeLineRetained = true;
 		return true;
 	};
-	const finishLine = (lineEnd: number): "next" | "stop-before" | "stop-after" | "reread" => {
+	const finishLine = (lineEnd: number): "next" | "stop-before" | "stop-after" | "stop-nul" | "reread" => {
 		if (mode === "header") {
 			header = false;
 			return "next";
 		}
+		if (lineHasNul) return "stop-nul";
 		if (mode === "blank") {
 			if (isBlankParts(parts)) return "next";
 			if (!classify()) return "stop-before";
@@ -580,6 +642,7 @@ async function scanSessionLines(
 			if (index.completeEnd !== completeEnd) advancedAt = start;
 			if (outcome !== "next") {
 				keepWitness(bytes, advancedAt);
+				if (outcome === "stop-nul") return { offset: size, seq: mode === "blank" ? seq : seq - 1, header: false };
 				return outcome === "stop-before"
 					? { offset: lineOffset, seq, header: false }
 					: { offset: position + start, seq, header: false };
@@ -599,6 +662,7 @@ async function scanSessionLines(
 	}
 	if (lineBytes === 0 || mode === "header") return { offset: position, seq, header };
 	const counted = mode !== "blank";
+	if (lineHasNul) return { offset: size, seq: counted ? seq - 1 : seq, header: false };
 	if (!atEnd) return { offset: lineOffset, seq: counted ? seq - 1 : seq, header: false };
 	if (!counted && isBlankParts(parts)) return { offset: position, seq, header: false };
 	const checker = new JsonTextChecker();
@@ -645,6 +709,7 @@ async function lineStartFromEnd(
 		position -= length;
 		for (let at = length - 1; at >= 0; at--) {
 			const byte = bytes[at]!;
+			if (byte === 0) return undefined;
 			if (byte === 10) {
 				// The newline that ends the last line ends no line before it.
 				if (position + at === end - 1) continue;
@@ -733,11 +798,15 @@ async function scanEntries(
 	};
 	let parts: Buffer[] = [],
 		lineStart = from,
-		position = from;
+		position = from,
+		lineHasNul = false,
+		nulTailAt: number | undefined;
 	// An oversized line is projected as it is read, never held whole.
 	let projector: ReturnType<typeof entryProjector> | undefined;
 	const add = (part: Buffer, stop: number) => {
 		if (header) return;
+		if (!lineHasNul && hasNulByte(part)) lineHasNul = true;
+		if (lineHasNul) return;
 		if (projector) projector.feed(part);
 		else if (stop - lineStart > SCAN_WINDOW_BYTES) {
 			projector = entryProjector();
@@ -784,7 +853,10 @@ async function scanEntries(
 				const stop = position + newline;
 				add(chunk.subarray(at, newline), stop);
 				if (header) header = false;
-				else if (projector) await longLine(projector.finish(), stop, true);
+				else if (lineHasNul) {
+					nulTailAt = lineStart;
+					break;
+				} else if (projector) await longLine(projector.finish(), stop, true);
 				else {
 					const short = shortLine(stop, true);
 					if (short !== true) await short;
@@ -792,9 +864,11 @@ async function scanEntries(
 				if (stopped) return undefined;
 				at = newline + 1;
 				lineStart = position + at;
+				lineHasNul = false;
 				parts = [];
 				projector = undefined;
 			}
+			if (nulTailAt !== undefined) break;
 			if (at < chunk.length) add(chunk.subarray(at), position + chunk.length);
 			position += chunk.length;
 		}
@@ -802,11 +876,20 @@ async function scanEntries(
 		// Settle a read ahead before the caller can close the file.
 		await next?.catch(() => undefined);
 	}
+	if (nulTailAt !== undefined) {
+		await settle();
+		if (stopped) return undefined;
+		reportTornLine(path);
+		if (invalidStructure) throw invalidStructure.error;
+		if (invalidText) throw invalidText.error;
+		return { size: nulTailAt, terminated: true, torn: true };
+	}
 	const terminated = lineStart === position;
 	const torn =
 		!terminated &&
 		!header &&
-		!(projector ? await longLine(projector.finish(), position, false) : await shortLine(position, false));
+		(lineHasNul ||
+			!(projector ? await longLine(projector.finish(), position, false) : await shortLine(position, false)));
 	await settle();
 	if (stopped) return undefined;
 	if (torn) reportTornLine(path);
@@ -903,7 +986,10 @@ export class JsonlSessionStore implements SessionStore {
 	/** Operations queued so far, counted so an append joins only a group that is still the last thing queued. */
 	private queued = 0;
 	private appendGroup: AppendGroup | undefined;
+	private chatAppendGroup: ChatAppendGroup | undefined;
 	private readonly keptFiles = new Map<string, KeptFile>();
+	/** Paths whose kept handles are currently in use by an in-flight write or sync, so LRU eviction skips them. */
+	private readonly pinnedKeptFiles = new Set<string>();
 	private closed = false;
 	private poisoned: JsonlStoragePoisonedError | StorageUnavailableError | undefined;
 	private readonly directory: string;
@@ -913,21 +999,68 @@ export class JsonlSessionStore implements SessionStore {
 			has: hasFileChatRecords,
 			read: readFileChatRecords,
 			readOrders: readFileChatOrders,
-			append: (owner, anchor, record) => {
-				record = boundedChatRecord(record);
-				return this.run(async () => {
-					const held = await this.locate(owner.id);
-					if (
-						held &&
-						held.stats.birthtimeNs > 0n &&
-						held.path === owner.file &&
-						fileEpochOf(held.stats, JSON.stringify(held.header)) === owner.epoch
-					)
-						await appendFileChatRecord(owner, anchor, record);
-				});
-			},
+			append: (owner, anchor, record) => this.appendChatRecord(owner, anchor, boundedChatRecord(record)),
 		};
 		return this.chatStore;
+	}
+
+	private appendChatRecord(owner: ChatRecordOwner, anchor: string, record: ChatRecord): Promise<void> {
+		if (this.closed) return Promise.reject(new StoreClosedError(this.descriptor));
+		return new Promise((resolve, reject) => {
+			const request: ChatAppendRequest = { owner, anchor, record, resolve, reject };
+			const waiting = this.chatAppendGroup;
+			if (waiting !== undefined && !waiting.started && waiting.queued === this.queued) {
+				waiting.requests.push(request);
+				return;
+			}
+			const group: ChatAppendGroup = { requests: [request], queued: 0, started: false };
+			this.chatAppendGroup = group;
+			const settle = (fallback?: unknown) => {
+				for (const pending of group.requests) {
+					if (pending.answer !== undefined && "ok" in pending.answer) pending.resolve();
+					else pending.reject(pending.answer !== undefined ? pending.answer.error : fallback);
+				}
+			};
+			this.run(() => this.commitChatAppends(group)).then(
+				() => settle(),
+				(cause: unknown) => settle(cause),
+			);
+			group.queued = this.queued;
+		});
+	}
+
+	private async commitChatAppends(group: ChatAppendGroup): Promise<void> {
+		group.started = true;
+		if (this.chatAppendGroup === group) this.chatAppendGroup = undefined;
+		const byOwner = new Map<string, { readonly owner: ChatRecordOwner; readonly requests: ChatAppendRequest[] }>();
+		for (const request of group.requests) {
+			const key = `${request.owner.id}\0${request.owner.file ?? ""}\0${request.owner.epoch}`;
+			let bucket = byOwner.get(key);
+			if (!bucket) {
+				bucket = { owner: request.owner, requests: [] };
+				byOwner.set(key, bucket);
+			}
+			bucket.requests.push(request);
+		}
+		for (const { owner, requests } of byOwner.values()) {
+			try {
+				const held = await this.locate(owner.id);
+				if (
+					held &&
+					held.stats.birthtimeNs > 0n &&
+					held.path === owner.file &&
+					fileEpochOf(held.stats, JSON.stringify(held.header)) === owner.epoch
+				)
+					await appendFileChatRecords(
+						owner,
+						requests.map(({ anchor, record }) => ({ anchor, record })),
+					);
+				for (const request of requests) request.answer = { ok: true };
+			} catch (cause) {
+				const failure = this.failure(cause);
+				for (const request of requests) request.answer = { error: failure };
+			}
+		}
 	}
 	private readonly fileStates = new Map<string, SessionFileState>();
 	private readonly rangeIndexes = new Map<string, RangeIndex>();
@@ -1047,10 +1180,10 @@ export class JsonlSessionStore implements SessionStore {
 			if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
 			const payload = Buffer.from(this.encode(header, entries));
 			const path = location === undefined ? this.locationFor(header) : resolve(location);
-			await mkdir(resolve(path, ".."), { recursive: true });
+			await makeDirectory(dirname(path));
 			const temporary = `${path}.${randomUUID()}.tmp`;
 			try {
-				await writeFile(temporary, payload, { flag: "wx" });
+				await writeSynced(temporary, payload);
 				try {
 					await link(temporary, path);
 				} catch (cause) {
@@ -1062,6 +1195,8 @@ export class JsonlSessionStore implements SessionStore {
 					if (cause.code !== "ENOENT") throw cause;
 				});
 			}
+			// The new name, and the temporary one gone, last a crash before the session is acknowledged.
+			await syncDirectory(dirname(path));
 			const state = this.contentState(header, entries, payload);
 			const stats = await this.remember(path, state);
 			// Only successful creation of a new generation of the bound ID moves this handle's association.
@@ -1080,7 +1215,7 @@ export class JsonlSessionStore implements SessionStore {
 		validateSessionHeader(header);
 		if (!("read" in entries)) validateSessionEntries(entries);
 		const path = location === undefined ? this.locationFor(header) : resolve(location);
-		await mkdir(dirname(path), { recursive: true });
+		await makeDirectory(dirname(path));
 		const temporary = `${path}.${randomUUID()}.tmp`;
 		const handle = await open(temporary, "wx+");
 		try {
@@ -1120,7 +1255,7 @@ export class JsonlSessionStore implements SessionStore {
 				: entries.map((entry) => ({ entry, reference: source.receipts.get(entry.id) }));
 			const line = this.encode(header, []);
 			let size = Buffer.byteLength(line);
-			let witness: Buffer;
+			let integrity: IndexIntegrity;
 			try {
 				await write(Buffer.from(line));
 				for await (const row of rows) {
@@ -1141,7 +1276,9 @@ export class JsonlSessionStore implements SessionStore {
 					size++;
 				}
 				await flush();
-				witness = await witnessAt(handle, size);
+				// Synced before it is linked into place: the session's name never lasts a crash without its bytes.
+				await syncFile(handle);
+				integrity = await captureIntegrity(handle, size, spans);
 			} finally {
 				await handle.close();
 			}
@@ -1154,6 +1291,11 @@ export class JsonlSessionStore implements SessionStore {
 					if ((cause as NodeJS.ErrnoException).code === "EEXIST") throw new SessionExistsError(header.id);
 					throw cause;
 				}
+				await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
+					if (cause.code !== "ENOENT") throw cause;
+				});
+				// The new name, and the temporary one gone, last a crash before the fork is acknowledged.
+				await syncDirectory(dirname(path));
 				const headerStamp = JSON.stringify(header);
 				const stats = await this.remember(path, {
 					headerStamp,
@@ -1162,25 +1304,30 @@ export class JsonlSessionStore implements SessionStore {
 					lastEntryId: lastId,
 					terminated: true,
 					torn: false,
-					witness,
+					witness: integrity.witness,
 					summaryState: summary,
 				});
 				const epoch = fileEpochOf(stats, headerStamp);
-				await this.keepIndex(path, {
-					identity: `${stats.dev}:${stats.ino}`,
-					birthtimeNs: String(stats.birthtimeNs),
-					headerStamp,
-					fileSize: size,
-					mtimeNs: String(stats.mtimeNs),
-					size,
-					witness,
-					terminated: true,
-					torn: false,
-					spans,
-					ids,
-					index: { ...index, epoch },
-					sidecarSize: 0,
-				});
+				await this.keepIndex(
+					path,
+					{
+						identity: `${stats.dev}:${stats.ino}`,
+						birthtimeNs: String(stats.birthtimeNs),
+						headerStamp,
+						fileSize: size,
+						mtimeNs: String(stats.mtimeNs),
+						size,
+						...integrity,
+						synced: true,
+						terminated: true,
+						torn: false,
+						spans,
+						ids,
+						index: { ...index, epoch },
+						sidecarSize: 0,
+					},
+					{ synced: true },
+				);
 				return { lastSeq: ids.length, epoch };
 			}, true);
 		} finally {
@@ -1193,8 +1340,10 @@ export class JsonlSessionStore implements SessionStore {
 	/**
 	 * Appends made while an earlier one waits its turn join it and commit together, as a LevelDB log writer's queue does:
 	 * under one lock, each is checked against the session as the appends before it leave it, and each file gets one write
-	 * of all their lines. Every append is answered once its lines are written and the lock is released, as it was alone,
-	 * and one that conflicts or fails validation rejects alone. Nothing is synced, as before.
+	 * of all their lines and one sync of them, as PostgreSQL's WAL flush covers every commit queued behind it (#6686).
+	 * Every append is answered once the sync covering its lines has finished and the lock is released, as it was alone,
+	 * and one that conflicts or fails validation rejects alone. The sync is made under the lock, so a failed one is cut
+	 * back before any other writer can append after lines a crash may have lost.
 	 */
 	append(
 		sessionId: string,
@@ -1212,16 +1361,15 @@ export class JsonlSessionStore implements SessionStore {
 			}
 			const group: AppendGroup = { requests: [request], queued: 0, started: false };
 			this.appendGroup = group;
+			const settle = (fallback?: unknown) => {
+				for (const { answer, resolve, reject } of group.requests) {
+					if (answer !== undefined && "lastSeq" in answer) resolve(answer);
+					else reject(answer !== undefined ? answer.error : fallback);
+				}
+			};
 			this.run(() => this.commitAppends(group)).then(
-				() => {
-					for (const { answer, resolve, reject } of group.requests) {
-						if (answer !== undefined && "lastSeq" in answer) resolve(answer);
-						else reject(answer?.error);
-					}
-				},
-				(cause: unknown) => {
-					for (const pending of group.requests) pending.reject(cause);
-				},
+				() => settle(),
+				(cause: unknown) => settle(cause),
 			);
 			group.queued = this.queued;
 		});
@@ -1232,14 +1380,42 @@ export class JsonlSessionStore implements SessionStore {
 		if (this.appendGroup === group) this.appendGroup = undefined;
 		const staged = new Map<string, StagedFile>();
 		for (const request of group.requests) {
+			if (this.poisoned) {
+				request.answer = { error: this.poisoned };
+				continue;
+			}
 			try {
 				await this.stageAppend(staged, request);
 			} catch (cause) {
-				if (this.poisoned) throw this.poisoned;
+				if (this.poisoned) {
+					request.answer = { error: this.poisoned };
+					break;
+				}
 				request.answer = { error: this.failure(cause) };
 			}
 		}
-		for (const file of staged.values()) await this.writeStaged(file);
+		if (this.poisoned) {
+			for (const file of staged.values()) {
+				for (const { request } of file.requests) request.answer = { error: this.poisoned };
+			}
+			for (const request of group.requests) request.answer ??= { error: this.poisoned };
+			return;
+		}
+		const files = [...staged.values()];
+		if (files.length === 1) {
+			await this.writeStaged(files[0]!);
+		} else if (files.length > 1) {
+			// Sync the distinct files of a multi-session group in parallel while keeping per-file outcome isolation.
+			let cursor = 0;
+			const workers = Array.from({ length: Math.min(files.length, MAX_PARALLEL_SYNCS) }, async () => {
+				while (cursor < files.length) {
+					const file = files[cursor++]!;
+					await this.writeStaged(file);
+				}
+			});
+			await Promise.all(workers);
+			await this.trimKeptFiles();
+		}
 	}
 
 	/** Checks one append against its session as the appends staged before it leave it, and stages its lines. */
@@ -1271,6 +1447,7 @@ export class JsonlSessionStore implements SessionStore {
 			// The copy kept before a compaction holds every append made before it.
 			if (!(await this.writeStaged(file))) {
 				staged.delete(sessionId);
+				if (this.poisoned) throw this.poisoned;
 				throw new SessionConflictError(sessionId, options.expectSeq, file.before.lastSeq);
 			}
 			await copyFile(
@@ -1287,19 +1464,25 @@ export class JsonlSessionStore implements SessionStore {
 
 	/**
 	 * Writes the lines staged for `file` through its kept handle, then decides the appends they came from: false when the
-	 * write failed and they fail. A failed write is cut off again; when that fails too the store is poisoned.
+	 * write failed and they fail. A failed write or sync is cut off again; when that fails too the store is poisoned,
+	 * without failing sibling files in the same group that already synced.
 	 */
 	private async writeStaged(file: StagedFile): Promise<boolean> {
 		const { path, before, entries, lines, requests } = file;
 		file.entries = [];
 		file.lines = [];
 		file.requests = [];
+		if (this.poisoned) {
+			for (const { request } of requests) request.answer = { error: this.poisoned };
+			return false;
+		}
 		if (entries.length === 0) {
 			for (const { request, lastSeq } of requests) request.answer = { lastSeq };
 			return true;
 		}
 		const offset = before.size;
 		const payload = Buffer.from(`${before.terminated ? "" : "\n"}${lines.join("\n")}\n`);
+		this.pinnedKeptFiles.add(path);
 		try {
 			const kept = await this.keptFile(path, file.identity);
 			// Cut by path, which names the handle's file under the lock: Windows refuses to truncate through a handle
@@ -1307,12 +1490,16 @@ export class JsonlSessionStore implements SessionStore {
 			if (before.torn) await truncate(path, before.size);
 			try {
 				await writeAll(kept.handle, payload);
+				// Every append of the group is acknowledged only after this sync, which covers all of its lines. A failed
+				// sync is cut back like a failed write, before any other writer can append after the lines it lost.
+				await syncFile(kept.handle);
 			} catch (cause) {
 				try {
 					await truncate(path, offset);
 				} catch (rollbackCause) {
-					this.poisoned = new JsonlStoragePoisonedError(path, cause as Error, rollbackCause as Error);
-					throw this.poisoned;
+					const poisoned = new JsonlStoragePoisonedError(path, cause as Error, rollbackCause as Error);
+					this.poisoned ??= poisoned;
+					throw poisoned;
 				}
 				throw cause;
 			}
@@ -1339,15 +1526,24 @@ export class JsonlSessionStore implements SessionStore {
 				rangeIndex.seenStamp = this.stamp(stats);
 				rangeIndex.seenSize = Number(stats.size);
 			}
-			await this.indexAppended(path, before, entries, lines, offset + (before.terminated ? 0 : 1), stats);
+			await this.indexAppended(
+				path,
+				before,
+				entries,
+				lines,
+				offset + (before.terminated ? 0 : 1),
+				stats,
+				kept.handle,
+			);
 			if (KEEP_APPEND_FILES) this.armIdle(path, kept);
 			else await this.closeKept(path);
 		} catch (cause) {
 			await this.closeKept(path);
-			const failure = cause === this.poisoned ? cause : this.failure(cause);
+			const failure = cause instanceof JsonlStoragePoisonedError ? cause : this.failure(cause);
 			for (const { request } of requests) request.answer = { error: failure };
-			if (cause === this.poisoned) throw cause;
 			return false;
+		} finally {
+			this.pinnedKeptFiles.delete(path);
 		}
 		for (const { request, lastSeq } of requests) request.answer = { lastSeq };
 		return true;
@@ -1392,12 +1588,15 @@ export class JsonlSessionStore implements SessionStore {
 					}
 					witness = await witnessAt(output, (await output.stat()).size);
 					await output.chmod((await stat(path)).mode & 0o7777);
+					// Synced before it is renamed over the session: a crash leaves the old file or this one, never an empty one.
+					await syncFile(output);
 				} finally {
 					await output.close();
 				}
 				await this.forgetIndex(path);
 				await this.closeKept(path);
 				await rename(temporary, path);
+				await syncDirectory(dirname(path));
 				const headerStamp = JSON.stringify(header);
 				const stats = await this.remember(path, {
 					...state,
@@ -1421,8 +1620,10 @@ export class JsonlSessionStore implements SessionStore {
 		const payload = Buffer.from(this.encode(header, entries));
 		const temporary = `${path}.${randomUUID()}.tmp`;
 		try {
-			await writeFile(temporary, payload, { flag: "wx" });
+			// Synced before it is renamed over the session, and the rename synced before the write is acknowledged.
+			await writeSynced(temporary, payload);
 			await rename(temporary, path);
+			await syncDirectory(dirname(path));
 		} finally {
 			await unlink(temporary).catch((cause: NodeJS.ErrnoException) => {
 				if (cause.code !== "ENOENT") throw cause;
@@ -1915,7 +2116,7 @@ export class JsonlSessionStore implements SessionStore {
 							}
 						}
 						fork = { labels: [...active.values()], catalog };
-						await this.keepIndex(path, { ...jsonl, fork });
+						await this.keepIndex(path, { ...jsonl, fork }, { synced: jsonl.synced, handle: file });
 						return fork;
 					};
 					return await indexedForkWindow(
@@ -2080,7 +2281,9 @@ export class JsonlSessionStore implements SessionStore {
 		const identity = `${stats.dev}:${stats.ino}`;
 		const headerStamp = JSON.stringify(header);
 		const epoch = fileEpochOf(stats, headerStamp);
-		let cached = this.indexes.get(path) ?? (await readSidecar(path));
+		const inMemory = this.indexes.get(path);
+		let cached = inMemory ?? (await readSidecar(path));
+		const fromDisk = inMemory === undefined && cached !== undefined;
 		// An older build's sidecar holds the epoch with the creation time in it. It is this file's when the file's
 		// identity, creation time and header still match it, and is read once with this build's epoch then rewritten.
 		const older =
@@ -2090,6 +2293,7 @@ export class JsonlSessionStore implements SessionStore {
 		if (cached !== undefined && older) cached = { ...cached, index: { ...cached.index, epoch } };
 		if (
 			cached !== undefined &&
+			(!fromDisk || cached.synced) &&
 			cached.identity === identity &&
 			cached.birthtimeNs === String(stats.birthtimeNs) &&
 			cached.headerStamp === headerStamp &&
@@ -2097,26 +2301,68 @@ export class JsonlSessionStore implements SessionStore {
 		) {
 			const fileSize = Number(stats.size);
 			const kept = this.keptFor(path, identity);
-			if (
-				cached.fileSize === fileSize &&
-				cached.mtimeNs === String(stats.mtimeNs) &&
-				(await witnessHolds(path, cached, kept))
-			) {
-				if (older) return this.keepIndex(path, cached);
+			const checkCached = () => (fromDisk ? integrityHolds(path, cached!, kept) : witnessHolds(path, cached!, kept));
+			if (cached.fileSize === fileSize && cached.mtimeNs === String(stats.mtimeNs) && (await checkCached())) {
+				if (older)
+					return this.keepIndex(path, cached, {
+						synced: cached.synced,
+						handle: kept,
+						writable: kept !== undefined,
+					});
 				this.indexes.set(path, cached);
 				return cached;
 			}
-			if (fileSize > cached.size && (await witnessHolds(path, cached, kept))) {
+			if (fileSize > cached.size && (await checkCached())) {
 				const grown = await this.catchUp(path, cached, stats, kept);
-				if (grown !== undefined) return this.keepIndex(path, grown);
+				if (grown !== undefined) return this.keepIndex(path, grown, { handle: kept, writable: kept !== undefined });
 			}
 		}
-		return this.keepIndex(path, await this.buildIndex(path, headerStamp, stats));
+		const kept = this.keptFor(path, identity);
+		if (kept !== undefined) {
+			const built = await this.buildIndex(path, headerStamp, stats, { handle: kept });
+			return this.keepIndex(path, built, { handle: kept, writable: true });
+		}
+		const handle = await open(path, "r");
+		try {
+			const built = await this.buildIndex(path, headerStamp, stats, { handle });
+			return await this.keepIndex(path, built, { handle });
+		} finally {
+			await handle.close();
+		}
 	}
 
-	private async keepIndex(path: string, jsonl: JsonlIndex): Promise<JsonlIndex> {
-		const written = await writeSidecar(path, jsonl);
-		const kept = written ? { ...jsonl, sidecarSize: jsonl.size } : jsonl;
+	private async keepIndex(
+		path: string,
+		jsonl: JsonlIndex,
+		options?: { readonly synced?: boolean; readonly handle?: FileHandle; readonly writable?: boolean },
+	): Promise<JsonlIndex> {
+		// Never persist a sidecar covering a torn/corrupt tail or bytes not yet confirmed synced to disk (#6686, #6717).
+		if (jsonl.torn) {
+			this.indexes.set(path, jsonl);
+			await unlink(`${path}${SIDECAR_SUFFIX}`).catch(() => undefined);
+			return jsonl;
+		}
+		if (!options?.synced) {
+			try {
+				await syncPath(path, options?.handle, options?.writable === true);
+			} catch {
+				this.indexes.set(path, jsonl);
+				return jsonl;
+			}
+		}
+		let durable = jsonl.synced ? jsonl : { ...jsonl, synced: true };
+		if (durable.size <= PREFIX_HASH_MAX_BYTES && durable.prefixHash === undefined) {
+			const handle = options?.handle ?? this.keptFor(path, durable.identity);
+			const file = handle ?? (await open(path, "r"));
+			try {
+				const integrity = await captureIntegrity(file, durable.size, durable.spans);
+				durable = { ...durable, ...integrity };
+			} finally {
+				if (handle === undefined) await file.close();
+			}
+		}
+		const written = await writeSidecar(path, durable);
+		const kept = written ? { ...durable, sidecarSize: durable.size } : durable;
 		this.indexes.set(path, kept);
 		return kept;
 	}
@@ -2160,6 +2406,7 @@ export class JsonlSessionStore implements SessionStore {
 			ranges === undefined
 				? topology
 				: await this.foldFile(path, epoch, (seq) => ranges.some(([low, high]) => seq >= low && seq <= high), input);
+		const integrity = await captureIntegrity(input.handle, active.size, active.spans);
 		return {
 			identity,
 			birthtimeNs,
@@ -2167,11 +2414,8 @@ export class JsonlSessionStore implements SessionStore {
 			fileSize: Number(stats.size),
 			mtimeNs: String(stats.mtimeNs),
 			size: active.size,
-			witness: await readFrom(
-				input.handle,
-				Math.max(0, active.size - WITNESS_BYTES),
-				Math.min(active.size, WITNESS_BYTES),
-			),
+			...integrity,
+			synced: false,
 			terminated: active.terminated,
 			torn: active.torn,
 			spans: active.spans,
@@ -2242,7 +2486,7 @@ export class JsonlSessionStore implements SessionStore {
 		kept: FileHandle | undefined,
 	): Promise<JsonlIndex | undefined> {
 		const from = cached.size - cached.witness.length;
-		if (Number(stats.size) - from > SCAN_WINDOW_BYTES) return this.streamCatchUp(path, cached, stats);
+		if (Number(stats.size) - from > SCAN_WINDOW_BYTES) return this.streamCatchUp(path, cached, stats, kept);
 		const bytes = await readBytes(path, from, Number(stats.size) - from, kept);
 		let offset = cached.size;
 		let appended = bytes.subarray(cached.witness.length);
@@ -2254,40 +2498,83 @@ export class JsonlSessionStore implements SessionStore {
 		const spans = [...cached.spans];
 		const entries: SessionEntry[] = [];
 		let start = 0;
+		let stoppedAtNul = false;
 		for (let newline = appended.indexOf(10); newline !== -1; newline = appended.indexOf(10, start)) {
-			const text = appended.subarray(start, newline).toString("utf8");
+			const rawLine = appended.subarray(start, newline);
+			if (hasNulByte(rawLine)) {
+				stoppedAtNul = true;
+				reportTornLine(path);
+				break;
+			}
+			const text = rawLine.toString("utf8");
 			if (text.trim()) {
 				entries.push(JSON.parse(text) as SessionEntry);
 				spans.push(offset + start, offset + newline);
 			}
 			start = newline + 1;
 		}
-		const last = appended.subarray(start);
 		let size = offset + start;
 		let terminated = true;
-		let torn = false;
-		if (last.length > 0) {
-			const unterminated = parseUnterminated(last.toString("utf8"));
-			if (unterminated) {
-				entries.push(unterminated);
-				spans.push(offset + start, offset + appended.length);
-				size = offset + appended.length;
-				terminated = false;
-			} else {
-				torn = true;
-				reportTornLine(path);
+		let torn = stoppedAtNul;
+		if (!stoppedAtNul) {
+			const last = appended.subarray(start);
+			if (last.length > 0) {
+				const unterminated = hasNulByte(last) ? undefined : parseUnterminated(last.toString("utf8"));
+				if (unterminated) {
+					entries.push(unterminated);
+					spans.push(offset + start, offset + appended.length);
+					size = offset + appended.length;
+					terminated = false;
+				} else {
+					torn = true;
+					reportTornLine(path);
+				}
 			}
 		}
 		validateSessionEntryStructure(entries, path);
 		validateSessionEntries(entries);
 		if (resumeIndexNeedsRefold(cached.index, entries)) return undefined;
 		const index = await this.foldAppended(path, cached, entries);
+		const witness = witnessOf(bytes.subarray(0, size - from));
+		let prefixHash: string | undefined;
+		let headWitness = cached.headWitness;
+		let checkpointStride = cached.checkpointStride;
+		let checkpoints = cached.checkpoints;
+		if (size <= PREFIX_HASH_MAX_BYTES) {
+			const file = kept ?? (await open(path, "r"));
+			try {
+				const captured = await captureIntegrity(file, size, spans);
+				prefixHash = captured.prefixHash;
+				headWitness = captured.headWitness;
+				checkpointStride = captured.checkpointStride;
+				checkpoints = captured.checkpoints;
+			} finally {
+				if (kept === undefined) await file.close();
+			}
+		} else {
+			if (headWitness === undefined && spans.length >= 2) {
+				const headStart = spans[0]!;
+				const headLen = Math.min(HEAD_WITNESS_BYTES, size - headStart);
+				headWitness =
+					headStart >= from
+						? Buffer.from(bytes.subarray(headStart - from, headStart - from + headLen))
+						: await readBytes(path, headStart, headLen, kept);
+			}
+			const extended = extendCheckpointsFromBuffer(checkpointStride, checkpoints, cached.size, size, from, bytes);
+			checkpointStride = extended.stride;
+			checkpoints = extended.checkpoints;
+		}
 		return {
 			...cached,
 			fileSize: Number(stats.size),
 			mtimeNs: String(stats.mtimeNs),
 			size,
-			witness: witnessAfter(cached.witness, appended.subarray(0, size - offset)),
+			witness,
+			synced: false,
+			prefixHash,
+			headWitness,
+			checkpointStride,
+			checkpoints,
 			terminated: appended.length === 0 ? cached.terminated : terminated,
 			torn,
 			spans,
@@ -2302,8 +2589,13 @@ export class JsonlSessionStore implements SessionStore {
 	 * indexed prefix, rather than read the whole file again or hold the suffix. Undefined when the cache cannot be
 	 * extended: the suffix does not continue the cached last line, or it branches, which needs a full fold.
 	 */
-	private async streamCatchUp(path: string, cached: JsonlIndex, stats: BigIntStats): Promise<JsonlIndex | undefined> {
-		const file = await open(path, "r");
+	private async streamCatchUp(
+		path: string,
+		cached: JsonlIndex,
+		stats: BigIntStats,
+		kept?: FileHandle,
+	): Promise<JsonlIndex | undefined> {
+		const file = kept ?? (await open(path, "r"));
 		try {
 			let start = cached.size;
 			if (!cached.terminated) {
@@ -2323,7 +2615,7 @@ export class JsonlSessionStore implements SessionStore {
 				if (!batch.length) return;
 				const seqs = new Map<string, number>();
 				for (const id of foreignResumeIds(index, batch)) {
-					const seq = appended.get(id) ?? (await this.seqInFile(path, cached, id));
+					const seq = appended.get(id) ?? (await this.seqInFile(path, cached, id, file));
 					if (seq !== undefined) seqs.set(id, seq);
 				}
 				fork = appendedForkIndex({ index, fork }, batch);
@@ -2351,19 +2643,36 @@ export class JsonlSessionStore implements SessionStore {
 			const scanned = await scanEntries(path, file, start, Number(stats.size), false, take);
 			if (!scanned) return undefined;
 			await flush();
+			const headWitness =
+				cached.headWitness ??
+				(spans.length >= 2
+					? await readFrom(file, spans[0]!, Math.min(HEAD_WITNESS_BYTES, scanned.size - spans[0]!))
+					: undefined);
+			const extended = await extendCheckpointsFromHandle(
+				file,
+				cached.checkpointStride,
+				cached.checkpoints,
+				cached.size,
+				scanned.size,
+			);
 			return {
 				...cached,
 				fileSize: Number(stats.size),
 				mtimeNs: String(stats.mtimeNs),
 				...scanned,
 				witness: await witnessAt(file, scanned.size),
+				synced: false,
+				prefixHash: undefined,
+				headWitness,
+				checkpointStride: extended.stride,
+				checkpoints: extended.checkpoints,
 				spans,
 				ids: hashes,
 				fork,
 				index,
 			};
 		} finally {
-			await file.close();
+			if (kept === undefined) await file.close();
 		}
 	}
 
@@ -2387,6 +2696,7 @@ export class JsonlSessionStore implements SessionStore {
 		lines: readonly string[],
 		firstLine: number,
 		stats: BigIntStats,
+		handle: FileHandle,
 	): Promise<void> {
 		const cached = this.indexes.get(path);
 		if (
@@ -2413,6 +2723,8 @@ export class JsonlSessionStore implements SessionStore {
 			mtimeNs: String(stats.mtimeNs),
 			size: state.size,
 			witness: state.witness,
+			synced: true,
+			prefixHash: undefined,
 			terminated: true,
 			torn: false,
 			spans,
@@ -2420,8 +2732,10 @@ export class JsonlSessionStore implements SessionStore {
 			fork: appendedForkIndex(cached, entries),
 			index: await this.foldAppended(path, cached, entries),
 		};
-		if (next.size - next.sidecarSize >= SIDECAR_REFRESH_BYTES) await this.keepIndex(path, next);
-		else this.indexes.set(path, next);
+		if (next.size - next.sidecarSize >= SIDECAR_REFRESH_BYTES) {
+			const integrity = await captureIntegrity(handle, next.size, spans);
+			await this.keepIndex(path, { ...next, ...integrity, synced: true }, { synced: true });
+		} else this.indexes.set(path, next);
 	}
 
 	private async entriesAt(
@@ -2665,8 +2979,18 @@ export class JsonlSessionStore implements SessionStore {
 		const handle = await open(path, constants.O_RDWR | constants.O_APPEND);
 		const opened: KeptFile = { handle, identity, idle: undefined, armed: 0 };
 		this.keptFiles.set(path, opened);
-		while (this.keptFiles.size > KEPT_FILES) await this.closeKept(this.keptFiles.keys().next().value as string);
+		await this.trimKeptFiles();
 		return opened;
+	}
+
+	/** Closes the least recently used unpinned handles until the cache is back within {@link KEPT_FILES}. */
+	private async trimKeptFiles(): Promise<void> {
+		if (this.keptFiles.size <= KEPT_FILES) return;
+		for (const candidate of [...this.keptFiles.keys()]) {
+			if (this.keptFiles.size <= KEPT_FILES) return;
+			if (this.pinnedKeptFiles.has(candidate)) continue;
+			await this.closeKept(candidate);
+		}
 	}
 
 	/** The kept handle of the file at `path`, while it is the file `identity` names, to read through. */
@@ -3031,8 +3355,9 @@ export class JsonlSessionStore implements SessionStore {
 
 	/**
 	 * The entries after the header line. A last line without a newline is read when it is a complete record and
-	 * left out when it is torn; `size` and `witness` then end at the last complete line. A malformed line before
-	 * the last one is still a parse failure.
+	 * left out when it is torn; a line containing raw NUL bytes (an unwritten zero-filled page from out-of-order
+	 * writeback and power loss) ends the readable prefix right before it as a torn tail. `size` and `witness` then
+	 * end at the last complete line before that tail. Any other malformed complete line is still a parse failure.
 	 */
 	private async readEntries(path: string): Promise<{
 		entries: SessionEntry[];
@@ -3042,44 +3367,54 @@ export class JsonlSessionStore implements SessionStore {
 		size: number;
 	}> {
 		const input = createReadStream(path);
-		let size = 0;
-		let complete = 0;
-		let witness: Buffer = Buffer.alloc(0);
-		let completeWitness: Buffer = Buffer.alloc(0);
-		input.on("data", (chunk: string | Buffer) => {
-			const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-			const newline = bytes.lastIndexOf(10);
-			if (newline !== -1) {
-				complete = size + newline + 1;
-				completeWitness = witnessAfter(witness, bytes.subarray(0, newline + 1));
-			}
-			witness = witnessAfter(witness, bytes);
-			size += bytes.length;
-		});
 		const entries: SessionEntry[] = [];
+		let size = 0;
+		let lineStart = 0;
+		let witness: Buffer = Buffer.alloc(0);
+		let parts: Buffer[] = [];
 		let first = true;
-		let last: string | undefined;
 		try {
-			for await (const line of readLines(input)) {
-				if (first) {
-					first = false;
-					continue;
+			for await (const chunk of input as AsyncIterable<string | Buffer>) {
+				const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+				let start = 0;
+				for (let newline = bytes.indexOf(10); newline !== -1; newline = bytes.indexOf(10, start)) {
+					parts.push(bytes.subarray(start, newline));
+					const lineBytes = parts.length === 1 ? parts[0]! : Buffer.concat(parts);
+					parts = [];
+					const lineEnd = size + newline + 1;
+					if (first) {
+						first = false;
+						witness = witnessAfter(witnessAfter(witness, lineBytes), NEWLINE);
+						lineStart = lineEnd;
+					} else if (hasNulByte(lineBytes)) {
+						return { entries, witness, terminated: true, torn: true, size: lineStart };
+					} else {
+						const text = lineBytes.toString(
+							"utf8",
+							0,
+							lineBytes.at(-1) === 0x0d ? lineBytes.length - 1 : lineBytes.length,
+						);
+						if (text.trim()) entries.push(JSON.parse(text) as SessionEntry);
+						witness = witnessAfter(witnessAfter(witness, lineBytes), NEWLINE);
+						lineStart = lineEnd;
+					}
+					start = newline + 1;
 				}
-				if (last?.trim()) entries.push(JSON.parse(last) as SessionEntry);
-				last = line;
+				if (start < bytes.length) parts.push(bytes.subarray(start));
+				size += bytes.length;
 			}
 		} finally {
 			input.destroy();
 		}
-		const terminated = complete === size;
-		if (last !== undefined && terminated) {
-			if (last.trim()) entries.push(JSON.parse(last) as SessionEntry);
-		} else if (last !== undefined) {
-			const entry = parseUnterminated(last);
-			if (!entry) return { entries, witness: completeWitness, terminated: true, torn: true, size: complete };
-			entries.push(entry);
-		}
-		return { entries, witness, terminated, torn: false, size };
+		if (parts.length === 0) return { entries, witness, terminated: true, torn: false, size };
+		const lastBytes = parts.length === 1 ? parts[0]! : Buffer.concat(parts);
+		if (first) return { entries, witness: witnessAfter(witness, lastBytes), terminated: false, torn: false, size };
+		if (hasNulByte(lastBytes)) return { entries, witness, terminated: true, torn: true, size: lineStart };
+		const text = lastBytes.toString("utf8", 0, lastBytes.at(-1) === 0x0d ? lastBytes.length - 1 : lastBytes.length);
+		const entry = parseUnterminated(text);
+		if (!entry) return { entries, witness, terminated: true, torn: true, size: lineStart };
+		entries.push(entry);
+		return { entries, witness: witnessAfter(witness, lastBytes), terminated: false, torn: false, size };
 	}
 
 	private stamp(stats: BigIntStats): string {
@@ -3156,7 +3491,8 @@ export class JsonlSessionStore implements SessionStore {
 			)
 				throw await stale();
 			if (state.stamp !== this.stamp(stats)) {
-				const file = await open(path, "r");
+				const kept = this.keptFor(path, state.identity);
+				const file = kept ?? (await open(path, "r"));
 				const offset = state.size - state.witness.length;
 				const bytes = Buffer.alloc(Number(stats.size) - offset);
 				try {
@@ -3167,24 +3503,47 @@ export class JsonlSessionStore implements SessionStore {
 						read += bytesRead;
 					}
 				} finally {
-					await file.close();
+					if (kept === undefined) await file.close();
 				}
 				if (!bytes.subarray(0, state.witness.length).equals(state.witness)) throw await stale();
-				let appended = bytes.subarray(state.witness.length).toString("utf8");
-				if (appended && !state.terminated) {
-					if (!appended.startsWith("\n")) throw await stale();
-					appended = appended.slice(1);
+				let pos = state.witness.length;
+				if (pos < bytes.length && !state.terminated) {
+					if (bytes[pos] !== 10) throw await stale();
+					pos += 1;
 				}
-				const lines = appended.split("\n");
-				const last = lines.pop() ?? "";
-				const entries = lines.map((line) => JSON.parse(line) as SessionEntry);
-				const unterminated = last === "" ? undefined : parseUnterminated(last);
-				if (unterminated) entries.push(unterminated);
-				const torn = last !== "" && !unterminated;
-				if (torn) reportTornLine(path);
+				const entries: SessionEntry[] = [];
+				let torn = false;
+				let stoppedAtNul = false;
+				for (let newline = bytes.indexOf(10, pos); newline !== -1; newline = bytes.indexOf(10, pos)) {
+					const rawLine = bytes.subarray(pos, newline);
+					if (hasNulByte(rawLine)) {
+						torn = true;
+						stoppedAtNul = true;
+						reportTornLine(path);
+						break;
+					}
+					const text = rawLine.toString("utf8");
+					if (text.trim()) entries.push(JSON.parse(text) as SessionEntry);
+					pos = newline + 1;
+				}
+				let end = pos;
+				if (!stoppedAtNul) {
+					if (pos < bytes.length) {
+						const tail = bytes.subarray(pos);
+						const unterminated = hasNulByte(tail) ? undefined : parseUnterminated(tail.toString("utf8"));
+						if (unterminated) {
+							entries.push(unterminated);
+							end = bytes.length;
+						} else {
+							torn = true;
+							reportTornLine(path);
+						}
+					} else {
+						end = bytes.length;
+					}
+				}
 				validateSessionEntryStructure(entries, path);
 				validateSessionEntries(entries);
-				const end = torn ? bytes.lastIndexOf(10) + 1 : bytes.length;
 				state = {
 					...state,
 					stamp: this.stamp(stats),
@@ -3295,6 +3654,27 @@ async function writeAll(file: FileHandle, bytes: Buffer): Promise<void> {
 	}
 }
 
+/** Writes `payload` to a new file at `path` and syncs it, before the caller links or renames it into place. */
+async function writeSynced(path: string, payload: Buffer): Promise<void> {
+	const handle = await open(path, "wx");
+	try {
+		await handle.writeFile(payload);
+		await syncFile(handle);
+	} finally {
+		await handle.close();
+	}
+}
+
+/** Makes the directory at `path` and those above it that are missing, and syncs the directory naming each it made. */
+async function makeDirectory(path: string): Promise<void> {
+	const made = await mkdir(path, { recursive: true });
+	if (made === undefined) return;
+	for (let directory = path; ; directory = dirname(directory)) {
+		await syncDirectory(dirname(directory));
+		if (directory === made || dirname(directory) === directory) return;
+	}
+}
+
 async function readFirstLineFrom(
 	file: FileHandle,
 	firstReadBytes: number,
@@ -3338,6 +3718,156 @@ async function witnessHolds(path: string, jsonl: JsonlIndex, kept?: FileHandle):
 	}
 }
 
+function chooseCheckpointStride(size: number, initial = CHECKPOINT_INITIAL_STRIDE): number {
+	let stride = initial;
+	while (size > stride && Math.floor((size - 1) / stride) > MAX_CHECKPOINTS) stride *= 2;
+	return stride;
+}
+
+function thinCheckpoints(
+	stride: number,
+	checkpoints: IndexCheckpoint[],
+): { readonly stride: number; readonly checkpoints: IndexCheckpoint[] } {
+	while (checkpoints.length > MAX_CHECKPOINTS) {
+		stride *= 2;
+		checkpoints = checkpoints.filter((cp) => cp.offset % stride === 0);
+	}
+	return { stride, checkpoints };
+}
+
+function checkpointsFromBuffer(
+	size: number,
+	bytes: Buffer,
+): { readonly stride: number; readonly checkpoints: IndexCheckpoint[] } {
+	const stride = chooseCheckpointStride(size);
+	const checkpoints: IndexCheckpoint[] = [];
+	for (let offset = stride; offset < size; offset += stride) {
+		const start = Math.max(0, offset - CHECKPOINT_HALF_BYTES);
+		const end = Math.min(size, offset + CHECKPOINT_HALF_BYTES);
+		checkpoints.push({ offset, bytes: Buffer.from(bytes.subarray(start, end)) });
+	}
+	return { stride, checkpoints };
+}
+
+function extendCheckpointsFromBuffer(
+	initialStride: number,
+	existing: readonly IndexCheckpoint[],
+	previousSize: number,
+	size: number,
+	bufferOffset: number,
+	buffer: Buffer,
+): { readonly stride: number; readonly checkpoints: IndexCheckpoint[] } {
+	const stride = Math.max(CHECKPOINT_INITIAL_STRIDE, initialStride);
+	const checkpoints = [...existing];
+	const firstOffset = Math.max(stride, Math.ceil(previousSize / stride) * stride);
+	for (let offset = firstOffset; offset < size; offset += stride) {
+		if (checkpoints.at(-1)?.offset === offset) continue;
+		const start = Math.max(0, offset - CHECKPOINT_HALF_BYTES);
+		const end = Math.min(size, offset + CHECKPOINT_HALF_BYTES);
+		if (start < bufferOffset || end > bufferOffset + buffer.length) continue;
+		checkpoints.push({ offset, bytes: Buffer.from(buffer.subarray(start - bufferOffset, end - bufferOffset)) });
+	}
+	return thinCheckpoints(stride, checkpoints);
+}
+
+async function extendCheckpointsFromHandle(
+	file: FileHandle,
+	initialStride: number,
+	existing: readonly IndexCheckpoint[],
+	previousSize: number,
+	size: number,
+): Promise<{ readonly stride: number; readonly checkpoints: IndexCheckpoint[] }> {
+	const stride = chooseCheckpointStride(size, Math.max(CHECKPOINT_INITIAL_STRIDE, initialStride));
+	const checkpoints = existing.filter((cp) => cp.offset % stride === 0);
+	const offsets: number[] = [];
+	const firstOffset = Math.max(stride, Math.ceil(previousSize / stride) * stride);
+	for (let offset = firstOffset; offset < size; offset += stride) {
+		if (checkpoints.at(-1)?.offset === offset) continue;
+		offsets.push(offset);
+	}
+	const read = await Promise.all(
+		offsets.map(async (offset) => {
+			const start = Math.max(0, offset - CHECKPOINT_HALF_BYTES);
+			const end = Math.min(size, offset + CHECKPOINT_HALF_BYTES);
+			return { offset, bytes: await readFrom(file, start, end - start) };
+		}),
+	);
+	checkpoints.push(...read);
+	return thinCheckpoints(stride, checkpoints);
+}
+
+/** Captures the tail witness and mid-file integrity checks (`prefixHash` for <= 256 KiB, straddling checkpoints above). */
+async function captureIntegrity(file: FileHandle, size: number, spans: readonly number[]): Promise<IndexIntegrity> {
+	if (size <= PREFIX_HASH_MAX_BYTES) {
+		const all = size === 0 ? Buffer.alloc(0) : await readFrom(file, 0, size);
+		const { stride, checkpoints } = checkpointsFromBuffer(size, all);
+		const headWitness =
+			spans.length >= 2
+				? Buffer.from(all.subarray(spans[0]!, Math.min(size, spans[0]! + HEAD_WITNESS_BYTES)))
+				: undefined;
+		return {
+			witness: witnessOf(all),
+			prefixHash: createHash("sha256").update(all).digest("hex"),
+			headWitness,
+			checkpointStride: stride,
+			checkpoints,
+		};
+	}
+	const stride = chooseCheckpointStride(size);
+	const offsets: number[] = [];
+	for (let offset = stride; offset < size; offset += stride) offsets.push(offset);
+	const [witness, headWitness, ...checkpointBytes] = await Promise.all([
+		witnessAt(file, size),
+		spans.length >= 2
+			? readFrom(file, spans[0]!, Math.min(HEAD_WITNESS_BYTES, size - spans[0]!))
+			: Promise.resolve(undefined),
+		...offsets.map((offset) => {
+			const start = Math.max(0, offset - CHECKPOINT_HALF_BYTES);
+			const end = Math.min(size, offset + CHECKPOINT_HALF_BYTES);
+			return readFrom(file, start, end - start);
+		}),
+	]);
+	return {
+		witness,
+		headWitness,
+		checkpointStride: stride,
+		checkpoints: offsets.map((offset, i) => ({ offset, bytes: checkpointBytes[i]! })),
+	};
+}
+
+/**
+ * Verifies a cold `.idx` sidecar loaded from disk against the session file's bytes, catching both tail mismatches and
+ * lost earlier pages whose tail witness survived a crash (#6717).
+ */
+async function integrityHolds(path: string, jsonl: JsonlIndex, kept?: FileHandle): Promise<boolean> {
+	const file = kept ?? (await open(path, "r").catch(() => undefined));
+	if (!file) return false;
+	try {
+		if (jsonl.prefixHash !== undefined) {
+			const all = jsonl.size === 0 ? Buffer.alloc(0) : await readFrom(file, 0, jsonl.size);
+			return (
+				witnessOf(all).equals(jsonl.witness) && createHash("sha256").update(all).digest("hex") === jsonl.prefixHash
+			);
+		}
+		const checks: Promise<boolean>[] = [witnessAt(file, jsonl.size).then((actual) => actual.equals(jsonl.witness))];
+		if (jsonl.headWitness !== undefined && jsonl.spans.length >= 2) {
+			const headStart = jsonl.spans[0]!;
+			checks.push(
+				readFrom(file, headStart, jsonl.headWitness.length).then((actual) => actual.equals(jsonl.headWitness!)),
+			);
+		}
+		for (const cp of jsonl.checkpoints) {
+			const start = Math.max(0, cp.offset - CHECKPOINT_HALF_BYTES);
+			checks.push(readFrom(file, start, cp.bytes.length).then((actual) => actual.equals(cp.bytes)));
+		}
+		return (await Promise.all(checks)).every(Boolean);
+	} catch {
+		return false;
+	} finally {
+		if (kept === undefined) await file.close().catch(() => undefined);
+	}
+}
+
 function encodeDeltas(values: readonly number[]): string {
 	let previous = 0;
 	return values
@@ -3368,6 +3898,11 @@ async function writeSidecar(path: string, jsonl: JsonlIndex): Promise<boolean> {
 		mtimeNs: jsonl.mtimeNs,
 		size: jsonl.size,
 		witness: jsonl.witness.toString("base64"),
+		synced: jsonl.synced,
+		...(jsonl.prefixHash !== undefined ? { prefixHash: jsonl.prefixHash } : {}),
+		...(jsonl.headWitness !== undefined ? { headWitness: jsonl.headWitness.toString("base64") } : {}),
+		checkpointStride: jsonl.checkpointStride,
+		checkpoints: jsonl.checkpoints.map((cp) => [cp.offset, cp.bytes.toString("base64")]),
 		terminated: jsonl.terminated,
 		torn: jsonl.torn,
 		spans: encodeDeltas(jsonl.spans),
@@ -3385,6 +3920,27 @@ async function writeSidecar(path: string, jsonl: JsonlIndex): Promise<boolean> {
 		await unlink(temporary).catch(() => undefined);
 		return false;
 	}
+}
+
+function validCheckpoints(value: unknown, size: number): IndexCheckpoint[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const checkpoints: IndexCheckpoint[] = [];
+	for (const item of value) {
+		if (!Array.isArray(item) || item.length !== 2) return undefined;
+		const [offset, encoded] = item;
+		if (
+			typeof offset !== "number" ||
+			!Number.isSafeInteger(offset) ||
+			offset <= 0 ||
+			offset >= size ||
+			typeof encoded !== "string"
+		)
+			return undefined;
+		const bytes = Buffer.from(encoded, "base64");
+		if (bytes.length === 0 || bytes.length > 2 * CHECKPOINT_HALF_BYTES) return undefined;
+		checkpoints.push({ offset, bytes });
+	}
+	return checkpoints;
 }
 
 function validForkIndex(value: unknown, last: number): JsonlForkIndex | undefined {
@@ -3440,6 +3996,25 @@ async function readSidecar(path: string): Promise<JsonlIndex | undefined> {
 		!isSessionResumeIndex(stored.index, spans.length / 2)
 	)
 		return undefined;
+	const synced = stored.synced === true;
+	const prefixHash =
+		typeof stored.prefixHash === "string" && /^[0-9a-f]{64}$/.test(stored.prefixHash) ? stored.prefixHash : undefined;
+	const headWitness = typeof stored.headWitness === "string" ? Buffer.from(stored.headWitness, "base64") : undefined;
+	const checkpointStride =
+		typeof stored.checkpointStride === "number" &&
+		Number.isSafeInteger(stored.checkpointStride) &&
+		stored.checkpointStride >= CHECKPOINT_INITIAL_STRIDE
+			? stored.checkpointStride
+			: CHECKPOINT_INITIAL_STRIDE;
+	const checkpoints = validCheckpoints(stored.checkpoints, stored.size);
+	// A synced sidecar must carry integrity coverage matching its size (prefixHash <= 256 KiB or checkpoints above).
+	if (
+		synced &&
+		(checkpoints === undefined ||
+			(stored.size <= PREFIX_HASH_MAX_BYTES && prefixHash === undefined) ||
+			(stored.size > PREFIX_HASH_MAX_BYTES && stored.size > checkpointStride && checkpoints.length === 0))
+	)
+		return undefined;
 	return {
 		identity: stored.identity,
 		birthtimeNs: stored.birthtimeNs,
@@ -3448,6 +4023,11 @@ async function readSidecar(path: string): Promise<JsonlIndex | undefined> {
 		mtimeNs: stored.mtimeNs,
 		size: stored.size,
 		witness: Buffer.from(stored.witness, "base64"),
+		synced,
+		prefixHash,
+		headWitness,
+		checkpointStride,
+		checkpoints: checkpoints ?? [],
 		terminated: stored.terminated,
 		torn: stored.torn,
 		spans,
