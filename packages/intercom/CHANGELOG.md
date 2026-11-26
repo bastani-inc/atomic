@@ -4,6 +4,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+### Changed
+
+- On PostgreSQL, the lease renewals each broker sends every 10 seconds, for itself, for each of its sessions and for each message it is delivering, no longer wait for the database server to write them to disk. Losing one in a server crash does no harm, because the next renewal repeats it. In a benchmark the server flushed its log about 90% less often for these writes, and each renewal skips a disk flush that takes about 1 to 3 ms on a typical cloud disk. Messages, registrations and every other write still wait for the disk ([#6633](https://github.com/bastani-inc/atomic/pull/6633), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ### Fixed
 
 - Intercom calls on a busy shared PostgreSQL database could fail with a lock timeout instead of retrying. A send, a session's registration renewal, a broker taking waiting messages, or a delivery confirmation that waited too long for a lock, or that the database ended to break a deadlock, failed even though nothing had been written. They now try again after a short random wait, up to 5 times, and a send still keeps its place behind the earlier sends to the same session. A send to a session now takes 1 round trip instead of 3 and holds that session's lock only while the database runs it, so sends to a busy session no longer queue behind each other's network round trips. A registration renewal now gives up waiting for a lock after 2 seconds and tries again, so a session no longer goes stale while one renewal waits ([#6626](https://github.com/bastani-inc/atomic/pull/6626)).

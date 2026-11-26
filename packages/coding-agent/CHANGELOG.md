@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Storage adapters receive a new transaction option, `relaxedDurability`, for writes whose loss in a server crash is harmless, such as lease renewals. A driver may answer the commit before the write reaches disk, or ignore the option. The PostgreSQL adapter turns `synchronous_commit` off for that transaction only. See [custom storage adapters](docs/storage/custom-adapters.md) ([#6633](https://github.com/bastani-inc/atomic/pull/6633), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ### Fixed
 
 - On macOS, the standalone `atomic` binary no longer reports a healthy local SQLite store as failed with "unable to open database file (SQLite code 14)" in `atomic storage status` after every Atomic process had closed it, for example right after `atomic storage import`. macOS's SQLite, which that binary uses, would not open a store read-only once its last connection had removed the `-wal` file.
