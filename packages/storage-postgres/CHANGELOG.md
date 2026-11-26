@@ -10,6 +10,7 @@
 ### Fixed
 
 - `close()` now returns only once the server has closed every connection of the database's pools, its readers' included. Before, it returned as soon as it had asked them to close, so a `DROP DATABASE` or a count of the database's connections made right after could still find them. A connection whose server stops answering is dropped after 5 seconds, so closing never waits for the network to give up on it.
+- `close()` also gives up on the listening connection, which carries wake-up notifications, after 5 seconds when its server stops answering. Before, it waited until TCP gave up on the connection, which can take minutes. It closes the listening connection and the pool at the same time, so a server that stopped answering costs one 5-second wait, not one for each.
 
 ## [0.10.11-alpha.2] - 2026-11-26
 

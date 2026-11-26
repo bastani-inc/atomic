@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto";
  *   on(event: "notification", listener: (message: { channel: string, payload?: string }) => void): unknown,
  *   on(event: "error" | "end", listener: () => void): unknown,
  *   end(): Promise<void>,
+ *   destroy?(): void,
  * }} ListenClient
  * @typedef {{
  *   connect: () => Promise<ListenClient>,
@@ -19,6 +20,7 @@ import { randomBytes } from "node:crypto";
  *   probeTimeoutMs?: number,
  *   retry?: { readonly firstMs: number, readonly maxMs: number },
  *   healthIntervalMs?: number,
+ *   closeWaitMs?: number,
  * }} ListenerOptions
  */
 
@@ -35,6 +37,53 @@ export const LISTEN_RETRY = /** @type {const} */ ({ firstMs: 1_000, maxMs: 30_00
  * replaced.
  */
 export const LISTEN_HEALTH_INTERVAL_MS = 30_000;
+/**
+ * How long closing waits for the server to let go of a connection before it drops it (`destroy`): a server that stopped
+ * answering never answers the goodbye, and TCP may take minutes to give up on it, however its keepalive is set.
+ */
+export const CLOSE_WAIT_MS = 5_000;
+
+/**
+ * Ends `client`, and drops it if the server has not let go of it within `waitMs`.
+ * @param {ListenClient} client
+ * @param {number} waitMs
+ */
+async function endWithin(client, waitMs) {
+	const ended = client.end().catch(() => {});
+	if (await settlesWithin(ended, waitMs)) return;
+	if (client.destroy === undefined) return;
+	client.destroy();
+	await ended;
+}
+
+/**
+ * Whether `promise` settles within `waitMs`; it is not waited for longer.
+ * @param {Promise<unknown> | undefined} promise
+ * @param {number} waitMs
+ * @returns {Promise<boolean>}
+ */
+async function settlesWithin(promise, waitMs) {
+	if (promise === undefined) return true;
+	/** @type {NodeJS.Timeout | undefined} */
+	let timer;
+	const late = new Promise((resolve) => {
+		timer = setTimeout(resolve, waitMs, false);
+		timer.unref?.();
+	});
+	try {
+		return /** @type {boolean} */ (
+			await Promise.race([
+				promise.then(
+					() => true,
+					() => true,
+				),
+				late,
+			])
+		);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 /**
  * How long after a notification goes out the same notification (channel and payload) waits before it goes out again:
@@ -169,6 +218,7 @@ export function createPostgresListener(options) {
 	const probeTimeoutMs = options.probeTimeoutMs ?? LISTEN_PROBE_TIMEOUT_MS;
 	const retry = options.retry ?? LISTEN_RETRY;
 	const healthIntervalMs = options.healthIntervalMs ?? LISTEN_HEALTH_INTERVAL_MS;
+	const closeWaitMs = options.closeWaitMs ?? CLOSE_WAIT_MS;
 	const probeChannel = `atomic_listen_probe_${randomBytes(6).toString("hex")}`;
 	/** @type {Map<string, Set<NotificationListener>>} */
 	const channels = new Map();
@@ -284,7 +334,7 @@ export function createPostgresListener(options) {
 			return;
 		}
 		if (closed) {
-			await opened.end().catch(() => {});
+			await endWithin(opened, closeWaitMs);
 			return;
 		}
 		client = opened;
@@ -364,10 +414,14 @@ export function createPostgresListener(options) {
 			clearTimeout(retryTimer);
 			clearTimeout(healthTimer);
 			retryTimer = undefined;
-			await firstAttempt;
 			const current = client;
 			client = undefined;
-			await current?.end().catch(() => {});
+			// The connection ends beside the attempt under way, which may be waiting on it; neither is waited for longer
+			// than `closeWaitMs`, after which the connection is dropped.
+			await Promise.all([
+				settlesWithin(firstAttempt, closeWaitMs),
+				current === undefined ? undefined : endWithin(current, closeWaitMs),
+			]);
 		},
 	};
 }
