@@ -38,8 +38,8 @@ on:
 # A catalog-only job selects one model data snapshot. All work jobs then run in parallel.
 #
 #   model-data          restore or hydrate one snapshot for this run
-#   unit-tests          build package -> one of eleven (Linux) or twelve (Windows) unit shards
-#   integration-tests   build package -> one of twelve integration shards (per OS)
+#   unit-tests          build package -> one of eleven (Linux), twelve (Windows) or six (macOS) unit shards
+#   integration-tests   build package -> one of twelve (Linux, Windows) or six (macOS) integration shards
 #   storage-conformance build package -> one of four Linux server-backed storage shards
 #   agent-suite         build ai + native bindings -> one of nine (Linux) or eleven (Windows) coding-agent shards
 #   packages-suite      build forked packages -> atomic-ai and forked workspace package suites (per OS)
@@ -114,9 +114,10 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Eleven shards on Linux and twelve on Windows, balanced by per-OS file durations measured on CI
-        # (test/helpers/duration-sequencer.ts). The result gate needs every shard. See docs/ci.md ("Sharded suites").
-        binary_platform: [linux-x64, windows-x64]
+        # Eleven shards on Linux, twelve on Windows and six on macOS, balanced by per-OS file durations measured on CI
+        # (test/helpers/duration-sequencer.ts; macOS uses Linux's). The result gate needs every shard. See docs/ci.md
+        # ("Sharded suites").
+        binary_platform: [linux-x64, windows-x64, darwin-arm64]
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         # The newest Node.js release that satisfies engines.node. The one entry below with another value runs on the
         # engines.node floor instead. See docs/ci.md ("Node.js version").
@@ -124,6 +125,12 @@ jobs:
         exclude:
           - binary_platform: linux-x64
             shard: 12
+          - { binary_platform: darwin-arm64, shard: 7 }
+          - { binary_platform: darwin-arm64, shard: 8 }
+          - { binary_platform: darwin-arm64, shard: 9 }
+          - { binary_platform: darwin-arm64, shard: 10 }
+          - { binary_platform: darwin-arm64, shard: 11 }
+          - { binary_platform: darwin-arm64, shard: 12 }
         include:
           # The three suites run on 8 vCPU: on 4 vCPU they averaged 54-77% CPU, and
           # Windows unit/integration hit their caps at p95. See docs/ci.md ("Sizing").
@@ -134,6 +141,12 @@ jobs:
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.windows-amd64
             shards: 12
+            timeout_minutes: 14
+          # macOS catches what Linux cannot: /var resolving to /private/var, APFS birth times, no /bin/false. Six
+          # shards keep a run inside the workspace's macOS capacity; see docs/ci.md ("Sizing").
+          - binary_platform: darwin-arm64
+            runner: namespace-profile-atomic-ci-macos-arm64-6x14;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.macos-arm64
+            shards: 6
             timeout_minutes: 14
           # One more Linux shard on exactly the engines.node floor, the oldest Node.js an npm install accepts. It runs
           # in parallel with the other shards, so the result gate takes about as long as before. The shard number is arbitrary.
@@ -298,21 +311,35 @@ jobs:
           retention-days: 14
 
   integration-tests:
-    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/12)
+    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }})
     needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Twelve shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts). The result
-        # gate below needs every shard, so the required check still covers the whole suite on both hosts.
-        binary_platform: [linux-x64, windows-x64]
+        # Twelve shards on Linux and Windows and six on macOS, balanced by per-OS file durations measured on CI
+        # (test/helpers/duration-sequencer.ts; macOS uses Linux's). The result gate below needs every shard, so the
+        # required check covers the whole suite on every host.
+        binary_platform: [linux-x64, windows-x64, darwin-arm64]
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        exclude:
+          - { binary_platform: darwin-arm64, shard: 7 }
+          - { binary_platform: darwin-arm64, shard: 8 }
+          - { binary_platform: darwin-arm64, shard: 9 }
+          - { binary_platform: darwin-arm64, shard: 10 }
+          - { binary_platform: darwin-arm64, shard: 11 }
+          - { binary_platform: darwin-arm64, shard: 12 }
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.linux-amd64
+            shards: 12
             timeout_minutes: 12
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.windows-amd64
+            shards: 12
+            timeout_minutes: 12
+          - binary_platform: darwin-arm64
+            runner: namespace-profile-atomic-ci-macos-arm64-6x14;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.macos-arm64
+            shards: 6
             timeout_minutes: 12
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -389,10 +416,21 @@ jobs:
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
+      # test/integration/task-process-tree-containment.test.ts wraps a descendant in GNU timeout, which macOS lacks.
+      - name: Make GNU timeout available on macOS
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          if command -v timeout >/dev/null; then exit 0; fi
+          if ! command -v gtimeout >/dev/null; then brew install coreutils; fi
+          mkdir -p "$RUNNER_TEMP/atomic-test-bin"
+          ln -sf "$(command -v gtimeout)" "$RUNNER_TEMP/atomic-test-bin/timeout"
+          echo "$RUNNER_TEMP/atomic-test-bin" >> "$GITHUB_PATH"
       - name: Integration tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 12)"
-          -- npm run test:integration -- --shard=${{ matrix.shard }}/12
+          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of ${{ matrix.shards }})"
+          -- npm run test:integration -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
         env:
           # Hard-require the installed-package Node smoke on both supported hosts.
           ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
