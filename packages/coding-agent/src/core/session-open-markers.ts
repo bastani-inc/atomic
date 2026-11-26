@@ -274,6 +274,14 @@ async function holderRuns(marker: SessionOpenMarkerAge): Promise<boolean> {
 }
 
 /**
+ * Whether the process that keeps `marker` still runs, as {@link findSessionOpenHolder} judges it: one of this host while
+ * it runs, however long it was suspended; one of another host while its heartbeat is fresh.
+ */
+export async function sessionOpenMarkerRuns(marker: SessionOpenMarkerAge): Promise<boolean> {
+	return marker.host === hostname() ? await holderRuns(marker) : marker.ageMs <= STALE_MS;
+}
+
+/**
  * A running session, in another process or in this one, that has `sessionId` of `store` open, or undefined when none
  * does. Stale markers are removed.
  */

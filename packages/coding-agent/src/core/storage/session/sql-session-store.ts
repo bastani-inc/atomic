@@ -1,3 +1,4 @@
+import { VERSION } from "../../../config.js";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import { ensureTableFillfactor, transactionFinisher } from "../added-exports.js";
@@ -33,6 +34,7 @@ import {
 	forkBlobCopy,
 	incompleteEntryRead,
 } from "./fork-row-copy.js";
+import { createSharedHistoryTables, sessionForkTables } from "./fork-schema.js";
 import { tryCleanupForkStaging } from "./fork-staging-maintenance.js";
 import { forkStoreRelation, nativeForkReader, registerForkScope } from "./fork-store-scope.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
@@ -120,10 +122,20 @@ import { validateSessionEntries, validateSessionHeader, validateSessionText } fr
  * that knows only version 1 would read as stubs. A database stays at version 1, which older builds still open, until
  * this build writes its first chunked entry: that transaction moves the sessions meta to 2, and older builds refuse it
  * when next opened with `StorageSchemaVersionError`. Builds before 2 check only the meta row, on SQLite and Postgres alike.
+ * Version 3 turns on forks that share their parent's history ({@link SESSION_SCHEMA_VERSION_SHARED_HISTORY}).
  */
-export const SESSION_SCHEMA_VERSION = 2;
+export const SESSION_SCHEMA_VERSION = 3;
 /** The sessions schema of a database without chunked entries, which older builds read too. */
 const SESSION_SCHEMA_VERSION_UNCHUNKED = 1;
+/** The sessions schema the first chunked entry raises a version 1 database to, which builds since #4954 read. */
+export const SESSION_SCHEMA_VERSION_CHUNKED = 2;
+/**
+ * The sessions schema in which a fork may share its parent's history instead of copying it (#6560). Only
+ * `atomic storage migrate --enable-shared-history-forks` raises a database to it, never a fork or any other write:
+ * builds that know only versions 1 and 2 refuse it, in every transaction, rather than read a fork's own rows as its
+ * whole history. `SqlSessionStore.sharedHistoryForks(tx)` tells a transaction whether its database is there.
+ */
+export const SESSION_SCHEMA_VERSION_SHARED_HISTORY = 3;
 /** The schema domain of the session tables in the prefix's migration ledger. */
 export const SESSION_DOMAIN = "sessions";
 /** The ledger step, `schema:session-fillfactor`, that sets the sessions table's fillfactor on PostgreSQL (#6560). */
@@ -561,6 +573,8 @@ export class SqlSessionStore implements SessionStore {
 	private chatStore?: SqlSessionChatRecords;
 	/** The database's reader handle, once a read opened it: see `readerDatabase`. */
 	private reader?: Promise<SqliteDatabase>;
+	/** The sessions schema version each transaction read first, by its handle: see `sharedHistoryForks`. */
+	private readonly schemaVersions = new WeakMap<SqliteExecutor, Promise<number>>();
 	/**
 	 * Absent on a local libSQL file, which then behaves as before: @libsql/client waits for another process's write
 	 * lock on the calling thread, even to begin a transaction, so a side write would stop the event loop where an
@@ -838,7 +852,12 @@ export class SqlSessionStore implements SessionStore {
 						{ version: 1, up: createTables },
 						{ version: 2, up: addEntryChunks },
 					],
-					options: { table: storageMigrationTable(options.prefix) },
+					// Version 3 is recorded only by `enableSharedHistoryForks`, never by an open; builds without it refuse it
+					// here, before their snapshot or search index opens (#6560).
+					options: {
+						table: storageMigrationTable(options.prefix),
+						recordedThrough: SESSION_SCHEMA_VERSION_SHARED_HISTORY,
+					},
 				},
 				// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its
 				// later steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking
@@ -851,6 +870,7 @@ export class SqlSessionStore implements SessionStore {
 							version: 2,
 							up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open),
 						},
+						{ version: 3, up: (tx, dialect) => SqlSessionOpenMarkers.addBuild(tx, dialect, presence.open) },
 					],
 					options: { table: storageMigrationTable(options.prefix), acceptNewer: true },
 				},
@@ -935,6 +955,7 @@ export class SqlSessionStore implements SessionStore {
 			[tables.entries, "chunks"],
 			[tables.blobs, "chunks"],
 			[open, "schema_version"],
+			[open, "build"],
 		] as const;
 		// One read of the catalog answers every probe: on a server, one request instead of a request each (#6560).
 		const reading = schemaCatalogOf(database);
@@ -970,7 +991,10 @@ export class SqlSessionStore implements SessionStore {
 			versions.length === 0 ||
 			versions.some(
 				(row) =>
-					row.schema_version !== SESSION_SCHEMA_VERSION_UNCHUNKED && row.schema_version !== SESSION_SCHEMA_VERSION,
+					typeof row.schema_version !== "number" ||
+					!Number.isInteger(row.schema_version) ||
+					row.schema_version < SESSION_SCHEMA_VERSION_UNCHUNKED ||
+					row.schema_version > SESSION_SCHEMA_VERSION,
 			)
 		)
 			return undefined;
@@ -1070,14 +1094,72 @@ export class SqlSessionStore implements SessionStore {
 		return { sql: `SELECT schema_version FROM ${this.tables.meta}`, params: [] };
 	}
 
+	/**
+	 * Reads the sessions schema version through `executor` and refuses one this build does not read. The answer is kept
+	 * for `executor`, a transaction's own handle, so {@link sharedHistoryForks} costs that transaction no read.
+	 */
 	private assertReadableSchema(executor: SqliteExecutor): Promise<void> {
-		return assertStoredSchemaVersion(
-			executor,
-			this.schemaCheck(),
-			"sessions",
-			SESSION_SCHEMA_VERSION,
-			"schema_version",
-			SESSION_SCHEMA_VERSION_UNCHUNKED,
+		const check = this.schemaCheck();
+		const version = executor.get(check.sql, ...check.params).then((row) => {
+			const found = row?.schema_version ?? null;
+			assertStorageSchemaVersion("sessions", found, SESSION_SCHEMA_VERSION, SESSION_SCHEMA_VERSION_UNCHUNKED);
+			return found as number;
+		});
+		this.schemaVersions.set(executor, version);
+		return version.then(() => {});
+	}
+
+	/**
+	 * Whether the database `tx` runs in has forks that share their parent's history turned on: its sessions schema, as
+	 * `tx` read it, is {@link SESSION_SCHEMA_VERSION_SHARED_HISTORY} (#6560). Every transaction of this store reads the
+	 * version first, so this costs no further read there; `tx` of any other transaction reads it once. Asked again in each
+	 * transaction, never kept on the store: another process may turn the forks on at any time, and the switch is one way,
+	 * so an answer read before it only means a fork is copied.
+	 */
+	async sharedHistoryForks(tx: SqliteExecutor): Promise<boolean> {
+		if (!this.schemaVersions.has(tx)) await this.assertReadableSchema(tx);
+		return (await this.schemaVersions.get(tx)!) >= SESSION_SCHEMA_VERSION_SHARED_HISTORY;
+	}
+
+	/**
+	 * Turns on forks that share their parent's history (#6560): creates the fork tables and raises the sessions schema to
+	 * {@link SESSION_SCHEMA_VERSION_SHARED_HISTORY} in one transaction, recording the version in the migration ledger
+	 * where there is one, so that builds which do not read it refuse the database at their next open or transaction. One
+	 * way: nothing lowers it again. `atomic storage migrate --enable-shared-history-forks` calls it, never a fork.
+	 *
+	 * Refused, changing nothing, while `live` judges any open marker of an older build to be a running process, unless
+	 * `force`. The transaction is the only writer of the whole database while it runs, so every session write either
+	 * finished before it, or starts after it and reads the new version first. Two hosts enabling at once run one after
+	 * the other, and the second finds it `already` done.
+	 */
+	async enableSharedHistoryForks(options: {
+		readonly force?: boolean;
+		readonly live: (marker: SessionOpenMarkerBuild) => Promise<boolean>;
+	}): Promise<SharedHistoryForksOutcome> {
+		this.assertOpen();
+		const tables = sessionForkTables(this.prefix);
+		return this.database.transaction(
+			async (tx): Promise<SharedHistoryForksOutcome> => {
+				if (await this.sharedHistoryForks(tx)) return { status: "already" };
+				const older = await this.openMarkers.olderThan(tx, SESSION_SCHEMA_VERSION_SHARED_HISTORY);
+				const holders: SessionOpenMarkerBuild[] = [];
+				for (const marker of older) if (await options.live(marker)) holders.push(marker);
+				if (holders.length > 0 && options.force !== true) return { status: "refused", holders };
+				await createSharedHistoryTables(tx, this.dialect, tables);
+				if (this.dialect.versionedMigrations)
+					await tx.run(
+						`INSERT INTO ${storageMigrationTable(this.prefix)} (domain, version, applied_at) VALUES (?, ?, ${this.dialect.nowMs}) ON CONFLICT DO NOTHING`,
+						SESSION_DOMAIN,
+						SESSION_SCHEMA_VERSION_SHARED_HISTORY,
+					);
+				await tx.run(
+					`UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version < ?`,
+					SESSION_SCHEMA_VERSION_SHARED_HISTORY,
+					SESSION_SCHEMA_VERSION_SHARED_HISTORY,
+				);
+				return { status: "enabled", bypassed: holders };
+			},
+			{ retryTransientFailures: true, concurrency: { kind: "serial" } },
 		);
 	}
 
@@ -1302,7 +1384,7 @@ export class SqlSessionStore implements SessionStore {
 			entryChunkBytes: SESSION_ENTRY_CHUNK_BYTES,
 			blobChunkBytes: SESSION_BLOB_CHUNK_BYTES,
 			unchunkedSchemaVersion: SESSION_SCHEMA_VERSION_UNCHUNKED,
-			chunkedSchemaVersion: SESSION_SCHEMA_VERSION,
+			chunkedSchemaVersion: SESSION_SCHEMA_VERSION_CHUNKED,
 			ownsBlobs:
 				this.getBlob === SqlSessionStore.prototype.getBlob && this.putBlob === SqlSessionStore.prototype.putBlob,
 			transaction: (sessionId, body, leading) => this.transaction(body, this.sessionWrite(sessionId, ...leading)),
@@ -4281,7 +4363,7 @@ export class SqlSessionStore implements SessionStore {
 	private async finishFork(tx: SqliteExecutor, child: string): Promise<void> {
 		const step: SqliteStatement = {
 			sql: `UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version = ? AND EXISTS (SELECT 1 FROM ${this.tables.entries} WHERE session_id = ? AND chunks > 0)`,
-			params: [SESSION_SCHEMA_VERSION, SESSION_SCHEMA_VERSION_UNCHUNKED, child],
+			params: [SESSION_SCHEMA_VERSION_CHUNKED, SESSION_SCHEMA_VERSION_UNCHUNKED, child],
 		};
 		// The transaction's last write: where its connection is pipelined, it goes out with the commit.
 		if (transactionFinisher(tx)?.([step]) !== true) await tx.run(step.sql, ...step.params);
@@ -4326,7 +4408,7 @@ export class SqlSessionStore implements SessionStore {
 		if (chunked && versionStep) {
 			yield {
 				sql: `UPDATE ${this.tables.meta} SET schema_version = ? WHERE schema_version = ?`,
-				params: [SESSION_SCHEMA_VERSION, SESSION_SCHEMA_VERSION_UNCHUNKED],
+				params: [SESSION_SCHEMA_VERSION_CHUNKED, SESSION_SCHEMA_VERSION_UNCHUNKED],
 			};
 		}
 		for (const { index, text } of texts) {
@@ -4379,6 +4461,25 @@ const nativeLoad = registerArchiveLoad(SqlSessionStore.prototype.load);
 
 type OpenMarkerRow = SqliteRow & { token: string; pid: number; host: string; age_ms: number };
 
+/** A marker of a running session, with the sessions schema and the Atomic version its process recorded. */
+export interface SessionOpenMarkerBuild extends SessionOpenMarkerAge {
+	readonly sessionId: string;
+	/** The newest sessions schema its process reads; undefined for builds before #5065, which record none. */
+	readonly schemaVersion?: number;
+	/** Its process's Atomic version; undefined for builds before #6560, which record none. */
+	readonly build?: string;
+}
+
+/**
+ * What {@link SqlSessionStore.enableSharedHistoryForks} did: `enabled`, it raised the sessions schema (`bypassed`
+ * lists the running older processes `force` let it pass); `already`, the schema was there; `refused`, `holders`, running
+ * processes of older builds, still have sessions open, and nothing changed.
+ */
+export type SharedHistoryForksOutcome =
+	| { readonly status: "enabled"; readonly bypassed: readonly SessionOpenMarkerBuild[] }
+	| { readonly status: "already" }
+	| { readonly status: "refused"; readonly holders: readonly SessionOpenMarkerBuild[] };
+
 /** The running sessions that have a SQL store's sessions open, in a table every host sharing the store reads (#4971). */
 class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 	static async createTable(tx: SqliteExecutor, dialect: StorageDialect, table: string): Promise<void> {
@@ -4402,6 +4503,16 @@ class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 			await tx.exec(`ALTER TABLE ${table} ADD COLUMN schema_version ${dialect.types.int}`);
 	}
 
+	/**
+	 * Each marker records the Atomic version of its process, so a command refused while older processes run names the
+	 * version each must be upgraded from (#6560). Null for markers of builds before it. Additive.
+	 */
+	static async addBuild(tx: SqliteExecutor, dialect: StorageDialect, table: string): Promise<void> {
+		const probe = dialect.columnExists(table, "build");
+		if ((await tx.get(probe.sql, ...probe.params)) === undefined)
+			await tx.exec(`ALTER TABLE ${table} ADD COLUMN build ${dialect.types.text}`);
+	}
+
 	private readonly database: SqliteDatabase;
 	private readonly table: string;
 	private readonly assertOpen: () => void;
@@ -4417,15 +4528,40 @@ class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 		// The database's clock, not this host's: hosts whose clocks differ read the same heartbeat age.
 		const now = dialectOf(this.database).nowMs;
 		await this.database.run(
-			`INSERT INTO ${this.table} (session_id, token, pid, host, heartbeat_at, schema_version) VALUES (?, ?, ?, ?, ${now}, ?)
+			`INSERT INTO ${this.table} (session_id, token, pid, host, heartbeat_at, schema_version, build) VALUES (?, ?, ?, ?, ${now}, ?, ?)
 			 ON CONFLICT(session_id, token) DO UPDATE SET pid = excluded.pid, host = excluded.host,
-			 heartbeat_at = excluded.heartbeat_at, schema_version = excluded.schema_version`,
+			 heartbeat_at = excluded.heartbeat_at, schema_version = excluded.schema_version, build = excluded.build`,
 			sessionId,
 			marker.token,
 			marker.pid,
 			marker.host,
 			SESSION_SCHEMA_VERSION,
+			VERSION,
 		);
+	}
+
+	/**
+	 * The markers, through `tx`, of processes that do not read sessions schema `version`: those that record an older
+	 * one, and those of builds that record none.
+	 */
+	async olderThan(tx: SqliteExecutor, version: number): Promise<readonly SessionOpenMarkerBuild[]> {
+		const now = dialectOf(this.database).nowMs;
+		const rows = await tx.all<
+			OpenMarkerRow & { session_id: string; schema_version: number | null; build: string | null }
+		>(
+			`SELECT session_id, token, pid, host, ${now} - heartbeat_at AS age_ms, schema_version, build FROM ${this.table}
+			 WHERE schema_version IS NULL OR schema_version < ? ORDER BY host, pid, session_id`,
+			version,
+		);
+		return rows.map((row) => ({
+			sessionId: row.session_id,
+			token: row.token,
+			pid: Number(row.pid),
+			host: row.host,
+			ageMs: Number(row.age_ms),
+			schemaVersion: row.schema_version === null ? undefined : Number(row.schema_version),
+			build: row.build ?? undefined,
+		}));
 	}
 
 	async remove(sessionId: string, token: string): Promise<void> {
