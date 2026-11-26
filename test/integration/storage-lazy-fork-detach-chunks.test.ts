@@ -3,8 +3,8 @@ import { afterEach, describe, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
-import { ForkSourceIncompleteError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { setForkCopyRefusalNote } from "../../packages/coding-agent/src/core/storage/session/fork-detach.js";
+import { ForkSourceIncompleteError } from "../../packages/coding-agent/src/core/storage/session/fork-errors.js";
 import { sessionForkTables } from "../../packages/coding-agent/src/core/storage/session/fork-schema.js";
 import {
 	SESSION_ENTRY_CHUNK_BYTES,

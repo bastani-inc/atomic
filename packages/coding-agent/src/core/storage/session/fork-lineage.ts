@@ -1,6 +1,6 @@
 import type { SqliteExecutor, SqliteRow, SqliteStatement } from "../database.js";
 import type { StorageDialect } from "../dialect.js";
-import { ForkSourceIncompleteError } from "./errors.js";
+import { ForkSourceIncompleteError } from "./fork-errors.js";
 import { type ForkCopyTables, forkBlobCopy } from "./fork-row-copy.js";
 import { assertForkSegments, type ForkSegment, forkRunSegments, segmentLength } from "./fork-segments.js";
 

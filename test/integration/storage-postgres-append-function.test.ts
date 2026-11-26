@@ -402,7 +402,8 @@ describe.skipIf(postgresSkipReason !== undefined)(
 					const version = await database.get<{ schema_version: number }>(
 						"SELECT schema_version FROM session_meta",
 					);
-					assert.equal(Number(version?.schema_version), 2);
+					// A new database is at the version with chunked entries and shared-history forks (#6560).
+					assert.equal(Number(version?.schema_version), 3);
 					const loaded = await store.load("s1");
 					assert.equal((loaded.entries[0] as { message: { content: string } }).message.content.length, 1_200_000);
 					assert.equal(loaded.entries[1]?.id, "m2");

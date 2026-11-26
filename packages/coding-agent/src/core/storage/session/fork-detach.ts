@@ -20,8 +20,8 @@
  */
 
 import type { SqliteExecutor } from "../database.js";
-import { ForkSourceIncompleteError } from "./errors.js";
 import { reparentedSegments, splitSegment } from "./fork-detach-map.js";
+import { ForkSourceIncompleteError } from "./fork-errors.js";
 import { type ForkSegment, segmentLength } from "./fork-segments.js";
 
 /**
