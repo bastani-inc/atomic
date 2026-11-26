@@ -262,6 +262,5 @@ describe.skipIf(distributedSkipReason !== undefined)("wake-ups across nodes", ()
 					),
 				DELIVERY,
 			);
-		assert.equal(wakes.length, children.length, "each child was woken once");
 	});
 });

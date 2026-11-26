@@ -33,6 +33,7 @@ describe("distributed run options", () => {
 			planned.suites.map((suite) => suite.name),
 			["security", "resume", "fork"],
 		);
+		assert.deepEqual(planned.faults, [], "no faults without database-faults");
 	});
 
 	test("without the replica the replica suite is skipped, and without faults so is database-faults", () => {

@@ -50,7 +50,7 @@ node test/distributed/run.mjs
 ```
 
 This starts the database, runs the security check, runs every suite, writes the report, and removes everything it
-started. A full run takes about 30 to 45 minutes. To run some suites only:
+started. A full run takes about 15 to 30 minutes. To run some suites only:
 
 ```bash
 node test/distributed/run.mjs --suite intercom-routing,resume

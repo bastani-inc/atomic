@@ -303,7 +303,7 @@ export function shuffled(items, seed) {
 
 /**
  * What a run with `options` does: the gate first, then the chosen suites in the order SUITES lists them, each run or
- * skipped with the reason; and the faults in the seed's order.
+ * skipped with the reason; and the faults in the seed's order, when database-faults runs.
  * @param {Options} options
  * @returns {{ suites: PlannedSuite[], faults: string[], services: string[] }}
  */
@@ -329,9 +329,10 @@ export function plan(options) {
 			});
 		else suites.push({ name: suite.name, file: suite.file, action: "run" });
 	}
+	const faultsRun = suites.some((suite) => suite.name === "database-faults" && suite.action === "run");
 	return {
 		suites,
-		faults: shuffled(options.faults, options.seed),
+		faults: faultsRun ? shuffled(options.faults, options.seed) : [],
 		services: ["primary", "pgbouncer", ...(options.replica ? ["replica"] : [])],
 	};
 }

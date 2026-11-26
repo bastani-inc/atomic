@@ -227,14 +227,14 @@ export function down(stack) {
  */
 export function leftovers(project) {
 	const filter = `label=com.docker.compose.project=${project}`;
-	const listed = (/** @type {string[]} */ ...args) =>
-		execFileSync("docker", [...args, "--filter", filter, "--format", "{{.Name}}"], { encoding: "utf8" })
+	const listed = (/** @type {string[]} */ command, /** @type {string} */ field) =>
+		execFileSync("docker", [...command, "--filter", filter, "--format", `{{.${field}}}`], { encoding: "utf8" })
 			.split("\n")
 			.map((name) => name.trim())
 			.filter(Boolean);
 	return [
-		...listed("ps", "--all").map((name) => `container ${name}`),
-		...listed("volume", "ls").map((name) => `volume ${name}`),
-		...listed("network", "ls").map((name) => `network ${name}`),
+		...listed(["ps", "--all"], "Names").map((name) => `container ${name}`),
+		...listed(["volume", "ls"], "Name").map((name) => `volume ${name}`),
+		...listed(["network", "ls"], "Name").map((name) => `network ${name}`),
 	];
 }
