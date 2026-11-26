@@ -38,8 +38,8 @@ on:
 # A catalog-only job selects one model data snapshot. All work jobs then run in parallel.
 #
 #   model-data          restore or hydrate one snapshot for this run
-#   unit-tests          build package -> one of eleven (Linux) or twelve (Windows) unit shards
-#   integration-tests   build package -> one of twelve integration shards (per OS)
+#   unit-tests          build package -> one of eleven (Linux), twelve (Windows) or six (macOS) unit shards
+#   integration-tests   build package -> one of twelve (Linux, Windows) or six (macOS) integration shards
 #   storage-conformance build package -> one of four Linux server-backed storage shards
 #   agent-suite         build ai + native bindings -> one of nine (Linux) or eleven (Windows) coding-agent shards
 #   packages-suite      build forked packages -> atomic-ai and forked workspace package suites (per OS)
@@ -114,9 +114,10 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Eleven shards on Linux and twelve on Windows, balanced by per-OS file durations measured on CI
-        # (test/helpers/duration-sequencer.ts). The result gate needs every shard. See docs/ci.md ("Sharded suites").
-        binary_platform: [linux-x64, windows-x64]
+        # Eleven shards on Linux, twelve on Windows and six on macOS, balanced by per-OS file durations measured on CI
+        # (test/helpers/duration-sequencer.ts; macOS uses Linux's). The result gate needs every shard. See docs/ci.md
+        # ("Sharded suites").
+        binary_platform: [linux-x64, windows-x64, darwin-arm64]
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         # The newest Node.js release that satisfies engines.node. The one entry below with another value runs on the
         # engines.node floor instead. See docs/ci.md ("Node.js version").
@@ -124,6 +125,12 @@ jobs:
         exclude:
           - binary_platform: linux-x64
             shard: 12
+          - { binary_platform: darwin-arm64, shard: 7 }
+          - { binary_platform: darwin-arm64, shard: 8 }
+          - { binary_platform: darwin-arm64, shard: 9 }
+          - { binary_platform: darwin-arm64, shard: 10 }
+          - { binary_platform: darwin-arm64, shard: 11 }
+          - { binary_platform: darwin-arm64, shard: 12 }
         include:
           # The three suites run on 8 vCPU: on 4 vCPU they averaged 54-77% CPU, and
           # Windows unit/integration hit their caps at p95. See docs/ci.md ("Sizing").
@@ -134,6 +141,12 @@ jobs:
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.windows-amd64
             shards: 12
+            timeout_minutes: 14
+          # macOS catches what Linux cannot: /var resolving to /private/var, APFS birth times, no /bin/false. Six
+          # shards keep a run inside the workspace's macOS capacity; see docs/ci.md ("Sizing").
+          - binary_platform: darwin-arm64
+            runner: namespace-profile-atomic-ci-macos-arm64-6x14;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.macos-arm64
+            shards: 6
             timeout_minutes: 14
           # One more Linux shard on exactly the engines.node floor, the oldest Node.js an npm install accepts. It runs
           # in parallel with the other shards, so the result gate takes about as long as before. The shard number is arbitrary.
@@ -250,17 +263,24 @@ jobs:
         if: matrix.binary_platform == 'linux-x64' && matrix.shard == 1
         timeout-minutes: 5
         run: node scripts/in-place-update-exports.mjs published packages/coding-agent/in-place-update packages/coding-agent packages/ai packages/agent packages/tui packages/codemode packages/schema packages/telemetry
-      # skill-creator's package_skill.py and quick_validate.py read SKILL.md with PyYAML. Linux's image has it; Windows'
-      # Python does not, so their tests skipped there. Install the pinned release from PyPI into that Python, checked
-      # against its Windows wheels' SHA-256 (CPython 3.10-3.15), and check that it imports without the user's
-      # site-packages, as the tests' reduced environment runs it.
+      # skill-creator's package_skill.py and quick_validate.py read SKILL.md with PyYAML. Linux's image has it; the
+      # Windows and macOS (Homebrew) Pythons do not, so their tests skipped there. Install the pinned release from PyPI
+      # into that Python, checked against its Windows and macOS arm64 wheels' SHA-256 (CPython 3.10-3.15), and check
+      # that it imports without the user's site-packages, as the tests' reduced environment runs it. Homebrew's Python
+      # refuses packages pip installs (PEP 668) unless told otherwise; the runner is discarded after the job.
       - name: Install the pinned PyYAML for the skill-creator tests
-        if: runner.os == 'Windows'
+        if: runner.os != 'Linux'
         shell: bash
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          python --version
+          python=python
+          system_packages=()
+          if [ "$RUNNER_OS" = macOS ]; then
+            python=python3
+            system_packages=(--break-system-packages)
+          fi
+          "$python" --version
           requirements="$RUNNER_TEMP/pyyaml-requirements.txt"
           cat > "$requirements" <<'EOF'
           PyYAML==6.0.4 \
@@ -271,11 +291,17 @@ jobs:
             --hash=sha256:1d2f08c122727c86f8303bb1dd45159ca1de1f2d68798e671ec46974e321008e \
             --hash=sha256:609e8efaffa5662da16b7d53eef76fc4eedbbe56fce5829b67ba808a6e35d399 \
             --hash=sha256:67da066ca12eb60114ea87f2ecbcca622fff0c205c743cc900437127564fabf6 \
-            --hash=sha256:a3cc63af3d639d1609143711837b926183418260aae89ed95193c07b25b99d33
+            --hash=sha256:a3cc63af3d639d1609143711837b926183418260aae89ed95193c07b25b99d33 \
+            --hash=sha256:e39017e1cef43d03b2ba427f60213e4b36dbc6fb092235fa3de3a510ce064d3c \
+            --hash=sha256:730788375056c43d3ac15bd894c9cd2fb7a931a38b302f408620c64b3ef176ed \
+            --hash=sha256:4d30c2f186612bd2f9f07c08a4c96721af59cfc8da3ec7cb27dfa2834e8bb019 \
+            --hash=sha256:9d4211f080920629a90c9e31c51e326fb70cfae38f18d4128b9913c23642bace \
+            --hash=sha256:7335809813ec838d9cd334b1744cda33deb141c9ef23a9c0df371c37980d3851 \
+            --hash=sha256:070c22b6f490d6cc30912be9fb9ab1af9c752769b39b53616f6510c3f038ee6a
           EOF
-          python -m pip install --disable-pip-version-check --no-input --retries 5 --timeout 30 \
-            --no-deps --only-binary=:all: --require-hashes --requirement "$requirements"
-          python -I -c "import sys, yaml; print('PyYAML', yaml.__version__, 'from', yaml.__file__); sys.exit(yaml.__version__ != '6.0.4')"
+          "$python" -m pip install --disable-pip-version-check --no-input --retries 5 --timeout 30 \
+            --no-deps --only-binary=:all: --require-hashes --requirement "$requirements" ${system_packages[@]+"${system_packages[@]}"}
+          "$python" -I -c "import sys, yaml; print('PyYAML', yaml.__version__, 'from', yaml.__file__); sys.exit(yaml.__version__ != '6.0.4')"
       - name: Unit tests
         env:
           # The skill-creator tests that need PyYAML fail instead of skipping when it is missing.
@@ -298,21 +324,35 @@ jobs:
           retention-days: 14
 
   integration-tests:
-    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/12)
+    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }})
     needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Twelve shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts). The result
-        # gate below needs every shard, so the required check still covers the whole suite on both hosts.
-        binary_platform: [linux-x64, windows-x64]
+        # Twelve shards on Linux and Windows and six on macOS, balanced by per-OS file durations measured on CI
+        # (test/helpers/duration-sequencer.ts; macOS uses Linux's). The result gate below needs every shard, so the
+        # required check covers the whole suite on every host.
+        binary_platform: [linux-x64, windows-x64, darwin-arm64]
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        exclude:
+          - { binary_platform: darwin-arm64, shard: 7 }
+          - { binary_platform: darwin-arm64, shard: 8 }
+          - { binary_platform: darwin-arm64, shard: 9 }
+          - { binary_platform: darwin-arm64, shard: 10 }
+          - { binary_platform: darwin-arm64, shard: 11 }
+          - { binary_platform: darwin-arm64, shard: 12 }
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.linux-amd64
+            shards: 12
             timeout_minutes: 12
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.windows-amd64
+            shards: 12
+            timeout_minutes: 12
+          - binary_platform: darwin-arm64
+            runner: namespace-profile-atomic-ci-macos-arm64-6x14;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.macos-arm64
+            shards: 6
             timeout_minutes: 12
       fail-fast: false
     runs-on: ${{ matrix.runner }}
@@ -389,10 +429,21 @@ jobs:
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
+      # test/integration/task-process-tree-containment.test.ts wraps a descendant in GNU timeout, which macOS lacks.
+      - name: Make GNU timeout available on macOS
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          if command -v timeout >/dev/null; then exit 0; fi
+          if ! command -v gtimeout >/dev/null; then brew install coreutils; fi
+          mkdir -p "$RUNNER_TEMP/atomic-test-bin"
+          ln -sf "$(command -v gtimeout)" "$RUNNER_TEMP/atomic-test-bin/timeout"
+          echo "$RUNNER_TEMP/atomic-test-bin" >> "$GITHUB_PATH"
       - name: Integration tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 12)"
-          -- npm run test:integration -- --shard=${{ matrix.shard }}/12
+          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of ${{ matrix.shards }})"
+          -- npm run test:integration -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
         env:
           # Hard-require the installed-package Node smoke on both supported hosts.
           ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"

@@ -9,7 +9,13 @@ import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { createMessageReader, type JsonWireValue } from "../../packages/intercom/broker/framing.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
-import { bunExecutable, type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
+import {
+	bunExecutable,
+	makeTempDirectory,
+	removeTempDirectory,
+	type SpawnedProcess,
+	spawnProcess,
+} from "../helpers/runtime.js";
 import { replaceEnvironmentVariable, temporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 /**
@@ -35,6 +41,22 @@ const HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 15_000;
 const WAIT = { timeout: 15_000, interval: 20 };
 /** How long every connection is watched, after the exchanges, for a drop, an error or a second registration. */
 const QUIET_MS = 3_000;
+
+const shortAgentDirs: string[] = [];
+afterAll(() => {
+	for (const agentDir of shortAgentDirs.splice(0)) removeTempDirectory(agentDir);
+});
+
+/**
+ * An agent directory directly under the temp directory. A 0.9.71 broker binds, and a 0.9.71 client connects to, the
+ * socket in its agent directory whatever that path's length, and a Unix socket path must fit in 104 bytes on macOS,
+ * whose temp directory takes about 57 of them: the run's sandbox directory leaves too few.
+ */
+function shortAgentDir(): string {
+	const agentDir = makeTempDirectory("icwf-");
+	shortAgentDirs.push(agentDir);
+	return agentDir;
+}
 
 type SessionInfo = import("../../packages/intercom/types.js").SessionInfo;
 type Message = import("../../packages/intercom/types.js").Message;
@@ -322,7 +344,7 @@ const ACKNOWLEDGED: RouteOutcome = { outcome: "acknowledged" };
 
 describe("0.9.x Intercom clients of a workflow run on this version's broker (Atomic 0.10.0 removed workflows)", () => {
 	const brokerFixture = new IntercomBrokerFixture(temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR));
-	const proxyAgentDir = temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR);
+	const proxyAgentDir = shortAgentDir();
 	const cleanups: Array<() => Promise<unknown>> = [];
 	let restoreAgentDir: (() => void) | undefined;
 	let broker: SpawnedProcess | undefined;
@@ -696,7 +718,7 @@ describe("0.9.x Intercom clients of a workflow run on this version's broker (Ato
 });
 
 describe("this version's Intercom client on a 0.9.71 broker routing a 0.9.71 workflow run", () => {
-	const brokerFixture = new IntercomBrokerFixture(temporaryAgentDir(process.env.ATOMIC_TEST_RUN_DIR));
+	const brokerFixture = new IntercomBrokerFixture(shortAgentDir());
 	const cleanups: Array<() => Promise<unknown>> = [];
 	let restoreAgentDir: (() => void) | undefined;
 	let broker: SpawnedProcess | undefined;

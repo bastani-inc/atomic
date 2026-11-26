@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The skill-creator's review viewer now prints its URL and opens the browser as soon as it serves. Before, it first looked up the name of 127.0.0.1, which could take many seconds when the resolver was slow to answer, as on some Macs ([#6691](https://github.com/bastani-inc/atomic/issues/6691)).
+
 ## [0.10.11-alpha.2] - 2026-11-26
 
 ### Changed

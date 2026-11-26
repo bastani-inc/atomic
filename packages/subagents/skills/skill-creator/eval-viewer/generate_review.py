@@ -26,6 +26,7 @@ import os
 import re
 import secrets
 import socket
+import socketserver
 import stat
 import sys
 import time
@@ -573,6 +574,10 @@ class ReviewServer(HTTPServer):
 
     On Windows, SO_REUSEADDR would let it bind a port that is already in use,
     so it asks for the port exclusively there instead.
+
+    It binds without HTTPServer's lookup of its address's name (socket.getfqdn),
+    a reverse DNS query that can wait many seconds for a resolver before the URL
+    is printed. It serves only 127.0.0.1, so its name is localhost.
     """
 
     allow_reuse_address = os.name != "nt"
@@ -580,7 +585,9 @@ class ReviewServer(HTTPServer):
     def server_bind(self) -> None:
         if os.name == "nt":
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "localhost"
+        self.server_port = self.server_address[1]
 
 
 def start_server(port: int, handler) -> HTTPServer:

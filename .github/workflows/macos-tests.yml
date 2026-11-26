@@ -1,7 +1,8 @@
 name: macOS tests
 
-# Maintainer-only: no pull-request trigger. It runs chosen test files on macOS, which test.yml does not cover,
-# against the ref it is dispatched on. See docs/ci.md ("macOS test dispatch").
+# Maintainer-only: no pull-request trigger. It runs chosen test files on macOS against the ref it is dispatched on.
+# test.yml runs the root unit and integration suites on macOS for every pull request; this covers the coding-agent
+# suite, the native Rust tests and single files. See docs/ci.md ("macOS test dispatch").
 on:
   workflow_dispatch:
     inputs:
@@ -30,7 +31,8 @@ concurrency:
 jobs:
   tests:
     if: github.repository == 'bastani-inc/atomic' && inputs.project != 'native'
-    # The only macOS profile this repository has. Nothing this job does is committed to its cache volume.
+    # The release macOS profile, not test.yml's Restricted CI one: only maintainers dispatch this. Nothing this job does
+    # is committed to its cache volume.
     runs-on: [namespace-profile-atomic-release-macos-arm64-6x14, nscloud-cache-exp-do-not-commit]
     timeout-minutes: 40
     steps:
