@@ -5,10 +5,12 @@
  *
  * Test with: bun src/cli.ts [args...]
  *
- * Deliberately keeps the static entry graph to config, compile-cache support,
- * attribution, and the disabled-by-default lifecycle seam. The full CLI graph
+ * Deliberately keeps the static entry graph to the Node.js version check, config,
+ * compile-cache support, attribution, and the disabled-by-default lifecycle seam. The full CLI graph
  * loads dynamically so metadata fast paths (for example `--version`) skip it.
  */
+// First: an older Node.js stops here with a message naming the version Atomic needs.
+import "./node-version-check.ts";
 import { APP_NAME, getPackageDir, VERSION } from "./config.js";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "./core/lifecycle-timings.ts";
 import { engineHeapRuntimeArgsForHost } from "./modes/interactive-engine/engine-heap.ts";
