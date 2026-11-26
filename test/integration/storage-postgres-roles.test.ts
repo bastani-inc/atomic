@@ -1315,6 +1315,13 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			await openAsRuntime(before);
 			assert.deepEqual(before.flatMap(ddl), [], "the runtime role ran no DDL");
 			assert.deepEqual(await indexes(), earlier);
+			const second: string[] = [];
+			await openAsRuntime(second);
+			assert.deepEqual(
+				second.filter((statement) => statement.includes("relowner")),
+				[],
+				"the process found out once that the runtime role does not own the table",
+			);
 
 			const again = await migrateAs(roles, "owner");
 			assert.equal(again.code, 0, again.err);

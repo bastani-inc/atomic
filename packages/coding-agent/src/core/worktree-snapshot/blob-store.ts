@@ -1202,26 +1202,60 @@ async function hotSessionLinks(
 	});
 }
 
+/** This process's check of {@link hotSessionLinks} for each database, ledger and links table, while it holds. */
+const hotSessionLinksChecks = new Map<string, Promise<boolean>>();
+
 /**
  * Runs {@link hotSessionLinks} on a PostgreSQL database whose ledger lacks it, in a transaction of its own. Nothing runs
  * where the catalog the open read records it, or where this role does not own the links table: a runtime role without
- * DDL opens as before, and `atomic storage migrate`, run as the owner, makes the change.
+ * DDL opens as before, and `atomic storage migrate`, run as the owner, makes the change. A role that does not own the
+ * table finds that out once per process, as for the fillfactor steps.
  */
 async function ensureHotSessionLinks(database: SqliteDatabase, t: SnapshotIndexTables, prefix: string): Promise<void> {
 	const dialect = dialectOf(database);
 	if (dialect.name !== "postgres" || database.readOnly === true) return;
 	const schema = sessionLinksHotSchema(prefix);
 	if (await storageSchemaCurrent(database, schema)) return;
+	const identity = database.databaseIdentity?.();
+	if (identity === undefined) {
+		await checkHotSessionLinks(database, t, prefix);
+		return;
+	}
+	const key = JSON.stringify([identity, schema.ledger, t.sessionLinks]);
+	let check = hotSessionLinksChecks.get(key);
+	if (check === undefined) {
+		const made = checkHotSessionLinks(database, t, prefix);
+		check = made;
+		hotSessionLinksChecks.set(key, made);
+		const forget = () => {
+			if (hotSessionLinksChecks.get(key) === made) hotSessionLinksChecks.delete(key);
+		};
+		made.then((settled) => {
+			if (!settled) forget();
+		}, forget);
+	}
+	await check;
+}
+
+/** Runs {@link hotSessionLinks} where this role owns the links table; true when this process need not check again. */
+async function checkHotSessionLinks(
+	database: SqliteDatabase,
+	t: SnapshotIndexTables,
+	prefix: string,
+): Promise<boolean> {
+	const dialect = dialectOf(database);
 	const found = await database.get<SqliteRow & { owned: boolean | number }>(
 		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned
 		FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?`,
 		dialect.identifier(t.sessionLinks),
 	);
-	if (found === undefined || !(found.owned === true || Number(found.owned) === 1)) return;
+	if (found === undefined) return false;
+	if (!(found.owned === true || Number(found.owned) === 1)) return true;
 	await database.transaction((transaction) => hotSessionLinks(transaction, t, prefix, dialect), {
 		retryTransientFailures: true,
-		concurrency: { kind: "serial", domain: schema.ledger },
+		concurrency: { kind: "serial", domain: sessionLinksHotSchema(prefix).ledger },
 	});
+	return false;
 }
 
 /** The columns of {@link SnapshotIndexTables.sessionRefs} that later builds added, with their types. */
