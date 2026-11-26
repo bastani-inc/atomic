@@ -110,6 +110,7 @@ import type {
 import {
 	entrySizeLimit,
 	matchesSessionIdPrefix,
+	onlySeqs,
 	SESSION_HISTORY_CHUNK_BYTES,
 	SESSION_HISTORY_PAGE_BYTES,
 } from "./types.js";
@@ -1434,7 +1435,8 @@ export class JsonlSessionStore implements SessionStore {
 				query.signal?.throwIfAborted();
 				const located = await this.locate(sessionId);
 				if (!located) throw new SessionNotFoundError(sessionId);
-				return this.readRangeOf(located.path, query, sessionId, located.state);
+				const page = await this.readRangeOf(located.path, query, sessionId, located.state);
+				return { ...page, entries: onlySeqs(page.entries, query.seqs) };
 			},
 			false,
 			query.signal,

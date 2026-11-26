@@ -2065,6 +2065,16 @@ $grant$`);
 		const skippedSet = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
 		const skippedPrefixes = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
 		const largeBytes = query.largeEntryBytes ?? 0x7fffffff;
+		// The sequences asked for, as one JSON parameter, so the statement's text is the same however many there are. Read
+		// ahead of need, they end the page before an entry past `maxChars`, the first excepted: a large entry the reader
+		// may never reach is not read for it.
+		const selected =
+			query.seqs === undefined
+				? ""
+				: ` AND seq IN (SELECT CAST(value AS ${this.dialect.types.int}) FROM ${this.dialect.jsonValues("?")})`;
+		const fitted = query.seqs === undefined ? "" : " AND (p.before_chars = 0 OR p.before_chars + p.bytes <= ?)";
+		const maxChars =
+			query.maxChars !== undefined && query.maxChars <= 0 ? 0 : (query.maxChars ?? Number.MAX_SAFE_INTEGER);
 		// The session's watermark and the page up to it, in one statement and so one snapshot: a read each, in turn, cost
 		// a search a second round trip for every page it reads (#6560). The session's row, joined to a page that may be
 		// empty, is a row with no entry; no row at all is a session that does not exist.
@@ -2083,11 +2093,11 @@ $grant$`);
 				SELECT seq, chunks, ${this.entryByteLength("entry_json")} AS raw_bytes,
 					${this.entryByteLength("entry_json")} + chunks * ? AS bytes
 				FROM ${this.tables.entries}
-				WHERE session_id = ? AND seq >= ? AND seq <= ?
+				WHERE session_id = ? AND seq >= ? AND seq <= ?${selected}
 					AND seq <= (SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?)
 			),
 			paged AS (
-				SELECT seq, chunks, raw_bytes, count(*) OVER () AS remaining,
+				SELECT seq, chunks, raw_bytes, bytes, count(*) OVER () AS remaining,
 					sum(bytes) OVER (ORDER BY seq) - bytes AS before_chars
 				FROM sized
 			),
@@ -2098,7 +2108,7 @@ $grant$`);
 						THEN ${this.dialect.jsonText("e.entry_json", "type")} END AS entry_type
 				FROM paged p
 				JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
-				WHERE p.before_chars < ?
+				WHERE p.before_chars < ?${fitted}
 			)
 			SELECT s.last_seq, page.seq, page.entry_json, page.entry_head, page.chunks, page.remaining, page.entry_type
 			FROM ${this.tables.sessions} s LEFT JOIN page ON 1 = 1
@@ -2108,11 +2118,13 @@ $grant$`);
 			sessionId,
 			fromSeq,
 			Math.min(query.toSeq, Number.MAX_SAFE_INTEGER),
+			...(query.seqs === undefined ? [] : [JSON.stringify(query.seqs)]),
 			sessionId,
 			largeBytes,
 			largeBytes,
 			sessionId,
-			query.maxChars !== undefined && query.maxChars <= 0 ? 0 : (query.maxChars ?? Number.MAX_SAFE_INTEGER),
+			maxChars,
+			...(query.seqs === undefined ? [] : [maxChars]),
 			sessionId,
 		);
 		const session = read[0];
