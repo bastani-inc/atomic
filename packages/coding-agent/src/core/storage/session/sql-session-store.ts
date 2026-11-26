@@ -1,7 +1,7 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { installSharedHistorySnapshotIndex } from "../../worktree-snapshot/added-exports.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
-import { ensureTableFillfactor, transactionFinisher } from "../added-exports.js";
+import { ensureTableFillfactor, MAX_SEQUENCE_REQUEST_STATEMENTS, transactionFinisher } from "../added-exports.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -22,7 +22,7 @@ import {
 	withStorageSchemaCatalog,
 } from "../schema-catalog.js";
 import { applyStorageMigrationsTogether, statementBatch } from "../statement-batches.js";
-import { MAX_SEQUENCE_REQUEST_STATEMENTS, sequenceRunner } from "../statement-sequence.js";
+import { sequenceRunner } from "../statement-sequence.js";
 import { sha256Hex } from "./blob-hash.js";
 import { bindChatEpoch } from "./chat-records.js";
 import {
