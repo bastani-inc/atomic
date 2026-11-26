@@ -38,7 +38,13 @@ import {
 } from "./fork-detach.js";
 import { forkDetachHost } from "./fork-detach-host.js";
 import { type ForkLineageTables, ForkSegmentRuns, forkLineageWrite, forkSegmentInserts } from "./fork-lineage.js";
-import { createOverTombstoneWithin, deleteForkedSessionWithin, replaceForkedSessionWithin } from "./fork-pins.js";
+import {
+	createOverTombstoneWithin,
+	deleteForkedSessionWithin,
+	forkPinReads,
+	readForkPins,
+	replaceForkedSessionWithin,
+} from "./fork-pins.js";
 import {
 	type CountedStatement,
 	type ForkBlobCopy,
@@ -959,6 +965,7 @@ export class SqlSessionStore implements SessionStore {
 		const markers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
 		// Shared-history forks turn on by themselves (#6560). An open that found them on reads nothing more for it; one
 		// that switched the database refreshes the catalog it read, so the stores it opens next see the fork tables.
+		let shared = sharedHistory === true;
 		if (sharedHistory !== true && database.readOnly !== true) {
 			const switched = await SqlSessionStore.switchAtOpen(
 				database,
@@ -968,6 +975,7 @@ export class SqlSessionStore implements SessionStore {
 				sharedHistory === false,
 			);
 			if (switched) refreshStorageSchemaCatalog(database);
+			shared = switched;
 		}
 		// Whether a staged clone ever ran here (#5594), asked beside the rest of the open rather than after it.
 		const staging = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, options.prefix).forkStaging;
@@ -1003,6 +1011,8 @@ export class SqlSessionStore implements SessionStore {
 			entryByteLength,
 		);
 		store.openMarkers = markers;
+		// The switch is one way: what the open found or made holds for every later transaction.
+		if (shared) store.noteSchemaVersion(SESSION_SCHEMA_VERSION_SHARED_HISTORY);
 		if (await staged) await store.cleanupForkStaging();
 		return store;
 	}
@@ -1405,17 +1415,28 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
-		const existing: SqliteStatement = {
-			sql: `SELECT id FROM ${this.tables.sessions} WHERE id = ?`,
-			params: [header.id],
-		};
+		// Where this store has seen shared history, the session's lookup also tells whether a deleted session with this ID
+		// left rows forks still read, in the same statement.
+		const tombstones = this.sharedHistorySeen;
+		const existing: SqliteStatement = tombstones
+			? {
+					sql: `SELECT (SELECT id FROM ${this.tables.sessions} WHERE id = ?) AS id, (SELECT session_id FROM ${this.forkTables.forkTombstones} WHERE session_id = ?) AS tombstone`,
+					params: [header.id, header.id],
+				}
+			: { sql: `SELECT id FROM ${this.tables.sessions} WHERE id = ?`, params: [header.id] };
 		return this.transactionCheckedAlongside(
 			async (tx, checked) => {
-				if (await tx.get(existing.sql, ...existing.params)) {
-					throw new SessionExistsError(header.id);
-				}
+				const found = await tx.get<SqliteRow & { id: string | null; tombstone?: string | null }>(
+					existing.sql,
+					...existing.params,
+				);
+				if (found?.id != null) throw new SessionExistsError(header.id);
 				// A deleted session with this ID may have left rows forks still read: they get their own copies first.
-				if (await this.sharedHistoryForks(tx)) await createOverTombstoneWithin(this.forkHost(), tx, header.id);
+				if (
+					(await this.sharedHistoryForks(tx)) &&
+					(tombstones ? found?.tombstone != null : await this.hasForkTombstone(tx, header.id))
+				)
+					await createOverTombstoneWithin(this.forkHost(), tx, header.id);
 				const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
 				await checked;
 				await this.writeEntries(tx, summary.statement, this.entryWrites(header.id, entries, 0, summary.texts));
@@ -1773,6 +1794,14 @@ export class SqlSessionStore implements SessionStore {
 	async prepareChatRecords(): Promise<void> {
 		this.assertOpen();
 		await this.chatRecords?.initialize();
+	}
+
+	/** Whether a deleted session with ID `sessionId` left rows forks still read. */
+	private async hasForkTombstone(tx: SqliteExecutor, sessionId: string): Promise<boolean> {
+		return (
+			(await tx.get(`SELECT session_id FROM ${this.forkTables.forkTombstones} WHERE session_id = ?`, sessionId)) !==
+			undefined
+		);
 	}
 
 	/** This store's side of detaching and pinning shared fork history: see fork-detach-host.ts. */
@@ -2487,23 +2516,40 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		let released: readonly string[] = [];
-		const written = await this.transaction(async (tx) => {
-			released = [];
-			await this.forWrite(tx, sessionId, options);
-			validateSessionHeader(header);
-			validateSessionEntries(entries);
-			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
-			// Forks reading the rows about to go get their own copies; the session holds all of its new rows itself.
-			if (await this.sharedHistoryForks(tx))
-				released = await replaceForkedSessionWithin(this.forkHost(), tx, sessionId);
-			await this.searchIndex?.forgetWithin(tx, sessionId);
-			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
-			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
-			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
-			const { texts, epoch } = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
-			await this.insertEntries(tx, sessionId, entries, 0, texts);
-			return { lastSeq: entries.length, epoch };
-		}, this.sessionWrite(sessionId));
+		const pinReads = this.sharedHistorySeen
+			? forkPinReads(this.forkHost(), this.tables.sessions, sessionId)
+			: undefined;
+		const written = await this.transactionCheckedAlongside(
+			async (tx, checked) => {
+				released = [];
+				// The session's row and its fork history are read beside the schema check, in one wait for the connection.
+				const [, pins] = await Promise.all([
+					this.forWrite(tx, sessionId, options),
+					this.readForkPinsWithin(tx, sessionId, pinReads),
+				]);
+				await checked;
+				validateSessionHeader(header);
+				validateSessionEntries(entries);
+				if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
+				// Forks reading the rows about to go get their own copies; the session holds all of its new rows itself.
+				if (pins !== undefined) released = await replaceForkedSessionWithin(this.forkHost(), tx, sessionId, pins);
+				await this.searchIndex?.forgetWithin(tx, sessionId);
+				await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
+				await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
+				await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
+				const { texts, epoch } = await this.saveSummary(tx, sessionId, {
+					header,
+					entries,
+					lastSeq: entries.length,
+				});
+				await this.insertEntries(tx, sessionId, entries, 0, texts);
+				return { lastSeq: entries.length, epoch };
+			},
+			this.sessionWrite(
+				sessionId,
+				...(pinReads === undefined ? [] : [this.headRead(sessionId, options, false), ...pinReads]),
+			),
+		);
 		await this.sweepReleasedForkRows(released);
 		return written;
 	}
@@ -2674,26 +2720,56 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		let released: readonly string[] = [];
-		await this.transaction(async (tx) => {
-			released = [];
-			await this.searchIndex?.forgetWithin(tx, sessionId);
-			if (await this.sharedHistoryForks(tx)) {
-				const pinned = await deleteForkedSessionWithin(this.forkHost(), tx, sessionId, new Date().toISOString());
-				released = pinned.released;
-				// Rows forks still read stay under a tombstone until the last of them no longer needs them.
-				if (pinned.keepRows) {
-					await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
-					return;
+		// Where this store has seen shared history, the session's fork history is read with the transaction's start.
+		const pinReads = this.sharedHistorySeen
+			? forkPinReads(this.forkHost(), this.tables.sessions, sessionId)
+			: undefined;
+		await this.transactionCheckedAlongside(
+			async (tx, checked) => {
+				released = [];
+				// Read beside the schema check, in one wait for the connection.
+				const pins = await this.readForkPinsWithin(tx, sessionId, pinReads);
+				await checked;
+				await this.searchIndex?.forgetWithin(tx, sessionId);
+				if (pins !== undefined) {
+					const pinned = await deleteForkedSessionWithin(
+						this.forkHost(),
+						tx,
+						sessionId,
+						new Date().toISOString(),
+						pins,
+					);
+					released = pinned.released;
+					// Rows forks still read stay under a tombstone until the last of them no longer needs them.
+					if (pinned.keepRows) {
+						await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
+						return;
+					}
 				}
-			}
-			await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
-			await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
-			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
-			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
-			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
-			await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
-		}, SESSION_TRANSACTION);
+				await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
+				await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
+				await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
+				await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
+				await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
+				await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
+			},
+			pinReads === undefined ? SESSION_TRANSACTION : { ...SESSION_TRANSACTION, leading: pinReads },
+		);
 		await this.sweepReleasedForkRows(released);
+	}
+
+	/**
+	 * The fork history of `sessionId` where the transaction `tx` runs on shared history: through `reads`, the transaction's
+	 * leading reads, or, for a store that had not seen shared history when the transaction began, read now.
+	 */
+	private async readForkPinsWithin(
+		tx: SqliteExecutor,
+		sessionId: string,
+		reads: ReturnType<typeof forkPinReads> | undefined,
+	) {
+		if (reads !== undefined) return readForkPins(tx, reads);
+		if (!(await this.sharedHistoryForks(tx))) return undefined;
+		return readForkPins(tx, forkPinReads(this.forkHost(), this.tables.sessions, sessionId));
 	}
 
 	/**

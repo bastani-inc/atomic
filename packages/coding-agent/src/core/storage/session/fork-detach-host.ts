@@ -55,6 +55,7 @@ export function forkDetachHost(store: ForkHostStore): ForkDetachHost {
 			forkLineage: forkTables.forkLineage,
 		},
 		forkTransaction: (body) => store.transaction(body),
+		lockClause: (mode) => dialect.lockClause(mode),
 		forkSegments: (tx, sessionId) => readForkSegments(tx, lineage, sessionId),
 		forkChildren: (tx, sourceId) => forkChildren(tx, lineage, sourceId),
 		async materializeForkSegments(tx, childId, pieces) {

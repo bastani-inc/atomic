@@ -9,7 +9,11 @@ import {
 	type ForkDetachHost,
 	resumeForkDetaches,
 } from "../../packages/coding-agent/src/core/storage/session/fork-detach.js";
-import { deleteForkedSessionWithin } from "../../packages/coding-agent/src/core/storage/session/fork-pins.js";
+import {
+	deleteForkedSessionWithin,
+	forkPinReads,
+	readForkPins,
+} from "../../packages/coding-agent/src/core/storage/session/fork-pins.js";
 import { type ForkSegment, forkPieces } from "../../packages/coding-agent/src/core/storage/session/fork-segments.js";
 import { sweepForkTombstones } from "../../packages/coding-agent/src/core/storage/session/fork-sweep.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -80,6 +84,7 @@ function storeHost(): ForkDetachHost & { crashAfterCommits?: number; commits: nu
 			forkSegments: "fork_segments",
 			forkLineage: "fork_lineage",
 		},
+		lockClause: () => "",
 		async forkTransaction(body) {
 			const result = await database.transaction(body);
 			host.commits++;
@@ -317,8 +322,17 @@ test("a deleted parent's rows stay while a fork reads them and are swept once it
 	await fork("C", "P", 3, 1);
 	const host = storeHost();
 	assert.equal(
-		(await database.transaction((tx) => deleteForkedSessionWithin(host, tx, "P", "2026-11-25T00:00:00.000Z")))
-			.keepRows,
+		(
+			await database.transaction(async (tx) =>
+				deleteForkedSessionWithin(
+					host,
+					tx,
+					"P",
+					"2026-11-25T00:00:00.000Z",
+					await readForkPins(tx, forkPinReads(host, "sessions", "P")),
+				),
+			)
+		).keepRows,
 		true,
 	);
 	await database.run("DELETE FROM sessions WHERE id = 'P'");

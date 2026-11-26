@@ -62,6 +62,8 @@ export interface ForkDetachHost {
 	 * `update` to drop one they hold or to delete them.
 	 */
 	lockForkSources(tx: SqliteExecutor, ids: readonly string[], mode: "key-share" | "update"): Promise<void>;
+	/** The clause that locks the rows a read selects, for update or for key share; none where writers run one at a time. */
+	lockClause(mode: "key-share" | "update"): string;
 	/** The session's rewrite epoch, which a replace or a truncation changes and an append does not. */
 	forkRewriteEpoch(tx: SqliteExecutor, sessionId: string): Promise<string | undefined>;
 }
