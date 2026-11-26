@@ -378,7 +378,10 @@ for (const backend of storageBackends) {
 						await enable(store);
 						const made = parentEntries(40);
 						await store.create(header("p"), made);
-						const read = await store.readRange("p", 1, 40);
+						// A fork's resume reads the whole linear session as its branch, noting each entry for the fork to share.
+						const resume = await store.readResume!("p", undefined, { deferChildRecords: true, forFork: true });
+						const read = { entries: resume.branch.map(({ entry }) => entry), epoch: resume.epoch };
+						assert.equal(read.entries.length, 40);
 						const edited = read.entries[10] as SessionEntry & { message: { content: string } };
 						edited.message.content = "edited in memory";
 						const created: SessionWriteResult = await createForkArchive(store, header("c", "p"), read.entries, {
@@ -445,7 +448,7 @@ for (const backend of storageBackends) {
 			);
 
 			test(
-				"a tail branch and a clone of a session read in full share its rows too (#6560)",
+				"a tail branch shares its rows; a clone of a session a plain resume read copies them (#6560)",
 				() =>
 					withBackendScope(backend, async (scope) => {
 						const database = await scope.connect();
@@ -464,11 +467,12 @@ for (const backend of storageBackends) {
 						);
 						assert.equal((await segments(database, scope.prefix, branch)).length, 2);
 
-						// A clone keeps every row as stored.
+						// A plain resume notes nothing, so that opening a session costs what it did before forks shared history: a clone
+						// of the entries it read stores them, as it did then. Those its manager appends since are shared.
 						const cloning = await SessionManager.open(store, "p", CWD);
 						const clone = (await cloning.forkTo(CWD, store)).getSessionId();
-						assert.deepEqual(await ownRows(database, scope.prefix, clone), []);
-						assert.deepEqual(await segments(database, scope.prefix, clone), [["p", 1, PARENT_LENGTH, 0]]);
+						assert.equal((await ownRows(database, scope.prefix, clone)).length, PARENT_LENGTH);
+						assert.deepEqual(await segments(database, scope.prefix, clone), []);
 						assert.deepEqual((await store.load(clone)).entries, made);
 					}),
 				SERVER_TIMEOUT_MS,
