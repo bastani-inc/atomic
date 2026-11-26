@@ -1,6 +1,13 @@
-import { transactionFinisher } from "./added-exports.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "./database.js";
 import { dialectOf } from "./dialect.js";
+import * as statementSequence from "./statement-sequence.js";
+
+/**
+ * `transactionFinisher` of `statement-sequence.ts`, which the copy of that module 0.10.3 and 0.10.4 loaded lacks: a
+ * process an in-place update caught keeps that copy, where a named import would fail to link. Without it the stamps
+ * go out on their own, before the commit.
+ */
+const finishers: Partial<Pick<typeof statementSequence, "transactionFinisher">> = statementSequence;
 
 /**
  * What a schema held when one open read it: its relations, triggers and columns, and on PostgreSQL the versions its
@@ -120,7 +127,7 @@ export async function recordSqliteSchemaStamps(
 		ON CONFLICT(domain) DO UPDATE SET revision = excluded.revision, schema_version = excluded.schema_version`,
 		params: stamps.flatMap(({ domain, revision }) => [stampKey(domain), revision]),
 	};
-	if (options.last === true && transactionFinisher(tx)?.([upsert]) === true) return;
+	if (options.last === true && finishers.transactionFinisher?.(tx)?.([upsert]) === true) return;
 	await tx.run(upsert.sql, ...upsert.params);
 }
 
