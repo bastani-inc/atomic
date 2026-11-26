@@ -95,7 +95,11 @@ describe("workspace git runner (#3109)", () => {
 			assert.equal(result.cause.platform, process.platform);
 			assert.equal((result.cause.cause as { code?: string }).code, "ENOENT");
 			assert.equal(result.fields.gitPath, join(dirs.root, "no-such-git"));
-			assert.match(String(result.fields.installCommand), /git/i);
+			// macOS installs git with the command line developer tools.
+			assert.match(
+				String(result.fields.installCommand),
+				process.platform === "darwin" ? /^xcode-select --install$/u : /git/i,
+			);
 			assert.ok(result.hint.includes(String(result.fields.installCommand)));
 			assert.equal(commands.length, 1, "one --version probe, nothing else");
 			assert.deepEqual(readdirSync(dirs.home), [], "no store or worktree directories were created");
@@ -364,7 +368,8 @@ describe("workspace git runner (#3109)", () => {
 	test.skipIf(process.platform === "win32")(
 		"checks git once per executable and does not remember a failed check (#3109)",
 		async () => {
-			const gitPath = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf-8" }).trim();
+			// The git binary itself: macOS's /usr/bin/git is a launcher that refuses to run under another name.
+			const gitPath = realpathSync(join(execFileSync("git", ["--exec-path"], { encoding: "utf-8" }).trim(), "git"));
 			const link = join(dirs.root, "late-git");
 			const restore = setWorkspaceGitExecutableResolver(async () => ({ path: link, env: {} }));
 			try {
