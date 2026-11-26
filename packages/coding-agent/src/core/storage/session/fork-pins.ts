@@ -113,22 +113,21 @@ export async function replaceForkedSessionWithin(
 /**
  * In the transaction that writes a new session, by `create` or by a fork, before the session is written: when a
  * deleted session with this ID left a tombstone, the forks still reading its rows get their own copy, and the rows go.
+ * Resolves with whether there was a tombstone.
  *
- * The forks that read the rows are locked before the tombstone, as a fork locks its sources' rows before their
- * tombstones: a fork of one of them, which holds that fork's row while it waits for the tombstone, never waits for this
- * transaction while this one waits for it. Under the tombstone's lock no fork starts reading the rows, so the forks are
- * listed again there; one that a fork committed meanwhile is locked as it is detached.
+ * The tombstone is locked before the forks that read the rows, as every writer orders them: a fork locks the
+ * tombstones among its sources before any session's row, so a fork that waits for this tombstone holds no row this
+ * transaction locks next. Under the tombstone's lock no fork starts reading the rows, so the forks listed then are all
+ * of them.
  */
 export async function createOverTombstoneWithin(
 	host: ForkDetachHost,
 	tx: SqliteExecutor,
 	sessionId: string,
-): Promise<void> {
-	if (!(await isTombstoned(host, tx, sessionId))) return;
-	// Where writers run one at a time, nothing is locked.
-	if (host.lockClause("update") !== "")
-		await host.lockForkSources(tx, await host.forkChildren(tx, sessionId), "update");
+): Promise<boolean> {
+	if (!(await isTombstoned(host, tx, sessionId))) return false;
 	for (const child of await lockedReferrers(host, tx, sessionId))
 		await detachForkWithin(host, tx, sessionId, child, false);
 	await removeStoredRows(host, tx, sessionId);
+	return true;
 }

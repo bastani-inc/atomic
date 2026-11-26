@@ -123,6 +123,31 @@ async function tombstones(database: SqliteDatabase, prefix: string, id: string):
 	return Number(row?.n);
 }
 
+/**
+ * Resolves once `operation` has settled or a session of the scope's database waits for a row lock, whichever comes
+ * first: the operation then either ran to its end or holds what it locked so far while it waits.
+ */
+async function settledOrQueued(probe: SqliteDatabase, settled: () => boolean): Promise<void> {
+	for (const start = Date.now(); !settled(); ) {
+		assert.ok(Date.now() - start < LOCK_WAIT_POLL_MS, "the operation runs or queues for a lock");
+		const waiting = await probe.get(
+			`SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+		);
+		if (Number(waiting?.n) > 0) return;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
+/** `operation`, and whether it has settled yet; its failure is left to whoever awaits it. */
+function tracked<T>(operation: Promise<T>): { readonly done: Promise<T>; settled(): boolean } {
+	let settled = false;
+	const done = operation.finally(() => {
+		settled = true;
+	});
+	done.catch(() => {});
+	return { done, settled: () => settled };
+}
+
 /** `database`, counting the runs of its transactions' callbacks: a transaction run again after a failure counts twice. */
 function countingRuns(database: SqliteDatabase): { readonly database: SqliteDatabase; runs(): number } {
 	let runs = 0;
@@ -205,10 +230,35 @@ for (const backend of storageBackends) {
 					}),
 				SERVER_TIMEOUT_MS,
 			);
+
+		test(
+			"a fork of the deleted session's own fork into its ID reads the fork's history, and keeps it (#6560)",
+			() =>
+				withScope(async (scope) => {
+					const database = await scope.connect();
+					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+					await store.create(header("P"), chain(["p1", "p2", "p3"]));
+					await forkWhole(store, "P", "F");
+					const head = await store.readEntrySizes("F", 1, 0);
+					await store.append("F", chain(["f4"]), { expectSeq: head.lastSeq });
+					await store.delete("P");
+
+					await forkWhole(store, "F", "P");
+
+					const expected = ["p1", "p2", "p3", "f4"];
+					assert.deepEqual(await texts(store, "P"), expected, "the new P reads the fork's history");
+					assert.deepEqual(await texts(store, "F"), expected);
+					assert.equal(await tombstones(database, scope.prefix, "P"), 0);
+					await store.delete("F");
+					assert.deepEqual(await texts(store, "P"), expected, "deleting the fork leaves the new P whole");
+				}),
+			SERVER_TIMEOUT_MS,
+		);
 	});
 
-	// Creating over a tombstone locks the forks that read it, then the tombstone, as a fork locks its sources' rows, then
-	// their tombstones: a fork of such a reader never holds what the create waits for while it waits for the create.
+	// Creating over a tombstone locks the tombstone, then the forks that read it, as a fork locks the tombstones among its
+	// sources, then their rows: a fork of such a reader never holds what the create waits for while it waits for the
+	// create, and no fork adds a reader once the create holds the tombstone.
 	describe.skipIf(backend.skipReason !== undefined || backend.name !== "Postgres")(
 		`creating over a tombstone beside a fork of its reader on ${name}`,
 		() => {
@@ -247,22 +297,11 @@ for (const backend of storageBackends) {
 						const created = creator.create(header("P"), chain(["new-p1"]));
 						created.catch(() => {});
 						await stoppedAt(reached.reached, created, "the create stopping before it locks F's row");
-						let forkSettled = false;
-						const forked = forkWhole(forker, "F", "C").finally(() => {
-							forkSettled = true;
-						});
-						forked.catch(() => {});
+						const forked = tracked(forkWhole(forker, "F", "C"));
 						const probe = await scope.connect();
-						for (const start = Date.now(); !forkSettled; ) {
-							assert.ok(Date.now() - start < LOCK_WAIT_POLL_MS, "the fork runs or queues for a lock");
-							const waiting = await probe.get(
-								`SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`,
-							);
-							if (Number(waiting?.n) > 0) break;
-							await new Promise((resolve) => setTimeout(resolve, 20));
-						}
+						await settledOrQueued(probe, forked.settled);
 						reached.release();
-						await Promise.all([created, forked]);
+						await Promise.all([created, forked.done]);
 
 						assert.equal(creating.runs() - createRuns, 1, "the create ran once: no deadlock rolled it back");
 						assert.equal(forking.runs() - forkRuns, 1, "the fork ran once: no deadlock rolled it back");
@@ -272,6 +311,84 @@ for (const backend of storageBackends) {
 						assert.equal(await tombstones(probe, prefix, "P"), 0);
 						await forker.delete("F");
 						assert.deepEqual(await texts(forker, "C"), ["p1", "p2", "p3"], "the fork's fork reads its own copy");
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a reader a fork adds while the create runs, and a fork of that reader, wait for it without a cycle (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const { prefix } = scope;
+						const setup = await SqlSessionStore.open(await scope.connect(), { prefix });
+						await setup.create(header("P"), chain(["p1", "p2", "p3"]));
+						await forkWhole(setup, "P", "F");
+						await setup.delete("P");
+						await setup.close();
+
+						// The create stops before its first lock of F's row and again before its first of R's: each time, until a
+						// fork has run or queues for a lock. A fork of F that commits while the create holds nothing makes R a new
+						// reader of P; a fork of R then runs while the create holds what it locked before R.
+						const sessions = renderStorageIdentifiers("sessions", SESSION_TABLES, prefix).sessions;
+						const stops = new Map([
+							["F", gate()],
+							["R", gate()],
+						]);
+						const creating = countingRuns(
+							instrumented(await scope.connect(), {
+								pause: (sql, inTransaction, params) => {
+									if (!inTransaction) return undefined;
+									for (const [id, stop] of stops)
+										if (locksRowForUpdate(sessions, sql, params, id)) {
+											stops.delete(id);
+											return stop.wait();
+										}
+									return undefined;
+								},
+							}),
+						);
+						const stopF = stops.get("F")!;
+						const stopR = stops.get("R")!;
+						const forking = countingRuns(await scope.connect());
+						const forkingAgain = countingRuns(await scope.connect());
+						const creator = await SqlSessionStore.open(creating.database, { prefix });
+						const forker = await SqlSessionStore.open(forking.database, { prefix });
+						const forkerAgain = await SqlSessionStore.open(forkingAgain.database, { prefix });
+						await forker.readEntrySizes("F", 1, 0);
+						const runs = () => [creating.runs(), forking.runs(), forkingAgain.runs()];
+						const before = runs();
+						const probe = await scope.connect();
+
+						const created = tracked(creator.create(header("P"), chain(["new-p1"])));
+						await stoppedAt(stopF.reached, created.done, "the create stopping before it locks F's row");
+						const forkedF = tracked(forkWhole(forker, "F", "R"));
+						await settledOrQueued(probe, forkedF.settled);
+						stopF.release();
+						// The create reaches R only where R committed before the create's list of P's readers.
+						await Promise.race([stopR.reached, created.done.catch(() => {})]);
+						let forkedR: ReturnType<typeof tracked> | undefined;
+						if (!created.settled()) {
+							await forkedF.done;
+							forkedR = tracked(forkWhole(forkerAgain, "R", "S"));
+							await settledOrQueued(probe, forkedR.settled);
+						}
+						stopR.release();
+						await Promise.all([created.done, forkedF.done]);
+						forkedR ??= tracked(forkWhole(forkerAgain, "R", "S"));
+						await forkedR.done;
+
+						const after = runs();
+						assert.deepEqual(
+							after.map((count, index) => count - before[index]!),
+							[1, 1, 1],
+							"the create and both forks each ran once: no deadlock rolled one back",
+						);
+						assert.deepEqual(await texts(forker, "P"), ["new-p1"]);
+						for (const id of ["F", "R", "S"]) assert.deepEqual(await texts(forker, id), ["p1", "p2", "p3"], id);
+						assert.equal(await tombstones(probe, prefix, "P"), 0);
+						await forker.delete("F");
+						await forker.delete("R");
+						assert.deepEqual(await texts(forker, "S"), ["p1", "p2", "p3"], "the last fork reads its own copy");
 					}),
 				SERVER_TIMEOUT_MS,
 			);
