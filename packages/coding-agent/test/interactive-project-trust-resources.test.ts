@@ -24,7 +24,9 @@ async function withPendingProject(
 	setup?: ((project: string, agentDir: string) => void) | ((project: string, agentDir: string) => Promise<string[]>),
 	host: "isolated" | "in-process" = "isolated",
 ) {
-	const root = mkdtempSync(join(tmpdir(), "atomic-trust-disclosure-"));
+	// The real path: the policy extension below compares a folder with the engine's working directory, which is real,
+	// and a resumed session reports the folder it was saved with (macOS reaches the temporary directory through /var).
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "atomic-trust-disclosure-")));
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "project");
 	const source = join(root, "source");
@@ -796,7 +798,15 @@ test(
 			const extensions = rowOf("[Extensions]");
 			assert.ok(extensions > 0);
 			// Select part of a row: the selection holds the rows where they are.
+			const selectedFrom = cli.output().length;
 			cli.write(`\x1b[<0;2;${extensions}M\x1b[<32;9;${extensions}M\x1b[<0;9;${extensions}m`);
+			// Approve only once the selection is painted (in reverse video): an approval that reaches the interface
+			// before the mouse input does finds nothing selected, and lists the approved prompt at once.
+			await cli.waitForScreen(
+				() => /\x1b\[7m(?:\x1b\[[\d;:]*m)*Extensio/u.test(cli.output().slice(selectedFrom)),
+				STARTUP_TIMEOUT_MS,
+				"the selected text",
+			);
 			await approveProject();
 			assert.doesNotMatch(cli.screen(), /\/projectapproved/);
 			// A click on the prompt ends the selection.
