@@ -163,11 +163,11 @@ import {
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 /**
- * `sessionEntryRelinker` of `blob-store.ts`, which the copy a process of an earlier release loaded lacks. Such a process
+ * `sessionEntryLinks` of `blob-store.ts`, which the copy a process of an earlier release loaded lacks. Such a process
  * keeps that copy after an in-place update, and can load this module from the update: a named import would fail to link
- * there. Without it, a materialization leaves the links its triggers wrote, as there, until the index is rebuilt (#6560).
+ * there. Without it, a materialization leaves the links the index's triggers wrote until the index is rebuilt (#6560).
  */
-const relinkers: Partial<Pick<typeof blobStore, "sessionEntryRelinker">> = blobStore;
+const entryLinkers: Partial<Pick<typeof blobStore, "sessionEntryLinks">> = blobStore;
 
 /**
  * The newest sessions schema this build reads and writes. Version 2 stores long entries in chunks (#4954), which a build
@@ -770,8 +770,9 @@ export class SqlSessionStore implements SessionStore {
 	private readonly forkTables: SessionForkTables;
 	/** See {@link forkLinks}. */
 	private forkLinkStatements?: ForkLinkWrites;
-	/** See {@link entryRelinker}. */
-	private entryRelink?: ReturnType<typeof blobStore.sessionEntryRelinker>;
+	/** See {@link entryLinks}. */
+	private entryLinkStatements?: Partial<Pick<blobStore.SessionEntryLinks, "materialized">> &
+		Pick<blobStore.SessionEntryLinks, "settle">;
 	/**
 	 * Whether a read of this store found its sessions schema at {@link SESSION_SCHEMA_VERSION_SHARED_HISTORY}: one way,
 	 * as the switch is. A read outside a transaction reads sessions through their views once it is set, and before that
@@ -2145,7 +2146,7 @@ export class SqlSessionStore implements SessionStore {
 			tables: this.tables,
 			forkTables: this.forkTables,
 			blobs: { legacyBlobData: this.legacyBlobData, chunkBytes: SESSION_BLOB_CHUNK_BYTES },
-			relinkEntries: (tx, sessionId, fromSeq) => this.entryRelinker()(tx, sessionId, fromSeq),
+			entryLinks: this.entryLinks(),
 			transaction: (body) => this.transaction(body, SESSION_TRANSACTION),
 		});
 	}
@@ -2165,14 +2166,18 @@ export class SqlSessionStore implements SessionStore {
 		return this.forkLinkStatements;
 	}
 
-	/** Links a session's stored rows again in the snapshot index, from a seq on, in seq order (#6560). */
-	private entryRelinker(): ReturnType<typeof blobStore.sessionEntryRelinker> {
-		this.entryRelink ??= (relinkers.sessionEntryRelinker ?? (() => async () => {}))(
+	/** How the snapshot index links a materialization's copies and a fork moved onto another copy (#6560). */
+	private entryLinks(): NonNullable<typeof this.entryLinkStatements> {
+		this.entryLinkStatements ??= entryLinkers.sessionEntryLinks?.(
 			this.prefix,
 			this.dialect,
 			this.forkTables.forkSegments,
-		);
-		return this.entryRelink;
+		) ?? {
+			async settle(tx, _sessionId, _fromSeq, before) {
+				for (const { sql, params } of before) await tx.run(sql, ...params);
+			},
+		};
+		return this.entryLinkStatements;
 	}
 
 	/**

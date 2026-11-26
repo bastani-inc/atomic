@@ -18,9 +18,11 @@ import type { BatchWrite } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import {
 	entriesIndexComplete,
+	forkLinksCheck,
 	forkSegmentsTable,
 	forkSessionLink,
 	legacyForkLinksTriggerName,
+	materializedForkLinks,
 	ownDuplicate,
 	ownParentSeq,
 	parentColumns,
@@ -597,7 +599,15 @@ interface IndexSource {
 	 * writes it over for a session with fork segments, and the one that sets a snapshot entry's previous snapshot, its
 	 * parent's anchor. The children count, the snapshot's records and when a pin began stay.
 	 */
-	readonly relink?: { readonly link: string; readonly fork?: string; readonly refs: string };
+	readonly relink?: {
+		readonly link: string;
+		readonly fork?: string;
+		readonly refs: string;
+		/** `refs` for the rows session `?` stores from seq `?` on, in one statement. */
+		readonly refsFrom: string;
+	};
+	/** The rows session `?` stores from seq `?` on, as `rowwise` yields one (#6560). */
+	readonly entriesFrom?: string;
 	/** Clears the source's index rows when its triggers are installed again, so no stale row outlives its entry. */
 	readonly reset?: readonly string[];
 	/**
@@ -953,6 +963,11 @@ function indexSources(
 	/** One entry as `r`, with its parent named once, so that each statement parses the entry's JSON for it only once. */
 	const triggerEntry = `(SELECT ${entryColumns.map((name) => `NEW.${name} AS ${name}`).join(", ")}, ${parentColumns(d, "NEW.entry_json")})`;
 	const storedEntry = `(SELECT ${entryColumns.join(", ")}, ${parentColumns(d, "entry_json")} FROM ${entries} WHERE ${d.rowOrder()} = ?)`;
+	/** The rows session `?` stores from seq `?` on, as `storedEntry` yields one. */
+	const entriesFrom = `(SELECT ${entryColumns.join(", ")}, ${parentColumns(d, "entry_json")} FROM ${entries} WHERE session_id = ? AND seq >= ?)`;
+	/** Sets the previous snapshot of the references of `rows` to their parent's anchor: when a pin began stays. */
+	const refsAgain = (rows: string) =>
+		`UPDATE ${t.sessionRefs} SET prev_seq = linked.anchor_seq FROM (SELECT r.session_id, r.seq, parent.anchor_seq FROM ${parentOf(rows)} WHERE ${isSnapshot}) AS linked WHERE ${t.sessionRefs}.session_id = linked.session_id AND ${t.sessionRefs}.seq = linked.seq`;
 	const indexComplete = entriesIndexComplete(t.sources);
 	const newRowOrder = d.rowOrder("NEW");
 	const forkLink = (rows: string) =>
@@ -996,11 +1011,13 @@ function indexSources(
 		backfill: [],
 		rowwise: [...sessionLink(storedEntry), ...forkLink(storedEntry), ...sessionRecord(storedEntry)],
 		...(forkSegments === undefined ? {} : { segments: forkSegments }),
+		entriesFrom,
 		relink: {
 			link: sessionLink(storedEntry)[1]!,
 			...(forkSegments === undefined ? {} : { fork: forkLink(storedEntry)[0]! }),
 			// The reference's previous snapshot only: when a pin began stays as its first indexing recorded it.
-			refs: `UPDATE ${t.sessionRefs} SET prev_seq = linked.anchor_seq FROM (SELECT r.session_id, r.seq, parent.anchor_seq FROM ${parentOf(storedEntry)} WHERE ${isSnapshot}) AS linked WHERE ${t.sessionRefs}.session_id = linked.session_id AND ${t.sessionRefs}.seq = linked.seq`,
+			refs: refsAgain(storedEntry),
+			refsFrom: refsAgain(entriesFrom),
 		},
 		// The triggers that index degraded pins (#4922). Older builds install theirs under the same names (#5065).
 		version: "session-entries@degraded-pins",
@@ -1254,24 +1271,62 @@ async function linkStoredEntry(executor: SqliteExecutor, linking: EntryLinking, 
 }
 
 /**
- * The relinking of a session's entries for a session store under `prefix` whose fork segments table is
- * `forkSegments` (#6560): see {@link relinkSessionEntries}. It does nothing until the index's backfill of the session
- * entries is done, which links the rows in seq order itself.
+ * How a session store links the rows a materialization copies into a fork, and the forks it moves onto another
+ * session's copy (#6560): see {@link sessionEntryLinks}.
  */
-export function sessionEntryRelinker(
-	prefix: string,
-	dialect: StorageDialect,
-	forkSegments: string,
-): (executor: SqliteExecutor, sessionId: string, fromSeq: number) => Promise<void> {
+export interface SessionEntryLinks {
+	/** The statement that links one piece of the rows a materialization copied: see `materializedForkLinks`. */
+	readonly materialized: string;
+	/**
+	 * Runs `before`, the writes of session `sessionId`'s new segments, and in the same request reads whether its links
+	 * from seq `fromSeq` on are what a save in seq order writes ({@link forkLinksCheck}). They are but in a few
+	 * histories, with entries that share an ID or name a parent after them: the session is then linked again from the
+	 * first row that is not, row by row, with the sessions that read it.
+	 */
+	settle(
+		executor: SqliteExecutor,
+		sessionId: string,
+		fromSeq: number,
+		before: readonly SqliteStatement[],
+	): Promise<void>;
+}
+
+/**
+ * The {@link SessionEntryLinks} of a session store under `prefix` whose fork segments table is `forkSegments` (#6560).
+ * Until the index's backfill of the session entries is done, which links the rows in seq order itself, `settle` only
+ * writes the segments.
+ */
+export function sessionEntryLinks(prefix: string, dialect: StorageDialect, forkSegments: string): SessionEntryLinks {
 	const t = snapshotIndexTables(prefix);
 	const source = indexSources(prefix, t, dialect, forkSegments).find((source) => source.name === "session-entries")!;
 	const linking = entryLinking(source, dialect, t.sessionLinks);
-	return async (executor, sessionId, fromSeq) => {
-		const complete = await executor.get<SqliteRow & { done: number | boolean | null }>(
-			`SELECT ${entriesIndexComplete(t.sources)} AS done`,
-		);
-		if (complete?.done === true || Number(complete?.done) === 1)
-			await relinkFrom(executor, linking, sessionId, fromSeq);
+	const complete = entriesIndexComplete(t.sources);
+	// The rows to check, from their links, which name each entry's id and its parent's, so no entry's JSON is parsed. A
+	// link without a parent is taken for a root: one whose parent is a value of another type, which no store writes, is
+	// linked broken, so the check finds it and the session is linked again row by row, from its JSON. A snapshot entry
+	// is its own anchor, as no other entry is.
+	const linked = `(SELECT l.session_id, l.seq, l.entry_id, l.parent_id, CASE WHEN l.parent_id IS NOT NULL THEN 'text' ELSE 'null' END AS parent_type, l.anchor_seq AS own_anchor FROM ${t.sessionLinks} AS l WHERE l.session_id = ? AND l.seq >= ?)`;
+	const check = forkLinksCheck(
+		{ links: t.sessionLinks, segments: forkSegments, refs: t.sessionRefs },
+		linked,
+		"r.own_anchor = r.seq",
+		complete,
+	);
+	return {
+		materialized: materializedForkLinks(t.sessionLinks, forkSegments, complete, dialect.types.int),
+		async settle(executor, sessionId, fromSeq, before) {
+			type Verdict = SqliteRow & { seq: number | null; children: number; refs: number };
+			const [, verdict] = await Promise.all([
+				runInOrder(executor, before),
+				executor.get<Verdict>(check, sessionId, fromSeq, sessionId, fromSeq, sessionId, fromSeq),
+			]);
+			if (verdict === undefined) return;
+			const children = Number(verdict.children) === 1;
+			if (verdict.seq !== null || children)
+				await relinkFrom(executor, linking, sessionId, children ? fromSeq : Number(verdict.seq));
+			if (verdict.seq !== null || children || Number(verdict.refs) === 1)
+				await executor.run(linking.relink.refsFrom, sessionId, fromSeq);
+		},
 	};
 }
 

@@ -3,12 +3,13 @@
  * written through fork-lineage.ts, in transactions of the store.
  */
 
-import type { SqliteExecutor, SqliteRow } from "../database.js";
+import type { SqliteExecutor, SqliteRow, SqliteStatement } from "../database.js";
 import type { StorageDialect } from "../dialect.js";
 import type { ForkDetachHost } from "./fork-detach.js";
 import {
 	type ForkMaterializeTables,
 	forkChildren,
+	forkSegmentWrites,
 	lockForkSources,
 	materializeForkSegments,
 	readForkSegments,
@@ -24,10 +25,13 @@ export interface ForkHostStore {
 	readonly forkTables: SessionForkTables;
 	readonly blobs: { readonly legacyBlobData: boolean; readonly chunkBytes: number };
 	/**
-	 * Links the rows session `sessionId` stores from seq `fromSeq` on again in the snapshot index, in seq order: see
-	 * `sessionEntryRelinker`.
+	 * How the snapshot index links the rows a materialization copies into a fork, and a fork moved onto another session's
+	 * copy: see `sessionEntryLinks`. Without `materialized`, the copied rows keep the links the index's triggers wrote.
 	 */
-	relinkEntries(tx: SqliteExecutor, sessionId: string, fromSeq: number): Promise<void>;
+	readonly entryLinks: {
+		readonly materialized?: string;
+		settle(tx: SqliteExecutor, sessionId: string, fromSeq: number, before: readonly SqliteStatement[]): Promise<void>;
+	};
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
 }
 
@@ -70,19 +74,24 @@ export function forkDetachHost(store: ForkHostStore): ForkDetachHost {
 				dialect,
 				materialize,
 				store.blobs,
-				(tx, sessionId, fromSeq) => store.relinkEntries(tx, sessionId, fromSeq),
+				store.entryLinks,
 				childId,
 				await length(tx, childId),
 				pieces,
 			);
 		},
 		async writeForkSegments(tx, sessionId, segments) {
-			if (segments.length > 0 || (await readForkSegments(tx, lineage, sessionId)).length > 0)
-				await writeForkSegments(tx, lineage, sessionId, segments, await length(tx, sessionId));
-			// A fork moved onto another session's copy of its rows reads that copy's links, which that session linked in its
-			// own view: the rows it stores after them are linked again (#6560).
+			// A fork moved onto another session's copy of its rows reads that copy's links: the rows it stores after them
+			// are checked, in the request that writes its segments, and linked again where they differ (#6560).
 			if (segments.length > 0)
-				await store.relinkEntries(tx, sessionId, Math.min(...segments.map((segment) => segment.baseSeq + 1)));
+				await store.entryLinks.settle(
+					tx,
+					sessionId,
+					Math.min(...segments.map((segment) => segment.baseSeq + 1)),
+					forkSegmentWrites(lineage, sessionId, segments, await length(tx, sessionId)),
+				);
+			else if ((await readForkSegments(tx, lineage, sessionId)).length > 0)
+				await writeForkSegments(tx, lineage, sessionId, segments, await length(tx, sessionId));
 		},
 		async lockForkSources(tx, ids, mode) {
 			await lockForkSources(tx, dialect, lineage, ids, mode);
