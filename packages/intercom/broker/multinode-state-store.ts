@@ -352,6 +352,11 @@ export interface OutboxStore {
 	claim(request: OutboxClaimRequest): Promise<OutboxClaimResult>;
 	renewClaim(claim: OutboxClaim): Promise<OutboxRenewClaimResult>;
 	/**
+	 * `renewClaim` for each of `claims`, of distinct rows, in one transaction whose one statement renews every claim still
+	 * current, answered in the order given (#6560). Optional: without it, a broker renews its claims one at a time.
+	 */
+	renewClaims?(claims: readonly OutboxClaim[]): Promise<OutboxRenewClaimResult[]>;
+	/**
 	 * #3983: the claim's recipient reports it is still saving the row, so the sender's broker keeps its sender
 	 * waiting. Optional: a store without it never extends a sender's wait.
 	 */

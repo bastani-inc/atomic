@@ -1444,6 +1444,48 @@ test("a send to a session on another broker reads as many rows of the shared dat
 	assert.equal(await rowsPerSend(), alone);
 });
 
+test("a renewal renews every message a broker is delivering in one call, not one each (#6560)", async () => {
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+	try {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const sent = Array.from({ length: 4 }, (_, index) => message({ content: { text: `in flight ${index}` } }));
+		for (const each of sent) a!.send(sender, "recipient", each);
+		// Written to the recipient, which has not confirmed saving them: all four stay claimed, in flight.
+		for (const each of sent) await waitFor(() => messageFrames(recipient, each.id)[0]);
+		const outbox = b!.opened.state.outbox;
+		const renewClaims = outbox.renewClaims!.bind(outbox);
+		const together: Promise<Awaited<ReturnType<typeof renewClaims>>>[] = [];
+		const renewedTogether = vi.spyOn(outbox, "renewClaims").mockImplementation((claims) => {
+			const renewing = renewClaims(claims);
+			together.push(renewing);
+			return renewing;
+		});
+		const renewedAlone = vi.spyOn(outbox, "renewClaim");
+		try {
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(together.length, 1), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				renewedTogether.mock.calls[0]![0].map((claim) => claim.messageId).sort(),
+				sent.map((each) => each.id).sort(),
+			);
+			assert.deepEqual(
+				(await together[0]!).map((renewed) => renewed.status),
+				["renewed", "renewed", "renewed", "renewed"],
+			);
+			assert.equal(renewedAlone.mock.calls.length, 0);
+		} finally {
+			renewedTogether.mockRestore();
+			renewedAlone.mockRestore();
+		}
+		for (const each of sent) b!.router.received(recipient, each.id);
+		for (const each of sent) assert.equal((await waitFor(() => outcomeOf(sender, each.id))).type, "delivered");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 test("an ask whose route write fails is redelivered and keeps its reply route instead of settling without one", async () => {
 	const [a, b] = await cluster();
 	const asker = await a!.connect("asker");

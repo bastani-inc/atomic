@@ -25,6 +25,7 @@ import {
 	type OutboxEnqueueRequest,
 	type OutboxEnqueueResult,
 	type OutboxFrame,
+	type OutboxRenewClaimResult,
 	type OutboxRow,
 	type OutboxRowState,
 	type OutboxStore,
@@ -54,6 +55,8 @@ const SEND_WAKE_TARGET = "atomic.intercom_send_wake_target";
 const SEND_HINT = "atomic.intercom_send_hint";
 /** The setting a PostgreSQL claim transaction records in that its recipient has undelivered rows, and its locks are held. */
 const CLAIM_GATE = "atomic.intercom_outbox_claim";
+/** The setting a PostgreSQL batched renewal records in when fewer rows renewed than it was given, so its follow-up read runs. */
+const RENEW_MISSES = "atomic.intercom_renew_misses";
 /** The most `markDelivered` calls one transaction settles together (#6560). */
 const MARK_DELIVERED_BATCH_MAX = 100;
 
@@ -96,6 +99,8 @@ function toRow(record: OutboxRecord): OutboxRow {
 }
 
 const isSettled = (record: OutboxRecord): boolean => record.state === "delivered" || record.state === "failed";
+
+const renewedAnswer = () => ({ status: "renewed" }) as const;
 
 /**
  * #5607: the wake-up hint written with an offline recipient's row failed, so neither was written. The hint is only a
@@ -232,7 +237,7 @@ export function openSqlOutboxStore(options: IntercomBrokerStateOptions): Promise
 async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Promise<SqlOutboxStore> {
 	const { database } = options;
 	const table = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_outbox`;
-	const { types, nowMs, greatest, lockClause, name: dialect } = dialectOf(database);
+	const { types, nowMs, greatest, lockClause, jsonValues, name: dialect } = dialectOf(database);
 	/** Claim writes and expiry: each decides on the rows it locks (#6560). */
 	const fenced = rowTransaction();
 	const ageSince = (column: string) => greatest("0", `${nowMs} - ${column}`);
@@ -331,28 +336,39 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 	const settled = `failure_reason = ?, settled_at = ${nowMs},
 		claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL`;
 
+	// One bound JSON array of `[messageId, token, claimantId]` triples keeps the statement text fixed for any batch size
+	// and matches each row against one whole claim rather than separate lists of ids and tokens (#6560).
+	const claimsCte =
+		dialect === "postgres"
+			? "WITH claims AS (SELECT c ->> 0 AS message_id, c ->> 1 AS claim_token, c ->> 2 AS claimant_id FROM jsonb_array_elements(?::jsonb) AS c)"
+			: "WITH claims AS (SELECT json_extract(value, '$[0]') AS message_id, json_extract(value, '$[1]') AS claim_token, json_extract(value, '$[2]') AS claimant_id FROM json_each(?))";
+	const claimTriples = (claims: readonly OutboxClaim[]): string =>
+		JSON.stringify(claims.map((claim) => [claim.messageId, claim.token, claim.claimantId]));
+	const matchesClaim =
+		"(message_id, claim_token, claimant_id) IN (SELECT message_id, claim_token, claimant_id FROM claims)";
+	const messageIdIn = (subquery: string) =>
+		dialect === "postgres" ? `message_id = ANY(ARRAY(${subquery}))` : `message_id IN (${subquery})`;
+	const lockedClaimsWhere =
+		dialect === "postgres"
+			? `${messageIdIn(
+					`SELECT message_id FROM ${table} WHERE state = 'claimed'
+						AND ${messageIdIn("SELECT message_id FROM claims")} AND ${matchesClaim}
+					ORDER BY sequence${lockClause("update")}`,
+				)} AND state = 'claimed' AND ${matchesClaim}`
+			: `state = 'claimed' AND ${matchesClaim}`;
+
 	/**
 	 * Settles each of `claims`, of distinct rows, as delivered, in one transaction: one UPDATE, sent with its start, that
 	 * locks their rows in sequence order, as a claim locks a recipient's rows, and changes those whose claim is still
 	 * current. Only when it changed fewer rows than it was given are the others read, to report why (#6560).
 	 */
 	const markDeliveredTogether = (claims: readonly OutboxClaim[]): Promise<OutboxDeliveredResult[]> => {
-		// The claims go as one JSON parameter, so the statement's text is the same however many it settles: a server that
-		// keeps prepared statements, and pg_stat_statements, see one statement, not one per count (#6560). Each row is
-		// found by its key, then checked against its claim.
-		const current = "(message_id, claim_token, claimant_id) IN (SELECT message_id, claim_token, claimant_id FROM claims)";
 		const write: SqliteStatement = {
-			sql: `WITH claims AS (
-					SELECT c ->> 0 AS message_id, c ->> 1 AS claim_token, c ->> 2 AS claimant_id FROM jsonb_array_elements(?::jsonb) AS c
-				)
+			sql: `${claimsCte}
 				UPDATE ${table} SET state = 'delivered', ${settled}
-				WHERE message_id = ANY(ARRAY(
-					SELECT message_id FROM ${table} WHERE state = 'claimed'
-						AND message_id = ANY(ARRAY(SELECT message_id FROM claims)) AND ${current}
-					ORDER BY sequence${lockClause("update")}
-				)) AND state = 'claimed' AND ${current}
+				WHERE ${lockedClaimsWhere}
 				RETURNING ${columns}`,
-			params: [JSON.stringify(claims.map((claim) => [claim.messageId, claim.token, claim.claimantId])), null],
+			params: [claimTriples(claims), null],
 		};
 		return database.transaction(
 			async (executor) => {
@@ -366,7 +382,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 						: new Map(
 								(
 									await executor.all<OutboxRecord>(
-										`SELECT ${columns} FROM ${table} WHERE message_id = ANY(ARRAY(SELECT jsonb_array_elements_text(?::jsonb)))`,
+										`SELECT ${columns} FROM ${table} WHERE ${messageIdIn(`SELECT value FROM ${jsonValues("?")}`)}`,
 										JSON.stringify(others.map((claim) => claim.messageId)),
 									)
 								).map((record) => [record.message_id, record]),
@@ -381,6 +397,108 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				});
 			},
 			{ ...fenced, leading: [write] },
+		);
+	};
+
+	/**
+	 * Renews each of `claims` in one transaction: one UPDATE that matches each row against an exact `(message_id,
+	 * claim_token, claimant_id)` triple, locks the rows in sequence order on PostgreSQL so it never waits in a cycle with
+	 * claims or settlements, and updates only claims still current. On PostgreSQL the update, a gated follow-up read for
+	 * misses, and the commit go in one round trip. Like `renewClaim`, its commit does not wait for the disk: the next
+	 * renewal repeats one a server crash lost (#6560, #6712).
+	 */
+	const renewClaims = async (claims: readonly OutboxClaim[]): Promise<OutboxRenewClaimResult[]> => {
+		const results: (OutboxRenewClaimResult | undefined)[] = claims.map((claim) =>
+			claim.messageId.length === 0
+				? invalid("empty-message-id")
+				: claim.claimantId.length === 0
+					? invalid("empty-claimant-id")
+					: undefined,
+		);
+		const valid = claims.filter((_, index) => results[index] === undefined);
+		if (valid.length === 0) return results as OutboxRenewClaimResult[];
+		const key = (messageId: string, token: string, claimantId: string) =>
+			JSON.stringify([messageId, token, claimantId]);
+		const answer = (
+			renewed: ReadonlySet<string>,
+			found: ReadonlyMap<string, OutboxRecord>,
+		): OutboxRenewClaimResult[] =>
+			claims.map((claim, index): OutboxRenewClaimResult => {
+				const checked = results[index];
+				if (checked !== undefined) return checked;
+				if (renewed.has(key(claim.messageId, claim.token, claim.claimantId))) return renewedAnswer();
+				const record = found.get(claim.messageId);
+				if (record === undefined) return { status: "unknown" };
+				if (isSettled(record)) return { status: "settled", row: toRow(record) };
+				return { status: "stale" };
+			});
+		if (dialect === "postgres") {
+			const write: SqliteStatement = {
+				sql: `${claimsCte}, renewed AS (
+						UPDATE ${table} SET claim_renewed_at = ${nowMs}
+						WHERE ${lockedClaimsWhere}
+						RETURNING message_id, claim_token, claimant_id
+					), gate AS MATERIALIZED (
+						SELECT set_config('${RENEW_MISSES}', CASE WHEN (SELECT COUNT(*) FROM renewed) < CAST(? AS ${types.int}) THEN '1' ELSE '' END, true) AS misses
+					)
+					SELECT renewed.message_id, renewed.claim_token, renewed.claimant_id
+					FROM gate LEFT JOIN renewed ON TRUE`,
+				params: [claimTriples(valid), valid.length],
+			};
+			const readMisses: SqliteStatement = {
+				sql: `SELECT ${columns} FROM ${table}
+					WHERE current_setting('${RENEW_MISSES}', true) = '1'
+						AND ${messageIdIn(`SELECT value FROM ${jsonValues("?")}`)}`,
+				params: [JSON.stringify(valid.map((claim) => claim.messageId))],
+			};
+			return database.transaction(
+				async (executor) => {
+					const renewed = new Set<string>();
+					for (const row of await executor.all<
+						SqliteRow & { message_id: string | null; claim_token: string | null; claimant_id: string | null }
+					>(write.sql, ...write.params))
+						if (row.message_id !== null && row.claim_token !== null && row.claimant_id !== null)
+							renewed.add(key(row.message_id, row.claim_token, row.claimant_id));
+					const found = new Map(
+						(await executor.all<OutboxRecord>(readMisses.sql, ...readMisses.params)).map((record) => [
+							record.message_id,
+							record,
+						]),
+					);
+					return answer(renewed, found);
+				},
+				{ ...fenced, leading: [write, readMisses], leadingOnly: true, relaxedDurability: true },
+			);
+		}
+		const write: SqliteStatement = {
+			sql: `${claimsCte}
+				UPDATE ${table} SET claim_renewed_at = ${nowMs}
+				WHERE ${lockedClaimsWhere}
+				RETURNING message_id, claim_token, claimant_id`,
+			params: [claimTriples(valid)],
+		};
+		return database.transaction(
+			async (executor) => {
+				const renewed = new Set<string>();
+				for (const row of await executor.all<
+					SqliteRow & { message_id: string; claim_token: string; claimant_id: string }
+				>(write.sql, ...write.params))
+					renewed.add(key(row.message_id, row.claim_token, row.claimant_id));
+				const others = valid.filter((claim) => !renewed.has(key(claim.messageId, claim.token, claim.claimantId)));
+				const found =
+					others.length === 0
+						? new Map<string, OutboxRecord>()
+						: new Map(
+								(
+									await executor.all<OutboxRecord>(
+										`SELECT ${columns} FROM ${table} WHERE ${messageIdIn(`SELECT value FROM ${jsonValues("?")}`)}`,
+										JSON.stringify(others.map((claim) => claim.messageId)),
+									)
+								).map((record) => [record.message_id, record]),
+							);
+				return answer(renewed, found);
+			},
+			{ ...fenced, leading: [write], relaxedDurability: true },
 		);
 	};
 
@@ -909,8 +1027,10 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			// Its claimant renews again within the renewal interval, far inside the claim's staleness limit: a renewal lost
 			// in a crash of the database server leaves the claim a renewal older and still current, so its commit does not
 			// wait for the disk.
-			return withClaim(claim, `claim_renewed_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const, true);
+			return withClaim(claim, `claim_renewed_at = ${nowMs}`, [], renewedAnswer, true);
 		},
+
+		renewClaims,
 
 		reportSaving(claim) {
 			return withClaim(claim, `saving_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const);

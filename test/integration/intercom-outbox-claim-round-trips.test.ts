@@ -436,6 +436,63 @@ for (const route of postgresRoutes) {
 					}),
 				);
 			});
+
+			test("batched claim renewals match whole triples, reject swapped tokens, and take one round trip (#6712)", async () => {
+				await withPostgresDatabase(async (scope) => {
+					const user = decodeURIComponent(new URL(scope.url).username);
+					const url = route.url(scope, scope.name, user);
+					const { state, bus } = await openIntercomBrokerState({ openDatabase: () => scope.open({ url }) });
+					await bus.close();
+					const texts = new Set<string>();
+					const query = pg.Client.prototype.query;
+					pg.Client.prototype.query = function (this: pg.Client, ...args: unknown[]) {
+						const first = args[0] as string | { text?: string } | undefined;
+						const text = typeof first === "string" ? first : first?.text;
+						if (text?.includes("SET claim_renewed_at =")) texts.add(text);
+						return Reflect.apply(query, this, args);
+					} as pg.Client["query"];
+					restores.push(() => {
+						pg.Client.prototype.query = query;
+					});
+					try {
+						for (const id of ["r-1", "r-2", "r-3", "r-4", "r-5"]) await enqueue(state, id, "target-r");
+						const claimed = await claim(state, "broker-b", "target-r");
+						assert.equal(claimed.status, "claimed");
+						if (claimed.status !== "claimed") return;
+						const claims = claimed.rows.map(({ claim }) => claim);
+						const trips = countPostgresRoundTrips();
+						const allRenewed = await state.outbox.renewClaims!(claims);
+						const allTrips = trips.take();
+						assert.deepEqual(
+							allRenewed.map((answer) => answer.status),
+							["renewed", "renewed", "renewed", "renewed", "renewed"],
+						);
+						assert.equal(allTrips, 1);
+						const subset = await state.outbox.renewClaims!(claims.slice(0, 2));
+						const subsetTrips = trips.take();
+						assert.deepEqual(
+							subset.map((answer) => answer.status),
+							["renewed", "renewed"],
+						);
+						assert.equal(subsetTrips, 1);
+						const mixed = await state.outbox.renewClaims!([
+							claims[0]!,
+							{ ...claims[1]!, token: claims[2]!.token },
+							{ ...claims[2]!, token: claims[1]!.token },
+							{ messageId: "missing", claimantId: "broker-b", token: "t", attempt: 1 },
+						]);
+						const mixedTrips = trips.take();
+						assert.deepEqual(
+							mixed.map((answer) => answer.status),
+							["renewed", "stale", "stale", "unknown"],
+						);
+						assert.equal(mixedTrips, 1);
+						assert.equal(texts.size, 1, [...texts].join("\n---\n"));
+					} finally {
+						await state.close();
+					}
+				});
+			});
 		},
 	);
 }

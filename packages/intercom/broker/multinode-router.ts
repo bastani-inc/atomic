@@ -52,6 +52,7 @@ import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxClaim,
+	type OutboxRenewClaimResult,
 	type OutboxEnqueueRequest,
 	type OutboxEnqueueResult,
 	type OutboxRow,
@@ -6466,13 +6467,19 @@ export class MultiNodeRouter {
 				}
 			});
 		}
-		for (const inflight of [...this.inflight.values()]) {
-			const renewed = await this.state.outbox.renewClaim(inflight.claim);
+		const inflights = [...this.inflight.values()];
+		const dropUnrenewed = (inflight: Inflight, renewed: OutboxRenewClaimResult) => {
 			if (renewed.status !== "renewed" && this.inflight.get(inflight.row.messageId) === inflight) {
 				this.inflight.delete(inflight.row.messageId);
 				inflight.finishOpening?.();
 			}
-		}
+		};
+		// #6560: every claim in flight renewed in one statement, not a transaction each.
+		const outbox = this.state.outbox;
+		if (inflights.length > 1 && outbox.renewClaims !== undefined) {
+			const renewed = await outbox.renewClaims(inflights.map((inflight) => inflight.claim));
+			inflights.forEach((inflight, index) => dropUnrenewed(inflight, renewed[index]!));
+		} else for (const inflight of inflights) dropUnrenewed(inflight, await outbox.renewClaim(inflight.claim));
 		for (const [key, mirror] of this.mirrored) {
 			const renewed = await this.state.reservations.renew(mirror.lease);
 			if (renewed.status !== "renewed" && this.mirrored.get(key) === mirror) this.mirrored.delete(key);
