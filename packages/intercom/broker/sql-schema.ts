@@ -7,7 +7,10 @@ import { dialectOf, ensureStorageSchema, type SqliteDatabase, type SqliteExecuto
  * namespace, and without them every open checks its schema in a transaction, as before.
  */
 const catalogApi: Partial<
-	Pick<typeof storage, "storageSchemaCurrent" | "schemaCatalogOf" | "withStorageSchemaCatalog">
+	Pick<
+		typeof storage,
+		"storageSchemaCurrent" | "schemaCatalogOf" | "withStorageSchemaCatalog" | "restampStorageSchemaAtOpenEnd"
+	>
 > = storage;
 
 /**
@@ -30,7 +33,10 @@ export async function withBrokerSchemaCatalog<T>(
  * Runs `setup`, a broker store's idempotent schema statements, in a transaction of its own, unless the prefix's ledger
  * records `revision` for `store` already (#5218): on PostgreSQL a current schema runs no DDL, so a role with only DML
  * privileges opens the store. Raise `revision` whenever `setup` creates or alters anything new. Inside an open that read
- * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560).
+ * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560). On SQLite and
+ * libSQL the store's stamp records it; where the stamp is behind, a setup whose objects the catalog holds is checked
+ * again, and a counter it seeds seeded, in the one transaction the open's end stamps every such store in, so the next
+ * open of a current schema takes no write lock and answers every store from its stamp.
  */
 export async function ensureBrokerSchema(
 	database: SqliteDatabase,
@@ -41,30 +47,56 @@ export async function ensureBrokerSchema(
 ): Promise<void> {
 	const schema = { ledger: storageMigrationTable(prefix), domain: `intercom-${store}`, revision };
 	if (await catalogApi.storageSchemaCurrent?.(database, schema)) return;
-	if (await createsNothingNew(database, setup)) return;
+	const found = await foundInCatalog(database, setup);
+	if (found !== undefined) {
+		const options = { verify: found.verify, deferred: found.seeds };
+		if (catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup, options) === true) return;
+		if (!found.seeds) return;
+	}
 	await database.transaction((tx) =>
 		ensureStorageSchema(tx, dialectOf(database), schema, async () => {
 			await setup(tx);
 		}),
 	);
+	catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup);
 }
 
 /**
- * Whether `setup` would change nothing on a SQLite or libSQL database: where it only runs `CREATE TABLE` and
- * `CREATE INDEX` statements with `IF NOT EXISTS`, and the catalog an open in progress read found each object, as a
- * table or an index as the statement names it. SQLite records no versions, so such a setup ran at every open in a
- * write transaction of its own, which took the database's write lock and, on a server, three round trips (#6560).
- * Statements on an existing object of that kind do nothing, so skipping them is the same. The setup runs against a
- * handle that only collects the SQL it would run; any other call, or a statement of another form, and it runs as
- * before. False outside such an open, and on PostgreSQL, whose ledger decides.
+ * Asks the open of `database` in progress to stamp `store`'s `setup` at its end, on SQLite and libSQL, where the open
+ * found the store current in the catalog, `verify` says, rather than by its stamp, which a schema change since left
+ * behind: the next open then answers from the stamp (#6560). Does nothing where the stamp is current, elsewhere, and
+ * outside an open.
  */
-async function createsNothingNew(
+export async function stampBrokerSchemaAtOpenEnd(
+	database: SqliteDatabase,
+	prefix: string | undefined,
+	store: string,
+	setup: (tx: SqliteExecutor) => Promise<unknown>,
+	verify: (catalog: storage.StorageSchemaCatalog) => boolean,
+	revision = 1,
+): Promise<void> {
+	const schema = { ledger: storageMigrationTable(prefix), domain: `intercom-${store}`, revision };
+	if (await catalogApi.storageSchemaCurrent?.(database, schema)) return;
+	catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup, { verify });
+}
+
+/**
+ * Whether the catalog an open in progress read holds everything `setup` creates on a SQLite or libSQL database: where
+ * it only runs `CREATE TABLE` and `CREATE INDEX` statements with `IF NOT EXISTS`, and seeds rows with `INSERT … ON
+ * CONFLICT … DO NOTHING`, and the catalog found each object, as a table or an index as the statement names it. Then
+ * `verify` checks the same against another catalog, and `seeds` tells whether it seeds rows, which still have to be
+ * written. SQLite records no versions, so such a setup ran at every open in a write transaction of its own, which took
+ * the database's write lock and, on a server, three round trips (#6560); statements on an existing object of that kind
+ * do nothing. The setup runs against a handle that only collects the SQL it would run; any other call, or a statement
+ * of another form, and it runs as before. Undefined outside such an open, and on PostgreSQL, whose ledger decides.
+ */
+async function foundInCatalog(
 	database: SqliteDatabase,
 	setup: (tx: SqliteExecutor) => Promise<unknown>,
-): Promise<boolean> {
-	if (dialectOf(database).versionedMigrations) return false;
-	const typeOf = (await openCatalogOf(database))?.sqliteObjectType;
-	if (typeOf === undefined) return false;
+): Promise<{ readonly verify: (catalog: storage.StorageSchemaCatalog) => boolean; readonly seeds: boolean } | undefined> {
+	if (dialectOf(database).versionedMigrations) return undefined;
+	const catalog = await openCatalogOf(database);
+	if (catalog?.sqliteObjectType === undefined) return undefined;
 	const scripts: string[] = [];
 	let other = false;
 	const refuse = () => {
@@ -83,21 +115,28 @@ async function createsNothingNew(
 	try {
 		await setup(collecting);
 	} catch {
-		return false;
+		return undefined;
 	}
-	if (other) return false;
+	if (other) return undefined;
+	const created: { readonly name: string; readonly type: string }[] = [];
+	let seeds = false;
 	for (const script of scripts) {
 		const statements = splitStatements(script);
-		if (statements === undefined) return false;
+		if (statements === undefined) return undefined;
 		for (const statement of statements) {
-			const created = CREATE_IF_NOT_EXISTS.exec(statement);
-			if (created === null) return false;
-			const name = created[3] ?? created[4]!;
-			if (typeOf(name) !== created[2]!.toLowerCase()) return false;
+			const create = CREATE_IF_NOT_EXISTS.exec(statement);
+			if (create !== null) created.push({ name: create[3] ?? create[4]!, type: create[2]!.toLowerCase() });
+			else if (SEED.test(statement)) seeds = true;
+			else return undefined;
 		}
 	}
-	return true;
+	const verify = (found: storage.StorageSchemaCatalog) =>
+		created.every(({ name, type }) => found.sqliteObjectType?.(name) === type);
+	return verify(catalog) ? { verify, seeds } : undefined;
 }
+
+/** `INSERT INTO … ON CONFLICT … DO NOTHING`: rows a setup seeds once, which writing again leaves as they are. */
+const SEED = /^INSERT\s+INTO\s[\s\S]*\sON\s+CONFLICT\b[\s\S]*\sDO\s+NOTHING$/i;
 
 /** `CREATE [UNIQUE] TABLE|INDEX IF NOT EXISTS <name>`, the name plain or double-quoted and never schema-qualified. */
 const CREATE_IF_NOT_EXISTS =
