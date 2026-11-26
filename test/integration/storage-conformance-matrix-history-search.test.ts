@@ -14,7 +14,7 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
  * (#6560). Before, it read each of them alone, a round trip each. This compares the two on random sessions on every
  * backend: a store that refuses the page read makes the search read each entry alone, as it did, and both must answer
  * every search, and every continuation of it, with the same text: the same matches in the same order, cut at the same
- * place by the same budget, with the same cursor.
+ * place by the same budget, with the same cursor. So must a store that ignores `seqs` and returns the whole range.
  */
 
 useTemporaryAgentDir();
@@ -111,6 +111,19 @@ function readingOneAtATime(store: SessionStore): SessionStore {
 	});
 }
 
+/** `store` as a custom store that does not know `seqs` would be: it reads the whole range. */
+function ignoringSeqs(store: SessionStore): SessionStore {
+	return new Proxy(store, {
+		get(target, key) {
+			if (key === "readEntryRange")
+				return (sessionId: string, { seqs: _seqs, ...query }: SessionEntriesQuery) =>
+					target.readEntryRange!(sessionId, query);
+			const value = Reflect.get(target, key);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
 /** `store`, counting its range reads. */
 function counting(store: SessionStore): {
 	readonly store: SessionStore;
@@ -157,6 +170,7 @@ for (const backend of storageBackends) {
 				}
 				const ahead = counting(sql);
 				const alone = counting(readingOneAtATime(sql));
+				const whole = ignoringSeqs(sql);
 				const router = (store: SessionStore, bytes: number, rows: number) =>
 					createHistoryRouter({
 						cwd: PROJECT,
@@ -194,7 +208,9 @@ for (const backend of storageBackends) {
 						for (let step = 0; url !== undefined && step <= CONTINUATIONS; step++) {
 							const read: string = (await router(ahead.store, bytes, rows).search?.(url, request)) ?? "";
 							const one: string = (await router(alone.store, bytes, rows).search?.(url, request)) ?? "";
+							const ranges: string = (await router(whole, bytes, rows).search?.(url, request)) ?? "";
 							assert.equal(read, one, `${url} ${JSON.stringify(request)} bytes ${bytes} rows ${rows}`);
+							assert.equal(ranges, one, `ignoring seqs: ${url} ${JSON.stringify(request)}`);
 							compared++;
 							url = CONTINUE.exec(read)?.[1];
 							if (url !== undefined) cut++;

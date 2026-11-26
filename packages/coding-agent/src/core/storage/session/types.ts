@@ -481,10 +481,11 @@ export interface SessionEntriesQuery {
 	readonly largeEntryBytes?: number;
 	readonly skipTypes?: readonly string[];
 	/**
-	 * Only these sequences, in ascending order, between `fromSeq` and `toSeq`: every store returns no other entry, so a
-	 * reader that knows which entries it needs reads them all in one call, not one call each. `history://` searches always
-	 * read this way. `throughSeq` keeps its meaning. A store may end the page sooner than it would for these entries
-	 * alone, and should end it before an entry that would take it past `maxChars`, unless that entry comes first.
+	 * Only these sequences, in ascending order, between `fromSeq` and `toSeq`: a store should return no other entry, so a
+	 * reader that knows which entries it needs reads them all in one call, not one call each, as `history://` searches
+	 * do. A store that returns the whole range still answers correctly, reading more. `throughSeq` keeps its meaning. A
+	 * store may end the page sooner than it would for these entries alone, and should end it before an entry that would
+	 * take it past `maxChars`, unless that entry comes first.
 	 */
 	readonly seqs?: readonly number[];
 	readonly signal?: AbortSignal;

@@ -1019,7 +1019,7 @@ Multiple stores can share one caller-owned `database` without closing it.
 
 Non-SQL backends can implement `openSessionStore` directly (each session has one writer):
 
-- **Required for `history://`.** Implement `readEntryRange(id, query)` honoring `fromSeq`, `toSeq`, `seqs`, `maxChars`, `largeEntryBytes`, `skipTypes`, and `signal`. When `query.seqs` lists sequence numbers, return only the entries at those numbers: every `history://` search reads the entries it found, and the lines around them, this way, in one call. Return freshly owned UTF-8 JSON buffers and `{ entries: [{ seq, entry }], throughSeq, lastSeq }` without falling back to whole-session `load()`.
+- **Required for `history://`.** Implement `readEntryRange(id, query)` honoring `fromSeq`, `toSeq`, `seqs`, `maxChars`, `largeEntryBytes`, `skipTypes`, and `signal`. When `query.seqs` lists sequence numbers, return only the entries at those numbers. A `history://` search reads the entries it found, and the lines around them, this way, in one call. A store that returns the whole range instead still gives the same results, but reads more. Return freshly owned UTF-8 JSON buffers and `{ entries: [{ seq, entry }], throughSeq, lastSeq }` without falling back to whole-session `load()`.
 - **Optional fast-path methods.** Implementing these avoids loading entire sessions into memory (stores implementing only `load()` still work with higher memory use):
 
 | Method | Purpose |
