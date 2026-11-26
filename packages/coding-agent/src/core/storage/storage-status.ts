@@ -46,6 +46,8 @@ export const STORAGE_ADAPTER_LOAD_TIMEOUT_MS = 15_000;
 
 export interface StorageProbe {
 	readonly adapter?: { readonly module: string; readonly loaded: boolean; readonly detail?: string };
+	/** A SQLite file's: the SQLite library this process runs, such as `SQLite 3.53.4`. */
+	readonly library?: string;
 	readonly connection: { readonly status: "ok" | "failed" | "skipped"; readonly detail: string };
 	/** The adapter loaded but has no `openDatabase` hook, so nothing was opened. */
 	readonly noDatabaseHook?: true;
@@ -163,6 +165,24 @@ function withTimeout<T>(operation: Promise<T>, label: string, timeoutMs: number)
 }
 
 /**
+ * The version of the SQLite library this process runs: the one Node bundles, or under Bun the one it loaded, which the
+ * macOS standalone binary ships next to it. Undefined where it cannot be read.
+ */
+async function sqliteLibraryVersion(): Promise<string | undefined> {
+	try {
+		const { openNodeSqliteDatabase } = await import("./node-sqlite.js");
+		const database = await openNodeSqliteDatabase(":memory:");
+		try {
+			return (await database.get<SqliteRow & { version: string }>("SELECT sqlite_version() AS version"))?.version;
+		} finally {
+			await database.close();
+		}
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Load the selection's adapter and run `SELECT 1` on its database; `inspect` reads it before it closes. Nothing is
  * created: a SQLite file that does not exist yet is not opened, and no Atomic table is touched.
  */
@@ -183,14 +203,20 @@ async function probeSelection(
 	}
 	if (selection.kind === "database") return { connection: { status: "skipped", detail: "caller-owned database" } };
 	if (selection.kind === "sqlite") {
+		const version = await sqliteLibraryVersion();
+		const library = version === undefined ? {} : { library: `SQLite ${version}` };
 		if (selection.path === "" || selection.path === ":memory:") {
-			return { connection: { status: "skipped", detail: "in memory; nothing to open" } };
+			return { ...library, connection: { status: "skipped", detail: "in memory; nothing to open" } };
 		}
 		if (!existsSync(selection.path)) {
-			return { connection: { status: "skipped", detail: "file not created yet; Atomic creates it on first use" } };
+			return {
+				...library,
+				connection: { status: "skipped", detail: "file not created yet; Atomic creates it on first use" },
+			};
 		}
 		const { openNodeSqliteDatabase } = await import("./node-sqlite.js");
 		return {
+			...library,
 			connection: await roundTrip(
 				() => openNodeSqliteDatabase(selection.path, { readOnly: true }),
 				"SQLite file",

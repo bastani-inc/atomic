@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { installLifecycleTraceFromEnv, markLifecycleTiming } from "../core/lifecycle-timings.ts";
 import { ATOMIC_AI_AGENT } from "../utils/agent-attribution.ts";
 import { stripBom } from "../utils/text.ts";
+import { useBundledSqlite } from "./bundled-sqlite.js";
 import {
 	INTERNAL_INTERCOM_BROKER_ARG,
 	INTERNAL_INTERCOM_BROKER_RELAY_ARG,
@@ -22,6 +23,9 @@ process.title = APP_NAME;
 process.env.ATOMIC_CODING_AGENT = "true";
 process.env.AI_AGENT = ATOMIC_AI_AGENT;
 process.emitWarning = (() => {}) as typeof process.emitWarning;
+
+// Before anything opens a database, the broker included.
+useBundledSqlite(dirname(process.execPath), (message) => console.error(message));
 
 const args = process.argv.slice(2);
 const appPath = join(dirname(process.execPath), "app.js");
