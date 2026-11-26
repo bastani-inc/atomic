@@ -109,7 +109,8 @@ test("a park column another broker added meanwhile is not an error, however the 
 		await openSqlPendingAskStore({ database, prefix: "" });
 		const wrapped = failingAlter(database, wording, true);
 		await openSqlPendingAskStore({ database: wrapped.database, prefix: "" });
-		assert.equal(wrapped.alters.length, 4);
+		// The four columns go in one transaction, which the first duplicate ends; then each goes in one of its own.
+		assert.equal(wrapped.alters.length, 5);
 	}
 });
 

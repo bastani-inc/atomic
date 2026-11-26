@@ -104,6 +104,18 @@ const FENCED_PATHS = {
 			"concurrent cleanups take each lapsed transfer over once and never a live one, beside staging clones (#6560)",
 	},
 	/**
+	 * A schema setup that hosts opening a new database at once run once (`setUpStorageOnce`): its first statement tries,
+	 * without waiting, the advisory locks every setup of the same objects takes (the prefix's setup lock, and for a
+	 * domain's migration that domain's lock and the database's, shared, as an earlier build's migration takes them), and
+	 * the setup runs only where it took them all. A process that finds one taken waits outside any transaction until the
+	 * setup is recorded, so the hosts never queue for the lock (#6560).
+	 */
+	"schema-setup": {
+		fences: ["the setup's advisory locks, all tried by its first statement without waiting"],
+		conformance:
+			"many hosts open a new database at once: each schema is set up once, every host opens, and none waits in a lock queue (#6560)",
+	},
+	/**
 	 * `SqlRateBuckets.acquire` and `cooldown`: one `UPDATE … RETURNING` (or upsert) of the scope's bucket row, which locks
 	 * no pool row, so it orders after none of them (#4768).
 	 */

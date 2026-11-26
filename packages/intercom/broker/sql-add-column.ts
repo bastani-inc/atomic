@@ -1,5 +1,5 @@
 import { dialectOf, type SqliteDatabase } from "@bastani/atomic/storage";
-import { catalogHasColumns, RETRY_UNAPPLIED } from "./sql-schema.js";
+import { catalogHasColumns, foundInCatalogAgain, RETRY_UNAPPLIED, setUpBrokerSchemaOnce } from "./sql-schema.js";
 
 function isLineTerminatorCode(code: number): boolean {
 	return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
@@ -114,8 +114,9 @@ export async function addOptionalColumn(
 
 /**
  * Adds each missing column of `columns` (name → definition after the name) to `table`, in order. A table from an older
- * broker gets the columns, and an older broker ignores them. Each column is probed and added in a serial transaction,
- * so brokers opening the store at once take turns (#5054); an older broker adding one meanwhile is not an error.
+ * broker gets the columns, and an older broker ignores them. The columns are probed and added in one transaction, which
+ * one of the brokers opening the store at once runs while the others wait for it without its lock (#5054, #6560); an
+ * older broker adding one meanwhile is not an error.
  */
 export async function addMissingColumns(
 	database: SqliteDatabase,
@@ -124,8 +125,31 @@ export async function addMissingColumns(
 	withColumn?: string,
 ): Promise<void> {
 	const dialect = dialectOf(database);
+	const names = Object.keys(columns);
 	// An open that read the catalog and found every column there runs no transaction (#6560).
-	if (await catalogHasColumns(database, table, Object.keys(columns))) return;
+	if (await catalogHasColumns(database, table, names)) return;
+	const probes = names.map((column) => dialect.columnExists(table, column));
+	try {
+		await setUpBrokerSchemaOnce(
+			database,
+			`${table}:columns`,
+			() => foundInCatalogAgain(database, (catalog) => names.every((column) => catalog.hasColumn(table, column))),
+			async (tx) => {
+				// The probes go out together, then each column they found missing is added.
+				const found = await Promise.all(probes.map((probe) => tx.all(probe.sql, ...probe.params)));
+				for (const [index, [column, definition]] of Object.entries(columns).entries()) {
+					if (found[index]!.length > 0) continue;
+					await tx.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+					if (withColumn !== undefined) await tx.exec(withColumn);
+				}
+			},
+			probes,
+		);
+		return;
+	} catch (error) {
+		if (!isDuplicateColumn(error)) throw error;
+	}
+	// An older broker added one of them meanwhile: each of the others in a transaction of its own.
 	for (const [column, definition] of Object.entries(columns)) {
 		const probe = dialect.columnExists(table, column);
 		try {

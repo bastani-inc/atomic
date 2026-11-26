@@ -32,6 +32,8 @@ Atomic keeps its tables in their own schema, `atomic`, rather than `public`. A s
 
 With two roles, a machine that connects as the runtime role can never change or drop Atomic's tables. Every machine can use the same runtime role, or you can create one login role per person with the same grants as `atomic_runtime`. For one person testing on one machine, a single role that owns the database is enough. Atomic then creates its tables the first time it opens the database.
 
+Run `atomic storage migrate` once before you start many agents on a new database. Agents that then start together find every table already there and run no setup. Without it, the first agents to open the empty database set it up between them: for each table, one agent creates it while the others wait for it without holding a lock or a connection. At 80 ms from the server, behind PgBouncer, 25 agents that each opened a session store and an Intercom broker on an empty database at once took about 15 seconds to open, and 100 took about 24 seconds. With the schema in place, the same 25 agents opened in about 1.3 seconds.
+
 1. **Create the roles and the database.** Connect as the server's administrator, a superuser or the managed service's administrator role, and run:
 
    ```sql

@@ -442,6 +442,8 @@ test("a small drain with no space to give back costs no transaction beyond its w
 	);
 	await sleep(300);
 	const opened = transactions;
+	// A new database's setup may run in a transaction tried without waiting: it is the open's, not housekeeping.
+	const openedMaintenance = maintenance;
 	for (let index = 0; index < 20; index++) {
 		await store.add(entry(`m${index}`));
 		await store.remove([`m${index}`]);
@@ -450,7 +452,7 @@ test("a small drain with no space to give back costs no transaction beyond its w
 	await store.close();
 	// One for each message written and one for each removed, as without giving space back.
 	assert.equal(transactions - opened, 40);
-	assert.equal(maintenance, 0, "no housekeeping transaction, at open or after a drain");
+	assert.equal(maintenance - openedMaintenance, 0, "no housekeeping transaction after a drain");
 	await database.close();
 });
 

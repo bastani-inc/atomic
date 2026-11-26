@@ -37,6 +37,8 @@ A SQLite file has one writer at a time. When many agents on one machine write at
 
 For many agents writing at once, from one machine or many, use [PostgreSQL](/storage/postgres).
 
+When many agents open a new SQLite file at once, one of them creates each table and the others wait for it without queueing for the write lock.
+
 ## SDK and local SQLite API
 
 This section is for SDK apps that open a SQLite file directly. To give a session a store, see [SDK session storage](/sdk/storage). To read, branch, and list sessions, see the [SessionManager API](/session-format#sessionmanager-api).
