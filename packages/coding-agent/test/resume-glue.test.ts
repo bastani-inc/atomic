@@ -1009,7 +1009,7 @@ describe("resume glue: remaining edge cases (#4329)", () => {
 		});
 	});
 
-	// Windows has no /bin/false to stand in for a Git that starts and fails.
+	// Windows cannot run the shell script that stands in for a Git that starts and fails.
 	test.skipIf(process.platform === "win32")(
 		"the default I/O loads an installed adapter and reports a failing Git as a failure, not as missing",
 		async () => {
@@ -1023,14 +1023,20 @@ describe("resume glue: remaining edge cases (#4329)", () => {
 				"postgres.js",
 			);
 			await defaultResumePreflightIo.loadAdapter(adapter, "/home/u/.atomic/agent", "sessions");
-			const previous = setWorktreeSnapshotGit(async () => ({ path: "/bin/false", env: {} }));
+			// Not /bin/false: macOS has only /usr/bin/false, and a missing executable is rightly reported as not installed.
+			const bin = mkdtempSync(join(tmpdir(), "resume-glue-failing-git-"));
+			const failingGit = join(bin, "git");
+			writeFileSync(failingGit, "#!/bin/sh\necho 'fatal: broken' >&2\nexit 1\n", { mode: 0o755 });
+			const previous = setWorktreeSnapshotGit(async () => ({ path: failingGit, env: {} }));
 			try {
 				await assert.rejects(defaultResumePreflightIo.probeGit(), (error: unknown) => {
-					assert.equal((error as { name?: string }).name, "WorkspaceGitError");
+					const { name, exitCode, detail } = error as { name?: string; exitCode?: number; detail?: string };
+					assert.deepEqual([name, exitCode, detail], ["WorkspaceGitError", 1, "fatal: broken"]);
 					return true;
 				});
 			} finally {
 				setWorktreeSnapshotGit(previous);
+				rmSync(bin, { recursive: true, force: true });
 			}
 		},
 	);
