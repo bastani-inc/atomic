@@ -1,6 +1,6 @@
 ---
-title: "Local SQLite storage"
-sidebarTitle: "SQLite"
+title: "SQLite setup"
+sidebarTitle: "Setup"
 description: "Atomic's default store: a local SQLite file, how it handles many writers, and the low-level SQLite API for SDK apps."
 ---
 

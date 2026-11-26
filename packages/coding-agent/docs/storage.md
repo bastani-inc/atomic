@@ -9,6 +9,7 @@ Atomic saves sessions in a local SQLite database (`~/.atomic/workflows/journal.s
 This page covers what every store shares: choosing a store, the `atomic storage` commands, moving sessions between stores, and storage errors. Each backend has its own page:
 
 - [Local SQLite](/storage/sqlite): the default, with nothing to set up.
+- [JSONL](/storage/jsonl): sessions as plain text files in a directory on one machine.
 - [PostgreSQL](/storage/postgres): a database shared by many machines and many agents, with guides for [PgBouncer](/storage/postgres/pgbouncer) and [server tuning](/storage/postgres/tuning).
 - [Custom adapters](/storage/custom-adapters): select an adapter package or wrap your own driver.
 
@@ -24,13 +25,14 @@ For SDK apps, see [SDK session storage](/sdk/storage) and the [SessionManager AP
 | --- | --- | --- |
 | One machine, one person | **[Local SQLite](/storage/sqlite)** (default) | Requires no setup |
 | Data that must stay on one machine | **Local SQLite** | Nothing leaves the machine |
+| Sessions as plain files you can read, back up, or delete by hand, on one machine | **[JSONL](/storage/jsonl)** | One text file per session. Holds sessions only, and forks copy their history |
 | Sessions and Intercom shared across machines, a team, or CI | **[PostgreSQL](/storage/postgres)** | Supports concurrent writers across many machines, with managed high availability, backups, and cloud identities |
 
 Atomic no longer supports Turso and libSQL. To move sessions off a libSQL database, see [Moving off libSQL](#moving-off-libsql).
 
 To move existing sessions between stores, see [Exporting and importing sessions](#exporting-and-importing-sessions). For CLI selection and resume flags, see [Choosing a store](/sessions#choosing-a-store).
 
-Sessions can also go to a directory of JSONL files with `{ "dir": "..." }`, but only through `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. Passing `"dir"` in top-level `storage`, `--storage`, `--storage-file`, or `ATOMIC_STORAGE` fails with `StorageConfigError`.
+A JSONL store is selected with `{ "dir": "..." }`, but only in `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. Passing `"dir"` in top-level `storage`, `--storage`, `--storage-file`, or `ATOMIC_STORAGE` fails with `StorageConfigError`. See [JSONL](/storage/jsonl).
 
 ## Storage home
 
@@ -169,6 +171,7 @@ Each backend's page covers its own settings:
 
 - [Tuning PostgreSQL](/storage/postgres#tuning-for-many-concurrent-agents): count connections and size `maxConnections`. For the server itself, see [PostgreSQL server tuning](/storage/postgres/tuning).
 - [Tuning local SQLite](/storage/sqlite#tuning-for-many-concurrent-agents): nothing to set.
+- [JSONL with several processes](/storage/jsonl#several-atomic-processes): one writer at a time per directory, nothing to set.
 
 ## Exporting and importing sessions
 

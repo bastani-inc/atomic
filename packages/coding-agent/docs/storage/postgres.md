@@ -1,5 +1,5 @@
 ---
-title: "PostgreSQL storage"
+title: "PostgreSQL setup"
 sidebarTitle: "Setup"
 description: "Set up PostgreSQL for Atomic's sessions and Intercom: roles, migrations, joining machines, TLS, proxies, connection budget, poolers, wake-ups, cloud identities, tuning, and troubleshooting."
 ---

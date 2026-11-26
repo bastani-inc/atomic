@@ -204,7 +204,18 @@
                 "group": "Storage",
                 "pages": [
                   "storage",
-                  "storage/sqlite",
+                  {
+                    "group": "SQLite",
+                    "pages": [
+                      "storage/sqlite"
+                    ]
+                  },
+                  {
+                    "group": "JSONL",
+                    "pages": [
+                      "storage/jsonl"
+                    ]
+                  },
                   {
                     "group": "PostgreSQL",
                     "pages": [
