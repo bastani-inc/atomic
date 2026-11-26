@@ -663,6 +663,8 @@ A local SQLite file has one writer at a time. Atomic queues the writers of every
 
 `atomic storage export <dir>` writes sessions to JSONL files, and `atomic storage import <dir>` restores them. Use these commands to move sessions between machines or migrate from one storage backend to another.
 
+Forks can [share history within a store](/sessions#forks-share-history). Export and moving between stores always make full standalone copies. Each exported file holds every entry and tool output of its session, including what the session inherited from the sessions it was forked from. It restores into any backend without them. Import writes every session as a standalone session, so deleting the original parents, in either store, never affects an imported copy. The header's `parentSessionId` is kept only as a record of where the session came from.
+
 ```bash
 atomic storage export <dir> [--limit <n>] [--since <time>]
 atomic storage import <dir>

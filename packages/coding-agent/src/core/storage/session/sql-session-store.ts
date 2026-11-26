@@ -30,7 +30,15 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import {
+	detachForkChildren,
+	type ForkDetachOptions,
+	type ForkDetachReport,
+	resumeForkDetaches,
+} from "./fork-detach.js";
+import { forkDetachHost } from "./fork-detach-host.js";
 import { type ForkLineageTables, ForkSegmentRuns, forkLineageWrite, forkSegmentInserts } from "./fork-lineage.js";
+import { createOverTombstoneWithin, deleteForkedSessionWithin, replaceForkedSessionWithin } from "./fork-pins.js";
 import {
 	type CountedStatement,
 	type ForkBlobCopy,
@@ -1406,6 +1414,8 @@ export class SqlSessionStore implements SessionStore {
 				if (await tx.get(existing.sql, ...existing.params)) {
 					throw new SessionExistsError(header.id);
 				}
+				// A deleted session with this ID may have left rows forks still read: they get their own copies first.
+				if (await this.sharedHistoryForks(tx)) await createOverTombstoneWithin(this.forkHost(), tx, header.id);
 				const summary = this.summaryWrite(header.id, { header, entries, lastSeq: entries.length });
 				await checked;
 				await this.writeEntries(tx, summary.statement, this.entryWrites(header.id, entries, 0, summary.texts));
@@ -1763,6 +1773,38 @@ export class SqlSessionStore implements SessionStore {
 	async prepareChatRecords(): Promise<void> {
 		this.assertOpen();
 		await this.chatRecords?.initialize();
+	}
+
+	/** This store's side of detaching and pinning shared fork history: see fork-detach-host.ts. */
+	private forkHost() {
+		return forkDetachHost({
+			dialect: this.dialect,
+			tables: this.tables,
+			forkTables: this.forkTables,
+			blobs: { legacyBlobData: this.legacyBlobData, chunkBytes: SESSION_BLOB_CHUNK_BYTES },
+			transaction: (body) => this.transaction(body, SESSION_TRANSACTION),
+		});
+	}
+
+	/**
+	 * @internal Gives every fork that shares history with `sessionId` its own copy of what it reads, so the session's
+	 * rows no longer stay for them; see fork-detach.ts. Detaches a crash stopped are finished first. Nothing to do where
+	 * shared-history forks are off.
+	 */
+	async detachForks(sessionId: string, options: ForkDetachOptions = {}): Promise<ForkDetachReport> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		if (!(await this.transaction((tx) => this.sharedHistoryForks(tx), SESSION_TRANSACTION)))
+			return { detached: [], reparented: [] };
+		return detachForkChildren(this.forkHost(), sessionId, options);
+	}
+
+	/** @internal Finishes every detach a crash stopped. Nothing to do where shared-history forks are off. */
+	async resumeForkDetaches(): Promise<ForkDetachReport> {
+		this.assertOpen();
+		if (!(await this.transaction((tx) => this.sharedHistoryForks(tx), SESSION_TRANSACTION)))
+			return { detached: [], reparented: [] };
+		return resumeForkDetaches(this.forkHost());
 	}
 
 	private forkStagingTarget(): import("./fork-staging.js").ForkStagingTarget {
@@ -2436,6 +2478,8 @@ export class SqlSessionStore implements SessionStore {
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
+			// Forks reading the rows about to go get their own copies; the session holds all of its new rows itself.
+			if (await this.sharedHistoryForks(tx)) await replaceForkedSessionWithin(this.forkHost(), tx, sessionId);
 			await this.searchIndex?.forgetWithin(tx, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
@@ -2613,6 +2657,15 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		await this.transaction(async (tx) => {
 			await this.searchIndex?.forgetWithin(tx, sessionId);
+			// Rows forks still read stay under a tombstone until the last of them no longer needs them.
+			if (
+				(await this.sharedHistoryForks(tx)) &&
+				(await deleteForkedSessionWithin(this.forkHost(), tx, sessionId, new Date().toISOString())) === "keep-rows"
+			) {
+				await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
+				await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
+				return;
+			}
 			await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
