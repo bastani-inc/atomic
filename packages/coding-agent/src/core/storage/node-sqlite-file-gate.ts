@@ -192,7 +192,6 @@ export function useWrappedFile(file: string, owner: object): { release(): void }
 			const count = (registry.wrapped.get(file) ?? 1) - 1;
 			if (count > 0) registry.wrapped.set(file, count);
 			else registry.wrapped.delete(file);
-			leaveScopesIfUnused();
 		},
 	};
 	registry.collected.register(owner, use, use);
@@ -231,16 +230,6 @@ function scopedHoldOpen(gate: FileGate): boolean {
 }
 
 /**
- * Leaves the asynchronous context once no wrapped connection is open and no scoped hold is: nothing reads it then, and
- * on Node 22 an entered context keeps promise hooks on for every later await. It is entered again when needed.
- */
-function leaveScopesIfUnused(): void {
-	if (registry.wrapped.size > 0) return;
-	for (const gate of registry.files.values()) if (scopedHoldOpen(gate)) return;
-	registry.scopes.disable();
-}
-
-/**
  * Closes `hold`, once. When it was the file's last, the oldest call waiting for the file runs now, if the word is free
  * and no call ran in this turn; the others follow one per turn (see `runNextWaiter`).
  */
@@ -252,7 +241,6 @@ export function releaseHold(hold: FileHold | undefined): void {
 	gate.holds.delete(hold);
 	if (!scopedHoldOpen(gate)) runNextWaiter(hold.file, gate);
 	forgetIfIdle(hold.file, gate);
-	if (hold.scoped) leaveScopesIfUnused();
 }
 
 /**

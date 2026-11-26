@@ -138,9 +138,8 @@ export function startCompileCacheHelper(launch: CompileCacheHelperLaunch): boole
 let warmupStarted = false;
 
 /**
- * Helper runtimes to run in sequence: one when host and engine share a compile-cache tag (either identical flags, or
- * an auto-sized `--max-old-space-size=<N>` which Node 22 engines align back to the host's tag and Node 24 shares
- * natively), else engine first then host.
+ * Helper runtimes to run in sequence: one when host and engine share a compile-cache tag (identical flags, or an
+ * auto-sized `--max-old-space-size=<N>`, which leaves V8's cache tag unchanged), else engine first then host.
  */
 export function compileCacheWarmupRuntimes(
 	own: CompileCacheHelperRuntime,
@@ -152,7 +151,7 @@ export function compileCacheWarmupRuntimes(
 		engine.execArgv.every((arg, index) => arg === own.execArgv[index]);
 	if (same) return [own];
 	// An auto-sized engine only adds `--max-old-space-size=<N>` when the host had no heap flag; both processes share
-	// the host's tag (Node 22 via engine reset, Node 24 natively), so one host helper warms both (#6222).
+	// the host's tag, so one host helper warms both (#6222).
 	const heapFlag = /^--max[-_]old[-_]space[-_]size=\d+$/;
 	const onlyAddedAutoHeap =
 		own.execArgv.length === 0 &&

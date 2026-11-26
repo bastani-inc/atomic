@@ -1484,8 +1484,8 @@ function invalidTextParam(params: readonly SqliteValue[]): number {
  * does not reach it.
  *
  * Every sequence made with the same signal shares one watch (#6106): a derived signal made for each call would stay
- * referenced from the caller's signal until that signal is released, which on Node 22 grows with every page an index
- * build writes. The listener is attached only while such a sequence runs, so a watch keeps nothing alive after its
+ * referenced from the caller's signal until that signal is released, which grows with every page an index build
+ * writes (about 260 bytes a call on Node.js 24.20.0). The listener is attached only while such a sequence runs, so a watch keeps nothing alive after its
  * last sequence returned, and the watch itself goes with the caller's signal. Once the signal has aborted the flag
  * stays raised; no request is sent with a signal that has aborted.
  */
