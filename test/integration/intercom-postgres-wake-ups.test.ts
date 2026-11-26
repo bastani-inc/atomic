@@ -6,6 +6,7 @@ import {
 	type WakeUpPollScheduler,
 } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpHint } from "../../packages/intercom/broker/wake-up-bus.js";
+import { NOTIFY_COALESCE_MS } from "../../packages/storage-postgres/listen.js";
 import { registerWakeUpBusConformance } from "../helpers/intercom-multinode-contract.js";
 import { type PostgresScope, postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { countRoundTrips } from "../helpers/postgres-round-trips.js";
@@ -240,6 +241,8 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on Postgres
 				for (const version of [1, 2, 3])
 					await publisher.publish({ brokerId: "broker-b", reason: "outbox", version });
 				await publisher.publish({ brokerId: "broker-c", reason: "outbox", version: 9 });
+				// The publisher's notifications held back for being sent within a few ms of each other go out before counting.
+				await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 10));
 				const runPoll = async () => {
 					statements.length = 0;
 					const callback = poll;
