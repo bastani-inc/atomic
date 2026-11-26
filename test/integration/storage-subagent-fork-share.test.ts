@@ -892,7 +892,7 @@ for (const backend of storageBackends) {
 					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
 					// A load reads the entry whole, as a history:// read does; a resume leaves it in the store.
 					const loaded = await store.load("big");
-					const stopWatching = watchEventLoopTurns(2);
+					const stopWatching = watchEventLoopTurns(2, 2 + CPU_CLOCK_STEP_MS);
 					// Time for the fingerprints to be taken in the background, a slice a turn.
 					await new Promise((resolve) => setTimeout(resolve, 1_500));
 					const turns = await stopWatching();

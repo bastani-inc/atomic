@@ -1,6 +1,8 @@
 import type { BigIntStats } from "node:fs";
+import { dirname } from "node:path";
 import { asyncScope } from "../async-scope.ts";
 import type { SessionHeader } from "../session-manager-types.ts";
+import { learnCreationTime } from "../storage/creation-time.js";
 import type { ChatPosition } from "../storage/session/chat-records.js";
 import { type ChatRecordOwner, chatEpoch, type SessionChatRecords } from "../storage/session/chat-records.js";
 import { discoverChatFile, readFileChatRecords } from "../storage/session/jsonl-chat-records.js";
@@ -78,6 +80,7 @@ export const captureTaskChatFile: CaptureTaskChatFile = async (file, id) => {
 		inspectedFiles.set(view, discovery);
 	}
 	if (!(await discovery.present)) return undefined;
+	await learnCreationTime(dirname(file));
 	return (raw, stats) => {
 		if (stats.birthtimeNs <= 0n) return;
 		const { type: _type, ...header } = raw;

@@ -6,9 +6,10 @@ import type net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { vi } from "vitest";
-import type {
-	IntercomClient as IntercomClientClass,
-	ReleasedChildReply,
+import {
+	IntercomClient,
+	type IntercomClient as IntercomClientClass,
+	type ReleasedChildReply,
 } from "../../packages/intercom/broker/client.js";
 import type { Message } from "../../packages/intercom/types.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
@@ -85,7 +86,6 @@ export async function createAskFailureReceiptsHarness(tempPrefix: string) {
 	brokerFixture.overrideAgentDir();
 	const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 	const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
-	const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 
 	async function startBroker(): Promise<void> {
 		const extensionDir = join(repoRoot, "packages/intercom");

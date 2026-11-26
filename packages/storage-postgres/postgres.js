@@ -12,7 +12,7 @@ import {
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
 import { createCloudPasswordProvider } from "./auth.js";
-import { createPostgresListener } from "./listen.js";
+import { createNotifyCoalescer, createPostgresListener } from "./listen.js";
 import {
 	isLocalTarget,
 	isRefusedCertificate,
@@ -116,6 +116,14 @@ export const DEFAULT_READER_MAX_CONNECTIONS = 2;
  * server or a network that stopped answering, and a statement that cannot run in a transaction block.
  */
 const CLIENT_TIMEOUT_GRACE_MS = 5_000;
+/** Sends the notifications of a JSON array of `[channel, payload]` pairs, as Oban sends many in one statement. */
+const NOTIFY_MANY_SQL = "SELECT pg_notify(notice ->> 0, notice ->> 1) FROM json_array_elements(?::json) AS notice";
+/** The conditional notify statement texts a database sends after their commit, at most. */
+const CONDITIONAL_NOTICES_TRACKED = 64;
+/** What a notify statement answers: it is sent apart from the statements around it. */
+const NO_ROWS = Object.freeze({ columns: [], rows: [], changes: 0 });
+/** The commit of writes a notification outside a transaction announces, which committed before it was made. */
+const COMMITTED = Promise.resolve(true);
 /** The length and code of a protocol cancel request, which is sent on a connection of its own, without a startup. */
 const CANCEL_REQUEST_LENGTH = 16;
 const CANCEL_REQUEST_CODE = 80877102;
@@ -1757,9 +1765,60 @@ export async function openPostgresDatabase(options) {
 	 */
 	const channelName = (channel) =>
 		postgresDialect.identifier(schema === LEGACY_SCHEMA ? channel : `${schema}_${channel}`);
+	/** The text of an unconditional notify statement. */
+	const plainNotice = listener.notify("", "").sql;
+	/** The texts of the conditional notify statements `notify` made, which a transaction sends after its commit too. */
+	/** @type {Set<string>} */
+	const conditionalNotices = new Set();
+	/** @param {string} sql */
+	const isNotice = (sql) => sql === plainNotice || conditionalNotices.has(sql);
+	/**
+	 * Sends `notices` on `client` right behind what it was sent last, in transactions of their own that wait for no flush
+	 * of their commits: a notifying commit holds a lock every notifying commit of the server takes (`PreCommit_Notify`)
+	 * until its commit is flushed, so a data commit that notified would make every other one wait for its flush. The
+	 * unconditional ones go in one statement; the conditional ones, which read other tables, in a transaction of their
+	 * own, so a failed read loses only them. A lost notification is harmless: listeners poll for what it announced.
+	 * @param {PoolClient} client
+	 * @param {readonly import("./listen.js").Notice[]} notices
+	 */
+	const sendNotices = (client, notices) => {
+		const plain = notices.filter((notice) => notice.sql === plainNotice);
+		const conditional = notices.filter((notice) => notice.sql !== plainNotice);
+		/** @type {Promise<unknown>[]} */
+		const answers = [];
+		const transaction = (/** @type {readonly import("./listen.js").Notice[]} */ statements) => {
+			answers.push(
+				client.query(`BEGIN; SET LOCAL synchronous_commit TO off; ${setTimeoutSql}; ${searchPathSql()}`),
+				...statements.map(({ sql, params }) => statement(client, sql, /** @type {SqliteValue[]} */ (params))),
+				client.query("COMMIT"),
+			);
+		};
+		if (plain.length > 0)
+			transaction([{ sql: NOTIFY_MANY_SQL, params: [JSON.stringify(plain.map((notice) => notice.params))] }]);
+		if (conditional.length > 0) transaction(conditional);
+		// Every answer is awaited, so none is left to fail unheard.
+		return watched(client, () => Promise.allSettled(answers), clientTimeoutMs).then(
+			() => {},
+			() => {},
+		);
+	};
+	/** Notifications held back because the same one went out a moment before, sent once their window passed. */
+	const coalescer = createNotifyCoalescer({
+		sendLater: (notices) => autocommit(pool, (client) => sendNotices(client, notices)),
+	});
 	/** @type {import("@bastani/atomic/storage").StorageNotifications} */
 	const notifications = {
-		notify: (channel, payload) => listener.notify(channelName(channel), payload),
+		notify(channel, payload, unless) {
+			const notice = listener.notify(channelName(channel), payload);
+			if (unless === undefined) return notice;
+			const sql = `${notice.sql} WHERE NOT EXISTS (${unless.sql})`;
+			// Texts come from store code, so few; past the bound a notification goes without its condition.
+			if (!conditionalNotices.has(sql)) {
+				if (conditionalNotices.size >= CONDITIONAL_NOTICES_TRACKED) return notice;
+				conditionalNotices.add(sql);
+			}
+			return { sql, params: [...notice.params, ...unless.params] };
+		},
 		listen(channel, onEvent) {
 			const subscription = listener.listen(channelName(channel), onEvent);
 			const tracked = {
@@ -1779,6 +1838,7 @@ export async function openPostgresDatabase(options) {
 	 */
 	const release = async () => {
 		for (const subscription of [...subscriptions]) subscription.close();
+		await coalescer.flush();
 		if (--shared.references > 0) return;
 		if (identity !== undefined && sharing.get(identity) === shared) sharing.delete(identity);
 		await listener.close();
@@ -1822,7 +1882,16 @@ export async function openPostgresDatabase(options) {
 		transientFailure: transientFailureOf(pg.DatabaseError),
 		// Postgres's largest field is 1 GB less one byte (#4954).
 		payloadLimits: { value: 1_073_741_823 },
-		execute: (sql, params) => autocommit(from, (client) => executeAutocommit(client, sql, params)),
+		execute: (sql, params) => {
+			// A notification outside a transaction announces writes already committed: it goes out now, in a transaction
+			// that waits for no flush (`sendNotices`), unless the same one went out a moment ago (`coalescer`).
+			if (isNotice(sql)) {
+				const now = coalescer.take([{ sql, params: [...params] }], COMMITTED);
+				if (now.length === 0) return Promise.resolve(NO_ROWS);
+				return autocommit(from, (client) => sendNotices(client, now)).then(() => NO_ROWS);
+			}
+			return autocommit(from, (client) => executeAutocommit(client, sql, params));
+		},
 		executeMultiple: (sql) => autocommit(from, (client) => executeMultipleAutocommit(client, sql)),
 		concurrentTransactions: true,
 		// The connection is pipelined: a transaction's statements go out without waiting for the answers before them.
@@ -1905,6 +1974,9 @@ export async function openPostgresDatabase(options) {
 			};
 			/** @type {{ sql: string, params: readonly SqliteValue[], result: Promise<SqliteDriverResult>, failure?: unknown }[]} */
 			const lead = [];
+			/** The notify statements the transaction ran, sent after its `COMMIT` (`sendCommit`). */
+			/** @type {import("./listen.js").Notice[]} */
+			const notices = [];
 			/** Whether the connection went back to the pool, which a read-only transaction's commit does as it is sent. */
 			let released = false;
 			const release = () => {
@@ -1922,6 +1994,17 @@ export async function openPostgresDatabase(options) {
 			const sendCommit = (timeoutMs) =>
 				submit("", () => {
 					const answer = watched(client, () => client.query("COMMIT"), timeoutMs);
+					// The notifications go right behind the `COMMIT`, in the same round trip, in a transaction of their own
+					// (`sendNotices`). Its answer is not waited for: the next call on the connection goes behind it. When the
+					// `COMMIT` rolled back, they announce nothing, and a listener's poll finds nothing new.
+					if (notices.length > 0) {
+						const committed = answer.then(
+							(result) => result.command === "COMMIT",
+							() => false,
+						);
+						const now = coalescer.take(notices.splice(0), committed);
+						if (now.length > 0) void sendNotices(client, now);
+					}
 					if (begin.readOnly === true) release();
 					return answer;
 				});
@@ -1975,6 +2058,11 @@ export async function openPostgresDatabase(options) {
 				Promise.reject(new StorageError("The transaction committed with its leading statements; it takes no more calls"));
 			return {
 				execute: (sql, params) => {
+					if (isNotice(sql)) {
+						if (committed !== undefined) return afterCommit();
+						notices.push({ sql, params: [...params] });
+						return Promise.resolve(NO_ROWS);
+					}
 					const next = lead[0];
 					if (next !== undefined && next.sql === sql && sameParams(next.params, params)) {
 						lead.shift();

@@ -7,9 +7,10 @@ import type {
 	StorageNotificationEvent,
 	StorageNotifications,
 } from "@bastani/atomic/storage";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
+	brokerWakeUpChannel,
 	openDatabaseWakeUpBus,
 	WAKE_UP_LISTENING_POLL_INTERVAL_MS,
 	WAKE_UP_POLL_INTERVAL_MS,
@@ -156,25 +157,37 @@ function recorder() {
 	return { events, listener: (event: WakeUpEvent) => events.push(event) };
 }
 
-test("a publish writes its hint and its notification in one transaction on the fenced hint path (#5103, #6560)", async () => {
+test("a publish writes its hint, with its recipient, and notifies its broker's own channel and the shared one, in one transaction on the fenced hint path (#5103, #6560)", async () => {
 	const file = await notifyingFile();
 	try {
 		const bus = await file.openBus();
 		file.transactions.length = 0;
-		assert.deepEqual(await bus.publish({ brokerId: "broker-b", reason: "outbox", version: 3 }), {
+		assert.deepEqual(
+			await bus.publish({ brokerId: "broker-b", reason: "outbox", version: 3, targetIdentity: "session:alice" }),
+			{ status: "published" },
+		);
+		assert.equal(file.transactions.length, 1);
+		assert.deepEqual(file.transactions[0]?.concurrency, { kind: "fenced", audit: "intercom-wakeup-hint" });
+		assert.equal(file.transactions[0]?.retryTransientFailures, true);
+		assert.equal(file.transactions[0]?.leading?.length, 1, "the hint goes with the transaction's start");
+		assert.deepEqual(await bus.publish({ brokerId: "broker-c", reason: "outcome", version: 0 }), {
 			status: "published",
 		});
-		assert.deepEqual(file.transactions, [
-			{ retryTransientFailures: true, concurrency: { kind: "fenced", audit: "intercom-wakeup-hint" } },
-		]);
 		const observer = await openNodeSqliteDatabase(file.path);
 		try {
-			assert.deepEqual(await observer.all("SELECT channel, payload FROM notices"), [
+			assert.deepEqual(await observer.all("SELECT channel, payload FROM notices ORDER BY id"), [
+				{ channel: brokerWakeUpChannel(TABLE, "broker-b"), payload: "broker-b" },
 				{ channel: TABLE, payload: "broker-b" },
+				{ channel: brokerWakeUpChannel(TABLE, "broker-c"), payload: "broker-c" },
+				{ channel: TABLE, payload: "broker-c" },
 			]);
-			assert.deepEqual(await observer.all(`SELECT broker_id, reason, version FROM ${TABLE}`), [
-				{ broker_id: "broker-b", reason: "outbox", version: 3 },
-			]);
+			assert.deepEqual(
+				await observer.all(`SELECT broker_id, reason, version, target_identity FROM ${TABLE} ORDER BY id`),
+				[
+					{ broker_id: "broker-b", reason: "outbox", version: 3, target_identity: "session:alice" },
+					{ broker_id: "broker-c", reason: "outcome", version: 0, target_identity: null },
+				],
+			);
 		} finally {
 			await observer.close();
 		}
@@ -190,10 +203,13 @@ test("a notification for a subscribed broker, or a resumed listener, polls at on
 		const timers = scheduler();
 		const bus = await file.openBus(timers.schedule);
 		await bus.subscribe("broker-b", recorder().listener);
-		await bus.subscribe("broker-c", recorder().listener);
-		assert.equal(file.listening.length, 1, "one listener per database, whatever the subscriptions");
-		const [listening] = file.listening;
-		assert.equal(listening?.channel, TABLE);
+		const brokerC = await bus.subscribe("broker-c", recorder().listener);
+		assert.deepEqual(
+			file.listening.map((entry) => entry.channel),
+			[TABLE, brokerWakeUpChannel(TABLE, "broker-b"), brokerWakeUpChannel(TABLE, "broker-c")],
+			"the shared channel, which earlier releases notify, and each subscribed broker's own",
+		);
+		const [listening, ownB, ownC] = file.listening;
 		assert.deepEqual(timers.delays, [WAKE_UP_POLL_INTERVAL_MS]);
 		listening!.listener({ kind: "notification", payload: "broker-a" });
 		assert.deepEqual(timers.delays, [WAKE_UP_POLL_INTERVAL_MS]);
@@ -204,8 +220,18 @@ test("a notification for a subscribed broker, or a resumed listener, polls at on
 		assert.deepEqual(timers.delays, [WAKE_UP_POLL_INTERVAL_MS, 0, WAKE_UP_POLL_INTERVAL_MS]);
 		listening!.listener({ kind: "listening" });
 		assert.deepEqual(timers.delays.at(-1), 0);
+		timers.fire();
+		await timers.settled();
+		ownB!.listener({ kind: "notification", payload: "broker-b" });
+		assert.equal(timers.delays.at(-1), 0, "a notification on a broker's own channel polls at once");
+		timers.fire();
+		await timers.settled();
+		if (brokerC.status === "subscribed") await brokerC.subscription.close();
+		assert.equal(ownC!.open, false, "a broker no subscription needs any more is no longer listened for");
+		assert.equal(ownB!.open, true);
 		await bus.close();
 		assert.equal(listening!.open, false, "close stops listening");
+		assert.equal(ownB!.open, false);
 		const armed = timers.delays.length;
 		listening!.listener({ kind: "notification", payload: "broker-b" });
 		assert.equal(timers.delays.length, armed, "a closed bus polls no more");
@@ -255,13 +281,18 @@ test("a bus listens again through the database it reopens, and a subscription ma
 		await timers.settled();
 		// The failed poll dropped the connection; the bus has none until its next poll reopens it.
 		await bus.subscribe("broker-c", recorder().listener);
-		assert.equal(file.listening.length, 1);
+		assert.equal(file.listening.length, 2, "the shared channel and broker-b's");
 		timers.fire();
 		await timers.settled();
-		assert.equal(file.listening.length, 2);
 		assert.deepEqual(
-			file.listening.map((entry) => entry.open),
-			[false, true],
+			file.listening.map((entry) => [entry.channel, entry.open]),
+			[
+				[TABLE, false],
+				[brokerWakeUpChannel(TABLE, "broker-b"), false],
+				[TABLE, true],
+				[brokerWakeUpChannel(TABLE, "broker-b"), true],
+				[brokerWakeUpChannel(TABLE, "broker-c"), true],
+			],
 		);
 		assert.ok(received.events.some((event) => event.kind === "resync" && event.cause === "reconnected"));
 		await bus.close();
@@ -314,6 +345,46 @@ test("through a transaction pooler, where no notification arrives, the poll keep
 			await timers.settled();
 			assert.equal(timers.delays.at(-1), WAKE_UP_POLL_INTERVAL_MS);
 		}
+		await bus.close();
+	} finally {
+		await file.close();
+	}
+});
+
+test("a hint table an earlier release created gets the recipient column when this release opens it", async () => {
+	const file = await notifyingFile();
+	try {
+		const earlier = await openNodeSqliteDatabase(file.path);
+		await earlier.exec(`CREATE TABLE ${TABLE} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			broker_id TEXT NOT NULL,
+			reason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),
+			version INTEGER NOT NULL,
+			created_at INTEGER NOT NULL
+		)`);
+		await earlier.run(
+			`INSERT INTO ${TABLE} (broker_id, reason, version, created_at) VALUES ('broker-b', 'outbox', 1, ?)`,
+			Date.now(),
+		);
+		await earlier.close();
+		const bus = await file.openBus();
+		assert.deepEqual(
+			await bus.publish({ brokerId: "broker-b", reason: "outbox", version: 2, targetIdentity: "session:alice" }),
+			{ status: "published" },
+		);
+		const received = recorder();
+		await bus.subscribe("broker-b", received.listener);
+		await vi.waitFor(() => assert.equal(received.events.filter((event) => event.kind === "hint").length, 2), {
+			timeout: POLL_END_LIMIT_MS,
+		});
+		assert.deepEqual(
+			received.events.flatMap((event) => (event.kind === "hint" ? [event.hint] : [])),
+			[
+				{ brokerId: "broker-b", reason: "outbox", version: 1 },
+				{ brokerId: "broker-b", reason: "outbox", version: 2, targetIdentity: "session:alice" },
+			],
+			"the earlier release's hint names no recipient",
+		);
 		await bus.close();
 	} finally {
 		await file.close();

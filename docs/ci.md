@@ -50,7 +50,7 @@ Read the job's `timeout-minutes` in the workflow. It covers setup, tests and tea
 
 ### Storage backend matrix
 
-`storage-conformance` runs the [storage matrix](../test/integration/storage-conformance-matrix.test.ts) with a PostgreSQL service container, in addition to SQLite, together with the multi-node resume tests that need PostgreSQL. `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1` makes missing server configuration fail instead of skipping coverage. See [`test/helpers/storage-backends.ts`](../test/helpers/storage-backends.ts) for local configuration.
+`storage-conformance` runs the [storage matrix](../test/integration/storage-conformance-matrix.test.ts) with a PostgreSQL service container, in addition to SQLite, together with the multi-node resume tests that need PostgreSQL. A PgBouncer container in transaction mode sits in front of PostgreSQL at `ATOMIC_TEST_PGBOUNCER_URL`. The Intercom outbox claim order and race tests run through it as well as directly. `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1` makes missing server configuration fail instead of skipping coverage. See [`test/helpers/storage-backends.ts`](../test/helpers/storage-backends.ts) for local configuration.
 
 ### macOS test dispatch
 
@@ -146,6 +146,14 @@ A maintainer must publish the first version of a new public package by hand. Run
 ## Direct release trigger and recovery
 
 A tag push starts `publish.yml` directly. Recover a failed release before cutting another on the same channel. Retrying an older release after a newer one has shipped can move `latest` or `next` backwards. Never delete, recreate or move a release tag.
+
+### Dry run
+
+A dry run builds and smokes every release archive from a branch, without a tag, and stages or publishes nothing. It runs the native artifacts (with the macOS SQLite library), the payload build and every smoke job, including `macos-binary-smoke`, then stops before `stage-github-release`. It does not wait for a publication or hold one up. Pass the branch as `source_ref` and its package version as `tag`. That version is `0.0.0` on `main`, so the dry run skips the release notes and the in-place update checks, which need a released version.
+
+```sh
+gh workflow run publish.yml --ref main -f tag=0.0.0 -f source_ref=main -f dry_run=true
+```
 
 ### Recovering a failed publication
 

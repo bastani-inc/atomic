@@ -20,6 +20,7 @@ import lockfile from "proper-lockfile";
 import { createSessionCwdMatcherAsync } from "../../../utils/canonical-path.ts";
 import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
+import { learnCreationTime } from "../creation-time.js";
 import { branchStatePages } from "./branch-state-pages.js";
 import { bindChatEpoch, boundedChatRecord, type ChatRecordOwner, type SessionChatRecords } from "./chat-records.js";
 import { validateSessionEntryStructure } from "./entry-structure.js";
@@ -46,7 +47,7 @@ import {
 	readFileChatRecords,
 } from "./jsonl-chat-records.js";
 import { entryProjector, jsonlEntryProjection, type ProjectedEntry } from "./jsonl-entry-projection.js";
-import { EPOCH_HAS_BIRTHTIME, fileEpochOf, legacyFileEpochOf } from "./jsonl-file-epoch.js";
+import { epochHasCreationTime, fileEpochOf, legacyFileEpochOf } from "./jsonl-file-epoch.js";
 import {
 	isCurrentSessionHeader,
 	legacyVersion,
@@ -284,10 +285,10 @@ interface IndexedSession {
 /** The sidecar version an older build reads, whose epochs all hold the file's creation time. */
 const BIRTHTIME_INDEX_VERSION = 2;
 /**
- * The version of the sidecars this build writes. One whose epoch leaves out the creation time is version 3, so an older
+ * The newest sidecar version. A sidecar whose epoch leaves out the creation time is written as version 3, so an older
  * build, which compares it with an epoch that has one, indexes the file again rather than read it. Both are read.
  */
-export const JSONL_INDEX_VERSION = EPOCH_HAS_BIRTHTIME ? BIRTHTIME_INDEX_VERSION : 3;
+export const JSONL_INDEX_VERSION = 3;
 const SIDECAR_SUFFIX = ".idx";
 const SIDECAR_REFRESH_BYTES = 1024 * 1024;
 const INDEX_BATCH_ENTRIES = 512;
@@ -960,6 +961,7 @@ export class JsonlSessionStore implements SessionStore {
 		const create = options?.createDirectory !== false;
 		if (options?.scanExisting === false) {
 			if (create) await store.run(() => mkdir(store.directory, { recursive: true }).then(() => {}), false);
+			await learnCreationTime(store.directory);
 			return store;
 		}
 		// The scan lists the directory first, and makes it only when it is missing.
@@ -972,6 +974,8 @@ export class JsonlSessionStore implements SessionStore {
 				return [];
 			}
 		}, false);
+		// Before any epoch is computed: whether the directory's file system keeps creation times decides its form.
+		await learnCreationTime(store.directory);
 		// A file whose stat stamp is the one a store of this process recorded is not read again: only stat.
 		const unread = await store.run(async () => {
 			const changed = new Set<string>();
@@ -3356,7 +3360,7 @@ function decodeDeltas(text: string): number[] {
 
 async function writeSidecar(path: string, jsonl: JsonlIndex): Promise<boolean> {
 	const body = JSON.stringify({
-		version: JSONL_INDEX_VERSION,
+		version: epochHasCreationTime(jsonl.index.epoch) ? BIRTHTIME_INDEX_VERSION : JSONL_INDEX_VERSION,
 		identity: jsonl.identity,
 		birthtimeNs: jsonl.birthtimeNs,
 		headerStamp: jsonl.headerStamp,

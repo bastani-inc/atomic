@@ -12,7 +12,7 @@ pub mod process_tree;
 pub mod pty;
 pub mod session_end;
 pub mod signal_disposition;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod spawn;
 pub mod stdin_input;
 pub mod subagent_control;

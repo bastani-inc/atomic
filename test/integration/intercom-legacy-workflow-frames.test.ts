@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import net from "node:net";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, test, vi } from "vitest";
+import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { createMessageReader, type JsonWireValue } from "../../packages/intercom/broker/framing.js";
 import { stopDetachedBroker } from "../helpers/detached-broker.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
@@ -701,7 +702,6 @@ describe("this version's Intercom client on a 0.9.71 broker routing a 0.9.71 wor
 	let broker: SpawnedProcess | undefined;
 	let brokerSocketPath = "";
 	let PreviousIntercomClient: PreviousClientClass;
-	let CurrentIntercomClient: typeof import("../../packages/intercom/broker/client.js").IntercomClient;
 
 	beforeAll(async () => {
 		// The 0.9.71 client fixes its broker socket when its module loads, from the agent directory then current.
@@ -716,7 +716,6 @@ describe("this version's Intercom client on a 0.9.71 broker routing a 0.9.71 wor
 		PreviousIntercomClient = (
 			(await import(join(RELEASE_0_9_71, "broker/client.ts"))) as { IntercomClient: PreviousClientClass }
 		).IntercomClient;
-		CurrentIntercomClient = (await import("../../packages/intercom/broker/client.js")).IntercomClient;
 	}, HOOK_TIMEOUT_MS);
 
 	afterAll(async () => {
@@ -738,7 +737,7 @@ describe("this version's Intercom client on a 0.9.71 broker routing a 0.9.71 wor
 
 	async function connectCurrent(name: string, group: string, groups?: readonly string[]) {
 		const watched = watch<CurrentClient>(
-			new CurrentIntercomClient(randomUUID(), { acknowledgesReceipt: true, brokerSocketPath }),
+			new IntercomClient(randomUUID(), { acknowledgesReceipt: true, brokerSocketPath }),
 		);
 		await watched.client.connect(session(name, group, groups), undefined, undefined, undefined, group);
 		cleanups.push(() => watched.client.disconnect().catch(() => undefined));

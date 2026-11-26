@@ -2883,7 +2883,12 @@ export class MultiNodeRouter {
 			});
 			if (enqueued.status === "invalid" || enqueued.status === "full") continue;
 			if (enqueued.status === "inserted" && owner.hostBrokerId !== undefined) {
-				await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
+				await this.bus.publish({
+					brokerId: owner.hostBrokerId,
+					reason: "outbox",
+					version: enqueued.row.sequence,
+					targetIdentity: owner.identity,
+				});
 			}
 			await this.state.releasedAsks.claim({
 				questionId: ask.questionId,
@@ -3001,7 +3006,12 @@ export class MultiNodeRouter {
 				});
 			}
 			if (enqueued.status === "inserted" && hosted !== undefined) {
-				await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
+				await this.bus.publish({
+					brokerId: hosted.holderId,
+					reason: "outbox",
+					version: enqueued.row.sequence,
+					targetIdentity: asker.targetIdentity,
+				});
 			}
 		}
 	}
@@ -5516,7 +5526,12 @@ export class MultiNodeRouter {
 			this.holdSender(waiter, receiptWaitMs);
 		}
 		if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
-		await this.bus.publish({ brokerId: target.hostBrokerId!, reason: "outbox", version: row.sequence });
+		await this.bus.publish({
+			brokerId: target.hostBrokerId!,
+			reason: "outbox",
+			version: row.sequence,
+			targetIdentity: row.targetIdentity,
+		});
 		// A clean quit recorded before this send's row was written is seen here; one recorded after it wakes this
 		// broker (`wakeWaitingOrigins`), so a send racing its recipient's quit is queued either way. The waiter's own
 		// receipt wait keeps running meanwhile, so slow reads here never hold the sender past it.
@@ -6286,8 +6301,12 @@ export class MultiNodeRouter {
 			void this.guard(this.deliverWakeRequests());
 			return;
 		}
-		if (event.hint.reason === "outbox") this.scanAll();
-		else {
+		if (event.hint.reason === "outbox") {
+			// A hint that names its recipient concerns that recipient's queue alone; one from an earlier release names none.
+			const target = event.hint.targetIdentity;
+			if (target === undefined) this.scanAll();
+			else if (this.localSessionFor(target) !== undefined) void this.scanIdentity(target);
+		} else {
 			void this.checkOutcomes();
 			void this.guard(this.checkHolds());
 			void this.guard(this.deliverWakeRequests());
@@ -6303,6 +6322,7 @@ export class MultiNodeRouter {
 			instanceKey: this.instanceKey,
 			pid: this.pid,
 			...(this.home === undefined ? {} : { home: this.home }),
+			ownWakeUpChannel: true,
 		};
 	}
 
