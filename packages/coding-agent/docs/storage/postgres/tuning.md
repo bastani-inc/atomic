@@ -276,6 +276,16 @@ PostgreSQL compresses large values, such as long session entries, stored files a
 
 In a test with large values built from real session history and source files, `lz4` took about 60% less time to compress them. Reading session entries back took 17% less time, and reading files back half as long. It stored session entries in 5% to 17% less space, and files in about 9% more.
 
+Stored files and large tool outputs also use `lz4`, even though they take a little more space than with `pglz`. In tests with real data:
+
+| Data | Space with `lz4` | Time to store | Time to read |
+| --- | --- | --- | --- |
+| Large tool outputs from real sessions, 24 MB | 4% more than `pglz` | about a third of `pglz`'s | about 40% of `pglz`'s |
+| Tracked files of six real repositories, images included, 150 MB | 7% more than `pglz` | about 40% of `pglz`'s | about half of `pglz`'s |
+| Images and gzip archives, 37 MB | 3% less than `pglz` | about a quarter of `pglz`'s | the same |
+
+The extra space comes from text, which `pglz` packs slightly tighter. Data that is already compressed, such as images and archives, is where `lz4` saves the most time: `pglz` spends that time trying to compress it and failing. Storing these columns without compression (`SET STORAGE EXTERNAL`) saves no time over `lz4` and takes about twice the space on a typical mix of files.
+
 Only values written after the change use `lz4`. Values already stored stay readable as they are. To see how a table's values are compressed, run:
 
 ```sql
