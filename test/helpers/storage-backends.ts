@@ -274,6 +274,34 @@ function postgresBackend(): StorageBackend {
 
 export const storageBackends: readonly StorageBackend[] = [sqliteFileBackend, libsqlServerBackend(), postgresBackend()];
 
+/**
+ * A local SQLite file through the libSQL adapter, which prepares each statement anew where node:sqlite keeps them: not a
+ * backend of the matrix, for the suites whose costs differ there.
+ */
+export const libsqlFileBackend: StorageBackend = {
+	name: "libSQL file",
+	skipReason: undefined,
+	async openScope() {
+		const directory = makeTempDirectory("atomic-storage-libsql-file-");
+		const url = `file:${join(directory, "database.sqlite")}`;
+		const pool = connections(() => openLibsqlDatabase({ url }));
+		return {
+			prefix: scopePrefix(),
+			connect: pool.connect,
+			async close() {
+				try {
+					await pool.closeAll();
+				} finally {
+					removeTempDirectory(directory);
+				}
+			},
+		};
+	},
+	async withRollbackFailure() {
+		throw new Error("the libSQL file backend fails no rollback");
+	},
+};
+
 /** The facade suite's subject on `backend`: one connection, reopened as a fresh one on the same scope. */
 export function databaseSubject(backend: StorageBackend): WithSqliteDatabaseSubject {
 	return async (body) => {

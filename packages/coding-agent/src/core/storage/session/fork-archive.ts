@@ -2,7 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { assertSessionBlobStore, copySessionBlobs, sessionBlobHashes } from "../../session-tool-output.ts";
 import { SessionConflictError } from "./errors.js";
 import { JsonlSessionStore } from "./jsonl-session-store.js";
-import { readFromSession } from "./stored-entries.js";
+import { storedRows } from "./stored-entries.js";
 import type {
 	ForkArchiveSource,
 	SessionForkSeed,
@@ -13,7 +13,8 @@ import type {
 
 /** A new child copy, never an update or a rewrite of the parent's session. A compatibility
  * adapter without an archive writer still receives the format it understands, not receipt stubs.
- * Entries read from the source go to its archive writer too, which may share their stored rows (#6560). */
+ * Entries of a source whose rows this process read or wrote go to its archive writer too, which may share those
+ * rows (#6560). */
 export async function createForkArchive(
 	store: SessionStore,
 	header: SessionRecordHeader,
@@ -25,7 +26,7 @@ export async function createForkArchive(
 		("read" in entries ||
 			source.receipts.size ||
 			source.hashes.length ||
-			readFromSession(entries, source.sessionId)) &&
+			storedRows(source.sessionId, source.epoch) !== undefined) &&
 		store.createFork
 	) {
 		const created = await store.createFork(header, entries, source, location);

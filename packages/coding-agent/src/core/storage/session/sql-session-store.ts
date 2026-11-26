@@ -22,7 +22,7 @@ import {
 	withStorageSchemaCatalog,
 } from "../schema-catalog.js";
 import { applyStorageMigrationsTogether, statementBatch } from "../statement-batches.js";
-import { sequenceRunner } from "../statement-sequence.js";
+import { MAX_SEQUENCE_REQUEST_STATEMENTS, sequenceRunner } from "../statement-sequence.js";
 import { sha256Hex } from "./blob-hash.js";
 import { bindChatEpoch } from "./chat-records.js";
 import {
@@ -107,7 +107,7 @@ import { sessionWriteTransaction } from "./session-transactions.js";
 import { sharedHistorySwitchHost } from "./shared-history-switch.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import { type SqlSessionChatRecords, sqlChatRecords } from "./sql-chat-records.js";
-import { noteStoredEntry, storedSeqOf } from "./stored-entries.js";
+import { dropStoredNotes, storedEntryNotes, storedRows } from "./stored-entries.js";
 import type {
 	ChildDisplayLaunch,
 	ForkArchiveSource,
@@ -130,7 +130,6 @@ import type {
 	SessionOpenMarkerStore,
 	SessionRecordHeader,
 	SessionResume,
-	SessionResumeOptions,
 	SessionScanOptions,
 	SessionScanPage,
 	SessionSnapshot,
@@ -582,7 +581,7 @@ async function entryByteLengthOf(database: SqliteDatabase): Promise<(expression:
 
 /**
  * The most bytes of statements a session write sends as one batch: an ordinary message's are far fewer. A larger
- * write, an import or a fork's whole window, runs its statements one at a time as they are made.
+ * write, an import or a fork's whole window, sends its statements a request's worth at a time as they are made.
  */
 const STATEMENT_BATCH_BYTES = 1024 * 1024;
 
@@ -598,6 +597,67 @@ function statementBytes(statement: SqliteStatement): number {
 		else bytes += 8;
 	}
 	return bytes;
+}
+
+const ENTRY_COLUMNS = ["session_id", "seq", "entry_id", "entry_json", "chunks"] as const;
+const TEXT_COLUMNS = ["session_id", "seq", "text_json"] as const;
+/** The most rows one insert of {@link RowInserts} names: 320 parameters for an entry's five, below SQLite's old 999. */
+const ROWS_PER_INSERT = 64;
+/** The most bytes of values one insert of {@link RowInserts} takes, unless one row's alone are more. */
+const ROW_INSERT_BYTES = 256 * 1024;
+
+/**
+ * Rows of `table` inserted several to a statement (#6560): one statement's SQL prepared, and its triggers compiled, for
+ * up to {@link ROWS_PER_INSERT} rows, not for each, so an append of a burst prepares once on a server that keeps no
+ * prepared statements. The rows go in in the order they are added, each as its own insert would, the triggers firing
+ * for each in turn: the triggers read only what the triggers of the rows before wrote, not the rows themselves.
+ */
+class RowInserts {
+	private readonly table: string;
+	private readonly columns: readonly string[];
+	private readonly sqls: string[] = [];
+	private rows: SqliteValue[][] = [];
+	private bytes = 0;
+
+	constructor(table: string, columns: readonly string[]) {
+		this.table = table;
+		this.columns = columns;
+	}
+
+	/** The insert of `count` rows. */
+	sql(count: number): string {
+		let sql = this.sqls[count];
+		if (sql === undefined) {
+			const row = `(${this.columns.map(() => "?").join(", ")})`;
+			sql = `INSERT INTO ${this.table} (${this.columns.join(", ")}) VALUES ${Array(count).fill(row).join(", ")}`;
+			this.sqls[count] = sql;
+		}
+		return sql;
+	}
+
+	/** Adds `row`, and yields the inserts of the rows before it once they are as many, or as large, as one takes. */
+	*add(row: SqliteValue[]): Generator<SqliteStatement> {
+		const bytes = statementBytes({ sql: "", params: row });
+		if (this.rows.length === ROWS_PER_INSERT || (this.rows.length > 0 && this.bytes + bytes > ROW_INSERT_BYTES))
+			yield* this.drain();
+		this.rows.push(row);
+		this.bytes += bytes;
+	}
+
+	/** The inserts of the rows added and not yet yielded. */
+	*drain(): Generator<SqliteStatement> {
+		const rows = this.rows;
+		if (rows.length === 0) return;
+		this.rows = [];
+		this.bytes = 0;
+		yield { sql: this.sql(rows.length), params: rows.flat() };
+	}
+}
+
+/** `first`, then what is left of `rest`. */
+function* withRest<T>(first: readonly T[], rest: Iterator<T>): Generator<T> {
+	yield* first;
+	for (let next = rest.next(); next.done !== true; next = rest.next()) yield next.value;
 }
 
 /**
@@ -1720,9 +1780,10 @@ export class SqlSessionStore implements SessionStore {
 		// Where each entry is: at the source's seq for one it stores unchanged, or undefined for one the child stores. A
 		// segment names the source's rows in increasing order, each once: an entry out of that order is stored.
 		const places: (number | undefined)[] = [];
+		const stored = storedRows(source.sessionId, source.epoch);
 		let sharedThrough = 0;
 		for (const entry of entries) {
-			const seq = source.receipts.get(entry.id)?.seq ?? storedSeqOf(entry, source.sessionId, source.epoch);
+			const seq = source.receipts.get(entry.id)?.seq ?? stored?.seqOf(entry, sharedThrough);
 			const shares = seq !== undefined && seq > sharedThrough && seq <= donor.lastSeq;
 			if (shares) sharedThrough = seq;
 			places.push(shares ? seq : undefined);
@@ -1779,17 +1840,7 @@ export class SqlSessionStore implements SessionStore {
 			segments: donor.segments,
 			length: donor.lastSeq,
 		});
-		for (const [index, entry] of entries.entries()) {
-			const seq = places[index];
-			if (seq !== undefined) {
-				runs.add(seq, index + 1, entry.id);
-				if (runs.full) yield* runs.drain();
-				continue;
-			}
-			// What the child holds is in seq order, for the snapshot index's triggers: the runs before this row first.
-			yield* runs.drain();
-			yield* this.entryForkWrites(tables, header.id, index, entry, source, donor.lastSeq);
-		}
+		yield* this.receiptForkWrites(tables, header.id, entries, source, donor.lastSeq, places, runs);
 		yield* runs.drain();
 		// The search texts of shared rows are the source's, read through the child's view.
 		yield* this.entryWrites(
@@ -1828,8 +1879,10 @@ export class SqlSessionStore implements SessionStore {
 
 	/**
 	 * The statements that store a fork's `entries`, in seq order: an entry with a receipt as the source stores it, its row
-	 * and chunks copied in two statements whatever their size, and any other as `create` stores it. A receipt's row that
-	 * names another entry fails the fork: the source changed under it.
+	 * and chunks copied in two statements whatever their size, and a run of others as `create` stores them, several rows
+	 * a statement. A receipt's row that names another entry fails the fork: the source changed under it. With `places`
+	 * and `runs`, an entry `places` puts in the source is named by `runs`' segments instead, and the segments before an
+	 * entry the child stores go first, for the snapshot index's triggers.
 	 */
 	private *receiptForkWrites(
 		tables: ForkViewTables,
@@ -1837,9 +1890,33 @@ export class SqlSessionStore implements SessionStore {
 		entries: readonly SessionEntry[],
 		source: ForkArchiveSource,
 		donorLastSeq: number,
+		places: readonly (number | undefined)[] = [],
+		runs?: ForkSegmentRuns,
 	): Generator<CountedStatement> {
-		for (const [index, entry] of entries.entries())
+		// The run of entries stored as `create` stores them, from `from`, not yet written.
+		let from = 0,
+			own = 0;
+		for (const [index, entry] of entries.entries()) {
+			const seq = places[index];
+			if (seq === undefined && !source.receipts.has(entry.id)) {
+				if (own === 0) {
+					if (runs !== undefined) yield* runs.drain();
+					from = index;
+				}
+				own++;
+				continue;
+			}
+			if (own > 0) yield* this.entryWrites(child, entries.slice(from, from + own), from, [], false);
+			own = 0;
+			if (seq !== undefined) {
+				runs!.add(seq, index + 1, entry.id);
+				if (runs!.full) yield* runs!.drain();
+				continue;
+			}
+			if (runs !== undefined) yield* runs.drain();
 			yield* this.entryForkWrites(tables, child, index, entry, source, donorLastSeq);
+		}
+		if (own > 0) yield* this.entryWrites(child, entries.slice(from, from + own), from, [], false);
 	}
 
 	/** The statements of {@link receiptForkWrites} that store `entry`, at index `index` of the fork's entries. */
@@ -3518,6 +3595,8 @@ $grant$`);
 		this.closed = true;
 		this.scopes.clear();
 		this.summaries.clear();
+		// Notes whose fingerprint is still to take go with the store: their entries are copied by a fork (#6560).
+		dropStoredNotes(this);
 		const reader = this.reader;
 		this.reader = undefined;
 		if (reader !== undefined) await (await reader.catch(() => undefined))?.close();
@@ -3887,21 +3966,24 @@ $grant$`);
 
 	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {
 		// The entries' first page is asked for beside the session's row: a pipelined connection sends both at once.
+		const generation = this.generation(sessionId);
 		const shared = await this.viewTables(tx);
-		const head = tx.get<HeaderRow & { chat_epoch: string | null; forked?: number }>(
-			`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision${this.forkedColumn(shared.segments)} FROM ${this.tables.sessions} WHERE id = ?`,
+		const head = tx.get<HeaderRow & { chat_epoch: string | null; epoch: string; forked?: number }>(
+			`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision,${generation.sql} AS epoch${this.forkedColumn(shared.segments)} FROM ${this.tables.sessions} WHERE id = ?`,
+			...generation.params,
 			sessionId,
 		);
 		// The rows go out before the row's answer, read directly when this store last found the session without
 		// segments; the row then says whether that still holds in this snapshot, and a guess it disproves reads again.
 		const guess: ForkViewTables =
 			this.forkedSessions.get(sessionId) === false ? { ...shared, segments: undefined } : shared;
-		// A load notes no entry for a fork to share: no fork of this store forks what a load read (#6560).
-		let [row, rows] = await Promise.all([head, this.readRows(tx, sessionId, undefined, undefined, undefined, guess)]);
+		// Each entry is noted in the generation the same snapshot reads, for a fork to share its row (#6560).
+		const epoch = head.then((found) => found?.epoch);
+		let [row, rows] = await Promise.all([head, this.readRows(tx, sessionId, undefined, undefined, epoch, guess)]);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		this.noteForked(tx, sessionId, row.forked);
 		if (guess.segments === undefined && shared.segments !== undefined && Number(row.forked) === 1)
-			rows = await this.readRows(tx, sessionId, undefined, undefined, undefined, shared);
+			rows = await this.readRows(tx, sessionId, undefined, undefined, epoch, shared);
 		const snapshot = {
 			header: JSON.parse(row.header_json) as SessionRecordHeader,
 			entries: rows.map(({ entry }) => entry),
@@ -3922,7 +4004,7 @@ $grant$`);
 		sessionId: string,
 		range: { readonly from?: number; readonly through?: number } = {},
 		seqs?: readonly number[],
-		epoch?: string,
+		epoch?: string | PromiseLike<string | undefined>,
 		viewTables?: ForkViewTables,
 	): Promise<SessionStoredEntry[]> {
 		const tables = viewTables ?? (await this.viewTables(tx, sessionId));
@@ -3973,13 +4055,19 @@ $grant$`);
 				SESSION_READ_PAGE_CHARS,
 				limit,
 			);
+			const generation = await epoch;
+			// Each entry is noted where it is stored, for a fork to share its row (#6560), only where that can happen.
+			const note =
+				generation === undefined || !this.sharedHistorySeen
+					? undefined
+					: storedEntryNotes(this, sessionId, generation);
 			for (const entry of rows) {
 				const chunks = Number(entry.chunks);
 				const seq = Number(entry.seq);
 				const json =
 					chunks === 0 ? entry.entry_json : await this.readEntryChunks(tx, tables, sessionId, seq, chunks);
 				const parsed = JSON.parse(json) as SessionEntry;
-				if (epoch !== undefined) noteStoredEntry(parsed, sessionId, seq, epoch, json);
+				note?.(parsed, seq, json);
 				entries.push({ seq, entry: parsed });
 			}
 			const next = nextFetch(limit, rows);
@@ -4625,7 +4713,10 @@ $grant$`);
 			const head = await this.historyHead(tx, sessionId, true);
 			if (expectedEpoch !== undefined && expectedEpoch !== head.epoch)
 				throw new SessionConflictError(sessionId, endSeq, head.lastSeq);
-			const entries = endSeq < start ? [] : await this.readRows(tx, sessionId, { from: start, through: endSeq });
+			const entries =
+				endSeq < start
+					? []
+					: await this.readRows(tx, sessionId, { from: start, through: endSeq }, undefined, head.epoch);
 			return {
 				startSeq: start,
 				entries: entries.map(({ entry }) => entry),
@@ -5664,14 +5755,14 @@ $grant$`);
 	): Promise<SessionResume> {
 		return this.resumeWindow(sessionId, leafId, throughSeq, options);
 	}
-	readResume(sessionId: string, leafId?: string, options?: SessionResumeOptions): Promise<SessionResume> {
+	readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {
 		return this.resumeWindow(sessionId, leafId, undefined, options);
 	}
 	private async resumeWindow(
 		sessionId: string,
 		leafId?: string,
 		throughSeq?: number,
-		options?: SessionResumeOptions,
+		options?: { deferChildRecords: true },
 	): Promise<SessionResume> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
@@ -5715,11 +5806,9 @@ $grant$`);
 		sessionId: string,
 		header: SessionRecordHeader,
 		index: SessionResumeIndex,
-		options?: SessionResumeOptions,
+		options?: { deferChildRecords: true },
 	): Promise<SessionResume> {
 		const { leafSeq } = index;
-		// Only a fork's read notes where each entry is stored, for the fork to share it (#6560): a plain resume pays nothing.
-		const epoch = options?.forFork ? index.epoch : undefined;
 		const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
 		announceHistoryLoad(plan.state.length + plan.branch.reduce((sum, [a, b]) => sum + b - a + 1, 0));
 		// The branch's ranges, the state and the leaf depend on the index alone: a pipelined connection sends them at once,
@@ -5727,10 +5816,10 @@ $grant$`);
 		const [ranges, state, leaf] = await Promise.all([
 			Promise.all(
 				plan.branch.map(([start, end]) =>
-					this.readRows(tx, sessionId, { from: start, through: end }, undefined, epoch),
+					this.readRows(tx, sessionId, { from: start, through: end }, undefined, index.epoch),
 				),
 			),
-			this.readSeqs(tx, sessionId, plan.state, epoch),
+			this.readSeqs(tx, sessionId, plan.state, index.epoch),
 			leafSeq <= 0 ? undefined : this.entryIdAt(tx, sessionId, leafSeq),
 		]);
 		const branch: SessionStoredEntry[] = ranges.flat();
@@ -6089,7 +6178,8 @@ $grant$`);
 	 */
 	private noteWritten(sessionId: string, epoch: string, written: readonly WrittenEntry[]): void {
 		if (!this.sharedHistorySeen) return;
-		for (const { entry, seq, json } of written) noteStoredEntry(entry, sessionId, seq, epoch, json);
+		const note = storedEntryNotes(this, sessionId, epoch);
+		for (const { entry, seq, json } of written) note(entry, seq, json);
 	}
 
 	/**
@@ -6113,9 +6203,10 @@ $grant$`);
 
 	/**
 	 * The statements that store `entries` after `lastSeq`, in order, each entry encoded only when its statements are
-	 * taken: each entry's row and its chunks, the version step a first chunked entry takes unless `versionStep` is
-	 * false (a fork takes it once its last entry is in), then the entries' search texts. With `written`, each entry is
-	 * added to it with its seq and its JSON as it is encoded, for {@link noteWritten} once the write commits.
+	 * taken: the entries' rows, several to a statement (see {@link rowInserts}), each chunked entry's own row and its
+	 * chunks in their place among them, the version step a first chunked entry takes unless `versionStep` is false (a
+	 * fork takes it once its last entry is in), then the entries' search texts. With `written`, each entry is added to it
+	 * with its seq and its JSON as it is encoded, for {@link noteWritten} once the write commits.
 	 */
 	private *entryWrites(
 		sessionId: string,
@@ -6126,22 +6217,26 @@ $grant$`);
 		written?: WrittenEntry[],
 	): Generator<SqliteStatement> {
 		let chunked = false;
+		const rows = new RowInserts(this.tables.entries, ENTRY_COLUMNS);
 		for (const [index, entry] of entries.entries()) {
 			const seq = lastSeq + index + 1;
 			const json = this.encode(entry);
 			written?.push({ entry, seq, json });
 			const stored = storedEntry(entry, json);
-			chunked ||= stored.chunks.length > 0;
+			if (stored.chunks.length === 0) {
+				yield* rows.add([sessionId, seq, entry.id, stored.json, 0]);
+				continue;
+			}
+			chunked = true;
+			yield* rows.drain();
 			yield {
-				sql: `INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json, chunks) VALUES (?, ?, ?, ?, ?)`,
+				sql: rows.sql(1),
 				params: [sessionId, seq, entry.id, stored.json, stored.chunks.length],
 			};
-			if (stored.chunks.length > 0) {
-				yield {
-					sql: `DELETE FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ?`,
-					params: [sessionId, seq],
-				};
-			}
+			yield {
+				sql: `DELETE FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ?`,
+				params: [sessionId, seq],
+			};
 			for (const [chunk, data] of stored.chunks.entries()) {
 				yield {
 					sql: `INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) VALUES (?, ?, ?, ?)`,
@@ -6149,6 +6244,7 @@ $grant$`);
 				};
 			}
 		}
+		yield* rows.drain();
 		// One way, in the transaction that writes the first chunked entry: a build that knows only version 1 refuses the
 		// database when next opened instead of reading the entry as a stub.
 		if (chunked && versionStep) {
@@ -6157,21 +6253,18 @@ $grant$`);
 				params: [SESSION_SCHEMA_VERSION_CHUNKED, SESSION_SCHEMA_VERSION_UNCHUNKED],
 			};
 		}
-		for (const { index, text } of texts) {
-			yield {
-				sql: `INSERT INTO ${this.tables.searchTexts} (session_id, seq, text_json) VALUES (?, ?, ?)`,
-				params: [sessionId, lastSeq + index + 1, this.encode(text)],
-			};
-		}
+		const searchTexts = new RowInserts(this.tables.searchTexts, TEXT_COLUMNS);
+		for (const { index, text } of texts) yield* searchTexts.add([sessionId, lastSeq + index + 1, this.encode(text)]);
+		yield* searchTexts.drain();
 	}
 
 	/**
-	 * Runs the session row's statement, then `entries`' statements, in order. A write of up to
-	 * {@link STATEMENT_BATCH_BYTES}, as an ordinary message is, goes to a connection thread as one batch that waits for
-	 * it once. A larger one runs its statements one at a time as they are made, as before, so it never holds more than
-	 * about that much of them, or sends it, at once.
+	 * Runs the session row's statement, then `entries`' statements, in order, as the transaction's last calls: the body
+	 * makes none after them. A write of up to {@link STATEMENT_BATCH_BYTES}, as an ordinary message is, goes with the
+	 * commit where the connection is pipelined, or to a connection thread as one batch that waits for it once, or a
+	 * request's worth at a time when it has more statements than one takes. A larger one is sent as it is made, without
+	 * waiting for each statement's answer, so it never holds more than about that much of them, or sends it, at once.
 	 */
-	/** Writes the session's row and its entries as the transaction's last calls: the body makes none after them. */
 	private async writeEntries(
 		tx: SqliteExecutor,
 		summary: SqliteStatement,
@@ -6180,18 +6273,32 @@ $grant$`);
 		const batch: SqliteStatement[] = [summary];
 		let bytes = statementBytes(summary);
 		const pending = entries[Symbol.iterator]();
+		let whole = true;
 		for (let next = pending.next(); next.done !== true; next = pending.next()) {
 			batch.push(next.value);
 			bytes += statementBytes(next.value);
-			if (bytes <= STATEMENT_BATCH_BYTES) continue;
-			for (const { sql, params } of batch) await tx.run(sql, ...params);
-			for (let rest = pending.next(); rest.done !== true; rest = pending.next())
-				await tx.run(rest.value.sql, ...rest.value.params);
+			if (bytes > STATEMENT_BATCH_BYTES) {
+				whole = false;
+				break;
+			}
+		}
+		if (whole) {
+			// The transaction's last writes: where its connection is pipelined, they go out with its commit.
+			if (transactionFinisher(tx)?.(batch) === true) return;
+			if (batch.length <= MAX_SEQUENCE_REQUEST_STATEMENTS) {
+				await statementBatch(tx, batch, []);
+				return;
+			}
+		}
+		// Many small statements go to a connection thread a request's worth at a time; larger ones one at a time as they
+		// are made, at most about a batch's worth of them unanswered.
+		const runSequence = whole ? sequenceRunner(tx) : undefined;
+		if (runSequence !== undefined) {
+			await runSequence({ statements: batch });
 			return;
 		}
-		// The transaction's last writes: where its connection is pipelined, they go out with its commit.
-		if (transactionFinisher(tx)?.(batch) === true) return;
-		await statementBatch(tx, batch, []);
+		const writes = new SentWrites(tx);
+		await writes.around(() => writes.send(whole ? batch : withRest(batch, pending)));
 	}
 
 	private encode(value: SessionRecordHeader | SessionEntry | StoredSummaryState | string): string {

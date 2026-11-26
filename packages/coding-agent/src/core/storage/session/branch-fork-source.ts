@@ -1,8 +1,6 @@
 import { createLabelEntry } from "../../session-manager-entries.ts";
 import { SessionEntryError } from "../../session-manager-errors.js";
-import type { SessionEntry } from "../../session-manager-types.ts";
 import { historyPages, readSessionHistoryChunks } from "./history-pages.js";
-import { storedSeqOf } from "./stored-entries.js";
 import {
 	SESSION_HISTORY_SCAN_ENTRIES,
 	type SessionForkRow,
@@ -21,32 +19,11 @@ async function forkRow(reader: SessionStore, id: string, item: SessionHistoryIte
 
 /** The SDK/CLI same-store clone keeps the original append log, including abandoned branches,
  * raw labels and recorded leaf moves. Unlike an interactive /fork it never edits structural links. */
-export function completeSessionForkStream(
-	id: string,
-	epoch: string | undefined,
-	through: number,
-	resident?: readonly SessionEntry[],
-): SessionForkStream {
+export function completeSessionForkStream(id: string, epoch: string | undefined, through: number): SessionForkStream {
 	return {
 		kind: "complete-session",
-		...(resident === undefined ? { prefix: { sessionId: id, epoch, through } } : {}),
+		prefix: { sessionId: id, epoch, through },
 		async *read(reader, _hasWritten, inlineSnapshot) {
-			// These isolated, already resident rows are the SDK's captured view. The stored child and its
-			// live manager must both see a plain-data edit made before the clone. No archive is loaded for it.
-			if (resident) {
-				// A row the store read in this generation, unchanged since, is the source's own: a store that shares the
-				// source's history names it rather than storing it again (#6560). A segment names rows in increasing order.
-				let storedThrough = 0;
-				for (const entry of resident) {
-					const seq = storedSeqOf(entry, id, epoch);
-					if (seq === undefined || seq <= storedThrough) yield { entry };
-					else {
-						storedThrough = seq;
-						yield { entry, stored: { sessionId: id, seq } };
-					}
-				}
-				return;
-			}
 			// Pages as large as a scan reads, so a long session takes a few reads, not one for each 64 entries (#6560).
 			for await (const { items } of historyPages(reader, id, epoch, through, {
 				pageEntries: SESSION_HISTORY_SCAN_ENTRIES,
