@@ -1,0 +1,91 @@
+# The shared database of the distributed tests (docs/distributed-tests.md): a PostgreSQL primary, PgBouncer in
+# transaction mode in front of it, and, with the `replica` profile, a streaming replica. Atomic nodes run as processes
+# on the host. They send queries through PgBouncer and keep their wake-up connections (listenUrl) on the primary.
+#
+# test/distributed/run.mjs starts this file under a project name of its own and sets every ADT_* variable: the
+# passwords it generates for the run, the directory of the run's TLS certificates, and the host ports it picked. Every
+# port is published on 127.0.0.1 only, and on the same host port for the whole run, so a restarted server is where the
+# nodes' links expect it.
+#
+# The PostgreSQL containers are privileged: each loop-mounts its data disk and runs the server in a cgroup of its own,
+# so postgres/disk.sh can fill or slow that disk.
+x-postgres: &postgres
+  build: ./postgres
+  image: atomic-distributed-postgres:16
+  privileged: true
+  cgroup: private
+  volumes:
+    - ./postgres:/adt:ro
+    - ${ADT_TLS_DIR:?}:/adt-tls:ro
+  healthcheck:
+    test: ["CMD", "pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+    interval: 1s
+    timeout: 5s
+    retries: 180
+
+services:
+  primary:
+    <<: *postgres
+    entrypoint: ["/adt/start-postgres.sh"]
+    command: []
+    environment:
+      ADT_ROLE: primary
+      ADT_DISK_MB: ${ADT_DISK_MB:-2048}
+      POSTGRES_PASSWORD: ${ADT_SUPERUSER_PASSWORD:?}
+      ADT_OWNER_PASSWORD: ${ADT_OWNER_PASSWORD:?}
+      ADT_RUNTIME_PASSWORD: ${ADT_RUNTIME_PASSWORD:?}
+      ADT_REPLICATION_PASSWORD: ${ADT_REPLICATION_PASSWORD:?}
+      ADT_PGBOUNCER_AUTH_PASSWORD: ${ADT_PGBOUNCER_AUTH_PASSWORD:?}
+    volumes:
+      - ./postgres:/adt:ro
+      - ./postgres/init-primary.sh:/docker-entrypoint-initdb.d/10-atomic.sh:ro
+      - ${ADT_TLS_DIR:?}:/adt-tls:ro
+      - primary-disk:/var/lib/postgresql/volume
+    ports:
+      - "127.0.0.1:${ADT_PRIMARY_PORT:?}:5432"
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
+    entrypoint: ["/adt/start-pgbouncer.sh"]
+    environment:
+      ADT_PGBOUNCER_AUTH_PASSWORD: ${ADT_PGBOUNCER_AUTH_PASSWORD:?}
+    volumes:
+      - ./pgbouncer:/adt:ro
+      - ${ADT_TLS_DIR:?}:/adt-tls:ro
+    ports:
+      - "127.0.0.1:${ADT_PGBOUNCER_PORT:?}:6432"
+    depends_on:
+      primary:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - sh
+        - -c
+        - PGPASSWORD="$$ADT_PGBOUNCER_AUTH_PASSWORD" psql -h 127.0.0.1 -p 6432 -U pgbouncer_auth pgbouncer -Atc 'SHOW VERSION'
+      interval: 1s
+      timeout: 5s
+      retries: 120
+
+  replica:
+    <<: *postgres
+    profiles: [replica]
+    entrypoint: ["/adt/start-postgres.sh"]
+    command: []
+    environment:
+      ADT_ROLE: replica
+      ADT_DISK_MB: ${ADT_DISK_MB:-2048}
+      ADT_REPLICATION_PASSWORD: ${ADT_REPLICATION_PASSWORD:?}
+    volumes:
+      - ./postgres:/adt:ro
+      - ${ADT_TLS_DIR:?}:/adt-tls:ro
+      - replica-disk:/var/lib/postgresql/volume
+    ports:
+      - "127.0.0.1:${ADT_REPLICA_PORT:?}:5432"
+    depends_on:
+      primary:
+        condition: service_healthy
+
+volumes:
+  primary-disk:
+  replica-disk:
