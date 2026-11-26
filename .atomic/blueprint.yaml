@@ -94,6 +94,17 @@ knowledge:
       project root) fails bare imports such as `string_decoder` or `stream` with
       "Cannot find module '<worktree>/string_decoder'" when the worktree path has a matching length.
       `test/global-setup-workspace-links.ts` stops the root and coding-agent suites in a worktree set up that way.
+  - name: docs
+    contents: |
+      `npm run docs:check --workspace=@bastani/atomic` checks the hosted docs' routes and internal links.
+      Mintlify's checks run from packages/coding-agent/docs, as CI's "Mintlify docs validation" step runs them:
+      `mise exec node@24 -- bunx mintlify@4.2.731 validate && mise exec node@24 -- bunx mintlify@4.2.731 broken-links`.
+      Use plain `bunx`: npx and `bunx --bun` change to the package root, where Mintlify finds no docs.json.
+      Use Node 24, because Mintlify refuses Node 25 and later. Keep the 4.2.731 pin: 4.2.732 needs a package
+      missing from the registry. Integration tests run the storage guides' examples:
+      storage-docs-tuning-examples and storage-postgres-tuning-guide need ATOMIC_TEST_POSTGRES_URL and
+      ATOMIC_TEST_POSTGRES_PASSWORD (add ATOMIC_TEST_POSTGRES_DOCKER=1 for the tuning guide's Docker part), and
+      storage-postgres-pgbouncer needs ATOMIC_TEST_PGBOUNCER=1, Docker and openssl.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

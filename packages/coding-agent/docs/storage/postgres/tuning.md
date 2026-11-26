@@ -4,13 +4,13 @@ sidebarTitle: "Server tuning"
 description: "Server-side tuning for a PostgreSQL database shared by many Atomic agents: where the time goes, distance, connections, memory, monitoring, busy tables, and what to leave alone."
 ---
 
-This guide is for the person who runs the PostgreSQL server that Atomic's agents share. Use it after you set up the database as in [PostgreSQL storage](/storage/postgres).
+This guide is for the person who runs the PostgreSQL server that Atomic's agents share. Use it after you set up the database as in [PostgreSQL setup](/storage/postgres).
 
-The table names below assume Atomic's default schema, `atomic`, and no `prefix`. With a prefix, each table name starts with it, for example `atomic.team_session_sessions`.
+The table names below assume Atomic's default schema, `atomic`, and no `prefix`, which is the default. With a prefix, each table name starts with it. For example, with `prefix: "team_"`, `atomic.session_sessions` becomes `atomic.team_session_sessions`.
 
 ## Where the time goes
 
-For Atomic, a database server is rarely short of CPU or disk. The usual limits are:
+Three things usually limit how fast Atomic's agents work with the server:
 
 - **Round trips.** Each save waits for answers from the server. The farther away the server, the longer each wait.
 - **Connections.** Each server has a fixed number. When agents need more than it has, they get errors.
@@ -50,13 +50,15 @@ On the machine itself, `uptime` shows the load average. If it stays well below t
 
 ## Put the database close to the agents
 
-Saving new entries to a session takes 1 round trip once you have run `atomic storage migrate` as the owner role, and 2 before. A round trip is the time a message takes to reach the server and come back, which `ping` shows. So every save takes at least that long:
+Each save waits for at least one round trip: the time a message takes to reach the server and come back, which `ping` shows. So every save takes at least that long:
 
-| Distance to the server | One round trip | Each save, at least | Before `atomic storage migrate` |
-| --- | --- | --- | --- |
-| Same data center | about 1 ms | about 1 ms | about 2 ms |
-| Same region, different zone | about 2 ms | about 2 ms | about 4 ms |
-| Across a continent | about 80 ms | about 80 ms | about 160 ms |
+| Distance to the server | One round trip, and each save at least |
+| --- | --- |
+| Same data center | about 1 ms |
+| Same region, different zone | about 2 ms |
+| Across a continent | about 80 ms |
+
+Saves wait twice as long until the owner has run `atomic storage migrate` after an upgrade. See [After you upgrade Atomic](#after-you-upgrade-atomic).
 
 Distance also makes every lock wait longer, because a transaction holds its locks for its round trips.
 
@@ -69,7 +71,7 @@ Each Atomic process opens up to `maxConnections` plus `readerMaxConnections` con
 On the server:
 
 - **`max_connections`** is the total the server accepts. Each connection uses memory for its own work, so the server cannot accept unlimited connections. Set it high enough for Atomic's connections, or PgBouncer's pool, plus one wake-up connection per broker and room for administrators. Changing it needs a restart.
-- **Per-role limits.** `ALTER ROLE atomic_runtime CONNECTION LIMIT 300;` caps one role, so a runaway fleet cannot take every slot. Count every broker's direct wake-up connection in the cap.
+- **Per-role limits.** `ALTER ROLE atomic_runtime CONNECTION LIMIT <n>;` caps one role, so a runaway fleet cannot take every slot. Set `<n>` to the connections Atomic needs, or PgBouncer's pool, plus one wake-up connection per broker, plus a margin. The example below uses 300. [Connection limits](/storage/postgres/pgbouncer#connection-limits) works one out.
 - **PgBouncer.** When agents need more connections than the server can give, put [PgBouncer](/storage/postgres/pgbouncer) in front.
 
 ```sql
@@ -89,13 +91,13 @@ The operating system tracks memory in pages, usually 4 KB each. Every server pro
 
 PostgreSQL uses huge pages when `huge_pages` is `try` (the default) or `on`, and the operating system has enough of them reserved. With `huge_pages = try` and none reserved, `huge_pages_status` is `off`. To reserve them on Linux:
 
-1. **Find out how many pages PostgreSQL needs.** Stop the server first, because PostgreSQL reads this setting only while it is not running. Run this as the `postgres` user, with your data directory:
+1. **Find out how many pages PostgreSQL needs.** Stop the server first, because PostgreSQL answers this only while it is not running. Then run the server program as the `postgres` user, with your data directory and configuration file. On Debian and Ubuntu, with PostgreSQL 18, replace 18 with your version:
 
    ```bash
-   postgres -D /var/lib/postgresql/18/main -C shared_memory_size_in_huge_pages
+   sudo -u postgres /usr/lib/postgresql/18/bin/postgres -D /var/lib/postgresql/18/main -C shared_memory_size_in_huge_pages -c config_file=/etc/postgresql/18/main/postgresql.conf
    ```
 
-   On Debian and Ubuntu, `postgres` is in `/usr/lib/postgresql/18/bin/`. Add `-c config_file=/etc/postgresql/18/main/postgresql.conf` so it reads your settings. It prints a number of pages, for example `4259`.
+   Elsewhere, `postgres` is usually on the `postgres` user's `PATH`, and the configuration file is in the data directory, so `-D <data directory>` is enough. It prints a number of pages, for example `4259`.
 
 2. **Reserve a little more than that**, rounded up, and keep it across reboots. For example, for 4259 pages, reserve 4350:
 
@@ -129,13 +131,13 @@ Managed services decide huge pages for you.
 
    If the line already lists other libraries, add it to the list, separated by a comma.
 
-2. **Create the extension** in Atomic's database, as a superuser. Atomic's owner role cannot. It gets `permission denied to create extension "pg_stat_statements"` with the hint `Must be superuser to create this extension`.
+2. **Create the extension** in Atomic's database, as a superuser or your managed service's administrator role. The owner role is not enough.
 
    ```sql
    CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
    ```
 
-3. **Let your monitoring role see every query.** Without this, a role sees the text only of its own queries:
+3. **Let the role you monitor with see every query.** Without this, a role sees the text only of its own queries. This example grants it to the owner role:
 
    ```sql
    GRANT pg_read_all_stats TO atomic_owner;
@@ -192,7 +194,7 @@ A few of Atomic's tables are small but change constantly:
 
 PostgreSQL never changes a row in place. An update writes a new version of the row and leaves the old one behind as a dead row. A background process, autovacuum, later frees the dead rows. By default it waits until a fifth of a table is dead. On a small table that changes constantly, that can mean many dead rows between cleanups, and queries that read past them.
 
-`atomic storage migrate`, run as the owner role, tells autovacuum to clean these tables after a fixed number of dead rows instead: 500 for `session_sessions` and `intercom_leases`, and 1000 for `snapshot_session_links`. In a test with 20,000 sessions, a few of them saved constantly for five minutes, the table held about a third as many dead rows on average. You do not set it yourself.
+`atomic storage migrate`, run as the owner role, tells autovacuum to clean these tables after a fixed number of dead rows instead: 500 for `session_sessions` and `intercom_leases`, and 1000 for `snapshot_session_links`. You do not set it yourself.
 
 The settings take effect at once, with no restart. Migrate keeps any value you have set on these tables yourself. To use a different threshold, set it and migrate leaves it alone:
 
@@ -233,19 +235,17 @@ WHERE relname IN ('session_sessions', 'intercom_leases', 'snapshot_session_links
 
 Atomic indexes session text for history search with a trigram index, `atomic.session_search_trgm`. This kind of index (GIN) does not add new text to the index right away. It first puts it in a holding area, the pending list, and later moves the whole list into the index in one go. That move is called a merge. Searches read the pending list as well as the index, so new text is found as soon as it is written, merged or not.
 
-PostgreSQL merges the list when it grows past the index's `gin_pending_list_limit`, 4 MB by default, and the write that pushes it past the limit does the whole merge itself, so that write is slow now and then.
+PostgreSQL merges the list when it grows past the index's `gin_pending_list_limit`, and the write that pushes it past the limit does the whole merge itself, so that write is slow now and then. Atomic keeps such merges rare:
 
-Atomic now keeps merges out of those writes:
+- **A large limit.** Atomic gives the index a limit of 64 MB, instead of PostgreSQL's default of 4 MB, so a write almost never reaches it.
+- **Merges in the background.** Each agent process, after it has written about 128,000 characters of search text, merges the list on a connection of its own with PostgreSQL's `gin_clean_pending_list`. Nothing waits for it. Only one merge runs at a time across all agents, so the list stays at about 1 MB however many agents write.
+- **Autovacuum merges too.** A vacuum of the table also merges the list. Atomic has the table behind the index, `atomic.session_search_entries`, vacuumed after every 1,000 new rows.
 
-- **A large limit.** Atomic gives the index a limit of 64 MB, so a write almost never reaches it.
-- **Merges in the background.** Each agent process, after it has written about 128,000 characters of search text, merges the list on a connection of its own, holding no session's lock, with PostgreSQL's `gin_clean_pending_list`. Nothing waits for it. Only one merge runs at a time across all agents, and a merge moves every agent's text, so the list stays at about 1 MB however many agents write.
-- **Autovacuum merges too.** A vacuum of the table also merges the list. Atomic sets the table behind the index, `atomic.session_search_entries`, to be vacuumed after every 1,000 new rows.
+`atomic storage migrate`, run as the owner role, sets the limit and the autovacuum settings. You do not set them yourself. If you set a 1 MB limit, as an earlier version of this guide suggested, `atomic storage migrate` replaces it with 64 MB.
 
-`atomic storage migrate`, run as the owner role, sets the limit and the autovacuum settings on a database that already has the index. You do not set them yourself. If you set a 1 MB limit as an earlier version of this guide suggested, `atomic storage migrate` replaces it with 64 MB.
+Only the index's owner may run `gin_clean_pending_list`. Agents that connect as the runtime role leave the merges to autovacuum, so keep autovacuum on. Without either, the list grows to 64 MB, and the write that crosses that limit merges all of it.
 
-Only the index's owner may run `gin_clean_pending_list`. Agents that connect as a runtime role leave the merges to autovacuum, so keep autovacuum on. Without either, the list grows to 64 MB, and the write that crosses that limit merges all of it.
-
-Writes to the search index don't hold the lock of the session they index. A history search that indexes a session takes a lock of that session's index instead, so the agent writing the session goes on saving while the search writes. When Atomic rewrites a session's whole history, it waits for an index write in progress and then removes that session's index, and an index write that starts during the rewrite waits for it and then finds the index outdated and writes nothing.
+Writes to the search index don't hold the lock of the session they index, so an agent keeps saving to a session while a history search indexes it.
 
 Check the settings with:
 
@@ -262,11 +262,11 @@ CREATE EXTENSION IF NOT EXISTS pgstattuple;
 SELECT pending_pages, pending_tuples FROM pgstatginindex('atomic.session_search_trgm');
 ```
 
-Leave the index's `fastupdate` on. Turning it off skips the pending list and adds every entry to the index as it is written, which made writing search text 16 to 19 times slower overall in our tests.
+Leave the index's `fastupdate` on. Turning it off skips the pending list and adds every entry to the index as it is written, which makes writing search text many times slower.
 
 ### Intercom's wake-up notices
 
-When one Intercom broker sends a message to another, it also writes a short notice to `atomic.intercom_wakeups` so the other broker checks for the message at once. Atomic makes this table unlogged: PostgreSQL does not write its rows to the write-ahead log, so each notice costs about a third of the log it used to and needs no disk flush when it commits.
+When one Intercom broker sends a message to another, it also writes a short notice to `atomic.intercom_wakeups` so the other broker checks for the message at once. Atomic makes this table unlogged: PostgreSQL does not write its rows to the write-ahead log, so a notice writes less and needs no disk flush when it commits.
 
 An unlogged table is emptied when the server crashes, and it is not copied to standby servers, so it is empty after a failover. Only notices are lost. Brokers also check for messages every 30 seconds, so every message still arrives, at worst that much later. Tables created by `atomic storage migrate` or by a broker start out unlogged. A table an earlier version created becomes unlogged the next time `atomic storage migrate` runs as the owner role.
 
@@ -274,7 +274,7 @@ An unlogged table is emptied when the server crashes, and it is not copied to st
 
 PostgreSQL compresses large values, such as long session entries, stored files and Intercom messages, before it stores them. Its default method, `pglz`, is slow. `atomic storage migrate` switches those columns to `lz4` when the server supports it. Most PostgreSQL 14 and later servers do, including the PostgreSQL project's packages and Docker images.
 
-In a test with large values built from real session history and source files, `lz4` took about 60% less time to compress them. Reading session entries back took 17% less time, and reading files back half as long. It stored session entries in 5% to 17% less space, and files in about 9% more.
+`lz4` compresses and decompresses faster than `pglz`, and stores session entries in a little less space.
 
 Only values written after the change use `lz4`. Values already stored stay readable as they are. To see how a table's values are compressed, run:
 
@@ -290,9 +290,7 @@ FROM atomic.session_entries GROUP BY 1;
 These settings come up in tuning advice, but rarely help Atomic:
 
 - **`synchronous_commit`.** Keep it `on`. Turning it off for the whole server can lose the last commits in a crash, and on a fast disk a commit's write takes far less time than a network round trip. Atomic already turns it off for its own heartbeat writes, the lease renewals Intercom brokers send every 10 seconds, because losing one in a crash does no harm: the next renewal repeats it. Session entries, messages and every other write still wait for the disk.
-- **`commit_delay`.** It lets several commits share one disk write, which helps only when disk writes are slow.
 - **`wal_compression`.** Keep the current value. It trades a little CPU for a smaller write-ahead log.
-- **`io_method`.** Atomic's data usually fits in memory, so the method PostgreSQL 18 uses to read from disk rarely matters.
 - **`deadlock_timeout`.** Atomic's lock waits are expected and end at its own lock timeout, so lowering it only adds work. Keep `log_lock_waits = on` to see long waits in the log.
 
 ## After you upgrade Atomic
@@ -305,8 +303,8 @@ atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomi
 
 Why it matters for performance:
 
-- **Fast starts.** An agent opens its storage quickly, in a few round trips and without taking locks, only when the database is already up to date. If it is not, each agent starts by checking and updating it, and many agents starting at once queue behind each other.
-- **New steps.** `atomic storage migrate` also applies changes a runtime role without DDL rights cannot make: the sequence Intercom uses to order new leases, `fillfactor` and autovacuum settings on the busy tables, `lz4` compression for large values, the search index settings, an unlogged table for Intercom's wake-up notices, and the function that saves entries to a session in 1 round trip instead of 2. Until it runs, agents keep working, but without those gains. Agents find the function the next time they start.
+- **Fast starts.** An agent opens an up-to-date database in a few round trips, without taking locks. On a database that is behind, each agent starts by checking and updating it, and many agents starting at once queue behind each other.
+- **Changes only the owner can make.** The runtime role cannot change the schema, so `atomic storage migrate` applies the rest: `fillfactor` and autovacuum settings on the busy tables, `lz4` compression for large values, the search index settings, an unlogged table for Intercom's wake-up notices, and saving entries to a session with one wait for the server instead of two. Until it runs, agents keep working without those gains. Running agents pick them up the next time they start.
 
 ## Checklist
 
@@ -324,6 +322,6 @@ On a managed service, such as Amazon RDS, Azure Database for PostgreSQL or Googl
 
 ## Related pages
 
-- [PostgreSQL storage](/storage/postgres): set up the database and roles.
+- [PostgreSQL setup](/storage/postgres): set up the database and roles.
 - [Tuning for many concurrent agents](/storage/postgres#tuning-for-many-concurrent-agents): size Atomic's connection settings.
 - [Run many agents on PostgreSQL with PgBouncer](/storage/postgres/pgbouncer).

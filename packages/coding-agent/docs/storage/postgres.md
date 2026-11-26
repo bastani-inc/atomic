@@ -1,260 +1,376 @@
 ---
 title: "PostgreSQL setup"
 sidebarTitle: "Setup"
-description: "Set up PostgreSQL for Atomic's sessions and Intercom: roles, migrations, joining machines, TLS, proxies, connection budget, poolers, wake-ups, cloud identities, tuning, and troubleshooting."
+description: "Share Atomic's sessions and Intercom across machines, a team, or CI with one PostgreSQL database: set up roles, join machines, connect through TLS, proxies, and poolers, size connections, and fix common errors."
 ---
 
-`@bastani/atomic-storage-postgres` stores Atomic's shared state in PostgreSQL. **Atomic sessions require PostgreSQL 16 or later** (for session JSON query functions). The adapter itself accepts PostgreSQL 14 or later on connect for non-session tables, and rejects servers older than PostgreSQL 14.
+Use PostgreSQL when more than one machine should see the same sessions and Intercom messages: a team, a CI fleet, or one person on several computers. Every machine that joins the database sees the same sessions, and its agents can message agents on the other machines. For one person on one machine, the default [local SQLite](/storage/sqlite) store needs no setup and is the better choice.
 
-It works with self-hosted PostgreSQL and managed services, including Azure Database for PostgreSQL Flexible Server, Azure HorizonDB, Amazon RDS and Aurora PostgreSQL, Google Cloud SQL, AlloyDB, Neon, and Supabase.
+This page is for the person who sets up the database and the people who connect their machines to it. It covers:
 
-When your agents need more connections than the server allows, put [PgBouncer](/storage/postgres/pgbouncer) in front of it. To tune the server itself, see [Server tuning](/storage/postgres/tuning).
+- creating the database and its roles;
+- joining a machine;
+- TLS, HTTP proxies, poolers, and cloud identities;
+- how many connections Atomic opens, and how to size them for many agents;
+- fixes for common errors.
 
-## What works on PostgreSQL
+Requirements:
 
-- **Sessions**, including entries containing NUL characters or lone surrogates in tool output.
-- **Intercom multi-node routing** across machines pointed at the same database.
-- **Session transfer** with `atomic storage export` and `atomic storage import`.
-- **Setup and operations** with `atomic storage join`, `atomic storage migrate`, `atomic storage status`, password files, rotated token files, cloud identities, TLS, HTTP proxies, and connection poolers.
+- **PostgreSQL 16 or newer.** Atomic keeps sessions only on PostgreSQL 16 or newer.
+- **The PostgreSQL adapter, `@bastani/atomic-storage-postgres`,** installed on every machine that connects. [Join a machine](#join-a-machine) shows how.
+
+Self-hosted PostgreSQL works, and so do managed services: Azure Database for PostgreSQL Flexible Server, Azure HorizonDB, Amazon RDS and Aurora PostgreSQL, Google Cloud SQL, AlloyDB, Neon, and Supabase.
+
+A new PostgreSQL server allows 100 connections, and each Atomic process can open up to 10, or 11 for an Intercom broker. If you will run more than a few Atomic processes, read [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents) before you start. When your agents need more connections than the server allows, put [PgBouncer](/storage/postgres/pgbouncer) in front of it. To tune the server itself, see [Server tuning](/storage/postgres/tuning).
 
 ## Set up the database
 
-Atomic stores its tables, indexes, trigger functions, and sequences in its own schema, `atomic` (configurable via the `schema` option), rather than `public`. Production deployments use two roles:
+Atomic keeps its tables in their own schema, `atomic`, rather than `public`. A shared deployment uses two roles:
 
-- **Owner role.** Owns the database and the `atomic` schema. Runs `atomic storage migrate` after initial setup and after each Atomic upgrade.
-- **Runtime role.** Used by sessions and Intercom brokers. Reads and writes rows without DDL privileges, ownership, or `CREATE`.
+- **The owner role** owns the database and the `atomic` schema. It creates and upgrades Atomic's tables with `atomic storage migrate`.
+- **The runtime role** is the role every machine connects as. It reads and writes rows, and cannot change the schema.
 
-For a single user on one machine, one role that owns the database is enough. Atomic initializes the schema once under an advisory lock when first opened, and subsequent opens on an up-to-date schema run no DDL.
+With two roles, a machine that connects as the runtime role can never change or drop Atomic's tables. Every machine can use the same runtime role, or you can create one login role per person with the same grants as `atomic_runtime`. For one person testing on one machine, a single role that owns the database is enough. Atomic then creates its tables the first time it opens the database.
 
-As the server administrator (a superuser, or the managed service's administrator role), create the roles and database:
+1. **Create the roles and the database.** Connect as the server's administrator, a superuser or the managed service's administrator role, and run:
 
-```sql
-CREATE ROLE atomic_owner LOGIN PASSWORD '<owner password>';
-CREATE ROLE atomic_runtime LOGIN PASSWORD '<runtime password>';
-CREATE DATABASE atomic OWNER atomic_owner;
-REVOKE ALL ON DATABASE atomic FROM PUBLIC;
-GRANT CONNECT ON DATABASE atomic TO atomic_owner, atomic_runtime;
-```
+   ```sql
+   CREATE ROLE atomic_owner LOGIN PASSWORD '<owner password>';
+   CREATE ROLE atomic_runtime LOGIN PASSWORD '<runtime password>';
+   -- On a managed service whose administrator is not a superuser, such as Azure, RDS, or Cloud SQL:
+   -- GRANT atomic_owner TO <administrator>;
+   CREATE DATABASE atomic OWNER atomic_owner;
+   REVOKE ALL ON DATABASE atomic FROM PUBLIC;
+   GRANT CONNECT ON DATABASE atomic TO atomic_owner, atomic_runtime;
+   ```
 
-Owning the database grants `atomic_owner` `CREATE` on it, which is all it needs to create the `atomic` schema. On managed services where the administrator is not a superuser (Azure, RDS, Cloud SQL), make the administrator a member of the owner role first with `GRANT atomic_owner TO <administrator>;`.
+   Owning the database lets `atomic_owner` create the `atomic` schema. On a managed service whose administrator is not a superuser, remove the `--` before the `GRANT` line, so the administrator may create a database owned by `atomic_owner`.
 
-Next, run `atomic storage migrate` from a machine with the owner role credentials to create the schema and tables:
+2. **Allow the machines to connect, over TLS.** On a self-hosted server, turn TLS on first, as [TLS](#tls) explains, because Atomic checks the server's certificate by default. Then `pg_hba.conf` decides who may log in. Allow the agent machines as the runtime role, and the machine you run `atomic storage migrate` on as the owner role. Then reload the server, for example with `SELECT pg_reload_conf();`:
 
-```bash
-atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password
-```
+   ```text
+   # TYPE   DATABASE  USER            ADDRESS          METHOD
+   hostssl  atomic    atomic_runtime  10.0.2.0/24      scram-sha-256
+   hostssl  atomic    atomic_owner    10.0.3.10/32     scram-sha-256
+   ```
 
-Passing `--token-file`, `--password-file`, `--auth`, or `--prefix` to `atomic storage migrate` requires passing `--db <url>` too. `atomic storage migrate` has no `--schema` flag; to migrate a custom schema, set `options.schema` in `settings.json`, `--storage`, or `ATOMIC_STORAGE` and run `atomic storage migrate` without `--db`.
+   Managed services use firewall rules instead, and have TLS on already.
 
-Then connect to the `atomic` database as `atomic_owner` and grant the runtime role its privileges:
+3. **Create Atomic's tables.** On a machine with Atomic installed, install the PostgreSQL adapter, save the owner's password in a file that only you can read, and run `atomic storage migrate` as the owner role. Connect to PostgreSQL directly, not through a pooler:
 
-```sql
-GRANT USAGE ON SCHEMA atomic TO atomic_runtime;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA atomic TO atomic_runtime;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA atomic TO atomic_runtime;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA atomic TO atomic_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO atomic_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT USAGE, SELECT ON SEQUENCES TO atomic_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT EXECUTE ON FUNCTIONS TO atomic_runtime;
-```
+   ```bash
+   atomic install npm:@bastani/atomic-storage-postgres
+   (umask 077; printf 'Owner password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-owner-password)
+   atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password
+   ```
 
-These statements grant every privilege the runtime role needs. `LISTEN`, `NOTIFY`, `pg_notify`, and advisory locks require no extra grants, and Atomic does not use `TRUNCATE`, `REFERENCES`, or temporary tables. The default privileges cover tables added by later `atomic storage migrate` runs, and `EXECUTE` covers trigger functions on servers where `EXECUTE` is revoked from `PUBLIC`. Join runtime machines using the runtime role as shown in [Join a machine](#join-a-machine).
+   It prints what it set up:
 
-Provider notes:
+   ```text
+   Atomic's tables in PostgreSQL postgresql://db.example.com:5432/atomic via @bastani/atomic-storage-postgres are set up for this version: sessions and Intercom.
+   ```
 
-- **Self-hosted PostgreSQL (16+) and Amazon RDS / Aurora.** Use the statements above. On RDS, run `GRANT atomic_owner TO <master user>;` before `CREATE DATABASE ... OWNER atomic_owner`.
-- **Azure Database for PostgreSQL Flexible Server.** Run the statements above as the server administrator (a member of `azure_pg_admin`). If you explicitly select `schema: "public"`, also run `GRANT CREATE ON SCHEMA public TO atomic_owner;` as the administrator.
-- **Google Cloud SQL.** Run the statements above as `postgres` or another member of `cloudsqlsuperuser`.
+   `--password-file`, `--token-file`, `--auth`, and `--prefix` only work together with `--db`. Without `--db`, `atomic storage migrate` upgrades the database this machine's `storage` setting names.
 
-When the runtime role lacks a required privilege or the schema is behind the current Atomic release, opening the store fails with `StorageConfigError` (`reason: "missing-privilege"`). The error names the exact `GRANT` or `atomic storage migrate` command to run.
+4. **Give the runtime role its privileges.** Connect to the `atomic` database as `atomic_owner` and run:
 
-`atomic storage migrate` sets `fillfactor = 80` on the sessions table and the Intercom lease table, which every append and lease renewal updates, so those updates usually stay on their page without touching an index. The setting applies to pages written after it. To apply it to existing pages too, run `VACUUM FULL` on those two tables during a quiet period, or use `pg_repack` to do it without a long lock. Both steps are optional. A runtime role that cannot alter these tables leaves the setting to the owner's `atomic storage migrate` and keeps working.
+   ```sql
+   GRANT USAGE ON SCHEMA atomic TO atomic_runtime;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA atomic TO atomic_runtime;
+   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA atomic TO atomic_runtime;
+   GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA atomic TO atomic_runtime;
+   ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO atomic_runtime;
+   ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT USAGE, SELECT ON SEQUENCES TO atomic_runtime;
+   ALTER DEFAULT PRIVILEGES FOR ROLE atomic_owner IN SCHEMA atomic GRANT EXECUTE ON FUNCTIONS TO atomic_runtime;
+   ```
 
-`atomic storage migrate` also creates a function in the `atomic` schema that saves new entries to a session in 1 round trip instead of 2, and lets every role that may write sessions run it. The function runs with the rights of the role that calls it, so it gives the runtime role no new rights. Each process checks for the function when it opens the database, with no extra query. Until you run `atomic storage migrate`, or if the runtime role may not run the function, saves take 2 round trips as before. Long entries that Atomic stores in chunks, and entries that refer back to earlier parts of a branch, also take the 2-round-trip path. Older Atomic versions ignore the function and keep working.
+   These are all the privileges the runtime role needs. The `ALTER DEFAULT PRIVILEGES` statements cover tables that later Atomic upgrades add, so you run them once. Intercom's notifications and locks need no extra grants.
 
-If you have not run `atomic storage migrate` after an upgrade and a low-privilege runtime role clones a session across connections, Atomic falls back to copying in memory and prints a one-time warning asking you to run `atomic storage migrate` as the owner role.
+5. **Join each machine as the runtime role.** See [Join a machine](#join-a-machine). If you will put PgBouncer in front of the server, set it up first and join with its address, as [Configure Atomic](/storage/postgres/pgbouncer#configure-atomic) shows.
 
-Every Atomic process opens one pool of up to 8 connections (`maxConnections`) per database, however many stores it opens there, plus a smaller pool for reads. See [Connection budget](#connection-budget) for what each process holds, and [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents) for how to size a fleet.
+Notes for managed services:
 
-Give each team or project its own `prefix` or its own database. PostgreSQL prefixes must be lowercase ASCII and at most 24 characters so generated identifiers stay within PostgreSQL's 63-byte limit. Longer prefixes fail with `StoragePrefixError` (`reason: "too-long"`), and uppercase letters fail with `reason: "uppercase"`.
+- **Azure Database for PostgreSQL Flexible Server.** Run the statements as the server administrator, a member of `azure_pg_admin`. If you set the `schema` option to `public`, also run `GRANT CREATE ON SCHEMA public TO atomic_owner;`.
+- **Google Cloud SQL.** Run the statements as `postgres` or another member of `cloudsqlsuperuser`.
+
+If the runtime role lacks a privilege, or the tables are older than the Atomic release that opens them, opening the database fails with `StorageConfigError` and reason `missing-privilege`. The error names the `GRANT` statement or the `atomic storage migrate` command to run.
+
+### After each Atomic upgrade
+
+Run `atomic storage migrate` as the owner role once after you upgrade Atomic, before you start many agents. The runtime role cannot change the schema. If an upgrade needs new tables, machines that connect as the runtime role fail with `missing-privilege` until you run it. Otherwise they keep working, but without the improvements only the owner can apply:
+
+- Saving new entries to a session waits for the server once instead of twice, so saves are faster.
+- The busy sessions and Intercom tables leave room on each page for updates, which keeps them faster to update and smaller. See [Server tuning](/storage/postgres/tuning#updates-that-stay-on-their-page).
+- Autovacuum cleans the busy tables sooner, and large values use the faster `lz4` compression where the server supports it. See [Server tuning](/storage/postgres/tuning).
+- On Azure, session history search gets its index once the `pg_trgm` extension is allowed. See [Azure](#azure).
+
+Running it on a database that is already current changes nothing.
+
+### Share one database between teams
+
+Give each team or project its own database, or its own `prefix`. A prefix starts the name of every table Atomic creates, so several groups can use one database without seeing each other's sessions. There is no prefix by default. Pass the same `--prefix` to `atomic storage migrate` and to every `atomic storage join` of that group. A machine with another prefix sees none of the group's sessions.
+
+On PostgreSQL, a prefix is at most 24 lowercase ASCII characters. A longer prefix fails with `StoragePrefixError` and reason `too-long`. Uppercase letters fail with reason `uppercase`.
 
 ### Upgrading from tables in `public`
 
-Older releases created Atomic's tables in `public`. Atomic continues reading tables in `public` when no `atomic` schema exists yet.
+Older releases created Atomic's tables in the `public` schema. Atomic keeps using those tables until you move them:
 
-To move an existing database into the `atomic` schema, upgrade all machines, run `atomic storage migrate` once as the role that owns those tables, and grant the runtime role its privileges on `atomic` as shown above. Restart any Atomic process that opened the database before the migration.
+1. Upgrade Atomic on every machine.
+2. Run `atomic storage migrate` once, as the role that owns the tables in `public`. It moves every Atomic table to the `atomic` schema in one transaction.
+3. Give the runtime role its privileges on `atomic`, as in step 4 of [Set up the database](#set-up-the-database).
+4. Restart every Atomic process that opened the database before the move.
 
-`atomic storage migrate` moves all existing Atomic tables, indexes, triggers, sequences, and functions from `public` to `atomic` in one transaction and prevents older processes from writing new data into `public`. If an older process created a table in `public` after the migration, a subsequent `atomic storage migrate` reports it and fails so no state is lost silently.
+A process that still writes to `public` after the move is refused, so no data lands in the wrong schema. If an older process created a table in `public` after the move anyway, the next `atomic storage migrate` names it and fails rather than lose it.
 
 ## Join a machine
 
-Install the PostgreSQL adapter once per machine in user scope, then join the database:
+Joining points a machine's Atomic at the shared database. Run these steps on every machine, as the user who runs Atomic:
 
-```bash
-atomic install npm:@bastani/atomic-storage-postgres
-printf '%s' '<password>' > ~/atomic-db-password && chmod 600 ~/atomic-db-password
-atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
-atomic intercom restart
-atomic storage status
-```
+1. **Install the PostgreSQL adapter.** It is a separate package, so you install it once per machine.
 
-`atomic storage join` accepts `postgres://` and `postgresql://` URLs with a username and no embedded password. Pass exactly one credential option:
+   ```bash
+   atomic install npm:@bastani/atomic-storage-postgres
+   ```
 
-- `--password-file <path>` copies the password into a private mode-`600` `~/.atomic/agent/storage-token.<id>` file. You can delete the input file afterward.
-- `--token-file <path>` saves the path as-is and rereads the file on every new connection. Use this with a Vault agent or secrets sidecar that rotates credentials automatically. Atomic strips only one trailing `\n` or `\r\n` when reading PostgreSQL token files, so avoid extra trailing spaces or blank lines.
-- `--auth azure`, `--auth aws`, or `--auth gcp` (the long forms `azure-entra`, `aws-iam`, and `gcp-iam` are also accepted) authenticates using the machine's cloud identity. See [Cloud identities](#cloud-identities).
+2. **Save the runtime role's password in a file** that only you can read. This command asks for the password, so it stays out of your shell history:
 
-`atomic storage join` tests the connection with `SELECT 1` before writing anything, then updates only the top-level `storage` key in `~/.atomic/agent/settings.json`:
+   ```bash
+   (umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
+   ```
+
+3. **Join the database.**
+
+   ```bash
+   atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+   ```
+
+   It prints what it did:
+
+   ```text
+   Connected to postgresql://atomic_runtime@db.example.com:5432/atomic.
+   Stored the password in /home/me/.atomic/agent/storage-token.28ab7041-05e2-4ad5-80af-854329035d8c (mode 600).
+   Set `storage` in /home/me/.atomic/agent/settings.json; other settings are unchanged.
+   Run `atomic storage status` to check each domain.
+   ```
+
+4. **Restart Intercom and check the result.** The Intercom broker is the background process on each machine that passes messages between agents. Restart it so it uses the shared database. The command is safe when no broker is running. Sessions that are already open keep their old store until you restart them.
+
+   ```bash
+   atomic intercom restart
+   atomic storage status
+   ```
+
+   `atomic storage status` exits with code `0` when everything answered, and prints something like this:
+
+   ```text
+   Sessions: PostgreSQL postgresql://db.example.com:5432/atomic via @bastani/atomic-storage-postgres
+     source:      global settings: storage
+     adapter:     loaded (from /home/me/.atomic/agent/npm/node_modules/@bastani/atomic-storage-postgres/postgres.js)
+     connection:  ok (postgres postgresql://db.example.com:5432/atomic answered in 20 ms, PostgreSQL 17.12; wake-ups: LISTEN/NOTIFY)
+
+   Intercom: PostgreSQL postgresql://db.example.com:5432/atomic via @bastani/atomic-storage-postgres
+     source:      global settings: storage
+     adapter:     loaded (from /home/me/.atomic/agent/npm/node_modules/@bastani/atomic-storage-postgres/postgres.js)
+     connection:  ok (postgres postgresql://db.example.com:5432/atomic answered in 11 ms, PostgreSQL 17.12; wake-ups: LISTEN/NOTIFY)
+     multi-node:  on
+     brokers:     0 live in the database
+
+   Intercom broker: not running (the next session that uses Intercom starts one with the selection above)
+   ```
+
+   `multi-node: on` means agents on this machine can message agents on the other machines that joined. A broker starts with the first session that uses Intercom, so right after a restart `brokers` can show `0` and the broker `not running`. Once sessions run on the joined machines, `brokers` counts their brokers.
+
+5. **Delete your password file**, `~/atomic-db-password`. `atomic storage join` keeps its own copy.
+
+`atomic storage join` takes a `postgres://` or `postgresql://` URL that names the user and never the password. Pass exactly one way to log in:
+
+| Option | What Atomic does |
+| --- | --- |
+| `--password-file <path>` | Copies the password into a private file in the agent directory, `~/.atomic/agent/storage-token.<id>`, readable only by you. You can delete your own file afterwards. |
+| `--token-file <path>` | Remembers the path and reads the file again for every new connection. Use it when another program, such as a Vault agent, keeps a short-lived password in that file. Atomic removes one trailing line break, so write no other trailing spaces or blank lines. |
+| `--auth azure`, `--auth aws`, or `--auth gcp` | Logs in with the machine's cloud identity. See [Cloud identities](#cloud-identities). |
+
+`atomic storage join` checks the URL, the adapter, and the password, and runs `SELECT 1` on the database, within 15 seconds. If any check fails, it changes nothing. Then it writes only the `storage` setting in `~/.atomic/agent/settings.json`, and replaces any `storage` value that was there. Save the old value first if you still need it. The setting looks like this:
 
 ```json
 {
   "storage": {
     "adapter": "@bastani/atomic-storage-postgres",
     "options": { "url": "postgresql://atomic_runtime@db.example.com:5432/atomic" },
-    "secrets": { "password": { "file": "agent/storage-token.3f2a" } }
+    "secrets": { "password": { "file": "agent/storage-token.28ab7041-05e2-4ad5-80af-854329035d8c" } }
   }
 }
 ```
 
-You can also edit this configuration directly. For password authentication in adapter configurations (including `settings.json`, `ATOMIC_STORAGE`, `--storage`, and SDK `{ kind: "adapter" }` selections), set `secrets.password` to `{ "file": "..." }` or `{ "env": "<variable>" }`. Because the adapter declares `liveSecrets: ["password"]`, Atomic rereads `secrets.password` for each new connection and ignores `options.password`, throwing `StorageConfigError` (`reason: "secret-missing"`) when `secrets.password` is omitted.
+`atomic storage join` created the password file and chose its name. `storage-token.28ab7041-05e2-4ad5-80af-854329035d8c` stands for that name here and in the examples below, so keep the name your machine has. The path is relative to the [storage home](/storage#storage-home), `~/.atomic`.
 
-| Option | Default | Description |
+You can write this setting yourself instead, or pass the same object in `ATOMIC_STORAGE` or `--storage`. Give the password in `secrets.password`, as `{ "file": "<path>" }` or `{ "env": "<variable>" }`. Atomic reads it again for every new connection, so a rotated password takes effect without a restart. A password in `options` is ignored, and a missing `secrets.password` fails with `StorageConfigError` and reason `secret-missing`.
+
+### Connection options
+
+Put these in `options`. The defaults suit a few machines. [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents) explains when to change them.
+
+| Option | Default | What it does |
 | --- | --- | --- |
-| `url` | Required | `postgres://` or `postgresql://` URL with username and no password |
-| `auth` | `"password"` | `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` for [cloud identities](#cloud-identities) |
-| `maxConnections` | `8` | Most connections one Atomic process opens in its main pool for this database. A positive integer. Raise it for more concurrent writes, as far as the server allows. See [Connection budget](#connection-budget) and [Tuning](#tuning-for-many-concurrent-agents) |
-| `readerMaxConnections` | `2` | Most connections in the process's pool for reads, capped at `maxConnections`. A non-negative integer. `0` turns the separate pool off, so reads share the main pool |
-| `statementTimeoutMs` | `30000` | How long one statement may run, in milliseconds, before the server cancels it. If the server stops answering, Atomic gives up on the connection 5 seconds after this |
-| `connectTimeoutMs` | `10000` | How long opening a connection, or waiting for a free one, may take, in milliseconds. A positive integer |
-| `idleTimeoutMs` | `300000` | How long, in milliseconds, a pool's last connection stays open after the pool's last call. Connections opened for a burst close after 10 seconds idle, or after `idleTimeoutMs` when it is shorter. A positive integer |
-| `keepAliveIdleMs` | `60000` | How long, in milliseconds, a connection sits unused before Atomic starts TCP keepalive probes on it. A positive integer |
-| `maxPreparedStatements` | `256`, or `0` when `listenUrl` is set, the URL's port is 6432 or 6543, or Atomic finds a pooler, unless Atomic finds PgBouncer 1.21 or later with `max_prepared_statements` above `0`. If your pooler listens on another port, set `listenUrl` or `0` | Most statements each connection keeps prepared on the server, so the server plans each one once. A non-negative integer. `0` turns prepared statements off. Each prepared statement uses some server memory per connection. See [Prepared statements](/storage/postgres/pgbouncer#how-atomic-works-with-pgbouncer) |
-| `listenUrl` | `url` | Direct endpoint for [wake-ups](#wake-ups) when `url` uses a transaction pooler. Enforces the same URL, TLS, proxy, and no-embedded-password rules as `url` (`credential-in-url`) |
-| `schema` | `"atomic"` | Schema name starting with a lowercase ASCII letter or `_`, followed by lowercase letters, digits, or `_` (1 to 63 characters) |
-| `proxy` | From environment | `http://` or `https://` proxy URL for all connections, or `"none"` to connect directly |
+| `url` | Required | The `postgres://` or `postgresql://` URL, with the user name and no password. |
+| `auth` | `"password"` | `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` to log in with a [cloud identity](#cloud-identities). |
+| `maxConnections` | `8` | The most connections one Atomic process opens to this database for its work. A positive whole number. |
+| `readerMaxConnections` | `2` | The most extra connections one process opens only for reads, so reads never wait behind writes. At most `maxConnections`. `0` turns the extra connections off. |
+| `statementTimeoutMs` | `30000` | How long one statement may run before the server cancels it, in milliseconds. If the server stops answering, Atomic drops the connection 5 seconds later. |
+| `connectTimeoutMs` | `10000` | How long opening a connection, or waiting for a free one, may take, in milliseconds. |
+| `idleTimeoutMs` | `300000` | How long a process keeps its last idle connection open, in milliseconds. Extra connections opened for a burst close after 10 seconds idle. |
+| `keepAliveIdleMs` | `60000` | How long a connection sits unused before Atomic sends TCP keepalive probes on it, in milliseconds. |
+| `maxPreparedStatements` | `256`, or `0` behind a pooler | How many queries each connection keeps prepared, so the server plans each one once. `0` turns this off. Atomic turns it off by itself behind a pooler, unless it finds a PgBouncer that supports it. See [Prepared statements](/storage/postgres/pgbouncer#how-atomic-works-with-pgbouncer). |
+| `listenUrl` | Same as `url` | The server's own address, for [wake-ups](#wake-ups): the instant notice of new Intercom messages. Set it when `url` points at a pooler, which cannot pass wake-ups. Follows the same rules as `url`. |
+| `schema` | `"atomic"` | The schema Atomic's tables live in. Lowercase letters, digits, and `_`, starting with a letter or `_`, at most 63 characters. To migrate a custom schema, put it in the `storage` setting and run `atomic storage migrate` without `--db`. |
+| `proxy` | From the environment | An `http://` or `https://` proxy for every connection, or `"none"` to ignore proxy variables. See [Through an HTTP proxy](#through-an-http-proxy). |
 
-For Node.js and TypeScript SDK apps, install `@bastani/atomic-storage-postgres` with `npm install` and import `openPostgresDatabase` directly. See [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) and [SDK session storage](/sdk/storage).
+For a Node.js or TypeScript app built on the SDK, install `@bastani/atomic-storage-postgres` with `npm install` and call `openPostgresDatabase` with the same options. See [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) and [SDK session storage](/sdk/storage).
 
 ## TLS
 
-Atomic connects over TLS to every remote host by default and verifies both the server certificate and hostname (`sslmode=verify-full`). If the URL omits the host, Atomic checks `PGHOST`.
+Atomic encrypts every connection to a remote server and checks both the server's certificate and its host name, as `sslmode=verify-full` does. Connections to `localhost`, a loopback address, or a Unix socket use no TLS unless the URL sets `sslmode`. If the URL names no host, Atomic uses `PGHOST`.
 
-You can override this by adding a lowercase `sslmode` parameter to the URL (`uselibpqcompat` must also be lowercase if used). `verify-ca` verifies the CA without checking the hostname, `prefer` and `allow` encrypt without checking the certificate, and `disable` turns TLS off. `require` with `sslrootcert` behaves like `verify-ca`. Without `sslrootcert`, `require` verifies both certificate and hostname like `verify-full`, which is stricter than libpq. Uppercase TLS parameters or unknown `sslmode` values fail with `StorageConfigError`.
+To change this, add `sslmode` to the URL, in lowercase:
 
-Provider CA configuration:
+| `sslmode` | Encrypts | Checks the certificate | Checks the host name |
+| --- | --- | --- | --- |
+| `verify-full`, the default | Yes | Yes | Yes |
+| `verify-ca` | Yes | Yes | No |
+| `require` with `sslrootcert` | Yes | Yes | No |
+| `require` without `sslrootcert` | Yes | Yes | Yes |
+| `prefer` or `allow` | Yes | No | No |
+| `disable` | No | No | No |
 
-- **Azure Database for PostgreSQL, Azure HorizonDB, and Neon.** Certificates chain to CAs trusted by Node.js, so no extra parameter is required.
-- **Supabase.** Download the project CA certificate from Project Settings > Database > SSL Configuration and add `?sslrootcert=/path/to/supabase-ca.pem`.
-- **Amazon RDS and Aurora.** Download your region's bundle from `https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem` and add `?sslrootcert=/path/to/bundle.pem`.
-- **Google Cloud SQL.** Save the server CA (`gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`). When connecting over a private IP address, add `?sslmode=verify-ca&sslrootcert=/path/to/server-ca.pem` because private IPs are not listed in the certificate's hostnames.
+`require` without `sslrootcert` checks more than the PostgreSQL command-line tools do. An unknown `sslmode`, or a TLS parameter written in uppercase, fails with `StorageConfigError`.
+
+Where to find the certificate authority, the certificate that signed the server's certificate:
+
+- **Self-hosted PostgreSQL.** Turn TLS on in `postgresql.conf` with `ssl = on`, `ssl_cert_file`, and `ssl_key_file`, using a certificate whose name matches the host in `url`. If your own certificate authority signed it, add `?sslrootcert=/path/to/root.crt` to the URL. The self-signed certificate that some Linux packages install, such as Debian's `snakeoil` certificate, does not pass the default check.
+- **Azure Database for PostgreSQL, Azure HorizonDB, and Neon.** Their certificates are trusted by Node.js already. Add nothing.
+- **Supabase.** Download the project's CA certificate from Project Settings > Database > SSL Configuration, and add `?sslrootcert=/path/to/supabase-ca.pem` to the URL.
+- **Amazon RDS and Aurora.** Download your region's bundle from `https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem`, and add `?sslrootcert=/path/to/bundle.pem`.
+- **Google Cloud SQL.** Save the server's CA with `gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`. Over a private IP address, add `?sslmode=verify-ca&sslrootcert=/path/to/server-ca.pem`, because the certificate does not list private addresses.
 
 ## Through an HTTP proxy
 
-In environments that restrict outbound traffic to an HTTP `CONNECT` proxy, Atomic tunnels pooled connections, [wake-up](#wake-ups) connections, and statement-cancel connections through the proxy. Allowlist `<database host>:5432` (or your configured port) on the proxy.
+Where outbound traffic must go through an HTTP proxy, Atomic tunnels every database connection through it with HTTP `CONNECT`. Allow `<database host>:5432`, or your server's port, on the proxy.
 
-- **Proxy selection.** Atomic reads `HTTPS_PROXY` (or `https_proxy`), then `ALL_PROXY` when it names an `http://` or `https://` proxy, then `HTTP_PROXY`. Credentials in the proxy URL are sent via `Proxy-Authorization` and redacted from logs and errors.
-- **Host exemptions.** `NO_PROXY` (or `no_proxy`) exempts matching hosts (`db.example.com`, `.example.com`, `example.com`, `*.example.com`, `host:port`, or `*`). Local hosts (`localhost`, loopback addresses, and Unix socket directories) connect directly regardless of proxy environment variables.
-- **Per-store override.** Set `options.proxy` to a proxy URL to route all connections through it, or to `"none"` to bypass environment proxies. SDK callers can pass `proxy` or a custom `socket` factory to `openPostgresDatabase`, but not both. Socket directories always connect directly.
-- **End-to-end TLS.** Atomic negotiates TLS with PostgreSQL inside the tunnel. With default `verify-full` (or `require` without `sslrootcert`), the certificate must match the database hostname so the proxy sees only encrypted traffic. `verify-ca` (and `require` with `sslrootcert`) protects against proxy interception only when `sslrootcert` points to a private CA dedicated to your database servers.
+- **Which proxy.** Atomic reads `HTTPS_PROXY` or `https_proxy` first, then `ALL_PROXY` when it names an `http://` or `https://` proxy, then `HTTP_PROXY`. A user name and password in the proxy URL are sent to the proxy and hidden from logs and errors.
+- **Hosts that skip the proxy.** `NO_PROXY` or `no_proxy` lists hosts to reach directly, such as `db.example.com`, `.example.com`, `*.example.com`, `host:port`, or `*`. `localhost`, loopback addresses, and Unix sockets never use the proxy.
+- **One store only.** Set the `proxy` option to a proxy URL to use it for this database, or to `"none"` to ignore the proxy variables.
+- **TLS stays end to end.** Atomic's TLS session runs inside the tunnel, so the proxy sees only encrypted traffic. With `verify-full`, the default, the certificate must match the database's host name. `verify-ca` protects against a proxy that intercepts traffic only when `sslrootcert` names a certificate authority used for nothing but your database servers.
 
-Atomic handles informational `1xx` proxy replies (such as `103 Early Hints`) and allows up to 16 KiB for total proxy response headers.
-
-If the proxy refuses the tunnel (`403` or `407`), opening fails immediately with `StorageUnavailableError` without retrying. Connection refusals, dropped connections, and `502` or `503` responses retry like an unreachable server (about 4 seconds for refused connections, or up to about 45 seconds when attempts time out after 8 seconds each), with a warning naming the proxy and failure reason.
+If the proxy refuses the tunnel with `403` or `407`, opening fails at once with `StorageUnavailableError`. A refused or dropped connection, or a `502` or `503` answer, is retried like an unreachable server, with a warning that names the proxy and the reason.
 
 ## Connection budget
 
-Each Atomic process holds one set of connections per database. The session store, in-process subagents' session stores, chat records, search, the Intercom broker's state, and all their read handles share it, when they use the same URL, role, password, `listenUrl`, `auth`, `schema`, `proxy`, and pool settings. The set closes when the last store using it closes. It holds:
+Connections are counted per process. What counts as one Atomic process:
 
-- **A main pool** of up to `maxConnections` connections, 8 by default, opened as calls need them. In `pg_stat_activity`, their `application_name` is `atomic`.
-- **A reader pool** of up to `readerMaxConnections` connections, 2 by default and never more than `maxConnections`. Reads use it, so they do not wait for connections that writes are using. Atomic sends no writes through it. Their `application_name` is `atomic-reader`.
-- **One listening connection** for [wake-ups](#wake-ups), opened once something in the process listens, such as an Intercom broker. Its `application_name` is `atomic-listen`.
+- each `atomic` you start, interactive or with `-p`;
+- each `atomic --mode rpc` child that a program starts;
+- the Intercom broker: Atomic runs one Intercom broker per agent directory, usually one per machine or container.
 
-So a process opens at most `maxConnections` + `readerMaxConnections` + 1 connections per database: 11 with the defaults.
+Subagents run inside the process that launched them and share its connections, so they add none.
 
-Pools grow for bursts and shrink afterwards. A connection opened for a burst closes after 10 seconds without use. A pool's last connection stays open for `idleTimeoutMs`, 5 minutes by default, after the pool's last call, so a call after a pause skips the connection and TLS handshakes. Unused connections do not keep the process from exiting.
+Each Atomic process shares one set of connections per database between everything it opens there: its sessions, its subagents' sessions, search, and Intercom. The set holds:
 
-The Intercom broker runs in its own process on each machine. Count each machine's broker process and each `atomic` process separately. How to size these settings:
+| Connections | How many | `application_name` in `pg_stat_activity` |
+| --- | --- | --- |
+| Main pool | Up to `maxConnections`, 8 by default | `atomic` |
+| Read pool | Up to `readerMaxConnections`, 2 by default. Only reads use it | `atomic-reader` |
+| Wake-up connection | 1, only in a process that listens for [wake-ups](#wake-ups), such as an Intercom broker | `atomic-listen` |
 
-- **A few long-lived processes**, such as one interactive session per machine: the defaults suit them. Each process holds 2 to 3 connections between bursts, and up to the maximum above during one.
-- **Many processes, such as a swarm of agent runners:** work out `maxConnections` from the server's limit with [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents). If the processes often sit idle, lower `idleTimeoutMs` to between 10000 and 30000, so idle processes give back their last pooled connection. Each process that listens still holds its listening connection.
-- **More processes than the server allows:** connect through [PgBouncer](/storage/postgres/pgbouncer) in transaction mode and set `listenUrl` to the server's direct address. Then only the listening connections count against the server directly.
+So a process opens at most `maxConnections` + `readerMaxConnections` connections, 10 with the defaults, and a process that listens, such as an Intercom broker, 1 more: 11.
+
+Atomic opens connections only when it needs them, and closes them again. An extra connection opened for a burst closes after 10 seconds unused. The last connection of each pool stays open for `idleTimeoutMs`, 5 minutes by default, so the next call after a pause does not wait for a new connection. So between bursts, a process holds 1 main connection, 1 read connection if it read recently, and its wake-up connection if it listens. Open connections never keep a process from exiting.
+
+Size the settings by how many processes you run:
+
+- **A few long-lived processes**, such as one interactive session per machine. Keep the defaults.
+- **Many processes, such as a swarm of agent runners.** Work out `maxConnections` with [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents). If the processes often sit idle, set `idleTimeoutMs` between `10000` and `30000`, so idle processes give their connections back sooner.
+- **More processes than the server can take.** Connect through [PgBouncer](/storage/postgres/pgbouncer) in transaction mode, and set `listenUrl` to the server's own address. Then only the wake-up connections go to the server directly.
 
 ## Connection poolers
 
-Atomic works with transaction-mode poolers, including PgBouncer, Azure's built-in PgBouncer (port 6432), Supabase Supavisor (port 6543), and Neon's `-pooler` endpoint. Use transaction or session mode, never statement mode.
+A pooler lets many clients share a few server connections. Atomic works with poolers in transaction mode or session mode, never statement mode. That includes PgBouncer, Azure's built-in PgBouncer on port 6432, Supabase's Supavisor on port 6543, and Neon's `-pooler` host.
 
-Atomic keeps schema selection (`SET LOCAL search_path`), statement and lock timeouts, and advisory locks scoped inside transactions so pooled connections return clean. Because transaction poolers cannot relay `LISTEN`/`NOTIFY`, set `listenUrl` to the server's direct endpoint (such as port 5432 on Azure or Neon's unpooled host) to keep [wake-ups](#wake-ups) active while queries stay pooled.
+A pooler in transaction mode cannot pass notifications, so set `listenUrl` to the server's own address, such as port 5432 on Azure or Neon's host without `-pooler`. Without it, Intercom still works, by checking for new messages every half second. See [Wake-ups](#wake-ups).
 
 To run your own PgBouncer, follow the [PgBouncer guide](/storage/postgres/pgbouncer). It has a complete configuration with TLS and SCRAM, how to size the pools, and how to check that it works.
 
 ## Wake-ups
 
-On PostgreSQL, Intercom brokers receive instant notifications of new messages through `LISTEN`/`NOTIFY`. Each Atomic process that listens, such as an Intercom broker, holds one listening connection per database in addition to its pools. Everything in the process that listens shares it.
+When one machine sends an Intercom message, the receiving machine's broker learns about it at once through PostgreSQL's `LISTEN` and `NOTIFY` commands. Each process that listens, such as an Intercom broker, holds one wake-up connection per database.
 
-While notifications are active, each broker also checks for missed messages every 5 seconds. If the listening connection drops or `url` points to a transaction pooler without `listenUrl`, brokers fall back to checking every half second, so no messages are lost. Atomic checks the listening connection every 30 seconds and reconnects if it drops. If it detects a transaction pooler, it stops retrying wake-ups until the process restarts.
+While wake-ups work, each broker also checks for missed messages every 5 seconds. If the wake-up connection drops, or `url` points at a transaction pooler and `listenUrl` is not set, brokers check every half second instead, so no message is lost. Atomic checks the wake-up connection every 30 seconds and reconnects it. Behind a transaction pooler, it stops trying until the process restarts.
 
-`atomic storage status` reports the wake-up state:
+`atomic storage status` shows the state:
 
-- `wake-ups: LISTEN/NOTIFY` means instant notifications are active.
-- `wake-ups: polling only, notifications do not pass the URL's transaction pooler` means you should set `listenUrl` to a direct endpoint.
-- `wake-ups: polling only, the listen connection failed` means the listening endpoint could not be reached or rejected login. Check `listenUrl` and the server connection limit.
+| Status line | Meaning |
+| --- | --- |
+| `wake-ups: LISTEN/NOTIFY` | Wake-ups work. |
+| `wake-ups: connecting` | The wake-up connection is opening. |
+| `wake-ups: polling only, notifications do not pass the URL's transaction pooler (set listenUrl to a direct endpoint)` | `url` points at a pooler. Set `listenUrl` to the server's own address. |
+| `wake-ups: polling only, the listen connection failed` | The wake-up connection could not connect or log in. Check `listenUrl` and the server's connection limit. |
 
 ## Azure
 
 **Azure Database for PostgreSQL Flexible Server:**
 
-- Connect directly to `<server>.postgres.database.azure.com` on port 5432.
-- Port 6432 uses the built-in PgBouncer transaction pooler on General Purpose and Memory Optimized tiers after enabling `pgbouncer.enabled`. Set `listenUrl` to port 5432 so [wake-ups](#wake-ups) work.
-- Add `PG_TRGM` to the `azure.extensions` server parameter before running `atomic storage migrate` so Atomic can index session history search. Without it, searches scan sessions page by page, and `atomic storage migrate` tells you to rerun after enabling it.
-- Watch connection limits. A Burstable B1ms server allows 50 connections (15 reserved for administrators), and each Atomic process opens up to `maxConnections` (8), 2 reader connections, and one wake-up connection. Lower `maxConnections`, use PgBouncer, or scale up for multiple processes. See [Connection budget](#connection-budget).
-- Allow client addresses in firewall rules or use private access.
+- Connect to `<server>.postgres.database.azure.com` on port 5432.
+- On General Purpose and Memory Optimized tiers, you can turn on the built-in PgBouncer with the `pgbouncer.enabled` server parameter. It listens on port 6432. Point `url` at port 6432 and `listenUrl` at port 5432.
+- Add `PG_TRGM` to the `azure.extensions` server parameter, then run `atomic storage migrate`, so Atomic can index session history search. Without it, search still works but reads sessions one page at a time, and `atomic storage migrate` tells you to run it again once the extension is allowed.
+- Watch the connection limit. A Burstable B1ms server allows 50 connections and keeps 15 of them for administrators. With the defaults, one Atomic process can open 10, and an Intercom broker 11. Lower `maxConnections`, use PgBouncer, or pick a larger server. See [Connection budget](#connection-budget).
+- Allow your machines' addresses in the firewall rules, or use private access.
 
 **Azure HorizonDB (preview, PostgreSQL 17):**
 
-- Connect to the cluster read/write endpoint (`<cluster>.rw.<id>.<region>.horizondb.azure.com` on port 5432). Do not use a read-only endpoint because Atomic writes on every connection. Wake-ups work on the read/write endpoint.
+- Connect to the cluster's read/write endpoint, `<cluster>.rw.<id>.<region>.horizondb.azure.com`, on port 5432. A read-only endpoint does not work, because Atomic writes on every connection. Wake-ups work on the read/write endpoint.
 - Add `pg_trgm` to `azure.extensions` in the compute pool's parameter group, then run `atomic storage migrate`.
-- Allow client addresses in firewall rules or connect over a private endpoint.
+- Allow your machines' addresses in the firewall rules, or connect over a private endpoint.
 
-Both Azure services use certificates trusted by Node.js, work with the role setup in [Set up the database](#set-up-the-database), and support Microsoft Entra authentication with `--auth azure`.
+Both services use certificates Node.js trusts, work with the roles from [Set up the database](#set-up-the-database), and support Microsoft Entra ID with `--auth azure`.
 
 ## Cloud identities
 
-With `--auth` (or `options.auth` in settings), Atomic requests a short-lived token from the machine's cloud identity for each new connection and keeps tokens only in memory. Install the cloud provider's SDK alongside the adapter:
+A machine on Azure, AWS, or Google Cloud can log in with its cloud identity instead of a password. Atomic asks the cloud for a short-lived token for each new connection and keeps it only in memory. Install the cloud provider's library first:
 
-| `--auth` | `options.auth` | Install | Credential source |
+| `--auth` | `options.auth` | Install | Where the identity comes from |
 | --- | --- | --- | --- |
-| `azure` or `azure-entra` | `"azure-entra"` | `atomic install npm:@azure/identity` | `AZURE_*` variables, AKS workload identity, VM/App Service/Container App managed identity (`AZURE_CLIENT_ID` selects user-assigned), or `az login` |
-| `aws` or `aws-iam` | `"aws-iam"` | `atomic install npm:@aws-sdk/rds-signer` | Default AWS credentials (`AWS_*` variables, profiles, IRSA, or instance profile) |
-| `gcp` or `gcp-iam` | `"gcp-iam"` | `atomic install npm:google-auth-library` | Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, Compute Engine/GKE/Cloud Run metadata server, or `gcloud auth application-default login`) |
+| `azure` or `azure-entra` | `"azure-entra"` | `atomic install npm:@azure/identity` | `AZURE_*` variables, AKS workload identity, the managed identity of a VM, App Service, or Container App (`AZURE_CLIENT_ID` picks a user-assigned one), or `az login` |
+| `aws` or `aws-iam` | `"aws-iam"` | `atomic install npm:@aws-sdk/rds-signer` | The default AWS credentials: `AWS_*` variables, profiles, IRSA, or the instance profile |
+| `gcp` or `gcp-iam` | `"gcp-iam"` | `atomic install npm:google-auth-library` | Application Default Credentials: `GOOGLE_APPLICATION_CREDENTIALS`, the Compute Engine, GKE, or Cloud Run metadata server, or `gcloud auth application-default login` |
 
-If the SDK is missing or cannot issue a token, opening fails with `StorageConfigError` (`reason: "auth-unavailable"`). Cloud tokens require TLS, so keep the default `sslmode`.
+If the library is missing or cannot get a token, opening fails with `StorageConfigError` and reason `auth-unavailable`. Cloud tokens need TLS, so keep the default `sslmode`.
 
-Map the cloud identity to a PostgreSQL role on your provider:
+Then map the identity to a PostgreSQL role:
 
-- **Azure (Flexible Server or HorizonDB).** Enable Microsoft Entra authentication and add an Entra administrator. Connected to `postgres` as that administrator, run `SELECT * FROM pgaadauth_create_principal('<identity name>', false, false);` and grant `CONNECT` on the Atomic database. Use that role name in the URL.
-- **AWS.** Enable IAM database authentication, run `CREATE USER atomic; GRANT rds_iam TO atomic;`, and grant the IAM identity `rds-db:connect` on `arn:aws:rds-db:<region>:<account>:dbuser:<DbiResourceId>/atomic`.
-- **Google Cloud.** Set `cloudsql.iam_authentication=on`, add the service account as an IAM database user, and grant `roles/cloudsql.instanceUser`. Use the service account email without `.gserviceaccount.com` as the URL username. Compute Engine VMs need the `cloud-platform` scope.
+- **Azure, Flexible Server or HorizonDB.** Turn on Microsoft Entra authentication and add an Entra administrator. Connected to the `postgres` database as that administrator, run `SELECT * FROM pgaadauth_create_principal('<identity name>', false, false);` and grant the new role `CONNECT` on the Atomic database. Use the identity name as the user in the URL.
+- **AWS.** Turn on IAM database authentication. Run `CREATE USER atomic; GRANT rds_iam TO atomic;`, and allow the IAM identity `rds-db:connect` on `arn:aws:rds-db:<region>:<account>:dbuser:<DbiResourceId>/atomic`.
+- **Google Cloud.** Set `cloudsql.iam_authentication=on`, add the service account as an IAM database user, and grant it `roles/cloudsql.instanceUser`. Use the service account's email without `.gserviceaccount.com` as the user in the URL. Compute Engine VMs need the `cloud-platform` scope.
 
-Grant the mapped identity the runtime privileges from [Set up the database](#set-up-the-database), and run `atomic storage migrate` as the owner role. See [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) for service-specific details and [SDK session storage](/sdk/storage) for SDK integration recipes.
+Give the mapped role the runtime privileges from [Set up the database](#set-up-the-database), and run `atomic storage migrate` as the owner role. For more detail per service, see [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres).
 
-Running `atomic install npm:@azure/identity` (or the AWS or Google SDK) installs the package under `~/.atomic/agent/npm`. The PostgreSQL adapter searches both its own directory and `~/.atomic/agent/npm`, so adapters installed from local paths find the SDK too.
+`atomic install` puts these libraries in `~/.atomic/agent/npm`, where the PostgreSQL adapter looks for them.
 
 ## Tuning for many concurrent agents
 
-How many agents can write at once depends on how many connections each process may open. Writes to different sessions run in parallel, each on its own connection. Writes to one session wait for each other.
+How many agents can write at once depends on how many connections each process may open. Writes to different sessions run side by side, each on its own connection. Writes to the same session wait for each other.
 
-This section covers Atomic's own settings. For the server side, such as memory, monitoring, and the tables that change most, see [Server tuning](/storage/postgres/tuning).
+This section covers Atomic's settings. For the server side, such as memory, monitoring, and the busiest tables, see [Server tuning](/storage/postgres/tuning).
 
-For high throughput, set `maxConnections` to the maximum the server allows, or a generous value. More connections let more writes from one process run at the same time. The limit is the server's `max_connections`, which every Atomic process on every machine shares.
+Every Atomic process on every machine shares the server's `max_connections`. Give each process as many connections as the server can spare, and no more. The steps below work out that number.
 
 ### Count the connections Atomic needs
 
-Each Atomic process opens up to this many connections:
+Each Atomic process, as [Connection budget](#connection-budget) defines it, opens up to this many connections:
 
 - **An agent process**, including each `atomic --mode rpc` child: `maxConnections` plus `readerMaxConnections`.
 - **An Intercom broker**: `maxConnections` plus `readerMaxConnections`, plus 1 for [wake-ups](#wake-ups).
 
-Atomic opens a connection only when it needs one, so a quiet process holds fewer. Plan for the maximum anyway, because busy processes reach it.
+A quiet process holds fewer. Plan for the maximum anyway, because busy processes reach it.
 
 Find what the server has to share. Run these as an administrator:
 
@@ -266,7 +382,16 @@ SELECT count(*) FROM pg_stat_activity
 WHERE backend_type = 'client backend' AND application_name NOT LIKE 'atomic%';
 ```
 
-The connections Atomic may use are `max_connections`, minus both reserved counts, minus what other clients use. Call that number *available*. With *P* Atomic processes, of which *B* are brokers, each process may use `(available - B) / P` connections, rounded down. Set `maxConnections` to that number minus `readerMaxConnections`.
+Then work out `maxConnections`:
+
+1. Take `max_connections`. Subtract both reserved counts and the connections other clients use. Call the result *available*.
+2. Count *P*, the number of Atomic processes on all machines, and *B*, the number of those that are Intercom brokers. Atomic runs one Intercom broker per agent directory, usually one per machine or container.
+3. Each process may use (*available* − *B*) / *P* connections, rounded down.
+4. Set `maxConnections` to that number minus `readerMaxConnections`.
+
+If step 4 gives `maxConnections` below 2, the server cannot give each process enough connections. Use a pooler, as in the second example below.
+
+A new PostgreSQL server has `max_connections = 100` with 3 slots reserved for superusers. With Atomic's defaults, each process may need 10 connections and each broker 11, so such a server holds about 8 processes. For example, 20 agent processes on 4 machines, with one broker each, can open up to 20 × 10 + 4 × 11 = 244 connections. Raise `max_connections`, lower `maxConnections`, or use PgBouncer.
 
 ### Example: 24 processes on a large server
 
@@ -287,7 +412,7 @@ In `~/.atomic/agent/settings.json` on each machine:
       "maxConnections": 17,
       "readerMaxConnections": 2
     },
-    "secrets": { "password": { "file": "agent/storage-token.3f2a" } }
+    "secrets": { "password": { "file": "agent/storage-token.28ab7041-05e2-4ad5-80af-854329035d8c" } }
   }
 }
 ```
@@ -309,13 +434,11 @@ const database = await openPostgresDatabase({
 
 Here, 150 CI runners each run one agent process and one Intercom broker, so *P* is 300 and *B* is 150. The server has `max_connections = 300`, 3 superuser slots, and 10 connections used by other clients, so *available* is 287.
 
-Even at the smallest settings, `maxConnections: 1` and `readerMaxConnections: 0`, the processes need 300 × 1 + 150 = 450 connections. That is more than 287, so connect through a transaction pooler such as PgBouncer instead. Switch to a pooler whenever the arithmetic gives `maxConnections` below 2.
+Even at the smallest settings, `maxConnections: 1` and `readerMaxConnections: 0`, the processes need 300 × 1 + 150 = 450 connections. That is more than 287, so connect through a pooler such as PgBouncer in transaction mode, on port 6432:
 
-With PgBouncer in transaction mode on port 6432:
-
-- Point `url` at PgBouncer. Connections to PgBouncer cost the server nothing, so keep `maxConnections` at its default of 8. Set PgBouncer's `max_client_conn` to at least *P* × (`maxConnections` + `readerMaxConnections`), here 300 × 10 = 3000.
-- PgBouncer cannot pass wake-up notifications. Either point `listenUrl` at the server directly, which uses one server connection per broker, or leave it out. With `listenUrl`, brokers are notified of new messages and check for missed ones every 5 seconds. Without it, they check the database every half second, 10 times as often.
-- Size PgBouncer's server pool (`default_pool_size`) to what is left. With `listenUrl`, that is 287 − 150 = 137. Without it, PgBouncer can use up to 287.
+- **Point `url` at PgBouncer.** Connections to PgBouncer do not count against the server, so keep `maxConnections` at its default of 8. Set PgBouncer's `max_client_conn` to at least *P* × (`maxConnections` + `readerMaxConnections`), here 300 × 10 = 3000.
+- **Point `listenUrl` at the server**, or leave it out. PgBouncer cannot pass wake-ups. With `listenUrl`, each broker holds one direct connection, learns of new messages at once, and checks for missed ones every 5 seconds. Without it, brokers check the database every half second, 10 times as often.
+- **Size PgBouncer's pool** to fit in what is left. With `listenUrl`, PgBouncer's pool and its reserve together may use at most 287 − 150 = 137 connections. Without `listenUrl`, up to 287. A smaller pool is often faster. The [PgBouncer guide](/storage/postgres/pgbouncer#choose-the-pool-sizes) starts at 80 plus 5 in reserve.
 
 ```json
 {
@@ -326,7 +449,7 @@ With PgBouncer in transaction mode on port 6432:
       "listenUrl": "postgresql://atomic_runtime@db.example.com:5432/atomic",
       "maxConnections": 8
     },
-    "secrets": { "password": { "file": "agent/storage-token.3f2a" } }
+    "secrets": { "password": { "file": "agent/storage-token.28ab7041-05e2-4ad5-80af-854329035d8c" } }
   }
 }
 ```
@@ -342,22 +465,22 @@ const database = await openPostgresDatabase({
 });
 ```
 
-The [PgBouncer guide](/storage/postgres/pgbouncer) has a complete, tested PgBouncer configuration, the PostgreSQL and Atomic settings that go with it, and how to check that it works.
+The [PgBouncer guide](/storage/postgres/pgbouncer) has a complete PgBouncer configuration, the PostgreSQL and Atomic settings that go with it, and how to check that it works.
 
 ### Other settings
 
-Set these in the same `options` object, or pass them to `openPostgresDatabase`. Each takes a positive integer number of milliseconds.
+Set these in the same `options` object, or pass them to `openPostgresDatabase`. Each takes a whole number of milliseconds, except `maxPreparedStatements`.
 
-- **Distance.** Saving new entries to a session takes 1 round trip to the server once `atomic storage migrate` has run, and 2 before. Put the database in the same region as the agents. A machine 80 ms away from the server spends at least 80 ms on each save, or 160 ms without the migration.
-- **`idleTimeoutMs`** (default `300000`, 5 minutes). Unused connections stay open this long, so the next call skips the connection and TLS handshakes. A process that exits closes its connections at once. Lower it, for example to `30000`, when long-running processes sit idle and the server is near its limit.
-- **`statementTimeoutMs`** (default `30000`). The server cancels a statement that runs longer. Raise it only if statements fail with `StorageTransientError` code `transaction-timeout` on a slow server. A lower value does not raise throughput.
-- **`connectTimeoutMs`** (default `10000`). Opening a connection, or waiting for a free one in the pool, fails after this long. Raise it for a distant server or one that is slow to accept connections.
-- **`keepAliveIdleMs`** (default `60000`). Atomic sends TCP keepalive probes on a connection that has been unused this long. Lower it if calls fail with `StorageTransientError` code `connection-lost` after pauses, which means a firewall, NAT or load balancer dropped idle connections.
-- **`maxPreparedStatements`** (default `256`). Each connection keeps up to this many statements prepared on the server, so the server plans each statement once per connection. It does not change round trips. Atomic turns it off by default when `listenUrl` is set or the URL's port is 6432 or 6543, the usual pooler ports, unless it finds PgBouncer 1.21 or later there with `max_prepared_statements` above `0`. 1.24 and later set that to 200 by default. Atomic also keeps it off behind any pooler that hands out its own cancel keys, on any port. If your pooler listens on another port, set `listenUrl` or `maxPreparedStatements: 0`. Lower the value if the server is short of memory per connection.
+- **Distance comes first.** Each save waits for at least one round trip to the server, so a machine 80 ms away spends at least 80 ms on each save. Put the database in the same region as the agents. Saves are slower until the owner has run `atomic storage migrate` after an upgrade.
+- **`idleTimeoutMs`** (default `300000`, 5 minutes). Lower it, for example to `30000`, when long-running processes sit idle and the server is near its connection limit.
+- **`statementTimeoutMs`** (default `30000`). Raise it only if statements fail with `StorageTransientError` code `transaction-timeout` on a slow server. A lower value does not make anything faster.
+- **`connectTimeoutMs`** (default `10000`). Raise it for a distant server or one that is slow to accept connections.
+- **`keepAliveIdleMs`** (default `60000`). Lower it if calls fail with `StorageTransientError` code `connection-lost` after a pause. That error after a pause usually means a firewall, NAT, or load balancer dropped the idle connection.
+- **`maxPreparedStatements`** (default `256`, or `0` behind a pooler). Lower it if the server is short of memory per connection. Atomic expects a pooler on ports 6432 and 6543. Behind a pooler on any other port, set `listenUrl` or `maxPreparedStatements: 0`. See [Prepared statements](/storage/postgres/pgbouncer#how-atomic-works-with-pgbouncer).
 
 ### Check the effect
 
-Run these as an administrator. Replace `atomic` with your database name. Atomic's connections report the application name `atomic`, and wake-up connections `atomic-listen`.
+Run these as an administrator. Replace `atomic` with your database name. Atomic's connections report the application name `atomic`, `atomic-reader`, or `atomic-listen`.
 
 How many connections Atomic holds, and what they are doing:
 
@@ -391,37 +514,41 @@ What to change:
 
 | You see | It means | Change |
 | --- | --- | --- |
-| `sorry, too many clients already`, `remaining connection slots are reserved for roles with the SUPERUSER attribute`, or `too many connections for role "<role>"` | The processes asked for more connections than the server or role allows. | Lower `maxConnections` or `readerMaxConnections`, raise `max_connections` or the role's `CONNECTION LIMIT`, or [put PgBouncer in front](/storage/postgres/pgbouncer). |
+| `sorry, too many clients already`, `remaining connection slots are reserved for roles with the SUPERUSER attribute`, or `too many connections for role "<role>"` | The processes asked for more connections than the server or the role allows. | Lower `maxConnections` or `readerMaxConnections`, raise `max_connections` or the role's `CONNECTION LIMIT`, or [put PgBouncer in front](/storage/postgres/pgbouncer). |
 | `timeout exceeded when trying to connect` | Every connection in a process's pool stayed busy for `connectTimeoutMs`. | Raise `maxConnections` if the server has connections to spare. Otherwise raise `connectTimeoutMs`. |
-| `the call was queued behind an earlier call that ran 60 seconds without settling, and did not run; nothing was written, retry it` | A call that this one had to wait for ran for a minute, usually because it waited on a lock or on an overloaded server. | Check what busy connections wait for. More connections do not help. |
-| Many connections with `wait_event_type` `Lock` | Agents are writing the same sessions or rows at once and wait for each other. | More connections do not help. Spread agents over more sessions. |
+| `the call was queued behind an earlier call that ran 60 seconds without settling, and did not run; nothing was written, retry it` | An earlier call ran for a minute, usually because it waited on a lock or on an overloaded server, and this call waited behind it. | Check what busy connections wait for. More connections do not help. |
+| Many connections with `wait_event_type` `Lock` | Agents write to the same sessions at once and wait for each other. | More connections do not help. Spread agents over more sessions. |
 | Most `atomic` connections are `idle` and the server is near its limit | Idle processes keep connections open. | Lower `idleTimeoutMs`. |
-| `wake-ups: polling only, the listen connection failed` in `atomic storage status` | A broker could not open its wake-up connection, often because the server has none left. | Recount the connections with the formula above. |
+| `wake-ups: polling only, the listen connection failed` in `atomic storage status` | A broker could not open its wake-up connection, often because the server has none left. | Count the connections again with the steps above. |
 
-Atomic reports the first two rows as `StorageTransientError` with code `connection-refused`, with the quoted text as the error's cause. The third row is a `StorageUnavailableError` whose message ends with the quoted text.
+Atomic reports the first two rows as `StorageTransientError` with code `connection-refused`, and the quoted text is the error's cause. The third row is a `StorageUnavailableError` whose message ends with the quoted text.
 
 ## Troubleshooting
 
-- **`credential-in-url`.** Remove the password from the URL and pass `--password-file` or `--token-file`.
-- **`libsql-removed`.** The URL is a libSQL one (`libsql://`, `https://`, `wss://`, or `file:`), or the command is `atomic team join`. Atomic 0.10.11 removed libSQL support; use a `postgres://` URL with `atomic storage join`, and see [Moving off libSQL](/storage#moving-off-libsql).
-- **`unsupported-auth`.** `--auth` accepts `azure` (`azure-entra`), `aws` (`aws-iam`), or `gcp` (`gcp-iam`).
-- **`adapter-not-installed`.** Run `atomic install npm:@bastani/atomic-storage-postgres` as the user running Atomic.
-- **`auth-unavailable`.** Install the cloud SDK named in the error and confirm the machine has a valid cloud identity. Atomic does not retry this error.
-- **`missing-privilege` (`42501` or `3F000`).** Run the `GRANT` named in the error for a runtime role (see [Set up the database](#set-up-the-database)), or run `atomic storage migrate` as the owner role if the error mentions ownership or `CREATE`.
-- **"This database was upgraded since this process started".** `atomic storage migrate` moved tables from `public` to `atomic` while this process was running. Restart the process.
-- **Refused token (`28P01` or Azure `28000`).** The token expired, targets the wrong user, or has an invalid format. For Azure, request a token for `https://ossrdbms-aad.database.windows.net` (`az account get-access-token --resource-type oss-rdbms`) or use `--auth azure`.
-- **`StorageUnavailableError` on open.** The server rejected credentials (`28P01` or `28000`), the database does not exist (`3D000`), or the server is older than PostgreSQL 14. Atomic sessions require PostgreSQL 16 or newer.
-- **Certificate untrusted (`self-signed certificate in certificate chain` or `unable to get local issuer certificate`).** Add `sslrootcert` pointing to your server CA. See [TLS](#tls).
-- **`INVALID_PURPOSE`.** The certificate in `sslrootcert` lacks `basicConstraints=CA:TRUE` or is restricted to client authentication. Point `sslrootcert` to the signing CA or reissue it with `CA:TRUE`. Not retried.
-- **`PATH_LENGTH_EXCEEDED`.** The certificate chain exceeds its root CA path-length limit. Reissue the root without that limit or sign the server certificate directly. Not retried.
-- **`UNSPECIFIED` with a reason (such as `key usage does not include certificate signing`).** Node.js reports certain certificate rejections with this code. Follow the reason text, such as reissuing the CA with `keyCertSign`. Not retried.
-- **Proxy certificate rejected.** An `https://` proxy's own certificate is checked against Node.js CAs, never `sslrootcert`. Add a private proxy CA to [`NODE_EXTRA_CA_CERTS`](/environment-variables#tls-certificates). Not retried.
-- **Proxy refused tunnel or unreachable.** Allowlist the database `host:port` on the proxy, supply proxy credentials for `407`, verify `HTTPS_PROXY`, or bypass the proxy with `NO_PROXY` or `proxy: "none"`. See [Through an HTTP proxy](#through-an-http-proxy).
-- **`unsupported-proxy`.** Proxy URLs must use `http://` or `https://` (not `socks5://`). Switch to an HTTP proxy or bypass it with `NO_PROXY` or `proxy: "none"`.
-- **`StorageTransientError` with code `read-only-server` (`25006`).** Point `url` at the primary read/write endpoint instead of a replica, or retry once failover or storage-full recovery completes.
-- **`sorry, too many clients already`, `remaining connection slots are reserved for roles with the SUPERUSER attribute`, or `too many connections for role "<role>"` (`53300`).** The server, or the role's `CONNECTION LIMIT`, has no connection left. Atomic reports `StorageTransientError` with code `connection-refused`, and the server's message is its cause. Lower `maxConnections` or `readerMaxConnections`, raise the server's `max_connections`, or put [PgBouncer](/storage/postgres/pgbouncer) in front. See [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents).
-- **`timeout exceeded when trying to connect`.** Every connection in the process's pool stayed busy, or a new connection took longer than `connectTimeoutMs` to open. Atomic reports `StorageTransientError` with code `connection-refused`, and this message is its cause. Raise `maxConnections` if the server has connections to spare. Raise `connectTimeoutMs` if the server is far away or slow to accept connections.
-- **`prepared statement "atomic_…" does not exist` or `already exists` behind a pooler.** The pooler does not keep prepared statements across connections. Atomic then stops preparing statements for the rest of the process and retries the call, so you usually see only a one-time warning. A call Atomic cannot retry fails once with `StorageTransientError` code `connection-lost`, and the pooler's message is its cause. Set `maxPreparedStatements` to `0`, or on PgBouncer 1.21 or later set `max_prepared_statements` above `0`. Atomic turns prepared statements on by itself only behind a PgBouncer it has confirmed keeps them, so you see this only after setting `maxPreparedStatements` yourself, behind a pooler on another port, or after changing PgBouncer's setting while Atomic runs.
-- **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`.** The server cancelled a statement or transaction that waited too long or exceeded `statementTimeoutMs`, and wrote nothing. Repeated errors indicate server overload.
-- **`wake-ups: polling only` in `atomic storage status`.** Messages still arrive via polling. See [Wake-ups](#wake-ups) to restore `LISTEN`/`NOTIFY`.
-- **Failover or pooler restart disconnects.** Reported as `StorageTransientError` with code `connection-lost`.
+Errors from `atomic storage join`, `atomic storage migrate`, and opening the database, with what to do:
+
+| Error | Fix |
+| --- | --- |
+| `credential-in-url` | Remove the password from the URL. Pass `--password-file` or `--token-file` instead. |
+| `libsql-removed` | The URL is a libSQL one, such as `libsql://`, `https://`, `wss://`, or `file:`, or the command is `atomic team join`. Use a `postgres://` URL with `atomic storage join`. To move existing sessions, see [Moving off libSQL](/storage#moving-off-libsql). |
+| `unsupported-auth` | `--auth` accepts `azure`, `aws`, or `gcp`, or the long forms `azure-entra`, `aws-iam`, and `gcp-iam`. |
+| `adapter-not-installed` | Run `atomic install npm:@bastani/atomic-storage-postgres` as the user who runs Atomic. |
+| `auth-unavailable` | Install the cloud library the error names, and check that the machine has a cloud identity. Atomic does not retry this error. |
+| `missing-privilege`, with PostgreSQL code `42501` or `3F000` | Run the `GRANT` the error names, as in [Set up the database](#set-up-the-database). If the error mentions ownership or `CREATE`, run `atomic storage migrate` as the owner role. |
+| `This database was upgraded since this process started` | `atomic storage migrate` moved the tables from `public` to `atomic` while this process ran. Restart the process. |
+| A refused password or token, with PostgreSQL code `28P01`, or `28000` on Azure | The token expired, names the wrong user, or has the wrong format. On Azure, use `--auth azure`, or get a token for `https://ossrdbms-aad.database.windows.net` with `az account get-access-token --resource-type oss-rdbms`. |
+| `StorageUnavailableError` on open | The server refused the login (`28P01` or `28000`), the database does not exist (`3D000`), or the server is too old. Use PostgreSQL 16 or newer. |
+| `self-signed certificate in certificate chain` or `unable to get local issuer certificate` | Set `sslrootcert` to your server's certificate authority. See [TLS](#tls). |
+| `INVALID_PURPOSE` | The certificate in `sslrootcert` is not a certificate authority (`basicConstraints=CA:TRUE`), or may only be used for clients. Point `sslrootcert` at the authority that signed the server's certificate. |
+| `PATH_LENGTH_EXCEEDED` | The certificate chain is longer than the root certificate allows. Reissue the root without that limit, or sign the server certificate with the root directly. |
+| `UNSPECIFIED` with a reason, such as `key usage does not include certificate signing` | Node.js reports some certificate problems this way. Follow the reason, for example reissue the certificate authority with `keyCertSign`. |
+| The proxy's own certificate is refused | An `https://` proxy's certificate is checked against Node.js's certificate authorities, never `sslrootcert`. Add your proxy's authority to [`NODE_EXTRA_CA_CERTS`](/environment-variables#tls-certificates). |
+| The proxy refused the tunnel, or cannot be reached | Allow the database's `host:port` on the proxy, give proxy credentials for a `407`, check `HTTPS_PROXY`, or skip the proxy with `NO_PROXY` or `proxy: "none"`. See [Through an HTTP proxy](#through-an-http-proxy). |
+| `unsupported-proxy` | Use an `http://` or `https://` proxy. Atomic does not support `socks5://`. |
+| `StorageTransientError` with code `read-only-server`, PostgreSQL code `25006` | `url` points at a read-only replica, or the server is failing over or out of disk. Point `url` at the read/write endpoint, or retry once the server recovers. |
+| `sorry, too many clients already`, `remaining connection slots are reserved for roles with the SUPERUSER attribute`, or `too many connections for role "<role>"`, PostgreSQL code `53300` | The server, or the role's `CONNECTION LIMIT`, has no connection left. Atomic reports `StorageTransientError` with code `connection-refused`. Lower `maxConnections` or `readerMaxConnections`, raise `max_connections`, or put [PgBouncer](/storage/postgres/pgbouncer) in front. See [Tuning for many concurrent agents](#tuning-for-many-concurrent-agents). |
+| `timeout exceeded when trying to connect` | Every connection in the process's pool stayed busy, or a new connection took longer than `connectTimeoutMs`. Atomic reports `StorageTransientError` with code `connection-refused`. Raise `maxConnections` if the server has connections to spare, or raise `connectTimeoutMs` for a distant or slow server. |
+| `prepared statement "atomic_…" does not exist` or `already exists`, behind a pooler | The pooler does not keep prepared statements. Atomic stops preparing statements for the rest of the process and retries, so you usually see only a one-time warning. Set `maxPreparedStatements` to `0`, or on PgBouncer 1.21 or later set `max_prepared_statements` above `0`. |
+| `StorageTransientError` with code `lock-conflict` or `transaction-timeout` | The server cancelled a statement that waited too long or ran past `statementTimeoutMs`. Nothing was written. If it keeps happening, the server is overloaded. |
+| `wake-ups: polling only` in `atomic storage status` | Messages still arrive, by polling. See [Wake-ups](#wake-ups). |
+| `StorageTransientError` with code `connection-lost` after a failover or pooler restart | The server or pooler closed the connection. Retry. |

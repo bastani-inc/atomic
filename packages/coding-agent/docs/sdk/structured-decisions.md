@@ -234,7 +234,7 @@ console.log(result.value.category, result.model);
 
 `result.value` holds the schema-validated result, `result.model` identifies the candidate that answered, and `result.modelAttempts` records skipped and failed candidates when a fallback chain ran.
 
-`result.usage` reports chat token usage when a chat candidate produced the result (classifier billing is reported separately by the classifier operation). A schema-valid result does not guarantee policy compliance, so validate invariants before acting.
+`result.usage` reports chat token usage when a chat candidate produced the result (classifier billing is reported separately by the classifier operation). A schema-valid result does not guarantee policy compliance, so check the result against your own rules before acting.
 
 The `structured_output` tool accepts required `instructions`, non-empty named `state`, and optional `model` and `fallbackModels` from the calling model. `createStructuredOutputTool({ schema })` fixes the output schema. The calling model cannot override the deadline; set it with `timeoutMs`. See [Structured output final results](/sdk/reference#structured-output-final-results).
 

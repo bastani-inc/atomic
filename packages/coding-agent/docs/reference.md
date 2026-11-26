@@ -24,7 +24,7 @@ Look up exact commands, settings, configuration schemas, tool behaviors, and API
 - [Models configuration](/models-configuration) lists the generated `models.json` field reference (including [remote compaction models](/models#remote-compaction-models)).
 - [Session format](/session-format) specifies the JSONL format, entry types, and `SessionManager` API.
 - [Compaction reference](/compaction/reference) covers parameters, saved boundaries, custom compactor contracts, hooks, exports, settings, and historical formats.
-- [Storage](/storage) covers choosing a store, sharing it across machines, the `atomic storage` commands, exporting and importing sessions, and typed storage errors. Each backend has its own page: [local SQLite](/storage/sqlite), [JSONL](/storage/jsonl), and [PostgreSQL](/storage/postgres) ([`@bastani/atomic-storage-postgres`](/libraries/storage-postgres)), with guides for [PgBouncer](/storage/postgres/pgbouncer) and [server tuning](/storage/postgres/tuning). [Custom adapters](/storage/custom-adapters) covers adapter packages, your own drivers, and the conformance suites. For programmatic backend recipes, see [SDK storage backends](/sdk/storage).
+- [Storage](/storage) covers choosing a session store, sharing one database between machines, the `atomic storage` commands, exporting and importing sessions, and storage errors. Each kind of store has its own page: [local SQLite](/storage/sqlite), [JSONL](/storage/jsonl), and [PostgreSQL](/storage/postgres), with its adapter library [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) and guides for [PgBouncer](/storage/postgres/pgbouncer) and [server tuning](/storage/postgres/tuning). [Custom adapters](/storage/custom-adapters) covers adapter packages, your own database drivers, and the conformance suites. For SDK apps, see [SDK session storage](/sdk/storage).
 - [Worktree snapshots SDK & errors](/worktree-snapshots#sdk) documents snapshot capture/restore functions, garbage collection, and `WorkspaceError` classes.
 - [Environment blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint) documents `.atomic/blueprint.yaml`, `atomic blueprint cache-key`, and `atomic blueprint prebuild`.
 
@@ -42,7 +42,7 @@ Look up exact commands, settings, configuration schemas, tool behaviors, and API
 - [Extension events](/extensions/events) lists every extension event and its payload.
 - [Provider API reference](/custom-provider/api-reference) specifies custom provider configuration and model definition options.
 - [SDK API reference](/sdk/reference) covers options, loaders, return values, run modes, and exports.
-- [SDK storage backends](/sdk/storage) documents `sessionStore`, `storage`, `resolveSessionStore()`, `StorageProvider`, and `createAgentSessionRuntime()` storage wiring.
+- [SDK session storage](/sdk/storage) documents `sessionStore`, `storage`, `resolveSessionStore()`, `StorageProvider`, and `createAgentSessionRuntime()` storage wiring.
 - [Structured decisions](/sdk/structured-decisions) documents `decide()`, structured output tools, and provider limits.
 - [RPC protocol](/rpc/protocol) and [RPC extension UI](/rpc/extension-ui) document RPC commands, events, UI dialogs, types, and errors.
 - [JSON event stream](/json) documents `--mode json` event output.

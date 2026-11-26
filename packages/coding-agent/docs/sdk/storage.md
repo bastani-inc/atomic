@@ -6,7 +6,7 @@ description: "Configure local SQLite, JSONL, in-memory, and PostgreSQL storage f
 
 By default, Atomic persists sessions in local SQLite at `~/.atomic/workflows/journal.sqlite` (`session_` table prefix). In SDK applications, you can select any built-in or remote backend per session, share one database connection across multiple sessions, or manage lifecycle explicitly through `createAgentSessionRuntime()` and `SessionManager`.
 
-For CLI setup, database role administration, migrations, and custom drivers, see [Storage backends](/storage).
+For CLI setup, database role administration, migrations, and custom drivers, see [Storage](/storage).
 
 ## Choosing a backend
 
@@ -198,7 +198,7 @@ npm install @bastani/atomic-storage-postgres @bastani/atomic
 
 Before connecting from an SDK host:
 
-- **PostgreSQL version:** Atomic sessions require **PostgreSQL 16 or later** (the adapter accepts PostgreSQL 14+ on connect for non-session tables).
+- **PostgreSQL version:** Atomic needs **PostgreSQL 16 or newer**.
 - **Table prefix rules:** On PostgreSQL, `prefix` must be **lowercase** and at most **24 characters** (`POSTGRES_MAX_STORAGE_PREFIX_LENGTH`). Uppercase or oversized prefixes fail with `StoragePrefixError`.
 - **Owner-role migrations:** Run `atomic storage migrate` once as the database owner role before connecting with a least-privilege runtime role. See [Set up the database](/storage/postgres#set-up-the-database).
 

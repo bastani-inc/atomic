@@ -47,7 +47,7 @@ Rules for these settings:
 - `--session-dir` can't be combined with `--session-store` or `--no-session`.
 - A non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` can't be combined with `ATOMIC_SESSIONS_STORAGE`, `--storage`, or `--storage-file`. Atomic stops at startup with `StorageConfigError` (`conflicting-overrides`).
 
-When several of these are set, the one higher in [the precedence list](/storage#selecting-storage-per-process) wins. Run `atomic storage status` in your project to see which store Atomic uses and where the choice came from.
+When several of these are set, the one higher in [the precedence list](/storage#which-selection-wins) wins. Run `atomic storage status` in your project to see which store Atomic uses and where the choice came from.
 
 ## Where the files go
 
@@ -75,7 +75,7 @@ Several Atomic processes on one machine can use the same directory at once:
 
 - **One writer at a time.** Before it writes, a process takes the `.session.lock` folder in the directory, and other processes wait for it. If a process exits while it holds the lock, another process takes the lock over after about 10 seconds.
 - **Grouped writes.** Saves that queue up while another save holds the lock are written together under one lock.
-- **Files kept open while writing.** While a session is being written, Atomic keeps its file open between saves, and closes it 30 seconds after the last one. A process keeps at most 16 files open this way. On Windows, Atomic closes each file after it writes, because Windows won't delete or replace an open file.
+- **Files kept open while writing.** While a session is being written, Atomic keeps its file open between saves and closes it soon after the last one. On Windows, Atomic closes each file after it writes, because Windows won't delete or replace an open file.
 
 Keep the directory on a local disk of one machine. Don't share it between machines through a network drive or a cloud-synced folder.
 
@@ -107,7 +107,9 @@ atomic storage import ~/moved
 To move them into PostgreSQL, [set up the database](/storage/postgres#set-up-the-database), join it, and import into it by name:
 
 ```bash
+(umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
 atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+rm ~/atomic-db-password  # atomic storage join keeps its own copy
 jq .storage ~/.atomic/agent/settings.json > new-storage.json
 atomic storage import ~/moved --storage-file new-storage.json
 ```

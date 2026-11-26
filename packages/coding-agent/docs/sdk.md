@@ -8,7 +8,7 @@ Embed Atomic in Node.js applications (Node.js 24.20 or newer) to build custom UI
 
 - **Full options and exports:** [SDK API reference](/sdk/reference) (includes [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor), [Supervised command SDK](/sdk/reference#supervised-command-sdk), and [Task transcript references](/sdk/reference#task-transcript-references)).
 - **Typed decisions:** [Structured decisions API](/sdk/structured-decisions).
-- **Session storage:** [SDK storage guide](/sdk/storage) and [Storage backends](/storage).
+- **Session storage:** [SDK storage guide](/sdk/storage) and [Storage](/storage).
 - **HTTP streaming servers:** [Embed Atomic in a web server](/sdk/web-server) (Next.js App Router guide).
 - **Compare modes:** [Programmatic integration](/programmatic).
 
@@ -193,7 +193,7 @@ try {
 - **Precedence:** Atomic resolves storage in order from `sessionManager`, `sessionStore`, `storage`, process flags and variables (`ATOMIC_SESSIONS_STORAGE` and `ATOMIC_STORAGE`), settings (`sessions.storage` before `storage`), and default SQLite. Memory is never an automatic fallback.
 - **Ownership and mutations:** Atomic closes stores it opened from selection objects during `dispose()`, while leaving caller-owned `SessionStore`, `SessionManager`, and `database` instances open. Await every `SessionManager` write and every `atomic.appendEntry`, `setSessionName`, `setLabel`, `setThinkingLevel`, and `cycleThinkingLevel` call; there is no `flush()` method. `ExtensionContext.sessionSignal` aborts when reload or shutdown starts so extensions can cancel waits while finishing in-flight writes.
 
-See the **[SDK storage guide](/sdk/storage)** for all five backends, `createAgentSessionRuntime()` wiring, `SessionManager` CRUD, `JsonlSessionStore` `exactDirectory` behavior, `npm install` vs `atomic install` adapter resolution, ownership and close rules, and `StorageError` handling. For CLI session commands, the full `SessionManager` method list, operator setup, and cross-machine resume, see [Sessions](/sessions), [SessionManager API](/session-format#sessionmanager-api), [Storage backends](/storage), and [Resume on any machine](/guides/resume-on-any-machine).
+See the **[SDK storage guide](/sdk/storage)** for all five backends, `createAgentSessionRuntime()` wiring, `SessionManager` CRUD, `JsonlSessionStore` `exactDirectory` behavior, `npm install` vs `atomic install` adapter resolution, ownership and close rules, and `StorageError` handling. For CLI session commands, the full `SessionManager` method list, operator setup, and cross-machine resume, see [Sessions](/sessions), [SessionManager API](/session-format#sessionmanager-api), [Storage](/storage), and [Resume on any machine](/guides/resume-on-any-machine).
 
 ### Human input without a terminal
 

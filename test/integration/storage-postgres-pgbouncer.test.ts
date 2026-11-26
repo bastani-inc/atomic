@@ -202,7 +202,7 @@ describe.skipIf(!enabled)("Atomic through PgBouncer in transaction mode, as the 
 		writeFileSync(
 			join(config, "pgbouncer.ini"),
 			ini
-				.replace("host=db.internal", `host=${postgresName}`)
+				.replace("host=db.example.com", `host=${postgresName}`)
 				.replaceAll("/etc/pgbouncer/tls/", "/etc/pgbouncer-tls/"),
 		);
 		const userlist = blocks("text").find((text) => text.includes('"pgbouncer_auth"'));
@@ -277,11 +277,11 @@ describe.skipIf(!enabled)("Atomic through PgBouncer in transaction mode, as the 
 					...options,
 					url:
 						String(options.url)
-							.replace("pgbouncer.internal:6432", `localhost:${bouncerPort}`)
+							.replace("pgbouncer.example.com:6432", `localhost:${bouncerPort}`)
 							.replace(/\?.*$/, "") + `?${tlsQuery}`,
 					listenUrl:
 						String(options.listenUrl)
-							.replace("db.internal:5432", `localhost:${directPort}`)
+							.replace("db.example.com:5432", `localhost:${directPort}`)
 							.replace(/\?.*$/, "") + `?${tlsQuery}`,
 				},
 			} as never,
