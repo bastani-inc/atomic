@@ -160,7 +160,7 @@ export interface BashToolDetails {
 	wallTimeMs?: number;
 }
 /**
- * As in OpenAI Codex: a negative timeout is refused, `0` stops the command at once rather than meaning "no limit", and
+ * A negative timeout is refused, `0` stops the command at once rather than meaning "no limit", and
  * leaving `timeout` out is what runs a command with no time limit.
  */
 export function validateExplicitTimeoutSeconds(timeout: number): void {

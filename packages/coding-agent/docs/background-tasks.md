@@ -140,7 +140,7 @@ Use `powershell({ action: "wait", id })` the same way for a PowerShell command. 
 
 ### Set a deadline
 
-If a command must not run longer than a known time, give it a `timeout` in seconds. Any positive number works, with no upper limit. Leaving `timeout` out is what gives a command no time limit. `0` does not mean "no limit": as in OpenAI Codex, it stops the command immediately. A negative number, or anything that is not a number, is refused before the command starts.
+If a command must not run longer than a known time, give it a `timeout` in seconds. Any positive number works, with no upper limit. Leaving `timeout` out is what gives a command no time limit. `0` does not mean "no limit": it stops the command immediately. A negative number, or anything that is not a number, is refused before the command starts.
 
 ```ts
 // Stop the end-to-end tests if they are still running after 2 hours.

@@ -218,7 +218,7 @@ describe("bash timeout validation", () => {
 		},
 	);
 
-	test("a zero timeout times the command out at once, as in Codex, instead of meaning no limit", async () => {
+	test("a zero timeout times the command out at once instead of meaning no limit", async () => {
 		const marker = join(tmpdir(), `atomic-zero-timeout-${process.pid}-${Date.now()}`);
 		await expect(
 			createLocalBashOperations().exec(`touch ${JSON.stringify(marker)}`, process.cwd(), {
