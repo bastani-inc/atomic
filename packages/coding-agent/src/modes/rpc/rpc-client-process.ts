@@ -339,6 +339,15 @@ export function appendBoundedStderr(existing: string, chunk: string): string {
 	return `${bytes.subarray(start).toString("utf8")}${marker}`;
 }
 
+/**
+ * `<name>(<pid>) MallocStackLogging: …`, a macOS notice. Once a memory-pressure or memory-limit event has made libmalloc
+ * load its stack-logging support, every fork() of that process prints "can't turn off malloc stack logging because it
+ * was not enabled" from inside fork(), to the parent's stderr, before the child sets up its own stdio. The native task
+ * supervisor forks to start each command in a session of its own, so the engine's stderr got one per command. It is
+ * the OS's, never the child's, and nothing a user can act on.
+ */
+const MACOS_STACK_LOGGING_NOTICE = /^\S+\(\d+\) MallocStackLogging: .*(?:\n|$)/gm;
+
 /** Batch noisy child output outside the pipe callback without filesystem work. */
 export function createStderrReporter(report: (message: string) => void): (data: string) => void {
 	let pending = "";
@@ -348,10 +357,10 @@ export function createStderrReporter(report: (message: string) => void): (data: 
 		if (scheduled) return;
 		scheduled = true;
 		setImmediate(() => {
-			const message = pending;
+			const message = pending.replace(MACOS_STACK_LOGGING_NOTICE, "");
 			pending = "";
 			scheduled = false;
-			report(message);
+			if (message) report(message);
 		});
 	};
 }
