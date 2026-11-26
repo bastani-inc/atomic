@@ -186,6 +186,13 @@ export async function withoutFailedWake<T>(
  * rows in the order of their sequence, and a send's checks of that recipient's queue (its size budget) hold until it
  * commits. Sends to other recipients, claims and every write of one row run beside them (#6560). A send that a lock
  * timeout ended runs again before the next send to that recipient this process makes starts (`RETRY_UNAPPLIED`).
+ *
+ * Sends to one recipient deliberately exclude one another, though a send holds the lock only while the database runs its
+ * statements, never across a round trip. Letting them share it (with a claim excluding them instead) would let them run
+ * side by side, but rows would then commit out of sequence order: a broker of an earlier release, which claims without
+ * waiting for sends, could hand a recipient's later message out before an earlier one during a rolling upgrade, and two
+ * sends could both see room for the last message the recipient's queue accepts and exceed its size budget. The time it
+ * would save, a few milliseconds per send, is not worth either.
  */
 export function recipientTransaction(
 	database: SqliteDatabase,

@@ -2515,6 +2515,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * and the sessions that record its blobs now. A blob a session the sweep did not walk records, such as one created
 	 * since, is kept; the next collection walks that session. Nothing in the transaction waits for a turn of the event
 	 * loop (#5530).
+	 *
+	 * It runs as a whole-database transaction on purpose, so no other write runs beside it. With only the blob table's
+	 * lock it would not be safe: it decides which blobs sessions still use in one statement and deletes in the next. A
+	 * session write that records a blob meanwhile holds the blob's row only until it commits its reference; the delete
+	 * waits for it, then goes ahead without looking at the references again, and removes a blob a session has just
+	 * recorded. The same goes for the references retaining runs and carried work write.
 	 */
 	private deleteUnretained(
 		batch: SweepDeleteBatch,
