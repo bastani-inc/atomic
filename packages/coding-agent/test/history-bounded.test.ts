@@ -2377,6 +2377,42 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		);
 	});
 
+	it("reports each stalled turn's wall time, CPU time and collections, and the JS stack of those after the watch has failed (#5250)", async () => {
+		// Six stalls after the fourth: on Windows the sampler may take one sample per 15.6 ms scheduler tick.
+		const blocked = new Set([100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]);
+		function holdTheLoopForTheStallReport(): void {
+			busyFor(40, cpuMs, CPU_CLOCK_STEP_MS);
+		}
+		const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
+		let turns: WatchedTurns;
+		try {
+			for (let index = 0; index < 1100; index++) {
+				if (blocked.has(index)) holdTheLoopForTheStallReport();
+				else busyFor(0.2);
+				await new Promise((resolve) => setImmediate(resolve));
+			}
+		} finally {
+			turns = await stopWatching();
+		}
+		const stalls = turns.kept.filter((turn) => turn.blockedMs > TURN_LIMIT_MS);
+		assert.ok(stalls.length >= blocked.size, `${stalls.length} stalls`);
+		// Stacks are sampled only once the watch has failed, so a passing watch never pays for sampling.
+		assert.ok(
+			stalls.slice(0, 4).every((turn) => turn.stack === undefined),
+			"no stack before the fourth stall decided the failure",
+		);
+		assert.throws(
+			() => assertFewStalls(turns, TURN_LIMIT_MS, "the blocking work"),
+			(error: Error) => {
+				assert.match(error.message, /blocked \d+ ms of \d+ ms wall, \d+ ms on the CPU, \d+ ms collecting/);
+				// The optimizing compiler may inline the blocking function into its caller, so match the file, not the name.
+				assert.match(error.message, /<- \S+ \(history-bounded\.test\.ts:\d+\)/);
+				assert.match(error.message, /main thread on the CPU \d+% of it/);
+				return true;
+			},
+		);
+	});
+
 	it("counts a turn's blocking work when a collection inside it waited off the CPU (#5250)", () => {
 		const windowsTick = 15.625;
 		const turn = { start: 0, end: 52.6, cpu: 2 * windowsTick };
@@ -2482,7 +2518,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			await warm.router.search?.(url, warm.request("text that no entry holds"));
 			const slow = withSlowIndexQueries(store);
 			const { router, request } = historyOver(slow.store, { timeMs: 60_000 });
-			const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS);
+			const stopWatching = watchEventLoopTurns(WATCHED_TURN_LIMIT_MS, PACED_TURN_LIMIT_MS);
 			let found: string;
 			let turns: WatchedTurns;
 			try {
