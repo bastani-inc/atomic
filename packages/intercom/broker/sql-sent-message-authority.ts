@@ -19,6 +19,7 @@ import type {
 	SentQuestionRoute,
 } from "./multinode-state-store.js";
 import { rowTransaction } from "./sql-outbox-store.js";
+import { deleteInBatches, storeNow } from "./sql-retention.js";
 import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type SentRow = SqliteRow & {
@@ -254,12 +255,15 @@ async function openSentMessageAuthorityInCatalog({
 			if (key.messageId.length === 0) return emptyMessageId;
 			return database.transaction((tx) => forgetIn(tx, key), leadingWith(forgetStatement(key)));
 		},
-		async prune(olderThanMs: number): Promise<number> {
-			const { changes } = await database.run(
-				`DELETE FROM ${table} WHERE ${nowMs} - recorded_at > ?`,
-				olderThanMs,
-			);
-			return changes;
+		prune(olderThanMs: number): Promise<number> {
+			// Oldest first, from `<table>_recorded`, in batches.
+			return deleteInBatches(database, {
+				table,
+				key: "message_id",
+				where: `recorded_at < ${storeNow(database)} - ?`,
+				params: [olderThanMs],
+				orderBy: "recorded_at",
+			});
 		},
 	};
 }

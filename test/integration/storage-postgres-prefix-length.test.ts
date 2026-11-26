@@ -66,12 +66,16 @@ function legacyIdentifier(name: string): string {
 	return `${name.slice(0, 54)}_${((hash ^ (hash >> 32n)) & 0xffffffffn).toString(16).padStart(8, "0")}`;
 }
 
+/** Indexes earlier releases created, which the stores now drop: still listed, as those releases may share the prefix. */
+const RETIRED_SUFFIXES = ["intercom_outbox_target", "intercom_outbox_target_bytes"];
+
 /**
  * What follows `prefix` in every identifier the stores create under it: each listed name whole, and each name too long
  * to stay whole as Postgres knows it, its head and a hash of the whole name (#4793).
  */
 const expectedSuffixes = (prefix: string) =>
 	[...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES, ...POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES]
+		.filter((suffix) => !RETIRED_SUFFIXES.includes(suffix))
 		.map((suffix) => postgresDialect.identifier(`${prefix}${suffix}`).slice(prefix.length))
 		.sort();
 

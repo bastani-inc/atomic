@@ -26,6 +26,17 @@ export const BROKER_LEASE_STALE_AFTER_MS = 30_000;
 export const OUTBOX_CLAIM_STALE_AFTER_MS = 30_000;
 /** Safety-net outbox scan interval for brokers whose wake-ups were lost. */
 export const OUTBOX_BACKUP_POLL_INTERVAL_MS = 30_000;
+/**
+ * How often the swarm's maintainer, one broker holding the maintenance lease, prunes the shared state past its retention
+ * and expires the outbox rows left queued too long; each other broker checks this often whether the lease went stale.
+ * Like Oban's leader-only pruner and River's maintenance leader, one broker does it, not every broker every backup poll.
+ */
+export const MAINTENANCE_INTERVAL_MS = 5 * 60_000;
+/**
+ * Age after which another broker takes the maintenance lease over: the maintainer renews it by taking it again each
+ * `MAINTENANCE_INTERVAL_MS`, so it goes stale only once the maintainer stopped.
+ */
+export const MAINTENANCE_STALE_AFTER_MS = 2 * MAINTENANCE_INTERVAL_MS;
 /** How long a session that left stays known, so a send to it is queued for its return (spec §14, S5 amendment). */
 export const KNOWN_SESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /**
@@ -68,6 +79,7 @@ export type StateStoreInvalidReason =
 	| "empty-child-name"
 	| "empty-target"
 	| "empty-group"
+	| "empty-task"
 	| "subject-key-mismatch";
 
 export interface InvalidStateInput {
@@ -75,7 +87,7 @@ export interface InvalidStateInput {
 	readonly reason: StateStoreInvalidReason;
 }
 
-export type LeaseKind = "broker" | "presence";
+export type LeaseKind = "broker" | "presence" | "maintenance";
 
 /** Broker membership: one row per running broker process, keyed by its random `brokerId`. */
 export interface BrokerMembershipSubject {
@@ -122,11 +134,21 @@ export interface PresenceAlias {
 	readonly owner: string;
 }
 
-export type LeaseSubject = BrokerMembershipSubject | RecipientPresenceSubject;
+/**
+ * The swarm's maintainer: the broker that runs one kind of shared maintenance, `task`, such as `"retention"`. Older
+ * brokers never read this kind, and keep their own maintenance.
+ */
+export interface MaintenanceSubject {
+	readonly kind: "maintenance";
+	readonly task: string;
+}
+
+export type LeaseSubject = BrokerMembershipSubject | RecipientPresenceSubject | MaintenanceSubject;
 
 export type LeaseKey =
 	| { readonly kind: "broker"; readonly brokerId: string }
-	| { readonly kind: "presence"; readonly targetIdentity: string };
+	| { readonly kind: "presence"; readonly targetIdentity: string }
+	| { readonly kind: "maintenance"; readonly task: string };
 
 export interface Lease {
 	readonly key: LeaseKey;

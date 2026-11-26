@@ -24,6 +24,7 @@ import { openSqlBrokerLeaseStore } from "./sql-lease-store.js";
 import { openSqlOutboxStore, recipientTransaction, runLast, withoutFailedWake } from "./sql-outbox-store.js";
 import { openSqlPendingAskStore } from "./sql-pending-ask-store.js";
 import { openSqlReleasedAskStore } from "./sql-released-ask-store.js";
+import { ensureRetentionIndexes } from "./sql-retention.js";
 import { openSqlRestoringReservationStore } from "./sql-restoring-reservation-store.js";
 import { withBrokerSchemaCatalog } from "./sql-schema.js";
 import { openSqlSentMessageAuthority } from "./sql-sent-message-authority.js";
@@ -162,6 +163,7 @@ export async function openIntercomBrokerState(
 			const releasedAsks = await openSqlReleasedAskStore(options);
 			const sentMessages = await openSqlSentMessageAuthority(options);
 			const knownSessions = await openSqlKnownSessionStore(options);
+			await ensureRetentionIndexes(database, options.prefix);
 			const bus = await openDatabaseWakeUpBus({
 				openDatabase: async () => borrowed,
 				prefix: source.prefix,

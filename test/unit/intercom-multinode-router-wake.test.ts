@@ -32,6 +32,7 @@ import {
 	type HeldSendRequest,
 	type IntercomBrokerStateStore,
 	KNOWN_SESSION_RETENTION_MS,
+	MAINTENANCE_INTERVAL_MS,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type RecipientPresenceSubject,
@@ -1117,9 +1118,9 @@ describe("released child sends queued across faults (#4401)", () => {
 		await ownerNode.router.close();
 		await vi.advanceTimersByTimeAsync(BROKER_LEASE_STALE_AFTER_MS + 1_000);
 		const ids = await queueSends(senderNode, sender, 3);
-		// The owner stays away past the known-session retention; the sender's broker prunes the child's record meanwhile.
+		// The owner stays away past the known-session retention; the swarm's maintainer prunes the child's record meanwhile.
 		vi.setSystemTime(Date.now() + KNOWN_SESSION_RETENTION_MS);
-		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await vi.advanceTimersByTimeAsync(MAINTENANCE_INTERVAL_MS);
 		await flush();
 		const forgotten = await senderNode.state.knownSessions.lookup(child.info.id, Number.MAX_SAFE_INTEGER);
 		assert.deepEqual(forgotten, { status: "found", sessions: [] });

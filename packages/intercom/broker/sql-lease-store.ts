@@ -283,22 +283,41 @@ const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const invalid = (reason: StateStoreInvalidReason): InvalidStateInput => ({ status: "invalid", reason });
 
 function keyOf(subject: LeaseSubject): LeaseKey {
-	return subject.kind === "broker"
-		? { kind: "broker", brokerId: subject.brokerId }
-		: { kind: "presence", targetIdentity: subject.targetIdentity };
+	switch (subject.kind) {
+		case "broker":
+			return { kind: "broker", brokerId: subject.brokerId };
+		case "maintenance":
+			return { kind: "maintenance", task: subject.task };
+		default:
+			return { kind: "presence", targetIdentity: subject.targetIdentity };
+	}
 }
 
 function keyId(key: LeaseKey): string {
-	return key.kind === "broker" ? key.brokerId : key.targetIdentity;
+	switch (key.kind) {
+		case "broker":
+			return key.brokerId;
+		case "maintenance":
+			return key.task;
+		default:
+			return key.targetIdentity;
+	}
 }
 
 function keyFor(kind: LeaseKind, id: string): LeaseKey {
-	return kind === "broker" ? { kind, brokerId: id } : { kind, targetIdentity: id };
+	switch (kind) {
+		case "broker":
+			return { kind, brokerId: id };
+		case "maintenance":
+			return { kind, task: id };
+		default:
+			return { kind, targetIdentity: id };
+	}
 }
 
 function invalidKey(key: LeaseKey): InvalidStateInput | undefined {
 	if (keyId(key).length > 0) return undefined;
-	return invalid(key.kind === "broker" ? "empty-broker-id" : "empty-target-identity");
+	return invalid(key.kind === "broker" ? "empty-broker-id" : key.kind === "maintenance" ? "empty-task" : "empty-target-identity");
 }
 
 /**
@@ -319,7 +338,7 @@ function stateFromRow(row: StateRow): LeaseState {
 	// A row an earlier broker wrote may hold half a surrogate pair: it reads as a stored one would.
 	const subject: LeaseSubject = JSON.parse(row.subject_json, wellFormed);
 	return {
-		key: keyFor(row.kind === "broker" ? "broker" : "presence", row.key),
+		key: keyFor(row.kind === "broker" || row.kind === "maintenance" ? row.kind : "presence", row.key),
 		holderId: row.holder_id,
 		fencingToken: Number(row.fencing_token),
 		subject,

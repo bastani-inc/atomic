@@ -73,6 +73,12 @@ export interface CrossNodeHeldFixtures {
 }
 
 /** Passed as `staleAfterMs` to treat a lease or claim of any realistic age as live. */
+/** The id that names a lease subject: its recipient, broker or maintenance task. */
+function subjectName(subject: LeaseSubject): string {
+	if (subject.kind === "presence") return subject.targetIdentity;
+	return subject.kind === "broker" ? subject.brokerId : subject.task;
+}
+
 const LIVE_MS = 3_600_000;
 /** Passed as `staleAfterMs` to treat every lease or claim as expired. */
 const EXPIRED_MS = -1;
@@ -234,6 +240,43 @@ export function registerBrokerLeaseStoreConformance(
 		});
 	});
 
+	check(
+		"keeps the maintenance lease apart from every presence and membership, one maintainer at a time",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const maintenance = { kind: "maintenance", task: "retention" } as const;
+			await acquire(a, "broker-a", membership("broker-a"));
+			await acquire(b, "broker-b", presence(RECIPIENT));
+			const first = await acquire(a, "broker-a", maintenance);
+			assert.deepEqual(first.key, { kind: "maintenance", task: "retention" });
+			assert.deepEqual(await b.acquire(maintenance, "broker-b", LIVE_MS), {
+				status: "held",
+				holderId: "broker-a",
+				fencingToken: first.fencingToken,
+			});
+			const read = expectStatus(await b.read(first.key), "found").lease;
+			assert.deepEqual(read, { ...first, subject: maintenance, ageMs: read.ageMs });
+			// No listing of presences or memberships includes it.
+			assert.deepEqual(
+				(await b.listLive("presence", LIVE_MS)).map((lease) => subjectName(lease.subject)),
+				[RECIPIENT],
+			);
+			assert.deepEqual(
+				(await b.listLive("broker", LIVE_MS)).map((lease) => subjectName(lease.subject)),
+				["broker-a"],
+			);
+			// The maintainer taking it again keeps it; once it is stale, another broker takes it over.
+			assert.deepEqual(await a.acquire(maintenance, "broker-a", LIVE_MS), { status: "acquired", lease: first });
+			const taken = expectStatus(await b.acquire(maintenance, "broker-b", EXPIRED_MS), "acquired").lease;
+			assert.ok(taken.fencingToken > first.fencingToken);
+			assert.equal((await a.acquire(maintenance, "broker-a", LIVE_MS)).status, "held");
+			assert.deepEqual(await a.acquire({ kind: "maintenance", task: "" }, "broker-a", LIVE_MS), {
+				status: "invalid",
+				reason: "empty-task",
+			});
+		},
+	);
+
 	check("lets the holder renew and re-acquire an expired lease that nobody took over", async (connect) => {
 		const a = await connect();
 		const lease = await acquire(a, "broker-a");
@@ -303,10 +346,7 @@ export function registerBrokerLeaseStoreConformance(
 		const second = await acquire(a, "broker-a", presence("target-2"));
 		await acquire(b, "broker-b", presence("target-1"));
 		await acquire(a, "broker-a", membership("broker-a"));
-		const targets = async () =>
-			(await b.listLive("presence", LIVE_MS)).map((lease) =>
-				lease.subject.kind === "presence" ? lease.subject.targetIdentity : lease.subject.brokerId,
-			);
+		const targets = async () => (await b.listLive("presence", LIVE_MS)).map((lease) => subjectName(lease.subject));
 		assert.deepEqual(await targets(), ["target-2", "target-1"]);
 		assert.deepEqual(
 			(await b.listLive("broker", LIVE_MS)).map((lease) => lease.subject),
@@ -328,9 +368,7 @@ export function registerBrokerLeaseStoreConformance(
 		await acquire(a, "broker-a", membership("broker-a"));
 		await a.release(released);
 		const aged = async (minAgeMs: number) =>
-			(await b.listAged!("presence", minAgeMs)).map((lease) =>
-				lease.subject.kind === "presence" ? lease.subject.targetIdentity : lease.subject.brokerId,
-			);
+			(await b.listAged!("presence", minAgeMs)).map((lease) => subjectName(lease.subject));
 		assert.deepEqual(await aged(LIVE_MS), [], "a lease younger than the age is not listed");
 		assert.deepEqual(await aged(0), ["target-2", "target-1"]);
 		assert.deepEqual(
@@ -364,9 +402,7 @@ export function registerBrokerLeaseStoreConformance(
 			await acquire(a, "broker-a", membership("broker-a"));
 			await a.release(released);
 			const named = async (target: string, staleAfterMs = LIVE_MS) =>
-				(await b.listLiveFor!(target, staleAfterMs)).map((lease) =>
-					lease.subject.kind === "presence" ? lease.subject.targetIdentity : lease.subject.brokerId,
-				);
+				(await b.listLiveFor!(target, staleAfterMs)).map((lease) => subjectName(lease.subject));
 			// Each target's presences, in first-acquisition order; others a store cannot index exactly may come along.
 			const assertNames = async (target: string, expected: readonly string[]) => {
 				const listed = await named(target);
@@ -427,9 +463,7 @@ export function registerBrokerLeaseStoreConformance(
 			assert.equal((await subjectOf(plain)).session.status, whole);
 			assert.ok(b.listLiveFor, "the store lists the presences a target may name");
 			const listed = async (target: string) =>
-				(await b.listLiveFor!(target, LIVE_MS)).map((lease) =>
-					lease.subject.kind === "presence" ? lease.subject.targetIdentity : lease.subject.brokerId,
-				);
+				(await b.listLiveFor!(target, LIVE_MS)).map((lease) => subjectName(lease.subject));
 			for (const target of [half, whole]) {
 				const found = await listed(target);
 				assert.ok(found.includes("half-named"), `${JSON.stringify(target)} lists its name's presence`);

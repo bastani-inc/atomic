@@ -19,6 +19,7 @@ import type {
 } from "./multinode-state-store.js";
 import { SETTLED_ASK_RETENTION_MS } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
+import { storeNow } from "./sql-retention.js";
 import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type AskRow = SqliteRow & { sender_session_id: string; target_session_id: string; message_id: string };
@@ -60,7 +61,7 @@ async function openPendingAskStoreInCatalog({
 	prefix,
 }: IntercomBrokerStateOptions): Promise<PendingAskStore> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_pending_asks`;
-	const { types, nowMs, greatest } = dialectOf(database);
+	const { types, nowMs } = dialectOf(database);
 	/**
 	 * Its transactions read and write this table and the settled asks alone, which no other store touches, so they
 	 * exclude one another, not every writer of the database (#6560).
@@ -87,6 +88,8 @@ async function openPendingAskStoreInCatalog({
 		replied: types.int,
 		ended_at: types.int,
 	});
+	/** The database clock, read once per statement: a column compared with it is answered by its index. */
+	const now = storeNow(database);
 	// #4997: asks answered or failed, remembered so a stopped broker's copy of one is not recorded again.
 	const settled = `${validateStoragePrefix(prefix)}intercom_settled_asks`;
 	await ensureBrokerSchema(database, prefix, "settled-asks", (tx) =>
@@ -141,7 +144,7 @@ async function openPendingAskStoreInCatalog({
 					 ON CONFLICT DO NOTHING`,
 					...reverseParams(route),
 				);
-				await tx.run(`DELETE FROM ${settled} WHERE settled_at < ${nowMs} - ?`, SETTLED_ASK_RETENTION_MS);
+				await tx.run(`DELETE FROM ${settled} WHERE settled_at < ${now} - ?`, SETTLED_ASK_RETENTION_MS);
 				return changes === 0 ? ({ status: "no-match" } as const) : ({ status: "cleared" } as const);
 			}, serial);
 		},
@@ -279,7 +282,7 @@ async function openPendingAskStoreInCatalog({
 		async listEnded(olderThanMs): Promise<PendingAskListResult> {
 			const rows = await database.all<AskRow>(
 				`SELECT sender_session_id, target_session_id, message_id FROM ${table}
-				 WHERE ended_at IS NOT NULL AND replied IS NULL AND ${greatest("0", `${nowMs} - ended_at`)} >= ?
+				 WHERE ended_at IS NOT NULL AND replied IS NULL AND ended_at <= ${now} - ?
 				 ORDER BY ended_at, "order"`,
 				olderThanMs,
 			);

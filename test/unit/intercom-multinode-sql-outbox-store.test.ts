@@ -182,3 +182,65 @@ test("claim skips opening a write transaction when the target has no undelivered
 		removeTempDirectory(directory);
 	}
 });
+
+test("on SQLite, a recipient's undelivered rows are read from the partial index, and settled rows are pruned from theirs", async () => {
+	const directory = makeTempDirectory("intercom-outbox-sqlite-indexes-");
+	const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+	// A broker's open creates the indexes, once every store's tables are there.
+	const opened = await openIntercomBrokerState({ openDatabase: async () => database });
+	try {
+		const { outbox } = opened.state;
+		const target = '["return","busy-session","default"]';
+		const from = { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+		for (const id of ["m-1", "m-2"])
+			await outbox.enqueue({
+				targetIdentity: target,
+				originBrokerId: "broker-b",
+				digest: id,
+				frame: { type: "message", from, message: { id, timestamp: 1, content: { text: id } } },
+			});
+		const indexes = await database.all<{ name: string }>(
+			"SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'intercom_outbox' AND sql IS NOT NULL ORDER BY name",
+		);
+		assert.deepEqual(
+			indexes.map((index) => index.name),
+			["intercom_outbox_settled", "intercom_outbox_undelivered"],
+		);
+		const statements: { sql: string; params: unknown[] }[] = [];
+		for (const method of ["all", "get", "run"] as const) {
+			const original = database[method].bind(database) as (sql: string, ...params: unknown[]) => Promise<unknown>;
+			vi.spyOn(database, method).mockImplementation(((sql: string, ...params: unknown[]) => {
+				statements.push({ sql, params });
+				return original(sql, ...params);
+			}) as never);
+		}
+		const claimed = await outbox.claim({ claimantId: "broker-a", targetIdentity: target, staleAfterMs: 30_000 });
+		assert.equal(claimed.status === "claimed" && claimed.rows.length, 2);
+		assert.equal((await outbox.listUndelivered(target)).status, "listed");
+		assert.equal((await outbox.undeliveredPosition(target, "m-2")).status, "positioned");
+		await outbox.prune(60_000);
+		vi.restoreAllMocks();
+		const plans = await Promise.all(
+			statements
+				.filter(({ sql }) => /\bintercom_outbox\b/.test(sql))
+				.map(async ({ sql, params }) => ({
+					sql,
+					plan: (await database.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, ...(params as never[])))
+						.map((row) => row.detail)
+						.join("\n"),
+				})),
+		);
+		for (const { sql, plan } of plans) {
+			assert.doesNotMatch(plan, /SCAN intercom_outbox(?! USING)/, `a full scan of the outbox for:\n${sql}\n${plan}`);
+			if (/target_identity = \? AND state IN \('queued', 'claimed'\)/.test(sql))
+				assert.match(plan, /intercom_outbox_undelivered/, `not from the undelivered rows' index:\n${sql}\n${plan}`);
+			if (/^\s*DELETE FROM intercom_outbox\b/.test(sql))
+				assert.match(plan, /intercom_outbox_settled/, `not from the settled rows' index:\n${sql}\n${plan}`);
+		}
+		assert.ok(plans.some(({ sql }) => /^\s*DELETE FROM intercom_outbox\b/.test(sql)));
+	} finally {
+		await opened.bus.close();
+		await opened.state.close();
+		removeTempDirectory(directory);
+	}
+});

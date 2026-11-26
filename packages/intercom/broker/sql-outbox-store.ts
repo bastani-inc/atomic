@@ -32,10 +32,10 @@ import {
 } from "./multinode-state-store.js";
 import { wakeUpNotices } from "./database-wake-up-bus.js";
 import { addMissingColumns } from "./sql-add-column.js";
+import { deleteInBatches, SETTLED, storeNow, UNDELIVERED } from "./sql-retention.js";
 import type { OutboxReservation } from "./sql-sent-message-authority.js";
 import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
-const UNDELIVERED = "state IN ('queued', 'claimed')";
 /**
  * The settings a PostgreSQL send that runs in one round trip (`enqueueAtOnce`) records its decisions in, for the
  * statements after the one that made them: whether the recipient's queue has room for the row, and which reservation
@@ -253,18 +253,14 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			failure_reason TEXT,
 			settled_at ${types.int}
 		);
-		CREATE INDEX IF NOT EXISTS ${table}_target ON ${table}(target_identity, state, sequence);
 	`;
 	await ensureBrokerSchema(database, options.prefix, "outbox", (tx) => tx.exec(schema));
 	// #3983: added later; a table from an older broker gets the column, and an older broker ignores it.
 	await addMissingColumns(database, table, { saving_at: types.int });
 	// #4896: when the row was queued and the size of its frame; rows an older broker wrote have neither.
 	await addMissingColumns(database, table, { queued_at: types.int, frame_bytes: types.int });
-	// The per-recipient cap is summed from this index alone. Summed from the rows, `frame_bytes`, stored after the
-	// frame, cost a read of every queued frame (overflow pages and all) on every enqueue. In a serial transaction (#5054).
-	await ensureBrokerSchema(database, options.prefix, "outbox-indexes", (tx) =>
-		tx.exec(`CREATE INDEX IF NOT EXISTS ${table}_target_bytes ON ${table}(target_identity, state, frame_bytes)`),
-	);
+	// Its partial indexes, and its fillfactor on PostgreSQL, are set at the end of a broker's open
+	// (`ensureRetentionIndexes`), where the other stores' tables are there too.
 
 	const columns = `sequence, message_id, target_identity, origin_broker_id, digest, frame_json, state,
 		claim_attempts, claimant_id, claim_token, failure_reason,
@@ -425,7 +421,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 	};
 
 	/**
-	 * #4896: the recipient's undelivered rows and their frame bytes, read from `<table>_target_bytes` alone. Only rows an
+	 * #4896: the recipient's undelivered rows and their frame bytes, read from `<table>_undelivered` alone. Only rows an
 	 * older broker wrote, without `frame_bytes`, are measured from their frames.
 	 */
 	const sizedTotalsStatement = (targetIdentity: string): SqliteStatement => ({
@@ -979,7 +975,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		async undeliveredPosition(targetIdentity, messageId) {
 			if (targetIdentity.length === 0) return invalid("empty-target-identity");
 			if (messageId.length === 0) return invalid("empty-message-id");
-			// Counted on the (target_identity, state, sequence) index: no row, and no frame, is read.
+			// Counted on `<outbox>_undelivered`: no row, and no frame, is read.
 			const counted = await database.get<{ position: SqliteValue }>(
 				`SELECT COUNT(*) AS position FROM ${table}
 				WHERE target_identity = ? AND ${UNDELIVERED} AND sequence <= (
@@ -994,11 +990,16 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		},
 
 		async prune(settledOlderThanMs, queuedOlderThanMs) {
+			// Each age compared as `column < now - age`, so an index on the column answers it.
+			const now = storeNow(database);
 			if (queuedOlderThanMs !== undefined) {
 				// Every recipient's rows, each locked in sequence order and decided on in its newest version, as a claim
-				// locks them: a renewal that commits first keeps its row, and expiry waits for no lock domain (#6560).
-				const lockedWhere = (where: string) =>
-					`message_id IN (SELECT message_id FROM ${table} WHERE ${where} ORDER BY sequence${lockClause("update")})`;
+				// locks them: a renewal that commits first keeps its row, and expiry waits for no lock domain (#6560). PostgreSQL
+				// takes the locked rows' ids as one array, so the update finds each by its key rather than joining the table.
+				const lockedWhere = (where: string) => {
+					const locked = `SELECT message_id FROM ${table} WHERE ${where} ORDER BY sequence${lockClause("update")}`;
+					return dialect === "postgres" ? `message_id = ANY(ARRAY(${locked}))` : `message_id IN (${locked})`;
+				};
 				await database.transaction(async (executor) => {
 					// A row an older broker queued has no time: its retention starts now.
 					await executor.run(
@@ -1007,8 +1008,8 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 					await executor.run(
 						`UPDATE ${table} SET state = 'failed', ${settled}
 						WHERE ${lockedWhere(
-							`${UNDELIVERED} AND ${ageSince("queued_at")} > ?
-							AND (claim_renewed_at IS NULL OR ${ageSince("claim_renewed_at")} > ?)`,
+							`${UNDELIVERED} AND queued_at < ${now} - ?
+							AND (claim_renewed_at IS NULL OR claim_renewed_at < ${now} - ?)`,
 						)}`,
 						JSON.stringify(OUTBOX_EXPIRED_REASON),
 						queuedOlderThanMs,
@@ -1016,12 +1017,14 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 					);
 				}, fenced);
 			}
-			const result = await database.run(
-				`DELETE FROM ${table}
-				WHERE state IN ('delivered', 'failed') AND ${ageSince("settled_at")} > ?`,
-				settledOlderThanMs,
-			);
-			return result.changes;
+			// Oldest first, from `<outbox>_settled`, in batches.
+			return deleteInBatches(database, {
+				table,
+				key: "sequence",
+				where: `${SETTLED} AND settled_at < ${now} - ?`,
+				params: [settledOlderThanMs],
+				orderBy: "settled_at",
+			});
 		},
 	};
 }

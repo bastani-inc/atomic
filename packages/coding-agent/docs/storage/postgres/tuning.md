@@ -216,7 +216,7 @@ Tables that only grow, such as `session_entries`, keep PostgreSQL's defaults. Si
 
 When PostgreSQL writes a row's new version on the same page as the old one, and the update changes no indexed column, it can skip updating the table's indexes. This is called a HOT update, for heap-only tuple. It is faster and leaves less to clean up. It only works when the page has free space.
 
-`fillfactor` leaves part of every page free for this. Atomic sets `fillfactor = 80` on `session_sessions` and `intercom_leases`, leaving a fifth of each page free, when you run `atomic storage migrate`. You do not set it yourself.
+`fillfactor` leaves part of every page free for this. Atomic sets `fillfactor = 80` on `session_sessions` and `intercom_leases`, leaving a fifth of each page free, and `fillfactor = 85` on `intercom_outbox`, whose messages Intercom brokers update while they deliver them, when you run `atomic storage migrate`. You do not set it yourself.
 
 `fillfactor` applies to pages written after the change. To rewrite existing pages, run `VACUUM FULL` on the table, which locks it while it runs, or use `pg_repack`. This is optional.
 
@@ -228,7 +228,7 @@ Check the share of HOT updates per table with:
 SELECT relname, n_tup_upd, n_tup_hot_upd,
        round(100.0 * n_tup_hot_upd / nullif(n_tup_upd, 0), 1) AS hot_percent
 FROM pg_stat_user_tables
-WHERE relname IN ('session_sessions', 'intercom_leases', 'snapshot_session_links');
+WHERE relname IN ('session_sessions', 'intercom_leases', 'intercom_outbox', 'snapshot_session_links');
 ```
 
 ### The search index

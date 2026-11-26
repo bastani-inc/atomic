@@ -16,6 +16,7 @@ import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-st
 import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pending-ask-store.js";
 import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
+import { ensureRetentionIndexes } from "../../packages/intercom/broker/sql-retention.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 
@@ -61,6 +62,8 @@ async function openEveryOwnedStore(db: SqliteDatabase): Promise<void> {
 		await openSqlReleasedAskStore(options);
 		await openSqlSentMessageAuthority(options);
 		await openSqlKnownSessionStore(options);
+		// As a broker's open ends, once every table is there.
+		await ensureRetentionIndexes(db, prefix);
 		const bus = await openDatabaseWakeUpBus({ openDatabase: async () => db, prefix });
 		cleanups.push(() => bus.close());
 	}

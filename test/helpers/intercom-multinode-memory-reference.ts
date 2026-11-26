@@ -62,17 +62,17 @@ export type MemoryPresenceHolder = (targetIdentity: string, staleAfterMs: number
 export type MemoryReturnAddressHolders = (returnAddress: string, staleAfterMs: number) => string[];
 
 function subjectId(subject: LeaseSubject): string {
-	return subject.kind === "broker" ? subject.brokerId : subject.targetIdentity;
+	return keyId(keyOf(subject));
 }
 
 function keyId(key: LeaseKey): string {
-	return key.kind === "broker" ? key.brokerId : key.targetIdentity;
+	return key.kind === "broker" ? key.brokerId : key.kind === "maintenance" ? key.task : key.targetIdentity;
 }
 
 function keyOf(subject: LeaseSubject): LeaseKey {
-	return subject.kind === "broker"
-		? { kind: "broker", brokerId: subject.brokerId }
-		: { kind: "presence", targetIdentity: subject.targetIdentity };
+	if (subject.kind === "broker") return { kind: "broker", brokerId: subject.brokerId };
+	if (subject.kind === "maintenance") return { kind: "maintenance", task: subject.task };
+	return { kind: "presence", targetIdentity: subject.targetIdentity };
 }
 
 /** A copy of `subject` with every string well formed, as a shared database stores it (#6560). */
@@ -99,7 +99,9 @@ function mayName(subject: RecipientPresenceSubject, named: string): boolean {
 
 function invalidKey(kind: LeaseKey["kind"], id: string): InvalidStateInput | undefined {
 	if (id.length > 0) return undefined;
-	return invalid(kind === "broker" ? "empty-broker-id" : "empty-target-identity");
+	return invalid(
+		kind === "broker" ? "empty-broker-id" : kind === "maintenance" ? "empty-task" : "empty-target-identity",
+	);
 }
 
 interface LeaseHolder {

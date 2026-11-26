@@ -17,6 +17,7 @@ import type {
 	ReleasedAskSupersede,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { deleteInBatches, storeNow } from "./sql-retention.js";
 import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 interface ReleasedAskRow extends SqliteRow {
@@ -189,9 +190,15 @@ async function openReleasedAskStoreInCatalog({ database, prefix }: IntercomBroke
 			if (bad !== undefined) return bad;
 			return settle(claim, "open", ["claimed"]);
 		},
-		async prune(olderThanMs) {
-			const { changes } = await database.run(`DELETE FROM ${table} WHERE expires_at + ? < ${nowMs}`, olderThanMs);
-			return changes;
+		prune(olderThanMs) {
+			// Oldest first, from `<table>_expires`, in batches.
+			return deleteInBatches(database, {
+				table,
+				key: '"order"',
+				where: `expires_at < ${storeNow(database)} - ?`,
+				params: [olderThanMs],
+				orderBy: "expires_at",
+			});
 		},
 	};
 

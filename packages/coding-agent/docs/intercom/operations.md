@@ -219,7 +219,7 @@ When a machine or broker stops abruptly, its sessions still look connected for u
 
 ### Data and security
 
-- **Retention.** Cross-machine message text, attachments, and sender metadata stay in the shared database until delivered, and delivered rows are pruned about 12 minutes later to protect against duplicate retries. Offline messages stay until delivered or expired after 7 days. Session names, IDs, and group memberships are stored for discovery and routing.
+- **Retention.** Cross-machine message text, attachments, and sender metadata stay in the shared database until delivered, and delivered rows are pruned 12 to 17 minutes later to protect against duplicate retries. Offline messages stay until delivered or expired after 7 days. One broker at a time does this cleanup, every 5 minutes; if it stops, another broker takes over within about 15 minutes. Session names, IDs, and group memberships are stored for discovery and routing.
 - **Database access.** Anyone who can read the shared database can read cross-machine Intercom messages. Keep credentials in `secrets` (`{ "env": ... }` or `{ "file": ... }`) rather than plain `options`, and use project groups rather than `default` so teammates in other repositories cannot inject prompts into your sessions.
 - **No open ports.** Intercom opens no network listeners or broker-to-broker sockets. Cross-machine security matches the shared database's authentication and transport security.
 

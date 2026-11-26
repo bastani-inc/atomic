@@ -1338,6 +1338,109 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 		});
 	});
 
+	test("migrate swaps the outbox's state-keyed indexes for partial ones and sets its fillfactor, while a runtime role keeps sending on the earlier indexes without DDL", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const row = await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema");
+			const schema = String(row?.schema);
+			const outbox = `${schema}.${PREFIX}intercom_outbox`;
+			const layout = async () => ({
+				indexes: (
+					await ownerDatabase.all<{ name: string }>(
+						"SELECT indexname AS name FROM pg_indexes WHERE schemaname = ? AND tablename = ? ORDER BY indexname",
+						schema,
+						`${PREFIX}intercom_outbox`,
+					)
+				).map((index) => index.name.slice(PREFIX.length)),
+				options: (
+					await ownerDatabase.get<{ options: string | null }>(
+						`SELECT array_to_string(reloptions, ',') AS options FROM pg_class WHERE oid = '${outbox}'::regclass`,
+					)
+				)?.options,
+			});
+			const current = {
+				indexes: [
+					"intercom_outbox_message_id_key",
+					"intercom_outbox_pkey",
+					"intercom_outbox_settled",
+					"intercom_outbox_undelivered",
+				],
+				options: "fillfactor=85",
+			};
+			assert.deepEqual(await layout(), current);
+
+			// As an earlier release left the outbox: its two indexes keyed by state, recorded as the steps' first revision,
+			// and the default fillfactor.
+			await ownerDatabase.exec(`DROP INDEX ${schema}.${PREFIX}intercom_outbox_undelivered;
+				DROP INDEX ${schema}.${PREFIX}intercom_outbox_settled;
+				CREATE INDEX ${PREFIX}intercom_outbox_target ON ${outbox}(target_identity, state, sequence);
+				CREATE INDEX ${PREFIX}intercom_outbox_target_bytes ON ${outbox}(target_identity, state, frame_bytes);
+				ALTER TABLE ${outbox} RESET (fillfactor)`);
+			await ownerDatabase.run(
+				`DELETE FROM ${schema}.${PREFIX}atomic_migrations WHERE domain IN (?, ?)`,
+				"schema:intercom-outbox-indexes",
+				"schema:intercom-outbox-fillfactor",
+			);
+			await ownerDatabase.run(
+				`INSERT INTO ${schema}.${PREFIX}atomic_migrations (domain, version, applied_at) VALUES (?, 1, 0)`,
+				"schema:intercom-outbox-indexes",
+			);
+			const earlier = {
+				indexes: [
+					"intercom_outbox_message_id_key",
+					"intercom_outbox_pkey",
+					"intercom_outbox_target",
+					"intercom_outbox_target_bytes",
+				],
+				options: null,
+			};
+			await grantRuntime(ownerDatabase, roles);
+			const sendAndDeliver = async (statements: string[], id: string) => {
+				const broker = await openIntercomBrokerState({
+					prefix: PREFIX,
+					openDatabase: async () => recording(await roles.open("runtime"), statements),
+				});
+				try {
+					const from = { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+					const sent = await broker.state.reserveAndEnqueue!(
+						{ messageId: id, digest: id, targetIdentity: "target" },
+						{
+							targetIdentity: "target",
+							originBrokerId: "broker-a",
+							digest: id,
+							frame: { type: "message", from, message: { id, timestamp: 1, content: { text: id } } },
+						},
+					);
+					assert.equal(sent.status, "inserted");
+					const claimed = await broker.state.outbox.claim({
+						claimantId: "broker-a",
+						targetIdentity: "target",
+						staleAfterMs: 30_000,
+					});
+					assert.ok(claimed.status === "claimed" && claimed.rows.length === 1);
+					assert.equal((await broker.state.outbox.markDelivered(claimed.rows[0]!.claim)).status, "delivered");
+					assert.equal(await broker.state.outbox.prune(60_000, 60_000), 0);
+				} finally {
+					await broker.bus.close();
+					await broker.state.close();
+				}
+			};
+			const before: string[] = [];
+			await sendAndDeliver(before, "m-before");
+			assert.deepEqual(before.flatMap(ddl), [], "the runtime role ran no DDL");
+			assert.deepEqual(await layout(), earlier);
+
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.deepEqual(await layout(), current);
+			const after: string[] = [];
+			await sendAndDeliver(after, "m-after");
+			assert.deepEqual(after.flatMap(ddl), [], "the runtime role ran no DDL");
+		});
+	});
+
 	test("a second open of every store on a current schema runs no DDL (#5218)", async () => {
 		await withRoles(async (_scope, roles) => {
 			await openEveryStore(() => roles.open("owner"), PREFIX);
