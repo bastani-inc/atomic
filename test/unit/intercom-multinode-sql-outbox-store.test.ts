@@ -163,6 +163,7 @@ test("claim skips opening a write transaction when the target has no undelivered
 			frame,
 		});
 		txSpy.mockClear();
+		const allSpy = vi.spyOn(database, "all");
 		const claimed = await outbox.claim({
 			claimantId: "broker-a",
 			targetIdentity: '["return","idle-session","default"]',
@@ -170,7 +171,12 @@ test("claim skips opening a write transaction when the target has no undelivered
 		});
 		assert.equal(claimed.status, "claimed");
 		if (claimed.status === "claimed") assert.equal(claimed.rows.length, 1);
-		assert.equal(txSpy.mock.calls.length, 1, "non-empty claim still claims atomically in one transaction");
+		assert.equal(txSpy.mock.calls.length, 0, "non-empty claim needs no transaction");
+		assert.deepEqual(
+			allSpy.mock.calls.map(([sql]) => /^\s*UPDATE\b/.test(sql)),
+			[true],
+			"non-empty claim claims atomically in one statement (#6560)",
+		);
 	} finally {
 		await database.close();
 		removeTempDirectory(directory);
