@@ -1619,6 +1619,138 @@ function closeLocalConnectionsOnce(clientEntry) {
 }
 
 /**
+ * The modules a client of a local `file:` database is made of: `@libsql/client`'s file client and the client's config.
+ * @typedef {[typeof import("@libsql/client/sqlite3"), typeof import("@libsql/core/config")]} FileProtocol
+ */
+
+/**
+ * A `libsql` statement, as `@libsql/client` runs it.
+ * @typedef {{ run(...params: unknown[]): unknown, all(...params: unknown[]): unknown[], readonly reader: boolean, raw(raw?: boolean): LibsqlStatement }} LibsqlStatement
+ */
+
+/**
+ * A `libsql` connection, as `@libsql/client`'s pool holds it.
+ * @typedef {{ prepare(sql: string): LibsqlStatement, close(): void }} LibsqlConnection
+ */
+
+/** How many prepared statements each connection to a local `file:` database keeps, as Atomic's own SQLite stores do. */
+const FILE_STATEMENT_CACHE_SIZE = 256;
+
+/** Connections that keep their prepared statements (`keepStatements`). @type {WeakSet<object>} */
+const keepingStatements = new WeakSet();
+
+/**
+ * Makes `connection` keep the last `FILE_STATEMENT_CACHE_SIZE` statements it prepared, by their SQL, so running one
+ * again does not prepare it again. `@libsql/client` prepares each statement every time it runs it, and SQLite compiles
+ * every trigger on the table a write changes into each prepare of that write: with one large trigger on a table,
+ * preparing an INSERT into it takes about 25 times as long as running it.
+ *
+ * A kept statement follows schema changes: SQLite prepares it again when it runs after the schema changed. The client
+ * reads a statement's result columns before it runs it, though, and a schema change can add columns to the rows of a
+ * statement with a `*` in it. So such a statement that returns rows is used again only while the schema version is
+ * the one read before it was prepared.
+ * A statement whose run fails is dropped. A failure with `SQLITE_SCHEMA`, which SQLite answers when the schema kept
+ * changing under a statement, drops every statement the connection kept. Closing the connection drops them all, so
+ * the collections a close runs finalize them and release the database's files.
+ * @param {LibsqlConnection} connection
+ */
+function keepStatements(connection) {
+	if (keepingStatements.has(connection)) return;
+	keepingStatements.add(connection);
+	/**
+	 * Each kept statement by its SQL, the least recently used first, with the schema version read before it was
+	 * prepared when it is one whose columns depend on the schema.
+	 * @type {Map<string, { statement: LibsqlStatement, schema?: unknown }>}
+	 */
+	const kept = new Map();
+	const { prepare, close } = connection;
+	/** @type {LibsqlStatement | undefined} */
+	let schemaVersion;
+	const currentSchema = () => {
+		schemaVersion ??= prepare.call(connection, "PRAGMA schema_version").raw(true);
+		return /** @type {unknown[][]} */ (schemaVersion.all())[0]?.[0];
+	};
+	connection.prepare = function (sql) {
+		const found = kept.get(sql);
+		if (found !== undefined) {
+			kept.delete(sql);
+			// Read before the statement runs: a change after it makes the next run prepare the statement again.
+			const schema = found.schema === undefined ? undefined : currentSchema();
+			if (schema === found.schema) {
+				kept.set(sql, found);
+				return found.statement;
+			}
+		}
+		const schema = sql.includes("*") ? currentSchema() : undefined;
+		const statement = prepare.call(this, sql);
+		const entry = { statement, schema: statement.reader ? schema : undefined };
+		for (const name of /** @type {const} */ (["run", "all"])) {
+			/** @param {unknown[]} params */
+			statement[name] = (...params) => {
+				try {
+					return Object.getPrototypeOf(statement)[name].apply(statement, params);
+				} catch (error) {
+					if (isSchemaChanged(error)) kept.clear();
+					else if (kept.get(sql) === entry) kept.delete(sql);
+					throw error;
+				}
+			};
+		}
+		kept.set(sql, entry);
+		if (kept.size > FILE_STATEMENT_CACHE_SIZE) kept.delete(/** @type {string} */ (kept.keys().next().value));
+		return statement;
+	};
+	connection.close = function () {
+		try {
+			return close.call(this);
+		} finally {
+			kept.clear();
+			schemaVersion = undefined;
+		}
+	};
+}
+
+/**
+ * A client of a local `file:` database whose connections each keep the statements they prepare (`keepStatements`):
+ * the client `createClient` makes for a file, after the same checks of its URL, over a connection pool of its own.
+ * Unlike `createClient` it runs no statement to check that the file opens: the adapter runs one on each client as soon
+ * as it makes it, which fails the same way.
+ * @param {FileProtocol} file
+ * @param {import("@libsql/client").Config} options
+ * @returns {import("@libsql/client").Client}
+ */
+function createFileClient([{ ConnectionPool, Sqlite3Client, LibsqlError }, { expandConfig, isInMemoryConfig }], options) {
+	const config = expandConfig(options, true);
+	if (config.scheme !== "file")
+		throw new LibsqlError(`URL scheme ${JSON.stringify(`${config.scheme}:`)} is not a local file`, "URL_SCHEME_NOT_SUPPORTED");
+	const { authority } = config;
+	if (authority !== undefined) {
+		const host = authority.host.toLowerCase();
+		if (host !== "" && host !== "localhost")
+			throw new LibsqlError(`Invalid host in file URL: ${JSON.stringify(authority.host)}`, "URL_INVALID");
+		if (authority.port !== undefined) throw new LibsqlError("File URL cannot have a port", "URL_INVALID");
+		if (authority.userinfo !== undefined) throw new LibsqlError("File URL cannot have username and password", "URL_INVALID");
+	}
+	// An in-memory database is its one connection's own, so its pool holds that one connection only.
+	const inMemory = isInMemoryConfig(config);
+	class KeepingPool extends ConnectionPool {
+		/** @param {boolean} [forTransaction] */
+		acquireSync(forTransaction) {
+			const connection = super.acquireSync(forTransaction);
+			keepStatements(/** @type {LibsqlConnection} */ (/** @type {unknown} */ (connection)));
+			return connection;
+		}
+	}
+	// A local connection reads no auth token: `libsql` sends one only to a database it syncs with.
+	const pool = new KeepingPool(
+		inMemory ? `${config.scheme}:${config.path}` : config.path,
+		{ timeout: config.timeout },
+		inMemory ? 1 : Math.max(1, config.concurrency),
+	);
+	return new Sqlite3Client(pool, config.intMode);
+}
+
+/**
  * A libSQL server's (sqld's) default payload limits, which the facade names when a value or a response is too large
  * (#4954): `max_row_size`, which sqld sets as SQLite's `SQLITE_LIMIT_LENGTH` on every connection, is `bytesize::mb(5)`
  * (5,000,000 bytes) for a value and a whole row, and `--max-response-size` is 10 MB for one statement's response.
@@ -1777,6 +1909,17 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers, k
 		} catch (cause) {
 			throw new StorageAdapterLoadError("libsql", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
 		}
+		/** @type {FileProtocol} */
+		let file;
+		try {
+			file = await Promise.all([import("@libsql/client/sqlite3"), import("@libsql/core/config")]);
+		} catch (cause) {
+			throw new StorageAdapterLoadError(
+				"@libsql/client",
+				/** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause),
+			);
+		}
+		createClient = (options) => createFileClient(file, options);
 	}
 	const redact = redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]);
 	const driver = () => createDriver(url, authToken, added, redact, createClient, protocol, keepConnections, reads);
