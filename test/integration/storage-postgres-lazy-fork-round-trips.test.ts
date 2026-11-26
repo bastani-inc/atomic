@@ -59,7 +59,8 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL round trips of for
 		await withPostgresDatabase(async ({ open }) => {
 			const store = await SqlSessionStore.open(await open());
 			try {
-				assert.equal((await store.enableSharedHistoryForks({ live: async () => false })).status, "enabled");
+				// A new store shares its forks' history from its first open.
+				assert.equal((await store.enableSharedHistoryForks()).status, "already");
 				const report: string[] = [];
 				// What creating a session of one entry takes: the start with the schema check and the child's absence, then
 				// the writes with the commit.
@@ -99,7 +100,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL round trips of for
 		await withPostgresDatabase(async ({ open }) => {
 			const store = await SqlSessionStore.open(await open());
 			try {
-				await store.enableSharedHistoryForks({ live: async () => false });
+				assert.equal((await store.enableSharedHistoryForks()).status, "already");
 				const report: string[] = [];
 				for (const length of [20, 2000]) {
 					const made = entries(`p${length}`, length);
@@ -152,7 +153,7 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL round trips of for
 			);
 			const appending = await SqlSessionStore.open(await open());
 			try {
-				assert.equal((await forking.enableSharedHistoryForks({ live: async () => false })).status, "enabled");
+				assert.equal((await forking.enableSharedHistoryForks()).status, "already");
 				const made = entries("p", 30);
 				await forking.create(header("p"), made);
 				const fork = clone(forking, "p", "c");

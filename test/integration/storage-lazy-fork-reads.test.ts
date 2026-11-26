@@ -24,6 +24,7 @@ import {
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import {
 	bytesOf,
@@ -312,10 +313,15 @@ async function openPair(
 	},
 	seed: number,
 ) {
-	const copy = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}c_` });
-	const shared = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}l_` });
-	const enabled = await shared.enableSharedHistoryForks({ live: async () => false });
-	assert.equal(enabled.status, "enabled");
+	// The copying store stays at schema 2 while an older build's session runs on its prefix; the sharing one switches
+	// at its open.
+	const copyDatabase = await scope.connect();
+	await holdOlderBuildMarker(copyDatabase, `${scope.prefix}c_`);
+	const copy = await SqlSessionStore.open(copyDatabase, { prefix: `${scope.prefix}c_` });
+	const sharedDatabase = await scope.connect();
+	const shared = await SqlSessionStore.open(sharedDatabase, { prefix: `${scope.prefix}l_` });
+	assert.equal(await copyDatabase.transaction((tx) => copy.sharedHistoryForks(tx)), false, "the copy store copies");
+	assert.equal(await sharedDatabase.transaction((tx) => shared.sharedHistoryForks(tx)), true, "the other shares");
 	const pair: Pair = { copy, shared, known: new Map(), seed, rng: random(seed), big: 2, serial: 0 };
 	return pair;
 }
