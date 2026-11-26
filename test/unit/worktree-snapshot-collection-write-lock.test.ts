@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers";
 import { pathToFileURL } from "node:url";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
@@ -34,6 +36,30 @@ import {
  * timeout passes, which the check of failed writes catches.
  */
 const TURN_CPU_LIMIT_MS = MAIN_THREAD_LAG_LIMIT_MS;
+
+/** A full garbage collection, whatever flags the runtime started with. */
+function exposedGc(): () => void {
+	if (globalThis.gc) return globalThis.gc;
+	setFlagsFromString("--expose-gc");
+	try {
+		return runInNewContext("gc") as () => void;
+	} finally {
+		setFlagsFromString("--no-expose-gc");
+	}
+}
+const gc = exposedGc();
+
+/**
+ * Frees what the setup left for the garbage collector and lets the finalizers of what it freed run, so the measured
+ * turns are the collection's own. The setup writes thousands of entries through connections that prepare each
+ * statement anew, as libSQL's file connections do: each insert's prepared statement holds a program with every
+ * trigger of the entries table compiled in, and the finalizers that free them run on this thread in turns of the
+ * event loop. Left pending, they ran in the collection's first turn and made it the busiest by far (#6560).
+ */
+async function settleSetupGarbage(): Promise<void> {
+	gc();
+	for (let turn = 0; turn < 4; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+}
 
 let directory: string;
 beforeEach(() => {
@@ -79,6 +105,7 @@ test.each(["node-sqlite", "libsql"] as const)(
 			dropped.push(forked);
 			await ageBlobs(shared.database, "snapshot_blobs", 10_000);
 			await other.exec("CREATE TABLE other_writes (at INTEGER NOT NULL)");
+			await settleSetupGarbage();
 
 			// The other connection writes once in every turn of the event loop while the collection runs, as another
 			// store of this process (one that keeps its own connection) may at any time.
