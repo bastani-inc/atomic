@@ -1870,6 +1870,32 @@ export async function openPostgresDatabase(options) {
 			};
 			/** @type {{ sql: string, params: readonly SqliteValue[], result: Promise<SqliteDriverResult>, failure?: unknown }[]} */
 			const lead = [];
+			/** Whether the connection went back to the pool, which a read-only transaction's commit does as it is sent. */
+			let released = false;
+			const release = () => {
+				if (released) return;
+				released = true;
+				client.release(lost.has(client));
+			};
+			/**
+			 * Sends the `COMMIT`. A read-only transaction's connection goes back to the pool once its `COMMIT` is written, not
+			 * once it is answered: the connection is pipelined, so the next transaction's `BEGIN` goes out behind the `COMMIT`
+			 * and the server runs it after. A read that follows at once then reuses this connection instead of opening another,
+			 * whose handshakes cost several round trips (#6560). A commit that fails ended nothing this transaction wrote.
+			 * @param {number} timeoutMs
+			 */
+			const sendCommit = (timeoutMs) =>
+				submit("", () => {
+					const answer = watched(client, () => client.query("COMMIT"), timeoutMs);
+					if (begin.readOnly === true) release();
+					return answer;
+				});
+			/**
+			 * With `leadingOnly`, the `COMMIT`, sent right behind the leading statements: the transaction is one round trip.
+			 * Its timer starts with them, so it waits as long as they may wait for their locks.
+			 * @type {Promise<import("pg").QueryResult> | undefined}
+			 */
+			let committed;
 			try {
 				// One round trip, with nothing set outside the transaction, so a transaction-mode pooler can serve it. The
 				// transaction's leading reads go out behind it on the pipelined connection, so the server runs them once the
@@ -1887,6 +1913,10 @@ export async function openPostgresDatabase(options) {
 					result.catch(() => {});
 					lead.push({ sql, params, result });
 				}
+				if (begin.leadingOnly === true && lead.length > 0) {
+					committed = sendCommit(lockWaitMs + clientTimeoutMs);
+					committed.catch(() => {});
+				}
 				await opened;
 				const outcomes = await Promise.allSettled(lead.map(({ result }) => result));
 				outcomes.forEach((outcome, index) => {
@@ -1902,13 +1932,9 @@ export async function openPostgresDatabase(options) {
 			 * not make failed, which aborted the transaction. Calls go out in the order they are made, so this decides at once.
 			 */
 			const endLead = () => lead.splice(0).find((read) => "failure" in read)?.failure;
-			/** Whether the connection went back to the pool, which a read-only transaction's commit does as it is sent. */
-			let released = false;
-			const release = () => {
-				if (released) return;
-				released = true;
-				client.release(lost.has(client));
-			};
+			/** A call made after the `COMMIT` went out with the leading statements: it would run outside the transaction. */
+			const afterCommit = () =>
+				Promise.reject(new StorageError("The transaction committed with its leading statements; it takes no more calls"));
 			return {
 				execute: (sql, params) => {
 					const next = lead[0];
@@ -1917,37 +1943,37 @@ export async function openPostgresDatabase(options) {
 						return next.result;
 					}
 					const failure = endLead();
+					if (committed !== undefined) return afterCommit();
 					return failure === undefined
 						? submit(sql, () => sendStatement(client, sql, params, clientTimeoutMs))
 						: Promise.reject(failure);
 				},
 				executeMultiple: (sql) => {
 					const failure = endLead();
+					if (committed !== undefined) return afterCommit();
 					return failure === undefined
 						? submit(sql, () => sendScript(client, sql, clientTimeoutMs))
 						: Promise.reject(failure);
 				},
 				async commit() {
 					// A leading read the callback never made failed and aborted the transaction: nothing is sent, and its own
-					// failure, not a bare rollback, says whether the transaction may run again.
+					// failure, not a bare rollback, says whether the transaction may run again. With `leadingOnly` the `COMMIT`
+					// went out already and ends it.
 					const failure = endLead();
 					if (failure !== undefined) throw failure;
-					const result = await submit("", () => {
-						const answer = watched(client, () => client.query("COMMIT"), clientTimeoutMs);
-						// A read-only transaction's connection goes back to the pool once its `COMMIT` is written, not once it is
-						// answered: the connection is pipelined, so the next transaction's `BEGIN` goes out behind the `COMMIT` and the
-						// server runs it after. A read that follows at once then reuses this connection instead of opening another,
-						// whose handshakes cost several round trips (#6560). A commit that fails ended nothing this transaction wrote.
-						if (begin.readOnly === true) release();
-						return answer;
-					});
+					const result = await (committed ?? sendCommit(clientTimeoutMs));
 					// A transaction a failed statement aborted ends in a rollback when committed, without an error.
 					if (result.command === "ROLLBACK")
 						throw new StorageError("The transaction was rolled back because a statement in it failed");
 				},
 				async rollback() {
 					// The server rolled back the transaction of a connection that broke. One that went back to the pool is another
-					// call's now, and its `COMMIT`, answered or not, ended the read-only transaction.
+					// call's now, and its `COMMIT`, answered or not, ended the read-only transaction. A `COMMIT` sent with the
+					// leading statements ended it too, as a rollback when one of them failed; one still unanswered is waited for.
+					if (committed !== undefined) {
+						await committed.catch(() => {});
+						return;
+					}
 					if (released || lost.has(client)) return;
 					try {
 						await watched(client, () => client.query("ROLLBACK"), clientTimeoutMs);
