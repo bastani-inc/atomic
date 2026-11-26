@@ -180,6 +180,14 @@ Type anywhere in `/tree` to filter entries through the inline search bar.
 
 `atomic --fork <id>`, missing-cwd **Fork**, and same-store SDK `forkTo()` copy all branches. Cross-store forks copy only current context without retired turns or private task records, and reopening warns `Parent history is in its original store or is no longer available.`. For full portable backups of all branches, use `atomic storage export` and `atomic storage import`.
 
+### Forks share history within a store {#forks-share-history}
+
+In a SQLite, PostgreSQL, or libSQL store, a fork shares the history it was forked from instead of copying it. A fork of a long session is created as quickly as a fork of a short one. The fork reads and resumes exactly as a copy would, and later changes to the parent never show up in it. A store starts sharing on its own; see [shared-history forks](/storage#shared-history-forks) for when it waits, for example while an older Atomic still has a session open. JSONL and in-memory stores always copy.
+
+Deleting a session that forks still share history with removes it from every list and search right away. The store keeps the part of its history those forks use, and frees it once the last of them is deleted or no longer needs it. Rewriting such a session first gives each fork its own copy of what it uses.
+
+Sharing never crosses a store boundary. Anything that takes a session out of its store makes a full standalone copy: `/export`, `/share`, `atomic --export`, `atomic storage export`, a fork into another store, and moving sessions between stores. The copy holds every entry and tool output the session inherited, and it doesn't need the sessions it was forked from. Importing a session always writes it as a standalone session, never as a fork of anything in the target store.
+
 ## Branch summaries
 
 When `/tree` switches away from a branch, Atomic can optionally summarize the abandoned branch. You can choose no summary, the default summary, or custom focus instructions. When `branchSummary.skipPrompt` is enabled, Atomic skips the prompt and defaults to no summary. See [Branch summaries](/compaction#branch-summaries).
@@ -266,6 +274,7 @@ Sessions auto-save to `~/.atomic/workflows/journal.sqlite` unless you configure 
 - **Project trust and resume hints.** Project-local storage settings apply after project trust approval. New conversations switch before saving, while resumed conversations stay in their original store. Keep generated `--session-dir`, `--session-store`, or `--session-prefix` flags when reopening non-default stores, such as `atomic --session-store "/data/project A/sessions.sqlite" --session-prefix project_ --session <id>`.
 - **Import and export.** `--import <file>` or `/import <file>` imports a JSONL export verbatim, including [worktree snapshots](/worktree-snapshots) written by `/export <file>.jsonl`. Import upgrades older supported formats automatically and raises `SessionExistsError` if the ID already exists. Empty imported IDs reopen through `atomic --session ""` or the picker.
 - **Ephemeral runs (`--no-session`).** Nothing is saved to a resumable store. When an idle subagent is unloaded from memory during `--no-session`, its history is temporarily saved to a private file in your agent directory and removed on exit; stale files left after a crash are cleaned up on a later startup on the same host. See [Releasing idle sessions](/sdk#releasing-idle-sessions).
+- **Forks share history.** A fork in the same store reads the history it keeps from its parent instead of storing a copy, so forking a long session is about as fast as forking a short one. The first time this release opens a store, it marks the store so that older Atomic releases can no longer open it; it waits to do so until no session of an older release is running on that database. See [Shared-history forks](/storage#shared-history-forks).
 - **Session stats (`/session`).** Displays the session ID, message count, tokens, and cost. Counts update after each completed message, and per-model cost and cache breakdowns appear once history matches totals.
 
 ### Choosing a store

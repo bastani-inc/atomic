@@ -6,6 +6,7 @@ import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.
 import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionRecordHeader } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import {
 	BIG_BLOB_BYTES,
@@ -72,12 +73,18 @@ for (const backend of storageBackends) {
 					const prefix = `${scope.prefix}s_`;
 					const firstDb = await scope.connect();
 					const secondDb = await scope.connect();
+					// The copy between handles is what this compares with main's: an older build's session running on the
+					// prefix keeps it from switching to shared-history forks at the stores' open (#6560).
+					await holdOlderBuildMarker(firstDb, prefix);
 					const first = await SqlSessionStore.open(firstDb, { prefix });
 					const second = await SqlSessionStore.open(secondDb, { prefix });
+					assert.equal(await firstDb.transaction((tx) => first.sharedHistoryForks(tx)), false, "the stores copy");
 					const { missing } = await seedSource(first, "src", "identity");
 					await seedSource(second, "other", "reverse");
 					const mainPrefix = `${scope.prefix}m_`;
 					const mainDb = await scope.connect();
+					// Main's copy, on the same sessions schema.
+					await holdOlderBuildMarker(mainDb, mainPrefix);
 					const main = await SqlSessionStore.open(mainDb, { prefix: mainPrefix });
 
 					const forward = await clone(first, "src", second, header("child", "src"));

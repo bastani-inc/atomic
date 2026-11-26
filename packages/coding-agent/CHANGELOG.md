@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- After this release upgrades a session database for shared-history forks (below), older Atomic versions can't open that database any more: they stop with "this store needs a newer Atomic". The upgrade happens by itself, but only once no older Atomic version has a session open on that database, so a machine you haven't upgraded yet keeps working until its sessions end. Upgrade every machine that shares a database. To take sessions back to an older version, export them with `atomic storage export` and import them with that version into a new store. See [Older Atomic versions](docs/storage.md#older-atomic-versions) ([#6600](https://github.com/bastani-inc/atomic/pull/6600), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
+### Added
+
+- Forks now share their parent's history instead of copying it, so forking a long session costs about as much as forking a short one. This covers `/fork`, `/clone`, `atomic --fork` and subagents started with `context: "fork"`, in local SQLite files and in shared libSQL and PostgreSQL databases. There is nothing to turn on. A fork reads, searches, resumes and exports exactly as a copy did, and changing or deleting its parent never changes it. Exporting a session or moving it to another store still writes a full copy that doesn't depend on any other session. On PostgreSQL, if Atomic connects with a role that can't create tables, forks keep copying until the database owner runs `atomic storage migrate`. See [Shared-history forks](docs/storage.md#shared-history-forks) ([#6600](https://github.com/bastani-inc/atomic/pull/6600), [#6602](https://github.com/bastani-inc/atomic/pull/6602), [#6608](https://github.com/bastani-inc/atomic/pull/6608), [#6601](https://github.com/bastani-inc/atomic/pull/6601), [#6598](https://github.com/bastani-inc/atomic/pull/6598), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ### Changed
 
 - On PostgreSQL, opening a session store whose tables are up to date now waits for 2 round trips instead of 5, and an Intercom broker for 1 instead of 3. The first query that opens the database also reads the list of Atomic's tables and their recorded versions, so the store does not read them again, and the snapshot index's two checks go out together. At 80 ms latency, reopening a session store takes about a quarter of a second less ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).

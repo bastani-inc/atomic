@@ -2,6 +2,12 @@
 	"freshSchema": [
 		{
 			"type": "index",
+			"name": "session_fork_segments_source",
+			"tbl_name": "session_fork_segments",
+			"sql": "CREATE INDEX session_fork_segments_source ON session_fork_segments (source_id)"
+		},
+		{
+			"type": "index",
 			"name": "snapshot_blobs_age",
 			"tbl_name": "snapshot_blobs",
 			"sql": "CREATE INDEX snapshot_blobs_age ON snapshot_blobs (created_at, hash)"
@@ -47,6 +53,12 @@
 			"name": "snapshot_session_records_hash",
 			"tbl_name": "snapshot_session_records",
 			"sql": "CREATE INDEX snapshot_session_records_hash ON snapshot_session_records (hash)"
+		},
+		{
+			"type": "index",
+			"name": "team_session_fork_segments_source",
+			"tbl_name": "team_session_fork_segments",
+			"sql": "CREATE INDEX team_session_fork_segments_source ON team_session_fork_segments (source_id)"
 		},
 		{
 			"type": "index",
@@ -122,6 +134,30 @@
 		},
 		{
 			"type": "table",
+			"name": "session_fork_detach",
+			"tbl_name": "session_fork_detach",
+			"sql": "CREATE TABLE session_fork_detach (\n\t\t\tparent_id TEXT NOT NULL, child_id TEXT NOT NULL, reparent INTEGER NOT NULL,\n\t\t\toriginal_segments TEXT NOT NULL, parent_epoch TEXT, child_epoch TEXT,\n\t\t\tPRIMARY KEY(parent_id, child_id)\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_fork_lineage",
+			"tbl_name": "session_fork_lineage",
+			"sql": "CREATE TABLE session_fork_lineage (\n\t\t\tsession_id TEXT NOT NULL PRIMARY KEY, parent_id TEXT, cut_seq INTEGER, generation TEXT NOT NULL\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_fork_segments",
+			"tbl_name": "session_fork_segments",
+			"sql": "CREATE TABLE session_fork_segments (\n\t\t\tsession_id TEXT NOT NULL, idx INTEGER NOT NULL, source_id TEXT NOT NULL,\n\t\t\tfrom_seq INTEGER NOT NULL, to_seq INTEGER NOT NULL, base_seq INTEGER NOT NULL,\n\t\t\tPRIMARY KEY(session_id, idx)\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_fork_tombstones",
+			"tbl_name": "session_fork_tombstones",
+			"sql": "CREATE TABLE session_fork_tombstones (\n\t\t\tsession_id TEXT NOT NULL PRIMARY KEY, deleted_at TEXT NOT NULL\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
 			"name": "session_meta",
 			"tbl_name": "session_meta",
 			"sql": "CREATE TABLE session_meta (schema_version INTEGER NOT NULL) STRICT"
@@ -130,7 +166,7 @@
 			"type": "table",
 			"name": "session_open",
 			"tbl_name": "session_open",
-			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
+			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, build TEXT, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -266,6 +302,30 @@
 		},
 		{
 			"type": "table",
+			"name": "team_session_fork_detach",
+			"tbl_name": "team_session_fork_detach",
+			"sql": "CREATE TABLE team_session_fork_detach (\n\t\t\tparent_id TEXT NOT NULL, child_id TEXT NOT NULL, reparent INTEGER NOT NULL,\n\t\t\toriginal_segments TEXT NOT NULL, parent_epoch TEXT, child_epoch TEXT,\n\t\t\tPRIMARY KEY(parent_id, child_id)\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_fork_lineage",
+			"tbl_name": "team_session_fork_lineage",
+			"sql": "CREATE TABLE team_session_fork_lineage (\n\t\t\tsession_id TEXT NOT NULL PRIMARY KEY, parent_id TEXT, cut_seq INTEGER, generation TEXT NOT NULL\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_fork_segments",
+			"tbl_name": "team_session_fork_segments",
+			"sql": "CREATE TABLE team_session_fork_segments (\n\t\t\tsession_id TEXT NOT NULL, idx INTEGER NOT NULL, source_id TEXT NOT NULL,\n\t\t\tfrom_seq INTEGER NOT NULL, to_seq INTEGER NOT NULL, base_seq INTEGER NOT NULL,\n\t\t\tPRIMARY KEY(session_id, idx)\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_fork_tombstones",
+			"tbl_name": "team_session_fork_tombstones",
+			"sql": "CREATE TABLE team_session_fork_tombstones (\n\t\t\tsession_id TEXT NOT NULL PRIMARY KEY, deleted_at TEXT NOT NULL\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
 			"name": "team_session_meta",
 			"tbl_name": "team_session_meta",
 			"sql": "CREATE TABLE team_session_meta (schema_version INTEGER NOT NULL) STRICT"
@@ -274,7 +334,7 @@
 			"type": "table",
 			"name": "team_session_open",
 			"tbl_name": "team_session_open",
-			"sql": "CREATE TABLE team_session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
+			"sql": "CREATE TABLE team_session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, build TEXT, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -604,6 +664,12 @@
 	"upgradedSchema": [
 		{
 			"type": "index",
+			"name": "session_fork_segments_source",
+			"tbl_name": "session_fork_segments",
+			"sql": "CREATE INDEX session_fork_segments_source ON session_fork_segments (source_id)"
+		},
+		{
+			"type": "index",
 			"name": "snapshot_blobs_age",
 			"tbl_name": "snapshot_blobs",
 			"sql": "CREATE INDEX snapshot_blobs_age ON snapshot_blobs (created_at, hash)"
@@ -676,6 +742,30 @@
 		},
 		{
 			"type": "table",
+			"name": "session_fork_detach",
+			"tbl_name": "session_fork_detach",
+			"sql": "CREATE TABLE session_fork_detach (\n\t\t\tparent_id TEXT NOT NULL, child_id TEXT NOT NULL, reparent INTEGER NOT NULL,\n\t\t\toriginal_segments TEXT NOT NULL, parent_epoch TEXT, child_epoch TEXT,\n\t\t\tPRIMARY KEY(parent_id, child_id)\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_fork_lineage",
+			"tbl_name": "session_fork_lineage",
+			"sql": "CREATE TABLE session_fork_lineage (\n\t\t\tsession_id TEXT NOT NULL PRIMARY KEY, parent_id TEXT, cut_seq INTEGER, generation TEXT NOT NULL\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_fork_segments",
+			"tbl_name": "session_fork_segments",
+			"sql": "CREATE TABLE session_fork_segments (\n\t\t\tsession_id TEXT NOT NULL, idx INTEGER NOT NULL, source_id TEXT NOT NULL,\n\t\t\tfrom_seq INTEGER NOT NULL, to_seq INTEGER NOT NULL, base_seq INTEGER NOT NULL,\n\t\t\tPRIMARY KEY(session_id, idx)\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_fork_tombstones",
+			"tbl_name": "session_fork_tombstones",
+			"sql": "CREATE TABLE session_fork_tombstones (\n\t\t\tsession_id TEXT NOT NULL PRIMARY KEY, deleted_at TEXT NOT NULL\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
 			"name": "session_meta",
 			"tbl_name": "session_meta",
 			"sql": "CREATE TABLE session_meta (schema_version INTEGER NOT NULL) STRICT"
@@ -684,7 +774,7 @@
 			"type": "table",
 			"name": "session_open",
 			"tbl_name": "session_open",
-			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
+			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, build TEXT, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
 		},
 		{
 			"type": "table",

@@ -87,7 +87,7 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 		}
 		for (const labelId of pendingLabelIds) replacementByLabelId.set(labelId, entry.id);
 		pendingLabelIds.length = 0;
-		pathWithoutLabels.push(
+		const copy: SessionEntry =
 			entry.type === "compaction"
 				? {
 						...entry,
@@ -99,8 +99,8 @@ export function createBranchedSessionState(input: BranchedSessionStateInput): Br
 					}
 				: input.preserveReceiptLinks && entry.type === "custom" && entry.customType === TOOL_OUTPUT_ENTRY_TYPE
 					? entry
-					: { ...entry, parentId: pathParentId },
-		);
+					: { ...entry, parentId: pathParentId };
+		pathWithoutLabels.push(copy);
 		pathParentId = entry.id;
 	}
 	const newSessionId = createSessionId();

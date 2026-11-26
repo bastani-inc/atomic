@@ -245,7 +245,7 @@ export async function fullScanRetainedHashes(
  */
 export async function dropSnapshotIndex(database: SqliteDatabase, prefix = ""): Promise<void> {
 	const triggers = await database.all<{ name: string }>(
-		"SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE '%snapshot%'",
+		"SELECT name FROM sqlite_schema WHERE type = 'trigger' AND (name LIKE '%snapshot%' OR name LIKE '%fork_links%')",
 	);
 	for (const { name } of triggers) await database.exec(`DROP TRIGGER ${name}`);
 	for (const table of [

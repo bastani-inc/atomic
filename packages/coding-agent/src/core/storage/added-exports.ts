@@ -10,7 +10,8 @@ import * as statementSequence from "./statement-sequence.js";
  * transaction, tables keep their default fillfactor, and a transaction's last writes run before its `COMMIT`, as there.
  */
 const schemaChecks: Partial<Pick<typeof migrations, "storageSchemaCurrent" | "ensureTableFillfactor">> = migrations;
-const finishers: Partial<Pick<typeof statementSequence, "transactionFinisher">> = statementSequence;
+const finishers: Partial<Pick<typeof statementSequence, "transactionFinisher" | "MAX_SEQUENCE_REQUEST_STATEMENTS">> =
+	statementSequence;
 
 export const storageSchemaCurrent: typeof migrations.storageSchemaCurrent =
 	schemaChecks.storageSchemaCurrent ?? (async () => false);
@@ -20,3 +21,9 @@ export const ensureTableFillfactor: typeof migrations.ensureTableFillfactor =
 
 export const transactionFinisher: typeof statementSequence.transactionFinisher =
 	finishers.transactionFinisher ?? (() => undefined);
+
+/**
+ * `MAX_SEQUENCE_REQUEST_STATEMENTS` of `statement-sequence.ts`, which the copies 0.10.3 and 0.10.4's prereleases loaded
+ * lack: the most statements one request of a sequence carries (#6560).
+ */
+export const MAX_SEQUENCE_REQUEST_STATEMENTS: number = finishers.MAX_SEQUENCE_REQUEST_STATEMENTS ?? 256;

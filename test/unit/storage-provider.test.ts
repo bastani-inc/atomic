@@ -144,7 +144,8 @@ test("caller-owned facade stays open after the session store closes", async () =
 		const selection = { kind: "database", database, prefix: "owned_" } as const;
 		const sessions = await provider.openSessionStore(selection, { agentDir: root, domain: "sessions" });
 		await sessions.close();
-		assert.equal((await database.get("SELECT schema_version FROM owned_session_meta"))?.schema_version, 1);
+		// A new store switches to shared-history forks at its first open (#6560).
+		assert.equal((await database.get("SELECT schema_version FROM owned_session_meta"))?.schema_version, 3);
 	} finally {
 		await database.close();
 		removeTempDirectory(root);
@@ -388,8 +389,8 @@ for (const kind of ["memory", "jsonl", "database", "sqlite", "adapter-domain", "
 					assert.ok(error instanceof StorageSchemaVersionError);
 					assert.equal(error.domain, domain);
 					assert.equal(error.found, 99);
-					// Sessions are at version 2 since long entries are stored in chunks (#4954).
-					assert.equal(error.supported, 2);
+					// Sessions read up to version 3, which turns on shared-history forks (#6560).
+					assert.equal(error.supported, 3);
 					assert.ok(error.cleanupCause instanceof adapter.cleanupErrorType);
 					assert.equal(error.cleanupCause, adapter.cleanupFailure);
 					assert.ok(error.cleanupCause.cause instanceof Error);

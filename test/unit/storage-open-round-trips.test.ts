@@ -190,7 +190,8 @@ test("a session store opened on a new file sets its schema up in a few dozen wai
 	const { database } = await databaseFile();
 	const requests = recordRequests();
 	await (await SqlSessionStore.open(database)).close();
-	// 95 statements, each its own wait, on main: four transactions now, each statement batch one wait.
+	// 95 statements, each its own wait, on main: four transactions now, each statement batch one wait. A new database's
+	// sessions schema starts with shared-history forks on, in the transaction that creates it: no switch (#6560).
 	assert.ok(requests.waits <= 30, `${requests.waits} waits for ${requests.sent.length} requests`);
 });
 

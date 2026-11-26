@@ -1,6 +1,5 @@
 import { createLabelEntry } from "../../session-manager-entries.ts";
 import { SessionEntryError } from "../../session-manager-errors.js";
-import type { SessionEntry } from "../../session-manager-types.ts";
 import { historyPages, readSessionHistoryChunks } from "./history-pages.js";
 import {
 	SESSION_HISTORY_SCAN_ENTRIES,
@@ -20,21 +19,11 @@ async function forkRow(reader: SessionStore, id: string, item: SessionHistoryIte
 
 /** The SDK/CLI same-store clone keeps the original append log, including abandoned branches,
  * raw labels and recorded leaf moves. Unlike an interactive /fork it never edits structural links. */
-export function completeSessionForkStream(
-	id: string,
-	epoch: string | undefined,
-	through: number,
-	resident?: readonly SessionEntry[],
-): SessionForkStream {
+export function completeSessionForkStream(id: string, epoch: string | undefined, through: number): SessionForkStream {
 	return {
 		kind: "complete-session",
+		prefix: { sessionId: id, epoch, through },
 		async *read(reader, _hasWritten, inlineSnapshot) {
-			// These isolated, already resident rows are the SDK's captured view. The stored child and its
-			// live manager must both see a plain-data edit made before the clone. No archive is loaded for it.
-			if (resident) {
-				for (const entry of resident) yield { entry };
-				return;
-			}
 			// Pages as large as a scan reads, so a long session takes a few reads, not one for each 64 entries (#6560).
 			for await (const { items } of historyPages(reader, id, epoch, through, {
 				pageEntries: SESSION_HISTORY_SCAN_ENTRIES,

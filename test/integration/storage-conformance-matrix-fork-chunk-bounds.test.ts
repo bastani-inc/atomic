@@ -10,6 +10,7 @@ import {
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { ForkArchiveSource, SessionForkSeed } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import {
 	bytesOf,
@@ -23,6 +24,10 @@ import {
  * A fork copies an entry's chunk rows 0 to `chunks - 1` and requires every one of them, whatever other chunk rows the
  * source keeps at that seq, as the copy one chunk at a time before #6560 did. A randomized test of corrupted sources
  * found the set-based copy taking every chunk row of a seq and checking only their number. Runs on every backend.
+ *
+ * A store copies forks while an older Atomic has a session open on it, so the stores here hold such a session's
+ * marker; a store that shares fork history copies no chunk row at a fork, and its detach is covered by
+ * storage-lazy-fork-detach-chunks.test.ts.
  */
 
 /** Stored in two chunks, at seq 1. */
@@ -115,9 +120,11 @@ for (const backend of storageBackends) {
 						withBackendScope(backend, async (scope) => {
 							const prefix = `${scope.prefix}s_`;
 							const database = await scope.connect();
+							await holdOlderBuildMarker(database, prefix);
 							const source = await SqlSessionStore.open(database, { prefix });
 							const destPrefix = fork.staged ? `${scope.prefix}d_` : prefix;
 							const destDatabase = fork.staged ? await scope.connect() : database;
+							if (fork.staged) await holdOlderBuildMarker(destDatabase, destPrefix);
 							const dest = fork.staged
 								? await SqlSessionStore.open(destDatabase, { prefix: destPrefix })
 								: source;

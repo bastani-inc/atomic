@@ -13,10 +13,13 @@ import { rmdirSync, rmSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { getAgentDir } from "../config.js";
+import { getAgentDir, VERSION } from "../config.js";
+import { reportDebugAsync } from "./debug.ts";
 import { ownProcessStartToken, readProcessStartToken } from "./process-start-token.js";
 import { attachSessionClaim } from "./session-claims.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
+import { setForkCopyRefusalNote } from "./storage/session/fork-detach.js";
+import { setSharedHistorySwitchHost } from "./storage/session/shared-history-switch.js";
 import type {
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
@@ -175,7 +178,7 @@ let heldCount = 0;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 
 function ownMarker(): SessionOpenMarker {
-	return { token: ownToken(), pid: process.pid, host: hostname() };
+	return { token: ownToken(), pid: process.pid, host: hostname(), build: VERSION };
 }
 
 function refreshMarkers(): void {
@@ -272,6 +275,27 @@ async function holderRuns(marker: SessionOpenMarkerAge): Promise<boolean> {
 	// (#5141); only a marker naming no start is judged by its age.
 	return (started !== undefined || marker.ageMs <= UNSTARTED_MARKER_LIMIT_MS) && processAlive(marker.pid);
 }
+
+/**
+ * Whether the process that keeps `marker` still runs, as {@link findSessionOpenHolder} judges it: one of this host while
+ * it runs, however long it was suspended; one of another host while its heartbeat is fresh.
+ */
+export async function sessionOpenMarkerRuns(marker: SessionOpenMarkerAge): Promise<boolean> {
+	return marker.host === hostname() ? await holderRuns(marker) : marker.ageMs <= STALE_MS;
+}
+
+// A session store's open switches it to shared-history forks only once no older Atomic runs a session there (#6560): it
+// judges their markers as this module does, and notes a switch it leaves for later in the debug log.
+setSharedHistorySwitchHost({
+	live: sessionOpenMarkerRuns,
+	skipped: (fields) => {
+		reportDebugAsync("storage", "shared-history-forks-deferred", fields).catch(() => {});
+	},
+});
+// A fork's copy of the rows it shares that a missing source chunk refused, with the write that needed it, is noted there too.
+setForkCopyRefusalNote((fields) => {
+	reportDebugAsync("storage", "fork-copy-refused", fields).catch(() => {});
+});
 
 /**
  * A running session, in another process or in this one, that has `sessionId` of `store` open, or undefined when none

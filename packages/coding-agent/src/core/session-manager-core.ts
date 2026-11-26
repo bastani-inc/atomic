@@ -2723,7 +2723,7 @@ export class SessionManager {
 					: store.locationFor(record)
 				: undefined;
 		assertSessionBlobStore(store, record.id, hashes.length);
-		await createForkArchive(
+		const created = await createForkArchive(
 			store,
 			record,
 			entries,
@@ -2731,7 +2731,17 @@ export class SessionManager {
 			location,
 		);
 		this.store = store;
-		this.restoreOpened(await readStoredSession(store, record.id, undefined), location);
+		// The child holds exactly the entries just written, in the generation the write reports: it opens from them, without
+		// reading them back (#6560). Not when a receipt stands for bytes only the store holds, or the store gave no
+		// generation of its own.
+		if (receipts.size === 0 && created.epoch !== undefined && created.lastSeq === entries.length) {
+			const { windowFromSnapshot } = await import("./storage/session/snapshot-history.js");
+			const snapshot = { header: record, entries, lastSeq: created.lastSeq, epoch: created.epoch };
+			this.restoreOpened(
+				{ resume: windowFromSnapshot(snapshot, undefined, undefined, undefined, isProxy) },
+				location,
+			);
+		} else this.restoreOpened(await readStoredSession(store, record.id, undefined), location);
 		this.markSessionStarted();
 		return this.sessionFile;
 	}
@@ -2891,17 +2901,19 @@ export class SessionManager {
 					: undefined;
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: sessionId });
 			const receipts = new Map<string, OversizedSessionEntry>();
+			// The resident rows go as they are held, plain-data edits made before the clone included: a store that shares
+			// history names the rows it read unchanged (#6560), and one that copies stores them as `create` does.
 			const data =
 				relation === "different"
 					? await this.forkWindow(this.getBranch(), this.getLeafId(), "session", receipts)
 					: !source.readEntrySizes || !source.readRange || !source.readEntryChunk
 						? await this.legacyForkEntries()
-						: (await import("./storage/session/branch-fork-source.js")).completeSessionForkStream(
+						: (captured ??
+							(await import("./storage/session/branch-fork-source.js")).completeSessionForkStream(
 								sessionId,
 								epoch,
 								through,
-								captured,
-							);
+							));
 			if (relation === "different") manager.markForkOrigin(source);
 			const hashes = "read" in data ? [] : sessionBlobHashes(source, data);
 			assertSessionBlobStore(store, manager.sessionId, hashes.length);

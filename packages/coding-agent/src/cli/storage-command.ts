@@ -658,6 +658,9 @@ async function migrate(
 	} finally {
 		await opened.close();
 	}
+	// Opening the sessions also switches them to shared-history forks once no older Atomic runs a session there (#6560),
+	// judging those sessions' markers as a running session does.
+	await import("../core/session-open-markers.js");
 	const sessions = await new StorageProvider().openSessionStore(selection, { agentDir, domain: "sessions" });
 	try {
 		// The fork staging table, which a runtime role without DDL cannot create when its first bounded clone needs it

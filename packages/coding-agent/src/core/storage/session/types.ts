@@ -446,6 +446,8 @@ export interface SessionOpenMarker {
 	readonly token: string;
 	readonly pid: number;
 	readonly host: string;
+	/** The Atomic version of the process, which a store may record (#6560). */
+	readonly build?: string;
 }
 
 /** A marker as a store lists it. */
@@ -611,6 +613,12 @@ export interface SessionForkRow {
 export interface SessionForkStream {
 	/** A whole saved session in append order, with sibling branches and labels unchanged. */
 	readonly kind?: "complete-session";
+	/**
+	 * Set when the stream yields exactly the stored rows of session `sessionId`, generation `epoch`, from seq 1 through
+	 * `through`, each unchanged: a store that shares the session's history may record the child as that prefix of it
+	 * without reading a row (#6560).
+	 */
+	readonly prefix?: { readonly sessionId: string; readonly epoch: string | undefined; readonly through: number };
 	/** The reader is bound to the writing transaction when both sides use the same SQL connection. */
 	read(
 		reader: SessionStore,

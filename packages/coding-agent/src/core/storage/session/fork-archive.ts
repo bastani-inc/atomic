@@ -2,6 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { assertSessionBlobStore, copySessionBlobs, sessionBlobHashes } from "../../session-tool-output.ts";
 import { SessionConflictError } from "./errors.js";
 import { JsonlSessionStore } from "./jsonl-session-store.js";
+import { storedRows } from "./stored-entries.js";
 import type {
 	ForkArchiveSource,
 	SessionForkSeed,
@@ -11,7 +12,9 @@ import type {
 } from "./types.js";
 
 /** A new child copy, never an update or a rewrite of the parent's session. A compatibility
- * adapter without an archive writer still receives the format it understands, not receipt stubs. */
+ * adapter without an archive writer still receives the format it understands, not receipt stubs.
+ * Entries of a source whose rows this process read or wrote go to its archive writer too, which may share those
+ * rows (#6560). */
 export async function createForkArchive(
 	store: SessionStore,
 	header: SessionRecordHeader,
@@ -19,7 +22,13 @@ export async function createForkArchive(
 	source: ForkArchiveSource,
 	location?: string,
 ): Promise<SessionWriteResult> {
-	if (("read" in entries || source.receipts.size || source.hashes.length) && store.createFork) {
+	if (
+		("read" in entries ||
+			source.receipts.size ||
+			source.hashes.length ||
+			storedRows(source.sessionId, source.epoch) !== undefined) &&
+		store.createFork
+	) {
 		const created = await store.createFork(header, entries, source, location);
 		if (created) {
 			const remaining = created.remainingBlobs ?? source.hashes;

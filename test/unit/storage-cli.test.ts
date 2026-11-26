@@ -102,6 +102,9 @@ test("storage migrate initializes sessions and Intercom without the workflow run
 		const tables = (await database.all("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) => row.name);
 		assert.ok(tables.includes("session_sessions"));
 		assert.ok(tables.includes("intercom_known_sessions"));
+		// Shared-history forks turned on by themselves, with no older Atomic running a session there (#6560).
+		assert.ok(tables.includes("session_fork_segments"));
+		assert.equal((await database.get("SELECT schema_version FROM session_meta"))?.schema_version, 3);
 	} finally {
 		await database.close();
 	}
