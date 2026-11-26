@@ -231,10 +231,11 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 		});
 	});
 
-	test("a broker of this release and one of 0.10.11-alpha.2 each wake the other's brokers, and only an earlier broker's wake-ups go to every listener", async () => {
+	test("a broker of this release and one of 0.10.11-alpha.2, which created the hint table, each wake the other's brokers, and only an earlier broker's wake-ups go to every listener", async () => {
 		await withPostgresDatabase(async (scope) => {
-			const current = await openBus(scope);
+			// The earlier release creates the hint table, without its recipient column, as on a database it set up.
 			const earlier = await openBus(scope, previousBus.openDatabaseWakeUpBus);
+			const current = await openBus(scope);
 			const toCurrent = await collect(current, "broker-new");
 			const toEarlier = await collect(earlier, "broker-old");
 			await members(scope, { "broker-new": "current", "broker-old": "earlier" });

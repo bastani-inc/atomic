@@ -339,7 +339,7 @@
 		"type": "table",
 		"name": "intercom_wakeups",
 		"tbl_name": "intercom_wakeups",
-		"sql": "CREATE TABLE intercom_wakeups (\n\t\t\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tbroker_id TEXT NOT NULL,\n\t\t\treason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),\n\t\t\tversion INTEGER NOT NULL,\n\t\t\tcreated_at INTEGER NOT NULL\n\t\t, target_identity TEXT)"
+		"sql": "CREATE TABLE intercom_wakeups (\n\t\t\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tbroker_id TEXT NOT NULL,\n\t\t\treason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),\n\t\t\tversion INTEGER NOT NULL,\n\t\t\tcreated_at INTEGER NOT NULL,\n\t\t\ttarget_identity TEXT\n\t\t)"
 	},
 	{
 		"type": "table",
@@ -417,7 +417,7 @@
 		"type": "table",
 		"name": "team_intercom_wakeups",
 		"tbl_name": "team_intercom_wakeups",
-		"sql": "CREATE TABLE team_intercom_wakeups (\n\t\t\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tbroker_id TEXT NOT NULL,\n\t\t\treason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),\n\t\t\tversion INTEGER NOT NULL,\n\t\t\tcreated_at INTEGER NOT NULL\n\t\t, target_identity TEXT)"
+		"sql": "CREATE TABLE team_intercom_wakeups (\n\t\t\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tbroker_id TEXT NOT NULL,\n\t\t\treason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),\n\t\t\tversion INTEGER NOT NULL,\n\t\t\tcreated_at INTEGER NOT NULL,\n\t\t\ttarget_identity TEXT\n\t\t)"
 	},
 	{
 		"type": "table",

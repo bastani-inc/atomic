@@ -7,7 +7,7 @@ import type {
 	StorageNotificationEvent,
 	StorageNotifications,
 } from "@bastani/atomic/storage";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
 	brokerWakeUpChannel,
@@ -345,6 +345,46 @@ test("through a transaction pooler, where no notification arrives, the poll keep
 			await timers.settled();
 			assert.equal(timers.delays.at(-1), WAKE_UP_POLL_INTERVAL_MS);
 		}
+		await bus.close();
+	} finally {
+		await file.close();
+	}
+});
+
+test("a hint table an earlier release created gets the recipient column when this release opens it", async () => {
+	const file = await notifyingFile();
+	try {
+		const earlier = await openNodeSqliteDatabase(file.path);
+		await earlier.exec(`CREATE TABLE ${TABLE} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			broker_id TEXT NOT NULL,
+			reason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),
+			version INTEGER NOT NULL,
+			created_at INTEGER NOT NULL
+		)`);
+		await earlier.run(
+			`INSERT INTO ${TABLE} (broker_id, reason, version, created_at) VALUES ('broker-b', 'outbox', 1, ?)`,
+			Date.now(),
+		);
+		await earlier.close();
+		const bus = await file.openBus();
+		assert.deepEqual(
+			await bus.publish({ brokerId: "broker-b", reason: "outbox", version: 2, targetIdentity: "session:alice" }),
+			{ status: "published" },
+		);
+		const received = recorder();
+		await bus.subscribe("broker-b", received.listener);
+		await vi.waitFor(() => assert.equal(received.events.filter((event) => event.kind === "hint").length, 2), {
+			timeout: POLL_END_LIMIT_MS,
+		});
+		assert.deepEqual(
+			received.events.flatMap((event) => (event.kind === "hint" ? [event.hint] : [])),
+			[
+				{ brokerId: "broker-b", reason: "outbox", version: 1 },
+				{ brokerId: "broker-b", reason: "outbox", version: 2, targetIdentity: "session:alice" },
+			],
+			"the earlier release's hint names no recipient",
+		);
 		await bus.close();
 	} finally {
 		await file.close();

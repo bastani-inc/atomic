@@ -25,7 +25,7 @@ import type {
 	WakeUpSubscription,
 } from "./wake-up-bus.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
+import { ensureBrokerSchema, openCatalogOf, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 /**
  * S4 wake-up bus (specs/2026-10-19-intercom-multi-node.md §5.6): a hint log in the shared storage database. Each
@@ -171,13 +171,18 @@ async function createSchema(database: SqliteDatabase, table: string, prefix: str
 			broker_id TEXT NOT NULL,
 			reason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),
 			version ${types.int} NOT NULL,
-			created_at ${types.int} NOT NULL
+			created_at ${types.int} NOT NULL,
+			target_identity TEXT
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_broker ON ${table} (broker_id, id);
 		CREATE INDEX IF NOT EXISTS ${table}_created ON ${table} (created_at);`;
+	// `target_identity`, the recipient a hint is about (`WakeUpHint.targetIdentity`), came later: a table an earlier
+	// release created gets it here, and an earlier broker's hints leave it null. A table this open creates has it, so a
+	// new database's first open spends nothing on it.
+	const catalog = await openCatalogOf(database);
+	const existed = catalog === undefined || catalog.hasTable(table);
 	await ensureBrokerSchema(database, prefix, "wakeups", (tx) => tx.exec(schema));
-	// The recipient a hint is about (`WakeUpHint.targetIdentity`), added later: an earlier broker's hints leave it null.
-	await addMissingColumns(database, table, { target_identity: "TEXT" });
+	if (existed) await addMissingColumns(database, table, { target_identity: "TEXT" });
 	await ensureUnloggedHints(database, table, prefix);
 }
 
