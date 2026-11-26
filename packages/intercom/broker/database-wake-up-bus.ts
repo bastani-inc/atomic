@@ -69,9 +69,9 @@ export interface DatabaseWakeUpBusOptions {
 	readonly schedule?: WakeUpPollScheduler;
 	/**
 	 * A separate handle on the same database that the poll reads its hints through, so a poll never queues behind the
-	 * database's writes (#6560); the bus does not close it. On PostgreSQL the poll takes and deletes its hints through
-	 * it in one statement (`DELETE … RETURNING`), so it must accept writes. Absent: the poll runs on the database it
-	 * opened.
+	 * database's writes (#6560); the bus does not close it, and writes nothing through it. On PostgreSQL the poll reads
+	 * nothing through it: it takes and deletes its hints in one statement (`DELETE … RETURNING`) on the database it
+	 * opened. Absent: the poll runs on the database it opened.
 	 */
 	readonly reader?: SqliteExecutor;
 }
@@ -328,12 +328,19 @@ class DatabaseWakeUpBus implements WakeUpBus {
 			let rows: HintRow[];
 			try {
 				if (dialectOf(database).name === "postgres") {
-					// #6560: one statement takes the batch and deletes it, through the reader, whose calls never queue
-					// behind this database's writes. It returns the hints in no particular order.
-					rows = await reader.all<HintRow>(
-						`DELETE FROM ${this.table} WHERE id IN (SELECT id ${batch}) RETURNING id, broker_id, reason, version`,
-						...brokerIds,
-					);
+					// #6560: one statement takes the batch and deletes it. It is a write, so it goes through the database,
+					// never the reader, as a statement of its own in the wake-up table's domain: one round trip, queued
+					// behind neither other domains' writes nor read-only transactions. It returns the hints in no
+					// particular order.
+					const take = {
+						sql: `DELETE FROM ${this.table} WHERE id IN (SELECT id ${batch}) RETURNING id, broker_id, reason, version`,
+						params: brokerIds,
+					};
+					rows = (
+						database.autocommit === undefined
+							? await database.all(take.sql, ...take.params)
+							: await database.autocommit(take, { kind: "serial", domain: this.table })
+					) as HintRow[];
 					rows.sort((left, right) => Number(left.id) - Number(right.id));
 				} else {
 					rows = await reader.all<HintRow>(`SELECT id, broker_id, reason, version ${batch}`, ...brokerIds);

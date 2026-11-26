@@ -166,7 +166,7 @@ If the proxy refuses the tunnel (`403` or `407`), opening fails immediately with
 Each Atomic process holds one set of connections per database. The session store, in-process subagents' session stores, chat records, search, the Intercom broker's state, and all their read handles share it, when they use the same URL, role, password, `listenUrl`, `auth`, `schema`, `proxy`, and pool settings. The set closes when the last store using it closes. It holds:
 
 - **A main pool** of up to `maxConnections` connections, 8 by default, opened as calls need them. In `pg_stat_activity`, their `application_name` is `atomic`.
-- **A reader pool** of up to `readerMaxConnections` connections, 2 by default and never more than `maxConnections`. Reads use it, so they do not wait for connections that writes are using. Their `application_name` is `atomic-reader`.
+- **A reader pool** of up to `readerMaxConnections` connections, 2 by default and never more than `maxConnections`. Reads use it, so they do not wait for connections that writes are using. Atomic sends no writes through it. Their `application_name` is `atomic-reader`.
 - **One listening connection** for [wake-ups](#wake-ups), opened once something in the process listens, such as an Intercom broker. Its `application_name` is `atomic-listen`.
 
 So a process opens at most `maxConnections` + `readerMaxConnections` + 1 connections per database: 11 with the defaults.
