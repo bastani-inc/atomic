@@ -1837,7 +1837,16 @@ export async function openPostgresDatabase(options) {
 			// The locks nest: one without a domain holds the whole database's lock, and one with a domain holds that lock
 			// shared, so it waits for and excludes whole-database transactions, but not those of other domains. The locks,
 			// and every row lock after them, wait at most `lockWaitMs`; the statement timeout starts after them.
-			const lock = begin.readOnly === true ? "" :
+			// With `lockIfLeadingFinds`, a domain's transaction takes the same locks in its first leading statement instead, and
+			// only for the row that read returns, so one whose read finds nothing takes no lock (#6560).
+			const lockedDomain =
+				begin.lockIfLeadingFinds === true &&
+				begin.readOnly !== true &&
+				concurrency.kind === "serial" &&
+				(begin.leading?.length ?? 0) > 0
+					? concurrency.domain
+					: undefined;
+			const lock = begin.readOnly === true || lockedDomain !== undefined ? "" :
 				concurrency.kind !== "serial"
 					? concurrency.excludesSerial === true
 						? `SELECT pg_advisory_xact_lock_shared(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}); `
@@ -1867,6 +1876,27 @@ export async function openPostgresDatabase(options) {
 				submitted.catch(() => {});
 				pendingSubmission = submitted;
 				return sent.then(({ answer }) => answer);
+			};
+			/**
+			 * Sends `sql`, a read, so that each row it returns takes the database's lock shared and `domain`'s lock, as a
+			 * domain's transaction takes them with its start; a read that returns no row takes neither. The lock keys go as
+			 * parameters, so the text is the same for every domain. The answer is the read's own columns.
+			 * @param {string} sql
+			 * @param {readonly SqliteValue[]} params
+			 * @param {string} domain
+			 * @returns {Promise<SqliteDriverResult>}
+			 */
+			const sendLocking = (sql, params, domain) => {
+				const locking = `SELECT found.*, pg_advisory_xact_lock_shared(hashtextextended(?, 0)) AS atomic_database_lock,
+					pg_advisory_xact_lock(hashtextextended(?, 0)) AS atomic_domain_lock FROM (${sql}) AS found`;
+				const values = [inSchema(DATABASE_LOCK_SCOPE), inSchema(domain), ...params];
+				return submit(locking, () => sendStatement(client, locking, values, lockWaitMs + clientTimeoutMs)).then(
+					(result) => ({
+						...result,
+						columns: result.columns.slice(0, -2),
+						rows: result.rows.map((row) => Array.prototype.slice.call(row, 0, -2)),
+					}),
+				);
 			};
 			/** @type {{ sql: string, params: readonly SqliteValue[], result: Promise<SqliteDriverResult>, failure?: unknown }[]} */
 			const lead = [];
@@ -1909,7 +1939,10 @@ export async function openPostgresDatabase(options) {
 					lockWaitMs + clientTimeoutMs,
 				);
 				for (const { sql, params } of begin.leading ?? []) {
-					const result = submit(sql, () => sendStatement(client, sql, params, lockWaitMs + clientTimeoutMs));
+					const result =
+						lockedDomain !== undefined && lead.length === 0
+							? sendLocking(sql, params, lockedDomain)
+							: submit(sql, () => sendStatement(client, sql, params, lockWaitMs + clientTimeoutMs));
 					result.catch(() => {});
 					lead.push({ sql, params, result });
 				}
