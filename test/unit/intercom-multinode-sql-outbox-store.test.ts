@@ -216,6 +216,17 @@ test("on SQLite, a recipient's undelivered rows are read from the partial index,
 		}
 		const claimed = await outbox.claim({ claimantId: "broker-a", targetIdentity: target, staleAfterMs: 30_000 });
 		assert.equal(claimed.status === "claimed" && claimed.rows.length, 2);
+		if (claimed.status === "claimed") {
+			assert.deepEqual(
+				await outbox.releaseClaims!(
+					claimed.rows.map(({ claim }) => claim),
+					{ unwritten: true },
+				),
+				[{ status: "released" }, { status: "released" }],
+			);
+			const reclaimed = await outbox.claim({ claimantId: "broker-a", targetIdentity: target, staleAfterMs: 30_000 });
+			assert.equal(reclaimed.status === "claimed" && reclaimed.rows.length, 2);
+		}
 		assert.equal((await outbox.listUndelivered(target)).status, "listed");
 		assert.equal((await outbox.undeliveredPosition(target, "m-2")).status, "positioned");
 		await outbox.prune(60_000);
@@ -241,6 +252,36 @@ test("on SQLite, a recipient's undelivered rows are read from the partial index,
 	} finally {
 		await opened.bus.close();
 		await opened.state.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("releaseClaims with unwritten: true floors claim_attempts at 0 when already 0 (#6713)", async () => {
+	const directory = makeTempDirectory("intercom-outbox-floor-");
+	const database = await openNodeSqliteDatabase(join(directory, "shared.sqlite"));
+	try {
+		const outbox = await openSqlOutboxStore({ database, prefix: "" });
+		const from = { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+		await outbox.enqueue({
+			targetIdentity: "r",
+			originBrokerId: "broker-a",
+			digest: "d-floor",
+			frame: { type: "message", from, message: { id: "m-floor", timestamp: 1, content: { text: "floor" } } },
+		});
+		const claimed = await outbox.claim({ claimantId: "broker-b", targetIdentity: "r", staleAfterMs: 30_000 });
+		assert.equal(claimed.status, "claimed");
+		if (claimed.status !== "claimed") return;
+		await database.run("UPDATE intercom_outbox SET claim_attempts = 0 WHERE message_id = ?", "m-floor");
+		assert.deepEqual(await outbox.releaseClaims!([claimed.rows[0]!.claim], { unwritten: true }), [
+			{ status: "released" },
+		]);
+		const after = await outbox.read("m-floor");
+		assert.equal(after.status, "found");
+		if (after.status !== "found") return;
+		assert.equal(after.row.state, "queued");
+		assert.equal(after.row.claimAttempts, 0);
+	} finally {
+		await database.close();
 		removeTempDirectory(directory);
 	}
 });

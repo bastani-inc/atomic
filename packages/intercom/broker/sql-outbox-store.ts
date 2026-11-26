@@ -25,6 +25,7 @@ import {
 	type OutboxEnqueueRequest,
 	type OutboxEnqueueResult,
 	type OutboxFrame,
+	type OutboxReleaseClaimResult,
 	type OutboxRenewClaimResult,
 	type OutboxRow,
 	type OutboxRowState,
@@ -57,6 +58,8 @@ const SEND_HINT = "atomic.intercom_send_hint";
 const CLAIM_GATE = "atomic.intercom_outbox_claim";
 /** The setting a PostgreSQL batched renewal records in when fewer rows renewed than it was given, so its follow-up read runs. */
 const RENEW_MISSES = "atomic.intercom_renew_misses";
+/** The setting a PostgreSQL batch claim release records in when fewer rows matched than were given (#6713). */
+const RELEASE_MISSES = "atomic.intercom_release_misses";
 /** The most `markDelivered` calls one transaction settles together (#6560). */
 const MARK_DELIVERED_BATCH_MAX = 100;
 
@@ -499,6 +502,158 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				return answer(renewed, found);
 			},
 			{ ...fenced, leading: [write], relaxedDurability: true },
+		);
+	};
+
+	const claimKey = (messageId: string, token: string, claimantId: string) =>
+		JSON.stringify([messageId, token, claimantId]);
+	const missColumns = `sequence, message_id, target_identity, origin_broker_id, digest,
+		CASE WHEN state IN ('delivered', 'failed') THEN frame_json ELSE '' END AS frame_json,
+		state, claim_attempts, claimant_id, claim_token, failure_reason,
+		CASE WHEN claim_renewed_at IS NULL THEN NULL ELSE ${ageSince("claim_renewed_at")} END AS claim_age,
+		CASE WHEN saving_at IS NULL THEN NULL ELSE ${ageSince("saving_at")} END AS saving_age`;
+	const releaseAssignments = (unwritten: boolean) => {
+		const attempts = unwritten ? `, claim_attempts = ${greatest("0", "claim_attempts - 1")}` : "";
+		return `state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL${attempts}`;
+	};
+
+	/**
+	 * Releases each of `claims` in one durable transaction, locking matching rows in sequence order as claims, renewals
+	 * and settlements do so none waits for another in a cycle, and matching each row by its full `(message_id,
+	 * claim_token, claimant_id)` tuple. On PostgreSQL, the update and conditional miss lookup go out together with
+	 * `BEGIN` and `COMMIT` (`leadingOnly: true`), so releasing any number of claims takes one round trip (#6713).
+	 */
+	const releaseClaims = async (
+		claims: readonly OutboxClaim[],
+		releaseOptions?: { readonly unwritten?: boolean },
+	): Promise<OutboxReleaseClaimResult[]> => {
+		if (claims.length === 0) return [];
+		const results: (OutboxReleaseClaimResult | undefined)[] = claims.map((claim) =>
+			claim.messageId.length === 0
+				? invalid("empty-message-id")
+				: claim.claimantId.length === 0
+					? invalid("empty-claimant-id")
+					: undefined,
+		);
+		const valid: { readonly claim: OutboxClaim; readonly index: number }[] = [];
+		claims.forEach((claim, index) => {
+			if (results[index] === undefined) valid.push({ claim, index });
+		});
+		if (valid.length === 0) return results as OutboxReleaseClaimResult[];
+		const assignments = releaseAssignments(releaseOptions?.unwritten === true);
+		const classifyMiss = (record: OutboxRecord | undefined): OutboxReleaseClaimResult => {
+			if (record === undefined) return { status: "unknown" };
+			if (isSettled(record)) return { status: "settled", row: toRow(record) };
+			return { status: "stale" };
+		};
+		if (dialect === "postgres") {
+			const write: SqliteStatement = {
+				sql: `${claimsCte}, released AS (
+						UPDATE ${table} AS outbox SET ${assignments}
+						FROM (SELECT DISTINCT message_id, claim_token, claimant_id FROM claims) AS matched
+						WHERE outbox.message_id = ANY(ARRAY(
+							SELECT message_id FROM ${table}
+							WHERE state = 'claimed'
+								AND ${messageIdIn("SELECT message_id FROM claims")}
+								AND ${matchesClaim}
+							ORDER BY sequence${lockClause("update")}
+						))
+							AND outbox.state = 'claimed'
+							AND outbox.message_id = matched.message_id
+							AND outbox.claim_token = matched.claim_token
+							AND outbox.claimant_id = matched.claimant_id
+						RETURNING outbox.message_id, matched.claim_token, matched.claimant_id
+					), gate AS MATERIALIZED (
+						SELECT set_config('${RELEASE_MISSES}', CASE WHEN (SELECT COUNT(*) FROM released) < CAST(? AS ${types.int}) THEN '1' ELSE '' END, true) AS misses
+					)
+					SELECT released.message_id, released.claim_token, released.claimant_id
+					FROM gate LEFT JOIN released ON TRUE`,
+				params: [claimTriples(valid.map(({ claim }) => claim)), valid.length],
+			};
+			const readMisses: SqliteStatement = {
+				sql: `SELECT ${missColumns} FROM ${table}
+					WHERE current_setting('${RELEASE_MISSES}', true) = '1'
+						AND ${messageIdIn(`SELECT value FROM ${jsonValues("?")}`)}`,
+				params: [JSON.stringify([...new Set(valid.map(({ claim }) => claim.messageId))])],
+			};
+			return database.transaction(
+				async (executor) => {
+					const releasedRows = await executor.all<
+						SqliteRow & { message_id: string | null; claim_token: string | null; claimant_id: string | null }
+					>(write.sql, ...write.params);
+					const foundRows = await executor.all<OutboxRecord>(readMisses.sql, ...readMisses.params);
+					const releasedKeys = new Set<string>();
+					for (const row of releasedRows) {
+						if (row.message_id !== null && row.claim_token !== null && row.claimant_id !== null) {
+							releasedKeys.add(claimKey(row.message_id, row.claim_token, row.claimant_id));
+						}
+					}
+					const found = new Map(foundRows.map((record) => [record.message_id, record]));
+					return claims.map((claim, index): OutboxReleaseClaimResult => {
+						const checked = results[index];
+						if (checked !== undefined) return checked;
+						if (releasedKeys.delete(claimKey(claim.messageId, claim.token, claim.claimantId))) {
+							return { status: "released" };
+						}
+						return classifyMiss(found.get(claim.messageId));
+					});
+				},
+				{ ...fenced, leading: [write, readMisses], leadingOnly: true },
+			);
+		}
+		// SQLite: partition into distinct-messageId waves (a single wave for distinct inputs) inside one serialized
+		// transaction so RETURNING message_id uniquely identifies the matched input entry even for duplicate message ids.
+		const waves: { readonly claim: OutboxClaim; readonly index: number }[][] = [];
+		for (const entry of valid) {
+			let wave = waves.find((candidate) => !candidate.some((other) => other.claim.messageId === entry.claim.messageId));
+			if (wave === undefined) {
+				wave = [];
+				waves.push(wave);
+			}
+			wave.push(entry);
+		}
+		const writeWave = (wave: readonly { readonly claim: OutboxClaim; readonly index: number }[]): SqliteStatement => ({
+			sql: `${claimsCte}
+				UPDATE ${table} SET ${assignments}
+				WHERE ${lockedClaimsWhere}
+				RETURNING message_id`,
+			params: [claimTriples(wave.map(({ claim }) => claim))],
+		});
+		const firstWrite = writeWave(waves[0]!);
+		return database.transaction(
+			async (executor) => {
+				const releasedIndices = new Set<number>();
+				for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
+					const wave = waves[waveIndex]!;
+					const write = waveIndex === 0 ? firstWrite : writeWave(wave);
+					const rows = await executor.all<SqliteRow & { message_id: string }>(write.sql, ...write.params);
+					const matchedIds = new Set(rows.map((row) => row.message_id));
+					for (const { claim, index } of wave) {
+						if (matchedIds.has(claim.messageId)) releasedIndices.add(index);
+					}
+				}
+				const missedIds = [
+					...new Set(valid.filter(({ index }) => !releasedIndices.has(index)).map(({ claim }) => claim.messageId)),
+				];
+				const found =
+					missedIds.length === 0
+						? new Map<string, OutboxRecord>()
+						: new Map(
+								(
+									await executor.all<OutboxRecord>(
+										`SELECT ${missColumns} FROM ${table} WHERE ${messageIdIn(`SELECT value FROM ${jsonValues("?")}`)}`,
+										JSON.stringify(missedIds),
+									)
+								).map((record) => [record.message_id, record]),
+							);
+				return claims.map((claim, index): OutboxReleaseClaimResult => {
+					const checked = results[index];
+					if (checked !== undefined) return checked;
+					if (releasedIndices.has(index)) return { status: "released" };
+					return classifyMiss(found.get(claim.messageId));
+				});
+			},
+			{ ...fenced, leading: [firstWrite] },
 		);
 	};
 
@@ -1037,14 +1192,15 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		},
 
 		releaseClaim(claim, options) {
-			const attempts = options?.unwritten === true ? `, claim_attempts = ${greatest("0", "claim_attempts - 1")}` : "";
 			return withClaim(
 				claim,
-				`state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL${attempts}`,
+				releaseAssignments(options?.unwritten === true),
 				[],
 				() => ({ status: "released" }) as const,
 			);
 		},
+
+		releaseClaims,
 
 		async releaseClaimsOf(claimantId) {
 			// Its rows locked in sequence order, as a claim locks them, so the two never wait for each other (#6560).

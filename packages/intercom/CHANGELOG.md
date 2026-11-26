@@ -7,6 +7,7 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 ### Changed
 
 - With multi-node routing, a broker now renews all the messages it is delivering in one statement every 10 seconds. It used to renew them one transaction at a time, waiting for each before the next. A broker delivering 20 messages to sessions that are still saving them now makes 1 round trip per renewal instead of 20. A message whose delivery another broker has taken over, or that was settled meanwhile, is still left alone, as before ([#6693](https://github.com/bastani-inc/atomic/pull/6693), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- With multi-node routing, a broker now releases all in-flight message claims for a departing session, an unwritten claim tail, or broker shutdown in one durable statement instead of one transaction per message. On PostgreSQL, releasing N claims takes 1 round trip instead of N, keeps rows locked in sequence order, preserves per-sender message order, and restores attempt counts with a floor of 0 for unwritten rows ([#6713](https://github.com/bastani-inc/atomic/issues/6713)).
 
 ## [0.10.11-alpha.3] - 2026-11-26
 

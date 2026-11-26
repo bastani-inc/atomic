@@ -681,6 +681,128 @@ export function registerOutboxStoreConformance(
 		},
 	);
 
+	check(
+		"releases claims together with mixed answers, pair matching, duplicates, and unwritten attempt counting (#6713)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			if (a.releaseClaims === undefined) return;
+			assert.deepEqual(await a.releaseClaims([]), []);
+			assert.deepEqual(
+				await a.releaseClaims([
+					{ messageId: "", claimantId: "broker-a", token: "t", attempt: 1 },
+					{ messageId: "m", claimantId: "", token: "t", attempt: 1 },
+				]),
+				[
+					{ status: "invalid", reason: "empty-message-id" },
+					{ status: "invalid", reason: "empty-claimant-id" },
+				],
+			);
+
+			for (const id of ["c1", "c2", "c3", "c4", "c5", "c6", "c7"]) await insert(a, frameFor(id, id));
+			await insert(a, frameFor("o1", "other"), { targetIdentity: OTHER_RECIPIENT });
+			const [c1, c2, c3, c4, c5, c6, c7] = await claimAll(a, "broker-a");
+			const [o1] = await claimAll(b, "broker-b", LIVE_MS, OTHER_RECIPIENT);
+			expectStatus(await b.markDelivered(c2!.claim), "delivered");
+			expectStatus(await b.markFailed(c3!.claim, "refused"), "failed");
+			expectStatus(await b.releaseClaim(c4!.claim), "released");
+
+			// Swapped tokens across two valid rows must never match or modify either row (including claim_attempts).
+			const swapped = await b.releaseClaims!(
+				[
+					{ ...c5!.claim, token: c6!.claim.token },
+					{ ...c6!.claim, token: c5!.claim.token },
+				],
+				{ unwritten: true },
+			);
+			assert.deepEqual(swapped, [{ status: "stale" }, { status: "stale" }]);
+			assert.equal(expectStatus(await a.read("c5"), "found").row.state, "claimed");
+			assert.equal(expectStatus(await a.read("c5"), "found").row.claimAttempts, 1);
+			assert.equal(expectStatus(await a.read("c6"), "found").row.state, "claimed");
+			assert.equal(expectStatus(await a.read("c6"), "found").row.claimAttempts, 1);
+
+			// Mixed batch in arbitrary order: valid (two claimants), delivered, failed, wrong token, wrong claimant,
+			// already released, missing, invalid, duplicate identical claim, and wrong-then-valid on same messageId.
+			const answers = await b.releaseClaims!([
+				c5!.claim,
+				c2!.claim,
+				c3!.claim,
+				{ ...c6!.claim, token: "not-its-token" },
+				{ ...c6!.claim, claimantId: "broker-other" },
+				c4!.claim,
+				{ messageId: "missing", claimantId: "broker-a", token: "t", attempt: 1 },
+				o1!.claim,
+				{ ...c1!.claim, messageId: "" },
+				{ ...c1!.claim, claimantId: "" },
+				c1!.claim,
+				c1!.claim,
+				{ ...c7!.claim, token: "wrong-before-right" },
+				c7!.claim,
+			]);
+			assert.deepEqual(
+				answers.map((answer) => answer.status),
+				[
+					"released",
+					"settled",
+					"settled",
+					"stale",
+					"stale",
+					"stale",
+					"unknown",
+					"released",
+					"invalid",
+					"invalid",
+					"released",
+					"stale",
+					"stale",
+					"released",
+				],
+			);
+			assert.equal(expectStatus(answers[1]!, "settled").row.state, "delivered");
+			assert.equal(expectStatus(answers[2]!, "settled").row.state, "failed");
+			assert.equal(expectStatus(answers[2]!, "settled").row.failureReason, "refused");
+			// Written releases return rows to queued and keep claimAttempts = 1.
+			for (const id of ["c1", "c5", "c7", "o1"]) {
+				const row = expectStatus(await a.read(id), "found").row;
+				assert.equal(row.state, "queued");
+				assert.equal(row.claimAttempts, 1);
+			}
+			// Untouched c6 is still claimed by broker-a.
+			assert.equal(expectStatus(await a.read("c6"), "found").row.state, "claimed");
+			assert.equal((await a.renewClaim(c6!.claim)).status, "renewed");
+
+			// Unwritten batch release decrements claimAttempts with floor 0 and never decrements non-matching claims.
+			await insert(a, frameFor("u1", "unwritten-1"));
+			await insert(a, frameFor("u2", "unwritten-2"));
+			// Release c6 written first so broker-b can claim the recipient's queued rows cleanly.
+			assert.deepEqual(await a.releaseClaim(c6!.claim), { status: "released" });
+			const claimed = await claimAll(b, "broker-b");
+			const byId = new Map(claimed.map((entry) => [entry.row.messageId, entry]));
+			const u1 = byId.get("u1")!;
+			const u2 = byId.get("u2")!;
+			const c1Again = byId.get("c1")!;
+			assert.equal(u1.row.claimAttempts, 1);
+			assert.equal(u2.row.claimAttempts, 1);
+			assert.equal(c1Again.row.claimAttempts, 2);
+
+			const unwrittenAnswers = await a.releaseClaims!(
+				[u1.claim, u1.claim, { ...u2.claim, token: "wrong" }, c1Again.claim],
+				{ unwritten: true },
+			);
+			assert.deepEqual(unwrittenAnswers, [
+				{ status: "released" },
+				{ status: "stale" },
+				{ status: "stale" },
+				{ status: "released" },
+			]);
+			assert.equal(expectStatus(await b.read("u1"), "found").row.state, "queued");
+			assert.equal(expectStatus(await b.read("u1"), "found").row.claimAttempts, 0);
+			assert.equal(expectStatus(await b.read("u2"), "found").row.state, "claimed");
+			assert.equal(expectStatus(await b.read("u2"), "found").row.claimAttempts, 1);
+			assert.equal(expectStatus(await b.read("c1"), "found").row.state, "queued");
+			assert.equal(expectStatus(await b.read("c1"), "found").row.claimAttempts, 1);
+		},
+	);
+
 	check("writes one row per message id and reports duplicates and conflicts", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		const frame = frameFor("m1", "hello");

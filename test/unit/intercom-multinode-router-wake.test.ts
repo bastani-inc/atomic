@@ -269,6 +269,14 @@ async function startNode(
 				await options.releaseClaimGate;
 				return inner.outbox.releaseClaim(claim, releaseOptions);
 			},
+			...(inner.outbox.releaseClaims === undefined
+				? {}
+				: {
+						releaseClaims: async (claims, releaseOptions) => {
+							await options.releaseClaimGate;
+							return inner.outbox.releaseClaims!(claims, releaseOptions);
+						},
+					}),
 			listUndelivered: async (identity) =>
 				options.undeliveredListInvalid === true
 					? { status: "invalid", reason: "empty-target-identity" }
