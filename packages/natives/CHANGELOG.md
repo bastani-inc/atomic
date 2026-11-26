@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `watchProcessUntilHostDies(pid)`: on Linux and macOS, the host-death guardian ends a running child process, and the processes below it in its process group, when the calling process dies, until `release()`. A process ID that by then names another process is left alone.
+
 ### Fixed
 
 - **`bash` with `pty: true` no longer slows to about 150 KB/s on macOS.** A macOS terminal holds about 1 KB of output, and the task supervisor read it only every 5 ms, so a command that printed 1 MB took about 6.5 seconds and waited on its own output. The supervisor now reads output as soon as it arrives: the same command takes under half a second ([#6634](https://github.com/bastani-inc/atomic/pull/6634)).

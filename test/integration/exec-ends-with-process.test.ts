@@ -47,9 +47,13 @@ async function recordedFrom(file: string): Promise<RecordedProcess> {
 	return recorded;
 }
 
-/** A command that records its pid in the file its first argument names, then runs until it is ended. */
+/**
+ * A command that starts two processes that run until they are ended, one in its process group and one detached, records
+ * their pids in `<file>.child` and `<file>.detached` and then its own in `<file>`, the file its first argument names,
+ * and runs until it is ended.
+ */
 const RECORDS_ITS_PID =
-	'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);';
+	'const { spawn } = require("node:child_process"); const { writeFileSync } = require("node:fs"); const file = process.argv[1]; const start = (detached) => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", detached }).pid; writeFileSync(file + ".child", String(start(false))); writeFileSync(file + ".detached", String(start(true))); writeFileSync(file, String(process.pid)); setInterval(() => {}, 1000);';
 /**
  * Starts two commands through the `exec.ts` module its first argument names, each running the program its fourth
  * argument holds: one that records its pid in its second argument and has a quit stop, and one that records its pid
@@ -58,44 +62,61 @@ const RECORDS_ITS_PID =
 const START_TWO_COMMANDS =
 	'const [execModule, stopped, kept, child] = process.argv.slice(1); import(execModule).then(({ execCommand }) => { void execCommand(process.execPath, ["-e", child, "--", stopped], process.cwd(), undefined, () => () => {}); void execCommand(process.execPath, ["-e", child, "--", kept], process.cwd()); setInterval(() => {}, 1000); });';
 
-// Where Atomic starts its commands through its native module, the kernel ends such a command with the process that
-// started it. Windows ends it with that process too; on macOS it keeps running.
-describe.runIf(process.platform === "linux")("a process running extensions' pi.exec commands is killed", () => {
-	test("a command its session's quit would stop ends with it, and a command a shutdown handler started does not", async () => {
-		const root = makeTempDirectory("atomic-exec-ends-with-process-");
-		roots.push(root);
-		const stopped = join(root, "stopped.pid");
-		const kept = join(root, "kept.pid");
-		const host = spawnProcess(
-			[
-				process.execPath,
-				...NODE_TS_SOURCE_ARGS,
-				"-e",
-				START_TWO_COMMANDS,
-				"--",
-				EXEC_MODULE,
-				stopped,
-				kept,
-				RECORDS_ITS_PID,
-			],
-			{
-				stdin: "ignore",
-				stdout: "ignore",
-				stderr: "inherit",
-			},
-		);
-		const hostProcess = await recordProcess(host.pid!);
-		processes.push(hostProcess);
-		const stoppedCommand = await recordedFrom(stopped);
-		const keptCommand = await recordedFrom(kept);
+// On Linux and macOS the native module's host-death guardian ends such a command, with the processes it started in its
+// process group, when the process that started it dies. Windows ends the command with that process too.
+describe.runIf(process.platform === "linux" || process.platform === "darwin")(
+	"a process running extensions' pi.exec commands is killed",
+	() => {
+		test("a command its session's quit would stop ends with it, with the process it started in its group, and a command a shutdown handler started does not", async () => {
+			const root = makeTempDirectory("atomic-exec-ends-with-process-");
+			roots.push(root);
+			const stopped = join(root, "stopped.pid");
+			const kept = join(root, "kept.pid");
+			const host = spawnProcess(
+				[
+					process.execPath,
+					...NODE_TS_SOURCE_ARGS,
+					"-e",
+					START_TWO_COMMANDS,
+					"--",
+					EXEC_MODULE,
+					stopped,
+					kept,
+					RECORDS_ITS_PID,
+				],
+				{
+					stdin: "ignore",
+					stdout: "ignore",
+					stderr: "inherit",
+				},
+			);
+			const hostProcess = await recordProcess(host.pid!);
+			processes.push(hostProcess);
+			const stoppedCommand = await recordedFrom(stopped);
+			const keptCommand = await recordedFrom(kept);
+			const stoppedChild = await recordedFrom(`${stopped}.child`);
+			const stoppedDetached = await recordedFrom(`${stopped}.detached`);
+			await recordedFrom(`${kept}.child`);
+			await recordedFrom(`${kept}.detached`);
 
-		await signalRecordedProcess(hostProcess, "SIGKILL");
+			await signalRecordedProcess(hostProcess, "SIGKILL");
 
-		assert.equal(await waitUntilGone(stoppedCommand, GONE_MS), true, "the command outlived the killed process");
-		assert.equal(
-			await waitUntilGone(keptCommand, KILL_SEEN_MS),
-			false,
-			"a command no quit stops ended with the process",
-		);
-	});
-});
+			assert.equal(await waitUntilGone(stoppedCommand, GONE_MS), true, "the command outlived the killed process");
+			assert.equal(
+				await waitUntilGone(stoppedChild, GONE_MS),
+				true,
+				"the process the command started outlived the killed process",
+			);
+			assert.equal(
+				await waitUntilGone(stoppedDetached, KILL_SEEN_MS),
+				false,
+				"a program the command started detached ended with the process",
+			);
+			assert.equal(
+				await waitUntilGone(keptCommand, KILL_SEEN_MS),
+				false,
+				"a command no quit stops ended with the process",
+			);
+		});
+	},
+);

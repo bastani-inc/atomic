@@ -39,6 +39,12 @@ export declare class HeldProcessDescendants {
   release(): void
 }
 
+/** A running child process that ends, with the processes below it in its process group, if this process dies first. */
+export declare class HostDeathWatch {
+  /** Stops the watch, once the process exited by itself: what it left running keeps running. */
+  release(): void
+}
+
 /** A process the host started with [`start_host_process`]. */
 export declare class HostProcess {
   get pid(): number
@@ -1105,6 +1111,14 @@ export declare function trySharedAdvisoryLockAsync(path: string, waitMs: number)
 export type WaitOutcome =
   | { kind: 'settled'; taskId: string; result: TaskResult }
   | { kind: 'yielded'; taskId: string; waitId: string; reason: YieldReason }
+
+/**
+ * On Linux and macOS, has the host-death guardian SIGKILL running child process `pid`, and the processes below it in
+ * its process group, when this process dies, however it dies, until `release()`. A process whose PID by then names
+ * another process is not touched, and one that left the group (a program started detached) is not followed. `pid`
+ * must be a child whose exit this process has not seen yet. `null` on Windows and when no guardian can run.
+ */
+export declare function watchProcessUntilHostDies(pid: number): HostDeathWatch | null
 
 /**
  * On Windows, calls back when the user's session ends, and keeps Windows waiting while the process shuts down: until

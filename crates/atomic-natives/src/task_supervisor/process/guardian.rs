@@ -10,7 +10,12 @@
 //! records the leader's start time when it is told to watch it and skips a session whose leader PID now names a
 //! different process. A guardian that dies first (a command ran `pkill sh`) closes its end of the socket; the host
 //! notices at once, starts another and tells it every session still watched.
-use std::collections::BTreeMap;
+//!
+//! The guardian also watches single processes that run in the host's own session and process group, such as an
+//! extension's `pi.exec` command: when the host dies it kills each one whose PID still names the process it was told
+//! about, together with the processes below it in its process group, read while it still runs. macOS has no
+//! parent-death signal, and on Linux that signal would end the command before the processes it started could be read.
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -68,6 +73,10 @@ END {
 /// leader is gone or still has that start time, freezes the session's cgroup if it has one and kills the members it
 /// lists, then SIGKILLs every process in those sessions. macOS uses `getsid` through the system Objective-C bridge;
 /// elsewhere it runs `pkill -s` or scans `/proc`. Three passes in a row must find none before the scan stops.
+///
+/// `+p <pid> - [<start time, for tests>]` and `-p <pid>` watch and unwatch a single process the same way. At
+/// end-of-file, before the sessions, each watched process that still has its recorded start time is SIGKILLed with
+/// the processes below it in its process group; one that is gone, or whose PID now names another process, is skipped.
 const SCRIPT: &str = r#"trap '' HUP INT QUIT TERM PIPE TSTP TTIN TTOU
 darwin_scanner=${1:-}
 darwin_fallback_pids=${2:-}
@@ -104,13 +113,65 @@ darwin_scan() {
 	for id in "$@"; do kill -KILL -- "-$id" 2>/dev/null && found=1; done
 	[ "$found" = 1 ]
 }
+process_table() {
+	if [ -r /proc/self/stat ]; then
+		for f in /proc/[0-9]*/stat; do
+			read -r l < "$f" || continue
+			pid=${f#/proc/}
+			set -- ${l##*) }
+			echo "${pid%/stat} $2 $3"
+		done
+	else
+		/bin/ps -axo pid=,ppid=,pgid=
+	fi
+}
+end_processes() {
+	sel=' '
+	for id in "$@"; do
+		ident "$id"
+		eval "w=\$j_$id"
+		if [ -n "$v" ] && [ "$v" = "$w" ]; then sel="$sel$id "; fi
+	done
+	[ "$sel" = ' ' ] && return
+	table=$(process_table)
+	while read -r pid ppid pgid; do
+		case $sel in *" $pid "*) eval "g_$pid=\$pgid" ;; esac
+	done <<TABLE
+$table
+TABLE
+	pass=0
+	while [ $pass -lt 2 ]; do
+		pass=$((pass+1))
+		grown=1
+		while [ $grown = 1 ]; do
+			grown=0
+			while read -r pid ppid pgid; do
+				case $sel in *" $pid "*) continue ;; esac
+				case $sel in *" $ppid "*) ;; *) continue ;; esac
+				eval "g=\${g_$ppid:-}"
+				[ "$pgid" = "$g" ] || continue
+				sel="$sel$pid "
+				eval "g_$pid=\$g"
+				grown=1
+			done <<TABLE
+$table
+TABLE
+		done
+		for pid in $sel; do kill -KILL "$pid" 2>/dev/null; done
+		table=$(process_table)
+	done
+}
 s=' '
+procs=' '
 while read -r op id cg recorded; do
 	case $op in
 	+) case $s in *" $id "*) ;; *) s="$s$id "; ident "$id"; v=${recorded:-$v}; eval "i_$id=\$v; c_$id=\$cg" ;; esac ;;
 	-) case $s in *" $id "*) s="${s%% $id *} ${s#* $id }" ;; esac ;;
+	+p) case $procs in *" $id "*) ;; *) procs="$procs$id "; ident "$id"; v=${recorded:-$v}; eval "j_$id=\$v" ;; esac ;;
+	-p) case $procs in *" $id "*) procs="${procs%% $id *} ${procs#* $id }" ;; esac ;;
 	esac
 done
+end_processes $procs
 matching_sessions $s
 k=$matched
 [ "$k" = ' ' ] && exit 0
@@ -164,8 +225,16 @@ struct Watched {
 struct State {
 	guardian: Option<Guardian>,
 	watched: BTreeMap<libc::pid_t, Watched>,
+	/// Single processes in the host's own session, each killed with the processes below it in its group.
+	processes: BTreeSet<libc::pid_t>,
 }
-static STATE: Mutex<State> = Mutex::new(State { guardian: None, watched: BTreeMap::new() });
+impl State {
+	fn watches_any(&self) -> bool {
+		!self.watched.is_empty() || !self.processes.is_empty()
+	}
+}
+static STATE: Mutex<State> =
+	Mutex::new(State { guardian: None, watched: BTreeMap::new(), processes: BTreeSet::new() });
 
 fn lock() -> std::sync::MutexGuard<'static, State> {
 	STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -247,7 +316,7 @@ fn replace_when_dead(monitor: &UnixStream, id: u32) {
 		let _ = dead.child.kill();
 		let _ = dead.child.wait();
 	}
-	if !state.watched.is_empty() {
+	if state.watches_any() {
 		let _ = guardian(&mut state);
 	}
 }
@@ -291,8 +360,12 @@ fn guardian(state: &mut State) -> Option<&mut Guardian> {
 	if dead {
 		discard(state);
 		state.guardian = Some(spawn().ok()?);
-		let lines: String =
-			state.watched.iter().map(|(session, watched)| line(*session, watched)).collect();
+		let lines: String = state
+			.watched
+			.iter()
+			.map(|(session, watched)| line(*session, watched))
+			.chain(state.processes.iter().map(|pid| format!("+p {pid} -\n")))
+			.collect();
 		if !lines.is_empty() && !send(state.guardian.as_mut()?, &lines) {
 			discard(state);
 			return None;
@@ -329,7 +402,39 @@ pub(super) fn unwatch(session: libc::pid_t) {
 		state.guardian.as_mut().is_none_or(|current| send(current, &format!("- {session}\n")));
 	if !sent {
 		discard(&mut state);
-		if !state.watched.is_empty() {
+		if state.watches_any() {
+			let _ = guardian(&mut state);
+		}
+	}
+}
+
+/// Kills `pid`, a running child of the host in the host's own session, and the processes below it in its process
+/// group, if the host dies before [`unwatch_process`]. Must run while `pid` is unreaped, so that the start time the
+/// guardian records is its own. Returns whether a guardian has it.
+pub(super) fn watch_process(pid: libc::pid_t) -> bool {
+	let mut state = lock();
+	if !state.processes.insert(pid) {
+		return state.guardian.is_some();
+	}
+	let entry = format!("+p {pid} -\n");
+	if guardian(&mut state).is_some_and(|guardian| send(guardian, &entry)) {
+		return true;
+	}
+	// The replacement is told every watched process, this one included.
+	discard(&mut state);
+	guardian(&mut state).is_some()
+}
+
+/// Stops watching `pid`, as soon as it exited: what it left running is not the guardian's to end.
+pub(super) fn unwatch_process(pid: libc::pid_t) {
+	let mut state = lock();
+	if !state.processes.remove(&pid) {
+		return;
+	}
+	let sent = state.guardian.as_mut().is_none_or(|current| send(current, &format!("-p {pid}\n")));
+	if !sent {
+		discard(&mut state);
+		if state.watches_any() {
 			let _ = guardian(&mut state);
 		}
 	}
@@ -399,17 +504,107 @@ pub(super) mod testing {
 		session: libc::pid_t,
 		recorded: Option<&str>,
 	) {
-		let mut guardian = spawn().unwrap();
 		let line = match recorded {
 			Some(start) => format!("+ {session} - {start}\n"),
 			None => format!("+ {session} -\n"),
 		};
-		assert!(send(&mut guardian, &line));
+		guardian_told_then_host_death(&line);
+	}
+
+	/// Starts a guardian of its own, sends it `lines` as the host would, closes the socket as a dying host does, and
+	/// waits for it to finish.
+	fn guardian_told_then_host_death(lines: &str) {
+		let mut guardian = spawn().unwrap();
+		assert!(send(&mut guardian, lines));
 		let Guardian { mut child, host } = guardian;
 		// The guardian's monitor holds another descriptor of the socket, so closing this one is not enough.
 		let _ = host.shutdown(std::net::Shutdown::Write);
 		let _ = child.wait();
 	}
+	/// A shell that runs, as a `pi.exec` command does, in its parent's session and process group, and starts two
+	/// processes: one in its group and one in a group of its own (job control).
+	struct HostCommand {
+		root: Child,
+		in_group: libc::pid_t,
+		other_group: libc::pid_t,
+	}
+	impl HostCommand {
+		fn start() -> Self {
+			use std::io::BufRead;
+			let mut root = Command::new("/bin/sh")
+				.args(["-c", "sleep 30 & echo $!; set -m; sleep 30 & echo $!; wait"])
+				.stdin(Stdio::null())
+				.stdout(Stdio::piped())
+				.spawn()
+				.unwrap();
+			let mut lines = io::BufReader::new(root.stdout.take().unwrap()).lines();
+			let mut pid = || lines.next().unwrap().unwrap().trim().parse::<libc::pid_t>().unwrap();
+			let (in_group, other_group) = (pid(), pid());
+			let command = Self { root, in_group, other_group };
+			assert_eq!(unsafe { libc::getpgid(command.in_group) }, unsafe { libc::getpgrp() });
+			assert_ne!(unsafe { libc::getpgid(command.other_group) }, unsafe { libc::getpgrp() });
+			command
+		}
+		fn pid(&self) -> libc::pid_t {
+			self.root.id() as libc::pid_t
+		}
+		/// Whether the shell and the process in its group are still running after `within`, and the other one.
+		fn running_after(&mut self, within: Duration) -> (bool, bool, bool) {
+			let deadline = std::time::Instant::now() + within;
+			loop {
+				let root = matches!(self.root.try_wait(), Ok(None));
+				let state = (root, runs(self.in_group), runs(self.other_group));
+				if (!state.0 && !state.1) || std::time::Instant::now() >= deadline {
+					return state;
+				}
+				std::thread::sleep(Duration::from_millis(20));
+			}
+		}
+	}
+	impl Drop for HostCommand {
+		fn drop(&mut self) {
+			for pid in [self.in_group, self.other_group] {
+				unsafe { libc::kill(pid, libc::SIGKILL) };
+			}
+			let _ = self.root.kill();
+			let _ = self.root.wait();
+		}
+	}
+	/// Whether `pid` names a process that is not a zombie: one its new parent reaps once it ended.
+	fn runs(pid: libc::pid_t) -> bool {
+		let state = Command::new("/bin/ps").args(["-o", "stat=", "-p", &pid.to_string()]).output();
+		state.is_ok_and(|output| {
+			let stat = String::from_utf8_lossy(&output.stdout);
+			!stat.trim().is_empty() && !stat.trim().starts_with('Z')
+		})
+	}
+
+	// A command in the host's own session (an extension's `pi.exec` command) ends with the process it started in its
+	// group when the host dies. A program it started in a group of its own keeps running, and a command whose PID now
+	// names another process is spared.
+	#[test]
+	fn guardian_ends_a_watched_process_and_its_group_descendants_when_the_host_dies() {
+		let mut command = HostCommand::start();
+		guardian_told_then_host_death(&format!("+p {} - 1\n", command.pid()));
+		assert_eq!(
+			command.running_after(Duration::from_millis(300)),
+			(true, true, true),
+			"the guardian killed a process whose PID it was told named another process"
+		);
+		guardian_told_then_host_death(&format!("+p {} -\n-p {}\n", command.pid(), command.pid()));
+		assert_eq!(
+			command.running_after(Duration::from_millis(300)),
+			(true, true, true),
+			"the guardian killed a process it no longer watched"
+		);
+		guardian_told_then_host_death(&format!("+p {} -\n", command.pid()));
+		assert_eq!(
+			command.running_after(Duration::from_secs(5)),
+			(false, false, true),
+			"the guardian ended the command and the process in its group, and only those"
+		);
+	}
+
 	/// What the crash kill does for one watched session whose leader was recorded as starting at `start`.
 	pub(in crate::task_supervisor) fn crash_kill(session: libc::pid_t, start: u64) {
 		kill_session(session, Some(start));

@@ -662,7 +662,7 @@ const result = await atomic.exec("git", ["status"], { signal, timeout: 5000 });
 - On Windows, bare command names (like `git`) resolve only from absolute directories on `PATH`, never from `cwd` or Atomic's own directory.
 - Options: `signal`, `timeout`, `cwd`, `maxBuffer` (default 256 MiB combined stdout/stderr). Exceeding `maxBuffer` kills the process and sets `truncated: true`, `killed: true`, and nonzero `code`. Signal terminations report `128 + signal`.
 - On timeout, abort, or `maxBuffer`: terminates the process tree (`SIGTERM`, then `SIGKILL` after 5 s on Unix; immediate descendant termination on Windows).
-- On interactive quit: kills running commands after 1 s (`SIGTERM` then `SIGKILL` on Unix; immediate on Windows) before `session_shutdown` runs; commands started inside `session_shutdown` are not killed this way. On forced `SIGKILL` to Atomic, running interactive commands and their process groups receive `SIGKILL`.
+- On interactive quit: kills running commands after 1 s (`SIGTERM` then `SIGKILL` on Unix; immediate on Windows) before `session_shutdown` runs; commands started inside `session_shutdown` are not killed this way. When Atomic is killed (`SIGKILL`), running commands and the processes they started in their process group receive `SIGKILL` on Linux and macOS, also in a session that runs in Atomic's own process; a program a command started detached keeps running.
 
 ### atomic.getActiveTools() / atomic.getAllTools() / atomic.setActiveTools(names)
 
