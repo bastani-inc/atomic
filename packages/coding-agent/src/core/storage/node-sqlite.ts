@@ -36,6 +36,7 @@ import type {
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
+	SqliteStatement,
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
@@ -83,6 +84,7 @@ import {
 import {
 	type ConnectionAnswer,
 	type ConnectionRequest,
+	type ReadTransactionRequest,
 	type SequenceAnswer,
 	type SequenceRequest,
 	STATEMENT_CACHE_SIZE,
@@ -1385,8 +1387,11 @@ function releaseOnExit(connection: ThreadConnection, current: { hold?: FileHold 
 /** Where a connection's statements run: a thread of its own, or the calling thread. */
 type SqliteConnection = ThreadConnection | CallerThreadConnection;
 
-/** A request either connection answers. Only a connection on a thread of its own runs sequences. */
-type SingleRequest = Exclude<ConnectionRequest, SequenceRequest>;
+/**
+ * A request either connection answers. Only a connection on a thread of its own runs sequences and read transactions
+ * started with their leading reads.
+ */
+type SingleRequest = Exclude<ConnectionRequest, SequenceRequest | ReadTransactionRequest>;
 
 /**
  * Sends one request to `connection`: a promise of its answer from a connection on a thread of its own, and the answer
@@ -1412,6 +1417,16 @@ function sendable(value: SqliteValue): SqliteValue {
 
 function sendableStatement({ sql, params, script }: SequencedStatement): SequencedStatement {
 	return { sql, params: params.map(sendable), ...(script === true ? { script } : {}) };
+}
+
+/** Whether two statements' parameters bind the same values, bytes compared by content. */
+function sameParams(left: readonly SqliteValue[], right: readonly SqliteValue[]): boolean {
+	if (left.length !== right.length) return false;
+	return left.every((value, index) => {
+		const other = right[index];
+		if (!isUint8Array(value) || !isUint8Array(other)) return value === other;
+		return value.byteLength === other.byteLength && value.every((byte, at) => byte === other[at]);
+	});
 }
 
 /** The index of the first text parameter holding NUL, which no statement may bind, or -1. */
@@ -2138,6 +2153,9 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		options?: SqliteTransactionOptions,
 	): Promise<T> {
 		if (options?.readOnly === true) {
+			const connection = this.connection;
+			if (connection instanceof ThreadConnection)
+				return this.enqueueStatement(() => this.readOnThread(connection, callback, options.leading ?? []));
 			return this.enqueueStatement(async () => {
 				await this.executor.exec("BEGIN");
 				let active = true;
@@ -2173,6 +2191,78 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			}
 			this.startBatch([queued]);
 		});
+	}
+
+	/**
+	 * A read-only transaction on a connection thread, which it waits for once less at each end (#6560): `BEGIN` goes in
+	 * one request with `leading`, the reads the callback makes first, whose answers the callback's calls get in order
+	 * until one differs; that call, and every later one, is sent as before, in the same snapshot. A leading read that
+	 * fails ends the answers there, so the call that makes it is sent and fails as it always would. The `COMMIT` is sent
+	 * without waiting for its answer: it changes nothing a read-only transaction read, the thread runs it before anything
+	 * sent after it, and rolls the transaction back where it fails. A callback that fails rolls it back and waits, as
+	 * before.
+	 */
+	private async readOnThread<T>(
+		connection: ThreadConnection,
+		callback: (transaction: SqliteExecutor) => Promise<T>,
+		leading: readonly SqliteStatement[],
+	): Promise<T> {
+		const lead: SqliteStatement[] = [];
+		for (const { sql, params } of leading) {
+			if (invalidTextParam(params) !== -1) break;
+			lead.push({ sql, params: snapshotParams(params) });
+		}
+		const request = { kind: "read", statements: lead.map((each) => sendableStatement(each)) } as const;
+		const answers = (await connection.request(request).catch((cause: unknown) => {
+			throw unavailable(this.descriptor, cause);
+		})) as SqliteRow[][];
+		const answered = lead
+			.slice(0, answers.length)
+			.map((statement, index) => ({ ...statement, rows: answers[index]! }));
+		let active = true;
+		const executor = this.createExecutor(() => active);
+		/** The rows of the next leading read when `sql` and `params` make it; otherwise the lead ends. */
+		const ledBy = (sql: string, params: readonly SqliteValue[]): SqliteRow[] | undefined => {
+			const next = answered[0];
+			if (active && next !== undefined && next.sql === sql && sameParams(next.params, params)) {
+				answered.shift();
+				return next.rows;
+			}
+			answered.length = 0;
+			return undefined;
+		};
+		const transaction: SqliteExecutor = {
+			exec: (sql) => {
+				answered.length = 0;
+				return executor.exec(sql);
+			},
+			run: (sql, ...params) => {
+				answered.length = 0;
+				return executor.run(sql, ...params);
+			},
+			get: <R extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+				const rows = ledBy(sql, params);
+				return rows === undefined ? executor.get<R>(sql, ...params) : Promise.resolve(rows[0] as R | undefined);
+			},
+			all: <R extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
+				const rows = ledBy(sql, params);
+				return rows === undefined ? executor.all<R>(sql, ...params) : Promise.resolve(rows as R[]);
+			},
+		};
+		try {
+			const value = await callback(transaction);
+			active = false;
+			connection.request({ kind: "endRead" }).catch(() => {});
+			return value;
+		} catch (cause) {
+			active = false;
+			try {
+				await this.executor.exec("ROLLBACK");
+			} catch (rollbackCause) {
+				throw new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause);
+			}
+			throw cause;
+		}
 	}
 
 	private startBatch(members: QueuedTransaction[]): void {

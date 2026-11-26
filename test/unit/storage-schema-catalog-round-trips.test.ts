@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
-import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+} from "../../packages/coding-agent/src/core/storage/database.js";
+import {
+	StorageTransactionClosedError,
+	StorageUnavailableError,
+} from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { ConnectionRequest } from "../../packages/coding-agent/src/core/storage/node-sqlite-thread.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
@@ -60,16 +68,16 @@ async function openBroker(path: string) {
 	await state.close();
 }
 
-test("a broker reopened on a SQLite file whose schema is current takes the write lock once, not once per store (#6560)", async () => {
+test("a broker reopened on a SQLite file whose schema is current takes no write lock (#6560)", async () => {
 	const path = databasePath("broker.sqlite");
 	await openBroker(path);
 	const requests = recordRequests();
 	await openBroker(path);
 	const { sent, waits } = requests.take();
 	const begins = sent.filter((request) => request.kind === "begin");
-	// The restoring reservations' counters are seeded on every open: an insert that may write is still run. The other
-	// stores' setups only create tables and indexes the schema holds, and each took the write lock: 30 times, in 97 waits.
-	assert.equal(begins.length, 1, `${begins.length} write transactions`);
+	// Each store's setup took the write lock at every open: 30 times, in 97 waits. The restoring reservations' counter
+	// seed then still took it once; its schema stamp now vouches for it.
+	assert.equal(begins.length, 0, `${begins.length} write transactions`);
 	assert.deepEqual(probes(sent), [], "no table or column was probed on its own");
 	assert.ok(waits <= 12, `${waits} waits for the connection's thread`);
 });
@@ -157,11 +165,121 @@ test("the tail of a session whose resume index is current is read in one transac
 	const tail = await store.readTail("s1", 10);
 	const { sent } = requests.take();
 	const begins = (request: ConnectionRequest) =>
-		request.kind === "begin" || /^\s*BEGIN\b/i.test(requestSql(request) ?? "");
+		request.kind === "begin" || request.kind === "read" || /^\s*BEGIN\b/i.test(requestSql(request) ?? "");
 	assert.equal(sent.filter(begins).length, 1, sent.map((request) => requestSql(request) ?? request.kind).join(" | "));
 	assert.deepEqual(sent.slice(0, sent.findIndex(begins)), [], "nothing was read before the transaction");
 	assert.deepEqual(
 		tail.entries.map((entry) => entry.id),
 		["m10", "m11", "m12"],
 	);
+});
+
+/**
+ * Every request sent to a connection's thread while `read` runs, and the waits it made for the thread: requests sent
+ * while none of its own was in flight, whose answer it had before it resolved. A request it did not wait for, such
+ * as a read transaction's commit, counts in `sent` only.
+ */
+async function waitsOf<T>(read: () => Promise<T>) {
+	const sent: ConnectionRequest[] = [];
+	let inFlight = 0;
+	let resolved = false;
+	let waits = 0;
+	const interception = interceptConnectionRequests((request, send) => {
+		sent.push(request);
+		const opensWait = inFlight === 0;
+		inFlight += 1;
+		return send(request).finally(() => {
+			inFlight -= 1;
+			if (opensWait && !resolved) waits += 1;
+		});
+	});
+	try {
+		const value = await read();
+		resolved = true;
+		return { value, sent, waits };
+	} finally {
+		interception.restore();
+	}
+}
+
+test("a read transaction sends its start with its leading reads, and does not wait for its commit (#6560)", async () => {
+	const { db } = await storeWith(thread(3));
+	const leading = [
+		{ sql: "SELECT schema_version FROM session_meta", params: [] },
+		{ sql: "SELECT id FROM session_sessions WHERE id = ?", params: ["s1"] },
+	];
+	const { value, sent, waits } = await waitsOf(() =>
+		db.transaction(
+			async (tx) => {
+				const [version, session] = await Promise.all([
+					tx.get<SqliteRow & { schema_version: number }>(leading[0]!.sql),
+					tx.all<SqliteRow & { id: string }>(leading[1]!.sql, "s1"),
+				]);
+				const entries = await tx.get<SqliteRow & { n: number }>(
+					"SELECT count(*) AS n FROM session_entries WHERE session_id = ?",
+					"s1",
+				);
+				return [version?.schema_version, session.map((row) => row.id), entries?.n];
+			},
+			{ readOnly: true, leading },
+		),
+	);
+	assert.deepEqual(value, [1, ["s1"], 3]);
+	// BEGIN, the two leading reads, the count and COMMIT were five requests and four waits; the BEGIN and the leading
+	// reads now go in one request, and the COMMIT is sent but not waited for.
+	assert.deepEqual(
+		sent.map((request) => request.kind),
+		["read", "get", "endRead"],
+	);
+	assert.equal(waits, 2);
+});
+
+test("a read transaction's leading reads answer from its snapshot, and one that fails is sent again and fails as before (#6560)", async () => {
+	const { db } = await storeWith(thread(3));
+	const writer = await openNodeSqliteDatabase(db.descriptor.location);
+	cleanups.push(() => writer.close());
+	const count = "SELECT count(*) AS n FROM session_entries";
+	const missing = "SELECT * FROM no_such_table";
+	const outcome = await db.transaction(
+		async (tx) => {
+			const before = await tx.get<SqliteRow & { n: number }>(count);
+			await writer.run("DELETE FROM session_entries");
+			const failed = await tx.all(missing).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			const after = await tx.get<SqliteRow & { n: number }>(count);
+			return { before: before?.n, after: after?.n, failed };
+		},
+		{
+			readOnly: true,
+			leading: [
+				{ sql: count, params: [] },
+				{ sql: missing, params: [] },
+			],
+		},
+	);
+	assert.equal(outcome.before, 3);
+	assert.equal(outcome.after, 3, "the later read sees the snapshot the leading read began");
+	assert.ok(outcome.failed instanceof StorageUnavailableError, String(outcome.failed));
+	assert.match(String((outcome.failed as StorageUnavailableError).cause), /no such table: no_such_table/);
+	assert.equal((await db.get<SqliteRow & { n: number }>(count))?.n, 0, "the transaction ended");
+	await assert.rejects(
+		db.transaction(
+			async (tx) => {
+				await tx.get(count);
+				throw new Error("callback failed");
+			},
+			{ readOnly: true, leading: [{ sql: count, params: [] }] },
+		),
+		/callback failed/,
+	);
+	let escaped: SqliteExecutor | undefined;
+	await db.transaction(
+		async (tx) => {
+			escaped = tx;
+		},
+		{ readOnly: true, leading: [{ sql: count, params: [] }] },
+	);
+	await assert.rejects(escaped!.get(count), StorageTransactionClosedError);
 });

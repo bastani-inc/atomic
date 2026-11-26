@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- On SQLite and libSQL, reopening an Intercom broker whose tables are already set up no longer takes the database's write lock, so brokers that start together no longer wait for each other. The same goes for a session's first chat record in each process. Atomic now records which version of each store's tables it set up, along with SQLite's own count of schema changes. If anything changes the tables later, including an older Atomic, the next open checks them again instead of trusting the record ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- Reading a session from a local SQLite file now waits for the database's background thread 2 or 3 times instead of 4 or 5. A read starts with its first queries in one message and doesn't wait for its final commit ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.1] - 2026-11-25
 
 Many agents can now share one PostgreSQL or libSQL database without waiting for each other, forks cost about the same however long the session is, and shell commands and history searches now run until they finish.

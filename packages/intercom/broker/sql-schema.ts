@@ -7,7 +7,10 @@ import { dialectOf, ensureStorageSchema, type SqliteDatabase, type SqliteExecuto
  * namespace, and without them every open checks its schema in a transaction, as before.
  */
 const catalogApi: Partial<
-	Pick<typeof storage, "storageSchemaCurrent" | "schemaCatalogOf" | "withStorageSchemaCatalog">
+	Pick<
+		typeof storage,
+		"storageSchemaCurrent" | "schemaCatalogOf" | "withStorageSchemaCatalog" | "restampStorageSchemaAtOpenEnd"
+	>
 > = storage;
 
 /**
@@ -30,7 +33,9 @@ export async function withBrokerSchemaCatalog<T>(
  * Runs `setup`, a broker store's idempotent schema statements, in a transaction of its own, unless the prefix's ledger
  * records `revision` for `store` already (#5218): on PostgreSQL a current schema runs no DDL, so a role with only DML
  * privileges opens the store. Raise `revision` whenever `setup` creates or alters anything new. Inside an open that read
- * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560).
+ * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560); on SQLite and
+ * libSQL the transaction stamps the revision, and the open's end stamps it again if a later store's setup changed the
+ * schema meanwhile, so the next open of a current schema takes no write lock.
  */
 export async function ensureBrokerSchema(
 	database: SqliteDatabase,
@@ -47,6 +52,7 @@ export async function ensureBrokerSchema(
 			await setup(tx);
 		}),
 	);
+	catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup);
 }
 
 /**

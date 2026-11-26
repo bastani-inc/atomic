@@ -5,7 +5,7 @@ import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
-import { observeRowsAndFailures } from "../helpers/node-sqlite-observations.js";
+import { observeLeadingReads, observeRowsAndFailures } from "../helpers/node-sqlite-observations.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { interceptConnectionRequests } from "../helpers/sqlite-connection-requests.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
@@ -143,6 +143,22 @@ test("rows and driver errors cross from a connection's thread as they come from 
 	const inMemory = await openNodeSqliteDatabase(":memory:");
 	cleanups.push(() => inMemory.close());
 	assert.deepStrictEqual(await observeRowsAndFailures(threaded), await observeRowsAndFailures(inMemory));
+});
+
+test("a read transaction's leading reads answer and fail on a connection's thread as each call does on the calling thread (#6560)", async () => {
+	const threaded = await open(databasePath());
+	const inMemory = await openNodeSqliteDatabase(":memory:");
+	cleanups.push(() => inMemory.close());
+	const kinds: string[] = [];
+	const interception = interceptConnectionRequests((request, send) => {
+		kinds.push(request.kind);
+		return send(request);
+	});
+	const observed = await observeLeadingReads(threaded);
+	interception.restore();
+	assert.deepStrictEqual(observed, await observeLeadingReads(inMemory));
+	// The leading reads up to the missing table went with the BEGIN; that one, and the ones after it, went on their own.
+	assert.deepEqual(kinds.slice(kinds.indexOf("read")), ["read", "all", "get", "get", "all", "endRead"]);
 });
 
 test.each([

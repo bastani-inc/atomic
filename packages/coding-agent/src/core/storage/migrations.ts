@@ -1,7 +1,7 @@
 import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "./database.js";
 import { dialectOf, type StorageDialect } from "./dialect.js";
 import { StorageConfigError, StorageSchemaVersionError } from "./errors.js";
-import { schemaCatalogOf } from "./schema-catalog.js";
+import { recordSqliteSchemaStamps, schemaCatalogOf, sqliteSchemaStampsOf } from "./schema-catalog.js";
 
 /** One version of a domain's schema. */
 export interface StorageMigrationStep {
@@ -285,12 +285,18 @@ export interface StorageSchemaSetup {
 /**
  * Whether the catalog an open in progress read (`withStorageSchemaCatalog`) records `schema.revision` for the
  * store already, so {@link ensureStorageSchema} would run nothing: the store's open then skips its schema transaction
- * and its lock (#6560). False outside such an open, on SQLite, and when the revision is not recorded.
+ * and its lock (#6560). On SQLite and libSQL the store's schema stamp records it, and only while nothing changed the
+ * schema since (`sqliteSchemaStampTable`). False outside such an open, and when the revision is not recorded.
  */
 export async function storageSchemaCurrent(database: SqliteDatabase, schema: StorageSchemaSetup): Promise<boolean> {
-	if (!dialectOf(database).versionedMigrations) return false;
-	const recorded = await recordedInCatalog(database, schema.ledger, `schema:${schema.domain}`);
-	return recorded !== undefined && recorded >= schema.revision;
+	const dialect = dialectOf(database);
+	const key = `schema:${schema.domain}`;
+	if (dialect.versionedMigrations) {
+		const recorded = await recordedInCatalog(database, schema.ledger, key);
+		return recorded !== undefined && recorded >= schema.revision;
+	}
+	if (dialect.name !== "sqlite") return false;
+	return ((await sqliteSchemaStampsOf(database, schema.ledger))?.get(key) ?? 0) >= schema.revision;
 }
 
 /**
@@ -299,8 +305,9 @@ export async function storageSchemaCurrent(database: SqliteDatabase, schema: Sto
  * database with versioned migrations (PostgreSQL) a current schema runs no DDL at all, so a runtime role with only DML
  * privileges opens it; a schema that is behind runs `setup` under the store's advisory lock, then records the revision,
  * so concurrent processes set it up once. A role that may not run the DDL then fails with
- * `StorageConfigError` reason `missing-privilege` from the adapter. On SQLite, which records no ledger, `setup` runs
- * every time, as before.
+ * `StorageConfigError` reason `missing-privilege` from the adapter. On SQLite and libSQL, which keep no ledger, `setup`
+ * runs every time it is called, as before, and then stamps the store with the schema version the transaction leaves,
+ * which {@link storageSchemaCurrent} believes until the schema changes again (#6560).
  */
 export async function ensureStorageSchema(
 	executor: SqliteExecutor,
@@ -310,6 +317,7 @@ export async function ensureStorageSchema(
 ): Promise<void> {
 	if (!dialect.versionedMigrations) {
 		await setup();
+		if (dialect.name === "sqlite") await recordSqliteSchemaStamps(executor, [schema]);
 		return;
 	}
 	const { ledger, domain, revision } = schema;
