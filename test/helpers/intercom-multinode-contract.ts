@@ -803,6 +803,88 @@ export function registerOutboxStoreConformance(
 		},
 	);
 
+	check(
+		"settles concurrent markDelivered calls in call order with repeated ids, mixed outcomes, and special characters (#6716)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const specialId = 'quote"\\$0\n\t';
+			const numericId = "123";
+			for (const id of ["d1", "d2", "d3", "d4", "d5", specialId, numericId]) await insert(a, frameFor(id, id));
+			await insert(a, frameFor("do1", "other"), { targetIdentity: OTHER_RECIPIENT });
+			const claimed = await claimAll(a, "broker-a");
+			assert.equal(claimed.length, 7);
+			const [d1, d2, d3, d4, d5, dw1, dw2] = claimed;
+			const [do1] = await claimAll(a, 'broker"\\$0', LIVE_MS, OTHER_RECIPIENT);
+			assert.ok(d1 && d2 && d3 && d4 && d5 && dw1 && dw2 && do1);
+			expectStatus(await a.markFailed(d3.claim, "refused"), "failed");
+
+			const calls: readonly OutboxClaim[] = [
+				d1.claim,
+				{ ...d1.claim, token: "wrong-token" },
+				d1.claim,
+				{ ...d2.claim, token: "wrong-token" },
+				d2.claim,
+				d3.claim,
+				{ ...d1.claim, claimantId: "other-broker" },
+				{ ...d1.claim, messageId: "never-queued" },
+				{ ...d4.claim, token: d5.claim.token },
+				{ ...d5.claim, token: d4.claim.token },
+				dw1.claim,
+				dw2.claim,
+				do1.claim,
+			];
+			const resolvedOrder: number[] = [];
+			const results = await Promise.all(
+				calls.map((entry, index) =>
+					a.markDelivered(entry).then((result) => {
+						resolvedOrder.push(index);
+						return result;
+					}),
+				),
+			);
+			const summarize = (result: Awaited<ReturnType<OutboxStore["markDelivered"]>>) =>
+				"row" in result ? `${result.status} ${result.row.messageId} ${result.row.state}` : result.status;
+			assert.deepEqual(results.map(summarize), [
+				"delivered d1 delivered",
+				"settled d1 delivered",
+				"settled d1 delivered",
+				"stale",
+				"delivered d2 delivered",
+				"settled d3 failed",
+				"settled d1 delivered",
+				"unknown",
+				"stale",
+				"stale",
+				`delivered ${specialId} delivered`,
+				`delivered ${numericId} delivered`,
+				"delivered do1 delivered",
+			]);
+			assert.deepEqual(
+				resolvedOrder,
+				calls.map((_, index) => index),
+			);
+
+			assert.deepEqual(await a.markDelivered({ ...d4.claim, messageId: "" }), {
+				status: "invalid",
+				reason: "empty-message-id",
+			});
+			assert.deepEqual(await a.markDelivered({ ...d4.claim, claimantId: "" }), {
+				status: "invalid",
+				reason: "empty-claimant-id",
+			});
+
+			for (const id of ["d1", "d2", specialId, numericId, "do1"])
+				assert.equal(expectStatus(await b.read(id), "found").row.state, "delivered");
+			assert.equal(expectStatus(await b.read("d3"), "found").row.state, "failed");
+			for (const id of ["d4", "d5"]) assert.equal(expectStatus(await b.read(id), "found").row.state, "claimed");
+
+			assert.deepEqual((await Promise.all([a.markDelivered(d4.claim), a.markDelivered(d5.claim)])).map(summarize), [
+				"delivered d4 delivered",
+				"delivered d5 delivered",
+			]);
+		},
+	);
+
 	check("writes one row per message id and reports duplicates and conflicts", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		const frame = frameFor("m1", "hello");

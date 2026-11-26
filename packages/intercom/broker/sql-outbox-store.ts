@@ -362,8 +362,9 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 
 	/**
 	 * Settles each of `claims`, of distinct rows, as delivered, in one transaction: one UPDATE, sent with its start, that
-	 * locks their rows in sequence order, as a claim locks a recipient's rows, and changes those whose claim is still
-	 * current. Only when it changed fewer rows than it was given are the others read, to report why (#6560).
+	 * locks their rows in sequence order on PostgreSQL, as a claim locks a recipient's rows, and changes those whose claim
+	 * is still current. Only when it changed fewer rows than it was given are the others read, to report why (#6560,
+	 * #6716).
 	 */
 	const markDeliveredTogether = (claims: readonly OutboxClaim[]): Promise<OutboxDeliveredResult[]> => {
 		const write: SqliteStatement = {
@@ -658,9 +659,10 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 	};
 
 	/**
-	 * The `markDelivered` calls waiting for the transaction that settles them, in the order they were made. On PostgreSQL
-	 * the calls made while one transaction settles others go together in the next, whose round trips they share, rather
-	 * than two round trips each: one transaction at a time, so each commits after every call made before it (#6560).
+	 * The `markDelivered` calls waiting for the transaction that settles them, in the order they were made. Calls made
+	 * while one transaction settles others go together in the next, sharing one transaction and its commit instead of
+	 * running one transaction each: one transaction at a time, so each commits after every call made before it (#6560,
+	 * #6716).
 	 */
 	const deliveries: {
 		readonly claim: OutboxClaim;
@@ -1217,11 +1219,8 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		},
 
 		markDelivered(claim) {
-			if (dialect !== "postgres" || claim.messageId.length === 0 || claim.claimantId.length === 0)
-				return withClaim(claim, `state = 'delivered', ${settled}`, [null], (written) => ({
-					status: "delivered" as const,
-					row: toRow(written),
-				}));
+			if (claim.messageId.length === 0) return Promise.resolve(invalid("empty-message-id"));
+			if (claim.claimantId.length === 0) return Promise.resolve(invalid("empty-claimant-id"));
 			return new Promise<OutboxDeliveredResult>((resolve, reject) => {
 				deliveries.push({ claim, resolve, reject });
 				if (delivering) return;
