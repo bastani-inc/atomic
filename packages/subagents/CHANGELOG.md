@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.11-alpha.1] - 2026-11-25
+
 ### Changed
 
 - A subagent's session is now always kept in the session store of the session that launched it, whatever that store is. A subagent of a session kept in JSONL files now has its session file in the same directory as its parent's, instead of a directory of its own. The launch's `sessionDir` and `defaultSessionDir` in `config.json` are ignored, with a one-time deprecation warning. A child's working directory, its worktree, the storage settings of the project it runs in, and a resume after a restart never choose another store. A subagent that was queued but never started relaunches in its parent's store after a restart, even when an earlier release recorded a directory for it. Sessions written as files by earlier releases stay readable and restorable ([#6594](https://github.com/bastani-inc/atomic/pull/6594)).

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.11-alpha.1] - 2026-11-25
+
 ### Breaking Changes
 
 - This package now needs Node.js 24.20.0 or newer, in the Node.js 24 LTS line (`engines.node` is `>=24.20.0`, up from `>=22.19.0`). Check with `node --version`, and upgrade from [nodejs.org](https://nodejs.org/en/download) or with `nvm install 24`, `fnm install 24`, or `mise use -g node@24`. Node.js releases before 24.15.0 bundle a SQLite version with a [bug that can corrupt](https://www.sqlite.org/wal.html#walresetbug) a database opened by a writer and a reader at once, and Node.js 24.17.0 through 24.19.0 reject valid certificates for IPv6 addresses ([nodejs/node#64145](https://github.com/nodejs/node/pull/64145)) ([#6579](https://github.com/bastani-inc/atomic/pull/6579)).
@@ -18,8 +20,8 @@
 - Every database a process opens with the same URL, role, password, schema and pool options shares one pool, one reader pool and one listening connection. A process that opens a session store and an Intercom broker, or several session stores, now holds one set of connections instead of one per store. The last database to close closes them. If `password` is a function, Atomic calls it once when the database opens, to tell credentials apart ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - A pool's last connection stays open for 5 minutes after the pool's last call instead of 10 seconds, with TCP keepalive after 60 seconds, so a call after a pause skips the connection and TLS handshakes. Connections opened for a burst still close after 10 seconds idle. Unused connections no longer keep the process from exiting ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 - Opening a database reads the server version and the schema that holds Atomic's tables in one query instead of two ([#6588](https://github.com/bastani-inc/atomic/pull/6588), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
-- A read-only transaction returns its connection to the pool as soon as its `COMMIT` is sent instead of when it is answered. The connection sends the next transaction's statements after the `COMMIT`, so reads made one after another reuse one connection instead of opening a second one, whose handshakes cost several round trips ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
-- A database now tells Atomic which server, database, role and schema it reaches. Atomic uses this to recognize two handles on the same database, and copies a session fork between them inside the database instead of staging it through another table ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- A read-only transaction returns its connection to the pool as soon as its `COMMIT` is sent instead of when it is answered. The connection sends the next transaction's statements after the `COMMIT`, so reads made one after another reuse one connection instead of opening a second one, whose handshakes cost several round trips ([#6599](https://github.com/bastani-inc/atomic/pull/6599), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- A database now tells Atomic which server, database, role and schema it reaches. Atomic uses this to recognize two handles on the same database, and copies a session fork between them inside the database instead of staging it through another table ([#6596](https://github.com/bastani-inc/atomic/pull/6596), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ## [0.10.10] - 2026-11-24
 
