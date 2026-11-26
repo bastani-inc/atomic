@@ -17,6 +17,7 @@ import { createHistoryRouter } from "../../packages/coding-agent/src/core/tools/
 import type { InternalSearchRequest } from "../../packages/coding-agent/src/core/tools/resource-selectors.js";
 import { snapshotIndexTables } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
 import { pathTo, seeded } from "../helpers/lazy-fork-worlds.js";
+import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { snapshotEntry, syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 import { type StorageBackend, storageBackends } from "../helpers/storage-backends.js";
 
@@ -170,12 +171,14 @@ for (const backend of storageBackends) {
 				withScope(backend, async (database, scopePrefix) => {
 					for (let seed = 1; seed <= (SEEDS[backend.name] ?? 2); seed++) {
 						const sharedPrefix = `${scopePrefix}${seed}l_`;
+						const copyPrefix = `${scopePrefix}${seed}c_`;
+						// The copying store stays at schema 2 while an older build's session runs on its prefix.
+						await holdOlderBuildMarker(database, copyPrefix);
 						const stores: Stores = {
-							copy: await SqlSessionStore.open(database, { prefix: `${scopePrefix}${seed}c_` }),
+							copy: await SqlSessionStore.open(database, { prefix: copyPrefix }),
 							shared: await SqlSessionStore.open(database, { prefix: sharedPrefix }),
 							sharedPrefix,
 						};
-						await stores.shared.enableSharedHistoryForks({ live: async () => false });
 						const both = [stores.copy, stores.shared];
 						const random = seeded(seed);
 						const views = new Map<string, SessionEntry[]>();

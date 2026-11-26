@@ -5,6 +5,8 @@ import { describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
+import { completeSessionForkStream } from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
+import { sessionForkTables } from "../../packages/coding-agent/src/core/storage/session/fork-schema.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { snapshotBlobHashes } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
 import { forkLinksTriggerName } from "../../packages/coding-agent/src/core/worktree-snapshot/fork-snapshot-index.js";
@@ -21,8 +23,10 @@ import {
 	writeAppend,
 	writeFork,
 } from "../helpers/lazy-fork-worlds.js";
+import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { messageEntry, snapshotEntry, syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 import { type StorageBackend, storageBackends } from "../helpers/storage-backends.js";
+import { header, user } from "./storage-conformance-matrix-fork-staging-helpers.js";
 
 /**
  * The snapshot reference index of forks that share their parent's history (#6560). Such a fork stores none of the
@@ -295,6 +299,59 @@ for (const backend of storageBackends) {
 								`seq ${seq}`,
 							);
 						}
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a store that switches at its open links the entries its forks append from the first fork on",
+				() =>
+					withScope(backend, async (database, prefix) => {
+						// A store an older build left at schema 2, with a session in it; then that build stops.
+						const at = `${prefix}s_`;
+						const older = await holdOlderBuildMarker(database, at);
+						const before = await SqlSessionStore.open(database, { prefix: at });
+						await before.create(header("parent"), [
+							user("e1", null, "one", 1),
+							user("e2", "e1", "two", 2),
+							user("e3", "e2", "three", 3),
+						]);
+						await before.close();
+						await older.release();
+
+						// This open switches it, and the snapshot index the same process opens next links shared forks.
+						const store = await SqlSessionStore.open(database, { prefix: at });
+						const trigger = forkLinksTriggerName(`${at}session_entries`);
+						const objects = dialectOf(database).schemaObjects([trigger]);
+						assert.equal(
+							(await database.all(objects.sql, ...objects.params)).length,
+							1,
+							"the switch installs the fork links trigger with the fork tables",
+						);
+						await store.snapshotBlobs.completeIndex();
+						const head = await store.readEntrySizes("parent", 1, 0);
+						const created = await store.createFork(
+							header("child", "parent"),
+							completeSessionForkStream("parent", head.epoch, head.lastSeq),
+							{ store, sessionId: "parent", epoch: head.epoch, hashes: [], receipts: new Map() },
+						);
+						assert.equal(created?.lastSeq, 3);
+						const segments = await database.get(
+							`SELECT count(*) AS n FROM ${sessionForkTables(at).forkSegments} WHERE session_id = ?`,
+							"child",
+						);
+						assert.ok(Number(segments?.n) > 0, "the fork shares its parent's rows");
+						await store.append("child", [user("e4", "e3", "four", 4)], { expectSeq: 3 });
+
+						const links = await database.all(
+							`SELECT seq, entry_id, parent_id, broken FROM ${at}snapshot_session_links WHERE session_id = ? ORDER BY seq`,
+							"child",
+						);
+						assert.deepEqual(
+							links.map((row) => [Number(row.seq), row.entry_id, row.parent_id, Number(row.broken)]),
+							[[4, "e4", "e3", 0]],
+							"the appended entry is linked below the entry it inherits, as in a copy",
+						);
 					}),
 				SERVER_TIMEOUT_MS,
 			);

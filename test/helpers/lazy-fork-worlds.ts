@@ -9,6 +9,7 @@ import {
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { snapshotIndexTables } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
 import type { SnapshotBlob } from "../../packages/coding-agent/src/core/worktree-snapshot/types.js";
+import { holdOlderBuildMarker } from "./older-build-marker.js";
 import { messageEntry, snapshotEntry, syntheticSnapshot, textBlob } from "./snapshot-reference-index.js";
 
 /**
@@ -51,8 +52,10 @@ export interface World {
 }
 
 export async function openWorld(database: SqliteDatabase, prefix: string, shared: boolean): Promise<World> {
+	// A store shares its forks' history from its first open; the copying world stays at schema 2 while an older build's
+	// session runs on its prefix, as a store does until such a build stops.
+	if (!shared) await holdOlderBuildMarker(database, prefix);
 	const store = await SqlSessionStore.open(database, { prefix });
-	if (shared) await store.enableSharedHistoryForks({ live: async () => false });
 	return {
 		prefix,
 		store,
