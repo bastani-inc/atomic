@@ -15,10 +15,17 @@ use napi::{
 use napi_derive::napi;
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 
+/// The process a supervised PTY runs: started without fork on macOS (see `supervised_pty`), by `portable-pty`
+/// elsewhere.
+#[cfg(target_os = "macos")]
+pub(crate) type SupervisedPtyChild = crate::spawn::SpawnedChild;
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) type SupervisedPtyChild = Box<dyn Child + Send + Sync>;
+
 /// Portable Unix PTY retained by the task supervisor, never by the legacy session registry.
 #[cfg(unix)]
 pub(crate) struct SupervisedPty {
-	pub child: Box<dyn Child + Send + Sync>,
+	pub child: SupervisedPtyChild,
 	pub master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
@@ -63,9 +70,65 @@ pub(crate) fn supervised_pty(
 		}
 	}
 	// portable-pty establishes a session/process group before exec on Unix.
+	#[cfg(not(target_os = "macos"))]
 	let child = pair.slave.spawn_command(command).map_err(std::io::Error::other)?;
+	#[cfg(target_os = "macos")]
+	let child = spawn_on_replica(&command, pair.master.as_ref())?;
 	drop(pair.slave);
 	Ok((SupervisedPty { child, master: pair.master }, reader, writer))
+}
+
+/// Starts `command` on the PTY's replica in a session of its own, with the program, arguments, directory and
+/// environment `portable-pty` would give it, through `posix_spawn` instead of fork: once memory pressure has made
+/// libmalloc load its stack-logging support, every fork() of the host prints a notice to its stderr, and fork copies
+/// the host's page tables. The directory is the command's if it is one, else the home directory; `SHELL` is set when
+/// the environment has none.
+#[cfg(target_os = "macos")]
+fn spawn_on_replica(
+	command: &CommandBuilder,
+	master: &dyn portable_pty::MasterPty,
+) -> std::io::Result<crate::spawn::SpawnedChild> {
+	use std::ffi::OsString;
+	use std::os::unix::ffi::OsStringExt;
+	let replica =
+		master.tty_name().ok_or_else(|| std::io::Error::other("PTY replica has no name"))?;
+	let replica = std::ffi::CString::new(OsStringExt::into_vec(replica.into_os_string()))
+		.map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+	let mut env: Vec<(OsString, OsString)> =
+		command.iter_full_env_as_str().map(|(key, value)| (key.into(), value.into())).collect();
+	if !env.iter().any(|(key, _)| key == "SHELL") {
+		env.push(("SHELL".into(), command.get_shell().into()));
+	}
+	let directory = command
+		.get_cwd()
+		.map(std::path::PathBuf::from)
+		.filter(|directory| directory.is_dir())
+		.unwrap_or_else(|| home_directory(command));
+	let argv = command.get_argv();
+	let request = crate::spawn::SpawnRequest::new(
+		&argv[0],
+		argv[1..].iter().cloned(),
+		env,
+		Some(&directory),
+		true,
+		crate::spawn::SignalDefaults::Terminal,
+	)?;
+	crate::spawn::spawn_on_terminal(&request, &replica).map(crate::spawn::SpawnedChild::new)
+}
+
+/// `HOME`, else the user's home directory from the password database, else `/`, as `portable-pty` finds it.
+#[cfg(target_os = "macos")]
+fn home_directory(command: &CommandBuilder) -> std::path::PathBuf {
+	use std::os::unix::ffi::OsStrExt;
+	if let Some(home) = command.get_env("HOME").and_then(|home| home.to_str()) {
+		return home.into();
+	}
+	let entry = unsafe { libc::getpwuid(libc::getuid()) };
+	if entry.is_null() {
+		return "/".into();
+	}
+	let directory = unsafe { std::ffi::CStr::from_ptr((*entry).pw_dir) };
+	std::ffi::OsStr::from_bytes(directory.to_bytes()).into()
 }
 
 #[napi(object)]
