@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { SqliteExecutor, SqliteRow, SqliteStatement } from "../database.js";
 import type { StorageDialect } from "../dialect.js";
 import { type ForkCopyTables, forkBlobCopy } from "./fork-row-copy.js";
@@ -99,7 +98,7 @@ export function forkLineageWrite(
 			ON CONFLICT(session_id) DO UPDATE SET generation = excluded.generation${
 				lineage === undefined ? "" : ", parent_id = excluded.parent_id, cut_seq = excluded.cut_seq"
 			}`,
-		params: [sessionId, lineage?.parentId ?? null, lineage?.cutSeq ?? null, randomUUID()],
+		params: [sessionId, lineage?.parentId ?? null, lineage?.cutSeq ?? null, crypto.randomUUID()],
 	};
 }
 
