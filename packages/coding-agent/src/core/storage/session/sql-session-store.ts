@@ -1869,7 +1869,7 @@ export class SqlSessionStore implements SessionStore {
 		yield {
 			sql: withForkViews(
 				[view],
-				`INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) SELECT ?, ?, c.idx, c.data FROM ${view.name} v JOIN ${this.tables.entryChunks} c ON c.session_id = v.src_id AND c.seq = v.src_seq ORDER BY c.idx`,
+				`INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) SELECT ?, ?, c.idx, c.data FROM ${view.name} v JOIN ${this.tables.entryChunks} c ON c.session_id = v.src_id AND c.seq = v.src_seq WHERE c.idx >= 0 AND c.idx < v.chunks ORDER BY c.idx`,
 			),
 			params: [...view.params, child, index + 1],
 		};
