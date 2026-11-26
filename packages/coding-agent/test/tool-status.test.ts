@@ -20,6 +20,7 @@ import { buildToolStatusReport, formatToolStatus, type ToolStatusReport } from "
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
 import { formatUnavailableToolsNotice } from "../src/modes/interactive/interactive-unavailable-tools.js";
 import "../src/modes/interactive/interactive-slash-commands.js";
+import * as sdk from "../src/index.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
@@ -31,7 +32,6 @@ beforeAll(() => {
 });
 
 test("exports asynchronous Git status from the SDK (#5377)", async () => {
-	const sdk = await import("../src/index.js");
 	assert.equal(typeof Reflect.get(sdk, "getGitStatusAsync"), "function");
 });
 

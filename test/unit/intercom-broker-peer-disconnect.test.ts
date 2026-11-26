@@ -5,6 +5,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test } from "vitest";
+import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
@@ -20,7 +21,6 @@ const extensionDir = join(repoRoot, "packages/intercom");
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-peer-disconnect-"));
 const socketPath = getBrokerSocketPath(process.platform, agentDir);
 const fixture = new IntercomBrokerFixture(agentDir);
-let IntercomClient: typeof import("../../packages/intercom/broker/client.js").IntercomClient;
 
 class WireClient {
 	readonly received: BrokerMessage[] = [];
@@ -118,7 +118,6 @@ const disconnected = (replyTo: string, peerSessionId: string, peerName?: string)
 
 beforeAll(async () => {
 	fixture.overrideAgentDir();
-	({ IntercomClient } = await import("../../packages/intercom/broker/client.js"));
 	const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
 		stdio: "ignore",

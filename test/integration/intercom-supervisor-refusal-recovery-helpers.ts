@@ -7,6 +7,7 @@ import type { ExtensionAPI, ExtensionContext, SubagentChildPolicy, ToolDefinitio
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { runGenericHandlers } from "../../packages/coding-agent/src/core/extensions/runner-events.js";
 import type { Extension, ExtensionError } from "../../packages/coding-agent/src/core/extensions/types.js";
+import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 
 /** Structural cost: a real broker, restarted in one case, and a child that waits out a refused capability. */
@@ -52,7 +53,6 @@ export function childPolicy(
 export async function createSupervisorRefusalHarness(tempPrefix: string) {
 	const fixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), tempPrefix)));
 	fixture.overrideAgentDir();
-	const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 	const { default: intercom } = await import("../../packages/intercom/index.js");
 
 	async function supervisor(
