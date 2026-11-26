@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { it } from "vitest";
+import { SessionConflictError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 
 // Native ESM gives the store and its errors one canonical module identity on every platform.
@@ -196,5 +197,175 @@ setInterval(() => {}, 1000);
 		if (child.exitCode === null) child.kill("SIGKILL");
 		await exited;
 		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+/** Writer processes, each making this many rounds of appends together, so their groups race one another. */
+const RACING_WRITERS = 4;
+const RACING_ROUNDS = 6;
+const APPENDS_TOGETHER = 5;
+
+it("keeps every acknowledged append of writer processes racing groups of appends at its own sequence (#6560)", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "jsonl-racing-groups-"));
+	const header = { id: "raced", version: 4, cwd: "/project", createdAt: "2026-11-25T00:00:00Z" } as const;
+	const seed = await JsonlSessionStore.open(directory);
+	try {
+		await seed.create(header, []);
+	} finally {
+		await seed.close();
+	}
+	const children = Array.from({ length: RACING_WRITERS }, (_, writer) => {
+		const child = spawn(process.execPath, [
+			"--input-type=module",
+			"--eval",
+			`
+const { JsonlSessionStore } = await import(${JSON.stringify(storeModule)});
+const { SessionConflictError } = await import(${JSON.stringify(errorsModule)});
+const store = await JsonlSessionStore.open(${JSON.stringify(directory)});
+let next = (await store.load("raced")).lastSeq;
+console.log("READY");
+await new Promise(resolve => process.stdin.once("data", resolve));
+const acknowledged = [];
+for (let round = 0; round < ${RACING_ROUNDS}; round++) {
+  let pending = Array.from({ length: ${APPENDS_TOGETHER} }, (_, index) => ({
+    type: "session_info", id: "w${writer}-r" + round + "-" + index, parentId: null, timestamp: "2026-11-25T00:00:00Z", name: "x".repeat(64),
+  }));
+  while (pending.length > 0) {
+    const results = await Promise.allSettled(pending.map((entry, index) => store.append("raced", [entry], { expectSeq: next + index })));
+    const retry = [];
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        acknowledged.push([pending[index].id, result.value.lastSeq]);
+        next = Math.max(next, result.value.lastSeq);
+      } else if (result.reason instanceof SessionConflictError) {
+        retry.push(pending[index]);
+        next = Math.max(next, result.reason.actualSeq);
+      } else throw result.reason;
+    }
+    pending = retry;
+  }
+}
+await store.close();
+console.log(JSON.stringify(acknowledged));
+`,
+		]);
+		let stderr = "";
+		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+			stderr += chunk;
+		});
+		return {
+			child,
+			exited: once(child, "close"),
+			stderr: () => stderr,
+			lines: createInterface({ input: child.stdout })[Symbol.asyncIterator](),
+		};
+	});
+	try {
+		await Promise.all(children.map(async ({ lines }) => assert.equal((await lines.next()).value, "READY")));
+		for (const { child } of children) child.stdin.end("go\n");
+		const acknowledged = (
+			await Promise.all(
+				children.map(async ({ lines }) => JSON.parse(String((await lines.next()).value)) as [string, number][]),
+			)
+		).flat();
+		for (const { exited, stderr } of children) assert.equal((await exited)[0], 0, stderr());
+		const store = await JsonlSessionStore.open(directory);
+		try {
+			const { entries, lastSeq } = await store.load(header.id);
+			const total = RACING_WRITERS * RACING_ROUNDS * APPENDS_TOGETHER;
+			assert.equal(lastSeq, total);
+			assert.equal(acknowledged.length, total);
+			assert.equal(new Set(entries.map((entry) => entry.id)).size, total, "no entry is lost or written twice");
+			for (const [id, seq] of acknowledged) assert.equal(entries[seq - 1]?.id, id, `${id} at ${seq}`);
+		} finally {
+			await store.close();
+		}
+	} finally {
+		for (const { child } of children) if (child.exitCode === null) child.kill();
+		await Promise.all(children.map(({ exited }) => exited));
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+/** Entries this large make one group's write many slices long, so the writer dies partway through it. */
+const GROUP_ENTRY_BYTES = 2 * 1024 * 1024;
+const GROUP_APPENDS = 8;
+/** The writer dies once this much of its group is on disk: two whole lines and part of the third. */
+const KILL_AFTER_BYTES = 2.5 * GROUP_ENTRY_BYTES;
+
+it("recovers from a writer process killed while it writes a group of appends, through a handle kept meanwhile (#6560)", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "jsonl-killed-group-"));
+	const header = { id: "group", version: 4, cwd: "/project", createdAt: "2026-11-25T00:00:00Z" } as const;
+	const first = {
+		type: "session_info" as const,
+		id: "first",
+		parentId: null,
+		timestamp: header.createdAt,
+		name: "first",
+	};
+	// This store keeps its handle on the file open while the other process writes and dies.
+	const store = await JsonlSessionStore.open(directory);
+	try {
+		await store.create(header, []);
+		await store.append(header.id, [first], { expectSeq: 0 });
+		const path = (await store.findFile(header.id))!;
+		const acknowledgedSize = (await stat(path)).size;
+		const child = spawn(process.execPath, [
+			"--input-type=module",
+			"--eval",
+			`
+import { statSync } from "node:fs";
+const { JsonlSessionStore } = await import(${JSON.stringify(storeModule)});
+const store = await JsonlSessionStore.open(${JSON.stringify(directory)});
+await store.load("group");
+setInterval(() => {
+  if (statSync(${JSON.stringify(path)}).size > ${acknowledgedSize + KILL_AFTER_BYTES}) process.kill(process.pid, "SIGKILL");
+}, 0);
+await Promise.all(Array.from({ length: ${GROUP_APPENDS} }, (_, index) =>
+  store.append("group", [{ type: "session_info", id: "lost-" + index, parentId: null, timestamp: ${JSON.stringify(header.createdAt)}, name: "x".repeat(${GROUP_ENTRY_BYTES}) }], { expectSeq: 1 + index })));
+console.log("ACKNOWLEDGED");
+`,
+		]);
+		let stdout = "";
+		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		const [code, signal] = await once(child, "exit");
+		assert.equal(stdout, "", "the group was acknowledged before the writer died");
+		assert.ok(signal === "SIGKILL" || (code !== null && code !== 0), `exit ${code} ${signal}`);
+		const size = (await stat(path)).size;
+		assert.ok(size > acknowledgedSize, "the killed writer left part of its group");
+		// Whole lines it wrote before it died were never acknowledged; whatever it wrote of the next is torn.
+		const reopened = await JsonlSessionStore.open(directory);
+		let survivors: number;
+		try {
+			const { entries } = await reopened.load(header.id);
+			survivors = entries.length - 1;
+			assert.deepEqual(entries[0], first);
+			assert.deepEqual(
+				entries.slice(1).map((entry) => entry.id),
+				Array.from({ length: survivors }, (_, index) => `lost-${index}`),
+			);
+			assert.ok(survivors < GROUP_APPENDS);
+		} finally {
+			await reopened.close();
+		}
+		const next = { ...first, id: "next" };
+		if (survivors > 0)
+			await assert.rejects(store.append(header.id, [next], { expectSeq: 1 }), (error: Error) => {
+				assert.ok(error instanceof SessionConflictError);
+				assert.equal(error.actualSeq, 1 + survivors);
+				return true;
+			});
+		assert.deepEqual(await store.append(header.id, [next], { expectSeq: 1 + survivors }), { lastSeq: 2 + survivors });
+		const { entries } = await store.load(header.id);
+		assert.deepEqual(entries.at(-1), next);
+		assert.equal(entries.length, 2 + survivors);
+		const text = await readFile(path, "utf8");
+		assert.ok(text.endsWith(`${JSON.stringify(next)}\n`), "the torn line is gone and the append ends the file");
+		assert.ok(text.length < size + 1024, "the torn line was cut off before the append");
+	} finally {
+		await store.close();
+		await rm(directory, { recursive: true, force: true, maxRetries: 5 });
 	}
 });
