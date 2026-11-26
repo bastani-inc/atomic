@@ -4,7 +4,7 @@
 
 ### Changed
 
-- A skill given to a subagent now arrives with its `skill://<name>` address and the note `References are relative to skill://<name>/.`, so the subagent can open the skill's other files and scripts.
+- A skill given to a subagent now arrives with its `skill://<name>` address and the note `References are relative to skill://<name>/.`, so the subagent can open the skill's other files and scripts ([#6589](https://github.com/bastani-inc/atomic/pull/6589)).
 
 ### Fixed
 
