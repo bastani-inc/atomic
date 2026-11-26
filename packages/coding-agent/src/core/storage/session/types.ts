@@ -628,16 +628,6 @@ export interface SessionForkStream {
 }
 export type SessionForkSeed = readonly SessionEntry[] | SessionForkStream;
 
-/**
- * How a resume reads: `deferChildRecords` leaves subagent child records to be read when shown; `forFork` says a fork
- * takes the entries read, so a store that shares history notes where each is stored for the fork to share it (#6560).
- * A plain resume notes nothing, at no cost.
- */
-export interface SessionResumeOptions {
-	readonly deferChildRecords: true;
-	readonly forFork?: true;
-}
-
 export interface ForkArchiveSource {
 	readonly store: SessionStore;
 	readonly sessionId: string;
@@ -746,7 +736,7 @@ export interface SessionStore {
 	readEntryChunk?(reference: OversizedSessionEntry, offset: number, bytes?: number): Promise<Uint8Array>;
 
 	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
-	readResume?(sessionId: string, leafId?: string, options?: SessionResumeOptions): Promise<SessionResume>;
+	readResume?(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume>;
 	readChildCatalogCut?(sessionId: string): Promise<SessionChildReadCut>;
 	/**
 	 * Where the session's snapshot entries are, from the index the store keeps of its history, without reading an entry:

@@ -22,8 +22,13 @@ import type {
 	SessionStore,
 	SessionWriteResult,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import {
+	assertFewStalls,
+	CPU_CLOCK_STEP_MS,
+	watchEventLoopTurns,
+} from "../../packages/coding-agent/test/helpers/event-loop-turns.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
-import { storageBackends } from "../helpers/storage-backends.js";
+import { libsqlFileBackend, storageBackends } from "../helpers/storage-backends.js";
 import { countStorageRoundTrips } from "../helpers/storage-round-trips.js";
 import {
 	bytesOf,
@@ -378,10 +383,7 @@ for (const backend of storageBackends) {
 						await enable(store);
 						const made = parentEntries(40);
 						await store.create(header("p"), made);
-						// A fork's resume reads the whole linear session as its branch, noting each entry for the fork to share.
-						const resume = await store.readResume!("p", undefined, { deferChildRecords: true, forFork: true });
-						const read = { entries: resume.branch.map(({ entry }) => entry), epoch: resume.epoch };
-						assert.equal(read.entries.length, 40);
+						const read = await store.readRange("p", 1, 40);
 						const edited = read.entries[10] as SessionEntry & { message: { content: string } };
 						edited.message.content = "edited in memory";
 						const created: SessionWriteResult = await createForkArchive(store, header("c", "p"), read.entries, {
@@ -448,7 +450,7 @@ for (const backend of storageBackends) {
 			);
 
 			test(
-				"a tail branch shares its rows; a clone of a session a plain resume read copies them (#6560)",
+				"a tail branch and a clone of a session read in full share its rows too (#6560)",
 				() =>
 					withBackendScope(backend, async (scope) => {
 						const database = await scope.connect();
@@ -467,12 +469,11 @@ for (const backend of storageBackends) {
 						);
 						assert.equal((await segments(database, scope.prefix, branch)).length, 2);
 
-						// A plain resume notes nothing, so that opening a session costs what it did before forks shared history: a clone
-						// of the entries it read stores them, as it did then. Those its manager appends since are shared.
+						// A clone keeps every row as stored.
 						const cloning = await SessionManager.open(store, "p", CWD);
 						const clone = (await cloning.forkTo(CWD, store)).getSessionId();
-						assert.equal((await ownRows(database, scope.prefix, clone)).length, PARENT_LENGTH);
-						assert.deepEqual(await segments(database, scope.prefix, clone), []);
+						assert.deepEqual(await ownRows(database, scope.prefix, clone), []);
+						assert.deepEqual(await segments(database, scope.prefix, clone), [["p", 1, PARENT_LENGTH, 0]]);
 						assert.deepEqual((await store.load(clone)).entries, made);
 					}),
 				SERVER_TIMEOUT_MS,
@@ -781,3 +782,130 @@ describe("a fork opens its child from what it wrote in the other stores too (#65
 			}
 		});
 });
+
+/**
+ * `database`, recording the SQL of each statement its write transactions run while `recording.on` is set. The
+ * transactions run as they would, though through a wrapper, so their statements go one at a time.
+ */
+function recordingWrites(database: SqliteDatabase) {
+	const recording = { on: false, statements: [] as string[] };
+	const wrapped = new Proxy(database, {
+		get(target, key) {
+			if (key === "transaction")
+				return (callback: Parameters<SqliteDatabase["transaction"]>[0], options?: SqliteTransactionOptions) =>
+					target.transaction(
+						(tx) =>
+							callback(
+								new Proxy(tx, {
+									get(inner, name) {
+										const value = Reflect.get(inner, name, inner) as unknown;
+										if (typeof value !== "function") return value;
+										if (name !== "run" && name !== "exec" && name !== "get" && name !== "all")
+											return value.bind(inner);
+										return (sql: string, ...params: unknown[]) => {
+											if (recording.on && options?.readOnly !== true) recording.statements.push(sql);
+											return Reflect.apply(value, inner, [sql, ...params]);
+										};
+									},
+								}),
+							),
+						options,
+					);
+			const value = Reflect.get(target, key, target) as unknown;
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	return { database: wrapped, recording };
+}
+
+/**
+ * Session "p" of `PARENT_LENGTH` entries, written by a store that closed before it noted them, as another process that
+ * wrote it would have: what this process knows of the session is what it reads.
+ */
+async function writtenElsewhere(scope: { connect(): Promise<SqliteDatabase>; readonly prefix: string }) {
+	const writer = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
+	await enable(writer);
+	const made = parentEntries(PARENT_LENGTH);
+	await writer.create(header("p"), made);
+	await writer.close();
+	return made;
+}
+
+for (const backend of [...storageBackends, libsqlFileBackend]) {
+	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
+	describe.skipIf(backend.skipReason !== undefined)(`a reopened session's fork on ${name} (#6560)`, () => {
+		test(
+			"forkTo of a session reopened in full names every row of it, as stored (#6560)",
+			() =>
+				withBackendScope(backend, async (scope) => {
+					const made = await writtenElsewhere(scope);
+					const database = await scope.connect();
+					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+					const parent = await SessionManager.open(store, "p", CWD);
+					assert.ok(parent.hasFullHistory());
+					const clone = (await parent.forkTo(CWD, store)).getSessionId();
+					assert.deepEqual(await ownRows(database, scope.prefix, clone), []);
+					assert.deepEqual(await segments(database, scope.prefix, clone), [["p", 1, PARENT_LENGTH, 0]]);
+					assert.deepEqual((await store.load(clone)).entries, made);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"forkTo of entries all edited in place stores them as create does, 64 rows a statement (#6560)",
+			() =>
+				withBackendScope(backend, async (scope) => {
+					await writtenElsewhere(scope);
+					const { database, recording } = recordingWrites(await scope.connect());
+					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+					const parent = await SessionManager.open(store, "p", CWD);
+					const edited = parent.getEntries();
+					for (const entry of edited) Object.assign(entry, { edited: true });
+					recording.on = true;
+					const clone = (await parent.forkTo(CWD, store)).getSessionId();
+					recording.on = false;
+					const entries = renderStorageIdentifiers("sessions", SESSION_TABLES, scope.prefix).entries;
+					const inserts = recording.statements.filter((sql) => sql.startsWith(`INSERT INTO ${entries} (`));
+					// 500 rows of about 300 bytes: seven inserts of 64 rows and one of 52, not one a row.
+					assert.equal(inserts.length, 8, inserts.join("\n"));
+					assert.ok(recording.statements.length <= 30, recording.statements.join("\n"));
+					assert.equal((await ownRows(database, scope.prefix, clone)).length, PARENT_LENGTH);
+					assert.deepEqual((await store.load(clone)).entries, edited);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"noting a 25 MB entry a load read never holds the event loop for more than 2 ms, and its fork still shares it (#6560)",
+			() =>
+				withBackendScope(backend, async (scope) => {
+					const writer = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
+					await enable(writer);
+					const huge = `${Array.from({ length: 400_000 }, (_, i) => `row-${i} ${"x".repeat(52)}`).join("\n")}`;
+					await writer.create(header("big"), [
+						user("b1", null, "before", 1),
+						user("b2", "b1", huge, 2),
+						user("b3", "b2", "after", 3),
+					]);
+					await writer.close();
+					const database = await scope.connect();
+					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+					// A load reads the entry whole, as a history:// read does; a resume leaves it in the store.
+					const loaded = await store.load("big");
+					const stopWatching = watchEventLoopTurns(2);
+					// Time for the fingerprints to be taken in the background, a slice a turn.
+					await new Promise((resolve) => setTimeout(resolve, 1_500));
+					const turns = await stopWatching();
+					assertFewStalls(turns, 2 + CPU_CLOCK_STEP_MS, "taking a 25 MB entry's fingerprint");
+					// Taken in one go, the fingerprint holds the event loop for tens of milliseconds: never once.
+					assert.ok(Math.max(0, ...turns.blockedMs) < 10 + CPU_CLOCK_STEP_MS, turns.blockedMs.join(", "));
+					const parent = await SessionManager.open(store, "big", CWD);
+					const clone = (await parent.forkTo(CWD, store)).getSessionId();
+					assert.deepEqual(await ownRows(database, scope.prefix, clone), []);
+					assert.deepEqual(await segments(database, scope.prefix, clone), [["big", 1, 3, 0]]);
+					assert.equal(loaded.entries.length, 3);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+	});
+}
