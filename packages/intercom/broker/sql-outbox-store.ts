@@ -31,9 +31,17 @@ import {
 	type StateStoreInvalidReason,
 } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
+import type { OutboxReservation } from "./sql-sent-message-authority.js";
+import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 const UNDELIVERED = "state IN ('queued', 'claimed')";
+/**
+ * The settings a PostgreSQL send that runs in one round trip (`enqueueAtOnce`) records its decisions in, for the
+ * statements after the one that made them: whether the recipient's queue has room for the row, and which reservation
+ * of the message the send deletes if its row is not queued.
+ */
+const SEND_ROOM = "atomic.intercom_send_room";
+const SEND_FORGET = "atomic.intercom_send_forget";
 /** The setting a PostgreSQL claim transaction records in that its recipient has undelivered rows, and its locks are held. */
 const CLAIM_GATE = "atomic.intercom_outbox_claim";
 /** The most `markDelivered` calls one transaction settles together (#6560). */
@@ -117,6 +125,22 @@ export interface SqlOutboxStore extends OutboxStore {
 	 * connection sends them with the transaction's start instead of a round trip each (#6560).
 	 */
 	enqueueLeading(request: OutboxEnqueueRequest): readonly SqliteStatement[];
+	/**
+	 * PostgreSQL: a send that reserves its message with `reservation` and queues its row as `enqueueIn` does under its
+	 * guard, with every decision made by the database, so the transaction is one round trip and holds its recipient's
+	 * lock domain for no round trip at all: `leading` are its statements, to send with its start and its commit
+	 * (`leadingOnly`), and `answer` makes them on the transaction's handle and reads the outcome. Undefined for a request
+	 * that writes a wake-up hint or that `enqueueIn` refuses, which take `enqueueIn`'s way.
+	 */
+	enqueueAtOnce?(
+		request: OutboxEnqueueRequest,
+		reservation: OutboxReservation,
+	):
+		| {
+				readonly leading: readonly SqliteStatement[];
+				answer(executor: SqliteExecutor): Promise<OutboxEnqueueResult>;
+		  }
+		| undefined;
 }
 
 /**
@@ -157,7 +181,8 @@ export async function withoutFailedWake<T>(
  * The lock domain of one recipient's sends, `<outbox>:<recipient>`: a send reserves its message and queues its row in
  * one transaction of it (`reserveAndEnqueue`, `enqueue`), so sends to one recipient run one at a time, and commit their
  * rows in the order of their sequence, and a send's checks of that recipient's queue (its size budget) hold until it
- * commits. Sends to other recipients, claims and every write of one row run beside them (#6560).
+ * commits. Sends to other recipients, claims and every write of one row run beside them (#6560). A send that a lock
+ * timeout ended runs again before the next send to that recipient this process makes starts (`RETRY_UNAPPLIED`).
  */
 export function recipientTransaction(
 	database: SqliteDatabase,
@@ -165,7 +190,7 @@ export function recipientTransaction(
 	targetIdentity: string,
 ): SqliteTransactionOptions {
 	const outbox = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_outbox`;
-	return { concurrency: { kind: "serial", domain: `${outbox}:${targetIdentity}` } };
+	return { ...RETRY_UNAPPLIED, concurrency: { kind: "serial", domain: `${outbox}:${targetIdentity}` } };
 }
 
 /**
@@ -174,7 +199,10 @@ export function recipientTransaction(
  * transactions an older broker runs on these tables (#6560).
  */
 export function rowTransaction(): SqliteTransactionOptions {
-	return { concurrency: { kind: "fenced", audit: fencedPath("intercom-outbox-row"), excludesSerial: true } };
+	return {
+		...RETRY_UNAPPLIED,
+		concurrency: { kind: "fenced", audit: fencedPath("intercom-outbox-row"), excludesSerial: true },
+	};
 }
 
 /**
@@ -270,6 +298,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		assignments: string,
 		params: readonly SqliteValue[],
 		answer: (written: OutboxRecord) => Result,
+		relaxedDurability = false,
 	): Promise<Result | OutboxClaimWriteRejection> => {
 		if (claim.messageId.length === 0) return Promise.resolve(invalid("empty-message-id"));
 		if (claim.claimantId.length === 0) return Promise.resolve(invalid("empty-claimant-id"));
@@ -288,7 +317,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				if (isSettled(record)) return { status: "settled", row: toRow(record) } as const;
 				return { status: "stale" } as const;
 			},
-			{ ...fenced, leading: [write] },
+			{ ...fenced, leading: [write], ...(relaxedDurability ? { relaxedDurability } : {}) },
 		);
 	};
 
@@ -519,9 +548,125 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		...(request.owed === true ? [] : [sizedTotalsStatement(request.targetIdentity)]),
 	];
 
+	/**
+	 * PostgreSQL: `reserveAndEnqueue`'s send in five statements that the database decides alone, sent together with the
+	 * transaction's start and commit. The recipient's lock domain, taken with the start, is held while the server runs them
+	 * and never across a round trip to the broker, so sends to one busy recipient wait for each other only that long. Under
+	 * the lock, as `enqueueIn` and the guard decide it across round trips:
+	 * 1. `decide` reads the message's row and reservation and the recipient's queue, and records in the transaction whether
+	 *    the queue has room for the row, and whether the send's earlier reservation goes because it has not.
+	 * 2. The reservation is written only while no row of the message with another digest is queued, and either the queue has
+	 *    room or the send's own row is queued already; a reservation of the message already there is left as it is.
+	 * 3. The row is inserted only while the queue has room and the send's digest holds the reservation.
+	 * 4. A reservation the send wrote is deleted again when its row is not queued, and an earlier one when the queue was full.
+	 * 5. The message's row is read, to answer a send whose row was not inserted.
+	 * Each statement sees what every transaction that committed before it wrote, as each of `enqueueIn`'s does.
+	 */
+	const enqueueAtOnce = (request: OutboxEnqueueRequest, reservation: OutboxReservation) => {
+		const messageId = request.frame.message.id;
+		if (
+			request.wakeHostWithinMs !== undefined ||
+			request.targetIdentity.length === 0 ||
+			request.originBrokerId.length === 0 ||
+			messageId.length === 0
+		)
+			return undefined;
+		const frameJson = JSON.stringify(request.frame);
+		const frameBytes = Buffer.byteLength(frameJson);
+		const queuedTotals =
+			request.owed === true
+				? { sql: "(SELECT 1) AS totals", params: [] as SqliteValue[] }
+				: {
+						sql: `(SELECT COUNT(*) AS row_count, COALESCE(SUM(frame_bytes), 0) + COALESCE((
+								SELECT SUM(LENGTH(frame_json)) FROM ${table}
+								WHERE target_identity = ? AND ${UNDELIVERED} AND frame_bytes IS NULL
+							), 0) AS byte_count
+							FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}) AS totals`,
+						params: [request.targetIdentity, request.targetIdentity],
+					};
+		const room =
+			request.owed === true
+				? { sql: "1", params: [] as SqliteValue[] }
+				: {
+						sql: "CASE WHEN totals.row_count < ? AND totals.byte_count + ? <= ? THEN 1 ELSE 0 END",
+						params: [OUTBOX_TARGET_MAX_ROWS, frameBytes, OUTBOX_TARGET_MAX_BYTES],
+					};
+		const decide: SqliteStatement = {
+			sql: `SELECT decided.room, decided.queued_digest, decided.reserved_digest,
+				set_config('${SEND_ROOM}', CASE WHEN decided.room = 1 THEN 'room' ELSE 'full' END, true) AS room_gate,
+				set_config('${SEND_FORGET}', CASE WHEN decided.room = 0 AND decided.queued_digest IS NULL
+					AND decided.reserved_digest = ? THEN 'earlier' ELSE '' END, true) AS forget_gate
+			FROM (
+				SELECT ${room.sql} AS room, (SELECT digest FROM ${table} WHERE message_id = ?) AS queued_digest,
+					(${reservation.holder.sql}) AS reserved_digest
+				FROM ${queuedTotals.sql}
+			) AS decided`,
+			params: [reservation.digest, ...room.params, messageId, ...reservation.holder.params, ...queuedTotals.params],
+		};
+		const hasRoom = `current_setting('${SEND_ROOM}', true) = 'room'`;
+		const reserve = reservation.reserveWhere(
+			{
+				sql: `NOT EXISTS (SELECT 1 FROM ${table} WHERE message_id = ? AND digest <> ?)
+					AND (${hasRoom} OR EXISTS (SELECT 1 FROM ${table} WHERE message_id = ? AND digest = ?))`,
+				params: [messageId, request.digest, messageId, request.digest],
+			},
+			`set_config('${SEND_FORGET}', 'new', true) AS reserved`,
+		);
+		const insert: SqliteStatement = {
+			sql: `INSERT INTO ${table}(message_id, target_identity, origin_broker_id, digest, frame_json, state, queued_at,
+					frame_bytes)
+				SELECT ?, ?, ?, ?, ?, 'queued', ${nowMs}, CAST(? AS ${types.int})
+				WHERE ${hasRoom} AND ${reservation.held.sql}
+				ON CONFLICT(message_id) DO NOTHING
+				RETURNING ${columns}`,
+			params: [
+				messageId,
+				request.targetIdentity,
+				request.originBrokerId,
+				request.digest,
+				frameJson,
+				frameBytes,
+				...reservation.held.params,
+			],
+		};
+		const forget = reservation.forgetWhere({
+			sql: `current_setting('${SEND_FORGET}', true) = 'earlier' OR (current_setting('${SEND_FORGET}', true) = 'new'
+				AND NOT EXISTS (SELECT 1 FROM ${table} WHERE message_id = ? AND digest = ?))`,
+			params: [messageId, request.digest],
+		});
+		const queued = selectStatement(messageId);
+		const leading = [decide, reserve, insert, forget, queued];
+		return {
+			leading,
+			async answer(executor: SqliteExecutor): Promise<OutboxEnqueueResult> {
+				// In the order of `leading`, each answered with the transaction's start: no call waits for a round trip.
+				const decided = (await executor.get<SqliteRow & { room: SqliteValue; reserved_digest: string | null }>(
+					decide.sql,
+					...decide.params,
+				))!;
+				await executor.all(reserve.sql, ...reserve.params);
+				const row = await executor.get<OutboxRecord>(insert.sql, ...insert.params);
+				await executor.run(forget.sql, ...forget.params);
+				const found = await executor.get<OutboxRecord>(queued.sql, ...queued.params);
+				if (row !== undefined) return { status: "inserted", row: toRow(row) };
+				// Another digest held the message's reservation: the send is refused, as before it wrote anything.
+				if (decided.reserved_digest !== null && decided.reserved_digest !== reservation.digest)
+					return { status: "conflict", messageId };
+				if (found !== undefined)
+					return found.digest === request.digest
+						? { status: "duplicate", row: toRow(found) }
+						: { status: "conflict", messageId };
+				if (Number(decided.room) === 0)
+					return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES };
+				return { status: "conflict", messageId };
+			},
+		};
+	};
+
 	return {
 		enqueueIn,
 		enqueueLeading,
+		...(dialect === "postgres" ? { enqueueAtOnce } : {}),
 		async enqueue(request) {
 			if (request.targetIdentity.length === 0) return invalid("empty-target-identity");
 			if (request.originBrokerId.length === 0) return invalid("empty-broker-id");
@@ -612,6 +757,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 						return claimed(records.filter((record) => record.message_id !== null));
 					},
 					{
+						...RETRY_UNAPPLIED,
 						concurrency: { kind: "serial", domain: `${table}_claims:${targetIdentity}` },
 						leading: [waiting, statement],
 						leadingOnly: true,
@@ -665,7 +811,10 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		},
 
 		renewClaim(claim) {
-			return withClaim(claim, `claim_renewed_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const);
+			// Its claimant renews again within the renewal interval, far inside the claim's staleness limit: a renewal lost
+			// in a crash of the database server leaves the claim a renewal older and still current, so its commit does not
+			// wait for the disk.
+			return withClaim(claim, `claim_renewed_at = ${nowMs}`, [], () => ({ status: "renewed" }) as const, true);
 		},
 
 		reportSaving(claim) {

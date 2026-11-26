@@ -27,6 +27,7 @@ import { recipientTransaction } from "./sql-outbox-store.js";
 import {
 	ensureBrokerSchema,
 	openCatalogOf,
+	RETRY_UNAPPLIED,
 	stampBrokerSchemaAtOpenEnd,
 	withBrokerSchemaCatalog,
 } from "./sql-schema.js";
@@ -45,6 +46,16 @@ const fillfactorApi: Partial<Pick<typeof storage, "ensureTableFillfactor">> = st
  * fits on its page and stays a HOT update (#6560).
  */
 const LEASE_FILLFACTOR = 80;
+
+/**
+ * How long a lease write waits for a row lock on PostgreSQL before it fails and runs again. Five runs that each wait
+ * this long, and the waits between them, about 4 s, take about 14 s: a renewal made 10 s after the last one still ends
+ * within the lease's 30 s stale bound (`BROKER_LEASE_STALE_AFTER_MS`).
+ */
+const LEASE_LOCK_WAIT_MS = 2_000;
+
+/** The statement of a presence acquisition's wait for the sends to its recipient under way: it only takes the lock. */
+const SENDS_PASSED = { sql: "SELECT 1 AS passed", params: [] };
 
 /**
  * The kind of the row whose `last_token` counts acquisitions on PostgreSQL where the order sequence is missing: see
@@ -371,9 +382,23 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 	const rowAge = dialect.greatest("0", `${nowMs} - ${table}.renewed_at`);
 	/**
 	 * Every write decides on its own row in one guarded statement, so leases never wait for the database's serial lock,
-	 * which a broker's renewals must not wait behind (#6560): see `fencedPath("intercom-lease")`.
+	 * which a broker's renewals must not wait behind (#6560): see `fencedPath("intercom-lease")`. On PostgreSQL a write
+	 * waits for a row lock at most `LEASE_LOCK_WAIT_MS`, then runs again (`RETRY_UNAPPLIED`): a renewal stuck behind
+	 * the database's lock timeout, as long as the lease's whole life, would let the lease go stale however it ended.
 	 */
-	const fenced = { concurrency: { kind: "fenced", audit: fencedPath("intercom-lease") } } as const;
+	const fenced = {
+		...RETRY_UNAPPLIED,
+		...(dialect.name === "postgres" ? { lockWaitMs: LEASE_LOCK_WAIT_MS } : {}),
+		concurrency: { kind: "fenced", audit: fencedPath("intercom-lease") },
+	} as const;
+	/**
+	 * A renewal only moves `renewed_at` forward, and its holder renews again within the renewal interval, far inside the
+	 * staleness limit: one lost in a crash of the database server leaves the lease a renewal older, still live, and no
+	 * fencing token changes. A renewal that carries a subject writes all of it, and the next renewal writes it again. So
+	 * its commit does not wait for the disk (PostgreSQL's `synchronous_commit = off`), which
+	 * spares the server a log flush per broker and per session every interval. Acquisitions and releases stay durable.
+	 */
+	const renewal = { ...fenced, relaxedDurability: true } as const;
 	/**
 	 * The order of a key acquired for the first time. A serial database runs one acquisition at a time, so the
 	 * largest order so far, plus one, is unique. PostgreSQL runs acquisitions beside one another, so each takes the
@@ -457,11 +482,13 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 				const row = (await holderOf(tx, key))!;
 				return { status: "held", holderId: row.holder_id!, fencingToken: Number(row.fencing_token) } as const;
 			}, fenced);
+			// The lock goes with the transaction's start and its commit, in one round trip, so it is held for none.
 			if (acquired.status === "acquired" && subject.kind === "presence" && dialect.name === "postgres")
-				await database.transaction(
-					async () => {},
-					recipientTransaction(database, options.prefix, subject.targetIdentity),
-				);
+				await database.transaction((tx) => tx.get(SENDS_PASSED.sql), {
+					...recipientTransaction(database, options.prefix, subject.targetIdentity),
+					leading: [SENDS_PASSED],
+					leadingOnly: true,
+				});
 			return acquired;
 		},
 		async renew(lease, subject) {
@@ -480,7 +507,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 								...ownedParams(lease),
 							);
 				return changes === 1 ? ({ status: "renewed" } as const) : stale(await holderOf(tx, lease.key));
-			}, fenced);
+			}, renewal);
 		},
 		async renewMany(requests) {
 			if (requests.length === 0) return [];
@@ -529,7 +556,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 						renewed[position]!.changes === 1
 							? ({ status: "renewed" } as const)
 							: stale(await holderOf(tx, requests[i]!.lease.key));
-			}, fenced);
+			}, renewal);
 			return results as LeaseRenewResult[];
 		},
 		async release(lease) {

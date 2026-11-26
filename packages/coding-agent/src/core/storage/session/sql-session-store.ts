@@ -1071,11 +1071,10 @@ export class SqlSessionStore implements SessionStore {
 					],
 					// Version 3 is recorded by the switch to shared-history forks (`enableSharedHistoryForks`), or by step 1
 					// when it creates a new database's schema at it; builds without it refuse it here, before their snapshot or
-					// search index opens (#6560).
-					options: {
-						table: storageMigrationTable(options.prefix),
-						recordedThrough: SESSION_SCHEMA_VERSION_SHARED_HISTORY,
-					},
+					// search index opens (#6560). This build accepts it and refuses a newer one below, not through an option of
+					// the migrations: a process of an earlier release that an in-place update caught keeps that release's
+					// copy of them, which knows only `acceptNewer`, and would refuse version 3 as newer than step 2.
+					options: { table: storageMigrationTable(options.prefix), acceptNewer: true },
 				},
 				// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its
 				// later steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking
@@ -1093,6 +1092,8 @@ export class SqlSessionStore implements SessionStore {
 					options: { table: storageMigrationTable(options.prefix), acceptNewer: true },
 				},
 			]);
+			if ((sessionsSchema?.version ?? 0) > SESSION_SCHEMA_VERSION)
+				throw new StorageSchemaVersionError(SESSION_DOMAIN, sessionsSchema!.version, SESSION_SCHEMA_VERSION);
 			// Where versions are recorded, the ledger tells whether the switch below ran already; elsewhere it reads. A
 			// schema this open created is at that version already, and the catalog it read learns of the fork tables.
 			if (createdShared) {

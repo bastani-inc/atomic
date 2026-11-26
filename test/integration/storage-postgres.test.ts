@@ -287,6 +287,30 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		});
 	});
 
+	test("only a transaction with relaxedDurability commits without waiting for the disk (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const database = await open({ maxConnections: 1 });
+			await database.exec("CREATE TABLE beats (id BIGINT PRIMARY KEY, at BIGINT NOT NULL)");
+			const setting = "SELECT current_setting('synchronous_commit') AS value";
+			const relaxed = await database.transaction(
+				async (tx) => {
+					await tx.run("INSERT INTO beats(id, at) VALUES (1, 1)");
+					return tx.get<{ value: string }>(setting);
+				},
+				{ relaxedDurability: true },
+			);
+			assert.equal(relaxed?.value, "off");
+			// The setting ends with the transaction: the next one on the same connection waits for the disk again.
+			const durable = await database.transaction(async (tx) => {
+				await tx.run("UPDATE beats SET at = 2 WHERE id = 1");
+				return tx.get<{ value: string }>(setting);
+			});
+			assert.equal(durable?.value, "on");
+			assert.equal((await database.get<{ value: string }>(setting))?.value, "on");
+			assert.deepEqual(await database.all("SELECT id, at FROM beats"), [{ id: 1, at: 2 }]);
+		});
+	});
+
 	test("a serial transaction excludes another of its domain until it commits (#4793)", async () => {
 		await withPostgresDatabase(async ({ open }) => {
 			const first = await open();

@@ -572,6 +572,17 @@ When `npm install`, `pnpm add`, or `bun add` replaces `@bastani/atomic` while a 
 
 Also restart after an in-place update if your process launched on an older Atomic release or before importing `@bastani/atomic/rpc-entry`.
 
+### Node 22 hosts
+
+Atomic no longer runs on Node.js 22. It needs Node.js 24.20.0 or newer. To move a host off Node 22:
+
+1. Run `node --version` to see which version you have.
+2. Install the current Node.js 24 LTS release from [nodejs.org](https://nodejs.org/en/download), or with `nvm install 24`, `fnm install 24` or `mise use -g node@24`.
+3. Reinstall your project's dependencies with the new Node.js, for example with `npm install`.
+4. If you started your host with `node --experimental-async-context-frame` to make Node 22 faster, remove the flag. Node 24 doesn't need it and refuses to start with it.
+
+See [Node.js version](/getting-started/installation#nodejs-version) for more on choosing a version.
+
 ### Migrating an existing Node host
 
 - **Builtins load automatically:** Remove manual registration of shipped builtin extensions; disable selectively with `builtins` and restrict tools with `tools` / `excludedTools` (`tools: []` excludes Intercom too).

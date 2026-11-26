@@ -133,6 +133,12 @@ The script stamps a detached `Release <version>` commit and pushes only its tag.
 
 Tags have no `v` prefix. A stable tag such as `0.9.10` publishes to npm `latest` and becomes the latest GitHub Release. An alpha tag such as `0.9.10-alpha.1` publishes to npm `next` and becomes a GitHub prerelease.
 
+### Docs site changelog
+
+The docs site's [changelog page](https://docs.bastani.ai/changelog), `packages/coding-agent/docs/changelog.mdx`, is generated from the release summaries in `packages/coding-agent/CHANGELOG.md` by `bun run scripts/sync-changelog-docs.ts`. The release PR may change only `CHANGELOG.md` files, so it can't carry the page. After publication, step 9 of the publish-release skill regenerates the page in its own docs PR.
+
+`npm run docs:check` in `packages/coding-agent` (run by `static-checks`) fails when the page doesn't match the generator's output. It accepts a page that only lacks the newest release, so the release PR and the PRs that merge before the docs PR still pass. If a release's docs PR never lands, the next release PR fails this check until the page is regenerated.
+
 ### Registering a new package name
 
 A maintainer must publish the first version of a new public package by hand. Run `npm publish --access public` from the prepared package directory. Then set its npm trusted publisher to repository `bastani-inc/atomic`, workflow `publish.yml` and environment `npm-publish`. Do not add a static npm token. See `packages` and `requires_registered_name` in the `publish-npm` job for the payload and names the workflow may skip until registered.

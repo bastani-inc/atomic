@@ -27,7 +27,7 @@ import type {
 import { reservationAdmitsSender } from "./group-membership.js";
 import { isReleasedReservationKey } from "./released-children.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema, openCatalogOf, withBrokerSchemaCatalog } from "./sql-schema.js";
+import { ensureBrokerSchema, openCatalogOf, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type ReservationRow = SqliteRow & {
 	reservation_key: string;
@@ -142,7 +142,7 @@ async function openRestoringReservationStoreInCatalog({
 	 * Its transactions read and write this table, its counters and its wake claims alone, which no other store
 	 * touches, so they exclude one another, not every writer of the database (#6560).
 	 */
-	const serial = { concurrency: { kind: "serial", domain: table } } as const;
+	const serial = { ...RETRY_UNAPPLIED, concurrency: { kind: "serial", domain: table } } as const;
 	await ensureBrokerSchema(database, prefix, "restoring-reservations", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
@@ -395,6 +395,8 @@ async function openRestoringReservationStoreInCatalog({
 		async renew(lease): Promise<RestoringReservationRenewResult> {
 			const bad = invalidLease(lease);
 			if (bad !== undefined) return bad;
+			// Renewed again within the renewal interval, far inside the staleness limit: a renewal lost in a crash of the
+			// database server leaves the reservation a renewal older and still held, so its commit does not wait for the disk.
 			return database.transaction(async (tx) => {
 				const stale = await owned(tx, lease);
 				if (stale !== undefined) return stale;
@@ -403,7 +405,7 @@ async function openRestoringReservationStoreInCatalog({
 					lease.reservationKey,
 				);
 				return { status: "renewed" };
-			}, serial);
+			}, { ...serial, relaxedDurability: true });
 		},
 		async release(lease, outcome): Promise<RestoringReservationReleaseResult> {
 			const bad = invalidLease(lease);

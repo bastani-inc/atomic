@@ -17,7 +17,7 @@ import type {
 	ReleasedAskSupersede,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
-import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
+import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 interface ReleasedAskRow extends SqliteRow {
 	readonly question_id: string;
@@ -79,7 +79,7 @@ async function openReleasedAskStoreInCatalog({ database, prefix }: IntercomBroke
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_released_asks`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	/** Its transactions read and write this table alone, so they exclude one another, not every writer (#6560). */
-	const serial = { concurrency: { kind: "serial", domain: table } } as const;
+	const serial = { ...RETRY_UNAPPLIED, concurrency: { kind: "serial", domain: table } } as const;
 	await ensureBrokerSchema(database, prefix, "released-asks", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(

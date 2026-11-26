@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Storage adapters receive a new transaction option, `relaxedDurability`, for writes whose loss in a server crash is harmless, such as lease renewals. A driver may answer the commit before the write reaches disk, or ignore the option. The PostgreSQL adapter turns `synchronous_commit` off for that transaction only. See [custom storage adapters](docs/storage/custom-adapters.md) ([#6633](https://github.com/bastani-inc/atomic/pull/6633), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ### Changed
 
 - On PostgreSQL, until `atomic storage migrate` sets `fillfactor` on the sessions table and the Intercom lease table, a process now checks each table's setting once instead of every time it opens a store. A role that may not change those tables, such as a runtime role, then opens the session store in 4 round trips instead of 5 from its second open on. Once migrate has set it, no open checks it, as before ([#6635](https://github.com/bastani-inc/atomic/pull/6635), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
@@ -9,6 +13,7 @@
 ### Fixed
 
 - On macOS, the standalone `atomic` binary no longer reports a healthy local SQLite store as failed with "unable to open database file (SQLite code 14)" in `atomic storage status` after every Atomic process had closed it, for example right after `atomic storage import`. macOS's SQLite, which that binary uses, would not open a store read-only once its last connection had removed the `-wal` file.
+- A process still running Atomic 0.10.10 or 0.10.11-alpha.1 after an in-place update (`npm install -g`, `bun add -g`) no longer fails to open a PostgreSQL session store with "this store needs a newer Atomic" once forks share history in that database. It opens the store, and its forks share their parent's history as in a new process ([#6631](https://github.com/bastani-inc/atomic/pull/6631)).
 
 ## [0.10.11-alpha.2] - 2026-11-26
 
