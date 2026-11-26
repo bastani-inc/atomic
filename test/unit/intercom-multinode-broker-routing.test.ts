@@ -12,6 +12,7 @@ import {
 	type SqliteValue,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import {
 	KNOWN_SESSION_REFRESH_INTERVAL_MS,
@@ -320,7 +321,6 @@ async function realClientOn(node: Node, name: string) {
 		);
 	});
 	await new Promise<void>((resolveListen) => server.listen(socketPath, resolveListen));
-	const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 	const client = new IntercomClient(undefined, { acknowledgesReceipt: true, brokerSocketPath: socketPath });
 	client.on("error", () => {});
 	cleanups.push(async () => {
