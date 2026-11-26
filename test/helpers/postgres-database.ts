@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { openPostgresDatabase, type PostgresDatabaseOptions } from "../../packages/storage-postgres/postgres.js";
@@ -9,7 +10,24 @@ import { openPostgresDatabase, type PostgresDatabaseOptions } from "../../packag
  * `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1` (CI's storage conformance job) makes that a failure.
  */
 export const postgresTestUrl = process.env.ATOMIC_TEST_POSTGRES_URL || undefined;
-export const postgresTestPassword = process.env.ATOMIC_TEST_POSTGRES_PASSWORD;
+export const postgresTestPassword = passwordOutsideCheckout(process.env.ATOMIC_TEST_POSTGRES_PASSWORD);
+
+/**
+ * `password`, refused when it is part of this checkout's path. Atomic removes a database's password from every error
+ * message and stack it reports, and these stacks name files in the checkout. So with a password such as `atomic` and a
+ * checkout under `~/projects/atomic`, an error comes back as a redacted copy, and the tests that check they get the very
+ * error they raised fail for no fault in the code.
+ */
+function passwordOutsideCheckout(password: string | undefined): string | undefined {
+	if (!password) return password;
+	const checkout = fileURLToPath(new URL("../..", import.meta.url));
+	for (const path of [checkout, realpathSync(checkout)])
+		if (path.includes(password))
+			throw new Error(
+				`ATOMIC_TEST_POSTGRES_PASSWORD is part of this checkout's path (${path}). Atomic redacts the password from the stacks of the errors it reports, which name files in the checkout, so tests that compare errors would fail. Give the test server another password.`,
+			);
+	return password;
+}
 
 if (postgresTestUrl === undefined && process.env.ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED === "1")
 	throw new Error("ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1 but ATOMIC_TEST_POSTGRES_URL is not set");

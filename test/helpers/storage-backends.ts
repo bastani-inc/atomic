@@ -5,6 +5,7 @@ import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storag
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { WithSqliteDatabaseSubject } from "../../packages/coding-agent/src/core/storage/testing.js";
 import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
+import { postgresTestPassword } from "./postgres-database.js";
 import { makeTempDirectory, removeTempDirectory } from "./runtime.js";
 import { interceptConnectionRequests, isExec } from "./sqlite-connection-requests.js";
 
@@ -104,7 +105,7 @@ export const sqliteFileBackend: StorageBackend = {
 
 function postgresBackend(): StorageBackend {
 	const server = serverUrl("ATOMIC_TEST_POSTGRES_URL");
-	const password = process.env.ATOMIC_TEST_POSTGRES_PASSWORD;
+	const password = postgresTestPassword;
 	const open = (url: string) => openPostgresDatabase({ url, ...(password === undefined ? {} : { password }) });
 	return {
 		name: "Postgres",
