@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `StorageNotifications` in `@bastani/atomic/storage` adds an optional `send(notices)` method for sending already-committed notifications together outside the database facade's serial call queue ([#6712](https://github.com/bastani-inc/atomic/issues/6712)).
+
 ### Changed
 
 - On PostgreSQL, deleting or replacing an indexed session now takes 3 round trips instead of 13 for a delete and 12 for a replace, both directly and through PgBouncer in transaction mode. The session's per-table deletes and rewrite now go out with the commit in one request, and forgetting its search index sends its savepoint, deletes and release together. At 80 ms latency, deleting a session took about 0.25 seconds instead of 1.03 seconds and replacing one took about 0.25 seconds instead of 0.96 seconds ([#6697](https://github.com/bastani-inc/atomic/pull/6697), [#6710](https://github.com/bastani-inc/atomic/issues/6710)).

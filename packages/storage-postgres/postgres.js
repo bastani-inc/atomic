@@ -1857,6 +1857,11 @@ export async function openPostgresDatabase(options) {
 	const coalescer = createNotifyCoalescer({
 		sendLater: (notices) => autocommit(pool, (client) => sendNotices(client, notices)),
 	});
+	/** Whether this database handle is closing; post-commit sends skip starting new pool checkouts after it. */
+	let closed = false;
+	/** In-flight `notifications.send` calls awaited before `release` ends the pool. */
+	/** @type {Set<Promise<void>>} */
+	const pendingNotices = new Set();
 	/** @type {import("@bastani/atomic/storage").StorageNotifications} */
 	const notifications = {
 		notify(channel, payload, unless) {
@@ -1869,6 +1874,22 @@ export async function openPostgresDatabase(options) {
 				conditionalNotices.add(sql);
 			}
 			return { sql, params: [...notice.params, ...unless.params] };
+		},
+		send(list) {
+			for (const statement of list)
+				if (!isNotice(statement.sql))
+					return Promise.reject(new StorageError("StorageNotifications.send accepts only statements from notify()"));
+			if (list.length === 0 || closed) return Promise.resolve();
+			const now = coalescer.take(
+				list.map(({ sql, params }) => ({ sql, params: [...params] })),
+				COMMITTED,
+			);
+			if (now.length === 0) return Promise.resolve();
+			const sending = autocommit(pool, (client) => sendNotices(client, now)).finally(() => {
+				pendingNotices.delete(sending);
+			});
+			pendingNotices.add(sending);
+			return sending;
 		},
 		listen(channel, onEvent) {
 			const subscription = listener.listen(channelName(channel), onEvent);
@@ -1888,8 +1909,9 @@ export async function openPostgresDatabase(options) {
 	 * the pools.
 	 */
 	const release = async () => {
+		closed = true;
 		for (const subscription of [...subscriptions]) subscription.close();
-		await coalescer.flush();
+		await Promise.all([coalescer.flush(), ...pendingNotices]);
 		if (--shared.references > 0) return;
 		if (identity !== undefined && sharing.get(identity) === shared) sharing.delete(identity);
 		const reader = shared.reader;

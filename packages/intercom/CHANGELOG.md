@@ -8,6 +8,10 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 - With multi-node routing, a broker now renews all the messages it is delivering in one statement every 10 seconds. It used to renew them one transaction at a time, waiting for each before the next. A broker delivering 20 messages to sessions that are still saving them now makes 1 round trip per renewal instead of 20. A message whose delivery another broker has taken over, or that was settled meanwhile, is still left alone, as before ([#6693](https://github.com/bastani-inc/atomic/pull/6693), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
+### Fixed
+
+- On PostgreSQL, the post-commit wake-up notifications sent after a message to an offline recipient no longer enter the database's serial call queue as two separate calls. Before, each notification waited behind and blocked unrelated concurrent transactions on the sender's database handle and checked out two pool connections, raising 95th-percentile send-to-delivery latency under 200 concurrent brokers. Both notifications now go out together through `StorageNotifications.send` in one coalesced round trip without blocking other transactions ([#6712](https://github.com/bastani-inc/atomic/issues/6712)).
+
 ## [0.10.11-alpha.3] - 2026-11-26
 
 ### Changed

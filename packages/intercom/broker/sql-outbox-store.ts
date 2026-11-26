@@ -866,9 +866,11 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				// earlier release), as the wake-up bus's own hints are, so the host does not wait for its backup poll
 				// (#6560); the hint is there for its poll if a notification is lost.
 				const notifications = database.notifications;
-				if (result.status === "inserted" && result.woke !== undefined && notifications !== undefined)
-					for (const { sql, params } of wakeUpNotices(notifications, wakeups, leases, result.woke))
-						void database.run(sql, ...params).catch(() => {});
+				if (result.status === "inserted" && result.woke !== undefined && notifications !== undefined) {
+					const notices = wakeUpNotices(notifications, wakeups, leases, result.woke);
+					if (notifications.send !== undefined) void notifications.send(notices).catch(() => {});
+					else for (const { sql, params } of notices) void database.run(sql, ...params).catch(() => {});
+				}
 				return result;
 			});
 	};
