@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { withBuiltinResourceLoader } from "../src/core/builtin-resource-loader.ts";
@@ -192,8 +192,8 @@ describe("skill:// selectors that name several skills", () => {
 	});
 
 	it("refuses a scope shared by two skills and names the URIs that tell them apart", async () => {
-		const first = skill(join("/work", ".atomic", "skills", "tdd"), "project");
-		const second = skill(join("/work", ".agents", "skills", "tdd"), "project");
+		const first = skill(resolve("/work", ".atomic", "skills", "tdd"), "project");
+		const second = skill(resolve("/work", ".agents", "skills", "tdd"), "project");
 		const router = createSkillRouter(() => buildSkillCatalog([first, second]));
 
 		assert.equal(await router.resolve?.("skill://tdd"), first.filePath);

@@ -1173,7 +1173,6 @@ export {
 	type TaskToolErrorFields,
 	type TaskToolFailureCode,
 } from "./core/tools/shell-task-status.ts";
-export { skillUri } from "./core/tools/skill-protocol.ts";
 export {
 	getProjectTrustOptions,
 	getProjectTrustOptionsAsync,

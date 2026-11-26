@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { buildSkillCatalog } from "../../packages/coding-agent/src/core/skill-catalog.js";
 import type { Skill } from "../../packages/coding-agent/src/core/skills.js";
 import { createSyntheticSourceInfo } from "../../packages/coding-agent/src/core/source-info.js";
+import { skillUri } from "../../packages/coding-agent/src/core/tools/skill-protocol.js";
 import { skillsWarning } from "../../packages/subagents/src/agents/agent-management-helpers.js";
 import {
 	buildSkillInjection,
@@ -93,6 +94,13 @@ describe("subagent skill resolution", () => {
 		assert.match(injection, /<skill name="agent-browser" location="skill:\/\/agent-browser">/);
 		assert.doesNotMatch(injection, /\n---\nname: tdd/);
 		assert.doesNotMatch(injection, /\n---\nname: agent-browser/);
+	});
+
+	test("gives an injected skill the same skill:// address the host resolves", () => {
+		const name = "acme:deploy now@scope/pkg";
+		const injection = buildSkillInjection([{ name, path: "/x/SKILL.md", content: "body", source: "user" }]);
+		assert.ok(injection.startsWith(`<skill name="${name}" location="${skillUri(name)}">\n`));
+		assert.equal(skillUri(name), "skill://acme%3Adeploy%20now@scope%2Fpkg");
 	});
 
 	test("prefers a project tdd skill over the builtin tdd skill", async () => {
