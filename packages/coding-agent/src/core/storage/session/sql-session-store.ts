@@ -1,4 +1,3 @@
-import { VERSION } from "../../../config.js";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import { ensureTableFillfactor, transactionFinisher } from "../added-exports.js";
@@ -1982,7 +1981,25 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		const stored = Uint8Array.from(data);
 		const blob = { hash: await sha256Hex(stored), bytes: stored.byteLength };
-		const previous = await this.blobHeader(sessionId, blob.hash);
+		// Read with the sessions schema version, so a store a later build upgraded is refused before anything is written.
+		const found = await this.database.get<
+			SqliteRow & { schema_version: number | null; bytes: number | null; chunks: number | null }
+		>(
+			`SELECT (SELECT max(schema_version) FROM ${this.tables.meta}) AS schema_version, b.bytes, b.chunks
+			FROM (SELECT 1 AS one) AS probe LEFT JOIN ${this.tables.blobs} b ON b.session_id = ? AND b.hash = ?`,
+			sessionId,
+			blob.hash,
+		);
+		assertStorageSchemaVersion(
+			"sessions",
+			found?.schema_version ?? null,
+			SESSION_SCHEMA_VERSION,
+			SESSION_SCHEMA_VERSION_UNCHUNKED,
+		);
+		const previous =
+			found?.bytes === null || found?.bytes === undefined
+				? undefined
+				: { bytes: Number(found.bytes), chunks: Number(found.chunks) };
 		if (previous) {
 			// Legacy bytes are converted only when written again, never on an opener's or reader's critical path.
 			// Each batch releases the writer queue; a crash loses at most one batch and readers keep the old bytes.
@@ -4482,12 +4499,13 @@ export type SharedHistoryForksOutcome =
 
 /** The running sessions that have a SQL store's sessions open, in a table every host sharing the store reads (#4971). */
 class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
+	/** A new table already has the columns the later steps add, so on a new database they find them and alter nothing. */
 	static async createTable(tx: SqliteExecutor, dialect: StorageDialect, table: string): Promise<void> {
 		const { int, text } = dialect.types;
 		await tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table} (
 				session_id ${text} NOT NULL, token ${text} NOT NULL, pid ${int} NOT NULL, host ${text} NOT NULL,
-				heartbeat_at ${int} NOT NULL, PRIMARY KEY(session_id, token)
+				heartbeat_at ${int} NOT NULL, schema_version ${int}, build ${text}, PRIMARY KEY(session_id, token)
 			)${dialect.tableOptions};
 		`);
 	}
@@ -4536,7 +4554,7 @@ class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 			marker.pid,
 			marker.host,
 			SESSION_SCHEMA_VERSION,
-			VERSION,
+			marker.build ?? null,
 		);
 	}
 

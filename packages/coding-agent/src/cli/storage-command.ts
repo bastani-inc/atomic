@@ -786,7 +786,7 @@ async function enableSharedHistoryForks(
 		if (outcome.status === "refused") {
 			log(
 				[
-					`Shared-history forks were not turned on in ${described}. ${plural(outcome.holders.length, "running session")} of an older Atomic still use it, and an older Atomic would read a fork that shares history as if it had none:`,
+					`Shared-history forks were not turned on in ${described}. ${plural(outcome.holders.length, "running session")} of an older Atomic still ${outcome.holders.length === 1 ? "uses" : "use"} it, and an older Atomic would read a fork that shares history as if it had none:`,
 					...olderProcesses(outcome.holders),
 					`Upgrade Atomic on those machines and restart those sessions, or wait for them to end, then run this again. To turn it on now anyway, add --force: those sessions then stop at their next read or write with StorageSchemaVersionError.`,
 				].join("\n"),
@@ -796,7 +796,7 @@ async function enableSharedHistoryForks(
 		if (outcome.bypassed.length > 0)
 			log(
 				[
-					`Warning: --force turned on shared-history forks while ${plural(outcome.bypassed.length, "running session")} of an older Atomic still use ${described}:`,
+					`Warning: --force turned on shared-history forks while ${plural(outcome.bypassed.length, "running session")} of an older Atomic still ${outcome.bypassed.length === 1 ? "uses" : "use"} ${described}:`,
 					...olderProcesses(outcome.bypassed),
 					`They stop at their next read or write with StorageSchemaVersionError. Upgrade Atomic on those machines before restarting them.`,
 				].join("\n"),

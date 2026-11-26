@@ -349,7 +349,7 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			const get = database.get.bind(database);
 			database.get = (async (sql: string, ...params: SqliteValue[]) => {
 				const row = await get(sql, ...params);
-				if (sql.includes("AS orphaned")) await database.run("UPDATE session_meta SET schema_version = 3");
+				if (sql.includes("AS orphaned")) await database.run("UPDATE session_meta SET schema_version = 4");
 				return row;
 			}) as typeof database.get;
 			try {
@@ -740,10 +740,10 @@ describe("a database written with chunked entries is refused by older builds (#4
 	test("a database with a schema newer than this build is refused (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
 			await SqlSessionStore.open(database);
-			await database.run("UPDATE session_meta SET schema_version = 3");
+			await database.run("UPDATE session_meta SET schema_version = 4");
 			await assert.rejects(SqlSessionStore.open(database), (error: unknown) => {
 				assert.ok(error instanceof StorageSchemaVersionError);
-				assert.deepEqual([error.found, error.supported], [3, 2]);
+				assert.deepEqual([error.found, error.supported], [4, 3]);
 				return true;
 			});
 		});
@@ -754,10 +754,10 @@ describe("a database written with chunked entries is refused by older builds (#4
 			const store = await SqlSessionStore.open(database);
 			await store.create(header(), [message("m", null, "kept")]);
 			// A newer build upgrades the schema while this store is open, as this build did to 0.9.87's.
-			await database.run("UPDATE session_meta SET schema_version = 3");
+			await database.run("UPDATE session_meta SET schema_version = 4");
 			const refused = (error: unknown) => {
 				assert.ok(error instanceof StorageSchemaVersionError);
-				assert.deepEqual([error.domain, error.found, error.supported], ["sessions", 3, 2]);
+				assert.deepEqual([error.domain, error.found, error.supported], ["sessions", 4, 3]);
 				return true;
 			};
 			await assert.rejects(store.load("session"), refused);
@@ -773,7 +773,7 @@ describe("a database written with chunked entries is refused by older builds (#4
 			await store.openMarkers!.put("session", { token: "t", pid: process.pid, host: "h" });
 			assert.deepEqual(
 				(await database.all("SELECT schema_version FROM session_open")).map((row) => Number(row.schema_version)),
-				[2],
+				[3],
 			);
 		});
 	});

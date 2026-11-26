@@ -124,7 +124,8 @@ test("SQL session schema is strict, checks JSON, and rejects unsupported version
 		const store = await SqlSessionStore.open(database, { prefix: "tenant_" });
 		assert.equal(
 			(await database.get(`SELECT schema_version FROM ${tables.meta}`))?.schema_version,
-			SESSION_SCHEMA_VERSION - 1,
+			1,
+			"a new store starts at the version every older build reads",
 		);
 		for (const name of Object.values(tables)) {
 			assert.equal((await database.get("SELECT strict FROM pragma_table_list WHERE name = ?", name))?.strict, 1);
@@ -140,15 +141,15 @@ test("SQL session schema is strict, checks JSON, and rejects unsupported version
 			StorageUnavailableError,
 		);
 		await store.close();
-		await database.run(`UPDATE ${tables.meta} SET schema_version = 3`);
+		await database.run(`UPDATE ${tables.meta} SET schema_version = 4`);
 		await assert.rejects(SqlSessionStore.open(database, { prefix: "tenant_" }), (error: Error) => {
 			assert.ok(error instanceof StorageSchemaVersionError);
 			assert.equal(error.domain, "sessions");
-			assert.equal(error.found, 3);
-			assert.equal(error.supported, 2);
+			assert.equal(error.found, 4);
+			assert.equal(error.supported, 3);
 			return true;
 		});
-		assert.equal((await database.get(`SELECT schema_version FROM ${tables.meta}`))?.schema_version, 3);
+		assert.equal((await database.get(`SELECT schema_version FROM ${tables.meta}`))?.schema_version, 4);
 	});
 });
 

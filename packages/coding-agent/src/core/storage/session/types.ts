@@ -446,6 +446,8 @@ export interface SessionOpenMarker {
 	readonly token: string;
 	readonly pid: number;
 	readonly host: string;
+	/** The Atomic version of the process, which a store may record (#6560). */
+	readonly build?: string;
 }
 
 /** A marker as a store lists it. */

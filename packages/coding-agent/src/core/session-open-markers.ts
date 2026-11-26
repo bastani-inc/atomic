@@ -13,7 +13,7 @@ import { rmdirSync, rmSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { getAgentDir } from "../config.js";
+import { getAgentDir, VERSION } from "../config.js";
 import { ownProcessStartToken, readProcessStartToken } from "./process-start-token.js";
 import { attachSessionClaim } from "./session-claims.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
@@ -175,7 +175,7 @@ let heldCount = 0;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 
 function ownMarker(): SessionOpenMarker {
-	return { token: ownToken(), pid: process.pid, host: hostname() };
+	return { token: ownToken(), pid: process.pid, host: hostname(), build: VERSION };
 }
 
 function refreshMarkers(): void {
