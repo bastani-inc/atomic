@@ -59,7 +59,7 @@
 		"url": "https://github.com/bastani-inc/atomic/issues"
 	},
 	"engines": {
-		"node": ">=22.19.0"
+		"node": ">=24.20.0"
 	},
 	"devDependencies": {
 		"@types/node": "24.12.4",

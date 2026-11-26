@@ -17,7 +17,7 @@ Follow these four pages in order for full setup instructions, or use the quick c
 
 ## Prerequisites
 
-- **Package install:** Node.js 22.19 or newer with npm or pnpm, or Bun 1.4.5+ for Bun installs.
+- **Package install:** Node.js 24 LTS, version 24.20.0 or newer, with npm or pnpm, or Bun 1.4.5+ for Bun installs. Check with `node --version`; see [Node.js version](/getting-started/installation#nodejs-version) to upgrade.
 - **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`; Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
 - **Model provider:** A supported subscription login (`/login`) or API key.
 

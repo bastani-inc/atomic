@@ -11,7 +11,7 @@ import { createRequire } from "node:module";
  * prove what they proved when they ran only under Bun.
  *
  * Mirrors `src/core/tools/resource-selectors.ts`: `node:sqlite` only, which
- * Node ≥ 22.13 and Bun ≥ 1.4.2 (this repository's floor) both ship. The
+ * Node ≥ 24.20.0 and Bun ≥ 1.4.2 (this repository's floor) both ship. The
  * `bun:sqlite` fallback was removed with the earlier 1.4.0 floor.
  */
 

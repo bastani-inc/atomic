@@ -1,10 +1,10 @@
 ---
 title: "Standalone libraries"
 sidebarTitle: "All libraries"
-description: "Explore Atomic's six core @bastani/atomic-* TypeScript libraries and two optional storage adapter packages for extensions, SDK apps, and standalone Node.js 22.19+ projects."
+description: "Explore Atomic's six core @bastani/atomic-* TypeScript libraries and two optional storage adapter packages for extensions, SDK apps, and standalone Node.js 24.20+ projects."
 ---
 
-Atomic publishes six core TypeScript libraries and two optional storage adapter packages (all requiring Node.js 22.19 or newer). Each package publishes on npm at Atomic's version with every release and works independently outside Atomic.
+Atomic publishes six core TypeScript libraries and two optional storage adapter packages (all requiring Node.js 24.20 or newer). Each package publishes on npm at Atomic's version with every release and works independently outside Atomic.
 
 ## Core libraries
 

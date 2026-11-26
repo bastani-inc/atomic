@@ -7,7 +7,7 @@ description: "PostgreSQL storage adapter for Atomic sessions and Intercom multi-
 `@bastani/atomic-storage-postgres` is Atomic's standalone [PostgreSQL](https://www.postgresql.org) storage adapter. It stores sessions and Intercom multi-node routing in one shared PostgreSQL database so multiple machines or SDK hosts can share state. Unlike the six core libraries in [Standalone libraries](/libraries), this package is not bundled inside `@bastani/atomic`; install it only when you use PostgreSQL.
 
 - **PostgreSQL version requirement:** Atomic sessions require **PostgreSQL 16 or later** (for session JSON query functions). The adapter accepts **PostgreSQL 14 or later** on connect for non-session tables and rejects servers older than PostgreSQL 14.
-- **Plain ESM with types:** Ships plain JavaScript ESM and TypeScript declarations (`postgres.d.ts`), requiring Node.js 22.19+ with no TypeScript loader.
+- **Plain ESM with types:** Ships plain JavaScript ESM and TypeScript declarations (`postgres.d.ts`), requiring Node.js 24.20+ with no TypeScript loader.
 
 For operator setup, role creation SQL, migrations, and troubleshooting, see [PostgreSQL setup](/storage#postgresql). For all five SDK storage backends and `createAgentSessionRuntime()`, see [SDK storage backends](/sdk/storage).
 

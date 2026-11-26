@@ -233,7 +233,7 @@ test("typecheck brings the forked packages' dist up to date before compiling dep
  * became `it.skip` and eleven more kept their names, kept passing, and executed
  * no assertions behind `if (!sqlite) return`. Neither shows up in a pass/fail
  * count or a test-name diff, so the guard is structural: the loader must use
- * `node:sqlite`, which Node >= 22.13 and Bun >= 1.4.2 (this repository's
+ * `node:sqlite`, which Node >= 24.20.0 and Bun >= 1.4.2 (this repository's
  * floor) both ship — the `bun:sqlite` fallback was deleted at the earlier
  * 1.4.0 floor and must not come back — and no test may reintroduce a soft
  * guard that turns an unavailable module into a green no-op.

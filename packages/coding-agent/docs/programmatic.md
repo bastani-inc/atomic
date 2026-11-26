@@ -12,7 +12,7 @@ Atomic provides three programmatic integration modes plus a component API for in
 | --- | --- | --- |
 | Run one or more prompts and parse structured output as JSON lines | [JSON event stream](/json) | `atomic --mode json` |
 | Drive a long-lived process with commands, interrupts, and extension UI prompts | [RPC mode](/rpc) | `atomic --mode rpc` |
-| Embed Atomic directly inside a Node.js application (Node.js 22.19+) | [TypeScript SDK](/sdk) | `@bastani/atomic` |
+| Embed Atomic directly inside a Node.js application (Node.js 24.20+) | [TypeScript SDK](/sdk) | `@bastani/atomic` |
 
 - **JSON event stream** executes one or more positional prompts in sequence, writes newline-delimited session events to stdout, and exits.
 - **RPC mode** keeps an Atomic subprocess running over stdin/stdout JSON Lines so you can send follow-up prompts, steer or abort turns, switch models, and answer extension dialogs and OAuth prompts.

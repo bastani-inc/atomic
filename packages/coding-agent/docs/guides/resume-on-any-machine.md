@@ -95,7 +95,7 @@ initialize:
   - name: Install Node.js
     uses: github.com/actions/setup-node@v4
     with:
-      node-version: "22"
+      node-version: "24"
   - name: Install pnpm
     run: npm install -g pnpm
 maintenance:

@@ -4,7 +4,7 @@ Set up a checkout to build, run, and test Atomic locally.
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org) 22.19.0 or later for npm and most tests. Use Node 22 to match CI.
+- [Node.js](https://nodejs.org) 24.20.0 or later for npm and most tests. CI runs the newest Node.js release that satisfies `engines.node` in the root `package.json`.
 - [Bun](https://bun.sh) 1.4.5 or later to run the CLI from source, typecheck, and run TypeScript scripts.
 - Stable [Rust](https://rustup.rs) with `cargo` on your `PATH` to build the native bindings.
 

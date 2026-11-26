@@ -12,7 +12,7 @@ Runs model-written JavaScript in a QuickJS VM (compiled to WebAssembly) where th
 npm install @bastani/atomic-codemode
 ```
 
-Requires Node.js 22.19+ (or Bun / Cloudflare Workers via the portable subpaths). Available package entry points:
+Requires Node.js 24.20+ (or Bun / Cloudflare Workers via the portable subpaths). Available package entry points:
 
 - `@bastani/atomic-codemode`: `CodemodeSandbox`, `loadQuickJSWasm`, `parseCodemodeSource`, `renderDeclarations`, and worker runtime for Node and Bun.
 - `@bastani/atomic-codemode/portable`: `RemoteCodemodeSandbox` and `InlineCodemodeSandbox` with zero Node.js imports.

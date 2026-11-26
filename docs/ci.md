@@ -159,6 +159,10 @@ The version registry accepts only tag-ref runs. A branch dispatch can publish to
 
 Keep third-party actions pinned to full commit SHAs. Validate workflow changes with YAML parsing, actionlint, maintainer review and a hosted run on the exact PR head. Do not write tests that duplicate workflow YAML. Keep product and release-tooling tests.
 
+### Node.js version
+
+The root `package.json` `engines.node` is the one source for the Node.js version. Every `actions/setup-node` step and `.atomic/blueprint.yaml` read it with `node-version-file`. Jobs with a sparse `release-tooling` checkout read `release-tooling/package.json`. CI therefore runs the newest Node.js release that satisfies the floor. The root and every published package declare the same `engines.node`. The one exception is the Mintlify step in `static-checks`, which switches to the newest Node 24 release because Mintlify refuses Node 25 and later. `test/ci/node-version-source.test.ts` enforces these rules.
+
 ### Dependabot and the pi sync
 
 [Dependabot](../.github/dependabot.yml) skips npm updates for dependencies that Atomic shares with the carried pi manifests in [the snapshot](../test/fixtures/pi-carried-dependencies.json). When refreshing the snapshot, run `node scripts/snapshot-pi-dependencies.mjs "$upstream_ref"` with the fetched pi ref and align the ignore list. Handle security fixes for ignored packages explicitly.

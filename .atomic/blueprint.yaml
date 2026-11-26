@@ -2,7 +2,7 @@ initialize:
   - name: Install Node.js
     uses: github.com/actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
     with:
-      node-version: ">=22.23.4 <23"
+      node-version-file: package.json
       package-manager-cache: "false"
   - name: Install Bun
     uses: github.com/oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -44,7 +44,7 @@ knowledge:
       Filter coding-agent tests with
       `npm run test --workspace=@bastani/atomic -- test/history-bounded.test.ts` (the package script
       already passes `--run`; run from its workspace, not the root with only `--config`). Run `test/http-dispatcher.test.ts`
-      on Node 22.23.4 or later in the 22.x line. Node 22.23.3 rejects valid IPv6 proxy certificates.
+      on Node 24.20.0 or later. Node 24.17.0 through 24.19.0 reject valid IPv6 proxy certificates.
       The TUI autocomplete suite's @ cases need `fd`
       on PATH; if the system provides `fdfind`, expose it as `fd` for that run so those cases do not skip.
       To select coding-agent files, run `cd packages/coding-agent && npx vitest run test/<name>.test.ts`;
@@ -60,9 +60,9 @@ knowledge:
       `(umask 0022; npx --no-install vitest --run --project unit test/unit/subagents-named-worktree-locks.test.ts)`.
       Localized named-worktree recovery fixtures write the translated marker while Git is paused, so they do not
       require installed locales or a Git build with gettext support.
-      Check terminal-display regressions on the supported Node 22 runtime too; newer Node versions can hide
+      Check terminal-display regressions on the oldest supported Node runtime, 24.20.0, too; newer Node versions can hide
       control-sequence stripping differences. If the local Node is newer, run
-      `npm exec --yes --package=node@22.23.5 -- node node_modules/vitest/vitest.mjs run --project unit test/unit/workflow-tool-block.test.ts`.
+      `npm exec --yes --package=node@24.20.0 -- node node_modules/vitest/vitest.mjs run --project unit test/unit/<file>.test.ts`.
       After changing SDK imports used by workflow graph views, run
       `npx vitest run --project unit test/unit/overlay-adapter-autowrap.test.ts test/unit/overlay-adapter-hidden-render.test.ts`:
       these wrappers run Bun children with isolated module mocks, which must expose each imported SDK name.
