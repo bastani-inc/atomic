@@ -19,6 +19,8 @@ interface StoredAt {
 	readonly length: number;
 	/** The stored JSON, until its fingerprint is taken. */
 	json: string | undefined;
+	/** How much of `json` the fingerprint covers so far, and the fingerprint up to there. */
+	taken: number;
 	fingerprint: number;
 }
 
@@ -30,24 +32,36 @@ const unprinted: StoredAt[] = [];
 /** The most time one turn spends taking fingerprints, so the event loop moves on between them. */
 const FINGERPRINT_SLICE_MS = 2;
 
+/** Characters fingerprinted between looks at the clock: a long entry's fingerprint is taken over several turns. */
+const FINGERPRINT_STRIDE = 16_384;
+const FNV_OFFSET = 0x811c9dc5;
+
 /**
- * A 32-bit FNV-1a fingerprint of `text`: not to keep anyone from forging a match, only to notice an entry changed in
- * place. Each step is a bijection of the state, so an edit of one character always changes it; with the length, a
- * larger edit goes unnoticed about once in 2^32.
+ * Continues a 32-bit FNV-1a fingerprint `hash` of `text` from `from` through `until`: not to keep anyone from forging a
+ * match, only to notice an entry changed in place. Each step is a bijection of the state, so an edit of one character
+ * always changes it; with the length, a larger edit goes unnoticed about once in 2^32.
  */
-function fingerprintOf(text: string): number {
-	let hash = 0x811c9dc5;
-	for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
-	return hash >>> 0;
+function fingerprintRange(text: string, hash: number, from: number, until: number): number {
+	for (let index = from; index < until; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
+	return hash;
 }
 
-/** Takes the fingerprints of the notes waiting for one, a slice at a time, each in a turn of its own. */
+/**
+ * Takes the fingerprints of the notes waiting for one, a slice at a time, each in a turn of its own. A long entry's is
+ * taken a stride at a time, carried over from turn to turn, so no turn holds the event loop for a whole entry.
+ */
 function takeFingerprints(): void {
 	const until = performance.now() + FINGERPRINT_SLICE_MS;
 	do {
-		const at = unprinted.pop()!;
-		at.fingerprint = fingerprintOf(at.json!);
-		at.json = undefined;
+		const at = unprinted.at(-1)!;
+		const json = at.json!;
+		const end = Math.min(json.length, at.taken + FINGERPRINT_STRIDE);
+		at.fingerprint = fingerprintRange(json, at.fingerprint, at.taken, end);
+		at.taken = end;
+		if (end === json.length) {
+			at.json = undefined;
+			unprinted.pop();
+		}
 	} while (unprinted.length > 0 && performance.now() < until);
 	if (unprinted.length > 0) setImmediate(takeFingerprints);
 }
@@ -60,7 +74,7 @@ export function noteStoredEntry(
 	epoch: string,
 	json: string,
 ): void {
-	const at: StoredAt = { sessionId, seq, epoch, length: json.length, json, fingerprint: 0 };
+	const at: StoredAt = { sessionId, seq, epoch, length: json.length, json, taken: 0, fingerprint: FNV_OFFSET };
 	stored.set(entry, at);
 	if (unprinted.push(at) === 1) setImmediate(takeFingerprints);
 }
@@ -74,7 +88,9 @@ export function storedSeqOf(entry: SessionEntry, sessionId: string, epoch: strin
 	if (at === undefined || epoch === undefined || at.sessionId !== sessionId || at.epoch !== epoch) return undefined;
 	const json = JSON.stringify(entry);
 	const unchanged =
-		at.json !== undefined ? json === at.json : json.length === at.length && fingerprintOf(json) === at.fingerprint;
+		at.json !== undefined
+			? json === at.json
+			: json.length === at.length && fingerprintRange(json, FNV_OFFSET, 0, json.length) === at.fingerprint;
 	return unchanged ? at.seq : undefined;
 }
 
