@@ -24,6 +24,25 @@ export function processStartToken(pid: number): string | undefined {
 	return windowsStartToken(known?.created);
 }
 
+/**
+ * The start of `pid`, as {@link processStartToken} reads it, read now where that starts no process: from `/proc` on
+ * Linux, from the native module on Windows. Never an answer remembered from an earlier read, which may describe an
+ * earlier process given the same id (#6133). Null where the native module found none, as for a process that already
+ * exited; undefined where it can only be read later ({@link readProcessStartToken}), as without the native module.
+ * For a record that must hold the start when it lands: a blueprint build lock naming a step that just started.
+ */
+export function processStartTokenNow(pid: number): string | null | undefined {
+	if (process.platform === "win32") {
+		const created = nativeProcessCreationTime(pid);
+		return typeof created === "string" ? windowsStartToken(created) : created;
+	}
+	try {
+		return linuxStartToken(readFileSync(`/proc/${pid}/stat`, "utf8"), readFileSync(BOOT_ID, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
 export interface ReadProcessStartTokenOptions {
 	/** When true, bypasses any cached or earlier in-flight Windows fallback answer for `pid`. */
 	readonly fresh?: boolean;

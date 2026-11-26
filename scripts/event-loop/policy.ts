@@ -235,6 +235,12 @@ export const SYNCHRONOUS_LOADER_HOOKS: readonly ReviewedSelector[] = [
 
 export const DURABLE_RECORDS: readonly ReviewedSelector[] = [
 	{
+		file: "packages/coding-agent/src/core/process-start-token.ts",
+		name: "processStartTokenNow",
+		reason:
+			"reads a just-started blueprint step's start from /proc, which is memory, not the disk, so the build lock names the step with its start in one write: a host killed between two writes left a step the next resume could not prove and waited 5 minutes for (#4748)",
+	},
+	{
 		file: "packages/coding-agent/src/core/resume/blueprint/build-lock.ts",
 		name: "writeBuildLocksDurably",
 		reason:

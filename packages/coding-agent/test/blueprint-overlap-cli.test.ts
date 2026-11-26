@@ -424,11 +424,11 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 	const worktreesDir = () => join(storeDir(), "worktrees");
 	/** The worktree each run of the step started in. */
 	const startedIn = () => (existsSync(places()) ? readFileSync(places(), "utf8").trim().split(/\r?\n/) : []);
-	/** The step processes the build lock of the worktree `slot` names. */
+	/** The step processes the build lock of the worktree `slot` names with their start, which proves each to a resume. */
 	const lockedSteps = (slot: string): number => {
 		try {
 			const lock = JSON.parse(readFileSync(buildLockPath(storeDir(), join(worktreesDir(), slot)), "utf8"));
-			return Array.isArray(lock.steps) ? lock.steps.length : 0;
+			return Array.isArray(lock.steps) ? lock.steps.filter((step: { start?: unknown }) => step.start).length : 0;
 		} catch {
 			return 0;
 		}
