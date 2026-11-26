@@ -62,6 +62,14 @@ gh workflow run macos-tests.yml --ref "$branch" \
   -f tests="test/unit/changelog.test.ts"
 ```
 
+For Rust unit tests in `atomic-natives`, set `project=native` and pass one Cargo test name filter:
+
+```sh
+gh workflow run macos-tests.yml --ref "$branch" \
+  -f project=native \
+  -f tests=externally_terminated_group
+```
+
 Link the run from the PR if the change depends on macOS validation.
 
 ## Runners

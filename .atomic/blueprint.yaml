@@ -77,6 +77,9 @@ knowledge:
       --offline. ATOMIC_AGENT_DIR does not select the CLI profile.
       Bare Node type stripping does not resolve source .js import paths to .ts. Node child probes that
       import source modules use the resolution hook shown in packages/coding-agent/test/read-streaming.test.ts.
+      Run the Darwin zombie process-group fixtures with
+      `cargo test --locked -p atomic-natives --lib externally_terminated_group`, or dispatch
+      `macos-tests.yml` with `project=native` and `tests=externally_terminated_group`.
   - name: readme feature tables
     contents: |
       After changing scripts/readme-feature-wall/manifest.json, run

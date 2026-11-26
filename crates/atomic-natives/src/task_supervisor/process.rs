@@ -2006,10 +2006,16 @@ mod tests {
 		assert!(!still_exists, "native child {pid} survived normal shutdown");
 		assert!(matches!(actor.snapshot(&owner).unwrap().tasks[0].cleanup, Cleanup::Reaped {}));
 	}
+	#[cfg(target_os = "macos")]
+	const HELD_ZOMBIE_DIRECTORY: &str = "ATOMIC_TEST_HELD_ZOMBIE_DIRECTORY";
 	// Darwin's group probe can return EPERM while another parent still owns a zombie.
 	#[cfg(target_os = "macos")]
 	#[test]
 	fn externally_terminated_group_waits_for_unreaped_member() {
+		if let Some(directory) = std::env::var_os(HELD_ZOMBIE_DIRECTORY) {
+			hold_unreaped_group_member(std::path::Path::new(&directory));
+			return;
+		}
 		assert_external_termination_cleanup(true);
 	}
 	#[cfg(unix)]
@@ -2115,35 +2121,79 @@ mod tests {
 		assert_external_termination_cleanup(false);
 	}
 	#[cfg(target_os = "macos")]
+	fn hold_unreaped_group_member(directory: &std::path::Path) {
+		use std::os::unix::process::ExitStatusExt;
+
+		let mut member = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+		let pid = member.id() as libc::pid_t;
+		if unsafe { libc::setsid() } < 0 {
+			let error = io::Error::last_os_error();
+			let _ = member.kill();
+			let _ = member.wait();
+			panic!("the zombie's parent could not leave the task session: {error}");
+		}
+		std::fs::write(directory.join("member"), format!("{pid}\n")).unwrap();
+		let mut exited = false;
+		let release = directory.join("release");
+		let deadline = Instant::now() + PROCESS_SHUTDOWN_GRACE * 4;
+		while directory.is_dir() && !release.exists() && Instant::now() < deadline {
+			if !exited && child_exited_without_reaping(pid).unwrap() {
+				exited = true;
+				let _ = std::fs::write(directory.join("exited"), b"exited\n");
+			}
+			std::thread::sleep(PROCESS_POLL);
+		}
+		if !exited {
+			let _ = member.kill();
+		}
+		let status = member.wait().unwrap();
+		if release.exists() {
+			assert_eq!(status.signal(), Some(libc::SIGTERM));
+			std::fs::write(directory.join("reaped"), b"reaped\n").unwrap();
+		}
+	}
+	#[cfg(target_os = "macos")]
+	struct ExternalTerminationFixture(std::path::PathBuf);
+	#[cfg(target_os = "macos")]
+	impl Drop for ExternalTerminationFixture {
+		fn drop(&mut self) {
+			let _ = std::fs::remove_dir_all(&self.0);
+		}
+	}
+	#[cfg(target_os = "macos")]
 	fn assert_external_termination_cleanup(reap_within_grace: bool) {
-		use std::os::unix::process::CommandExt;
-		use std::process::{Command, Stdio};
+		const HELPER_TEST: &str =
+			"task_supervisor::process::tests::externally_terminated_group_waits_for_unreaped_member";
 		let (actor, owner) = command_owner();
-		let path = std::env::temp_dir().join(format!(
+		let fixture = ExternalTerminationFixture(std::env::temp_dir().join(format!(
 			"atomic-external-term-{}-{}",
 			std::process::id(),
 			actor.id
+		)));
+		let directory = &fixture.0;
+		std::fs::create_dir(directory).unwrap();
+		let mut intent = pipe_intent(&format!(
+			"set +m; \"$ATOMIC_TEST_HELD_ZOMBIE_EXE\" --exact {HELPER_TEST} </dev/null >/dev/null 2>&1 & exec /bin/sleep 30"
 		));
-		actor
+		intent.env = Some(std::collections::HashMap::from([
+			(HELD_ZOMBIE_DIRECTORY.into(), directory.to_string_lossy().into_owned().into()),
+			(
+				"ATOMIC_TEST_HELD_ZOMBIE_EXE".into(),
+				std::env::current_exe().unwrap().to_string_lossy().into_owned().into(),
+			),
+		]));
+		let task = actor
 			.start_command_configured(
 				&owner,
-				pipe_intent(&format!("echo $$ > '{}'; exec sleep 30", path.display())),
+				intent,
 				"external-term".into(),
 				CommandResourceOptions { background: Some(true), ..Default::default() },
 			)
 			.unwrap();
-		let pid: libc::pid_t = wait_for_file(&path).trim().parse().unwrap();
-		std::fs::remove_file(path).unwrap();
-		// Keep a group member waitable here to deterministically model a descendant
-		// awaiting reaping by another parent after an external killpg(SIGTERM).
-		let mut member = Command::new("/bin/sleep")
-			.arg("30")
-			.process_group(pid)
-			.stdin(Stdio::null())
-			.stdout(Stdio::null())
-			.stderr(Stdio::null())
-			.spawn()
-			.unwrap();
+		let pid = actor.process_group(&task).unwrap().unwrap();
+		let member: libc::pid_t = wait_for_file(&directory.join("member")).trim().parse().unwrap();
+		assert_eq!(unsafe { libc::getpgid(member) }, pid);
+		assert_eq!(unsafe { libc::getsid(member) }, pid);
 		let started = Instant::now();
 		assert_eq!(unsafe { libc::kill(-pid, libc::SIGTERM) }, 0);
 		actor.begin_close(&owner).unwrap();
@@ -2157,22 +2207,21 @@ mod tests {
 			assert!(started.elapsed() < PROCESS_SHUTDOWN_GRACE, "leader was not reaped");
 			std::thread::sleep(PROCESS_POLL);
 		}
-		// Hold the zombie through several post-reap probes, or through the entire
-		// drain bound. It cannot disappear until this test explicitly waits for it.
+		// Hold the zombie through several post-reap probes, or through the entire drain bound.
+		assert_eq!(wait_for_file(&directory.join("exited")), "exited\n");
 		let observation =
 			if reap_within_grace { Duration::from_millis(100) } else { PROCESS_SHUTDOWN_GRACE };
 		let finished = command.join_until(Instant::now() + observation);
 		let before_reap = actor.snapshot(&owner).unwrap();
 		let probe = unsafe { libc::kill(-pid, 0) };
 		let probe_error = io::Error::last_os_error().raw_os_error();
-		let member_exited = child_exited_without_reaping(member.id() as libc::pid_t).unwrap();
-		member.wait().unwrap();
+		std::fs::write(directory.join("release"), b"").unwrap();
+		assert_eq!(wait_for_file(&directory.join("reaped")), "reaped\n");
 		assert!(command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE));
 		let receipt = actor.close_receipt(&owner);
 		actor.shutdown();
 		assert_eq!(probe, -1);
 		assert_eq!(probe_error, Some(libc::EPERM));
-		assert!(member_exited, "fixture must be an unreaped zombie, not a live process");
 		assert!(!command.output.lock().unwrap().path.exists(), "empty settled spool stayed on disk");
 		if reap_within_grace {
 			assert!(!finished, "cleanup settled before the zombie was reaped: {before_reap:?}");
