@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.11-alpha.2] - 2026-11-26
+
 ### Changed
 
 - A subagent started with `context: "fork"` now shares its parent's history in the session store instead of copying it, so it starts about as fast from a long conversation as from a short one. It reads, resumes and exports as before. See [Shared-history forks](../coding-agent/docs/storage.md#shared-history-forks) in Atomic's storage guide ([#6608](https://github.com/bastani-inc/atomic/pull/6608), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
