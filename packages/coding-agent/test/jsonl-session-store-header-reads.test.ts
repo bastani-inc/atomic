@@ -8,10 +8,11 @@ import { afterEach, beforeEach, describe, it } from "vitest";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 
 /**
- * The fs requests one append may make: locate (open, one header read, close, stat), the lock, the write and its
- * bookkeeping. 11 on Linux; before #4319 an append read its header one byte per request, about 160 for a short header.
+ * The fs requests one append may make: locate, the mixed-version group lock (#6718: 12 libuv requests), the write,
+ * its sync and its bookkeeping (17 on Linux, up to 20 on Windows where handles close after each write; before #4319 an
+ * append read its header one byte per request, about 160 for a short header).
  */
-const APPEND_FS_OPERATION_BOUND = 16;
+const APPEND_FS_OPERATION_BOUND = 24;
 /** One read takes the header line of any ordinary session (#4319). */
 const HEADER_READ_CHUNK_BYTES = 64 * 1024;
 
