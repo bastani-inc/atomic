@@ -257,7 +257,7 @@ interface OutboxState {
 }
 
 /** #5607: how the memory outbox sends the wake-up hint the SQL outbox writes with an offline recipient's row. */
-export type MemoryOutboxWake = (brokerId: string, version: number) => Promise<unknown>;
+export type MemoryOutboxWake = (brokerId: string, version: number, targetIdentity: string) => Promise<unknown>;
 
 function outboxStore(
 	shared: OutboxState,
@@ -324,7 +324,7 @@ function outboxStore(
 				request.wakeHostWithinMs === undefined
 					? undefined
 					: presence?.(request.targetIdentity, request.wakeHostWithinMs);
-			if (woke !== undefined) await wake?.(woke, record.sequence);
+			if (woke !== undefined) await wake?.(woke, record.sequence, request.targetIdentity);
 			return { status: "inserted", row: row(record), ...(woke === undefined ? {} : { woke }) };
 		},
 		async claim(request) {

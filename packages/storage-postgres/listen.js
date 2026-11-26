@@ -36,6 +36,119 @@ export const LISTEN_RETRY = /** @type {const} */ ({ firstMs: 1_000, maxMs: 30_00
  */
 export const LISTEN_HEALTH_INTERVAL_MS = 30_000;
 
+/**
+ * How long after a notification goes out the same notification (channel and payload) waits before it goes out again:
+ * the commits of that window share the one sent after it. A listener polls once for all of them instead of once for each.
+ */
+export const NOTIFY_COALESCE_MS = 5;
+
+/**
+ * A notification a committed transaction sends: a `pg_notify` statement, with its parameters. Two with the same text and
+ * parameters are the same notification.
+ * @typedef {{ readonly sql: string, readonly params: readonly unknown[] }} Notice
+ */
+
+/**
+ * Coalesces this process's notifications, as River's insert notify limiter does: a notification goes out with its
+ * transaction's commit unless the same one went out within `windowMs`. One held back that way goes out once its
+ * transaction committed and the window since the last one passed, through `sendLater`, once for every commit held back
+ * in that window. A notification is only ever sent after the commit it announces, so a listener that polls when it
+ * arrives finds that commit's writes.
+ * @param {{ windowMs?: number, sendLater: (notices: readonly Notice[]) => Promise<void> }} options
+ */
+export function createNotifyCoalescer(options) {
+	const windowMs = options.windowMs ?? NOTIFY_COALESCE_MS;
+	/** When each notification last went out, by this process's clock. */
+	/** @type {Map<string, number>} */
+	const sentAt = new Map();
+	/** Notifications held back whose commits are done, to go out at the end of their window. */
+	/** @type {Map<string, Notice>} */
+	const held = new Map();
+	/** @type {NodeJS.Timeout | undefined} */
+	let timer;
+	/** @type {Set<Promise<void>>} */
+	const sending = new Set();
+
+	const keyOf = (/** @type {Notice} */ notice) => JSON.stringify([notice.sql, notice.params]);
+	/** Forgets notifications whose window ended with none held back, so the map holds only recent ones. */
+	const forget = (/** @type {number} */ now) => {
+		for (const [key, at] of sentAt) if (now - at >= windowMs && !held.has(key)) sentAt.delete(key);
+	};
+	const send = (/** @type {readonly Notice[]} */ notices) => {
+		const sent = options.sendLater(notices).catch(() => {});
+		sending.add(sent);
+		void sent.then(() => sending.delete(sent));
+	};
+	const flush = () => {
+		timer = undefined;
+		const now = Date.now();
+		/** @type {Notice[]} */
+		const due = [];
+		for (const [key, notice] of held) {
+			if (now - (sentAt.get(key) ?? -Infinity) < windowMs) continue;
+			held.delete(key);
+			sentAt.set(key, now);
+			due.push(notice);
+		}
+		if (due.length > 0) send(due);
+		schedule();
+	};
+	const schedule = () => {
+		if (timer !== undefined || held.size === 0) return;
+		let next = Infinity;
+		for (const key of held.keys()) next = Math.min(next, (sentAt.get(key) ?? -Infinity) + windowMs);
+		timer = setTimeout(flush, Math.max(0, next - Date.now()));
+		timer.unref?.();
+	};
+
+	return {
+		/**
+		 * Of `notices`, which a transaction whose commit was just sent ran, the ones to send with that commit now; each other
+		 * goes out later, through `sendLater`, if `committed` resolves true.
+		 * @param {readonly Notice[]} notices
+		 * @param {Promise<boolean>} committed
+		 * @returns {Notice[]}
+		 */
+		take(notices, committed) {
+			const now = Date.now();
+			if (sentAt.size > 1024) forget(now);
+			/** @type {Notice[]} */
+			const immediate = [];
+			for (const notice of notices) {
+				const key = keyOf(notice);
+				const last = sentAt.get(key);
+				if (last === undefined || now - last >= windowMs) {
+					// Sent behind this commit, so it covers the commits held back before it too.
+					sentAt.set(key, now);
+					held.delete(key);
+					immediate.push(notice);
+					continue;
+				}
+				void committed.then(
+					(done) => {
+						if (!done) return;
+						held.set(key, notice);
+						schedule();
+					},
+					() => {},
+				);
+			}
+			return immediate;
+		},
+		/** Sends every notification held back now, and resolves once every one sent later was answered. */
+		async flush() {
+			clearTimeout(timer);
+			timer = undefined;
+			if (held.size > 0) {
+				const due = [...held.values()];
+				held.clear();
+				send(due);
+			}
+			await Promise.all(sending);
+		},
+	};
+}
+
 /** Quotes `name` as an SQL identifier. */
 function quoted(/** @type {string} */ name) {
 	return `"${name.replaceAll('"', '""')}"`;

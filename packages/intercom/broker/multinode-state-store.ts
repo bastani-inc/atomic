@@ -96,6 +96,11 @@ export interface BrokerMembershipSubject {
 	readonly instanceKey?: string;
 	/** #5038: the broker's process id, checked on its host before a later instance supersedes it. */
 	readonly pid?: number;
+	/**
+	 * The broker listens for wake-up notifications on a channel of its own (`brokerWakeUpChannel`), so a sender need not
+	 * notify the channel every broker of an earlier release listens on. Absent from older brokers.
+	 */
+	readonly ownWakeUpChannel?: true;
 }
 
 /** Recipient presence: which broker currently hosts the recipient's socket. */

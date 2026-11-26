@@ -15,6 +15,7 @@
 ### Added
 
 - Storage adapters receive a new transaction option, `relaxedDurability`, for writes whose loss in a server crash is harmless, such as lease renewals. A driver may answer the commit before the write reaches disk, or ignore the option. The PostgreSQL adapter turns `synchronous_commit` off for that transaction only. See [custom storage adapters](docs/storage/custom-adapters.md) ([#6633](https://github.com/bastani-inc/atomic/pull/6633), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- `StorageNotifications.notify` in `@bastani/atomic/storage` takes an optional third argument, `unless`, a read. When it is given, the notification goes out only if that read returns no row when the notification is sent. Adapters that do not support it send the notification anyway ([#6655](https://github.com/bastani-inc/atomic/pull/6655)).
 
 ### Changed
 

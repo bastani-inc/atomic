@@ -17,6 +17,12 @@ export interface WakeUpHint {
 	 * skips one because of its version.
 	 */
 	readonly version: number;
+	/**
+	 * The recipient whose queue the hint is about (`deliveryTargetIdentity`), when one is: the broker then reads that
+	 * queue alone instead of every recipient it hosts. Absent from hints that concern no single recipient and from those of
+	 * earlier releases.
+	 */
+	readonly targetIdentity?: string;
 }
 
 export type WakeUpEvent =
