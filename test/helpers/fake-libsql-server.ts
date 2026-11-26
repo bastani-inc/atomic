@@ -101,7 +101,12 @@ export type FakeLibsqlFault =
 	| { readonly kind: "closed-before" }
 	| { readonly kind: "gateway-after"; readonly status?: number }
 	/** A plain-text HTTP 400 sent before anything runs, as sqld answers a request it refuses as a protocol error. */
-	| { readonly kind: "bad-request"; readonly message: string };
+	| { readonly kind: "bad-request"; readonly message: string }
+	/**
+	 * HTTP 429 sent before anything runs, as sqld answers a request it could not open a database connection for in time
+	 * (`DbCreateTimeout`) because open streams hold all of its connections.
+	 */
+	| { readonly kind: "no-connection" };
 
 export interface FakeLibsqlPipeline {
 	/** The SQL texts the request runs, in order. */
@@ -416,6 +421,8 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		const socket = request.socket;
 		if (fault?.kind === "reset-before") return void socket.resetAndDestroy();
 		if (fault?.kind === "closed-before") return void socket.end();
+		if (fault?.kind === "no-connection")
+			return answer(response, 429, { error: "Timed out while opening database connection" });
 		if (fault?.kind === "bad-request") {
 			response.writeHead(400, { "content-type": "text/plain" });
 			return void response.end(fault.message);
