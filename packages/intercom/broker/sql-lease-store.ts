@@ -195,7 +195,11 @@ async function ensureAddressColumns(database: SqliteDatabase, prefix: string | u
 			(column) => catalog.hasColumn(table, column) && catalog.sqliteObjectType?.(`${table}_${column}`) === "index",
 		)
 	) {
-		stampBrokerSchemaAtOpenEnd(database, prefix, "lease-addresses", setup);
+		await stampBrokerSchemaAtOpenEnd(database, prefix, "lease-addresses", setup, (found) =>
+			ADDRESS_COLUMNS.every(
+				(column) => found.hasColumn(table, column) && found.sqliteObjectType?.(`${table}_${column}`) === "index",
+			),
+		);
 		return true;
 	}
 	try {

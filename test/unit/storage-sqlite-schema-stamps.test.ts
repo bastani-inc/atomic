@@ -54,6 +54,21 @@ function countBegins() {
 	};
 }
 
+/** The kinds of the requests every connection sends its thread until `take`. */
+function recordKinds() {
+	const kinds: string[] = [];
+	const interception = interceptConnectionRequests((request: ConnectionRequest, send) => {
+		kinds.push(request.kind);
+		return send(request);
+	});
+	cleanups.push(() => interception.restore());
+	return {
+		take() {
+			return kinds.splice(0);
+		},
+	};
+}
+
 /** Opens the broker state `open` builds on `path`, runs `use`, and closes it. */
 async function withBroker<T>(
 	open: OpenBroker,
@@ -183,4 +198,21 @@ test("a store an earlier build set up, which has no stamps, is stamped at this b
 	const begins = countBegins();
 	assert.equal(await withBroker(current, path, (state) => reserve(state, "current")), 2);
 	assert.equal(begins.take(), 1, "the reservation's own transaction only");
+});
+
+test("a broker reopened after another prefix changed the schema checks its stores in one write transaction (#6560)", async () => {
+	const path = databasePath();
+	await withBroker(current, path);
+	// Another team's tables on the same database: the schema version every stamp records moves on.
+	await onFile(path, (database) => database.exec("CREATE TABLE other_team_items (value)"));
+	const sent = recordKinds();
+	await withBroker(current, path, (state) => reserve(state, "after"));
+	// The reservation's own transaction, and one that seeds the counters, checks every store and stamps them all.
+	assert.equal(sent.take().filter((kind) => kind === "begin").length, 2);
+	assert.equal((await stampsOf(path)).behind, 0);
+	await withBroker(current, path);
+	assert.deepEqual(
+		sent.take().filter((kind) => kind === "begin"),
+		[],
+	);
 });

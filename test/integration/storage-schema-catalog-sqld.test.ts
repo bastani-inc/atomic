@@ -69,6 +69,34 @@ describe.skipIf(serverUrl === undefined)("opening stores on a libSQL server whos
 		}
 	});
 
+	test("a broker reopened after another prefix changed the schema checks its stores in one write transaction", async () => {
+		const open = opener();
+		const prefix = `cat_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
+		const openBroker = async () => {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: open, prefix });
+			await bus.close();
+			await state.close();
+		};
+		try {
+			await openBroker();
+			// Another prefix's table on the same server, as concurrent tests and other teams create them: the schema
+			// version the stamps record moves on.
+			const other = await open();
+			await other.exec(`CREATE TABLE ${prefix}other (value)`);
+			await other.close();
+			const requests = countRequests();
+			await openBroker();
+			// No transaction per store: one seeds the counters, checks every store and stamps them all, 7 requests here.
+			const stale = requests.take();
+			assert.ok(stale <= 8, `${stale} requests`);
+		} finally {
+			const database = await open();
+			await database.exec(`DROP TABLE IF EXISTS ${prefix}other`);
+			await dropLibsqlScope(database, prefix);
+			await database.close();
+		}
+	});
+
 	test("a session store reopened reads its schema in one request, not a request for every table and column", async () => {
 		const open = opener();
 		const prefix = `cat_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;

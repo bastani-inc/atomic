@@ -1,5 +1,6 @@
 import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "./database.js";
 import { dialectOf } from "./dialect.js";
+import { transactionFinisher } from "./statement-sequence.js";
 
 /**
  * What a schema held when one open read it: its relations, triggers and columns, and on PostgreSQL the versions its
@@ -94,31 +95,37 @@ export interface SqliteSchemaStamp {
 /**
  * @internal Stamps each of `stamps`, in the transaction `tx` that ran their setups, with the schema version as that
  * transaction leaves it: a later open believes their revisions until the schema changes again (#6560). Creates the
- * stamps table first, so its own creation is part of the version recorded. SQLite and libSQL only; every stamp must
- * share a ledger.
+ * stamps table first, unless `options.tableExists`, so its own creation is part of the version recorded. With
+ * `options.last`, the stamps are the transaction's last statement: where its connection is pipelined, they go out with
+ * its commit. SQLite and libSQL only; every stamp must share a ledger.
  */
 export async function recordSqliteSchemaStamps(
 	tx: SqliteExecutor,
 	stamps: readonly SqliteSchemaStamp[],
+	options: { readonly tableExists?: boolean; readonly last?: boolean } = {},
 ): Promise<void> {
 	const ledger = stamps[0]?.ledger;
 	if (ledger === undefined) return;
 	const table = sqliteSchemaStampTable(ledger);
-	await tx.exec(
-		`CREATE TABLE IF NOT EXISTS ${table} (domain TEXT NOT NULL PRIMARY KEY, revision INTEGER NOT NULL, schema_version INTEGER NOT NULL)`,
-	);
-	// The revision this transaction set up, even below a newer build's: the stamp says what was checked at this version.
-	for (const { domain, revision } of stamps)
-		await tx.run(
-			`INSERT INTO ${table} (domain, revision, schema_version) SELECT ?, ?, schema_version FROM pragma_schema_version WHERE true
-			ON CONFLICT(domain) DO UPDATE SET revision = excluded.revision, schema_version = excluded.schema_version`,
-			stampKey(domain),
-			revision,
+	if (options.tableExists !== true)
+		await tx.exec(
+			`CREATE TABLE IF NOT EXISTS ${table} (domain TEXT NOT NULL PRIMARY KEY, revision INTEGER NOT NULL, schema_version INTEGER NOT NULL)`,
 		);
+	// The revision this transaction set up, even below a newer build's: the stamp says what was checked at this version.
+	// One statement for them all, so a server pays one request.
+	const upsert = {
+		sql: `INSERT INTO ${table} (domain, revision, schema_version)
+		SELECT column1, column2, (SELECT schema_version FROM pragma_schema_version)
+		FROM (VALUES ${stamps.map(() => "(?, ?)").join(", ")}) WHERE true
+		ON CONFLICT(domain) DO UPDATE SET revision = excluded.revision, schema_version = excluded.schema_version`,
+		params: stamps.flatMap(({ domain, revision }) => [stampKey(domain), revision]),
+	};
+	if (options.last === true && transactionFinisher(tx)?.([upsert]) === true) return;
+	await tx.run(upsert.sql, ...upsert.params);
 }
 
 /** The catalog of a SQLite or libSQL database, or undefined when it cannot be read, such as on a SQLite too old. */
-async function readSqliteCatalog(database: SqliteDatabase, ledger: string): Promise<StorageSchemaCatalog | undefined> {
+async function readSqliteCatalog(database: SqliteExecutor, ledger: string): Promise<StorageSchemaCatalog | undefined> {
 	let rows: CatalogRow[];
 	try {
 		rows = await database.all<CatalogRow>(SQLITE_CATALOG_SQL);
@@ -250,9 +257,24 @@ interface CatalogScope {
 	readonly restamp: Map<string, PendingRestamp>;
 }
 
-interface PendingRestamp {
+interface PendingRestamp extends SchemaStampAtOpenEnd {
 	readonly stamp: SqliteSchemaStamp;
 	readonly setup: (tx: SqliteExecutor) => Promise<unknown>;
+}
+
+/** @internal How the end of an open stamps a store's setup: see {@link restampStorageSchemaAtOpenEnd}. */
+export interface SchemaStampAtOpenEnd {
+	/**
+	 * Whether the store's schema, as the end's transaction reads the catalog, holds everything `setup` creates. Given,
+	 * the end runs `setup` only where it does not; absent, it runs `setup` whenever the store's stamp is behind.
+	 */
+	readonly verify?: (catalog: StorageSchemaCatalog) => boolean;
+	/**
+	 * `setup` has not run in this open and must: the end runs it whatever the stamp, and a failure fails the open, as
+	 * the setup's own transaction would have. For a setup whose objects all exist and whose only other statements seed
+	 * rows nothing in the open reads, such as a counter's: it then shares the end's transaction instead of taking one.
+	 */
+	readonly deferred?: boolean;
 }
 
 const scopes = new WeakMap<SqliteDatabase, CatalogScope>();
@@ -330,47 +352,65 @@ export async function sqliteSchemaStampsOf(
 
 /**
  * @internal Tells the open of `database` in progress that it checked `setup`, the schema setup `stamp` names, without
- * its stamp (SQLite and libSQL only): it ran it in a transaction that stamped it, or found every object it creates in
- * the catalog. A schema change later in the same open, such as the next store's setup or a column it adds, leaves the
- * stamp behind the schema version, and a store found in the catalog has none that is current, so the next open would
- * check it again. The open's end reads the stamps once more and, where any of these is behind, runs those setups again
- * in one transaction and stamps them all with the version it leaves: the next open of a current schema then takes no
- * write lock and answers every such store from its stamp (#6560). Does nothing outside such an open.
+ * its stamp (SQLite and libSQL only): it ran it in a transaction that stamped it, found every object it creates in the
+ * catalog (with `verify`), or leaves it to the end (`deferred`). A schema change later in the same open, such as the
+ * next store's setup or a column it adds, leaves a stamp behind the schema version, and a store found in the catalog has
+ * none that is current, so the next open would check it again. The open's end reads the stamps once more and, where any
+ * of these is behind, checks or runs them in one transaction and stamps them all with the version it leaves: the next
+ * open of a current schema then takes no write lock and answers every such store from its stamp (#6560). False, and
+ * nothing is kept, outside such an open: the caller then runs `setup` as it would without stamps.
  */
 export function restampStorageSchemaAtOpenEnd(
 	database: SqliteDatabase,
 	stamp: SqliteSchemaStamp,
 	setup: (tx: SqliteExecutor) => Promise<unknown>,
-): void {
+	options: SchemaStampAtOpenEnd = {},
+): boolean {
 	const scope = scopes.get(database);
-	if (scope === undefined || scope.ledger !== stamp.ledger || dialectOf(database).name !== "sqlite") return;
-	scope.restamp.set(stamp.domain, { stamp, setup });
+	if (scope === undefined || scope.ledger !== stamp.ledger || dialectOf(database).name !== "sqlite") return false;
+	scope.restamp.set(stamp.domain, { stamp, setup, ...options });
+	return true;
 }
 
 /**
- * Stamps again, in one transaction, the setups `scope`'s open ran whose stamps a later change of the schema left
- * behind; each runs again first, so its stamp vouches for what the transaction found. Housekeeping: a failure leaves
- * the stamps behind, and the next open checks those stores as it would without them.
+ * Stamps again, in one transaction, the setups `scope`'s open checked whose stamps are behind: each with `verify` is
+ * checked against the catalog the transaction reads, and runs where that finds something missing; each without runs.
+ * Every deferred setup runs, and fails the open where the transaction fails. Otherwise housekeeping: a failure leaves the
+ * stamps behind, and the next open checks those stores as it would without them.
  */
 async function restamp(database: SqliteDatabase, scope: CatalogScope): Promise<void> {
 	const pending = [...scope.restamp.values()];
 	scope.restamp.clear();
+	const deferred = pending.some((each) => each.deferred === true);
 	try {
-		// None where no setup made the table yet: every one is behind then.
-		const current = await readSqliteSchemaStamps(database, scope.ledger).catch(() => new Map<string, number>());
-		const behind = pending.filter(({ stamp }) => (current.get(stampKey(stamp.domain)) ?? 0) < stamp.revision);
+		// Every setup this open checked was behind when it began. Where each is deferred or checked against the catalog,
+		// the end's transaction checks it again anyway, so the stamps are not read again; otherwise they are, to spare an
+		// open that changed nothing since its setups a transaction. None where no setup made the table yet.
+		const reread = pending.some((each) => each.deferred !== true && each.verify === undefined);
+		const current = reread
+			? await readSqliteSchemaStamps(database, scope.ledger).catch(() => new Map<string, number>())
+			: new Map<string, number>();
+		const behind = pending.filter(
+			({ stamp, deferred }) => deferred === true || (current.get(stampKey(stamp.domain)) ?? 0) < stamp.revision,
+		);
 		if (behind.length === 0) return;
+		const table = sqliteSchemaStampTable(scope.ledger);
 		await database.transaction(
 			async (tx) => {
-				for (const { setup } of behind) await setup(tx);
+				const catalog = await readSqliteCatalog(tx, scope.ledger);
+				for (const { setup, verify, deferred } of behind)
+					if (deferred === true || verify === undefined || catalog === undefined || !verify(catalog))
+						await setup(tx);
 				await recordSqliteSchemaStamps(
 					tx,
 					behind.map(({ stamp }) => stamp),
+					{ tableExists: catalog?.hasTable(table) === true, last: true },
 				);
 			},
 			{ retryTransientFailures: true, concurrency: { kind: "serial", domain: scope.ledger } },
 		);
-	} catch {
+	} catch (error) {
+		if (deferred) throw error;
 		// The next open checks them again.
 	}
 }
