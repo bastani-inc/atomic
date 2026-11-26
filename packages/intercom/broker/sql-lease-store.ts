@@ -24,7 +24,12 @@ import type {
 } from "./multinode-state-store.js";
 import { isMissingPrivilege } from "./sql-add-column.js";
 import { recipientTransaction } from "./sql-outbox-store.js";
-import { ensureBrokerSchema, openCatalogOf, withBrokerSchemaCatalog } from "./sql-schema.js";
+import {
+	ensureBrokerSchema,
+	openCatalogOf,
+	stampBrokerSchemaAtOpenEnd,
+	withBrokerSchemaCatalog,
+} from "./sql-schema.js";
 
 /** Store-clock milliseconds since the lease was renewed, never negative. */
 const age = ({ greatest, nowMs }: StorageDialect) => greatest("0", `${nowMs} - renewed_at`);
@@ -158,41 +163,43 @@ async function ensureAddressColumns(database: SqliteDatabase, prefix: string | u
 	const indexes = ADDRESS_COLUMNS.map(
 		(column) => `CREATE INDEX IF NOT EXISTS ${table}_${column} ON ${table}(${column})`,
 	).join(";\n");
+	const setup = async (tx: SqliteExecutor) => {
+		if (dialect.name === "postgres") {
+			// One statement, so the table is rewritten once.
+			await tx.exec(
+				`ALTER TABLE ${table} ${ADDRESS_COLUMNS.map(
+					(column) => `ADD COLUMN IF NOT EXISTS ${column} TEXT GENERATED ALWAYS AS (${expressions[column]}) STORED`,
+				).join(", ")};\n${indexes}`,
+			);
+			return;
+		}
+		// SQLite runs this on every open: `pragma_table_xinfo` lists generated columns, which `pragma_table_info` hides.
+		const present = new Set(
+			(await tx.all<SqliteRow & { name: string }>("SELECT name FROM pragma_table_xinfo(?)", table)).map(
+				(row) => row.name,
+			),
+		);
+		for (const column of ADDRESS_COLUMNS)
+			if (!present.has(column))
+				await tx.exec(
+					`ALTER TABLE ${table} ADD COLUMN ${column} TEXT GENERATED ALWAYS AS (${expressions[column]}) VIRTUAL`,
+				);
+		await tx.exec(indexes);
+	};
 	// On SQLite, which records no step, the catalog an open read finds the columns and their indexes, so a current
-	// table costs no write transaction (#6560).
+	// table costs no write transaction (#6560); the open's end stamps it, so the next open answers from the stamp.
 	const catalog = dialect.versionedMigrations ? undefined : await openCatalogOf(database);
 	if (
 		catalog?.sqliteObjectType !== undefined &&
 		ADDRESS_COLUMNS.every(
 			(column) => catalog.hasColumn(table, column) && catalog.sqliteObjectType?.(`${table}_${column}`) === "index",
 		)
-	)
+	) {
+		stampBrokerSchemaAtOpenEnd(database, prefix, "lease-addresses", setup);
 		return true;
+	}
 	try {
-		await ensureBrokerSchema(database, prefix, "lease-addresses", async (tx) => {
-			if (dialect.name === "postgres") {
-				// One statement, so the table is rewritten once.
-				await tx.exec(
-					`ALTER TABLE ${table} ${ADDRESS_COLUMNS.map(
-						(column) =>
-							`ADD COLUMN IF NOT EXISTS ${column} TEXT GENERATED ALWAYS AS (${expressions[column]}) STORED`,
-					).join(", ")};\n${indexes}`,
-				);
-				return;
-			}
-			// SQLite runs this on every open: `pragma_table_xinfo` lists generated columns, which `pragma_table_info` hides.
-			const present = new Set(
-				(
-					await tx.all<SqliteRow & { name: string }>("SELECT name FROM pragma_table_xinfo(?)", table)
-				).map((row) => row.name),
-			);
-			for (const column of ADDRESS_COLUMNS)
-				if (!present.has(column))
-					await tx.exec(
-						`ALTER TABLE ${table} ADD COLUMN ${column} TEXT GENERATED ALWAYS AS (${expressions[column]}) VIRTUAL`,
-					);
-			await tx.exec(indexes);
-		});
+		await ensureBrokerSchema(database, prefix, "lease-addresses", setup);
 		return true;
 	} catch (error) {
 		if (isMissingPrivilege(error)) return false;

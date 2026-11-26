@@ -34,8 +34,9 @@ export async function withBrokerSchemaCatalog<T>(
  * records `revision` for `store` already (#5218): on PostgreSQL a current schema runs no DDL, so a role with only DML
  * privileges opens the store. Raise `revision` whenever `setup` creates or alters anything new. Inside an open that read
  * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560); on SQLite and
- * libSQL the transaction stamps the revision, and the open's end stamps it again if a later store's setup changed the
- * schema meanwhile, so the next open of a current schema takes no write lock.
+ * libSQL the transaction stamps the revision. A store whose stamp was behind is stamped again at the open's end, after
+ * every setup and added column of the open, so the next open of a current schema takes no write lock and answers every
+ * store from its stamp.
  */
 export async function ensureBrokerSchema(
 	database: SqliteDatabase,
@@ -46,12 +47,32 @@ export async function ensureBrokerSchema(
 ): Promise<void> {
 	const schema = { ledger: storageMigrationTable(prefix), domain: `intercom-${store}`, revision };
 	if (await catalogApi.storageSchemaCurrent?.(database, schema)) return;
-	if (await createsNothingNew(database, setup)) return;
+	if (await createsNothingNew(database, setup)) {
+		stampBrokerSchemaAtOpenEnd(database, prefix, store, setup, revision);
+		return;
+	}
 	await database.transaction((tx) =>
 		ensureStorageSchema(tx, dialectOf(database), schema, async () => {
 			await setup(tx);
 		}),
 	);
+	catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup);
+}
+
+/**
+ * Asks the open of `database` in progress to stamp `store`'s `setup` at its end, on SQLite and libSQL, where the open
+ * found the store current in the catalog rather than by its stamp, which a schema change since left behind: the next
+ * open then answers from the stamp (#6560). Does nothing elsewhere, outside an open, and where the store's stamp is
+ * current.
+ */
+export function stampBrokerSchemaAtOpenEnd(
+	database: SqliteDatabase,
+	prefix: string | undefined,
+	store: string,
+	setup: (tx: SqliteExecutor) => Promise<unknown>,
+	revision = 1,
+): void {
+	const schema = { ledger: storageMigrationTable(prefix), domain: `intercom-${store}`, revision };
 	catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup);
 }
 

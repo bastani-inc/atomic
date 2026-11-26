@@ -285,12 +285,13 @@ export async function sqliteSchemaStampsOf(
 }
 
 /**
- * @internal Tells the open of `database` in progress that it ran `setup`, the schema setup `stamp` names, in a
- * transaction that stamped it (SQLite and libSQL only). A schema change later in the same open, such as the next
- * store's setup, leaves that stamp behind the schema version, so the next open would check it again under the write
- * lock. The open's end reads the stamps once more and, where any it ran is behind, runs those setups again in one
- * transaction and stamps them all with the version it leaves: the next open of a current schema then takes no write
- * lock (#6560). Does nothing outside such an open.
+ * @internal Tells the open of `database` in progress that it checked `setup`, the schema setup `stamp` names, without
+ * its stamp (SQLite and libSQL only): it ran it in a transaction that stamped it, or found every object it creates in
+ * the catalog. A schema change later in the same open, such as the next store's setup or a column it adds, leaves the
+ * stamp behind the schema version, and a store found in the catalog has none that is current, so the next open would
+ * check it again. The open's end reads the stamps once more and, where any of these is behind, runs those setups again
+ * in one transaction and stamps them all with the version it leaves: the next open of a current schema then takes no
+ * write lock and answers every such store from its stamp (#6560). Does nothing outside such an open.
  */
 export function restampStorageSchemaAtOpenEnd(
 	database: SqliteDatabase,
@@ -311,7 +312,8 @@ async function restamp(database: SqliteDatabase, scope: CatalogScope): Promise<v
 	const pending = [...scope.restamp.values()];
 	scope.restamp.clear();
 	try {
-		const current = await readSqliteSchemaStamps(database, scope.ledger);
+		// None where no setup made the table yet: every one is behind then.
+		const current = await readSqliteSchemaStamps(database, scope.ledger).catch(() => new Map<string, number>());
 		const behind = pending.filter(({ stamp }) => (current.get(stampKey(stamp.domain)) ?? 0) < stamp.revision);
 		if (behind.length === 0) return;
 		await database.transaction(

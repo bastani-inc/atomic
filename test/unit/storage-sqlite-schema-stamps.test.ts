@@ -141,3 +141,46 @@ test("a build that records no stamps opens a stamped store, and the next open ch
 	// And the earlier build still opens the store this build stamped again, and reads and writes it.
 	assert.equal(await withBroker(earlier, path, (state) => reserve(state, "earlier again")), 3);
 });
+
+/** The stamps of the broker's stores, and how many of them a schema change since left behind. */
+function stampsOf(path: string) {
+	return onFile(path, async (database) => {
+		const rows = await database.all<SqliteRow & { domain: string; behind: number }>(
+			`SELECT domain, schema_version <> (SELECT schema_version FROM pragma_schema_version) AS behind
+			FROM atomic_schema_stamps ORDER BY domain`,
+		);
+		return { domains: rows.map((row) => row.domain), behind: rows.filter((row) => row.behind === 1).length };
+	});
+}
+
+test("a broker store whose dropped column an open adds again is stamped again in that open (#6560)", async () => {
+	const path = databasePath();
+	await withBroker(current, path);
+	const stamped = await stampsOf(path);
+	assert.equal(stamped.behind, 0);
+	await onFile(path, (database) => database.exec("ALTER TABLE intercom_known_sessions DROP COLUMN lost_at"));
+	assert.equal((await stampsOf(path)).behind, stamped.domains.length, "the drop left every stamp behind");
+	await withBroker(current, path);
+	const columns = await onFile(path, (database) =>
+		database.all<SqliteRow & { name: string }>("SELECT name FROM pragma_table_info('intercom_known_sessions')"),
+	);
+	assert.ok(
+		columns.some((column) => column.name === "lost_at"),
+		"the column is added again",
+	);
+	// Every store, those whose setups it ran and those the catalog found, is stamped with the schema it left.
+	assert.deepEqual(await stampsOf(path), stamped);
+	const begins = countBegins();
+	await withBroker(current, path);
+	assert.equal(begins.take(), 0);
+});
+
+test("a store an earlier build set up, which has no stamps, is stamped at this build's first open (#6560)", async () => {
+	const path = databasePath();
+	const earlier = (await import(earlierBroker)).openIntercomBrokerState as OpenBroker;
+	await withBroker(earlier, path, (state) => reserve(state, "earlier"));
+	await withBroker(current, path);
+	const begins = countBegins();
+	assert.equal(await withBroker(current, path, (state) => reserve(state, "current")), 2);
+	assert.equal(begins.take(), 1, "the reservation's own transaction only");
+});
