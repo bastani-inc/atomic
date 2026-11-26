@@ -27,6 +27,8 @@ import {
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { snapshotIndexTables } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
+import { forkLinkWrites } from "../../packages/coding-agent/src/core/worktree-snapshot/fork-snapshot-index.js";
 import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import {
@@ -596,6 +598,8 @@ for (const backend of storageBackends) {
 									dialectOf(database),
 									tables,
 									{ legacyBlobData: false, chunkBytes: SESSION_BLOB_CHUNK_BYTES },
+									forkLinkWrites({ ...tables, ...snapshotIndexTables(prefix) }, dialectOf(database))
+										.materialized,
 									"c",
 									last,
 									segments,

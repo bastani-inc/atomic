@@ -22,6 +22,8 @@ export interface ForkHostStore {
 	readonly tables: Omit<ForkMaterializeTables, "forkSegments" | "forkLineage">;
 	readonly forkTables: SessionForkTables;
 	readonly blobs: { readonly legacyBlobData: boolean; readonly chunkBytes: number };
+	/** The statement that links the rows a materialization copies into a fork: see `materializedForkLinks`. */
+	readonly materializedLinks: string;
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
 }
 
@@ -64,6 +66,7 @@ export function forkDetachHost(store: ForkHostStore): ForkDetachHost {
 				dialect,
 				materialize,
 				store.blobs,
+				store.materializedLinks,
 				childId,
 				await length(tx, childId),
 				pieces,

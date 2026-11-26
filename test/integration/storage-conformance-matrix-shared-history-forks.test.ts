@@ -19,6 +19,13 @@ import {
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionRecordHeader } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { snapshotIndexTables } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
+import {
+	forkSessionLink,
+	legacyForkLinksTriggerName,
+	parentColumns,
+	snapshotEntryCondition,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/fork-snapshot-index.js";
 import { holdOlderBuildMarker } from "../helpers/older-build-marker.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import {
@@ -120,6 +127,44 @@ async function schemaTwoStore(database: SqliteDatabase, prefix: string): Promise
 	await older.release();
 }
 
+/** Whether the fork links trigger of earlier builds of #6560 is there, or on PostgreSQL its function. */
+async function legacyTriggerExists(database: SqliteDatabase, prefix: string): Promise<boolean> {
+	const name = legacyForkLinksTriggerName(tables(prefix).entries);
+	const objects = dialectOf(database).schemaObjects([name]);
+	if ((await database.all(objects.sql, ...objects.params)).length > 0) return true;
+	if (dialectOf(database).name !== "postgres") return false;
+	const fn = await database.get(
+		"SELECT proname FROM pg_catalog.pg_proc WHERE pronamespace = current_schema()::regnamespace AND proname = ?",
+		`${name}_fn`,
+	);
+	return fn !== undefined;
+}
+
+/** Installs the fork links trigger as earlier builds of #6560 did, on the entries of a switched store under `prefix`. */
+async function installLegacyTrigger(database: SqliteDatabase, prefix: string): Promise<void> {
+	const dialect = dialectOf(database);
+	const entries = tables(prefix).entries;
+	const segments = sessionForkTables(prefix).forkSegments;
+	const row = `(SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, ${parentColumns(dialect, "NEW.entry_json")})`;
+	await database.exec(
+		dialect.renderTrigger({
+			name: legacyForkLinksTriggerName(entries),
+			table: entries,
+			timing: "AFTER",
+			event: "INSERT",
+			when: `EXISTS (SELECT 1 FROM ${segments} WHERE session_id = NEW.session_id)`,
+			statements: [
+				forkSessionLink(
+					snapshotIndexTables(prefix).sessionLinks,
+					segments,
+					row,
+					snapshotEntryCondition(dialect, (name) => `r.${name}`),
+				),
+			],
+		}),
+	);
+}
+
 /** Every statement `database` is sent, and every transaction it starts, until `stop`. */
 function recording(database: SqliteDatabase) {
 	const statements: string[] = [];
@@ -148,7 +193,7 @@ for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
 	describe.skipIf(backend.skipReason !== undefined)(`the switch to shared-history forks on ${name} (#6560)`, () => {
 		test(
-			"a new store is at schema 3, with the fork tables and their snapshot links, from its first open, which takes no switch",
+			"a new store is at schema 3, with the fork tables and no fork links trigger, from its first open, which takes no switch",
 			() =>
 				withBackendScope(backend, async (scope) => {
 					const database = await scope.connect();
@@ -161,12 +206,7 @@ for (const backend of storageBackends) {
 						assert.ok(!/schema_version IS NULL OR/.test(sql), `a new store's open read the markers: ${sql}`);
 					}
 					assert.equal(first.transactions(), TRANSACTIONS_OF_A_NEW_STORE[dialectOf(database).name]);
-					const links = dialectOf(database).schemaObjects([`${tables(scope.prefix).entries}_fork_links_v1`]);
-					assert.equal(
-						(await database.all(links.sql, ...links.params)).length,
-						1,
-						"the fork links trigger exists",
-					);
+					assert.equal(await legacyTriggerExists(database, scope.prefix), false, "no fork links trigger");
 					assert.equal(await schemaVersion(database, scope.prefix), 3);
 					assert.equal(await forkTablesExist(database, scope.prefix), true);
 					assert.equal(await database.transaction((tx) => store.sharedHistoryForks(tx)), true);
@@ -357,6 +397,51 @@ for (const backend of storageBackends) {
 						{ transactions: warm.transactions(), statements: warm.statements.length },
 						WARM_OPEN[dialectOf(warm.database).name],
 						`a warm open sent ${warm.statements.join(" | ")}`,
+					);
+				}),
+			SERVER_TIMEOUT_MS,
+		);
+
+		test(
+			"a store's open drops the fork links trigger earlier builds installed, in one small transaction, after which opens are warm again",
+			() =>
+				withBackendScope(backend, async (scope) => {
+					const database = await scope.connect();
+					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+					await seedSource(store, "src", "legacy");
+					await store.close();
+					await installLegacyTrigger(database, scope.prefix);
+					assert.equal(await legacyTriggerExists(database, scope.prefix), true);
+
+					const first = recording(await scope.connect());
+					const reopened = await SqlSessionStore.open(first.database, { prefix: scope.prefix });
+					assert.equal(await legacyTriggerExists(database, scope.prefix), false, "the open dropped it");
+					// Found by the read the open makes anyway; dropped in a transaction of its own, as nothing else is written.
+					const warm = WARM_OPEN[dialectOf(database).name]!;
+					assert.deepEqual(
+						{ transactions: first.transactions(), statements: first.statements.length },
+						{ transactions: warm.transactions + 1, statements: warm.statements },
+						`the open sent ${first.statements.join(" | ")}`,
+					);
+					// The store links a fork's entries itself.
+					const created = await fork(reopened, "src", header("child", "src"));
+					await reopened.append("child", [user("x1", "e1", "below the first", 99)], {
+						expectSeq: created.lastSeq,
+					});
+					const link = await database.get(
+						`SELECT anchor_seq, broken FROM ${snapshotIndexTables(scope.prefix).sessionLinks} WHERE session_id = ? AND seq = ?`,
+						"child",
+						created.lastSeq + 1,
+					);
+					assert.equal(Number(link?.broken), 0, "the entry below an inherited one is linked as in a copy");
+					await reopened.close();
+
+					const next = recording(await scope.connect());
+					await (await SqlSessionStore.open(next.database, { prefix: scope.prefix })).close();
+					assert.deepEqual(
+						{ transactions: next.transactions(), statements: next.statements.length },
+						warm,
+						`the next open sent ${next.statements.join(" | ")}`,
 					);
 				}),
 			SERVER_TIMEOUT_MS,

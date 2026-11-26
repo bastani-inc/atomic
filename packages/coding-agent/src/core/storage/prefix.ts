@@ -61,8 +61,6 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"session_chat_v1",
 	"session_chat_v1_anchor",
 	"session_entries",
-	"session_entries_fork_links_v1",
-	"session_entries_fork_links_v1_fn",
 	"session_entries_search_forget",
 	"session_entries_search_forget_fn",
 	"session_entries_snapshot_links",

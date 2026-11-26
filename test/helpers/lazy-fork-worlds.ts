@@ -1,23 +1,27 @@
+import assert from "node:assert/strict";
+import { createLabelEntry } from "../../packages/coding-agent/src/core/session-manager-entries.ts";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
-import { sessionForkTables } from "../../packages/coding-agent/src/core/storage/session/fork-schema.js";
 import {
-	assertForkSegments,
-	type ForkSegment,
-	forkRunSegments,
-} from "../../packages/coding-agent/src/core/storage/session/fork-segments.js";
+	completeSessionForkStream,
+	humanForkStream,
+} from "../../packages/coding-agent/src/core/storage/session/branch-fork-source.js";
+import { sessionForkTables } from "../../packages/coding-agent/src/core/storage/session/fork-schema.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import {
+	SESSION_FORMAT_VERSION,
+	type SessionRecordHeader,
+} from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { snapshotIndexTables } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
 import type { SnapshotBlob } from "../../packages/coding-agent/src/core/worktree-snapshot/types.js";
 import { holdOlderBuildMarker } from "./older-build-marker.js";
 import { messageEntry, snapshotEntry, syntheticSnapshot, textBlob } from "./snapshot-reference-index.js";
 
 /**
- * Two worlds of the same session histories on one database, under two prefixes (#6560): in one every fork copies the
- * rows it keeps, as forks always have; in the other, where shared-history forks are on, a fork stores only the rows it
- * changes and the entries appended to it, and fork segments name the rest in the sessions that store them. Rows are
- * written to the entries table directly, in seq order as a fork or an append writes them, so the snapshot index's
- * triggers index them; nothing here reads a session through the store.
+ * Two worlds of the same session histories on one database, under two prefixes (#6560), both written through the
+ * session store: in one every fork copies the rows it keeps, as forks always have; in the other, where shared-history
+ * forks are on, a fork stores only the rows it changes and the entries appended to it, and fork segments name the rest
+ * in the sessions that store them.
  */
 
 /** A deterministic random source, so a failing history can be replayed by its seed. */
@@ -30,133 +34,6 @@ export function seeded(seed: number): () => number {
 		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
 		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 	};
-}
-
-/** A session of a written history: its view, in seq order, and, in the shared world, its segments and the seqs it stores. */
-export interface HistorySession {
-	readonly id: string;
-	readonly view: SessionEntry[];
-	readonly segments: ForkSegment[];
-	/** The seqs of the view the session stores itself in the shared world. */
-	readonly own: Set<number>;
-}
-
-/** One world's tables and store. */
-export interface World {
-	readonly prefix: string;
-	readonly store: SqlSessionStore;
-	readonly entries: string;
-	readonly links: string;
-	readonly segments: string;
-	readonly shared: boolean;
-}
-
-export async function openWorld(database: SqliteDatabase, prefix: string, shared: boolean): Promise<World> {
-	// A store shares its forks' history from its first open; the copying world stays at schema 2 while an older build's
-	// session runs on its prefix, as a store does until such a build stops.
-	if (!shared) await holdOlderBuildMarker(database, prefix);
-	const store = await SqlSessionStore.open(database, { prefix });
-	return {
-		prefix,
-		store,
-		entries: `${prefix}session_entries`,
-		links: snapshotIndexTables(prefix).sessionLinks,
-		segments: sessionForkTables(prefix).forkSegments,
-		shared,
-	};
-}
-
-/** Writes `rows` of `sessionId` at their seqs, one statement each, in seq order, in one transaction. */
-export async function writeRows(
-	database: SqliteDatabase,
-	world: World,
-	sessionId: string,
-	rows: readonly { readonly seq: number; readonly entry: SessionEntry }[],
-): Promise<void> {
-	if (rows.length === 0) return;
-	await database.transaction(async (tx) => {
-		for (const { seq, entry } of rows)
-			await tx.run(
-				`INSERT INTO ${world.entries} (session_id, seq, entry_id, entry_json) VALUES (?, ?, ?, ?)`,
-				sessionId,
-				seq,
-				entry.id,
-				JSON.stringify(entry),
-			);
-	});
-}
-
-export async function writeSegments(
-	database: SqliteDatabase,
-	world: World,
-	sessionId: string,
-	segments: readonly ForkSegment[],
-): Promise<void> {
-	for (const [index, segment] of segments.entries())
-		await database.run(
-			`INSERT INTO ${world.segments} (session_id, idx, source_id, from_seq, to_seq, base_seq) VALUES (?, ?, ?, ?, ?, ?)`,
-			sessionId,
-			index,
-			segment.sourceId,
-			segment.fromSeq,
-			segment.toSeq,
-			segment.baseSeq,
-		);
-}
-
-export interface LinkRow extends SqliteRow {
-	seq: number;
-	entry_id: string;
-	parent_id: string | null;
-	anchor_seq: number | null;
-	children: number;
-	broken: number;
-}
-
-/** The index's links of `sessionId` at `seqs`, by seq. */
-export async function linksAt(
-	database: SqliteDatabase,
-	world: World,
-	sessionId: string,
-	seqs: readonly number[],
-): Promise<Map<number, LinkRow>> {
-	const rows = await database.all<LinkRow>(
-		`SELECT seq, entry_id, parent_id, anchor_seq, children, broken FROM ${world.links} WHERE session_id = ? ORDER BY seq`,
-		sessionId,
-	);
-	const wanted = new Set(seqs);
-	return new Map(
-		rows
-			.filter((row) => wanted.has(Number(row.seq)))
-			.map((row) => [
-				Number(row.seq),
-				{
-					...row,
-					seq: Number(row.seq),
-					anchor_seq: row.anchor_seq === null ? null : Number(row.anchor_seq),
-					children: Number(row.children),
-					broken: Number(row.broken),
-				},
-			]),
-	);
-}
-
-/** A random entry following `parent`: a snapshot of one of two checkouts, with blobs of its own, or a message. */
-export function randomEntry(
-	random: () => number,
-	parent: SessionEntry | undefined,
-	blobs: SnapshotBlob[],
-	tag: string,
-): SessionEntry {
-	const parentId = parent?.id ?? null;
-	if (random() < 0.35) {
-		const blob = textBlob(`${tag}-${blobs.length}-${random()}`);
-		blobs.push(blob);
-		const root = random() < 0.5 ? "/repo" : "/other";
-		const id = `snap-${blobs.length}-${Math.floor(random() * 1e9)}`;
-		return snapshotEntry(root, id, syntheticSnapshot(id, [blob.hash], { root }), parentId);
-	}
-	return messageEntry(`${tag}`, parentId);
 }
 
 /** The ancestors of `entry` in `view`, itself included, in view order. */
@@ -173,92 +50,217 @@ export function pathTo(view: readonly SessionEntry[], entry: SessionEntry): Sess
 	return path.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
 }
 
-/** Appends `count` random entries to `session`, each under its last entry or a random one, in both worlds. */
-export function appendEntries(
-	random: () => number,
-	session: HistorySession,
-	count: number,
-	blobs: SnapshotBlob[],
-): { readonly seq: number; readonly entry: SessionEntry }[] {
-	const rows: { seq: number; entry: SessionEntry }[] = [];
-	for (let index = 0; index < count; index++) {
-		const view = session.view;
-		const parent =
-			view.length === 0 ? undefined : random() < 0.6 ? view.at(-1)! : view[Math.floor(random() * view.length)]!;
-		const entry = randomEntry(random, parent, blobs, session.id);
-		view.push(entry);
-		session.own.add(view.length);
-		rows.push({ seq: view.length, entry });
-	}
-	return rows;
+export function sessionHeader(id: string): SessionRecordHeader {
+	return { id, version: SESSION_FORMAT_VERSION, createdAt: "2026-11-01T00:00:00.000Z", cwd: "/project" };
+}
+
+/** The two stores of one history, each session's view, and every snapshot blob its entries name. */
+export interface Worlds {
+	readonly database: SqliteDatabase;
+	readonly copy: SqlSessionStore;
+	readonly shared: SqlSessionStore;
+	readonly copyPrefix: string;
+	readonly sharedPrefix: string;
+	readonly views: Map<string, SessionEntry[]>;
+	readonly blobs: SnapshotBlob[];
 }
 
 /**
- * A fork of `parent` that keeps `kept`, entries of its view in view order: the shared world's segments for the rows
- * it inherits and the rows it stores itself, each kept row stored by the fork with probability `ownShare`, as a fork
- * stores a row it edits. The copy world stores every row.
+ * Opens both worlds under `prefix`: the copying store stays at schema 2 while an older build's session runs on its
+ * prefix, as a store does until such a build stops; the other shares its forks' history from its first open.
  */
-export function forkOf(
-	random: () => number,
-	parent: HistorySession,
-	id: string,
-	kept: readonly SessionEntry[],
-	ownShare: number,
-): { readonly child: HistorySession; readonly ownRows: { seq: number; entry: SessionEntry }[] } {
-	const parentSeq = new Map(parent.view.map((entry, index) => [entry.id, index + 1]));
-	const segments: ForkSegment[] = [];
-	const own = new Set<number>();
-	const ownRows: { seq: number; entry: SessionEntry }[] = [];
-	let run: { fromSeq: number; toSeq: number; baseSeq: number } | undefined;
-	const flush = () => {
-		if (run !== undefined) segments.push(...forkRunSegments(parent.id, parent.segments, parent.view.length, run));
-		run = undefined;
-	};
-	kept.forEach((entry, index) => {
-		const seq = index + 1;
-		const from = parentSeq.get(entry.id)!;
-		if (random() < ownShare) {
-			flush();
-			own.add(seq);
-			ownRows.push({ seq, entry });
-			return;
-		}
-		if (run !== undefined && run.toSeq + 1 === from && run.baseSeq + (run.toSeq - run.fromSeq + 1) === seq - 1)
-			run.toSeq = from;
-		else {
-			flush();
-			run = { fromSeq: from, toSeq: from, baseSeq: seq - 1 };
-		}
-	});
-	flush();
-	assertForkSegments(id, segments, kept.length);
-	return { child: { id, view: [...kept], segments, own }, ownRows };
-}
-
-/** Writes a fork in both worlds: every kept row in the copy world, the segments and the stored rows in the shared one. */
-export async function writeFork(
-	database: SqliteDatabase,
-	copy: World,
-	shared: World,
-	child: HistorySession,
-	ownRows: readonly { seq: number; entry: SessionEntry }[],
-): Promise<void> {
-	await writeRows(
+export async function openWorlds(database: SqliteDatabase, prefix: string): Promise<Worlds> {
+	const copyPrefix = `${prefix}c_`;
+	const sharedPrefix = `${prefix}l_`;
+	await holdOlderBuildMarker(database, copyPrefix);
+	return {
 		database,
-		copy,
-		child.id,
-		child.view.map((entry, index) => ({ seq: index + 1, entry })),
-	);
-	await writeSegments(database, shared, child.id, child.segments);
-	await writeRows(database, shared, child.id, ownRows);
+		copy: await SqlSessionStore.open(database, { prefix: copyPrefix }),
+		shared: await SqlSessionStore.open(database, { prefix: sharedPrefix }),
+		copyPrefix,
+		sharedPrefix,
+		views: new Map(),
+		blobs: [],
+	};
 }
 
-/** Writes `rows` appended to `sessionId` in both worlds. */
-export async function writeAppend(
-	database: SqliteDatabase,
-	worlds: readonly World[],
-	sessionId: string,
-	rows: readonly { seq: number; entry: SessionEntry }[],
-): Promise<void> {
-	for (const world of worlds) await writeRows(database, world, sessionId, rows);
+/**
+ * `count` random entries after `view`: snapshots of one of two checkouts, each with a blob of its own, messages, and
+ * now and then a label, which a branch fork drops, editing the entry after it to follow the one before.
+ */
+export function randomEntries(
+	random: () => number,
+	view: readonly SessionEntry[],
+	count: number,
+	blobs: SnapshotBlob[],
+	tag: string,
+): SessionEntry[] {
+	const added: SessionEntry[] = [];
+	for (let index = 0; index < count; index++) {
+		const all = [...view, ...added];
+		const parent = all.length === 0 ? null : random() < 0.6 ? all.at(-1)! : all[Math.floor(random() * all.length)]!;
+		if (parent !== null && random() < 0.1) {
+			const target = all[Math.floor(random() * all.length)]!;
+			added.push(createLabelEntry(target.id, `${tag}-label`, new Set(all.map((entry) => entry.id)), parent.id));
+			continue;
+		}
+		if (random() < 0.35) {
+			const blob = textBlob(`${tag}-${blobs.length}-${random()}`);
+			blobs.push(blob);
+			const root = random() < 0.5 ? "/repo" : "/other";
+			const id = `snap-${blobs.length}-${Math.floor(random() * 1e9)}`;
+			added.push(snapshotEntry(root, id, syntheticSnapshot(id, [blob.hash], { root }), parent?.id ?? null));
+		} else added.push(messageEntry(tag, parent?.id ?? null));
+	}
+	return added;
+}
+
+/** Stores `entries` in both worlds: a new session `id`, or appended to it. Their blobs are stored first. */
+export async function writeBoth(worlds: Worlds, id: string, entries: readonly SessionEntry[]): Promise<void> {
+	await putBlobs(worlds);
+	const view = worlds.views.get(id);
+	for (const store of [worlds.copy, worlds.shared]) {
+		if (view === undefined) await store.create(sessionHeader(id), entries);
+		else if (entries.length > 0) await store.append(id, entries, { expectSeq: view.length });
+	}
+	worlds.views.set(id, [...(view ?? []), ...entries]);
+}
+
+/** Every blob of the worlds' history, stored in both. */
+export async function putBlobs(worlds: Worlds): Promise<void> {
+	for (const store of [worlds.copy, worlds.shared]) await store.snapshotBlobs.putBlobs(worlds.blobs);
+}
+
+/** How a fork keeps its parent's entries: see {@link forkBoth}. */
+export type ForkKind =
+	| { readonly cut: number }
+	| { readonly leaf: SessionEntry; readonly leafSeq: number }
+	| { readonly entries: readonly SessionEntry[] };
+
+/**
+ * Forks `parent` into `id` in both worlds: its whole history through `cut`; with `leaf`, the branch to that entry,
+ * without its labels, each entry after one edited to follow the entry before it; or, with `entries`, the entries a caller holds, which a store with shared history shares where they are the
+ * ones it wrote and stores itself where they are not, as when they were edited.
+ */
+export async function forkBoth(worlds: Worlds, parent: string, id: string, kind: ForkKind): Promise<void> {
+	const lengths: number[] = [];
+	for (const store of [worlds.copy, worlds.shared]) {
+		const head = await store.readEntrySizes(parent, 1, 0);
+		const source = { store, sessionId: parent, epoch: head.epoch, hashes: [], receipts: new Map() };
+		if ("entries" in kind) {
+			// Entries that need nothing of the source are created as they are where they share nothing.
+			const created =
+				(await store.createFork(sessionHeader(id), kind.entries, source)) ??
+				(await store.create(sessionHeader(id), kind.entries));
+			lengths.push(created.lastSeq);
+			continue;
+		}
+		const stream =
+			"cut" in kind
+				? completeSessionForkStream(parent, head.epoch, kind.cut)
+				: humanForkStream(parent, head.epoch, head.lastSeq, kind.leafSeq, kind.leaf.id, new Map(), new Map());
+		const created = await store.createFork(sessionHeader(id), stream, source);
+		assert.ok(created, `the store forks ${parent} into ${id}`);
+		lengths.push(created.lastSeq);
+	}
+	assert.equal(lengths[0], lengths[1], `${id}: both forks keep as many entries`);
+	const entries = (await worlds.copy.load(id)).entries;
+	assert.deepEqual((await worlds.shared.load(id)).entries, entries, `${id}: both forks read the same`);
+	worlds.views.set(id, [...entries]);
+}
+
+/** A random way to fork a session whose view is `view`. */
+export function randomForkKind(random: () => number, view: readonly SessionEntry[]): ForkKind {
+	const at = Math.floor(random() * view.length);
+	const pick = random();
+	if (pick < 0.35) return { cut: at + 1 };
+	if (pick < 0.7) return { leaf: view[at]!, leafSeq: at + 1 };
+	// The entries through `at`, a message now and then edited, as a caller may hold them.
+	return {
+		entries: view
+			.slice(0, at + 1)
+			.map((entry) =>
+				entry.type === "message" && random() < 0.25
+					? ({ ...entry, message: { ...entry.message, content: `edited ${entry.id}` } } as SessionEntry)
+					: entry,
+			),
+	};
+}
+
+/**
+ * A random history in both worlds: a root session, a chain of three forks, each of the one before, and a fork of the
+ * root beside them. A fork keeps a prefix of its parent's view, the branch to one of its entries, or entries a caller
+ * holds, some edited, and has entries appended; parents go on appending after they are forked. Resolves with the forks'
+ * ids, parents first.
+ */
+export async function randomHistory(worlds: Worlds, seed: number): Promise<string[]> {
+	const random = seeded(seed);
+	const append = (id: string, count: number) =>
+		writeBoth(worlds, id, randomEntries(random, worlds.views.get(id) ?? [], count, worlds.blobs, id));
+	const root = `root-${seed}`;
+	await append(root, 12 + Math.floor(random() * 20));
+	const forks: string[] = [];
+	const fork = async (parent: string, id: string) => {
+		await forkBoth(worlds, parent, id, randomForkKind(random, worlds.views.get(parent)!));
+		await append(id, 2 + Math.floor(random() * 6));
+		// The parent goes on after the fork.
+		await append(parent, Math.floor(random() * 3));
+		forks.push(id);
+	};
+	let parent = root;
+	for (let depth = 1; depth <= 3; depth++) {
+		await fork(parent, `fork-${seed}-${depth}`);
+		parent = `fork-${seed}-${depth}`;
+	}
+	await fork(root, `sibling-${seed}`);
+	return forks;
+}
+
+export interface LinkRow {
+	readonly seq: number;
+	readonly entry: string;
+	readonly parent: string | null;
+	readonly anchor: number | null;
+	readonly children: number;
+	readonly broken: number;
+}
+
+/** The snapshot index's links of session `id` under `prefix`, by seq. */
+export async function linksOf(database: SqliteDatabase, prefix: string, id: string): Promise<Map<number, LinkRow>> {
+	const rows = await database.all<SqliteRow>(
+		`SELECT seq, entry_id, parent_id, anchor_seq, children, broken FROM ${snapshotIndexTables(prefix).sessionLinks} WHERE session_id = ? ORDER BY seq`,
+		id,
+	);
+	return new Map(
+		rows.map((row) => [
+			Number(row.seq),
+			{
+				seq: Number(row.seq),
+				entry: String(row.entry_id),
+				parent: row.parent_id === null ? null : String(row.parent_id),
+				anchor: row.anchor_seq === null ? null : Number(row.anchor_seq),
+				children: Number(row.children),
+				broken: Number(row.broken),
+			},
+		]),
+	);
+}
+
+/** The seqs of the rows session `id` stores itself under `prefix`. */
+export async function storedSeqs(database: SqliteDatabase, prefix: string, id: string): Promise<Set<number>> {
+	const rows = await database.all<SqliteRow>(
+		`SELECT seq FROM ${prefix}session_entries WHERE session_id = ? ORDER BY seq`,
+		id,
+	);
+	return new Set(rows.map((row) => Number(row.seq)));
+}
+
+/** How many fork segments the sessions under `prefix` have. */
+export async function segmentCount(database: SqliteDatabase, prefix: string, id?: string): Promise<number> {
+	const segments = sessionForkTables(prefix).forkSegments;
+	const row = await database.get<SqliteRow>(
+		`SELECT count(*) AS n FROM ${segments}${id === undefined ? "" : " WHERE session_id = ?"}`,
+		...(id === undefined ? [] : [id]),
+	);
+	return Number(row?.n);
 }

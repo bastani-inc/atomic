@@ -1,6 +1,10 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
-import { installSharedHistorySnapshotIndex } from "../../worktree-snapshot/added-exports.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
+import {
+	type ForkLinkWrites,
+	forkLinkWrites,
+	legacyForkLinksTriggerName,
+} from "../../worktree-snapshot/fork-snapshot-index.ts";
 import { ensureTableFillfactor, MAX_SEQUENCE_REQUEST_STATEMENTS, transactionFinisher } from "../added-exports.js";
 import type {
 	SqliteDatabase,
@@ -288,7 +292,8 @@ type WrittenRow = {
 };
 /** What the session append function answers: what it did, and the value its outcome names. */
 type AppendOutcomeRow = SqliteRow & { outcome: string; detail: string | null };
-type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
+/** A session's row as `forWrite` reads it: `forked` where the read asked whether the session has fork segments. */
+type HeaderRow = SqliteRow & { header_json: string; last_seq: number; forked?: number | null };
 type SummaryStateRow = HeaderRow & { summary_state: string };
 type ResumeRow = SummaryStateRow & { revision: string };
 
@@ -654,6 +659,12 @@ class RowInserts {
 	}
 }
 
+/** What `first` yields, then `last`. */
+function* thenAll<T>(first: Iterable<T>, last: readonly T[]): Generator<T> {
+	yield* first;
+	yield* last;
+}
+
 /** `first`, then what is left of `rest`. */
 function* withRest<T>(first: readonly T[], rest: Iterator<T>): Generator<T> {
 	yield* first;
@@ -741,6 +752,8 @@ export class SqlSessionStore implements SessionStore {
 	private readonly schemaVersions = new WeakMap<SqliteExecutor, Promise<number>>();
 	/** The fork tables under this store's prefix, which exist once its sessions schema is version 3 (#6560). */
 	private readonly forkTables: SessionForkTables;
+	/** See {@link forkLinks}. */
+	private forkLinkStatements?: ForkLinkWrites;
 	/**
 	 * Whether a read of this store found its sessions schema at {@link SESSION_SCHEMA_VERSION_SHARED_HISTORY}: one way,
 	 * as the switch is. A read outside a transaction reads sessions through their views once it is set, and before that
@@ -1540,11 +1553,12 @@ export class SqlSessionStore implements SessionStore {
 				const holders = await liveMarkers(older, live);
 				if (holders.length > 0) return { status: "deferred", holders };
 				await createSharedHistoryTables(tx, dialect, sessionForkTables(prefix));
-				// The snapshot index links the entries of forks that share history from the first one on.
-				await installSharedHistorySnapshotIndex(tx, dialect, prefix);
 				await statementBatch(
 					tx,
 					[
+						// The store links the entries of forks that share history itself; earlier builds of #6560 installed a
+						// trigger for it, which every entry ran. Gone with the switch, as a store's open drops it too.
+						dialect.dropTrigger(legacyForkLinksTriggerName(tables.entries), tables.entries, true),
 						dialect.versionedMigrations && {
 							sql: `INSERT INTO ${storageMigrationTable(prefix)} (domain, version, applied_at) VALUES (?, ?, ${dialect.nowMs}) ON CONFLICT DO NOTHING`,
 							params: [SESSION_DOMAIN, SESSION_SCHEMA_VERSION_SHARED_HISTORY],
@@ -1852,6 +1866,10 @@ export class SqlSessionStore implements SessionStore {
 		);
 		assertForkSegments(header.id, runs.segments, entries.length);
 		yield forkLineageWrite(lineage, header.id, { parentId: source.sessionId, cutSeq: donor.lastSeq });
+		// The links of the entries the child stores, behind every one of them, in seq order (see `forkLinks`).
+		if (runs.segments.length > 0)
+			for (const [index, place] of places.entries())
+				if (place === undefined) yield this.forkLinks().entry(header.id, index + 1);
 	}
 
 	/**
@@ -2054,8 +2072,24 @@ export class SqlSessionStore implements SessionStore {
 			tables: this.tables,
 			forkTables: this.forkTables,
 			blobs: { legacyBlobData: this.legacyBlobData, chunkBytes: SESSION_BLOB_CHUNK_BYTES },
+			materializedLinks: this.forkLinks().materialized,
 			transaction: (body) => this.transaction(body, SESSION_TRANSACTION),
 		});
+	}
+
+	/** The statements that link the entries a session with fork segments stores, as a copy links them (#6560). */
+	private forkLinks(): ForkLinkWrites {
+		const index = snapshotIndexTables(this.prefix);
+		this.forkLinkStatements ??= forkLinkWrites(
+			{
+				entries: this.tables.entries,
+				sessionLinks: index.sessionLinks,
+				sources: index.sources,
+				forkSegments: this.forkTables.forkSegments,
+			},
+			this.dialect,
+		);
+		return this.forkLinkStatements;
 	}
 
 	/**
@@ -2425,6 +2459,8 @@ export class SqlSessionStore implements SessionStore {
 		const blobs: { copy?: ForkBlobCopy | undefined } = {};
 		// Whether a row was copied from the source's stored bytes, which `finishForkCopy` checks are complete.
 		let copiedRows = false;
+		// The seqs of the rows the child stores where its segments name the rest, which it links once they are in.
+		const ownSeqs: number[] = [];
 		const remainingBlobs = await writes.around(async () => {
 			for await (const row of stream.read(reader, async (id) => (await lookup(id)) !== undefined, inlineSnapshot)) {
 				index = await foldForkRow(index, row, lookup);
@@ -2454,6 +2490,7 @@ export class SqlSessionStore implements SessionStore {
 				}
 				// What the child holds is in seq order, for the snapshot index's triggers: the runs before this row first.
 				await writes.send(runs?.drain() ?? copies.drain());
+				if (runs !== undefined) ownSeqs.push(seq + 1);
 				if (!row.reference) {
 					await writes.send(this.entryWrites(header.id, [entry], seq, listed.texts, false));
 				} else if (row.inlineSnapshot) {
@@ -2501,6 +2538,8 @@ export class SqlSessionStore implements SessionStore {
 			if (runs !== undefined) {
 				assertForkSegments(header.id, runs.segments, seq);
 				last.push(forkLineageWrite(lineage, header.id, { parentId: source.sessionId, cutSeq: head.lastSeq }));
+				// The links of the rows the child stores, behind every one of them, in seq order (see `forkLinks`).
+				if (runs.segments.length > 0) for (const own of ownSeqs) last.push(this.forkLinks().entry(header.id, own));
 			}
 			const statement = this.summaryWrite(header.id, { header, entries: [], lastSeq: seq }, summary, index);
 			last.push(statement.statement);
@@ -2762,7 +2801,7 @@ export class SqlSessionStore implements SessionStore {
 		const appended = await this.transactionCheckedAlongside(
 			async (tx, checked) => {
 				writtenRow = undefined;
-				const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
+				const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true, true);
 				validateSessionEntries(entries);
 				// A new snapshot record is written only while every blob it references is still stored (#5077).
 				await this.blobTable.assertStored(
@@ -2787,13 +2826,27 @@ export class SqlSessionStore implements SessionStore {
 				written = [];
 				const statements = this.entryWrites(sessionId, entries, previous.last_seq, summary.texts, true, written);
 				await checked;
-				writtenRow = summary.row;
-				await this.writeEntries(tx, summary.statement, statements);
+				// A session with fork segments links its entries itself, behind them in the same batch (see `forkLinks`); the
+				// read of its row said whether it has any, unless this store had not yet seen shared history then.
+				const forked =
+					previous.forked !== undefined
+						? Number(previous.forked) === 1
+						: (await this.sharedHistoryForks(tx)) && (await this.hasForkSegments(tx, sessionId));
+				// Its appends go through a transaction, never the append function, which writes no link.
+				writtenRow = forked ? undefined : summary.row;
+				const links = forked
+					? entries.map((_, index) => this.forkLinks().entry(sessionId, previous.last_seq + index + 1))
+					: [];
+				await this.writeEntries(
+					tx,
+					summary.statement,
+					links.length === 0 ? statements : thenAll(statements, links),
+				);
 				// The generation the session is in once this commits: the one a fork of it later finds, while only appends
 				// follow.
 				return { lastSeq, epoch: summary.epoch };
 			},
-			this.sessionWrite(sessionId, this.headRead(sessionId, options, true)),
+			this.sessionWrite(sessionId, this.headRead(sessionId, options, true, true)),
 		);
 		this.noteWritten(sessionId, appended.epoch, written);
 		this.rememberWritten(sessionId, writtenRow);
@@ -6001,6 +6054,7 @@ $grant$`);
 		sessionId: string,
 		options: SessionWriteOptions,
 		includeSummaryState: true,
+		forked?: boolean,
 	): Promise<{ readonly row: SummaryStateRow; readonly state: StoredSummaryState }>;
 	private forWrite(
 		tx: SqliteExecutor,
@@ -6013,8 +6067,9 @@ $grant$`);
 		sessionId: string,
 		options: SessionWriteOptions,
 		includeSummaryState = false,
+		forked = false,
 	): Promise<{ readonly row: HeaderRow; readonly state?: StoredSummaryState }> {
-		const read = this.headRead(sessionId, options, includeSummaryState);
+		const read = this.headRead(sessionId, options, includeSummaryState, forked);
 		const row = await tx.get<HeaderRow>(read.sql, ...read.params);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		const state =
@@ -6025,13 +6080,31 @@ $grant$`);
 		return { row, state };
 	}
 
-	/** The read of the session's row that `forWrite` checks a write against. */
-	private headRead(sessionId: string, options: SessionWriteOptions, includeSummaryState: boolean): SqliteStatement {
+	/**
+	 * The read of the session's row that `forWrite` checks a write against; with `forked`, once this store has seen
+	 * shared history, it also reads whether the session has fork segments (#6560).
+	 */
+	private headRead(
+		sessionId: string,
+		options: SessionWriteOptions,
+		includeSummaryState: boolean,
+		forked = false,
+	): SqliteStatement {
 		return {
-			sql: `SELECT header_json, last_seq${includeSummaryState || options.epoch !== undefined ? ", summary_state" : ""}
+			sql: `SELECT header_json, last_seq${includeSummaryState || options.epoch !== undefined ? ", summary_state" : ""}${forked ? this.outsideForkedColumn("id") : ""}
 			 FROM ${this.tables.sessions} WHERE id = ?`,
 			params: [sessionId],
 		};
+	}
+
+	/** Whether session `sessionId` has fork segments, read in `tx`, whose database has shared history (#6560). */
+	private async hasForkSegments(tx: SqliteExecutor, sessionId: string): Promise<boolean> {
+		return (
+			(await tx.get(
+				`SELECT 1 AS found FROM ${this.forkTables.forkSegments} WHERE session_id = ? LIMIT 1`,
+				sessionId,
+			)) !== undefined
+		);
 	}
 
 	private async appendedResume(
