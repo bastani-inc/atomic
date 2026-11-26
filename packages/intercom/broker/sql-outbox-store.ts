@@ -34,6 +34,8 @@ import { addMissingColumns } from "./sql-add-column.js";
 import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 const UNDELIVERED = "state IN ('queued', 'claimed')";
+/** The setting a PostgreSQL claim transaction records in that its recipient has undelivered rows, and its locks are held. */
+const CLAIM_GATE = "atomic.intercom_outbox_claim";
 /** The most `markDelivered` calls one transaction settles together (#6560). */
 const MARK_DELIVERED_BATCH_MAX = 100;
 
@@ -551,21 +553,36 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			const claiming = `state = 'claimed', claim_attempts = claim_attempts + 1, claimant_id = ?,
 				claim_token = ? || ':' || CAST(sequence AS TEXT), claim_renewed_at = ${nowMs}, saving_at = NULL`;
 			if (dialect === "postgres") {
-				// One statement, sent with the transaction's start and its commit: one round trip whether or not there is anything
-				// to claim (#6560). It locks the recipient's undelivered rows in sequence order, as every write of several rows
+				// A read and one claim statement, sent with the transaction's start and its commit: one round trip whether or not
+				// there is anything to claim (#6560). The claim statement locks the recipient's undelivered rows in sequence order, as every write of several rows
 				// locks them, and reads them in their newest versions, so a renewal or settlement of one waits for this claim, or
 				// this claim for it. It does not skip a locked row (SKIP LOCKED): an earlier row passed over could be handed out
 				// after a later one, and another claimant's live claim would go unseen. Another claimant's live claim holds
 				// every row; otherwise each row not live is claimed, and the claimant's own live claims stay in flight.
-				// The recipient's claims take turns: the transaction's start takes the lock domain `<outbox>_claims:<recipient>`,
-				// before the statement takes its snapshot. The statement sees only rows its snapshot holds, so without it a claim
-				// made meanwhile of a row queued meanwhile went unseen: this claim could take over a claimant's older row it was
-				// late to renew while that claimant held a newer one, and two brokers would hand out one recipient's messages at
-				// once, the newer possibly first. Sends, settlements and other recipients' claims do not take it.
+				// The recipient's claims take turns: the lock domain `<outbox>_claims:<recipient>` is taken before the statement
+				// takes its snapshot. The statement sees only rows its snapshot holds, so without it a claim made meanwhile of a
+				// row queued meanwhile went unseen: this claim could take over a claimant's older row it was late to renew while
+				// that claimant held a newer one, and two brokers would hand out one recipient's messages at once, the newer
+				// possibly first. Sends, settlements and other recipients' claims do not take it.
+				// Only a recipient with undelivered rows needs the lock. A read sent first, `waiting`, takes it, with the
+				// database's lock shared, only when it finds such a row, so the common empty poll takes no lock at all. The read
+				// records what it found in a setting of the transaction, and the claim statement locks and claims rows only when
+				// the read found some: every claim acts under the lock, with a snapshot taken after it. A row queued after the
+				// read waits for the next claim, which its send's wake-up hint brings. An older driver takes the locks with the
+				// transaction's start instead, which is just as correct.
+				// While it waits for the locks, `waiting` holds the table's share lock. A broker that adds a column to the table
+				// under the database's lock at that moment ends one of the two with a deadlock error; a claim that fails so is
+				// taken again at the next scan, as after any failed claim.
+				const waiting: SqliteStatement = {
+					sql: `SELECT set_config('${CLAIM_GATE}', 'locked', true) AS waiting
+						WHERE EXISTS (SELECT 1 FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED})`,
+					params: [targetIdentity],
+				};
 				const statement: SqliteStatement = {
 					sql: `WITH locked AS MATERIALIZED (
 						SELECT message_id, sequence, state, claimant_id, claim_renewed_at FROM ${table}
 						WHERE target_identity = ? AND ${UNDELIVERED}
+							AND current_setting('${CLAIM_GATE}', true) = 'locked'
 						ORDER BY sequence${lockClause("update")}
 					), live AS MATERIALIZED (
 						SELECT message_id, sequence, claimant_id FROM locked
@@ -585,6 +602,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 				};
 				return database.transaction(
 					async (executor) => {
+						await executor.all(waiting.sql, ...waiting.params);
 						const records = await executor.all<OutboxRecord & { readonly holder: string | null }>(
 							statement.sql,
 							...statement.params,
@@ -595,8 +613,9 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 					},
 					{
 						concurrency: { kind: "serial", domain: `${table}_claims:${targetIdentity}` },
-						leading: [statement],
+						leading: [waiting, statement],
 						leadingOnly: true,
+						lockIfLeadingFinds: true,
 					},
 				);
 			}

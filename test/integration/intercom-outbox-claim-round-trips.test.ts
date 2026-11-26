@@ -12,7 +12,12 @@ import { openIntercomBrokerState } from "../../packages/intercom/broker/open-bro
 import { rowTransaction } from "../../packages/intercom/broker/sql-outbox-store.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { checkClaimantlessRow } from "../helpers/outbox-claimantless-row.js";
-import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
+import {
+	type PostgresScope,
+	postgresSkipReason,
+	postgresTestPassword,
+	withPostgresDatabase,
+} from "../helpers/postgres-database.js";
 import { dropLibsqlScope } from "../helpers/storage-backends.js";
 
 const restores: (() => void)[] = [];
@@ -68,6 +73,58 @@ function countPostgresRoundTrips() {
 	};
 }
 
+/**
+ * Runs `poll` while the first `COMMIT` the adapter sends is held back, and counts the advisory locks the sessions of
+ * the database at `url` hold meanwhile, from a connection of the test's own: the locks of the poll's transaction, kept
+ * open at its end.
+ */
+async function locksHeldBy<T>(url: string, poll: () => Promise<T>) {
+	const query = pg.Client.prototype.query;
+	let open!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		open = resolve;
+	});
+	let arrived!: () => void;
+	const committing = new Promise<void>((resolve) => {
+		arrived = resolve;
+	});
+	let held = false;
+	const holding = function (this: pg.Client, ...args: Parameters<pg.Client["query"]>) {
+		if (args[0] !== "COMMIT" || held) return Reflect.apply(query, this, args);
+		held = true;
+		arrived();
+		return gate.then(() => Reflect.apply(query, this, args));
+	};
+	pg.Client.prototype.query = holding as pg.Client["query"];
+	const restore = () => {
+		pg.Client.prototype.query = query;
+		open();
+	};
+	restores.push(restore);
+	const { hostname, port, pathname, username } = new URL(url);
+	const counter = new pg.Client({
+		host: hostname,
+		port: Number(port),
+		database: pathname.slice(1),
+		user: decodeURIComponent(username),
+		...(postgresTestPassword === undefined ? {} : { password: postgresTestPassword }),
+	});
+	try {
+		await counter.connect();
+		const answer = poll();
+		await Promise.race([committing, answer]);
+		const { rows } = await counter.query<{ locks: string }>(
+			`SELECT count(*) AS locks FROM pg_locks JOIN pg_database ON pg_database.oid = pg_locks.database
+			WHERE pg_locks.locktype = 'advisory' AND pg_database.datname = current_database()`,
+		);
+		restore();
+		return { locks: Number(rows[0]?.locks), answer: await answer };
+	} finally {
+		restore();
+		await counter.end();
+	}
+}
+
 /** Counts the HTTP requests sent to a libSQL server until the test ends. */
 function countRequests() {
 	const original = globalThis.fetch;
@@ -119,6 +176,31 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claims on Pos
 					),
 					["delivered", "delivered", "delivered"],
 				);
+			} finally {
+				await state.close();
+			}
+		});
+	});
+
+	test("an empty poll takes no lock, and a poll that finds messages takes the database's and its recipient's (#6560)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => scope.open() });
+			await bus.close();
+			try {
+				await enqueue(state, "m-warm", "target-w");
+				assert.deepEqual(claimedIds(await claim(state, "broker-b", "target-w")), ["m-warm"]);
+				// Each poll's transaction is kept open at its COMMIT while another session counts the locks it holds.
+				const empty = await locksHeldBy(scope.url, () => claim(state, "broker-b", "target-a"));
+				for (const id of ["m-1", "m-2"]) await enqueue(state, id, "target-a");
+				const waiting = await locksHeldBy(scope.url, () => claim(state, "broker-b", "target-a"));
+				const held = await locksHeldBy(scope.url, () => claim(state, "broker-c", "target-a"));
+				assert.deepEqual(claimedIds(empty.answer), []);
+				// Before, the empty poll took both with its BEGIN.
+				assert.equal(empty.locks, 0);
+				assert.deepEqual(claimedIds(waiting.answer), ["m-1", "m-2"]);
+				assert.equal(waiting.locks, 2);
+				assert.deepEqual(held.answer, { status: "held", claimantId: "broker-b" });
+				assert.equal(held.locks, 2);
 			} finally {
 				await state.close();
 			}
@@ -294,6 +376,166 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claim order o
 		});
 	});
 });
+
+/**
+ * Runs `body` with brokers that connect as a role owning the scope's database, so a row policy applies to them, and
+ * with the test's hooks into the server installed once the outbox exists. A hidden row `sentinel` of target-a, which
+ * no statement sees: a poll's first read of target-a's rows stalls on it while the test holds advisory lock 6561, after
+ * the read took its snapshot. A claim statement (`FOR UPDATE`) stalls as it reads m-1 while the test holds 6560. Only
+ * connections opened with `stalls` stall.
+ */
+async function withStallingPolls(
+	scope: PostgresScope,
+	body: (
+		openBroker: (stalls: boolean) => Promise<IntercomBrokerStateStore>,
+		holdLock: (key: number) => Promise<() => Promise<void>>,
+		control: SqliteDatabase,
+	) => Promise<void>,
+): Promise<void> {
+	const owner = `atomic_claim_race_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+	const password = `pw-${randomUUID()}`;
+	await scope.admin.exec(`CREATE ROLE ${owner} LOGIN PASSWORD '${password}'`);
+	const opened: Awaited<ReturnType<typeof openIntercomBrokerState>>[] = [];
+	try {
+		await scope.admin.exec(`GRANT ${owner} TO CURRENT_USER`);
+		await scope.admin.exec(`ALTER DATABASE ${scope.name} OWNER TO ${owner}`);
+		const openAs = (stalls: boolean) => {
+			const url = new URL(scope.url);
+			url.username = owner;
+			if (stalls) url.searchParams.set("options", "-c atomic_test.stall=on");
+			return scope.open({ url: url.href, password });
+		};
+		const openBroker = async (stalls: boolean) => {
+			const broker = await openIntercomBrokerState({ openDatabase: () => openAs(stalls) });
+			opened.push(broker);
+			await broker.bus.close();
+			return broker.state;
+		};
+		const control = await openAs(false);
+		await openBroker(false);
+		await control.exec(`
+			INSERT INTO intercom_outbox (message_id, target_identity, origin_broker_id, digest, frame_json, state)
+			VALUES ('sentinel', 'target-a', 'broker-test', 'sentinel', '{}', 'queued');
+			CREATE FUNCTION atomic_test_claim_stall(id text) RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$
+			BEGIN
+				IF current_setting('atomic_test.stall', true) IS DISTINCT FROM 'on' THEN
+					RETURN id <> 'sentinel';
+				END IF;
+				IF id = 'sentinel' THEN
+					PERFORM pg_advisory_xact_lock_shared(6561);
+					RETURN false;
+				END IF;
+				IF id = 'm-1' AND current_query() LIKE '%FOR UPDATE%' THEN
+					PERFORM pg_advisory_xact_lock_shared(6560);
+				END IF;
+				RETURN true;
+			END $$;
+			ALTER TABLE intercom_outbox ENABLE ROW LEVEL SECURITY;
+			ALTER TABLE intercom_outbox FORCE ROW LEVEL SECURITY;
+			CREATE POLICY atomic_test_claim_stall ON intercom_outbox USING (atomic_test_claim_stall(message_id));
+		`);
+		const holdLock = async (key: number) => {
+			let release!: () => void;
+			const released = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			let held!: () => void;
+			const holding = new Promise<void>((resolve) => {
+				held = resolve;
+			});
+			const stall = control.transaction(async (tx) => {
+				await tx.get(`SELECT pg_advisory_xact_lock(${key})::text AS locked`);
+				held();
+				await released;
+			}, rowTransaction());
+			await holding;
+			return async () => {
+				release();
+				await stall;
+			};
+		};
+		await body(openBroker, holdLock, control);
+	} finally {
+		for (const broker of opened) await broker.state.close();
+		await scope.admin.exec(`DROP DATABASE IF EXISTS ${scope.name} WITH (FORCE)`);
+		await scope.admin.exec(`DROP ROLE IF EXISTS ${owner}`);
+	}
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe.skipIf(postgresSkipReason !== undefined)(
+	"Intercom outbox: a send that lands during a PostgreSQL poll (#6560)",
+	() => {
+		test("a message queued after the poll's first read waits for the next poll, which claims it (#6560)", async () => {
+			await withPostgresDatabase((scope) =>
+				withStallingPolls(scope, async (openBroker, holdLock, control) => {
+					const sender = await openBroker(false);
+					const poller = await openBroker(true);
+					const releaseRead = await holdLock(6561);
+					const polling = claim(poller, "broker-b", "target-a");
+					await waitForLockWaiter(control, "advisory");
+					// The poll's read took its snapshot and found nothing yet; m-1 is queued before its claim statement runs.
+					await enqueue(sender, "m-1", "target-a");
+					await releaseRead();
+					const first = claimedIds(await polling);
+					const next = claimedIds(await claim(poller, "broker-b", "target-a"));
+					// Either the poll claimed m-1, or it answered empty and the next poll claims it.
+					assert.ok(
+						(Array.isArray(first) && first.length === 0 && JSON.stringify(next) === '["m-1"]') ||
+							(JSON.stringify(first) === '["m-1"]' && Array.isArray(next) && next.length === 0),
+						`first poll ${JSON.stringify(first)}, next ${JSON.stringify(next)}`,
+					);
+				}),
+			);
+		});
+
+		test("a poll whose first read found nothing never takes over an older row while another broker claims a newer one (#6560)", async () => {
+			await withPostgresDatabase((scope) =>
+				withStallingPolls(scope, async (openBroker, holdLock, control) => {
+					const late = await openBroker(false);
+					const poller = await openBroker(true);
+					const releaseRead = await holdLock(6561);
+					// To this poll, a claim unrenewed for 50 ms is stale.
+					const polling = poller.outbox.claim({
+						claimantId: "broker-poll",
+						targetIdentity: "target-a",
+						staleAfterMs: 50,
+					});
+					await waitForLockWaiter(control, "advisory");
+					// After the poll's read took its snapshot: m-1 is queued and claimed by broker-late, which is then late to renew.
+					await enqueue(late, "m-1", "target-a");
+					assert.deepEqual(claimedIds(await claim(late, "broker-late", "target-a")), ["m-1"]);
+					await sleep(100);
+					// A claim statement that read m-1 now waits there, after its snapshot, until the test lets it go.
+					const releaseClaim = await holdLock(6560);
+					await releaseRead();
+					await Promise.race([polling, sleep(500)]);
+					// m-2 is queued after the poll's claim statement took its snapshot, and broker-late, which still holds m-1 live
+					// by its own count, claims it.
+					await enqueue(late, "m-2", "target-a");
+					const newer = claim(late, "broker-late", "target-a");
+					await Promise.race([newer, sleep(500)]);
+					await releaseClaim();
+					assert.deepEqual(claimedIds(await polling), []);
+					assert.deepEqual(claimedIds(await newer), ["m-2"]);
+					// Without the lock, the poll's claim statement took m-1 over while broker-late claimed m-2: two brokers held one
+					// session's messages at once, and m-2 could arrive before m-1.
+					const holders = await control.all<{ message_id: string; claimant_id: string }>(
+						"SELECT message_id, claimant_id FROM intercom_outbox WHERE state = 'claimed' ORDER BY sequence",
+					);
+					assert.deepEqual(
+						holders.map((row) => [row.message_id, row.claimant_id]),
+						[
+							["m-1", "broker-late"],
+							["m-2", "broker-late"],
+						],
+					);
+				}),
+			);
+		});
+	},
+);
 
 /** How long a write that does not wait for the claim may take, far below the time the claim is kept waiting. */
 const UNBLOCKED_MS = 5_000;

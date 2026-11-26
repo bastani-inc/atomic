@@ -99,6 +99,12 @@ export interface SqliteDriverTransactionOptions {
 	 * `pipelinedTransactions` may send the commit right behind them, and then fails any other call without sending it.
 	 */
 	readonly leadingOnly?: boolean;
+	/**
+	 * Optional. `SqliteTransactionOptions.lockIfLeadingFinds`, set only with `leading` whose first statement is the
+	 * transaction's: a driver with `pipelinedTransactions` may take a `serial` domain's locks in that statement, for the
+	 * row it returns, instead of with the begin.
+	 */
+	readonly lockIfLeadingFinds?: boolean;
 }
 
 /** The driver calls `createSqliteDatabase` turns into a `SqliteDatabase`. */
@@ -1170,6 +1176,8 @@ class DriverDatabase implements SqliteDatabase {
 			...(options?.leadingOnly === true && leading.length > 0 && leading.length === options.leading?.length
 				? { leadingOnly: true }
 				: {}),
+			// `leading` holds the first statement whenever it holds any.
+			...(options?.lockIfLeadingFinds === true && leading.length > 0 ? { lockIfLeadingFinds: true } : {}),
 		};
 		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
 		const concurrentWrites = this.driver.concurrentTransactions === true;

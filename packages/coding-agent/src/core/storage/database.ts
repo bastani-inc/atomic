@@ -64,6 +64,13 @@ export interface SqliteTransactionOptions {
 	 * that statement fails. Other drivers ignore it.
 	 */
 	readonly leadingOnly?: boolean;
+	/**
+	 * @internal With `leading`, a `serial` transaction of a domain takes its locks in its first leading statement, a read,
+	 * and only when that read returns a row, instead of with its start: a transaction whose first read finds nothing
+	 * takes no lock. Every statement after it starts once the locks are held, so it sees every transaction that held them
+	 * and committed. A driver that ignores it takes the locks with the start. Other drivers ignore it.
+	 */
+	readonly lockIfLeadingFinds?: boolean;
 }
 
 /** How one batch waits for a busy write lock, and whether it goes ahead of the database's queued calls. */
