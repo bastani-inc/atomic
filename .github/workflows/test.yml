@@ -223,10 +223,10 @@ jobs:
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
-      # The release checks its packed build against the newest published release, which the unit suite's committed
-      # records (packages/coding-agent/in-place-update/) do not hold: 0.10.11-alpha.2's release failed on exports
-      # 0.10.11-alpha.1 lacked after every pull request passed. This runs that check, and against the newest stable
-      # release, on this build, in one shard (two npm downloads and a few seconds of parsing).
+      # The release checks its packed build against the newest published release and the newest stable one, which the
+      # unit suite's committed records (packages/coding-agent/in-place-update/) do not hold: 0.10.11-alpha.2's release
+      # failed on exports 0.10.11-alpha.1 lacked after every pull request passed. This runs the same check on this build,
+      # in one shard (two npm downloads and a few seconds of parsing).
       - name: Check in-place updates from the newest published releases
         if: matrix.binary_platform == 'linux-x64' && matrix.shard == 1
         timeout-minutes: 5

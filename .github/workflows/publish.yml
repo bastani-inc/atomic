@@ -899,6 +899,8 @@ jobs:
             const root = await Bun.file("packages/natives/package.json").json();
             const actual = Object.keys(root.optionalDependencies ?? {});
             if (actual.length !== 8 || actual.some((name) => !expected.has(name) || root.optionalDependencies[name] !== process.env.VERSION)) throw new Error("native optionalDependencies must be the eight exact-version platform packages");'
+      # Against the committed records and, from npm, the newest release published before this one and the newest stable
+      # one, which most installations an update replaces run. It fails when npm cannot be reached.
       - name: Check in-place updates from earlier releases
         env:
           VERSION: ${{ needs.integrity.outputs.version }}
