@@ -169,6 +169,13 @@ async function hasResumeIndex(database: SqliteDatabase): Promise<boolean> {
  * again for every projected field (five times) or joins its chunks again for every field (over twenty).
  */
 const LOADED_HOST_CPU_FACTOR = 3;
+/**
+ * Odd total brackets collected when the first single-sample CPU check hits a transient host-load spike.
+ * Requiring a majority (at least 3 of 5) matches the exact median without division, tolerating up to two
+ * spiked brackets while still rejecting persistent regressions at the same 3x factor.
+ */
+const CPU_CONFIRMATION_BRACKETS = 5;
+const CPU_CONFIRMATION_MIN_PASSES = Math.floor(CPU_CONFIRMATION_BRACKETS / 2) + 1;
 
 describe("SqlSessionStore tail reads (#5249)", () => {
 	it("reads a compacted session's tail without the history rows before it (#5249)", async () => {
@@ -590,6 +597,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 				});
 			}
 			await writeSession(path, entries);
+			type RebuildSample = { micros: number; peakBytes: number; readBytes: number; toolCalls: number };
 			const measure = (mode: string) =>
 				JSON.parse(
 					execFileSync(
@@ -604,21 +612,42 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 						],
 						{ encoding: "utf8" },
 					),
-				) as { micros: number; peakBytes: number; readBytes: number; toolCalls: number };
-			// Bracket the run with two independent controls to measure allocator and timer noise on this machine rather
-			// than setting a machine-specific RSS/time limit.
-			const first = measure("joined");
-			const actual = measure("stored");
-			const second = measure("joined");
-			assert.equal(first.toolCalls, errors ? 0 : chunkedEntries);
-			assert.equal(actual.toolCalls, first.toolCalls);
-			const measured = JSON.stringify({ actual, first, second });
-			// Like the joined projection, the rebuild keeps every payload in the database and reads back only metadata:
-			// less than one stored chunk, while each entry here spans several. This does not depend on the host's load.
-			assert.ok(actual.readBytes < SESSION_ENTRY_CHUNK_BYTES, measured);
+				) as RebuildSample;
+			const expectedToolCalls = errors ? 0 : chunkedEntries;
 			const allocatorSlackBytes = 2 * SESSION_ENTRY_CHUNK_BYTES;
-			assert.ok(actual.peakBytes <= Math.max(first.peakBytes, second.peakBytes) + allocatorSlackBytes, measured);
-			assert.ok(actual.micros <= Math.max(first.micros, second.micros) * LOADED_HOST_CPU_FACTOR, measured);
+			const brackets: Array<{
+				actual: RebuildSample;
+				first: RebuildSample;
+				second: RebuildSample;
+				cpuPassed: boolean;
+			}> = [];
+			const runBracket = (first: RebuildSample) => {
+				const actual = measure("stored");
+				const second = measure("joined");
+				assert.equal(first.toolCalls, expectedToolCalls);
+				assert.equal(second.toolCalls, expectedToolCalls);
+				assert.equal(actual.toolCalls, expectedToolCalls);
+				const measured = JSON.stringify({ actual, first, second });
+				// Like the joined projection, the rebuild keeps every payload in the database and reads back only metadata:
+				// less than one stored chunk, while each entry here spans several. This does not depend on the host's load.
+				assert.ok(actual.readBytes < SESSION_ENTRY_CHUNK_BYTES, measured);
+				assert.ok(actual.peakBytes <= Math.max(first.peakBytes, second.peakBytes) + allocatorSlackBytes, measured);
+				const cpuPassed = actual.micros <= Math.max(first.micros, second.micros) * LOADED_HOST_CPU_FACTOR;
+				brackets.push({ actual, first, second, cpuPassed });
+				return second;
+			};
+			// Bracket the run with two independent controls to measure allocator and timer noise on this machine rather
+			// than setting a machine-specific RSS/time limit. If the first sample catches a transient host-load spike,
+			// collect additional interleaved brackets and require the median bracket (at least 3 of 5) to stay within
+			// LOADED_HOST_CPU_FACTOR while every sample still satisfies the deterministic bytes and memory bounds.
+			let control = runBracket(measure("joined"));
+			if (!brackets[0]!.cpuPassed) {
+				while (brackets.length < CPU_CONFIRMATION_BRACKETS) {
+					control = runBracket(control);
+				}
+				const passing = brackets.filter((bracket) => bracket.cpuPassed).length;
+				assert.ok(passing >= CPU_CONFIRMATION_MIN_PASSES, JSON.stringify(brackets));
+			}
 		},
 		120_000,
 	);
