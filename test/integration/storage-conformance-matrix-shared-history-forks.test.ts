@@ -38,6 +38,13 @@ import {
  * storage matrix.
  */
 
+/**
+ * The transactions a new store's first open runs, as many as before shared-history forks: on SQLite and libSQL the
+ * sessions schema with its fork tables, the snapshot tables, their index and the search index; on PostgreSQL the
+ * sessions, open-session and fillfactor steps, the snapshot tables with their index, and the search index.
+ */
+const TRANSACTIONS_OF_A_NEW_STORE: Record<string, number> = { sqlite: 4, postgres: 5 };
+
 /** A heartbeat older than any marker counts for. */
 const LONG_AGO_MS = 3_600_000;
 
@@ -129,12 +136,25 @@ for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
 	describe.skipIf(backend.skipReason !== undefined)(`the switch to shared-history forks on ${name} (#6560)`, () => {
 		test(
-			"a new store is at schema 3, with the fork tables, from its first open",
+			"a new store is at schema 3, with the fork tables and their snapshot links, from its first open, which takes no switch",
 			() =>
 				withBackendScope(backend, async (scope) => {
 					const database = await scope.connect();
+					const first = recording(await scope.connect());
+					await (await SqlSessionStore.open(first.database, { prefix: scope.prefix })).close();
 					const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
 
+					for (const sql of first.statements) {
+						assert.ok(!/max\(schema_version\)/i.test(sql), `a new store's open read the version again: ${sql}`);
+						assert.ok(!/schema_version IS NULL OR/.test(sql), `a new store's open read the markers: ${sql}`);
+					}
+					assert.equal(first.transactions(), TRANSACTIONS_OF_A_NEW_STORE[dialectOf(database).name]);
+					const links = dialectOf(database).schemaObjects([`${tables(scope.prefix).entries}_fork_links_v1`]);
+					assert.equal(
+						(await database.all(links.sql, ...links.params)).length,
+						1,
+						"the fork links trigger exists",
+					);
 					assert.equal(await schemaVersion(database, scope.prefix), 3);
 					assert.equal(await forkTablesExist(database, scope.prefix), true);
 					assert.equal(await database.transaction((tx) => store.sharedHistoryForks(tx)), true);

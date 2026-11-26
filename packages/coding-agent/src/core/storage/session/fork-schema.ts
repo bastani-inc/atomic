@@ -26,17 +26,14 @@ export function sessionForkTables(prefix?: string): SessionForkTables {
 }
 
 /**
- * Creates the fork tables, idempotently, in the transaction that raises the sessions schema to the version that turns
- * shared-history forks on. `generation` is a token that changes with every change to a fork's segments and never
- * repeats for an id, so a reader's cached segments are keyed by it.
+ * The statements that create the fork tables, idempotently: in the transaction that raises the sessions schema to the
+ * version that turns shared-history forks on, or in the one that creates a new database's sessions schema at that
+ * version. `generation` is a token that changes with every change to a fork's segments and never repeats for an id, so
+ * a reader's cached segments are keyed by it.
  */
-export async function createSharedHistoryTables(
-	tx: SqliteExecutor,
-	dialect: StorageDialect,
-	tables: SessionForkTables,
-): Promise<void> {
+export function sharedHistoryTablesScript(dialect: StorageDialect, tables: SessionForkTables): string {
 	const { int, text } = dialect.types;
-	await tx.exec(`
+	return `
 		CREATE TABLE IF NOT EXISTS ${tables.forkSegments} (
 			session_id ${text} NOT NULL, idx ${int} NOT NULL, source_id ${text} NOT NULL,
 			from_seq ${int} NOT NULL, to_seq ${int} NOT NULL, base_seq ${int} NOT NULL,
@@ -54,5 +51,14 @@ export async function createSharedHistoryTables(
 			original_segments ${text} NOT NULL, parent_epoch ${text}, child_epoch ${text},
 			PRIMARY KEY(parent_id, child_id)
 		)${dialect.tableOptions};
-	`);
+	`;
+}
+
+/** Creates the fork tables in `tx`: see {@link sharedHistoryTablesScript}. */
+export async function createSharedHistoryTables(
+	tx: SqliteExecutor,
+	dialect: StorageDialect,
+	tables: SessionForkTables,
+): Promise<void> {
+	await tx.exec(sharedHistoryTablesScript(dialect, tables));
 }

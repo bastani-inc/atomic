@@ -177,6 +177,25 @@ export function refreshStorageSchemaCatalog(database: SqliteDatabase): void {
 }
 
 /**
+ * Tells the catalog an open of `database` in progress read that the open created `tables` since, so the stores it
+ * opens next find them without reading the schema again.
+ */
+export function noteStorageSchemaTables(database: SqliteDatabase, tables: readonly string[]): void {
+	const scope = scopes.get(database);
+	if (scope?.catalog === undefined) return;
+	const identifier = dialectOf(database).identifier;
+	const created = new Set(tables.map((table) => identifier(table)));
+	scope.catalog = scope.catalog.then(
+		(catalog) =>
+			catalog && {
+				...catalog,
+				hasTable: (table) => created.has(identifier(table)) || catalog.hasTable(table),
+				hasObject: (name) => created.has(identifier(name)) || catalog.hasObject(name),
+			},
+	);
+}
+
+/**
  * The catalog an open of `database` in progress read ({@link withStorageSchemaCatalog}), when it read `ledger`'s
  * versions or no `ledger` is named; undefined outside such an open, and when it could not be read.
  */

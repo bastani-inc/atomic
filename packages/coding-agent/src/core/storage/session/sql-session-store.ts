@@ -14,7 +14,12 @@ import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
-import { refreshStorageSchemaCatalog, schemaCatalogOf, withStorageSchemaCatalog } from "../schema-catalog.js";
+import {
+	noteStorageSchemaTables,
+	refreshStorageSchemaCatalog,
+	schemaCatalogOf,
+	withStorageSchemaCatalog,
+} from "../schema-catalog.js";
 import { applyStorageMigrationsTogether, statementBatch } from "../statement-batches.js";
 import { sequenceRunner } from "../statement-sequence.js";
 import { sha256Hex } from "./blob-hash.js";
@@ -50,7 +55,12 @@ import {
 	forkBlobCopy,
 	incompleteEntryRead,
 } from "./fork-row-copy.js";
-import { createSharedHistoryTables, type SessionForkTables, sessionForkTables } from "./fork-schema.js";
+import {
+	createSharedHistoryTables,
+	type SessionForkTables,
+	sessionForkTables,
+	sharedHistoryTablesScript,
+} from "./fork-schema.js";
 import { assertForkSegments, type ForkSegment, prefixForkSegments } from "./fork-segments.js";
 import { tryCleanupForkStaging } from "./fork-staging-maintenance.js";
 import { forkStoreRelation, nativeForkReader, registerForkScope } from "./fork-store-scope.js";
@@ -158,9 +168,10 @@ const SESSION_SCHEMA_VERSION_UNCHUNKED = 1;
 /** The sessions schema the first chunked entry raises a version 1 database to, which builds since #4954 read. */
 export const SESSION_SCHEMA_VERSION_CHUNKED = 2;
 /**
- * The sessions schema in which a fork shares its parent's history instead of copying it (#6560). A store's open, or
- * `atomic storage migrate`, raises a database to it by itself once no session of an older build runs there
- * (`SqlSessionStore.enableSharedHistoryForks`); a fork or any other write never does. Builds that know only versions 1
+ * The sessions schema in which a fork shares its parent's history instead of copying it (#6560). A new database's
+ * sessions schema starts at it; a store's open, or `atomic storage migrate`, raises an older one to it by itself once
+ * no session of an older build runs there (`SqlSessionStore.enableSharedHistoryForks`); a fork or any other write never
+ * does. Builds that know only versions 1
  * and 2 refuse it, at their open and in every transaction, rather than read a fork's own rows as its whole history.
  * `SqlSessionStore.sharedHistoryForks(tx)` tells a transaction whether its database is there.
  */
@@ -776,6 +787,9 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<SqlSessionStore> {
 		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, options.prefix);
 		let legacyBlobData = false;
+		const forkTables = sessionForkTables(options.prefix);
+		// Whether this open created the sessions schema, at the version of shared-history forks.
+		let createdShared = false;
 		const createTables = async (tx: SqliteExecutor, dialect: StorageDialect) => {
 			const { int, text, blob } = dialect.types;
 			const strict = dialect.tableOptions;
@@ -825,17 +839,28 @@ export class SqlSessionStore implements SessionStore {
 					PRIMARY KEY(session_id, hash, idx)
 				)${strict};
 			`;
+			// A new database has no older build to wait for (#6560): its sessions schema starts at the version of
+			// shared-history forks, with their tables, in this transaction, so its open costs no switch of its own. An
+			// older build that set the schema up first wrote its version here, and the switch waits for its sessions.
+			const created = versions.length === 0;
 			const [revision, data] = await statementBatch(
 				tx,
 				[
-					versions.length === 0 && {
+					created && {
 						sql: `INSERT INTO ${tables.meta} VALUES (?)`,
-						params: [SESSION_SCHEMA_VERSION_UNCHUNKED],
+						params: [SESSION_SCHEMA_VERSION_SHARED_HISTORY],
 					},
 					tablesScript,
+					created && sharedHistoryTablesScript(dialect, forkTables),
+					created &&
+						dialect.versionedMigrations && {
+							sql: `INSERT INTO ${storageMigrationTable(options.prefix)} (domain, version, applied_at) VALUES (?, ?, ${dialect.nowMs}) ON CONFLICT DO NOTHING`,
+							params: [SESSION_DOMAIN, SESSION_SCHEMA_VERSION_SHARED_HISTORY],
+						},
 				],
 				[columnExists(tables.sessions, "revision"), columnExists(tables.blobs, "data")],
 			);
+			createdShared = created;
 			legacyBlobData = data;
 			const [chunks] = legacyBlobData
 				? await statementBatch(tx, [], [columnExists(tables.blobs, "chunks")])
@@ -931,8 +956,9 @@ export class SqlSessionStore implements SessionStore {
 						{ version: 1, up: createTables },
 						{ version: 2, up: addEntryChunks },
 					],
-					// Version 3 is recorded only by the switch to shared-history forks (`enableSharedHistoryForks`), never by
-					// these steps; builds without it refuse it here, before their snapshot or search index opens (#6560).
+					// Version 3 is recorded by the switch to shared-history forks (`enableSharedHistoryForks`), or by step 1
+					// when it creates a new database's schema at it; builds without it refuse it here, before their snapshot or
+					// search index opens (#6560).
 					options: {
 						table: storageMigrationTable(options.prefix),
 						recordedThrough: SESSION_SCHEMA_VERSION_SHARED_HISTORY,
@@ -954,8 +980,12 @@ export class SqlSessionStore implements SessionStore {
 					options: { table: storageMigrationTable(options.prefix), acceptNewer: true },
 				},
 			]);
-			// Where versions are recorded, the ledger tells whether the switch below ran already; elsewhere it reads.
-			if (dialectOf(database).versionedMigrations)
+			// Where versions are recorded, the ledger tells whether the switch below ran already; elsewhere it reads. A
+			// schema this open created is at that version already, and the catalog it read learns of the fork tables.
+			if (createdShared) {
+				sharedHistory = true;
+				noteStorageSchemaTables(database, Object.values(forkTables));
+			} else if (dialectOf(database).versionedMigrations)
 				sharedHistory = (sessionsSchema?.version ?? 0) >= SESSION_SCHEMA_VERSION_SHARED_HISTORY;
 		}
 		// Room on each page for the session row's next version, which every append writes, so it stays a HOT update
