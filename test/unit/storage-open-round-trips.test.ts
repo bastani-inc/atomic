@@ -176,14 +176,14 @@ test("a batch's reads see what its writes did, and wait for the thread once with
 	assert.equal(waits, 1);
 });
 
-test("a session store opened on a database already set up waits for the connection's thread three times", async () => {
+test("a session store opened on a database already set up waits for the connection's thread twice", async () => {
 	const { database } = await databaseFile();
 	await (await SqlSessionStore.open(database)).close();
 	const requests = recordRequests();
 	await (await SqlSessionStore.open(database)).close();
-	// The schema probes together, then the versions with the leftover chunks check, then the snapshot index and the
-	// search index probes together; main waited for each of 39 statements.
-	assert.equal(requests.waits, 3);
+	// The schema, in one read, with the versions and the leftover chunks check, then the snapshot index; main waited for
+	// each of 39 statements, and the schema probes once took a wait of their own (#6560).
+	assert.equal(requests.waits, 2);
 });
 
 test("a session store opened on a new file sets its schema up in a few dozen waits for the thread, not one per statement", async () => {

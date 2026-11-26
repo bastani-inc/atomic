@@ -48,7 +48,8 @@ function failingAlter(database: SqliteDatabase, failure: () => Error | string, s
 	return {
 		alters,
 		database: interceptingDatabase(borrowed, {
-			all: async (sql, params, next) => (staleColumns && /table_info/i.test(sql) ? [] : next(sql, ...params)),
+			// The probes, and the schema catalog an open reads, which lists columns with pragma_table_xinfo, miss the columns.
+			all: async (sql, params, next) => (staleColumns && /table_x?info/i.test(sql) ? [] : next(sql, ...params)),
 			exec: async (sql, next) => {
 				if (sql.startsWith("ALTER TABLE")) {
 					alters.push(sql);

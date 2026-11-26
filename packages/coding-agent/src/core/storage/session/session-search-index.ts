@@ -611,6 +611,9 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	private static async tablesExist(database: SqliteDatabase, tables: SearchTables): Promise<boolean> {
 		const dialect = dialectOf(database);
 		if (dialect.versionedMigrations) return false;
+		// The catalog an open read answers both, without a read of their own (#6560).
+		const catalog = await schemaCatalogOf(database);
+		if (catalog?.hasTable(tables.state) === true && catalog.hasTable(tables.fts)) return true;
 		const probes = [tables.state, tables.fts].map((table) => dialect.tableExists(table));
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
 		return found.every((row) => row !== undefined);

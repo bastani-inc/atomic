@@ -2,7 +2,7 @@ import type { SqliteDatabase, SqliteRow } from "./database.js";
 import { dialectOf } from "./dialect.js";
 
 /**
- * What a PostgreSQL schema held when one open read it: its relations, triggers and columns, and the versions its
+ * What a schema held when one open read it: its relations, triggers and columns, and on PostgreSQL the versions its
  * ledger records. Only a positive answer is final: the schema only moves forward, so what existed then still exists,
  * while something missing may have been created since and is checked again under the store's lock.
  */
@@ -17,6 +17,11 @@ export interface StorageSchemaCatalog {
 	hasObject(name: string): boolean;
 	/** Whether `table` had a column named `column`. */
 	hasColumn(table: string, column: string): boolean;
+	/**
+	 * What kind of object `name` was on SQLite and libSQL (`table`, `index`, `view` or `trigger`), from one read of
+	 * `sqlite_schema`; undefined when there was none, and always on PostgreSQL.
+	 */
+	readonly sqliteObjectType?: (name: string) => string | undefined;
 }
 
 const TABLE_KINDS = new Set(["r", "p", "v", "m", "f"]);
@@ -37,15 +42,49 @@ UNION ALL SELECT 'column', table_name::text, column_name::text
 type CatalogRow = SqliteRow & { kind: string; name: string; detail: string | null };
 
 /**
+ * Every object of a SQLite or libSQL database and every column of its tables, generated ones included, in one
+ * statement and so one snapshot: what `tableExists`, `columnExists` and `schemaObjects` ask one at a time (#6560).
+ */
+const SQLITE_CATALOG_SQL = `SELECT 'object' AS kind, name, type AS detail FROM sqlite_master
+UNION ALL SELECT 'column', m.name, c.name FROM sqlite_master AS m JOIN pragma_table_xinfo(m.name) AS c
+	WHERE m.type = 'table'`;
+
+/** The catalog of a SQLite or libSQL database, or undefined when it cannot be read, such as on a SQLite too old. */
+async function readSqliteCatalog(database: SqliteDatabase, ledger: string): Promise<StorageSchemaCatalog | undefined> {
+	let rows: CatalogRow[];
+	try {
+		rows = await database.all<CatalogRow>(SQLITE_CATALOG_SQL);
+	} catch {
+		return undefined;
+	}
+	const types = new Map<string, string>();
+	const columns = new Set<string>();
+	for (const row of rows) {
+		if (row.kind === "column") columns.add(`${row.name}\0${row.detail}`);
+		else types.set(row.name, String(row.detail));
+	}
+	return {
+		ledger,
+		// SQLite records no versions: its stores set their schemas up as before, checked against what exists.
+		recordedVersion: () => 0,
+		hasTable: (table) => types.get(table) === "table",
+		hasObject: (name) => types.has(name),
+		hasColumn: (table, column) => columns.has(`${table}\0${column}`),
+		sqliteObjectType: (name) => types.get(name),
+	};
+}
+
+/**
  * Reads `database`'s schema and the versions `ledger` records, in two statements sent at once, without a transaction
- * or a lock. Undefined on a dialect without versioned migrations (SQLite), whose stores set their schemas up as before,
- * and when either read fails: the stores then check each object themselves.
+ * or a lock. On SQLite and libSQL, which record no versions, reads the schema alone in one statement. Undefined when a
+ * read fails: the stores then check each object themselves.
  */
 export async function readStorageSchemaCatalog(
 	database: SqliteDatabase,
 	ledger: string,
 ): Promise<StorageSchemaCatalog | undefined> {
 	const dialect = dialectOf(database);
+	if (dialect.name === "sqlite") return readSqliteCatalog(database, ledger);
 	if (!dialect.versionedMigrations || dialect.name !== "postgres") return undefined;
 	const physicalLedger = dialect.identifier(ledger);
 	const versions = database
@@ -89,7 +128,9 @@ export async function readStorageSchemaCatalog(
 
 interface CatalogScope {
 	readonly ledger: string;
-	readonly catalog: Promise<StorageSchemaCatalog | undefined>;
+	/** Read when the scope starts on PostgreSQL, whose opens always ask it; on SQLite at the first question. */
+	catalog: Promise<StorageSchemaCatalog | undefined> | undefined;
+	readonly read: () => Promise<StorageSchemaCatalog | undefined>;
 	users: number;
 }
 
@@ -109,7 +150,8 @@ export async function withStorageSchemaCatalog<T>(
 ): Promise<T> {
 	let scope = scopes.get(database);
 	if (scope === undefined || scope.ledger !== ledger) {
-		scope = { ledger, catalog: readStorageSchemaCatalog(database, ledger), users: 0 };
+		const read = () => readStorageSchemaCatalog(database, ledger);
+		scope = { ledger, catalog: dialectOf(database).name === "sqlite" ? undefined : read(), read, users: 0 };
 		scopes.set(database, scope);
 	}
 	const shared = scope;
@@ -135,5 +177,6 @@ export async function schemaCatalogOf(
 ): Promise<StorageSchemaCatalog | undefined> {
 	const scope = scopes.get(database);
 	if (scope === undefined || (ledger !== undefined && scope.ledger !== ledger)) return undefined;
+	scope.catalog ??= scope.read();
 	return scope.catalog;
 }

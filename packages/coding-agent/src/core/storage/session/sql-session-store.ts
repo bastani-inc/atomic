@@ -905,23 +905,43 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<{ readonly legacyBlobData: boolean; readonly orphaned: boolean } | undefined> {
 		const dialect = dialectOf(database);
 		if (dialect.versionedMigrations) return undefined;
-		const probes = [
-			...[...Object.values(tables), open].map((table) => dialect.tableExists(table)),
-			dialect.columnExists(tables.sessions, "revision"),
-			dialect.columnExists(tables.entries, "chunks"),
-			dialect.columnExists(tables.blobs, "chunks"),
-			dialect.columnExists(open, "schema_version"),
-		];
-		const legacy = dialect.columnExists(tables.blobs, "data");
-		const [legacyFound, ...found] = await Promise.all(
-			[legacy, ...probes].map((probe) => database.get(probe.sql, ...probe.params)),
-		);
-		if (!found.every((row) => row !== undefined)) return undefined;
-		// Asked beside the versions; its answer, or its failure, counts only for a schema this build supports.
+		const required = [...Object.values(tables), open];
+		const columns = [
+			[tables.sessions, "revision"],
+			[tables.entries, "chunks"],
+			[tables.blobs, "chunks"],
+			[open, "schema_version"],
+		] as const;
+		// One read of the catalog answers every probe: on a server, one request instead of a request each (#6560).
+		const reading = schemaCatalogOf(database);
+		// The versions, and the leftover chunks, are asked beside the schema, so a current one waits for one answer: they
+		// count only where every table and column is found, and fail unheard on a database that lacks them.
 		const orphaned =
 			orphans === undefined ? undefined : database.get(`SELECT 1 FROM (${orphans}) AS orphaned LIMIT 1`);
 		orphaned?.catch(() => {});
-		const versions = await database.all(`SELECT schema_version FROM ${tables.meta}`);
+		const versionsRead = database.all(`SELECT schema_version FROM ${tables.meta}`);
+		versionsRead.catch(() => {});
+		let legacyBlobs: boolean;
+		const catalog = await reading;
+		if (catalog !== undefined) {
+			const present =
+				required.every((table) => catalog.hasTable(table)) &&
+				columns.every(([table, column]) => catalog.hasColumn(table, column));
+			if (!present) return undefined;
+			legacyBlobs = catalog.hasColumn(tables.blobs, "data");
+		} else {
+			const probes = [
+				...required.map((table) => dialect.tableExists(table)),
+				...columns.map(([table, column]) => dialect.columnExists(table, column)),
+			];
+			const legacy = dialect.columnExists(tables.blobs, "data");
+			const [legacyFound, ...found] = await Promise.all(
+				[legacy, ...probes].map((probe) => database.get(probe.sql, ...probe.params)),
+			);
+			if (!found.every((row) => row !== undefined)) return undefined;
+			legacyBlobs = legacyFound !== undefined;
+		}
+		const versions = await versionsRead;
 		if (
 			versions.length === 0 ||
 			versions.some(
@@ -930,7 +950,7 @@ export class SqlSessionStore implements SessionStore {
 			)
 		)
 			return undefined;
-		return { legacyBlobData: legacyFound !== undefined, orphaned: (await orphaned) !== undefined };
+		return { legacyBlobData: legacyBlobs, orphaned: (await orphaned) !== undefined };
 	}
 
 	/**
@@ -965,12 +985,18 @@ export class SqlSessionStore implements SessionStore {
 	 * `transaction` for a body that only reads, in one read-only snapshot, on the database's reader handle when it
 	 * offers one: its reads then wait for neither the writes queued on this store's connection nor their locks.
 	 */
-	private async readTransaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
+	private async readTransaction<T>(
+		body: (tx: SqliteExecutor) => Promise<T>,
+		leading: readonly SqliteStatement[] = [],
+	): Promise<T> {
 		const database = await this.readerDatabase();
-		return database.transaction(async (tx) => {
-			await this.assertReadableSchema(tx);
-			return body(tx);
-		}, this.checkedFirst(SESSION_READ));
+		return database.transaction(
+			async (tx) => {
+				await this.assertReadableSchema(tx);
+				return body(tx);
+			},
+			this.checkedFirst(leading.length === 0 ? SESSION_READ : { ...SESSION_READ, leading }),
+		);
 	}
 
 	/**
@@ -1605,22 +1631,17 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		query.signal?.throwIfAborted();
-		const session = await this.database.get<SqliteRow & { last_seq: number | bigint }>(
-			`SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`,
-			sessionId,
-		);
-		if (!session) throw new SessionNotFoundError(sessionId);
-		const lastSeq = Number(session.last_seq);
 		const fromSeq = Math.max(1, query.fromSeq);
-		const toSeq = Math.min(query.toSeq, lastSeq);
-		if (fromSeq > toSeq) return { lastSeq, entries: [], throughSeq: Math.max(toSeq, fromSeq - 1) };
-		if (query.maxChars !== undefined && query.maxChars <= 0) return { lastSeq, entries: [], throughSeq: fromSeq - 1 };
 		const skippedSet = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
 		const skippedPrefixes = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
 		const largeBytes = query.largeEntryBytes ?? 0x7fffffff;
-		const rows = await this.database.all<
+		// The session's watermark and the page up to it, in one statement and so one snapshot: a read each, in turn, cost
+		// a search a second round trip for every page it reads (#6560). The session's row, joined to a page that may be
+		// empty, is a row with no entry; no row at all is a session that does not exist.
+		const read = await this.database.all<
 			SqliteRow & {
-				seq: number | bigint;
+				last_seq: number | bigint;
+				seq: number | bigint | null;
 				entry_json: string | null;
 				entry_head: string;
 				chunks: number | bigint;
@@ -1633,28 +1654,45 @@ export class SqlSessionStore implements SessionStore {
 					${this.entryByteLength("entry_json")} + chunks * ? AS bytes
 				FROM ${this.tables.entries}
 				WHERE session_id = ? AND seq >= ? AND seq <= ?
+					AND seq <= (SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?)
 			),
 			paged AS (
 				SELECT seq, chunks, raw_bytes, count(*) OVER () AS remaining,
 					sum(bytes) OVER (ORDER BY seq) - bytes AS before_chars
 				FROM sized
+			),
+			page AS (
+				SELECT p.seq, CASE WHEN p.chunks = 0 AND p.raw_bytes <= ? THEN e.entry_json END AS entry_json,
+					substr(e.entry_json, 1, 64) AS entry_head, p.chunks, p.remaining,
+					CASE WHEN p.chunks = 0 AND p.raw_bytes > ? AND substr(e.entry_json, 1, 8) <> '{"type":'
+						THEN ${this.dialect.jsonText("e.entry_json", "type")} END AS entry_type
+				FROM paged p
+				JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
+				WHERE p.before_chars < ?
 			)
-			SELECT p.seq, CASE WHEN p.chunks = 0 AND p.raw_bytes <= ? THEN e.entry_json END AS entry_json,
-				substr(e.entry_json, 1, 64) AS entry_head, p.chunks, p.remaining,
-				CASE WHEN p.chunks = 0 AND p.raw_bytes > ? AND substr(e.entry_json, 1, 8) <> '{"type":'
-					THEN ${this.dialect.jsonText("e.entry_json", "type")} END AS entry_type
-			FROM paged p
-			JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
-			WHERE p.before_chars < ?
-			ORDER BY p.seq`,
+			SELECT s.last_seq, page.seq, page.entry_json, page.entry_head, page.chunks, page.remaining, page.entry_type
+			FROM ${this.tables.sessions} s LEFT JOIN page ON 1 = 1
+			WHERE s.id = ?
+			ORDER BY page.seq`,
 			SESSION_ENTRY_CHUNK_BYTES,
 			sessionId,
 			fromSeq,
-			toSeq,
+			Math.min(query.toSeq, Number.MAX_SAFE_INTEGER),
+			sessionId,
 			largeBytes,
 			largeBytes,
 			sessionId,
-			query.maxChars ?? Number.MAX_SAFE_INTEGER,
+			query.maxChars !== undefined && query.maxChars <= 0 ? 0 : (query.maxChars ?? Number.MAX_SAFE_INTEGER),
+			sessionId,
+		);
+		const session = read[0];
+		if (!session) throw new SessionNotFoundError(sessionId);
+		const lastSeq = Number(session.last_seq);
+		const toSeq = Math.min(query.toSeq, lastSeq);
+		if (fromSeq > toSeq) return { lastSeq, entries: [], throughSeq: Math.max(toSeq, fromSeq - 1) };
+		if (query.maxChars !== undefined && query.maxChars <= 0) return { lastSeq, entries: [], throughSeq: fromSeq - 1 };
+		const rows = read.filter(
+			(row): row is typeof row & { seq: number | bigint } => row.seq !== null && row.seq !== undefined,
 		);
 		const entries: SessionEntryAt[] = [];
 		for (const row of rows) {
@@ -2312,14 +2350,23 @@ export class SqlSessionStore implements SessionStore {
 		return entries;
 	}
 
+	/**
+	 * The read of the session's row that `resumeSource` makes first: a read transaction that starts with it names it as
+	 * a leading read, so a pipelined connection sends it with the transaction's start (#6560).
+	 */
+	private resumeRow(sessionId: string): SqliteStatement {
+		return {
+			sql: `SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
+			params: [sessionId],
+		};
+	}
+
 	private async resumeSource(
 		tx: SqliteExecutor,
 		sessionId: string,
 	): Promise<ResumeSource & { readonly row: ResumeRow }> {
-		const row = await tx.get<ResumeRow>(
-			`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
-			sessionId,
-		);
+		const read = this.resumeRow(sessionId);
+		const row = await tx.get<ResumeRow>(read.sql, ...read.params);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		const stored = windowIndex(JSON.parse(row.summary_state) as StoredSummaryState, Number(row.last_seq));
 		const remembered = this.resumeIndexes.get(sessionId);
@@ -2331,6 +2378,22 @@ export class SqlSessionStore implements SessionStore {
 		if (!index || !isSessionResumeIndex(index, Number(row.last_seq)))
 			throw new SessionConflictError(sessionId, Number(row.last_seq), Number(row.last_seq));
 		return { header: JSON.parse(row.header_json) as SessionRecordHeader, index, row };
+	}
+
+	/**
+	 * Runs `read`, a read transaction that finds the session's index with `resumeSource`, at once; only when that index is
+	 * missing or stale (`resumeSource` rejects with `SessionConflictError`) does it compute the index with
+	 * `prepareResume` and run `read` again. A current index, the usual case, then costs no read before the transaction:
+	 * on a server, one round trip fewer (#6560).
+	 */
+	private async withResumeIndex<T>(sessionId: string, read: () => Promise<T>): Promise<T> {
+		try {
+			return await read();
+		} catch (error) {
+			if (!(error instanceof SessionConflictError)) throw error;
+		}
+		await this.prepareResume(sessionId);
+		return read();
 	}
 
 	private async prepareResume(
@@ -2818,17 +2881,25 @@ export class SqlSessionStore implements SessionStore {
 	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		await this.prepareResume(sessionId);
 		const start = Math.max(1, fromSeq);
-		const { tail } = await this.readTransaction(async (tx) => {
-			const source = await this.resumeSource(tx, sessionId);
-			const stateSeqs = stateSeqsBefore(source.index, start);
-			if (hasHistoryLoadObserver())
-				announceHistoryLoad(stateSeqs.length + Math.max(0, source.index.seq - start + 1));
-			const state = await this.readSeqs(tx, sessionId, stateSeqs);
-			const entries = (await this.readRows(tx, sessionId, "seq >= ?", [start])).map(({ entry }) => entry);
-			return { tail: sessionTailFrom(source.index, source.header, start, state, entries), source };
-		});
+		const { tail } = await this.withResumeIndex(sessionId, () =>
+			this.readTransaction(
+				async (tx) => {
+					const source = await this.resumeSource(tx, sessionId);
+					const stateSeqs = stateSeqsBefore(source.index, start);
+					if (hasHistoryLoadObserver())
+						announceHistoryLoad(stateSeqs.length + Math.max(0, source.index.seq - start + 1));
+					// Neither depends on the other: a pipelined connection sends both at once (#6560).
+					const [state, rows] = await Promise.all([
+						this.readSeqs(tx, sessionId, stateSeqs),
+						this.readRows(tx, sessionId, "seq >= ?", [start]),
+					]);
+					const entries = rows.map(({ entry }) => entry);
+					return { tail: sessionTailFrom(source.index, source.header, start, state, entries), source };
+				},
+				[this.resumeRow(sessionId)],
+			),
+		);
 
 		return tail;
 	}
@@ -3738,6 +3809,21 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
+		// The session's current leaf, whose index the session row keeps: the row is read in the transaction itself, so a
+		// current index costs no read before it (#6560). One that is missing or stale is computed as below.
+		if (leafId === undefined && throughSeq === undefined) {
+			try {
+				return await this.readTransaction(
+					async (tx) => {
+						const { header, index } = await this.resumeSource(tx, sessionId);
+						return this.resumeIn(tx, sessionId, header, index, options);
+					},
+					[this.resumeRow(sessionId)],
+				);
+			} catch (error) {
+				if (!(error instanceof SessionConflictError)) throw error;
+			}
+		}
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const { index, revision } = await this.prepareResume(sessionId, leafId, throughSeq);
 			const resume = await this.readTransaction(async (tx) => {
@@ -3747,58 +3833,80 @@ export class SqlSessionStore implements SessionStore {
 				);
 				if (!head) throw new SessionNotFoundError(sessionId);
 				if (revision !== head.revision) return undefined;
-				const header = JSON.parse(head.header_json) as SessionRecordHeader;
-				const { leafSeq } = index;
-				const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
-				announceHistoryLoad(plan.state.length + plan.branch.reduce((sum, [a, b]) => sum + b - a + 1, 0));
-				const branch: SessionStoredEntry[] = [];
-				for (const [start, end] of plan.branch)
-					branch.push(...(await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, end])));
-				const state = await this.readSeqs(tx, sessionId, plan.state);
-				const leaf =
-					leafSeq <= 0
-						? undefined
-						: await tx.get<SqliteRow & { entry_id: string }>(
-								`SELECT entry_id FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
-								sessionId,
-								leafSeq,
-							);
-				const resume = sessionResumeFrom(index, header, branch, state, leaf?.entry_id ?? null, plan.children);
-				if (resume.compaction)
-					await readEarlierCompletionIntents(index, resume, (seqs) => this.readSeqs(tx, sessionId, seqs));
-				return resume;
+				return this.resumeIn(tx, sessionId, JSON.parse(head.header_json) as SessionRecordHeader, index, options);
 			});
 			if (resume !== undefined) return resume;
 		}
 		throw new SessionConflictError(sessionId, 0, 0);
 	}
 
+	/** The resume of `index`, the session's index as of the snapshot of `tx`, with `header`. */
+	private async resumeIn(
+		tx: SqliteExecutor,
+		sessionId: string,
+		header: SessionRecordHeader,
+		index: SessionResumeIndex,
+		options?: { deferChildRecords: true },
+	): Promise<SessionResume> {
+		const { leafSeq } = index;
+		const plan = sessionResumePlan(index, index.leafSeq, options?.deferChildRecords);
+		announceHistoryLoad(plan.state.length + plan.branch.reduce((sum, [a, b]) => sum + b - a + 1, 0));
+		// The branch's ranges, the state and the leaf depend on the index alone: a pipelined connection sends them at once,
+		// one round trip for all, and each range keeps its place in the branch (#6560).
+		const [ranges, state, leaf] = await Promise.all([
+			Promise.all(
+				plan.branch.map(([start, end]) => this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, end])),
+			),
+			this.readSeqs(tx, sessionId, plan.state),
+			leafSeq <= 0
+				? undefined
+				: tx.get<SqliteRow & { entry_id: string }>(
+						`SELECT entry_id FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+						sessionId,
+						leafSeq,
+					),
+		]);
+		const branch: SessionStoredEntry[] = ranges.flat();
+		const resume = sessionResumeFrom(index, header, branch, state, leaf?.entry_id ?? null, plan.children);
+		if (resume.compaction)
+			await readEarlierCompletionIntents(index, resume, (seqs) => this.readSeqs(tx, sessionId, seqs));
+		return resume;
+	}
+
 	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
-		await this.prepareResume(sessionId);
-		const { point } = await this.readTransaction(async (tx) => {
-			const source = await this.resumeSource(tx, sessionId);
-			const { index } = source;
-			const leafSeq = leafId === undefined ? index.leafSeq : ((await this.seqOfEntry(tx, sessionId, leafId)) ?? -1);
-			const found = latestCompactionOf(index, leafSeq);
-			if (found === undefined) return { point: undefined, source };
-			const [boundary] = await this.readSeqs(tx, sessionId, [found.seq]);
-			const leaf = await tx.get<SqliteRow & { entry_id: string }>(
-				`SELECT entry_id FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
-				sessionId,
-				leafSeq,
-			);
-			if (boundary === undefined || leaf === undefined) return { point: undefined, source };
-			const point: SessionCompactionPoint = {
-				...found,
-				entry: boundary.entry as SessionCompactionPoint["entry"],
-				leafId: leaf.entry_id,
-				lastSeq: index.seq,
-			};
-			return { point, source };
-		});
+		const { point } = await this.withResumeIndex(sessionId, () =>
+			this.readTransaction(
+				async (tx) => {
+					const source = await this.resumeSource(tx, sessionId);
+					const { index } = source;
+					const leafSeq =
+						leafId === undefined ? index.leafSeq : ((await this.seqOfEntry(tx, sessionId, leafId)) ?? -1);
+					const found = latestCompactionOf(index, leafSeq);
+					if (found === undefined) return { point: undefined, source };
+					// Neither depends on the other: a pipelined connection sends both at once (#6560).
+					const [[boundary], leaf] = await Promise.all([
+						this.readSeqs(tx, sessionId, [found.seq]),
+						tx.get<SqliteRow & { entry_id: string }>(
+							`SELECT entry_id FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+							sessionId,
+							leafSeq,
+						),
+					]);
+					if (boundary === undefined || leaf === undefined) return { point: undefined, source };
+					const point: SessionCompactionPoint = {
+						...found,
+						entry: boundary.entry as SessionCompactionPoint["entry"],
+						leafId: leaf.entry_id,
+						lastSeq: index.seq,
+					};
+					return { point, source };
+				},
+				[this.resumeRow(sessionId)],
+			),
+		);
 
 		return point;
 	}
