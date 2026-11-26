@@ -224,7 +224,8 @@ test("a read transaction sends its start with its leading reads, and does not wa
 			{ readOnly: true, leading },
 		),
 	);
-	assert.deepEqual(value, [1, ["s1"], 3]);
+	// A new store is at the sessions schema with shared-history forks (#6560).
+	assert.deepEqual(value, [3, ["s1"], 3]);
 	// BEGIN, the two leading reads, the count and COMMIT were five requests and four waits; the BEGIN and the leading
 	// reads now go in one request, and the COMMIT is sent but not waited for.
 	assert.deepEqual(
