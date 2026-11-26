@@ -974,7 +974,11 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 							schema,
 							...tables,
 						)
-					).map((table) => [table.name, table.options]),
+					).map((table) => [
+						table.name,
+						// Only the fillfactor: migrate sets autovacuum settings on these tables too.
+						(table.options ?? "").split(",").find((option) => option.startsWith("fillfactor=")) ?? null,
+					]),
 				);
 			const recorded = async () =>
 				(
@@ -1169,6 +1173,75 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			const again = await migrateAs(roles, "owner");
 			assert.equal(again.code, 0, again.err);
 			assert.deepEqual(await openAsRuntime(), current);
+		});
+	});
+
+	test("migrate sets autovacuum on the busy tables and lz4 on the large columns, keeps a value the administrator chose, and changes nothing once they are set (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const row = await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema");
+			const schema = String(row?.schema);
+			const lz4 =
+				(await ownerDatabase.get(
+					"SELECT 1 AS found FROM pg_settings WHERE name = 'default_toast_compression' AND 'lz4' = ANY(enumvals)",
+				)) !== undefined;
+			const options = async (table: string) =>
+				(
+					(
+						await ownerDatabase.get<{ options: string | null }>(
+							`SELECT array_to_string(c.reloptions, ',') AS options FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+						WHERE n.nspname = ? AND c.relname = ?`,
+							schema,
+							`${PREFIX}${table}`,
+						)
+					)?.options ?? ""
+				)
+					.split(",")
+					.filter((option) => option !== "")
+					.sort();
+			const compression = async (table: string, column: string) =>
+				(
+					await ownerDatabase.get<{ method: string }>(
+						`SELECT a.attcompression AS method FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+						JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ? AND c.relname = ? AND a.attname = ?`,
+						schema,
+						`${PREFIX}${table}`,
+						column,
+					)
+				)?.method;
+			const busy = (threshold: number, analyze = threshold) =>
+				[
+					"autovacuum_analyze_scale_factor=0",
+					`autovacuum_analyze_threshold=${analyze}`,
+					"autovacuum_vacuum_scale_factor=0",
+					`autovacuum_vacuum_threshold=${threshold}`,
+				].sort();
+			assert.deepEqual(await options("session_sessions"), [...busy(500), "fillfactor=80"].sort());
+			assert.deepEqual(await options("intercom_leases"), [...busy(500), "fillfactor=80"].sort());
+			assert.deepEqual(await options("snapshot_session_links"), busy(1000));
+			assert.deepEqual(await options("session_entries"), [], "an insert-only table keeps the server's settings");
+			for (const [table, column] of [
+				["session_entries", "entry_json"],
+				["session_entry_chunks", "data"],
+				["session_blob_chunks", "data"],
+				["snapshot_blobs", "data"],
+				["intercom_outbox", "frame_json"],
+			] as const)
+				assert.equal(await compression(table, column), lz4 ? "l" : "", `${table}.${column}`);
+
+			// An administrator's own threshold stays; a setting removed since is set again.
+			await ownerDatabase.exec(
+				`ALTER TABLE ${schema}.${PREFIX}session_sessions RESET (autovacuum_analyze_threshold), SET (autovacuum_vacuum_threshold = 2000)`,
+			);
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.match(again.out, new RegExp(`on 1 table: ${PREFIX}session_sessions\\.`));
+			assert.deepEqual(await options("session_sessions"), [...busy(2000, 500), "fillfactor=80"].sort());
+			const settled = await migrateAs(roles, "owner");
+			assert.equal(settled.code, 0, settled.err);
+			assert.doesNotMatch(settled.out, /Tuned/, "a tuned database changes nothing");
 		});
 	});
 

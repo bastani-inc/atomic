@@ -23,6 +23,7 @@ import {
 	POSTGRES_ATOMIC_SCHEMA,
 	strayPostgresStorageTables,
 } from "../core/storage/postgres-schema.js";
+import { type PostgresTableTuningResult, tunePostgresStorageTables } from "../core/storage/postgres-table-tuning.js";
 import { StorageProvider, type StorageSelection } from "../core/storage/provider.js";
 import {
 	type CheckedSharedDatabase,
@@ -677,11 +678,15 @@ async function migrate(
 	await intercom.ensureLazyIntercomSchemas(intercomSource);
 	// Tables created in public after the move hold state the moved ones do not (#5218).
 	const checked = await open("sessions");
+	const postgres = dialectOf(checked).name === "postgres";
 	let strays: string[];
 	let withoutTrigrams: boolean;
+	let tuning: PostgresTableTuningResult;
 	try {
 		strays = await strayPostgresStorageTables(checked);
-		withoutTrigrams = dialectOf(checked).name === "postgres" && !(await hasPostgresExtension(checked, "pg_trgm"));
+		withoutTrigrams = postgres && !(await hasPostgresExtension(checked, "pg_trgm"));
+		// Autovacuum settings for the busy tables, and lz4 compression for the large values, once every table exists.
+		tuning = await tunePostgresStorageTables(checked, selection.prefix);
 	} finally {
 		await checked.close();
 	}
@@ -692,6 +697,18 @@ async function migrate(
 		return 1;
 	}
 	log(`Atomic's tables in ${describeStorageSelection(selection)} are set up for this version: sessions and Intercom.`);
+	if (tuning.tuned.length > 0)
+		log(
+			`Tuned autovacuum or compression settings on ${tuning.tuned.length} table${tuning.tuned.length === 1 ? "" : "s"}: ${tuning.tuned.join(", ")}.`,
+		);
+	if (postgres && !tuning.lz4)
+		log(
+			"This PostgreSQL server was built without lz4, so large values keep its default compression, which is slower.",
+		);
+	if (tuning.busy.length > 0)
+		log(
+			`Left ${tuning.busy.join(", ")} unchanged because another process held ${tuning.busy.length === 1 ? "it" : "them"} too long; run \`${APP_NAME} storage migrate\` again later to tune ${tuning.busy.length === 1 ? "it" : "them"}.`,
+		);
 	if (withoutTrigrams)
 		log(
 			`Searches of session history will read each session a page at a time: the pg_trgm extension, which their index uses, is not installed in this database and this role could not install it. On Azure Database for PostgreSQL and Azure HorizonDB, add pg_trgm to the server parameter azure.extensions; elsewhere, grant this role CREATE on the database or have an administrator run CREATE EXTENSION pg_trgm in it. Then run \`${APP_NAME} storage migrate\` again.`,

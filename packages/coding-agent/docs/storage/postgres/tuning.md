@@ -192,18 +192,12 @@ A few of Atomic's tables are small but change constantly:
 
 PostgreSQL never changes a row in place. An update writes a new version of the row and leaves the old one behind as a dead row. A background process, autovacuum, later frees the dead rows. By default it waits until a fifth of a table is dead. On a small table that changes constantly, that can mean many dead rows between cleanups, and queries that read past them.
 
-Tell autovacuum to clean these tables after a fixed number of dead rows instead. This takes effect at once, with no restart. For example:
+`atomic storage migrate`, run as the owner role, tells autovacuum to clean these tables after a fixed number of dead rows instead: 500 for `session_sessions` and `intercom_leases`, and 1000 for `snapshot_session_links`. In a test with 20,000 sessions, a few of them saved constantly for five minutes, the table held about a third as many dead rows on average. You do not set it yourself.
+
+The settings take effect at once, with no restart. Migrate keeps any value you have set on these tables yourself. To use a different threshold, set it and migrate leaves it alone:
 
 ```sql
-ALTER TABLE atomic.session_sessions SET (
-  autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 500,
-  autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 500);
-ALTER TABLE atomic.intercom_leases SET (
-  autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 500,
-  autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 500);
-ALTER TABLE atomic.snapshot_session_links SET (
-  autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
-  autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000);
+ALTER TABLE atomic.session_sessions SET (autovacuum_vacuum_threshold = 2000);
 ```
 
 Check dead rows and the last cleanup with:
@@ -214,7 +208,7 @@ FROM pg_stat_user_tables
 WHERE relname IN ('session_sessions', 'intercom_leases', 'snapshot_session_links');
 ```
 
-To undo the settings, run `ALTER TABLE <table> RESET (autovacuum_vacuum_scale_factor, autovacuum_vacuum_threshold, autovacuum_analyze_scale_factor, autovacuum_analyze_threshold);`.
+Tables that only grow, such as `session_entries`, keep PostgreSQL's defaults. Since PostgreSQL 13, autovacuum also visits a table after enough inserts, and Atomic reads those tables by key, so it gains nothing from cleaning them more often.
 
 ### Updates that stay on their page
 
@@ -276,6 +270,21 @@ When one Intercom broker sends a message to another, it also writes a short noti
 
 An unlogged table is emptied when the server crashes, and it is not copied to standby servers, so it is empty after a failover. Only notices are lost. Brokers also check for messages every 30 seconds, so every message still arrives, at worst that much later. Tables created by `atomic storage migrate` or by a broker start out unlogged. A table an earlier version created becomes unlogged the next time `atomic storage migrate` runs as the owner role.
 
+## Compression of large values
+
+PostgreSQL compresses large values, such as long session entries, stored files and Intercom messages, before it stores them. Its default method, `pglz`, is slow. `atomic storage migrate` switches those columns to `lz4` when the server supports it. Most PostgreSQL 14 and later servers do, including the PostgreSQL project's packages and Docker images.
+
+In a test with large values built from real session history and source files, `lz4` took about 60% less time to compress them. Reading session entries back took 17% less time, and reading files back half as long. It stored session entries in 5% to 17% less space, and files in about 9% more.
+
+Only values written after the change use `lz4`. Values already stored stay readable as they are. To see how a table's values are compressed, run:
+
+```sql
+SELECT pg_column_compression(entry_json) AS method, count(*)
+FROM atomic.session_entries GROUP BY 1;
+```
+
+`NULL` is a value too small to compress. If your server was built without `lz4`, migrate says so and leaves the columns as they are.
+
 ## Settings you can usually leave alone
 
 These settings come up in tuning advice, but rarely help Atomic:
@@ -297,7 +306,7 @@ atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomi
 Why it matters for performance:
 
 - **Fast starts.** An agent opens its storage quickly, in a few round trips and without taking locks, only when the database is already up to date. If it is not, each agent starts by checking and updating it, and many agents starting at once queue behind each other.
-- **New steps.** `atomic storage migrate` also applies changes a runtime role without DDL rights cannot make: the sequence Intercom uses to order new leases, `fillfactor` on the busy tables, the search index settings, an unlogged table for Intercom's wake-up notices, and the function that saves entries to a session in 1 round trip instead of 2. Until it runs, agents keep working, but without those gains. Agents find the function the next time they start.
+- **New steps.** `atomic storage migrate` also applies changes a runtime role without DDL rights cannot make: the sequence Intercom uses to order new leases, `fillfactor` and autovacuum settings on the busy tables, `lz4` compression for large values, the search index settings, an unlogged table for Intercom's wake-up notices, and the function that saves entries to a session in 1 round trip instead of 2. Until it runs, agents keep working, but without those gains. Agents find the function the next time they start.
 
 ## Checklist
 
@@ -308,7 +317,6 @@ Why it matters for performance:
 | Set `shared_buffers` to about a quarter of memory | Yes |
 | Reserve huge pages with `vm.nr_hugepages` and check `huge_pages_status` | Yes |
 | Preload `pg_stat_statements`, create it as a superuser, grant `pg_read_all_stats` | Yes |
-| Set per-table autovacuum on `session_sessions`, `intercom_leases` and `snapshot_session_links` | No |
 | Run `atomic storage migrate` after each Atomic upgrade | No |
 | Keep autovacuum on, so it merges the search index's pending list for agents that use a runtime role | No |
 
