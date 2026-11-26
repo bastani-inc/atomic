@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Checking a detached fork's worktree snapshot links now reads the fork's links in one pass and looks up each entry's parent once, so the check takes about half the time it first did: 1.9 ms instead of 3.7 ms on SQLite, and 6.4 ms instead of 10.7 ms on PostgreSQL, for a fork of 1,000 entries ([#6692](https://github.com/bastani-inc/atomic/pull/6692), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.3] - 2026-11-26
 
 Atomic drops libSQL storage and keeps SQLite, PostgreSQL and JSONL, many agents open and share one PostgreSQL database with less waiting, and the storage docs get one page per backend.

@@ -88,10 +88,10 @@ function childViewSeq(
  * stores, and keeps every snapshot record a segment names (see `SqlSnapshotBlobStore.sweep`), so it never needs it.
  */
 export function forkSessionLink(links: string, segments: string, rows: string, isSnapshot: string): string {
-	const { anchor, broken } = forkLinkValues(links, segments, isSnapshot);
+	const { parent, anchor, broken } = forkLinkValues(links, segments, isSnapshot);
 	return `INSERT INTO ${links} (session_id, seq, entry_id, parent_id, anchor_seq, children, broken)
 		SELECT r.session_id, r.seq, r.entry_id, CASE WHEN r.parent_type = 'text' THEN r.parent_id END, ${anchor}, 0, ${broken}
-		FROM ${rows} AS r WHERE EXISTS (SELECT 1 FROM ${segments} AS any_segment WHERE any_segment.session_id = r.session_id)
+		FROM ${rows} AS r ${parent} WHERE EXISTS (SELECT 1 FROM ${segments} AS any_segment WHERE any_segment.session_id = r.session_id)
 		ON CONFLICT (session_id, seq) DO UPDATE SET anchor_seq = excluded.anchor_seq, broken = excluded.broken`;
 }
 
@@ -100,21 +100,26 @@ export function forkSessionLink(links: string, segments: string, rows: string, i
  * session's and those its segments name: the one function a save, the index's rebuild and the check of a
  * materialization's links ({@link forkLinksCheck}) all compute them with (#6560). For a session without segments it
  * is what the released link statement writes.
+ *
+ * `parent` is the join that follows `r` in the statement's FROM: it finds `r`'s parent among the links its session
+ * stores ({@link ownParentSeq}) once, as `par`, for both expressions to read.
  */
 export function forkLinkValues(
 	links: string,
 	segments: string,
 	isSnapshot: string,
-): { readonly anchor: string; readonly broken: string } {
-	const parentSeq = ownParentSeq(links);
-	const own = (column: string) =>
-		`(SELECT p.${column} FROM ${links} AS p WHERE p.session_id = r.session_id AND p.seq = ${parentSeq})`;
-	const ownParent = `${parentSeq} IS NOT NULL`;
+): { readonly parent: string; readonly anchor: string; readonly broken: string } {
+	// The first link with the parent's id, if it is before `r`: the link `ownParentSeq` finds, joined as a plain row, so
+	// that no lookup is a join key the database computes for each comparison.
+	const parent = `LEFT JOIN ${links} AS par ON par.session_id = r.session_id AND par.entry_id = r.parent_id AND r.parent_type = 'text' AND +par.seq < r.seq AND NOT EXISTS (SELECT 1 FROM ${links} AS earlier WHERE earlier.session_id = par.session_id AND earlier.entry_id = par.entry_id AND +earlier.seq < par.seq)`;
+	const own = (column: string) => `par.${column}`;
+	const ownParent = "par.seq IS NOT NULL";
 	const inherited = (select: string) =>
 		`(SELECT ${select} FROM ${segments} AS seg JOIN ${links} AS up ON up.session_id = seg.source_id AND up.entry_id = r.parent_id AND +up.seq BETWEEN seg.from_seq AND seg.to_seq WHERE seg.session_id = r.session_id AND r.parent_type = 'text' AND seg.base_seq < r.seq ORDER BY seg.base_seq, up.seq LIMIT 1)`;
 	const anchor = `CASE WHEN up.anchor_seq IS NOT NULL THEN ${childViewSeq(links, segments, "r.session_id", "up.session_id", "up.anchor_seq", "r.seq")} END`;
 	const duplicate = `${ownDuplicate(links)} OR EXISTS (SELECT 1 FROM ${segments} AS seg JOIN ${links} AS other ON other.session_id = seg.source_id AND other.entry_id = r.entry_id AND +other.seq BETWEEN seg.from_seq AND seg.to_seq WHERE seg.session_id = r.session_id AND seg.base_seq < r.seq)`;
 	return {
+		parent,
 		anchor: `CASE WHEN ${isSnapshot} THEN r.seq WHEN ${ownParent} THEN ${own("anchor_seq")} ELSE ${inherited(anchor)} END`,
 		broken: `CASE WHEN ${duplicate} THEN 1 WHEN r.parent_type IS NULL OR r.parent_type = 'null' THEN 0 WHEN ${ownParent} THEN ${own("broken")} ELSE COALESCE(${inherited("up.broken")}, 1) END`,
 	};
@@ -143,28 +148,36 @@ export function materializedForkLinks(links: string, segments: string, complete:
 
 /**
  * The read that tells whether the links of session `?` from seq `?` on are the ones {@link forkLinkValues} computes,
- * one statement for them all (#6560): `seq`, the first row whose anchor or broken mark is not, or null; `children`,
- * whether a row from that seq on has a child stored before it, whose count {@link materializedForkLinks} and a save
- * may tell apart; and `refs`, whether a snapshot entry's reference names another previous snapshot than its parent's
- * anchor. `rows` yields the session's rows from that seq on as `r`, with their ids, their parents' ids and JSON types
- * (`parent_id`, `parent_type`), bound to the session's id and the seq; `isSnapshot` tells whether `r` is a snapshot
- * entry; `refs` is the snapshot references' table. Nothing is read until the index's backfill is done (`complete`).
+ * one statement for them all, in one pass over those links (#6560): `seq`, the first row whose anchor or broken mark
+ * is not, or null; `children`, whether a row from that seq on has a child stored before it, whose count
+ * {@link materializedForkLinks} and a save may tell apart; and `refs`, whether a snapshot entry's reference names
+ * another previous snapshot than its parent's anchor. It reads the rows' links, which name each entry's id and its
+ * parent's, so no entry's JSON is parsed: a link without a parent is taken for a root (one whose parent is a value of
+ * another type, which no store writes, is linked broken, so the check finds it), and a snapshot entry is its own
+ * anchor, as no other entry is. `refs` is the snapshot references' table. Nothing is read until the index's backfill
+ * is done (`complete`). Parameters: the session's id and the seq twice, for the rows before the seq that may be a
+ * checked row's child; then the session's id and the seq, for the rows checked.
  */
 export function forkLinksCheck(
 	tables: { readonly links: string; readonly segments: string; readonly refs: string },
-	rows: string,
-	isSnapshot: string,
 	complete: string,
 ): string {
 	const { links, segments, refs } = tables;
-	const { anchor, broken } = forkLinkValues(links, segments, isSnapshot);
-	const parentAnchor = `(SELECT p.anchor_seq FROM ${links} AS p WHERE p.session_id = r.session_id AND p.seq = ${ownParentSeq(links)})`;
-	return `SELECT
-		(SELECT min(v.seq) FROM (SELECT r.session_id, r.seq, ${anchor} AS anchor_seq, ${broken} AS broken FROM ${rows} AS r) AS v
-			JOIN ${links} AS l ON l.session_id = v.session_id AND l.seq = v.seq
-			WHERE COALESCE(l.anchor_seq, -1) <> COALESCE(v.anchor_seq, -1) OR l.broken <> v.broken) AS seq,
-		CASE WHEN EXISTS (SELECT 1 FROM ${links} AS c WHERE c.session_id = ? AND c.parent_id IS NOT NULL AND EXISTS (SELECT 1 FROM ${links} AS q WHERE q.session_id = c.session_id AND q.entry_id = c.parent_id AND +q.seq > c.seq AND +q.seq >= ?)) THEN 1 ELSE 0 END AS children,
-		CASE WHEN EXISTS (SELECT 1 FROM ${rows} AS r JOIN ${refs} AS ref ON ref.session_id = r.session_id AND ref.seq = r.seq WHERE ${isSnapshot} AND COALESCE(ref.prev_seq, -1) <> COALESCE(${parentAnchor}, -1)) THEN 1 ELSE 0 END AS refs
+	const rows = `(SELECT l.session_id, l.seq, l.entry_id, l.parent_id, CASE WHEN l.parent_id IS NOT NULL THEN 'text' ELSE 'null' END AS parent_type, l.anchor_seq AS own_anchor, l.broken AS own_broken FROM ${links} AS l WHERE l.session_id = ? AND l.seq >= ?)`;
+	const isSnapshot = "r.own_anchor = r.seq";
+	const { parent, anchor, broken } = forkLinkValues(links, segments, isSnapshot);
+	// A row's child stored before it: for a checked row, whether its parent's id is on a row after it, and for a row
+	// before the checked ones, whether it is on a checked row after it.
+	const childBefore = (child: string, from: string) =>
+		`EXISTS (SELECT 1 FROM ${links} AS q WHERE q.session_id = ${child}.session_id AND q.entry_id = ${child}.parent_id AND +q.seq > ${child}.seq${from})`;
+	return `SELECT v.seq,
+		CASE WHEN v.children = 1 OR EXISTS (SELECT 1 FROM ${links} AS c WHERE c.session_id = ? AND c.seq < ? AND c.parent_id IS NOT NULL AND ${childBefore("c", " AND +q.seq >= ?")}) THEN 1 ELSE 0 END AS children,
+		v.refs
+	FROM (SELECT
+		min(CASE WHEN COALESCE(r.own_anchor, -1) <> COALESCE(${anchor}, -1) OR r.own_broken <> ${broken} THEN r.seq END) AS seq,
+		max(CASE WHEN r.parent_id IS NOT NULL AND ${childBefore("r", "")} THEN 1 ELSE 0 END) AS children,
+		max(CASE WHEN ${isSnapshot} AND ref.seq IS NOT NULL AND COALESCE(ref.prev_seq, -1) <> COALESCE(par.anchor_seq, -1) THEN 1 ELSE 0 END) AS refs
+		FROM ${rows} AS r ${parent} LEFT JOIN ${refs} AS ref ON ref.session_id = r.session_id AND ref.seq = r.seq) AS v
 	WHERE ${complete}`;
 }
 
