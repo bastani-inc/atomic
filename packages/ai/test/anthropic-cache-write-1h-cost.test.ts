@@ -1,7 +1,8 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 
 function createSseResponse(events: Array<{ event: string; data: string }>): Response {
 	const body = events.map(({ event, data }) => `event: ${event}\ndata: ${data}\n`).join("\n");
@@ -60,7 +61,7 @@ const context = normalizeContext({ messages: [{ role: "user", content: "hi", tim
 
 describe("Anthropic 1h cache write cost", () => {
 	it("prices the 1h portion at 2x input and the rest at the 5m rate", async () => {
-		const model = getModel("anthropic", "claude-opus-4-8");
+		const model = getFixtureModel("anthropic", "claude-opus-4-8");
 		const response = createSseResponse(
 			eventsWithCacheCreation({ ephemeral_5m_input_tokens: 600_000, ephemeral_1h_input_tokens: 400_000 }),
 		);
@@ -76,7 +77,7 @@ describe("Anthropic 1h cache write cost", () => {
 
 	// Regression for #9210: Vercel AI Gateway sends cache usage in message_delta, not message_start.
 	it("prices 1h cache writes reported only in message_delta", async () => {
-		const model = getModel("vercel-ai-gateway", "anthropic/claude-haiku-4.5");
+		const model = getFixtureModel("vercel-ai-gateway", "anthropic/claude-haiku-4.5");
 		const response = createSseResponse([
 			{
 				event: "message_start",
@@ -110,7 +111,7 @@ describe("Anthropic 1h cache write cost", () => {
 	});
 
 	it("falls back to the 5m rate when no breakdown is reported", async () => {
-		const model = getModel("anthropic", "claude-opus-4-8");
+		const model = getFixtureModel("anthropic", "claude-opus-4-8");
 		const response = createSseResponse(eventsWithCacheCreation(undefined));
 		const result = await streamAnthropic(model, context, {
 			client: createFakeAnthropicClient(response),
@@ -125,7 +126,7 @@ describe("Anthropic 1h cache write cost", () => {
 	// Claude Fable 5.1 published rates: $10 input, $12.50 5m write, $20 1h write, $0.25 read.
 	// https://platform.claude.com/docs/en/models/fable-5-1/overview
 	it("prices the full 1h cache write at $20/MTok for Claude Fable 5.1", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		expect(model.cost.input).toBe(10);
 		expect(model.cost.cacheWrite).toBe(12.5);
 		const response = createSseResponse(eventsWithCacheCreation({ ephemeral_1h_input_tokens: 1_000_000 }));
@@ -137,7 +138,7 @@ describe("Anthropic 1h cache write cost", () => {
 	});
 
 	it("prices the 5m cache write at $12.50/MTok for Claude Fable 5.1", async () => {
-		const model = getModel("anthropic", "claude-fable-5-1");
+		const model = getFixtureModel("anthropic", "claude-fable-5-1");
 		const response = createSseResponse(eventsWithCacheCreation({ ephemeral_5m_input_tokens: 1_000_000 }));
 		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
 

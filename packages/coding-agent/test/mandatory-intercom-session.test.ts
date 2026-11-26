@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stopDetachedBroker } from "../../../test/helpers/detached-broker.js";
 import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
@@ -107,7 +107,7 @@ describe("trusted ordinary Intercom sessions", () => {
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir,
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				sessionManager: SessionManager.inMemory(cwd),
 				tools: ["intercom"],
 			});
@@ -150,7 +150,7 @@ describe("trusted ordinary Intercom sessions", () => {
 		const { session } = await createAgentSessionFromServices({
 			services,
 			sessionManager: SessionManager.inMemory(cwd),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			tools: ["intercom"],
 		});
 		try {
@@ -177,7 +177,7 @@ describe("trusted ordinary Intercom sessions", () => {
 		const { session } = await createAgentSessionFromServices({
 			services,
 			sessionManager: SessionManager.inMemory(cwd),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			tools: ["intercom"],
 		});
 		try {
@@ -209,7 +209,7 @@ describe("trusted ordinary Intercom sessions", () => {
 		const { session } = await createAgentSessionFromServices({
 			services,
 			sessionManager: SessionManager.inMemory(cwd),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			tools: ["intercom"],
 		});
 		try {
@@ -260,7 +260,7 @@ describe("trusted ordinary Intercom sessions", () => {
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir,
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				settingsManager,
 				sessionManager: SessionManager.inMemory(cwd),
 				resourceLoader: suppliedLoader,
@@ -325,7 +325,7 @@ describe("trusted ordinary Intercom sessions", () => {
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			sessionManager: SessionManager.inMemory(cwd),
 			resourceLoader: suppliedLoader,
 			tools: ["read", "bash", "intercom"],
@@ -381,7 +381,7 @@ describe("trusted ordinary Intercom sessions", () => {
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			sessionManager: SessionManager.inMemory(cwd),
 			resourceLoader: suppliedLoader,
 			tools: ["intercom"],

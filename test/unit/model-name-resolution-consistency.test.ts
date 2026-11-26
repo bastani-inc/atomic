@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import type { Api, Model } from "@bastani/atomic-ai";
-import { getModel, getModels, getProviders } from "@bastani/atomic-ai/compat";
+import { getModels, getProviders } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { resolveFallbackModel } from "../../packages/coding-agent/src/core/fallback-models.js";
 import { deriveFastModelVariants } from "../../packages/coding-agent/src/core/fast-model-variants.js";
 import { toCodemodeModelInfo } from "../../packages/coding-agent/src/extensions/codemode/execute.js";
 import { resolveCandidateModel } from "../../packages/subagents/src/shared/model-resolution.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
 function derived(id: string, variantId: string): Model<Api> {
-	const base = getModel("openai", id as never) as Model<Api>;
+	const base = getFixtureModel("openai", id as never) as Model<Api>;
 	const variant = deriveFastModelVariants("openai", [base]).models.find((m) => m.id === variantId);
 	assert.ok(variant, `${variantId} is derived from ${id}`);
 	return variant;
@@ -32,8 +33,8 @@ test("a subagent model name resolves exactly as the same settings fallbackModels
 });
 
 test("a subagent model name keeps the launch rules for whitespace, credentials and unknown effort words (#5046)", () => {
-	const mini = getModel("openai", "gpt-5.4-mini" as never) as Model<Api>;
-	const opus = getModel("anthropic", "claude-opus-4-8" as never) as Model<Api>;
+	const mini = getFixtureModel("openai", "gpt-5.4-mini" as never) as Model<Api>;
+	const opus = getFixtureModel("anthropic", "claude-opus-4-8" as never) as Model<Api>;
 	const registry = {
 		getAvailable: () => [mini, opus],
 		find: () => undefined,

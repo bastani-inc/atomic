@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage } from "@bastani/atomic-agent-core";
-import { type AssistantMessage, getModel } from "@bastani/atomic-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AutoCompactionRunOutcome } from "../src/core/agent-session-methods.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -58,7 +59,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		tempDir = join(tmpdir(), `pi-auto-compaction-queue-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const agent = new Agent({
 			initialState: {
 				model,

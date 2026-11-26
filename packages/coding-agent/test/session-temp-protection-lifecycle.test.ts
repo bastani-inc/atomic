@@ -11,8 +11,9 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@bastani/atomic-agent-core";
-import { getModel, streamSimple } from "@bastani/atomic-ai/compat";
+import { streamSimple } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -34,7 +35,7 @@ import { createTestResourceLoader } from "./utilities.ts";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.now();
-const model = getModel("anthropic", "claude-sonnet-4-5")!;
+const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 
 const envKeys = ["TMPDIR", "TEMP", "TMP"] as const;
 const savedEnv = new Map<string, string | undefined>();

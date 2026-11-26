@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";
@@ -11,6 +10,7 @@ import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js"
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { createStructuredOutputTool } from "../../packages/coding-agent/src/core/tools/index.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
 /**
  * Structural cost, not a slow test: each case builds a real AgentSession with its
@@ -57,7 +57,7 @@ async function createIsolatedSession(
 	const { session } = await createAgentSession({
 		cwd: tempDir,
 		agentDir,
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		settingsManager,
 		sessionManager,
 		resourceLoader,

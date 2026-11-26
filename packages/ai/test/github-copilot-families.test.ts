@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "vitest";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { streamSimple } from "../src/compat.ts";
 import { parseGitHubCopilotDiscoveredModels } from "../src/providers/github-copilot.ts";
 import {
 	GitHubCopilotAuthenticationError,
@@ -35,14 +36,14 @@ import {
 	GROK_TEXT_TURN,
 	KIMI_SPLIT_ARGUMENTS_TOOL_TURN,
 	KIMI_TEXT_TURN,
-	VENDOR_PARALLEL_TOOL_TURN,
-	VENDOR_TEXT_TURN,
 	RESPONSES_CONTENT_FILTER_TURN,
 	RESPONSES_EMPTY_TURN,
 	RESPONSES_TRUNCATED_TURN,
 	responsesErrorEvents,
 	responsesFailedEvents,
 	sseBody,
+	VENDOR_PARALLEL_TOOL_TURN,
+	VENDOR_TEXT_TURN,
 	type WireEvent,
 } from "./fixtures/github-copilot-wire.ts";
 
@@ -78,7 +79,7 @@ function discovered(id: string): Model<Api> {
 }
 
 function catalogModel(id: string): Model<Api> {
-	const model = getModel("github-copilot", id as never) as Model<Api> | undefined;
+	const model = getFixtureModel("github-copilot", id as never) as Model<Api> | undefined;
 	if (!model) throw new Error(`Expected github-copilot/${id} in the built-in catalog`);
 	return model;
 }

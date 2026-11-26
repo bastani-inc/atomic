@@ -4,8 +4,9 @@ import { fileURLToPath } from "node:url";
 import type { ResponseFunctionCallOutputItemList } from "openai/resources/responses/responses.js";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import type { Api, Context, Model, StreamOptions, Tool, ToolResultMessage } from "../src/compat.ts";
-import { complete, getModel } from "../src/compat.ts";
+import { complete } from "../src/compat.ts";
 import { hasAzureOpenAICredentials, resolveAzureDeploymentName } from "./azure-utils.ts";
 import { resolveApiKey } from "./oauth.ts";
 
@@ -145,7 +146,7 @@ async function verifyToolResultImagesStayInFunctionCallOutput<TApi extends Api>(
 
 describe("Responses API tool result images", () => {
 	describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI Responses Provider (gpt-5-mini)", () => {
-		const model = getModel("openai", "gpt-5-mini");
+		const model = getFixtureModel("openai", "gpt-5-mini");
 
 		it("should send tool result images in function_call_output", { retry: 3, timeout: 30000 }, async () => {
 			await verifyToolResultImagesStayInFunctionCallOutput(model, { reasoningEffort: "low" });
@@ -153,7 +154,7 @@ describe("Responses API tool result images", () => {
 	});
 
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses Provider (gpt-4o-mini)", () => {
-		const model = getModel("azure", "gpt-4o-mini");
+		const model = getFixtureModel("azure", "gpt-4o-mini");
 		const azureDeploymentName = resolveAzureDeploymentName(model.id);
 		const azureOptions = azureDeploymentName ? { azureDeploymentName } : {};
 
@@ -163,7 +164,7 @@ describe("Responses API tool result images", () => {
 	});
 
 	describe("GitHub Copilot Responses Provider (gpt-6-luna)", () => {
-		const model = getModel("github-copilot", "gpt-6-luna");
+		const model = getFixtureModel("github-copilot", "gpt-6-luna");
 
 		it.skipIf(!githubCopilotToken)(
 			"should send tool result images in function_call_output",
@@ -178,7 +179,7 @@ describe("Responses API tool result images", () => {
 	});
 
 	describe("OpenAI Codex Responses Provider (gpt-6.1-sol)", () => {
-		const model = getModel("openai-codex", "gpt-6.1-sol");
+		const model = getFixtureModel("openai-codex", "gpt-6.1-sol");
 
 		it.skipIf(!openaiCodexToken)(
 			"should send tool result images in function_call_output",

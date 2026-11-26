@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { completeSimple, getModel } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { completeSimple } from "../src/compat.ts";
 
 function createLongSystemPrompt(): string {
 	const nonce = `${Date.now()}-${Math.random()}`;
@@ -15,7 +16,7 @@ describe.skipIf(!process.env.OPENROUTER_API_KEY)("OpenRouter cache_write repro E
 		retry: 2,
 		timeout: 90000,
 	}, async () => {
-		const model = getModel("openrouter", "google/gemini-2.5-flash");
+		const model = getFixtureModel("openrouter", "google/gemini-2.5-flash");
 		const context = {
 			systemPrompt: createLongSystemPrompt(),
 			messages: [

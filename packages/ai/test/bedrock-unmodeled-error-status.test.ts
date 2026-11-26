@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer, request as httpRequest, type Server } from "node:http";
 import { afterEach, describe, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { Api, AssistantMessage, Model } from "../src/types.ts";
 import { isContextOverflow } from "../src/utils/overflow.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
@@ -61,7 +62,10 @@ function forwardingProxy(upstream: string): Promise<string> {
 }
 
 function bedrockTurn(baseUrl: string, env: Record<string, string> = {}): Promise<AssistantMessage> {
-	const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+	const model = getFixtureModel(
+		"amazon-bedrock",
+		"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+	) as Model<"bedrock-converse-stream">;
 	return streamBedrock({ ...model, baseUrl }, context, {
 		cacheRetention: "none",
 		maxRetries: 0,
@@ -153,7 +157,10 @@ describe("an Amazon Bedrock answer the SDK has no Bedrock exception for", () => 
 
 	it("leaves a hook's error alone though it carries an HTTP status: no answer of Bedrock's was received for it", async () => {
 		const endpoint = await answering(400, '{"message":"bad request"}');
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0") as Model<"bedrock-converse-stream">;
+		const model = getFixtureModel(
+			"amazon-bedrock",
+			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		) as Model<"bedrock-converse-stream">;
 		const env = { AWS_BEDROCK_FORCE_HTTP1: "1", AWS_BEDROCK_SKIP_AUTH: "1", AWS_REGION: "us-east-1" };
 		for (const status of [
 			{ status: 503 },
@@ -181,7 +188,9 @@ describe("an Amazon Bedrock answer the SDK has no Bedrock exception for", () => 
 	});
 
 	it("reads a gateway's 413 whose body is not JSON as a context overflow", async () => {
-		const message = await bedrockTurn(await answering(413, "Request Entity Too Large", { "content-type": "text/plain" }));
+		const message = await bedrockTurn(
+			await answering(413, "Request Entity Too Large", { "content-type": "text/plain" }),
+		);
 
 		assert.ok(message.errorMessage?.startsWith("413: "), message.errorMessage);
 		assert.equal(isContextOverflow(message), true, message.errorMessage);

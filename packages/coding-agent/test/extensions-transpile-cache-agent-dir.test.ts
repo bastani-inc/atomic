@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { getExtensionTranspileCacheDir } from "../src/config.js";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
@@ -95,7 +95,7 @@ async function sessionWithLateImport(agentDir: string, cwd: string) {
 		agentDir,
 		settingsManager,
 		sessionManager: SessionManager.inMemory(cwd),
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 	});
 	sessions.push(session);
@@ -444,7 +444,7 @@ describe("extension transpile cache follows the agent directory", () => {
 			agentDir: sessionAgentDir,
 			settingsManager: SettingsManager.create(cwd, sessionAgentDir, { projectTrusted: true }),
 			sessionManager: SessionManager.inMemory(cwd),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			builtins: { subagents: false, intercom: false, mcp: false, "web-access": false },
 		});
 		sessions.push(session);

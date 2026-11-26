@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { streamSimple } from "../src/api/mistral-conversations.ts";
-import { getModel, getSupportedThinkingLevels } from "../src/compat.ts";
+import { getSupportedThinkingLevels } from "../src/compat.ts";
 import type { Context, Model, SimpleStreamOptions, ThinkingLevelMap } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -148,14 +149,14 @@ describe("Mistral reasoning mode selection", () => {
 		["zai-glm-5-2", GLM_5_2_LEVELS, ["off", "high", "max"]],
 		["zai-glm-5-3", GLM_5_3_LEVELS, ["low", "high", "max"]],
 	] as const)("offers only the API's effort levels for %s", (modelId, map, levels) => {
-		const model = getModel("mistral", modelId);
+		const model = getFixtureModel("mistral", modelId);
 
 		expect(model.thinkingLevelMap).toEqual(map);
 		expect(getSupportedThinkingLevels(model)).toEqual(levels);
 	});
 
 	it("keeps Magistral on prompt_mode without a thinking level map", () => {
-		expect(getModel("mistral", "magistral-medium-latest").thinkingLevelMap).toBeUndefined();
+		expect(getFixtureModel("mistral", "magistral-medium-latest").thinkingLevelMap).toBeUndefined();
 	});
 
 	it("uses the session id as prompt cache key", async () => {

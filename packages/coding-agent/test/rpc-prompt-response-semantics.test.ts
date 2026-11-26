@@ -8,10 +8,10 @@ import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
-	getModel,
 	type Model,
 } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -124,7 +124,7 @@ async function createRuntimeHost(options: {
 	const tempDir = join(tmpdir(), `pi-rpc-prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 
-	const model = options.model ?? getModel("anthropic", "claude-sonnet-4-5");
+	const model = options.model ?? getFixtureModel("anthropic", "claude-sonnet-4-5");
 	if (!model) {
 		throw new Error("Test model not found");
 	}
@@ -279,7 +279,7 @@ describe("RPC prompt response semantics", () => {
 	});
 
 	it("blocks unsupported prompts but stays live for set_model recovery", async () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("missing recovery model");
 		const { lineHandler, cleanup } = await startRpcMode({
 			withAuth: true,
@@ -335,8 +335,8 @@ describe("RPC prompt response semantics", () => {
 	});
 
 	it("clears the unsupported prompt lock only after a successful changed cycle", async () => {
-		const initial = getModel("anthropic", "claude-sonnet-4-5");
-		const selected = getModel("anthropic", "claude-haiku-4-5");
+		const initial = getFixtureModel("anthropic", "claude-sonnet-4-5");
+		const selected = getFixtureModel("anthropic", "claude-haiku-4-5");
 		if (!initial || !selected) throw new Error("missing cycle models");
 		const { lineHandler, cleanup, runtimeHost } = await startRpcMode({
 			withAuth: true,

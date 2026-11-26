@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import type { Api, Context, Model, Tool, ToolResultMessage } from "../src/compat.ts";
-import { complete, getModel } from "../src/compat.ts";
+import { complete } from "../src/compat.ts";
 import type { StreamOptions } from "../src/types.ts";
 
 type StreamOptionsWithExtras = StreamOptions & Record<string, unknown>;
@@ -208,7 +209,7 @@ async function handleToolWithTextAndImageResult<TApi extends Api>(
 
 describe("Tool Results with Images", () => {
 	describe.skipIf(!process.env.GEMINI_API_KEY)("Google Provider (gemini-2.5-flash)", () => {
-		const llm = getModel("google", "gemini-2.5-flash");
+		const llm = getFixtureModel("google", "gemini-2.5-flash");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -220,7 +221,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI Completions Provider (gpt-4o-mini)", () => {
-		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini");
+		const { compat: _compat, ...baseModel } = getFixtureModel("openai", "gpt-4o-mini");
 		void _compat;
 		const llm: Model<"openai-completions"> = {
 			...baseModel,
@@ -237,7 +238,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.OPENAI_API_KEY)("OpenAI Responses Provider (gpt-5-mini)", () => {
-		const llm = getModel("openai", "gpt-5-mini");
+		const llm = getFixtureModel("openai", "gpt-5-mini");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -249,7 +250,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!hasAzureOpenAICredentials())("Azure OpenAI Responses Provider (gpt-4o-mini)", () => {
-		const llm = getModel("azure", "gpt-4o-mini");
+		const llm = getFixtureModel("azure", "gpt-4o-mini");
 		const azureDeploymentName = resolveAzureDeploymentName(llm.id);
 		const azureOptions = azureDeploymentName ? { azureDeploymentName } : {};
 
@@ -263,7 +264,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic Provider (claude-haiku-4-5)", () => {
-		const model = getModel("anthropic", "claude-haiku-4-5");
+		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(model);
@@ -275,7 +276,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.OPENROUTER_API_KEY)("OpenRouter Provider (glm-4.5v)", () => {
-		const llm = getModel("openrouter", "z-ai/glm-4.5v");
+		const llm = getFixtureModel("openrouter", "z-ai/glm-4.5v");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -287,7 +288,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.MISTRAL_API_KEY)("Mistral Provider (ministral-14b-latest)", () => {
-		const llm = getModel("mistral", "ministral-14b-latest");
+		const llm = getFixtureModel("mistral", "ministral-14b-latest");
 
 		it("should handle tool result with only image", { retry: 5, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -299,7 +300,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.TOGETHER_API_KEY)("Together AI Provider (Kimi-K3)", () => {
-		const llm = getModel("together", "moonshotai/Kimi-K3");
+		const llm = getFixtureModel("together", "moonshotai/Kimi-K3");
 		const options = { reasoningEffort: "high" } satisfies StreamOptionsWithExtras;
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
@@ -312,7 +313,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.BASETEN_API_KEY)("Baseten Provider (Kimi-K3)", () => {
-		const llm = getModel("baseten", "moonshotai/Kimi-K3");
+		const llm = getFixtureModel("baseten", "moonshotai/Kimi-K3");
 		const options = { reasoningEffort: "high" } satisfies StreamOptionsWithExtras;
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
@@ -325,7 +326,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.XIAOMI_API_KEY)("Xiaomi MiMo (API billing) Provider (mimo-v2.6-pro)", () => {
-		const llm = getModel("xiaomi", "mimo-v2.6-pro");
+		const llm = getFixtureModel("xiaomi", "mimo-v2.6-pro");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -346,7 +347,7 @@ describe("Tool Results with Images", () => {
 	describe.skipIf(!process.env.XIAOMI_TOKEN_PLAN_CN_API_KEY)(
 		"Xiaomi MiMo Token Plan (CN) Provider (mimo-v2.6-pro)",
 		() => {
-			const llm = getModel("xiaomi-token-plan-cn", "mimo-v2.6-pro");
+			const llm = getFixtureModel("xiaomi-token-plan-cn", "mimo-v2.6-pro");
 
 			it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 				await handleToolWithImageResult(llm);
@@ -363,7 +364,7 @@ describe("Tool Results with Images", () => {
 	describe.skipIf(!process.env.XIAOMI_TOKEN_PLAN_AMS_API_KEY)(
 		"Xiaomi MiMo Token Plan (AMS) Provider (mimo-v2.6-pro)",
 		() => {
-			const llm = getModel("xiaomi-token-plan-ams", "mimo-v2.6-pro");
+			const llm = getFixtureModel("xiaomi-token-plan-ams", "mimo-v2.6-pro");
 
 			it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 				await handleToolWithImageResult(llm);
@@ -380,7 +381,7 @@ describe("Tool Results with Images", () => {
 	describe.skipIf(!process.env.XIAOMI_TOKEN_PLAN_SGP_API_KEY)(
 		"Xiaomi MiMo Token Plan (SGP) Provider (mimo-v2.6-pro)",
 		() => {
-			const llm = getModel("xiaomi-token-plan-sgp", "mimo-v2.6-pro");
+			const llm = getFixtureModel("xiaomi-token-plan-sgp", "mimo-v2.6-pro");
 
 			it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 				await handleToolWithImageResult(llm);
@@ -395,7 +396,7 @@ describe("Tool Results with Images", () => {
 	);
 
 	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_API_KEY)("Qwen Token Plan Provider (qwen3.7-max)", () => {
-		const llm = getModel("qwen-token-plan", "qwen3.7-max");
+		const llm = getFixtureModel("qwen-token-plan", "qwen3.7-max");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -407,7 +408,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_API_KEY)("Qwen Token Plan Individual Provider (qwen3.8-max)", () => {
-		const llm = getModel("qwen-token-plan-individual", "qwen3.8-max");
+		const llm = getFixtureModel("qwen-token-plan-individual", "qwen3.8-max");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -421,7 +422,7 @@ describe("Tool Results with Images", () => {
 	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_CN_API_KEY)(
 		"Qwen Token Plan Individual (CN) Provider (qwen3.8-max)",
 		() => {
-			const llm = getModel("qwen-token-plan-individual-cn", "qwen3.8-max");
+			const llm = getFixtureModel("qwen-token-plan-individual-cn", "qwen3.8-max");
 
 			it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 				await handleToolWithImageResult(llm);
@@ -434,7 +435,7 @@ describe("Tool Results with Images", () => {
 	);
 
 	describe.skipIf(!process.env.QWEN_TOKEN_PLAN_CN_API_KEY)("Qwen Token Plan (CN) Provider (qwen3.7-max)", () => {
-		const llm = getModel("qwen-token-plan-cn", "qwen3.7-max");
+		const llm = getFixtureModel("qwen-token-plan-cn", "qwen3.7-max");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -446,7 +447,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.KIMI_API_KEY)("Kimi For Coding Provider (kimi-for-coding)", () => {
-		const llm = getModel("kimi-coding", "kimi-for-coding");
+		const llm = getFixtureModel("kimi-coding", "kimi-for-coding");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -458,7 +459,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!process.env.AI_GATEWAY_API_KEY)("Vercel AI Gateway Provider (google/gemini-2.5-flash)", () => {
-		const llm = getModel("vercel-ai-gateway", "google/gemini-2.5-flash");
+		const llm = getFixtureModel("vercel-ai-gateway", "google/gemini-2.5-flash");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -470,7 +471,7 @@ describe("Tool Results with Images", () => {
 	});
 
 	describe.skipIf(!hasBedrockCredentials())("Amazon Bedrock Provider (claude-sonnet-4-5)", () => {
-		const llm = getModel("amazon-bedrock", "global.anthropic.claude-sonnet-4-5-20250929-v1:0");
+		const llm = getFixtureModel("amazon-bedrock", "global.anthropic.claude-sonnet-4-5-20250929-v1:0");
 
 		it("should handle tool result with only image", { retry: 3, timeout: 30000 }, async () => {
 			await handleToolWithImageResult(llm);
@@ -486,7 +487,7 @@ describe("Tool Results with Images", () => {
 	// =========================================================================
 
 	describe("Anthropic OAuth Provider (claude-sonnet-4-5)", () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5");
 
 		it.skipIf(!anthropicOAuthToken)(
 			"should handle tool result with only image",
@@ -510,7 +511,7 @@ describe("Tool Results with Images", () => {
 			"claude-haiku-4.5 - should handle tool result with only image",
 			{ retry: 3, timeout: 30000 },
 			async () => {
-				const llm = getModel("github-copilot", "claude-haiku-4.5");
+				const llm = getFixtureModel("github-copilot", "claude-haiku-4.5");
 				await handleToolWithImageResult(llm, { apiKey: githubCopilotToken });
 			},
 		);
@@ -519,7 +520,7 @@ describe("Tool Results with Images", () => {
 			"claude-haiku-4.5 - should handle tool result with text and image",
 			{ retry: 3, timeout: 30000 },
 			async () => {
-				const llm = getModel("github-copilot", "claude-haiku-4.5");
+				const llm = getFixtureModel("github-copilot", "claude-haiku-4.5");
 				await handleToolWithTextAndImageResult(llm, { apiKey: githubCopilotToken });
 			},
 		);
@@ -528,7 +529,7 @@ describe("Tool Results with Images", () => {
 			"claude-sonnet-4 - should handle tool result with only image",
 			{ retry: 3, timeout: 30000 },
 			async () => {
-				const llm = getModel("github-copilot", "claude-sonnet-4.6");
+				const llm = getFixtureModel("github-copilot", "claude-sonnet-4.6");
 				await handleToolWithImageResult(llm, { apiKey: githubCopilotToken });
 			},
 		);
@@ -537,7 +538,7 @@ describe("Tool Results with Images", () => {
 			"claude-sonnet-4 - should handle tool result with text and image",
 			{ retry: 3, timeout: 30000 },
 			async () => {
-				const llm = getModel("github-copilot", "claude-sonnet-4.6");
+				const llm = getFixtureModel("github-copilot", "claude-sonnet-4.6");
 				await handleToolWithTextAndImageResult(llm, { apiKey: githubCopilotToken });
 			},
 		);
@@ -548,7 +549,7 @@ describe("Tool Results with Images", () => {
 			"gpt-6.1-sol - should handle tool result with only image",
 			{ retry: 3, timeout: 30000 },
 			async () => {
-				const llm = getModel("openai-codex", "gpt-6.1-sol");
+				const llm = getFixtureModel("openai-codex", "gpt-6.1-sol");
 				await handleToolWithImageResult(llm, { apiKey: openaiCodexToken });
 			},
 		);
@@ -557,7 +558,7 @@ describe("Tool Results with Images", () => {
 			"gpt-6.1-sol - should handle tool result with text and image",
 			{ retry: 3, timeout: 30000 },
 			async () => {
-				const llm = getModel("openai-codex", "gpt-6.1-sol");
+				const llm = getFixtureModel("openai-codex", "gpt-6.1-sol");
 				await handleToolWithTextAndImageResult(llm, { apiKey: openaiCodexToken });
 			},
 		);

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import type { OpenAIResponsesOptions } from "../src/api/openai-responses.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
@@ -8,6 +9,7 @@ import { xaiProvider } from "../src/providers/xai.ts";
 import type { Context, Model } from "../src/types.ts";
 import { formatUserAgent } from "../src/utils/identity.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
+import { publishedModel } from "./live-catalog-model.ts";
 
 const PI_USER_AGENT = formatUserAgent();
 
@@ -130,21 +132,22 @@ describe("xAI Responses provider", () => {
 		for (const model of Object.values(XAI_MODELS)) {
 			expect(model.api, model.id).toBe("openai-responses");
 		}
-		// Levels come from models.dev effort metadata, which gains levels over time; pin what each model must support.
-		for (const id of ["grok-4.5", "grok-4.6", "grok-4.7"] as const) {
-			expect(getSupportedThinkingLevels(XAI_MODELS[id]), id).toEqual(expect.arrayContaining(["low", "medium", "high"]));
-			expect(getSupportedThinkingLevels(XAI_MODELS[id]), id).not.toContain("off");
-		}
-		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.5"])).toEqual(expect.arrayContaining(["xhigh"]));
-		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.6"])).toEqual(expect.arrayContaining(["xhigh"]));
-		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.7"])).toEqual(expect.arrayContaining(["xhigh"]));
-		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.3"])).toEqual(
+	});
+
+	it.for(["grok-4.5", "grok-4.6", "grok-4.7"])("lists the supported thinking levels of %s", (id, ctx) => {
+		const levels = getSupportedThinkingLevels(publishedModel("xai", id, ctx));
+		expect(levels).toEqual(expect.arrayContaining(["low", "medium", "high", "xhigh"]));
+		expect(levels).not.toContain("off");
+	});
+
+	it("supports off on Grok 4.3", (ctx) => {
+		expect(getSupportedThinkingLevels(publishedModel("xai", "grok-4.3", ctx))).toEqual(
 			expect.arrayContaining(["off", "low", "medium", "high", "xhigh"]),
 		);
 	});
 
-	it("includes Grok 4.7 capabilities and long-context pricing", () => {
-		expect(XAI_MODELS["grok-4.7"]).toMatchObject({
+	it("includes Grok 4.7 capabilities and long-context pricing", (ctx) => {
+		expect(publishedModel("xai", "grok-4.7", ctx)).toMatchObject({
 			api: "openai-responses",
 			reasoning: true,
 			input: ["text", "image"],
@@ -170,7 +173,7 @@ describe("xAI Responses provider", () => {
 
 	it("uses /responses with bearer auth and xAI-compatible request fields", async () => {
 		const captured = await captureRequest(
-			XAI_MODELS["grok-4.5"],
+			getFixtureModel("xai", "grok-4.5"),
 			{
 				systemPrompt: "You are a careful coding assistant.",
 				messages: [{ role: "user", content: "hello", timestamp: 1 }],
@@ -209,7 +212,7 @@ describe("xAI Responses provider", () => {
 
 	it("requests encrypted reasoning at Grok's lowest effort, low, without an effort override (#4545)", async () => {
 		const captured = await captureRequest(
-			XAI_MODELS["grok-4.5"],
+			getFixtureModel("xai", "grok-4.5"),
 			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
 			{ apiKey: "xai-test-token" },
 		);
@@ -224,7 +227,7 @@ describe("xAI Responses provider", () => {
 
 	it("uses /responses for Grok 4.7 with xhigh effort and encrypted reasoning", async () => {
 		const captured = await captureRequest(
-			XAI_MODELS["grok-4.7"],
+			getFixtureModel("xai", "grok-4.7"),
 			{
 				systemPrompt: "You are a careful coding assistant.",
 				messages: [{ role: "user", content: "hello", timestamp: 1 }],
@@ -247,7 +250,7 @@ describe("xAI Responses provider", () => {
 
 	it("uses /responses for Grok 4.3", async () => {
 		const captured = await captureRequest(
-			XAI_MODELS["grok-4.3"],
+			getFixtureModel("xai", "grok-4.3"),
 			{
 				messages: [{ role: "user", content: "hello", timestamp: 1 }],
 			},
@@ -274,7 +277,7 @@ describe("xAI Responses provider", () => {
 		});
 
 		const openaiModel: Model<"openai-responses"> = {
-			...XAI_MODELS["grok-4.5"],
+			...getFixtureModel("xai", "grok-4.5"),
 			provider: "openai",
 			baseUrl: "https://api.openai.com/v1",
 		};
@@ -290,7 +293,7 @@ describe("xAI Responses provider", () => {
 
 	it("lets explicit headers override the default Responses User-Agent", async () => {
 		const captured = await captureRequest(
-			XAI_MODELS["grok-4.5"],
+			getFixtureModel("xai", "grok-4.5"),
 			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
 			{ apiKey: "xai-test-token", headers: { "User-Agent": "custom-agent" } },
 		);

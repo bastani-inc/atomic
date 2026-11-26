@@ -4,9 +4,9 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@bastani/atomic-agent-core";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import * as config from "../src/config.js";
 import { AgentSession } from "../src/core/agent-session.js";
 import {
@@ -62,7 +62,7 @@ test("default SDK creation returns an Atomic AgentSession with builtin tools and
 		const { session, extensionsResult } = await createAgentSession({
 			cwd,
 			agentDir: join(cwd, "agent"),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			sessionManager: SessionManager.inMemory(cwd),
 		});
 		try {
@@ -111,7 +111,7 @@ test.each([
 				agentDir,
 				settingsManager,
 				resourceLoader,
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				sessionManager: SessionManager.inMemory(cwd),
 			});
 			try {
@@ -165,7 +165,7 @@ test(
 			resourceLoader: loader,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(cwd),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		});
 		try {
 			const { session } = await createAgentSession(options);
@@ -209,7 +209,7 @@ test("CLI service creation supplies the same default builtin families", async ()
 		const { session } = await createAgentSessionFromServices({
 			services,
 			sessionManager: SessionManager.inMemory(cwd),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		});
 		try {
 			for (const name of ["subagent", "intercom", "web_search"])
@@ -854,7 +854,7 @@ test("SDK host callback answers a questionnaire without rendering", async () => 
 			agentDir: join(cwd, "agent"),
 			sessionManager: SessionManager.inMemory(cwd),
 			settingsManager: SettingsManager.inMemory(),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			extensionBindings: {
 				humanInput: {
@@ -924,7 +924,7 @@ async function hostSession(bindings: ExtensionBindings = {}, options: CreateAgen
 			settingsManager,
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			extensionBindings: bindings,
 			...options,
@@ -1375,7 +1375,7 @@ test("SDK startup hooks can await human input without rendering", async () => {
 			settingsManager,
 			resourceLoader: loader,
 			sessionManager: SessionManager.inMemory(cwd),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			extensionBindings: { humanInput: callbackHost({ input: async () => "  initial " }) },
 		});
@@ -2370,7 +2370,7 @@ test("compaction drains admitted hooks and refuses terminal admission", async ()
 		settingsManager,
 		resourceLoader,
 		sessionManager,
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 	});
 	await sessionManager.appendMessage({
@@ -2705,7 +2705,7 @@ test.each(["thinking", "name", "bus", "context", "forwarded context", "shortcut"
 			agentDir: cwd,
 			settingsManager,
 			resourceLoader,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			sessionManager: SessionManager.inMemory(cwd),
 			builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 			tools: [],
@@ -2859,7 +2859,7 @@ test("closing preserves queued message persistence and completion hooks", async 
 		cwd,
 		agentDir: cwd,
 		modelRuntime,
-		model: getModel("anthropic", "claude-sonnet-4-5"),
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 		settingsManager,
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
@@ -3041,7 +3041,7 @@ test.each([1, 2])("disposal cancels %i admitted background summaries without wai
 		cwd,
 		agentDir: cwd,
 		modelRuntime,
-		model: getModel("anthropic", "claude-sonnet-4-5"),
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 		settingsManager: SettingsManager.inMemory({ sessionSummary: { enabled: true } }),
 		sessionManager: await SessionManager.create(cwd, join(cwd, "sessions")),
 		tools: [],
@@ -3134,7 +3134,7 @@ test("closing preserves admitted tool results", async () => {
 		cwd,
 		agentDir: cwd,
 		modelRuntime,
-		model: getModel("anthropic", "claude-sonnet-4-5"),
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 		settingsManager,
 		resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
@@ -3310,7 +3310,7 @@ test.each([1, 2])(
 						sessionStartEvent,
 						settingsManager,
 						modelRuntime,
-						model: getModel("anthropic", "claude-sonnet-4-5"),
+						model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 						resourceLoader,
 						builtins: { subagents: false, mcp: false, intercom: false, "web-access": false },
 					})),
@@ -5426,7 +5426,7 @@ test("web results survive sibling initialization and overlapping close", async (
 				sessionManager: SessionManager.inMemory(cwd),
 				resourceLoader,
 				settingsManager: SettingsManager.inMemory(),
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				builtins: { subagents: false, mcp: false, intercom: false },
 			});
 			sessions.push(session);

@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 // Per-tier provider regression for issues/provider-error-body-passthrough.
 //
 // Routes a 403-with-body error through the real provider catch path for one
@@ -90,7 +91,7 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 	};
 });
 
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 
 const context = normalizeContext({
 	systemPrompt: "",
@@ -199,7 +200,7 @@ describe("provider error body passthrough (per-tier regression)", () => {
 			$response: { statusCode: 403, body: '{"message":"blocked by gateway WAF"}' },
 		});
 
-		const model = getModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
+		const model = getFixtureModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
 		const output = await drainResult(
 			streamSimpleBedrock(model, normalizeContext({ messages: context.messages }), {}),
 		);
@@ -225,7 +226,7 @@ describe("provider error body passthrough (per-tier regression)", () => {
 			},
 		);
 
-		const model = getModel("amazon-bedrock", "global.anthropic.claude-opus-5");
+		const model = getFixtureModel("amazon-bedrock", "global.anthropic.claude-opus-5");
 		const output = await drainResult(
 			streamSimpleBedrock(model, normalizeContext({ messages: context.messages }), {}),
 		);

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { Model, ProviderHeaders } from "../src/types.ts";
 
 interface FakeOpenAIClientOptions {
@@ -81,7 +82,7 @@ describe("openai-completions prompt caching", () => {
 	});
 
 	function createModel(overrides: Partial<Model<"openai-completions">> = {}): Model<"openai-completions"> {
-		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini");
+		const { compat: _compat, ...baseModel } = getFixtureModel("openai", "gpt-4o-mini");
 		return {
 			...(baseModel as Omit<Model<"openai-completions">, "api">),
 			api: "openai-completions",
@@ -258,7 +259,7 @@ describe("openai-completions prompt caching", () => {
 	it.each(["accounts/fireworks/models/glm-5p3", "accounts/fireworks/routers/glm-5p3-fast"] as const)(
 		"sends Fireworks session affinity for %s",
 		async (modelId) => {
-			const model = getModel("fireworks", modelId);
+			const model = getFixtureModel("fireworks", modelId);
 			const { headers } = await captureRequest({ sessionId: "fireworks-session" }, model);
 
 			expect(headers["x-session-affinity"]).toBe("fireworks-session");
@@ -267,7 +268,7 @@ describe("openai-completions prompt caching", () => {
 
 	it("sends Baseten session affinity for built-in catalog models", async () => {
 		// Regression for upstream #9629.
-		const model = getModel("baseten", "zai-org/GLM-5.2");
+		const model = getFixtureModel("baseten", "zai-org/GLM-5.2");
 		const { headers } = await captureRequest({ sessionId: "baseten-catalog-session" }, model);
 		expect(headers["x-session-affinity"]).toBe("baseten-catalog-session");
 		expect(headers["x-client-request-id"]).toBe("baseten-catalog-session");
@@ -303,7 +304,7 @@ describe("openai-completions prompt caching", () => {
 	});
 
 	it("sends OpenRouter session-affinity header by default for built-in OpenRouter models", async () => {
-		const model = getModel("openrouter", "auto");
+		const model = getFixtureModel("openrouter", "auto");
 		const { payload, headers } = await captureRequest({ sessionId: "session-openrouter" }, model);
 
 		expect(payload?.session_id).toBeUndefined();
@@ -318,7 +319,7 @@ describe("openai-completions prompt caching", () => {
 		"lets model headers override default OpenRouter session affinity with %s",
 		async (sessionId) => {
 			const model = {
-				...getModel("openrouter", "auto"),
+				...getFixtureModel("openrouter", "auto"),
 				headers: { "x-session-id": sessionId },
 			};
 			// Probe runtime null suppression even though Model.headers only declares string values.
@@ -335,7 +336,7 @@ describe("openai-completions prompt caching", () => {
 		"lets request headers override model and default OpenRouter session affinity with %s",
 		async (sessionId) => {
 			const model = {
-				...getModel("openrouter", "auto"),
+				...getFixtureModel("openrouter", "auto"),
 				headers: { "x-session-id": "model-session" },
 			};
 			const { headers } = await captureRequest(
@@ -348,7 +349,7 @@ describe("openai-completions prompt caching", () => {
 	);
 
 	it("omits default OpenRouter session affinity when cacheRetention is none", async () => {
-		const model = getModel("openrouter", "auto");
+		const model = getFixtureModel("openrouter", "auto");
 		const { payload, headers } = await captureRequest(
 			{ cacheRetention: "none", sessionId: "session-openrouter" },
 			model,

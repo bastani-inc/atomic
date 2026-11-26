@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { type BedrockOptions, stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
-import { getModel, getModels, streamSimple } from "../src/compat.ts";
+import { getModels, streamSimple } from "../src/compat.ts";
 import type { AnthropicMessagesCompat, BedrockCompat, Context, Model, OpenAICompletionsCompat } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -120,7 +121,7 @@ describe("Bedrock temperature suppression for Claude Fable", () => {
 
 describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () => {
 	it("omits temperature for openrouter/anthropic/claude-fable-5.1:batch", async () => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5.1:batch");
+		const model = getFixtureModel("openrouter", "anthropic/claude-fable-5.1:batch");
 		expect(model.compat?.supportsTemperature).toBe(false);
 
 		expect((await captureCompletionsPayload(model, 0)).temperature).toBeUndefined();
@@ -131,7 +132,7 @@ describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () =
 	// not reach it — yet it carries Fable 5.1's $0.25 cache read and OpenRouter's own
 	// `supported_parameters` for it omits `temperature`. The family match covers it.
 	it("omits temperature for openrouter/anthropic/claude-fable-5:batch", async () => {
-		const model = getModel("openrouter", "anthropic/claude-fable-5:batch");
+		const model = getFixtureModel("openrouter", "anthropic/claude-fable-5:batch");
 		expect(model.compat?.supportsTemperature).toBe(false);
 
 		expect((await captureCompletionsPayload(model, 0)).temperature).toBeUndefined();
@@ -140,7 +141,7 @@ describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () =
 	// Upstream pi 44f6851b moved the `~anthropic/claude-*-latest` aliases onto Anthropic Messages, so the
 	// alias no longer goes through the completions path above; its guard must hold there instead.
 	it("suppresses temperature for the openrouter ~anthropic/claude-fable-latest alias on Anthropic Messages", () => {
-		const model = getModel("openrouter", "~anthropic/claude-fable-latest");
+		const model = getFixtureModel("openrouter", "~anthropic/claude-fable-latest");
 		expect(model.api).toBe("anthropic-messages");
 		expect(model.compat?.supportsTemperature).toBe(false);
 	});
@@ -148,7 +149,7 @@ describe("OpenAI-completions temperature suppression for Claude Fable 5.1", () =
 	it.each(["anthropic/claude-opus-5:batch", "anthropic/claude-sonnet-5:batch"] as const)(
 		"keeps temperature for openrouter/%s",
 		async (modelId) => {
-			const model = getModel("openrouter", modelId);
+			const model = getFixtureModel("openrouter", modelId);
 			expect(model.compat?.supportsTemperature).toBeUndefined();
 
 			expect((await captureCompletionsPayload(model, 0)).temperature).toBe(0);
@@ -181,12 +182,14 @@ describe("temperature suppression is scoped to the Claude Fable family", () => {
 	it("leaves non-Fable models on those APIs untouched", () => {
 		// The pre-existing Anthropic temperature predicate matches many more models on these two
 		// APIs; widening to it would change request bodies for models unrelated to this work.
-		expect(getModel("openrouter", "anthropic/claude-opus-4.8:batch").compat?.supportsTemperature).toBeUndefined();
+		expect(
+			getFixtureModel("openrouter", "anthropic/claude-opus-4.8:batch").compat?.supportsTemperature,
+		).toBeUndefined();
 	});
 
 	it("leaves the already-guarded Anthropic Messages entries as they were", () => {
 		// These were suppressed before this change, by `isAnthropicTemperatureUnsupportedModel`.
-		expect(getModel("anthropic", "claude-fable-5-1").compat?.supportsTemperature).toBe(false);
-		expect(getModel("anthropic", "claude-fable-5").compat?.supportsTemperature).toBe(false);
+		expect(getFixtureModel("anthropic", "claude-fable-5-1").compat?.supportsTemperature).toBe(false);
+		expect(getFixtureModel("anthropic", "claude-fable-5").compat?.supportsTemperature).toBe(false);
 	});
 });

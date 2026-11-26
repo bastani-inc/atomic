@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage } from "@bastani/atomic-agent-core";
-import { type AssistantMessage, getModel } from "@bastani/atomic-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import {
 	MAX_LENGTH_CONTINUATION_ATTEMPTS,
@@ -55,7 +56,7 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
 
-		const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, contextWindow: 200_000 };
+		const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-5")!, contextWindow: 200_000 };
 		const agent = new Agent({ initialState: { model, systemPrompt: "Test", tools: [] } });
 		sessionManager = SessionManager.inMemory();
 		await sessionManager.appendMessage({

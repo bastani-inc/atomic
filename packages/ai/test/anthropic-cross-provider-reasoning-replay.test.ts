@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { anthropicAssistantReplayContent } from "../src/api/anthropic-assistant-content.ts";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { streamSimple } from "../src/compat.ts";
 import type { AssistantMessage, Context, FetchFunction, Message, Model } from "../src/types.ts";
 
 interface AnthropicPayloadBlock {
@@ -109,8 +110,8 @@ function reasoningBlocks(blocks: AnthropicPayloadBlock[]): AnthropicPayloadBlock
 }
 
 const fallbackTargets: Model<"anthropic-messages">[] = [
-	getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">,
-	getModel("anthropic", "claude-opus-5-5") as Model<"anthropic-messages">,
+	getFixtureModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">,
+	getFixtureModel("anthropic", "claude-opus-5-5") as Model<"anthropic-messages">,
 ];
 
 describe("cross-provider fallback replay to Anthropic (#4185)", () => {
@@ -137,7 +138,7 @@ describe("cross-provider fallback replay to Anthropic (#4185)", () => {
 	}
 
 	it("replays the latest Claude turn's reasoning byte-identical, signatures intact, after a GPT fallback (#4185)", async () => {
-		const model = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
+		const model = getFixtureModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
 		const exactThinking = "Claude plan, with an unpaired surrogate \ud83d left exactly as returned";
 		const latestClaudeTurn = claudeTurn(model, [
 			{ type: "thinking", thinking: exactThinking, thinkingSignature: "sig-claude-1" },
@@ -169,7 +170,7 @@ describe("cross-provider fallback replay to Anthropic (#4185)", () => {
 	});
 
 	it("keeps a same-model replay's signed and redacted thinking unchanged (#4185)", async () => {
-		const model = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
+		const model = getFixtureModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
 		const turn = claudeTurn(model, [
 			{ type: "thinking", thinking: "plain signed plan", thinkingSignature: "sig-same" },
 			{ type: "thinking", thinking: "[Reasoning redacted]", thinkingSignature: "opaque-same", redacted: true },
@@ -190,8 +191,8 @@ describe("cross-provider fallback replay to Anthropic (#4185)", () => {
 	});
 
 	it("does not replay one Claude model's reasoning to a different Claude model on the same provider (#4185)", async () => {
-		const opus = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
-		const sonnet = getModel("github-copilot", "claude-sonnet-5.5") as Model<"anthropic-messages">;
+		const opus = getFixtureModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
+		const sonnet = getFixtureModel("github-copilot", "claude-sonnet-5.5") as Model<"anthropic-messages">;
 		const opusTurn = claudeTurn(opus, [
 			{ type: "thinking", thinking: "opus plan", thinkingSignature: "sig-opus" },
 			{ type: "toolCall", id: "toolu_opus", name: "bash", arguments: { command: "ls" } },
@@ -209,7 +210,7 @@ describe("cross-provider fallback replay to Anthropic (#4185)", () => {
 
 describe("anthropicAssistantReplayContent (#4185)", () => {
 	it("describes each assistant message of the request, including a turn sent only as its fallback marker (#4185)", async () => {
-		const model = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
+		const model = getFixtureModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
 		const assistants: AssistantMessage[] = [
 			copilotGptTurn([{ type: "thinking", thinking: "GPT plan", thinkingSignature: gptReasoningItem }]),
 			copilotGptTurn([

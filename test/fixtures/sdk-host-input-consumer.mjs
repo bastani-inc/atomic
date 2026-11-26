@@ -1,9 +1,10 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 // #3105 slice C: built-package, non-TTY Node execution. Packed installation is slice H.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
+
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "../../packages/coding-agent/dist/index.js";
 
 assert.equal(process.stdin.isTTY, undefined);
@@ -29,7 +30,7 @@ let session;
 try {
 	await loader.reload();
 	({ session } = await createAgentSession({ cwd, agentDir: join(cwd, "agent"), settingsManager, resourceLoader: loader,
-		model: getModel("anthropic", "claude-sonnet-4-5"), sessionManager: SessionManager.inMemory(cwd),
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5"), sessionManager: SessionManager.inMemory(cwd),
 		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false }, extensionBindings: { humanInput: host },
 	}));
 	assert.equal(context.hasUI, false);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { getModel, getModels, streamSimple } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { getModels, streamSimple } from "../src/compat.ts";
 import { getSupportedThinkingLevels } from "../src/models.ts";
 import { githubCopilotProvider } from "../src/providers/github-copilot.ts";
 
@@ -44,7 +45,7 @@ describe("GitHub Copilot GPT-6.1 Sol", () => {
 	});
 
 	it.each(EFFORTS)("sends canonical Copilot Responses identity and %s effort without a Codex tier", async (effort) => {
-		const model = getModel("github-copilot", MODEL_ID);
+		const model = getFixtureModel("github-copilot", MODEL_ID);
 		let request: Request | undefined;
 		const result = await streamSimple(
 			model,

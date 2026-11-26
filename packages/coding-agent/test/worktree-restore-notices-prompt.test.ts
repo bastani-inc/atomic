@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { withWorktreeRestoreNotices } from "../src/core/resume/path-mapping.js";
 import { createAgentSession } from "../src/core/sdk.js";
@@ -34,7 +34,7 @@ async function openSession() {
 	const { session, extensionsResult } = await createAgentSession({
 		cwd: tempDir,
 		agentDir,
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		settingsManager,
 		sessionManager: SessionManager.inMemory(),
 		resourceLoader,

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type StreamFn } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, Message } from "@bastani/atomic-ai/compat";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -120,7 +120,7 @@ describe("recovery from session history after a clear", () => {
 		const manager = opened.manager;
 		const agent = new Agent({
 			getApiKey: () => undefined,
-			initialState: { model: getModel("anthropic", "claude-sonnet-4-5")!, systemPrompt: "test", tools: [] },
+			initialState: { model: getFixtureModel("anthropic", "claude-sonnet-4-5")!, systemPrompt: "test", tools: [] },
 			streamFn: refusingStream,
 		});
 		const authStorage = AuthStorage.inMemory();

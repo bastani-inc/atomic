@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import type { CreateAgentSessionOptions } from "../src/core/sdk.js";
@@ -62,7 +62,7 @@ test("createAgentSession rejects a set but invalid storage variable even with an
 					cwd,
 					agentDir,
 					settingsManager: SettingsManager.inMemory(),
-					model: getModel("anthropic", "claude-sonnet-4-5")!,
+					model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 					builtins: NO_PACKAGES,
 					...host,
 				}),
@@ -86,7 +86,7 @@ test("createAgentSession rejects a set but invalid storage variable even with an
 			cwd,
 			agentDir,
 			settingsManager: SettingsManager.inMemory(),
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			builtins: NO_PACKAGES,
 			...host,
 		});
@@ -124,7 +124,7 @@ export default { atomicStorageAdapter: 1 as const, openDatabase: (options: { rea
 		agentDir,
 		settingsManager,
 		resourceLoader,
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		builtins: NO_PACKAGES,
 	});
 	sessions.push(session);
@@ -151,7 +151,7 @@ test("a relative ATOMIC_STORAGE path puts the session database under the custom 
 		cwd,
 		agentDir,
 		settingsManager: SettingsManager.inMemory(),
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		builtins: NO_PACKAGES,
 	});
 	sessions.push(session);

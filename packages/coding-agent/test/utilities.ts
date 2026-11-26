@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * Shared test utilities for coding-agent tests.
  */
@@ -6,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent } from "@bastani/atomic-agent-core";
-import { getModel, streamSimple } from "@bastani/atomic-ai/compat";
+import { streamSimple } from "@bastani/atomic-ai/compat";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage, readStoredCredential } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
@@ -188,7 +189,7 @@ export async function createTestSession(options: TestSessionOptions = {}): Promi
 	const tempDir = join(tmpdir(), `pi-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(tempDir, { recursive: true });
 
-	const model = getModel("anthropic", "claude-sonnet-4-5")!;
+	const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const agent = new Agent({
 		streamFn: streamSimple,
 		getApiKey: () => API_KEY,

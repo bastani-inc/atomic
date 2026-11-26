@@ -3,12 +3,12 @@ import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	getCurrentSystemMessage,
-	getModel,
 	toToolDeclaration,
 	type UserMessage,
 } from "@bastani/atomic-ai/compat";
 import { obj } from "@bastani/atomic-schema";
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import {
 	Agent,
 	type AgentEvent,
@@ -126,7 +126,7 @@ describe("Agent", () => {
 	});
 
 	it("should create an agent instance with custom initial state", () => {
-		const customModel = getModel("openai", "gpt-4o-mini");
+		const customModel = getFixtureModel("openai", "gpt-4o-mini");
 		const agent = new Agent({
 			streamFn: unusedStreamFunction,
 			initialState: {
@@ -615,7 +615,7 @@ describe("Agent", () => {
 		const agent = new Agent({ streamFn: unusedStreamFunction });
 
 		// Test setModel
-		const newModel = getModel("google", "gemini-2.5-flash");
+		const newModel = getFixtureModel("google", "gemini-2.5-flash");
 		agent.state.model = newModel;
 		expect(agent.state.model).toBe(newModel);
 

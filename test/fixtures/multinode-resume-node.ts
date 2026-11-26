@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * One "node" of the reduced multi-node resume scenarios (#4329), run as its own process with its own agent
  * directory, HOME and Atomic home, sharing only the storage selected by ATOMIC_STORAGE.
@@ -12,7 +13,7 @@
  */
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall, getModel } from "@bastani/atomic-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { parseArgs } from "../../packages/coding-agent/src/cli/args.ts";
 import { getAgentDir } from "../../packages/coding-agent/src/config.ts";
 import { resumeFailureMessage } from "../../packages/coding-agent/src/core/resume/failure.ts";
@@ -91,7 +92,7 @@ async function sdkOpen(args: SdkOpenArgs): Promise<void> {
 	const store = await resolveSessionStore(process.cwd(), { agentDir, settings: {} });
 	const { session } = await createAgentSession({
 		agentDir,
-		model: getModel("anthropic", "claude-sonnet-4-5")!,
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		settingsManager: SettingsManager.create(process.cwd(), agentDir),
 		sessionManager: await SessionManager.open(store, args.sessionId),
 	});

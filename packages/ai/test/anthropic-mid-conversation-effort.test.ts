@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { type AnthropicOptions, stream } from "../src/api/anthropic-messages.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { AssistantMessage, Context, Model } from "../src/types.ts";
 
 interface WireMessage {
@@ -214,23 +215,23 @@ describe("Anthropic mid-conversation effort", () => {
 
 	it("supports off only on managed models that accept disabled thinking (#10753)", () => {
 		for (const id of ["claude-opus-5", "claude-haiku-5-5"] as const) {
-			const model = getModel("anthropic", id);
+			const model = getFixtureModel("anthropic", id);
 			expect(model.compat?.supportsMidConvoEffort).toBe(true);
 			expect(model.thinkingLevelMap?.off).not.toBeNull();
 		}
 		for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5-2"] as const) {
-			expect(getModel("anthropic", id).thinkingLevelMap?.off).toBeNull();
+			expect(getFixtureModel("anthropic", id).thinkingLevelMap?.off).toBeNull();
 		}
 	});
 
 	it("gates Fable 5.2 like Fable 5.1 and keeps only fallbacks that accept per-message effort", () => {
-		const direct = getModel("anthropic", "claude-fable-5-2");
+		const direct = getFixtureModel("anthropic", "claude-fable-5-2");
 		expect(direct.compat?.supportsMidConvoEffort).toBe(true);
 		expect(direct.compat?.supportsMidConvoSystemMessages).toBe(true);
 		expect(direct.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", max: "max" });
 		// Opus 4.8 cannot take per-message effort, so it is dropped from Fable 5.2's fallbacks.
 		expect(direct.compat?.allowedFallbackModels?.map((fallback) => fallback.model)).toEqual(["claude-opus-5"]);
-		expect(getModel("openrouter", "anthropic/claude-fable-5.2").compat?.supportsMidConvoEffort).toBe(true);
+		expect(getFixtureModel("openrouter", "anthropic/claude-fable-5.2").compat?.supportsMidConvoEffort).toBe(true);
 	});
 
 	it("sends the effort and binding beta headers", async () => {

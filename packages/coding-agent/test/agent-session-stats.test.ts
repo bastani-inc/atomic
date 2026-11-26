@@ -3,12 +3,12 @@ import { Agent } from "@bastani/atomic-agent-core";
 import {
 	type AssistantMessage,
 	fauxAssistantMessage,
-	getModel,
 	streamSimple,
 	type ToolResultMessage,
 	type Usage,
 } from "@bastani/atomic-ai/compat";
 import { describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { SessionStats } from "../src/core/agent-session-types.js";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -20,7 +20,7 @@ import { createHarness } from "./suite/harness.js";
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
-const model = getModel("anthropic", "claude-sonnet-4-5")!;
+const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 
 function createUsage(totalTokens: number): Usage {
 	return {

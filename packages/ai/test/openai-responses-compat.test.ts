@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { Model } from "../src/types.ts";
 
 type CapturedHeaders = Headers | string[][] | Record<string, string | readonly string[] | undefined> | undefined;
@@ -34,7 +35,7 @@ function getHeader(headers: CapturedHeaders, name: string): string | null {
 
 async function captureOpenAIResponseHeaders(
 	options: Parameters<typeof streamOpenAIResponses>[2],
-	model: Model<"openai-responses"> = getModel("openai", "gpt-5.4"),
+	model: Model<"openai-responses"> = getFixtureModel("openai", "gpt-5.4"),
 ): Promise<{
 	sessionId: string | null;
 	clientRequestId: string | null;
@@ -81,7 +82,7 @@ describe("openai-responses provider defaults", () => {
 
 	it("omits reasoning for a Copilot model whose thinking map lists no off effort, when no reasoning is requested (earendil-works/pi#2567)", async () => {
 		const model: Model<"openai-responses"> = {
-			...getModel("github-copilot", "gpt-6-luna"),
+			...getFixtureModel("github-copilot", "gpt-6-luna"),
 			thinkingLevelMap: undefined,
 		};
 		let capturedPayload: unknown;
@@ -128,7 +129,7 @@ describe("openai-responses provider defaults", () => {
 		);
 
 		const stream = streamOpenAIResponses(
-			getModel("openai", "gpt-5.6-luna"),
+			getFixtureModel("openai", "gpt-5.6-luna"),
 			normalizeContext({
 				messages: [
 					{
@@ -180,7 +181,7 @@ describe("openai-responses provider defaults", () => {
 		);
 
 		const stream = streamOpenAIResponses(
-			getModel(provider, id),
+			getFixtureModel(provider, id),
 			normalizeContext({
 				messages: [{ role: "user", content: "Ping.", timestamp: Date.now() }],
 				tools: [{ name: "ping", description: "Ping", parameters: Type.Object({ value: Type.String() }) }],
@@ -208,7 +209,7 @@ describe("openai-responses provider defaults", () => {
 	});
 
 	it("sets strict mode explicitly for Cloudflare OpenAI Responses tools", async () => {
-		const model = getModel("cloudflare-ai-gateway", "gpt-5.6-sol");
+		const model = getFixtureModel("cloudflare-ai-gateway", "gpt-5.6-sol");
 		let capturedPayload: CapturedResponsesPayload | undefined;
 
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -272,7 +273,7 @@ describe("openai-responses provider defaults", () => {
 		"gpt-6-sol",
 		"gpt-6-luna",
 	] as const)("sends none reasoning effort for OpenAI %s when no reasoning is requested", async (modelId) => {
-		const model = getModel("openai", modelId);
+		const model = getFixtureModel("openai", modelId);
 		let capturedPayload: unknown;
 
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -316,7 +317,7 @@ describe("openai-responses provider defaults", () => {
 	] as const)(
 		"sends OpenAI %s its lowest effort, %s, when no reasoning is requested and off is unsupported (#4545)",
 		async (modelId, effort) => {
-			const model = getModel("openai", modelId);
+			const model = getFixtureModel("openai", modelId);
 			let capturedPayload: unknown;
 
 			vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -369,7 +370,7 @@ describe("openai-responses provider defaults", () => {
 		);
 
 		const stream = streamOpenAIResponses(
-			getModel("openai", "gpt-5.4"),
+			getFixtureModel("openai", "gpt-5.4"),
 			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
@@ -392,7 +393,7 @@ describe("openai-responses provider defaults", () => {
 
 	it("sets cache-affinity headers for proxy OpenAI Responses requests with a sessionId", async () => {
 		const proxyModel: Model<"openai-responses"> = {
-			...getModel("openai", "gpt-5.4"),
+			...getFixtureModel("openai", "gpt-5.4"),
 			provider: "opencode",
 			baseUrl: "https://proxy.example.com/v1",
 		};
@@ -404,7 +405,7 @@ describe("openai-responses provider defaults", () => {
 
 	it("uses OpenRouter session-affinity header when configured", async () => {
 		const proxyModel: Model<"openai-responses"> = {
-			...getModel("openai", "gpt-5.4"),
+			...getFixtureModel("openai", "gpt-5.4"),
 			provider: "proxy",
 			baseUrl: "https://proxy.example.com/v1",
 			compat: { sessionAffinityFormat: "openrouter" },
@@ -429,7 +430,7 @@ describe("openai-responses provider defaults", () => {
 
 	it("auto-detects OpenRouter session-affinity header for OpenRouter Responses endpoints", async () => {
 		const openRouterModel: Model<"openai-responses"> = {
-			...getModel("openai", "gpt-5.4"),
+			...getFixtureModel("openai", "gpt-5.4"),
 			provider: "openrouter",
 			baseUrl: "https://openrouter.ai/api/v1",
 		};
@@ -453,7 +454,7 @@ describe("openai-responses provider defaults", () => {
 
 	it("uses OpenAI no-session format when configured", async () => {
 		const proxyModel: Model<"openai-responses"> = {
-			...getModel("openai", "gpt-5.4"),
+			...getFixtureModel("openai", "gpt-5.4"),
 			provider: "proxy",
 			baseUrl: "https://proxy.example.com/v1",
 			compat: { sessionAffinityFormat: "openai-nosession" },
@@ -477,7 +478,7 @@ describe("openai-responses provider defaults", () => {
 	});
 
 	it("uses OpenAI no-session format for OpenCode Responses models", async () => {
-		const model = getModel("opencode", "gpt-5.4");
+		const model = getFixtureModel("opencode", "gpt-5.4");
 		let capturedPayload: CapturedResponsesPayload | undefined;
 		const captured = await captureOpenAIResponseHeaders(
 			{
@@ -498,7 +499,7 @@ describe("openai-responses provider defaults", () => {
 
 	it("can omit OpenAI session-id header while preserving other affinity data", async () => {
 		const proxyModel: Model<"openai-responses"> = {
-			...getModel("openai", "gpt-5.4"),
+			...getFixtureModel("openai", "gpt-5.4"),
 			provider: "opencode",
 			baseUrl: "https://proxy.example.com/v1",
 			compat: { sessionAffinityFormat: "openai-nosession" },
@@ -550,7 +551,7 @@ describe("openai-responses provider defaults", () => {
 	] as const)(
 		"applies %s cost multiplier for requested %s and returned %s service tier",
 		async (modelId, serviceTier, responseServiceTier, multiplier) => {
-			const model = getModel("openai", modelId);
+			const model = getFixtureModel("openai", modelId);
 			const tokenCount = 100_000;
 			const tokenScale = tokenCount / 1_000_000;
 			const sse = `${[
@@ -597,7 +598,7 @@ describe("openai-responses provider defaults", () => {
 	);
 
 	it("routes a fast variant to its base upstream model and prices it against that base", async () => {
-		const base = getModel("openai", "gpt-5.5");
+		const base = getFixtureModel("openai", "gpt-5.5");
 		// A fast variant keeps its canonical `-fast` id; `fastRoute` names the upstream model.
 		const fast: Model<"openai-responses"> = {
 			...base,
@@ -648,7 +649,7 @@ describe("openai-responses provider defaults", () => {
 	it.each(["gpt-6-sol", "gpt-6-luna"] as const)(
 		"prices a %s fast variant at 2x when the response reports the fast tier by name",
 		async (modelId) => {
-			const base = getModel("openai", modelId);
+			const base = getFixtureModel("openai", modelId);
 			const fast: Model<"openai-responses"> = {
 				...base,
 				id: `${modelId}-fast`,
@@ -711,7 +712,7 @@ describe("openai-responses provider defaults", () => {
 	] as const)(
 		"emits no service tier for a Copilot %s fast route even when a request asks for %s",
 		async (modelId, requested) => {
-			const base = getModel("openai", "gpt-5.5");
+			const base = getFixtureModel("openai", "gpt-5.5");
 			const copilotFast: Model<"openai-responses"> = {
 				...base,
 				id: `${modelId}-fast`,
@@ -760,7 +761,7 @@ describe("openai-responses provider defaults", () => {
 		["an array", []],
 		["a primitive", "invalid"],
 	] as const)("rejects %s returned by a payload hook for a fast route", async (_label, replacement) => {
-		const base = getModel("openai", "gpt-5.5");
+		const base = getFixtureModel("openai", "gpt-5.5");
 		const fast: Model<"openai-responses"> = {
 			...base,
 			id: "gpt-5.5-fast",
@@ -792,7 +793,7 @@ describe("openai-responses provider defaults", () => {
 		);
 
 		const result = await streamOpenAIResponses(
-			getModel("openai", "gpt-5.5"),
+			getFixtureModel("openai", "gpt-5.5"),
 			normalizeContext({ systemPrompt: "sys", messages: [{ role: "user", content: "hi", timestamp: Date.now() }] }),
 			{ apiKey: "sk-test-key", maxRetries: 2, maxRetryDelayMs: 1 },
 		).result();
@@ -803,7 +804,7 @@ describe("openai-responses provider defaults", () => {
 	});
 
 	it("omits an unadvertised ultrafast tier instead of throwing", async () => {
-		const model = getModel("openai", "gpt-5.5");
+		const model = getFixtureModel("openai", "gpt-5.5");
 		let capturedPayload: { model?: string; service_tier?: string } | undefined;
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
 			capturedPayload = JSON.parse(String(init?.body)) as { model?: string; service_tier?: string };
@@ -866,7 +867,7 @@ describe("openai-responses provider defaults", () => {
 
 	it("sends GPT-6 Astra's advertised ultrafast tier and prices it at the published Ultrafast rates", async () => {
 		const { result, payload } = await streamAstra(
-			getModel("openai", "gpt-6-astra"),
+			getFixtureModel("openai", "gpt-6-astra"),
 			{ serviceTier: "ultrafast" },
 			"ultrafast",
 		);
@@ -879,13 +880,17 @@ describe("openai-responses provider defaults", () => {
 	});
 
 	it("omits a Fast tier the OpenAI API model does not advertise", async () => {
-		const { payload } = await streamAstra(getModel("openai", "gpt-5-nano"), { serviceTier: "priority" }, undefined);
+		const { payload } = await streamAstra(
+			getFixtureModel("openai", "gpt-5-nano"),
+			{ serviceTier: "priority" },
+			undefined,
+		);
 
 		expect(payload?.service_tier).toBeUndefined();
 	});
 
 	it("bills a Fast route that OpenAI served at Standard at the base rates", async () => {
-		const base = getModel("openai", "gpt-6-astra");
+		const base = getFixtureModel("openai", "gpt-6-astra");
 		const fast: Model<"openai-responses"> = {
 			...base,
 			id: "gpt-6-astra-fast",
@@ -904,7 +909,7 @@ describe("openai-responses provider defaults", () => {
 		["gpt-5.5", "default", "default", 1],
 		["gpt-5.5", "flex", "flex", 0.5],
 	] as const)("%s asked for %s serializes %s", async (modelId, requested, expectedTier, multiplier) => {
-		const base = getModel("openai", "gpt-5.5");
+		const base = getFixtureModel("openai", "gpt-5.5");
 		const model: Model<"openai-responses"> =
 			modelId === "gpt-5.5"
 				? base
@@ -961,7 +966,7 @@ describe("openai-responses max_output_tokens compat", () => {
 		);
 
 		const stream = streamOpenAIResponses(
-			getModel("openai", "gpt-5.4"),
+			getFixtureModel("openai", "gpt-5.4"),
 			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
@@ -983,7 +988,7 @@ describe("openai-responses max_output_tokens compat", () => {
 	});
 
 	it("omits max_output_tokens when supportsMaxOutputTokens is false", async () => {
-		const baseModel = getModel("openai", "gpt-5.4");
+		const baseModel = getFixtureModel("openai", "gpt-5.4");
 		const model: Model<"openai-responses"> = {
 			...baseModel,
 			compat: { ...baseModel.compat, supportsMaxOutputTokens: false },

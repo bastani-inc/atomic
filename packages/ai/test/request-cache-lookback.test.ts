@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { describe, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamCompletions } from "../src/api/openai-completions.ts";
-import { getModel } from "../src/compat.ts";
+
 import type {
 	Api,
 	AssistantMessage,
@@ -146,7 +147,7 @@ function lastBlock(payload: AnthropicPayload): [number, number] {
 }
 
 describe("Anthropic: a turn that adds 20 or more positions", () => {
-	const model = { ...getModel("anthropic", "claude-sonnet-4-5"), ...offline };
+	const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-5"), ...offline };
 
 	it("marks where the previous request ended when one turn adds more than 20 blocks (#6103)", async () => {
 		const payload = await capture<AnthropicPayload>(
@@ -197,7 +198,7 @@ describe("Anthropic: a turn that adds 20 or more positions", () => {
 	});
 
 	it("counts the effort markers a request sends before earlier replies (#6103)", async () => {
-		const managed = { ...getModel("anthropic", "claude-opus-5-5"), ...offline };
+		const managed = { ...getFixtureModel("anthropic", "claude-opus-5-5"), ...offline };
 		// A text block and 9 tool calls with a recorded effort, then 9 results: 19 blocks and the reply's effort marker.
 		const messages = parallelReads(managed, 9, true).map((message) =>
 			message.role === "assistant" ? { ...message, providerThinkingLevel: "high" } : message,
@@ -264,7 +265,7 @@ describe("Anthropic: a turn that adds 20 or more positions", () => {
 });
 
 describe("Anthropic on the Claude API: a run of tool calls or tool results is one position", () => {
-	const model = getModel("anthropic", "claude-sonnet-4-5");
+	const model = getFixtureModel("anthropic", "claude-sonnet-4-5");
 	const capturePayload = (messages: Message[], apiKey = "sk-ant-test") =>
 		capture<AnthropicPayload>(streamAnthropic as StreamFunction, model, messages, { apiKey });
 
@@ -330,7 +331,7 @@ function unansweredBeforeResume(model: Model<Api>, added: number, tools = true):
 }
 
 describe("Anthropic: a resumed request whose restored history ends with a request no reply answered", () => {
-	const model = { ...getModel("anthropic", "claude-sonnet-4-5"), ...offline };
+	const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-5"), ...offline };
 	const resumed = (added: number, tools = true) => unansweredBeforeResume(model, added, tools);
 
 	it("keeps a breakpoint where the last answered request ended when the hinted one is 20 or more positions past it", async () => {
@@ -432,7 +433,7 @@ describe("Anthropic: a resumed request whose restored history ends with a reques
 });
 
 describe("Bedrock: a turn that adds 20 or more blocks", () => {
-	const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
+	const model = getFixtureModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
 	type BedrockPayload = { messages: Array<{ role: string; content: Array<Record<string, unknown>> }> };
 	const cachePoints = (payload: BedrockPayload): Array<[number, number]> =>
 		payload.messages.flatMap((message, index) =>

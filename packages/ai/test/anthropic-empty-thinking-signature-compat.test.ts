@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getModel, getModels, streamSimple } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { getModels, streamSimple } from "../src/compat.ts";
 import { hasApi } from "../src/models.ts";
 import type { AssistantMessage, Context, Model } from "../src/types.ts";
 
@@ -143,7 +144,7 @@ describe("Anthropic empty thinking signature compat", () => {
 	it.each(["opencode", "opencode-go"] as const)(
 		"replays unsigned %s qwen3.8-flash thinking as thinking, not text (#10047)",
 		async (provider) => {
-			const model = getModel(provider, "qwen3.8-flash");
+			const model = getFixtureModel(provider, "qwen3.8-flash");
 			expect(model.compat?.allowEmptySignature).toBe(true);
 
 			const payload = await capturePayload(model, makeContext("", "internal reasoning", provider, "qwen3.8-flash"));

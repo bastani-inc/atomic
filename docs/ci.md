@@ -90,6 +90,8 @@ In `test.yml`, `model-data` restores a verified snapshot from `main` for pull re
 
 All work jobs wait for this short catalog-only job. It installs no dependencies and prevents typecheck and the suites from testing different catalogs. A warm pull-request run can use older data until `main` refreshes the cache. The separate manual macOS workflow still restores or hydrates independently, and releases fetch live data.
 
+Transport and session tests use model inputs from `test/helpers/catalog-model-fixtures.ts`. Add only the entries a test needs to `test/fixtures/model-catalog.json`; do not refresh this fixture as part of catalog hydration. Tests of catalog generation should run the generator on fixed upstream inputs. Tests that need the generated catalog should use an untyped lookup such as `builtinModels().getModel(provider, id)` and skip with a reason if the upstream entry is absent. The CI contract rejects typed lookups of literal IDs, since removing one upstream should not break typecheck.
+
 ### Warming the release toolchain caches
 
 `release-linux-cache` warms npm downloads and verified Zig tarballs. `release-windows-cache` warms Windows npm downloads. `msvc-crt` runs after the Linux warmer because both jobs write to the Linux x64 volume. The macOS warmer's `dependencies` job caches downloads for arm64 and x64. Warmers do not publish releases.

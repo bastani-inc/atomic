@@ -1,7 +1,7 @@
 import { Agent, type StreamFn } from "@bastani/atomic-agent-core";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import {
@@ -88,7 +88,7 @@ describe("compaction extension hooks", () => {
 	}
 
 	async function create(ext: Extension, streamFn: StreamFn = refusingStream): Promise<void> {
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const manager = SessionManager.inMemory();
 		const agent = new Agent({
 			getApiKey: () => undefined,

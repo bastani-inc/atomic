@@ -8,8 +8,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createExtensionRuntime } from "../src/core/extensions/loader.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
@@ -55,7 +55,7 @@ describe("createAgentSession shared ModelRuntime (#1431)", () => {
 		const modelRegistry = await createModelRegistry(authStorage, tempDir);
 		const modelRuntime = getModelRuntime(modelRegistry);
 		const createSpy = vi.spyOn(AuthStorage, "create");
-		const model = getModel("anthropic", "claude-sonnet-4-5");
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5");
 
 		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,

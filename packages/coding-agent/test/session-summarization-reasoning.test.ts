@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { getModel, streamSimple } from "@bastani/atomic-ai/compat";
+import { streamSimple } from "@bastani/atomic-ai/compat";
 import { describe, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { generateSessionSummary } from "../src/core/compaction/session-summarization.js";
 import type { SessionEntry } from "../src/core/session-manager.js";
 
 describe("session summarization with required reasoning", () => {
 	it("does not disable required thinking in the Anthropic Opus 5.5 request", async () => {
-		const model = getModel("anthropic", "claude-opus-5-5");
+		const model = getFixtureModel("anthropic", "claude-opus-5-5");
 		assert.equal(model.thinkingLevelMap?.off, null);
 		let payload: { thinking?: { type: string }; max_tokens?: number } | undefined;
 		const entries: SessionEntry[] = [

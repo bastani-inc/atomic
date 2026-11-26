@@ -11,7 +11,6 @@ import {
 	type AssistantMessage,
 	anthropicMessagesApi,
 	createAssistantMessageEventStream,
-	getModel,
 	type Model,
 } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
@@ -36,6 +35,7 @@ import {
 	forkedParentSessionId,
 } from "../../packages/subagents/src/runs/inprocess/prompt-behavior.js";
 import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const PROVIDER = "fork-prompt-cache";
@@ -122,7 +122,7 @@ const textReply: Reply = (model, count) => message(model, [{ type: "text", text:
 
 /** Models of one provider whose requests the Anthropic transport serializes; `reply` scripts each answer. */
 async function recordingRuntime(compat: object, reply: Reply = textReply) {
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const model = (id: string): Model<"anthropic-messages"> => ({
 		...base,
 		id,
@@ -604,7 +604,7 @@ describe("a forked subagent continues its parent's cached request", () => {
 	test("the start a fork copied from its parent's history is not its own", async () => {
 		const dir = makeTempDirectory("atomic-fork-cache-");
 		cleanups.push(() => removeTempDirectory(dir));
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const turn = async (manager: SessionManager, text: string) => {
 			await manager.appendMessage({ role: "user", content: text, timestamp: Date.now() });
 			await manager.appendMessage(message(model, [{ type: "text", text: `${text} done` }]));

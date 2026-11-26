@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { convertMessages, stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { AssistantMessage, FetchFunction, Model, OpenAICompletionsCompat, Usage } from "../src/types.ts";
 
 const emptyUsage: Usage = {
@@ -51,7 +52,7 @@ const baseCompat: Omit<
 };
 
 function buildModel(): Model<"openai-completions"> {
-	const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini");
+	const { compat: _compat, ...baseModel } = getFixtureModel("openai", "gpt-4o-mini");
 	return { ...baseModel, api: "openai-completions", input: ["text", "image"] };
 }
 

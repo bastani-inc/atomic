@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { getDisabledGoogleThinkingConfig, resolveGoogleThinkingLevel } from "../src/api/google-shared.ts";
 import { streamSimple } from "../src/api/openai-completions.ts";
-import { getModel, getModels, getProviders } from "../src/compat.ts";
+import { getModels, getProviders } from "../src/compat.ts";
 import { getSupportedThinkingLevels } from "../src/models.ts";
 import type { Api, Context, Model } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
+import { publishedModel } from "./live-catalog-model.ts";
 
 /**
  * Catalog regressions for Gemini 3.8 Flash in the shipped, hydrated provider catalogs.
@@ -21,10 +23,6 @@ import { normalizeContext } from "../src/utils/transcript.ts";
  * The GitHub Copilot assertions pin the current models.dev row. GitHub shipped the model in
  * Copilot on 2026-09-03:
  * - https://github.blog/changelog/2026-09-03-gemini-3-8-flash-is-now-available-in-github-copilot/
- *
- * These `getModel(...)` calls are also the compile-time proof of typed catalog lookup:
- * `getBuiltinModel` constrains the model id to `keyof (typeof MODELS)[TProvider]`, and this
- * package typechecks `test/**`, so an absent id fails the build rather than only the run.
  */
 
 interface CapturedCompletionsPayload {
@@ -60,8 +58,8 @@ async function captureCompletionsPayload(
 }
 
 describe("Gemini 3.8 Flash Google catalogs", () => {
-	it("publishes the documented Gemini API limits, pricing, and capabilities", () => {
-		const model = getModel("google", "gemini-3.8-flash");
+	it("publishes the documented Gemini API limits, pricing, and capabilities", (ctx) => {
+		const model = publishedModel("google", "gemini-3.8-flash", ctx);
 
 		expect(model).toBeDefined();
 		expect(model.id).toBe("gemini-3.8-flash");
@@ -78,8 +76,8 @@ describe("Gemini 3.8 Flash Google catalogs", () => {
 		expect(model.cost).toEqual({ input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
 	});
 
-	it("publishes the same model on Vertex under the plain, unprefixed model id", () => {
-		const model = getModel("google-vertex", "gemini-3.8-flash");
+	it("publishes the same model on Vertex under the plain, unprefixed model id", (ctx) => {
+		const model = publishedModel("google-vertex", "gemini-3.8-flash", ctx);
 
 		expect(model).toBeDefined();
 		// Vertex names this model `gemini-3.8-flash`, with no `publishers/google/models/` prefix.
@@ -99,9 +97,9 @@ describe("Gemini 3.8 Flash Google catalogs", () => {
 	// for this model", and Gemini 3.x Flash always thinks, so `off` is denied too. Assert the
 	// for this model. The upstream resolver now rejects unsupported mappings; disabling thinking
 	// uses the lowest published level instead of sending an unsupported value.
-	it("offers only the three thinking levels Google publishes", () => {
+	it("offers only the three thinking levels Google publishes", (ctx) => {
 		for (const provider of ["google", "google-vertex"] as const) {
-			const model = getModel(provider, "gemini-3.8-flash");
+			const model = publishedModel(provider, "gemini-3.8-flash", ctx);
 
 			expect(model.thinkingLevelMap?.off, provider).toBeNull();
 			expect(model.thinkingLevelMap?.minimal, provider).toBeNull();
@@ -111,16 +109,18 @@ describe("Gemini 3.8 Flash Google catalogs", () => {
 
 	// Google's own comparison table publishes MINIMAL for Gemini 3.5 and 3.6 Flash and drops it
 	// from 3.7 onward, so the denial above must not have leaked into the older Flash entries.
-	it("leaves the 3.5 and 3.6 Flash entries offering minimal", () => {
+	it("leaves the 3.5 and 3.6 Flash entries offering minimal", (ctx) => {
 		for (const id of ["gemini-3.5-flash", "gemini-3.6-flash"] as const) {
-			expect(getModel("google", id).thinkingLevelMap?.minimal, id).toBe("minimal");
-			expect(getSupportedThinkingLevels(getModel("google", id)), id).toContain("minimal");
+			expect(publishedModel("google", id, ctx).thinkingLevelMap?.minimal, id).toBe("minimal");
+			expect(getSupportedThinkingLevels(publishedModel("google", id, ctx)), id).toContain("minimal");
 		}
 	});
 
-	it("resolves the published levels to Google's own thinking levels", () => {
+	it("resolves the published levels to Google's own thinking levels", (ctx) => {
 		for (const provider of ["google", "google-vertex"] as const) {
-			const model = getModel(provider, "gemini-3.8-flash") as Model<"google-generative-ai" | "google-vertex">;
+			const model = publishedModel(provider, "gemini-3.8-flash", ctx) as Model<
+				"google-generative-ai" | "google-vertex"
+			>;
 
 			expect(
 				getDisabledGoogleThinkingConfig(model, () => 1024),
@@ -137,8 +137,8 @@ describe("Gemini 3.8 Flash Google catalogs", () => {
 });
 
 describe("Gemini 3.8 Flash GitHub Copilot catalog", () => {
-	it("routes through Copilot's OpenAI-compatible endpoint rather than Google's API", () => {
-		const model = getModel("github-copilot", "gemini-3.8-flash");
+	it("routes through Copilot's OpenAI-compatible endpoint rather than Google's API", (ctx) => {
+		const model = publishedModel("github-copilot", "gemini-3.8-flash", ctx);
 
 		expect(model).toBeDefined();
 		expect(model.id).toBe("gemini-3.8-flash");
@@ -152,16 +152,16 @@ describe("Gemini 3.8 Flash GitHub Copilot catalog", () => {
 		expect(model.compat).toMatchObject({ supportsStore: false, supportsDeveloperRole: false });
 	});
 
-	it("carries the limits models.dev advertises", () => {
-		const model = getModel("github-copilot", "gemini-3.8-flash");
+	it("carries the limits models.dev advertises", (ctx) => {
+		const model = publishedModel("github-copilot", "gemini-3.8-flash", ctx);
 
 		expect(model.contextWindow).toBe(1_000_000);
 		expect(model.maxTokens).toBe(64_000);
 		expect(model.cost).toEqual({ input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
 	});
 
-	it("exposes the reasoning efforts models.dev advertises", () => {
-		const model = getModel("github-copilot", "gemini-3.8-flash");
+	it("exposes the reasoning efforts models.dev advertises", (ctx) => {
+		const model = publishedModel("github-copilot", "gemini-3.8-flash", ctx);
 
 		expect(model.compat).toMatchObject({ supportsReasoningEffort: true });
 		expect(model.thinkingLevelMap).toEqual({
@@ -178,7 +178,7 @@ describe("Gemini 3.8 Flash GitHub Copilot catalog", () => {
 
 	// The models.dev effort metadata enables the OpenAI-compatible request field.
 	it("sends the requested effort as reasoning_effort on the request payload", async () => {
-		const payload = await captureCompletionsPayload(getModel("github-copilot", "gemini-3.8-flash"), "low");
+		const payload = await captureCompletionsPayload(getFixtureModel("github-copilot", "gemini-3.8-flash"), "low");
 
 		expect(payload.model).toBe("gemini-3.8-flash");
 		expect(payload.reasoning_effort).toBe("low");

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession } from "../src/core/sdk.js";
@@ -23,7 +23,7 @@ it("session requests serialize long caching, retain overrides and obey provider 
 	const credentials = AuthStorage.inMemory();
 	await credentials.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
 	const modelRuntime = await ModelRuntime.create({ credentials, modelsPath: null });
-	const model = getModel("anthropic", "claude-haiku-4-5");
+	const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir: cwd,
@@ -86,9 +86,9 @@ it("defaults only capable OpenAI and Bedrock models to extended retention", asyn
 		}));
 	}
 	const modelRuntime = await ModelRuntime.create({ credentials, modelsPath: null });
-	const gpt4o = getModel("openai", "gpt-4o");
-	const gpt5 = getModel("openai", "gpt-5");
-	const sonnet = getModel("amazon-bedrock", "anthropic.claude-sonnet-4-5-20250929-v1:0");
+	const gpt4o = getFixtureModel("openai", "gpt-4o");
+	const gpt5 = getFixtureModel("openai", "gpt-5");
+	const sonnet = getFixtureModel("amazon-bedrock", "anthropic.claude-sonnet-4-5-20250929-v1:0");
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir: cwd,
@@ -105,24 +105,24 @@ it("defaults only capable OpenAI and Bedrock models to extended retention", asyn
 			for (const [base, supported] of [
 				[gpt4o, false],
 				[gpt5, true],
-				[getModel("openai", "gpt-4.1"), true],
-				[getModel("openai", "gpt-4.1-mini"), false],
-				[getModel("openai", "gpt-5-mini"), false],
+				[getFixtureModel("openai", "gpt-4.1"), true],
+				[getFixtureModel("openai", "gpt-4.1-mini"), false],
+				[getFixtureModel("openai", "gpt-5-mini"), false],
 				...(api === "openai-responses"
 					? ([
-							[getModel("cloudflare-ai-gateway", "gpt-4o"), false],
-							[getModel("cloudflare-ai-gateway", "gpt-5"), true],
-							[getModel("github-copilot", "gpt-6-luna"), false],
-							[{ ...getModel("github-copilot", "gpt-6.1-sol"), id: "gpt-5.4" }, true],
-							[getModel("opencode", "gpt-5-nano"), false],
-							[getModel("opencode", "gpt-5"), true],
+							[getFixtureModel("cloudflare-ai-gateway", "gpt-4o"), false],
+							[getFixtureModel("cloudflare-ai-gateway", "gpt-5"), true],
+							[getFixtureModel("github-copilot", "gpt-6-luna"), false],
+							[{ ...getFixtureModel("github-copilot", "gpt-6.1-sol"), id: "gpt-5.4" }, true],
+							[getFixtureModel("opencode", "gpt-5-nano"), false],
+							[getFixtureModel("opencode", "gpt-5"), true],
 						] as const)
 					: []),
 				// OpenRouter registers Completions, not Responses.
 				...(api === "openai-completions"
 					? ([
-							[getModel("openrouter", "openai/gpt-4o"), false],
-							[getModel("openrouter", "openai/gpt-5"), true],
+							[getFixtureModel("openrouter", "openai/gpt-4o"), false],
+							[getFixtureModel("openrouter", "openai/gpt-5"), true],
 						] as const)
 					: []),
 				[{ ...gpt5, id: "gpt-5-2025-08-07" }, true],
@@ -168,7 +168,7 @@ it("defaults only capable OpenAI and Bedrock models to extended retention", asyn
 				| { prompt_cache_retention?: string; prompt_cache_options?: { ttl?: string; mode?: string } }
 				| undefined;
 			const stream = await session.agent.streamFunction(
-				getModel("openai", "gpt-5.6-sol"),
+				getFixtureModel("openai", "gpt-5.6-sol"),
 				{
 					messages: [{ role: "user", content: "Hello", timestamp: 0 }],
 				},
@@ -200,7 +200,7 @@ it("defaults only capable OpenAI and Bedrock models to extended retention", asyn
 				},
 				false,
 			],
-			[getModel("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0"), true],
+			[getFixtureModel("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0"), true],
 			[{ ...sonnet, id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0" }, true],
 			[
 				{

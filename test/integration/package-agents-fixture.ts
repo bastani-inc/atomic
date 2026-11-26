@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 /**
  * An isolated profile for the #5991 acceptance tests: a temporary home and agent directory, a copy of the
  * `review-kit` fixture package (`test/fixtures/package-agents/review-kit`, whose manifest ships `agents: ["./agents"]`),
@@ -12,12 +13,7 @@ import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getCurrentTools, getSystemMessageText, type JsonObject, type JsonValue } from "@bastani/atomic-ai";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Model,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/atomic-ai/compat";
 import { vi } from "vitest";
 import { LATEST_PROTOCOL_VERSION } from "../../packages/coding-agent/src/extensions/mcp/client/index.js";
 import {
@@ -263,7 +259,7 @@ export async function createPackageAgentProfile(): Promise<PackageAgentProfile> 
 	);
 
 	const base: Model<"anthropic-messages"> = {
-		...getModel("anthropic", "claude-sonnet-4-5")!,
+		...getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 		reasoning: true,
 		contextWindow: 200_000,
 	};

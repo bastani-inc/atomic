@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { stream as streamBedrock } from "@bastani/atomic-ai/api/bedrock-converse-stream";
-import { type AssistantMessage, getModel, normalizeContext } from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, normalizeContext } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { _isRetryableError } from "../../packages/coding-agent/src/core/agent-session-retry.js";
 import {
@@ -9,8 +9,9 @@ import {
 	isRetryableSameModelFailure,
 	normalizeModelFailureSignal,
 } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 
-const bedrockModel = getModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
+const bedrockModel = getFixtureModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
 const context = normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 0 }] });
 
 let server: Server | undefined;

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import type { ExtensionFactory } from "../src/core/sdk.ts";
@@ -46,7 +46,7 @@ describe("AgentSession dynamic provider registration", () => {
 		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager,
 			authStorage,

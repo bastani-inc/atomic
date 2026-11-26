@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { getImageModel } from "../src/image-models.ts";
+import { getFixtureImageModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+
 import { generateImages } from "../src/images.ts";
 import type { ImageContent, ImageModel, ImagesContext, ProviderImagesOptions } from "../src/types.ts";
 
@@ -52,7 +53,7 @@ describe("Images E2E Tests", () => {
 	describe.skipIf(!process.env.OPENROUTER_API_KEY)(
 		"OpenRouter Images Provider (google/gemini-2.5-flash-image)",
 		() => {
-			const model = getImageModel("openrouter", "google/gemini-2.5-flash-image");
+			const model = getFixtureImageModel("openrouter", "google/gemini-2.5-flash-image");
 
 			it("should generate a basic image", { retry: 3 }, async () => {
 				await basicImageGeneration(model);

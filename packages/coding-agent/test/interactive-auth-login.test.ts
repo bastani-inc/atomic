@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { type Api, getModel, type Model } from "@bastani/atomic-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { collectOAuthProviderMetadata } from "../src/core/oauth-provider-metadata.ts";
 import { LoginDialogComponent } from "../src/modes/interactive/components/login-dialog.ts";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
@@ -417,7 +418,7 @@ describe("post-login model refresh", () => {
 		{ provider: "anthropic", name: "Anthropic", authType: "oauth" as const, modelId: "claude-opus-5-5" },
 	]) {
 		it(`selects the ${scenario.provider} default immediately after ${scenario.authType} login`, async () => {
-			const model = getModel(scenario.provider, scenario.modelId);
+			const model = getFixtureModel(scenario.provider, scenario.modelId);
 			const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
 			const getAvailable = vi.fn(() => [model as Model<Api>]);
 			const setModel = vi.fn(async () => {});

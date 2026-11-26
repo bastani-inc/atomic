@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer, type Server } from "node:https";
-import { connect as connectNet, createServer as createNetServer, type Server as NetServer, type Socket } from "node:net";
+import {
+	connect as connectNet,
+	createServer as createNetServer,
+	type Server as NetServer,
+	type Socket,
+} from "node:net";
 import tls, { type ConnectionOptions, connect as connectTls, type TLSSocket } from "node:tls";
 import { afterEach, describe, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { createTestCertificate } from "../../../test/helpers/tls-certificates.ts";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamAzureOpenAIResponses } from "../src/api/azure-openai-responses.ts";
@@ -18,13 +24,13 @@ import {
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
 import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
-import { getModel } from "../src/compat.ts";
+
 import type { Api, AssistantMessage, Model } from "../src/types.ts";
 import { retryProviderRequest } from "../src/utils/provider-retry.ts";
-import { recordProxyConnectionFailure, transportFailure } from "../src/utils/tls-certificate.ts";
-import { observeWebSocketTransport } from "../src/utils/websocket-transport.ts";
 import { isRetryableAssistantError } from "../src/utils/retry.ts";
+import { recordProxyConnectionFailure, transportFailure } from "../src/utils/tls-certificate.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
+import { observeWebSocketTransport } from "../src/utils/websocket-transport.ts";
 
 /**
  * A request the runtime refused for the endpoint's TLS certificate is sent once, by every adapter, and says what to do
@@ -100,7 +106,7 @@ const TURNS: Readonly<Record<string, Turn>> = {
 	"pi-messages": (baseUrl, hooks) =>
 		streamPiMessages(createModel("pi-messages", baseUrl), context, { ...options, ...hooks }).result(),
 	"Amazon Bedrock": (baseUrl, hooks) => {
-		const model = getModel(
+		const model = getFixtureModel(
 			"amazon-bedrock",
 			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
 		) as Model<"bedrock-converse-stream">;
@@ -292,9 +298,12 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 			socket.once("data", () => socket.resetAndDestroy());
 		});
 		const refusing = createHttpServer((_request, response) => response.writeHead(502).end());
-		refusing.on("upgrade", (_request, socket: Socket) => socket.end("HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n"));
+		refusing.on("upgrade", (_request, socket: Socket) =>
+			socket.end("HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n"),
+		);
 		servers.push(reset, refusing);
-		for (const server of [reset, refusing]) await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		for (const server of [reset, refusing])
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const portOf = (server: NetServer | import("node:http").Server) => {
 			const address = server.address();
 			assert.ok(address !== null && typeof address === "object");
@@ -412,11 +421,21 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 			throw shared;
 		}, globalThis.fetch);
 		const turn = (baseUrl: string, hooks?: Hooks) =>
-			streamPiMessages(createModel("pi-messages", baseUrl), context, { apiKey: "test-key", fetch: failing, ...hooks }).result();
+			streamPiMessages(createModel("pi-messages", baseUrl), context, {
+				apiKey: "test-key",
+				fetch: failing,
+				...hooks,
+			}).result();
 
 		const [first, second] = await Promise.all([turn("https://first.test"), turn("https://second.test")]);
-		assert.ok(first.errorMessage?.startsWith("The TLS certificate for first.test was not accepted"), first.errorMessage);
-		assert.ok(second.errorMessage?.startsWith("The TLS certificate for second.test was not accepted"), second.errorMessage);
+		assert.ok(
+			first.errorMessage?.startsWith("The TLS certificate for first.test was not accepted"),
+			first.errorMessage,
+		);
+		assert.ok(
+			second.errorMessage?.startsWith("The TLS certificate for second.test was not accepted"),
+			second.errorMessage,
+		);
 
 		const hooked = await turn("https://third.test", {
 			onPayload: async () => {
@@ -436,7 +455,11 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 			throw shared;
 		}, globalThis.fetch);
 		const turn = (baseUrl: string, hooks?: Hooks) =>
-			streamPiMessages(createModel("pi-messages", baseUrl), context, { apiKey: "test-key", fetch: failing, ...hooks }).result();
+			streamPiMessages(createModel("pi-messages", baseUrl), context, {
+				apiKey: "test-key",
+				fetch: failing,
+				...hooks,
+			}).result();
 
 		const [first, second] = await Promise.all([turn("https://first.test"), turn("https://second.test")]);
 		for (const message of [first, second]) {
@@ -469,7 +492,11 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		}, globalThis.fetch);
 		// Bedrock's SDK speaks HTTP/2 unless told otherwise: an endpoint that offers it, with the same certificate.
 		const certificate = createTestCertificate({ subject: "localhost", altNames: ["localhost"] });
-		const bedrockEndpoint = tls.createServer({ cert: certificate.cert, key: certificate.key, ALPNProtocols: ["h2", "http/1.1"] });
+		const bedrockEndpoint = tls.createServer({
+			cert: certificate.cert,
+			key: certificate.key,
+			ALPNProtocols: ["h2", "http/1.1"],
+		});
 		bedrockEndpoint.on("tlsClientError", () => {});
 		servers.push(bedrockEndpoint);
 		await new Promise<void>((resolve) => bedrockEndpoint.listen(0, "127.0.0.1", resolve));
@@ -492,7 +519,7 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 			return (connect as (...forwarded: unknown[]) => TLSSocket)(...args);
 		}) as typeof tls.connect);
 		try {
-			const bedrock = getModel(
+			const bedrock = getFixtureModel(
 				"amazon-bedrock",
 				"us.anthropic.claude-haiku-4-5-20251001-v1:0",
 			) as Model<"bedrock-converse-stream">;
@@ -506,17 +533,21 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 				[
 					"aiplatform.googleapis.com",
 					() =>
-						streamGoogleVertex(getModel("google-vertex", "gemini-2.5-flash") as Model<"google-vertex">, context, {
-							apiKey: "test-key",
-							fetch: redirect,
-							maxRetries: 0,
-						}).result(),
+						streamGoogleVertex(
+							getFixtureModel("google-vertex", "gemini-2.5-flash") as Model<"google-vertex">,
+							context,
+							{
+								apiKey: "test-key",
+								fetch: redirect,
+								maxRetries: 0,
+							},
+						).result(),
 				],
 				[
 					"my-resource.openai.azure.com",
 					() =>
 						streamAzureOpenAIResponses(
-							getModel("azure-openai-responses", "gpt-4.1") as Model<"azure-openai-responses">,
+							getFixtureModel("azure-openai-responses", "gpt-4.1") as Model<"azure-openai-responses">,
 							context,
 							{ apiKey: "test-key", azureResourceName: "my-resource", fetch: redirect, maxRetries: 0 },
 						).result(),
@@ -552,7 +583,8 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 			socket.destroy();
 		});
 		servers.push(proxy, endpoint);
-		for (const server of [proxy, endpoint]) await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		for (const server of [proxy, endpoint])
+			await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const portOf = (server: NetServer | Server) => {
 			const address = server.address();
 			assert.ok(address !== null && typeof address === "object");
@@ -560,7 +592,7 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		};
 		// The proxy URL's credentials are never repeated.
 		const proxyUrl = `https://agent:s3cret@localhost:${portOf(proxy)}`;
-		const bedrock = getModel(
+		const bedrock = getFixtureModel(
 			"amazon-bedrock",
 			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
 		) as Model<"bedrock-converse-stream">;
@@ -619,7 +651,7 @@ describe("a model request refused for its TLS certificate (#6114)", () => {
 		await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
 		const address = proxy.address();
 		assert.ok(address !== null && typeof address === "object");
-		const bedrock = getModel(
+		const bedrock = getFixtureModel(
 			"amazon-bedrock",
 			"us.anthropic.claude-haiku-4-5-20251001-v1:0",
 		) as Model<"bedrock-converse-stream">;

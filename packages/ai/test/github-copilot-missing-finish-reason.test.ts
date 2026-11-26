@@ -5,7 +5,8 @@ import type { AddressInfo } from "node:net";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { afterEach, describe, it } from "vitest";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { streamSimple } from "../src/compat.ts";
 import {
 	GitHubCopilotEmptyResponseError,
 	GitHubCopilotStreamEndedEarlyError,
@@ -112,7 +113,7 @@ afterEach(async () => {
 });
 
 function gemini(baseUrl: string): Model<Api> {
-	const model = getModel("github-copilot", "gemini-4-argon" as never) as Model<Api> | undefined;
+	const model = getFixtureModel("github-copilot", "gemini-4-argon" as never) as Model<Api> | undefined;
 	if (!model) throw new Error("Expected github-copilot/gemini-4-argon in the built-in catalog");
 	assert.equal(model.api, "openai-completions");
 	return { ...model, baseUrl };

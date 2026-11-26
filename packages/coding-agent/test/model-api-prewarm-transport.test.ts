@@ -6,12 +6,12 @@ import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import {
 	type Api,
 	getApiProvider,
-	getModel,
 	type Model,
 	registerApiProvider,
 	resetApiProviders,
 } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { prewarmHostDefaultModelApi } from "../src/core/default-model-api-prewarm.ts";
@@ -86,7 +86,7 @@ describe("the API implementation a prewarm loads", () => {
 	test("a model of a built-in provider: Atomic's implementation of its api, which its requests use", async () => {
 		const runtime = await runtimeWith();
 		const loads = countLoads("anthropic-messages");
-		await prewarmModelApi(getModel("anthropic", "claude-sonnet-4-5"), runtime);
+		await prewarmModelApi(getFixtureModel("anthropic", "claude-sonnet-4-5"), runtime);
 		assert.equal(loads.count, 1);
 	});
 
@@ -117,7 +117,7 @@ describe("the API implementation a prewarm loads", () => {
 
 	test("a provider an extension brings with its own stream functions: nothing", async () => {
 		const runtime = await runtimeWith();
-		const native = getModel("anthropic", "claude-sonnet-4-5") as Model<Api>;
+		const native = getFixtureModel("anthropic", "claude-sonnet-4-5") as Model<Api>;
 		runtime.registerNativeProvider({
 			id: "native",
 			name: "native",
@@ -504,7 +504,7 @@ describe("the API implementation an SDK session loads as it is created", () => {
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5"),
+			model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 			settingsManager,
 			sessionManager: SessionManager.inMemory(cwd),
 			authStorage: AuthStorage.inMemory({ anthropic: { type: "api_key", key: "test" } }),

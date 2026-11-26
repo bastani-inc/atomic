@@ -1,9 +1,10 @@
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/atomic-ai/compat";
+
 import { prepareAgentSessionServices } from "../../packages/coding-agent/src/core/agent-session-services.ts";
 import { isSessionQuitting } from "../../packages/coding-agent/src/core/agent-session-events.ts";
 import {
@@ -55,7 +56,7 @@ try {
 	);
 	({ session } = await createAgentSessionFromServices({
 		services: await prepare(),
-		model: getModel("anthropic", "claude-sonnet-4-5"),
+		model: getFixtureModel("anthropic", "claude-sonnet-4-5"),
 		sessionManager: SessionManager.inMemory(cwd),
 		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 	}));

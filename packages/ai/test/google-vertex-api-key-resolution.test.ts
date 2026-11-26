@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 
 const googleGenAiMock = vi.hoisted(() => ({
 	constructorCalls: [] as Array<Record<string, unknown>>,
@@ -47,7 +48,7 @@ vi.mock("@google/genai", () => {
 });
 
 import { stream as streamGoogleVertex } from "../src/api/google-vertex.ts";
-import { getModel, normalizeContext } from "../src/compat.ts";
+import { normalizeContext } from "../src/compat.ts";
 import type { FetchFunction, Model } from "../src/types.ts";
 import { formatUserAgent } from "../src/utils/identity.ts";
 
@@ -72,7 +73,7 @@ async function globalFetchCalls(fetch: FetchFunction): Promise<string[]> {
 	return calls;
 }
 
-const model = getModel("google-vertex", "gemini-3-flash-preview");
+const model = getFixtureModel("google-vertex", "gemini-3-flash-preview");
 const context = normalizeContext({
 	messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
 });

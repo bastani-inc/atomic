@@ -11,12 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Model,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/atomic-ai/compat";
 import { afterAll, beforeAll, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -30,6 +25,7 @@ import { holdStartingChild } from "../../packages/subagents/src/runs/foreground/
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { subagentStartHoldMs } from "../../packages/subagents/src/runs/shared/start-progress.js";
 import type { TaskExecutionHooks } from "../../packages/subagents/src/shared/types.js";
+import { getFixtureModel } from "../helpers/catalog-model-fixtures.ts";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -155,7 +151,7 @@ for (const { stallAt, resume } of [
 			fixture.onCleanup(() => rmSync(cwd, { recursive: true, force: true }));
 			const agentDir = join(cwd, "agent");
 			const model: Model<"anthropic-messages"> = {
-				...getModel("anthropic", "claude-sonnet-4-5")!,
+				...getFixtureModel("anthropic", "claude-sonnet-4-5")!,
 				provider: "start-retry-fixture",
 				reasoning: true,
 			};

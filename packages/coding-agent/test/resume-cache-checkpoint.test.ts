@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { Message } from "@bastani/atomic-ai";
-import { getModel } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import {
 	clearsForResumedBudget,
 	restoredCacheCheckpoint,
@@ -52,7 +52,7 @@ test("a history that ends with a system message, as after a model switch before 
 describe("clearing the context before the first request after a resume near the window (#6117)", () => {
 	// 32,768-token window: a request keeps the 8,192 budget and 1,024 answer tokens while its input is at most
 	// 32,768 - 4,096 - 9,216 = 19,456 tokens.
-	const model = { ...getModel("anthropic", "claude-sonnet-4-5"), contextWindow: 32_768, maxTokens: 32_768 };
+	const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-5"), contextWindow: 32_768, maxTokens: 32_768 };
 	const lastReply = (input: number, sent: number): AgentMessage =>
 		({
 			...reply,

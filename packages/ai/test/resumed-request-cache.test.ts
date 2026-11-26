@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, describe, it } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import {
 	type AnthropicOptions,
 	stream as streamAnthropic,
@@ -9,7 +10,7 @@ import {
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamCompletions } from "../src/api/openai-completions.ts";
 import { fitThinkingBudget } from "../src/api/simple-options.ts";
-import { getModel } from "../src/compat.ts";
+
 import { cleanupSessionResources } from "../src/session-resources.ts";
 import type {
 	Api,
@@ -32,9 +33,18 @@ import { appendSystemMessageUpdates, collapseSystemMessages } from "../src/utils
 
 class PayloadCaptured extends Error {}
 type Payload = Record<string, unknown>;
-type StreamFunction = (model: Model<Api>, context: TranscriptContext, options: StreamOptions) => AssistantMessageEventStream;
+type StreamFunction = (
+	model: Model<Api>,
+	context: TranscriptContext,
+	options: StreamOptions,
+) => AssistantMessageEventStream;
 
-async function capture(stream: StreamFunction, model: Model<Api>, messages: Message[], apiKey?: string): Promise<Payload> {
+async function capture(
+	stream: StreamFunction,
+	model: Model<Api>,
+	messages: Message[],
+	apiKey?: string,
+): Promise<Payload> {
 	let payload: Payload | undefined;
 	const result = stream(model, { messages } as TranscriptContext, {
 		...(apiKey ? { apiKey } : {}),
@@ -50,7 +60,12 @@ async function capture(stream: StreamFunction, model: Model<Api>, messages: Mess
 
 const readTool: Tool = { name: "read", description: "Read a file", parameters: Type.Object({ path: Type.String() }) };
 
-function reply(model: Model<Api>, text: string, timestamp: number, extra: Partial<AssistantMessage> = {}): AssistantMessage {
+function reply(
+	model: Model<Api>,
+	text: string,
+	timestamp: number,
+	extra: Partial<AssistantMessage> = {},
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
@@ -77,12 +92,19 @@ function resumedHistory(model: Model<Api>): Message[] {
 		{ role: "system", content: "You are a coding assistant.", toolsAdded: [readTool], timestamp: 1 },
 		{ role: "user", content: "first", timestamp: 2 },
 		{ ...reply(model, "first answer", 3), cacheBreakpoint: true },
-		...Array.from({ length: 25 }, (_, index): Message => ({ role: "user", content: `resumed ${index}`, timestamp: 4 + index })),
+		...Array.from(
+			{ length: 25 },
+			(_, index): Message => ({ role: "user", content: `resumed ${index}`, timestamp: 4 + index }),
+		),
 	];
 }
 
 type AnthropicBlock = { type: string; text?: string; cache_control?: unknown };
-type AnthropicPayload = { system?: AnthropicBlock[]; tools?: Array<{ cache_control?: unknown }>; messages: Array<{ role: string; content: string | AnthropicBlock[] }> };
+type AnthropicPayload = {
+	system?: AnthropicBlock[];
+	tools?: Array<{ cache_control?: unknown }>;
+	messages: Array<{ role: string; content: string | AnthropicBlock[] }>;
+};
 
 function markedMessages(payload: AnthropicPayload): number[] {
 	return payload.messages.flatMap((message, index) =>
@@ -104,8 +126,13 @@ const offline = { baseUrl: "http://127.0.0.1:9" };
 describe("a resumed request's checkpoint breakpoint", () => {
 	for (const id of ["claude-opus-5-5", "claude-sonnet-4-6"] as const) {
 		it(`Anthropic ${id}: marks the input before the restored reply and keeps the newest input marked`, async () => {
-			const model = { ...getModel("anthropic", id), ...offline };
-			const payload = (await capture(streamAnthropic as StreamFunction, model, resumedHistory(model), "sk-ant-test")) as AnthropicPayload;
+			const model = { ...getFixtureModel("anthropic", id), ...offline };
+			const payload = (await capture(
+				streamAnthropic as StreamFunction,
+				model,
+				resumedHistory(model),
+				"sk-ant-test",
+			)) as AnthropicPayload;
 			const firstInput = payload.messages.findIndex((message) => message.role === "user");
 			const newestInput = payload.messages.findLastIndex((message) => message.role === "user");
 			assert.deepEqual(markedMessages(payload), [firstInput, newestInput]);
@@ -114,17 +141,22 @@ describe("a resumed request's checkpoint breakpoint", () => {
 	}
 
 	it("Anthropic: no hint, no checkpoint (a session that kept running)", async () => {
-		const model = { ...getModel("anthropic", "claude-sonnet-4-6"), ...offline };
+		const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-6"), ...offline };
 		// Few enough new messages that the newest breakpoint reaches back to the previous request's.
 		const history = resumedHistory(model)
 			.slice(0, 6)
 			.map((message) => (message.role === "assistant" ? { ...message, cacheBreakpoint: undefined } : message));
-		const payload = (await capture(streamAnthropic as StreamFunction, model, history, "sk-ant-test")) as AnthropicPayload;
+		const payload = (await capture(
+			streamAnthropic as StreamFunction,
+			model,
+			history,
+			"sk-ant-test",
+		)) as AnthropicPayload;
 		assert.deepEqual(markedMessages(payload), [payload.messages.length - 1]);
 	});
 
 	it("Anthropic OAuth: the identity block's breakpoint makes room, so the request keeps Claude's four", async () => {
-		const model = { ...getModel("anthropic", "claude-sonnet-4-6"), ...offline };
+		const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-6"), ...offline };
 		const payload = (await capture(
 			streamAnthropic as StreamFunction,
 			model,
@@ -138,7 +170,7 @@ describe("a resumed request's checkpoint breakpoint", () => {
 	});
 
 	it("Bedrock: puts a cache point after the input before the restored reply", async () => {
-		const model = getModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
+		const model = getFixtureModel("amazon-bedrock", "global.anthropic.claude-fable-5-1");
 		const payload = (await capture(streamBedrock as StreamFunction, model, resumedHistory(model))) as {
 			messages: Array<{ role: string; content: Array<Record<string, unknown>> }>;
 		};
@@ -161,7 +193,12 @@ describe("a resumed request's checkpoint breakpoint", () => {
 			contextWindow: 200_000,
 			maxTokens: 1_000,
 		};
-		const payload = (await capture(streamCompletions as StreamFunction, model, resumedHistory(model), "test-key")) as {
+		const payload = (await capture(
+			streamCompletions as StreamFunction,
+			model,
+			resumedHistory(model),
+			"test-key",
+		)) as {
 			messages: Array<{ role: string; content: string | Array<{ cache_control?: unknown }> }>;
 		};
 		const marked = payload.messages.flatMap((message, index) =>
@@ -195,7 +232,10 @@ describe("a resumed session keeps its strict-tool fallback", () => {
 	};
 	function success(): Response {
 		const events = [
-			{ type: "message_start", message: { id: "msg", model: model.id, usage: { input_tokens: 1, output_tokens: 0 } } },
+			{
+				type: "message_start",
+				message: { id: "msg", model: model.id, usage: { input_tokens: 1, output_tokens: 0 } },
+			},
 			{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
 			{ type: "message_stop" },
 		];
@@ -292,7 +332,7 @@ describe("a resumed session keeps its strict-tool fallback", () => {
 
 describe("a session whose earlier version folded prompt updates into its leading prompt", () => {
 	it("rewrites the cached prompt once after the upgrade, and every later request extends that request", () => {
-		const model = { ...getModel("anthropic", "claude-sonnet-4-6"), ...offline };
+		const model = { ...getFixtureModel("anthropic", "claude-sonnet-4-6"), ...offline };
 		const history: Message[] = [
 			{ role: "system", content: "", sections: { preamble: "Base.", date: "<date>\n1\n</date>" }, timestamp: 1 },
 			{ role: "user", content: "first", timestamp: 2 },
@@ -301,7 +341,12 @@ describe("a session whose earlier version folded prompt updates into its leading
 			{ role: "user", content: "second", timestamp: 5 },
 			reply(model, "second answer", 6),
 		];
-		const update: SystemMessage = { role: "system", content: "", sections: { date: "<date>\n3\n</date>" }, timestamp: 9 };
+		const update: SystemMessage = {
+			role: "system",
+			content: "",
+			sections: { date: "<date>\n3\n</date>" },
+			timestamp: 9,
+		};
 		const beforeUpgrade = collapseSystemMessages({ messages: history } as TranscriptContext).messages;
 		const firstAfterUpgrade = appendSystemMessageUpdates({
 			messages: [...history, { role: "user", content: "third", timestamp: 7 }],
@@ -322,7 +367,12 @@ describe("a session whose earlier version folded prompt updates into its leading
 });
 
 describe("a budget-based thinking request near the context window", () => {
-	const model: Model<"anthropic-messages"> = { ...getModel("anthropic", "claude-sonnet-4-5"), ...offline, contextWindow: 32_768, maxTokens: 32_768 };
+	const model: Model<"anthropic-messages"> = {
+		...getFixtureModel("anthropic", "claude-sonnet-4-5"),
+		...offline,
+		contextWindow: 32_768,
+		maxTokens: 32_768,
+	};
 
 	/** A context ending with a reply that reports `inputTokens` input, which the estimate takes as its size. */
 	function contextWithInput(inputTokens: number): Message[] {
@@ -370,10 +420,13 @@ describe("a budget-based thinking request near the context window", () => {
 			{ role: "user", content: "next", timestamp: 4 },
 		];
 		// Unchanged: only the 16,000 reported and 2 for "next" count; 32,768 - 16,002 - 4,096 = 12,670 keeps the budget.
-		assert.deepEqual(fitThinkingBudget(model, { messages: redeclared(declared) } as TranscriptContext, 32_768, 8_192), {
-			maxTokens: 12_670,
-			thinkingBudget: 8_192,
-		});
+		assert.deepEqual(
+			fitThinkingBudget(model, { messages: redeclared(declared) } as TranscriptContext, 32_768, 8_192),
+			{
+				maxTokens: 12_670,
+				thinkingBudget: 8_192,
+			},
+		);
 		// A changed definition counts in full (14,129 characters of JSON, 4,037 tokens), however long the old one was:
 		// 32,768 - 20,039 - 4,096 = 8,633.
 		assert.deepEqual(

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { getModel } from "@bastani/atomic-ai/compat";
 import type { Component, Terminal, TUI } from "@bastani/atomic-tui";
 import {
 	getKeybindings,
@@ -9,6 +8,7 @@ import {
 	TUI_KEYBINDINGS,
 } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 import { isDebugEnabled } from "../src/core/debug.js";
 import { setDebugSetting } from "../src/core/debug-setting.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -44,8 +44,8 @@ class SelectorTerminal implements Terminal {
 
 async function openSettingsSelector(opened: (selector: SettingsSelectorComponent | undefined) => void = () => {}) {
 	const settingsManager = SettingsManager.inMemory({});
-	const chatModel = getModel("openai", "gpt-4o");
-	const compactionModel = getModel("openai", "gpt-4.1-mini");
+	const chatModel = getFixtureModel("openai", "gpt-4o");
+	const compactionModel = getFixtureModel("openai", "gpt-4.1-mini");
 	const session = {
 		settingsManager,
 		model: chatModel,

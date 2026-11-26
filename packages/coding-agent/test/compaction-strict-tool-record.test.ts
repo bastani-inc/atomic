@@ -1,3 +1,4 @@
+import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 /**
  * A session resumed after compactions removed every reply that recorded a strict-tool fallback still tells the provider
  * about it, whichever prompt it sends: its own, a transformed one, or one a `before_agent_start` handler forced.
@@ -5,12 +6,7 @@
  */
 
 import { recordsStrictToolLimits } from "@bastani/atomic-ai/api/strict-tool-limits";
-import {
-	type AssistantMessage,
-	createAssistantMessageEventStream,
-	getModel,
-	type Model,
-} from "@bastani/atomic-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -59,7 +55,7 @@ type PromptKind = "own" | "transformed" | "forced by a handler";
 
 /** Whether the first request after the resume carries the record. */
 async function firstRequestRecords(kind: PromptKind, recorded: boolean): Promise<boolean> {
-	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const model: Model<"anthropic-messages"> = { ...base, provider: PROVIDER, id: "claude", name: "Claude" };
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
