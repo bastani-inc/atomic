@@ -652,7 +652,9 @@ test(
 				'const path = require("node:path");',
 				`const { renameSyncWithRetry } = require(${JSON.stringify(RENAME_RETRY_SYNC_MODULE_PATH)});`,
 				'if (process.argv[1]?.endsWith("cli.js") && !process.argv.includes("--internal-engine-prewarm")) {',
-				`	const dist = ${JSON.stringify(join(layout.atomic, "dist"))};`,
+				// Node resolves a module to its real path: on macOS the temporary directory /var/folders/... is a link to
+				// /private/var/folders/..., so the SDK entry compared with must be written by its real path too.
+				`	const dist = ${JSON.stringify(fs.realpathSync(join(layout.atomic, "dist")))};`,
 				'	const sdk = pathToFileURL(path.join(dist, "index.js")).href;',
 				"	let pending = true;",
 				"	registerHooks({",
