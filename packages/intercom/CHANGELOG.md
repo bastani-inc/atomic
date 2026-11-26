@@ -4,9 +4,16 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+## [0.10.11-alpha.2] - 2026-11-26
+
 ### Changed
 
-- With multi-node routing on PostgreSQL, messages that recipients confirm at about the same time are now recorded as delivered together, in one transaction that takes 2 round trips, instead of 2 round trips for each message. Each message still gets its own answer, in the order the confirmations arrived, and a message is never recorded as delivered twice. At 80 ms latency, four confirmations took 0.19 s instead of 0.55 s, and no longer opened extra database connections ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- With multi-node routing on PostgreSQL, messages that recipients confirm at about the same time are now recorded as delivered together, in one transaction that takes 2 round trips, instead of 2 round trips for each message. Each message still gets its own answer, in the order the confirmations arrived, and a message is never recorded as delivered twice. At 80 ms latency, four confirmations took 0.19 s instead of 0.55 s, and no longer opened extra database connections ([#6606](https://github.com/bastani-inc/atomic/pull/6606), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- Intercom brokers that share a database pick up waiting messages faster. On PostgreSQL, taking a session's waiting messages now takes 1 round trip instead of 3. On a libSQL server it takes 2 instead of 3, and on a SQLite file 2 calls instead of 5 to 9. A check that finds no messages still takes 1 round trip everywhere. On PostgreSQL it takes no lock, so it does not wait while another process holds the whole database's lock. At 80 ms from the server, taking waiting messages took about 100 ms on PostgreSQL instead of about 280 ms, and 200 to 280 ms on a libSQL server instead of about 320 ms ([#6610](https://github.com/bastani-inc/atomic/pull/6610), [#6615](https://github.com/bastani-inc/atomic/pull/6615), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
+### Fixed
+
+- Messages to one session could arrive out of order on PostgreSQL when a broker was slow to renew its hold on an earlier message. Another broker could take over the earlier message while the slow broker delivered a later one. Brokers taking the same session's messages now take turns, so one broker at a time delivers them, in order ([#6610](https://github.com/bastani-inc/atomic/pull/6610), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
 
 ## [0.10.11-alpha.1] - 2026-11-25
 
