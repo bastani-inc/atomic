@@ -271,7 +271,6 @@ Atomic manages these keys automatically in global `settings.json`. Leave them un
 | `firstRunOnboardingStartedVersion` | string | unset | Version when first-run onboarding started |
 | `onboardedVersion` | string | unset | Version when onboarding completed |
 | `lastChangelogVersion` | string | unset | Most recent version whose changelog notice was displayed |
-| `teamJoin` | object | unset | `atomic team join` record used by `atomic team leave` |
 | `enableAnalytics` | boolean | `false` | Opt-in flag saved during first-run setup (storage only; Atomic does not transmit analytics) |
 | `trackingId` | string | unset | Locally generated analytics ID when `enableAnalytics` is enabled |
 | `deviceId` | string | unset | Global install ID created when a provider sign-in needs one (project values ignored) |
@@ -431,19 +430,19 @@ On Windows, write JSON paths with forward slashes or escaped backslashes:
 ```
 
 - **Default.** `~/.atomic/workflows/journal.sqlite` (`session_` tables; under `<agentDir>/workflows/` when `ATOMIC_CODING_AGENT_DIR` is set unless it adopted a parent store; see [Storage home](/storage#storage-home)). JSONL is opt-in via `dir`, `--session-dir`, or `ATOMIC_CODING_AGENT_SESSION_DIR` (legacy `sessionDir` was removed).
-- **Precedence.** Highest to lowest: SDK `sessionStore`, SDK `storage` (`createAgentSession({ storage })`, see [SDK storage](/sdk/storage)), `--no-session`, `--session-dir`, or `--session-store`, `--storage` or `--storage-file`, `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`, `ATOMIC_STORAGE`, `ATOMIC_PROFILE=ci`, `sessions.storage`, `storage`, and default SQLite. Project selections replace global objects whole rather than merging; an explicit `{}` on `sessions.storage` selects default SQLite rather than inheriting `storage`. Relative paths in settings and JSON flags or env vars resolve from [storage home](/storage#storage-home); `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve from `cwd`. See [Storage and team variables](/environment-variables#storage-and-team-variables).
-- **Errors.** Only the winning setting is validated from `settings.json`, whereas process-level selections (`--storage`, `--storage-file`, `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, and `ATOMIC_PROFILE=ci` with `ATOMIC_TEAM_*`) are validated unconditionally even when outranked. Invalid config throws `StorageConfigError` (`source`, `field`, `reason`) or `TeamProfileConfigError`, and open failures throw typed errors without falling back to memory. See [Choosing a store](/sessions#choosing-a-store), [Selecting storage per process](/storage#selecting-storage-per-process), and [Storage errors](/storage#storage-errors).
+- **Precedence.** Highest to lowest: SDK `sessionStore`, SDK `storage` (`createAgentSession({ storage })`, see [SDK storage](/sdk/storage)), `--no-session`, `--session-dir`, or `--session-store`, `--storage` or `--storage-file`, `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`, `ATOMIC_STORAGE`, `sessions.storage`, `storage`, and default SQLite. Project selections replace global objects whole rather than merging; an explicit `{}` on `sessions.storage` selects default SQLite rather than inheriting `storage`. Relative paths in settings and JSON flags or env vars resolve from [storage home](/storage#storage-home); `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve from `cwd`. See [Storage and team variables](/environment-variables#storage-and-team-variables).
+- **Errors.** Only the winning setting is validated from `settings.json`, whereas process-level selections (`--storage`, `--storage-file`, `ATOMIC_STORAGE`, and `ATOMIC_SESSIONS_STORAGE`) are validated unconditionally even when outranked. A selection naming the removed `@bastani/atomic-storage-libsql` adapter, or a variable of the removed `ATOMIC_PROFILE=ci` team profile, fails with `libsql-removed` (see [Moving off libSQL](/storage#moving-off-libsql)). Invalid config throws `StorageConfigError` (`source`, `field`, `reason`) or `TeamProfileConfigError`, and open failures throw typed errors without falling back to memory. See [Choosing a store](/sessions#choosing-a-store), [Selecting storage per process](/storage#selecting-storage-per-process), and [Storage errors](/storage#storage-errors).
 
 #### Storage adapters
 
-Install an adapter [Atomic package](/storage/custom-adapters#adapters-from-atomic-packages) (such as [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) or [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql)), or pass its directory via `--extension` or SDK `additionalExtensionPaths` (which takes precedence over settings), and reference it in `storage` or `sessions.storage`:
+Install an adapter [Atomic package](/storage/custom-adapters#adapters-from-atomic-packages) (such as [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres)), or pass its directory via `--extension` or SDK `additionalExtensionPaths` (which takes precedence over settings), and reference it in `storage` or `sessions.storage`:
 
 ```json
 {
   "storage": {
-    "adapter": "@example/atomic-sqlite",
-    "options": { "url": "libsql://database.example" },
-    "secrets": { "authToken": { "env": "DATABASE_TOKEN" } },
+    "adapter": "@bastani/atomic-storage-postgres",
+    "options": { "url": "postgresql://atomic@db.example.com:5432/atomic" },
+    "secrets": { "password": { "env": "ATOMIC_DB_PASSWORD" } },
     "prefix": "project_"
   }
 }

@@ -30,7 +30,7 @@ import { backendLabel, runnerFor, withSqlSessionStore } from "./storage-conforma
 
 /**
  * Every store's behavioural contract on every storage backend (#4793): the database facade and same-handle sessions
- * on a SQLite file, a libSQL server and Postgres. Reopen sessions and Intercom's multi-node routing state run in
+ * on a SQLite file and on PostgreSQL. Reopen sessions and Intercom's multi-node routing state run in
  * sibling `storage-conformance-matrix-*.test.ts` files.
  */
 

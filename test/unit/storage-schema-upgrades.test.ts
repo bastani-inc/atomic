@@ -5,7 +5,6 @@ import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.ts";
@@ -21,7 +20,6 @@ import {
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 
 import { createSession, snapshotEntry, syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 
@@ -172,14 +170,11 @@ function startOpener(adapter: string, hash: string, mode = "open") {
 	};
 }
 
-for (const adapter of ["node-sqlite", "libsql"] as const) {
+for (const adapter of ["node-sqlite"] as const) {
 	describe(adapter, () => {
 		async function openDatabase(): Promise<SqliteDatabase> {
 			const path = join(directory, "journal.sqlite");
-			const database =
-				adapter === "node-sqlite"
-					? await openNodeSqliteDatabase(path)
-					: await openLibsqlDatabase({ url: pathToFileURL(path).href });
+			const database = await openNodeSqliteDatabase(path);
 			closers.push(() => database.close());
 			return database;
 		}

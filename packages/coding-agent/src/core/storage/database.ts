@@ -189,7 +189,7 @@ export interface SqliteDatabase extends SqliteExecutor {
 	readonly notifications?: StorageNotifications;
 	/**
 	 * The bytes this process may still write on the file system that holds the database's file (where a link to the file
-	 * points, and where its write-ahead log goes), as a SQLite or libSQL file database reports them. Absent, or resolving
+	 * points, and where its write-ahead log goes), as a SQLite file database reports them. Absent, or resolving
 	 * undefined, when this process cannot see the database's disk (a server, memory) or the file system does not say.
 	 */
 	freeBytes?(): Promise<number | undefined>;

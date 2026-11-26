@@ -507,7 +507,7 @@ Without a detachment policy, detachable calls run inline. A host using persisten
 - **`session.isWaitingOnDetachedResults()`:** Reports whether the transcript still awaits a detached result. While waiting under a detachment policy, nothing starts a turn on the idle session (including subagent notices, steering, follow-ups, and post-compaction continuations); held custom messages are persisted and replayed after `resumeDetachedTurn()` continues the turn. Do not call `prompt()` while waiting on results.
 - **`session.hasPendingDetachedTurn()` and `session.redispatchDetachedToolCalls()`:** `hasPendingDetachedTurn()` reports whether a reopened transcript ends on a detached turn; continue it with `redispatchDetachedToolCalls()` and `resumeDetachedTurn()` instead of prompting again. `redispatchDetachedToolCalls()` restarts unanswered detachable calls with their original IDs and arguments and emits `tool_execution_start` before returning.
 
-Results handed to `resumeDetachedTurn()` pass through `tool_result` hooks, image resizing, and output persistence (stored as `tool-output://<sha256>` in blob-capable stores like SQLite, libSQL, and memory, or on disk otherwise; see [Persisted tool output](/tools#persisted-tool-output)).
+Results handed to `resumeDetachedTurn()` pass through `tool_result` hooks, image resizing, and output persistence (stored as `tool-output://<sha256>` in blob-capable stores like SQLite, PostgreSQL, and memory, or on disk otherwise; see [Persisted tool output](/tools#persisted-tool-output)).
 
 Detached calls run outside the session's async context and hold no reference to the session:
 
@@ -1503,10 +1503,9 @@ StorageProvider, type StorageSelection, type StorageOpenContext, type StorageAda
 type AdapterOptions, type SecretRef, type SessionStorageOption, type SessionStore
 loadStorageAdapter, resolveAdapterOptions, adapterOpenContext, storageSelectionKey
 secretFilePath, secretFilePathAsync
-LIBSQL_ADAPTER_PACKAGE, POSTGRES_ADAPTER_PACKAGE, LOCAL_SESSIONS_STORAGE, REDACTED_SECRET
+POSTGRES_ADAPTER_PACKAGE, LOCAL_SESSIONS_STORAGE, REDACTED_SECRET
 inMemorySecret, type InMemorySecretRef
-teamProfileSelection, type TeamProfileSelectionOptions, type TeamStorageSelection
-joinTeam, leaveTeam, getTeamProfile, isPostgresUrl
+getTeamProfile, isPostgresUrl
 selectStorage, selectStorageAsync, type StorageInputSelection, type StorageSettingsSelection
 selectProcessStorage, selectProcessStorageAsync, type ProcessStorageChoice, type StorageDomain
 processSharedStorageSelection, processSharedStorageSelectionAsync

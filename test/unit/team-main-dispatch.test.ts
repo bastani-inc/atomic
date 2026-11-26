@@ -54,7 +54,7 @@ async function atomic(...argv: string[]): Promise<{ code: number | undefined; ou
 test("atomic team runs the team command with its own arguments, cwd and agent directory, and exits with its code (#4320)", async () => {
 	const help = await atomic("team", "--help");
 	assert.equal(help.code, 0);
-	assert.match(help.out[0] ?? "", /^Usage:\n {2}atomic team join <url> \[--token-file <path>\] \[--prefix <prefix>\]/);
+	assert.match(help.out[0] ?? "", /^Usage:\n {2}atomic team status \[--json\]\n/);
 
 	const unknown = await atomic("team", "doctor");
 	assert.equal(unknown.code, 1);

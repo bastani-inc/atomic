@@ -11,7 +11,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type {
@@ -33,7 +32,6 @@ import {
 	resetSnapshotCollectionScheduleForTesting,
 	scheduleSnapshotCollection,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
-import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { assertLag, MAIN_THREAD_LAG_LIMIT_MS, measureLag } from "../helpers/event-loop-lag.js";
 import {
 	ageBlobs,
@@ -270,14 +268,11 @@ test(
 	LARGE_STORE_TEST_TIMEOUT_MS,
 );
 
-test.each(["node-sqlite", "libsql"] as const)(
+test.each(["node-sqlite"] as const)(
 	"on %s, each page of a collection reads the age index from where the page before ended, not from its start, and the pages hold every aged blob once, in age order (#5530)",
 	async (adapter) => {
 		const file = join(directory, `pages-${adapter}.sqlite`);
-		const database =
-			adapter === "node-sqlite"
-				? await openNodeSqliteDatabase(file)
-				: await openLibsqlDatabase({ url: pathToFileURL(file).href });
+		const database = await openNodeSqliteDatabase(file);
 		try {
 			// The statements that read a page of the age index, in order, with what each one read.
 			const pages: { sql: string; params: readonly SqliteValue[]; rows: readonly SqliteRow[] }[] = [];

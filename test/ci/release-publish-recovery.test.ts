@@ -33,7 +33,7 @@ const workflow = parse(workflowSource) as {
 const fakes = join(root, "test/fixtures/release-cli-fakes");
 const payload = parseReleasePayloadPackages(workflowSource);
 const nativeLeaves = payload.filter((name) => name.startsWith("@bastani/atomic-natives-"));
-const ADAPTER = "@bastani/atomic-storage-libsql";
+const ADAPTER = "@bastani/atomic-storage-postgres";
 const VERSION = "1.2.3";
 
 let workspaces: string[] = [];
@@ -192,7 +192,7 @@ function publishNpm(rel: Release, npmTag = "latest"): StepRun {
 }
 
 describe("publish-npm", () => {
-	test("publishes the eight native leaves, then the native root, the forked pi packages in dependency order, the libSQL adapter and atomic", () => {
+	test("publishes the eight native leaves, then the native root, the forked pi packages in dependency order, the PostgreSQL adapter and atomic", () => {
 		const rel = release();
 		writeNpmPayload(rel);
 		const run = publishNpm(rel);
@@ -226,7 +226,10 @@ describe("publish-npm", () => {
 		script(rel, `registration-${stateKey(ADAPTER)}`, ["e404"]);
 		const run = publishNpm(rel);
 		assert.equal(run.exitCode, 0, run.output);
-		assert.match(run.output, /::warning::@bastani\/atomic-storage-libsql is not registered on npm yet; skipping it/);
+		assert.match(
+			run.output,
+			/::warning::@bastani\/atomic-storage-postgres is not registered on npm yet; skipping it/,
+		);
 		assert.equal(isPublished(rel, ADAPTER), false);
 		assert.ok(isPublished(rel, "@bastani/atomic"));
 	});

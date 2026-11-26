@@ -156,7 +156,7 @@ Piped stdin is separated from CLI prompt text by a newline. Use `--mode json` fo
 
 - **[Interactive mode](/usage).** Learn slash commands, shortcuts, and message queueing.
 - **[Sessions](/sessions) and [Worktree snapshots](/worktree-snapshots).** Branch conversations, restore repository checkouts, and [resume on any machine with blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint).
-- **[Storage backends](/storage).** Keep local SQLite or switch to shared PostgreSQL or Turso/libSQL (or see [SDK storage backends](/sdk/storage) for embedded apps).
+- **[Storage backends](/storage).** Keep local SQLite or switch to shared PostgreSQL (or see [SDK storage backends](/sdk/storage) for embedded apps).
 - **[Compaction](/compaction).** Manage long sessions and configure [custom remote compactors](/compaction#customize-morph-or-add-a-remote-compactor).
 - **[MCP servers](/mcp-servers).** Connect external tools and data sources over Model Context Protocol.
 - **[Subagents](/subagents), [Intercom](/intercom), and [Orchestration](/orchestration).** Delegate independent tasks, coordinate live sessions, and verify multi-step work.

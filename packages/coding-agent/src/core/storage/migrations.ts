@@ -285,7 +285,7 @@ export interface StorageSchemaSetup {
 /**
  * Whether the catalog an open in progress read (`withStorageSchemaCatalog`) records `schema.revision` for the
  * store already, so {@link ensureStorageSchema} would run nothing: the store's open then skips its schema transaction
- * and its lock (#6560). On SQLite and libSQL the store's schema stamp records it, and only while nothing changed the
+ * and its lock (#6560). On SQLite the store's schema stamp records it, and only while nothing changed the
  * schema since (`sqliteSchemaStampTable`). False outside such an open, and when the revision is not recorded.
  */
 export async function storageSchemaCurrent(database: SqliteDatabase, schema: StorageSchemaSetup): Promise<boolean> {
@@ -305,7 +305,7 @@ export async function storageSchemaCurrent(database: SqliteDatabase, schema: Sto
  * database with versioned migrations (PostgreSQL) a current schema runs no DDL at all, so a runtime role with only DML
  * privileges opens it; a schema that is behind runs `setup` under the store's advisory lock, then records the revision,
  * so concurrent processes set it up once. A role that may not run the DDL then fails with
- * `StorageConfigError` reason `missing-privilege` from the adapter. On SQLite and libSQL, which keep no ledger, `setup`
+ * `StorageConfigError` reason `missing-privilege` from the adapter. On SQLite, which keep no ledger, `setup`
  * runs every time it is called, as before, and then stamps the store with the schema version the transaction leaves,
  * which {@link storageSchemaCurrent} believes until the schema changes again (#6560).
  */
@@ -353,7 +353,7 @@ export interface StorageFillfactorSetup extends StorageSchemaSetup {
  * their page as HOT updates and touch no index (#6560). It applies to the pages written from then on; `VACUUM FULL`
  * or pg_repack rewrites the existing ones with it. Nothing runs where the catalog an open read records the step, where
  * the table has a fillfactor already, or where this role does not own the table: a runtime role without DDL opens as
- * before, and `atomic storage migrate`, run as the owner, sets it. Does nothing on SQLite and libSQL.
+ * before, and `atomic storage migrate`, run as the owner, sets it. Does nothing on SQLite.
  */
 export async function ensureTableFillfactor(database: SqliteDatabase, setup: StorageFillfactorSetup): Promise<void> {
 	const dialect = dialectOf(database);

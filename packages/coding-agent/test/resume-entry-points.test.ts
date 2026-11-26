@@ -979,7 +979,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const before = runtime.session.sessionId;
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		try {
-			slowStore(runtime, "libsql", RESUME_CATALOG_TIMEOUT_MS * 2);
+			slowStore(runtime, "postgres", RESUME_CATALOG_TIMEOUT_MS * 2);
 			const pending = runtime.switchSession(sessionId).then(
 				() => undefined,
 				(error: unknown) => error,
@@ -989,7 +989,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 			assert.ok(isResumeCatalogTimeoutError(error), String(error));
 			assert.deepEqual(
 				[error.subject, error.id, error.storage, error.timeoutMs, error.retryable],
-				["session", sessionId, "libsql", RESUME_CATALOG_TIMEOUT_MS, true],
+				["session", sessionId, "postgres", RESUME_CATALOG_TIMEOUT_MS, true],
 			);
 		} finally {
 			vi.useRealTimers();
@@ -1034,11 +1034,11 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const { runtime } = await runtimeOn(fixture.sandbox.path("agent"), {});
 		const store = runtime.session.sessionManager.getSessionStore();
 		Object.defineProperty(store, "descriptor", {
-			value: { ...store.descriptor, adapter: "libsql" },
+			value: { ...store.descriptor, adapter: "postgres" },
 			configurable: true,
 		});
 		const unreachable = new StorageTransientError(
-			{ adapter: "libsql", location: "remote" },
+			{ adapter: "postgres", location: "remote" },
 			{ code: "connection-lost", outcome: "not-applied", attempts: 1 },
 			new Error("ECONNRESET"),
 		);

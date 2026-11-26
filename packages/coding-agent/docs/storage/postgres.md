@@ -133,7 +133,7 @@ You can also edit this configuration directly. For password authentication in ad
 | `schema` | `"atomic"` | Schema name starting with a lowercase ASCII letter or `_`, followed by lowercase letters, digits, or `_` (1 to 63 characters) |
 | `proxy` | From environment | `http://` or `https://` proxy URL for all connections, or `"none"` to connect directly |
 
-`atomic team join` supports libSQL URLs only. Use `atomic storage join` for PostgreSQL. For Node.js and TypeScript SDK apps, install `@bastani/atomic-storage-postgres` with `npm install` and import `openPostgresDatabase` directly. See [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) and [SDK session storage](/sdk/storage).
+For Node.js and TypeScript SDK apps, install `@bastani/atomic-storage-postgres` with `npm install` and import `openPostgresDatabase` directly. See [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) and [SDK session storage](/sdk/storage).
 
 ## TLS
 
@@ -403,8 +403,7 @@ Atomic reports the first two rows as `StorageTransientError` with code `connecti
 ## Troubleshooting
 
 - **`credential-in-url`.** Remove the password from the URL and pass `--password-file` or `--token-file`.
-- **`unsupported-url` from `atomic team join`.** `atomic team join` supports libSQL only. Use `atomic storage join` for PostgreSQL.
-- **`unsupported-option`.** `--password-file` and `--auth` apply to PostgreSQL only. libSQL uses `--token-file`.
+- **`libsql-removed`.** The URL is a libSQL one (`libsql://`, `https://`, `wss://`, or `file:`), or the command is `atomic team join`. Atomic 0.10.11 removed libSQL support; use a `postgres://` URL with `atomic storage join`, and see [Moving off libSQL](/storage#moving-off-libsql).
 - **`unsupported-auth`.** `--auth` accepts `azure` (`azure-entra`), `aws` (`aws-iam`), or `gcp` (`gcp-iam`).
 - **`adapter-not-installed`.** Run `atomic install npm:@bastani/atomic-storage-postgres` as the user running Atomic.
 - **`auth-unavailable`.** Install the cloud SDK named in the error and confirm the machine has a valid cloud identity. Atomic does not retry this error.

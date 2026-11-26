@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
 	isTeamProfileTimeoutError,
 	TeamProfileError,
 	type TeamProfileTimeoutError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
-import { LIBSQL_ADAPTER_PACKAGE } from "../../packages/coding-agent/src/core/storage/selection.js";
+import { POSTGRES_ADAPTER_PACKAGE } from "../../packages/coding-agent/src/core/storage/selection.js";
 import { joinSharedDatabase } from "../../packages/coding-agent/src/core/storage/team.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -59,7 +58,7 @@ beforeEach(() => {
 	root = makeTempDirectory("team-connection-check-");
 	agentDir = join(root, "agent");
 	mkdirSync(agentDir, { recursive: true });
-	for (const name of ["ATOMIC_STORAGE", "ATOMIC_PROFILE", "ATOMIC_TEAM_URL"]) vi.stubEnv(name, "");
+	vi.stubEnv("ATOMIC_STORAGE", "");
 	record = { opened: [], queries: [], closed: 0 };
 	globalThis.__team4320Adapter = record;
 });
@@ -72,14 +71,14 @@ afterEach(() => {
 	removeTempDirectory(root);
 });
 
-/** Install a package named like the libSQL adapter whose entry point is `source`, as `atomic install <dir>` would. */
+/** Install a package named like the PostgreSQL adapter whose entry point is `source`, as `atomic install <dir>` would. */
 function installAdapter(source: string): void {
 	const directory = join(root, "adapter");
 	mkdirSync(directory, { recursive: true });
 	writeFileSync(
 		join(directory, "package.json"),
 		JSON.stringify({
-			name: LIBSQL_ADAPTER_PACKAGE,
+			name: POSTGRES_ADAPTER_PACKAGE,
 			version: "0.0.0",
 			type: "module",
 			atomic: { storageAdapters: ["./adapter.js"] },
@@ -89,39 +88,34 @@ function installAdapter(source: string): void {
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [directory] }));
 }
 
-function writeToken(token: string): string {
-	const path = join(root, "token");
-	writeFileSync(path, token);
+function writePassword(password = "team-password"): string {
+	const path = join(root, "password");
+	writeFileSync(path, password);
 	return path;
 }
 
+const URL_ = "postgres://atomic@team.example.com/atomic";
+
 const settingsText = (): string => readFileSync(join(agentDir, "settings.json"), "utf8");
 
-function join4320(url: string, tokenFile?: string, timeoutMs?: number) {
-	return joinSharedDatabase(
-		{ url, agentDir, cwd: root, pinLocalSessions: true, ...(tokenFile === undefined ? {} : { tokenFile }) },
-		"sdk",
-		timeoutMs,
-	);
+function join4320(url: string, passwordFile = writePassword(), timeoutMs?: number) {
+	return joinSharedDatabase({ url, agentDir, cwd: root, passwordFile }, "cli", timeoutMs);
 }
 
-test("the join's connection check opens the database with the token, runs SELECT 1 and closes it (#4320)", async () => {
+test("the join's connection check opens the database with the password, runs SELECT 1 and closes it (#4320)", async () => {
 	installAdapter(RECORDING_ADAPTER);
-	const url = "libsql://team.example.turso.io";
-	await join4320(url, writeToken("team-token\n"));
-	const fileUrl = pathToFileURL(join(root, "team.sqlite")).href;
-	await join4320(fileUrl);
-	assert.deepEqual(record.opened, [{ url, authToken: "team-token" }, { url: fileUrl }]);
-	assert.deepEqual(record.queries, ["SELECT 1 AS ok", "SELECT 1 AS ok"]);
-	assert.equal(record.closed, 2);
+	await join4320(URL_, writePassword("team-password\n"));
+	assert.deepEqual(record.opened, [{ url: URL_, password: "team-password" }]);
+	assert.deepEqual(record.queries, ["SELECT 1 AS ok"]);
+	assert.equal(record.closed, 1);
 });
 
 test("a failing SELECT 1 fails the join with connection-failed, closes the database and changes nothing (#4320)", async () => {
 	installAdapter(RECORDING_ADAPTER);
 	record.fail = new Error("no such namespace");
 	const before = settingsText();
-	const url = "libsql://team.example.turso.io";
-	const failure = await join4320(url, writeToken("team-token")).then(
+	const url = URL_;
+	const failure = await join4320(url).then(
 		() => assert.fail("joined a database whose SELECT 1 failed"),
 		(error: Error) => error,
 	);
@@ -136,14 +130,14 @@ test("a failing SELECT 1 fails the join with connection-failed, closes the datab
 
 test("an installed adapter without openDatabase fails the connection check by name (#4320)", async () => {
 	installAdapter("export default { atomicStorageAdapter: 1 };\n");
-	const failure = await join4320(pathToFileURL(join(root, "team.sqlite")).href).then(
+	const failure = await join4320(URL_).then(
 		() => assert.fail("joined through an adapter that cannot open a database"),
 		(error: Error) => error,
 	);
 	assert.ok(failure instanceof TeamProfileError);
 	assert.deepEqual(
 		[failure.code, failure.detail],
-		["connection-failed", `${LIBSQL_ADAPTER_PACKAGE} has no openDatabase hook`],
+		["connection-failed", `${POSTGRES_ADAPTER_PACKAGE} has no openDatabase hook`],
 	);
 });
 
@@ -152,7 +146,7 @@ test("the connection deadline is cleared as soon as the database answers (#4320)
 	const DEADLINE_MS = 3_600_000;
 	const timers = vi.spyOn(globalThis, "setTimeout");
 	const cleared = vi.spyOn(globalThis, "clearTimeout");
-	await join4320(pathToFileURL(join(root, "team.sqlite")).href, undefined, DEADLINE_MS);
+	await join4320(URL_, undefined, DEADLINE_MS);
 	const deadline = timers.mock.calls.findIndex(([, delay]) => delay === DEADLINE_MS);
 	assert.notEqual(deadline, -1, "the join armed its connection deadline");
 	assert.ok(cleared.mock.calls.some(([timer]) => timer === timers.mock.results[deadline]?.value));
@@ -162,7 +156,7 @@ test("a connection check that fails after the deadline is kept as the timeout's 
 	installAdapter(RECORDING_ADAPTER);
 	record.answerAfterMs = 200;
 	record.fail = new Error("connection reset after the deadline");
-	const failure = await join4320("libsql://team.example.turso.io", writeToken("team-token"), 20).then(
+	const failure = await join4320(URL_, undefined, 20).then(
 		() => assert.fail("joined a database that answered after the deadline"),
 		(error: Error) => error,
 	);
@@ -185,9 +179,9 @@ test("a database that never answers times out exactly at the deadline, and elaps
 	});
 	record.hang = true;
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-	const url = "libsql://team.example.turso.io";
+	const url = URL_;
 	let settled = false;
-	const joining = join4320(url, writeToken("team-token"), 300).then(
+	const joining = join4320(url, undefined, 300).then(
 		() => assert.fail("joined a database that never answered"),
 		(error: Error) => {
 			settled = true;

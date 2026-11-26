@@ -193,7 +193,7 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	/**
 	 * Optional. The bytes this process may still write on the file system that holds the database's file, or undefined
 	 * when the file system does not say; the facade exposes it as `SqliteDatabase.freeBytes`. Provide it only for a
-	 * database in a file this process can see, such as a local SQLite or libSQL file.
+	 * database in a file this process can see, such as a local SQLite file.
 	 */
 	freeBytes?(): Awaitable<number | undefined>;
 	/**

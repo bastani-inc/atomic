@@ -542,11 +542,10 @@ export default function piIntercomExtension(atomic: ExtensionAPI, testOverrides:
     if (!getLiveContext(ctx, generation)) throw new IntercomRuntimeInactiveError();
     const actual = routing?.acrossMachines ?? false;
     const explicit = explicitHomeGroup(config, ctx);
-    const strictSharedProfile = selectedShared && (process.env.ATOMIC_PROFILE ?? "").trim() === "ci";
     if (routing !== undefined) {
       brokerRouting = actual;
       const brokerLacksSelectedStorage = !routing.hasSharedStorage && selectedShared;
-      if (brokerLacksSelectedStorage || (strictSharedProfile && !actual)) {
+      if (brokerLacksSelectedStorage) {
         if (sessionHomeGroup === null) await warmProjectGroup(ctx);
         throw new IntercomRoutingMismatchError("shared-storage-not-on-broker", resolveSessionHomeGroup());
       }

@@ -1,7 +1,7 @@
 ---
 title: "SDK storage backends"
 sidebarTitle: "Storage backends"
-description: "Configure local SQLite, JSONL, in-memory, libSQL/Turso, and PostgreSQL storage for createAgentSession(), createAgentSessionRuntime(), and SessionManager."
+description: "Configure local SQLite, JSONL, in-memory, and PostgreSQL storage for createAgentSession(), createAgentSessionRuntime(), and SessionManager."
 ---
 
 By default, Atomic persists sessions in local SQLite at `~/.atomic/workflows/journal.sqlite` (`session_` table prefix). In SDK applications, you can select any built-in or remote backend per session, share one database connection across multiple sessions, or manage lifecycle explicitly through `createAgentSessionRuntime()` and `SessionManager`.
@@ -15,7 +15,6 @@ For CLI setup, database role administration, migrations, and custom drivers, see
 | **Local SQLite** (default) | Built into `@bastani/atomic` | `{ kind: "sqlite", path, prefix? }` or caller-owned `openNodeSqliteDatabase()` | Single-machine apps, full worktree snapshots, history search, zero external services |
 | **JSONL directory** | Built into `@bastani/atomic` | `{ kind: "jsonl", dir }` or `JsonlSessionStore.open(dir, { exactDirectory: true })` | Human-readable append-only `.jsonl` files (no snapshot blobs) |
 | **In-memory** | Built into `@bastani/atomic` | `SessionManager.inMemory()`, `new MemorySessionStore()`, or `{ kind: "memory" }` | Tests, ephemeral runs, or RAM-backed release/rehydrate |
-| **libSQL / Turso** | [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql) | `openLibsqlDatabase()` + `{ kind: "database", database }`, `{ kind: "adapter", ... }`, or `teamProfileSelection()` | Lightweight shared DB for small teams, multi-machine resume, or CI |
 | **PostgreSQL 16+** | [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) | `openPostgresDatabase()` + `{ kind: "database", database }` or `{ kind: "adapter", ... }` | Concurrent multi-machine writers, managed HA, connection poolers, cloud IAM |
 
 ### `@bastani/atomic` vs. `@bastani/atomic/storage`
@@ -295,89 +294,7 @@ try {
 
 > **Module resolution for `{ kind: "adapter" }`:** Atomic resolves adapter package names from user-scope packages installed with `atomic install` (`~/.atomic/agent/npm`), paths passed in `DefaultResourceLoader({ additionalExtensionPaths: [packageRoot] })`, or relative to `agentDir` — **not** from your application's local `node_modules`. If your app installed `@bastani/atomic-storage-postgres` only with `npm install`, use **Option A** (`openPostgresDatabase()`), install the package in user scope (`atomic install npm:@bastani/atomic-storage-postgres`), pass its directory via `additionalExtensionPaths`, or pass a resolved file path (`fileURLToPath(import.meta.resolve(POSTGRES_ADAPTER_PACKAGE))`).
 
-### libSQL / Turso
-
-Install the optional adapter alongside `@bastani/atomic`:
-
-```bash
-npm install @bastani/atomic-storage-libsql @bastani/atomic
-```
-
-**Option A — Caller-owned `openLibsqlDatabase()`:**
-
-```typescript
-import { createAgentSession } from "@bastani/atomic";
-import { openLibsqlDatabase } from "@bastani/atomic-storage-libsql";
-
-const database = await openLibsqlDatabase({
-  url: "libsql://<db>.turso.io",
-  authToken: process.env.TURSO_AUTH_TOKEN,
-  // Optional for self-hosted sqld (`libsql:`, `https:`, or `http:` URLs):
-  // namespace: "team-a",
-  // headers: { "x-custom-routing": "primary" },
-});
-try {
-  const { session } = await createAgentSession({
-    sessionStore: { kind: "database", database, prefix: "app_" },
-  });
-  try {
-    await session.prompt("Summarize recent test failures");
-  } finally {
-    await session.dispose();
-  }
-} finally {
-  await database.close();
-}
-```
-
-**Option B — `{ kind: "adapter" }` and `teamProfileSelection()`:**
-
-The `{ kind: "adapter" }` resolution rules are the same as PostgreSQL above (`atomic install npm:@bastani/atomic-storage-libsql`, `additionalExtensionPaths`, or resolved file path). For CI or team profiles, `teamProfileSelection()` builds a validated libSQL `storage` selection without touching `settings.json`:
-
-```typescript
-import {
-  createAgentSession,
-  LIBSQL_ADAPTER_PACKAGE,
-  teamProfileSelection,
-} from "@bastani/atomic";
-
-// Adapter selection
-{
-  const { session } = await createAgentSession({
-    sessionStore: {
-      kind: "adapter",
-      module: LIBSQL_ADAPTER_PACKAGE,
-      options: { url: "libsql://<db>.turso.io" },
-      secrets: { authToken: { env: "TURSO_AUTH_TOKEN" } },
-      prefix: "app_",
-    },
-  });
-  try {
-    await session.prompt("Check release readiness");
-  } finally {
-    await session.dispose();
-  }
-}
-
-// CI / team profile helper (libSQL / Turso only)
-// Pass exactly one of `token` (in-memory, redacted), `tokenEnv` (validated immediately), or `tokenFile`.
-{
-  const storage = teamProfileSelection({
-    profile: "ci",
-    url: process.env.ATOMIC_TEAM_URL!,
-    tokenEnv: "ATOMIC_TEAM_TOKEN",
-    prefix: "ci_",
-  });
-  const { session } = await createAgentSession({ storage });
-  try {
-    await session.prompt("Run release checks");
-  } finally {
-    await session.dispose();
-  }
-}
-```
-
-See [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql) and [Team and CI setup](/guides/team-setup#from-the-sdk) for `sqld` checkpoints, retries, and CI environment variables.
+> Atomic 0.10.11 removed libSQL and Turso support, including `@bastani/atomic-storage-libsql`, `teamProfileSelection()`, and `LIBSQL_ADAPTER_PACKAGE`. To move sessions off libSQL, see [Moving off libSQL](/storage#moving-off-libsql).
 
 ## `createAgentSessionRuntime()` and `SessionManager` with explicit stores
 
@@ -423,8 +340,8 @@ import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 const cwd = process.cwd();
 const agentDir = getAgentDir();
 
-// Swap openNodeSqliteDatabase() for openPostgresDatabase() or openLibsqlDatabase()
-// to run the exact same runtime against PostgreSQL or libSQL.
+// Swap openNodeSqliteDatabase() for openPostgresDatabase()
+// to run the exact same runtime against PostgreSQL.
 const database = await openNodeSqliteDatabase("./runtime-sessions.sqlite");
 try {
   const store = await SqlSessionStore.open(database, { prefix: "app_" });
@@ -529,7 +446,7 @@ When `createAgentSession()` chooses a session store, the first source set wins:
 
 1. `sessionManager` (caller-owned `SessionManager`).
 2. `sessionStore` (either a `SessionStore` instance or a tagged `StorageSelection`: `{ kind: "sqlite", path, prefix? }`, `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, or `{ kind: "adapter", module, options?, secrets?, prefix? }`).
-3. `storage` (`settings.json` shape: `{ path, prefix? }`, `{ database, prefix? }`, `{ memory: true }`, or `{ adapter, options?, secrets?, prefix? }` — also returned by `teamProfileSelection()`. Does not accept `{ dir }`; use `sessionStore: { kind: "jsonl", dir }` for JSONL).
+3. `storage` (`settings.json` shape: `{ path, prefix? }`, `{ database, prefix? }`, `{ memory: true }`, or `{ adapter, options?, secrets?, prefix? }`. Does not accept `{ dir }`; use `sessionStore: { kind: "jsonl", dir }` for JSONL).
 4. Process overrides (`ATOMIC_SESSIONS_STORAGE`, `ATOMIC_STORAGE`, `--storage`, `--storage-file`; see [Selecting storage per process](/storage#selecting-storage-per-process)).
 5. Settings (`sessions.storage`, then top-level `storage`).
 6. Default local SQLite (`~/.atomic/workflows/journal.sqlite`).
@@ -608,7 +525,6 @@ For the full list of storage error classes, cross-process `serializeStorageError
 
 - [Operator storage setup](/storage): PostgreSQL roles, TLS, proxies, poolers, migrations, `atomic storage` commands, and custom drivers.
 - [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres): PostgreSQL adapter options, cloud IAM, and SQL helpers.
-- [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql): Turso and self-hosted `sqld` adapter options and retry behavior.
 - [SDK overview](/sdk): `createAgentSession()`, workspaces, Intercom policies, and lifecycle hooks.
 - [SDK API reference](/sdk/reference): Full options, loaders, run modes, and exports.
 - [`SessionManager` API](/session-format#sessionmanager-api): Entry types, tree navigation, and session append methods.

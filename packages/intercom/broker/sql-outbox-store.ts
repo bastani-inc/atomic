@@ -765,7 +765,7 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 					},
 				);
 			}
-			// SQLite and libSQL: a write statement takes the database's write lock even when it changes nothing, so a read
+			// SQLite: a write statement takes the database's write lock even when it changes nothing, so a read
 			// decides first, without it, whether there is anything to claim: empty scans (such as fan-out wake-up polls across
 			// idle sessions) cost one read. Linearizable: if a row commits after this snapshot, its enqueue writes a new
 			// wake-up hint. The same read answers a claim another claimant holds, or one of only the claimant's own rows in

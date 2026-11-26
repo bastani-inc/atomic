@@ -41,8 +41,6 @@ knowledge:
       node_modules/.bin on PATH for their nested Vitest commands. For many test-file filters on Windows,
       invoke `node node_modules/vitest/vitest.mjs run --project unit ...` directly rather than `npx vitest`:
       npx.cmd passes through cmd.exe and fails once the command exceeds its 8191-character limit.
-      `test/unit/storage-libsql-close-once.test.ts` runs native-driver close regressions in child processes
-      with glibc freed-memory poisoning on Linux, and checks file release directly on Windows.
       Filter coding-agent tests with
       `npm run test --workspace=@bastani/atomic -- test/history-bounded.test.ts` (the package script
       already passes `--run`; run from its workspace, not the root with only `--config`). Run `test/http-dispatcher.test.ts`

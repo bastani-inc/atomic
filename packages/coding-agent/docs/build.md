@@ -38,10 +38,10 @@ Work down this list and stop at the first mechanism that solves your problem.
 [Programmatic modes](/programmatic) compares JSON mode, RPC, and the SDK, and links each one to its protocol or API reference.
 
 - [TypeScript SDK](/sdk). Embed Atomic in Node.js applications.
-- [SDK storage backends](/sdk/storage). Wire local SQLite, JSONL, in-memory, libSQL/Turso, or PostgreSQL into `createAgentSession()` and `createAgentSessionRuntime()`.
+- [SDK storage backends](/sdk/storage). Wire local SQLite, JSONL, in-memory, or PostgreSQL into `createAgentSession()` and `createAgentSessionRuntime()`.
 - [Structured decisions](/sdk/structured-decisions). Run typed classifier or chat decisions with `decide()` and `generateStructuredOutput()`.
 - [Web server guide](/sdk/web-server). Stream agent runs from an HTTP server or Next.js App Router endpoint.
 - [RPC mode](/rpc). Integrate over stdin and stdout JSONL.
 - [JSON event stream mode](/json). Run print mode with structured events.
 - [TUI components](/tui). Build custom terminal UI for extensions.
-- [Standalone libraries](/libraries). Use Atomic's six core packages (`ai`, `tui`, `agent-core`, `codemode`, `schema`, `telemetry`) and optional storage adapters ([`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) and [`@bastani/atomic-storage-libsql`](/libraries/storage-libsql)) directly.
+- [Standalone libraries](/libraries). Use Atomic's six core packages (`ai`, `tui`, `agent-core`, `codemode`, `schema`, `telemetry`) and optional storage adapters ([`@bastani/atomic-storage-postgres`](/libraries/storage-postgres)) directly.

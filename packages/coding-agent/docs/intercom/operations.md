@@ -120,17 +120,11 @@ By default, each machine's broker serves only sessions on that machine. With mul
 
 ### Turning it on
 
-For a team, run `atomic team join <url> --token-file <path>` to configure the team database for Intercom while keeping session transcripts local and restarting the broker. CI runners use `ATOMIC_PROFILE=ci` instead. See [Team and CI setup](/guides/team-setup).
+For a team that shares Intercom while keeping session transcripts local, or CI runners that share both, see [Team and CI setup](/guides/team-setup).
 
-To configure multi-node routing with a shared database for both sessions and Intercom, install either `@bastani/atomic-storage-libsql` ([Turso and libSQL](/storage#moving-off-libsql), [libSQL adapter library](/libraries/storage-libsql)) or `@bastani/atomic-storage-postgres` ([PostgreSQL](/storage/postgres), [PostgreSQL adapter library](/libraries/storage-postgres)) on every machine and run `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for all flags and options.
+To configure multi-node routing with a shared database for both sessions and Intercom, install `@bastani/atomic-storage-postgres` ([PostgreSQL](/storage/postgres), [PostgreSQL adapter library](/libraries/storage-postgres)) on every machine and run `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for all flags and options.
 
 ```bash
-# Turso / libSQL
-atomic install npm:@bastani/atomic-storage-libsql
-atomic storage join libsql://<db>.turso.io --token-file ~/turso-token --prefix team_
-atomic intercom restart
-
-# PostgreSQL
 atomic install npm:@bastani/atomic-storage-postgres
 atomic storage join postgres://atomic@db.example.com:5432/atomic?sslmode=verify-full --password-file ~/pg-password --prefix team_
 atomic intercom restart
@@ -140,15 +134,15 @@ You can also give every machine the same top-level `storage` selection and `pref
 
 The broker reads its storage selection from:
 
-1. Process overrides on the Atomic process that spawns the broker: `--storage`, `--storage-file`, `ATOMIC_STORAGE`, or `ATOMIC_PROFILE=ci` ([Selecting storage per process](/storage#selecting-storage-per-process)).
+1. Process overrides on the Atomic process that spawns the broker: `--storage`, `--storage-file`, or `ATOMIC_STORAGE` ([Selecting storage per process](/storage#selecting-storage-per-process)).
 2. Otherwise, the top-level `storage` block in `~/.atomic/agent/settings.json` (or under `ATOMIC_CODING_AGENT_DIR`).
 
 ```json
 {
   "storage": {
-    "adapter": "@bastani/atomic-storage-libsql",
-    "options": { "url": "libsql://<db>.turso.io" },
-    "secrets": { "authToken": { "env": "TURSO_TOKEN" } },
+    "adapter": "@bastani/atomic-storage-postgres",
+    "options": { "url": "postgresql://atomic@db.example.com:5432/atomic?sslmode=verify-full" },
+    "secrets": { "password": { "env": "ATOMIC_DB_PASSWORD" } },
     "prefix": "team_"
   }
 }
@@ -177,7 +171,7 @@ How the project group name is derived:
 
 Explicit groups take precedence over the project group: an inherited subagent group, an SDK host policy, `ATOMIC_INTERCOM_GROUP`, or `group` in `config.json`. Joining `default` explicitly while multi-node routing is on prints a warning (in the UI or once on stderr for non-interactive runs) because every teammate sharing the database can message `default`. Running sessions keep their current group until restarted or reloaded.
 
-Before registering, each session verifies the running broker's routing mode so a session never accidentally joins `default` on a multi-node broker or runs locally when shared storage was requested. If the running broker's storage disagrees with the session (for example after switching `storage` or `ATOMIC_PROFILE=ci`), run `atomic intercom restart` and restart the session. For `ProjectGroupError` and the `IntercomRouting*Error` classes (`IntercomRoutingMismatchError`, `IntercomRoutingUnavailableError`, `IntercomRoutingTimeoutError`, `IntercomRoutingChangedError`), see [Routing and project-group errors](/intercom/reference#routing-and-project-group-errors).
+Before registering, each session verifies the running broker's routing mode so a session never accidentally joins `default` on a multi-node broker or runs locally when shared storage was requested. If the running broker's storage disagrees with the session (for example after switching `storage` or `ATOMIC_STORAGE`), run `atomic intercom restart` and restart the session. For `ProjectGroupError` and the `IntercomRouting*Error` classes (`IntercomRoutingMismatchError`, `IntercomRoutingUnavailableError`, `IntercomRoutingTimeoutError`, `IntercomRoutingChangedError`), see [Routing and project-group errors](/intercom/reference#routing-and-project-group-errors).
 
 ### What works across machines
 

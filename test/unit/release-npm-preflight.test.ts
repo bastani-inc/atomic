@@ -57,7 +57,6 @@ describe("scripts/release-npm-preflight.ts", () => {
 			"@bastani/atomic-tui",
 			"@bastani/atomic-agent-core",
 			"@bastani/atomic-codemode",
-			"@bastani/atomic-storage-libsql",
 			"@bastani/atomic-storage-postgres",
 			"@bastani/atomic",
 		]);
@@ -231,7 +230,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 				allowNew: false,
 			}),
 			(error: Error) => {
-				assert.match(error.message, /2 of 18 publish-payload packages are not registered on npm/u);
+				assert.match(error.message, /2 of 17 publish-payload packages are not registered on npm/u);
 				assert.match(error.message, /^ {2}- @bastani\/atomic-natives-win32-arm64-msvc$/mu);
 				assert.match(error.message, /^ {2}- @bastani\/atomic$/mu);
 				assert.match(error.message, /Re-run with --allow-new/u);
@@ -281,7 +280,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 	});
 
 	test("the storage adapters are published only once their npm names exist, so an unregistered name cannot break a release (#3857, #4793)", async () => {
-		const adapters = ["@bastani/atomic-storage-libsql", "@bastani/atomic-storage-postgres"];
+		const adapters = ["@bastani/atomic-storage-postgres"];
 		const publisher = parseReleasePublisher(publishWorkflow);
 		assert.deepEqual(publisher.deferredUntilRegistered, adapters);
 
@@ -312,10 +311,10 @@ describe("scripts/release-npm-preflight.ts", () => {
 	test("deferral covers only the names the publisher lists (#3857)", async () => {
 		await assert.rejects(
 			verifyReleasePackagesRegistered({
-				packages: ["@bastani/atomic", "@bastani/atomic-storage-libsql"],
+				packages: ["@bastani/atomic", "@bastani/atomic-storage-postgres"],
 				isRegistered: async () => false,
 				allowNew: false,
-				deferredUntilRegistered: ["@bastani/atomic-storage-libsql"],
+				deferredUntilRegistered: ["@bastani/atomic-storage-postgres"],
 			}),
 			/1 of 2 publish-payload packages is not registered on npm:\n {2}- @bastani\/atomic\n/u,
 		);
