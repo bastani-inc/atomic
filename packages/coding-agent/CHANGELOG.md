@@ -5,7 +5,7 @@
 ### Fixed
 
 - On macOS, the standalone `atomic` binary no longer reports a healthy local SQLite store as failed with "unable to open database file (SQLite code 14)" in `atomic storage status` after every Atomic process had closed it, for example right after `atomic storage import`. macOS's SQLite, which that binary uses, would not open a store read-only once its last connection had removed the `-wal` file.
-- A process still running Atomic 0.10.10 or 0.10.11-alpha.1 after an in-place update (`npm install -g`, `bun add -g`) no longer fails to open a PostgreSQL session store with "this store needs a newer Atomic" once forks share history in that database. It opens the store, and its forks share their parent's history as in a new process.
+- A process still running Atomic 0.10.10 or 0.10.11-alpha.1 after an in-place update (`npm install -g`, `bun add -g`) no longer fails to open a PostgreSQL session store with "this store needs a newer Atomic" once forks share history in that database. It opens the store, and its forks share their parent's history as in a new process ([#6631](https://github.com/bastani-inc/atomic/pull/6631)).
 
 ## [0.10.11-alpha.2] - 2026-11-26
 
