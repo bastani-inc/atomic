@@ -84,13 +84,11 @@ describe("bash timeout validation", () => {
 			await run(86400);
 			await run(10_000_000);
 			expect(observed).toEqual([undefined, 86400, 10_000_000]);
-			for (const invalid of [-1, -0.5, Number.NaN, Number.POSITIVE_INFINITY, 1e308])
+			for (const invalid of [0, -1, -0.5, Number.NaN, Number.POSITIVE_INFINITY, 1e308])
 				await expect(run(invalid)).rejects.toThrow(
-					/finite, non-negative number of seconds\. Leave timeout out for no time limit; 0 stops the command immediately\./,
+					/must be a positive number of seconds\. Leave timeout out for no time limit\./,
 				);
 			expect(executed).toBe(3);
-			await run(0);
-			expect(observed.at(-1)).toBe(0);
 		},
 	);
 
@@ -189,7 +187,7 @@ describe("bash timeout validation", () => {
 		},
 	);
 
-	test.each([-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+	test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
 		"rejects an invalid explicit tool timeout: %s",
 		async (timeout) => {
 			let executed = false;
@@ -209,7 +207,7 @@ describe("bash timeout validation", () => {
 		},
 	);
 
-	test.each([-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+	test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
 		"rejects an invalid local-operation timeout before spawning: %s",
 		async (timeout) => {
 			await expect(
@@ -218,14 +216,14 @@ describe("bash timeout validation", () => {
 		},
 	);
 
-	test("a zero timeout times the command out at once instead of meaning no limit", async () => {
+	test("a zero timeout is refused before the command starts, not treated as no limit", async () => {
 		const marker = join(tmpdir(), `atomic-zero-timeout-${process.pid}-${Date.now()}`);
 		await expect(
 			createLocalBashOperations().exec(`touch ${JSON.stringify(marker)}`, process.cwd(), {
 				timeout: 0,
 				onData: () => {},
 			}),
-		).rejects.toThrow("timeout:0");
+		).rejects.toThrow("Leave timeout out for no time limit");
 		expect(existsSync(marker)).toBe(false);
 	});
 
