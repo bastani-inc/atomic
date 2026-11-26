@@ -18,6 +18,7 @@ import { reportDebugAsync } from "./debug.ts";
 import { ownProcessStartToken, readProcessStartToken } from "./process-start-token.js";
 import { attachSessionClaim } from "./session-claims.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
+import { setForkCopyRefusalNote } from "./storage/session/fork-detach.js";
 import { setSharedHistorySwitchHost } from "./storage/session/shared-history-switch.js";
 import type {
 	SessionOpenMarker,
@@ -290,6 +291,10 @@ setSharedHistorySwitchHost({
 	skipped: (fields) => {
 		reportDebugAsync("storage", "shared-history-forks-deferred", fields).catch(() => {});
 	},
+});
+// A fork's copy of the rows it shares that a missing source chunk refused, with the write that needed it, is noted there too.
+setForkCopyRefusalNote((fields) => {
+	reportDebugAsync("storage", "fork-copy-refused", fields).catch(() => {});
 });
 
 /**

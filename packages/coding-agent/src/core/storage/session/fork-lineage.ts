@@ -1,5 +1,6 @@
 import type { SqliteExecutor, SqliteRow, SqliteStatement } from "../database.js";
 import type { StorageDialect } from "../dialect.js";
+import { ForkSourceIncompleteError } from "./errors.js";
 import { type ForkCopyTables, forkBlobCopy } from "./fork-row-copy.js";
 import { assertForkSegments, type ForkSegment, forkRunSegments, segmentLength } from "./fork-segments.js";
 
@@ -243,6 +244,23 @@ export function withoutForkPieces(segments: readonly ForkSegment[], pieces: read
 	return remaining;
 }
 
+/** The first seq of `piece` whose entry its source lacks, or holds without one of its chunks: why its copy was refused. */
+async function firstIncomplete(tx: SqliteExecutor, tables: ForkMaterializeTables, piece: ForkSegment): Promise<number> {
+	const rows = await tx.all<SqliteRow & { seq: number; chunks: number; held: number }>(
+		`SELECT e.seq, e.chunks, (SELECT count(*) FROM ${tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx >= 0 AND c.idx < e.chunks) AS held FROM ${tables.entries} e WHERE e.session_id = ? AND e.seq BETWEEN ? AND ? ORDER BY e.seq`,
+		piece.sourceId,
+		piece.fromSeq,
+		piece.toSeq,
+	);
+	let expected = piece.fromSeq;
+	for (const row of rows) {
+		if (Number(row.seq) !== expected || (Number(row.chunks) > 0 && Number(row.held) !== Number(row.chunks)))
+			return expected;
+		expected++;
+	}
+	return expected;
+}
+
 /**
  * Copies into session `childId`, a fork that shares history, the rows `pieces` of its segments name, with their chunks,
  * search texts and the blobs their tool outputs name, then writes its segments without them, with a new generation, so
@@ -265,14 +283,20 @@ export async function materializeForkSegments(
 	for (const piece of [...pieces].sort((a, b) => a.baseSeq - b.baseSeq)) {
 		const shift = piece.baseSeq - piece.fromSeq + 1;
 		const range = [piece.sourceId, piece.fromSeq, piece.toSeq];
-		await tx.run(
-			`INSERT INTO ${tables.entries} (session_id, seq, entry_id, entry_json, chunks) SELECT ?, seq + ?, entry_id, entry_json, chunks FROM ${tables.entries} WHERE session_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`,
+		// Only an entry the source holds whole is copied: one stored in chunks needs each of its chunks 0 to `chunks - 1`,
+		// counted by their key in the same statement. An entry missing, or lacking a chunk, is not copied, and the count of
+		// the rows copied tells: the copy is refused before anything of it commits, and the fork keeps reading the source.
+		const copied = await tx.run(
+			`INSERT INTO ${tables.entries} (session_id, seq, entry_id, entry_json, chunks) SELECT ?, e.seq + ?, e.entry_id, e.entry_json, e.chunks FROM ${tables.entries} e WHERE e.session_id = ? AND e.seq BETWEEN ? AND ? AND (e.chunks = 0 OR e.chunks = (SELECT count(*) FROM ${tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx >= 0 AND c.idx < e.chunks)) ORDER BY e.seq`,
 			childId,
 			shift,
 			...range,
 		);
+		if (Number(copied.changes) !== segmentLength(piece))
+			throw new ForkSourceIncompleteError(childId, piece.sourceId, await firstIncomplete(tx, tables, piece));
+		// Each entry's own chunks only, never a row an older version left past them or at an entry stored whole.
 		await tx.run(
-			`INSERT INTO ${tables.entryChunks} (session_id, seq, idx, data) SELECT ?, seq + ?, idx, data FROM ${tables.entryChunks} WHERE session_id = ? AND seq BETWEEN ? AND ? ORDER BY seq, idx`,
+			`INSERT INTO ${tables.entryChunks} (session_id, seq, idx, data) SELECT ?, c.seq + ?, c.idx, c.data FROM ${tables.entryChunks} c JOIN ${tables.entries} e ON e.session_id = c.session_id AND e.seq = c.seq WHERE c.session_id = ? AND c.seq BETWEEN ? AND ? AND c.idx >= 0 AND c.idx < e.chunks ORDER BY c.seq, c.idx`,
 			childId,
 			shift,
 			...range,
