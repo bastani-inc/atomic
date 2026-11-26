@@ -43,10 +43,17 @@ So nothing Atomic does depends on keeping the same connection to PostgreSQL betw
 
 If you leave out `listenUrl`, Atomic notices that it is behind a pooler and stops waiting for wake-ups. Brokers then check the database for new messages every half second instead of every 5 seconds. Messages still arrive, a little later, and the database gets more queries.
 
-**Prepared statements.** A prepared statement is a query that PostgreSQL parses and plans once, then runs many times. Atomic can keep its frequent queries prepared, which saves the server work, but only if the pooler keeps track of them. The Atomic setting `maxPreparedStatements` controls this:
+**Prepared statements.** A prepared statement is a query that PostgreSQL parses and plans once, then runs many times. Atomic can keep its frequent queries prepared, which saves the server work, but only if the pooler keeps track of them. PgBouncer 1.21 and later does, when its `max_prepared_statements` setting is above `0`. PgBouncer 1.24 and later set it to 200 by default.
 
-- By default, Atomic turns prepared statements off when `listenUrl` is set or the URL's port is 6432 or 6543. Most setups need nothing more.
-- To use them through PgBouncer, you need PgBouncer 1.21 or later with `max_prepared_statements` above `0`. PgBouncer 1.24 and later set it to 200 by default. Then set `maxPreparedStatements` in Atomic to `256`.
+Atomic turns prepared statements on by itself when it finds such a PgBouncer, so you do not need to set anything:
+
+- **PgBouncer 1.26 and later** tell each client their version and `max_prepared_statements` when it logs in. Atomic reads them from its first connection.
+- **PgBouncer 1.21 to 1.25** do not. On its first connection, Atomic prepares one test statement in a transaction, and checks whether PgBouncer renamed it, as it renames the statements it keeps. Then Atomic removes the statement again. The test goes out together with Atomic's first query, so it costs no extra round trip.
+- **Other poolers.** The same test compares the server process that runs it with the one the connection's cancel key names. A pooler that hands out cancel keys of its own, as PgBouncer does, gets caught this way on any port, and Atomic keeps prepared statements off behind it.
+- **Anything else stays off:** PgBouncer before 1.21, PgBouncer with `max_prepared_statements = 0`, Supabase's Supavisor, other poolers, and any pooler Atomic cannot identify. This is the safe choice, because a pooler that loses prepared statements makes queries fail.
+- **If your pooler listens on another port, set `listenUrl` or `maxPreparedStatements: 0`.** A pooler on a port other than 6432 or 6543 that passes the server's own cancel key through looks like PostgreSQL itself to Atomic, so prepared statements stay on there. A pooler needs `listenUrl` for wake-ups anyway.
+
+Atomic's `maxPreparedStatements` setting overrides this. Set it to `0` to keep prepared statements off, or to `256` to turn them on without the check. If you change PgBouncer's `max_prepared_statements` to `0` while Atomic runs, the next query that needs a lost statement fails once and runs again, and Atomic stops preparing statements until it restarts.
 
 ```text
 agent processes ──> PgBouncer :6432 ──> PostgreSQL :5432
@@ -162,7 +169,7 @@ reserve_pool_timeout = 3
 max_db_connections = 85
 
 ;; Remember up to this many prepared statements per PostgreSQL connection.
-;; Atomic uses them only when its maxPreparedStatements setting is above 0.
+;; Atomic finds this setting and uses prepared statements when it is above 0.
 max_prepared_statements = 200
 
 ;; Close a PostgreSQL connection unused for 10 minutes, and replace any connection after 1 hour.
@@ -300,7 +307,7 @@ What this shows:
 
 - With the database close to the agents, 80 pooled connections serve 200 agents with room to spare. Only 13 to 18 were in use at a time.
 - With the database far away, transactions last longer and lock waits hold connections, so the same pool fills up. A larger pool removed the queue. The remaining errors were lock timeouts between agents sending, claiming and delivering Intercom messages at once, which PgBouncer does not cause.
-- Turning on prepared statements (`maxPreparedStatements: 256`) worked through PgBouncer but did not change these times. Leave it unset unless your own measurements show a gain.
+- Turning on prepared statements (`maxPreparedStatements: 256`) worked through PgBouncer but did not change these times. Atomic now turns them on by itself behind PgBouncer 1.21 or later, which saves the server parsing and planning work. Round trips are what set these times.
 
 ## Common errors
 
@@ -315,7 +322,7 @@ Atomic reports these as `StorageUnavailableError` or `StorageTransientError`. Th
 | `wake-ups: polling only, notifications do not pass the URL's transaction pooler` in `atomic storage status` | `listenUrl` is missing or points at PgBouncer. | Set `listenUrl` to PostgreSQL's own address. |
 | `too many connections for role "atomic_runtime"` | The role's `CONNECTION LIMIT` is lower than PgBouncer's pool plus the brokers' wake-up connections. | Raise the limit, or lower `default_pool_size`. |
 | `sorry, too many clients already` | PostgreSQL's `max_connections` is lower than PgBouncer's pool plus the wake-up and other connections. | Raise `max_connections`, or lower `default_pool_size` and `max_db_connections`. |
-| `prepared statement "atomic_…" does not exist` | Atomic's `maxPreparedStatements` is above `0`, but PgBouncer does not keep prepared statements: it is older than 1.21, or `max_prepared_statements` is `0`. | Set `max_prepared_statements` above `0` in PgBouncer, or set `maxPreparedStatements` to `0` in Atomic. |
+| `prepared statement "atomic_…" does not exist` | Atomic sends prepared statements, but PgBouncer does not keep them: it is older than 1.21, or `max_prepared_statements` is `0`. Atomic turns them on by itself only behind a PgBouncer that keeps them, so this follows setting `maxPreparedStatements` by hand, or changing `max_prepared_statements` while Atomic runs. | Set `max_prepared_statements` above `0` in PgBouncer, or set `maxPreparedStatements` to `0` in Atomic. |
 | `unsupported startup parameter: <name>` | A client sent a connection setting that PgBouncer does not forward. Atomic sends only `application_name`, which PgBouncer forwards. | Add the name to `ignore_startup_parameters` for other clients that need it, such as `extra_float_digits` for Java clients. Never add `application_name`. |
 | `bouncer config error`, with `auth_query response contained null user name` in PgBouncer's log | The lookup function returned a row of empty values for an unknown role. | Declare the function with `RETURNS TABLE`, as in [A role for password lookups](#a-role-for-password-lookups). |
 | `kernel file descriptor limit: 1024` in PgBouncer's log | The service's open-file limit is below `max_client_conn`. | Raise `LimitNOFILE`, as in [Start PgBouncer](#start-pgbouncer). |
@@ -324,7 +331,7 @@ Atomic reports these as `StorageUnavailableError` or `StorageTransientError`. Th
 
 These services include a pooler of their own. We have not tested Atomic through them. The notes come from each service's documentation.
 
-- **Supabase.** The shared pooler, Supavisor, runs transaction mode on port 6543. Point `url` at port 6543 and `listenUrl` at the direct connection on port 5432. Supavisor does not keep prepared statements, so leave `maxPreparedStatements` at its default, which is `0` on port 6543.
+- **Supabase.** The shared pooler, Supavisor, runs transaction mode on port 6543. Point `url` at port 6543 and `listenUrl` at the direct connection on port 5432. Supavisor does not keep prepared statements, so leave `maxPreparedStatements` unset. Atomic keeps them off there, because it does not identify Supavisor as a PgBouncer that keeps them.
 - **Neon.** The pooled host name ends in `-pooler` and runs PgBouncer in transaction mode. Point `url` at the pooled host and `listenUrl` at the same host name without `-pooler`.
 - **Azure Database for PostgreSQL Flexible Server.** Turn on the built-in PgBouncer with the `pgbouncer.enabled` server parameter, on General Purpose and Memory Optimized tiers. It listens on port 6432 of the same host. Point `listenUrl` at port 5432.
 - **Amazon RDS Proxy.** RDS Proxy does not pass `LISTEN`, so point `listenUrl` at the database instance's own endpoint. RDS Proxy may keep a client on one database connection ("pinning") when it sees session settings. We have not checked whether Atomic's statements cause pinning. Watch the proxy's pinning metrics in CloudWatch.

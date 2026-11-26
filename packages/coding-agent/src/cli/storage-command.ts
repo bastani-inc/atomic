@@ -661,11 +661,13 @@ async function migrate(
 	const sessions = await new StorageProvider().openSessionStore(selection, { agentDir, domain: "sessions" });
 	try {
 		// The fork staging table, which a runtime role without DDL cannot create when its first bounded clone needs it
-		// (#5594), and the chat records' table, which it cannot create at the first chat record.
+		// (#5594), the chat records' table, which it cannot create at the first chat record, and the function that appends
+		// to a session in one round trip on PostgreSQL (#6599).
 		const { SqlSessionStore } = await import("../core/storage/session/sql-session-store.js");
 		if (sessions instanceof SqlSessionStore) {
 			await sessions.prepareForkStaging();
 			await sessions.prepareChatRecords();
+			await sessions.prepareAppendFunction();
 		}
 	} finally {
 		await sessions.close();

@@ -187,6 +187,14 @@ export interface SqliteDatabase extends SqliteExecutor {
 		options?: SqliteTransactionOptions,
 	): Promise<T>;
 	/**
+	 * @internal Runs `statement` by itself as one request that commits on its own, queued in this process as a
+	 * transaction of `concurrency` is: behind the calls such a transaction waits for, and ahead of the calls that wait
+	 * for it. The statement takes on the server whatever locks it needs itself, such as a function that takes the
+	 * domain's advisory locks. A transient failure that applied nothing runs it again. Resolves with its rows. Present
+	 * only where the driver runs transactions concurrently (PostgreSQL).
+	 */
+	autocommit?(statement: SqliteStatement, concurrency: TransactionConcurrency): Promise<SqliteRow[]>;
+	/**
 	 * Runs the statements in order, in one write transaction, as one call to the database: all of them commit or none
 	 * do. Resolves with each statement's rows. Present only when the driver can send a batch in one request, which
 	 * saves a round trip per statement against a remote database.
