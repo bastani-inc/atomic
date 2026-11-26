@@ -263,8 +263,6 @@ type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
 
 /** The reads that begin a fork with shared history: see `SqlSessionStore.sharedForkReads`. */
 interface SharedForkReads {
-	/** The sessions the lock read locks, in id order. */
-	readonly ids: readonly string[];
 	readonly exists: SqliteStatement;
 	readonly lock: SqliteStatement;
 	readonly tombstones: SqliteStatement;
@@ -1730,15 +1728,33 @@ export class SqlSessionStore implements SessionStore {
 		id: string,
 		found: NewSessionRow | undefined,
 		operation: "create" | "fork",
-	): Promise<void> {
+	): Promise<boolean> {
 		if (found?.id != null) throw new SessionExistsError(id);
-		if (!(await this.sharedHistoryForks(tx))) return;
+		if (!(await this.sharedHistoryForks(tx))) return false;
 		// The read found the tombstone too where it asked for it.
-		if (!(found?.tombstone === undefined ? await this.hasForkTombstone(tx, id) : found.tombstone !== null)) return;
-		await createOverTombstoneWithin(this.forkHost(), tx, id).catch((error: unknown) => {
+		if (!(found?.tombstone === undefined ? await this.hasForkTombstone(tx, id) : found.tombstone !== null))
+			return false;
+		return createOverTombstoneWithin(this.forkHost(), tx, id).catch((error: unknown) => {
 			noteForkCopyRefusal(error, operation);
 			throw error;
 		});
+	}
+
+	/**
+	 * {@link startNewSession} for a fork with shared history, once it has read its donor: resolves with the donor. A donor
+	 * that read the rows a deleted session with the child's ID left holds its own copy of them now, in segments of its
+	 * own, and is read again (#6560).
+	 */
+	private async startSharedFork(
+		tx: SqliteExecutor,
+		child: string,
+		donor: SharedForkDonor,
+		source: ForkArchiveSource,
+		withState: boolean,
+	): Promise<SharedForkDonor> {
+		if (!(await this.startNewSession(tx, child, donor.child, "fork"))) return donor;
+		if (!donor.segments.some((segment) => segment.sourceId === child)) return donor;
+		return this.sharedForkDonor(tx, child, source, this.sharedForkReads(child, source.sessionId, withState));
 	}
 
 	async createFork(header: SessionRecordHeader, entries: SessionForkSeed, source: ForkArchiveSource) {
@@ -1787,7 +1803,7 @@ export class SqlSessionStore implements SessionStore {
 					(tx, checked) => this.writeEntriesFork(tx, checked, header, entries, source, reads),
 					this.sessionWrite(
 						header.id,
-						...(reads === undefined ? [] : [reads.exists, reads.lock, reads.tombstones, reads.segments]),
+						...(reads === undefined ? [] : [reads.exists, reads.tombstones, reads.lock, reads.segments]),
 					),
 				);
 			} catch (error) {
@@ -1845,7 +1861,7 @@ export class SqlSessionStore implements SessionStore {
 		await checked;
 		// As `create`: the rows a deleted session with the child's ID left for forks go first. Without shared history, no
 		// session left any.
-		if (shared !== undefined) await this.startNewSession(tx, header.id, shared.child, "fork");
+		if (shared !== undefined) shared = await this.startSharedFork(tx, header.id, shared, unchecked, false);
 		const tables = await this.viewTables(tx);
 		const writes = new SentWrites(tx);
 		if (!sharing) {
@@ -2230,7 +2246,9 @@ export class SqlSessionStore implements SessionStore {
 				this.summaryWrite(header.id, { header, entries: [], lastSeq }, summary, index),
 			create: (header, entries) => this.create(header, entries),
 			newSessionRead: (id) => this.newSessionRead(id),
-			startNewSession: (tx, id, found) => this.startNewSession(tx, id, found as NewSessionRow | undefined, "fork"),
+			startNewSession: async (tx, id, found) => {
+				await this.startNewSession(tx, id, found as NewSessionRow | undefined, "fork");
+			},
 			sourceStoredEntryChunks: (source) => {
 				const store = nativeForkReader(source, "entry");
 				return store instanceof SqlSessionStore && store.readEntryChunk === SqlSessionStore.prototype.readEntryChunk
@@ -2408,7 +2426,7 @@ export class SqlSessionStore implements SessionStore {
 					(tx, checked) => this.writeStreamedFork(tx, checked, header, stream, source, reads),
 					this.sessionWrite(
 						header.id,
-						...(reads === undefined ? [] : [reads.exists, reads.lock, reads.tombstones, reads.segments]),
+						...(reads === undefined ? [] : [reads.exists, reads.tombstones, reads.lock, reads.segments]),
 					),
 				);
 			} catch (error) {
@@ -2426,20 +2444,22 @@ export class SqlSessionStore implements SessionStore {
 		reads: SharedForkReads | undefined,
 	) {
 		const sharedRead = this.leadingForkDonor(tx, header.id, source, reads);
-		const shared = (await this.sharedHistoryForks(tx))
+		const withState = stream.prefix !== undefined;
+		let shared = (await this.sharedHistoryForks(tx))
 			? await (sharedRead ??
 					this.sharedForkDonor(
 						tx,
 						header.id,
 						source,
-						this.sharedForkReads(header.id, source.sessionId, stream.prefix !== undefined),
+						this.sharedForkReads(header.id, source.sessionId, withState),
 					))
 			: undefined;
-		const head = shared ?? (await this.forkDonor(tx, header.id, source));
+		const read = shared ?? (await this.forkDonor(tx, header.id, source));
 		await checked;
 		// As `create`: the rows a deleted session with the child's ID left for forks go first. Without shared history, no
 		// session left any.
-		if (shared !== undefined) await this.startNewSession(tx, header.id, shared.child, "fork");
+		if (shared !== undefined) shared = await this.startSharedFork(tx, header.id, shared, source, withState);
+		const head = shared ?? read;
 		const { encodedForkRow } = await import("./fork-row-bytes.js");
 		const { foldForkRow } = await import("./fork-row-index.js");
 		const prefix = stream.prefix;
@@ -2683,15 +2703,15 @@ export class SqlSessionStore implements SessionStore {
 
 	/**
 	 * The reads that begin a fork of session `donor` into `child` with shared history (#6560), in order: whether the child
-	 * exists; the rows of the donor and of the sessions its segments name, as the statement starts or as this store last
-	 * saw them, each locked `key-share` in id order, unless the child exists, with the donor's watermark and generation,
-	 * and with `withState` its summary state; then the donor's segments, read once those locks are held.
+	 * exists; the tombstones of the deleted sessions among the donor's sources, locked `key-share`; the rows of the donor
+	 * and of the sessions its segments name, as the statement starts or as this store last saw them, each locked
+	 * `key-share` in id order, unless the child exists, with the donor's watermark and generation, and with `withState`
+	 * its summary state; then the donor's segments, read once those locks are held.
 	 */
 	private sharedForkReads(child: string, donor: string, withState: boolean): SharedForkReads {
 		const ids = [...new Set([donor, ...(this.forkSources.get(donor) ?? [])])].sort();
 		const epoch = `COALESCE(${this.dialect.jsonText("summary_state", "epoch")}, ${this.dialect.jsonText("summary_state", "resume", "epoch")}, revision)`;
 		return {
-			ids,
 			exists: this.newSessionRead(child),
 			lock: {
 				sql: `SELECT id, last_seq, CASE WHEN id = ? THEN ${epoch} END AS epoch${withState ? ", CASE WHEN id = ? THEN summary_state END AS summary_state" : ""}
@@ -2700,8 +2720,9 @@ export class SqlSessionStore implements SessionStore {
 					AND NOT EXISTS (SELECT 1 FROM ${this.tables.sessions} c WHERE c.id = ?) ORDER BY id${this.dialect.lockClause("key-share")}`,
 				params: [donor, ...(withState ? [donor] : []), JSON.stringify(ids), donor, child],
 			},
-			// A source deleted while forks still read it keeps only a tombstone, which the sweep that removes its rows locks:
-			// the fork locks it too, after the sessions rows, as every writer orders them.
+			// A source deleted while forks still read it keeps only a tombstone, which the sweep that removes its rows and a
+			// session created under its ID lock: the fork locks it too, before the sessions rows, as every writer orders them
+			// (see fork-pins.ts). A fork waiting for a tombstone so holds no session's row the tombstone's holder may lock.
 			tombstones: {
 				sql: `SELECT session_id FROM ${this.forkTables.forkTombstones} WHERE ${inJsonList(this.dialect, "session_id")}
 					OR session_id IN (SELECT source_id FROM ${this.forkTables.forkSegments} WHERE session_id = ?)
@@ -2734,12 +2755,12 @@ export class SqlSessionStore implements SessionStore {
 				(error: unknown) => ({ error }),
 			);
 		const existing = settle(tx.get<NewSessionRow>(reads.exists.sql, ...reads.exists.params));
-		const locked = settle(tx.all<Locked>(reads.lock.sql, ...reads.lock.params));
 		const tombstones = settle(
 			tx.all<SqliteRow & { session_id: string }>(reads.tombstones.sql, ...reads.tombstones.params),
 		);
+		const locked = settle(tx.all<Locked>(reads.lock.sql, ...reads.lock.params));
 		const segmentRows = settle(tx.all<Segment>(reads.segments.sql, ...reads.segments.params));
-		for (const read of [existing, locked, tombstones, segmentRows]) {
+		for (const read of [existing, tombstones, locked, segmentRows]) {
 			const answer = await read;
 			if ("error" in answer) throw answer.error;
 		}
@@ -2756,10 +2777,10 @@ export class SqlSessionStore implements SessionStore {
 		}));
 		const sources = [...new Set(segments.map((segment) => segment.sourceId))].sort();
 		this.noteForkSources(source.sessionId, sources);
-		// The lock read found the donor's sources as its statement began. One that moved the donor's history while the read
-		// waited for the donor's lock may have named others since: the fork then runs again, locking those.
+		// The locking reads found the donor's sources as each statement began. One that moved the donor's history while the
+		// reads waited for their locks may have named others since, or deleted one between the two reads: the fork then runs
+		// again, locking those.
 		const lockedIds = new Set([
-			...reads.ids,
 			...answer(await locked).map((candidate) => String(candidate.id)),
 			...answer(await tombstones).map((candidate) => String(candidate.session_id)),
 		]);
