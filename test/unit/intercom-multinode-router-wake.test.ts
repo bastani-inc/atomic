@@ -5651,3 +5651,47 @@ describe("one live registration per Intercom id across brokers (#5607)", () => {
 		}
 	});
 });
+
+describe("router wake-up hints that name their recipient", () => {
+	test("a hint naming a recipient reads that recipient's queue alone; one naming none reads every hosted recipient's", async () => {
+		const shared = await cluster();
+		const node = await startNode(shared);
+		const alice = session("alice");
+		const bob = session("bob");
+		for (const hosted of [alice, bob]) {
+			node.sessions.set(hosted.info.id, hosted);
+			await node.router.sessionRegistered(hosted);
+		}
+		await flush();
+		const claimed: string[] = [];
+		const claim = node.state.outbox.claim.bind(node.state.outbox);
+		vi.spyOn(node.state.outbox, "claim").mockImplementation(async (request) => {
+			claimed.push(request.targetIdentity);
+			return claim(request);
+		});
+		const publisher = await shared.connectBus();
+		cleanups.push(() => publisher.close());
+		const brokerId = node.router.brokerId;
+		const aliceIdentity = deliveryTargetIdentity(alice);
+		await publisher.publish({ brokerId, reason: "outbox", version: 1, targetIdentity: aliceIdentity });
+		await vi.waitFor(() => assert.deepEqual(claimed, [aliceIdentity]));
+		await flush();
+		assert.deepEqual(claimed, [aliceIdentity], "bob's queue is not read");
+		await publisher.publish({
+			brokerId,
+			reason: "outbox",
+			version: 2,
+			targetIdentity: deliveryTargetIdentity(session("elsewhere")),
+		});
+		await flush();
+		assert.deepEqual(claimed, [aliceIdentity], "a recipient hosted elsewhere reads nothing here");
+		claimed.length = 0;
+		await publisher.publish({ brokerId, reason: "outbox", version: 3 });
+		await vi.waitFor(() => assert.equal(claimed.length, 2));
+		assert.deepEqual(
+			new Set(claimed),
+			new Set([aliceIdentity, deliveryTargetIdentity(bob)]),
+			"an earlier release's hint",
+		);
+	});
+});

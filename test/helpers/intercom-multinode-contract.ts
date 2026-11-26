@@ -2857,7 +2857,7 @@ export function registerReturningSessionConformance(
 			assert.equal(after.woke, "broker-b");
 			assert.deepEqual(await onB.recorder.next(isHintFor("broker-b", "outbox")), {
 				kind: "hint",
-				hint: { brokerId: "broker-b", reason: "outbox", version: after.row.sequence },
+				hint: { brokerId: "broker-b", reason: "outbox", version: after.row.sequence, targetIdentity: RECIPIENT },
 			});
 			const stale = await enqueue("m3", { wakeHostWithinMs: EXPIRED_MS });
 			assert.equal(stale.woke, undefined, "a lease past the bound names no broker");

@@ -144,11 +144,18 @@ export interface StorageNotificationSubscription {
  */
 export interface StorageNotifications {
 	/**
-	 * A statement that sends `payload` to the listeners of `channel` when the transaction it runs in commits, and never
-	 * when it rolls back: run it in the transaction of the write it announces. `channel` is a name such as
-	 * `<prefix>pool_ready`; the database shortens a long one the same way for `notify` and `listen`.
+	 * A statement that sends `payload` to the listeners of `channel` once the transaction it runs in commits: run it in the
+	 * transaction of the write it announces. `channel` is a name such as `<prefix>pool_ready`; the database shortens a long
+	 * one the same way for `notify` and `listen`. With `unless`, a read, the notification goes out only when that read,
+	 * made as it goes out, returns no row.
+	 *
+	 * Postgres answers the statement at once and sends the notification in a transaction of its own, right behind the
+	 * `COMMIT` in the same round trip: a notifying commit holds a server-wide lock until it is flushed, which would make
+	 * every other notifying commit wait for it. That transaction may also run when the `COMMIT` rolled back, and commits
+	 * that send the same notification within a few milliseconds of each other share one, sent once they committed. Older
+	 * adapters send it in the transaction and ignore `unless`.
 	 */
-	notify(channel: string, payload: string): SqliteStatement;
+	notify(channel: string, payload: string, unless?: SqliteStatement): SqliteStatement;
 	/** Delivers `channel`'s events to `listener`, on one listening connection the database shares between channels. */
 	listen(channel: string, listener: (event: StorageNotificationEvent) => void): StorageNotificationSubscription;
 	/** Opens the listening connection when it is not open, and resolves with its state once the first attempt settled. */

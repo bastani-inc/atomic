@@ -30,6 +30,7 @@ import {
 	type OutboxStore,
 	type StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { wakeUpNotices } from "./database-wake-up-bus.js";
 import { addMissingColumns } from "./sql-add-column.js";
 import type { OutboxReservation } from "./sql-sent-message-authority.js";
 import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
@@ -531,16 +532,23 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			const hint = async () => {
 				// PostgreSQL: never wait behind another session's lock on the hint log; such a hint goes without. The hint
 				// is a new row, so it needs no lock domain of its own (#6560): see `fencedPath("intercom-wakeup-hint")`.
-				if (dialect === "postgres") await executor.run(`LOCK TABLE ${wakeups} IN ROW EXCLUSIVE MODE NOWAIT`);
-				await executor.run(
-					`INSERT INTO ${wakeups}(broker_id, reason, version, created_at) VALUES (?, 'outbox', ?, ${nowMs})`,
-					host,
-					Number(inserted.sequence),
-				);
-				// Notified when it commits, as the wake-up bus's own hints are, so the host does not wait for its backup
-				// poll (#6560).
-				const notify = database.notifications?.notify(wakeups, host);
-				if (notify !== undefined) await executor.run(notify.sql, ...notify.params);
+				// Notified once it commits, as the wake-up bus's own hints are, so the host does not wait for its backup
+				// poll (#6560); on Postgres the notifications go right behind the commit, outside it.
+				const notifications = database.notifications;
+				const statements: SqliteStatement[] = [
+					...(dialect === "postgres" ? [{ sql: `LOCK TABLE ${wakeups} IN ROW EXCLUSIVE MODE NOWAIT`, params: [] }] : []),
+					{
+						sql: `INSERT INTO ${wakeups}(broker_id, reason, version, created_at, target_identity)
+							VALUES (?, 'outbox', ?, ${nowMs}, ?)`,
+						params: [host, Number(inserted.sequence), request.targetIdentity],
+					},
+					...(notifications === undefined ? [] : wakeUpNotices(notifications, wakeups, leases, host)),
+				];
+				// Together, in one round trip, on a pipelined transaction's own handle, which sends calls in the order they
+				// are made: a lock refused aborts the transaction, so the insert after it fails too.
+				if (finisherOf?.(executor) !== undefined)
+					await Promise.all(statements.map(({ sql, params }) => executor.run(sql, ...params)));
+				else for (const { sql, params } of statements) await executor.run(sql, ...params);
 			};
 			await hint().catch((cause: unknown) => {
 				throw new OutboxWakeFailedError(cause);

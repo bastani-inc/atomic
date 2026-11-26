@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as storage from "@bastani/atomic/storage";
 import {
 	dialectOf,
@@ -6,6 +7,9 @@ import {
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
+	type SqliteStatement,
+	type StorageNotificationEvent,
+	type StorageNotifications,
 	type StorageNotificationSubscription,
 	storageMigrationTable,
 	validateStoragePrefix,
@@ -20,6 +24,7 @@ import type {
 	WakeUpSubscribeResult,
 	WakeUpSubscription,
 } from "./wake-up-bus.js";
+import { addMissingColumns } from "./sql-add-column.js";
 import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 /**
@@ -29,12 +34,15 @@ import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./
  * hints written meanwhile may have been pruned or missed. While the database stays unavailable, reopening backs off
  * exponentially from the poll interval up to `WAKE_UP_RECONNECT_MAX_DELAY_MS`.
  *
- * On a database that delivers notifications (Postgres), a publish also notifies the channel named like the table, in
- * the transaction that writes the hint, and a subscribed connection polls as soon as a notification for one of its
- * brokers arrives (#5103). The interval poll stays: notifications are lost while the listening connection is down, and
- * none arrive through a transaction pooler. While the database reports its listening connection live, the poll only
- * backs the notifications up and runs at `WAKE_UP_LISTENING_POLL_INTERVAL_MS`; the listener's `listening` event, sent
- * when it listens again after an outage, polls at once (#6560).
+ * On a database that delivers notifications (Postgres), a publish also notifies the hint's broker once the hint
+ * commits, and a subscribed connection polls as soon as a notification for one of its brokers arrives (#5103). Each
+ * broker has a channel of its own (`brokerWakeUpChannel`), so a notification reaches only the connection that hosts it;
+ * brokers of earlier releases listen on the channel named like the table instead, which is notified too while the
+ * broker's membership does not say it listens on its own (`wakeUpNotices`). A connection listens on both. The interval
+ * poll stays: notifications are lost while the listening connection is down, and none arrive through a transaction
+ * pooler. While the database reports its listening connection live, the poll only backs the notifications up and runs
+ * at `WAKE_UP_LISTENING_POLL_INTERVAL_MS`; the listener's `listening` event, sent when it listens again after an
+ * outage, polls at once (#6560).
  */
 
 /** How often a connection with subscriptions reads its hints when no notification would announce them. */
@@ -52,12 +60,47 @@ export const WAKE_UP_HINT_RETENTION_MS = OUTBOX_BACKUP_POLL_INTERVAL_MS;
  */
 export const WAKE_UP_PRUNE_INTERVAL_MS = 10_000;
 /**
- * Hints read and deleted per statement; a poll repeats until a batch comes back short. Each batch's delete binds one
- * parameter per hint, so a backlog never exceeds SQLite's bound-parameter limit (999 on old builds).
+ * Hints read and deleted per statement; a poll repeats until a batch comes back short, so a backlog is taken in
+ * statements of bounded size.
  */
 export const WAKE_UP_POLL_BATCH_SIZE = 500;
 /** Longest wait between attempts to reopen an unavailable database; the backup poll covers the gap. */
 export const WAKE_UP_RECONNECT_MAX_DELAY_MS = OUTBOX_BACKUP_POLL_INTERVAL_MS;
+
+/**
+ * What a broker's membership subject holds, as the lease table stores it, when the broker listens on its own wake-up
+ * channel (`BrokerMembershipSubject.ownWakeUpChannel`). A JSON string escapes its quotes, so only that field matches.
+ */
+export const OWN_WAKE_UP_CHANNEL_MARK = '"ownWakeUpChannel":true';
+
+/**
+ * The channel only `brokerId`'s connections listen on: the hint table's name and 64 bits of a hash of the broker id, so
+ * it stays a short identifier whatever the id, as Que's `que_listener_<pid>`. A notification on it reaches that broker's
+ * connection alone, where one on the table's channel reaches every broker's.
+ */
+export function brokerWakeUpChannel(table: string, brokerId: string): string {
+	return `${table}_${createHash("sha256").update(brokerId).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * The notifications that wake `brokerId` once the transaction that runs them commits: one on its own channel, and one on
+ * the table's channel, where brokers of earlier releases listen, unless `brokerId`'s membership lease, in `leases`, says
+ * it listens on its own. Both carry the broker id, which a listener checks.
+ */
+export function wakeUpNotices(
+	notifications: StorageNotifications,
+	table: string,
+	leases: string,
+	brokerId: string,
+): SqliteStatement[] {
+	return [
+		notifications.notify(brokerWakeUpChannel(table, brokerId), brokerId),
+		notifications.notify(table, brokerId, {
+			sql: `SELECT 1 FROM ${leases} WHERE kind = 'broker' AND key = ? AND strpos(subject_json, ?) > 0`,
+			params: [brokerId, OWN_WAKE_UP_CHANNEL_MARK],
+		}),
+	];
+}
 
 /** Runs `callback` once after `delayMs` and returns a function that cancels it. */
 export type WakeUpPollScheduler = (callback: () => void, delayMs: number) => () => void;
@@ -84,6 +127,15 @@ interface HintRow extends SqliteRow {
 	readonly broker_id: string;
 	readonly reason: string;
 	readonly version: number;
+	readonly target_identity: string | null;
+}
+
+/** The channels a connection listens on, each with its subscription, and the database it listens through. */
+interface Listening {
+	readonly database: SqliteDatabase;
+	readonly channels: Map<string, StorageNotificationSubscription>;
+	/** The database reported its listening connection live, as of the latest check. */
+	live: boolean;
 }
 
 interface DatabaseSubscription {
@@ -124,6 +176,8 @@ async function createSchema(database: SqliteDatabase, table: string, prefix: str
 		CREATE INDEX IF NOT EXISTS ${table}_broker ON ${table} (broker_id, id);
 		CREATE INDEX IF NOT EXISTS ${table}_created ON ${table} (created_at);`;
 	await ensureBrokerSchema(database, prefix, "wakeups", (tx) => tx.exec(schema));
+	// The recipient a hint is about (`WakeUpHint.targetIdentity`), added later: an earlier broker's hints leave it null.
+	await addMissingColumns(database, table, { target_identity: "TEXT" });
 	await ensureUnloggedHints(database, table, prefix);
 }
 
@@ -187,6 +241,8 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	private readonly subscriptions = new Set<DatabaseSubscription>();
 	private readonly options: DatabaseWakeUpBusOptions;
 	private readonly table: string;
+	/** The lease table, whose membership leases say which brokers listen on their own channels. */
+	private readonly leases: string;
 	private readonly pollIntervalMs: number;
 	private readonly listeningPollIntervalMs: number;
 	private readonly schedule: WakeUpPollScheduler;
@@ -199,15 +255,11 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	/** Consecutive failed attempts to reopen the database; each doubles the wait before the next. */
 	private reconnectFailures = 0;
 	private reconnectNotBefore = 0;
-	/** The notification channel this connection listens on, and the database it listens through. */
-	private listening:
-		| {
-				readonly database: SqliteDatabase;
-				readonly subscription: StorageNotificationSubscription;
-				/** The database reported its listening connection live, as of the latest check. */
-				live: boolean;
-		  }
-		| undefined;
+	/**
+	 * The notification channels this connection listens on, each with its subscription: the table's and each subscribed
+	 * broker's own (`brokerWakeUpChannel`). And the database it listens through.
+	 */
+	private listening: Listening | undefined;
 	/** A notification arrived during a poll: the next poll runs as soon as that one ends. */
 	private pollAgain = false;
 	/** When a publish last deleted the hints past the retention, by this process's clock. */
@@ -216,6 +268,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	constructor(options: DatabaseWakeUpBusOptions, table: string, database: SqliteDatabase) {
 		this.options = options;
 		this.table = table;
+		this.leases = `${validateStoragePrefix(options.prefix)}intercom_leases`;
 		this.database = database;
 		this.pollIntervalMs = options.pollIntervalMs ?? WAKE_UP_POLL_INTERVAL_MS;
 		this.listeningPollIntervalMs = options.listeningPollIntervalMs ?? WAKE_UP_LISTENING_POLL_INTERVAL_MS;
@@ -227,28 +280,36 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		const database = await this.connection(false);
 		if (database === undefined) return { status: "unavailable" };
 		const { nowMs } = dialectOf(database);
-		const insert = `INSERT INTO ${this.table} (broker_id, reason, version, created_at) VALUES (?, ?, ?, ${nowMs})`;
+		const insert: SqliteStatement = {
+			sql: `INSERT INTO ${this.table} (broker_id, reason, version, created_at, target_identity) VALUES (?, ?, ?, ${nowMs}, ?)`,
+			params: [hint.brokerId, hint.reason, hint.version, hint.targetIdentity ?? null],
+		};
 		const notifications = database.notifications;
 		try {
-			if (notifications === undefined) await database.run(insert, hint.brokerId, hint.reason, hint.version);
+			if (notifications === undefined) await database.run(insert.sql, ...insert.params);
 			else {
-				// The notification goes out when the hint commits, so the poll it starts finds the hint. A hint is a new
-				// row that no write checks first, so its writers take no lock domain (#6560): see
+				// The notifications go out once the hint commits, so the poll they start finds the hint: on Postgres right
+				// behind its commit, in the same round trip, and the insert goes with the transaction's start (#6560). A hint
+				// is a new row that no write checks first, so its writers take no lock domain: see
 				// `fencedPath("intercom-wakeup-hint")`.
-				const notify = notifications.notify(this.table, hint.brokerId);
+				const notices = wakeUpNotices(notifications, this.table, this.leases, hint.brokerId);
 				await database.transaction(
 					async (tx) => {
-						await tx.run(insert, hint.brokerId, hint.reason, hint.version);
-						await tx.run(notify.sql, ...notify.params);
+						await Promise.all([insert, ...notices].map(({ sql, params }) => tx.run(sql, ...params)));
 					},
-					{ ...RETRY_UNAPPLIED, concurrency: { kind: "fenced", audit: fencedPath("intercom-wakeup-hint") } },
+					{
+						...RETRY_UNAPPLIED,
+						concurrency: { kind: "fenced", audit: fencedPath("intercom-wakeup-hint") },
+						leading: [insert],
+					},
 				);
 			}
 			// #6560: at most once per interval, not at every publish: each prune is a write every broker would send.
 			if (this.prunedAt === undefined || Date.now() - this.prunedAt >= WAKE_UP_PRUNE_INTERVAL_MS) {
 				this.prunedAt = Date.now();
+				// The clock is read once, in a subquery: PostgreSQL's is volatile, and a volatile bound uses no index.
 				await database.run(
-					`DELETE FROM ${this.table} WHERE created_at < ${nowMs} - ?`,
+					`DELETE FROM ${this.table} WHERE created_at < (SELECT ${nowMs}) - ?`,
 					WAKE_UP_HINT_RETENTION_MS,
 				);
 			}
@@ -272,6 +333,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 			close: async () => {
 				subscription.open = false;
 				this.subscriptions.delete(subscription);
+				this.listen();
 			},
 		};
 		return { status: "subscribed", subscription: handle };
@@ -286,8 +348,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		this.closed = true;
 		this.cancelPoll?.();
 		this.cancelPoll = undefined;
-		this.listening?.subscription.close();
-		this.listening = undefined;
+		this.stopListening();
 		for (const subscription of this.subscriptions) subscription.open = false;
 		this.subscriptions.clear();
 		await this.polling;
@@ -303,22 +364,45 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		});
 	}
 
-	/** Listens for notifications through the current database, when it delivers them. */
+	/**
+	 * Listens for notifications through the current database, when it delivers them: on each subscribed broker's own
+	 * channel, and on the table's, where brokers of earlier releases send them. A channel no subscription needs any more
+	 * is left.
+	 */
 	private listen(): void {
 		const database = this.database;
-		if (this.closed || database === undefined || this.listening?.database === database) return;
-		this.listening?.subscription.close();
-		this.listening = undefined;
+		if (this.closed || database === undefined) return;
+		if (this.listening !== undefined && this.listening.database !== database) this.stopListening();
 		const notifications = database.notifications;
 		if (notifications === undefined) return;
-		const subscription = notifications.listen(this.table, (event) => {
-			if (event.kind === "listening") {
-				if (this.listening?.subscription === subscription) this.listening.live = true;
-				this.pollNow();
-			} else if ([...this.subscriptions].some((open) => open.brokerId === event.payload)) this.pollNow();
-		});
-		this.listening = { database, subscription, live: false };
-		void this.checkListening();
+		const fresh = this.listening === undefined;
+		const listening = (this.listening ??= { database, channels: new Map(), live: false });
+		const wanted = new Set([
+			this.table,
+			...[...this.subscriptions].map((subscription) => brokerWakeUpChannel(this.table, subscription.brokerId)),
+		]);
+		for (const [channel, subscription] of listening.channels) {
+			if (wanted.has(channel)) continue;
+			subscription.close();
+			listening.channels.delete(channel);
+		}
+		for (const channel of wanted) {
+			if (!listening.channels.has(channel))
+				listening.channels.set(channel, notifications.listen(channel, (event) => this.notified(listening, event)));
+		}
+		if (fresh) void this.checkListening();
+	}
+
+	private notified(listening: Listening, event: StorageNotificationEvent): void {
+		if (event.kind === "listening") {
+			if (this.listening === listening) listening.live = true;
+			this.pollNow();
+		} else if ([...this.subscriptions].some((open) => open.brokerId === event.payload)) this.pollNow();
+	}
+
+	private stopListening(): void {
+		for (const subscription of this.listening?.channels.values() ?? []) subscription.close();
+		this.listening = undefined;
 	}
 
 	/** Asks the database whether its listening connection is live, for the interval of the next poll. */
@@ -371,20 +455,22 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		const database = await this.connection(true);
 		const brokerIds = [...new Set([...this.subscriptions].map((subscription) => subscription.brokerId))];
 		if (database === undefined || brokerIds.length === 0) return;
-		const placeholders = brokerIds.map(() => "?").join(", ");
-		const batch = `FROM ${this.table} WHERE broker_id IN (${placeholders}) ORDER BY id LIMIT ${WAKE_UP_POLL_BATCH_SIZE}`;
+		const dialect = dialectOf(database);
+		// One statement text whatever the number of brokers, so the server plans it once: their ids go as one JSON array.
+		const batch = `FROM ${this.table} WHERE broker_id IN (SELECT value FROM ${dialect.jsonValues("?")}) ORDER BY id LIMIT ${WAKE_UP_POLL_BATCH_SIZE}`;
+		const ids = JSON.stringify(brokerIds);
 		const reader = this.options.reader ?? database;
 		for (;;) {
 			let rows: HintRow[];
 			try {
-				if (dialectOf(database).name === "postgres") {
+				if (dialect.name === "postgres") {
 					// #6560: one statement takes the batch and deletes it. It is a write, so it goes through the database,
 					// never the reader, as a statement of its own in the wake-up table's domain: one round trip, queued
 					// behind neither other domains' writes nor read-only transactions. It returns the hints in no
 					// particular order.
 					const take = {
-						sql: `DELETE FROM ${this.table} WHERE id IN (SELECT id ${batch}) RETURNING id, broker_id, reason, version`,
-						params: brokerIds,
+						sql: `DELETE FROM ${this.table} WHERE id IN (SELECT id ${batch}) RETURNING id, broker_id, reason, version, target_identity`,
+						params: [ids],
 					};
 					rows = (
 						database.autocommit === undefined
@@ -393,11 +479,14 @@ class DatabaseWakeUpBus implements WakeUpBus {
 					) as HintRow[];
 					rows.sort((left, right) => Number(left.id) - Number(right.id));
 				} else {
-					rows = await reader.all<HintRow>(`SELECT id, broker_id, reason, version ${batch}`, ...brokerIds);
+					rows = await reader.all<HintRow>(
+						`SELECT id, broker_id, reason, version, target_identity ${batch}`,
+						ids,
+					);
 					if (rows.length > 0) {
 						await database.run(
-							`DELETE FROM ${this.table} WHERE id IN (${rows.map(() => "?").join(", ")})`,
-							...rows.map((row) => row.id),
+							`DELETE FROM ${this.table} WHERE id IN (SELECT value FROM ${dialect.jsonValues("?")})`,
+							JSON.stringify(rows.map((row) => Number(row.id))),
 						);
 					}
 				}
@@ -410,6 +499,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 					brokerId: row.broker_id,
 					reason: row.reason === "outcome" ? "outcome" : "outbox",
 					version: row.version,
+					...(row.target_identity === null ? {} : { targetIdentity: row.target_identity }),
 				};
 				for (const subscription of this.subscriptions) {
 					if (subscription.brokerId === hint.brokerId) this.deliver(subscription, { kind: "hint", hint });

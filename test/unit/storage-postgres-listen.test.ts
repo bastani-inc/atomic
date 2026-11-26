@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import type { StorageNotificationEvent } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
+	createNotifyCoalescer,
 	createPostgresListener,
 	LISTEN_HEALTH_INTERVAL_MS,
 	LISTEN_RETRY,
 	type ListenClient,
 	type ListenerOptions,
+	NOTIFY_COALESCE_MS,
 } from "../../packages/storage-postgres/listen.js";
 
 /**
@@ -461,4 +463,54 @@ test("a notification for a channel whose last listener just left is dropped (#51
 	server.sessions[0]!.emit({ channel: "n_other", payload: "root" });
 	assert.deepEqual(other.events.at(-1), { kind: "notification", payload: "root" });
 	await server.listener.close();
+});
+
+test("the same notification within the window goes out once, after the commits it was held for; another goes out at once", async () => {
+	const later: unknown[][] = [];
+	const coalescer = createNotifyCoalescer({
+		sendLater: async (notices) => {
+			later.push(notices.map((notice) => notice.params));
+		},
+	});
+	const wake = (broker: string) => ({ sql: "SELECT pg_notify(?, ?)", params: ["wakeups", broker] });
+	const committed = Promise.resolve(true);
+	assert.deepEqual(coalescer.take([wake("b"), wake("c")], committed), [wake("b"), wake("c")]);
+	// Two more commits for b within the window, one of them rolled back, and one for d.
+	assert.deepEqual(coalescer.take([wake("b")], committed), []);
+	assert.deepEqual(coalescer.take([wake("b")], Promise.resolve(false)), []);
+	assert.deepEqual(coalescer.take([wake("d")], committed), [wake("d")]);
+	await vi.advanceTimersByTimeAsync(NOTIFY_COALESCE_MS - 1);
+	assert.deepEqual(later, [], "held until the window since the last one passed");
+	await vi.advanceTimersByTimeAsync(1);
+	assert.deepEqual(later, [[["wakeups", "b"]]], "once for the commits held back, none for c or d");
+	// The window starts again with the one sent later.
+	assert.deepEqual(coalescer.take([wake("b")], committed), []);
+	await vi.advanceTimersByTimeAsync(NOTIFY_COALESCE_MS);
+	assert.equal(later.length, 2);
+	await vi.advanceTimersByTimeAsync(NOTIFY_COALESCE_MS);
+	assert.deepEqual(coalescer.take([wake("b")], committed), [wake("b")], "past the window it goes with its commit");
+	await coalescer.flush();
+	assert.equal(later.length, 2, "nothing held, nothing sent");
+});
+
+test("a notification held for a commit not yet answered waits for it, and closing sends what is held at once", async () => {
+	const later: unknown[][] = [];
+	const coalescer = createNotifyCoalescer({
+		sendLater: async (notices) => {
+			later.push(notices.map((notice) => notice.params));
+		},
+	});
+	const wake = { sql: "SELECT pg_notify(?, ?)", params: ["wakeups", "b"] };
+	coalescer.take([wake], Promise.resolve(true));
+	let answer!: (done: boolean) => void;
+	coalescer.take([wake], new Promise<boolean>((resolve) => (answer = resolve)));
+	await vi.advanceTimersByTimeAsync(NOTIFY_COALESCE_MS * 3);
+	assert.deepEqual(later, [], "its commit is not answered yet");
+	answer(true);
+	await vi.advanceTimersByTimeAsync(0);
+	assert.deepEqual(later, [[["wakeups", "b"]]], "sent once its commit is answered, the window having passed");
+	coalescer.take([wake], Promise.resolve(true));
+	await vi.advanceTimersByTimeAsync(0);
+	await coalescer.flush();
+	assert.deepEqual(later, [[["wakeups", "b"]], [["wakeups", "b"]]]);
 });
