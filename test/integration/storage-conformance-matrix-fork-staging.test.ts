@@ -109,11 +109,12 @@ for (const backend of storageBackends) {
 					const ledger: Ledger = { open: new Map(), overlaps: [], recording: false };
 					const counted = instrumented(await scope.connect(), { name: "source", ledger });
 					const reader = await SqlSessionStore.open(counted, { prefix: `${scope.prefix}s_` });
-					/** The bytes each staging transaction inserted, from its lease renewal on. */
+					/** The bytes each staging transaction inserted, from its lease renewal (or the first's lease) on. */
 					const batches: number[] = [];
+					const lease = `INSERT INTO ${staging} (transfer_id, kind, seq, idx, name, size, body) `;
 					const pause = (sql: string, inTransaction: boolean, params: readonly unknown[]) => {
 						if (!inTransaction) return undefined;
-						if (sql.startsWith(`UPDATE ${staging} SET size`)) batches.push(0);
+						if (sql.startsWith(`UPDATE ${staging} SET size`) || sql.startsWith(lease)) batches.push(0);
 						else if (sql.startsWith(`INSERT INTO ${staging} `) && batches.length > 0)
 							batches[batches.length - 1]! += params.reduce<number>(
 								(n, p) => n + (typeof p === "string" ? p.length : p instanceof Uint8Array ? p.byteLength : 0),
@@ -422,6 +423,61 @@ for (const backend of storageBackends) {
 							await stalled;
 						}
 						assert.deepEqual((await dest.load("child")).entries, (await source.load("src")).entries);
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+		if (backend.name === "Postgres")
+			test(
+				"staged clones of different children do not wait for each other's staging write or publication (#6560)",
+				() =>
+					withScope(async (scope) => {
+						const source = await SqlSessionStore.open(await scope.connect(), { prefix: `${scope.prefix}s_` });
+						await seedSource(source, "src", "apart");
+						const destPrefix = `${scope.prefix}d_`;
+						const staging = stagingTable(destPrefix);
+						const stagingWrite = new RegExp(`^INSERT INTO ${staging} `);
+						const publication = new RegExp(`^DELETE FROM ${staging} WHERE transfer_id = \\?$`);
+						let hold: { readonly at: RegExp; readonly gate: ReturnType<typeof gate> } | undefined;
+						// The held clone's handle: its first statement `hold` names, inside a transaction, waits for the gate.
+						const held = await SqlSessionStore.open(
+							instrumented(await scope.connect(), {
+								pause: (sql, inTransaction) => {
+									const current = hold;
+									if (current === undefined || !inTransaction || !current.at.test(sql)) return undefined;
+									hold = undefined;
+									return current.gate.wait();
+								},
+							}),
+							{ prefix: destPrefix },
+						);
+						const free = await SqlSessionStore.open(await scope.connect(), { prefix: destPrefix });
+						await free.prepareForkStaging();
+						const expected = (await source.load("src")).entries;
+						for (const [phase, at] of [
+							["staging", stagingWrite],
+							["publishing", publication],
+						] as const) {
+							const stalled = gate();
+							hold = { at, gate: stalled };
+							const slow = stagedClone(source, "src", held, header(`${phase}-held`, "src"));
+							slow.catch(() => {});
+							await within(stalled.reached, `the held clone ${phase}`);
+							try {
+								const { created } = await within(
+									stagedClone(source, "src", free, header(`${phase}-free`, "src")),
+									`a clone of another child while one is held ${phase}`,
+									UNBLOCKED_CLONE_MS,
+								);
+								assert.equal(created.lastSeq, 13);
+							} finally {
+								stalled.release();
+							}
+							await within(slow, `the held clone, released ${phase}`);
+							for (const id of [`${phase}-held`, `${phase}-free`])
+								assert.deepEqual((await free.load(id)).entries, expected, id);
+						}
+						assert.equal(await stagedRows(await scope.connect(), destPrefix), 0);
 					}),
 				SERVER_TIMEOUT_MS,
 			);

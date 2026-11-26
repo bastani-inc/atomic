@@ -1185,9 +1185,9 @@ export class SqlSessionStore implements SessionStore {
 			chunkedSchemaVersion: SESSION_SCHEMA_VERSION,
 			ownsBlobs:
 				this.getBlob === SqlSessionStore.prototype.getBlob && this.putBlob === SqlSessionStore.prototype.putBlob,
-			transaction: (sessionId, body) => this.transaction(body, this.sessionWrite(sessionId)),
-			saveSummary: (tx, header, lastSeq, summary, index) =>
-				this.saveSummary(tx, header.id, { header, entries: [], lastSeq }, summary, index),
+			transaction: (sessionId, body, leading) => this.transaction(body, this.sessionWrite(sessionId, ...leading)),
+			summaryWrite: (header, lastSeq, summary, index) =>
+				this.summaryWrite(header.id, { header, entries: [], lastSeq }, summary, index),
 			create: (header, entries) => this.create(header, entries),
 			sourceStoredEntryChunks: (source) => {
 				const store = nativeForkReader(source, "entry");
