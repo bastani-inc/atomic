@@ -1114,7 +1114,7 @@ export interface CompactorModel<TApi extends CompactorApi = CompactorApi> extend
 	compactionParams?: Record<string, unknown>;
 	/** Optional wall-clock timeout in milliseconds for one compactor request (default: 120000). */
 	timeoutMs?: number;
-	/** Optional upper bound on compacted output in estimated tokens (default: 32000; still capped at 50% of the automatic trigger budget). */
+	/** Optional upper bound on compacted output in estimated tokens; longer output clears the context instead. No default: omitted means no size limit. */
 	maxTokens?: number;
 }
 

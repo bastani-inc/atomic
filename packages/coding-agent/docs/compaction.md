@@ -92,11 +92,11 @@ When `compactionModel` names a registered compactor model (built-in `morph/morph
 
 Images are replaced with an omission marker, thinking blocks are omitted, long lines wrap at 2,000 characters, and role headers are wrapped in `<keepContext>` tags automatically. Messages excluded from model context, such as `!!` shell commands and extension messages with `excludeFromContext`, are not sent.
 
-The request uses your `/compact` instructions as its query, or your latest user request if none were given. Atomic sends `{ messages, query, model }` plus any optional `compactionParams` configured on that compactor model, letting the remote API apply its own server defaults when `compactionParams` is omitted. You can customize endpoint parameters (`compactionParams`), request path (`endpointPath`), timeout (`timeoutMs`, default 120 seconds), headers (`headers`), and output token cap (`maxTokens`, default 32,000) per compactor model in `models.json` or an extension.
+The request uses your `/compact` instructions as its query, or your latest user request if none were given. Atomic sends `{ messages, query, model }` plus any optional `compactionParams` configured on that compactor model, letting the remote API apply its own server defaults when `compactionParams` is omitted. You can customize endpoint parameters (`compactionParams`), request path (`endpointPath`), timeout (`timeoutMs`, default 120 seconds), headers (`headers`), and an output limit (`maxTokens`, no default) per compactor model in `models.json` or an extension.
 
 The compactor's output replaces the context inside a `<compacted-context>` block, followed by the same recovery instructions used by context clearing so the agent can retrieve omitted details from history.
 
-By default, output longer than 32,000 estimated tokens fails (estimated at 4 ASCII characters per token and 1 token per non-ASCII character, so non-English or emoji-heavy output reaches the cap roughly 4 times sooner than ASCII text). Setting `maxTokens` on the compactor model overrides the 32,000-token ceiling, while small context windows always stay capped at half of the automatic trigger budget. Output also fails if the system prompt and boundary message together would reach or exceed the automatic trigger (`systemPrompt + boundary >= trigger`). If an endpoint echoes your API key or sensitive auth header, Atomic replaces it with `[redacted]` before storing or displaying the output.
+A compactor's output has no built-in size limit: whatever the endpoint returns is used, however long it is. Only limits you configure apply. To ask the endpoint for shorter output, set its own size option in `compactionParams` (for Morph, `compression_ratio`). To reject long output, set `maxTokens` on the compactor model: output longer than that many estimated tokens (4 ASCII characters or 1 non-ASCII character per token) clears the context instead. `maxTokens` has no default. If the compacted context is still above the automatic trigger, nothing is rejected: before the next request, automatic compaction runs again on it as it would on any context past the trigger, and a provider's context-overflow error is recovered the same way. Compacted text returned by an extension's `session_before_compact` hook keeps its limits: text longer than 32,000 estimated tokens (or half of the automatic trigger on a small context window), or a result that would not fit below the trigger, clears the context instead. If an endpoint echoes your API key or sensitive auth header, Atomic replaces it with `[redacted]` before storing or displaying the output.
 
 ### When the compactor fails
 
@@ -110,9 +110,9 @@ Compaction starts
   ├─ compactionModel is "" / "auto"                                    -> Automatic (Context cleared)
   ├─ compactionModel is unknown / chat / classifier                    -> Automatic fallback (Context cleared)
   └─ compactionModel is a registered compactor
-       ├─ success and fits within maxTokens and trigger budget         -> Context compacted (compactor)
+       ├─ success (within maxTokens, if you set one)                   -> Context compacted (compactor)
        └─ missing auth / HTTP or network error / timeout / Esc /
-          malformed or empty output / oversized / overflows trigger    -> Automatic fallback (Context cleared)
+          malformed or empty output / longer than a maxTokens you set  -> Automatic fallback (Context cleared)
 ```
 
 Atomic prints a one-line notice (`Compaction model not used (<reason>); context cleared instead`) without exposing your API key or sensitive headers. Pressing `Escape` or calling `abortCompaction()` during a compactor request also clears the context with reason `request aborted`. A takeover by `/compact`, closing the session, or an extension returning `{ cancel: true }` cancels compaction completely.
@@ -163,8 +163,7 @@ Keep default compaction clean in `settings.json` and configure endpoint-specific
             "compression_ratio": 0.35,
             "preserve_recent": 2
           },
-          "timeoutMs": 180000,
-          "maxTokens": 48000
+          "timeoutMs": 180000
         }
       }
     }
@@ -194,8 +193,7 @@ Keep default compaction clean in `settings.json` and configure endpoint-specific
             "target_ratio": 0.4,
             "preserve_recent": 2
           },
-          "timeoutMs": 180000,
-          "maxTokens": 48000
+          "timeoutMs": 180000
         }
       ]
     }

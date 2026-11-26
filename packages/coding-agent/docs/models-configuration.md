@@ -55,7 +55,7 @@ Each `models` entry adds a model to the provider. An entry whose `id` matches an
 | `cost.tiers[].cacheWrite` | number |  | Required. Cache-write cost in USD per million tokens. |
 | `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Atomic warms only tiers with a known lifetime. |
 | `contextWindow` | number | `128000` | Context window in tokens. Applies only to chat models. |
-| `maxTokens` | number | `16384` | Maximum output tokens. Defaults to 16384 for chat models. When omitted on compactor models, defaults to 32000 estimated tokens, capped at 50% of the automatic trigger. |
+| `maxTokens` | number | `16384` | Maximum output tokens. Defaults to 16384 for chat models. On compactor models it has no default: when set, compacted output longer than this many estimated tokens clears the context instead; when omitted, output has no size limit. |
 | `timeoutMs` | number |  | Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |
@@ -89,7 +89,7 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 | `cost.tiers[].cacheWrite` | number |  | Required. Cache-write cost in USD per million tokens. |
 | `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Atomic warms only tiers with a known lifetime. |
 | `contextWindow` | number |  | Context window in tokens. Applies only to chat models. |
-| `maxTokens` | number |  | Maximum output tokens. On compactor models, sets the upper bound on compacted output in estimated tokens, capped at 50% of the automatic trigger. |
+| `maxTokens` | number |  | Maximum output tokens. On compactor models, compacted output longer than this many estimated tokens clears the context instead; omit it for no size limit. |
 | `timeoutMs` | number |  | Wall-clock timeout in milliseconds for one compactor request (default 120000). Applies only to compactor models. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
 | `samplingParamsByThinkingLevel` | object |  | samplingParams per thinking level, merged over samplingParams. |

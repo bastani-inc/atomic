@@ -61,9 +61,9 @@ const ModelFieldDescriptions = {
 	reasoning: "Whether the model supports thinking. Applies only to chat models.",
 	contextWindow: "Context window in tokens. Applies only to chat models.",
 	maxTokens:
-		"Maximum output tokens. Defaults to 16384 for chat models. When omitted on compactor models, defaults to 32000 estimated tokens, capped at 50% of the automatic trigger.",
+		"Maximum output tokens. Defaults to 16384 for chat models. On compactor models it has no default: when set, compacted output longer than this many estimated tokens clears the context instead; when omitted, output has no size limit.",
 	maxTokensOverride:
-		"Maximum output tokens. On compactor models, sets the upper bound on compacted output in estimated tokens, capped at 50% of the automatic trigger.",
+		"Maximum output tokens. On compactor models, compacted output longer than this many estimated tokens clears the context instead; omit it for no size limit.",
 } as const;
 
 /** Everything pi-ai defines for compatibility, plus Atomic's alias for the grammar-tool capability. */

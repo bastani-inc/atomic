@@ -168,7 +168,7 @@ interface ProviderCompactorModelConfig extends ProviderModelConfigBase {
   compactionParams?: Record<string, unknown>;
   /** Wall-clock request timeout in milliseconds (default `120000`). */
   timeoutMs?: number;
-  /** Upper bound on compacted output in estimated tokens (default `32000`; still capped at 50% of automatic trigger budget). */
+  /** Optional upper bound on compacted output in estimated tokens; longer output clears the context instead. No default: omitted means no size limit. */
   maxTokens?: number;
 }
 

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { fauxAssistantMessage } from "@bastani/atomic-ai";
 import { afterEach, describe, it, vi } from "vitest";
@@ -18,6 +21,12 @@ import { createHarness, type Harness } from "./suite/harness.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 const API_KEY = "sk-morph-secret-key-0123456789";
+
+function writeModelsJson(dir: string, providers: Record<string, object>): string {
+	const path = join(dir, "models.json");
+	writeFileSync(path, JSON.stringify({ providers }));
+	return path;
+}
 const COMPACTOR = "morph/morph-compactor";
 
 interface CapturedRequest {
@@ -483,7 +492,6 @@ describe("compaction with a configured compactor model", () => {
 		["an HTTP error", () => json({ error: { message: `invalid key ${API_KEY}` } }, 503), /failed: HTTP 503/u, true],
 		["empty output", () => json({ output: "" }), /failed: empty output/u, true],
 		["a malformed response", () => new Response("not json", { status: 200 }), /failed: malformed response/u, true],
-		["output over the cap", () => json({ output: "word ".repeat(200_000) }), /failed: output too long/u, true],
 	];
 	for (const [name, respond, reason, credentials] of fallbacks) {
 		it(`falls back to clearing the context on ${name}, naming the reason and never the key`, async () => {
@@ -546,13 +554,130 @@ describe("compaction with a configured compactor model", () => {
 		return created;
 	}
 
-	it("falls back to clearing when the system prompt, the output and the recovery text would not fit", async () => {
+	const ACME_COMPACTOR = {
+		id: "c1",
+		name: "Acme Compactor",
+		type: "compactor" as const,
+		api: "custom-compact",
+		input: ["text" as const],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	};
+	const loadingPaths: Array<[string, string, (dir: string) => Partial<Parameters<typeof createHarness>[0]>]> = [
+		["the built-in catalog entry", COMPACTOR, () => ({})],
+		[
+			"a models.json compactor without maxTokens",
+			"acme/c1",
+			(dir) => ({
+				modelsPath: writeModelsJson(dir, {
+					acme: { baseUrl: "https://compact.example.com/v1", apiKey: API_KEY, models: [ACME_COMPACTOR] },
+				}),
+			}),
+		],
+		[
+			"an extension's compactor without maxTokens",
+			"acme/c1",
+			() => ({
+				extensionFactories: [
+					(atomic) => {
+						atomic.registerProvider("acme", {
+							baseUrl: "https://compact.example.com/v1",
+							apiKey: API_KEY,
+							models: [ACME_COMPACTOR],
+						});
+					},
+				],
+			}),
+		],
+		[
+			"a models.json override of the built-in entry without maxTokens",
+			COMPACTOR,
+			(dir) => ({
+				modelsPath: writeModelsJson(dir, {
+					morph: { modelOverrides: { "morph-compactor": { compactionParams: { compression_ratio: 0.5 } } } },
+				}),
+			}),
+		],
+	];
+	for (const [path, compactionModel, configure] of loadingPaths) {
+		it(`keeps a long output whole from ${path} on a model with a large context window`, async () => {
+			const output = "word ".repeat(220_000);
+			vi.stubGlobal("fetch", endpoint(() => json({ output })).fetch);
+			const dir = mkdtempSync(join(tmpdir(), "atomic-compactor-paths-"));
+			try {
+				const created = await createHarness({
+					models: [{ id: "million", contextWindow: 1_000_000, maxTokens: 32_000 }],
+					settings: { compactionModel, retry: { enabled: false } },
+					...configure(dir),
+				});
+				harness = created;
+				await created.authStorage.modify("morph", async () => ({ type: "api_key", key: API_KEY }));
+				created.setResponses([fauxAssistantMessage("answer")]);
+				await created.session.prompt("fix the parser");
+				const [provider, id] = compactionModel.split("/");
+				const model = created.session.modelRuntime
+					.getModelsOfType("compactor")
+					.find((entry) => entry.provider === provider && entry.id === id);
+				assert.ok(model, `${compactionModel} is registered`);
+				assert.equal(model.maxTokens, undefined);
+				if (path.includes("override")) assert.deepEqual(model.compactionParams, { compression_ratio: 0.5 });
+
+				const result = await created.session.compact();
+
+				assert.equal(result.form, "compacted");
+				assert.equal(result.fallbackReason, undefined);
+				assert.equal(result.model, compactionModel);
+				assert.ok(result.compactedText.includes(`<compacted-context>\n${output.trimEnd()}`));
+				assert.ok(estimateContextTokens(created.session.messages).tokens > 270_000);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	}
+
+	it("keeps the compactor's output even when the replacement does not fit below the trigger", async () => {
 		vi.stubGlobal("fetch", endpoint(() => json({ output: "word ".repeat(12_400) })).fetch);
 		harness = await budgetHarness("rule ".repeat(16_000));
 		const result = await harness.session.compact();
-		assert.equal(result.form, "cleared");
-		assert.match(result.fallbackReason ?? "", /too long/u);
-		assert.ok(estimateContextTokens(harness.session.messages).tokens < 31_000);
+		assert.equal(result.form, "compacted");
+		assert.equal(result.fallbackReason, undefined);
+		assert.ok(result.compactedText.includes("word word"));
+	});
+
+	it("a maxTokens the compactor model's configuration sets is the only limit on its output", async () => {
+		vi.stubGlobal("fetch", endpoint(() => json({ output: "word ".repeat(4_000) })).fetch);
+		harness = await compactorHarness(false);
+		const limited = (maxTokens: number) => ({
+			id: `limited-${maxTokens}`,
+			name: "Limited compactor",
+			type: "compactor" as const,
+			api: "custom-compact",
+			input: ["text" as const],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			maxTokens,
+		});
+		harness.session.modelRuntime.registerProvider("acme", {
+			baseUrl: "https://compact.example.com/v1",
+			apiKey: API_KEY,
+			models: [limited(1_000), limited(10_000)],
+		});
+
+		const over = await harness.session.compact({ compactionModel: "acme/limited-1000" });
+		assert.equal(over.form, "cleared");
+		assert.equal(over.fallbackReason, "acme/limited-1000 failed: output too long (5000 > 1000 tokens)");
+		await harness.session.prompt("keep going");
+
+		const under = await harness.session.compact({ compactionModel: "acme/limited-10000" });
+		assert.equal(under.form, "compacted");
+		assert.equal(under.fallbackReason, undefined);
+	});
+
+	it("keeps a compactor's output that is larger than the automatic trigger", async () => {
+		vi.stubGlobal("fetch", endpoint(() => json({ output: "word ".repeat(40_000) })).fetch);
+		harness = await budgetHarness("rules");
+		const result = await harness.session.compact();
+		assert.equal(result.form, "compacted");
+		assert.equal(result.fallbackReason, undefined);
+		assert.ok(estimateContextTokens(harness.session.messages).tokens > 31_000);
 	});
 
 	it("keeps the compacted text when the whole replacement fits below the trigger", async () => {
