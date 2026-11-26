@@ -1,12 +1,12 @@
 name: macOS tests
 
-# Maintainer-only: no pull-request trigger. It runs chosen root test files on macOS, which test.yml does not cover,
+# Maintainer-only: no pull-request trigger. It runs chosen test files on macOS, which test.yml does not cover,
 # against the ref it is dispatched on. See docs/ci.md ("macOS test dispatch").
 on:
   workflow_dispatch:
     inputs:
       tests:
-        description: Test files to run, separated by spaces, each under test/ and ending in .test.ts
+        description: Repository-relative .test.ts paths, separated by spaces
         required: true
         type: string
       project:
@@ -17,6 +17,7 @@ on:
         options:
           - unit
           - integration
+          - agent
 
 permissions:
   contents: read
@@ -35,16 +36,22 @@ jobs:
       - name: Check the requested test files
         env:
           TESTS: ${{ inputs.tests }}
+          PROJECT: ${{ inputs.project }}
         run: |
           set -euo pipefail
           read -r -a files <<< "$TESTS"
-          if [ "${#files[@]}" -eq 0 ]; then
+          if [ -z "${files[0]:-}" ]; then
             echo "::error::No test files were given"
             exit 1
           fi
+          case "$PROJECT" in
+            unit|integration) prefix="test/$PROJECT/" ;;
+            agent) prefix=packages/coding-agent/test/ ;;
+            *) echo "::error::Unknown test project: $PROJECT"; exit 1 ;;
+          esac
           for file in "${files[@]}"; do
-            if ! [[ "$file" =~ ^test/[A-Za-z0-9._/-]+\.test\.ts$ ]] || [[ "$file" == *..* ]]; then
-              echo "::error::Not a test file under test/: $file"
+            if ! [[ "$file" =~ ^[A-Za-z0-9._/-]+\.test\.ts$ ]] || [[ "$file" == *..* || "$file" != "$prefix"* ]]; then
+              echo "::error::Not a test file under $prefix: $file"
               exit 1
             fi
           done
@@ -95,6 +102,15 @@ jobs:
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
+      - name: Make GNU timeout available for process-tree containment tests
+        if: inputs.project == 'integration' && contains(inputs.tests, 'test/integration/task-process-tree-containment.test.ts')
+        run: |
+          set -euo pipefail
+          if command -v timeout >/dev/null; then exit 0; fi
+          if ! command -v gtimeout >/dev/null; then brew install coreutils; fi
+          mkdir -p "$RUNNER_TEMP/atomic-test-bin"
+          ln -s "$(brew --prefix coreutils)/bin/gtimeout" "$RUNNER_TEMP/atomic-test-bin/timeout"
+          echo "$RUNNER_TEMP/atomic-test-bin" >> "$GITHUB_PATH"
       - name: Run the requested tests
         env:
           TESTS: ${{ inputs.tests }}
@@ -102,4 +118,8 @@ jobs:
         run: |
           set -euo pipefail
           read -r -a files <<< "$TESTS"
+          if [ "$PROJECT" = agent ]; then
+            cd packages/coding-agent
+            files=("${files[@]#packages/coding-agent/}")
+          fi
           npx vitest --run --project "$PROJECT" "${files[@]}"

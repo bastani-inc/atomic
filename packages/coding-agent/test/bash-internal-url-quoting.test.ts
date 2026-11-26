@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, it } from "vitest";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { createBashToolDefinition } from "../src/core/tools/bash.js";
 
 describe.skipIf(process.platform === "win32")("bash internal URL safety", () => {
@@ -31,7 +31,7 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 		["printf %s $(printf %s artifact://path)", "artifact://path"],
 		["printf %s $(printf %s {a,b}; printf %s artifact://path)", "abartifact://path"],
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a template
-		["printf %s $(printf %s ${__atomic_unset:-)}; printf %s artifact://path)", ")artifact://path"],
+		['printf %s $(printf %s ${__atomic_unset:-")"}; printf %s artifact://path)', ")artifact://path"],
 		["printf %s `printf %s artifact://path`", "artifact://path"],
 		["printf %s \\artifact://path", "artifact://path"],
 		["cat <<EOF\nartifact://path\nEOF", "artifact://path\n"],
@@ -46,6 +46,17 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 			resolveInternalUrl: () => hazard,
 		});
 		assert.deepEqual(result.content, [{ type: "text", text: output }]);
+	});
+
+	it("does not resolve a URL after an unquoted `)` in a parameter expansion (#4252)", async () => {
+		const bash = createBashToolDefinition(cwd);
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion, not a template
+		const command = "printf %s $(printf %s ${__atomic_unset:-)}; printf %s artifact://path)";
+		const bare = await bash.execute("bare", { command });
+		const resolveInternalUrl = vi.fn(() => join(cwd, "resolved"));
+		const result = await bash.execute("with-resolver", { command }, undefined, undefined, { resolveInternalUrl });
+		assert.equal(resolveInternalUrl.mock.calls.length, 0);
+		assert.deepEqual(result.content, bare.content);
 	});
 
 	// Code scanning #241: the shell does not apply word quoting in these contexts, so a URL there stays unexpanded.

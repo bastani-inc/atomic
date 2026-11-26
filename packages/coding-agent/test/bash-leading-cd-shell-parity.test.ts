@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.js";
+import { shellQuote } from "../src/core/resume/blueprint/envrc.js";
 import { createBashToolDefinition, createLocalBashOperations } from "../src/core/tools/bash.js";
 
 // Each generated case runs two real shells; the case count, not a slow test, sets this budget.
@@ -11,7 +12,7 @@ const PROPERTY_CASES = 160;
 const PROPERTY_TIMEOUT_MS = 120_000;
 
 let root = "";
-const inheritedOldPwd = process.env.OLDPWD;
+let commandPrefix = "";
 
 beforeAll(async () => {
 	root = await realpath(await mkdtemp(join(tmpdir(), "atomic-bash-cd-parity-")));
@@ -21,13 +22,10 @@ beforeAll(async () => {
 	await writeFile(join(root, "my dir", "spaced.txt"), "");
 	await writeFile(join(root, "top.txt"), "");
 	await writeFile(join(root, "file.txt"), "");
-	// `cd -` goes to $OLDPWD; point it at a directory whose listing is stable.
-	process.env.OLDPWD = join(root, "src");
+	commandPrefix = `OLDPWD=${shellQuote(join(root, "src"))}`;
 });
 
 afterAll(async () => {
-	if (inheritedOldPwd === undefined) delete process.env.OLDPWD;
-	else process.env.OLDPWD = inheritedOldPwd;
 	await rm(root, { recursive: true, force: true });
 });
 
@@ -45,6 +43,7 @@ function recordingRealBash() {
 	const local = createLocalBashOperations();
 	const ran = { command: "", cwd: "" };
 	const tool = createBashToolDefinition(root, {
+		commandPrefix,
 		operations: {
 			exec: (command, cwd, options) => {
 				ran.command = command;
@@ -60,14 +59,14 @@ function recordingRealBash() {
 
 /** What bash prints for the command as written: an explicit cwd turns the leading-cd shortcut off. */
 async function asBash(command: string): Promise<string> {
-	const tool = createBashToolDefinition(root);
+	const tool = createBashToolDefinition(root, { commandPrefix });
 	return text(await tool.execute("bash", { command, cwd: root }, undefined, undefined, {} as ExtensionContext));
 }
 
 async function assertRunsAsWritten(command: string): Promise<string> {
 	const { ran, run } = recordingRealBash();
 	const output = await run(command);
-	assert.equal(ran.command, command);
+	assert.equal(ran.command, `${commandPrefix}\n${command}`);
 	assert.equal(ran.cwd, root);
 	assert.equal(output, await asBash(command));
 	return output;
@@ -100,7 +99,7 @@ describe("bash leading cd matches bash (#4840)", () => {
 	});
 
 	it("runs `cd missing; ls` in the original directory as bash does (#4840)", async () => {
-		const tool = createBashToolDefinition(root);
+		const tool = createBashToolDefinition(root, { commandPrefix });
 		const command = "cd missing; ls";
 		const output = text(await tool.execute("bash", { command }, undefined, undefined, {} as ExtensionContext));
 		assert.match(output, /top\.txt/);
@@ -110,14 +109,14 @@ describe("bash leading cd matches bash (#4840)", () => {
 	it("still runs `cd src && ls` through the shortcut (#4840)", async () => {
 		const { ran, run } = recordingRealBash();
 		assert.equal(await run("cd src && ls"), "inside.txt\n");
-		assert.equal(ran.command, "ls");
+		assert.equal(ran.command, `${commandPrefix}\nls`);
 		assert.equal(ran.cwd, join(root, "src"));
 	});
 
 	it('still runs `cd "src" && ls` through the shortcut (#4840)', async () => {
 		const { ran, run } = recordingRealBash();
 		assert.equal(await run('cd "src" && ls'), "inside.txt\n");
-		assert.equal(ran.command, "ls");
+		assert.equal(ran.command, `${commandPrefix}\nls`);
 		assert.equal(ran.cwd, join(root, "src"));
 	});
 
@@ -157,7 +156,7 @@ describe("bash leading cd matches bash (#4840)", () => {
 			const failures: string[] = [];
 			for (let i = 0; i < PROPERTY_CASES; i++) {
 				const command = `cd ${pick(targets)}${pick(suffixes)}${pick(separators)} ${pick(rests)}`;
-				const tool = createBashToolDefinition(root);
+				const tool = createBashToolDefinition(root, { commandPrefix });
 				const actual = await tool
 					.execute("bash", { command }, undefined, undefined, {} as ExtensionContext)
 					.then(text, (error: Error) => `threw: ${error.message}`);
