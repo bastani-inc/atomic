@@ -12,7 +12,8 @@ const PROPERTY_CASES = 160;
 const PROPERTY_TIMEOUT_MS = 120_000;
 
 let root = "";
-let commandPrefix = "";
+const setupEnvName = process.platform === "darwin" ? "BASH_ENV" : "OLDPWD";
+const inheritedSetupEnv = process.env[setupEnvName];
 
 beforeAll(async () => {
 	root = await realpath(await mkdtemp(join(tmpdir(), "atomic-bash-cd-parity-")));
@@ -22,10 +23,19 @@ beforeAll(async () => {
 	await writeFile(join(root, "my dir", "spaced.txt"), "");
 	await writeFile(join(root, "top.txt"), "");
 	await writeFile(join(root, "file.txt"), "");
-	commandPrefix = `OLDPWD=${shellQuote(join(root, "src"))}`;
+	const oldPwd = join(root, "src");
+	if (setupEnvName === "BASH_ENV") {
+		const bashEnv = join(root, ".cd-parity-env");
+		await writeFile(bashEnv, `OLDPWD=${shellQuote(oldPwd)}\n`);
+		process.env.BASH_ENV = bashEnv;
+	} else {
+		process.env.OLDPWD = oldPwd;
+	}
 });
 
 afterAll(async () => {
+	if (inheritedSetupEnv === undefined) delete process.env[setupEnvName];
+	else process.env[setupEnvName] = inheritedSetupEnv;
 	await rm(root, { recursive: true, force: true });
 });
 
@@ -43,7 +53,6 @@ function recordingRealBash() {
 	const local = createLocalBashOperations();
 	const ran = { command: "", cwd: "" };
 	const tool = createBashToolDefinition(root, {
-		commandPrefix,
 		operations: {
 			exec: (command, cwd, options) => {
 				ran.command = command;
@@ -59,14 +68,14 @@ function recordingRealBash() {
 
 /** What bash prints for the command as written: an explicit cwd turns the leading-cd shortcut off. */
 async function asBash(command: string): Promise<string> {
-	const tool = createBashToolDefinition(root, { commandPrefix });
+	const tool = createBashToolDefinition(root);
 	return text(await tool.execute("bash", { command, cwd: root }, undefined, undefined, {} as ExtensionContext));
 }
 
 async function assertRunsAsWritten(command: string): Promise<string> {
 	const { ran, run } = recordingRealBash();
 	const output = await run(command);
-	assert.equal(ran.command, `${commandPrefix}\n${command}`);
+	assert.equal(ran.command, command);
 	assert.equal(ran.cwd, root);
 	assert.equal(output, await asBash(command));
 	return output;
@@ -99,7 +108,7 @@ describe("bash leading cd matches bash (#4840)", () => {
 	});
 
 	it("runs `cd missing; ls` in the original directory as bash does (#4840)", async () => {
-		const tool = createBashToolDefinition(root, { commandPrefix });
+		const tool = createBashToolDefinition(root);
 		const command = "cd missing; ls";
 		const output = text(await tool.execute("bash", { command }, undefined, undefined, {} as ExtensionContext));
 		assert.match(output, /top\.txt/);
@@ -109,14 +118,14 @@ describe("bash leading cd matches bash (#4840)", () => {
 	it("still runs `cd src && ls` through the shortcut (#4840)", async () => {
 		const { ran, run } = recordingRealBash();
 		assert.equal(await run("cd src && ls"), "inside.txt\n");
-		assert.equal(ran.command, `${commandPrefix}\nls`);
+		assert.equal(ran.command, "ls");
 		assert.equal(ran.cwd, join(root, "src"));
 	});
 
 	it('still runs `cd "src" && ls` through the shortcut (#4840)', async () => {
 		const { ran, run } = recordingRealBash();
 		assert.equal(await run('cd "src" && ls'), "inside.txt\n");
-		assert.equal(ran.command, `${commandPrefix}\nls`);
+		assert.equal(ran.command, "ls");
 		assert.equal(ran.cwd, join(root, "src"));
 	});
 
@@ -156,7 +165,7 @@ describe("bash leading cd matches bash (#4840)", () => {
 			const failures: string[] = [];
 			for (let i = 0; i < PROPERTY_CASES; i++) {
 				const command = `cd ${pick(targets)}${pick(suffixes)}${pick(separators)} ${pick(rests)}`;
-				const tool = createBashToolDefinition(root, { commandPrefix });
+				const tool = createBashToolDefinition(root);
 				const actual = await tool
 					.execute("bash", { command }, undefined, undefined, {} as ExtensionContext)
 					.then(text, (error: Error) => `threw: ${error.message}`);
