@@ -140,10 +140,11 @@ Returns the replacement count plus `details` (`diff`, unified `patch`, and `firs
   | --- | --- |
   | left out | No time limit. The command runs until it finishes or is stopped. Use this for dev servers and watchers. |
   | a positive number, such as `7200` | The command is stopped after that many seconds. There is no upper limit. |
-  | `0` | The command is stopped immediately. `0` does **not** mean "no limit". |
-  | a negative number, such as `-1` | Refused before the command starts. |
+  | `0` or a negative number, such as `-1` | Refused before the command starts. Leave `timeout` out instead if you want no limit. |
 
-  A refused value shows: `Invalid timeout -1: timeout must be a finite, non-negative number of seconds. Leave timeout out for no time limit; 0 stops the command immediately.` Before this release a command stopped after 300 seconds by default and could ask for 3600 seconds at most; both limits are gone. See [How long a command runs](/background-tasks#background-shells).
+  A refused value shows: `Invalid timeout 0: timeout must be a positive number of seconds. Leave timeout out for no time limit.`
+
+  `timeout` only decides when a command is stopped. To check on a command without waiting, use `wait` instead: `{ "action": "wait", "id": "<task id>", "budgetMs": 0 }` returns its current output at once. Before this release a command stopped after 300 seconds by default and could ask for 3600 seconds at most; both limits are gone. See [How long a command runs](/background-tasks#background-shells).
 - **At most 64 at once.** A session runs up to 64 commands at the same time, its subagents' shells included. At that limit a new command is refused with `64 commands are already running in this session, the most it runs at once. Stop one you no longer need with kill or /tasks, or wait for one to finish, then run this command again.` Nothing running is stopped to make room. See [How many commands run at once](/background-tasks#how-many-commands-run-at-once).
 - **`pty: true`.** Runs the command in the bundled native PTY. In interactive and standard sessions, native PTY errors fail the call rather than silently falling back to pipes; standalone SDK sessions without background task support fall back to pipes if the native PTY is unavailable. Set `ATOMIC_NO_PTY=1` to force pipes (`ATOMIC_NO_PTY=0` overrides a legacy `PI_NO_PTY=1`).
 - **`heartbeatMs`.** Background [task heartbeat](/background-tasks#task-heartbeats) interval in milliseconds (defaults to `tasks.heartbeatMs` or 15 minutes; `0` disables; minimum `60000`).

@@ -73,7 +73,7 @@ const bashBaseSchema = Type.Object(
 		timeout: Type.Optional(
 			Type.Number({
 				description:
-					"Optional deadline in seconds. Omit it for no time limit: the command runs until it finishes or is stopped. 0 stops it immediately; negative values are refused.",
+					"Optional deadline in seconds, greater than 0. Omit it for no time limit: the command runs until it finishes or is stopped.",
 			}),
 		),
 		wait: Type.Optional(
@@ -160,13 +160,13 @@ export interface BashToolDetails {
 	wallTimeMs?: number;
 }
 /**
- * A negative timeout is refused, `0` stops the command at once rather than meaning "no limit", and
- * leaving `timeout` out is what runs a command with no time limit.
+ * Leaving `timeout` out is what runs a command with no time limit. `0` and negative values are refused: a deadline that
+ * has already passed is never useful, and a model that writes `0` usually means "no limit".
  */
 export function validateExplicitTimeoutSeconds(timeout: number): void {
-	if (!Number.isFinite(timeout) || timeout < 0 || !Number.isFinite(timeout * 1000))
+	if (!Number.isFinite(timeout) || timeout <= 0 || !Number.isFinite(timeout * 1000))
 		throw new Error(
-			`Invalid timeout ${String(timeout)}: timeout must be a finite, non-negative number of seconds. Leave timeout out for no time limit; 0 stops the command immediately.`,
+			`Invalid timeout ${String(timeout)}: timeout must be a positive number of seconds. Leave timeout out for no time limit.`,
 		);
 }
 const STILL_RUNNING = (taskId: string) => `Command is still running (task ${taskId}).`;
@@ -184,7 +184,6 @@ export function stillRunningReceipt(taskId: string, timeoutSeconds: number | und
 function normalizeTimeoutSeconds(timeout: number | undefined): number | undefined {
 	if (timeout === undefined) return undefined;
 	validateExplicitTimeoutSeconds(timeout);
-	if (timeout === 0) return 0;
 	// The nearest whole millisecond, and at least one: fractional seconds are honoured, not floored.
 	return Math.max(1, Math.round(timeout * 1000)) / 1000;
 }
@@ -213,8 +212,6 @@ export function createLocalBashOperations(options?: {
 		exec: async (command, cwd, { onData, signal, timeout, wait, env, pty, heartbeatMs }) => {
 			validateBashWait(wait, !!options?.taskOwner);
 			if (timeout !== undefined) validateExplicitTimeoutSeconds(timeout);
-			// A zero deadline has already passed: the command times out without starting.
-			if (timeout === 0) throw new Error("timeout:0");
 			if (pty && getEnvValue(`${APP_NAME.toUpperCase()}_NO_PTY`) !== "1") {
 				try {
 					return await executeNativePty(command, cwd, {
