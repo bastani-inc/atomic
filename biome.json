@@ -31,6 +31,7 @@
 			"test/**/*.ts",
 			"scripts/**/*.ts",
 			"scripts/**/*.mjs",
+			"test/distributed/**/*.mjs",
 			"!**/node_modules/**/*",
 			"!**/dist/**/*",
 			"!**/binaries/**/*",
