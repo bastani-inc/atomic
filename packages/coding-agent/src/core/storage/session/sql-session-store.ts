@@ -1982,15 +1982,14 @@ export class SqlSessionStore implements SessionStore {
 					SqliteRow & { hash: string; bytes: number; chunks: number; data: Uint8Array | null; own: number }
 				>(
 					`SELECT b.hash, b.bytes, b.chunks, CASE WHEN b.chunks >= 0 AND b.bytes <= ? THEN c.data END AS data,
-						CASE WHEN b.session_id = ? THEN 1 ELSE 0 END AS own
-				FROM ${this.tables.blobs} b LEFT JOIN ${this.tables.blobChunks} c
-				ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = 0
-				WHERE ${tables.segments === undefined ? "b.session_id = ?" : `(b.session_id = ? OR b.session_id IN (SELECT source_id FROM ${tables.segments} WHERE session_id = ?))`}
-					AND b.hash IN (${hashes.map(() => "?").join(", ")})${tables.guard === undefined ? "" : ` AND ${tables.guard}`}
+						CASE WHEN w.place = 0 THEN 1 ELSE 0 END AS own
+				FROM ${this.blobPlaces(tables)} w JOIN ${this.tables.blobs} b
+				ON b.session_id = w.owner AND b.hash IN (${hashes.map(() => "?").join(", ")})
+				LEFT JOIN ${this.tables.blobChunks} c ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = 0
+				${tables.guard === undefined ? "" : `WHERE ${tables.guard}`}
 				ORDER BY own DESC, b.session_id`,
 					maxBytes,
-					sessionId,
-					...(tables.segments === undefined ? [sessionId] : [sessionId, sessionId]),
+					...this.blobPlaceParams(tables, sessionId),
 					...hashes,
 				),
 			(found) => found.length > 0,
@@ -2025,16 +2024,15 @@ export class SqlSessionStore implements SessionStore {
 		const row = await this.outsideTransaction(
 			(tables) =>
 				this.database.get<SqliteRow & { bytes: number; chunks: number; data: Uint8Array | null }>(
-					`SELECT b.bytes, b.chunks, ${legacy} AS data FROM ${this.tables.blobs} b LEFT JOIN ${this.tables.blobChunks} c
-				ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = ?
-				WHERE ${tables.segments === undefined ? "b.session_id = ?" : `(b.session_id = ? OR b.session_id IN (SELECT source_id FROM ${tables.segments} WHERE session_id = ?))`}
-					AND b.hash = ?${tables.guard === undefined ? "" : ` AND ${tables.guard}`}
-				ORDER BY CASE WHEN b.session_id = ? THEN 0 ELSE 1 END, b.session_id LIMIT 1`,
+					`SELECT b.bytes, b.chunks, ${legacy} AS data
+				FROM ${this.blobPlaces(tables)} w JOIN ${this.tables.blobs} b ON b.session_id = w.owner AND b.hash = ?
+				LEFT JOIN ${this.tables.blobChunks} c ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = ?
+				${tables.guard === undefined ? "" : `WHERE ${tables.guard}`}
+				ORDER BY w.place, b.session_id LIMIT 1`,
 					...(cut ? [offset + 1, legacyBytes] : []),
-					Math.floor(offset / SESSION_BLOB_CHUNK_BYTES),
-					...(tables.segments === undefined ? [sessionId] : [sessionId, sessionId]),
+					...this.blobPlaceParams(tables, sessionId),
 					hash,
-					sessionId,
+					Math.floor(offset / SESSION_BLOB_CHUNK_BYTES),
 				),
 			(found) => found !== undefined,
 		);
@@ -2974,16 +2972,35 @@ export class SqlSessionStore implements SessionStore {
 				this.database.get<SqliteRow & { owner: string; bytes: number; chunks: number }>(
 					tables.segments === undefined
 						? `SELECT session_id AS owner, bytes, chunks FROM ${this.tables.blobs} WHERE session_id = ? AND hash = ?${tables.guard === undefined ? "" : ` AND ${tables.guard}`}`
-						: `SELECT session_id AS owner, bytes, chunks FROM ${this.tables.blobs}
-							WHERE hash = ? AND (session_id = ? OR session_id IN (SELECT source_id FROM ${tables.segments} WHERE session_id = ?))${tables.guard === undefined ? "" : ` AND ${tables.guard}`}
-							ORDER BY CASE WHEN session_id = ? THEN 0 ELSE 1 END, session_id LIMIT 1`,
-					...(tables.segments === undefined ? [sessionId, hash] : [hash, sessionId, sessionId, sessionId]),
+						: `SELECT b.session_id AS owner, b.bytes, b.chunks
+							FROM ${this.blobPlaces(tables)} w JOIN ${this.tables.blobs} b ON b.session_id = w.owner AND b.hash = ?
+							${tables.guard === undefined ? "" : `WHERE ${tables.guard}`}
+							ORDER BY w.place, b.session_id LIMIT 1`,
+					...(tables.segments === undefined
+						? [sessionId, hash]
+						: [...this.blobPlaceParams(tables, sessionId), hash]),
 				),
 			(found) => found !== undefined,
 		);
 		return row === undefined
 			? undefined
 			: { owner: String(row.owner), bytes: Number(row.bytes), chunks: Number(row.chunks) };
+	}
+
+	/**
+	 * The sessions whose blobs a session reads (#6560), as a derived table of `owner` and `place`: the session itself,
+	 * place 0, and, with shared history, the sources its segments name, place 1. A blob is then looked up by its key in
+	 * each, never by a scan of the blobs of every session. Its parameters are {@link blobPlaceParams}.
+	 */
+	private blobPlaces(tables: ForkViewTables): string {
+		const own = `SELECT CAST(? AS ${this.dialect.types.text}) AS owner, 0 AS place`;
+		return tables.segments === undefined
+			? `(${own})`
+			: `(${own} UNION ALL SELECT source_id, 1 FROM ${tables.segments} WHERE session_id = ?)`;
+	}
+
+	private blobPlaceParams(tables: ForkViewTables, sessionId: string): SqliteValue[] {
+		return tables.segments === undefined ? [sessionId] : [sessionId, sessionId];
 	}
 
 	private async blobHeader(
