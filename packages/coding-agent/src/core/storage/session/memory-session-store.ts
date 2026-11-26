@@ -75,7 +75,7 @@ import type {
 	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
-import { entrySizeLimit, matchesSessionIdPrefix, SESSION_HISTORY_CHUNK_BYTES } from "./types.js";
+import { entrySizeLimit, matchesSessionIdPrefix, onlySeqs, SESSION_HISTORY_CHUNK_BYTES } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
@@ -1164,7 +1164,7 @@ export class MemorySessionStore implements SessionStore {
 			}
 			const entries = await this.entriesIn(sessionId, record, held, fromSeq, throughSeq, query);
 			if (entries === undefined) continue;
-			return { lastSeq, entries, throughSeq };
+			return { lastSeq, entries: onlySeqs(entries, query.seqs), throughSeq };
 		}
 	}
 

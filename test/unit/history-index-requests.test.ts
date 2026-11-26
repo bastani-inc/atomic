@@ -327,3 +327,33 @@ test("an index write whose signal aborts after its page's statements ran publish
 	assert.equal(await index.extend("long", HISTORY_TEXT_FORMAT, 0, 2, texts), true);
 	assert.deepEqual(await index.candidates("long", [["ABORTED_NEEDLE"]], 1, 2, 10), [1, 2]);
 });
+
+test("a repeated history:// search reads the entries the index names, and their context, in one request (#6560)", async () => {
+	const entries: SessionEntry[] = Array.from({ length: 70 }, (_, index) => {
+		const at = BASE + index * 1000;
+		return {
+			type: "message",
+			id: `e${index + 1}`,
+			parentId: index === 0 ? null : `e${index}`,
+			timestamp: new Date(at).toISOString(),
+			message: { role: "user", content: `entry ${index} needle-${index % 7}`, timestamp: at },
+		};
+	});
+	const { store } = await openStore(undefined, entries);
+	const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => store, budget: { timeMs: 120_000 } });
+	const request = { ...search("needle-5"), contextBefore: 2, contextAfter: 2 };
+	const first = await router.search?.("history://sessions/long", request);
+	let requests = 0;
+	const interception = interceptConnectionRequests((sent, send) => {
+		requests++;
+		return send(sent);
+	});
+	cleanups.push(() => interception.restore());
+	const again = await router.search?.("history://sessions/long", request);
+	interception.restore();
+	assert.equal(again, first);
+	assert.equal((again ?? "").match(/:\d+: entry \d+ needle-5/g)?.length, 10);
+	// 34 requests before: the header, the index's coverage and state, its candidates, then each of the 10 matches and
+	// the 2 entries after it, each read alone. Now the entries go in one read.
+	assert.ok(requests <= 5, `${requests} requests`);
+});
