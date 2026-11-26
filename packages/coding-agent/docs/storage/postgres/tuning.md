@@ -251,7 +251,7 @@ Leave the index's `fastupdate` on. Turning it off adds every entry to the index 
 
 These settings come up in tuning advice, but rarely help Atomic:
 
-- **`synchronous_commit`.** Keep it `on`. Turning it off can lose the last commits in a crash, and on a fast disk a commit's write takes far less time than a network round trip.
+- **`synchronous_commit`.** Keep it `on`. Turning it off for the whole server can lose the last commits in a crash, and on a fast disk a commit's write takes far less time than a network round trip. Atomic already turns it off for its own heartbeat writes, the lease renewals Intercom brokers send every 10 seconds, because losing one in a crash does no harm: the next renewal repeats it. Session entries, messages and every other write still wait for the disk.
 - **`commit_delay`.** It lets several commits share one disk write, which helps only when disk writes are slow.
 - **`wal_compression`.** Keep the current value. It trades a little CPU for a smaller write-ahead log.
 - **`io_method`.** Atomic's data usually fits in memory, so the method PostgreSQL 18 uses to read from disk rarely matters.

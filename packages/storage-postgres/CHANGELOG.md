@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A transaction with `relaxedDurability` runs with `synchronous_commit` off, set inside the `BEGIN` the adapter already sends, so it costs no extra round trip. Its commit returns without waiting for the disk. The setting ends with the transaction ([#6633](https://github.com/bastani-inc/atomic/pull/6633), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.2] - 2026-11-26
 
 ### Changed
