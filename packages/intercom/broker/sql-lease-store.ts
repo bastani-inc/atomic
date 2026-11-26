@@ -55,29 +55,46 @@ const ACQUISITION_ORDER_KIND = "acquisition-order";
 /**
  * Creates the sequence first acquisitions take their order from on PostgreSQL, `<table>_order`, once per database
  * (recorded as the `intercom-lease-order` schema step), starting past every order taken so far, the counter row's
- * included. False where it is missing and this role may not create it: a runtime role on a database `atomic storage
- * migrate` has not upgraded yet keeps the counter row (#6560).
+ * included. Where the ledger records the step but the catalog the open read has no sequence, someone dropped it: it is
+ * created again, under the schema lock, if it is still missing. Where this role may not create it, as a runtime role
+ * before `atomic storage migrate`, acquisitions take their order from the counter row instead (#6560).
  */
-async function ensureOrderSequence(
-	database: SqliteDatabase,
-	prefix: string | undefined,
-	table: string,
-): Promise<boolean> {
+async function ensureOrderSequence(database: SqliteDatabase, prefix: string | undefined, table: string): Promise<void> {
+	const sequence = `${table}_order`;
+	const create = async (tx: SqliteExecutor) => {
+		await tx.exec(`CREATE SEQUENCE IF NOT EXISTS ${sequence} AS BIGINT`);
+		await tx.get(
+			`SELECT setval('${sequence}', GREATEST(
+				(SELECT COALESCE(MAX(first_acquired_order), 0) FROM ${table}),
+				(SELECT COALESCE(MAX(last_token), 0) FROM ${table} WHERE kind = '${ACQUISITION_ORDER_KIND}'),
+				1
+			))`,
+		);
+	};
+	const catalog = await openCatalogOf(database);
+	const dropped =
+		catalog !== undefined &&
+		catalog.recordedVersion("schema:intercom-lease-order") >= 1 &&
+		!catalog.hasObject(sequence);
 	try {
-		await ensureBrokerSchema(database, prefix, "lease-order", async (tx) => {
-			await tx.exec(`CREATE SEQUENCE IF NOT EXISTS ${table}_order AS BIGINT`);
+		if (!dropped) {
+			await ensureBrokerSchema(database, prefix, "lease-order", create);
+			return;
+		}
+		await database.transaction(async (tx) => {
+			// The lock `ensureStorageSchema` takes, so processes that find it dropped create it once.
 			await tx.get(
-				`SELECT setval('${table}_order', GREATEST(
-					(SELECT COALESCE(MAX(first_acquired_order), 0) FROM ${table}),
-					(SELECT COALESCE(MAX(last_token), 0) FROM ${table} WHERE kind = '${ACQUISITION_ORDER_KIND}'),
-					1
-				))`,
+				"SELECT pg_advisory_xact_lock(hashtextextended(?, 0)) AS locked",
+				`${storageMigrationTable(prefix)}:schema`,
 			);
+			const found = await tx.get<SqliteRow & { missing: boolean | number }>(
+				"SELECT to_regclass(?) IS NULL AS missing",
+				sequence,
+			);
+			if (found?.missing === true || Number(found?.missing) === 1) await create(tx);
 		});
-		return true;
 	} catch (error) {
-		if (isMissingPrivilege(error)) return false;
-		throw error;
+		if (!isMissingPrivilege(error)) throw error;
 	}
 }
 
@@ -340,8 +357,7 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 		)
 	`;
 	await ensureBrokerSchema(database, options.prefix, "leases", (tx) => tx.exec(schema));
-	const orderSequence = `${table}_order`;
-	const sequenced = dialect.name === "postgres" && (await ensureOrderSequence(database, options.prefix, table));
+	if (dialect.name === "postgres") await ensureOrderSequence(database, options.prefix, table);
 	const addressed = await ensureAddressColumns(database, options.prefix, table);
 	await fillfactorApi.ensureTableFillfactor?.(database, {
 		ledger: storageMigrationTable(options.prefix),
@@ -377,22 +393,27 @@ async function openBrokerLeaseStoreInCatalog(options: IntercomBrokerStateOptions
 	/**
 	 * The order of a key acquired for the first time. A serial database runs one acquisition at a time, so the
 	 * largest order so far, plus one, is unique. PostgreSQL runs acquisitions beside one another, so each takes the
-	 * next value of the order sequence, which no acquisition waits for (#6560). Where `atomic storage migrate` has not
-	 * created it yet and this role may not, each takes the next value of a counter row, upserted by the statement
-	 * itself, whose row lock orders them; the counter's kind is no lease's, so no lease query reads it.
+	 * next value of the order sequence, which no acquisition waits for (#6560). Where the sequence is missing, because
+	 * `atomic storage migrate` has not created it yet and this role may not, or because someone dropped it, each takes
+	 * the next value of a counter row instead, upserted by the statement itself, whose row lock orders them, and which
+	 * never falls behind an order already taken; the counter's kind is no lease's, so no lease query reads it. Each
+	 * statement looks the sequence up itself, so a store opened before the sequence existed takes it from then on, as
+	 * one opened after does, and one opened before it was dropped takes the counter rather than fail: only acquisitions
+	 * made while the sequence is created can share an order, which their keys then decide.
 	 */
 	const largestOrder = `(SELECT COALESCE(MAX(first_acquired_order), 0) FROM ${table})`;
-	const nextOrder = sequenced
-		? { with: "", value: `nextval('${orderSequence}')` }
-		: dialect.name === "postgres"
+	const sequence = `to_regclass('${table}_order')`;
+	const nextOrder =
+		dialect.name === "postgres"
 			? {
 					with: `WITH next_order AS (
 						INSERT INTO ${table}(kind, key, last_token, first_acquired_order)
-						VALUES ('${ACQUISITION_ORDER_KIND}', '', ${largestOrder} + 1, 0)
-						ON CONFLICT(kind, key) DO UPDATE SET last_token = ${table}.last_token + 1
+						SELECT '${ACQUISITION_ORDER_KIND}', '', ${largestOrder} + 1, 0 WHERE ${sequence} IS NULL
+						ON CONFLICT(kind, key) DO UPDATE SET
+							last_token = GREATEST(${table}.last_token, excluded.last_token - 1) + 1
 						RETURNING last_token
 					) `,
-					value: "(SELECT last_token FROM next_order)",
+					value: `COALESCE(nextval(${sequence}), (SELECT last_token FROM next_order), ${largestOrder} + 1)`,
 				}
 			: { with: "", value: `${largestOrder} + 1` };
 	/** Latency-bound reads, which must not queue behind this database's writes (#6560). */

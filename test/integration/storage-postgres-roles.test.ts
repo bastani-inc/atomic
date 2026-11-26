@@ -16,6 +16,7 @@ import {
 	type SessionRecordHeader,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
+import type { BrokerLeaseStore } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
@@ -202,6 +203,37 @@ async function migrateAs(roles: Roles, role: "owner" | "runtime", prefix = PREFI
 		removeTempDirectory(root);
 	}
 }
+
+/** A presence lease's subject for the session `targetIdentity`. */
+const presenceSubject = (targetIdentity: string) =>
+	({
+		kind: "presence",
+		targetIdentity,
+		session: {
+			id: targetIdentity,
+			name: targetIdentity,
+			cwd: "/",
+			model: "m",
+			pid: 1,
+			startedAt: 1,
+			lastActivity: 1,
+		},
+	}) as const;
+
+/** `count` lease keys named `<phase>-<n>`. */
+const keys = (phase: string, count: number) => Array.from({ length: count }, (_, index) => `${phase}-${index}`);
+
+/** The order each presence lease under {@link PREFIX} was first acquired in, by key. */
+async function presenceOrders(database: SqliteDatabase, schema: string): Promise<Map<string, number>> {
+	const rows = await database.all<{ key: string; first_acquired_order: number | bigint }>(
+		`SELECT key, first_acquired_order FROM ${schema}.${PREFIX}intercom_leases WHERE kind = 'presence'`,
+	);
+	return new Map(rows.map((row) => [row.key, Number(row.first_acquired_order)]));
+}
+
+/** The orders of the keys {@link keys} named for `phase`. */
+const phase = (orders: ReadonlyMap<string, number>, name: string) =>
+	[...orders].filter(([key]) => key.startsWith(`${name}-`)).map(([, order]) => order);
 
 /** The statements of `sql` that define or change the schema. */
 const ddl = (sql: string): string[] =>
@@ -818,7 +850,9 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			await acquireAll(Array.from({ length: 12 }, (_, index) => `after-${index}`));
 			assert.deepEqual(statements.flatMap(ddl), [], "the runtime role ran no DDL");
 			assert.ok(
-				statements.some((statement) => statement.includes(`nextval('${PREFIX}intercom_leases_order')`)),
+				statements.some((statement) =>
+					statement.includes(`nextval(to_regclass('${PREFIX}intercom_leases_order'))`),
+				),
 				"the acquisition took its order from the sequence",
 			);
 			const orders = await ownerDatabase.all<{ first_acquired_order: number | bigint }>(
@@ -826,6 +860,95 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 			);
 			assert.equal(orders.length, 25);
 			assert.equal(new Set(orders.map((order) => Number(order.first_acquired_order))).size, 25);
+		});
+	});
+
+	test("a runtime store opened before migrate creates the order sequence takes its order from it afterwards, as one opened after does, so no two leases share an order (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const schema = String(
+				(await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema"))?.schema,
+			);
+			// As an earlier release left the schema: no order sequence, and no ledger record of it.
+			await ownerDatabase.exec(`DROP SEQUENCE ${schema}.${PREFIX}intercom_leases_order`);
+			await ownerDatabase.run(
+				`DELETE FROM ${schema}.${PREFIX}atomic_migrations WHERE domain = ?`,
+				"schema:intercom-lease-order",
+			);
+			await grantRuntime(ownerDatabase, roles);
+			const early = await Promise.all(
+				[0, 1, 2].map(async () =>
+					openSqlBrokerLeaseStore({ database: await roles.open("runtime"), prefix: PREFIX }),
+				),
+			);
+			const acquire = async (stores: readonly BrokerLeaseStore[], targets: readonly string[]) => {
+				const acquired = await Promise.all(
+					targets.map((target, index) =>
+						stores[index % stores.length]!.acquire(presenceSubject(target), "broker-a", 60_000),
+					),
+				);
+				assert.deepEqual(new Set(acquired.map((result) => result.status)), new Set(["acquired"]));
+			};
+			await acquire(early, keys("before", 9));
+
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			const late = await openSqlBrokerLeaseStore({ database: await roles.open("runtime"), prefix: PREFIX });
+			await acquire([...early, late], keys("after", 16));
+
+			const orders = await presenceOrders(ownerDatabase, schema);
+			assert.equal(orders.size, 25);
+			assert.equal(new Set(orders.values()).size, 25, "no two leases share an order");
+			assert.ok(
+				Math.max(...phase(orders, "before")) < Math.min(...phase(orders, "after")),
+				"every lease acquired after migrate comes after every lease acquired before it",
+			);
+		});
+	});
+
+	test("a dropped order sequence makes acquisitions take their order from the counter instead of failing, and migrate creates it again past every order taken (#6560)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const ownerDatabase = await roles.open("owner");
+			const schema = String(
+				(await ownerDatabase.get<{ schema: string }>("SELECT current_schema() AS schema"))?.schema,
+			);
+			await grantRuntime(ownerDatabase, roles);
+			const opened = await openSqlBrokerLeaseStore({ database: await roles.open("runtime"), prefix: PREFIX });
+			const acquire = async (store: BrokerLeaseStore, targets: readonly string[]) => {
+				const acquired = await Promise.all(
+					targets.map((target) => store.acquire(presenceSubject(target), "broker-a", 60_000)),
+				);
+				assert.deepEqual(new Set(acquired.map((result) => result.status)), new Set(["acquired"]));
+			};
+			await acquire(opened, keys("sequenced", 5));
+
+			// Dropped by hand; the ledger still records the step.
+			await ownerDatabase.exec(`DROP SEQUENCE ${schema}.${PREFIX}intercom_leases_order`);
+			await acquire(opened, keys("dropped-open", 4));
+			const reopened = await openSqlBrokerLeaseStore({ database: await roles.open("runtime"), prefix: PREFIX });
+			await acquire(reopened, keys("dropped-reopened", 4));
+
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+			assert.ok(
+				await ownerDatabase.get(
+					"SELECT 1 AS found FROM pg_class WHERE relname = ?",
+					`${PREFIX}intercom_leases_order`,
+				),
+				"migrate created the sequence again",
+			);
+			await acquire(opened, keys("recreated", 4));
+
+			const orders = await presenceOrders(ownerDatabase, schema);
+			assert.equal(orders.size, 17);
+			assert.equal(new Set(orders.values()).size, 17, "no two leases share an order");
+			const dropped = [...phase(orders, "dropped-open"), ...phase(orders, "dropped-reopened")];
+			assert.ok(Math.max(...phase(orders, "sequenced")) < Math.min(...dropped));
+			assert.ok(Math.max(...dropped) < Math.min(...phase(orders, "recreated")));
 		});
 	});
 
