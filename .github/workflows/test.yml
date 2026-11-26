@@ -223,6 +223,14 @@ jobs:
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
+      # The release checks its packed build against the newest published release, which the unit suite's committed
+      # records (packages/coding-agent/in-place-update/) do not hold: 0.10.11-alpha.2's release failed on exports
+      # 0.10.11-alpha.1 lacked after every pull request passed. This runs that check, and against the newest stable
+      # release, on this build, in one shard (two npm downloads and a few seconds of parsing).
+      - name: Check in-place updates from the newest published releases
+        if: matrix.binary_platform == 'linux-x64' && matrix.shard == 1
+        timeout-minutes: 5
+        run: node scripts/in-place-update-exports.mjs published packages/coding-agent/in-place-update packages/coding-agent packages/ai packages/agent packages/tui packages/codemode packages/schema packages/telemetry
       # skill-creator's package_skill.py and quick_validate.py read SKILL.md with PyYAML. Linux's image has it; Windows'
       # Python does not, so their tests skipped there. Install the pinned release from PyPI into that Python, checked
       # against its Windows wheels' SHA-256 (CPython 3.10-3.15), and check that it imports without the user's

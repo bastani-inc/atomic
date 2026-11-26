@@ -8,10 +8,12 @@ import * as statementSequence from "./statement-sequence.js";
  * can load the modules that use these from the update: a named import of any of them would fail to link there, so they
  * take them from here, a path no earlier release has (#6560). Without them every open checks its schema in a
  * transaction, tables keep their default fillfactor, and a transaction's last writes run before its `COMMIT`, as there.
+ *
+ * Releases since 0.10.11-alpha.1 ship this module with these exports, so a process of one may hold its copy: an export
+ * added here would fail to link there. Later additions go in a module no release has, as `added-exports-0-10-11.ts`.
  */
 const schemaChecks: Partial<Pick<typeof migrations, "storageSchemaCurrent" | "ensureTableFillfactor">> = migrations;
-const finishers: Partial<Pick<typeof statementSequence, "transactionFinisher" | "MAX_SEQUENCE_REQUEST_STATEMENTS">> =
-	statementSequence;
+const finishers: Partial<Pick<typeof statementSequence, "transactionFinisher">> = statementSequence;
 
 export const storageSchemaCurrent: typeof migrations.storageSchemaCurrent =
 	schemaChecks.storageSchemaCurrent ?? (async () => false);
@@ -21,9 +23,3 @@ export const ensureTableFillfactor: typeof migrations.ensureTableFillfactor =
 
 export const transactionFinisher: typeof statementSequence.transactionFinisher =
 	finishers.transactionFinisher ?? (() => undefined);
-
-/**
- * `MAX_SEQUENCE_REQUEST_STATEMENTS` of `statement-sequence.ts`, which the copies 0.10.3 and 0.10.4's prereleases loaded
- * lack: the most statements one request of a sequence carries (#6560).
- */
-export const MAX_SEQUENCE_REQUEST_STATEMENTS: number = finishers.MAX_SEQUENCE_REQUEST_STATEMENTS ?? 256;

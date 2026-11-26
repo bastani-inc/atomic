@@ -19,12 +19,15 @@
 // release, and `release` does it for a packed release in the release workflow: releases before `GUARDED_SINCE` must be
 // recorded before building so the build's gates recognize them (`packages/coding-agent/scripts/in-place-update-gate.mjs`),
 // while releases from `GUARDED_SINCE` onward self-guard on-demand imports at call sites and are downloaded from npm on
-// the fly when not committed. `packages/coding-agent/in-place-update/` holds the records (see its README.md).
+// the fly when not committed. `published` checks a build against the records and the newest published release and
+// the newest stable one, from npm, as CI does on every pull request: those records are not committed, so `check` and the
+// unit suite miss them. `packages/coding-agent/in-place-update/` holds the records (see its README.md).
 //
 // Usage:
 //   node scripts/in-place-update-exports.mjs record <package-dir>...       (prints the record; the application first)
 //   node scripts/in-place-update-exports.mjs record --published <version>  (of the release npm has)
 //   node scripts/in-place-update-exports.mjs check <records-dir> <package-dir>...
+//   node scripts/in-place-update-exports.mjs published <records-dir> <package-dir>...
 //   node scripts/in-place-update-exports.mjs release <version> <records-dir> <tarball-dir>
 //
 // A package directory is an installed or unpacked package (its package.json and the files it publishes), or a workspace
@@ -702,8 +705,8 @@ function downloadRelease(version, into) {
 	return unpackRelease(tarballs, into);
 }
 
-/** The latest published release of the application before `version`, or undefined when there is none. */
-function previousRelease(version) {
+/** Every published release of the application. */
+function publishedVersions() {
 	const result = spawnSync(
 		process.platform === "win32" ? "npm.cmd" : "npm",
 		["view", APPLICATION, "versions", "--json"],
@@ -713,11 +716,28 @@ function previousRelease(version) {
 		},
 	);
 	if (result.status !== 0) throw new Error(`npm view ${APPLICATION} versions failed: ${result.stderr}`);
-	const versions = /** @type {string[]} */ (JSON.parse(result.stdout));
-	return versions
+	return /** @type {string[]} */ (JSON.parse(result.stdout));
+}
+
+/** The latest published release of the application before `version`, or undefined when there is none. */
+function previousRelease(version) {
+	return publishedVersions()
 		.filter((published) => semver.lt(published, version))
 		.sort(semver.compare)
 		.at(-1);
+}
+
+/**
+ * The published releases a build of the next release is checked against before it is released: the newest one, which
+ * `release` checks the packed release against as the one before it (a prerelease, often), and the newest stable one,
+ * which most installations an update replaces run.
+ * @param {readonly string[]} versions @returns {string[]}
+ */
+export function latestPublishedReleases(versions) {
+	const sorted = [...versions].sort(semver.compare);
+	const newest = sorted.at(-1);
+	const stable = sorted.filter((version) => semver.prerelease(version) === null).at(-1);
+	return [...new Set([newest, stable].filter((version) => version !== undefined))];
 }
 
 /** The records in `dir` (`<version>.json`) and the specifiers `allowed.json` there allows, by release. */
@@ -785,6 +805,31 @@ function main(argv) {
 		const { records, allowed } = readRecords(rest[0]);
 		return report(records, allowed, rest.slice(1)) ? 0 : 1;
 	}
+	if (command === "published" && rest.length >= 2) {
+		// Before a release: this build against every recorded release and the latest published ones, which `release`
+		// downloads and the records here need not hold.
+		const [recordsDir, ...dirs] = rest;
+		const into = work();
+		try {
+			const { records, allowed } = readRecords(recordsDir);
+			let resolved = records;
+			for (const previous of latestPublishedReleases(publishedVersions())) {
+				const next = resolveReleaseRecords(resolved, {
+					previous,
+					recordsDir,
+					download: (version) => recordRelease(downloadRelease(version, into)),
+				});
+				if (!next.ok) {
+					console.error(next.error);
+					return 1;
+				}
+				resolved = next.records;
+			}
+			return report(resolved, allowed, dirs) ? 0 : 1;
+		} finally {
+			rmSync(into, { recursive: true, force: true });
+		}
+	}
 	if (command === "release" && rest.length === 3) {
 		// The release path: the packed release against every recorded release and the latest published one before it.
 		const [version, recordsDir, tarballs] = rest;
@@ -812,6 +857,7 @@ function main(argv) {
 			"Usage:",
 			"  in-place-update-exports.mjs record <package-dir>... | record --published <version>",
 			"  in-place-update-exports.mjs check <records-dir> <package-dir>...",
+			"  in-place-update-exports.mjs published <records-dir> <package-dir>...",
 			"  in-place-update-exports.mjs release <version> <records-dir> <tarball-dir>",
 		].join("\n"),
 	);
