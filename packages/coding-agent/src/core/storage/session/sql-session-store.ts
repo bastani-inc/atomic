@@ -28,6 +28,7 @@ import {
 } from "./errors.js";
 import {
 	type CountedStatement,
+	entryChunksCopy,
 	type ForkBlobCopy,
 	ForkRowRuns,
 	forkBlobCopy,
@@ -1199,10 +1200,7 @@ export class SqlSessionStore implements SessionStore {
 				changes: 1,
 				mismatch: () => new SessionConflictError(ref.sessionId, ref.seq, donorLastSeq),
 			};
-			yield {
-				sql: `INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) SELECT ?, ?, idx, data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? ORDER BY idx`,
-				params: [child, index + 1, ref.sessionId, ref.seq],
-			};
+			yield { sql: entryChunksCopy(this.tables), params: [child, index + 1, ref.sessionId, ref.seq] };
 		}
 	}
 

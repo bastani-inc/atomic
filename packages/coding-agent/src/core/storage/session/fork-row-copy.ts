@@ -24,6 +24,20 @@ const HELD_RUN_ROWS = 4096;
 const BLOB_HASHES_PER_STATEMENT = 256;
 
 /**
+ * The chunk rows `INSERT … SELECT` copies of the entries of session `?` at seqs `?` to `?`: only each entry's chunks 0 to
+ * `chunks - 1`, as the copy one chunk at a time did, never a row an older version left past them or at an entry stored
+ * whole. `incompleteEntryRead` then finds an entry missing any of those.
+ */
+function entryChunkRows(tables: ForkCopyTables, seqs: string): string {
+	return `FROM ${tables.entryChunks} c JOIN ${tables.entries} e ON e.session_id = c.session_id AND e.seq = c.seq WHERE c.session_id = ? AND c.seq ${seqs} AND c.idx >= 0 AND c.idx < e.chunks ORDER BY c.seq, c.idx`;
+}
+
+/** Copies to child seq `?` the chunks 0 to `chunks - 1` of the entry at seq `?` of session `?`, as a fork does. */
+export function entryChunksCopy(tables: ForkCopyTables): string {
+	return `INSERT INTO ${tables.entryChunks} (session_id, seq, idx, data) SELECT ?, ?, c.idx, c.data ${entryChunkRows(tables, "= ?")}`;
+}
+
+/**
  * The source's stored rows a fork copies, gathered into runs of consecutive seqs and copied a run at a time, each run in
  * one `INSERT … SELECT` for its entries and one for their chunks (#6560), not one statement per row and chunk. Rows are
  * copied in seq order, so the snapshot index's triggers meet a parent before its children, as they do for an append.
@@ -80,7 +94,7 @@ export class ForkRowRuns {
 					mismatch: () => new SessionConflictError(this.source, sourceFrom, sourceFrom + count - 1),
 				},
 				{
-					sql: `INSERT INTO ${entryChunks} (session_id, seq, idx, data) SELECT ?, seq + ?, idx, data FROM ${entryChunks} WHERE session_id = ? AND seq BETWEEN ? AND ? ORDER BY seq, idx`,
+					sql: `INSERT INTO ${entryChunks} (session_id, seq, idx, data) SELECT ?, c.seq + ?, c.idx, c.data ${entryChunkRows(this.tables, "BETWEEN ? AND ?")}`,
 					params,
 				},
 			);
@@ -100,11 +114,12 @@ export interface CountedStatement extends SqliteStatement {
 
 /**
  * The read that finds a stored entry of `child` missing any of its chunks, which the fork checks before it commits: an
- * entry copied from the source names its chunk count, and the chunks were copied in the same statements.
+ * entry copied from the source names its chunk count, and the chunks were copied in the same statements. It counts the
+ * entry's chunk rows from 0 to `chunks - 1`, keyed by their index, so a count of `chunks` is each of them.
  */
 export function incompleteEntryRead(tables: ForkCopyTables, child: string): SqliteStatement {
 	return {
-		sql: `SELECT e.seq FROM ${tables.entries} e WHERE e.session_id = ? AND e.chunks > 0 AND e.chunks <> (SELECT count(*) FROM ${tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq) LIMIT 1`,
+		sql: `SELECT e.seq FROM ${tables.entries} e WHERE e.session_id = ? AND e.chunks > 0 AND e.chunks <> (SELECT count(*) FROM ${tables.entryChunks} c WHERE c.session_id = e.session_id AND c.seq = e.seq AND c.idx >= 0 AND c.idx < e.chunks) LIMIT 1`,
 		params: [child],
 	};
 }
