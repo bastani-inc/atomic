@@ -8,6 +8,7 @@ import {
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
+import { checkClaimantlessRow } from "../helpers/outbox-claimantless-row.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { interceptConnectionRequests, requestSql } from "../helpers/sqlite-connection-requests.js";
 
@@ -16,15 +17,18 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function openBroker(): Promise<IntercomBrokerStateStore> {
-	const directory = makeTempDirectory("atomic-outbox-claim-");
-	cleanups.push(() => removeTempDirectory(directory));
-	const path = join(directory, "broker.sqlite");
+async function openBroker(path = brokerPath()): Promise<IntercomBrokerStateStore> {
 	const { state, bus } = await openIntercomBrokerState({ openDatabase: () => openNodeSqliteDatabase(path) });
 	// Only the outbox's calls are counted: the wake-up bus, which polls on its own, is closed first.
 	await bus.close();
 	cleanups.push(() => state.close());
 	return state;
+}
+
+function brokerPath(): string {
+	const directory = makeTempDirectory("atomic-outbox-claim-");
+	cleanups.push(() => removeTempDirectory(directory));
+	return join(directory, "broker.sqlite");
 }
 
 /** Every request sent to a connection's thread, and the waits: requests sent while none was out. */
@@ -136,4 +140,12 @@ test("a claim another broker holds, or of the claimant's own rows in flight, is 
 	const inFlight = requests.take();
 	assert.equal(inFlight.waits, 1);
 	assert.deepEqual(writeLocks(inFlight.sent), []);
+});
+
+test("a claimed row without a claimant is not held by anyone, and is taken over once its claim is stale (#6560)", async () => {
+	const path = brokerPath();
+	const state = await openBroker(path);
+	const database = await openNodeSqliteDatabase(path);
+	cleanups.push(() => database.close());
+	await checkClaimantlessRow(state, database, "intercom_outbox");
 });

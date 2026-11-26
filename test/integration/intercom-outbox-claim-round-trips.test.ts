@@ -11,6 +11,7 @@ import {
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { rowTransaction } from "../../packages/intercom/broker/sql-outbox-store.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+import { checkClaimantlessRow } from "../helpers/outbox-claimantless-row.js";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { dropLibsqlScope } from "../helpers/storage-backends.js";
 
@@ -192,6 +193,20 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claims on Pos
 	});
 });
 
+describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claims of a row without a claimant (#6560)", () => {
+	test("on PostgreSQL, a claimed row without a claimant is not held, and is taken over once stale (#6560)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: () => open() });
+			try {
+				await checkClaimantlessRow(state, await open(), "intercom_outbox");
+			} finally {
+				await bus.close();
+				await state.close();
+			}
+		});
+	});
+});
+
 describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox claim order on PostgreSQL (#6560)", () => {
 	test("a claim that takes over a late claimant's row waits for that claimant's newer claim, so one session's messages stay in order (#6560)", async () => {
 		await withPostgresDatabase(async (scope) => {
@@ -300,6 +315,25 @@ const serverUrl = process.env.ATOMIC_TEST_LIBSQL_URL;
 const tokenFile = process.env.ATOMIC_TEST_LIBSQL_TOKEN_FILE;
 
 describe.skipIf(serverUrl === undefined)("Intercom outbox claims on a libSQL server (#6560)", () => {
+	test("a claimed row without a claimant is not held, and is taken over once stale (#6560)", async () => {
+		const authToken = tokenFile === undefined ? undefined : readFileSync(tokenFile, "utf8").trim();
+		const open = () => openLibsqlDatabase({ url: serverUrl!, ...(authToken === undefined ? {} : { authToken }) });
+		const prefix = `claim_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
+		const database = await open();
+		try {
+			const { state, bus } = await openIntercomBrokerState({ openDatabase: open, prefix });
+			try {
+				await checkClaimantlessRow(state, database, `${prefix}intercom_outbox`);
+			} finally {
+				await bus.close();
+				await state.close();
+			}
+		} finally {
+			await dropLibsqlScope(database, prefix);
+			await database.close();
+		}
+	});
+
 	test("an empty poll is one request, and a claim of queued messages two, with one write (#6560)", async () => {
 		const authToken = tokenFile === undefined ? undefined : readFileSync(tokenFile, "utf8").trim();
 		const open = () => openLibsqlDatabase({ url: serverUrl!, ...(authToken === undefined ? {} : { authToken }) });
