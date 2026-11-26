@@ -11,6 +11,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/session/fork-detach.js";
 import { deleteForkedSessionWithin } from "../../packages/coding-agent/src/core/storage/session/fork-pins.js";
 import { type ForkSegment, forkPieces } from "../../packages/coding-agent/src/core/storage/session/fork-segments.js";
+import { sweepForkTombstones } from "../../packages/coding-agent/src/core/storage/session/fork-sweep.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -28,9 +29,10 @@ beforeEach(async () => {
 	await database.exec(`
 		CREATE TABLE sessions (id TEXT PRIMARY KEY, last_seq INTEGER NOT NULL, epoch TEXT NOT NULL);
 		CREATE TABLE entries (session_id TEXT NOT NULL, seq INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(session_id, seq));
-		CREATE TABLE entry_chunks (session_id TEXT NOT NULL);
-		CREATE TABLE blobs (session_id TEXT NOT NULL);
-		CREATE TABLE blob_chunks (session_id TEXT NOT NULL);
+		CREATE TABLE entry_chunks (session_id TEXT NOT NULL, seq INTEGER NOT NULL);
+		CREATE TABLE search_texts (session_id TEXT NOT NULL, seq INTEGER NOT NULL);
+		CREATE TABLE blobs (session_id TEXT NOT NULL, hash TEXT NOT NULL);
+		CREATE TABLE blob_chunks (session_id TEXT NOT NULL, hash TEXT NOT NULL);
 		CREATE TABLE fork_segments (
 			session_id TEXT NOT NULL, idx INTEGER NOT NULL, source_id TEXT NOT NULL,
 			from_seq INTEGER NOT NULL, to_seq INTEGER NOT NULL, base_seq INTEGER NOT NULL, PRIMARY KEY(session_id, idx)
@@ -73,6 +75,7 @@ function storeHost(): ForkDetachHost & { crashAfterCommits?: number; commits: nu
 			entryChunks: "entry_chunks",
 			blobs: "blobs",
 			blobChunks: "blob_chunks",
+			searchTexts: "search_texts",
 			tombstones: "fork_tombstones",
 			forkSegments: "fork_segments",
 			forkLineage: "fork_lineage",
@@ -285,18 +288,20 @@ test("a parent rewritten during a detach keeps its other forks off the child's c
 	assert.deepEqual(await host.forkSegments(database, "S"), [{ sourceId: "P", fromSeq: 1, toSeq: 3, baseSeq: 0 }]);
 });
 
-test("a deleted parent's rows stay while a fork reads them and go with the detach of its last reader", async () => {
+test("a deleted parent's rows stay while a fork reads them and are swept once its last reader is detached", async () => {
 	await session("P", 4);
 	await fork("C", "P", 3, 1);
 	const host = storeHost();
 	assert.equal(
-		await database.transaction((tx) => deleteForkedSessionWithin(host, tx, "P", "2026-11-25T00:00:00.000Z")),
-		"keep-rows",
+		(await database.transaction((tx) => deleteForkedSessionWithin(host, tx, "P", "2026-11-25T00:00:00.000Z")))
+			.keepRows,
+		true,
 	);
 	await database.run("DELETE FROM sessions WHERE id = 'P'");
 	assert.deepEqual(await view("C"), ["P:1", "P:2", "P:3", "C:4"]);
 	await detachFork(host, "P", "C");
 	assert.deepEqual(await view("C"), ["P:1", "P:2", "P:3", "C:4"]);
+	assert.deepEqual(await sweepForkTombstones(host, ["P"], { batchEntries: 2 }), ["P"]);
 	assert.equal(
 		Number((await database.get<{ n: number }>("SELECT count(*) AS n FROM entries WHERE session_id = 'P'"))!.n),
 		0,

@@ -30,6 +30,7 @@ export const FORK_DETACH_PAGE_ROWS = 2_000;
 export interface ForkPinTables {
 	readonly entries: string;
 	readonly entryChunks: string;
+	readonly searchTexts: string;
 	readonly blobs: string;
 	readonly blobChunks: string;
 	readonly tombstones: string;
@@ -121,7 +122,7 @@ export async function lockedReferrers(
 /** Removes the rows a session stores and its tombstone: nothing names them, and the session is gone or replaced. */
 export async function removeStoredRows(host: ForkDetachHost, tx: SqliteExecutor, sessionId: string): Promise<void> {
 	const { pinTables: tables } = host;
-	for (const table of [tables.blobChunks, tables.blobs, tables.entryChunks, tables.entries])
+	for (const table of [tables.blobChunks, tables.blobs, tables.entryChunks, tables.searchTexts, tables.entries])
 		await tx.run(`DELETE FROM ${table} WHERE session_id = ?`, sessionId);
 	await tx.run(`DELETE FROM ${tables.tombstones} WHERE session_id = ?`, sessionId);
 }
@@ -131,12 +132,6 @@ export async function isTombstoned(host: ForkDetachHost, tx: SqliteExecutor, ses
 		(await tx.get(`SELECT session_id FROM ${host.pinTables.tombstones} WHERE session_id = ?`, sessionId)) !==
 		undefined
 	);
-}
-
-/** Removes the rows of `sessionId` when it is a deleted session's tombstone and no fork reads them any more. */
-export async function sweepTombstoneWithin(host: ForkDetachHost, tx: SqliteExecutor, sessionId: string): Promise<void> {
-	if (!(await isTombstoned(host, tx, sessionId))) return;
-	if ((await lockedReferrers(host, tx, sessionId)).length === 0) await removeStoredRows(host, tx, sessionId);
 }
 
 function parseProgress(row: ProgressRow): DetachProgress {
@@ -250,11 +245,7 @@ export async function detachFork(
 			await tx.run(`DELETE FROM ${table} WHERE parent_id = ? AND child_id = ?`, parentId, childId);
 			return reparented;
 		});
-		if (done === undefined) continue;
-		// A deleted parent's rows go with their last reader. Its own transaction, holding no fork's lock: one that
-		// locks the parent while holding the child would wait in the opposite order to a create over the tombstone.
-		await host.forkTransaction((tx) => sweepTombstoneWithin(host, tx, parentId));
-		return { detached: [childId], reparented: [...done] };
+		if (done !== undefined) return { detached: [childId], reparented: [...done] };
 	}
 }
 

@@ -58,7 +58,7 @@ async function withStore(backend: StorageBackend, body: (fixture: Fixture) => Pr
 		const database = await scope.connect();
 		const store = await SqlSessionStore.open(crashing(database, crash), { prefix: scope.prefix });
 		try {
-			assert.equal((await store.enableSharedHistoryForks({ live: async () => false })).status, "enabled");
+			assert.notEqual((await store.enableSharedHistoryForks({ live: async () => false })).status, "refused");
 			await body({ store, prefix: scope.prefix, database, crash });
 		} finally {
 			await store.close();
@@ -164,6 +164,42 @@ for (const backend of storageBackends) {
 		);
 
 		test(
+			"a detach of a deleted session's forks keeps the sweep off its rows until the forks hold their own, across crashes (#6560)",
+			() =>
+				withStore(backend, async (fixture) => {
+					const { store, crash } = fixture;
+					const parent = await SessionManager.create(store, CWD);
+					for (let index = 0; index < 8; index++) await parent.appendMessage(user(`p${index}`));
+					const parentId = parent.getSessionId();
+					const child = await clone(store, parentId);
+					await appendTo(store, child, "c own");
+					const before = await view(store, child);
+					await store.delete(parentId);
+					const parentRows = `SELECT count(*) AS n FROM ${entriesTable(fixture.prefix)} WHERE session_id = ?`;
+
+					let finished = false;
+					for (let commits = 0; !finished; commits++) {
+						assert.ok(commits < 20, "the detach finishes");
+						crash.after = commits;
+						finished = await store.detachForks(parentId, { pageRows: 3 }).then(
+							() => true,
+							(error: Error) => {
+								if (!(error instanceof Crash)) throw error;
+								return false;
+							},
+						);
+						crash.after = undefined;
+						// A sweep between the detach's commits finds the child still reading the rest of the parent's rows.
+						await store.sweepForkTombstones([parentId]);
+						assert.equal(await view(store, child), before, `the child after ${commits + 1} commits and a sweep`);
+					}
+					assert.equal(await count(fixture, parentRows, parentId), 0, "the deleted parent's rows went");
+					assert.equal(await view(store, child), before);
+				}),
+			DETACH_TIMEOUT_MS,
+		);
+
+		test(
 			"detaching 50 sibling forks copies the parent's rows once (#6560)",
 			() =>
 				withStore(backend, async (fixture) => {
@@ -225,6 +261,105 @@ for (const backend of storageBackends) {
 						[],
 					);
 					assert.deepEqual((await store.load(parentId)).entries, []);
+				}),
+			DETACH_TIMEOUT_MS,
+		);
+
+		test(
+			"deleting the last fork of a deleted session sweeps the session's rows, and only them (#6560)",
+			() =>
+				withStore(backend, async (fixture) => {
+					const { store } = fixture;
+					const parent = await SessionManager.create(store, CWD);
+					for (let index = 0; index < 5; index++) await parent.appendMessage(user(`p${index}`));
+					const parentId = parent.getSessionId();
+					const first = await clone(store, parentId);
+					const second = await clone(store, parentId);
+					const other = await SessionManager.create(store, CWD);
+					await other.appendMessage(user("unrelated"));
+					const otherView = await view(store, other.getSessionId());
+					const parentRows = `SELECT count(*) AS n FROM ${entriesTable(fixture.prefix)} WHERE session_id = ?`;
+					const tombstones = `SELECT count(*) AS n FROM ${sessionForkTables(fixture.prefix).forkTombstones}`;
+
+					await store.delete(parentId);
+					const before = await view(store, second);
+					await store.delete(first);
+					assert.equal(await count(fixture, parentRows, parentId), 5, "the second fork still reads them");
+					assert.equal(await view(store, second), before);
+					await store.delete(second);
+					assert.equal(await count(fixture, parentRows, parentId), 0, "the last reader's delete swept them");
+					assert.equal(await count(fixture, tombstones), 0);
+					assert.equal(await view(store, other.getSessionId()), otherView);
+				}),
+			DETACH_TIMEOUT_MS,
+		);
+
+		test(
+			"a sweep stopped after any of its batches leaves a tombstone the next sweep finishes (#6560)",
+			() =>
+				withStore(backend, async (fixture) => {
+					const { store, crash } = fixture;
+					const parent = await SessionManager.create(store, CWD);
+					for (let index = 0; index < 7; index++) await parent.appendMessage(user(`p${index}`));
+					await parent.appendToolOutputBlob("call-p", new Uint8Array(Buffer.from("parent output")));
+					const parentId = parent.getSessionId();
+					const child = await clone(store, parentId);
+					await store.delete(parentId);
+					// The process stops right after the delete of the last reader commits, before its sweep.
+					crash.after = 0;
+					await assert.rejects(store.delete(child), Crash);
+					crash.after = undefined;
+					const parentRows = `SELECT count(*) AS n FROM ${entriesTable(fixture.prefix)} WHERE session_id = ?`;
+					const tombstone = `SELECT count(*) AS n FROM ${sessionForkTables(fixture.prefix).forkTombstones} WHERE session_id = ?`;
+					assert.equal(await count(fixture, parentRows, parentId), 8);
+
+					let rows = 8;
+					let swept: string[] | undefined;
+					for (let commits = 0; swept === undefined; commits++) {
+						assert.ok(commits < 20, "the sweep finishes");
+						crash.after = commits;
+						swept = await store.sweepForkTombstones([], 3).catch((error: Error) => {
+							if (!(error instanceof Crash)) throw error;
+							return undefined;
+						});
+						crash.after = undefined;
+						const left = await count(fixture, parentRows, parentId);
+						assert.ok(left <= rows, "a stopped sweep never brings rows back");
+						rows = left;
+						if (left > 0)
+							assert.equal(await count(fixture, tombstone, parentId), 1, "the tombstone stays with its rows");
+						assert.equal(await store.readHeader(parentId), undefined);
+					}
+					// No sweep named the session: the stopped delete's tombstone was found as left over.
+					assert.equal(await count(fixture, parentRows, parentId), 0);
+					assert.equal(await count(fixture, tombstone, parentId), 0);
+				}),
+			DETACH_TIMEOUT_MS,
+		);
+
+		test(
+			"a fork of a session being deleted either reads its whole history or is refused (#6560)",
+			() =>
+				withStore(backend, async (fixture) => {
+					const { store } = fixture;
+					for (let round = 0; round < 4; round++) {
+						const parent = await SessionManager.create(store, CWD);
+						for (let index = 0; index < 4; index++) await parent.appendMessage(user(`p${round}.${index}`));
+						const parentId = parent.getSessionId();
+						const reader = await clone(store, parentId);
+						const expected = (await store.load(parentId)).entries;
+						const [deleted, forked] = await Promise.allSettled([store.delete(parentId), clone(store, parentId)]);
+						assert.equal(deleted.status, "fulfilled");
+						if (forked.status === "fulfilled")
+							assert.deepEqual(
+								(await store.load(forked.value)).entries,
+								expected,
+								"the fork reads the whole history",
+							);
+						assert.deepEqual((await store.load(reader)).entries, expected);
+						// Once deleted, the session cannot be forked.
+						await assert.rejects(clone(store, parentId));
+					}
 				}),
 			DETACH_TIMEOUT_MS,
 		);

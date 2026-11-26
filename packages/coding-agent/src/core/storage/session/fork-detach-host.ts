@@ -47,6 +47,7 @@ export function forkDetachHost(store: ForkHostStore): ForkDetachHost {
 		pinTables: {
 			entries: tables.entries,
 			entryChunks: tables.entryChunks,
+			searchTexts: tables.searchTexts,
 			blobs: tables.blobs,
 			blobChunks: tables.blobChunks,
 			tombstones: forkTables.forkTombstones,

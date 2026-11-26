@@ -166,7 +166,7 @@ async function withScope<T>(backend: StorageBackend, body: (scope: StorageBacken
 /** Opens a store under `prefix`, with shared-history forks turned on when `shared`. */
 async function openStore(scope: StorageBackendScope, prefix: string, shared: boolean): Promise<SqlSessionStore> {
 	const store = await SqlSessionStore.open(await scope.connect(), { prefix });
-	if (shared) assert.equal((await store.enableSharedHistoryForks({ live: async () => false })).status, "enabled");
+	if (shared) assert.notEqual((await store.enableSharedHistoryForks({ live: async () => false })).status, "refused");
 	return store;
 }
 

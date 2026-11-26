@@ -23,55 +23,56 @@ import {
 	isTombstoned,
 	lockedReferrers,
 	removeStoredRows,
-	sweepTombstoneWithin,
 } from "./fork-detach.js";
 
 /**
- * Drops `sessionId`'s own segments, then sweeps each source they named that is a tombstone nothing else names. A
- * source a sweep keeps is still read by another fork, or is a live session.
+ * Drops `sessionId`'s own segments. Resolves with the sources they named: a deleted one that no fork reads any more
+ * is for the caller to sweep once its transaction commits (fork-sweep.ts).
  */
-async function dropOwnSegments(host: ForkDetachHost, tx: SqliteExecutor, sessionId: string): Promise<void> {
+async function dropOwnSegments(host: ForkDetachHost, tx: SqliteExecutor, sessionId: string): Promise<string[]> {
 	const sources = [...new Set((await host.forkSegments(tx, sessionId)).map((segment) => segment.sourceId))].sort();
-	if (sources.length === 0) return;
-	await host.writeForkSegments(tx, sessionId, []);
-	for (const source of sources) await sweepTombstoneWithin(host, tx, source);
+	if (sources.length > 0) await host.writeForkSegments(tx, sessionId, []);
+	return sources;
 }
 
 /**
- * In `delete`'s transaction, before the session's rows go. Resolves `"keep-rows"` when forks still read rows the
- * session stores: the caller then removes only its sessions row and search texts, and the session stays as a tombstone.
+ * In `delete`'s transaction, before the session's rows go. `keepRows` when forks still read rows the session stores:
+ * the caller then removes only its sessions row, and the rows stay under a tombstone. `released` are the sources the
+ * session's own segments named, to sweep once the transaction commits.
  */
 export async function deleteForkedSessionWithin(
 	host: ForkDetachHost,
 	tx: SqliteExecutor,
 	sessionId: string,
 	deletedAt: string,
-): Promise<"keep-rows" | "remove-rows"> {
-	await dropOwnSegments(host, tx, sessionId);
+): Promise<{ readonly keepRows: boolean; readonly released: readonly string[] }> {
+	const released = await dropOwnSegments(host, tx, sessionId);
 	// A session created later under this ID starts without the deleted one's lineage.
 	await tx.run(`DELETE FROM ${host.pinTables.forkSegments} WHERE session_id = ?`, sessionId);
 	await tx.run(`DELETE FROM ${host.pinTables.forkLineage} WHERE session_id = ?`, sessionId);
-	if ((await lockedReferrers(host, tx, sessionId)).length === 0) return "remove-rows";
+	if ((await lockedReferrers(host, tx, sessionId)).length === 0) return { keepRows: false, released };
 	await tx.run(
 		`INSERT INTO ${host.pinTables.tombstones} (session_id, deleted_at) VALUES (?, ?) ON CONFLICT DO NOTHING`,
 		sessionId,
 		deletedAt,
 	);
-	return "keep-rows";
+	return { keepRows: true, released };
 }
 
 /**
  * In `replace`'s transaction, before the session's rows go: each fork reading them gets its own copy, and the session
- * drops its own segments, as a replaced session holds every row of its view itself.
+ * drops its own segments, as a replaced session holds every row of its view itself. Resolves with the sources those
+ * segments named, to sweep once the transaction commits.
  */
 export async function replaceForkedSessionWithin(
 	host: ForkDetachHost,
 	tx: SqliteExecutor,
 	sessionId: string,
-): Promise<void> {
-	await dropOwnSegments(host, tx, sessionId);
+): Promise<readonly string[]> {
+	const released = await dropOwnSegments(host, tx, sessionId);
 	for (const child of await lockedReferrers(host, tx, sessionId))
 		await detachForkWithin(host, tx, sessionId, child, false);
+	return released;
 }
 
 /**

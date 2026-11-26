@@ -1796,7 +1796,9 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		if (!(await this.transaction((tx) => this.sharedHistoryForks(tx), SESSION_TRANSACTION)))
 			return { detached: [], reparented: [] };
-		return detachForkChildren(this.forkHost(), sessionId, options);
+		const report = await detachForkChildren(this.forkHost(), sessionId, options);
+		await this.sweepReleasedForkRows([sessionId]);
+		return report;
 	}
 
 	/** @internal Finishes every detach a crash stopped. Nothing to do where shared-history forks are off. */
@@ -1805,6 +1807,17 @@ export class SqlSessionStore implements SessionStore {
 		if (!(await this.transaction((tx) => this.sharedHistoryForks(tx), SESSION_TRANSACTION)))
 			return { detached: [], reparented: [] };
 		return resumeForkDetaches(this.forkHost());
+	}
+
+	/**
+	 * @internal Removes the rows of deleted sessions that no fork reads any more, a batch per transaction: `sessionIds`,
+	 * and a few any earlier sweep left. Resolves with the sessions whose rows went.
+	 */
+	async sweepForkTombstones(sessionIds: readonly string[] = [], batchEntries?: number): Promise<string[]> {
+		this.assertOpen();
+		if (!(await this.transaction((tx) => this.sharedHistoryForks(tx), SESSION_TRANSACTION))) return [];
+		const { sweepForkTombstones } = await import("./fork-sweep.js");
+		return sweepForkTombstones(this.forkHost(), sessionIds, batchEntries === undefined ? {} : { batchEntries });
 	}
 
 	private forkStagingTarget(): import("./fork-staging.js").ForkStagingTarget {
@@ -2473,13 +2486,16 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.transaction(async (tx) => {
+		let released: readonly string[] = [];
+		const written = await this.transaction(async (tx) => {
+			released = [];
 			await this.forWrite(tx, sessionId, options);
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 			// Forks reading the rows about to go get their own copies; the session holds all of its new rows itself.
-			if (await this.sharedHistoryForks(tx)) await replaceForkedSessionWithin(this.forkHost(), tx, sessionId);
+			if (await this.sharedHistoryForks(tx))
+				released = await replaceForkedSessionWithin(this.forkHost(), tx, sessionId);
 			await this.searchIndex?.forgetWithin(tx, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
@@ -2488,6 +2504,8 @@ export class SqlSessionStore implements SessionStore {
 			await this.insertEntries(tx, sessionId, entries, 0, texts);
 			return { lastSeq: entries.length, epoch };
 		}, this.sessionWrite(sessionId));
+		await this.sweepReleasedForkRows(released);
+		return written;
 	}
 
 	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
@@ -2655,16 +2673,18 @@ export class SqlSessionStore implements SessionStore {
 	async delete(sessionId: string): Promise<void> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
+		let released: readonly string[] = [];
 		await this.transaction(async (tx) => {
+			released = [];
 			await this.searchIndex?.forgetWithin(tx, sessionId);
-			// Rows forks still read stay under a tombstone until the last of them no longer needs them.
-			if (
-				(await this.sharedHistoryForks(tx)) &&
-				(await deleteForkedSessionWithin(this.forkHost(), tx, sessionId, new Date().toISOString())) === "keep-rows"
-			) {
-				await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
-				await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
-				return;
+			if (await this.sharedHistoryForks(tx)) {
+				const pinned = await deleteForkedSessionWithin(this.forkHost(), tx, sessionId, new Date().toISOString());
+				released = pinned.released;
+				// Rows forks still read stay under a tombstone until the last of them no longer needs them.
+				if (pinned.keepRows) {
+					await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
+					return;
+				}
 			}
 			await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
@@ -2673,6 +2693,22 @@ export class SqlSessionStore implements SessionStore {
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
 		}, SESSION_TRANSACTION);
+		await this.sweepReleasedForkRows(released);
+	}
+
+	/**
+	 * Removes the rows of deleted sessions no fork reads any more, among `released` and any an earlier sweep left, in
+	 * transactions of their own after the write that released them committed. A sweep that fails leaves tombstones the
+	 * next one finishes: the write it follows stands either way.
+	 */
+	private async sweepReleasedForkRows(released: readonly string[]): Promise<void> {
+		if (released.length === 0) return;
+		const { sweepForkTombstones } = await import("./fork-sweep.js");
+		try {
+			await sweepForkTombstones(this.forkHost(), released);
+		} catch {
+			/* Its tombstones stay for the next sweep. */
+		}
 	}
 
 	/**
