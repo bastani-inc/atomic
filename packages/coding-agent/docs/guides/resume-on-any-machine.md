@@ -8,22 +8,23 @@ When several machines share one storage database, you can start a session on one
 
 ## Join each machine
 
-Every machine must use the same shared PostgreSQL database. Do not embed passwords or auth tokens in the database URL; pass credentials through `--password-file`, `--token-file`, or `--auth` (`credential-in-url`).
+Every machine must use the same shared [PostgreSQL](/storage/postgres) database, PostgreSQL 16 or newer.
 
-PostgreSQL 16 or newer:
+1. Set up the database once. Create the roles, then run `atomic storage migrate` as the owner role, and again after each Atomic upgrade. See [Set up the database](/storage/postgres#set-up-the-database).
+2. On every machine, install the adapter, save the runtime role's password in a file, join the database as the runtime role, and restart Intercom:
 
-In two-role deployments, run `atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomic' --password-file ~/atomic-owner-password` once as the owner role (and after Atomic upgrades), then grant the runtime role its privileges before joining machines as `atomic_runtime`. See [Set up the database](/storage/postgres#set-up-the-database).
+   ```bash
+   atomic install npm:@bastani/atomic-storage-postgres
+   (umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
+   atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+   rm ~/atomic-db-password  # atomic storage join keeps its own copy
+   atomic intercom restart
+   atomic storage status
+   ```
 
-```bash
-atomic install npm:@bastani/atomic-storage-postgres
-atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
-atomic intercom restart
-atomic storage status
-```
+Never put a password in the database URL. Pass it with `--password-file`, `--token-file`, or `--auth`, as [Join a machine](/storage/postgres#join-a-machine) explains. A URL with a password fails with `credential-in-url`.
 
-See [PostgreSQL](/storage/postgres) for database roles, TLS, and cloud identities.
-
-`atomic storage join` stores sessions in the shared database so they resume on any joined machine. By contrast, the team layout in [Set up teams and CI](/guides/team-setup) shares Intercom while keeping personal sessions local. To share sessions on such a machine, remove its `sessions.storage` setting. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens, and `atomic storage status`.
+`atomic storage join` keeps sessions in the shared database, so they resume on any machine that joined it. If a machine shares only Intercom and keeps its sessions local, with `sessions.storage` set to `{}`, remove that setting so its sessions go to the shared database too. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes and `atomic storage status`.
 
 Keep worktree snapshots enabled (`snapshots.enabled`, on by default). At the end of each turn that modifies files, Atomic saves uncommitted edits, untracked files, and unpushed commits in the shared database. If `snapshots.enabled` is set to `false`, no snapshots are captured, cross-machine resume cannot restore repository files, and `atomic blueprint prebuild` fails with `snapshots are disabled`.
 
@@ -265,7 +266,7 @@ For session resumes, missing Git never blocks opening the session. Instead, the 
 
 | Symptom | Fix | SDK error and code |
 | --- | --- | --- |
-| Session ID not found on this machine | If this machine uses local storage only (`local-storage-not-joined`), join shared storage with `atomic storage join` (and remove a `sessions.storage` setting that keeps sessions local). If already joined (`shared-miss`), check the session ID, database URL, and prefix. | `ResumeNotFoundError` (`not-found`) |
+| Session ID not found on this machine | If this machine keeps its sessions locally (`local-storage-not-joined`), join the shared database with `atomic storage join`, and remove any `sessions.storage` setting that keeps sessions local. If already joined (`shared-miss`), check the session ID, database URL, and prefix. | `ResumeNotFoundError` (`not-found`) |
 | Missing storage adapter, missing or unreadable credentials, or unavailable Git | Follow each fix listed in the error, such as running `atomic install`, creating the token or password file, or unsetting offline mode. | `ResumePreconditionError` (`preconditions-unmet`) |
 | Git cannot be started or downloaded | Follow the hint (install Git on `PATH` or unset `ATOMIC_OFFLINE`). Session resumes still open without restoring checkouts. | `GitUnavailableError` (`not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed`) |
 | Shared database unreachable during lookup | Check connectivity with `atomic storage status` and resume again. | `ResumeCatalogUnavailableError` (`catalog-unavailable`) |

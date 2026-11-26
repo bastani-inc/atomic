@@ -1,6 +1,6 @@
 # @bastani/atomic-storage-postgres
 
-A [PostgreSQL](https://www.postgresql.org) storage adapter for [Atomic](https://github.com/bastani-inc/atomic). It stores sessions and Intercom multi-node routing in one shared PostgreSQL database so multiple machines can share state. Install it only when you want PostgreSQL storage.
+A [PostgreSQL](https://www.postgresql.org) storage adapter for [Atomic](https://github.com/bastani-inc/atomic). With it, several machines keep their sessions and Intercom messages in one shared PostgreSQL database, so a team, a CI fleet, or one person on several computers sees the same sessions and can message agents on other machines. Install it only when you want PostgreSQL storage. The full guide is [PostgreSQL setup](https://docs.bastani.ai/storage/postgres).
 
 ## Install
 
@@ -20,16 +20,16 @@ npm install @bastani/atomic-storage-postgres
 
 ## Configure
 
-**PostgreSQL 16 or newer is required for Atomic sessions.** The adapter accepts PostgreSQL 14 or newer on connect for non-session tables and rejects servers older than PostgreSQL 14.
+**Atomic needs PostgreSQL 16 or newer.**
 
 ### Join with the CLI
 
 After creating your database and roles (see [Set up the database](https://docs.bastani.ai/storage/postgres#set-up-the-database)), run `atomic storage migrate` as the owner role to create or upgrade the schema, then join each machine as the runtime role:
 
 ```bash
-printf '%s' "$PASSWORD" > ~/atomic-db-password
-chmod 600 ~/atomic-db-password
+(umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
 atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+rm ~/atomic-db-password  # atomic storage join keeps its own copy
 atomic intercom restart
 atomic storage status
 ```
@@ -55,8 +55,7 @@ You can also edit `~/.atomic/agent/settings.json` directly:
 ```
 
 ```bash
-printf '%s' "$PASSWORD" > ~/.atomic/postgres-password
-chmod 600 ~/.atomic/postgres-password
+(umask 077; printf 'Password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/.atomic/postgres-password)
 ```
 
 | Option | Required | Description |
@@ -64,7 +63,7 @@ chmod 600 ~/.atomic/postgres-password
 | `url` | Yes | A `postgres://` or `postgresql://` URL with a username and no embedded password. Any password in the URL or a `password=` query parameter is refused (`credential-in-url`). |
 | `password` | When using password auth | Pass through `secrets.password` (`{ "file": ... }`, `{ "env": ... }`, or `inMemorySecret()` in SDK `{ kind: "adapter" }` selections). Because the adapter declares `liveSecrets: ["password"]`, Atomic rereads `secrets.password` for every new connection and ignores `options.password`, throwing `StorageConfigError` (`reason: "secret-missing"`) when `secrets.password` is omitted. |
 | `auth` | No | `"password"` (default), or `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` for [cloud IAM authentication](#cloud-iam-authentication). Omit `secrets.password` when using cloud `auth`; direct SDK calls to `openPostgresDatabase()` reject combining cloud `auth` with `password` (`conflicting-token`). |
-| `maxConnections` | No | Most connections one Atomic process opens in its main pool. Default `8`. A positive integer. Every store a process opens on the same URL, role, password, schema and pool options shares one main pool and one reader pool. For high throughput, set it as high as the server's `max_connections` allows; see [Tuning](#tuning-for-many-agents). |
+| `maxConnections` | No | Most connections one Atomic process opens in its main pool. Default `8`. A positive integer. Every store a process opens on the same URL, role, password, schema and pool options shares one main pool and one reader pool. See [Tuning for many agents](#tuning-for-many-agents) for how to size it. |
 | `readerMaxConnections` | No | Most connections in the process's separate pool for reads, capped at `maxConnections`. Default `2`. `0` turns the separate pool off, so reads share the main pool. |
 | `statementTimeoutMs` | No | How long one statement may run, in milliseconds, before the server cancels it. Default `30000`. |
 | `connectTimeoutMs` | No | How long opening a connection, or waiting for a free one, may take, in milliseconds. Default `10000`. |
@@ -97,23 +96,23 @@ In environments that require an outbound HTTP proxy, every connection (pooled co
 
 ### Connections and readers
 
-Calls from one process that cannot conflict run at the same time, each on its own connection. Writes to different sessions are one example, and read-only transactions are another. Calls that conflict, such as two writes to one session, run in the order they were made. A transaction sends its statements without waiting for each answer, so saving entries to a session takes 2 round trips, or 1 through the function `atomic storage migrate` creates.
+Calls from one process that cannot conflict run at the same time, each on its own connection. Writes to different sessions are one example, and read-only transactions are another. Calls that conflict, such as two writes to one session, run in the order they were made. Saving new entries to a session takes 1 round trip to the server once `atomic storage migrate` has run, and 2 before.
 
 `openReader()` returns a handle for reads. Every reader of the process shares one pool of up to `readerMaxConnections` connections, so reads do not wait for connections that writes are using. Closing the database also closes its readers.
 
-Connections opened for a burst close after 10 seconds without use. A pool's last connection stays open for `idleTimeoutMs` after the pool's last call, with TCP keepalive, so the next call skips the connection and TLS handshakes. Unused connections never keep the process from exiting.
+Connections opened for a burst close after 10 seconds without use. A pool's last connection stays open for `idleTimeoutMs` after the pool's last call, so the next call does not wait for a new connection. Open connections never keep the process from exiting.
 
 ### Tuning for many agents
 
-Every Atomic process on every machine shares the server's `max_connections`. For high throughput, give each process as many connections as that limit allows. When it cannot give each process at least 2, connect through PgBouncer in transaction mode, as the [PgBouncer guide](https://docs.bastani.ai/storage/postgres/pgbouncer) describes. The [tuning guide](https://docs.bastani.ai/storage/postgres#tuning-for-many-concurrent-agents) shows how to count connections, worked examples, and the queries and errors that tell you what to change.
+Every Atomic process on every machine shares the server's `max_connections`. Give each process as many connections as the server can spare. When the server cannot give each process at least 2, connect through PgBouncer in transaction mode, as the [PgBouncer guide](https://docs.bastani.ai/storage/postgres/pgbouncer) describes. [Tuning for many concurrent agents](https://docs.bastani.ai/storage/postgres#tuning-for-many-concurrent-agents) shows how to count connections, with worked examples, and the queries and errors that tell you what to change.
 
 ### Connection poolers and wake-ups
 
-The adapter works through transaction-mode poolers such as PgBouncer and Supavisor. It avoids session-level state and session locks.
+The adapter works through poolers in transaction mode, such as PgBouncer and Supabase's Supavisor. It keeps no state on a connection between transactions.
 
-Prepared statements are off by default behind a pooler: when `listenUrl` is set, or the URL's port is `6432` (PgBouncer) or `6543` (Supavisor). PgBouncer 1.21 and later supports them in transaction mode once `max_prepared_statements` is above `0`, which is the default from 1.24, and the adapter turns them on there by itself. It finds out from the first connection, without an extra round trip: PgBouncer 1.26 and later report their version and `max_prepared_statements` when a client logs in, and on earlier releases the adapter checks whether PgBouncer renamed a test statement, then removes it. Anything it cannot confirm leaves them off. The same check compares the server process with the one the connection's cancel key names, so a pooler that hands out its own cancel keys turns them off on any port. If your pooler listens on another port, set `listenUrl` or `maxPreparedStatements: 0`. Supavisor's shared pooler does not support them in transaction mode. If a pooler on another port loses or mixes up prepared statements, the server reports `prepared statement "atomic_…" does not exist` or `already exists`: the adapter runs that call again and sends every later statement unprepared, and you can set `maxPreparedStatements` to `0` to avoid that first failure.
+Behind a pooler, prepared statements are off by default: when `listenUrl` is set, or the URL's port is `6432` (PgBouncer) or `6543` (Supavisor). The adapter turns them on by itself when its first connection finds PgBouncer 1.21 or later with `max_prepared_statements` above `0`, which is the default from PgBouncer 1.24. Anything it cannot confirm leaves them off. If your pooler listens on another port, set `listenUrl` or `maxPreparedStatements: 0`. If a pooler loses prepared statements, the server reports `prepared statement "atomic_…" does not exist` or `already exists`. The adapter then runs the call again and stops preparing statements, and you can set `maxPreparedStatements` to `0` to avoid that first failure.
 
-Each Intercom broker also opens one connection outside the pools to `LISTEN` for wake-up notifications, so it delivers new messages immediately. Each broker listens on a channel of its own, and a notification goes out right after the write it announces commits, in a short transaction of its own, so commits that notify do not wait for each other. Because transaction-mode poolers do not forward `LISTEN`/`NOTIFY`, the adapter detects this automatically and falls back to polling unless `listenUrl` points to a direct endpoint. No messages are lost without wake-ups; run `atomic storage status` to see which mode is active.
+Each Intercom broker also holds one connection outside the pools to `LISTEN` for wake-up notifications, so it learns of new messages at once. Poolers in transaction mode do not pass `LISTEN` and `NOTIFY`, so behind one the adapter checks for new messages every half second instead, unless `listenUrl` points at the server directly. No message is lost either way. Run `atomic storage status` to see which mode is active.
 
 ### Errors and retries
 

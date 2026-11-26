@@ -19,7 +19,7 @@
 
 Atomic is a terminal coding-agent runtime. Use built-in tools for file edits and shell commands, [codemode](docs/codemode.md) to script multi-step checks, and [subagents](docs/subagents.md) to delegate work to isolated contexts. Extend Atomic with TypeScript [extensions](#extensions), [skills](#skills), [prompt templates](#prompt-templates), and [themes](#themes), or share them as [Atomic packages](#atomic-packages) via npm or git.
 
-Atomic bundles first-party integrations for [subagents](docs/subagents.md), [MCP servers](docs/mcp-servers.md), [web access](docs/web-access.md), and [Intercom](docs/intercom.md). Sessions save to local SQLite by default or share state across machines over PostgreSQL ([Storage](docs/storage.md)), with [worktree snapshots](docs/worktree-snapshots.md) and [environment blueprints](docs/guides/resume-on-any-machine.md#set-the-environment-up-with-a-blueprint) for cross-machine resume. See [Orchestration](docs/orchestration.md) for multi-step tasks and [Migrating workflows](docs/orchestration/migrating-workflows.md) to convert an earlier workflow file to a skill.
+Atomic bundles first-party integrations for [subagents](docs/subagents.md), [MCP servers](docs/mcp-servers.md), [web access](docs/web-access.md), and [Intercom](docs/intercom.md). Sessions save to local SQLite by default, or several machines can share them through one PostgreSQL database ([Storage](docs/storage.md)), with [worktree snapshots](docs/worktree-snapshots.md) and [environment blueprints](docs/guides/resume-on-any-machine.md#set-the-environment-up-with-a-blueprint) for cross-machine resume. See [Orchestration](docs/orchestration.md) for multi-step tasks and [Migrating workflows](docs/orchestration/migrating-workflows.md) to convert an earlier workflow file to a skill.
 
 Run Atomic interactively, in print or JSON mode, over RPC for process integration, or embedded through the TypeScript SDK.
 
@@ -215,7 +215,7 @@ Sessions store an append-only tree of entries (`id` and `parentId`), enabling in
 
 ### Management
 
-Sessions auto-save per working directory in the default local SQLite store (`~/.atomic/workflows/journal.sqlite`), or in a shared PostgreSQL database via [Storage backends](docs/storage.md). Legacy `~/.atomic/agent/sessions/` and `~/.pi/agent/sessions/` JSONL files remain readable.
+Sessions auto-save per working directory in the default local SQLite store (`~/.atomic/workflows/journal.sqlite`), or in a shared PostgreSQL database. See [Storage](docs/storage.md). Legacy `~/.atomic/agent/sessions/` and `~/.pi/agent/sessions/` JSONL files remain readable.
 
 ```bash
 atomic -c                    # Continue the most recent session
@@ -440,7 +440,7 @@ try {
 }
 ```
 
-- **Storage backends:** Configure SQLite, JSONL, in-memory, and PostgreSQL 16+ (`@bastani/atomic-storage-postgres`) with `createAgentSession()` or `createAgentSessionRuntime()`. See [SDK storage backends](docs/sdk/storage.md) ([docs.bastani.ai/sdk/storage](https://docs.bastani.ai/sdk/storage)).
+- **Storage backends:** Configure SQLite, JSONL, in-memory, and PostgreSQL 16+ (`@bastani/atomic-storage-postgres`) stores with `createAgentSession()` or `createAgentSessionRuntime()`. See [SDK storage backends](docs/sdk/storage.md) ([docs.bastani.ai/sdk/storage](https://docs.bastani.ai/sdk/storage)).
 - **Structured decisions:** Make typed, schema-validated classifier or chat decisions without starting a session using `decide()` and `generateStructuredOutput()`. See [Structured decisions](docs/sdk/structured-decisions.md).
 - **Multi-session runtimes and guides:** See [docs/sdk.md](docs/sdk.md), [docs/sdk/web-server.md](docs/sdk/web-server.md), and [examples/sdk/](examples/sdk/).
 
@@ -493,7 +493,7 @@ atomic config [-l]                   # Enable/disable package resources
 atomic auth <login|logout|check|print-api-key|print-bearer-token>
 atomic mcp <add|remove|list|login|logout>
 atomic storage <status|join|migrate|move-snapshot-chunks|search-session|export|import>
-atomic team <join|status|leave>
+atomic team status
 atomic intercom <status|restart|upgrade>
 atomic blueprint <cache-key|prebuild>   # Environment blueprint cache keys and worktree prebuilds
 ```

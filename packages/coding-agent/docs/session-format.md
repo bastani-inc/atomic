@@ -4,7 +4,7 @@ sidebarTitle: "Session format"
 description: "Format-4 JSONL session schema, message and entry types, context rebuilding rules, and the SessionManager API."
 ---
 
-This reference describes format-4 JSONL files used by explicit JSONL stores and session exports. Sessions default to local SQLite; see [Session storage](/sessions#session-storage), [Storage backends](/storage), and [SDK session storage](/sdk/storage) to choose or open a store.
+This reference describes format-4 JSONL files used by explicit JSONL stores and session exports. Sessions default to local SQLite; see [Session storage](/sessions#session-storage), [Storage](/storage), and [SDK session storage](/sdk/storage) to choose or open a store.
 
 In JSONL, each line is a JSON object with a `type` field. Session entries form a tree through `id` and `parentId`.
 
@@ -540,7 +540,7 @@ for (const line of lines) {
 
 Await `create`, `open`, `continueRecent`, `forkFrom`, and every session mutation. A resolved mutation has committed to its store, and a failed write rejects with a typed storage error without publishing the entry. There is no `flush` method.
 
-`inMemory()` selects memory storage explicitly without filesystem I/O. Factories without an explicit store or directory resolve configured storage, defaulting to the shared local SQLite database. Passing a directory selects JSONL explicitly. Store-open failures never fall back to memory. To open SQLite, PostgreSQL, JSONL, or memory stores, see [SDK session storage](/sdk/storage), [Storage backends](/storage), and [Session management](/sdk/reference#session-management).
+`inMemory()` selects memory storage explicitly without filesystem I/O. Factories without an explicit store or directory resolve configured storage, defaulting to the shared local SQLite database. Passing a directory selects JSONL explicitly. Store-open failures never fall back to memory. To open SQLite, PostgreSQL, JSONL, or memory stores, see [SDK session storage](/sdk/storage), [Storage](/storage), and [Session management](/sdk/reference#session-management).
 
 **Store ownership and closing.** `SessionManager` has no `close()` method. Calling `SessionManager.create(cwd)`, `SessionManager.continueRecent(cwd)`, or `SessionManager.open(filePath)` without passing a `SessionStore` opens an internal store that `createAgentSession({ sessionManager })` does **not** close during `session.dispose()`. Close `sessionManager.getSessionStore().close()` when finished, or open and close a `SessionStore` explicitly and pass it to `SessionManager.create(store, cwd)` or `SessionManager.open(store, sessionId)`. Calling `close()` twice on a direct `SqlSessionStore`, `JsonlSessionStore`, or `MemorySessionStore` throws `StoreClosedError`, and `SqlSessionStore.close()` leaves a caller-owned `database` open. See [SDK session storage](/sdk/storage) for the ownership matrix.
 

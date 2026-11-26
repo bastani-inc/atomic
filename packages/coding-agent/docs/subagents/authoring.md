@@ -178,5 +178,5 @@ Override or disable bundled agents in user (`~/.atomic/agent/settings.json`) or 
 
 - Lead with the role, goal, and observable success criteria.
 - Specify edit permissions, tool rules, output shape, and an explicit stop rule.
-- Reserve strict wording for true invariants. Ask for evidence and conclusions rather than private reasoning or repeated self-checks.
+- Reserve strict wording for rules that must always hold. Ask for evidence and conclusions rather than private reasoning or repeated self-checks.
 - Set `model: auto` to run an agent on your default model (`/model`). See [Automatic model selection](/subagents/reference#automatic-model-selection) for the exact resolution chain.

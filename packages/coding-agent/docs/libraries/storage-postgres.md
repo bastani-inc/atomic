@@ -6,7 +6,7 @@ description: "PostgreSQL storage adapter for Atomic sessions and Intercom multi-
 
 `@bastani/atomic-storage-postgres` is Atomic's standalone [PostgreSQL](https://www.postgresql.org) storage adapter. It stores sessions and Intercom multi-node routing in one shared PostgreSQL database so multiple machines or SDK hosts can share state. Unlike the six core libraries in [Standalone libraries](/libraries), this package is not bundled inside `@bastani/atomic`; install it only when you use PostgreSQL.
 
-- **PostgreSQL version requirement:** Atomic sessions require **PostgreSQL 16 or later** (for session JSON query functions). The adapter accepts **PostgreSQL 14 or later** on connect for non-session tables and rejects servers older than PostgreSQL 14.
+- **PostgreSQL version requirement:** Atomic needs **PostgreSQL 16 or newer**.
 - **Plain ESM with types:** Ships plain JavaScript ESM and TypeScript declarations (`postgres.d.ts`), requiring Node.js 24.20+ with no TypeScript loader.
 
 For operator setup, role creation SQL, migrations, and troubleshooting, see [PostgreSQL setup](/storage/postgres). For all five SDK storage backends and `createAgentSessionRuntime()`, see [SDK storage backends](/sdk/storage).
@@ -64,7 +64,7 @@ Pass the returned `SqliteDatabase` to `createAgentSession({ sessionStore: { kind
 | `url` | `string` *(required)* | — | A `postgres://` or `postgresql://` URL with a username and no embedded password. Any password in the URL or a `password=` query parameter is rejected with `credential-in-url`. |
 | `password` | `string \| (() => Promise<string>)` | — | Password string or async callback invoked for each new connection, and once when the database opens to tell its credential apart from other databases' in the shared pool. Omit when using cloud `auth`; combining cloud `auth` with `password` throws `conflicting-token`. |
 | `auth` | `"password" \| "azure-entra" \| "aws-iam" \| "gcp-iam"` | `"password"` | Credential strategy. Cloud modes request short-lived tokens per new connection via the provider's SDK. |
-| `maxConnections` | `number` | `8` (`DEFAULT_MAX_CONNECTIONS`) | Most connections the process's main pool opens. A positive integer. Every database the process opens with the same `url`, role, password, `listenUrl`, `auth`, `schema`, `proxy`, `socket` and pool options shares one main pool, one reader pool and one listening connection, and the last one to close closes them. For high throughput, set it as high as the server's `max_connections` allows. See [Tuning for many concurrent agents](/storage/postgres#tuning-for-many-concurrent-agents). |
+| `maxConnections` | `number` | `8` (`DEFAULT_MAX_CONNECTIONS`) | Most connections the process's main pool opens. A positive integer. Every database the process opens with the same `url`, role, password, `listenUrl`, `auth`, `schema`, `proxy`, `socket` and pool options shares one main pool, one reader pool and one listening connection, and the last one to close closes them. To size it, see [Tuning for many concurrent agents](/storage/postgres#tuning-for-many-concurrent-agents). |
 | `readerMaxConnections` | `number` | `2` (`DEFAULT_READER_MAX_CONNECTIONS`) | Most connections in the reader pool that every handle `openReader()` returns shares, capped at `maxConnections`. A non-negative integer. `0` leaves `openReader` undefined, so reads share the main pool. |
 | `statementTimeoutMs` | `number` | `30000` (`DEFAULT_STATEMENT_TIMEOUT_MS`) | How long one statement may run, in milliseconds, before the server cancels it. A positive integer. |
 | `connectTimeoutMs` | `number` | `10000` (`DEFAULT_CONNECT_TIMEOUT_MS`) | How long opening a connection, or waiting for a free pooled one, may take, in milliseconds. A positive integer. |
@@ -110,9 +110,9 @@ For Azure Database for PostgreSQL Flexible Server (PostgreSQL 16+), Azure Horizo
 Join a machine with the CLI after installing in user scope and running `atomic storage migrate`:
 
 ```bash
-printf '%s' "$PASSWORD" > ~/atomic-db-password
-chmod 600 ~/atomic-db-password
+(umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
 atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+rm ~/atomic-db-password  # atomic storage join keeps its own copy
 atomic intercom restart
 atomic storage status
 ```

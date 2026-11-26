@@ -120,28 +120,39 @@ By default, each machine's broker serves only sessions on that machine. With mul
 
 ### Turning it on
 
-For a team that shares Intercom while keeping session transcripts local, or CI runners that share both, see [Team and CI setup](/guides/team-setup).
+Point every machine at the same [PostgreSQL](/storage/postgres) database, with the same `prefix`:
 
-To configure multi-node routing with a shared database for both sessions and Intercom, install `@bastani/atomic-storage-postgres` ([PostgreSQL](/storage/postgres), [PostgreSQL adapter library](/libraries/storage-postgres)) on every machine and run `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for all flags and options.
+1. Set up the database once, as in [Set up the database](/storage/postgres#set-up-the-database). With a prefix, as below, pass the same `--prefix` to `atomic storage migrate`.
+2. On every machine, install the PostgreSQL adapter, save the runtime role's password in a file, join the database, and restart the broker:
 
-```bash
-atomic install npm:@bastani/atomic-storage-postgres
-atomic storage join postgres://atomic@db.example.com:5432/atomic?sslmode=verify-full --password-file ~/pg-password --prefix team_
-atomic intercom restart
+   ```bash
+   atomic install npm:@bastani/atomic-storage-postgres
+   (umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
+   atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password --prefix team_
+   rm ~/atomic-db-password  # atomic storage join keeps its own copy
+   atomic intercom restart
+   ```
+
+`atomic storage join` sets the top-level `storage` setting, which shares sessions too. To share Intercom but keep each machine's sessions local, as [Team and CI setup](/guides/team-setup) describes, also set `sessions.storage` to `{}` in `~/.atomic/agent/settings.json`, which keeps sessions in the default local SQLite file:
+
+```json
+{ "sessions": { "storage": {} } }
 ```
 
-You can also give every machine the same top-level `storage` selection and `prefix` manually, using any database-backed [storage adapter](/storage/custom-adapters#selecting-an-adapter) installed as an [Atomic package](/storage/custom-adapters#adapters-from-atomic-packages). Both npm installations and standalone binaries support multi-node routing.
+See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) and [Storage and Intercom CLI commands](/reference/cli#storage-and-intercom-commands) for every option. Any database-backed [custom adapter](/storage/custom-adapters#selecting-an-adapter) works too, if every machine uses the same `storage` setting and `prefix`. Both npm installs and standalone binaries support multi-node routing.
 
-The broker reads its storage selection from:
+The broker takes its store from:
 
-1. Process overrides on the Atomic process that spawns the broker: `--storage`, `--storage-file`, or `ATOMIC_STORAGE` ([Selecting storage per process](/storage#selecting-storage-per-process)).
-2. Otherwise, the top-level `storage` block in `~/.atomic/agent/settings.json` (or under `ATOMIC_CODING_AGENT_DIR`).
+1. The process that starts it: `--storage`, `--storage-file`, or `ATOMIC_STORAGE`. See [Selecting storage per process](/storage#selecting-storage-per-process).
+2. Otherwise, the top-level `storage` setting in `~/.atomic/agent/settings.json`, or in the agent directory that `ATOMIC_CODING_AGENT_DIR` names.
+
+For example, a setting that reads the password from an environment variable:
 
 ```json
 {
   "storage": {
     "adapter": "@bastani/atomic-storage-postgres",
-    "options": { "url": "postgresql://atomic@db.example.com:5432/atomic?sslmode=verify-full" },
+    "options": { "url": "postgresql://atomic_runtime@db.example.com:5432/atomic" },
     "secrets": { "password": { "env": "ATOMIC_DB_PASSWORD" } },
     "prefix": "team_"
   }
@@ -171,7 +182,7 @@ How the project group name is derived:
 
 Explicit groups take precedence over the project group: an inherited subagent group, an SDK host policy, `ATOMIC_INTERCOM_GROUP`, or `group` in `config.json`. Joining `default` explicitly while multi-node routing is on prints a warning (in the UI or once on stderr for non-interactive runs) because every teammate sharing the database can message `default`. Running sessions keep their current group until restarted or reloaded.
 
-Before registering, each session verifies the running broker's routing mode so a session never accidentally joins `default` on a multi-node broker or runs locally when shared storage was requested. If the running broker's storage disagrees with the session (for example after switching `storage` or `ATOMIC_STORAGE`), run `atomic intercom restart` and restart the session. For `ProjectGroupError` and the `IntercomRouting*Error` classes (`IntercomRoutingMismatchError`, `IntercomRoutingUnavailableError`, `IntercomRoutingTimeoutError`, `IntercomRoutingChangedError`), see [Routing and project-group errors](/intercom/reference#routing-and-project-group-errors).
+Before registering, each session checks the running broker's routing mode, so a session never joins `default` on a multi-node broker by accident, or runs locally when it asked for shared storage. If the running broker's store differs from the session's, for example after you change `storage`, run `atomic intercom restart` and restart the session. For `ProjectGroupError` and the `IntercomRouting*Error` classes (`IntercomRoutingMismatchError`, `IntercomRoutingUnavailableError`, `IntercomRoutingTimeoutError`, `IntercomRoutingChangedError`), see [Routing and project-group errors](/intercom/reference#routing-and-project-group-errors).
 
 ### What works across machines
 
@@ -187,7 +198,7 @@ If a local session and a remote session share the same name, name lookup prefers
 
 ### Latency
 
-Brokers poll the shared database for wake-ups every 0.5 seconds, so cross-machine messages typically arrive within half a second plus database round trips, with `delivered` confirmation taking a similar round trip. A backup poll every 30 seconds recovers missed wake-ups.
+On PostgreSQL, the database notifies the receiving broker of a new message at once, so a cross-machine message usually arrives within a few database round trips. The `delivered` confirmation takes about as long. Brokers also check for missed messages every 5 seconds. When notifications are not available, for example behind a transaction pooler without `listenUrl`, brokers check the database every half second instead. See [Wake-ups](/storage/postgres#wake-ups). With a custom adapter, brokers check every half second. A backup check every 30 seconds recovers anything else.
 
 A sender waits about 8 seconds for a live recipient to confirm saving a message. A recipient actively saving reports progress to extend that wait up to 2 minutes, and a claimed remote delivery gets one extra 8-second window (about 16 seconds total) before reporting an uncertain outcome. The message is still delivered once; check with the recipient before resending.
 

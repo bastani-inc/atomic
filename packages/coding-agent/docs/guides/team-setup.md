@@ -34,16 +34,18 @@ Set up the team's PostgreSQL database as described in [PostgreSQL](/storage/post
 
 ```bash
 atomic install npm:@bastani/atomic-storage-postgres
+(umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
 atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic?sslmode=verify-full' --password-file ~/atomic-db-password
+rm ~/atomic-db-password  # atomic storage join keeps its own copy
 ```
 
 `atomic storage join` checks the URL, the password, the installed adapter, and a `SELECT 1` within 15 seconds before it writes anything, then sets the global `storage` setting to the team database. See [Joining a machine to a shared database](/storage#joining-a-machine-to-a-shared-database) for every option, including `--token-file`, `--auth azure|aws|gcp`, and `--prefix`.
 
-To keep your personal sessions on this machine while Intercom uses the team database, add an empty `sessions.storage` selection to `~/.atomic/agent/settings.json`. It selects the default local SQLite file even though top-level `storage` is shared:
+To keep your personal sessions on this machine while Intercom uses the team database, add an empty `sessions.storage` selection to `~/.atomic/agent/settings.json`. It selects the default local SQLite file even though top-level `storage` is shared. Keep the `storage` value that `atomic storage join` wrote, including the name of its password file:
 
 ```json
 {
-  "storage": { "adapter": "@bastani/atomic-storage-postgres", "options": { "url": "postgresql://atomic_runtime@db.example.com:5432/atomic?sslmode=verify-full" }, "secrets": { "password": { "file": "storage-token.<id>" } } },
+  "storage": { "adapter": "@bastani/atomic-storage-postgres", "options": { "url": "postgresql://atomic_runtime@db.example.com:5432/atomic?sslmode=verify-full" }, "secrets": { "password": { "file": "agent/storage-token.28ab7041-05e2-4ad5-80af-854329035d8c" } } },
   "sessions": { "storage": {} }
 }
 ```
@@ -57,7 +59,7 @@ atomic team status
 
 - Pass `--prefix` to isolate multiple teams inside one database. Everyone on a team must use the same URL and prefix.
 - Sessions that were already running keep their previous Intercom group until they restart or run `/reload`.
-- To leave the team, remove `storage` and `sessions.storage` from `~/.atomic/agent/settings.json` and run `atomic intercom restart`. The password file `atomic storage join` wrote (`storage-token.<id>` in the agent directory) can then be deleted.
+- To leave the team, remove `storage` and `sessions.storage` from `~/.atomic/agent/settings.json` and run `atomic intercom restart`. The password file that `atomic storage join` wrote, `storage-token.<id>` in the agent directory, can then be deleted.
 
 ## Project groups
 
@@ -226,7 +228,7 @@ Anyone with read access to the team database can read everything stored in it, i
 
 ## Related
 
-- [Storage backends](/storage) for storage setup, selections, precedence, and error reference.
+- [Storage](/storage) for storage setup, selections, precedence, and error reference.
 - [SDK session storage](/sdk/storage) for Node.js and TypeScript storage recipes and store ownership rules.
 - [Resume sessions on any machine](/guides/resume-on-any-machine) for cross-machine worktree snapshots and environment blueprints.
 - [Running Intercom across machines](/intercom/operations#running-intercom-across-machines) for multi-node broker details.

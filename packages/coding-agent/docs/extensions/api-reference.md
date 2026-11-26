@@ -534,7 +534,7 @@ Returns all slash commands invocable via prompts (`extension`, `prompt`, and `sk
 
 Register a TUI renderer for custom messages with `customType`. Options include `expanded`, `outputPad`, `keyHint()`, and `keyText()` in both interactive and embedded rendering. Returning a `Component` renders it, returning `null` suppresses the message completely (zero rows, no box), and returning `undefined` falls back to the default boxed rendering. Clicking the message in fullscreen mode toggles `expanded` unless a custom mouse handler consumes the click. See [Message rendering](/extensions/ui#message-rendering).
 
-### atomic.registerToolRenderer(resolver)
+### atomic.registerToolRenderer(resolver) {#atomic-registertoolrenderer-resolver}
 
 Register a resolver `(toolName, next) => renderers` supplying `renderCall`, `renderResult`, and optional `renderShell` for any tool (including MCP tools in resumed sessions before their server connects). Resolvers run in extension load order; `next()` returns the remaining resolvers' choice and then the tool's own renderers. See [Custom rendering](/extensions/authoring#custom-rendering).
 
@@ -597,7 +597,7 @@ Flag rules:
 
 <div id="pi-registeragentpanelsource-source" />
 
-### atomic.registerAgentPanelSource(source)
+### atomic.registerAgentPanelSource(source) {#atomic-registeragentpanelsource-source}
 
 Add rows to the [agent panel](/background-tasks#the-agent-panel) below the prompt and to `/tasks`. Registrations are removed automatically when the extension reloads or the session closes.
 
@@ -650,7 +650,7 @@ Optional actions (`open`, `stop`, `answer`) return `{ ok: true }` or `{ ok: fals
 
 Exported types and standalone helpers: `AgentPanelSource`, `AgentPanelItem`, `AgentPanelState`, `AgentPanelActionResult`, `AgentPanelOpenOptions`, `AgentPanelAnswerOptions`, `AgentPanelSourceRegistration`, `AgentPanelSession`, `agentPanelItems(session)`, `subscribeAgentPanel(session, listener)`, `openAgentPanelItem`, `stopAgentPanelItem`, `answerAgentPanelItem`, `dismissedAgentPanelItems(session)`, and `agentPanelTaskId(id)`.
 
-### atomic.exec(command, args, options?)
+### atomic.exec(command, args, options?) {#atomic-exec-command-args-options}
 
 Execute a command directly without a shell:
 

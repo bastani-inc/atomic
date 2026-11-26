@@ -6,7 +6,7 @@ description: "Resume, search, name, branch, fork, share, and export conversation
 
 Atomic saves every conversation as an append-only tree in a local SQLite database (`~/.atomic/workflows/journal.sqlite` by default). You can resume past work, jump back to earlier turns, and branch without losing history. For branch summaries and context clearing, see [Context and compaction](/compaction#branch-summarization).
 
-- To configure SQLite, PostgreSQL, or custom adapters, see [Storage backends](/storage).
+- To choose where sessions are stored, such as a shared PostgreSQL database, see [Storage](/storage).
 - To resume sessions across machines with worktree snapshots and blueprints, see [Resume sessions on any machine](/guides/resume-on-any-machine).
 - To open and pass session stores from Node.js or TypeScript, see [SDK session storage](/sdk/storage).
 - For JSONL schemas, entry types, and the `SessionManager` API, see [Session file format](/session-format).
@@ -176,17 +176,13 @@ Type anywhere in `/tree` to filter entries through the inline search bar.
 | Typical use | Explore alternatives in place | Branch from an earlier prompt | Duplicate current path before continuing |
 | Summary | Optional branch summary | None | None |
 
-`/fork` and `/clone` copy the active path, including worktree snapshots, into a new session.
+`/fork` and `/clone` start a new session from the active path, including its worktree snapshots. `atomic --fork <id>`, choosing **Fork** for a session whose directory is missing, and the SDK's `forkTo()` into the same store take every branch.
 
-`atomic --fork <id>`, missing-cwd **Fork**, and same-store SDK `forkTo()` copy all branches. Cross-store forks copy only current context without retired turns or private task records, and reopening warns `Parent history is in its original store or is no longer available.`. For full portable backups of all branches, use `atomic storage export` and `atomic storage import`.
+A fork into another store, such as an SDK `forkTo()` that names a different store, carries only the current context, without retired turns or private task records. Reopening it shows `Parent history is in its original store or is no longer available.` To move every branch of a session to another store, use `atomic storage export` and `atomic storage import`.
 
-### Forks share history within a store {#forks-share-history}
+### Shared-history forks {#forks-share-history}
 
-In a SQLite or PostgreSQL store, a fork shares the history it was forked from instead of copying it. A fork of a long session is created as quickly as a fork of a short one. The fork reads and resumes exactly as a copy would, and later changes to the parent never show up in it. A store starts sharing on its own; see [shared-history forks](/storage#shared-history-forks) for when it waits, for example while an older Atomic still has a session open. JSONL and in-memory stores always copy.
-
-Deleting a session that forks still share history with removes it from every list and search right away. The store keeps the part of its history those forks use, and frees it once the last of them is deleted or no longer needs it. Rewriting such a session first gives each fork its own copy of what it uses.
-
-Sharing never crosses a store boundary. Anything that takes a session out of its store makes a full standalone copy: `/export`, `/share`, `atomic --export`, `atomic storage export`, a fork into another store, and moving sessions between stores. The copy holds every entry and tool output the session inherited, and it doesn't need the sessions it was forked from. Importing a session always writes it as a standalone session, never as a fork of anything in the target store.
+In a SQLite or PostgreSQL store, a fork shares the history it starts from with the original session instead of copying it, so forking a long session is about as fast as forking a short one. A fork still behaves exactly like a copy: later changes to the original never show up in it, and deleting the original never changes it. Exports and forks into another store write full copies. JSONL and in-memory stores always copy. On SQLite there is nothing to set up. On PostgreSQL, the owner runs `atomic storage migrate` once. Atomic 0.10.11 upgrades the store so that earlier releases can no longer open it. See [Shared-history forks](/storage#shared-history-forks).
 
 ## Branch summaries
 
@@ -204,7 +200,7 @@ The agent can inspect past project sessions from any session or subagent using r
 
 - **Search behavior.** Searching `history://sessions` or `history://` scans the newest 25 sessions per page, excludes the current session (search the current session through its own ID URL), skips `custom` and `worktree_snapshot` entries, and caps output at 10 matches per session. Extra matches include a `?cursor=<seq>.<match>` continuation. Multi-line patterns match across up to 16,384 characters or 256 entries, with the same window for lookbehind, and matches crossing that boundary note the cutoff. After compaction, the boundary message gives the exact session URL and range to recover earlier details ([Context cleared](/compaction#context-cleared)).
 - **Budgets and continuations.** Every `history://` call enforces a 40,000-byte output cap, a 250,000-entry scan cap, and a 3-second nominal time budget. A call in a session that moves to the background has no time limit instead, as described in [Slow history searches](#slow-history-searches). When a call stops early, it returns a `continue with` URL containing `cursor`, `after=<activityMs>.<createdMs>[.<id>]`, and an optional `session=<id>`. Pass that URL unchanged; list continuations expire after 60 seconds.
-- **Indexing and storage.** SQLite and PostgreSQL build a trigram index on first search. PostgreSQL installs `pg_trgm` during `atomic storage migrate` or on open when permissions allow. Multi-line patterns scan linearly. The index roughly doubles text-heavy session storage and clears automatically when sessions are deleted or rewritten (`VACUUM` or `VACUUM FULL` reclaims disk space). Never edit active JSONL files in place outside Atomic's storage APIs.
+- **Indexing and storage.** SQLite and PostgreSQL build a search index on the first search. PostgreSQL installs `pg_trgm` during `atomic storage migrate` or on open when permissions allow. Multi-line patterns scan linearly. The index roughly doubles text-heavy session storage and clears automatically when sessions are deleted or rewritten (`VACUUM` or `VACUUM FULL` reclaims disk space). Never edit active JSONL files in place outside Atomic's storage APIs.
 
 ### Slow history searches {#slow-history-searches}
 
@@ -268,58 +264,43 @@ This command writes no `-wal` or `-shm` files on cleanly closed databases and st
 
 ## Session storage
 
-Sessions auto-save to `~/.atomic/workflows/journal.sqlite` unless you configure a different store.
+Atomic saves sessions as you go, by default in a local SQLite file, `~/.atomic/workflows/journal.sqlite`. [Storage](/storage) covers every store, sharing sessions between machines, and moving sessions between stores.
 
-- **Legacy sessions.** Under the default SQLite store, earlier JSONL sessions in `~/.atomic/agent/sessions` (formats 1 through 3 and older format-4 files) still appear in `/resume` and `--continue`. Opening one imports a copy into SQLite without modifying the original file. If sync conflict copies exist, the newest message wins. Unopened files over 32 KiB display an estimated summary until opened. Selecting a custom store shows only that store.
-- **Project trust and resume hints.** Project-local storage settings apply after project trust approval. New conversations switch before saving, while resumed conversations stay in their original store. Keep generated `--session-dir`, `--session-store`, or `--session-prefix` flags when reopening non-default stores, such as `atomic --session-store "/data/project A/sessions.sqlite" --session-prefix project_ --session <id>`.
-- **Import and export.** `--import <file>` or `/import <file>` imports a JSONL export verbatim, including [worktree snapshots](/worktree-snapshots) written by `/export <file>.jsonl`. Import upgrades older supported formats automatically and raises `SessionExistsError` if the ID already exists. Empty imported IDs reopen through `atomic --session ""` or the picker.
-- **Ephemeral runs (`--no-session`).** Nothing is saved to a resumable store. When an idle subagent is unloaded from memory during `--no-session`, its history is temporarily saved to a private file in your agent directory and removed on exit; stale files left after a crash are cleaned up on a later startup on the same host. See [Releasing idle sessions](/sdk#releasing-idle-sessions).
-- **Forks share history.** A fork in the same store reads the history it keeps from its parent instead of storing a copy, so forking a long session is about as fast as forking a short one. The first time this release opens a store, it marks the store so that older Atomic releases can no longer open it; it waits to do so until no session of an older release is running on that database. See [Shared-history forks](/storage#shared-history-forks).
-- **Session stats (`/session`).** Displays the session ID, message count, tokens, and cost. Counts update after each completed message, and per-model cost and cache breakdowns appear once history matches totals.
+- **Sessions from older releases.** With the default store, JSONL sessions from earlier releases in `~/.atomic/agent/sessions` still appear in `/resume` and `--continue`. Opening one imports a copy into SQLite and leaves the original file unchanged. If a sync tool left conflicting copies of a file, the newest message wins. An unopened file over 32 KiB shows an estimated summary until you open it. With any other store, only that store's sessions appear.
+- **Project settings.** A project's storage settings apply once you [trust the project](/security). New conversations then use the project's store, while resumed conversations stay in the store they came from. To reopen a session in a store that is not your default, keep the flags Atomic prints, for example `atomic --session-store "/data/project A/sessions.sqlite" --session-prefix project_ --session <id>`.
+- **Importing a file.** `--import <file>` or `/import <file>` imports a JSONL export as it is, including the [worktree snapshots](/worktree-snapshots) that `/export <file>.jsonl` wrote. It upgrades older formats, and fails with `SessionExistsError` if the store already has a session with that ID. A session imported with an empty ID reopens with `atomic --session ""` or from the picker.
+- **Nothing saved (`--no-session`).** Nothing goes to a store you can resume from. If Atomic unloads an idle subagent from memory in this mode, it keeps the subagent's history in a private temporary file in your agent directory, and deletes it on exit. A later start on the same machine removes files left by a crash. See [Releasing idle sessions](/sdk#releasing-idle-sessions).
+- **Forks share history.** See [Shared-history forks](#forks-share-history).
+- **Session stats (`/session`).** Shows the session ID, message count, tokens, and cost. The counts update after each completed message.
 
 ### Choosing a store
 
-Configure `sessions.storage` (sessions only) or top-level `storage` (shared default for sessions and Intercom) in `settings.json`:
+Set `sessions.storage` to choose a store for sessions only, or top-level `storage` to choose one for sessions and Intercom together. For example, in `settings.json`:
 
 ```json
 {
   "sessions": {
-    "storage": { "dir": "sessions" }
+    "storage": { "path": "sessions.sqlite" }
   }
 }
 ```
 
-Supported store objects:
+| Value | Store |
+| --- | --- |
+| `{ "path": "sessions.sqlite" }` | A [local SQLite](/storage/sqlite) file. |
+| `{ "dir": "sessions" }` | A [JSONL directory](/storage/jsonl). Only in `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. |
+| `{ "memory": true }` | Memory only. Sessions are lost when the process exits. |
+| `{}` | The default SQLite file. In top-level `storage`, `~/.atomic/storage.sqlite`. |
+| `{ "adapter": "...", "options": {}, "secrets": {} }` | A database through an adapter: [PostgreSQL](/storage/postgres) or a [custom adapter](/storage/custom-adapters#selecting-an-adapter). |
 
-- `{ "path": "sessions.sqlite" }`: local SQLite database. Works in both `sessions.storage` and `storage`.
-- `{ "dir": "sessions" }`: [JSONL directory store](/storage/jsonl). Allowed **only** in `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. Passing `"dir"` in top-level `storage`, `--storage`, `--storage-file`, or `ATOMIC_STORAGE` fails with `StorageConfigError`.
-- `{ "memory": true }`: ephemeral in-memory store.
-- `{}` (empty object): selects the default session SQLite file (`<storageHome>/workflows/journal.sqlite`) in `sessions.storage` (overriding any shared `storage`), or `<storageHome>/storage.sqlite` in top-level `storage`.
-- Database adapter: [PostgreSQL](/storage/postgres) or a [custom adapter](/storage/custom-adapters#selecting-an-adapter).
+A selection replaces any lower one as a whole object. Fields are never merged. Command-line flags and environment variables can override these settings for one process. [Which selection wins](/storage#which-selection-wins) lists the order. Relative paths in settings and JSON values resolve against the [storage home](/storage#storage-home). Relative paths in `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve against the current directory.
 
-Legacy `sessionDir` has been removed.
+Flag rules:
 
-Store selection follows this precedence order, from highest to lowest:
-
-1. Explicit SDK `sessionManager` (bypasses store selection)
-2. SDK `sessionStore`
-3. SDK `createAgentSession({ storage })`
-4. `--session-store`, `--no-session`, or `--session-dir`
-5. `--storage` or `--storage-file`
-6. `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR`
-7. `ATOMIC_STORAGE`
-8. `sessions.storage` in `settings.json`
-9. `storage` in `settings.json`
-10. Default local SQLite (`~/.atomic/workflows/journal.sqlite`)
-
-Each selection replaces lower-precedence settings as a whole object rather than merging fields. Settings, JSON flags, and JSON environment variables resolve relative paths from [storage home](/storage#storage-home). `--session-dir`, `--session-store`, and `ATOMIC_CODING_AGENT_SESSION_DIR` resolve relative paths from `cwd`.
-
-Flag validation rules:
-
-- `--session-store` conflicts with `--session-dir` and `--no-session`.
-- Combining a non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` with `ATOMIC_SESSIONS_STORAGE`, `--storage`, or `--storage-file` fails startup with `StorageConfigError` (`conflicting-overrides`).
-- `--session-prefix` requires `--session-store` (local SQLite only) and must match `[A-Za-z_][A-Za-z0-9_]*` without starting with `sqlite_` (case-insensitive, so `SQLITE_` is also rejected). Shared databases use `storage.prefix` or `atomic storage join --prefix` with the same pattern; PostgreSQL also requires lowercase ASCII and at most 24 characters.
-- Invalid CLI storage flags exit cleanly with `Error: ...` (exit code `1`). Invalid or unavailable stores always raise a typed error instead of falling back to memory. See [Selecting storage per process](/storage#selecting-storage-per-process).
+- `--session-store` cannot be combined with `--session-dir` or `--no-session`.
+- A non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` cannot be combined with `ATOMIC_SESSIONS_STORAGE`, `--storage`, or `--storage-file`. Startup fails with `StorageConfigError` and reason `conflicting-overrides`.
+- `--session-prefix` works only with `--session-store`, for a local SQLite file. The prefix must match `[A-Za-z_][A-Za-z0-9_]*` and must not start with `sqlite_` in any letter case. For a shared database, set `prefix` in the `storage` setting, or pass `atomic storage join --prefix`. PostgreSQL prefixes must also be lowercase and at most 24 characters.
+- Invalid storage flags stop the CLI with `Error: ...` and exit code `1`. A store that is invalid or cannot be opened always raises an error. Atomic never falls back to memory.
 
 From the SDK, `sessionStore` accepts all five selection kinds (`{ kind: "sqlite", path, prefix? }`, `{ kind: "jsonl", dir }`, `{ kind: "memory" }`, `{ kind: "database", database, prefix? }`, and `{ kind: "adapter", module, options?, secrets?, prefix? }`) or a concrete `SessionStore` instance (`SqlSessionStore`, `JsonlSessionStore`, or `MemorySessionStore`). Passing an explicit `sessionManager` bypasses store selection:
 
