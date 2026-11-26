@@ -660,6 +660,10 @@ export class SqlSessionStore implements SessionStore {
 	 * reads the tables themselves on the condition, checked in the read's own snapshot, that the schema is older.
 	 */
 	private sharedHistorySeen = false;
+	/** For each transaction, whether each session whose row it read has fork segments, as that read found (#6560). */
+	private readonly forkedIn = new WeakMap<SqliteExecutor, Map<string, boolean>>();
+	/** Whether each recently read session had fork segments: only a first guess, which a read checks (#6560). */
+	private readonly forkedSessions = new Map<string, boolean>();
 	/** The sessions each recently forked session's segments named when this store last read them (#6560). */
 	private readonly forkSources = new Map<string, readonly string[]>();
 	/**
@@ -1264,11 +1268,42 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/** How transaction `tx` reads a session's rows: through its view where its database has shared history (#6560). */
-	private async viewTables(tx: SqliteExecutor): Promise<ForkViewTables> {
+	private async viewTables(tx: SqliteExecutor, sessionId?: string): Promise<ForkViewTables> {
+		// A session that the transaction's own read of its row found without segments reads its tables directly, as a
+		// database without shared history does: the same statements and plans, in the same snapshot (#6560).
+		const plain = sessionId !== undefined && this.forkedIn.get(tx)?.get(sessionId) === false;
 		return {
-			segments: (await this.sharedHistoryForks(tx)) ? this.forkTables.forkSegments : undefined,
+			segments: !plain && (await this.sharedHistoryForks(tx)) ? this.forkTables.forkSegments : undefined,
 			dialect: this.dialect,
 		};
+	}
+
+	/**
+	 * A column, `forked`, of a read of a sessions row whose id is `id`: 1 when the session has fork segments (#6560),
+	 * found by the segments' key. Only where `segments`, the fork segments table, exists.
+	 */
+	private forkedColumn(segments: string | undefined, id = "id"): string {
+		return segments === undefined
+			? ""
+			: `, CASE WHEN EXISTS (SELECT 1 FROM ${segments} WHERE session_id = ${id}) THEN 1 ELSE 0 END AS forked`;
+	}
+
+	/**
+	 * Notes what a read of session `sessionId`'s row in transaction `tx` found, `forked` from {@link forkedColumn}: the
+	 * transaction's later reads of a session without segments read its tables directly. The store remembers it too, as a
+	 * first guess for a read that sends its statements before that row's answer, and checks it against that answer.
+	 */
+	private noteForked(tx: SqliteExecutor | undefined, sessionId: string, forked: SqliteValue | undefined): void {
+		if (forked === undefined || forked === null) return;
+		const value = Number(forked) === 1;
+		if (tx !== undefined) {
+			const known = this.forkedIn.get(tx) ?? new Map<string, boolean>();
+			this.forkedIn.set(tx, known);
+			known.set(sessionId, value);
+		}
+		this.forkedSessions.delete(sessionId);
+		this.forkedSessions.set(sessionId, value);
+		while (this.forkedSessions.size > 256) this.forkedSessions.delete(this.forkedSessions.keys().next().value!);
 	}
 
 	/**
@@ -1302,6 +1337,31 @@ export class SqlSessionStore implements SessionStore {
 		const value = await read(this.outsideViewTables());
 		if (found(value)) return value;
 		return (await this.schemaNowShared(seen)) ? read(this.outsideViewTables()) : value;
+	}
+
+	/**
+	 * `read`, a read outside a transaction of session `sessionId`'s rows that also reads, as `forked`, whether the
+	 * session has fork segments, through `outsideTransaction` (#6560): from the tables themselves when this store last
+	 * found the session without segments, and through its view again when the read's own answer says it now has them.
+	 */
+	private outsideSessionRead<T>(
+		sessionId: string,
+		read: (tables: ForkViewTables) => Promise<T>,
+		found: (value: T) => boolean,
+		forkedOf: (value: T) => SqliteValue | undefined,
+	): Promise<T> {
+		return this.outsideTransaction(async (tables) => {
+			const plain = tables.segments !== undefined && this.forkedSessions.get(sessionId) === false;
+			const value = await read(plain ? { ...tables, segments: undefined } : tables);
+			const forked = forkedOf(value);
+			this.noteForked(undefined, sessionId, forked);
+			return plain && Number(forked) === 1 ? read(tables) : value;
+		}, found);
+	}
+
+	/** The `forked` column of a read outside a transaction of the sessions row `id` names: see `outsideSessionRead`. */
+	private outsideForkedColumn(id: string): string {
+		return this.forkedColumn(this.sharedHistorySeen ? this.forkTables.forkSegments : undefined, id);
 	}
 
 	/**
@@ -1967,7 +2027,7 @@ export class SqlSessionStore implements SessionStore {
 			const { sessionId, epoch, seq } = reference;
 			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
-			const view = this.entriesView(await this.viewTables(tx), sessionId, seq - 1, seq);
+			const view = this.entriesView(await this.viewTables(tx, sessionId), sessionId, seq - 1, seq);
 			const row = await tx.get<SqliteRow & { chunks: number; data: Uint8Array | null }>(
 				withForkViews(
 					[view],
@@ -1992,7 +2052,7 @@ export class SqlSessionStore implements SessionStore {
 			const { sessionId, epoch, seq } = reference;
 			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
-			const view = this.entriesView(await this.viewTables(tx), sessionId, seq - 1, seq);
+			const view = this.entriesView(await this.viewTables(tx, sessionId), sessionId, seq - 1, seq);
 			const row = await tx.get<SqliteRow & { chunks: number }>(
 				withForkViews([view], `SELECT chunks FROM ${view.name}`),
 				...view.params,
@@ -2710,11 +2770,13 @@ export class SqlSessionStore implements SessionStore {
 		// view; a page that should hold an entry and holds none was held back by the read's own check of the schema.
 		const maxChars =
 			query.maxChars !== undefined && query.maxChars <= 0 ? 0 : (query.maxChars ?? Number.MAX_SAFE_INTEGER);
-		const read = await this.outsideTransaction(
+		const read = await this.outsideSessionRead(
+			sessionId,
 			(tables) => {
 				const view = this.entriesView(tables, sessionId, fromSeq - 1, Math.min(query.toSeq, FORK_VIEW_END));
 				return this.database.all<
 					SqliteRow & {
+						forked?: number;
 						last_seq: number | bigint;
 						seq: number | bigint | null;
 						entry_json: string | null;
@@ -2746,7 +2808,7 @@ export class SqlSessionStore implements SessionStore {
 				JOIN ${this.tables.entries} e ON e.session_id = p.src_id AND e.seq = p.src_seq
 				WHERE p.before_chars < ?
 			)
-			SELECT s.last_seq, page.seq, page.entry_json, page.entry_head, page.chunks, page.remaining, page.entry_type
+			SELECT s.last_seq, page.seq, page.entry_json, page.entry_head, page.chunks, page.remaining, page.entry_type${this.outsideForkedColumn("s.id")}
 			FROM ${this.tables.sessions} s LEFT JOIN page ON 1 = 1
 			WHERE s.id = ?
 			ORDER BY page.seq`,
@@ -2766,6 +2828,7 @@ export class SqlSessionStore implements SessionStore {
 				if (fromSeq > Math.min(query.toSeq, Number(session.last_seq))) return true;
 				return found.some((row) => row.seq !== null && row.seq !== undefined);
 			},
+			(found) => found[0]?.forked,
 		);
 		const session = read[0];
 		if (!session) throw new SessionNotFoundError(sessionId);
@@ -3528,23 +3591,23 @@ export class SqlSessionStore implements SessionStore {
 	private async read(tx: SqliteExecutor, sessionId: string): Promise<SessionSnapshot> {
 		// The entries' first page is asked for beside the session's row: a pipelined connection sends both at once.
 		const generation = this.generation(sessionId);
-		const head = tx.get<HeaderRow & { chat_epoch: string | null; epoch: string }>(
-			`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision,${generation.sql} AS epoch FROM ${this.tables.sessions} WHERE id = ?`,
+		const shared = await this.viewTables(tx);
+		const head = tx.get<HeaderRow & { chat_epoch: string | null; epoch: string; forked?: number }>(
+			`SELECT header_json, last_seq,CASE WHEN ${this.dialect.jsonValid("summary_state")} THEN ${this.dialect.jsonText("summary_state", "epoch")} END AS chat_epoch,revision,${generation.sql} AS epoch${this.forkedColumn(shared.segments)} FROM ${this.tables.sessions} WHERE id = ?`,
 			...generation.params,
 			sessionId,
 		);
+		// The rows go out before the row's answer, read directly when this store last found the session without
+		// segments; the row then says whether that still holds in this snapshot, and a guess it disproves reads again.
+		const guess: ForkViewTables =
+			this.forkedSessions.get(sessionId) === false ? { ...shared, segments: undefined } : shared;
 		// Each entry is noted in the generation the same snapshot reads, for a fork to share its row (#6560).
-		const [row, rows] = await Promise.all([
-			head,
-			this.readRows(
-				tx,
-				sessionId,
-				undefined,
-				undefined,
-				head.then((found) => found?.epoch),
-			),
-		]);
+		const epoch = head.then((found) => found?.epoch);
+		let [row, rows] = await Promise.all([head, this.readRows(tx, sessionId, undefined, undefined, epoch, guess)]);
 		if (!row) throw new SessionNotFoundError(sessionId);
+		this.noteForked(tx, sessionId, row.forked);
+		if (guess.segments === undefined && shared.segments !== undefined && Number(row.forked) === 1)
+			rows = await this.readRows(tx, sessionId, undefined, undefined, epoch, shared);
 		const snapshot = {
 			header: JSON.parse(row.header_json) as SessionRecordHeader,
 			entries: rows.map(({ entry }) => entry),
@@ -3566,8 +3629,9 @@ export class SqlSessionStore implements SessionStore {
 		range: { readonly from?: number; readonly through?: number } = {},
 		seqs?: readonly number[],
 		epoch?: string | PromiseLike<string | undefined>,
+		viewTables?: ForkViewTables,
 	): Promise<SessionStoredEntry[]> {
-		const tables = await this.viewTables(tx);
+		const tables = viewTables ?? (await this.viewTables(tx, sessionId));
 		const through = range.through ?? FORK_VIEW_END;
 		const filter = seqs === undefined ? "" : ` AND seq IN (${seqs.map(() => "?").join(", ")})`;
 		const entries: SessionStoredEntry[] = [];
@@ -3652,8 +3716,11 @@ export class SqlSessionStore implements SessionStore {
 	 * a leading read, so a pipelined connection sends it with the transaction's start (#6560).
 	 */
 	private resumeRow(sessionId: string): SqliteStatement {
+		// Whether the session has fork segments, where this store has seen shared history (#6560): a leading read goes
+		// out before the transaction's schema check answers.
+		const forked = this.forkedColumn(this.sharedHistorySeen ? this.forkTables.forkSegments : undefined);
 		return {
-			sql: `SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
+			sql: `SELECT header_json,last_seq,summary_state,revision${forked} FROM ${this.tables.sessions} WHERE id = ?`,
 			params: [sessionId],
 		};
 	}
@@ -3687,8 +3754,9 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 	): Promise<ResumeSource & { readonly row: ResumeRow }> {
 		const read = this.resumeRow(sessionId);
-		const row = await tx.get<ResumeRow>(read.sql, ...read.params);
+		const row = await tx.get<ResumeRow & { forked?: number }>(read.sql, ...read.params);
 		if (!row) throw new SessionNotFoundError(sessionId);
+		this.noteForked(tx, sessionId, row.forked);
 		const stored = windowIndex(JSON.parse(row.summary_state) as StoredSummaryState, Number(row.last_seq));
 		const remembered = this.resumeIndexes.get(sessionId);
 		const index = isSessionResumeIndex(stored, Number(row.last_seq))
@@ -3723,11 +3791,12 @@ export class SqlSessionStore implements SessionStore {
 		throughSeq?: number,
 	): Promise<{ index: SessionResumeIndex; revision: string }> {
 		attempts: for (let attempt = 0; attempt < 3; attempt++) {
-			const row = await this.database.get<ResumeRow>(
-				`SELECT header_json,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE id = ?`,
+			const row = await this.database.get<ResumeRow & { forked?: number }>(
+				`SELECT header_json,last_seq,summary_state,revision${this.outsideForkedColumn("id")} FROM ${this.tables.sessions} WHERE id = ?`,
 				sessionId,
 			);
 			if (!row) throw new SessionNotFoundError(sessionId);
+			this.noteForked(undefined, sessionId, row.forked);
 			const state = JSON.parse(row.summary_state) as StoredSummaryState;
 			const remembered = this.resumeIndexes.get(sessionId);
 			const currentIndex =
@@ -3948,7 +4017,10 @@ export class SqlSessionStore implements SessionStore {
 			const pageWhere = sqlite ? `WHERE session_id = ${owner} AND seq > ${lo} AND seq <= ${hi}${sources}` : where;
 			// Each page reads the session's view (#6560). A row it inherits is stored under another session, so its chunks
 			// are found where the view says the row is, `src_id` and `src_seq`, rather than under the bound owner.
-			const tables = this.outsideViewTables();
+			// A session the row found without segments reads its tables directly (#6560). One that has them since, as a
+			// session deleted and made again as a fork does, has a new revision, which the rebuild checks at its end.
+			const viewed = this.outsideViewTables();
+			const tables = Number(row.forked) === 0 ? { ...viewed, segments: undefined } : viewed;
 			const shared = tables.segments !== undefined;
 			const page = `WITH ${sqlite ? "bounds(id,lo,hi) AS NOT MATERIALIZED (VALUES (?,?,?)), " : ""}page AS (
 				SELECT ${sqlite && !shared ? "" : "CASE WHEN chunks > 0 THEN src_id END AS src_id,"}seq,src_seq,entry_id,chunks,entry_json FROM entries_view
@@ -4078,7 +4150,7 @@ export class SqlSessionStore implements SessionStore {
 					}
 					if (rows.length === 0) {
 						// A page in the range always has rows: none means the read's own check held them back.
-						if (await this.schemaNowShared(shared)) continue attempts;
+						if (await this.schemaNowShared(viewed.segments !== undefined)) continue attempts;
 						break;
 					}
 					const batch: SessionEntry[] = [];
@@ -4268,7 +4340,8 @@ export class SqlSessionStore implements SessionStore {
 				startSeq: start,
 				entries: entries.map(({ entry }) => entry),
 				seqs: entries.map(({ seq }) => seq),
-				...head,
+				lastSeq: head.lastSeq,
+				epoch: head.epoch,
 			};
 		});
 	}
@@ -4282,20 +4355,17 @@ export class SqlSessionStore implements SessionStore {
 		tx: SqliteExecutor,
 		sessionId: string,
 		readOnly = false,
-		segments?: string,
 	): Promise<{ lastSeq: number; epoch: string; forked: boolean }> {
 		const generation = this.generation(sessionId);
-		const forked =
-			segments === undefined
-				? "0"
-				: `CASE WHEN EXISTS (SELECT 1 FROM ${segments} WHERE session_id = id) THEN 1 ELSE 0 END`;
-		const row = await tx.get<SqliteRow & { last_seq: number; revision: string; epoch: string; forked: number }>(
-			`SELECT last_seq, revision, ${generation.sql} AS epoch, ${forked} AS forked FROM ${this.tables.sessions} WHERE id = ?${readOnly ? "" : this.dialect.lockClause("share")}`,
+		const { segments } = await this.viewTables(tx);
+		const row = await tx.get<SqliteRow & { last_seq: number; revision: string; epoch: string; forked?: number }>(
+			`SELECT last_seq, revision, ${generation.sql} AS epoch${this.forkedColumn(segments)} FROM ${this.tables.sessions} WHERE id = ?${readOnly ? "" : this.dialect.lockClause("share")}`,
 			...generation.params,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		this.noteGeneration(sessionId, row.revision, Number(row.last_seq), row.epoch);
+		this.noteForked(tx, sessionId, row.forked);
 		return { lastSeq: Number(row.last_seq), epoch: row.epoch, forked: Number(row.forked) === 1 };
 	}
 
@@ -4310,7 +4380,7 @@ export class SqlSessionStore implements SessionStore {
 		backward: boolean,
 	): Promise<SessionHistoryItem[]> {
 		const edge = backward ? through : from;
-		const tables = await this.viewTables(tx);
+		const tables = await this.viewTables(tx, sessionId);
 		const view = this.entriesView(tables, sessionId, from - 1, through);
 		const rows = await tx.all<SqliteRow & { seq: number; bytes: number | null; chunks: number; body: string | null }>(
 			withForkViews(
@@ -4360,7 +4430,7 @@ export class SqlSessionStore implements SessionStore {
 			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== index.epoch || head.lastSeq < index.seq)
 				throw new SessionConflictError(sessionId, index.seq, head.lastSeq);
-			const view = forkView(await this.viewTables(tx), {
+			const view = forkView(await this.viewTables(tx, sessionId), {
 				name: "launched",
 				table: this.tables.entries,
 				columns: ["entry_id"],
@@ -4432,7 +4502,7 @@ export class SqlSessionStore implements SessionStore {
 			const callIds = sqlite
 				? `(SELECT json_group_array(json_extract(b.value,'$.id')) FROM json_each(entry_json,'$.message.content') b WHERE CASE WHEN b.type='object' THEN json_extract(b.value,'$.type')='toolCall' AND json_type(b.value,'$.id')='text' END)`
 				: `(SELECT json_agg(b->>'id')::text FROM jsonb_array_elements((${content})::jsonb) b WHERE b->>'type'='toolCall' AND jsonb_typeof(b->'id')='string')`;
-			const view = this.entriesView(await this.viewTables(tx), sessionId, fromSeq - 1, toSeq);
+			const view = this.entriesView(await this.viewTables(tx, sessionId), sessionId, fromSeq - 1, toSeq);
 			const rows = await tx.all(
 				withForkViews(
 					[view],
@@ -4492,7 +4562,7 @@ export class SqlSessionStore implements SessionStore {
 				throw new SessionConflictError(sessionId, wanted.at(-1)!, head.lastSeq);
 			const tail = `(SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id=e.src_id AND c.seq=e.src_seq AND c.idx=e.chunks-1)`;
 			const view = this.entriesView(
-				await this.viewTables(tx),
+				await this.viewTables(tx, sessionId),
 				sessionId,
 				Math.min(...wanted) - 1,
 				Math.max(...wanted),
@@ -4562,7 +4632,7 @@ export class SqlSessionStore implements SessionStore {
 		return this.readTransaction(async (tx) => {
 			const head = await this.historyHead(tx, sessionId, true);
 			const lastChunk = `(SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id = e.src_id AND c.seq = e.src_seq AND c.idx = e.chunks - 1)`;
-			const tables = await this.viewTables(tx);
+			const tables = await this.viewTables(tx, sessionId);
 			// A view's seqs are dense: a shared history reads only the seqs the limit lets through.
 			const after = Math.max(1, startSeq) - 1;
 			const view = this.entriesView(
@@ -4584,7 +4654,8 @@ export class SqlSessionStore implements SessionStore {
 				entrySizeLimit(limit),
 			);
 			return {
-				...head,
+				lastSeq: head.lastSeq,
+				epoch: head.epoch,
 				sizes: rows.map((row) => {
 					if (row.bytes === null)
 						throw new StorageUnavailableError(
@@ -4622,19 +4693,24 @@ export class SqlSessionStore implements SessionStore {
 		// that finds it turned on is read again. A shared history is read a window at a time, so each source's index reads
 		// only the seqs the page may hold: the next `count` of a view's dense seqs, or a wider window for a selection,
 		// which then accounts for the range only through the window's end.
+		// A session this store last found without segments is read from its tables, which the head row confirms.
 		const shared = this.sharedHistorySeen;
+		const plain = shared && this.forkedSessions.get(sessionId) === false;
 		const tables: ForkViewTables = {
-			segments: shared ? this.forkTables.forkSegments : undefined,
+			segments: shared && !plain ? this.forkTables.forkSegments : undefined,
 			dialect: this.dialect,
 		};
-		const scanEnd = !shared
-			? endSeq
-			: Math.min(endSeq, Math.max(1, startSeq) - 1 + (select === undefined ? count : SCAN_SELECT_WINDOW));
+		const scanEnd =
+			tables.segments === undefined
+				? endSeq
+				: Math.min(endSeq, Math.max(1, startSeq) - 1 + (select === undefined ? count : SCAN_SELECT_WINDOW));
 		const view = this.entriesView(tables, sessionId, startSeq - 1, scanEnd, "scan_view");
 		const bytes = (row: string) =>
 			`CASE WHEN ${row}.chunks = 0 THEN ${this.entryByteLength(`${row}.entry_json`)} ELSE (${row}.chunks - 1) * ? + (SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id = ${row}.src_id AND c.seq = ${row}.src_seq AND c.idx = ${row}.chunks - 1) END`;
+		const forked = this.outsideForkedColumn("id");
+		const forkedNull = forked === "" ? "" : ", NULL";
 		const head = `SELECT 0 AS seq, NULL AS bytes, NULL AS chunks, header_json AS entry_json, last_seq, revision,
-				${generation.sql} AS epoch, (SELECT schema_version FROM ${this.tables.meta} LIMIT 1) AS schema_version`;
+				${generation.sql} AS epoch, (SELECT schema_version FROM ${this.tables.meta} LIMIT 1) AS schema_version${forked}`;
 		type Row = SqliteRow & {
 			seq: number;
 			bytes: number | null;
@@ -4644,6 +4720,7 @@ export class SqlSessionStore implements SessionStore {
 			revision: string | null;
 			epoch: string | null;
 			schema_version: number | null;
+			forked?: number | null;
 			sized?: number | null;
 			sized_last?: number | null;
 			prefix?: Uint8Array | null;
@@ -4659,7 +4736,7 @@ export class SqlSessionStore implements SessionStore {
 							[view],
 							`${head} FROM ${this.tables.sessions} WHERE id = ?
 					UNION ALL
-					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL FROM (
+					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL${forkedNull} FROM (
 						SELECT e.seq, e.chunks, e.entry_json, ${bytes("e")} AS bytes FROM ${view.name} e
 						-- The cut bounds the range itself, so the read stops there, however far the range goes.
 						WHERE e.session_id = ? AND e.seq BETWEEN ? AND (
@@ -4707,7 +4784,7 @@ export class SqlSessionStore implements SessionStore {
 					${head}, (SELECT count(*) FROM sized) AS sized, (SELECT max(seq) FROM sized) AS sized_last, NULL AS prefix
 					FROM ${this.tables.sessions} WHERE id = ?
 					UNION ALL
-					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL, NULL, NULL,
+					SELECT seq, bytes, chunks, CASE WHEN bytes <= ? AND chunks = 0 THEN entry_json END, NULL, NULL, NULL, NULL${forkedNull}, NULL, NULL,
 						${
 							referencePrefix === undefined
 								? "NULL"
@@ -4754,7 +4831,8 @@ export class SqlSessionStore implements SessionStore {
 			SESSION_SCHEMA_VERSION_UNCHUNKED,
 		);
 		this.noteSchemaVersion(first.schema_version);
-		if (this.sharedHistorySeen !== shared)
+		this.noteForked(undefined, sessionId, first.forked);
+		if (this.sharedHistorySeen !== shared || (plain && Number(first.forked) === 1))
 			return SqlSessionStore.prototype.readScanPage.call(this, sessionId, startSeq, endSeq, epoch, limit, options);
 		const lastSeq = Number(first.last_seq);
 		this.noteGeneration(sessionId, first.revision!, lastSeq, first.epoch!);
@@ -4856,15 +4934,18 @@ export class SqlSessionStore implements SessionStore {
 		const json = this.dialect.name === "sqlite" ? "CAST(e.entry_json AS BLOB)" : "convert_to(e.entry_json, 'UTF8')";
 		// The entry through the session's view (#6560), with the schema in the same statement: one read without shared
 		// history that finds it turned on is read again.
+		// A session this store last found without segments is read from its tables, which the same row confirms (#6560).
 		const shared = this.sharedHistorySeen;
+		const plain = shared && this.forkedSessions.get(sessionId) === false;
 		const view = this.entriesView(
-			{ segments: shared ? this.forkTables.forkSegments : undefined, dialect: this.dialect },
+			{ segments: shared && !plain ? this.forkTables.forkSegments : undefined, dialect: this.dialect },
 			sessionId,
 			seq - 1,
 			seq,
 		);
 		const row = await this.database.get<
 			SqliteRow & {
+				forked?: number;
 				last_seq: number;
 				revision: string;
 				epoch: string;
@@ -4879,7 +4960,7 @@ export class SqlSessionStore implements SessionStore {
 				(SELECT schema_version FROM ${this.tables.meta} LIMIT 1) AS schema_version, e.chunks,
 				CASE WHEN e.chunks > 0
 					THEN (SELECT substr(c.data, CAST(? AS INTEGER), CAST(? AS INTEGER)) FROM ${this.tables.entryChunks} c WHERE c.session_id = e.src_id AND c.seq = e.src_seq AND c.idx = ?)
-					ELSE substr(${json}, CAST(? AS INTEGER), CAST(? AS INTEGER)) END AS data
+					ELSE substr(${json}, CAST(? AS INTEGER), CAST(? AS INTEGER)) END AS data${this.outsideForkedColumn("s.id")}
 			FROM ${this.tables.sessions} s LEFT JOIN ${view.name} e ON e.session_id = s.id
 			WHERE s.id = ?`,
 			),
@@ -4900,7 +4981,8 @@ export class SqlSessionStore implements SessionStore {
 			SESSION_SCHEMA_VERSION_UNCHUNKED,
 		);
 		this.noteSchemaVersion(row.schema_version);
-		if (this.sharedHistorySeen !== shared)
+		this.noteForked(undefined, sessionId, row.forked);
+		if (this.sharedHistorySeen !== shared || (plain && Number(row.forked) === 1))
 			return SqlSessionStore.prototype.readEntryChunk.call(this, reference, offset, bytes);
 		this.noteGeneration(sessionId, row.revision, Number(row.last_seq), row.epoch);
 		if (row.epoch !== epoch) throw new SessionConflictError(sessionId, seq, Number(row.last_seq));
@@ -4934,8 +5016,8 @@ export class SqlSessionStore implements SessionStore {
 		return this.readTransaction(async (tx) => {
 			// A fork that shares its parent's history finds the links it inherits through its view (#6560); any other
 			// session, which the head read tells apart, reads its own links by key.
-			const tables = await this.viewTables(tx);
-			const head = await this.historyHead(tx, sessionId, true, tables.segments);
+			const tables = await this.viewTables(tx, sessionId);
+			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== query.epoch || head.lastSeq < query.throughSeq)
 				throw new SessionConflictError(sessionId, query.throughSeq, head.lastSeq);
 			if (candidates.length === 0) return { seqs: [] };
@@ -5014,27 +5096,35 @@ export class SqlSessionStore implements SessionStore {
 			// Check the index in the same snapshot as the entries. A peer can legitimately invalidate or
 			// remove it when appending to a side branch; that must not make a committed fork point disappear.
 			const snapshots = snapshotIndexTables(this.prefix);
-			// The fork point through the session's view (#6560), from the links or the entries.
-			const tables = await this.viewTables(tx);
-			const leafViews = [snapshots.sessionLinks, this.tables.entries].map((table, index) =>
-				forkView(tables, {
-					name: `leaf_${index}`,
-					table,
-					columns: ["entry_id"],
+			// The fork point through the session's view (#6560), from the links or the entries; read directly when this
+			// store last found the session without segments, which the same row then confirms, or read again.
+			const shared = await this.viewTables(tx);
+			const headRead = (leafTables: ForkViewTables) => {
+				const leafViews = [snapshots.sessionLinks, this.tables.entries].map((table, index) =>
+					forkView(leafTables, {
+						name: `leaf_${index}`,
+						table,
+						columns: ["entry_id"],
+						sessionId,
+						after: 0,
+						through: FORK_VIEW_END,
+						match: { column: "entry_id", value: entryId },
+					}),
+				);
+				return tx.get<ResumeRow & { leaf_seq: number | null; forked?: number }>(
+					withForkViews(
+						leafViews,
+						`SELECT header_json,last_seq,summary_state,revision,CASE WHEN EXISTS (SELECT 1 FROM ${snapshots.sources} WHERE source='session-entries' AND backfilled_through>=watermark) THEN (SELECT max(seq) FROM leaf_0) ELSE (SELECT max(seq) FROM leaf_1) END AS leaf_seq${this.forkedColumn(shared.segments, "s.id")} FROM ${this.tables.sessions} s WHERE s.id=?`,
+					),
+					...forkViewParams(leafViews),
 					sessionId,
-					after: 0,
-					through: FORK_VIEW_END,
-					match: { column: "entry_id", value: entryId },
-				}),
-			);
-			const row = await tx.get<ResumeRow & { leaf_seq: number | null }>(
-				withForkViews(
-					leafViews,
-					`SELECT header_json,last_seq,summary_state,revision,CASE WHEN EXISTS (SELECT 1 FROM ${snapshots.sources} WHERE source='session-entries' AND backfilled_through>=watermark) THEN (SELECT max(seq) FROM leaf_0) ELSE (SELECT max(seq) FROM leaf_1) END AS leaf_seq FROM ${this.tables.sessions} s WHERE s.id=?`,
-				),
-				...forkViewParams(leafViews),
-				sessionId,
-			);
+				);
+			};
+			const guessPlain = shared.segments !== undefined && this.forkedSessions.get(sessionId) === false;
+			let row = await headRead(guessPlain ? { ...shared, segments: undefined } : shared);
+			if (row && guessPlain && Number(row.forked) === 1) row = await headRead(shared);
+			if (row) this.noteForked(tx, sessionId, row.forked);
+			const tables = await this.viewTables(tx, sessionId);
 			if (!row) throw new SessionNotFoundError(sessionId);
 			const header = JSON.parse(row.header_json) as SessionRecordHeader;
 			const state = JSON.parse(row.summary_state) as StoredSummaryState;
@@ -5314,11 +5404,13 @@ export class SqlSessionStore implements SessionStore {
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const { index, revision } = await this.prepareResume(sessionId, leafId, throughSeq);
 			const resume = await this.readTransaction(async (tx) => {
-				const head = await tx.get<SqliteRow & { header_json: string; revision: string }>(
-					`SELECT header_json,revision FROM ${this.tables.sessions} WHERE id = ?`,
+				const { segments } = await this.viewTables(tx);
+				const head = await tx.get<SqliteRow & { header_json: string; revision: string; forked?: number }>(
+					`SELECT header_json,revision${this.forkedColumn(segments)} FROM ${this.tables.sessions} WHERE id = ?`,
 					sessionId,
 				);
 				if (!head) throw new SessionNotFoundError(sessionId);
+				this.noteForked(tx, sessionId, head.forked);
 				if (revision !== head.revision) return undefined;
 				return this.resumeIn(tx, sessionId, JSON.parse(head.header_json) as SessionRecordHeader, index, options);
 			});
@@ -5368,7 +5460,7 @@ export class SqlSessionStore implements SessionStore {
 					const leafSeq =
 						leafId === undefined
 							? index.leafSeq
-							: ((await this.seqOfEntry(tx, await this.viewTables(tx), sessionId, leafId)) ?? -1);
+							: ((await this.seqOfEntry(tx, await this.viewTables(tx, sessionId), sessionId, leafId)) ?? -1);
 					const found = latestCompactionOf(index, leafSeq);
 					if (found === undefined) return { point: undefined, source };
 					// Neither depends on the other: a pipelined connection sends both at once (#6560).
@@ -5398,7 +5490,7 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 		seq: number,
 	): Promise<{ readonly entry_id: string } | undefined> {
-		const view = this.entriesView(await this.viewTables(tx), sessionId, seq - 1, seq);
+		const view = this.entriesView(await this.viewTables(tx, sessionId), sessionId, seq - 1, seq);
 		return tx.get<SqliteRow & { entry_id: string }>(
 			withForkViews([view], `SELECT entry_id FROM ${view.name}`),
 			...view.params,
@@ -5583,7 +5675,7 @@ export class SqlSessionStore implements SessionStore {
 			`SELECT CASE WHEN backfilled_through >= watermark THEN 1 ELSE 0 END AS complete FROM ${index.sources} WHERE source = 'session-entries'`,
 		);
 		const table = Number(source?.complete) === 1 ? index.sessionLinks : this.tables.entries;
-		const read = (viewTables: ForkViewTables) => {
+		const read = (viewTables: ForkViewTables, forked = "") => {
 			const view = forkView(viewTables, {
 				name: "linked",
 				table,
@@ -5593,16 +5685,23 @@ export class SqlSessionStore implements SessionStore {
 				through: FORK_VIEW_END,
 				match: { column: "entry_id", value: entryId },
 			});
-			return executor.get<SqliteRow & { seq: number }>(
-				withForkViews([view], "SELECT seq FROM linked ORDER BY seq DESC LIMIT 1"),
+			return executor.get<SqliteRow & { seq: number | null; forked?: number }>(
+				withForkViews([view], `SELECT (SELECT seq FROM linked ORDER BY seq DESC LIMIT 1) AS seq${forked}`),
 				...view.params,
+				...(forked === "" ? [] : [sessionId]),
 			);
 		};
+		// Outside a transaction, the same statement says whether the session has segments (#6560).
 		const row =
 			tables === undefined
-				? await this.outsideTransaction(read, (found) => found !== undefined)
+				? await this.outsideSessionRead(
+						sessionId,
+						(viewTables) => read(viewTables, this.outsideForkedColumn("?")),
+						(found) => found?.seq != null,
+						(found) => found?.forked,
+					)
 				: await read(tables);
-		return row === undefined ? undefined : Number(row.seq);
+		return row?.seq == null ? undefined : Number(row.seq);
 	}
 
 	private async saveSummary(
