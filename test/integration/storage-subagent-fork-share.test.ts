@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
-import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import type {
+	SqliteDatabase,
+	SqliteTransactionOptions,
+} from "../../packages/coding-agent/src/core/storage/database.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
 import { createForkArchive } from "../../packages/coding-agent/src/core/storage/session/fork-archive.js";
 import { sessionForkTables } from "../../packages/coding-agent/src/core/storage/session/fork-schema.js";
+import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import {
 	SESSION_BLOB_CHUNK_BYTES,
 	SESSION_ENTRY_CHUNK_BYTES,
@@ -17,6 +22,7 @@ import type {
 	SessionStore,
 	SessionWriteResult,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { storageBackends } from "../helpers/storage-backends.js";
 import { countStorageRoundTrips } from "../helpers/storage-round-trips.js";
 import {
@@ -143,6 +149,80 @@ async function richParent(store: SqlSessionStore, id: string): Promise<void> {
 		user("e9", "e8", "after the compaction", 9),
 	];
 	await store.append(id, entries, { expectSeq: 1 });
+}
+
+/** Everything a manager shows of the session it opened, to compare one opened another way with it. */
+function managerView(manager: SessionManager) {
+	const entries = manager.getEntries();
+	return {
+		header: manager.getHeader(),
+		entries,
+		leaf: manager.getLeafId(),
+		branch: manager.getBranch(),
+		tree: manager.getTree(),
+		context: manager.buildSessionContext(),
+		labels: entries.map((entry) => [entry.id, manager.getLabel(entry.id), manager.getLabelTimestamp(entry.id)]),
+		seqs: entries.map((entry) => manager.getEntrySeq(entry.id)),
+		lastSeq: manager.getLastSeq(),
+		epoch: manager.getHistoryEpoch(),
+		fullHistory: manager.hasFullHistory(),
+		heldTail: manager.getHeldTail(),
+		settings: manager.getLatestBranchSettings(),
+		name: manager.getSessionName(),
+		lastAnswer: manager.getLastBranchAnswer(),
+	};
+}
+
+/**
+ * `database`, counting the transactions it and its read handle run: those of reads alone, and the others. The
+ * transactions themselves run as they would.
+ */
+function countingTransactions(database: SqliteDatabase) {
+	const counts = { reads: 0, writes: 0 };
+	const counted = (inner: SqliteDatabase): SqliteDatabase =>
+		new Proxy(inner, {
+			get(target, key) {
+				if (key === "transaction")
+					return (callback: Parameters<SqliteDatabase["transaction"]>[0], options?: SqliteTransactionOptions) => {
+						if (options?.readOnly === true) counts.reads++;
+						else counts.writes++;
+						return target.transaction(callback, options);
+					};
+				if (key === "openReader" && typeof target.openReader === "function")
+					return async () => counted(await target.openReader!());
+				const value = Reflect.get(target, key, target) as unknown;
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+	return { database: counted(database), counts };
+}
+
+/**
+ * A parent with what a fork's window carries: settings, a session name, labels, a branch, an entry stored in chunks
+ * and a tool output whose blob the store holds. Its leaf is on the branch.
+ */
+async function richManager(store: SessionStore): Promise<SessionManager> {
+	const parent = await SessionManager.create(store, CWD);
+	await parent.appendModelChange("faux", "faux-1");
+	await parent.appendThinkingLevelChange("high");
+	const first = await parent.appendMessage({ role: "user", content: "first", timestamp: 1 });
+	await parent.appendSessionInfo("a named session");
+	await parent.appendLabelChange(first, "start");
+	// A JSONL store holds no blobs.
+	if (store.putBlob !== undefined) {
+		const blob = await store.putBlob(parent.getSessionId(), bytesOf(2 * SESSION_BLOB_CHUNK_BYTES + 99, 7));
+		await parent.appendCustomEntry("atomic.tool-output", { hash: blob.hash, toolCallId: "saved", bytes: blob.bytes });
+	}
+	const side = await parent.appendMessage({ role: "user", content: "a side branch", timestamp: 2 });
+	await parent.branch(first);
+	await parent.appendMessage({
+		role: "user",
+		content: `big ${"x".repeat(SESSION_ENTRY_CHUNK_BYTES + SESSION_ENTRY_CHUNK_BYTES / 2)}`,
+		timestamp: 3,
+	});
+	await parent.appendLabelChange(side, "elsewhere");
+	await parent.appendMessage({ role: "user", content: "last", timestamp: 4 });
+	return parent;
 }
 
 for (const backend of storageBackends) {
@@ -524,6 +604,176 @@ for (const backend of storageBackends) {
 					}),
 				SERVER_TIMEOUT_MS,
 			);
+			test(
+				"a fork opens its child from what it wrote, as a reload of the child shows it, with no read of its own (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const { database, counts } = countingTransactions(await scope.connect());
+						const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+						await enable(store);
+						const parent = await richManager(store);
+						const leaf = parent.getLeafId()!;
+
+						const before = { ...counts };
+						const child = await parent.captureFork(leaf, { internal: true })();
+						assert.deepEqual(
+							{ reads: counts.reads - before.reads, writes: counts.writes - before.writes },
+							{ reads: 1, writes: 1 },
+							"the fork's window read and its write, and nothing after",
+						);
+						const reloaded = await SessionManager.open(store, child.getSessionId(), CWD);
+						assert.deepEqual(managerView(child), managerView(reloaded));
+						assert.ok(child.getEntries().length > 0);
+						for (const entry of child.getEntries())
+							if (entry.type === "custom" && entry.customType === "atomic.tool-output") {
+								const hash = (entry.data as { hash: string }).hash;
+								assert.deepEqual(
+									await store.getBlob(child.getSessionId(), hash),
+									bytesOf(2 * SESSION_BLOB_CHUNK_BYTES + 99, 7),
+								);
+							}
+
+						// The SDK's tail branch installs its child the same way.
+						const branching = await SessionManager.open(store, parent.getSessionId(), CWD);
+						await branching.createBranchedSession(leaf, { history: "tail" });
+						assert.deepEqual(
+							managerView(branching),
+							managerView(await SessionManager.open(store, branching.getSessionId(), CWD)),
+						);
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a fork that keeps a receipt opens its child from the store, as a reload shows it (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const database = await scope.connect();
+						const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+						await enable(store);
+						const parent = await SessionManager.create(store, CWD);
+						const blob = await store.putBlob(parent.getSessionId(), bytesOf(100, 3));
+						// A receipt larger than a stored row: the fork carries only its identifying fields.
+						const receipt = await parent.appendCustomEntry("atomic.tool-output", {
+							hash: blob.hash,
+							toolCallId: "saved",
+							bytes: blob.bytes,
+							extra: "x".repeat(SESSION_ENTRY_CHUNK_BYTES + 1000),
+						});
+						await parent.appendCompaction("clear", null, 100, {
+							strategy: "verbatim-lines",
+							promptVersion: 7,
+							parameters: { query: "clear" },
+							form: "cleared",
+							stats: {
+								linesBefore: 1,
+								linesDeleted: 1,
+								linesKept: 0,
+								rangeCount: 0,
+								tokensBefore: 100,
+								tokensAfter: 0,
+								percentReduction: 100,
+							},
+						});
+						await parent.appendMessage({
+							role: "user",
+							content: `Inspect tool-output://${blob.hash}`,
+							timestamp: 1,
+						});
+						const { forks } = forksOf(store);
+
+						const child = await parent.captureFork(parent.getLeafId()!, { internal: true })();
+
+						assert.ok(
+							forks[0]!.entries.some(
+								(entry) => entry.id === receipt && !("extra" in ((entry as { data?: object }).data ?? {})),
+							),
+							"the fork wrote the receipt's stub",
+						);
+						const reloaded = await SessionManager.open(store, child.getSessionId(), CWD);
+						assert.deepEqual(managerView(child), managerView(reloaded));
+						const stored = (await store.load(child.getSessionId())).entries.find((entry) => entry.id === receipt);
+						assert.equal(
+							(stored as { data: { extra: string } }).data.extra.length,
+							SESSION_ENTRY_CHUNK_BYTES + 1000,
+						);
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a subagent fork reads nothing once it wrote its child, and 50 at once read once each (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const { database, counts } = countingTransactions(await scope.connect());
+						const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+						await enable(store);
+						await store.create(header("p"), parentEntries(PARENT_LENGTH));
+						const parent = await SessionManager.open(store, "p", CWD);
+						const leaf = parent.getLeafId()!;
+						const trips = countStorageRoundTrips(backend);
+						try {
+							await store.create(header("fresh"), [user("f1", null, "hello", 1)]);
+							const freshTrips = trips.take();
+							let windowTrips = 0;
+							let forkTrips = 0;
+							forksOf(store, {
+								before: () => {
+									windowTrips = trips.take();
+								},
+								after: () => {
+									forkTrips = trips.take();
+								},
+							});
+							await parent.captureFork(leaf, { internal: true })();
+							// Once the child is written, the fork opens it from what it wrote: no read of it follows.
+							const afterTrips = trips.take();
+							const report = `window read ${windowTrips}, fork ${forkTrips}, after the fork ${afterTrips}, a fresh session ${freshTrips}`;
+							console.info(`round trips of a captureFork on ${backend.name}: ${report}`);
+							assert.equal(afterTrips, 0, report);
+							assert.ok(forkTrips > 0 && forkTrips <= freshTrips, report);
+						} finally {
+							trips.restore();
+						}
+
+						const before = { ...counts };
+						await Promise.all(Array.from({ length: 50 }, () => parent.captureFork(leaf, { internal: true })()));
+						assert.deepEqual(
+							{ reads: counts.reads - before.reads, writes: counts.writes - before.writes },
+							{ reads: 50, writes: 50 },
+						);
+					}),
+				SERVER_TIMEOUT_MS,
+			);
 		},
 	);
 }
+
+describe("a fork opens its child from what it wrote in the other stores too (#6560)", () => {
+	for (const kind of ["memory", "JSONL"] as const)
+		test(`on a ${kind} store, the child a fork opens equals the child reloaded (#6560)`, async () => {
+			const directory = makeTempDirectory("subagent-fork-share-");
+			const store: SessionStore =
+				kind === "memory"
+					? new MemorySessionStore()
+					: await JsonlSessionStore.open(directory, { exactDirectory: true });
+			try {
+				const parent = await richManager(store);
+				const leaf = parent.getLeafId()!;
+				const child = await parent.captureFork(leaf, { internal: true })();
+				assert.deepEqual(
+					managerView(child),
+					managerView(await SessionManager.open(store, child.getSessionId(), CWD)),
+				);
+				const branching = await SessionManager.open(store, parent.getSessionId(), CWD);
+				await branching.createBranchedSession(leaf, { history: "tail" });
+				assert.deepEqual(
+					managerView(branching),
+					managerView(await SessionManager.open(store, branching.getSessionId(), CWD)),
+				);
+			} finally {
+				await store.close();
+				removeTempDirectory(directory);
+			}
+		});
+});
