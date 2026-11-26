@@ -105,6 +105,11 @@ export interface SqliteDriverTransactionOptions {
 	 * row it returns, instead of with the begin.
 	 */
 	readonly lockIfLeadingFinds?: boolean;
+	/**
+	 * Optional. `SqliteTransactionOptions.relaxedDurability`, never set on a read-only transaction: the driver may answer
+	 * the commit before the transaction reaches disk.
+	 */
+	readonly relaxedDurability?: boolean;
 }
 
 /** The driver calls `createSqliteDatabase` turns into a `SqliteDatabase`. */
@@ -1178,6 +1183,7 @@ class DriverDatabase implements SqliteDatabase {
 				: {}),
 			// `leading` holds the first statement whenever it holds any.
 			...(options?.lockIfLeadingFinds === true && leading.length > 0 ? { lockIfLeadingFinds: true } : {}),
+			...(options?.relaxedDurability === true && options.readOnly !== true ? { relaxedDurability: true } : {}),
 		};
 		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
 		const concurrentWrites = this.driver.concurrentTransactions === true;

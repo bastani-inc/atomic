@@ -8,7 +8,8 @@ import * as statementSequence from "./statement-sequence.js";
  * in-place update replaced the installation keeps them, and can load the modules that use these from the update: a
  * named import of any of them would fail to link there, so they take them from here, a path no earlier release has
  * (#6560). With 0.10.11-alpha.1's catalog, which knows nothing of fork tables, an open keeps the catalog it read, as
- * there.
+ * there: the snapshot blob store such a process holds is that release's, which asks the catalog nothing of forks, so its
+ * forks still share and read their parent's history (test/integration/in-place-update-forks.test.ts).
  */
 const catalogUpdates: Partial<Pick<typeof schemaCatalog, "noteStorageSchemaTables" | "refreshStorageSchemaCatalog">> =
 	schemaCatalog;
