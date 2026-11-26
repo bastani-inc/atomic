@@ -49,6 +49,7 @@ const SERVER_TIMEOUT_MS = 240_000;
  */
 interface ReleasedBlobStore {
 	completeIndex(): Promise<void>;
+	collectGarbage(options: { graceSeconds: number }): Promise<readonly string[]>;
 }
 const released = (await import(
 	pathToFileURL(join(import.meta.dirname, "../fixtures/snapshot-store-0.9.89/worktree-snapshot/blob-store.ts")).href
@@ -202,6 +203,43 @@ for (const backend of storageBackends) {
 						const both = [first.hash, second.hash].sort();
 						assert.deepEqual(await kept(worlds.copy), both, "the copy keeps both");
 						assert.deepEqual(await kept(worlds.shared), both, "the shared fork keeps its inherited snapshot");
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"the database keeps a snapshot a fork inherits from a released build's collection, and frees it once the fork is deleted",
+				() =>
+					withScope(backend, async (database, prefix) => {
+						const worlds = await openWorlds(database, prefix);
+						const first = textBlob("the checkout the fork inherits");
+						const second = textBlob("the parent's next checkout");
+						worlds.blobs.push(first, second);
+						const s1 = snapshotEntry("/repo", "s1", syntheticSnapshot("s1", [first.hash]), null);
+						const m1 = messageEntry("after s1", s1.id);
+						await writeBoth(worlds, "parent", [s1, m1]);
+						await forkBoth(worlds, "parent", "child", { cut: 2 });
+						await writeBoth(worlds, "parent", [
+							snapshotEntry("/repo", "s2", syntheticSnapshot("s2", [second.hash]), m1.id),
+						]);
+						const kept = async () => [...(await worlds.shared.snapshotBlobs.listBlobHashes())].sort();
+						const both = [first.hash, second.hash].sort();
+
+						// A collection that does not know forks, as a process of an earlier release holds, retains only the
+						// parent's latest snapshot: the database refuses it the one the fork inherits.
+						const olderStore = await released.SqlSnapshotBlobStore.open(database, worlds.sharedPrefix);
+						await olderStore.collectGarbage({ graceSeconds: 0 });
+						assert.deepEqual(await kept(), both, "the fork's inherited snapshot stays");
+						assert.deepEqual(
+							(await worlds.shared.load("child")).entries.map((entry) => entry.id),
+							[s1.id, m1.id],
+							"the fork reads it",
+						);
+
+						// Once the fork is deleted, nothing inherits it, and this build's collection frees it.
+						await worlds.shared.delete("child");
+						await worlds.shared.snapshotBlobs.collectGarbage({ graceSeconds: 0 });
+						assert.deepEqual(await kept(), [second.hash], "freed once no fork inherits it");
 					}),
 				SERVER_TIMEOUT_MS,
 			);

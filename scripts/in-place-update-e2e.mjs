@@ -404,10 +404,13 @@ export async function updateRunningBuild(tarballs, version, repositoryRoot) {
  * A process of an earlier release that forks a session after an update (`forkAfterUpdate`). With `setup`, it sets up
  * each database marked `earlier` through the release's own session store, writing one session, and exits. Otherwise it
  * loads what a running process holds, without the session store, which it loads on demand, and once updated opens each
- * database through the release's storage provider: it creates a session, forks it, appends to both, reads both, then
- * opens the database again and reads them once more.
+ * database through the release's storage provider: it creates a session that starts with a worktree snapshot, forks
+ * it, appends to both, the parent another snapshot, reads both, and opens the database again and reads them once more.
+ * Then it deletes the parent and collects snapshot blobs through the snapshot store it holds, the release's, which knows
+ * nothing of forks, and reads the fork and whether the blob of the snapshot it inherits is still there.
  */
 const FORK_HOST = `
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
@@ -423,18 +426,51 @@ const open = (each) =>
 		? storage.openNodeSqliteDatabase(each.path)
 		: postgres.openPostgresDatabase({ url: each.url, password: each.password });
 const header = (id) => ({ id, version: 4, createdAt: "2026-11-01T00:00:00.000Z", cwd: "/project" });
+const message = (id, parentId) => ({
+	type: "message",
+	id,
+	parentId,
+	timestamp: "2026-11-01T00:00:00.000Z",
+	message: { role: "user", content: id, timestamp: 1 },
+});
 const entries = (tag, count, parentId = null) => {
 	const made = [];
-	for (let index = 1; index <= count; index++)
-		made.push({
-			type: "message",
-			id: tag + "-" + index,
-			parentId: made.at(-1)?.id ?? parentId,
-			timestamp: "2026-11-01T00:00:00.000Z",
-			message: { role: "user", content: tag + " " + index, timestamp: 1 },
-		});
+	for (let index = 1; index <= count; index++) made.push(message(tag + "-" + index, made.at(-1)?.id ?? parentId));
 	return made;
 };
+/** A snapshot blob whose bytes are \`text\`, and a snapshot entry \`id\` after \`parentId\` whose snapshot holds it. */
+const blob = (text) => {
+	const data = new TextEncoder().encode(text);
+	return { hash: createHash("sha256").update(data).digest("hex"), data };
+};
+const snapshotEntry = (id, parentId, hash) => ({
+	type: "worktree_snapshot",
+	id,
+	parentId,
+	timestamp: "2026-11-01T00:00:00.000Z",
+	root: "/project",
+	snapshotId: "snapshot-" + id,
+	snapshot: {
+		version: 1,
+		id: "snapshot-" + id,
+		root: "/project",
+		remotes: [],
+		branch: "main",
+		head: "a".repeat(40),
+		snapshot: "b".repeat(40),
+		tree: "c".repeat(40),
+		envHash: "env",
+		delta: { base: "head", patch: hash, bytes: 1 },
+		chain: [{ tree: "d".repeat(40), patch: hash, bytes: 1 }],
+		bundle: null,
+		omitted: [],
+		filters: null,
+		capturedAt: "2026-11-01T00:00:00.000Z",
+	},
+});
+/** The blob of the snapshot the fork inherits, and of the one its parent takes after the fork. */
+const inherited = blob("the snapshot the fork inherits");
+const later = blob("the snapshot the parent takes after the fork");
 const ids = async (store, id) => (await store.load(id)).entries.map((entry) => entry.id);
 async function withStore(each, body) {
 	const database = await open(each);
@@ -456,8 +492,13 @@ async function forkAndRead(each) {
 	const outcome = {};
 	await withStore(each, async (store, database) => {
 		if (each.earlier) outcome.earlier = await ids(store, "earlier");
-		const parent = entries("parent", 3);
-		await store.create(header("parent"), parent);
+		// The parent's history starts with a snapshot, which the fork inherits, and takes another after the fork.
+		await store.snapshotBlobs.putBlobs([inherited, later]);
+		await store.create(header("parent"), [
+			snapshotEntry("parent-1", null, inherited.hash),
+			message("parent-2", "parent-1"),
+			message("parent-3", "parent-2"),
+		]);
 		const head = await store.readEntrySizes("parent", 1, 0);
 		// As the release's session manager forks a session: the stream of its history, from the module it loads on demand.
 		const { completeSessionForkStream } = await load("dist/core/storage/session/branch-fork-source.code.js");
@@ -467,7 +508,11 @@ async function forkAndRead(each) {
 			completeSessionForkStream("parent", head.epoch, head.lastSeq),
 			source,
 		);
-		await store.append("parent", entries("parent-after", 2, "parent-3"), { expectSeq: 3 });
+		await store.append(
+			"parent",
+			[snapshotEntry("parent-after-1", "parent-3", later.hash), message("parent-after-2", "parent-after-1")],
+			{ expectSeq: 3 },
+		);
 		await store.append("fork", entries("fork", 2, "parent-3"), { expectSeq: fork.lastSeq });
 		outcome.parent = await ids(store, "parent");
 		outcome.fork = await ids(store, "fork");
@@ -476,6 +521,16 @@ async function forkAndRead(each) {
 	});
 	await withStore(each, async (store) => {
 		outcome.reopened = { parent: await ids(store, "parent"), fork: await ids(store, "fork") };
+	});
+	// The parent goes, and the process collects snapshot blobs as its automatic collection does, with no grace: the
+	// snapshot the fork inherits from it must stay, with its blob.
+	await withStore(each, async (store) => {
+		await store.delete("parent");
+		await store.snapshotBlobs.collectGarbage({ graceSeconds: 0 });
+		outcome.collected = {
+			fork: await ids(store, "fork"),
+			inheritedBlob: (await store.snapshotBlobs.getBlob(inherited.hash)) !== undefined,
+		};
 	});
 	return outcome;
 }
@@ -520,7 +575,9 @@ const FORKED = {
  * Updates a running process of release `version`, installed from npm with its PostgreSQL adapter, in place to the
  * packages in `tarballs`, in `work`, and has it fork a session in each of `databases` (see {@link ForkDatabase}) through
  * the session store it then loads from the update: each fork must read its parent's history and its own entries, share
- * that history rather than copy it, and read the same once the database is opened again. Returns what went wrong.
+ * that history rather than copy it, and read the same once the database is opened again; once its parent is deleted
+ * and the release's collection runs, the fork must still read it, and the blob of the snapshot it inherits must still
+ * be there. Returns what went wrong.
  *
  * @param {string} version
  * @param {string} tarballs
@@ -588,6 +645,15 @@ export async function forkAfterUpdate(version, tarballs, work, databases) {
 			expect("the fork", outcome.fork, FORKED.fork);
 			expect("the parent, opened again,", outcome.reopened?.parent, FORKED.parent);
 			expect("the fork, opened again,", outcome.reopened?.fork, FORKED.fork);
+			expect(
+				"the fork, after its parent was deleted and snapshots collected,",
+				outcome.collected?.fork,
+				FORKED.fork,
+			);
+			if (outcome.collected?.inheritedBlob !== true)
+				problems.push(
+					`${where}: collection deleted the blob of the snapshot the fork inherits from its deleted parent`,
+				);
 			if (!(outcome.segments > 0))
 				problems.push(`${where}: the fork copied its parent's history instead of sharing it`);
 		}

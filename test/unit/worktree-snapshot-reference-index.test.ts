@@ -305,8 +305,8 @@ test("reopening a session store and run journal finds their index triggers and c
 
 	assert.deepEqual(
 		opens,
-		[4, 0],
-		"the first opens install the triggers of each of the three sources and the chunk cleanup (#4954), the second none",
+		[5, 0],
+		"the first opens install the triggers of each of the three sources, the chunk cleanup (#4954) and the guard of the blobs forks inherit (#6560), the second none",
 	);
 	assert.deepEqual(
 		(
@@ -320,6 +320,7 @@ test("reopening a session store and run journal finds their index triggers and c
 			["session_entries_snapshot_refs", "session_entries"],
 			["session_entries_snapshot_refs_delete", "session_entries"],
 			["snapshot_blobs_chunks_delete_all", "snapshot_blobs"],
+			["snapshot_blobs_fork_keep", "snapshot_blobs"],
 			["wf_events_snapshot_refs", "wf_events"],
 			["wf_events_snapshot_state", "wf_events"],
 			["wf_runs_snapshot_refs_delete", "wf_runs"],

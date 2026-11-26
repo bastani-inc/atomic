@@ -2,6 +2,10 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import * as blobStore from "../../worktree-snapshot/blob-store.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import {
+	ensureForkInheritedBlobGuard,
+	installForkInheritedBlobGuard,
+} from "../../worktree-snapshot/fork-blob-guard.ts";
+import {
 	type ForkLinkWrites,
 	forkLinkWrites,
 	legacyForkLinksTriggerName,
@@ -1158,6 +1162,16 @@ export class SqlSessionStore implements SessionStore {
 			SqlSessionSearchIndex.open(database, tables, options.prefix),
 			entryByteLengthOf(database),
 		]);
+		// Where forks share history, the database keeps every snapshot blob a fork inherits from a collection that does not
+		// know forks, as a process of an earlier release that an in-place update caught runs (#6560). Where the database has
+		// the guard, the catalog the open read says so, and nothing more is read.
+		if (shared)
+			await ensureForkInheritedBlobGuard(
+				database,
+				snapshotIndexTables(options.prefix),
+				forkTables.forkSegments,
+				storageMigrationTable(options.prefix),
+			);
 		// The append function `atomic storage migrate` creates, found by the catalog read the open made anyway (#6599). A
 		// facade or blob store loaded from an earlier release, as a process updated in place can hold, lacks what an
 		// append through it needs, and appends as before.
@@ -1590,6 +1604,13 @@ export class SqlSessionStore implements SessionStore {
 				const holders = await liveMarkers(older, live);
 				if (holders.length > 0) return { status: "deferred", holders };
 				await createSharedHistoryTables(tx, dialect, sessionForkTables(prefix));
+				// With the fork tables, so that no fork shares a history before the database keeps what it inherits.
+				await installForkInheritedBlobGuard(
+					tx,
+					dialect,
+					snapshotIndexTables(prefix),
+					sessionForkTables(prefix).forkSegments,
+				);
 				await statementBatch(
 					tx,
 					[

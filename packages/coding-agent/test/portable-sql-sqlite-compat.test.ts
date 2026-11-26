@@ -336,9 +336,13 @@ test("a journal's transaction creates the blob tables and indexes its tables, on
 	await createJournalTables(database);
 	await writeJournalRows(database, "before");
 	await database.transaction((transaction) => SqlSnapshotBlobStore.initialize(transaction, "", sqliteDialect));
-	// What a new database holds for the unprefixed journal, before any session store opens.
+	// What a new database holds for the unprefixed journal, before any session store opens: without its fork tables,
+	// nor the guard of the blobs forks inherit, which reads them (#6560).
 	const journalOwned = (GOLDEN.freshSchema as SqliteRow[]).filter(
-		(row) => !String(row.name).startsWith("team_") && !String(row.name).startsWith("session_"),
+		(row) =>
+			!String(row.name).startsWith("team_") &&
+			!String(row.name).startsWith("session_") &&
+			row.name !== "snapshot_blobs_fork_keep",
 	);
 	assert.deepEqual(JSON.parse(JSON.stringify(await schemaOf(database))), journalOwned);
 	const progress = await database.all("SELECT * FROM snapshot_index_sources ORDER BY source");

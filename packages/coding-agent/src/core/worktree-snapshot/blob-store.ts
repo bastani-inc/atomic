@@ -1,4 +1,5 @@
 import { storageSchemaCurrent, transactionFinisher } from "../storage/added-exports.js";
+import { noteStorageSchemaTables } from "../storage/added-exports-0-10-11.js";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -16,6 +17,7 @@ import { type StorageSchemaCatalog, schemaCatalogOf } from "../storage/schema-ca
 import { statementBatch } from "../storage/statement-batches.js";
 import type { BatchWrite } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
+import { forkInheritedBlobGuard, forkInheritedBlobGuardName } from "./fork-blob-guard.ts";
 import {
 	entriesIndexComplete,
 	forkSegmentsTable,
@@ -1910,7 +1912,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		// Whether this open created the tables on PostgreSQL, and with them the links indexes of {@link hotSessionLinks}.
 		let linksHot = false;
 		if (!current) {
-			await applyStorageMigrations(
+			const migrated = await applyStorageMigrations(
 				database,
 				SNAPSHOT_BLOB_DOMAIN,
 				[
@@ -1919,17 +1921,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 						up: async (transaction, dialect) => {
 							// On PostgreSQL the tables come with the links index of {@link hotSessionLinks}, without one an
 							// earlier build made, recorded in the ledger in the same request: a new database takes no extra
-							// round trip for it.
+							// round trip for it. Where forks share history, as a new database's do from its first open, the
+							// guard that keeps what they inherit comes with them in that request too (fork-blob-guard.ts).
 							const hot = dialect.name === "postgres";
-							await createSnapshotIndexTables(
-								transaction,
-								t,
-								prefix,
-								dialect,
-								hot
+							await createSnapshotIndexTables(transaction, t, prefix, dialect, [
+								...(hot
 									? [`DROP INDEX IF EXISTS ${t.sessionLinks}_leaves`, hotSessionLinksRecord(prefix, dialect)]
-									: [],
-							);
+									: []),
+								...((await shared) ? [forkInheritedBlobGuard(dialect, t, segments).replace(/;\s*$/, "")] : []),
+							]);
 							linksHot = hot;
 						},
 					},
@@ -1966,6 +1966,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				],
 				{ table: storageMigrationTable(prefix) },
 			);
+			// The session store's open, which asks the catalog for the guard next, finds it without reading the schema again.
+			if (migrated.applied.includes(1) && (await shared))
+				noteStorageSchemaTables(database, [forkInheritedBlobGuardName(t.blobs)]);
 		}
 		if (!linksHot) await ensureHotSessionLinks(database, t, prefix);
 		const store = new SqlSnapshotBlobStore(

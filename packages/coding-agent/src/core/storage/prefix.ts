@@ -96,6 +96,8 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"snapshot_blobs_age",
 	"snapshot_blobs_chunks_delete_all",
 	"snapshot_blobs_chunks_delete_all_fn",
+	"snapshot_blobs_fork_keep",
+	"snapshot_blobs_fork_keep_fn",
 	"snapshot_blobs_inline_size",
 	"snapshot_carried_refs",
 	"snapshot_carried_refs_hash",
