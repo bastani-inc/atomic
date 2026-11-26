@@ -16,10 +16,10 @@ import {
 	OUTBOX_EXPIRED_REASON,
 	OUTBOX_TARGET_MAX_BYTES,
 	OUTBOX_TARGET_MAX_ROWS,
-	type ClaimedOutboxRow,
 	type InvalidStateInput,
 	type IntercomBrokerStateOptions,
 	type OutboxClaim,
+	type OutboxClaimResult,
 	type OutboxClaimWriteRejection,
 	type OutboxDeliveredResult,
 	type OutboxEnqueueRequest,
@@ -256,8 +256,6 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 			limit,
 		);
 	};
-	const isLive = (record: OutboxRecord, staleAfterMs: number): boolean =>
-		record.claim_age !== null && Number(record.claim_age) <= staleAfterMs;
 
 	/**
 	 * Applies `assignments` (with their parameters) to the row only while `claim` is its current claim: one UPDATE whose
@@ -537,61 +535,105 @@ async function openOutboxStoreInCatalog(options: IntercomBrokerStateOptions): Pr
 		async claim(request) {
 			if (request.claimantId.length === 0) return invalid("empty-claimant-id");
 			if (request.targetIdentity.length === 0) return invalid("empty-target-identity");
-			// Fast read-only index check so empty scans (such as fan-out wake-up polls across idle sessions) never take a
-			// SQLite write lock. Linearizable: if a row commits after this snapshot, its enqueue writes a new wake-up hint.
-			const pending = await database.get(
-				`SELECT 1 AS present FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} LIMIT 1`,
-				request.targetIdentity,
-			);
-			if (pending === undefined) return { status: "claimed", rows: [] } as const;
-			// The recipient's rows are locked in sequence order, as every write of several rows locks them, and read in
-			// their newest versions: a renewal or settlement of one waits for this claim, or this claim for it, so what it
-			// decides on stays true until it commits (#6560). It does not skip a locked row (SKIP LOCKED): an earlier row
-			// passed over could be handed out after a later one, and another claimant's live claim would go unseen.
-			const locking: SqliteStatement = {
-				sql: `SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}
-					ORDER BY sequence${lockClause("update")}`,
-				params: [request.targetIdentity],
-			};
-			return database.transaction(async (executor) => {
-				const records = await executor.all<OutboxRecord>(locking.sql, ...locking.params);
-				const other = records.find(
-					(record) =>
-						record.state === "claimed" &&
-						record.claimant_id !== request.claimantId &&
-						isLive(record, request.staleAfterMs),
+			const { claimantId, targetIdentity, staleAfterMs } = request;
+			// Each row's token: this claim's, with the row's sequence, so every claimed row has a token of its own.
+			const token = randomUUID();
+			const claimed = (records: readonly OutboxRecord[]): OutboxClaimResult => ({
+				status: "claimed",
+				rows: [...records]
+					.sort((first, second) => Number(first.sequence) - Number(second.sequence))
+					.map((record) => {
+						const row = toRow(record);
+						const claim = { messageId: row.messageId, claimantId, token: String(record.claim_token), attempt: row.claimAttempts };
+						return { row, claim };
+					}),
+			});
+			const claiming = `state = 'claimed', claim_attempts = claim_attempts + 1, claimant_id = ?,
+				claim_token = ? || ':' || CAST(sequence AS TEXT), claim_renewed_at = ${nowMs}, saving_at = NULL`;
+			if (dialect === "postgres") {
+				// One statement, sent with the transaction's start and its commit: one round trip whether or not there is anything
+				// to claim (#6560). It locks the recipient's undelivered rows in sequence order, as every write of several rows
+				// locks them, and reads them in their newest versions, so a renewal or settlement of one waits for this claim, or
+				// this claim for it. It does not skip a locked row (SKIP LOCKED): an earlier row passed over could be handed out
+				// after a later one, and another claimant's live claim would go unseen. Another claimant's live claim holds
+				// every row; otherwise each row not live is claimed, and the claimant's own live claims stay in flight.
+				const statement: SqliteStatement = {
+					sql: `WITH locked AS MATERIALIZED (
+						SELECT message_id, sequence, state, claimant_id, claim_renewed_at FROM ${table}
+						WHERE target_identity = ? AND ${UNDELIVERED}
+						ORDER BY sequence${lockClause("update")}
+					), live AS MATERIALIZED (
+						SELECT message_id, sequence, claimant_id FROM locked
+						WHERE state = 'claimed' AND claim_renewed_at IS NOT NULL AND ${ageSince("claim_renewed_at")} <= ?
+					), holder AS MATERIALIZED (
+						SELECT claimant_id FROM live WHERE claimant_id <> ? ORDER BY sequence LIMIT 1
+					), claimed AS (
+						UPDATE ${table} SET ${claiming}
+						WHERE message_id IN (SELECT message_id FROM locked)
+							AND message_id NOT IN (SELECT message_id FROM live)
+							AND NOT EXISTS (SELECT 1 FROM holder)
+						RETURNING ${columns}
+					)
+					SELECT claimed.*, (SELECT claimant_id FROM holder) AS holder
+					FROM (SELECT 1) AS answer LEFT JOIN claimed ON TRUE`,
+					params: [targetIdentity, staleAfterMs, claimantId, claimantId, token],
+				};
+				return database.transaction(
+					async (executor) => {
+						const records = await executor.all<OutboxRecord & { readonly holder: string | null }>(
+							statement.sql,
+							...statement.params,
+						);
+						const holder = records[0]?.holder ?? null;
+						if (holder !== null) return { status: "held", claimantId: holder } as const;
+						return claimed(records.filter((record) => record.message_id !== null));
+					},
+					{ ...fenced, leading: [statement], leadingOnly: true },
 				);
-				if (other?.claimant_id) return { status: "held", claimantId: other.claimant_id } as const;
-				const rows: ClaimedOutboxRow[] = [];
-				const claims: SqliteStatement[] = [];
-				for (const record of records) {
-					if (record.state === "claimed" && isLive(record, request.staleAfterMs)) continue;
-					const token = randomUUID();
-					claims.push({
-						sql: `UPDATE ${table} SET state = 'claimed', claim_attempts = claim_attempts + 1, claimant_id = ?,
-							claim_token = ?, claim_renewed_at = ${nowMs}, saving_at = NULL
-						WHERE message_id = ?`,
-						params: [request.claimantId, token, record.message_id],
-					});
-					// The row as the update leaves it: this transaction holds its lock (#6560).
-					const row = toRow({
-						...record,
-						state: "claimed",
-						claim_attempts: Number(record.claim_attempts) + 1,
-						claimant_id: request.claimantId,
-						claim_token: token,
-						claim_age: 0,
-						saving_age: null,
-					});
-					rows.push({
-						row,
-						claim: { messageId: row.messageId, claimantId: request.claimantId, token, attempt: row.claimAttempts },
-					});
-				}
-				// Sent with the commit: one round trip for the claim's reads, one for its writes (#6560).
-				await runLast(executor, ...claims);
-				return { status: "claimed", rows } as const;
-			}, { ...fenced, leading: [locking] });
+			}
+			// SQLite and libSQL: a write statement takes the database's write lock even when it changes nothing, so a read
+			// decides first, without it, whether there is anything to claim: empty scans (such as fan-out wake-up polls across
+			// idle sessions) cost one read. Linearizable: if a row commits after this snapshot, its enqueue writes a new
+			// wake-up hint. The same read answers a claim another claimant holds, or one of only the claimant's own rows in
+			// flight. Otherwise one statement claims the rows, deciding again on what it changes (#6560).
+			const live = (alias: string) =>
+				`${alias}.state = 'claimed' AND ${alias}.claim_renewed_at IS NOT NULL
+				AND ${ageSince(`${alias}.claim_renewed_at`)} <= ?`;
+			const heldBy = `SELECT live.claimant_id FROM ${table} live
+				WHERE live.target_identity = ? AND ${live("live")} AND live.claimant_id <> ?`;
+			const probe = () =>
+				database.get<{ holder: string | null; claimable: SqliteValue }>(
+					`SELECT (${heldBy} ORDER BY live.sequence LIMIT 1) AS holder, EXISTS (
+						SELECT 1 FROM ${table} pending WHERE pending.target_identity = ?
+						AND pending.${UNDELIVERED} AND NOT (${live("pending")})
+					) AS claimable`,
+					targetIdentity,
+					staleAfterMs,
+					claimantId,
+					targetIdentity,
+					staleAfterMs,
+				);
+			const found = await probe();
+			if (found !== undefined && found.holder !== null) return { status: "held", claimantId: found.holder } as const;
+			if (Number(found?.claimable ?? 0) === 0) return { status: "claimed", rows: [] } as const;
+			const records = await database.all<OutboxRecord>(
+				`UPDATE ${table} SET ${claiming}
+				WHERE target_identity = ? AND ${UNDELIVERED} AND NOT (${live(table)}) AND NOT EXISTS (${heldBy})
+				RETURNING ${columns}`,
+				claimantId,
+				token,
+				targetIdentity,
+				staleAfterMs,
+				targetIdentity,
+				staleAfterMs,
+				claimantId,
+			);
+			if (records.length > 0) return claimed(records);
+			// Another claimant took the rows since the read, or they were settled: only then is the holder read again.
+			const again = await probe();
+			return again !== undefined && again.holder !== null
+				? ({ status: "held", claimantId: again.holder } as const)
+				: ({ status: "claimed", rows: [] } as const);
 		},
 
 		renewClaim(claim) {

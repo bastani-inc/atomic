@@ -57,6 +57,13 @@ export interface SqliteTransactionOptions {
 	 * fenced path's one guarded write: it never runs unused. Other drivers ignore it.
 	 */
 	readonly leading?: readonly SqliteStatement[];
+	/**
+	 * @internal The callback makes the `leading` calls, all of them in order, and no other. A pipelined driver then sends
+	 * the commit right behind them, so the whole transaction costs one round trip: a call the callback makes after them
+	 * fails without being sent. When a leading statement fails, the transaction rolls back and the callback's call of
+	 * that statement fails. Other drivers ignore it.
+	 */
+	readonly leadingOnly?: boolean;
 }
 
 /** How one batch waits for a busy write lock, and whether it goes ahead of the database's queued calls. */
