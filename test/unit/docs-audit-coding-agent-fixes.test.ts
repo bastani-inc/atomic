@@ -666,6 +666,10 @@ describe("loadSkillsAsync parity with loadSkills", () => {
 	});
 });
 
+const THEME_WATCH_TIMEOUT_MS = 10_000;
+const THEME_WATCH_POLL_INTERVAL_MS = 50;
+const THEME_WATCH_INITIAL_REWRITE_DELAY_MS = 400;
+
 describe("theme watcher sourcePath, THEME_KEY_OLD, and hexColorAnsi color mode", () => {
 	test("hot-reloads a registered theme outside ~/.atomic/agent/themes with a filename differing from its name", async () => {
 		const root = createTempDir("atomic-theme-watch-");
@@ -688,15 +692,107 @@ describe("theme watcher sourcePath, THEME_KEY_OLD, and hexColorAnsi color mode",
 		const watching = vi.spyOn(fsWatch, "watchWithErrorHandlerAsync");
 		assert.deepEqual(setTheme("project-custom", true), { success: true });
 		assert.equal(theme.getFgAnsi("accent"), "\x1b[38;2;17;34;51m");
-		await watching.mock.results.at(-1)?.value;
+		assert.equal(watching.mock.calls.length, 1);
+		assert.equal(watching.mock.calls[0]?.[0], projectThemesDir);
+		const watcher = await watching.mock.results.at(-1)?.value;
+		assert.ok(watcher);
 
-		const reloaded = new Promise<void>((resolve) => onThemeChange(resolve));
+		const expectedAccentAnsi = "\x1b[38;2;68;85;102m";
+		const updatedThemeJson = {
+			...initialThemeJson,
+			colors: { ...initialThemeJson.colors, accent: "#445566" },
+		};
+		let reloadedUpdatedAccent = false;
+		onThemeChange(() => {
+			if (theme.getFgAnsi("accent") === expectedAccentAnsi) {
+				reloadedUpdatedAccent = true;
+			}
+		});
+
+		const writeUpdatedTheme = (attempt: number) => {
+			writeTextSync(
+				customPath,
+				attempt % 2 === 0 ? JSON.stringify(updatedThemeJson) : JSON.stringify(updatedThemeJson, null, 2),
+			);
+		};
+		let writeAttempt = 0;
+		let nextRewriteDelayMs = THEME_WATCH_INITIAL_REWRITE_DELAY_MS;
+		let lastWriteAt = performance.now();
+		writeUpdatedTheme(writeAttempt++);
+
+		// macOS FSEvents registers its stream cursor asynchronously after fs.watch() returns, so a
+		// single write right after startup can be missed. Re-write with exponential backoff strictly
+		// longer than the 100 ms reload debounce so retries cannot starve the debounce timer.
+		await vi.waitFor(
+			() => {
+				if (reloadedUpdatedAccent && theme.getFgAnsi("accent") === expectedAccentAnsi) {
+					return;
+				}
+				const now = performance.now();
+				if (now - lastWriteAt >= nextRewriteDelayMs) {
+					writeUpdatedTheme(writeAttempt++);
+					lastWriteAt = now;
+					nextRewriteDelayMs *= 2;
+				}
+				assert.equal(
+					reloadedUpdatedAccent,
+					true,
+					`expected theme hot-reload after ${writeAttempt} write(s), accent=${JSON.stringify(theme.getFgAnsi("accent"))}`,
+				);
+			},
+			{ timeout: THEME_WATCH_TIMEOUT_MS, interval: THEME_WATCH_POLL_INTERVAL_MS },
+		);
+		assert.equal(theme.getFgAnsi("accent"), expectedAccentAnsi);
+	});
+
+	test("ignores stale theme watcher events after stopThemeWatcher()", async () => {
+		const root = createTempDir("atomic-theme-watch-stale-");
+		const projectThemesDir = join(root, "project-themes");
+		makeDirectorySync(projectThemesDir, { recursive: true });
+		const darkJson = JSON.parse(readTextSync(join(getThemesDir(), "dark.json"), "utf-8")) as {
+			name: string;
+			colors: Record<string, string | number>;
+		};
+		const customPath = join(projectThemesDir, "stale-guard.json");
+		const initialThemeJson = {
+			...darkJson,
+			name: "project-stale-guard",
+			colors: { ...darkJson.colors, accent: "#112233" },
+		};
+		writeTextSync(customPath, JSON.stringify(initialThemeJson));
+
+		const loaded = loadThemeFromPath(customPath, "truecolor");
+		setRegisteredThemes([loaded]);
+
+		let capturedListener: ((eventType: "rename" | "change", filename: string | null) => void) | undefined;
+		vi.spyOn(fsWatch, "watchWithErrorHandlerAsync").mockImplementation(async (_watchPath, listener) => {
+			capturedListener = listener;
+			return { close() {} } as never;
+		});
+
+		assert.deepEqual(setTheme("project-stale-guard", true), { success: true });
+		assert.ok(capturedListener);
+
+		let notifications = 0;
+		onThemeChange(() => {
+			notifications += 1;
+		});
 		writeTextSync(
 			customPath,
 			JSON.stringify({ ...initialThemeJson, colors: { ...initialThemeJson.colors, accent: "#445566" } }),
 		);
-		await vi.waitFor(() => reloaded, { timeout: 5_000 });
-		assert.equal(theme.getFgAnsi("accent"), "\x1b[38;2;68;85;102m");
+
+		vi.useFakeTimers();
+		try {
+			stopThemeWatcher();
+			capturedListener("change", "stale-guard.json");
+			assert.equal(vi.getTimerCount(), 0);
+			await vi.advanceTimersByTimeAsync(200);
+			assert.equal(notifications, 0);
+			assert.equal(theme.getFgAnsi("accent"), "\x1b[38;2;17;34;51m");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test("populates legacy @mariozechner/pi-coding-agent:theme symbol alongside @bastani/atomic:theme", () => {

@@ -52,6 +52,8 @@ import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxClaim,
+	type OutboxReleaseClaimResult,
+	type OutboxRenewClaimResult,
 	type OutboxEnqueueRequest,
 	type OutboxEnqueueResult,
 	type OutboxRow,
@@ -62,6 +64,7 @@ import {
 	type ReleasedAskRecord,
 	type RestoringReservation,
 	type RestoringReservationLease,
+	type RestoringReservationRenewResult,
 	reservationKeyFor,
 	returnAddressOf,
 	type SentMessageReservation,
@@ -3072,7 +3075,7 @@ export class MultiNodeRouter {
 			// this registration held itself is given back.
 			if (alias !== undefined) await this.releaseOwner(alias);
 			if (entry.fenced === true) {
-				for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
+				await this.releaseClaims(claims.map((inflight) => inflight.claim));
 				const stillHere = [...this.presence.keys()].some((other) => deliveryTargetIdentity(other) === identity);
 				if (entry.lease !== undefined && !stillHere) {
 					await this.state.leases.release(entry.lease);
@@ -3113,7 +3116,7 @@ export class MultiNodeRouter {
 			// a reply never finds it offline with only its pending asks. A failed write loses them, as a lost local route
 			// does: the subagent then wakes at its reply deadline.
 			await keepReleasedAsks(this.state, session).catch((error: Error) => this.report(error));
-			for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
+			await this.releaseClaims(claims.map((inflight) => inflight.claim));
 			// #4842: an ask that ends with its recipient fails for its asker on any node.
 			await (away ? Promise.resolve() : this.state.pendingAsks.pruneSender(sessionId).then(() => undefined))
 				.then(async () => {
@@ -5832,10 +5835,28 @@ export class MultiNodeRouter {
 		return done;
 	}
 
+	/**
+	 * Scans every recipient this broker hosts. With several, one read first finds those with undelivered rows, and only
+	 * they are claimed for: a backup poll or resync across idle recipients costs one statement, not a claim each (#6560).
+	 * A row queued after the read is claimed when its send's wake-up hint arrives, or at the next scan, as one queued
+	 * right after a claim's own read is. When the read fails, every recipient is claimed for, as without it.
+	 */
 	private scanAll(): void {
-		for (const identity of new Set([...this.host.sessions.values()].map(deliveryTargetIdentity))) {
-			this.scanIdentity(identity);
+		const identities = [...new Set([...this.host.sessions.values()].map(deliveryTargetIdentity))];
+		const outbox = this.state.outbox;
+		if (identities.length < 2 || outbox.withUndelivered === undefined) {
+			for (const identity of identities) this.scanIdentity(identity);
+			return;
 		}
+		void outbox.withUndelivered(identities).then(
+			(found) => {
+				for (const identity of identities) if (found.has(identity)) this.scanIdentity(identity);
+			},
+			(error: unknown) => {
+				this.report(error);
+				for (const identity of identities) this.scanIdentity(identity);
+			},
+		);
 	}
 
 	private localSessionFor(identity: string): BrokerConnectedSession | undefined {
@@ -5870,10 +5891,13 @@ export class MultiNodeRouter {
 				// The recipient left or was replaced while this batch was being delivered: release this row and every
 				// later row in the batch unwritten so a reconnected session never receives a later row ahead of an earlier
 				// released row.
-				for (let remaining = index; remaining < claimed.rows.length; remaining++) {
-					const pending = claimed.rows[remaining]!;
-					const released = await this.state.outbox.releaseClaim(pending.claim, { unwritten: true });
-					if (released.status === "released") await this.wakeOrigin(pending.row);
+				const tail = claimed.rows.slice(index);
+				const released = await this.releaseClaims(
+					tail.map((pending) => pending.claim),
+					{ unwritten: true },
+				);
+				for (let remaining = 0; remaining < tail.length; remaining++) {
+					if (released[remaining]?.status === "released") await this.wakeOrigin(tail[remaining]!.row);
 				}
 				if (this.localSessionFor(identity) !== undefined) void this.scanIdentity(identity);
 				return;
@@ -6021,7 +6045,12 @@ export class MultiNodeRouter {
 						});
 					}
 				}
-				const delivered = await this.state.outbox.markDelivered(inflight.claim);
+				// Replies clear their shared pending-ask route after `markDelivered` commits; keeping `wakeOrigin` after
+				// `clearReply` prevents the replier from hearing `delivered` and sending a second reply before the route
+				// is cleared (#6715). Non-reply deliveries write the outcome hint atomically inside the settlement.
+				const delivered = await this.state.outbox.markDelivered(inflight.claim, {
+					wakeOrigin: frame.message.replyTo === undefined,
+				});
 				this.storeAnswered();
 				marked = true;
 				this.firstHandedOverAt.delete(messageId);
@@ -6046,7 +6075,7 @@ export class MultiNodeRouter {
 					inflight.handedOverAt,
 				);
 				finishOpening?.();
-				await this.wakeOrigin(inflight.row);
+				if (delivered.woke !== inflight.row.originBrokerId) await this.wakeOrigin(inflight.row);
 			} finally {
 				finishOpening?.();
 			}
@@ -6072,6 +6101,20 @@ export class MultiNodeRouter {
 			if (oldest === undefined) break;
 			this.firstHandedOverAt.delete(oldest);
 		}
+	}
+
+	private async releaseClaims(
+		claims: readonly OutboxClaim[],
+		options?: { readonly unwritten?: boolean },
+	): Promise<OutboxReleaseClaimResult[]> {
+		if (claims.length === 0) return [];
+		const outbox = this.state.outbox;
+		if (claims.length > 1 && outbox.releaseClaims !== undefined) {
+			return outbox.releaseClaims(claims, options);
+		}
+		const results: OutboxReleaseClaimResult[] = [];
+		for (const claim of claims) results.push(await outbox.releaseClaim(claim, options));
+		return results;
 	}
 
 	private async wakeOrigin(row: OutboxRow): Promise<void> {
@@ -6466,16 +6509,34 @@ export class MultiNodeRouter {
 				}
 			});
 		}
-		for (const inflight of [...this.inflight.values()]) {
-			const renewed = await this.state.outbox.renewClaim(inflight.claim);
+		const inflights = [...this.inflight.values()];
+		const dropUnrenewed = (inflight: Inflight, renewed: OutboxRenewClaimResult) => {
 			if (renewed.status !== "renewed" && this.inflight.get(inflight.row.messageId) === inflight) {
 				this.inflight.delete(inflight.row.messageId);
 				inflight.finishOpening?.();
 			}
-		}
-		for (const [key, mirror] of this.mirrored) {
-			const renewed = await this.state.reservations.renew(mirror.lease);
+		};
+		// #6560: every claim in flight renewed in one statement, not a transaction each.
+		const outbox = this.state.outbox;
+		if (inflights.length > 1 && outbox.renewClaims !== undefined) {
+			const renewed = await outbox.renewClaims(inflights.map((inflight) => inflight.claim));
+			inflights.forEach((inflight, index) => dropUnrenewed(inflight, renewed[index]!));
+		} else for (const inflight of inflights) dropUnrenewed(inflight, await outbox.renewClaim(inflight.claim));
+		const mirrors = [...this.mirrored];
+		const dropUnrenewedMirror = (
+			key: string,
+			mirror: MirroredReservation,
+			renewed: RestoringReservationRenewResult,
+		) => {
 			if (renewed.status !== "renewed" && this.mirrored.get(key) === mirror) this.mirrored.delete(key);
+		};
+		const reservations = this.state.reservations;
+		if (mirrors.length > 0 && reservations.renewMany !== undefined) {
+			const renewed = await reservations.renewMany(mirrors.map(([, mirror]) => mirror.lease));
+			mirrors.forEach(([key, mirror], index) => dropUnrenewedMirror(key, mirror, renewed[index]!));
+		} else {
+			for (const [key, mirror] of mirrors)
+				dropUnrenewedMirror(key, mirror, await reservations.renew(mirror.lease));
 		}
 		// #5352: a reservation whose write failed or did not answer is written again, in order behind its key's steps.
 		for (const [key, pending] of this.unpublished) {
@@ -6670,7 +6731,7 @@ export class MultiNodeRouter {
 		this.holds.clear();
 		await Promise.all([...this.serials.values()]);
 		try {
-			for (const inflight of this.inflight.values()) await this.state.outbox.releaseClaim(inflight.claim);
+			await this.releaseClaims([...this.inflight.values()].map((inflight) => inflight.claim));
 			for (const entry of this.presence.values()) {
 				if (entry.lease !== undefined) await this.state.leases.release(entry.lease);
 			}

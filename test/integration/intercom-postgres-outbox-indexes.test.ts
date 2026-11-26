@@ -121,7 +121,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom outbox indexes on Po
 				);
 				assert.equal((await state.outbox.renewClaim(first)).status, "renewed");
 				assert.equal((await state.outbox.reportSaving!(first)).status, "renewed");
-				assert.equal((await state.outbox.markDelivered(first)).status, "delivered");
+				assert.equal((await state.outbox.markDelivered(first, { wakeOrigin: true })).status, "delivered");
 				assert.equal((await state.outbox.markFailed(second, "refused")).status, "failed");
 				assert.equal((await state.outbox.releaseClaim(third)).status, "released");
 				assert.equal(await state.outbox.releaseClaimsOf("broker-b"), 1);

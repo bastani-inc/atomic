@@ -20,6 +20,7 @@ const {
 	clockSkewMs = 0,
 	blobBytes = 0,
 	fillDatabase = false,
+	mode = "plain",
 } = options;
 
 if (clockSkewMs !== 0) {
@@ -41,6 +42,9 @@ const { getWriterQueueStats, openNodeSqliteDatabase } = await jiti.import(
 const { serializeStorageError } = await jiti.import(
 	fileURLToPath(new URL("../../packages/coding-agent/src/core/storage/errors.ts", import.meta.url)),
 );
+const { transactionFinisher } = await jiti.import(
+	fileURLToPath(new URL("../../packages/coding-agent/src/core/storage/statement-sequence.ts", import.meta.url)),
+);
 const database = await openNodeSqliteDatabase(path, lockWaitMs === undefined ? {} : { lockWaitMs });
 if (fillDatabase) {
 	const { page_count } = await database.get("PRAGMA page_count");
@@ -56,18 +60,40 @@ async function lane() {
 	while (next < transactions) {
 		const seq = next++;
 		try {
-			await database.transaction(async (tx) => {
-				await tx.run(
-					"INSERT INTO writes(writer, seq, payload) VALUES (?, ?, ?)",
-					label,
-					seq,
-					blobBytes > 0 ? new Uint8Array(blobBytes) : null,
+			const payload = blobBytes > 0 ? new Uint8Array(blobBytes) : null;
+			const insert = {
+				sql: "INSERT INTO writes(writer, seq, payload) VALUES (?, ?, ?)",
+				params: [label, seq, payload],
+			};
+			if (mode === "leadingOnly") {
+				await database.transaction(
+					async (tx) => {
+						await tx.run(insert.sql, ...insert.params);
+					},
+					{ leading: [insert], leadingOnly: true },
 				);
-				const until = performance.now() + busyMs;
-				while (performance.now() < until) {
-					// Work done while holding the lock.
-				}
-			});
+			} else if (mode === "finisher") {
+				const read = { sql: "SELECT count(*) AS n FROM writes WHERE writer = ?", params: [label] };
+				await database.transaction(
+					async (tx) => {
+						await tx.get(read.sql, ...read.params);
+						const until = performance.now() + busyMs;
+						while (performance.now() < until) {
+							// Work done while holding the lock.
+						}
+						if (transactionFinisher(tx)?.([insert]) !== true) await tx.run(insert.sql, ...insert.params);
+					},
+					{ leading: [read] },
+				);
+			} else {
+				await database.transaction(async (tx) => {
+					await tx.run(insert.sql, ...insert.params);
+					const until = performance.now() + busyMs;
+					while (performance.now() < until) {
+						// Work done while holding the lock.
+					}
+				});
+			}
 			committed += 1;
 		} catch (error) {
 			errors.push(serializeStorageError(error));

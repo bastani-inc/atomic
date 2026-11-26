@@ -28,6 +28,7 @@ export interface WriterOptions {
 	readonly clockSkewMs?: number;
 	readonly blobBytes?: number;
 	readonly fillDatabase?: boolean;
+	readonly mode?: "plain" | "leadingOnly" | "finisher";
 }
 
 export interface WriterReport {
