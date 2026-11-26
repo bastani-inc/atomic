@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { countRows, type FakeLibsqlFault, useFakeLibsqlServers } from "../helpers/fake-libsql-server.js";
+import { sleep } from "../helpers/runtime.js";
 
 const { server, open } = useFakeLibsqlServers();
 
@@ -48,32 +49,66 @@ test("a batch that the server refused for want of a connection runs again and wr
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
 });
 
-/** How long a reused stream may sit idle before the adapter closes it (the adapter's `STREAM_REUSE_IDLE_MS`). */
-const STREAM_REUSE_IDLE_MS = 5_000;
-/** Headroom on a loaded machine for the timer to fire and the close to reach the server. */
-const CLOSE_HEADROOM_MS = 5_000;
+/** Longer than the adapter's `STREAM_REUSE_IDLE_MS` (5 s), after which an idle reused stream is no longer used. */
+const IDLE_PAUSE_MS = 6_000;
+/** How many transactions run after the pause. */
+const TRANSACTIONS = 5;
 
-test("a reused stream left idle is closed once it has sat idle the reuse bound, before any other statement comes", async () => {
+/** The pipeline requests that only close a stream another request opened. */
+function closes(fake: Awaited<ReturnType<typeof server>>) {
+	return fake.pipelines.filter((pipeline) => pipeline.continuesStream && pipeline.sql.length === 0).length;
+}
+
+test(
+	"a database's idle reused stream costs no request while the server has connections to spare",
+	async () => {
+		const fake = await server();
+		const database = await open(fake.url);
+		await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+		await database.run("INSERT INTO events VALUES (0)");
+		const requests = fake.pipelines.length;
+		const closed = closes(fake);
+		const connections = fake.connections;
+		await sleep(IDLE_PAUSE_MS);
+		// Nothing is sent for the idle stream during the pause: no close on a timer.
+		assert.equal(fake.pipelines.length, requests);
+		for (let n = 1; n <= TRANSACTIONS; n++)
+			await database.transaction(async (tx) => {
+				await tx.run("INSERT INTO events VALUES (?)", n);
+			});
+		const sent = fake.pipelines.slice(requests);
+		// Each transaction is one request with its BEGIN and its statement, on a new stream, and one with its COMMIT.
+		assert.equal(sent.length, 2 * TRANSACTIONS);
+		assert.equal(sent.filter((pipeline) => !pipeline.continuesStream).length, TRANSACTIONS);
+		assert.equal(closes(fake), closed, "no stream was closed on its own");
+		// The runtime let its idle connections go during the pause: the transactions open 2 new ones, as they did when
+		// idle streams were only closed at their database's next statement.
+		assert.equal(fake.connections - connections, 2);
+		assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), TRANSACTIONS + 1);
+	},
+	IDLE_PAUSE_MS + 20_000,
+);
+
+test("a server out of connections gets back every idle reused stream this process keeps on it, and only on it", async () => {
 	const fake = await server();
-	const database = await open(fake.url);
-	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
-	await database.run("INSERT INTO events VALUES (1)");
-	const closes = () =>
-		fake.pipelines.filter((pipeline) => pipeline.continuesStream && pipeline.sql.length === 0).length;
-	const before = closes();
-	const idleSince = performance.now();
-	// The stream holds one of the server's connections for as long as it is open: it is closed without waiting for a
-	// next statement, which may never come.
-	await vi.waitFor(() => assert.equal(closes(), before + 1, "the idle stream was closed"), {
-		timeout: STREAM_REUSE_IDLE_MS + CLOSE_HEADROOM_MS,
-		interval: 100,
+	const other = await server();
+	const first = await open(fake.url);
+	const second = await open(fake.url);
+	const elsewhere = await open(other.url);
+	await first.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	await elsewhere.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	for (const database of [first, second, elsewhere]) await database.get("SELECT COUNT(*) AS count FROM events");
+	const closed = closes(fake);
+	const closedElsewhere = closes(other);
+	fake.fail(NO_CONNECTION);
+	await second.transaction(async (tx) => {
+		await tx.run("INSERT INTO events VALUES (1)");
 	});
-	assert.ok(
-		performance.now() - idleSince >= STREAM_REUSE_IDLE_MS - 100,
-		"it was closed only once the reuse bound passed",
-	);
-	await database.run("INSERT INTO events VALUES (2)");
-	assert.equal(fake.pipelines.at(-1)?.continuesStream, false, "the next statement opened a new stream");
-	assert.equal(fake.expiredStatements, 0, "no statement met an expired stream");
-	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
+	// The two idle streams on the server that refused, each holding one of its connections, were closed.
+	await vi.waitFor(() => assert.equal(closes(fake), closed + 2));
+	assert.equal(closes(other), closedElsewhere, "the stream on the other server stayed open");
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+	// A database whose stream was closed opens a new one for its next statement.
+	await first.get("SELECT COUNT(*) AS count FROM events");
+	assert.equal(fake.pipelines.at(-1)?.continuesStream, false);
 });

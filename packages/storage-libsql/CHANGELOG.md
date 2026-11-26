@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- On a libSQL server, a database's idle stream is no longer closed after 5 seconds without a statement. It stays open as it did before 0.10.11-alpha.2, and is closed only when the server answers that it has no connection left: then every idle stream this process keeps on that server is closed at once, to give the server its connections back. A busy server's refusal is still sent again, so writes from many agents at once still don't fail, and a burst of writes after a pause no longer sends 100 closes and opens 100 new connections in the middle of it ([#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+
 ## [0.10.11-alpha.2] - 2026-11-26
 
 ### Changed

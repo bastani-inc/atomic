@@ -405,13 +405,14 @@ class AbandonedStreams {
  * `fetch` that adds `headers` to every request the libSQL HTTP client sends, sends the closes `abandoned` keeps ahead of
  * it (a write waits for them), abandons a request after `REQUEST_TIMEOUT_MS`, wait included, and hands a stream's close
  * that failed to `abandoned` for resending. With `kept`, requests go over its connections instead of the runtime's
- * pool.
+ * pool. `refused` runs when the server answers HTTP 429, that it could not open a connection for the request.
  * @param {[string, string][]} headers
  * @param {AbandonedStreams} abandoned
- * @param {KeptConnections} [kept]
+ * @param {KeptConnections | undefined} kept
+ * @param {() => void} refused
  * @returns {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>}
  */
-function fetchWith(headers, abandoned, kept) {
+function fetchWith(headers, abandoned, kept, refused) {
 	return async (input, init) => {
 		const request = new Request(input, init);
 		for (const [name, value] of headers) request.headers.set(name, value);
@@ -425,7 +426,9 @@ function fetchWith(headers, abandoned, kept) {
 			else abandoned.start();
 		}
 		try {
-			return await (kept === undefined ? fetch(request, { signal }) : kept.fetch(request, signal));
+			const response = await (kept === undefined ? fetch(request, { signal }) : kept.fetch(request, signal));
+			if (response.status === 429) refused();
+			return response;
 		} catch (error) {
 			await abandoned.failed(copy).catch(() => {});
 			throw error;
@@ -567,11 +570,11 @@ function hranaCode(hrana, error) {
  * One Hrana stream that statements outside a transaction take in turn (#5151). sqld loads the database's schema for
  * every stream it opens, so a request that opens, uses and closes a stream costs time that grows with the number of
  * tables; a stream kept open loads it once. A stream that failed, sat idle `STREAM_REUSE_IDLE_MS` or lived
- * `STREAM_REUSE_MAX_AGE_MS` is closed and a new one opened. An idle stream is closed as soon as it has sat idle that
- * long, not at the next statement: an open stream holds one of the server's connections, of which sqld has 128 by
- * default, so a process with many databases on one server would otherwise keep one idle per database until the server
- * expired it, leaving too few for their transactions. A statement is sent again only when the server refused its
- * request without running it: it found the stream expired, or refused its baton (`REFUSED_BATON`). A request whose
+ * `STREAM_REUSE_MAX_AGE_MS` is closed and a new one opened. An open stream holds one of the server's connections, of
+ * which sqld has 128 by default, so a process with many databases on one server keeps one per database while their
+ * streams sit idle; when the server answers that it has no connection left (HTTP 429), every idle one of them is closed
+ * at once (`releaseIdleStreams`). A statement is sent again only when the server refused its request without running
+ * it: it found the stream expired, or refused its baton (`REFUSED_BATON`). A request whose
  * answer was lost may have run, so its failure is the caller's, as it is for a statement on a stream of its own. A
  * statement the server answered `no such table` for a table the schema holds runs again, with growing waits, up to
  * `MISSING_TABLE_RERUNS` times (#5464): the server compiled it while other connections changed the schema and ran none
@@ -584,8 +587,6 @@ class ReusedStream {
 	usedAt = 0;
 	/** Whether a statement is on the stream now; a statement arriving meanwhile takes a stream of its own. */
 	busy = false;
-	/** Closes the stream once it sat idle `STREAM_REUSE_IDLE_MS`. @type {ReturnType<typeof setTimeout> | undefined} */
-	idleTimer;
 
 	/**
 	 * @param {typeof import("@libsql/hrana-client")} hrana
@@ -654,21 +655,7 @@ class ReusedStream {
 			}
 		} finally {
 			this.busy = false;
-			this.closeWhenIdle();
 		}
-	}
-
-	/** Closes the stream once it has sat idle `STREAM_REUSE_IDLE_MS`, without keeping the process alive for it. */
-	closeWhenIdle() {
-		if (this.stream === undefined || this.idleTimer !== undefined) return;
-		this.idleTimer = setTimeout(() => {
-			this.idleTimer = undefined;
-			if (this.busy) return;
-			const idle = performance.now() - this.usedAt;
-			if (idle >= STREAM_REUSE_IDLE_MS) this.drop();
-			else this.closeWhenIdle();
-		}, Math.max(STREAM_REUSE_IDLE_MS - (performance.now() - this.usedAt), 0));
-		this.idleTimer.unref?.();
 	}
 
 	/**
@@ -718,11 +705,26 @@ class ReusedStream {
 
 	/** Closes the stream, if one is open; its close is sent in the background. */
 	drop() {
-		clearTimeout(this.idleTimer);
-		this.idleTimer = undefined;
 		this.stream?.close();
 		this.stream = undefined;
 	}
+}
+
+/**
+ * The reused streams of every database this process has open on a server, by the server's location.
+ * @type {Map<string, Set<ReusedStream>>}
+ */
+const reusedStreams = new Map();
+
+/**
+ * Closes every reused stream this process keeps idle on the server at `location`, which answered that it could not open
+ * a connection for a request (HTTP 429): each frees one of its connections. A stream a statement is on stays. A stream
+ * closed so is opened again by its database's next statement, so a server that never runs out of connections costs
+ * nothing.
+ * @param {string} location
+ */
+function releaseIdleStreams(location) {
+	for (const reused of reusedStreams.get(location) ?? []) if (!reused.busy) reused.drop();
 }
 
 /**
@@ -2018,6 +2020,9 @@ function createDriver(url, authToken, added, redact, createClient, protocol, kee
 	let client;
 	const abandoned = new AbandonedStreams();
 	const kept = local ? undefined : keepConnections?.();
+	/** The server's location as diagnostics show it, without credentials, and as the process's streams on it are kept. */
+	const redacted = redact(url);
+	const refused = () => releaseIdleStreams(redacted);
 	// Create the client inside a driver call, so the facade redacts credentials from its failures. The busy timeout is a
 	// client option, not a PRAGMA, because the client opens more connections than the one that ran the PRAGMA, and
 	// each needs it; a connection waits for a lock on the calling thread.
@@ -2027,7 +2032,7 @@ function createDriver(url, authToken, added, redact, createClient, protocol, kee
 			authToken,
 			intMode: "bigint",
 			...(local ? { timeout: FILE_BUSY_TIMEOUT_MS } : {}),
-			...(local ? {} : { fetch: fetchWith(added, abandoned, kept), concurrency }),
+			...(local ? {} : { fetch: fetchWith(added, abandoned, kept, refused), concurrency }),
 		});
 	// The Hrana client whose stream statements outside a transaction reuse, made on first use inside a driver call, as the
 	// client is, so the facade redacts credentials from a failure to read the URL.
@@ -2044,7 +2049,7 @@ function createDriver(url, authToken, added, redact, createClient, protocol, kee
 			const base = encodeBaseUrl(config.scheme, config.authority, config.path);
 			if (config.scheme === "ws" || config.scheme === "wss") hranaClient = hrana.openWs(base, config.authToken);
 			else {
-				const send = fetchWith(added, abandoned, kept);
+				const send = fetchWith(added, abandoned, kept, refused);
 				/** @type {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>} */
 				const tracked = (input, init) => {
 					const sent = send(input, init);
@@ -2061,7 +2066,12 @@ function createDriver(url, authToken, added, redact, createClient, protocol, kee
 	const shared = async () => {
 		if (protocol === undefined) return undefined;
 		const [hrana, , , { LibsqlError }] = protocol;
-		return (reused ??= new ReusedStream(hrana, LibsqlError, remote));
+		if (reused === undefined) {
+			reused = new ReusedStream(hrana, LibsqlError, remote);
+			const streams = reusedStreams.get(redacted) ?? new Set();
+			reusedStreams.set(redacted, streams.add(reused));
+		}
+		return reused;
 	};
 	/** @type {MergedReads | undefined} */
 	let merged;
@@ -2162,8 +2172,6 @@ function createDriver(url, authToken, added, redact, createClient, protocol, kee
 		);
 		return results.map(driverResult);
 	};
-	/** The server's location as diagnostics show it, without credentials. */
-	const redacted = redact(url);
 	/** @type {import("@bastani/atomic/storage").SqliteDriver} */
 	const driver = {
 		descriptor: { adapter: "libsql", location: url },
@@ -2255,7 +2263,12 @@ function createDriver(url, authToken, added, redact, createClient, protocol, kee
 			return pipelinedTransaction(hrana, api, () => transaction, inTransaction, watch, options?.leading ?? []);
 		},
 		async close() {
-			reused?.drop();
+			if (reused !== undefined) {
+				reused.drop();
+				const streams = reusedStreams.get(redacted);
+				streams?.delete(reused);
+				if (streams?.size === 0) reusedStreams.delete(redacted);
+			}
 			hranaClient?.close();
 			if (hranaClient !== undefined) {
 				// The stream's close is sent on a later turn; wait for it a little, so it neither outlives the database for
