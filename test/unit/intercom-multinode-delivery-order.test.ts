@@ -468,13 +468,38 @@ test("claimFor does not deliver a later row in a claimed batch ahead of an earli
 	a.send(sender, targetId, m2);
 	await vi.waitFor(() => assert.equal(outcomeOf(sender, m2.id)?.type, "queued"), { timeout: WAIT_MS, interval: 15 });
 
-	// Inject mid-batch disconnect right as claim returns [m1, m2], and reconnect during releaseClaim(m1)!
+	// Inject mid-batch disconnect right as claim returns [m1, m2], and reconnect while the unwritten tail is releasing!
 	const bOutbox = b.opened.state.outbox;
 	const origClaim = bOutbox.claim.bind(bOutbox);
 	const origRelease = bOutbox.releaseClaim.bind(bOutbox);
+	const origReleaseMany = bOutbox.releaseClaims?.bind(bOutbox);
 	let injected = false;
 	let reconnected: BrokerConnectedSession | undefined;
 	let firstConn: BrokerConnectedSession | undefined;
+	const simulateReconnect = () => {
+		if (reconnected !== undefined) return;
+		const info: SessionInfo = {
+			id: randomUUID(),
+			name: "target",
+			cwd: "/work",
+			model: "test/model",
+			pid: 1,
+			startedAt: 2,
+			lastActivity: 2,
+			status: "idle",
+			group: "default",
+			groups: ["default"],
+		};
+		reconnected = {
+			socket: fakeSocket(),
+			info,
+			registrationGroup: normalizeGroup("default"),
+			registrationName: "target",
+			registrationReturnAddress: targetReturn,
+			acknowledgesReceipt: true,
+		};
+		b.sessions.set(info.id, reconnected);
+	};
 	Object.assign(bOutbox, {
 		claim: async (...args: Parameters<typeof origClaim>) => {
 			const result = await origClaim(...args);
@@ -487,32 +512,18 @@ test("claimFor does not deliver a later row in a claimed batch ahead of an earli
 		},
 		releaseClaim: async (...args: Parameters<typeof origRelease>) => {
 			const res = await origRelease(...args);
-			if (injected && reconnected === undefined && args[0].messageId === m1.id) {
-				// Simulate target reconnecting while row 1's releaseClaim was awaiting!
-				const info: SessionInfo = {
-					id: randomUUID(),
-					name: "target",
-					cwd: "/work",
-					model: "test/model",
-					pid: 1,
-					startedAt: 2,
-					lastActivity: 2,
-					status: "idle",
-					group: "default",
-					groups: ["default"],
-				};
-				reconnected = {
-					socket: fakeSocket(),
-					info,
-					registrationGroup: normalizeGroup("default"),
-					registrationName: "target",
-					registrationReturnAddress: targetReturn,
-					acknowledgesReceipt: true,
-				};
-				b.sessions.set(info.id, reconnected);
-			}
+			if (injected && args[0].messageId === m1.id) simulateReconnect();
 			return res;
 		},
+		...(origReleaseMany === undefined
+			? {}
+			: {
+					releaseClaims: async (...args: Parameters<typeof origReleaseMany>) => {
+						const res = await origReleaseMany(...args);
+						if (injected && args[0].some((claim) => claim.messageId === m1.id)) simulateReconnect();
+						return res;
+					},
+				}),
 	});
 
 	firstConn = await b.connect("target", { returnAddress: targetReturn, id: targetId });
@@ -1934,4 +1945,78 @@ test("progress-extended local gate waits are still hard-capped at PRESENCE_REGIS
 		gate.finish(t2);
 		gate.finish(t1);
 	});
+});
+
+test("batched departure release preserves per-sender FIFO when recipient moves back to sender's broker (#6651, #6713)", async () => {
+	const { nodes } = await cluster(2);
+	const [a, b] = [nodes[0]!, nodes[1]!];
+	const sender = await a.connect("sender");
+	const targetReturn = randomUUID();
+	const onB = await b.connect("target", { returnAddress: targetReturn });
+	const targetId = onB.info.id;
+
+	const [m1, m2, m3, m4] = ["move-1", "move-2", "move-3", "move-4"].map((text) => makeMessage(text));
+	for (const each of [m1!, m2!, m3!]) a.send(sender, targetId, each);
+	await vi.waitFor(() => assert.deepEqual(receivedTexts(onB), ["move-1", "move-2", "move-3"]), {
+		timeout: WAIT_MS,
+		interval: 15,
+	});
+
+	// Spy on B's batched releaseClaims when recipient departs with 3 in-flight messages.
+	const bOutbox = b.opened.state.outbox;
+	const origReleaseMany = bOutbox.releaseClaims!.bind(bOutbox);
+	const releaseDone = deferred();
+	const releaseBatches: string[][] = [];
+	const releaseSingle = vi.spyOn(bOutbox, "releaseClaim");
+	Object.assign(bOutbox, {
+		releaseClaims: async (...args: Parameters<typeof origReleaseMany>) => {
+			releaseBatches.push(args[0].map((claim) => claim.messageId));
+			const res = await origReleaseMany(...args);
+			releaseDone.resolve();
+			return res;
+		},
+	});
+
+	b.leave(onB);
+	await releaseDone.promise;
+	assert.equal(releaseBatches.length, 1);
+	assert.deepEqual([...releaseBatches[0]!].sort(), [m1!.id, m2!.id, m3!.id].sort());
+	assert.equal(releaseSingle.mock.calls.length, 0);
+
+	// Gate A's claim so m4 arrives locally while m1..m3 (released in one batch by B) are still being claimed on A.
+	const aOutbox = a.opened.state.outbox;
+	const origAClaim = aOutbox.claim.bind(aOutbox);
+	const targetIdentity = deliveryTargetIdentity(onB);
+	const claimStarted = deferred();
+	const claimGate = deferred();
+	cleanups.push(async () => claimGate.resolve());
+	Object.assign(aOutbox, {
+		claim: async (...args: Parameters<typeof origAClaim>) => {
+			if (args[0].targetIdentity === targetIdentity) {
+				claimStarted.resolve();
+				await claimGate.promise;
+			}
+			return origAClaim(...args);
+		},
+	});
+
+	const onA = await a.connect("target", { returnAddress: targetReturn, id: targetId });
+	await claimStarted.promise;
+	a.send(sender, targetId, m4!);
+	// m4 must wait behind earlier unsettled outbox messages m1..m3.
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	assert.deepEqual(receivedTexts(onA), []);
+
+	claimGate.resolve();
+	await vi.waitFor(() => assert.deepEqual(receivedTexts(onA), ["move-1", "move-2", "move-3", "move-4"]), {
+		timeout: WAIT_MS,
+		interval: 15,
+	});
+	for (const each of [m1!, m2!, m3!]) a.router.received(onA, each.id);
+	for (const each of [m1!, m2!, m3!, m4!]) {
+		await vi.waitFor(() => assert.equal(outcomeOf(sender, each.id)?.type, "delivered"), {
+			timeout: WAIT_MS,
+			interval: 15,
+		});
+	}
 });

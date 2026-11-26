@@ -52,6 +52,7 @@ import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxClaim,
+	type OutboxReleaseClaimResult,
 	type OutboxRenewClaimResult,
 	type OutboxEnqueueRequest,
 	type OutboxEnqueueResult,
@@ -3074,7 +3075,7 @@ export class MultiNodeRouter {
 			// this registration held itself is given back.
 			if (alias !== undefined) await this.releaseOwner(alias);
 			if (entry.fenced === true) {
-				for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
+				await this.releaseClaims(claims.map((inflight) => inflight.claim));
 				const stillHere = [...this.presence.keys()].some((other) => deliveryTargetIdentity(other) === identity);
 				if (entry.lease !== undefined && !stillHere) {
 					await this.state.leases.release(entry.lease);
@@ -3115,7 +3116,7 @@ export class MultiNodeRouter {
 			// a reply never finds it offline with only its pending asks. A failed write loses them, as a lost local route
 			// does: the subagent then wakes at its reply deadline.
 			await keepReleasedAsks(this.state, session).catch((error: Error) => this.report(error));
-			for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
+			await this.releaseClaims(claims.map((inflight) => inflight.claim));
 			// #4842: an ask that ends with its recipient fails for its asker on any node.
 			await (away ? Promise.resolve() : this.state.pendingAsks.pruneSender(sessionId).then(() => undefined))
 				.then(async () => {
@@ -5872,10 +5873,13 @@ export class MultiNodeRouter {
 				// The recipient left or was replaced while this batch was being delivered: release this row and every
 				// later row in the batch unwritten so a reconnected session never receives a later row ahead of an earlier
 				// released row.
-				for (let remaining = index; remaining < claimed.rows.length; remaining++) {
-					const pending = claimed.rows[remaining]!;
-					const released = await this.state.outbox.releaseClaim(pending.claim, { unwritten: true });
-					if (released.status === "released") await this.wakeOrigin(pending.row);
+				const tail = claimed.rows.slice(index);
+				const released = await this.releaseClaims(
+					tail.map((pending) => pending.claim),
+					{ unwritten: true },
+				);
+				for (let remaining = 0; remaining < tail.length; remaining++) {
+					if (released[remaining]?.status === "released") await this.wakeOrigin(tail[remaining]!.row);
 				}
 				if (this.localSessionFor(identity) !== undefined) void this.scanIdentity(identity);
 				return;
@@ -6074,6 +6078,20 @@ export class MultiNodeRouter {
 			if (oldest === undefined) break;
 			this.firstHandedOverAt.delete(oldest);
 		}
+	}
+
+	private async releaseClaims(
+		claims: readonly OutboxClaim[],
+		options?: { readonly unwritten?: boolean },
+	): Promise<OutboxReleaseClaimResult[]> {
+		if (claims.length === 0) return [];
+		const outbox = this.state.outbox;
+		if (claims.length > 1 && outbox.releaseClaims !== undefined) {
+			return outbox.releaseClaims(claims, options);
+		}
+		const results: OutboxReleaseClaimResult[] = [];
+		for (const claim of claims) results.push(await outbox.releaseClaim(claim, options));
+		return results;
 	}
 
 	private async wakeOrigin(row: OutboxRow): Promise<void> {
@@ -6690,7 +6708,7 @@ export class MultiNodeRouter {
 		this.holds.clear();
 		await Promise.all([...this.serials.values()]);
 		try {
-			for (const inflight of this.inflight.values()) await this.state.outbox.releaseClaim(inflight.claim);
+			await this.releaseClaims([...this.inflight.values()].map((inflight) => inflight.claim));
 			for (const entry of this.presence.values()) {
 				if (entry.lease !== undefined) await this.state.leases.release(entry.lease);
 			}

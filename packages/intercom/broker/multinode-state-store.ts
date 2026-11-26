@@ -368,6 +368,14 @@ export interface OutboxStore {
 	 */
 	releaseClaim(claim: OutboxClaim, options?: { readonly unwritten?: boolean }): Promise<OutboxReleaseClaimResult>;
 	/**
+	 * `releaseClaim` for each of `claims`, in one transaction whose statement releases every claim still current,
+	 * answered in the order given (#6713). Optional: without it, a broker releases its claims one at a time.
+	 */
+	releaseClaims?(
+		claims: readonly OutboxClaim[],
+		options?: { readonly unwritten?: boolean },
+	): Promise<OutboxReleaseClaimResult[]>;
+	/**
 	 * #5038: return every row `claimantId` holds to `queued`, as its own `releaseClaim` would, so a dead broker's
 	 * claims stop holding its recipients' queues until they go stale. Resolves to the number of rows released.
 	 */
