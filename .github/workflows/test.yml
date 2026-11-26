@@ -493,12 +493,13 @@ jobs:
         shell: bash
         timeout-minutes: 1
         run: until curl -fsS "$ATOMIC_TEST_LIBSQL_URL/health"; do sleep 1; done
-      # Run the adapter conformance matrix, the Postgres adapter and Intercom tests, and all libSQL server tests.
+      # Run the adapter conformance matrix, the Postgres adapter and Intercom tests, all libSQL server tests, and
+      # forks on PostgreSQL in a process an in-place update caught.
       - name: Storage conformance and libSQL server tests
         run: >-
           bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64 ${{ matrix.shard }} of 4)"
           -- npm run test:integration -- storage-conformance-matrix storage-postgres intercom-postgres sqld
-          --shard=${{ matrix.shard }}/4
+          in-place-update-forks --shard=${{ matrix.shard }}/4
       - name: Upload test diagnostics
         if: always()
         # The tests decide the job's result, not a failed diagnostics upload (such as an artifact service timeout).

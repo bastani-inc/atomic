@@ -24,18 +24,6 @@ export interface StorageMigrationOptions {
 	 * them still reads and writes it correctly (#5065).
 	 */
 	readonly acceptNewer?: boolean;
-	/**
-	 * A recorded version above the last step and at most this one is accepted, and nothing runs; a newer one is still
-	 * refused. For versions that only an explicit command records, never a migration this call would run: the sessions
-	 * domain's version 3, which turns on forks that share their parent's history (#6560), and which builds that do not
-	 * list it refuse.
-	 */
-	readonly recordedThrough?: number;
-}
-
-/** Whether a recorded `version` above the last step, `supported`, is accepted under `options` instead of refused. */
-function acceptsRecorded(version: number, supported: number, options: StorageMigrationOptions): boolean {
-	return version <= supported || options.acceptNewer === true || version <= (options.recordedThrough ?? supported);
 }
 
 export interface StorageMigrationResult {
@@ -124,12 +112,12 @@ async function applyVersioned(
 	table: string,
 	domain: string,
 	steps: readonly StorageMigrationStep[],
-	options: StorageMigrationOptions = {},
+	acceptNewer = false,
 ): Promise<StorageMigrationResult> {
 	const current = await recordedVersion(transaction, dialect, table, domain);
 	const supported = steps.at(-1)?.version ?? 0;
 	if (current > supported) {
-		if (acceptsRecorded(current, supported, options)) return { applied: [], version: current };
+		if (acceptNewer) return { applied: [], version: current };
 		throw new StorageSchemaVersionError(domain, current, supported);
 	}
 	const applied: number[] = [];
@@ -164,13 +152,14 @@ export async function applyStorageMigrations(
 	const recorded = dialect.versionedMigrations ? await recordedInCatalog(database, table, domain) : undefined;
 	const supported = steps.at(-1)?.version ?? 0;
 	if (recorded !== undefined && recorded >= supported && supported > 0) {
-		if (!acceptsRecorded(recorded, supported, options))
+		if (recorded > supported && !options.acceptNewer)
 			throw new StorageSchemaVersionError(domain, recorded, supported);
 		return { applied: [], version: recorded };
 	}
 	return database.transaction(
 		async (transaction) => {
-			if (dialect.versionedMigrations) return applyVersioned(transaction, dialect, table, domain, steps, options);
+			if (dialect.versionedMigrations)
+				return applyVersioned(transaction, dialect, table, domain, steps, options.acceptNewer);
 			for (const step of steps) await step.up(transaction, dialect);
 			return { applied: steps.map((step) => step.version), version: steps.at(-1)?.version ?? 0 };
 		},
