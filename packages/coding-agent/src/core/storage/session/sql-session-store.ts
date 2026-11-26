@@ -890,8 +890,8 @@ export class SqlSessionStore implements SessionStore {
 						sql: `INSERT INTO ${tables.meta} VALUES (?)`,
 						params: [SESSION_SCHEMA_VERSION_SHARED_HISTORY],
 					},
-					tablesScript,
-					created && sharedHistoryTablesScript(dialect, forkTables),
+					// One script with the fork tables, so a driver that sends each statement of a batch apart sends no more.
+					created ? `${tablesScript}\n${sharedHistoryTablesScript(dialect, forkTables)}` : tablesScript,
 					created &&
 						dialect.versionedMigrations && {
 							sql: `INSERT INTO ${storageMigrationTable(options.prefix)} (domain, version, applied_at) VALUES (?, ?, ${dialect.nowMs}) ON CONFLICT DO NOTHING`,

@@ -1245,8 +1245,12 @@ async function installSource(
 				? []
 				: [
 						...(source.reset ?? []).map((sql) => ({ sql, params: [] })),
-						// Triggers of these names that an older build installed are replaced, not kept (#5065).
-						...source.triggers.map((trigger) => dialect.dropTrigger(trigger.name, trigger.table)),
+						// Triggers of these names that an older build installed are replaced, not kept (#5065): dropped in one
+						// script, as they are created, so a source with more triggers costs a driver no more calls.
+						source.triggers.length > 0 &&
+							source.triggers
+								.map((trigger) => `${dialect.dropTrigger(trigger.name, trigger.table)};`)
+								.join("\n"),
 					]),
 			source.triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n"),
 			{
