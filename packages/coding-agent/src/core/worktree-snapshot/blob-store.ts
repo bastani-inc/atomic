@@ -13,7 +13,8 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations, ensureStorageSchema, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
-import { type StorageSchemaCatalog, schemaCatalogOf } from "../storage/schema-catalog.js";
+import { type StorageSchemaCatalog, schemaCatalogOf, withStorageSchemaCatalog } from "../storage/schema-catalog.js";
+import { queueSqliteSchemaSetup, type SqliteSchemaBatchContext } from "../storage/sqlite-open-batch.js";
 import { statementBatch } from "../storage/statement-batches.js";
 import type { BatchWrite } from "../storage/statement-sequence.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
@@ -1937,7 +1938,7 @@ async function readSourceStates(
 export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private readonly database: SqliteDatabase;
 	private readonly tables: SnapshotIndexTables;
-	private readonly sources: readonly IndexSource[];
+	private sources: readonly IndexSource[];
 	private readonly dialect: StorageDialect;
 	/** The sessions' fork segments table (#6560), which exists once shared-history forks are on. */
 	private readonly forkSegments: string;
@@ -1966,11 +1967,19 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	/**
 	 * Opens the blob table and its reference index, creating the tables that are missing in their own transaction, such
 	 * as those an index written by an earlier build lacks, and indexes referencing tables created since. A store whose
-	 * tables and index exist opens without the write lock.
+	 * tables and index exist opens without the write lock. On SQLite inside an open scope (`withStorageSchemaCatalog`),
+	 * table creation and index installation queue into the open's single write transaction (#6709).
 	 */
-	static async open(database: SqliteDatabase, prefix = ""): Promise<SqlSnapshotBlobStore> {
+	static open(database: SqliteDatabase, prefix = ""): Promise<SqlSnapshotBlobStore> {
+		return withStorageSchemaCatalog(database, storageMigrationTable(prefix), () =>
+			SqlSnapshotBlobStore.openWithCatalog(database, prefix),
+		);
+	}
+
+	private static async openWithCatalog(database: SqliteDatabase, prefix: string): Promise<SqlSnapshotBlobStore> {
 		const t = snapshotIndexTables(prefix);
 		const dialect = dialectOf(database);
+		const ledger = storageMigrationTable(prefix);
 		const columns = [
 			[t.blobs, "created_at"],
 			[t.blobs, "chunks"],
@@ -1982,6 +1991,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			...columns.map(([table, column]) => dialect.columnExists(table, column)),
 			dialect.schemaObjects(triggers),
 		];
+		const tablesPresent = (found: StorageSchemaCatalog) =>
+			Object.values(t).every((table) => found.hasTable(table)) &&
+			columns.every(([table, column]) => found.hasColumn(table, column)) &&
+			triggers.some((trigger) => found.hasObject(trigger));
 		// One catalog read answers the schema questions where an open read it (#6560): always on Postgres, at the first
 		// question on SQLite.
 		const catalog = await schemaCatalogOf(database);
@@ -1998,12 +2011,144 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const current = dialect.versionedMigrations
 			? false
 			: catalog !== undefined
-				? Object.values(t).every((table) => catalog.hasTable(table)) &&
-					columns.every(([table, column]) => catalog.hasColumn(table, column)) &&
-					triggers.some((trigger) => catalog.hasObject(trigger))
+				? tablesPresent(catalog)
 				: (await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)))).every(
 						(row) => row !== undefined,
 					);
+
+		// On SQLite inside an open scope, when the snapshot tables are missing or incomplete, queue both table creation
+		// and source index trigger installation into the open's single write transaction without reading uncommitted tables
+		// beforehand (#6709).
+		if (!current && !dialect.versionedMigrations && catalog !== undefined) {
+			const needsReset =
+				catalog.hasTable(t.sessionLinks) || catalog.hasTable(t.sessionRefs) || catalog.hasTable(t.sessionRecords);
+			const reset = needsReset ? await SqlSnapshotBlobStore.prepareSessionIndexReset(database) : undefined;
+			const store = new SqlSnapshotBlobStore(
+				database,
+				dialect,
+				t,
+				indexSources(prefix, t, dialect, (await shared) ? segments : undefined),
+				segments,
+			);
+			const enqueueFreshTables = (ctx: SqliteSchemaBatchContext, sharedNow: boolean) => {
+				const { int, text, blob } = dialect.types;
+				const strict = dialect.tableOptions;
+				const keyed = dialect.withoutRowidTableOptions;
+				const guard = sharedNow ? [forkInheritedBlobGuard(dialect, t, segments).replace(/;\s*$/, "")] : [];
+				ctx.enqueue(
+					`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash ${text} PRIMARY KEY, bytes ${int} NOT NULL, data ${blob} NOT NULL, created_at ${int} NOT NULL DEFAULT (${dialect.nowSeconds}))${strict}`,
+				);
+				ctx.enqueue(`
+		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (run_id, hash))${keyed};
+		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
+		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id ${text} PRIMARY KEY, retained ${int} NOT NULL, seq ${int} NOT NULL)${keyed};
+		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id ${text} NOT NULL, seq ${int} NOT NULL, root ${text} NOT NULL, snapshot_id ${text} NOT NULL, prev_seq ${int}, restore_from ${text}, restore_to ${text}, degraded_from ${text}, degraded_since ${int}, PRIMARY KEY (session_id, seq))${keyed};
+		CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id ${text} NOT NULL, seq ${int} NOT NULL, entry_id ${text} NOT NULL, parent_id ${text}, anchor_seq ${int}, children ${int} NOT NULL, broken ${int} NOT NULL, PRIMARY KEY (session_id, seq))${strict};
+		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_entry ON ${t.sessionLinks} (session_id, entry_id);
+		${sessionLinksLeafIndex(t, dialect)};
+		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_broken ON ${t.sessionLinks} (session_id) WHERE broken = 1;
+		CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id ${text} NOT NULL, seq ${int} NOT NULL, snapshot_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (session_id, seq, hash))${keyed};
+		CREATE INDEX IF NOT EXISTS ${t.sessionRecords}_hash ON ${t.sessionRecords} (hash);
+		CREATE TABLE IF NOT EXISTS ${t.carriedRefs} (owner ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (owner, hash))${keyed};
+		CREATE INDEX IF NOT EXISTS ${t.carriedRefs}_hash ON ${t.carriedRefs} (hash);
+		CREATE TABLE IF NOT EXISTS ${t.collection} (id ${int} PRIMARY KEY CHECK (id = 1), claimed_at ${int}, holder ${text}, finished_at ${int}, deleted ${int}, error_code ${text})${strict};
+		INSERT INTO ${t.collection} (id) VALUES (1) ON CONFLICT DO NOTHING;
+		CREATE TABLE IF NOT EXISTS ${t.sources} (source ${text} PRIMARY KEY, watermark ${int} NOT NULL, backfilled_through ${int} NOT NULL)${keyed};
+		${guard.map((statement) => `${statement};`).join("\n")}
+	`);
+				ctx.enqueue(chunkTableDefinition(t.blobChunks, dialect));
+				for (const write of [...blobChunkWrites(t, dialect, [false, false]), ...blobMaintenanceIndexes(t)]) {
+					if (write !== false && write !== undefined) ctx.enqueue(write);
+				}
+				for (const table of Object.values(t)) ctx.noteTableCreated(table);
+			};
+			const queued = queueSqliteSchemaSetup(database, ledger, {
+				done: async (freshCatalog) => {
+					if (!tablesPresent(freshCatalog)) return false;
+					const sharedNow = freshCatalog.hasTable(segments);
+					if (sharedNow && !freshCatalog.hasObject(forkInheritedBlobGuardName(t.blobs))) return false;
+					const sourcesNow = indexSources(prefix, t, dialect, sharedNow ? segments : undefined);
+					const legacy = store.legacyForkLinks();
+					const foundLegacy = new Set<string>();
+					const states = await readSourceStates(
+						database,
+						dialect,
+						t,
+						sourcesNow,
+						false,
+						undefined,
+						legacy && { names: [legacy.name], found: foundLegacy },
+					);
+					if (legacy !== undefined && foundLegacy.has(legacy.name)) return false;
+					if (states.some((state) => !state.installed && !state.deferred)) return false;
+					store.sources = sourcesNow;
+					return true;
+				},
+				run: async (ctx) => {
+					const sharedNow = ctx.tableExisted(segments) || ctx.createdTable(segments);
+					store.sources = indexSources(prefix, t, dialect, sharedNow ? segments : undefined);
+					const anyTableExisted = Object.values(t).some((table) => ctx.tableExisted(table));
+					const tablesAlreadyCurrent = ctx.catalog !== undefined && tablesPresent(ctx.catalog);
+					const guardName = forkInheritedBlobGuardName(t.blobs);
+					if (!tablesAlreadyCurrent) {
+						if (ctx.catalog !== undefined && !anyTableExisted) {
+							enqueueFreshTables(ctx, sharedNow);
+						} else {
+							await ctx.flushWrites();
+							await createSnapshotIndexTables(
+								ctx.tx,
+								t,
+								prefix,
+								dialect,
+								sharedNow ? [forkInheritedBlobGuard(dialect, t, segments).replace(/;\s*$/, "")] : [],
+							);
+							for (const table of Object.values(t)) ctx.noteTableCreated(table);
+						}
+					} else if (sharedNow && ctx.catalog?.hasObject(guardName) !== true) {
+						ctx.enqueue(forkInheritedBlobGuard(dialect, t, segments));
+					}
+					// Install snapshot index triggers in the same transaction. When no referencing table or progress table
+					// existed before this transaction, only newly created tables (empty, watermark 0) need triggers.
+					const existingSources = store.sources.filter((source) => ctx.tableExisted(source.table));
+					if (!ctx.tableExisted(t.sources) && existingSources.length === 0) {
+						for (const source of store.sources) {
+							if (!ctx.createdTable(source.table)) continue;
+							ctx.enqueue(source.triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n"));
+							ctx.enqueue({
+								sql: `INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, 0, 0) ${REPLACE_PROGRESS}`,
+								params: [source.name],
+							});
+							if (source.own !== undefined)
+								ctx.enqueue({
+									sql: `INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, 0, 0) ${REPLACE_PROGRESS}`,
+									params: [source.own],
+								});
+							if (source.version !== undefined) ctx.enqueue(publishVersion(t, source));
+						}
+						return;
+					}
+					await ctx.flushWrites();
+					const legacy = store.legacyForkLinks();
+					const foundLegacy = new Set<string>();
+					const states = await readSourceStates(
+						ctx.tx,
+						dialect,
+						t,
+						store.sources,
+						false,
+						undefined,
+						legacy && { names: [legacy.name], found: foundLegacy },
+					);
+					if (legacy !== undefined && foundLegacy.has(legacy.name))
+						await ctx.tx.exec(dialect.dropTrigger(legacy.name, legacy.table, true));
+					for (const { source, installed, deferred } of states) {
+						if (!installed && !deferred) await installSource(ctx.tx, dialect, t, source, reset);
+					}
+				},
+			});
+			if (queued) return store;
+		}
+
 		// A versioned database always checks its ledger: a newer schema with the same tables is refused, and a step it
 		// lacks, such as the index triggers, runs even when every table exists.
 		// Whether this open created the tables on PostgreSQL, and with them the links indexes of {@link hotSessionLinks}.
@@ -2061,7 +2206,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 							]
 						: []),
 				],
-				{ table: storageMigrationTable(prefix) },
+				{ table: ledger },
 			);
 			// The session store's open, which asks the catalog for the guard next, finds it without reading the schema again.
 			if (migrated.applied.includes(1) && (await shared))

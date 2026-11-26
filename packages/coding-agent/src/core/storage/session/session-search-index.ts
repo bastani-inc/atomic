@@ -12,6 +12,7 @@ import * as migrations from "../migrations.js";
 import { applyStorageMigrations, ensureStorageSchema, withShortSchemaLockWaits } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
 import { schemaCatalogOf } from "../schema-catalog.js";
+import { queueSqliteSchemaSetup } from "../sqlite-open-batch.js";
 import { type RunSequence, sequenceRunner } from "../statement-sequence.js";
 import type {
 	SessionSearchCoverage,
@@ -690,14 +691,39 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		database: SqliteDatabase,
 		sessionTables: SessionTables,
 		prefix: string | undefined,
+		onUnavailable?: () => void,
 	): Promise<SqlSessionSearchIndex | undefined> {
 		const tables = renderStorageIdentifiers("sessions", SESSION_SEARCH_TABLES, prefix);
-		const engine = engineFor(dialectOf(database));
+		const dialect = dialectOf(database);
+		const engine = engineFor(dialect);
 		const ledger = storageMigrationTable(prefix);
 		let created = false;
 		try {
 			if (await SqlSessionSearchIndex.tablesExist(database, tables))
 				return new SqlSessionSearchIndex(database, sessionTables, tables);
+			if (!dialect.versionedMigrations) {
+				const { int, text, rowKey } = dialect.types;
+				const stateSql = `CREATE TABLE IF NOT EXISTS ${tables.state} (sid ${rowKey}, session_id ${text} NOT NULL UNIQUE, format ${int} NOT NULL, indexed_seq ${int} NOT NULL, revision ${text} NOT NULL, entry_id ${text} NOT NULL)${dialect.tableOptions}`;
+				const ftsSql = `CREATE VIRTUAL TABLE IF NOT EXISTS ${tables.fts} USING fts5(body, content='', contentless_delete=1, tokenize='trigram', detail='none')`;
+				if (
+					queueSqliteSchemaSetup(database, ledger, {
+						optional: true,
+						verify: (catalog) => catalog.hasTable(tables.state) && catalog.hasTable(tables.fts),
+						onFailure: onUnavailable,
+						run(ctx) {
+							if (!ctx.tableExisted(tables.state)) {
+								ctx.enqueue(stateSql);
+								ctx.noteTableCreated(tables.state);
+							}
+							if (!ctx.tableExisted(tables.fts)) {
+								ctx.enqueue(ftsSql);
+								ctx.noteTableCreated(tables.fts);
+							}
+						},
+					})
+				)
+					return new SqlSessionSearchIndex(database, sessionTables, tables);
+			}
 			await applyStorageMigrations(
 				database,
 				SESSION_SEARCH_DOMAIN,
@@ -722,9 +748,9 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 				],
 				{ table: ledger, acceptNewer: true },
 			);
-			if (!(await engine.ready(database, dialectOf(database), tables))) return undefined;
+			if (!(await engine.ready(database, dialect, tables))) return undefined;
 			// Tuning is for speed only: a failure leaves the index as it was, and searches go on using it.
-			if (!created) await engine.tune?.(database, dialectOf(database), tables, ledger).catch(() => undefined);
+			if (!created) await engine.tune?.(database, dialect, tables, ledger).catch(() => undefined);
 		} catch {
 			return undefined;
 		}
@@ -734,9 +760,9 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	private static async tablesExist(database: SqliteDatabase, tables: SearchTables): Promise<boolean> {
 		const dialect = dialectOf(database);
 		if (dialect.versionedMigrations) return false;
-		// The catalog an open read answers both, without a read of their own (#6560).
+		// The catalog an open read answers both, without a read of their own (#6560, #6709).
 		const catalog = await schemaCatalogOf(database);
-		if (catalog?.hasTable(tables.state) === true && catalog.hasTable(tables.fts)) return true;
+		if (catalog !== undefined) return catalog.hasTable(tables.state) && catalog.hasTable(tables.fts);
 		const probes = [tables.state, tables.fts].map((table) => dialect.tableExists(table));
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
 		return found.every((row) => row !== undefined);

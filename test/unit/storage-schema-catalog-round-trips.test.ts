@@ -29,17 +29,18 @@ function databasePath(name: string): string {
 	return join(directory, name);
 }
 
-/** Every request sent to a connection's thread until the test ends, and the waits: requests sent while none was out. */
+/** Every request sent to a connection's thread until the test ends, and the waits: requests sent while none of that connection's was out. */
 function recordRequests() {
 	const sent: ConnectionRequest[] = [];
-	let inFlight = 0;
+	const inFlight = new WeakMap<object, number>();
 	let waits = 0;
-	const interception = interceptConnectionRequests((request, send) => {
+	const interception = interceptConnectionRequests((request, send, connection) => {
 		sent.push(request);
-		if (inFlight === 0) waits += 1;
-		inFlight += 1;
+		const pending = inFlight.get(connection) ?? 0;
+		if (pending === 0) waits += 1;
+		inFlight.set(connection, pending + 1);
 		return send(request).finally(() => {
-			inFlight -= 1;
+			inFlight.set(connection, (inFlight.get(connection) ?? 1) - 1);
 		});
 	});
 	cleanups.push(() => interception.restore());
@@ -68,24 +69,27 @@ async function openBroker(path: string) {
 	await state.close();
 }
 
-test("a broker opened a third time on a SQLite file whose schema is current takes no write lock (#6560)", async () => {
+test("a broker opened on a SQLite file sets up in one lock and takes no write lock from the second open on (#6560, #6709)", async () => {
 	const path = databasePath("broker.sqlite");
-	// The first open of a new database sets the schema up and stamps nothing, so it costs what it did before stamps:
-	// its later setups would leave earlier stamps behind. The second finds every store in the catalog and stamps them all
-	// in the one write transaction it takes anyway, to seed the restoring reservations' counters. From the third on, the
-	// stamps vouch for every store.
+	// The first open of a new database batches every store's setup, column additions, indexes, counter seed and stamps
+	// into one write transaction (#6709), so from the second open on, the stamps vouch for every store.
+	const first = recordRequests();
 	await openBroker(path);
+	const firstResult = first.take();
+	assert.equal(firstResult.sent.filter((request) => request.kind === "begin").length, 1, "the first open");
+	assert.equal(firstResult.waits, 10, `first open: ${firstResult.waits} waits`);
 	const second = recordRequests();
 	await openBroker(path);
-	assert.equal(second.take().sent.filter((request) => request.kind === "begin").length, 1, "the second open");
-	const requests = recordRequests();
-	await openBroker(path);
-	const { sent, waits } = requests.take();
+	const { sent, waits } = second.take();
 	const begins = sent.filter((request) => request.kind === "begin");
-	// Each store's setup took the write lock at every open: 30 times, in 97 waits; then once, for the counter seed.
 	assert.equal(begins.length, 0, `${begins.length} write transactions`);
 	assert.deepEqual(probes(sent), [], "no table or column was probed on its own");
-	assert.ok(waits <= 12, `${waits} waits for the connection's thread`);
+	assert.equal(waits, 8, `second open: ${waits} waits for the connection's thread`);
+	const warm = recordRequests();
+	await openBroker(path);
+	const warmResult = warm.take();
+	assert.equal(warmResult.sent.filter((request) => request.kind === "begin").length, 0, "the warm open");
+	assert.equal(warmResult.waits, 8, `warm open: ${warmResult.waits} waits`);
 });
 
 test("a broker reopened after a table or index of its schema was dropped creates it again", async () => {

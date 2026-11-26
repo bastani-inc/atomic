@@ -25,7 +25,13 @@ import type {
 	WakeUpSubscription,
 } from "./wake-up-bus.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema, openCatalogOf, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
+import {
+	ensureBrokerSchema,
+	openCatalogOf,
+	queueBrokerSqliteSetup,
+	RETRY_UNAPPLIED,
+	withBrokerSchemaCatalog,
+} from "./sql-schema.js";
 
 /**
  * S4 wake-up bus (specs/2026-10-19-intercom-multi-node.md §5.6): a hint log in the shared storage database. Each
@@ -188,7 +194,25 @@ async function createSchema(database: SqliteDatabase, table: string, prefix: str
 	const catalog = await openCatalogOf(database);
 	const existed = catalog === undefined || catalog.hasTable(table);
 	await ensureBrokerSchema(database, prefix, "wakeups", (tx) => tx.exec(schema));
-	if (existed) await addMissingColumns(database, table, { target_identity: "TEXT" });
+	if (dialectOf(database).name === "sqlite") {
+		if (
+			!(catalog !== undefined && catalog.hasColumn(table, "target_identity")) &&
+			!queueBrokerSqliteSetup(database, prefix ?? "", {
+				verify: (found) => found.hasColumn(table, "target_identity"),
+				run(ctx) {
+					// Add target_identity only when an older build created the table before this transaction without it.
+					if (ctx.tableExisted(table) && !ctx.hasColumn(table, "target_identity")) {
+						ctx.enqueue(`ALTER TABLE ${table} ADD COLUMN target_identity TEXT`);
+						ctx.noteColumnAdded(table, "target_identity");
+					}
+				},
+			})
+		) {
+			if (existed) await addMissingColumns(database, table, { target_identity: "TEXT" });
+		}
+	} else if (existed) {
+		await addMissingColumns(database, table, { target_identity: "TEXT" });
+	}
 	await ensureUnloggedHints(database, table, prefix);
 }
 

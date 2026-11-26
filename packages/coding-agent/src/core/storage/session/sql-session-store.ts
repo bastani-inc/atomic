@@ -30,6 +30,7 @@ import { ensureStorageSchema } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
 import { schemaCatalogOf, withStorageSchemaCatalog } from "../schema-catalog.js";
+import { flushStorageSchemaSetups, queueSqliteSchemaSetup } from "../sqlite-open-batch.js";
 import { applyStorageMigrationsTogether, statementBatch } from "../statement-batches.js";
 import { sequenceRunner } from "../statement-sequence.js";
 import { sha256Hex } from "./blob-hash.js";
@@ -1072,6 +1073,9 @@ export class SqlSessionStore implements SessionStore {
 			);
 		};
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
+		const ledger = storageMigrationTable(options.prefix);
+		// Start the SQLite octet_length capability probe beside the schema read so cold opens do not wait for it alone.
+		const entryByteLengthPromise = entryByteLengthOf(database);
 		// A SQLite schema records no ledger, so its idempotent setup would run, under the write lock, at every open. A
 		// schema that is current skips it: on a server many processes share, each open otherwise held the write lock for a
 		// dozen round trips while every other writer waited (#4768). Such an open writes only when it finds entry chunks
@@ -1084,7 +1088,9 @@ export class SqlSessionStore implements SessionStore {
 			presence.open,
 			database.readOnly === true ? undefined : orphanedEntryKeys,
 		);
+		const dialect = dialectOf(database);
 		let sharedHistory: boolean | undefined;
+		let batchedSqliteSetup = false;
 		if (current !== undefined) {
 			legacyBlobData = current.legacyBlobData;
 			sharedHistory = current.sharedHistory;
@@ -1104,7 +1110,108 @@ export class SqlSessionStore implements SessionStore {
 					.catch((error: Error) => {
 						if (error instanceof StorageSchemaVersionError) throw error;
 					});
-		} else {
+		} else if (!dialect.versionedMigrations) {
+			const requiredTables = [...Object.values(tables), presence.open];
+			const requiredColumns = [
+				[tables.sessions, "revision"],
+				[tables.entries, "chunks"],
+				[tables.blobs, "chunks"],
+				[presence.open, "schema_version"],
+				[presence.open, "build"],
+			] as const;
+			batchedSqliteSetup = queueSqliteSchemaSetup(database, ledger, {
+				reset() {
+					createdShared = false;
+					legacyBlobData = false;
+				},
+				done: async (freshCatalog) => {
+					const present =
+						requiredTables.every((table) => freshCatalog.hasTable(table)) &&
+						requiredColumns.every(([table, column]) => freshCatalog.hasColumn(table, column));
+					if (!present) return false;
+					const versions = await database.all(`SELECT schema_version FROM ${tables.meta}`);
+					if (versions.length === 0) return false;
+					for (const version of versions)
+						assertStorageSchemaVersion(
+							"sessions",
+							version.schema_version!,
+							SESSION_SCHEMA_VERSION,
+							SESSION_SCHEMA_VERSION_UNCHUNKED,
+						);
+					legacyBlobData = freshCatalog.hasColumn(tables.blobs, "data");
+					createdShared = versions.every(
+						(row) => Number(row.schema_version) >= SESSION_SCHEMA_VERSION_SHARED_HISTORY,
+					);
+					return true;
+				},
+				run: async (ctx) => {
+					if (ctx.catalog !== undefined && !requiredTables.some((table) => ctx.tableExisted(table))) {
+						const { int, text, blob } = dialect.types;
+						const strict = dialect.tableOptions;
+						const json = (column: string) => dialect.jsonValid(column);
+						const tablesScript = `
+				CREATE TABLE IF NOT EXISTS ${tables.sessions} (
+					id ${text} PRIMARY KEY, cwd ${text} NOT NULL, created_at ${text} NOT NULL,
+					header_json ${text} NOT NULL CHECK(${json("header_json")}), internal ${int} NOT NULL,
+					last_seq ${int} NOT NULL, modified_at ${text} NOT NULL, message_count ${int} NOT NULL,
+					first_message ${text} NOT NULL CHECK(${json("first_message")}),
+					name ${text} CHECK(name IS NULL OR ${json("name")}), has_name ${int} NOT NULL,
+					summary ${text} CHECK(summary IS NULL OR ${json("summary")}), summarized_through_id ${text},
+					summary_state ${text} NOT NULL CHECK(${json("summary_state")}), revision ${text} NOT NULL DEFAULT ''${dialect.rowOrderColumn}
+				)${strict};
+				CREATE TABLE IF NOT EXISTS ${tables.entries} (
+					session_id ${text} NOT NULL, seq ${int} NOT NULL, entry_id ${text} NOT NULL,
+					entry_json ${text} NOT NULL CHECK(${json("entry_json")}), PRIMARY KEY(session_id, seq)${dialect.rowOrderColumn}
+				)${strict};
+				CREATE TABLE IF NOT EXISTS ${tables.searchTexts} (
+					session_id ${text} NOT NULL, seq ${int} NOT NULL,
+					text_json ${text} NOT NULL CHECK(${json("text_json")}), PRIMARY KEY(session_id, seq)
+				)${strict};
+				CREATE TABLE IF NOT EXISTS ${tables.blobs} (
+					session_id ${text} NOT NULL, hash ${text} NOT NULL, bytes ${int} NOT NULL, chunks ${int} NOT NULL,
+					PRIMARY KEY(session_id, hash)
+				)${strict};
+				CREATE TABLE IF NOT EXISTS ${tables.blobChunks} (
+					session_id ${text} NOT NULL, hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,
+					PRIMARY KEY(session_id, hash, idx)
+				)${strict};
+			`;
+						ctx.enqueue(`CREATE TABLE IF NOT EXISTS ${tables.meta} (schema_version ${int} NOT NULL)${strict}`);
+						ctx.enqueue({
+							sql: `INSERT INTO ${tables.meta} VALUES (?)`,
+							params: [SESSION_SCHEMA_VERSION_SHARED_HISTORY],
+						});
+						ctx.enqueue(`${tablesScript}\n${sharedHistoryTablesScript(dialect, forkTables)}`);
+						ctx.enqueue(`
+				CREATE TABLE IF NOT EXISTS ${tables.entryChunks} (
+					session_id ${text} NOT NULL, seq ${int} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,
+					PRIMARY KEY(session_id, seq, idx)
+				)${strict};
+			`);
+						ctx.enqueue(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
+						ctx.enqueue(`
+			CREATE TABLE IF NOT EXISTS ${presence.open} (
+				session_id ${text} NOT NULL, token ${text} NOT NULL, pid ${int} NOT NULL, host ${text} NOT NULL,
+				heartbeat_at ${int} NOT NULL, schema_version ${int}, build ${text}, PRIMARY KEY(session_id, token)
+			)${strict};
+		`);
+						for (const table of [...requiredTables, ...Object.values(forkTables)]) ctx.noteTableCreated(table);
+						createdShared = true;
+						legacyBlobData = false;
+						return;
+					}
+					await ctx.flushWrites();
+					await createTables(ctx.tx, dialect);
+					await addEntryChunks(ctx.tx, dialect);
+					await SqlSessionOpenMarkers.createTable(ctx.tx, dialect, presence.open);
+					await SqlSessionOpenMarkers.addSchemaVersion(ctx.tx, dialect, presence.open);
+					await SqlSessionOpenMarkers.addBuild(ctx.tx, dialect, presence.open);
+					for (const table of requiredTables) ctx.noteTableCreated(table);
+					if (createdShared) for (const table of Object.values(forkTables)) ctx.noteTableCreated(table);
+				},
+			});
+		}
+		if (current === undefined && !batchedSqliteSetup) {
 			const [sessionsSchema] = await applyStorageMigrationsTogether(database, [
 				{
 					domain: SESSION_DOMAIN,
@@ -1117,7 +1224,7 @@ export class SqlSessionStore implements SessionStore {
 					// search index opens (#6560). This build accepts it and refuses a newer one below, not through an option of
 					// the migrations: a process of an earlier release that an in-place update caught keeps that release's
 					// copy of them, which knows only `acceptNewer`, and would refuse version 3 as newer than step 2.
-					options: { table: storageMigrationTable(options.prefix), acceptNewer: true },
+					options: { table: ledger, acceptNewer: true },
 				},
 				// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its
 				// later steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking
@@ -1132,7 +1239,7 @@ export class SqlSessionStore implements SessionStore {
 						},
 						{ version: 3, up: (tx, dialect) => SqlSessionOpenMarkers.addBuild(tx, dialect, presence.open) },
 					],
-					options: { table: storageMigrationTable(options.prefix), acceptNewer: true },
+					options: { table: ledger, acceptNewer: true },
 				},
 			]);
 			if ((sessionsSchema?.version ?? 0) > SESSION_SCHEMA_VERSION)
@@ -1142,66 +1249,115 @@ export class SqlSessionStore implements SessionStore {
 			if (createdShared) {
 				sharedHistory = true;
 				noteStorageSchemaTables(database, Object.values(forkTables));
-			} else if (dialectOf(database).versionedMigrations)
+			} else if (dialect.versionedMigrations)
 				sharedHistory = (sessionsSchema?.version ?? 0) >= SESSION_SCHEMA_VERSION_SHARED_HISTORY;
 		}
 		// Room on each page for the session row's next version, which every append writes, so it stays a HOT update
 		// (#6560). PostgreSQL only; a runtime role leaves it to `atomic storage migrate`.
 		await ensureTableFillfactor(database, {
-			ledger: storageMigrationTable(options.prefix),
+			ledger,
 			domain: SESSION_FILLFACTOR_DOMAIN,
 			revision: 1,
 			table: tables.sessions,
 			fillfactor: SESSION_ROW_FILLFACTOR,
 		});
 		const markers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
-		// Shared-history forks turn on by themselves (#6560). An open that found them on reads nothing more for it; one
-		// that switched the database refreshes the catalog it read, so the stores it opens next see the fork tables.
-		let shared = sharedHistory === true;
-		if (sharedHistory !== true && database.readOnly !== true) {
-			const switched = await SqlSessionStore.switchAtOpen(
-				database,
-				options.prefix ?? "",
-				tables,
-				markers,
-				sharedHistory === false,
-			);
-			if (switched) refreshStorageSchemaCatalog(database);
-			shared = switched;
-		}
 		// Whether a staged clone ever ran here (#5594), asked beside the rest of the open rather than after it.
 		const staging = renderStorageIdentifiers("sessions", SESSION_FORK_STAGING_TABLES, options.prefix).forkStaging;
-		const stagingProbe = dialectOf(database).tableExists(staging);
-		const catalog = await schemaCatalogOf(database);
-		const staged =
-			database.readOnly === true || !database.tryMaintenance
-				? Promise.resolve(false)
-				: catalog !== undefined
-					? Promise.resolve(catalog.hasTable(staging))
-					: database.get(stagingProbe.sql, ...stagingProbe.params).then(
-							(row) => row !== undefined,
-							() => false,
-						);
-		// Neither the snapshot tables nor the search index depend on the other. Where the sessions schema was current,
-		// theirs most likely is too and opening them only reads, so those reads go together. Otherwise the snapshot
-		// tables are set up first, in a transaction of their own as before: set up together, the two transactions would
-		// share one group commit and pay a savepoint each.
-		const opening = current === undefined ? await SqlSnapshotBlobStore.open(database, options.prefix) : undefined;
-		const [blobs, searchIndex, entryByteLength] = await Promise.all([
-			opening ?? SqlSnapshotBlobStore.open(database, options.prefix),
-			SqlSessionSearchIndex.open(database, tables, options.prefix),
-			entryByteLengthOf(database),
-		]);
-		// Where forks share history, the database keeps every snapshot blob a fork inherits from a collection that does not
-		// know forks, as a process of an earlier release that an in-place update caught runs (#6560). Where the database has
-		// the guard, the catalog the open read says so, and nothing more is read.
-		if (shared)
-			await ensureForkInheritedBlobGuard(
-				database,
-				snapshotIndexTables(options.prefix),
-				forkTables.forkSegments,
-				storageMigrationTable(options.prefix),
-			);
+		const stagingProbe = dialect.tableExists(staging);
+		let shared = sharedHistory === true;
+		let blobs: SqlSnapshotBlobStore;
+		let searchIndex: SqlSessionSearchIndex | undefined;
+		let catalog: Awaited<ReturnType<typeof schemaCatalogOf>>;
+		let staged: Promise<boolean>;
+		if (batchedSqliteSetup) {
+			// Queue snapshot tables, snapshot index triggers and search tables into the same SQLite write transaction as
+			// sessions, then commit them all together before inspecting outcomes or returning the store (#6709).
+			catalog = await schemaCatalogOf(database);
+			staged =
+				database.readOnly === true || !database.tryMaintenance
+					? Promise.resolve(false)
+					: catalog !== undefined
+						? Promise.resolve(catalog.hasTable(staging))
+						: database.get(stagingProbe.sql, ...stagingProbe.params).then(
+								(row) => row !== undefined,
+								() => false,
+							);
+			let searchUnavailable = false;
+			blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
+			const openedSearch = await SqlSessionSearchIndex.open(database, tables, options.prefix, () => {
+				searchUnavailable = true;
+			});
+			await Promise.allSettled([entryByteLengthPromise]);
+			await flushStorageSchemaSetups(database, ledger);
+			searchIndex = searchUnavailable ? undefined : openedSearch;
+			shared = createdShared;
+			if (!shared && database.readOnly !== true) {
+				const switched = await SqlSessionStore.switchAtOpen(database, options.prefix ?? "", tables, markers, false);
+				if (switched) {
+					refreshStorageSchemaCatalog(database);
+					shared = true;
+					blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
+					await ensureForkInheritedBlobGuard(
+						database,
+						snapshotIndexTables(options.prefix),
+						forkTables.forkSegments,
+						ledger,
+					);
+				}
+			}
+		} else {
+			// Shared-history forks turn on by themselves (#6560). An open that found them on reads nothing more for it; one
+			// that switched the database refreshes the catalog it read, so the stores it opens next see the fork tables.
+			if (sharedHistory !== true && database.readOnly !== true) {
+				const switched = await SqlSessionStore.switchAtOpen(
+					database,
+					options.prefix ?? "",
+					tables,
+					markers,
+					sharedHistory === false,
+				);
+				if (switched) refreshStorageSchemaCatalog(database);
+				shared = switched;
+			}
+			catalog = await schemaCatalogOf(database);
+			staged =
+				database.readOnly === true || !database.tryMaintenance
+					? Promise.resolve(false)
+					: catalog !== undefined
+						? Promise.resolve(catalog.hasTable(staging))
+						: database.get(stagingProbe.sql, ...stagingProbe.params).then(
+								(row) => row !== undefined,
+								() => false,
+							);
+			// Neither the snapshot tables nor the search index depend on the other. Where the sessions schema was current,
+			// theirs most likely is too and opening them only reads, so those reads go together. Otherwise the snapshot
+			// tables are set up first, in a transaction of their own as before: set up together, the two transactions would
+			// share one group commit and pay a savepoint each.
+			const opening = current === undefined ? await SqlSnapshotBlobStore.open(database, options.prefix) : undefined;
+			let searchUnavailable = false;
+			const [openedBlobs, openedSearch] = await Promise.all([
+				opening ?? SqlSnapshotBlobStore.open(database, options.prefix),
+				SqlSessionSearchIndex.open(database, tables, options.prefix, () => {
+					searchUnavailable = true;
+				}),
+			]);
+			await Promise.allSettled([entryByteLengthPromise]);
+			await flushStorageSchemaSetups(database, ledger);
+			blobs = openedBlobs;
+			searchIndex = searchUnavailable ? undefined : openedSearch;
+			// Where forks share history, the database keeps every snapshot blob a fork inherits from a collection that does
+			// not know forks, as a process of an earlier release that an in-place update caught runs (#6560). Where the
+			// database has the guard, the catalog the open read says so, and nothing more is read.
+			if (shared)
+				await ensureForkInheritedBlobGuard(
+					database,
+					snapshotIndexTables(options.prefix),
+					forkTables.forkSegments,
+					ledger,
+				);
+		}
+		const entryByteLength = await entryByteLengthPromise;
 		// The append function `atomic storage migrate` creates, found by the catalog read the open made anyway (#6599). A
 		// facade or blob store loaded from an earlier release, as a process updated in place can hold, lacks what an
 		// append through it needs, and appends as before.
@@ -1283,7 +1439,10 @@ export class SqlSessionStore implements SessionStore {
 			const present =
 				required.every((table) => catalog.hasTable(table)) &&
 				columns.every(([table, column]) => catalog.hasColumn(table, column));
-			if (!present) return undefined;
+			if (!present) {
+				await Promise.allSettled([orphaned, versionsRead]);
+				return undefined;
+			}
 			legacyBlobs = catalog.hasColumn(tables.blobs, "data");
 		} else {
 			const probes = [
@@ -1294,7 +1453,10 @@ export class SqlSessionStore implements SessionStore {
 			const [legacyFound, ...found] = await Promise.all(
 				[legacy, ...probes].map((probe) => database.get(probe.sql, ...probe.params)),
 			);
-			if (!found.every((row) => row !== undefined)) return undefined;
+			if (!found.every((row) => row !== undefined)) {
+				await Promise.allSettled([orphaned, versionsRead]);
+				return undefined;
+			}
 			legacyBlobs = legacyFound !== undefined;
 		}
 		const versions = await versionsRead;
@@ -1307,8 +1469,10 @@ export class SqlSessionStore implements SessionStore {
 					row.schema_version < SESSION_SCHEMA_VERSION_UNCHUNKED ||
 					row.schema_version > SESSION_SCHEMA_VERSION,
 			)
-		)
+		) {
+			await Promise.allSettled([orphaned]);
 			return undefined;
+		}
 		return {
 			legacyBlobData: legacyBlobs,
 			orphaned: (await orphaned) !== undefined,

@@ -186,13 +186,14 @@ test("a session store opened on a database already set up waits for the connecti
 	assert.equal(requests.waits, 2);
 });
 
-test("a session store opened on a new file sets its schema up in a few dozen waits for the thread, not one per statement", async () => {
+test("a session store opened on a new file sets its schema up in one write lock and four waits (#6709)", async () => {
 	const { database } = await databaseFile();
 	const requests = recordRequests();
 	await (await SqlSessionStore.open(database)).close();
-	// 95 statements, each its own wait, on main: four transactions now, each statement batch one wait. A new database's
-	// sessions schema starts with shared-history forks on, in the transaction that creates it: no switch (#6560).
-	assert.ok(requests.waits <= 30, `${requests.waits} waits for ${requests.sent.length} requests`);
+	// 95 statements on main, then four transactions in ~30 waits (#6560): now one batched write transaction (#6709):
+	// catalog + capability probes (1), begin (2), live catalog (3), all DDL + triggers + search + commit (4).
+	assert.equal(requests.sent.filter((request) => request.kind === "begin").length, 1);
+	assert.equal(requests.waits, 4, `${requests.waits} waits for ${requests.sent.length} requests`);
 });
 
 test("a schema set up in batches on the connection's thread is the one set up a statement at a time", async () => {
