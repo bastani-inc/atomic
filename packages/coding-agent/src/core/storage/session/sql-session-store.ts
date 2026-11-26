@@ -748,6 +748,8 @@ export class SqlSessionStore implements SessionStore {
 	private chatStore?: SqlSessionChatRecords;
 	/** The database's reader handle, once a read opened it: see `readerDatabase`. */
 	private reader?: Promise<SqliteDatabase>;
+	/** Each session's writes this store started and has not finished, each settled as its write is: see `writing`. */
+	private readonly unfinishedWrites = new Map<string, Set<Promise<void>>>();
 	/** The sessions schema version each transaction read first, by its handle: see `sharedHistoryForks`. */
 	private readonly schemaVersions = new WeakMap<SqliteExecutor, Promise<number>>();
 	/** The fork tables under this store's prefix, which exist once its sessions schema is version 3 (#6560). */
@@ -847,7 +849,7 @@ export class SqlSessionStore implements SessionStore {
 		registerHistorySnapshot(this, (sessionId, project) => {
 			this.assertOpen();
 			validateSessionText("sessionId", sessionId);
-			return this.readTransaction(async (tx) => {
+			return this.readTransaction(sessionId, async (tx) => {
 				const head = await this.historyHead(tx, sessionId, true);
 				return project(head.epoch, head.lastSeq, (from, through, backward) =>
 					this.historyPacket(tx, sessionId, head.epoch, from, through, backward),
@@ -1285,13 +1287,19 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/**
-	 * `transaction` for a body that only reads, in one read-only snapshot, on the database's reader handle when it
-	 * offers one: its reads then wait for neither the writes queued on this store's connection nor their locks.
+	 * `transaction` for a body that only reads session `sessionId`, in one read-only snapshot, on the database's reader
+	 * handle when it offers one: its reads then wait for neither the writes queued on this store's connection nor their
+	 * locks. It first waits for the writes of that session this store started and has not finished (`writing`), so a
+	 * caller that starts a write and then reads, without awaiting the write, reads it as the store's own connection would
+	 * have; with none unfinished it waits for nothing.
 	 */
 	private async readTransaction<T>(
+		sessionId: string,
 		body: (tx: SqliteExecutor) => Promise<T>,
 		leading: readonly SqliteStatement[] = [],
 	): Promise<T> {
+		const unfinished = this.unfinishedWrites.get(sessionId);
+		if (unfinished !== undefined) await Promise.all(unfinished);
 		const database = await this.readerDatabase();
 		return database.transaction(
 			async (tx) => {
@@ -1300,6 +1308,27 @@ export class SqlSessionStore implements SessionStore {
 			},
 			this.checkedFirst(leading.length === 0 ? SESSION_READ : { ...SESSION_READ, leading }),
 		);
+	}
+
+	/**
+	 * `write`, a write of session `sessionId` this store has just started, kept in `unfinishedWrites` until it settles,
+	 * for the reads of the session that start meanwhile to wait for (`readTransaction`). No write waits for a read, and
+	 * no write of this store reads through `readTransaction`, so the wait never comes back to the write.
+	 */
+	private writing<T>(sessionId: string, write: Promise<T>): Promise<T> {
+		const writes = this.unfinishedWrites.get(sessionId) ?? new Set<Promise<void>>();
+		this.unfinishedWrites.set(sessionId, writes);
+		const settled = write.then(
+			() => {},
+			() => {},
+		);
+		writes.add(settled);
+		void settled.then(() => {
+			writes.delete(settled);
+			if (writes.size === 0 && this.unfinishedWrites.get(sessionId) === writes)
+				this.unfinishedWrites.delete(sessionId);
+		});
+		return write;
 	}
 
 	/**
@@ -1623,7 +1652,14 @@ export class SqlSessionStore implements SessionStore {
 		return { ...this.database.descriptor, ...(this.prefix === "" ? {} : { prefix: this.prefix }) };
 	}
 
-	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
+	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]) {
+		return this.writing(header.id, this.writeCreate(header, entries));
+	}
+
+	private async writeCreate(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+	): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
@@ -1674,7 +1710,11 @@ export class SqlSessionStore implements SessionStore {
 		return created;
 	}
 
-	async createFork(
+	async createFork(header: SessionRecordHeader, entries: SessionForkSeed, source: ForkArchiveSource) {
+		return this.writing(header.id, this.writeCreateFork(header, entries, source));
+	}
+
+	private async writeCreateFork(
 		header: SessionRecordHeader,
 		entries: SessionForkSeed,
 		source: ForkArchiveSource,
@@ -2019,7 +2059,11 @@ export class SqlSessionStore implements SessionStore {
 	 * while a transaction of this store is open, and the child is published in one transaction: see `fork-staging.ts`.
 	 * `remainingBlobs` names the blobs left to copy with `copySessionBlobs`: those the source no longer holds.
 	 */
-	async createStagedFork(
+	async createStagedFork(header: SessionRecordHeader, stream: SessionForkStream, source: ForkArchiveSource) {
+		return this.writing(header.id, this.writeCreateStagedFork(header, stream, source));
+	}
+
+	private async writeCreateStagedFork(
 		header: SessionRecordHeader,
 		stream: SessionForkStream,
 		source: ForkArchiveSource,
@@ -2181,7 +2225,7 @@ export class SqlSessionStore implements SessionStore {
 		index: number,
 	): Promise<Uint8Array | undefined> {
 		this.assertOpen();
-		return this.readTransaction(async (tx) => {
+		return this.readTransaction(reference.sessionId, async (tx) => {
 			const { sessionId, epoch, seq } = reference;
 			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
@@ -2206,7 +2250,7 @@ export class SqlSessionStore implements SessionStore {
 	/** How many chunks the entry `reference` names is stored in, 0 when it is stored whole, in its generation. */
 	private async readStoredChunks(reference: OversizedSessionEntry): Promise<number> {
 		this.assertOpen();
-		return this.readTransaction(async (tx) => {
+		return this.readTransaction(reference.sessionId, async (tx) => {
 			const { sessionId, epoch, seq } = reference;
 			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== epoch) throw new SessionConflictError(sessionId, seq, head.lastSeq);
@@ -2781,7 +2825,11 @@ export class SqlSessionStore implements SessionStore {
 		await this.insertEntries(tx, child, [edits ? { ...original, ...edits } : original], seq, texts, false);
 	}
 
-	async append(
+	async append(sessionId: string, entries: readonly SessionEntry[], options: SessionWriteOptions) {
+		return this.writing(sessionId, this.writeAppend(sessionId, entries, options));
+	}
+
+	private async writeAppend(
 		sessionId: string,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
@@ -3087,6 +3135,15 @@ $grant$`);
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
+	) {
+		return this.writing(sessionId, this.writeReplace(sessionId, header, entries, options));
+	}
+
+	private async writeReplace(
+		sessionId: string,
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		options: SessionWriteOptions,
 	): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
@@ -3140,7 +3197,14 @@ $grant$`);
 		return written;
 	}
 
-	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions): Promise<SessionWriteResult> {
+	async updateHeader(header: SessionRecordHeader, options: SessionWriteOptions) {
+		return this.writing(header.id, this.writeUpdateHeader(header, options));
+	}
+
+	private async writeUpdateHeader(
+		header: SessionRecordHeader,
+		options: SessionWriteOptions,
+	): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
 		this.writtenRows.delete(header.id);
@@ -3173,7 +3237,7 @@ $grant$`);
 			);
 			if (row) announceHistoryLoad(row.last_seq);
 		}
-		return this.readTransaction((tx) => this.read(tx, sessionId));
+		return this.readTransaction(sessionId, (tx) => this.read(tx, sessionId));
 	}
 
 	async readEntryRange(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
@@ -3316,7 +3380,11 @@ $grant$`);
 		return row ? (JSON.parse(row.header_json) as SessionRecordHeader) : undefined;
 	}
 
-	async delete(sessionId: string): Promise<void> {
+	async delete(sessionId: string) {
+		return this.writing(sessionId, this.writeDelete(sessionId));
+	}
+
+	private async writeDelete(sessionId: string): Promise<void> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		this.writtenRows.delete(sessionId);
@@ -4737,6 +4805,7 @@ $grant$`);
 		const start = Math.max(1, fromSeq);
 		const { tail } = await this.withResumeIndex(sessionId, () =>
 			this.readTransaction(
+				sessionId,
 				async (tx) => {
 					const source = await this.resumeSource(tx, sessionId);
 					const stateSeqs = stateSeqsBefore(source.index, start);
@@ -4766,7 +4835,7 @@ $grant$`);
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		const start = Math.max(1, startSeq);
-		return this.readTransaction(async (tx) => {
+		return this.readTransaction(sessionId, async (tx) => {
 			const head = await this.historyHead(tx, sessionId, true);
 			if (expectedEpoch !== undefined && expectedEpoch !== head.epoch)
 				throw new SessionConflictError(sessionId, endSeq, head.lastSeq);
@@ -4864,7 +4933,7 @@ $grant$`);
 		const { childDisplayCut } = await import("./card-view.js");
 		const { index } = await this.prepareResume(sessionId);
 		if (typeof launch.launchLeafId !== "string") return childDisplayCut(index, launch);
-		return this.readTransaction(async (tx) => {
+		return this.readTransaction(sessionId, async (tx) => {
 			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== index.epoch || head.lastSeq < index.seq)
 				throw new SessionConflictError(sessionId, index.seq, head.lastSeq);
@@ -4921,7 +4990,7 @@ $grant$`);
 		epoch?: string,
 	): Promise<readonly (SessionTreeOutlineEntry | { seq: number; streamed: true })[]> {
 		this.assertOpen();
-		return this.readTransaction(async (tx) => {
+		return this.readTransaction(sessionId, async (tx) => {
 			const head = await this.historyHead(tx, sessionId, true);
 			if ((epoch !== undefined && head.epoch !== epoch) || head.lastSeq < toSeq)
 				throw new SessionConflictError(sessionId, toSeq, head.lastSeq);
@@ -4994,7 +5063,7 @@ $grant$`);
 		const limit = entrySizeLimit(options.limit);
 		const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
 		if (!wanted.length) return { items: [] };
-		return this.readTransaction(async (tx) => {
+		return this.readTransaction(sessionId, async (tx) => {
 			const head = await this.historyHead(tx, sessionId, true);
 			if (head.epoch !== epoch || head.lastSeq < wanted.at(-1)!)
 				throw new SessionConflictError(sessionId, wanted.at(-1)!, head.lastSeq);
@@ -5067,7 +5136,7 @@ $grant$`);
 	): Promise<SessionEntrySizes> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.readTransaction(async (tx) => {
+		return this.readTransaction(sessionId, async (tx) => {
 			const head = await this.historyHead(tx, sessionId, true);
 			const lastChunk = `(SELECT length(data) FROM ${this.tables.entryChunks} c WHERE c.session_id = e.src_id AND c.seq = e.src_seq AND c.idx = e.chunks - 1)`;
 			const tables = await this.viewTables(tx, sessionId);
@@ -5451,7 +5520,7 @@ $grant$`);
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		const { candidates, afterSeq, limit } = taskReferenceDuplicateQuery(query);
-		return this.readTransaction(async (tx) => {
+		return this.readTransaction(sessionId, async (tx) => {
 			// A fork that shares its parent's history finds the links it inherits through its view (#6560); any other
 			// session, which the head read tells apart, reads its own links by key.
 			const tables = await this.viewTables(tx, sessionId);
@@ -5530,7 +5599,7 @@ $grant$`);
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		const { indexedForkWindow, forkMetadata, byteMetadata, locateFork } = await import("./fork-window.js");
-		return this.readTransaction(async (tx) => {
+		return this.readTransaction(sessionId, async (tx) => {
 			// Check the index in the same snapshot as the entries. A peer can legitimately invalidate or
 			// remove it when appending to a side branch; that must not make a committed fork point disappear.
 			const snapshots = snapshotIndexTables(this.prefix);
@@ -5829,6 +5898,7 @@ $grant$`);
 		if (leafId === undefined && throughSeq === undefined) {
 			try {
 				return await this.readTransaction(
+					sessionId,
 					async (tx) => {
 						const { header, index } = await this.resumeSource(tx, sessionId);
 						return this.resumeIn(tx, sessionId, header, index, options);
@@ -5841,7 +5911,7 @@ $grant$`);
 		}
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const { index, revision } = await this.prepareResume(sessionId, leafId, throughSeq);
-			const resume = await this.readTransaction(async (tx) => {
+			const resume = await this.readTransaction(sessionId, async (tx) => {
 				const { segments } = await this.viewTables(tx);
 				const head = await tx.get<SqliteRow & { header_json: string; revision: string; forked?: number }>(
 					`SELECT header_json,revision${this.forkedColumn(segments)} FROM ${this.tables.sessions} WHERE id = ?`,
@@ -5892,6 +5962,7 @@ $grant$`);
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
 		const { point } = await this.withResumeIndex(sessionId, () =>
 			this.readTransaction(
+				sessionId,
 				async (tx) => {
 					const source = await this.resumeSource(tx, sessionId);
 					const { index } = source;

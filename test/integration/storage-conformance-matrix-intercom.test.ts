@@ -206,6 +206,79 @@ for (const backend of storageBackends) {
 		},
 	);
 	run(
+		`${intercom}: a read through the reader sees the broker's writes it started before it, awaited or not`,
+		async () => {
+			const scope = await backend.openScope();
+			try {
+				const { state, bus } = await openIntercomBrokerState({
+					prefix: scope.prefix,
+					async openDatabase() {
+						const database = await scope.connect();
+						// A database that offers a reader, as the adapters do.
+						database.openReader ??= () => scope.connect();
+						return database;
+					},
+				});
+				try {
+					for (let round = 0; round < 4; round++) {
+						const targetIdentity = `target-${round}`;
+						const sessionId = `session-${round}`;
+						const recorded = state.knownSessions.record({
+							targetIdentity,
+							intercomSessionId: sessionId,
+							group: "team",
+							groups: ["team"],
+						});
+						const known = await state.knownSessions.lookup(sessionId, KNOWN_SESSION_RETENTION_MS);
+						assert.equal(known.status === "found" ? known.sessions.length : 0, 1, `lookup after record ${round}`);
+						await recorded;
+						const bound = state.knownSessions.bind(
+							`bound-${round}`,
+							`address-${round}`,
+							KNOWN_SESSION_RETENTION_MS,
+						);
+						assert.deepEqual(
+							await state.knownSessions.binding(`bound-${round}`, KNOWN_SESSION_RETENTION_MS),
+							{ status: "bound", returnAddress: `address-${round}` },
+							`binding after bind ${round}`,
+						);
+						await bound;
+						const presence = {
+							kind: "presence",
+							targetIdentity,
+							session: { ...sender, id: sessionId, name: sessionId },
+						} as const;
+						const acquired = state.leases.acquire(presence, "broker-a", BROKER_LEASE_STALE_AFTER_MS);
+						const [read, live] = await Promise.all([
+							state.leases.read({ kind: "presence", targetIdentity }),
+							state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS),
+						]);
+						assert.equal(read.status, "found", `read after acquire ${round}`);
+						assert.ok(
+							live.some((lease) => lease.holderId === "broker-a" && lease.key.kind === "presence"),
+							`live leases after acquire ${round}`,
+						);
+						const taken = await acquired;
+						assert.equal(taken.status, "acquired");
+						if (taken.status !== "acquired") return;
+						const released = state.leases.release(taken.lease);
+						assert.deepEqual(
+							await state.leases.read({ kind: "presence", targetIdentity }),
+							{ status: "missing" },
+							`read after release ${round}`,
+						);
+						await released;
+					}
+				} finally {
+					await bus.close();
+					await state.close();
+				}
+			} finally {
+				await scope.close();
+			}
+		},
+	);
+	run(
 		`${intercom}: a send queues its message only under its own reservation, while another connection reserves it (#6560)`,
 		async () => {
 			const scope = await backend.openScope();
