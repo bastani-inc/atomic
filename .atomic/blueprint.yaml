@@ -2,7 +2,7 @@ initialize:
   - name: Install Node.js
     uses: github.com/actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
     with:
-      node-version: ">=24.20.0 <25"
+      node-version-file: package.json
       package-manager-cache: "false"
   - name: Install Bun
     uses: github.com/oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6

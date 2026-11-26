@@ -112,7 +112,7 @@ jobs:
       # here rather than only by installed-package-node-extensions.test.ts.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=24.20.0 <25"
+          node-version-file: package.json
           package-manager-cache: false
       # The bindings depend only on these sources and the Rust compiler, and
       # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
@@ -275,7 +275,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=24.20.0 <25"
+          node-version-file: package.json
           package-manager-cache: false
       # The bindings depend only on these sources and the Rust compiler, and
       # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
@@ -415,7 +415,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=24.20.0 <25"
+          node-version-file: package.json
           package-manager-cache: false
       - name: Week for the native bindings cache key
         id: week
@@ -548,7 +548,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=24.20.0 <25"
+          node-version-file: package.json
           package-manager-cache: false
       # The bindings depend only on these sources and the Rust compiler, and
       # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
@@ -710,7 +710,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=24.20.0 <25"
+          node-version-file: package.json
           package-manager-cache: false
       - name: Configure Namespace npm cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
@@ -781,7 +781,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=24.20.0 <25"
+          node-version-file: package.json
           package-manager-cache: false
       # The bindings depend only on these sources and the Rust compiler, and
       # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
@@ -1026,7 +1026,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=24.20.0 <25"
+          node-version-file: package.json
           package-manager-cache: false
       - name: Week for the native bindings cache key
         id: week
@@ -1085,25 +1085,6 @@ jobs:
       - name: Docs link validation
         working-directory: packages/coding-agent
         run: npm run docs:check
-      - name: Mintlify docs validation
-        if: github.event_name == 'pull_request'
-        working-directory: packages/coding-agent/docs
-        # Pinned: mintlify@4.2.732 pulls a package missing from the registry.
-        # Unpin once upstream publishes a resolvable release.
-        # bunx, deliberately without `--bun`, and not npx — both verified on a
-        # Linux + Node 22 + Bun 1.4.0 container (Node 24 is equally below mintlify's limit):
-        # - `bunx --bun` re-hosts the CLI wrapper's spawned `node` child on Bun,
-        #   and Bun 1.4.0 self-reports Node-compat 26.x, which trips mintlify's
-        #   "not supported on node versions 25+" refusal.
-        # - npx chdirs to the nearest package root (packages/coding-agent), so
-        #   mintlify resolves docs.json one directory up and fails with "must be
-        #   run in a directory where a docs.json file exists".
-        # Plain bunx preserves this working-directory and the wrapper's `node`
-        # child resolves to the Node 24 LTS this job pins above.
-        timeout-minutes: 5
-        run: |
-          bunx mintlify@4.2.731 validate
-          bunx mintlify@4.2.731 broken-links
       # pi parity: repository scripts that Node can run are tested with Node's
       # own runner rather than through the workspace suites.
       - name: Script tests
@@ -1112,6 +1093,34 @@ jobs:
         run: ./scripts/test-installers-containers.sh
       - name: Deterministic CI and release contracts
         run: npm run test:ci-contracts
+      # Mintlify refuses Node 25 and later, while package.json's engines.node (>=24.20.0) resolves to
+      # the newest Node release. This is the only setup-node step that does not read package.json: it
+      # switches to the newest Node 24 release with the same floor, last so no other step runs on it.
+      - name: Node.js 24 for Mintlify
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ">=24.20.0 <25"
+          package-manager-cache: false
+      - name: Mintlify docs validation
+        if: github.event_name == 'pull_request'
+        working-directory: packages/coding-agent/docs
+        # Pinned: mintlify@4.2.732 pulls a package missing from the registry.
+        # Unpin once upstream publishes a resolvable release.
+        # bunx, deliberately without `--bun`, and not npx — both verified on a
+        # Linux + Node 22 + Bun 1.4.0 container:
+        # - `bunx --bun` re-hosts the CLI wrapper's spawned `node` child on Bun,
+        #   and Bun 1.4.0 self-reports Node-compat 26.x, which trips mintlify's
+        #   "not supported on node versions 25+" refusal.
+        # - npx chdirs to the nearest package root (packages/coding-agent), so
+        #   mintlify resolves docs.json one directory up and fails with "must be
+        #   run in a directory where a docs.json file exists".
+        # Plain bunx preserves this working-directory and the wrapper's `node`
+        # child resolves to the Node 24 set up by the step above.
+        timeout-minutes: 5
+        run: |
+          bunx mintlify@4.2.731 validate
+          bunx mintlify@4.2.731 broken-links
 
   test:
     # GitHub counts a skipped required check as satisfied, so in a draft this job is skipped under another name and

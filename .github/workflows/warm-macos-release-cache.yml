@@ -26,7 +26,7 @@ jobs:
           bun-version: 1.4.5
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=24.20.0 <25"
+          node-version-file: package.json
           package-manager-cache: false
       - name: Configure macOS release dependency cache
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
@@ -38,7 +38,7 @@ jobs:
       - name: Cache Intel Node for Rosetta smoke
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ">=24.20.0 <25"
+          node-version-file: package.json
           architecture: x64
           package-manager-cache: false
       - name: Download locked Intel npm dependencies
