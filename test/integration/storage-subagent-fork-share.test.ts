@@ -17,8 +17,8 @@ import type {
 	SessionStore,
 	SessionWriteResult,
 } from "../../packages/coding-agent/src/core/storage/session/types.js";
-import { countRoundTrips } from "../helpers/postgres-round-trips.js";
 import { storageBackends } from "../helpers/storage-backends.js";
+import { countStorageRoundTrips } from "../helpers/storage-round-trips.js";
 import {
 	bytesOf,
 	header,
@@ -38,6 +38,8 @@ const CWD = "/project";
 const PARENT_LENGTH = 500;
 /** The label's place in the parent: the child drops it, so the entry after it is rewritten onto the one before. */
 const LABEL_INDEX = 250;
+/** The entries a parent appends in this process, one at a time, after it was created. */
+const APPENDED = 200;
 
 /** A linear parent of `length` entries, with a label at `LABEL_INDEX` that marks an earlier entry. */
 function parentEntries(length: number): SessionEntry[] {
@@ -145,7 +147,6 @@ async function richParent(store: SqlSessionStore, id: string): Promise<void> {
 
 for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
-	const postgres = backend.name.toLowerCase().includes("postgres");
 	describe.skipIf(backend.skipReason !== undefined)(
 		`a subagent's fork shares its parent's history on ${name} (#6560)`,
 		() => {
@@ -159,15 +160,15 @@ for (const backend of storageBackends) {
 						const made = parentEntries(PARENT_LENGTH);
 						await store.create(header("p"), made);
 						const parent = await SessionManager.open(store, "p", CWD);
-						const trips = postgres ? countRoundTrips() : undefined;
+						const trips = countStorageRoundTrips(backend);
 						// What a fresh session costs: creating one of a single entry.
 						await store.create(header("fresh"), [user("f1", null, "hello", 1)]);
-						const freshTrips = trips?.take() ?? 0;
+						const freshTrips = trips.take();
 						let forkTrips = 0;
 						const { forks } = forksOf(store, {
-							before: () => void trips?.take(),
+							before: () => void trips.take(),
 							after: () => {
-								forkTrips = trips?.take() ?? 0;
+								forkTrips = trips.take();
 							},
 						});
 						try {
@@ -193,18 +194,27 @@ for (const backend of storageBackends) {
 
 							// A copy of the same fork: `create` of the entries it was given.
 							const copyHeader = { ...forks[0]!.header, id: "copy" };
-							trips?.take();
+							trips.take();
 							await store.create(copyHeader, kept);
-							const createTrips = trips?.take() ?? 0;
-							if (postgres) {
-								const report = `fork ${forkTrips}, a fresh session ${freshTrips}, a copy ${createTrips}`;
-								console.info(`round trips of a 500-entry captureFork: ${report}`);
-								assert.ok(forkTrips > 0 && forkTrips <= freshTrips, report);
-							}
+							const createTrips = trips.take();
+							// The first load of each by a store that never read either, as another process makes it.
+							const reader = await SqlSessionStore.open(await scope.connect(), { prefix: scope.prefix });
+							// Its first read opens its read handle, which neither load below should pay for.
+							await reader.load("fresh");
+							trips.take();
+							const forkLoad = await reader.load(id);
+							const forkLoadTrips = trips.take();
+							const copyLoad = await reader.load("copy");
+							const copyLoadTrips = trips.take();
+							const report = `fork ${forkTrips}, a fresh session ${freshTrips}, a copy ${createTrips}; first load of the fork ${forkLoadTrips}, of the copy ${copyLoadTrips}`;
+							console.info(`round trips of a 500-entry captureFork on ${backend.name}: ${report}`);
+							assert.ok(forkTrips > 0 && forkTrips <= freshTrips, report);
+							assert.ok(forkLoadTrips > 0 && forkLoadTrips <= copyLoadTrips, report);
+							assert.deepEqual(forkLoad.entries, copyLoad.entries);
 							assert.deepEqual((await store.load(id)).entries, (await store.load("copy")).entries);
 							assert.deepEqual(child.getEntries(), (await opened(store, "copy")).entries);
 						} finally {
-							trips?.restore();
+							trips.restore();
 						}
 					}),
 				SERVER_TIMEOUT_MS,
@@ -380,6 +390,109 @@ for (const backend of storageBackends) {
 						assert.deepEqual(await ownRows(database, scope.prefix, clone), []);
 						assert.deepEqual(await segments(database, scope.prefix, clone), [["p", 1, PARENT_LENGTH, 0]]);
 						assert.deepEqual((await store.load(clone)).entries, made);
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"a parent that appended its whole history in this process, never read back, shares it with its forks and clones, in the round trips of creating a fresh session (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const database = await scope.connect();
+						const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+						await enable(store);
+						const parent = await SessionManager.create(store, CWD);
+						const id = parent.getSessionId();
+						const ids: string[] = [];
+						for (let index = 0; index < APPENDED; index++) {
+							ids.push(await parent.appendMessage({ role: "user", content: `turn ${index}`, timestamp: index }));
+							// A label the fork drops and appends again: the entry after it is rewritten onto the one before.
+							if (index === APPENDED / 2) await parent.appendLabelChange(ids[10]!, "kept");
+						}
+						const length = APPENDED + 1;
+						const labelSeq = APPENDED / 2 + 2;
+						const trips = countStorageRoundTrips(backend);
+						try {
+							await store.create(header("fresh"), [user("f1", null, "hello", 1)]);
+							const freshTrips = trips.take();
+							let forkTrips = 0;
+							forksOf(store, {
+								before: () => void trips.take(),
+								after: () => {
+									forkTrips = trips.take();
+								},
+							});
+
+							const child = await parent.captureFork(parent.getLeafId()!, { internal: true })();
+							const forked = child.getSessionId();
+							const captureTrips = forkTrips;
+							assert.deepEqual(
+								(await ownRows(database, scope.prefix, forked)).map(([seq]) => seq),
+								[labelSeq, length],
+							);
+							assert.deepEqual(await segments(database, scope.prefix, forked), [
+								[id, 1, labelSeq - 1, 0],
+								// The parent's label is at seq labelSeq, the rewritten entry after it at labelSeq + 1.
+								[id, labelSeq + 2, length, labelSeq],
+							]);
+
+							// A clone of the live manager forks the rows it holds as it appended them.
+							const clone = (await parent.forkTo(CWD, store)).getSessionId();
+							const cloneTrips = forkTrips;
+							assert.deepEqual(await ownRows(database, scope.prefix, clone), []);
+							assert.deepEqual(await segments(database, scope.prefix, clone), [[id, 1, length, 0]]);
+							const report = `captureFork ${captureTrips}, clone ${cloneTrips}, a fresh session ${freshTrips}`;
+							console.info(`round trips after ${APPENDED} appends on ${backend.name}: ${report}`);
+							assert.ok(captureTrips > 0 && captureTrips <= freshTrips, report);
+							assert.ok(cloneTrips > 0 && cloneTrips <= freshTrips, report);
+
+							// The parent goes on: what the fork and the clone hold stays as it was.
+							const forkView = (await store.load(forked)).entries;
+							const cloneView = (await store.load(clone)).entries;
+							for (let index = 0; index < 10; index++)
+								await parent.appendMessage({ role: "user", content: `later ${index}`, timestamp: index });
+							assert.equal((await store.load(id)).entries.length, length + 10);
+							assert.deepEqual((await store.load(forked)).entries, forkView);
+							assert.deepEqual((await store.load(clone)).entries, cloneView);
+							assert.deepEqual(cloneView, (await store.load(id)).entries.slice(0, length));
+							assert.deepEqual((await SessionManager.open(store, forked, CWD)).getEntries(), child.getEntries());
+
+							// A clone after those appends still shares the whole history: the generation did not change.
+							const later = (await parent.forkTo(CWD, store)).getSessionId();
+							assert.deepEqual(await ownRows(database, scope.prefix, later), []);
+							assert.deepEqual(await segments(database, scope.prefix, later), [[id, 1, length + 10, 0]]);
+						} finally {
+							trips.restore();
+						}
+					}),
+				SERVER_TIMEOUT_MS,
+			);
+
+			test(
+				"an appended entry edited in memory before a clone is stored by the clone, never shared (#6560)",
+				() =>
+					withBackendScope(backend, async (scope) => {
+						const database = await scope.connect();
+						const store = await SqlSessionStore.open(database, { prefix: scope.prefix });
+						await enable(store);
+						const parent = await SessionManager.create(store, CWD);
+						const id = parent.getSessionId();
+						const ids: string[] = [];
+						for (let index = 0; index < 30; index++)
+							ids.push(await parent.appendMessage({ role: "user", content: `turn ${index}`, timestamp: index }));
+						const edited = parent.getEntry(ids[10]!) as SessionEntry & { message: { content: string } };
+						edited.message.content = "edited in memory";
+
+						const clone = (await parent.forkTo(CWD, store)).getSessionId();
+
+						assert.deepEqual(await ownRows(database, scope.prefix, clone), [[11, ids[10]!]]);
+						assert.deepEqual(await segments(database, scope.prefix, clone), [
+							[id, 1, 10, 0],
+							[id, 12, 30, 11],
+						]);
+						const view = (await store.load(clone)).entries;
+						assert.equal((view[10] as typeof edited).message.content, "edited in memory");
+						assert.equal(((await store.load(id)).entries[10] as typeof edited).message.content, "turn 10");
 					}),
 				SERVER_TIMEOUT_MS,
 			);
