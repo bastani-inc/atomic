@@ -1332,6 +1332,12 @@ export class SqlSessionStore implements SessionStore {
 					? (sessionId, hash, offset, legacyBytes) => store.readBlobPart(sessionId, hash, offset, legacyBytes)
 					: undefined;
 			},
+			sourceBlobFirstParts: (source) => {
+				const store = nativeForkReader(source, "blob");
+				return store instanceof SqlSessionStore && store.getBlob === SqlSessionStore.prototype.getBlob
+					? (sessionId, hashes, maxBytes) => store.readBlobFirstParts(sessionId, hashes, maxBytes)
+					: undefined;
+			},
 		};
 	}
 
@@ -1378,6 +1384,39 @@ export class SqlSessionStore implements SessionStore {
 			if (!row) throw new StorageUnavailableError(this.descriptor, new Error(`Missing session entry ${seq}`));
 			return Number(row.chunks);
 		});
+	}
+
+	/**
+	 * The headers of the blobs `hashes` of session `sessionId` in one read (#6560), each with its first chunk row when it
+	 * is stored in chunks of at most `maxBytes` in all, as `readBlobPart` reads them at offset 0. A blob the session does
+	 * not hold is left out; one in the legacy one-row layout comes without its value.
+	 */
+	private async readBlobFirstParts(
+		sessionId: string,
+		hashes: readonly string[],
+		maxBytes: number,
+	): Promise<Map<string, { readonly bytes: number; readonly chunks: number; readonly data?: Uint8Array }>> {
+		this.assertOpen();
+		const parts = new Map<string, { readonly bytes: number; readonly chunks: number; readonly data?: Uint8Array }>();
+		if (hashes.length === 0) return parts;
+		const rows = await this.database.all<
+			SqliteRow & { hash: string; bytes: number; chunks: number; data: Uint8Array | null }
+		>(
+			`SELECT b.hash, b.bytes, b.chunks, CASE WHEN b.chunks >= 0 AND b.bytes <= ? THEN c.data END AS data
+				FROM ${this.tables.blobs} b LEFT JOIN ${this.tables.blobChunks} c
+				ON c.session_id = b.session_id AND c.hash = b.hash AND c.idx = 0
+				WHERE b.session_id = ? AND b.hash IN (${hashes.map(() => "?").join(", ")})`,
+			maxBytes,
+			sessionId,
+			...hashes,
+		);
+		for (const row of rows)
+			parts.set(String(row.hash), {
+				bytes: Number(row.bytes),
+				chunks: Number(row.chunks),
+				...(row.data == null ? {} : { data: row.data }),
+			});
+		return parts;
 	}
 
 	/**

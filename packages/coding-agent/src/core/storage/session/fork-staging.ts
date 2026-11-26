@@ -28,7 +28,7 @@ import type {
 	SessionStore,
 	SessionWriteResult,
 } from "./types.js";
-import { SESSION_HISTORY_CHUNK_BYTES } from "./types.js";
+import { SESSION_HISTORY_CHUNK_BYTES, SESSION_HISTORY_PAGE_BYTES } from "./types.js";
 import { validateSessionEntries } from "./validation.js";
 
 /*
@@ -157,7 +157,25 @@ export interface ForkStagingTarget {
 				legacyBytes: number,
 		  ) => Promise<ForkStagingBlobPart | undefined>)
 		| undefined;
+	/**
+	 * Optional. A reader of the first parts of several blobs in one source read (#6560), when `store` is a SQL session
+	 * store whose blob reads are its own: for each of `hashes` the source holds, its header, and, for a blob in chunks of
+	 * at most `maxBytes`, its first chunk row, as `sourceBlobParts` reads them at offset 0. A hash the source does not
+	 * hold is left out.
+	 */
+	sourceBlobFirstParts?(
+		store: SessionStore,
+	):
+		| ((
+				sessionId: string,
+				hashes: readonly string[],
+				maxBytes: number,
+		  ) => Promise<ReadonlyMap<string, ForkStagingBlobPart>>)
+		| undefined;
 }
+
+/** How many blobs one read of their first parts names. */
+const BLOB_FIRST_PARTS_PER_READ = 64;
 
 /** Creating the staging table: the table's own lock domain keeps concurrent creators apart. */
 function stagingTransaction(table: string): SqliteTransactionOptions {
@@ -382,10 +400,11 @@ async function wholeSourceFork(
 
 /**
  * `store` as the clone reads it: when the source is a SQL session store, the 64 KiB reads of an entry it keeps in
- * chunks are served from that entry's stored chunk rows, each fetched whole in one source read. The most recently read
- * rows are held, up to {@link FORK_STAGING_READ_CACHE_BYTES}, so the passes the feed and the copy make over one entry
- * fetch each row once. Each fetch checks the entry's generation, as each read did; the rows of a generation never
- * change. Anything else reads as before.
+ * chunks are served from that entry's stored chunk rows, each fetched whole in one source read, and those of an entry
+ * it stores whole from parts as large, each one read (#6560). The most recently read parts are held, up to
+ * {@link FORK_STAGING_READ_CACHE_BYTES}, so the passes the feed and the copy make over one entry fetch each part once.
+ * Each fetch checks the entry's generation, as each read did; the rows of a generation never change. Anything else
+ * reads as before.
  */
 function chunkRowReader(
 	store: SessionStore,
@@ -396,19 +415,20 @@ function chunkRowReader(
 	if (rows === undefined || read === undefined) return store;
 	const held = new Map<string, Uint8Array>();
 	let heldBytes = 0;
-	/** The last entry found stored whole, whose reads go to the store as without this reader. */
+	/** The last entry found stored whole, whose parts are read as cuts of its value. */
 	let whole: string | undefined;
 	const readEntryChunk = async (reference: OversizedSessionEntry, offset: number): Promise<Uint8Array> => {
 		const index = Math.floor(offset / chunkBytes);
 		const entry = `${reference.sessionId}\u0000${reference.epoch}\u0000${reference.seq}`;
-		if (whole === entry) return read(reference, offset);
 		const key = `${entry}\u0000${index}`;
+		const start = offset - index * chunkBytes;
 		let data = held.get(key);
 		if (data === undefined) {
-			const fetched = await rows(reference, index);
+			let fetched = whole === entry ? undefined : await rows(reference, index);
 			if (fetched === undefined) {
 				whole = entry;
-				return read(reference, offset);
+				fetched = await read(reference, index * chunkBytes, Math.min(chunkBytes, SESSION_HISTORY_PAGE_BYTES));
+				if (fetched.byteLength <= start) return read(reference, offset);
 			}
 			data = fetched;
 			held.set(key, data);
@@ -422,7 +442,6 @@ function chunkRowReader(
 			held.delete(key);
 			held.set(key, data);
 		}
-		const start = offset - index * chunkBytes;
 		return data.subarray(start, start + SESSION_HISTORY_CHUNK_BYTES);
 	};
 	return new Proxy(store, {
@@ -642,7 +661,14 @@ async function stageAndPublish(
 							],
 						}),
 					);
-					if (inserts.length === 0 || transactionFinisher(tx)?.(inserts) === true) return;
+					const finish = transactionFinisher(tx);
+					if (inserts.length === 0 || finish?.(inserts) === true) return;
+					// More than the commit's request takes: a pipelined connection still takes them all without waiting
+					// for each answer, in order, so a large batch costs a round trip, not one per row (#6560).
+					if (finish !== undefined) {
+						await Promise.all(inserts.map((insert) => tx.run(insert.sql, ...insert.params)));
+						return;
+					}
 					await statementBatch(tx, inserts, []);
 				},
 				{ ...options, leading: [first] },
@@ -778,13 +804,28 @@ async function stageAndPublish(
 		let blobRows = 0;
 		let blobChunkRows = 0;
 		let ordinal = 0;
-		for (const hash of hashes) {
+		// The headers and first chunks of small blobs, read a group at a time instead of one read per blob (#6560).
+		const firstParts = target.ownsBlobs ? target.sourceBlobFirstParts?.(source.store) : undefined;
+		const blobHashes = [...hashes];
+		let prefetched: {
+			readonly hashes: ReadonlySet<string>;
+			readonly parts: ReadonlyMap<string, ForkStagingBlobPart>;
+		} = { hashes: new Set(), parts: new Map() };
+		for (const [index, hash] of blobHashes.entries()) {
 			if (!target.ownsBlobs) {
 				leftForPutBlob.push(hash);
 				continue;
 			}
+			if (firstParts !== undefined && !prefetched.hashes.has(hash)) {
+				const group = blobHashes.slice(index, index + BLOB_FIRST_PARTS_PER_READ);
+				prefetched = {
+					hashes: new Set(group),
+					parts: await firstParts(source.sessionId, group, SESSION_HISTORY_CHUNK_BYTES),
+				};
+			}
 			const at = ordinal++;
-			const chunks = await stageBlob(target, source, hash, at, stage, flush);
+			const known = prefetched.hashes.has(hash) ? { first: prefetched.parts.get(hash) } : undefined;
+			const chunks = await stageBlob(target, source, hash, at, stage, flush, known);
 			if (chunks === undefined) missing.push(hash);
 			else {
 				blobRows++;
@@ -923,14 +964,23 @@ async function stageBlob(
 	ordinal: number,
 	stage: (row: StagedRow) => Promise<void>,
 	flush: () => Promise<void>,
+	known?: { readonly first: ForkStagingBlobPart | undefined },
 ): Promise<number | undefined> {
 	const size = target.blobChunkBytes;
 	const parts = target.sourceBlobParts(source.store);
 	const incomplete = (bytes: number) =>
 		new SessionBlobError("blob-incomplete", { sessionId: source.sessionId, hash, bytes });
 	if (parts !== undefined) {
-		// The header, and the first chunk row of a chunked blob; a legacy blob's value is not read yet.
-		const first = await parts(source.sessionId, hash, 0, 0);
+		// The header, and the first chunk row of a chunked blob; a legacy blob's value is not read yet. A group read may
+		// have read them already, or found the blob gone; a larger blob's are read here.
+		const first =
+			known !== undefined &&
+			(known.first === undefined ||
+				known.first.chunks === -1 ||
+				known.first.data !== undefined ||
+				known.first.bytes === 0)
+				? known.first
+				: await parts(source.sessionId, hash, 0, 0);
 		if (first === undefined) return undefined;
 		const { bytes } = first;
 		const chunks = Math.ceil(bytes / size);
