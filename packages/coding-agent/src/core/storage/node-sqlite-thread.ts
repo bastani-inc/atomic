@@ -17,7 +17,13 @@ ${EVAL_WORKER_BUILTIN}
 const { parentPort, workerData } = builtin("node:worker_threads");
 process.emitWarning = () => {};
 const { DatabaseSync } = builtin("node:sqlite");
+const { statSync } = builtin("node:fs");
 let database;
+let walPath;
+let lastWalSize = -1n;
+let lastWalMtimeNs = -1n;
+const WAL_SIZE_LIMIT_BYTES = BigInt(workerData.walSizeLimit);
+const CHECKPOINT_AFTER = new Set(["exec", "run", "get", "all", "begin", "sequence"]);
 
 const STANDARD_ERRORS = [Error, TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError];
 // Bun stamps every error with where it was thrown; the caller's copy gets its own.
@@ -94,7 +100,19 @@ function table(rows) {
 const handlers = {
 	open: (request) => {
 		database = new DatabaseSync(request.path, { readOnly: request.readOnly });
-		return database.location();
+		const location = database.location();
+		if (!request.readOnly && typeof location === "string" && location.length > 0) {
+			walPath = location + "-wal";
+			lastWalSize = -1n;
+			lastWalMtimeNs = -1n;
+			database.exec(
+				"PRAGMA wal_autocheckpoint=" +
+					workerData.walAutoCheckpoint +
+					"; PRAGMA journal_size_limit=" +
+					workerData.walSizeLimit,
+			);
+		}
+		return location;
 	},
 	exec: (request) => {
 		database.exec(request.sql);
@@ -204,7 +222,9 @@ const handlers = {
 	},
 	close: () => {
 		prepared.clear();
+		walPath = undefined;
 		database?.close();
+		database = undefined;
 		globalThis.Bun?.gc?.(true);
 	},
 };
@@ -263,12 +283,37 @@ function handle(request) {
 	}
 }
 
+function maybeCheckpoint(kind) {
+	if (walPath === undefined || database === undefined || !CHECKPOINT_AFTER.has(kind)) return;
+	try {
+		if (database.isTransaction !== false) return;
+		const stat = statSync(walPath, { bigint: true, throwIfNoEntry: false });
+		if (stat === undefined) {
+			lastWalSize = -1n;
+			lastWalMtimeNs = -1n;
+			return;
+		}
+		if (stat.size <= WAL_SIZE_LIMIT_BYTES) {
+			lastWalSize = stat.size;
+			lastWalMtimeNs = stat.mtimeNs;
+			return;
+		}
+		if (stat.size === lastWalSize && stat.mtimeNs === lastWalMtimeNs) return;
+		lastWalSize = stat.size;
+		lastWalMtimeNs = stat.mtimeNs;
+		database.exec("PRAGMA wal_checkpoint(PASSIVE)");
+	} catch {}
+}
+
 parentPort.on("message", (request) => {
+	let answered = false;
 	try {
 		parentPort.postMessage({ id: request.id, value: handle(request), tx: inTransaction() });
+		answered = true;
 	} catch (error) {
 		parentPort.postMessage({ id: request.id, failure: failure(error), tx: inTransaction() });
 	}
+	if (answered) maybeCheckpoint(request.kind);
 });
 `;
 
@@ -490,6 +535,11 @@ let spare: ThreadConnection | undefined;
 /** How many prepared statements a connection keeps for reuse, least recently used first out. */
 export const STATEMENT_CACHE_SIZE = 256;
 
+/** Safety-net automatic WAL checkpoint threshold in pages on writable file connections. */
+const WAL_AUTO_CHECKPOINT = 10_000;
+/** Target write-ahead log size limit in bytes (4 MiB) for journal truncation and post-response checkpoints. */
+const WAL_SIZE_LIMIT = 4 * 1024 * 1024;
+
 /** A node:sqlite connection running on its own worker thread. */
 export class ThreadConnection {
 	private readonly worker: Worker;
@@ -511,7 +561,12 @@ export class ThreadConnection {
 		this.worker = new Worker(CONNECTION_SOURCE, {
 			eval: true,
 			execArgv: [],
-			workerData: { nowSql: `SELECT ${sqliteDialect.nowMs} AS now`, statementCacheSize: STATEMENT_CACHE_SIZE },
+			workerData: {
+				nowSql: `SELECT ${sqliteDialect.nowMs} AS now`,
+				statementCacheSize: STATEMENT_CACHE_SIZE,
+				walAutoCheckpoint: WAL_AUTO_CHECKPOINT,
+				walSizeLimit: WAL_SIZE_LIMIT,
+			},
 		});
 		this.worker.on("message", (reply: ConnectionReply) => this.receive(reply));
 		this.worker.on("error", (error: Error) => this.end(error));
