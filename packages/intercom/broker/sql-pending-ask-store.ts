@@ -19,7 +19,7 @@ import type {
 } from "./multinode-state-store.js";
 import { SETTLED_ASK_RETENTION_MS } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema, withBrokerSchemaCatalog } from "./sql-schema.js";
+import { ensureBrokerSchema, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
 
 type AskRow = SqliteRow & { sender_session_id: string; target_session_id: string; message_id: string };
 
@@ -65,7 +65,7 @@ async function openPendingAskStoreInCatalog({
 	 * Its transactions read and write this table and the settled asks alone, which no other store touches, so they
 	 * exclude one another, not every writer of the database (#6560).
 	 */
-	const serial = { concurrency: { kind: "serial", domain: table } } as const;
+	const serial = { ...RETRY_UNAPPLIED, concurrency: { kind: "serial", domain: table } } as const;
 	await ensureBrokerSchema(database, prefix, "pending-asks", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(

@@ -16,7 +16,8 @@
 // `record` writes a release's record: for the application and the packages of its own it depends on, each package's
 // exports map, each JavaScript file's export names, the files its code loads on demand, the files the CLI loads at start
 // and the files every running process has loaded. `check` lists what a build breaks for a process of each recorded
-// release, and `release` does it for a packed release in the release workflow: releases before `GUARDED_SINCE` must be
+// release, and `release` does it for a packed release in the release workflow, also against the newest release published
+// before it and the newest stable one, which most installations it replaces run: releases before `GUARDED_SINCE` must be
 // recorded before building so the build's gates recognize them (`packages/coding-agent/scripts/in-place-update-gate.mjs`),
 // while releases from `GUARDED_SINCE` onward self-guard on-demand imports at call sites and are downloaded from npm on
 // the fly when not committed. `published` checks a build against the records and the newest published release and
@@ -719,17 +720,8 @@ function publishedVersions() {
 	return /** @type {string[]} */ (JSON.parse(result.stdout));
 }
 
-/** The latest published release of the application before `version`, or undefined when there is none. */
-function previousRelease(version) {
-	return publishedVersions()
-		.filter((published) => semver.lt(published, version))
-		.sort(semver.compare)
-		.at(-1);
-}
-
 /**
- * The published releases a build of the next release is checked against before it is released: the newest one, which
- * `release` checks the packed release against as the one before it (a prerelease, often), and the newest stable one,
+ * The published releases a build is checked against: the newest one (a prerelease, often), and the newest stable one,
  * which most installations an update replaces run.
  * @param {readonly string[]} versions @returns {string[]}
  */
@@ -738,6 +730,15 @@ export function latestPublishedReleases(versions) {
 	const newest = sorted.at(-1);
 	const stable = sorted.filter((version) => semver.prerelease(version) === null).at(-1);
 	return [...new Set([newest, stable].filter((version) => version !== undefined))];
+}
+
+/**
+ * The published releases `release` checks the packed release `version` against: of those published before it, the
+ * newest and the newest stable one.
+ * @param {string} version @param {readonly string[]} versions @returns {string[]}
+ */
+export function releasesBefore(version, versions) {
+	return latestPublishedReleases(versions.filter((published) => semver.lt(published, version)));
 }
 
 /** The records in `dir` (`<version>.json`) and the specifiers `allowed.json` there allows, by release. */
@@ -763,8 +764,8 @@ function report(records, allowed, dirs) {
 }
 
 /**
- * Resolves the release records `release` checks against: every committed record in `recordsDir`, plus `previous` (the
- * latest published release before the version being packed). Releases before `GUARDED_SINCE` lack call-site guards and
+ * Resolves the release records a build is checked against: every committed record in `recordsDir`, plus `previous` (a
+ * published release, such as the latest one before the version being packed). Releases before `GUARDED_SINCE` lack call-site guards and
  * must be recorded before building so `split-dist.mjs` generates gates and version probes for them; releases from
  * `GUARDED_SINCE` onward self-guard every on-demand import and are fetched on the fly when not committed.
  * @param {readonly ReleaseRecord[]} records
@@ -783,6 +784,26 @@ export function resolveReleaseRecords(records, { previous, recordsDir, download 
 		resolved.push(download(previous));
 	}
 	return { ok: true, records: resolved };
+}
+
+/**
+ * The committed records in `recordsDir` and each of the published releases `previous` that they lack, downloaded into
+ * `into`, or why a release that must be recorded is not.
+ * @param {readonly ReleaseRecord[]} records @param {readonly string[]} previous @param {string} recordsDir
+ * @param {string} into
+ */
+function resolvePublishedRecords(records, previous, recordsDir, into) {
+	/** @type {ReturnType<typeof resolveReleaseRecords>} */
+	let resolved = { ok: true, records: [...records] };
+	for (const version of previous) {
+		if (!resolved.ok) break;
+		resolved = resolveReleaseRecords(resolved.records, {
+			previous: version,
+			recordsDir,
+			download: (download) => recordRelease(downloadRelease(download, into)),
+		});
+	}
+	return resolved;
 }
 
 function main(argv) {
@@ -812,37 +833,35 @@ function main(argv) {
 		const into = work();
 		try {
 			const { records, allowed } = readRecords(recordsDir);
-			let resolved = records;
-			for (const previous of latestPublishedReleases(publishedVersions())) {
-				const next = resolveReleaseRecords(resolved, {
-					previous,
-					recordsDir,
-					download: (version) => recordRelease(downloadRelease(version, into)),
-				});
-				if (!next.ok) {
-					console.error(next.error);
-					return 1;
-				}
-				resolved = next.records;
+			const resolved = resolvePublishedRecords(
+				records,
+				latestPublishedReleases(publishedVersions()),
+				recordsDir,
+				into,
+			);
+			if (!resolved.ok) {
+				console.error(resolved.error);
+				return 1;
 			}
-			return report(resolved, allowed, dirs) ? 0 : 1;
+			return report(resolved.records, allowed, dirs) ? 0 : 1;
 		} finally {
 			rmSync(into, { recursive: true, force: true });
 		}
 	}
 	if (command === "release" && rest.length === 3) {
-		// The release path: the packed release against every recorded release and the latest published one before it.
+		// The release path: the packed release against every recorded release and, of those published before it, the
+		// newest and the newest stable one, which most installations it replaces run.
 		const [version, recordsDir, tarballs] = rest;
 		const into = work();
 		try {
 			const dirs = unpackRelease(tarballs, into);
 			const { records, allowed } = readRecords(recordsDir);
-			const previous = previousRelease(version);
-			const resolved = resolveReleaseRecords(records, {
-				previous,
+			const resolved = resolvePublishedRecords(
+				records,
+				releasesBefore(version, publishedVersions()),
 				recordsDir,
-				download: (prev) => recordRelease(downloadRelease(prev, into)),
-			});
+				into,
+			);
 			if (!resolved.ok) {
 				console.error(resolved.error);
 				return 1;

@@ -14,6 +14,15 @@ const catalogApi: Partial<
 > = storage;
 
 /**
+ * What every transaction of the broker's state asks of the database besides its locks: run again, after a short
+ * randomized wait, when a lock wait that outlasted the database's lock timeout, a deadlock or a serialization failure
+ * ended it before it wrote anything, rather than failing the send, renewal, claim or delivery it makes. A busy shared
+ * database ends one now and then even when nothing is wrong. Each callback only uses its transaction handle, so running
+ * it again repeats nothing else; a database that cannot tell what a failure applied ignores it.
+ */
+export const RETRY_UNAPPLIED = { retryTransientFailures: true } as const;
+
+/**
  * Runs `open`, a broker store's open on `database`, with one read of the prefix's schema catalog, which its schema
  * checks answer from: a store whose schema is current opens with no schema transaction and no lock, whether the broker
  * opens it with the others (`openIntercomBrokerState`, whose read it shares), on its own, or later, as the ended-child
@@ -56,6 +65,8 @@ export async function ensureBrokerSchema(
 		if (!found.seeds) return;
 	}
 	const dialect = dialectOf(database);
+	// Idempotent, and run again when a busy database ended it before it wrote anything, as brokers opening together on a
+	// new database wait for each other's setup.
 	await database.transaction(async (tx) => {
 		if (!dialect.versionedMigrations) {
 			await setup(tx);
@@ -64,7 +75,7 @@ export async function ensureBrokerSchema(
 		await ensureStorageSchema(tx, dialect, schema, async () => {
 			await setup(tx);
 		});
-	});
+	}, RETRY_UNAPPLIED);
 	// Stamped where the end of the open takes a transaction for other stores anyway, as after a repair or an upgrade.
 	if (!dialect.versionedMigrations)
 		catalogApi.restampStorageSchemaAtOpenEnd?.(database, schema, setup, { verify: found?.verify, alongside: true });

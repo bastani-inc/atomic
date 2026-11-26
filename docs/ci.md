@@ -14,7 +14,7 @@ Pull requests need `test (all platforms)` and CodeQL results. Releases use a sep
 
 ## Tests
 
-- `unit-tests` and `integration-tests` run the root suites on Linux and Windows.
+- `unit-tests` and `integration-tests` run the root suites on Linux and Windows. The first Linux unit-test shard also runs the release's in-place update check on the build (see [Release pipeline](#release-pipeline)).
 - `agent-suite` runs the coding-agent suite on both platforms.
 - `packages-suite` runs the AI and other compiled workspace packages' suites on both platforms.
 - `storage-conformance` runs the database-backed suites on Linux.
@@ -126,12 +126,18 @@ bun run scripts/cut-release.ts 0.9.10 --base main --push --yes
 The script stamps a detached `Release <version>` commit and pushes only its tag. Check the resulting `Publish <version>` run. Do not dispatch a second run during normal publication.
 
 1. `integrity` checks that the source resolves to the tag commit, the subject is `Release <tag>` and `packages/coding-agent/package.json` matches the tag. Build jobs use that verified commit.
-2. `native-artifacts` builds the native bindings. `build` packs the npm tarballs and builds release archives and notes. `linux-binary-smoke`, `windows-binary-smoke` and `alpine-binary-smoke` test release binaries. The Windows smoke job also produces the Windows archives.
+2. `native-artifacts` builds the native bindings. `build` packs the npm tarballs and builds release archives and notes. It then checks that people who update in place from an earlier release keep a working installation. It compares the packed packages with the releases recorded in `packages/coding-agent/in-place-update/`, the newest release on npm before this one and the newest stable release on npm. The newest release is often a prerelease, while most people update from the newest stable one. The check downloads the releases from npm and fails if npm cannot be reached. `linux-binary-smoke`, `windows-binary-smoke` and `alpine-binary-smoke` test release binaries. The Windows smoke job also produces the Windows archives.
 3. `stage-github-release` waits for the build and smoke jobs. It stages the archives and `SHA256SUMS` in a verified draft. It does not change a public release.
 4. `publish-npm` uses OIDC and provenance. It publishes the native leaves before their dependents and `@bastani/atomic` last. It skips versions already on npm.
 5. `publish-github-release` makes the draft public only after npm succeeds. `register-published-version` then records the published version using a tag-scoped OIDC token.
 
 Tags have no `v` prefix. A stable tag such as `0.9.10` publishes to npm `latest` and becomes the latest GitHub Release. An alpha tag such as `0.9.10-alpha.1` publishes to npm `next` and becomes a GitHub prerelease.
+
+### Docs site changelog
+
+The docs site's [changelog page](https://docs.bastani.ai/changelog), `packages/coding-agent/docs/changelog.mdx`, is generated from the release summaries in `packages/coding-agent/CHANGELOG.md` by `bun run scripts/sync-changelog-docs.ts`. The release PR may change only `CHANGELOG.md` files, so it can't carry the page. After publication, step 9 of the publish-release skill regenerates the page in its own docs PR.
+
+`npm run docs:check` in `packages/coding-agent` (run by `static-checks`) fails when the page doesn't match the generator's output. It accepts a page that only lacks the newest release, so the release PR and the PRs that merge before the docs PR still pass. If a release's docs PR never lands, the next release PR fails this check until the page is regenerated.
 
 ### Registering a new package name
 

@@ -11,7 +11,12 @@ const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const RETIRED_EDITOR = ["hash", "line"].join("");
 const RETIRED_SNAPSHOT_HEADER = ["#", "TAG"].join("");
 const RETIRED_INTERCEPTOR = ["bash", "[-_ ]?", "interceptor"].join("");
-const OUTSIDE_CHANGELOGS = [".", ":(exclude,glob)**/CHANGELOG.md"];
+// The docs site's changelog page is generated from packages/coding-agent/CHANGELOG.md.
+const OUTSIDE_CHANGELOGS = [
+	".",
+	":(exclude,glob)**/CHANGELOG.md",
+	":(exclude)packages/coding-agent/docs/changelog.mdx",
+];
 
 function gitGrep(flags: string[], pattern: string): string[] {
 	try {

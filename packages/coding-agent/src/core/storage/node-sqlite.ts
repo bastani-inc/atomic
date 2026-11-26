@@ -13,6 +13,7 @@ import {
 import {
 	lstat,
 	mkdir,
+	open as openFileHandle,
 	readdir,
 	readFile,
 	realpath,
@@ -801,6 +802,48 @@ function pathExists(path: string): Promise<boolean> {
 		() => true,
 		() => false,
 	);
+}
+
+/** The 16 bytes a SQLite database file starts with. */
+const SQLITE_FILE_HEADER = "SQLite format 3\0";
+
+/**
+ * Creates the missing `-wal` of a WAL-mode database file before a read-only connection opens it, as SQLite creates it
+ * for a writer. The last connection to close cleanly removes the `-wal` and `-shm`. Stock SQLite, which Node bundles,
+ * creates both again for the next read-only connection; Apple's, which Bun uses on macOS, creates the `-shm` but not
+ * the `-wal`, and fails the open with SQLITE_CANTOPEN (code 14), so `atomic storage status` reported a store that
+ * `atomic storage import` had just written as unavailable. An empty `-wal` is a WAL without frames. Nothing is created
+ * for a database in another journal mode, which would read a `-wal` as its WAL, nor when the file cannot be read: the
+ * open then reports what it finds. The `-wal` takes the database file's permissions, as SQLite gives it.
+ */
+async function prepareReadOnlyWal(filePath: string): Promise<void> {
+	try {
+		// SQLite keeps the WAL beside the file a symbolic link names.
+		const target = await realpath(filePath);
+		const wal = `${target}-wal`;
+		if (await pathExists(wal)) return;
+		const database = await openFileHandle(target, "r");
+		const header = Buffer.alloc(20);
+		let mode: number;
+		try {
+			await database.read(header, 0, header.length, 0);
+			mode = (await database.stat()).mode & 0o777;
+		} finally {
+			await database.close();
+		}
+		// Read and write format versions 2 mark a WAL-mode database.
+		if (header.toString("latin1", 0, 16) !== SQLITE_FILE_HEADER || header[18] !== 2 || header[19] !== 2) return;
+		// Appending creates the file without emptying one a writer made meanwhile.
+		const created = await openFileHandle(wal, "a", mode);
+		try {
+			const stats = await created.stat();
+			if (stats.size === 0 && (stats.mode & 0o777) !== mode) await created.chmod(mode);
+		} finally {
+			await created.close();
+		}
+	} catch {
+		// The open reports the file's state itself.
+	}
 }
 
 async function resolveOpenLockTarget(filePath: string, readOnly: boolean): Promise<string | undefined> {
@@ -2565,6 +2608,7 @@ export async function openNodeSqliteDatabase(
 		const likely = readOnly || isInMemoryDatabase(path) ? undefined : heldOpenLock?.target;
 		const holders =
 			likely === undefined ? undefined : { target: likely, ready: prepareHolderDirectory(holderDirectory(likely)) };
+		if (readOnly && targetFile !== undefined && !isInMemoryDatabase(path)) await prepareReadOnlyWal(targetFile);
 		// A file-backed connection runs on a thread of its own, so opening it, waiting for its locks and its synced
 		// commits never hold this thread (#5376).
 		const opened = isInMemoryDatabase(path)

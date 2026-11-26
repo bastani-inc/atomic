@@ -164,7 +164,9 @@ test("a publish writes its hint and its notification in one transaction on the f
 		assert.deepEqual(await bus.publish({ brokerId: "broker-b", reason: "outbox", version: 3 }), {
 			status: "published",
 		});
-		assert.deepEqual(file.transactions, [{ concurrency: { kind: "fenced", audit: "intercom-wakeup-hint" } }]);
+		assert.deepEqual(file.transactions, [
+			{ retryTransientFailures: true, concurrency: { kind: "fenced", audit: "intercom-wakeup-hint" } },
+		]);
 		const observer = await openNodeSqliteDatabase(file.path);
 		try {
 			assert.deepEqual(await observer.all("SELECT channel, payload FROM notices"), [
