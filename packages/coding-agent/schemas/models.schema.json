@@ -142,7 +142,7 @@
                     "type": "number",
                     "exclusiveMinimum": 0,
                     "default": 16384,
-                    "description": "Maximum output tokens. Defaults to 16384 for chat models. When omitted on compactor models, defaults to 32000 estimated tokens, capped at 50% of the automatic trigger."
+                    "description": "Maximum output tokens. Defaults to 16384 for chat models. On compactor models it has no default: when set, compacted output longer than this many estimated tokens clears the context instead; when omitted, output has no size limit."
                   },
                   "timeoutMs": {
                     "type": "number",
@@ -337,7 +337,7 @@
                     "maxTokens": {
                       "type": "number",
                       "exclusiveMinimum": 0,
-                      "description": "Maximum output tokens. On compactor models, sets the upper bound on compacted output in estimated tokens, capped at 50% of the automatic trigger."
+                      "description": "Maximum output tokens. On compactor models, compacted output longer than this many estimated tokens clears the context instead; omit it for no size limit."
                     },
                     "timeoutMs": {
                       "type": "number",

@@ -16,12 +16,12 @@ Instructions passed to `/compact`, `session.compact({ query })`, `ctx.compact({ 
 
 `compression_ratio` and `preserve_recent` are not top-level `session.compact()` or `settings.json` compaction options and are ignored if supplied there, keeping default context-clearing compaction free of endpoint knobs. Configure API-specific parameters directly on each compactor model in [`models.json`](/models#remote-compaction-models) (`compactionParams`, `endpointPath`, `timeoutMs`, `maxTokens`, `headers`) or via [`atomic.registerProvider()`](/custom-provider/api-reference) (`ProviderCompactorModelConfig`). When `compactionParams` is omitted, Atomic does not inject provider-specific body fields so the remote API applies its own defaults.
 
-Safety bounds used when a compactor model omits an override are exported from `@bastani/atomic`:
+Safety bounds are exported from `@bastani/atomic`. A compactor model's output has no built-in size limit: only a `maxTokens` you set on the compactor model limits it, and it has no default.
 
 | Default | Export | Model override field | Meaning |
 | --- | --- | --- | --- |
 | `120000` | `COMPACTOR_REQUEST_TIMEOUT_MS` | `timeoutMs` | Wall-clock limit on one compactor request, in milliseconds |
-| `32000` | `COMPACTED_OUTPUT_MAX_TOKENS` | `maxTokens` | Largest allowed compacted text in estimated tokens (always also capped at `COMPACTED_OUTPUT_MAX_TRIGGER_SHARE` = 50% of the automatic trigger budget) |
+| `32000` | `COMPACTED_OUTPUT_MAX_TOKENS` | None | Largest compacted text an extension's `session_before_compact` hook may return, in estimated tokens (also capped at `COMPACTED_OUTPUT_MAX_TRIGGER_SHARE` = 50% of the automatic trigger budget). Does not apply to compactor models |
 | `2000` | `COMPACTOR_LINE_WIDTH` | None | Character width at which long lines wrap before framing |
 
 ### Compactor request contract
@@ -104,7 +104,7 @@ atomic.on("session_before_compact", async (event) => {
 
 Return `{ cancel: true }` to cancel compaction. Return `{ compactedText }` to write a `Context compacted` boundary offline without provider credentials; the model sees your text in a `<compacted-context>` block followed by recovery instructions.
 
-Empty or whitespace-only text counts as no replacement, so the configured compaction form runs normally. If `compactedText` exceeds the compactor output cap or makes `systemPrompt + boundary >= trigger`, Atomic rejects it, falls back to clearing the context with `fallbackReason` starting with `extension failed: output too long`, and emits `session_compact` with `fromExtension: false`.
+Empty or whitespace-only text counts as no replacement, so the configured compaction form runs normally. If `compactedText` exceeds `COMPACTED_OUTPUT_MAX_TOKENS` (32,000 estimated tokens, or half of the automatic trigger on a small context window) or makes `systemPrompt + boundary >= trigger`, Atomic rejects it, falls back to clearing the context with `fallbackReason` starting with `extension failed: output too long`, and emits `session_compact` with `fromExtension: false`. These limits apply only to an extension's text; a compactor model's output has none.
 
 ### `session_compact`
 
@@ -173,7 +173,7 @@ Every `CompactionError` carries `code`, `hint`, `retryable`, and `fields()`. Use
 | `requestCompactorOutput(request)` | Send one `CompactorRequest` to a compactor endpoint; resolves `{ text, usage? }` or throws `CompactorFailure` / `CompactionCancelledError` |
 | `resolveCompactionModel(configured, models)` | Resolve `compactionModel` to a `CompactionModelSelection` (`auto` with any fallback reason, or a compactor) |
 | `classifyCompactionModel(configured, models)` | Classify a `compactionModel` string as `"auto"`, `"compactor"`, `"chat"`, `"classifier"`, or `"unknown"` |
-| `compactedOutputTokenCap(triggerTokens, maxOutputTokens?)` | Compute the effective compacted output cap in estimated tokens |
+| `compactedOutputTokenCap(triggerTokens, maxOutputTokens?)` | Compute the largest compacted text an extension hook may return, in estimated tokens |
 | `SESSION_HISTORY_TOOL_NAME` | `"session_history"`, the read-only history tool granted after clearing when `read` or `search` is absent |
 
 The types `CompactorModel`, `CompactorApi`, `ProviderCompactorModelConfig`, `CompactionForm`, `CompactionBackend`, `CompactionHistoryLocation`, `CompactionModelKind`, `CompactionModelSelection`, `CompactorMessage`, `CompactorRequest`, `CompactionErrorCode`, `SerializedCompactionError`, and `BranchSummaryEntry` are exported alongside them.

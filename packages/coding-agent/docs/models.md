@@ -172,8 +172,7 @@ Add a custom remote compaction endpoint by setting `"type": "compactor"` on a mo
             "target_ratio": 0.4,
             "preserve_recent": 2
           },
-          "timeoutMs": 180000,
-          "maxTokens": 48000
+          "timeoutMs": 180000
         }
       ]
     }
@@ -181,7 +180,7 @@ Add a custom remote compaction endpoint by setting `"type": "compactor"` on a mo
 }
 ```
 
-Every custom compactor requires `"api"` at the provider or model level (just like custom chat models; built-in Morph defines its own `"api": "morph-compact"`). Atomic sends `{ messages, query, model }` plus any keys in `compactionParams` (omitting `compactionParams` lets the remote API use its own defaults). See [Customize Morph or add a remote compactor](/compaction#customize-morph-or-add-a-remote-compactor) and [Compaction reference](/compaction/reference#compactor-request-contract).
+Every custom compactor requires `"api"` at the provider or model level (just like custom chat models; built-in Morph defines its own `"api": "morph-compact"`). Atomic sends `{ messages, query, model }` plus any keys in `compactionParams` (omitting `compactionParams` lets the remote API use its own defaults). A compactor's output has no built-in size limit; set `maxTokens` on the compactor model to reject output longer than that many estimated tokens, or use the endpoint's own size option in `compactionParams` to ask for shorter output. See [Customize Morph or add a remote compactor](/compaction#customize-morph-or-add-a-remote-compactor) and [Compaction reference](/compaction/reference#compactor-request-contract).
 
 ## Use classifier models
 

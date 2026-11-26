@@ -73,6 +73,8 @@ export interface HarnessOptions {
 	cwd?: string;
 	settings?: Partial<Settings>;
 	settingsManager?: SettingsManager;
+	/** A models.json the session's model runtime loads. Default: none. */
+	modelsPath?: string;
 	systemPrompt?: string;
 	tools?: AgentTool[];
 	customTools?: ToolDefinition[];
@@ -140,7 +142,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	}
 	const modelRuntime = await ModelRuntime.create({
 		credentials: authStorage,
-		modelsPath: null,
+		modelsPath: options.modelsPath ?? null,
 		modelsStore: new InMemoryCodingAgentModelsStore(),
 	});
 	if (withConfiguredAuth) {

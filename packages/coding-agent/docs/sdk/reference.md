@@ -164,6 +164,8 @@ Remote catalogs persist locally so later runtimes can restore them without a net
 - Network refreshes are throttled to once per provider every four hours unless forced. Call `await modelRuntime.refresh({ allowNetwork: true, force: true, signal })` to force an immediate refresh.
 - Setting `ATOMIC_OFFLINE` (legacy alias `PI_OFFLINE`) disables model network access, and a `refresh()` call that omits `allowNetwork` follows that same runtime network policy.
 
+A running session exposes the runtime it uses as `session.modelRuntime`, so you can add a provider to a live session without creating a new runtime. For example, `session.modelRuntime.registerProvider("acme", { ... })` makes the provider's models available to that session's model selection and compaction.
+
 `registerProvider()`, `registerNativeProvider()`, and `unregisterProvider()` return at once and refresh the catalog from cache in the background while checking provider credentials. `await modelRuntime.whenRegistrationRefreshesSettled()` resolves once no registration refresh is running, including refreshes started while you wait.
 
 ### API keys and OAuth

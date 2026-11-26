@@ -12,9 +12,9 @@ export { CompactorFailure };
 export const COMPACTOR_REQUEST_TIMEOUT_MS = 120_000;
 /** Lines longer than this are wrapped before they are sent, so the compactor can keep or drop parts of them. */
 export const COMPACTOR_LINE_WIDTH = 2_000;
-/** Default upper bound on compacted text, in estimated tokens, unless overridden by model `maxTokens`. Longer output is a failure and the context is cleared. */
+/** Upper bound, in estimated tokens, on compacted text an extension hook supplies; longer text clears the context. A compactor model's output has no bound. */
 export const COMPACTED_OUTPUT_MAX_TOKENS = 32_000;
-/** Compacted text never fills more than this share of the context the automatic trigger allows. */
+/** Compacted text an extension hook supplies never fills more than this share of the context the automatic trigger allows. */
 export const COMPACTED_OUTPUT_MAX_TRIGGER_SHARE = 0.5;
 
 const DEFAULT_COMPACTOR_ENDPOINT_PATH = "/compact";
@@ -135,7 +135,7 @@ export function buildCompactorMessages(
 	);
 }
 
-/** Largest compacted text, in estimated tokens, for a model whose automatic trigger fires above `triggerTokens`. */
+/** Largest compacted text an extension hook may supply, in estimated tokens, for a model whose automatic trigger fires above `triggerTokens`. */
 export function compactedOutputTokenCap(triggerTokens: number, maxOutputTokens = COMPACTED_OUTPUT_MAX_TOKENS): number {
 	const limit =
 		Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : COMPACTED_OUTPUT_MAX_TOKENS;

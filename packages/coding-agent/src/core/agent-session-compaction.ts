@@ -226,8 +226,8 @@ async function runCompactor(
 			stop: stop.signal,
 		});
 		if (output.usage) session._emit({ type: "compaction_usage", reason, usage: output.usage });
-		const oversized = oversizedCompactedText(session, output.text, selection.model.maxTokens);
-		if (oversized !== undefined) return { fallbackReason: oversized };
+		const overLimit = overConfiguredLimit(output.text, selection.model.maxTokens);
+		if (overLimit !== undefined) return { fallbackReason: overLimit };
 		return {
 			compacted: { text: output.text, backend: "compactor", model: selection.fullId },
 			...(output.usage ? { usage: output.usage } : {}),
@@ -242,10 +242,17 @@ async function runCompactor(
 	}
 }
 
-function oversizedCompactedText(session: AgentSession, text: string, maxOutputTokens?: number): string | undefined {
+/** A compactor model's output is limited only by a `maxTokens` its configuration sets; there is no default. */
+function overConfiguredLimit(text: string, maxTokens: number | undefined): string | undefined {
+	if (maxTokens === undefined) return undefined;
+	const tokens = estimateTextTokens(text);
+	return tokens > maxTokens ? `output too long (${tokens} > ${maxTokens} tokens)` : undefined;
+}
+
+function oversizedCompactedText(session: AgentSession, text: string): string | undefined {
 	const model = session.model;
 	const trigger = model ? model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens : 0;
-	const cap = compactedOutputTokenCap(trigger, maxOutputTokens);
+	const cap = compactedOutputTokenCap(trigger);
 	const tokens = estimateTextTokens(text);
 	return tokens > cap ? `output too long (${tokens} > ${cap} tokens)` : undefined;
 }
@@ -407,16 +414,6 @@ export async function planVerbatimCompaction(
 	if (signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
 	if ("fallbackReason" in outcome) {
 		return { ...base, fallbackReason: `${selection.fullId} failed: ${outcome.fallbackReason}`, fromExtension: false };
-	}
-	// The whole replacement, system prompt and recovery instructions included, must leave room below the trigger.
-	const overflow = overflowingBoundary(this, { ...base, compacted: outcome.compacted });
-	if (overflow !== undefined) {
-		return {
-			...base,
-			fallbackReason: `${selection.fullId} failed: ${overflow}`,
-			...(outcome.usage ? { usage: outcome.usage } : {}),
-			fromExtension: false,
-		};
 	}
 	return {
 		...base,
