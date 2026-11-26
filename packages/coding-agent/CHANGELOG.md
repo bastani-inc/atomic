@@ -12,6 +12,7 @@
 ### Fixed
 
 - On macOS, resuming a session whose blueprint build was cut off because Atomic was killed no longer waits 5 minutes for a build step that is still running. Atomic now reads when a process started on macOS too, so the next resume can tell the leftover step is that build's and stop it at once. Session claims, worktree leases and other locks on macOS also tell a process that died from a later one given its process ID. Locks written by earlier versions, which name no start, are judged by process ID as before ([#6704](https://github.com/bastani-inc/atomic/issues/6704)).
+- Fixed pipelined storage transactions (such as PostgreSQL) blaming a failure already recovered by `ROLLBACK TO SAVEPOINT` when `COMMIT` later fails or loses its connection, which could misclassify an ambiguous commit failure as `"not-applied"` and retry an already-committed transaction. The facade now keeps the commit's own recognized failure, skips calls recovered by a fulfilled `ROLLBACK TO SAVEPOINT`, and lets drivers notify it immediately before writing `COMMIT` in `leadingOnly` transactions ([#6711](https://github.com/bastani-inc/atomic/issues/6711)).
 
 ## [0.10.11-alpha.3] - 2026-11-26
 

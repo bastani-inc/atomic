@@ -97,8 +97,14 @@ export interface SqliteDriverTransactionOptions {
 	/**
 	 * Optional. `SqliteTransactionOptions.leadingOnly`, set only with every statement of `leading`: a driver with
 	 * `pipelinedTransactions` may send the commit right behind them, and then fails any other call without sending it.
+	 * A driver that writes `COMMIT` before `commit()` must invoke `onCommit?.()` immediately before writing it.
 	 */
 	readonly leadingOnly?: boolean;
+	/**
+	 * Optional. Invoked by a driver right before writing `COMMIT` ahead of `commit()`, as with `leadingOnly`, so any
+	 * connection loss from that point on keeps its ambiguous outcome and is never retried.
+	 */
+	readonly onCommit?: () => void;
 	/**
 	 * Optional. `SqliteTransactionOptions.lockIfLeadingFinds`, set only with `leading` whose first statement is the
 	 * transaction's: a driver with `pipelinedTransactions` may take a `serial` domain's locks in that statement, for the
@@ -451,43 +457,302 @@ function concurrencyConfigError(): StorageConfigError {
 	);
 }
 
+type SavepointAction =
+	| { readonly kind: "savepoint"; readonly name: string }
+	| { readonly kind: "rollback-to"; readonly name: string }
+	| { readonly kind: "release"; readonly name: string }
+	| { readonly kind: "other" };
+
+const SAVEPOINT_KEYWORDS = /\b(?:SAVEPOINT|ROLLBACK|RELEASE)\b/i;
+
+function classifySavepointStatement(
+	tokens: readonly { readonly text: string; readonly quoted: boolean }[],
+): SavepointAction {
+	const keyword = (at: number): string | undefined => {
+		const token = tokens[at];
+		return token === undefined || token.quoted ? undefined : token.text.toUpperCase();
+	};
+	const identifier = (at: number): string | undefined => {
+		const token = tokens[at];
+		if (token === undefined || token.text.length === 0) return undefined;
+		return token.quoted ? token.text : token.text.toLowerCase();
+	};
+	const first = keyword(0);
+	if (first === "SAVEPOINT" && tokens.length === 2) {
+		const name = identifier(1);
+		if (name !== undefined) return { kind: "savepoint", name };
+	}
+	if (first === "RELEASE") {
+		const nameIndex = keyword(1) === "SAVEPOINT" ? 2 : 1;
+		if (tokens.length === nameIndex + 1) {
+			const name = identifier(nameIndex);
+			if (name !== undefined) return { kind: "release", name };
+		}
+	}
+	if (first === "ROLLBACK") {
+		let at = 1;
+		if (keyword(at) === "WORK" || keyword(at) === "TRANSACTION") at++;
+		if (keyword(at) === "TO") {
+			at++;
+			if (keyword(at) === "SAVEPOINT") at++;
+			if (tokens.length === at + 1) {
+				const name = identifier(at);
+				if (name !== undefined) return { kind: "rollback-to", name };
+			}
+		}
+	}
+	return { kind: "other" };
+}
+
+/**
+ * Extracts `SAVEPOINT`, `ROLLBACK TO [SAVEPOINT]`, and `RELEASE [SAVEPOINT]` actions from `sql` in statement order,
+ * ignoring comments, string literals, and dollar-quoted strings. Returns undefined when `sql` contains none.
+ */
+function parseSavepointActions(sql: string): readonly SavepointAction[] | undefined {
+	if (!SAVEPOINT_KEYWORDS.test(sql)) return undefined;
+	const actions: SavepointAction[] = [];
+	let index = 0;
+	const length = sql.length;
+	while (index < length) {
+		const tokens: { readonly text: string; readonly quoted: boolean }[] = [];
+		let extra = false;
+		while (index < length) {
+			const ch = sql[index]!;
+			if (/\s/.test(ch)) {
+				index++;
+				continue;
+			}
+			if (ch === "-" && sql[index + 1] === "-") {
+				const end = sql.indexOf("\n", index + 2);
+				index = end === -1 ? length : end + 1;
+				continue;
+			}
+			if (ch === "/" && sql[index + 1] === "*") {
+				let depth = 1;
+				index += 2;
+				while (index < length && depth > 0) {
+					if (sql.startsWith("/*", index)) {
+						depth++;
+						index += 2;
+					} else if (sql.startsWith("*/", index)) {
+						depth--;
+						index += 2;
+					} else index++;
+				}
+				continue;
+			}
+			if (ch === ";") {
+				index++;
+				break;
+			}
+			if (ch === "'") {
+				const escapes =
+					(sql[index - 1] === "e" || sql[index - 1] === "E") &&
+					!/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 2] ?? "");
+				index++;
+				while (index < length) {
+					if (escapes && sql[index] === "\\") index += 2;
+					else if (sql[index] !== "'") index++;
+					else if (sql[index + 1] === "'") index += 2;
+					else break;
+				}
+				index++;
+				extra = true;
+				continue;
+			}
+			if (ch === '"') {
+				let value = "";
+				index++;
+				while (index < length) {
+					if (sql[index] === '"') {
+						if (sql[index + 1] === '"') {
+							value += '"';
+							index += 2;
+						} else {
+							index++;
+							break;
+						}
+					} else {
+						value += sql[index++];
+					}
+				}
+				if (tokens.length < 5) tokens.push({ text: value, quoted: true });
+				else extra = true;
+				continue;
+			}
+			if (ch === "$") {
+				const tag = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
+				if (tag !== undefined) {
+					const close = sql.indexOf(tag, index + tag.length);
+					index = close === -1 ? length : close + tag.length;
+					extra = true;
+					continue;
+				}
+			}
+			if (/[A-Za-z_\u0080-\uffff]/.test(ch)) {
+				let end = index + 1;
+				while (end < length && /[A-Za-z0-9_$\u0080-\uffff]/.test(sql[end]!)) end++;
+				const word = sql.slice(index, end);
+				index = end;
+				if (tokens.length < 5) tokens.push({ text: word, quoted: false });
+				else extra = true;
+				continue;
+			}
+			extra = true;
+			index++;
+		}
+		if (tokens.length === 0 && !extra) continue;
+		actions.push(extra ? { kind: "other" } : classifySavepointStatement(tokens));
+	}
+	return actions.some((action) => action.kind !== "other") ? actions : undefined;
+}
+
+interface RecordedCall {
+	readonly actions?: readonly SavepointAction[];
+	failure?: { readonly reason: unknown };
+	settled: boolean;
+}
+
+/**
+ * Tracks unrecovered failures of a transaction's calls in push order, dropping failures recovered by a fulfilled
+ * `ROLLBACK TO [SAVEPOINT] <name>`. Settled prefixes fold incrementally so long transactions stay bounded in memory.
+ */
+class SavepointFailureLog {
+	private readonly savepoints: { readonly name: string; readonly failureCount: number }[] = [];
+	private readonly activeFailures: unknown[] = [];
+	private readonly pending: RecordedCall[] = [];
+	private head = 0;
+
+	track(sql: string | undefined, result: Promise<unknown>): Promise<void> {
+		const entry: RecordedCall = {
+			actions: sql === undefined ? undefined : parseSavepointActions(sql),
+			settled: false,
+		};
+		this.pending.push(entry);
+		return result.then(
+			() => {
+				entry.settled = true;
+				this.compact();
+			},
+			(reason: unknown) => {
+				entry.failure = { reason };
+				entry.settled = true;
+				this.compact();
+			},
+		);
+	}
+
+	private compact(): void {
+		while (this.head < this.pending.length && this.pending[this.head]!.settled) {
+			const entry = this.pending[this.head++]!;
+			this.apply(entry);
+		}
+		if (this.head > 0 && this.head === this.pending.length) {
+			this.pending.length = 0;
+			this.head = 0;
+		}
+	}
+
+	private findLastSavepoint(name: string): number {
+		for (let index = this.savepoints.length - 1; index >= 0; index--)
+			if (this.savepoints[index]!.name === name) return index;
+		return -1;
+	}
+
+	private apply(entry: RecordedCall): void {
+		if (entry.failure === undefined) {
+			for (const action of entry.actions ?? []) {
+				if (action.kind === "savepoint") {
+					this.savepoints.push({ name: action.name, failureCount: this.activeFailures.length });
+				} else if (action.kind === "rollback-to") {
+					const index = this.findLastSavepoint(action.name);
+					if (index !== -1) {
+						this.activeFailures.length = this.savepoints[index]!.failureCount;
+						this.savepoints.length = index + 1;
+					}
+				} else if (action.kind === "release") {
+					const index = this.findLastSavepoint(action.name);
+					if (index !== -1) this.savepoints.length = index;
+				}
+			}
+			return;
+		}
+		const actions = entry.actions;
+		if (
+			actions !== undefined &&
+			actions.length > 1 &&
+			actions[0]?.kind === "savepoint" &&
+			this.activeFailures.length === (this.savepoints.at(-1)?.failureCount ?? 0)
+		) {
+			this.savepoints.push({ name: actions[0].name, failureCount: this.activeFailures.length });
+		}
+		this.activeFailures.push(entry.failure.reason);
+	}
+
+	firstFailure(): unknown {
+		this.compact();
+		return this.activeFailures[0];
+	}
+
+	firstTransientFailure(): StorageTransientError | undefined {
+		this.compact();
+		let chosen: StorageTransientError | undefined;
+		for (const reason of this.activeFailures) {
+			if (!(reason instanceof StorageTransientError)) continue;
+			if (reason.outcome !== "not-applied") return reason;
+			chosen ??= reason;
+		}
+		return chosen;
+	}
+}
+
 /** Serializes operations in call order; a failed operation does not stop the ones queued after it. */
 class CallQueue {
 	private tail: Promise<void> = Promise.resolve();
+	private readonly log = new SavepointFailureLog();
 
-	push<T>(operation: () => Promise<T>): Promise<T> {
+	push<T>(operation: () => Promise<T>, sql?: string): Promise<T> {
 		const result = this.tail.then(operation);
-		this.tail = result.then(
-			() => {},
-			() => {},
-		);
+		this.tail = this.log.track(sql, result);
 		return result;
 	}
 
 	drained(): Promise<void> {
 		return this.tail;
 	}
+
+	async firstTransientFailure(): Promise<StorageTransientError | undefined> {
+		await this.drained();
+		return this.log.firstTransientFailure();
+	}
 }
 
 /** Starts each operation as it is pushed, so a pipelined connection receives them in push order without waiting. */
 class PipelineQueue {
-	private readonly started: Promise<unknown>[] = [];
+	private readonly inFlight = new Set<Promise<void>>();
+	private readonly log = new SavepointFailureLog();
 
-	push<T>(operation: () => Promise<T>): Promise<T> {
+	push<T>(operation: () => Promise<T>, sql?: string): Promise<T> {
 		const result = operation();
-		result.catch(() => {});
-		// A queue lasts one transaction, so it keeps every call it started.
-		this.started.push(result);
+		const tracked = this.log.track(sql, result);
+		this.inFlight.add(tracked);
+		void tracked.then(() => this.inFlight.delete(tracked));
 		return result;
 	}
 
 	drained(): Promise<void> {
-		return Promise.allSettled(this.started).then(() => {});
+		return Promise.all(this.inFlight).then(() => {});
 	}
 
-	/** The failure of the first call, in the order they were sent, that failed; undefined when none did. */
-	firstFailure(): Promise<unknown> {
-		return firstFailure(this.started);
+	/** The failure of the first unrecovered call, in the order they were sent, that failed; undefined when none did. */
+	async firstFailure(): Promise<unknown> {
+		await this.drained();
+		return this.log.firstFailure();
+	}
+
+	async firstTransientFailure(): Promise<StorageTransientError | undefined> {
+		await this.drained();
+		return this.log.firstTransientFailure();
 	}
 }
 
@@ -802,12 +1067,6 @@ function hasInvalidText(statement: SqliteStatement): boolean {
 	return statement.params.some((value) => typeof value === "string" && value.includes("\0"));
 }
 
-/** The failure of the first of `calls` that failed, in their order, once all settled; undefined when none did. */
-async function firstFailure(calls: readonly Promise<unknown>[]): Promise<unknown> {
-	for (const outcome of await Promise.allSettled(calls)) if (outcome.status === "rejected") return outcome.reason;
-	return undefined;
-}
-
 /** `leading` with parameters snapshotted, up to the first statement that holds NUL, which the facade refuses to send. */
 function leadingStatements(leading: readonly SqliteStatement[] | undefined): readonly SqliteStatement[] {
 	const sent: SqliteStatement[] = [];
@@ -915,12 +1174,12 @@ class DriverDatabase implements SqliteDatabase {
 				: () => PLAIN_SCOPE;
 		this.executor = this.createExecutor(
 			driver,
-			(operation, sql) => {
+			(operation, sql, script) => {
 				if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
 				return this.queue.push(
 					() => this.retrying(operation, true),
 					false,
-					sql === undefined ? PLAIN_SCOPE : scopeOf(sql),
+					sql === undefined || script === true ? PLAIN_SCOPE : scopeOf(sql),
 				);
 			},
 			true,
@@ -1106,7 +1365,12 @@ class DriverDatabase implements SqliteDatabase {
 						},
 						safe,
 					);
-					attempt.transient ??= failure;
+					if (
+						attempt.transient === undefined ||
+						(attempt.transient.outcome === "not-applied" && failure.outcome !== "not-applied")
+					) {
+						attempt.transient = failure;
+					}
 					throw failure;
 				}
 			}
@@ -1116,19 +1380,24 @@ class DriverDatabase implements SqliteDatabase {
 
 	private createExecutor(
 		connection: SqliteDriverExecutor,
-		admit: <T>(operation: (attempt: Attempt) => Promise<T>, sql?: string) => Promise<T>,
+		admit: <T>(operation: (attempt: Attempt) => Promise<T>, sql?: string, script?: boolean) => Promise<T>,
 		applies: boolean,
 	): SqliteExecutor {
 		const statement = (sql: string, params: readonly SqliteValue[]) => {
 			const bound = snapshotParams(params);
-			return admit(async (attempt) => {
-				const invalidIndex = bound.findIndex((value) => typeof value === "string" && value.includes("\0"));
-				if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
-				return this.call(() => connection.execute(sql, bound), attempt, applies, bound);
-			}, sql);
+			return admit(
+				async (attempt) => {
+					const invalidIndex = bound.findIndex((value) => typeof value === "string" && value.includes("\0"));
+					if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
+					return this.call(() => connection.execute(sql, bound), attempt, applies, bound);
+				},
+				sql,
+				false,
+			);
 		};
 		return {
-			exec: (sql) => admit((attempt) => this.call(() => connection.executeMultiple(sql), attempt, applies)),
+			exec: (sql) =>
+				admit((attempt) => this.call(() => connection.executeMultiple(sql), attempt, applies), sql, true),
 			run: async (sql, ...params) => ({ changes: (await statement(sql, params)).changes }),
 			get: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
 				const result = await statement(sql, params);
@@ -1208,8 +1477,17 @@ class DriverDatabase implements SqliteDatabase {
 		attempt: Attempt,
 		begin: SqliteDriverTransactionOptions,
 	): Promise<T> {
-		const connection = await this.call(() => this.driver.beginTransaction(begin), attempt);
 		const pipelined = this.driver.pipelinedTransactions === true;
+		const driverBegin: SqliteDriverTransactionOptions =
+			pipelined && begin.leadingOnly === true
+				? {
+						...begin,
+						onCommit: () => {
+							attempt.committing = true;
+						},
+					}
+				: begin;
+		const connection = await this.call(() => this.driver.beginTransaction(driverBegin), attempt);
 		const handleQueue = pipelined ? new PipelineQueue() : new CallQueue();
 		let active = true;
 		let result: T;
@@ -1217,9 +1495,9 @@ class DriverDatabase implements SqliteDatabase {
 		let finished = false;
 		const handle = this.createExecutor(
 			connection,
-			(operation) =>
+			(operation, sql) =>
 				active && !finished
-					? handleQueue.push(() => operation(attempt))
+					? handleQueue.push(() => operation(attempt), sql)
 					: Promise.reject(new StorageTransactionClosedError()),
 			false,
 		);
@@ -1279,13 +1557,24 @@ class DriverDatabase implements SqliteDatabase {
 			await (committing ?? commit());
 		} catch (cause) {
 			let failure = cause as StorageFailureCause;
-			// A commit that came back as a rollback names no reason: the statement that failed is the transaction's failure,
-			// and whether it may run again is that failure's, as when the callback awaited it.
-			const unanswered =
-				returned && handleQueue instanceof PipelineQueue ? await handleQueue.firstFailure() : undefined;
-			if (unanswered !== undefined) {
-				failure = unanswered as StorageFailureCause;
-				if (unanswered instanceof StorageTransientError) attempt.transient = unanswered;
+			if (returned) {
+				if (cause instanceof StorageTransientError) {
+					// Keep the commit's own failure whenever the driver recognized it (especially an ambiguous outcome).
+					attempt.transient = cause;
+				} else {
+					// A commit that came back as a rollback names no reason: the first unrecovered statement failure is
+					// the transaction's failure, and whether it may run again is that failure's.
+					const unanswered = handleQueue instanceof PipelineQueue ? await handleQueue.firstFailure() : undefined;
+					if (unanswered !== undefined) {
+						failure = unanswered as StorageFailureCause;
+						attempt.transient = unanswered instanceof StorageTransientError ? unanswered : undefined;
+					} else {
+						attempt.transient = undefined;
+					}
+				}
+			} else if (!(cause instanceof StorageTransientError)) {
+				// Recovered savepoint transient failures must not trigger retries for an unrelated callback failure.
+				attempt.transient = await handleQueue.firstTransientFailure();
 			}
 			try {
 				await this.call(() => connection.rollback());
