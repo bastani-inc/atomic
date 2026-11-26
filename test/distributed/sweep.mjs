@@ -46,16 +46,16 @@ function projects() {
 /** @param {string} project */
 function remove(project) {
 	const filter = `label=${LABEL}=${project}`;
-	const ids = (/** @type {string[]} */ ...command) =>
-		docker(...command, "--filter", filter, "--format", "{{.ID}}")
+	const ids = (/** @type {string} */ field, /** @type {string[]} */ ...command) =>
+		docker(...command, "--filter", filter, "--format", `{{.${field}}}`)
 			.split("\n")
 			.map((id) => id.trim())
 			.filter(Boolean);
-	const containers = ids("ps", "--all");
+	const containers = ids("ID", "ps", "--all");
 	if (containers.length > 0) docker("rm", "--force", "--volumes", ...containers);
-	const volumes = ids("volume", "ls");
+	const volumes = ids("Name", "volume", "ls");
 	if (volumes.length > 0) docker("volume", "rm", "--force", ...volumes);
-	const networks = ids("network", "ls");
+	const networks = ids("ID", "network", "ls");
 	if (networks.length > 0) docker("network", "rm", ...networks);
 	return leftovers(project);
 }
