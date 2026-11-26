@@ -435,10 +435,25 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 30
+      # PgBouncer in transaction mode in front of the PostgreSQL service, for the tests that run through a pooler
+      # as well as directly (ATOMIC_TEST_PGBOUNCER_URL). Every database name goes to the server, and roles a test
+      # creates sign in through auth_query as the postgres user.
+      pgbouncer:
+        image: edoburu/pgbouncer:v1.26.1-p0@sha256:488422e38cff912895d0d65d8963fcd306e6ac589a724398b6eb8e294e94d624
+        env:
+          DB_HOST: postgres
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          AUTH_TYPE: scram-sha-256
+          POOL_MODE: transaction
+          MAX_CLIENT_CONN: "400"
+        ports:
+          - 6432:5432
     env:
       ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED: "1"
       ATOMIC_TEST_POSTGRES_URL: postgresql://postgres@127.0.0.1:5432/postgres
       ATOMIC_TEST_POSTGRES_PASSWORD: postgres
+      ATOMIC_TEST_PGBOUNCER_URL: postgresql://postgres@127.0.0.1:6432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -498,13 +513,17 @@ jobs:
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
-      # Run the adapter conformance matrix, the PostgreSQL adapter, Intercom and multi-node resume tests, and forks
-      # on PostgreSQL in a process an in-place update caught.
+      - name: Wait for PgBouncer
+        shell: bash
+        timeout-minutes: 1
+        run: until (exec 3<>/dev/tcp/127.0.0.1/6432) 2>/dev/null; do sleep 1; done
+      # Run the adapter conformance matrix, the PostgreSQL adapter, Intercom and multi-node resume tests, the Intercom
+      # outbox claim tests directly and through PgBouncer, and forks on PostgreSQL in a process an in-place update caught.
       - name: Storage conformance and PostgreSQL tests
         run: >-
           bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64 ${{ matrix.shard }} of 4)"
           -- npm run test:integration -- storage-conformance-matrix storage-postgres intercom-postgres multinode-resume
-          in-place-update-forks --shard=${{ matrix.shard }}/4
+          intercom-outbox-claim in-place-update-forks --shard=${{ matrix.shard }}/4
       - name: Upload test diagnostics
         if: always()
         # The tests decide the job's result, not a failed diagnostics upload (such as an artifact service timeout).
