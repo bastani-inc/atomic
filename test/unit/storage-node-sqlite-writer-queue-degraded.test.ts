@@ -24,6 +24,7 @@ vi.mock("node:fs", async (importOriginal) => {
 		closeSync: vi.fn(actual.closeSync),
 		existsSync: vi.fn(actual.existsSync),
 		mkdirSync: vi.fn(actual.mkdirSync),
+		open: vi.fn(actual.open),
 		openSync: vi.fn(actual.openSync),
 		readFileSync: vi.fn(actual.readFileSync),
 		rmSync: vi.fn(actual.rmSync),
@@ -67,6 +68,7 @@ const { getWriterQueueDegradation, getWriterQueueStats, openNodeSqliteDatabase, 
 const { flushDebugLog } = await import("../../packages/coding-agent/src/core/debug.js");
 // In the same module graph too: a frozen clock reaches the copy's connection threads (#5376).
 const { databaseNow, freezeDatabaseClock } = await import("../helpers/database-clock.js");
+const { interceptConnectionRequests } = await import("../helpers/sqlite-connection-requests.js");
 
 /** Debug records follow a degradation asynchronously; on a loaded machine they can take far longer than a turn. */
 const DEBUG_RECORD_WAIT_MS = 10_000;
@@ -77,6 +79,7 @@ const watch = vi.mocked(fs.watch);
 const closeSync = vi.mocked(fs.closeSync);
 const existsSync = vi.mocked(fs.existsSync);
 const mkdirSync = vi.mocked(fs.mkdirSync);
+const open = vi.mocked(fs.open);
 const openSync = vi.mocked(fs.openSync);
 const readFileSync = vi.mocked(fs.readFileSync);
 const rmSync = vi.mocked(fs.rmSync);
@@ -102,6 +105,7 @@ afterEach(async () => {
 	closeSync.mockImplementation(actual.closeSync);
 	existsSync.mockImplementation(actual.existsSync);
 	mkdirSync.mockImplementation(actual.mkdirSync);
+	open.mockImplementation(actual.open);
 	openSync.mockImplementation(actual.openSync);
 	readFileSync.mockImplementation(actual.readFileSync);
 	rmSync.mockImplementation(actual.rmSync);
@@ -1200,22 +1204,29 @@ test("an exited process's write-lock record another connection removes first is 
 });
 
 test("a write-lock record that cannot be written is removed and left out, and transactions still commit (#4387)", async () => {
+	// Open the connection's holder record read-only so writing to its descriptor fails with EBADF on the connection thread.
+	open.mockImplementation(((file: fs.PathLike, flags: fs.OpenMode, ...rest: unknown[]) => {
+		if (String(file).includes("-holders") && flags === "w") {
+			actual.writeFileSync(file, "");
+			return (actual.open as (...args: unknown[]) => void)(file, "r", ...rest);
+		}
+		return (actual.open as (...args: unknown[]) => void)(file, flags, ...rest);
+	}) as typeof fs.open);
 	const { database, path } = await fixture();
 	suppressWarnings();
-	let attempts = 0;
-	write.mockImplementation(((descriptor: number, data: string, ...rest: unknown[]) => {
-		if (typeof data !== "string" || !/^(held|free) /.test(data))
-			return (actual.write as (...args: unknown[]) => void)(descriptor, data, ...rest);
-		attempts += 1;
-		const callback = rest.at(-1) as (error: Error) => void;
-		process.nextTick(() => callback(failure("EIO")));
-	}) as typeof fs.write);
+	const holderFds: (number | undefined)[] = [];
+	const interception = interceptConnectionRequests((request, send) => {
+		if (request.kind === "begin") holderFds.push(request.holderFd);
+		return send(request);
+	});
+	cleanups.push(() => interception.restore());
 	for (const value of ["first", "second"])
 		await database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", value));
 	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "first" }, { value: "second" }]);
-	assert.equal(attempts, 1, "a record it could not write is not written again");
+	assert.equal(typeof holderFds[0], "number", "the first transaction tried the holder record");
+	assert.equal(holderFds[1], undefined, "a record it could not write is not written again");
 	assert.deepEqual(actual.readdirSync(`${path}-holders`), [], "and does not stay to name a holder");
-	assertHolderRecordUnavailable(database, path, "EIO");
+	assertHolderRecordUnavailable(database, path, "EBADF");
 });
 
 /**

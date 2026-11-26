@@ -1031,3 +1031,57 @@ test("differential equivalence: pipelined leading and finisher transactions beha
 	assert.deepEqual(pipelined, unbatched, "pipelined thread connection matches unbatched thread connection");
 	assert.deepEqual(pipelined, wrapped, "pipelined thread connection matches unbatched calling-thread connection");
 });
+
+test("connection thread writes holder records and checks the writers-queue directory without overtaking live tickets (#6706)", async () => {
+	const { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } = await import("node:fs");
+	const { path, database } = await openFile();
+	const holders = `${path}-holders`;
+	const writers = `${path}-writers`;
+	const wakes = `${path}-wakes`;
+	const readHolderState = () => {
+		const [name] = readdirSync(holders).filter((entry) => entry.startsWith(`${process.pid}-`));
+		return readFileSync(join(holders, name!), "utf8").slice(0, 4);
+	};
+
+	// Uncontended write: worker thread writes "held" before callback runs and "free" before commit settles.
+	let duringTx = "";
+	const sent = recordRequests();
+	await database.transaction(async (tx) => {
+		duringTx = readHolderState();
+		await tx.run("INSERT INTO items (value) VALUES (?)", "uncontended");
+	});
+	assert.equal(duringTx, "held", "holder record already says held on the connection thread before callback runs");
+	assert.equal(readHolderState(), "free", "holder record already says free when transaction settles");
+	assert.equal(
+		sent.filter((request) => request.kind === "begin").length,
+		1,
+		"uncontended fast path took the lock in a single begin request",
+	);
+
+	// Empty post-contention writers directory: still takes the lock in one begin request without returning contended.
+	mkdirSync(writers, { recursive: true });
+	mkdirSync(wakes, { recursive: true });
+	sent.length = 0;
+	await database.transaction((tx) => tx.run("INSERT INTO items (value) VALUES (?)", "empty-dir"));
+	assert.equal(
+		sent.filter((request) => request.kind === "begin").length,
+		1,
+		"empty post-contention writers directory still completes in one begin request",
+	);
+
+	// Mid-transaction waiter added while this connection holds the lock: settleLock notices writers dir and wakes it!
+	const ticketName = `${String(Date.now()).padStart(15, "0")}-999999991-1`;
+	const noticePath = join(wakes, ticketName);
+	const untouchedMs = Date.UTC(2000, 0, 1);
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO items (value) VALUES (?)", "wakes-waiter");
+		writeFileSync(join(writers, ticketName), "");
+		writeFileSync(noticePath, "");
+		const untouched = new Date(untouchedMs);
+		utimesSync(noticePath, untouched, untouched);
+	});
+	const { statSync } = await import("node:fs");
+	assert.ok(statSync(noticePath).mtimeMs > untouchedMs, "releasing the lock woke the ticket queued mid-transaction");
+	assert.equal(existsSync(join(writers, ticketName)), true);
+	assert.deepEqual(await itemValues(database), ["uncontended", "empty-dir", "wakes-waiter"]);
+});

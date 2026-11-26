@@ -19,6 +19,14 @@ if (slowRecordMs !== undefined) {
 }
 
 const jiti = createJiti(import.meta.url, { fsCache: false });
+if (slowRecordMs !== undefined) {
+	// Route holder-record writes through the main-thread `fs.write` path delayed above so the caller can stop this
+	// process after taking the lock and before its "held" record lands.
+	const { ThreadConnection } = await jiti.import(
+		fileURLToPath(new URL("../../packages/coding-agent/src/core/storage/node-sqlite-thread.ts", import.meta.url)),
+	);
+	Object.defineProperty(ThreadConnection.prototype, "inTransaction", { get: () => undefined, configurable: true });
+}
 const { openNodeSqliteDatabase } = await jiti.import(
 	fileURLToPath(new URL("../../packages/coding-agent/src/core/storage/node-sqlite.ts", import.meta.url)),
 );

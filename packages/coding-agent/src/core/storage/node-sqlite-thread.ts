@@ -15,9 +15,40 @@ import type { SequencedStatement, SqliteSequence } from "./statement-sequence.js
 const CONNECTION_SOURCE = `
 ${EVAL_WORKER_BUILTIN}
 const { parentPort, workerData } = builtin("node:worker_threads");
+const fs = builtin("node:fs");
 process.emitWarning = () => {};
 const { DatabaseSync } = builtin("node:sqlite");
 let database;
+let holderFd;
+let holderActive = false;
+let writersDir;
+let lastFreed = false;
+let lastHasWaiters;
+let pendingHolderError;
+const HOLDER_FREE = "free " + "0".repeat(15) + "\\n";
+
+function hasWriters(dir) {
+	if (!fs.existsSync(dir)) return false;
+	try {
+		return fs.readdirSync(dir).length > 0;
+	} catch (error) {
+		return error?.code !== "ENOENT";
+	}
+}
+
+function writeHolder(record) {
+	if (holderFd === undefined) return;
+	try {
+		fs.writeSync(holderFd, record, 0, "utf8");
+	} catch (error) {
+		holderFd = undefined;
+		pendingHolderError ??= failure(error);
+	}
+}
+
+function holderLine(prefix) {
+	return prefix + " " + String(Date.now()).padStart(15, "0") + "\\n";
+}
 
 const STANDARD_ERRORS = [Error, TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError];
 // Bun stamps every error with where it was thrown; the caller's copy gets its own.
@@ -133,8 +164,17 @@ const handlers = {
 		}
 	},
 	// One non-blocking BEGIN IMMEDIATE, the connection's busy timeout restored before answering, then the transaction's
-	// leading statements, if any, in the same request.
+	// leading statements, if any, in the same request. When writersDir and checkQueue are given, checks the
+	// writers' queue directory first and returns { contended: true } without taking the lock if entries are present
+	// (or the directory cannot be listed). When holderFd is given, writes the connection's holder record in place
+	// around taking and releasing the lock.
 	begin: (request) => {
+		if (request.writersDir !== undefined) writersDir = request.writersDir;
+		if ("holderFd" in request) holderFd = request.holderFd;
+		if (request.checkQueue === true && writersDir !== undefined && hasWriters(writersDir)) {
+			return { contended: true };
+		}
+		writeHolder(holderLine("want"));
 		// The file's lock word (see FREE in node-sqlite-file-gate.ts): taken before BEGIN, after waiting here for a
 		// statement the calling thread runs meanwhile; settleLock gives it back once the transaction ended.
 		if (request.lockState !== undefined) {
@@ -156,6 +196,7 @@ const handlers = {
 		try {
 			database.exec("BEGIN IMMEDIATE");
 			began = true;
+			holderActive = true;
 		} finally {
 			try {
 				database.exec("PRAGMA busy_timeout=" + configured);
@@ -164,7 +205,9 @@ const handlers = {
 				throw restoreFailure;
 			}
 		}
-		return request.statements === undefined ? undefined : lead(request.statements);
+		const result = request.statements === undefined ? undefined : lead(request.statements);
+		if (inTransaction()) writeHolder(holderLine("held"));
+		return result;
 	},
 	lead: (request) => lead(request.statements),
 	// \`repeat\`, then each statement, in one request: the statements the caller would send one at a time, in the same
@@ -244,15 +287,23 @@ function inTransaction() {
 }
 
 function settleLock() {
-	if (lockState === undefined) return;
-	const { state, held } = lockState;
-	if (inTransaction()) {
-		if (Atomics.compareExchange(state, 0, held - 1, held) === held - 1) Atomics.notify(state, 0);
-		return;
+	const open = inTransaction();
+	if (lockState !== undefined) {
+		const { state, held } = lockState;
+		if (open) {
+			if (Atomics.compareExchange(state, 0, held - 1, held) === held - 1) Atomics.notify(state, 0);
+		} else {
+			lockState = undefined;
+			if (Atomics.compareExchange(state, 0, held, 0) === held || Atomics.compareExchange(state, 0, held - 1, 0) === held - 1)
+				Atomics.notify(state, 0);
+		}
 	}
-	lockState = undefined;
-	if (Atomics.compareExchange(state, 0, held, 0) === held || Atomics.compareExchange(state, 0, held - 1, 0) === held - 1)
-		Atomics.notify(state, 0);
+	if (holderActive && !open) {
+		holderActive = false;
+		writeHolder(HOLDER_FREE);
+		lastFreed = true;
+		lastHasWaiters = writersDir !== undefined && fs.existsSync(writersDir);
+	}
 }
 
 function handle(request) {
@@ -264,10 +315,22 @@ function handle(request) {
 }
 
 parentPort.on("message", (request) => {
+	lastFreed = false;
+	lastHasWaiters = undefined;
+	pendingHolderError = undefined;
 	try {
-		parentPort.postMessage({ id: request.id, value: handle(request), tx: inTransaction() });
+		const value = handle(request);
+		const reply = { id: request.id, value, tx: inTransaction() };
+		if (lastFreed) reply.freed = true;
+		if (lastHasWaiters !== undefined) reply.hasWaiters = lastHasWaiters;
+		if (pendingHolderError !== undefined) reply.holderError = pendingHolderError;
+		parentPort.postMessage(reply);
 	} catch (error) {
-		parentPort.postMessage({ id: request.id, failure: failure(error), tx: inTransaction() });
+		const reply = { id: request.id, failure: failure(error), tx: inTransaction() };
+		if (lastFreed) reply.freed = true;
+		if (lastHasWaiters !== undefined) reply.hasWaiters = lastHasWaiters;
+		if (pendingHolderError !== undefined) reply.holderError = pendingHolderError;
+		parentPort.postMessage(reply);
 	}
 });
 `;
@@ -310,6 +373,17 @@ export interface BeginRequest {
 	readonly lockState?: SharedArrayBuffer;
 	readonly lockTag?: number;
 	readonly statements?: readonly SequencedStatement[];
+	/** Open descriptor of this connection's write-lock holder record, written synchronously on the connection thread. */
+	readonly holderFd?: number;
+	/** Path of the cross-process writers'-queue directory, checked on the connection thread. */
+	readonly writersDir?: string;
+	/** When true, return `{ contended: true }` without taking the lock if `writersDir` has entries or cannot be listed. */
+	readonly checkQueue?: boolean;
+}
+
+/** Returned by a `begin` request with `checkQueue: true` when the writers' queue directory is non-empty or unreadable. */
+export interface BeginContendedAnswer {
+	readonly contended: true;
 }
 
 /**
@@ -358,6 +432,7 @@ type ConnectionValue =
 	| RowTable
 	| readonly RowTable[]
 	| LeadTable
+	| BeginContendedAnswer
 	| { readonly changes: number }
 	| SequenceAnswer
 	| string
@@ -376,6 +451,7 @@ export type ConnectionAnswer =
 	| SqliteRow[]
 	| SqliteRow[][]
 	| LeadAnswer
+	| BeginContendedAnswer
 	| { readonly changes: number }
 	| SequenceAnswer
 	| string
@@ -403,6 +479,9 @@ interface ConnectionReply {
 	readonly value?: ConnectionValue;
 	readonly failure?: ConnectionFailure;
 	readonly tx?: boolean;
+	readonly freed?: boolean;
+	readonly hasWaiters?: boolean;
+	readonly holderError?: ConnectionFailure;
 }
 
 const STANDARD_ERRORS: Readonly<Record<string, ErrorConstructor>> = {
@@ -496,12 +575,33 @@ export class ThreadConnection {
 	private readonly waiting = new Map<number, Waiter>();
 	private nextId = 1;
 	private _inTransaction?: boolean;
+	private _lastFreed = false;
+	private _lastHasWaiters?: boolean;
+	private _holderError?: Error;
 	private ended?: Error;
 	private closing?: Promise<undefined>;
 
 	/** Whether SQLite had an open transaction after the thread's last answer; undefined for older connection threads. */
 	get inTransaction(): boolean | undefined {
 		return this._inTransaction;
+	}
+
+	/** Consumes any connection-thread holder-record write failure reported since the last check. */
+	takeHolderError(): Error | undefined {
+		const error = this._holderError;
+		this._holderError = undefined;
+		return error;
+	}
+
+	/**
+	 * Consumes the release metadata reported by the connection thread when the transaction ended: whether the thread
+	 * already wrote the `"free"` holder record, and whether the writers'-queue directory existed.
+	 */
+	takeReleaseState(): { readonly freed: boolean; readonly hasWaiters: boolean | undefined } {
+		const state = { freed: this._lastFreed, hasWaiters: this._lastHasWaiters };
+		this._lastFreed = false;
+		this._lastHasWaiters = undefined;
+		return state;
 	}
 
 	private constructor() {
@@ -597,8 +697,10 @@ export class ThreadConnection {
 		if (request.kind === "all") return answer.then((value) => rowsOf(value as RowTable));
 		if (request.kind === "read") return answer.then((value) => (value as readonly RowTable[]).map(rowsOf));
 		if (request.kind === "lead" || (request.kind === "begin" && request.statements !== undefined))
-			return answer.then((value): LeadAnswer | undefined => {
+			return answer.then((value): LeadAnswer | BeginContendedAnswer | undefined => {
 				if (value === undefined) return undefined;
+				if (typeof value === "object" && value !== null && "contended" in value)
+					return value as BeginContendedAnswer;
 				const { answers, failure, open } = value as LeadTable;
 				return {
 					answers: answers.map((each) => ({ rows: rowsOf(each), changes: each.changes })),
@@ -645,6 +747,11 @@ export class ThreadConnection {
 
 	private receive(reply: ConnectionReply): void {
 		if (typeof reply.tx === "boolean") this._inTransaction = reply.tx;
+		if (reply.freed === true) {
+			this._lastFreed = true;
+			this._lastHasWaiters = reply.hasWaiters;
+		}
+		if (reply.holderError !== undefined) this._holderError ??= connectionError(reply.holderError);
 		const waiter = this.waiting.get(reply.id);
 		if (waiter === undefined) return;
 		this.waiting.delete(reply.id);
