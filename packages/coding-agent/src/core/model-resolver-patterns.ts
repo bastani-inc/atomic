@@ -1,7 +1,7 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { normalizeModelReference } from "./azure-provider-compat.js";
-import { defaultModelPerProvider } from "./model-resolver-defaults.ts";
+import { findProviderDefaultModel } from "./model-resolver-defaults.ts";
 import { isValidThinkingLevel } from "./thinking-levels.ts";
 
 /*
@@ -255,10 +255,7 @@ export function buildFallbackModel(
 	const providerModels = availableModels.filter((m) => m.provider === provider);
 	if (providerModels.length === 0) return undefined;
 
-	const defaultId = defaultModelPerProvider[provider];
-	const baseModel = defaultId
-		? (providerModels.find((m) => m.id === defaultId) ?? providerModels[0])
-		: providerModels[0];
+	const baseModel = findProviderDefaultModel(provider, providerModels) ?? providerModels[0];
 	const fallbackContextWindow = baseModel.contextWindow;
 
 	return {

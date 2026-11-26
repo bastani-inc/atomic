@@ -10,7 +10,7 @@ description: "Install Atomic with a package manager or standalone release archiv
 
 ## Package managers
 
-Install globally with npm, pnpm, or Bun (requires Node.js 22.19+, or Bun 1.4.2+ for Bun installs):
+Install globally with npm, pnpm, or Bun (requires [Node.js 24.20.0 or newer](#nodejs-version), or Bun 1.4.2+ for Bun installs):
 
 ```bash
 npm install -g @bastani/atomic
@@ -22,13 +22,20 @@ npm install -g @bastani/atomic
 - Package managers select the matching platform native package (`@bastani/atomic-natives-<platform>`) automatically.
 - Sessions save locally in `~/.atomic/workflows/journal.sqlite` with no database server needed. To share sessions across machines, see [Sharing storage across hosts](/storage#sharing-storage-across-hosts).
 
+### Node.js version
+
+Package-manager installs need Node.js 24 LTS, version 24.20.0 or newer. The [release archive](#release-archive) bundles its own runtime and needs no Node.js.
+
+- **Why 24.20.0:** Node.js releases before 24.15.0 bundle a SQLite version with a bug that can corrupt Atomic's session database ([SQLite WAL-reset bug](https://www.sqlite.org/wal.html#walresetbug)). Node.js 24.17.0 through 24.19.0 reject valid certificates for IPv6 addresses such as an `https://[::1]` proxy ([nodejs/node#64145](https://github.com/nodejs/node/pull/64145)); 24.20.0 fixes both.
+- **Check your version:** Run `node --version`. It must print `v24.20.0` or a later `v24` release, or a newer major version.
+- **Upgrade:** Install the current Node.js 24 LTS release from [nodejs.org](https://nodejs.org/en/download), or with a version manager: `nvm install 24`, `fnm install 24`, or `mise use -g node@24`. Then reinstall Atomic with `npm install -g @bastani/atomic` so it runs on the new Node.js.
+
 ### Package manager troubleshooting
 
 - **Optional native packages:** Do not omit optional dependencies (`npm install --omit=optional`, `pnpm install --no-optional`, or `bun install --omit=optional`) in a project. Without your platform's native package, Atomic stops at startup with an error naming the missing package; reinstall without those flags to fix it. Global npm installs still pull transitive optional native packages even with `--omit=optional`.
 - **Dependency resolution:** Atomic pins its direct dependencies to exact versions and does not bundle a lockfile, so your package manager resolves sub-dependencies at install time. Use the [release archive](#release-archive) if you want the exact dependency tree the release was tested with.
 - **Older Linux lockfiles:** On Linux, `npm ci` from an older project lockfile that omits C-library tags can install both the glibc and musl native packages. Atomic loads the matching one automatically.
 - **Mismatched native module after an update:** Atomic stops if its native module comes from a different release. If you updated Atomic while it was running, restart it. Otherwise reinstall to repair the installation. A long-running SDK program that stopped this way keeps refusing new sessions until restarted. This version check applies to packaged releases and skips standalone binaries, source checkouts, `NAPI_RS_NATIVE_LIBRARY_PATH` overrides, and apps that bundle the SDK without pinning `@bastani/atomic-natives`.
-- **Node 22 overhead:** On Node 22, async operations have higher overhead than on Node 24 or Bun. Run Atomic on Node 24 or later to avoid this overhead. Do not set `NODE_OPTIONS=--experimental-async-context-frame`: Node 24 and later refuse to start with that option, and commands Atomic runs inherit `NODE_OPTIONS`.
 
 ## Release archive
 

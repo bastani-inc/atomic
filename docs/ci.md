@@ -7,7 +7,7 @@ Pull requests need `test (all platforms)` and CodeQL results. Releases use a sep
 - [Tests](../.github/workflows/test.yml) runs on pushes to `main` and when a pull request opens, gets a push, reopens or changes draft status. It runs tests and archive smoke checks on Linux and Windows.
 - [Cancel closed pull request runs](../.github/workflows/cancel-closed-pr-runs.yml) runs when a pull request closes, including after a merge. The `cancel` job stops queued and running `test.yml` runs for that PR without checking out its code.
 - [CodeQL](../.github/workflows/codeql.yml) runs on pushes to `main`, on PRs targeting any branch and weekly. The `analyze` job scans GitHub Actions, JavaScript and TypeScript, and Rust. Keep GitHub's CodeQL default setup disabled so this workflow can upload results.
-- [macOS tests](../.github/workflows/macos-tests.yml) runs selected root test files on a branch a maintainer dispatches. It is not a required check.
+- [macOS tests](../.github/workflows/macos-tests.yml) runs selected root or coding-agent test files on a branch a maintainer dispatches. It is not a required check.
 - [Warm toolchain cache](../.github/workflows/warm-toolchain-cache.yml) warms Linux and Windows release caches on pushes to `main` or a manual dispatch on `main`.
 - [Warm macOS release cache](../.github/workflows/warm-macos-release-cache.yml) warms the macOS release cache on pushes to `main` or a manual dispatch on `main`.
 - [Publish](../.github/workflows/publish.yml) runs on release tag pushes. Use manual dispatch only for [recovery](#direct-release-trigger-and-recovery).
@@ -54,7 +54,7 @@ Read the job's `timeout-minutes` in the workflow. It covers setup, tests and tea
 
 ### macOS test dispatch
 
-A maintainer can run specific root tests on the chosen branch. Set `project` to `unit` or `integration` and provide space-separated `.test.ts` paths under `test/`.
+A maintainer can run specific tests on the chosen branch. Pick `unit`, `integration`, or `agent` and provide space-separated `.test.ts` paths from that project's directory: `test/unit/`, `test/integration/`, or `packages/coding-agent/test/`.
 
 ```sh
 gh workflow run macos-tests.yml --ref "$branch" \
@@ -92,9 +92,11 @@ Use `actions/checkout`, not the Namespace git mirror. CI and release jobs use se
 
 Open the PR's **Files changed** tab before approving each run from a fork. If it touches `.github/`, wait for maintainer review. Check `runs-on`, label suffixes, triggers and permissions. Do not approve a fork run that adds a PR workflow or picks a runner outside the approved Restricted profiles. Restricted access protects the committed configuration, not a workflow that the PR changes to select another runner.
 
-### Model data cached, fetched live in one place
+### One model catalog snapshot per test run
 
-Among the regular test jobs, `static-checks` always fetches the live model catalogs. The suites and archive job can restore a verified snapshot from `main`. A job with no valid snapshot runs `npm run hydrate:model-data` before building offline. Releases fetch live data.
+In `test.yml`, `model-data` restores a verified snapshot from `main` for pull requests. It fetches the catalogs once if there is no valid snapshot, and on pushes to `main`. The other jobs download the same run artifact, including its validation manifest, and build offline. A failed shard can rerun against the same artifact without checking upstream again.
+
+All work jobs wait for this short catalog-only job. It installs no dependencies and prevents typecheck and the suites from testing different catalogs. A warm pull-request run can use older data until `main` refreshes the cache. The separate manual macOS workflow still restores or hydrates independently, and releases fetch live data.
 
 ### Warming the release toolchain caches
 
@@ -164,6 +166,10 @@ The version registry accepts only tag-ref runs. A branch dispatch can publish to
 ## Maintaining CI
 
 Keep third-party actions pinned to full commit SHAs. Validate workflow changes with YAML parsing, actionlint, maintainer review and a hosted run on the exact PR head. Do not write tests that duplicate workflow YAML. Keep product and release-tooling tests.
+
+### Node.js version
+
+The root `package.json` `engines.node` is the one source for the Node.js version. Every `actions/setup-node` step and `.atomic/blueprint.yaml` read it with `node-version-file`. Jobs with a sparse `release-tooling` checkout read `release-tooling/package.json`. CI therefore runs the newest Node.js release that satisfies the floor. The root and every published package declare the same `engines.node`. The one exception is the Mintlify step in `static-checks`, which switches to the newest Node 24 release because Mintlify refuses Node 25 and later. `test/ci/node-version-source.test.ts` enforces these rules.
 
 ### Dependabot and the pi sync
 

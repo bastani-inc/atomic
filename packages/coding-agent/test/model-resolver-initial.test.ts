@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import type { Model } from "@bastani/atomic-ai/compat";
-import { getBuiltinModels, getBuiltinProviders } from "@bastani/atomic-ai/providers/all";
+import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { findInitialModel, restoreModelFromSession } from "../src/core/model-resolver.js";
-import { defaultModelPerProvider, findPreferredAvailableModel } from "../src/core/model-resolver-defaults.js";
+import {
+	defaultModelPerProvider,
+	findPreferredAvailableModel,
+	findProviderDefaultModel,
+} from "../src/core/model-resolver-defaults.js";
 import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.js";
 
 const COPILOT_ENV_KEYS = [
@@ -106,38 +110,26 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
 		expect(defaultModelPerProvider["qwen-token-plan-individual-cn"]).toBe("qwen3.8-max");
 	});
-	test("NVIDIA automatic selection prefers listed Nemotron 3.5 Super VL over the first catalog model (#10910)", () => {
-		const chatModels = getBuiltinModels("nvidia");
-		const preferred = chatModels.find((model) => model.id === "nvidia/nemotron-3.5-super-vl-120b-a12b");
-		const other = chatModels.find((model) => model.id !== "nvidia/nemotron-3.5-super-vl-120b-a12b");
-		assert.ok(preferred);
-		assert.ok(other);
+	test.each([
+		["nvidia", "nvidia/nemotron-3.5-super-vl-120b-a12b"],
+		["xiaomi", "mimo-v2.6-pro"],
+		["xiaomi-token-plan-cn", "mimo-v2.6-pro"],
+		["xiaomi-token-plan-ams", "mimo-v2.6-pro"],
+		["xiaomi-token-plan-sgp", "mimo-v2.6-pro"],
+	])("%s automatic selection prefers %s over the first catalog model", (provider, id) => {
+		const preferred = { ...allModels[0], provider, id };
+		const other = { ...preferred, id: "another-model" };
 		assert.equal(findPreferredAvailableModel([other, preferred]), preferred);
 	});
-	test.each(["xiaomi", "xiaomi-token-plan-cn", "xiaomi-token-plan-ams", "xiaomi-token-plan-sgp"])(
-		"%s automatic selection prefers MiMo V2.6 Pro over the first catalog model",
-		(provider) => {
-			const chatModels = getBuiltinModels(provider);
-			const preferred = chatModels.find((model) => model.id === "mimo-v2.6-pro");
-			const other = chatModels.find((model) => model.id !== "mimo-v2.6-pro");
-			assert.ok(preferred);
-			assert.ok(other);
-			assert.equal(findPreferredAvailableModel([other, preferred]), preferred);
-		},
-	);
 	test("built-in chat providers have defaults in their generated catalogs", () => {
-		for (const provider of getBuiltinProviders()) {
-			const chatModels = getBuiltinModels(provider);
-			const defaultId = defaultModelPerProvider[provider];
+		for (const provider of builtinProviders()) {
+			const chatModels = provider.getModels();
+			const selected = findProviderDefaultModel(provider.id, chatModels);
 			if (chatModels.length === 0) {
-				assert.equal(defaultId, undefined, `${provider} has no chat models and should have no chat default`);
+				assert.equal(selected, undefined, `${provider.id} has no chat models and should have no chat default`);
 				continue;
 			}
-			assert.equal(
-				chatModels.some((model) => model.id === defaultId),
-				true,
-				`${provider} default ${defaultId} should exist in its generated catalog`,
-			);
+			assert.ok(selected && chatModels.includes(selected), `${provider.id} should select one of its chat models`);
 		}
 	});
 	test("findInitialModel accepts explicit provider custom model ids", async () => {

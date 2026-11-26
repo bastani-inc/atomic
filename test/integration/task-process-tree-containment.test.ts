@@ -161,8 +161,13 @@ test.runIf(posix)(
 );
 
 const hostDeaths = (["pipe", "pty"] as const).flatMap((terminal) =>
-	(["sigkill", "throw", "exit", "guardian-first"] as const).map((how) => ({ terminal, how })),
+	(["sigkill", "throw", "exit", "guardian-first"] as const).map((how) => ({
+		terminal,
+		how,
+		shape: "timeout" as "timeout" | "job-control",
+	})),
 );
+if (process.platform === "darwin") hostDeaths.push({ terminal: "pipe", how: "sigkill", shape: "job-control" });
 /** The guardian a host started to end its shells when it dies: its child running the guardian script. */
 function guardianOf(host: number): number[] {
 	return execFileSync("ps", ["-eo", "pid=,ppid=,args="], { encoding: "utf8" })
@@ -172,12 +177,14 @@ function guardianOf(host: number): number[] {
 		.map((match) => Number(match?.[1]));
 }
 test.runIf(posix).each(hostDeaths)(
-	"a $terminal shell and its descendants end within their execution timeout when the host dies by $how (#5057)",
-	async ({ terminal, how }) => {
+	"a $terminal shell with a $shape descendant ends within its execution timeout when the host dies by $how (#5057)",
+	async ({ terminal, how, shape }) => {
 		const directory = await mkdtemp(join(tmpdir(), "task-host-death-5057-"));
-		const host = spawn(process.execPath, [resolve("test/fixtures/task-host-death.mjs"), directory, how, terminal], {
-			stdio: "ignore",
-		});
+		const host = spawn(
+			process.execPath,
+			[resolve("test/fixtures/task-host-death.mjs"), directory, how, terminal, shape],
+			{ stdio: "ignore" },
+		);
 		const exited = new Promise<void>((done) => host.once("exit", () => done()));
 		// #6125: recorded while they run, so neither the assertion nor the cleanup takes a later process for one of them.
 		const processes: RecordedProcess[] = [];
@@ -188,10 +195,15 @@ test.runIf(posix).each(hostDeaths)(
 		};
 		try {
 			const ready = await pidFrom(join(directory, "ready"), 15_000);
-			processes.push(
-				await recordProcess(await pidFrom(join(directory, "shell"))),
-				await recordProcess(await pidFrom(join(directory, "inner"))),
-			);
+			const shellPid = await pidFrom(join(directory, "shell"));
+			const innerPid = await pidFrom(join(directory, "inner"));
+			processes.push(await recordProcess(shellPid), await recordProcess(innerPid));
+			if (shape === "job-control") {
+				const processGroup = (pid: number) =>
+					execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8" }).trim();
+				assert.equal(processGroup(shellPid), String(shellPid));
+				assert.equal(processGroup(innerPid), String(innerPid));
+			}
 			if (how === "guardian-first") {
 				// A command that kills every `sh` it can, as `pkill sh` would, takes the guardian down first.
 				const [guardian] = guardianOf(host.pid ?? 0);

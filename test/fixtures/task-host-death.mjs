@@ -3,7 +3,7 @@
 // be SIGKILLed, `throw` crashes with an uncaught exception, `exit` calls process.exit(1).
 // `guardian-first` SIGKILLs the guardian that ends shells when the host dies, then waits to be SIGKILLed itself.
 // With the `hopper` shape the descendant keeps forking a replacement and exiting, and `inner` holds its process group.
-//   node task-host-death.mjs <directory> <sigkill|throw|exit|guardian-first> <pipe|pty> [hopper]
+//   node task-host-death.mjs <directory> <sigkill|throw|exit|guardian-first> <pipe|pty> [timeout|job-control|hopper]
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,10 +11,12 @@ import * as native from "@bastani/atomic-natives";
 
 const [directory, how, terminal, shape] = process.argv.slice(2);
 const hopper = fileURLToPath(new URL("./task-hopper.py", import.meta.url));
-const descendant =
-	shape === "hopper"
-		? `python3 '${hopper}' '${directory}/hop' 0.01 >/dev/null 2>&1 & while [ ! -s '${directory}/hop.pgid' ]; do sleep 0.01; done; cp '${directory}/hop.pgid' '${directory}/inner'; sleep 300`
-		: `timeout 300 sh -c 'echo $$ > "$1"; exec sleep 300' sh '${directory}/inner'`;
+const descendants = {
+	hopper: `python3 '${hopper}' '${directory}/hop' 0.01 >/dev/null 2>&1 & while [ ! -s '${directory}/hop.pgid' ]; do sleep 0.01; done; cp '${directory}/hop.pgid' '${directory}/inner'; sleep 300`,
+	"job-control": `exec /bin/bash -c 'set -m; sleep 300 >/dev/null 2>&1 & echo $! > "$1"; wait' bash '${directory}/inner'`,
+	timeout: `timeout 300 sh -c 'echo $$ > "$1"; exec sleep 300' sh '${directory}/inner'`,
+};
+const descendant = descendants[shape ?? "timeout"];
 const supervisor = new native.TaskSupervisor();
 const scope = { kind: "session", sessionId: crypto.randomUUID() };
 const owner = supervisor.openTaskOwner(supervisor.bindHostSession(scope), scope);

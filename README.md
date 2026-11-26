@@ -271,7 +271,7 @@ The model-family badges are representative open families, not a closed allowlist
 
 ### Prerequisites
 
-- **Package install:** Node.js 22.19 or newer plus npm, pnpm, Yarn, or Bun. Use Bun 1.4.5+ for Bun installs.
+- **Package install:** Node.js 24 LTS, version 24.20.0 or newer, plus npm, pnpm, Yarn, or Bun. Check with `node --version`; [Node.js version](packages/coding-agent/docs/getting-started/installation.md#nodejs-version) explains why and how to upgrade. Use Bun 1.4.5+ for Bun installs.
 - **Release archive install:** macOS and Linux need `tar` and either `curl` or `wget`. Windows uses built-in PowerShell commands. This path does not need Node.js or a package manager.
 - **Model-provider access:** Use a supported subscription login or API key.
 
@@ -356,7 +356,7 @@ After authenticating, type a message. To try parallel work, ask Atomic to delega
 <details>
 <summary><b>Devcontainer, terminal, and SDK references</b></summary>
 
-Atomic runs in a standard devcontainer or VM. Use the release-archive installer for an image without Node.js or npm, or install Node.js 22.19+ and use a package manager. Pass provider credentials through environment variables.
+Atomic runs in a standard devcontainer or VM. Use the release-archive installer for an image without Node.js or npm, or install Node.js 24.20.0 or newer and use a package manager. Pass provider credentials through environment variables.
 
 See [Terminal setup](./packages/coding-agent/docs/terminal-setup.md), [Security](./packages/coding-agent/docs/security.md), and [Programmatic usage](./packages/coding-agent/README.md#programmatic-usage) for the SDK and RPC entry points.
 
@@ -795,7 +795,7 @@ Large, mixed, or growing contexts can make attention harder. Specialized agents 
 
 ## Published packages
 
-All public packages publish on npm under `@bastani/atomic*` (Node.js 22.19+):
+All public packages publish on npm under `@bastani/atomic*` (Node.js 24.20+):
 
 | Package | Purpose | Docs |
 | --- | --- | --- |

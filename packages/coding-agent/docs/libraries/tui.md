@@ -4,7 +4,7 @@ sidebarTitle: "@bastani/atomic-tui"
 description: "Terminal UI framework with differential rendering, alternate-screen viewports, components, overlays, key handling, and images."
 ---
 
-Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications (requires Node.js 22.19+).
+Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications (requires Node.js 24.20+).
 
 ## Installation
 

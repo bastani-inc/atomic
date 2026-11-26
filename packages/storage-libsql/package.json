@@ -5,7 +5,7 @@
   "contributors": ["Norin Lavaee", "Alex Lavaee"],
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=22.19.0" },
+  "engines": { "node": ">=24.20.0" },
   "main": "./libsql.js",
   "types": "./libsql.d.ts",
   "exports": { ".": { "types": "./libsql.d.ts", "import": "./libsql.js", "default": "./libsql.js" } },

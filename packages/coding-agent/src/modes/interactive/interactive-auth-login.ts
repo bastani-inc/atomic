@@ -1,9 +1,9 @@
+import { findProviderDefaultModel } from "../../core/model-resolver-defaults.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import { isOAuthLoginCancelled } from "../../core/oauth-login.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Api,
-	defaultModelPerProvider,
 	ExtensionSelectorComponent,
 	getAuthPath,
 	getDocsPath,
@@ -46,13 +46,10 @@ InteractiveModeBase.prototype.completeProviderAuthentication = async function (
 			selectionError = llamaCppPostLoginGuidance(actionLabel, providerModels.length);
 		} else if (!hasDefaultModelProvider(providerId)) {
 			selectionError = `${actionLabel}, but no default model is configured for provider "${providerId}". Use /model to select a model.`;
-		} else if (providerModels.length === 0) {
-			selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
 		} else {
-			const defaultModelId = defaultModelPerProvider[providerId];
-			selectedModel = providerModels.find((model) => model.id === defaultModelId);
+			selectedModel = findProviderDefaultModel(providerId, providerModels);
 			if (!selectedModel) {
-				selectionError = `${actionLabel}, but its default model "${defaultModelId}" is not available. Use /model to select a model.`;
+				selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
 			} else {
 				try {
 					await this.session.setModel(selectedModel);

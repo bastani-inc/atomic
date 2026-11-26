@@ -7,7 +7,7 @@ export type SqliteSelectorValue = string | number | boolean | null;
 export type SqliteSelectorRow = Record<string, SqliteSelectorValue>;
 
 const MISSING_NODE_SQLITE =
-	"SQLite selectors need node:sqlite (Node >= 22.13 or Bun >= 1.4.2); this runtime does not provide it.";
+	"SQLite selectors need node:sqlite (Node >= 24.20.0 or Bun >= 1.4.2); this runtime does not provide it.";
 
 const CONNECTION_SOURCE = `
 ${EVAL_WORKER_BUILTIN}

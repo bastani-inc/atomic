@@ -8,7 +8,7 @@ Atomic is a terminal coding agent with built-in file, shell, search, codemode, s
 
 ## Quick start
 
-Install with a package manager (requires Node.js 22.19+, or Bun 1.4.5+ for Bun installs):
+Install with a package manager (requires [Node.js 24.20.0 or newer](/getting-started/installation#nodejs-version), or Bun 1.4.5+ for Bun installs):
 
 ```bash
 npm install -g @bastani/atomic
