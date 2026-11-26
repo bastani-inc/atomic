@@ -150,6 +150,9 @@ const ROUTE_HOLDER_DOWN_WINDOW_MS = 10 * 60_000;
 const BROKER_UNRESPONSIVE_AFTER_MS = (3 * BROKER_LEASE_RENEW_INTERVAL_MS) / 2;
 export const SHARED_STORAGE_UNAVAILABLE_REASON =
 	"Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.";
+/** #6637: a send that would overtake its sender's earlier messages to the session, still undelivered at the save cap. */
+export const EARLIER_SENDS_UNDELIVERED_REASON =
+	"Your earlier messages to this session are still waiting in the shared storage database, and this one may not overtake them. Try again once the database is available.";
 const MAX_HELD_SENDS = 256;
 /**
  * #3983: how long the decision to keep a sender waiting may take before the sender is told to keep waiting while it
@@ -563,6 +566,11 @@ interface Waiter {
 	 * wait as uncertain (#4443).
 	 */
 	missedSavingReport?: boolean;
+	/**
+	 * #6637: its send was answered and its routing is over, so a later local send to its recipient goes after it
+	 * (`waitForEarlierOutboxSends`); one still routing is ordered by the send-order gate, within its bounds.
+	 */
+	routed?: true;
 }
 
 interface SendProgress {
@@ -1114,6 +1122,8 @@ export class MultiNodeRouter {
 	private readonly initialScans = new Map<string, { readonly promise: Promise<void>; readonly resolve: () => void }>();
 	/** Refcount of unsettled outbox waiters per `(senderKey, targetIdentity)` pair, maintained by `setWaiter`/`dropWaiter`. */
 	private readonly unsettledOutboxPairs = new Map<string, number>();
+	/** #6637: local sends waiting for their sender's earlier outbox sends to their recipient (`waitForEarlierOutboxSends`). */
+	private readonly outboxSendWatchers = new Set<() => void>();
 	private readonly sendOrder = new SendOrderGate();
 	private activeLocalCommit:
 		| { readonly clientMessage: SendClientMessage; reentrant?: RemoteSendRequest }
@@ -3027,6 +3037,7 @@ export class MultiNodeRouter {
 		for (const [release, owner] of [...this.activeOpenings]) {
 			if (owner === session) release();
 		}
+		this.outboxSendsChanged();
 		for (const waiter of [...this.waiters.values()]) {
 			// #4642: a hosted session shares its host's socket; only its own sends end with it.
 			const sentBySession =
@@ -3719,7 +3730,11 @@ export class MultiNodeRouter {
 		} finally {
 			const progress = this.sendProgress.get(request.clientMessage);
 			if (progress !== undefined) this.stopProgress(progress);
-			if (ownsTicket) this.sendOrder.finish(ticket);
+			if (ownsTicket) {
+				this.sendOrder.finish(ticket);
+				const waiter = this.waiters.get(request.message.id);
+				if (waiter !== undefined) waiter.routed = true;
+			}
 		}
 	}
 
@@ -4013,21 +4028,79 @@ export class MultiNodeRouter {
 	}
 
 	/**
-	 * Wait for any initial or active outbox scan of `identity` on this broker, bounded by `expired`, only when
-	 * `senderKey` actually has an unsettled outbox waiter for `identity`. Unrelated senders and targets with no
-	 * unsettled outbox rows from this sender never wait behind slow presence writes or other senders' claims.
+	 * #6637: a send to a session here goes after its sender's earlier sends to that session still in the shared outbox
+	 * (sent while it was offline or on another broker, and answered): it waits until this broker has written each of them
+	 * to the session, or each settled otherwise. A wait bounded by the local lookup's bound let it overtake them whenever the
+	 * session's registration and first claim took longer, as on a far-away database, or the claim found the rows still
+	 * held by the broker the session left. Only a sender with an unsettled outbox send to the session ever waits. The
+	 * sender is held meanwhile, and refused as retryable at the save cap. True to take the local path; false when the
+	 * send was answered or the router closed.
 	 */
-	private async waitForPendingOutboxScan(
+	private async waitForEarlierOutboxSends(
+		request: RemoteSendRequest,
 		senderKey: string,
-		identity: string,
-		expired: Promise<"expired">,
-	): Promise<void> {
-		if (!this.unsettledOutboxPairs.has(outboxPairKey(senderKey, identity))) return;
-		const initial = this.initialScans.get(identity)?.promise;
-		if (initial !== undefined) await Promise.race([initial, expired]);
-		if (this.closed) return;
-		const active = this.scanning.get(identity)?.done;
-		if (active !== undefined) await Promise.race([active, expired]);
+		target: BrokerConnectedSession,
+	): Promise<boolean> {
+		const identity = deliveryTargetIdentity(target);
+		const pair = outboxPairKey(senderKey, identity);
+		if (!this.unsettledOutboxPairs.has(pair)) return true;
+		const earlier = new Set<string>();
+		for (const waiter of this.waiters.values())
+			if (
+				waiter.routed === true &&
+				waiter.messageId !== request.message.id &&
+				outboxPairKey(waiter.senderKey, waiter.targetIdentity) === pair
+			)
+				earlier.add(waiter.messageId);
+		const written = (): boolean => {
+			for (const messageId of earlier)
+				if (!this.waiters.has(messageId) || this.inflight.get(messageId)?.session === target) earlier.delete(messageId);
+			return earlier.size === 0;
+		};
+		if (written()) return true;
+		// A registration's first scan is still to come; otherwise a scan that ended without them looks again now.
+		if (!this.initialScans.has(identity)) void this.scanIdentity(identity);
+		const progress = this.sendProgress.get(request.clientMessage);
+		const startedAt = progress?.startedAt ?? performance.now();
+		const deadline = { clientDeadlineAt: progress?.clientDeadlineAt ?? startedAt + SEND_RESPONSE_TIMEOUT_MS };
+		const capAt = startedAt + RECIPIENT_SAVE_MAX_WAIT_MS;
+		while (!this.closed && !written()) {
+			// A session that left takes the local path's fallback, which routes the send through the outbox behind them.
+			if (this.host.sessions.get(target.info.id) !== target) return true;
+			const now = performance.now();
+			if (now >= capAt) {
+				this.fail(request, EARLIER_SENDS_UNDELIVERED_REASON);
+				return false;
+			}
+			const guardAt = deadline.clientDeadlineAt - MIN_WAIT_CLIENT_MARGIN_MS;
+			if (now >= guardAt) {
+				this.sendHoldFrame(
+					request.socket,
+					request.message.id,
+					request.attemptId,
+					Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, capAt - now),
+					deadline,
+				);
+				if (progress !== undefined) progress.clientDeadlineAt = deadline.clientDeadlineAt;
+				continue;
+			}
+			await new Promise<void>((resolve) => {
+				const wake = (): void => {
+					clearTimeout(timer);
+					this.outboxSendWatchers.delete(wake);
+					resolve();
+				};
+				const timer = setTimeout(wake, Math.min(capAt, guardAt) - now);
+				timer.unref?.();
+				this.outboxSendWatchers.add(wake);
+			});
+		}
+		return !this.closed;
+	}
+
+	/** #6637: an outbox send was written to its recipient here or settled, or a recipient left: waits look again. */
+	private outboxSendsChanged(): void {
+		for (const wake of [...this.outboxSendWatchers]) wake();
 	}
 
 	/**
@@ -4884,7 +4957,6 @@ export class MultiNodeRouter {
 		ticket: SendOrderTicket,
 		openingDeadlineAt: number,
 	): Promise<void> {
-		const targetIdentity = deliveryTargetIdentity(target);
 		const lookup = this.state.outbox.read(request.message.id);
 		// #5607: a lookup that fails while an owner check is still answering is reported when it is awaited below, not
 		// left unobserved meanwhile. The checks are waited for within the lookup's own bound, counted from now.
@@ -4934,7 +5006,7 @@ export class MultiNodeRouter {
 					sending = adopted;
 				}
 				await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
-				await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
+				if (!(await this.waitForEarlierOutboxSends(sending, ticket.senderKey, target))) return;
 				this.extendBeforeLocalReceiptWait(sending, target);
 				await this.commitLocalNotFound(sending, ticket, openingDeadlineAt);
 				return;
@@ -4977,7 +5049,7 @@ export class MultiNodeRouter {
 				sending = adopted;
 			}
 			await this.waitForEarlierLocal(ticket, target, expired, boundExpired);
-			await this.waitForPendingOutboxScan(ticket.senderKey, targetIdentity, expired);
+			if (!(await this.waitForEarlierOutboxSends(sending, ticket.senderKey, target))) return;
 			this.extendBeforeLocalReceiptWait(sending, target);
 			await this.commitLocalNotFound(sending, ticket, openingDeadlineAt);
 		} finally {
@@ -5842,6 +5914,7 @@ export class MultiNodeRouter {
 				// A recipient that never confirms saves is delivered once the frame is written, as locally.
 				if (session.acknowledgesReceipt !== true) this.settleDelivered(inflight, session, frame);
 			});
+			this.outboxSendsChanged();
 		}
 	}
 
@@ -6195,6 +6268,7 @@ export class MultiNodeRouter {
 			const next = (this.unsettledOutboxPairs.get(pair) ?? 0) - 1;
 			if (next <= 0) this.unsettledOutboxPairs.delete(pair);
 			else this.unsettledOutboxPairs.set(pair, next);
+			this.outboxSendsChanged();
 		}
 		if (waiter.timer !== undefined) clearTimeout(waiter.timer);
 		if (waiter.capTimer !== undefined) clearTimeout(waiter.capTimer);

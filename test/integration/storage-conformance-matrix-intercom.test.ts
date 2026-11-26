@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import type { SqliteDatabase, SqliteExecutor } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
+import { LOCAL_RETRY_LOOKUP_BOUND_MS } from "../../packages/intercom/broker/multinode-router.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
 	type IntercomBrokerStateOptions,
@@ -37,12 +39,15 @@ import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtim
 import { type StorageBackend, storageBackends } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 import {
+	framesOf,
 	message,
 	messageFrames,
 	Node,
 	outcomeOf,
 	reasonOf,
+	sendAndSettle,
 	waitFor,
+	waitOffline,
 } from "../unit/intercom-multinode-broker-routing-helpers.js";
 import { backendLabel } from "./storage-conformance-matrix-helpers.js";
 
@@ -852,6 +857,61 @@ for (const backend of storageBackends) {
 				}
 			},
 		);
+	run(
+		`${intercom}: messages queued for an offline session reach it, once it registers on its sender's broker, before the sender's later sends, however slow the broker's first claim of them is (#6637)`,
+		async () => {
+			const scope = await backend.openScope();
+			const directory = makeTempDirectory("intercom-matrix-handoff-");
+			const nodes: Node[] = [];
+			let unstall = () => {};
+			try {
+				const shared = await scope.connect();
+				for (const name of ["node-0", "node-1"])
+					nodes.push(await Node.start(name, directory, shared, undefined, scope.prefix));
+				const [a, b] = nodes as [Node, Node];
+				const sender = await a.connect("sender");
+				const returnAddress = randomUUID();
+				const away = await b.connect("mover", { returnAddress });
+				b.leave(away);
+				await waitOffline(a, away);
+				const queued = [0, 1, 2, 3].map((index) => message({ content: { text: `queued-${index}` } }));
+				for (const sent of queued)
+					assert.equal((await sendAndSettle(a, sender, away.info.id, sent)).type, "queued", sent.content.text);
+				// The sender's broker claims the queued messages slower than a local send's lookups are bounded, as a claim
+				// that follows the registration's writes to a far-away database does.
+				const outbox = a.opened.state.outbox;
+				const claim = outbox.claim.bind(outbox);
+				const stalled = new Promise<void>((resolve) => {
+					unstall = resolve;
+				});
+				Object.assign(outbox, {
+					claim: async (request: Parameters<typeof claim>[0]) => {
+						await stalled;
+						return claim(request);
+					},
+				});
+				// The session registers on its sender's broker, and the sender sends again at once.
+				const moved = await a.connect("mover", { returnAddress, id: away.info.id });
+				const later = [0, 1, 2, 3].map((index) => message({ content: { text: `later-${index}` } }));
+				for (const sent of later) a.send(sender, away.info.id, sent);
+				const texts = () =>
+					framesOf(moved).flatMap((frame) => (frame.type === "message" ? [frame.message.content.text] : []));
+				await sleep(3 * LOCAL_RETRY_LOOKUP_BOUND_MS);
+				assert.deepEqual(texts(), [], "nothing overtook the queued messages");
+				unstall();
+				await waitFor(() => (texts().length >= 8 ? true : undefined));
+				assert.deepEqual(
+					texts(),
+					[...queued, ...later].map((sent) => sent.content.text),
+				);
+			} finally {
+				unstall();
+				for (const node of nodes) await node.close();
+				await scope.close();
+				removeTempDirectory(directory);
+			}
+		},
+	);
 	registerCrossNodeHeldRoundTripConformance(run, intercom, {
 		openReservations: scopeFixture(backend, openSqlRestoringReservationStore),
 		openHeldSends: scopeFixture(backend, openSqlHeldSendStore),
