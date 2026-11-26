@@ -52,15 +52,15 @@ On the machine itself, `uptime` shows the load average. If it stays well below t
 
 ## Put the database close to the agents
 
-Saving new entries to a session takes 2 round trips. A round trip is the time a message takes to reach the server and come back, which `ping` shows. So every save takes at least twice that:
+Saving new entries to a session takes 1 round trip once you have run `atomic storage migrate` as the owner role, and 2 before. A round trip is the time a message takes to reach the server and come back, which `ping` shows. So every save takes at least that long:
 
-| Distance to the server | One round trip | Each save, at least |
-| --- | --- | --- |
-| Same data center | about 1 ms | about 2 ms |
-| Same region, different zone | about 2 ms | about 4 ms |
-| Across a continent | about 80 ms | about 160 ms |
+| Distance to the server | One round trip | Each save, at least | Before `atomic storage migrate` |
+| --- | --- | --- | --- |
+| Same data center | about 1 ms | about 1 ms | about 2 ms |
+| Same region, different zone | about 2 ms | about 2 ms | about 4 ms |
+| Across a continent | about 80 ms | about 80 ms | about 160 ms |
 
-We measured this on our server. At 80 ms, a save took 164 to 166 ms in the middle of the range (p50) with 25 to 200 agents. At about 10 ms through PgBouncer, a save took 23 ms. Distance also makes every lock wait longer, because a transaction holds its locks for its round trips.
+We measured this on our server with 2 round trips per save. At 80 ms, a save took 164 to 166 ms in the middle of the range (p50) with 25 to 200 agents. At about 10 ms through PgBouncer, a save took 23 ms. Distance also makes every lock wait longer, because a transaction holds its locks for its round trips.
 
 Run the server in the same region as the agents, and ideally the same zone. No server setting makes up for distance.
 
@@ -286,13 +286,13 @@ atomic storage migrate --db 'postgresql://atomic_owner@db.example.com:5432/atomi
 Why it matters for performance:
 
 - **Fast starts.** An agent opens its storage quickly, in a few round trips and without taking locks, only when the database is already up to date. If it is not, each agent starts by checking and updating it, and many agents starting at once queue behind each other.
-- **New steps.** `atomic storage migrate` also applies changes a runtime role without DDL rights cannot make: the sequence Intercom uses to order new leases, and `fillfactor` on the busy tables. Until it runs, agents keep working, but without those gains.
+- **New steps.** `atomic storage migrate` also applies changes a runtime role without DDL rights cannot make: the sequence Intercom uses to order new leases, `fillfactor` on the busy tables, and the function that saves entries to a session in 1 round trip instead of 2. Until it runs, agents keep working, but without those gains. Agents find the function the next time they start.
 
 ## Checklist
 
 | Step | Restart needed | Measured on our server |
 | --- | --- | --- |
-| Run the database in the same region as the agents | — | Yes: 2 round trips per save |
+| Run the database in the same region as the agents | — | Yes: 2 round trips per save, 1 after `atomic storage migrate` |
 | Size `max_connections` and per-role limits from the connection count, or put PgBouncer in front | `max_connections` only | Yes: raised 300 to 400, role 150 to 300 |
 | Set `shared_buffers` to about a quarter of memory | Yes | Kept 8 GB of 30 GB |
 | Reserve huge pages with `vm.nr_hugepages` and check `huge_pages_status` | Yes | Yes: `on`, 4259 pages needed, 4350 reserved |

@@ -1759,10 +1759,28 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 */
 	async assertStored(transaction: SqliteExecutor, snapshots: readonly WorktreeSnapshot[]): Promise<void> {
 		const missing = await this.missingBlob(transaction, snapshots);
-		if (missing === undefined) return;
+		if (missing !== undefined) await this.refuseCollected(missing);
+	}
+
+	/** The `blobs-collected` {@link WorkspaceSnapshotError} `assertStored` rejects with for `hash`. */
+	async refuseCollected(hash: string): Promise<never> {
 		// Loaded only when a write is refused, so the storage entry does not load the workspace error family.
 		const { WorkspaceSnapshotError } = await import("./errors.ts");
-		throw new WorkspaceSnapshotError("blobs-collected", missing);
+		throw new WorkspaceSnapshotError("blobs-collected", hash);
+	}
+
+	/** The blobs of `snapshots` that `assertStored` checks, each once, in the order it reports the first missing one. */
+	storedHashes(snapshots: readonly WorktreeSnapshot[]): string[] {
+		return [...new Set(snapshots.flatMap(wellFormedBlobHashes))];
+	}
+
+	/**
+	 * The query `missingBlob` reads, for the blobs named by `source`, an SQL expression of a JSON array of hashes: the
+	 * hashes this table holds in full, locked FOR SHARE in hash order. A statement that checks the blobs on the server,
+	 * such as the session append function, runs it as it is (#6599).
+	 */
+	storedBlobsQuery(source: string): string {
+		return `SELECT hash FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues(source)}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash)) ORDER BY hash${this.dialect.byteOrderCollation}${this.dialect.lockClause("share")}`;
 	}
 
 	/**
@@ -1783,10 +1801,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * rows it finds stay locked FOR SHARE until the transaction ends, taken in hash order as a blob write takes them.
 	 */
 	async missingBlob(transaction: SqliteExecutor, snapshots: readonly WorktreeSnapshot[]): Promise<string | undefined> {
-		const hashes = [...new Set(snapshots.flatMap(wellFormedBlobHashes))];
+		const hashes = this.storedHashes(snapshots);
 		if (hashes.length === 0) return undefined;
 		const rows = await transaction.all<SqliteRow & { hash: string }>(
-			`SELECT hash FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash)) ORDER BY hash${this.dialect.byteOrderCollation}${this.dialect.lockClause("share")}`,
+			this.storedBlobsQuery("?"),
 			JSON.stringify(hashes),
 		);
 		const stored = new Set(rows.map((row) => row.hash));
