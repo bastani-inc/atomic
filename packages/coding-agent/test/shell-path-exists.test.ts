@@ -118,6 +118,22 @@ describe("Windows Store shell aliases", () => {
 		assert.equal(shell.getShellConfig(alias).shell, alias);
 	});
 
+	it("expands a leading ~ in custom shellPath on Windows (sync and async)", async () => {
+		vi.stubEnv("USERPROFILE", "D:\\Users\\test");
+		const expected = "D:\\Users\\test\\tools\\bash.exe";
+		accessSyncMock.mockImplementation((path: string) => {
+			if (path !== expected) throw Object.assign(new Error("not found"), { code: "ENOENT" });
+		});
+		accessMock.mockImplementation(async (path: string) => {
+			if (path !== expected) throw Object.assign(new Error("not found"), { code: "ENOENT" });
+		});
+
+		assert.equal(shell.getShellConfig("~\\tools\\bash.exe").shell, expected);
+		assert.equal(shell.getShellConfig("~/tools/bash.exe").shell, expected);
+		assert.equal((await shell.getShellConfigAsync("~\\tools\\bash.exe")).shell, expected);
+		assert.equal((await shell.getShellConfigAsync("~/tools/bash.exe")).shell, expected);
+	});
+
 	it("rejects an explicitly configured directory named like a shell (#5324)", () => {
 		const directory = "D:\\tools\\bash.exe";
 		standIns.directories.add(directory);
@@ -252,6 +268,20 @@ describe("Unix shell existence checks", () => {
 			}
 		},
 	);
+
+	it("expands a leading ~/ in custom shellPath on Unix (sync and async)", async () => {
+		vi.stubEnv("HOME", "/home/alice");
+		const expected = "/home/alice/.local/bin/bash";
+		accessSyncMock.mockImplementation((path: string) => {
+			if (path !== expected) throw Object.assign(new Error("not found"), { code: "ENOENT" });
+		});
+		accessMock.mockImplementation(async (path: string) => {
+			if (path !== expected) throw Object.assign(new Error("not found"), { code: "ENOENT" });
+		});
+
+		assert.equal(shell.getShellConfig("~/.local/bin/bash").shell, expected);
+		assert.equal((await shell.getShellConfigAsync("~/.local/bin/bash")).shell, expected);
+	});
 
 	it("rejects an explicitly configured shell path that fails access(F_OK)", () => {
 		accessSyncMock.mockImplementationOnce(() => {

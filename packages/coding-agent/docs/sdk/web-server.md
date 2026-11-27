@@ -1,47 +1,49 @@
 ---
-title: "Embed Atomic in a web server"
-sidebarTitle: "Web server guide"
+title: "Stream from a web server"
+sidebarTitle: "Stream over HTTP"
 description: "Run Atomic sessions behind a Next.js App Router endpoint and stream newline-delimited JSON output to a browser."
 ---
 
-This guide puts an Atomic agent behind an HTTP endpoint using Next.js App Router. The same pattern works in any long-running Node.js server: keep one session per conversation, start a prompt per request, and stream session events back as newline-delimited JSON (NDJSON).
+This guide puts an Atomic agent behind an HTTP endpoint using Next.js App Router. The same pattern works in any long-running Node.js server: keep one session per conversation, start one prompt per request, and stream session events back as newline-delimited JSON (NDJSON).
 
-Read [TypeScript SDK](/sdk) first for `createAgentSession()`, `AgentSession`, `AgentSessionRuntime`, and session events. For servers that release idle sessions and rehydrate them on later requests, wrap sessions with `createAgentSessionRuntime()` instead (see [Releasing idle sessions](/sdk#releasing-idle-sessions)).
+Read [Use the TypeScript SDK](/sdk) first for `createAgentSession()`, `AgentSession`, `AgentSessionRuntime`, and session events. For servers that release idle sessions and rehydrate them on later requests, wrap sessions with `createAgentSessionRuntime()` instead (see [Releasing idle sessions](/sdk#releasing-idle-sessions)).
 
-## Install
+## Prerequisites and setup
 
-```bash
-npm install @bastani/atomic
-```
+<Steps>
+  <Step title="Install @bastani/atomic">
+    Atomic requires Node.js 24.20 or newer. Dependency install scripts are not required; if your package manager blocks install scripts, leave them disabled.
 
-Atomic requires Node.js 24.20 or newer. Dependency install scripts are not required; if your package manager blocks install scripts, leave them disabled.
+    ```bash
+    npm install @bastani/atomic
+    ```
+  </Step>
+  <Step title="Keep Atomic external to the server bundle">
+    Atomic resolves its bundled resources and native modules relative to `node_modules`, so list it in `serverExternalPackages` (Next.js 15 and later):
 
-## Keep Atomic out of the server bundle
+    ```typescript
+    // next.config.ts
+    import type { NextConfig } from "next";
 
-Atomic resolves its bundled resources and native modules relative to `node_modules`, so keep it outside Next.js's server bundle using `serverExternalPackages` (Next.js 15 and later):
+    const nextConfig: NextConfig = {
+      serverExternalPackages: ["@bastani/atomic", "@bastani/atomic-natives", "@bastani/atomic-ai"],
+    };
 
-```typescript
-// next.config.ts
-import type { NextConfig } from "next";
+    export default nextConfig;
+    ```
 
-const nextConfig: NextConfig = {
-  serverExternalPackages: ["@bastani/atomic", "@bastani/atomic-natives", "@bastani/atomic-ai"],
-};
+    List any other Atomic packages your server imports directly, including [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) when storing sessions in PostgreSQL (see [Configure session storage](/sdk/storage)).
+  </Step>
+  <Step title="Use the Node.js runtime and Atomic's TypeBox subpath">
+    Every route handler that imports Atomic must run on the Node.js runtime, not Edge:
 
-export default nextConfig;
-```
+    ```typescript
+    export const runtime = "nodejs";
+    ```
 
-Once `@bastani/atomic` is external, its dependencies load from `node_modules`. List any other Atomic packages your application imports directly, including [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres) when using remote SQL storage (see [SDK storage guide](/sdk/storage)).
-
-Import TypeBox for custom tool schemas from `@bastani/atomic/typebox` (and its subpaths such as `/value`, `/compile`, and `/format`) rather than `typebox` directly so custom formats and settings share Atomic's TypeBox registry.
-
-Every route that imports Atomic must run on the Node.js runtime:
-
-```typescript
-export const runtime = "nodejs";
-```
-
-Import Atomic only from server code. Client components may use `import type` from `@bastani/atomic`, which adds zero bytes to the browser bundle.
+    Import Atomic only from server code (client components may use `import type` from `@bastani/atomic`, which adds zero bytes to the browser bundle). When defining custom tool schemas, import TypeBox from `@bastani/atomic/typebox` (and its subpaths such as `/value`, `/compile`, and `/format`) so custom formats share Atomic's validation registry.
+  </Step>
+</Steps>
 
 ## Keep one session per conversation
 
@@ -126,9 +128,11 @@ if (!state.shutdownRegistered) {
 }
 ```
 
-`SessionManager.inMemory()` keeps history in process memory. To persist conversations across restarts, pass a SQLite, JSONL, or PostgreSQL `SessionManager` or `sessionStore` (see [SDK storage guide](/sdk/storage)). Call `closeConversation()` when a conversation finishes or goes idle, and run `closeAllConversations()` on `SIGTERM`/`SIGINT` so session stores and child processes close cleanly.
+<Warning>
+Sessions stored on `globalThis` live in one Node.js server process. Run this pattern on a long-lived server with sticky routing per conversation if you scale to multiple instances; short-lived serverless functions discard process memory between requests.
+</Warning>
 
-Sessions on `globalThis` live in one server process. Run this on a long-lived Node.js server with sticky routing per conversation if you scale to multiple instances; short-lived serverless functions discard process memory between requests.
+`SessionManager.inMemory()` keeps history only in RAM. To persist conversations across restarts or share them across servers, pass a SQLite, JSONL, or PostgreSQL `SessionManager` or `sessionStore` (see [Configure session storage](/sdk/storage)). Call `closeConversation()` when a conversation finishes or goes idle, and run `closeAllConversations()` on `SIGTERM`/`SIGINT` so session stores and child processes close cleanly.
 
 ## Stream a prompt
 
@@ -219,9 +223,8 @@ Key behaviors:
 - **One prompt at a time:** `session.prompt()` rejects while streaming, so the route returns `409` and flips `busy` synchronously to prevent races. To queue prompts instead of rejecting, call `session.prompt(message, { streamingBehavior: "followUp" })`.
 - **Stop on disconnect:** When the browser disconnects or aborts `fetch`, `request.signal` and `cancel()` call `session.abort()`, stopping the current turn and tools while keeping the session reusable.
 - **Payload throttling:** Each line emits the complete transcript so far. For long responses, throttle updates on a short timer or send incremental diffs.
-- **Error sanitization:** Log raw errors server-side and send sanitized user-safe error messages to the browser.
-
-`createTranscript()` returns a tool result's text by default. To send structured `details` for specific tools instead, pass `createTranscript({ toolResult: (toolName) => (toolName === "todo" ? "details" : "content") })`.
+- **Structured tool details:** `createTranscript()` returns a tool result's text by default. Pass `createTranscript({ toolResult: (toolName) => (toolName === "todo" ? "details" : "content") })` to emit structured `details` for specific tools.
+- **Error sanitization:** Log raw errors server-side and return generic user-safe messages to the browser.
 
 ## Read the stream in the browser
 
@@ -266,19 +269,30 @@ Render each part by `type`: `text` and `thinking` hold strings, and a `toolCall`
 
 ## Secure the endpoint
 
-Any route driving an agent session lets callers run tools with the server process's OS permissions. Atomic has [no built-in sandbox](/security#no-built-in-sandbox).
+<Warning>
+Atomic has [no built-in sandbox](/security#no-built-in-sandbox). Any HTTP route driving an agent session lets callers execute enabled tools with the server process's OS permissions, and `cwd` does not jail file tools to that directory.
+</Warning>
 
 - **Require authentication** on every route that creates sessions or sends prompts, and scope conversation IDs to the authenticated user.
-- **Allow only needed tools.** `tools` is an allowlist; the example enables only read-only `read`, `find`, and `search`. Omit `bash`, `edit`, and `write` unless the agent must mutate files or run commands. `excludedTools` removes tools, and `noTools: "all"` exposes none. Omit `ask_user_question` in headless sessions. See [Tools](/sdk/reference#tools).
+- **Allow only needed tools.** `tools` is an allowlist; the example enables only read-only `read`, `find`, and `search`. Omit `bash`, `edit`, and `write` unless the agent must mutate files or run commands. Use `excludedTools` to strip specific tools or `noTools: "all"` to expose none, and omit `ask_user_question` in headless servers. See [Tools](/sdk/reference#tools).
 - **Disable unused builtins.** Turn off `subagents`, `mcp`, `web-access`, and `intercom` via `builtins` when not required.
-- **Choose `cwd` deliberately.** `cwd` sets the starting directory for relative tool paths and project discovery, but does not jail file access (tools can read absolute paths outside `cwd`). Point `cwd` at a controlled directory, never user input.
+- **Choose `cwd` deliberately.** `cwd` sets the starting directory for relative paths and project discovery, but tools can still access absolute paths outside `cwd`. Point `cwd` at a controlled directory, never user input.
 - **Isolate the process** in a container, VM, or restricted OS account whenever callers must not reach other server files or when write/shell tools are enabled. See [Containerization](/containerization).
 - **Keep credentials server-side.** Provider keys live in the server's `ModelRuntime`. Never forward them to browsers or accept raw keys from untrusted clients.
 
 ## Next steps
 
-- [TypeScript SDK](/sdk): sessions, prompting, storage, and events.
-- [SDK storage guide](/sdk/storage): persist server sessions in SQLite, JSONL, or PostgreSQL and wire `createAgentSessionRuntime()`.
-- [SDK API reference](/sdk/reference): every `createAgentSession()` option and export.
-- [Orchestration](/orchestration): multi-step workflows with codemode and subagents.
-- [Migrating workflows](/orchestration/migrating-workflows): replacing older workflow definitions.
+<Columns cols={2}>
+  <Card title="Use the TypeScript SDK" href="/sdk">
+    Sessions, prompting, workspaces, Intercom policies, and lifecycle hooks.
+  </Card>
+  <Card title="Configure session storage" href="/sdk/storage">
+    Persist server sessions in SQLite, JSONL, or PostgreSQL and wire `createAgentSessionRuntime()`.
+  </Card>
+  <Card title="SDK API reference" href="/sdk/reference">
+    Every `createAgentSession()` option, runtime method, error class, and export.
+  </Card>
+  <Card title="Orchestration" href="/orchestration">
+    Multi-step workflows with codemode and subagents, plus [migrating older workflows](/orchestration/migrating-workflows).
+  </Card>
+</Columns>

@@ -17,7 +17,6 @@ import {
 	CompactionCancelledError,
 	CompactionStateError,
 	CompactorFailure,
-	compactedOutputTokenCap,
 	estimateTextTokens,
 	estimateTokens,
 	findUnansweredToolCall,
@@ -249,31 +248,13 @@ function overConfiguredLimit(text: string, maxTokens: number | undefined): strin
 	return tokens > maxTokens ? `output too long (${tokens} > ${maxTokens} tokens)` : undefined;
 }
 
-function oversizedCompactedText(session: AgentSession, text: string): string | undefined {
-	const model = session.model;
-	const trigger = model ? model.contextWindow - session.settingsManager.getCompactionSettings(model).reserveTokens : 0;
-	const cap = compactedOutputTokenCap(trigger);
-	const tokens = estimateTextTokens(text);
-	return tokens > cap ? `output too long (${tokens} > ${cap} tokens)` : undefined;
-}
-
-function overflowingBoundary(
-	session: AgentSession,
-	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions" | "compacted">,
-): string | undefined {
-	const after = contextAfterBoundary(session, planned);
-	return after.trigger !== undefined && after.tokens >= after.trigger
-		? `output too long for the context (${after.tokens} >= ${after.trigger} tokens)`
-		: undefined;
-}
-
 /**
- * Estimated tokens of the context right after a boundary, and the automatic trigger: the system prompt plus the whole
- * boundary message, compacted text included. The trigger is undefined for a model with no known context window.
+ * Estimated tokens of the context right after a clear boundary, and the automatic trigger: the system prompt plus the
+ * boundary message. The trigger is undefined for a model with no known context window.
  */
 function contextAfterBoundary(
 	session: AgentSession,
-	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions" | "compacted">,
+	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions">,
 ): { tokens: number; trigger: number | undefined } {
 	const boundary = buildBoundaryText(
 		{
@@ -282,9 +263,6 @@ function contextAfterBoundary(
 			entriesBefore: 0,
 			access: planned.access,
 			...(planned.instructions ? { instructions: planned.instructions } : {}),
-			...(planned.compacted
-				? { compacted: { text: planned.compacted.text, source: planned.compacted.model ?? "an extension" } }
-				: {}),
 		},
 		0,
 	);
@@ -310,7 +288,7 @@ export function automaticBoundaryText(session: AgentSession): string {
 /** Whether the system prompt plus the boundary message stays below the automatic compaction trigger. */
 function fitsBelowTrigger(
 	session: AgentSession,
-	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions" | "compacted">,
+	planned: Pick<PlannedVerbatimCompaction, "tokensBefore" | "access" | "systemTokens" | "instructions">,
 ): boolean {
 	const { tokens, trigger } = contextAfterBoundary(session, planned);
 	return trigger === undefined || tokens < trigger;
@@ -387,10 +365,6 @@ export async function planVerbatimCompaction(
 		// Empty or whitespace text is no override: the configured form runs instead (#4977).
 		if (hookResult?.compactedText !== undefined && hookResult.compactedText.trim().length > 0) {
 			const compacted: CompactedReplacement = { text: hookResult.compactedText, backend: "extension" };
-			const oversized =
-				oversizedCompactedText(this, compacted.text) ?? overflowingBoundary(this, { ...base, compacted });
-			if (oversized !== undefined)
-				return { ...base, fallbackReason: `extension failed: ${oversized}`, fromExtension: false };
 			options.onCompactionSource?.(true);
 			return { ...base, compacted, fromExtension: true };
 		}

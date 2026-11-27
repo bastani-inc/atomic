@@ -19,6 +19,7 @@
             "pages": [
               "index",
               "quickstart",
+              "how-atomic-works",
               "getting-started/installation",
               "getting-started/authentication",
               "getting-started/first-session",
@@ -35,16 +36,43 @@
               "sessions",
               "worktree-snapshots",
               "guides/resume-on-any-machine",
-              "compaction"
+              {
+                "group": "Compaction",
+                "pages": [
+                  "compaction",
+                  "compaction/memory-compaction",
+                  "compaction/custom-compactors",
+                  "compaction/branch-summaries"
+                ]
+              }
             ]
           },
           {
             "group": "Delegate and automate",
             "pages": [
-              "guides/orchestration",
-              "guides/subagents",
+              {
+                "group": "Orchestration",
+                "pages": [
+                  "orchestration",
+                  "orchestration/patterns",
+                  "orchestration/migrating-workflows"
+                ]
+              },
+              {
+                "group": "Subagents",
+                "pages": [
+                  "subagents",
+                  "subagents/authoring"
+                ]
+              },
               "background-tasks",
-              "guides/intercom",
+              {
+                "group": "Intercom",
+                "pages": [
+                  "intercom",
+                  "intercom/operations"
+                ]
+              },
               "guides/team-setup",
               "computer-use",
               "verification"
@@ -53,6 +81,7 @@
           {
             "group": "Models and providers",
             "pages": [
+              "models/choose-a-model",
               "providers",
               "llama-cpp"
             ]
@@ -70,14 +99,9 @@
         "tab": "Build",
         "groups": [
           {
-            "group": "Overview",
-            "pages": [
-              "build"
-            ]
-          },
-          {
             "group": "Customize Atomic",
             "pages": [
+              "build",
               {
                 "group": "Skills",
                 "pages": [
@@ -96,47 +120,30 @@
                   "extensions/ui",
                   "extensions/examples"
                 ]
-              }
-            ]
-          },
-          {
-            "group": "Orchestrate agents",
-            "pages": [
-              "orchestration",
-              "orchestration/patterns",
-              "orchestration/migrating-workflows",
-              {
-                "group": "Subagents",
-                "pages": [
-                  "subagents",
-                  "subagents/authoring"
-                ]
               },
               {
-                "group": "Intercom",
+                "group": "Packages",
                 "pages": [
-                  "intercom",
-                  "intercom/operations"
+                  "packages",
+                  "packages/authoring"
                 ]
               }
-            ]
-          },
-          {
-            "group": "Share packages",
-            "pages": [
-              "packages",
-              "packages/authoring"
             ]
           },
           {
             "group": "Custom models and providers",
             "pages": [
               "models",
-              "custom-provider",
-              "custom-provider/override",
-              "custom-provider/registration",
-              "custom-provider/oauth",
-              "custom-provider/streaming"
+              {
+                "group": "Custom providers",
+                "pages": [
+                  "custom-provider",
+                  "custom-provider/override",
+                  "custom-provider/registration",
+                  "custom-provider/oauth",
+                  "custom-provider/streaming"
+                ]
+              }
             ]
           },
           {
@@ -152,9 +159,14 @@
                   "sdk/web-server"
                 ]
               },
-              "rpc",
-              "rpc/extension-ui",
-              "rpc/examples",
+              {
+                "group": "RPC mode",
+                "pages": [
+                  "rpc",
+                  "rpc/extension-ui",
+                  "rpc/examples"
+                ]
+              },
               "json",
               "tui",
               {
@@ -182,39 +194,43 @@
             "pages": [
               "reference",
               "reference/cli",
+              "slash-commands",
               "settings",
               "environment-variables",
               "keybindings",
               "tools",
               "codemode",
               "mcp-servers",
-              "web-access"
+              "web-access",
+              "background-tasks/reference"
             ]
           },
           {
             "group": "Models, sessions, and storage",
             "pages": [
-              "providers/reference",
-              "models/reference",
-              "models-configuration",
+              {
+                "group": "Providers",
+                "pages": [
+                  "providers/reference",
+                  "providers/github-copilot-errors"
+                ]
+              },
+              {
+                "group": "Models",
+                "pages": [
+                  "models/reference",
+                  "models-configuration"
+                ]
+              },
               "session-format",
               "compaction/reference",
+              "worktree-snapshots/reference",
               {
                 "group": "Storage",
                 "pages": [
                   "storage",
-                  {
-                    "group": "SQLite",
-                    "pages": [
-                      "storage/sqlite"
-                    ]
-                  },
-                  {
-                    "group": "JSONL",
-                    "pages": [
-                      "storage/jsonl"
-                    ]
-                  },
+                  "storage/sqlite",
+                  "storage/jsonl",
                   {
                     "group": "PostgreSQL",
                     "pages": [
@@ -291,6 +307,9 @@
   "redirects": [
     { "source": "/workflows", "destination": "/orchestration" },
     { "source": "/guides/workflows", "destination": "/orchestration" },
+    { "source": "/guides/orchestration", "destination": "/orchestration" },
+    { "source": "/guides/subagents", "destination": "/subagents" },
+    { "source": "/guides/intercom", "destination": "/intercom" },
     { "source": "/workflows/builtins", "destination": "/orchestration/migrating-workflows" },
     { "source": "/workflows/authoring", "destination": "/orchestration/migrating-workflows" },
     { "source": "/workflows/reliable-design", "destination": "/orchestration/patterns" },
@@ -323,19 +342,19 @@
     },
     {
       "source": "/models/artificial-analysis-index",
-      "destination": "/models"
+      "destination": "/models/choose-a-model"
     },
     {
       "source": "/models/pareto-efficiency",
-      "destination": "/models"
+      "destination": "/models/choose-a-model"
     },
     {
       "source": "/models/evals",
-      "destination": "/models"
+      "destination": "/models/choose-a-model"
     },
     {
       "source": "/models/model-selection",
-      "destination": "/models"
+      "destination": "/models/choose-a-model"
     },
     { "source": "/postgres", "destination": "/storage/postgres" },
     { "source": "/postgresql", "destination": "/storage/postgres" },
@@ -345,7 +364,7 @@
     { "source": "/libraries/storage-libsql", "destination": "/storage#moving-off-libsql" },
     { "source": "/decisions", "destination": "/sdk/structured-decisions" },
     { "source": "/structured-decisions", "destination": "/sdk/structured-decisions" },
-    { "source": "/compactors", "destination": "/compaction#customize-morph-or-add-a-remote-compactor" },
+    { "source": "/compactors", "destination": "/compaction/custom-compactors" },
     { "source": "/blueprints", "destination": "/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint" }
   ]
 }

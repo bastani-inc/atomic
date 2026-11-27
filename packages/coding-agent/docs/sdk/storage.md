@@ -1,14 +1,14 @@
 ---
-title: "SDK storage backends"
-sidebarTitle: "Storage backends"
+title: "Configure session storage"
+sidebarTitle: "Configure storage"
 description: "Configure local SQLite, JSONL, in-memory, and PostgreSQL storage for createAgentSession(), createAgentSessionRuntime(), and SessionManager."
 ---
 
-By default, Atomic persists sessions in local SQLite at `~/.atomic/workflows/journal.sqlite` (`session_` table prefix). In SDK applications, you can select any built-in or remote backend per session, share one database connection across multiple sessions, or manage lifecycle explicitly through `createAgentSessionRuntime()` and `SessionManager`.
+By default, Atomic persists sessions in local SQLite at `~/.atomic/workflows/journal.sqlite` (`session_` table prefix). In SDK applications, you can choose any of the four supported backends per session, share one database connection across multiple sessions, or manage lifecycle explicitly through `createAgentSessionRuntime()` and `SessionManager`.
 
 For CLI setup, database role administration, migrations, and custom drivers, see [Storage](/storage).
 
-## Choosing a backend
+## Choose a backend
 
 | Backend | Package | How to pass it | Best for |
 | --- | --- | --- | --- |
@@ -127,7 +127,7 @@ import { createAgentSession, JsonlSessionStore } from "@bastani/atomic";
 
 Atomic offers three in-memory configurations with different release and rehydrate behavior:
 
-1. **`SessionManager.inMemory()`:** Ephemeral private session with no external store handle. Cannot be released and rehydrated (`not-reopenable`).
+1. **`SessionManager.inMemory()`:** Ephemeral private session with no external store handle. Cannot be released and rehydrated (`not-reopenable`); combining it with `releaseWhenIdle` rejects immediately in `createAgentSession()`.
 2. **Caller-owned `new MemorySessionStore()`:** Keeps session history in process RAM across `session.release()` and `runtime.rehydrate()` without writing anything to disk. You own the store and close it with `await store.close()`.
 3. **Disk-spilling memory store via `resolveSessionStore(cwd, { agentDir, sessionStore: { kind: "memory" } })`:** Writes released session history to private owner-only files (`0700`/`0600`) under `<agentDir>/released-history/` to free RAM while idle, cleaning up files on close and process exit (throws `SessionSpillError` if a spill file is missing or corrupt).
 
@@ -292,13 +292,19 @@ try {
 }
 ```
 
-> **Module resolution for `{ kind: "adapter" }`:** Atomic resolves adapter package names from user-scope packages installed with `atomic install` (`~/.atomic/agent/npm`), paths passed in `DefaultResourceLoader({ additionalExtensionPaths: [packageRoot] })`, or relative to `agentDir` — **not** from your application's local `node_modules`. If your app installed `@bastani/atomic-storage-postgres` only with `npm install`, use **Option A** (`openPostgresDatabase()`), install the package in user scope (`atomic install npm:@bastani/atomic-storage-postgres`), pass its directory via `additionalExtensionPaths`, or pass a resolved file path (`fileURLToPath(import.meta.resolve(POSTGRES_ADAPTER_PACKAGE))`).
+<Warning>
+**`{ kind: "adapter" }` does not search your application's local `node_modules`.** Atomic resolves adapter package names from user-scope packages installed with `atomic install` (`~/.atomic/agent/npm`), directories passed in `DefaultResourceLoader({ additionalExtensionPaths: [packageRoot] })`, or paths relative to `agentDir`. If your app installed `@bastani/atomic-storage-postgres` only with `npm install`, use **Option A** (`openPostgresDatabase()`), install it in user scope (`atomic install npm:@bastani/atomic-storage-postgres`), pass its directory via `additionalExtensionPaths`, or pass a resolved file path (`fileURLToPath(import.meta.resolve(POSTGRES_ADAPTER_PACKAGE))`).
+</Warning>
 
-> Atomic 0.10.11 removed libSQL and Turso support, including `@bastani/atomic-storage-libsql`, `teamProfileSelection()`, and `LIBSQL_ADAPTER_PACKAGE`. To move sessions off libSQL, see [Moving off libSQL](/storage#moving-off-libsql).
+<Note>
+Atomic 0.10.11 removed libSQL and Turso support, including `@bastani/atomic-storage-libsql`, `teamProfileSelection()`, and `LIBSQL_ADAPTER_PACKAGE`. To move sessions off libSQL, see [Moving off libSQL](/storage#moving-off-libsql).
+</Note>
 
 ## `createAgentSessionRuntime()` and `SessionManager` with explicit stores
 
 Neither `createAgentSessionRuntime()` nor `createAgentSessionFromServices()` takes `sessionStore` or `storage` directly. Both take a pre-opened `sessionManager: SessionManager`, and every later `newSession()`, `switchSession()`, `fork()`, and `rehydrate()` call inherits the store from `sessionManager.getSessionStore()`.
+
+Pass `interactive: true` to `createAgentSessionRuntime()` only when attaching an interactive UI; when omitted (`false`), resuming a worktree snapshot starts the first turn while the blueprint build runs in the background unless `resume.waitForBlueprint` is set. Call `runtime.takeResumeNotices()` after `switchSession()` or `rehydrate()` to retrieve resume warnings once.
 
 Use these explicit-store `SessionManager` methods to open, resume, and inspect sessions against any `SessionStore` (`SqlSessionStore`, `JsonlSessionStore`, `MemorySessionStore`, or a store from `resolveSessionStore()`):
 
@@ -519,12 +525,46 @@ async function runWithStorageHandling(fn: () => Promise<void>): Promise<void> {
 }
 ```
 
-For the full list of storage error classes, cross-process `serializeStorageError()` / `rehydrateStorageError()`, and team setup errors, see [Storage errors](/storage#storage-errors) and [Session and storage errors](/sdk/reference#session-and-storage-errors).
+For the full list of storage error classes and cross-process `serializeStorageError()` / `rehydrateStorageError()`, see [Storage errors](/storage#storage-errors) and [Session and storage errors](/sdk/reference#session-and-storage-errors).
+
+## Testing custom storage adapters
+
+If you implement a custom `SqliteDatabase` driver or storage adapter, import `registerSqliteDatabaseConformance()` from `@bastani/atomic/storage/testing` to run Atomic's conformance test suite (parameter binding, binary blobs, transactions, rollbacks, reopening, and typed error contracts) inside your own test runner:
+
+```typescript
+import { describe, it } from "vitest";
+import { registerSqliteDatabaseConformance } from "@bastani/atomic/storage/testing";
+
+registerSqliteDatabaseConformance({ describe, it }, "MyDatabaseAdapter", async (body) => {
+  const database = await openMyAdapter();
+  try {
+    await body({
+      database,
+      reopen: () => openMyAdapter(),
+      withRollbackFailure: async (cause, fn) => {
+        // Inject a rollback failure using `cause` while running `fn`
+        await fn();
+      },
+    });
+  } finally {
+    await database.close();
+  }
+});
+```
 
 ## Related docs
 
-- [Operator storage setup](/storage): PostgreSQL roles, TLS, proxies, poolers, migrations, `atomic storage` commands, and custom drivers.
-- [`@bastani/atomic-storage-postgres`](/libraries/storage-postgres): PostgreSQL adapter options, cloud IAM, and SQL helpers.
-- [SDK overview](/sdk): `createAgentSession()`, workspaces, Intercom policies, and lifecycle hooks.
-- [SDK API reference](/sdk/reference): Full options, loaders, run modes, and exports.
-- [`SessionManager` API](/session-format#sessionmanager-api): Entry types, tree navigation, and session append methods.
+<Columns cols={2}>
+  <Card title="Operator storage setup" href="/storage">
+    PostgreSQL roles, TLS, proxies, poolers, migrations, `atomic storage` commands, and custom drivers.
+  </Card>
+  <Card title="@bastani/atomic-storage-postgres" href="/libraries/storage-postgres">
+    PostgreSQL adapter options, PgBouncer auto-detection, cloud IAM, and SQL helpers.
+  </Card>
+  <Card title="Use the TypeScript SDK" href="/sdk">
+    `createAgentSession()`, workspaces, Intercom policies, and lifecycle hooks.
+  </Card>
+  <Card title="SessionManager API" href="/session-format#sessionmanager-api">
+    Entry types, tree navigation, and session append methods, plus [SDK API reference](/sdk/reference).
+  </Card>
+</Columns>

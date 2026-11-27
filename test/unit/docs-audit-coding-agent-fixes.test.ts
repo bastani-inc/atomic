@@ -480,8 +480,8 @@ describe("/export argument parsing and case-insensitive .jsonl", () => {
 	});
 });
 
-describe("overflowingBoundary error wording", () => {
-	test("reports >= instead of > when post-compaction boundary reaches or exceeds trigger", async () => {
+describe("extension session_before_compact output size", () => {
+	test("keeps extension compactedText even when post-compaction boundary reaches or exceeds trigger", async () => {
 		const root = createTempDir("atomic-overflow-boundary-");
 		const agentDir = join(root, "agent");
 		makeDirectorySync(agentDir, { recursive: true });
@@ -518,8 +518,10 @@ describe("overflowingBoundary error wording", () => {
 			await session.sessionManager.appendMessage({ role: "user", content: "hello", timestamp: 1 });
 			session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
 			const result = await session.compact();
-			assert.equal(result.form, "cleared");
-			assert.match(result.fallbackReason ?? "", /output too long for the context \(\d+ >= 500 tokens\)/);
+			assert.equal(result.form, "compacted");
+			assert.equal(result.backend, "extension");
+			assert.equal(result.fallbackReason, undefined);
+			assert.ok(result.compactedText.includes("<compacted-context>\nretained\n</compacted-context>"));
 		} finally {
 			session.dispose();
 		}

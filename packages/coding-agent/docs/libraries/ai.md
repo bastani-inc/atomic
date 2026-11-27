@@ -10,7 +10,9 @@ Inside an Atomic extension, import it without installing it because the host pro
 
 `@bastani/atomic-ai` provides one LLM API across providers with provider collections, automatic auth resolution, token and cost tracking, and JSON-serializable contexts for mid-session model handoffs.
 
-**Note:** The chat catalog includes only models that support tool calling (function calling). Image and classifier catalogs use their operation-specific capabilities.
+<Note>
+The chat catalog includes only models that support tool calling (function calling). Image and classifier catalogs use their operation-specific capabilities.
+</Note>
 
 ## Supported providers
 
@@ -60,7 +62,7 @@ Requires Node.js 24.20 or newer.
 
 Key root and subpath exports:
 
-- Root `@bastani/atomic-ai`: `createModels`, `createProvider`, `Type`/`Static`/`TSchema` (re-exported from TypeBox), thinking helpers (`DEFAULT_THINKING_BUDGETS`, `fittedThinkingBudget`, `thinkingBudgetForLevel`, `getSupportedThinkingLevels`, `clampThinkingLevel`), `OAuthRefreshRejectedError`, `GitHubCopilot*Error`, `cleanupSessionResources`, and `PI_AI_VERSION`.
+- Root `@bastani/atomic-ai`: `createModels`, `createProvider`, `Type`/`Static`/`TSchema` (re-exported from TypeBox), thinking helpers (`DEFAULT_THINKING_BUDGETS`, `fittedThinkingBudget`, `thinkingBudgetForLevel`, `getSupportedThinkingLevels`, `clampThinkingLevel`), `OAuthRefreshRejectedError`, `GitHubCopilot*Error`, `cleanupSessionResources`, and `PI_AI_VERSION` (intentionally retains its legacy `PI_` prefix for compatibility).
 - Subpaths: `@bastani/atomic-ai/models`, `@bastani/atomic-ai/providers/<provider>`, `@bastani/atomic-ai/providers/all`, `@bastani/atomic-ai/api/<api-id>`, `@bastani/atomic-ai/utils/*`, `@bastani/atomic-ai/session-resources`, `@bastani/atomic-ai/bedrock-provider`, `@bastani/atomic-ai/lazy-bedrock-provider`, `@bastani/atomic-ai/oauth`, `@bastani/atomic-ai/bun-oauth`, `@bastani/atomic-ai/lazy-oauth`, and `@bastani/atomic-ai/compat`.
 
 ## Quick start
@@ -523,6 +525,25 @@ Stored credentials remain provider-scoped, so save the key under the provider ID
 
 Amazon Bedrock resolves ambient AWS credentials (`AWS_PROFILE`, access key pairs, `AWS_BEARER_TOKEN_BEDROCK`, ECS task roles, web identity tokens); its provider-owned login flow supports bearer tokens, AWS profiles, and the existing credential chain. Vertex AI resolves either an explicit key or gcloud Application Default Credentials plus project/location, with a provider-owned login flow for API keys, ADC, and service-account files.
 
+### Provider-scoped environment overrides
+
+Pass `env` in stream options to scope provider configuration to a single request. Values in `env` take precedence over process environment variables for provider auth and configuration such as Cloudflare account IDs, Azure OpenAI settings, Vertex project and location, Bedrock settings, `ATOMIC_CACHE_RETENTION` (legacy alias `PI_CACHE_RETENTION`), and `HTTP_PROXY` / `HTTPS_PROXY`:
+
+```typescript
+const models = builtinModels();
+const model = models.getModel('cloudflare-ai-gateway', 'workers-ai/@cf/moonshotai/kimi-k2.6')!;
+
+const response = await models.complete(model, context, {
+  env: {
+    CLOUDFLARE_API_KEY: '...',
+    CLOUDFLARE_ACCOUNT_ID: 'account-id',
+    CLOUDFLARE_GATEWAY_ID: 'gateway-id'
+  }
+});
+```
+
+Use this when one process needs different provider settings per request, or when ambient environment variables should not leak into a provider call.
+
 ## Tools
 
 Tools enable LLMs to interact with external systems. This library uses TypeBox schemas for type-safe tool definitions with automatic validation using TypeBox's built-in validator and value conversion utilities. TypeBox schemas can be serialized and deserialized as plain JSON, making them ideal for distributed systems.
@@ -644,12 +665,6 @@ context.messages.push({
   timestamp: Date.now()
 });
 ```
-
-### Fireworks deferred tools
-
-Fireworks models using the Anthropic Messages API support native deferred tool loading. Keep your discovery tool in `context.tools`. After the discovery tool result, append a chronological system message with `toolsAdded` containing the newly discovered tool definitions (`toolsRemoved` when tools drop out). The adapter sends deferred schemas and `tool_reference` blocks while preserving ordinary result text and unsigned thinking during replay.
-
-Name the discovery tool `ToolSearch` or `tool_search` for Fireworks prompt-prefix deferral. Other discovery names serialize correctly but do not get that prefix optimization. Set `model.compat.supportsToolReferences` to `false` to send ordinary tool schemas instead. This feature does not apply to Fireworks Chat Completions models.
 
 ### Streaming tool calls with partial JSON
 
@@ -893,11 +908,20 @@ console.log(model.input);  // ['text'] or ['text', 'image']
 console.log(model.output); // ['image'] or ['image', 'text']
 ```
 
+### Notes and limitations
+
+- Image models and chat models share `Models` and `Provider`; list image models with `getModelsOfType('image')` and call `generateImages()`, never the chat streaming APIs.
+- Image-generation models do not participate in tool calling.
+- Outputs arrive in `AssistantImages.output` and can contain both base64-encoded `ImageContent` blocks and `TextContent` blocks. Check `model.output` and `model.input` for each model's capabilities.
+- Like streaming APIs, image generation accepts options such as `apiKey`, `signal`, `headers`, `onPayload`, and `onResponse`, and results may include `stopReason`, `responseId`, and `usage`.
+- To analyze images in a conversation or call tools, use the chat APIs with a vision-capable model.
+- Built-in image generation is available through `openrouter` and `openai-images`.
+
 ### OpenAI Images API
 
 The `openai-images` provider serves OpenAI's GPT Image models (`gpt-image-2.6-sunburst`, `gpt-image-2.6-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, and `gpt-image-1-mini`) through the OpenAI Images API. It borrows the API key stored for `openai-api`, then `openai`, then `OPENAI_API_KEY`. A ChatGPT OAuth credential on `openai` is skipped, so with only OAuth stored those models are unavailable and `generateImages()` returns `Provider is not configured: openai-images`.
 
-Text blocks become the `prompt`. Requests without image blocks call `/images/generations`; requests with image blocks call `/images/edits` and upload each image block. `OpenAIImagesOptions` adds the request fields below, sending each only when set:
+Text blocks become the `prompt`. Requests without image blocks call `/images/generations`; requests with image blocks call `/images/edits` and upload each image block:
 
 ```typescript
 import { getBuiltinImageModel } from '@bastani/atomic-ai/providers/all';
@@ -909,6 +933,8 @@ const result = await models.generateImages(flare, {
 ```
 
 Each returned image is an `ImageContent` block whose `mimeType` matches the response's `output_format`: `image/png`, `image/jpeg`, `image/webp`, `image/gif`, or `image/svg+xml`. An SVG block stores UTF-8 XML in `data` as base64; save GIFs with `.gif` and SVGs with `.svg`.
+
+#### Request options (`OpenAIImagesOptions`)
 
 | Option | Sent as | Notes |
 | --- | --- | --- |
@@ -924,7 +950,9 @@ Each returned image is an `ImageContent` block whose `mimeType` matches the resp
 
 GIF and SVG output are generation-only: they cannot be combined with input image blocks, SVG requires `n` of 1, and neither supports streaming, partial images, or `outputCompression`. `outputFormat: 'gif'` consumes more tokens as `frameCount` grows; `size` applies to each frame, and total frame dimensions must stay within the model's size limits.
 
-**Reference images, markup, and mask.** When sending input images, the first image without a `role` is the base image to edit and any remaining unroled images are references.
+#### Reference images, markup, and mask
+
+When sending input images, the first image without a `role` is the base image to edit and any remaining unroled images are references.
 
 Set `role: 'markup'` on a transparent PNG with annotations (circles or sketches) to send it as the `markup` field guiding edits to the base image; it must match the base image's dimensions. Set `role: 'mask'` on an image with an alpha channel to send it as the `mask` field. Markup and mask images do not count as references, each request accepts at most one of either, and you cannot send both together. Markup-guided edits work on GPT Image 2.5 and 2.6.
 
@@ -938,21 +966,23 @@ await models.generateImages(flare, {
 }, { quality: 'medium' });
 ```
 
-**Validation.** Invalid requests fail locally before sending anything, returning an `ImageGenerationConfigError` with `field`, `reason`, and a hint for what to change. Checks cover out-of-range values, `frameCount` or `frameDurationMs` without GIF output, GIF or SVG on an edit, SVG with `n` above 1, `outputCompression` outside `jpeg` or `webp`, `svg` without SVG output, markup combined with a mask, a role image without a base image, duplicate roles, and features not declared by the model.
+#### Local validation
 
-Models declare optional features in `ImageModel.capabilities`; undeclared features are treated as unsupported, so custom `openai-images` models must set `capabilities` to use them. Validation runs both before `onPayload` sees the request and again on the final payload after `onPayload` returns or mutates it. `reason` is one of:
+Invalid requests fail locally before sending anything, returning an `ImageGenerationConfigError` with `field`, `reason`, and a hint for what to change. Models declare optional features in `ImageModel.capabilities`; undeclared features are treated as unsupported, so custom `openai-images` models must set `capabilities` to use them. Validation runs both before `onPayload` sees the request and again on the final payload after `onPayload` returns or mutates it.
 
 | `reason` | When it fires | What to do |
 | --- | --- | --- |
-| `out-of-range` | `frameCount` outside 2-16, `frameDurationMs` outside 20-2000, `outputCompression` outside 0-100 (or not an integer), or `safetyIdentifier` longer than 128 characters. The bounds are in `OPENAI_IMAGES_LIMITS`. | Use a value within the bounds. |
+| `out-of-range` | `frameCount` outside 2-16, `frameDurationMs` outside 20-2000, `outputCompression` outside 0-100 (or not an integer), or `safetyIdentifier` longer than 128 characters. Bounds are in `OPENAI_IMAGES_LIMITS`. | Use a value within the bounds. |
 | `requires-option` | `frameCount` or `frameDurationMs` without `outputFormat: "gif"`, or `svg` without `outputFormat: "svg"`. `related` names the missing option. | Set the option in `related`, or remove `field`. |
-| `conflicts-with-option` | SVG output with `n` above 1; `outputCompression` with `png`, `gif`, `svg`, or no format; `background: "transparent"` with `jpeg`, `gif`, or `svg`; a markup image together with a mask image; GIF or SVG output with streaming or partial images. | Remove `field` or the option named in `related`. |
-| `generation-only` | GIF or SVG output on a request with input images, which goes to the edits endpoint. | Remove the input images, or choose `png`, `jpeg`, or `webp`. |
+| `conflicts-with-option` | SVG output with `n` above 1; `outputCompression` with `png`, `gif`, `svg`, or no format; `background: "transparent"` with `jpeg`, `gif`, or `svg`; markup combined with mask; GIF or SVG with streaming or partial images. | Remove `field` or the option named in `related`. |
+| `generation-only` | GIF or SVG output on a request with input images (edits endpoint). | Remove the input images, or choose `png`, `jpeg`, or `webp`. |
 | `unsupported-by-model` | `complexity`, GIF, SVG, or markup on a model whose `capabilities` do not declare it. GPT Image 2.6 declares all four; GPT Image 2.5 declares markup; older models declare none. | Use a model that declares the feature. |
-| `requires-base-image` | An image with `role: "markup"` or `role: "mask"` but no image without a role for it to apply to. | Put the base image first, without a role. |
+| `requires-base-image` | An image with `role: "markup"` or `role: "mask"` and no unroled base image. | Put the base image first, without a role. |
 | `duplicate-role` | Two images with `role: "markup"`, or two with `role: "mask"`. | Send at most one image per role. |
 
-**Errors.** `generateImages()` resolves with `stopReason: 'error'`, `errorMessage`, and a JSON-safe `error` (`ImageGenerationErrorData`). Rehydrate the typed error with `imageGenerationErrorFromData(result.error)` and branch on its class, guard, `code`, or `retryable` rather than parsing message text. Cancellation resolves with `stopReason: 'aborted'` and no `error`.
+#### Structured errors
+
+`generateImages()` resolves with `stopReason: 'error'`, `errorMessage`, and a JSON-safe `error` (`ImageGenerationErrorData`). Rehydrate the typed error with `imageGenerationErrorFromData(result.error)` and branch on its class, guard, `code`, or `retryable` rather than parsing message text. Cancellation resolves with `stopReason: 'aborted'` and no `error`.
 
 The typed error retains only the HTTP status and the provider's type, code, and request ID in `detail` and its message; it excludes the provider's raw message because that can quote the prompt, while `errorMessage` keeps the provider's text.
 
@@ -967,22 +997,7 @@ The typed error retains only the HTTP status and the provider's type, code, and 
 | `ImageModerationBlockedError` (`isImageModerationBlockedError`) | `moderation-blocked` | `error.code` is `moderation_blocked`. | No | `moderationStage` (`input`, `output`, `unknown`), `categories` |
 | `ImageGenerationTimeoutError` (`isImageGenerationTimeoutError`) | `timeout` | The request exceeded `timeoutMs`. | Yes | `timeoutMs`, `elapsedMs`, `phase` |
 
-All classes extend `ImageGenerationError`, and `isImageGenerationError()` matches any of them. Type guards check either class instances or serialized objects from another process whose `name` and `code` match.
-
-Use `findImageGenerationError(error, guard)` to search a `cause` chain (up to 8 links), for example `findImageGenerationError(error, isImageGenerationQuotaError)`, and `isRetryableImageGenerationError()` to test whether the nearest matching error in the chain is retryable. `result.error` preserves up to 8 cause-chain links: family causes retain their structured data, while foreign causes keep a safe name and any known errno code with their message replaced by `[foreign error message omitted]`.
-
-With `maxRetries`, rate-limit and server errors retry automatically while quota and user errors do not. Usage on an SVG request tracks the image model only; OpenAI reports the SVG-authoring model's tokens separately as `svg_usage`, which is not added to `usage` or its cost.
-
-### Notes and limitations
-
-- Image models and chat models share `Models` and `Provider`; list image models with `getModelsOfType('image')` and call `generateImages()`, never the chat streaming APIs.
-- Image-generation models do not participate in tool calling.
-- Outputs arrive in `AssistantImages.output` and can contain both base64-encoded `ImageContent` blocks and `TextContent` blocks.
-- Some models return only images while others return images plus text; check `model.output`.
-- Some models accept image input while others are text-to-image only; check `model.input`.
-- Like streaming APIs, image generation accepts options such as `apiKey`, `signal`, `headers`, `onPayload`, and `onResponse`, and results may include `stopReason`, `responseId`, and `usage`.
-- To analyze images in a conversation or call tools, use the chat APIs with a vision-capable model.
-- Built-in image generation is available through `openrouter` and `openai-images`.
+All classes extend `ImageGenerationError`, and `isImageGenerationError()` matches any of them (including serialized objects from another process whose `name` and `code` match). Use `findImageGenerationError(error, guard)` to search a `cause` chain (up to 8 links) and `isRetryableImageGenerationError()` to test retryability. With `maxRetries`, rate-limit and server errors retry automatically while quota and user errors do not. Usage on an SVG request tracks the image model only; OpenAI reports the SVG-authoring model's tokens separately as `svg_usage`, which is not added to `usage` or its cost.
 
 ## Classification
 
@@ -1128,13 +1143,7 @@ for (const block of response.content) {
 }
 ```
 
-`xhigh` and `max` are model-specific, opt-in levels. Use `getSupportedThinkingLevels(model)` to determine whether a concrete model exposes either level; models such as GPT-5.6 can expose both.
-
-| Model | Providers | Levels | `off` | `minimal` |
-| --- | --- | --- | --- | --- |
-| GPT-6.2 Astra, GPT-6.2 Sol | OpenAI, Azure and Codex Responses | `low`, `medium`, `high`, `xhigh`, `max` | No | No |
-| GPT-6.1 Sol | OpenAI, Azure and Codex Responses | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias that sends `low` |
-| GPT-6.1 Terra | OpenAI, Azure and Codex Responses | `off`, `low`, `medium`, `high`, `xhigh`, `max` | Sends reasoning effort `none` | Codex UI alias that sends `low` |
+`xhigh` and `max` are model-specific, opt-in levels, and some models also omit `off` or `minimal`. Call `getSupportedThinkingLevels(model)` to inspect the exact levels a concrete model supports (and `clampThinkingLevel()` to normalize a requested level). For OpenAI/Codex model-specific reasoning levels, see [OpenAI and Codex](#openai-and-codex).
 
 ### Provider-specific options (`stream` / `complete`)
 
@@ -1686,6 +1695,10 @@ Every provider accepts messages produced by other providers, including text, too
 
 ## System messages
 
+<Note>
+**For custom provider and adapter authors:** Ordinary application callers pass `systemPrompt` and `tools` on `Context` and rarely construct `SystemMessage` directly. The wire details below apply when building custom providers or managing mid-conversation system/tool transitions.
+</Note>
+
 Public entry points (`Models.stream()`, `streamSimple()`, `complete()`, and `completeSimple()`) accept `Context` and normalize `systemPrompt` and `tools` into a leading system message. Provider implementations, `ProviderStreams`, and direct API modules receive a `TranscriptContext` containing only `messages`.
 
 ```typescript
@@ -1745,7 +1758,9 @@ const continuation = await models.complete(newModel, restored);
 
 Models are plain serializable data with no attached functions, so you can store the active model with `JSON.stringify()` as well.
 
-> **Note**: If the context contains base64-encoded images (as shown in Image input), they are serialized with the context.
+<Note>
+If the context contains base64-encoded images (as shown in [Image input](#image-input)), they are serialized inline with the context.
+</Note>
 
 ## Browser usage
 
@@ -1766,7 +1781,9 @@ const response = await models.complete(model, {
 });
 ```
 
-> **Security warning**: Exposing API keys in frontend code lets anyone extract and abuse them. Only use direct browser keys for internal tools or demos; in production, proxy requests through a backend.
+<Warning>
+Exposing API keys in frontend browser code lets anyone extract and abuse them. Use direct browser keys only for internal tools or demos; in production, proxy requests through a backend (see [`streamProxy()` in `@bastani/atomic-agent-core`](/libraries/agent-core#proxy-usage)).
+</Warning>
 
 Browser compatibility notes:
 
@@ -1842,25 +1859,6 @@ registerLazyOAuthFlows();
 
 Both modules are Node-only; never import them into a browser bundle.
 
-### Provider-scoped environment overrides
-
-Pass `env` in stream options to scope provider configuration to a request. Values in `env` take precedence over process environment variables for provider auth and configuration such as Cloudflare account IDs, Azure OpenAI settings, Vertex project and location, Bedrock settings, `ATOMIC_CACHE_RETENTION` (legacy alias `PI_CACHE_RETENTION`), and `HTTP_PROXY` / `HTTPS_PROXY`.
-
-```typescript
-const models = builtinModels();
-const model = models.getModel('cloudflare-ai-gateway', 'workers-ai/@cf/moonshotai/kimi-k2.6')!;
-
-const response = await models.complete(model, context, {
-  env: {
-    CLOUDFLARE_API_KEY: '...',
-    CLOUDFLARE_ACCOUNT_ID: 'account-id',
-    CLOUDFLARE_GATEWAY_ID: 'gateway-id'
-  }
-});
-```
-
-Use this when one process needs different provider settings per request, or when ambient environment variables should not leak into a provider call.
-
 ## OAuth providers
 
 These built-in providers support OAuth authentication in addition to or instead of static API keys:
@@ -1914,28 +1912,6 @@ await models.logout('anthropic');
 
 For OpenAI Sign in with ChatGPT, pass a fourth `LoginOptions` argument with `getDeviceId: () => installationUuid`. Persist this UUID and return the same value on later logins. The login registers a user-owned client and stores its issued client ID and granted scopes with the credential. Direct ChatGPT access omits unsupported temperature, output-token limits, and cache-retention fields. If its shared subscription limit is exhausted, check [ChatGPT usage](https://chatgpt.com/settings/usage).
 
-### Vertex AI
-
-Vertex AI models support either a Google Cloud API key or Application Default Credentials (ADC). Its provider-owned API-key login flow can configure either method:
-
-- **API key**: Set `GOOGLE_CLOUD_API_KEY` or pass `apiKey` in the call options.
-- **Local development (ADC)**: Run `gcloud auth application-default login`
-- **CI/Production (ADC)**: Set `GOOGLE_APPLICATION_CREDENTIALS` to point to a service account JSON key file
-
-When using ADC, also set `GOOGLE_CLOUD_PROJECT` (or `GCLOUD_PROJECT`) and `GOOGLE_CLOUD_LOCATION`. You can also pass `project` and `location` in the call options. When using `GOOGLE_CLOUD_API_KEY`, `project` and `location` are not required.
-
-```bash
-# Local (uses your user credentials)
-gcloud auth application-default login
-export GOOGLE_CLOUD_PROJECT="my-project"
-export GOOGLE_CLOUD_LOCATION="us-central1"
-
-# CI/Production (service account key file)
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
-```
-
-Official docs: [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials)
-
 ### CLI login
 
 `@bastani/atomic-ai` ships the `atomic-ai` binary (with `pi-ai` kept as a legacy alias) to log into built-in **OAuth** providers:
@@ -1954,17 +1930,57 @@ The CLI lists only providers that support OAuth (`provider.auth.oauth`), and wri
 
 Built-in login and refresh flows are private provider implementations. Use provider-owned `OAuthAuth`, which composes with `CredentialStore` and gets locked auto-refresh through `Models`. The `@bastani/atomic-ai/oauth` entry point retains only type declarations required for extension OAuth compatibility.
 
-Provider notes:
+## Provider-specific notes
 
-**OpenAI Codex.** Requires a ChatGPT subscription with model access. Includes GPT-6.2 Sol and Codex models with extended context windows and reasoning capabilities. Prompt caching is enabled automatically when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
+### Vertex AI
 
-Call `cleanupSessionResources(sessionId)` (imported from `@bastani/atomic-ai`) when finished with a Codex session so its pooled WebSocket connection does not keep the process alive.
+Vertex AI models support either a Google Cloud API key or Application Default Credentials (ADC). Its provider-owned API-key login flow can configure either method:
 
-**Azure.** Supports both Azure OpenAI Responses (`azure-openai-responses`) and Microsoft Foundry Chat Completions (`openai-completions`, such as `deepseek-v4-pro`). Set `AZURE_OPENAI_API_KEY` and either `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`. `AZURE_OPENAI_BASE_URL` accepts `https://<resource>.openai.azure.com`, `https://<resource>.cognitiveservices.azure.com`, and `https://<resource>.ai.azure.com` (including `*.services.ai.azure.com`); root endpoints normalize to `/openai/v1` automatically.
+- **API key:** Set `GOOGLE_CLOUD_API_KEY` or pass `apiKey` in the call options (`project` and `location` are not required).
+- **Local development (ADC):** Run `gcloud auth application-default login` and set `GOOGLE_CLOUD_PROJECT` (or `GCLOUD_PROJECT`) and `GOOGLE_CLOUD_LOCATION` (or pass `project` and `location` in call options).
+- **CI/Production (ADC):** Set `GOOGLE_APPLICATION_CREDENTIALS` to a service account JSON key file alongside project and location.
+
+```bash
+# Local (uses your user credentials)
+gcloud auth application-default login
+export GOOGLE_CLOUD_PROJECT="my-project"
+export GOOGLE_CLOUD_LOCATION="us-central1"
+
+# CI/Production (service account key file)
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+```
+
+Official docs: [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials)
+
+### Azure
+
+Supports both Azure OpenAI Responses (`azure-openai-responses`) and Microsoft Foundry Chat Completions (`openai-completions`, such as `deepseek-v4-pro`). Set `AZURE_OPENAI_API_KEY` and either `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`. `AZURE_OPENAI_BASE_URL` accepts `https://<resource>.openai.azure.com`, `https://<resource>.cognitiveservices.azure.com`, and `https://<resource>.ai.azure.com` (including `*.services.ai.azure.com`); root endpoints normalize to `/openai/v1` automatically.
 
 Use `AZURE_OPENAI_API_VERSION` (defaults to `v1`) to override the API version. Deployment names default to model IDs and can be overridden with `azureDeploymentName` or `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` using comma-separated `model-id=deployment` pairs (for example `gpt-4o-mini=my-deployment,gpt-4o=prod`). Legacy deployment-based URLs are not supported.
 
-**GitHub Copilot.** If you get "The requested model is not supported", enable the model manually in VS Code: open Copilot Chat, click the model selector, select the model (warning icon), and click "Enable".
+### OpenAI and Codex
+
+OpenAI Codex requires a ChatGPT subscription with model access and includes GPT-6.2 Sol and Codex models with extended context windows and reasoning capabilities. Prompt caching is enabled automatically when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection; WebSocket connections with `sessionId` and caching enabled reuse connections per session and expire after 5 minutes of inactivity.
+
+Call `cleanupSessionResources(sessionId)` (imported from `@bastani/atomic-ai`) when finished with a Codex session so its pooled WebSocket connection does not keep the process alive.
+
+Model-specific reasoning levels across OpenAI, Azure, and Codex Responses:
+
+| Model | Levels | `off` | `minimal` |
+| --- | --- | --- | --- |
+| GPT-6.2 Astra, GPT-6.2 Sol | `low`, `medium`, `high`, `xhigh`, `max` | No | No |
+| GPT-6.1 Sol | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias that sends `low` |
+| GPT-6.1 Terra | `off`, `low`, `medium`, `high`, `xhigh`, `max` | Sends reasoning effort `none` | Codex UI alias that sends `low` |
+
+### GitHub Copilot
+
+If you receive `"The requested model is not supported"`, enable the model manually in VS Code: open Copilot Chat, click the model selector, select the model (warning icon), and click **Enable**.
+
+### Fireworks deferred tools
+
+Fireworks models using the Anthropic Messages API support native deferred tool loading. Keep your discovery tool in `context.tools`. After the discovery tool result, append a chronological system message with `toolsAdded` containing the newly discovered tool definitions (`toolsRemoved` when tools drop out). The adapter sends deferred schemas and `tool_reference` blocks while preserving ordinary result text and unsigned thinking during replay.
+
+Name the discovery tool `ToolSearch` or `tool_search` for Fireworks prompt-prefix deferral. Other discovery names serialize correctly but do not get that prefix optimization. Set `model.compat.supportsToolReferences` to `false` to send ordinary tool schemas instead. This feature does not apply to Fireworks Chat Completions models.
 
 ## Migrating from the old global API
 

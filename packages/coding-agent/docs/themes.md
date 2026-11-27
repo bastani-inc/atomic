@@ -1,18 +1,18 @@
 ---
-title: "Customize themes"
-sidebarTitle: "Themes"
+title: "Create themes"
+sidebarTitle: "Create themes"
 description: "Switch built-in terminal themes, follow system light or dark appearance, and author custom JSON themes with hot reload."
 ---
 
-Themes are JSON files that define colors for the Atomic terminal UI.
+Themes are JSON files that control every color in the Atomic terminal UI. Switch between built-in palettes, follow your terminal's light or dark appearance automatically, or author your own theme with live hot reload.
 
-This page covers selecting a theme and authoring your own. See [Theme reference](/themes/reference) for the file schema, every color token, accepted color formats, and terminal color overrides.
+See [Theme format reference](/themes/reference) for the complete JSON schema, all 51 required and 3 optional color tokens, accepted color formats, and terminal color modes.
 
 ## Built-in themes
 
 Atomic ships seven built-in themes:
 
-- `system`: derives colors from your terminal's reported foreground, background, and ANSI palette, and follows terminal appearance changes where supported. If the terminal does not report colors, it uses ANSI palette colors and faint secondary text. `system` is reserved and cannot be overridden by a custom theme.
+- `system` — derives colors from your terminal's reported foreground, background, and ANSI palette, and follows terminal appearance changes where supported. If the terminal does not report colors, it uses ANSI palette colors and faint secondary text.
 - `dark`
 - `light`
 - `catppuccin-frappe`
@@ -20,161 +20,176 @@ Atomic ships seven built-in themes:
 - `catppuccin-macchiato`
 - `catppuccin-mocha`
 
-## Locations and precedence
+<Warning>
+Choose a distinct `"name"` for custom themes. `system` is reserved and a custom theme named `system` is silently ignored. Reusing another built-in name (`dark`, `light`, `catppuccin-*`) overrides interactive rendering, while `/export` still uses the built-in theme and live hot reload disables itself.
+</Warning>
 
-Atomic loads custom themes from these sources:
+## Select a theme
 
-- **Global:** `~/.atomic/agent/themes/*.json` (legacy `~/.pi/agent/themes/*.json`)
-- **Project** (only after you grant [project trust](/security#project-trust)): `.atomic/themes/*.json` (legacy `.pi/themes/*.json`)
-- **Packages:** `themes/` directories, `atomic.themes`, or legacy `pi.themes` entries in `package.json` ([Authoring packages](/packages/authoring))
-- **Settings:** `themes` array in global or project `settings.json`, which accepts files, directories, and filter patterns (`!glob`, `+path`, `-path` with `~` expansion; see [Package filtering](/packages/reference#package-filtering))
-- **CLI:** `--theme <path>` (repeatable) loads a theme file; `--use-theme <name>` (see [Initial theme](#initial-theme)) selects an already-loaded theme for one run without saving it
+<Note>
+Atomic does not have a `/theme` slash command. Choose a theme in `/settings`, pass `--use-theme`, or edit `settings.json` ([Interface and display settings](/settings#interface-and-display)).
+</Note>
 
-Discovery rules:
-
-- Auto-discovery in `~/.atomic/agent/themes/` and `.atomic/themes/` is non-recursive and skips dotfiles, `node_modules`, and files matched by `.gitignore`, `.ignore`, or `.fdignore`.
-- Disable custom and package theme discovery with `--no-themes` (no short flag). Built-in themes and explicit `--theme <path>` files remain available.
-- When multiple custom themes share the same `"name"`, Atomic keeps the first match and reports a collision diagnostic at startup or `/reload`. Precedence order:
-  1. Packages passed with `-e` / `--extension`
-  2. Project `settings.json` `themes` array
-  3. Project auto-discovered directories (`.atomic/themes/`, then legacy `.pi/themes/`)
-  4. Global `settings.json` `themes` array
-  5. Global auto-discovered directories (`~/.atomic/agent/themes/`, then legacy `~/.pi/agent/themes/`)
-  6. Configured packages (project packages, then global packages)
-  7. Bundled packages
-  8. Explicit CLI `--theme <path>` paths
-
-## Selecting a theme
-
-Atomic does not have a `/theme` slash command. Select a theme through `/settings`, `--use-theme`, or `settings.json` ([Interface and display settings](/settings#interface-and-display)):
+Set a single theme in `~/.atomic/agent/settings.json` or a trusted project's `.atomic/settings.json`:
 
 ```json
 {
-  "theme": "my-theme"
+  "theme": "catppuccin-mocha"
 }
 ```
 
-Use `"theme": "light-theme/dark-theme"` for automatic mode. Specify exactly one `/`, with non-empty names on both sides (surrounding spaces are trimmed). Atomic selects the matching theme using this fallback order:
+To follow your terminal's light or dark appearance automatically, set `"theme": "light-theme/dark-theme"` with exactly one `/` and non-empty names on both sides (surrounding spaces are trimmed):
 
-1. Terminal-reported background color (waits up to 100 ms at startup, and applies late terminal replies asynchronously if they arrive after startup)
-2. Terminal appearance change notifications
-3. `COLORFGBG` environment variable (uses the last `;`-separated number; indices `0` to `6` and `8` map to dark, all other integers map to light)
+```json
+{
+  "theme": "catppuccin-latte/catppuccin-mocha"
+}
+```
+
+Atomic chooses the light or dark side in this order:
+
+1. Terminal-reported background color (waits up to 100 ms at startup and applies late replies asynchronously)
+2. Terminal appearance change notifications (subscribed when using a `light/dark` pair or `system`, not when `theme` is unset)
+3. `COLORFGBG` environment variable (see [Terminal compatibility](/themes/reference#terminal-compatibility) for index mapping)
 4. Dark theme fallback
 
-A malformed auto value with extra `/` characters or an empty side falls back to the terminal default (`dark` or `light`). On first run, Atomic detects your terminal background and defaults to `dark` or `light`.
+Edge cases to know:
 
-The main chat uses the terminal's default background, including transparency. Headers, footers, and tool cards keep their theme colors.
-
-Setting `NO_COLOR` (to any value) or `FORCE_COLOR=0` disables all theme colors and text styles. Setting `FORCE_COLOR=1` or `2` caps truecolor themes at the 256-color palette, and `NO_COLOR` always takes precedence over `FORCE_COLOR` ([Terminal compatibility](/themes/reference#terminal-compatibility), [Environment variables](/environment-variables#terminal-and-display-variables)).
+- A malformed auto value with extra `/` characters or an empty side (such as `"light/"`) silently falls back to the detected terminal default (`dark` or `light`).
+- Setting `"theme": ""` fails with `Theme not found: ` and falls back to `dark`.
+- The main chat keeps your terminal's default background (including transparency), while headers, footers, and tool cards keep their theme colors.
+- `NO_COLOR` (any value) or `FORCE_COLOR=0` disables all theme colors and text styles, `FORCE_COLOR=1` or `2` caps output at 256 colors, and `NO_COLOR` always wins over `FORCE_COLOR` ([Terminal compatibility](/themes/reference#terminal-compatibility), [Environment variables](/environment-variables#terminal-and-display-variables)).
 
 ### Initial theme
 
-Start an interactive run with a theme without changing the saved setting:
+Override the theme for one interactive run without changing `settings.json`:
 
 ```bash
 atomic --use-theme light
-```
-
-To follow terminal appearance for one run, pass `lightTheme/darkTheme`:
-
-```bash
 atomic --use-theme light/dark
 ```
 
-`--use-theme` applies in interactive mode only (ignored in print, JSON, and RPC modes). Choosing another theme later in `/settings` applies it immediately and saves it normally. If the requested theme name is unknown or fails to load, Atomic prints an error (`Failed to load theme "<name>": ...`) and falls back to `dark`.
+`--use-theme` applies in interactive mode only (ignored in print, JSON, and RPC modes). Selecting a different theme later in `/settings` applies immediately and saves normally. If the requested theme name is unknown or invalid, Atomic prints `Failed to load theme "<name>": ...` and falls back to `dark`.
 
-## Creating a custom theme
+## Create a custom theme
 
-1. Create a theme file:
+<Steps>
+  <Step title="Create the theme file">
+    Create a JSON file under `~/.atomic/agent/themes/` (global) or `.atomic/themes/` (project):
 
-```bash
-mkdir -p ~/.atomic/agent/themes
-vim ~/.atomic/agent/themes/my-theme.json
-```
+    ```bash
+    mkdir -p ~/.atomic/agent/themes
+    vim ~/.atomic/agent/themes/my-theme.json
+    ```
+  </Step>
+  <Step title="Define variables and all 51 required color tokens">
+    Include `$schema` for editor completion and define every required token (plus optional `scrollbarThumb` shown below; see [Color tokens](/themes/reference#color-tokens)):
 
-2. Define the theme with all 51 required color tokens (see [Color tokens](/themes/reference#color-tokens)):
-
-```json
-{
-  "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/theme.schema.json",
-  "name": "my-theme",
-  "vars": {
-    "primary": "#00aaff",
-    "secondary": 242
-  },
-  "colors": {
-    "accent": "primary",
-    "border": "primary",
-    "borderAccent": "#00ffff",
-    "borderMuted": "secondary",
-    "success": "#00ff00",
-    "error": "#ff0000",
-    "warning": "#ffff00",
-    "muted": "secondary",
-    "dim": 240,
-    "text": "",
-    "thinkingText": "secondary",
-    "selectedBg": "#2d2d30",
-    "scrollbarThumb": "#555566",
-    "userMessageBg": "#2d2d30",
-    "userMessageText": "",
-    "customMessageBg": "#2d2d30",
-    "customMessageText": "",
-    "customMessageLabel": "primary",
-    "toolPendingBg": "#1e1e2e",
-    "toolSuccessBg": "#1e2e1e",
-    "toolErrorBg": "#2e1e1e",
-    "toolTitle": "primary",
-    "toolOutput": "",
-    "mdHeading": "#ffaa00",
-    "mdLink": "primary",
-    "mdLinkUrl": "secondary",
-    "mdCode": "#00ffff",
-    "mdCodeBlock": "",
-    "mdCodeBlockBorder": "secondary",
-    "mdQuote": "secondary",
-    "mdQuoteBorder": "secondary",
-    "mdHr": "secondary",
-    "mdListBullet": "#00ffff",
-    "toolDiffAdded": "#00ff00",
-    "toolDiffRemoved": "#ff0000",
-    "toolDiffContext": "secondary",
-    "syntaxComment": "secondary",
-    "syntaxKeyword": "primary",
-    "syntaxFunction": "#00aaff",
-    "syntaxVariable": "#ffaa00",
-    "syntaxString": "#00ff00",
-    "syntaxNumber": "#ff00ff",
-    "syntaxType": "#00aaff",
-    "syntaxOperator": "primary",
-    "syntaxPunctuation": "secondary",
-    "thinkingOff": "secondary",
-    "thinkingMinimal": "primary",
-    "thinkingLow": "#00aaff",
-    "thinkingMedium": "#00ffff",
-    "thinkingHigh": "#ff00ff",
-    "thinkingXhigh": "#ff0000",
-    "bashMode": "#ffaa00"
-  }
-}
-```
-
-3. Select the theme via `/settings`.
+    ```json
+    {
+      "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/theme.schema.json",
+      "name": "my-theme",
+      "vars": {
+        "primary": "#00aaff",
+        "secondary": 242
+      },
+      "colors": {
+        "accent": "primary",
+        "border": "primary",
+        "borderAccent": "#00ffff",
+        "borderMuted": "secondary",
+        "success": "#00ff00",
+        "error": "#ff0000",
+        "warning": "#ffff00",
+        "muted": "secondary",
+        "dim": 240,
+        "text": "",
+        "thinkingText": "secondary",
+        "selectedBg": "#2d2d30",
+        "scrollbarThumb": "#555566",
+        "userMessageBg": "#2d2d30",
+        "userMessageText": "",
+        "customMessageBg": "#2d2d30",
+        "customMessageText": "",
+        "customMessageLabel": "primary",
+        "toolPendingBg": "#1e1e2e",
+        "toolSuccessBg": "#1e2e1e",
+        "toolErrorBg": "#2e1e1e",
+        "toolTitle": "primary",
+        "toolOutput": "",
+        "mdHeading": "#ffaa00",
+        "mdLink": "primary",
+        "mdLinkUrl": "secondary",
+        "mdCode": "#00ffff",
+        "mdCodeBlock": "",
+        "mdCodeBlockBorder": "secondary",
+        "mdQuote": "secondary",
+        "mdQuoteBorder": "secondary",
+        "mdHr": "secondary",
+        "mdListBullet": "#00ffff",
+        "toolDiffAdded": "#00ff00",
+        "toolDiffRemoved": "#ff0000",
+        "toolDiffContext": "secondary",
+        "syntaxComment": "secondary",
+        "syntaxKeyword": "primary",
+        "syntaxFunction": "#00aaff",
+        "syntaxVariable": "#ffaa00",
+        "syntaxString": "#00ff00",
+        "syntaxNumber": "#ff00ff",
+        "syntaxType": "#00aaff",
+        "syntaxOperator": "primary",
+        "syntaxPunctuation": "secondary",
+        "thinkingOff": "secondary",
+        "thinkingMinimal": "primary",
+        "thinkingLow": "#00aaff",
+        "thinkingMedium": "#00ffff",
+        "thinkingHigh": "#ff00ff",
+        "thinkingXhigh": "#ff0000",
+        "bashMode": "#ffaa00"
+      }
+    }
+    ```
+  </Step>
+  <Step title="Activate and iterate live">
+    Run `/reload` if Atomic is already open, then pick `my-theme` in `/settings`. Edit and save the file to watch changes apply live.
+  </Step>
+</Steps>
 
 ### Live hot reload
 
-Atomic watches the active custom theme's actual file path and reloads it automatically when you save edits (debounced by 100 ms). Hot reload works for global themes, project themes, package themes, `--theme <path>` files, and custom themes whose filename differs from their JSON `"name"`. If you save invalid JSON mid-edit, Atomic ignores the broken save and keeps the last valid theme active until the next valid save.
+Atomic watches the active custom theme's file on disk and reloads it automatically on save (100 ms debounce), falling back to 1-second polling if native file watching is unavailable on that path.
 
-Theme files are strict. Atomic accepts only the documented top-level fields and color tokens. Extra top-level metadata or unknown keys under `colors`, `workingIndicator`, or `export` make the theme invalid. Define reusable custom colors under `vars`. The [theme JSON schema](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/schemas/theme.schema.json) lists every accepted property, required token, and value type. Atomic reports invalid theme files during startup and `/reload`.
+- Works for global themes, project themes, package themes, `--theme <path>` files, and custom themes whose filename differs from their JSON `"name"`.
+- Saving invalid JSON mid-edit keeps the last valid theme active until the next valid save.
+- Hot reload is not active for `system`, built-in theme names, or in-memory `Theme` instances passed via extension `setTheme()`.
+
+Theme validation is strict: Atomic rejects unknown top-level keys or unknown properties under `colors`, `workingIndicator`, or `export`, and reports invalid files on startup and `/reload`. Put reusable custom colors in `vars`.
+
+## Where themes load from
+
+Atomic discovers custom themes from these sources:
+
+- **Global:** `~/.atomic/agent/themes/*.json`
+- **Project** (requires [project trust](/security#project-trust)): `.atomic/themes/*.json`
+- **Packages:** `themes/` directories or `atomic.themes` entries in `package.json` ([Create packages](/packages/authoring))
+- **Settings:** `themes` array in global or project `settings.json`, accepting files, directories, and filter patterns (`!glob`, `+path`, `-path` with `~` expansion; see [Package filtering](/packages/reference#package-filtering))
+- **CLI:** `--theme <path>` (repeatable; accepts a `.json` file or a directory) loads themes; `--use-theme <name>` activates one for that run
+
+Discovery and precedence behavior:
+
+- Auto-discovery in `~/.atomic/agent/themes/` and `.atomic/themes/` is non-recursive and skips dotfiles, `node_modules`, and files matched by `.gitignore`, `.ignore`, or `.fdignore`.
+- Explicit `--theme <dir>` paths read all `*.json` files in that directory without applying dotfile or `.gitignore` filters.
+- Passing `--no-themes` disables auto-discovered and configured-package themes; built-in themes, themes shipped in `-e` / `--extension` packages, and explicit `--theme <path>` files or directories still load.
+- When multiple custom themes declare the same `"name"`, Atomic reports a collision diagnostic and keeps the first match: `-e` packages win first, then project overrides global, both override configured packages, and explicit `--theme` paths apply last—see [Resource precedence order](/packages/reference#resource-precedence-order).
+
+<Note>
+Legacy `.pi` theme locations (`~/.pi/agent/themes/*.json`, `.pi/themes/*.json`, and `pi.themes` in `package.json`) remain supported alongside `.atomic` paths.
+</Note>
 
 ## Tips
 
-**Dark terminals.** Use bright, saturated colors with higher contrast.
-
-**Light terminals.** Use darker, muted colors with lower contrast.
-
-**Color harmony.** Start with a base palette such as Nord, Gruvbox, or Tokyo Night, define it in `vars`, and reference it consistently.
-
-**Testing.** Check your theme with different message types, tool states, Markdown content, and long wrapped text.
-
-**VS Code.** Set `terminal.integrated.minimumContrastRatio` to `1` for accurate colors.
+- **Dark terminals:** Use bright, saturated accents with clear contrast against dark backgrounds.
+- **Light terminals:** Use darker, muted tones to keep text comfortable to scan.
+- **Color harmony:** Define a small base palette (such as Nord, Gruvbox, or Tokyo Night) in `vars` and reference it across tokens.
+- **Testing:** Check your theme across user messages, tool pending/success/error states, diffs, Markdown code blocks, and long wrapped lines.
+- **VS Code terminal:** Set `terminal.integrated.minimumContrastRatio` to `1` so VS Code does not shift your palette colors.

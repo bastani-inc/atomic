@@ -1,39 +1,41 @@
 ---
-title: "RPC extension UI protocol"
-sidebarTitle: "RPC UI protocol"
+title: "Handle extension UI over RPC"
+sidebarTitle: "RPC extension UI"
 description: "Handle extension dialogs, notifications, status bars, widgets, questionnaires, and OAuth prompts over the RPC transport."
 ---
 
-<div id="extension-ui-protocol" />
+Extensions request user interaction through `ctx.ui.select()`, `ctx.ui.confirm()`, and related methods. Provider OAuth logins started with `login_provider` (`authType: "oauth"`) use the same `extension_ui_request` and `extension_ui_response` sub-protocol. For process startup, framing, and typed client code, see [Drive Atomic over RPC](/rpc), [RPC protocol reference](/rpc/protocol), and [Connect with RPC clients](/rpc/examples).
 
-Extensions request user interaction through `ctx.ui.select()`, `ctx.ui.confirm()`, and related methods. Provider OAuth logins started with `login_provider` use the same `extension_ui_request` and `extension_ui_response` sub-protocol. For process startup, framing, and typed client code, see [RPC mode](/rpc), [RPC protocol reference](/rpc/protocol), and [RPC client examples](/rpc/examples).
+## Extension UI protocol {#extension-ui-protocol}
 
 Extension UI requests fall into three categories:
 
 - **Dialog methods** (`select`, `confirm`, `input`, `editor`, and `questionnaire` when the client [opted in](/rpc/protocol#set_extension_ui_capabilities)): emit an `extension_ui_request` on stdout and wait until the client sends an `extension_ui_response` on stdin with the matching `id`.
 - **Fire-and-forget UI methods** (`cancel`, `notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`): emit an `extension_ui_request` on stdout and expect no response. Handle `cancel` by closing its matching dialog; other methods update your display.
-- **OAuth login methods** (`oauth_auth`, `oauth_device_code`, `oauth_progress`, `oauth_info`, `oauth_prompt`, `oauth_select`, `oauth_manual_code`, `oauth_manual_code_cancel`): drive interactive OAuth sign-in during `login_provider`. `oauth_prompt`, `oauth_select`, and `oauth_manual_code` expect an `extension_ui_response` with `value` or `cancelled: true`; the other OAuth methods are fire-and-forget.
+- **OAuth login methods** (`oauth_auth`, `oauth_device_code`, `oauth_progress`, `oauth_info`, `oauth_prompt`, `oauth_select`, `oauth_manual_code`, `oauth_manual_code_cancel`): drive interactive OAuth sign-in during `login_provider`. `oauth_prompt`, `oauth_select`, and `oauth_manual_code` expect an `extension_ui_response` with `value`; the other OAuth methods are fire-and-forget.
 
-When a dialog request carries a `timeout` (in milliseconds) or an `AbortSignal`, Atomic resolves it automatically with its default value (`undefined` for `select`/`input`/`editor`, `false` for `confirm`, `{ answers: [], cancelled: true }` for `questionnaire`) if the timeout expires or the signal aborts. Clients do not need to run their own timers. For `select`, `confirm`, `input`, `editor`, and `questionnaire`, Atomic sends a matching `cancel` notification when the request times out or aborts. Note that `editor` does not serialize `timeout` on the wire request, even though Atomic still enforces `opts.timeout` locally and emits `cancel` if it expires.
+<Note>
+When a standard dialog (`select`, `confirm`, `input`, `editor`, or `questionnaire`) carries a `timeout` (in milliseconds) or an `AbortSignal`, Atomic resolves it automatically with its default value (`undefined` for `select`/`input`/`editor`, `false` for `confirm`, `{ answers: [], cancelled: true }` for `questionnaire`) if the timeout expires or the signal aborts, and sends a matching `cancel` notification. Clients do not need to run their own timers. Note that `editor` does not serialize `timeout` on the wire request even though Atomic still enforces `opts.timeout` locally and emits `cancel` if it expires.
+</Note>
 
 ## Unsupported and degraded methods in plain RPC mode
 
 In RPC mode, `ctx.mode` is `"rpc"` and `ctx.hasUI` is `true` because dialog and fire-and-forget methods work through this protocol. Guard terminal-only features such as `ctx.ui.custom()` with `ctx.mode === "tui"`.
 
-The following `ExtensionUIContext` methods are unsupported or degraded in plain RPC mode:
-
-- `setWidget(key, factory)`: passing a component factory function throws `Error("Component-factory widgets are unavailable in this RPC host.")`. Only string arrays (or `undefined` to clear) work over plain RPC.
-- `custom()`: resolves to `undefined`.
-- `hostSessionPicker` and `hostInputForm`: omitted (`undefined`).
-- `setWorkingMessage()`, `setWorkingVisible()`, `setWorkingIndicator()`, `setHiddenThinkingLabel()`, `setFooter()`, `setHeader()`, `setEditorComponent()`, `addAutocompleteProvider()`, and `requestRender()`: no-ops.
-- `onTerminalInput()`, `onHostCustomUiStateChange()`, and `onWidgetRelease()`: return a no-op unsubscribe function.
-- `getEditorText()`: returns `""`.
-- `getEditorComponent()`: returns `undefined`.
-- `pasteToEditor(text)`: delegates to `setEditorText(text)` without paste-collapse handling.
-- `getFooterDataProvider()`: returns a stub where `getGitBranch()` returns `null`, `getExtensionStatuses()` returns an empty `Map`, `getAvailableProviderCount()` returns `1`, and `onBranchChange()` returns a no-op unsubscribe function.
-- `getHostCustomUiState()`: returns `{ blockingInlineCustomUiDepth: 0, blockingInlineCustomUiActive: false }`; `focusHostInlineCustomUi()` returns `false`.
-- `setToolsExpanded()` and `getToolsExpanded()`: store expansion state locally for the session, matching `getChatRenderSettings().toolOutputExpanded` (not sent over the wire). `getChatRenderSettings().hideThinkingBlock` is `false`.
-- `getAllThemes()` returns `[]`, `getTheme()` returns `undefined`, and `setTheme()` returns `{ success: false, error: "Theme switching not supported in RPC mode" }`.
+| Method or property | Behavior in plain RPC mode |
+| --- | --- |
+| `setWidget(key, factory)` | Throws `Error("Component-factory widgets are unavailable in this RPC host.")`. Only string arrays (or `undefined` to clear) work over plain RPC. |
+| `custom()` | Resolves to `undefined`. |
+| `hostSessionPicker`, `hostInputForm` | Omitted (`undefined`). |
+| `setWorkingMessage()`, `setWorkingVisible()`, `setWorkingIndicator()`, `setHiddenThinkingLabel()`, `setFooter()`, `setHeader()`, `setEditorComponent()`, `addAutocompleteProvider()`, `requestRender()` | No-ops. |
+| `onTerminalInput()`, `onHostCustomUiStateChange()`, `onWidgetRelease()` | Return a no-op unsubscribe function. |
+| `getEditorText()` | Returns `""`. |
+| `getEditorComponent()` | Returns `undefined`. |
+| `pasteToEditor(text)` | Delegates to `setEditorText(text)` without paste-collapse handling. |
+| `getFooterDataProvider()` | Returns a stub (`getGitBranch() -> null`, `getExtensionStatuses() -> empty Map`, `getAvailableProviderCount() -> 1`, `onBranchChange() -> no-op unsubscribe`). |
+| `getHostCustomUiState()`, `focusHostInlineCustomUi()` | Returns `{ blockingInlineCustomUiDepth: 0, blockingInlineCustomUiActive: false }`; `focusHostInlineCustomUi()` returns `false`. |
+| `setToolsExpanded()`, `getToolsExpanded()`, `getChatRenderSettings()` | Stores tool-expansion state locally (matching `getChatRenderSettings().toolOutputExpanded`; not sent over the wire). `hideThinkingBlock` is `false`. |
+| `getAllThemes()`, `getTheme()`, `setTheme()` | Returns `[]`, `undefined`, and `{ success: false, error: "Theme switching not supported in RPC mode" }`. |
 
 ## Extension UI requests (stdout)
 
@@ -235,18 +237,35 @@ Replace the text in the input editor. Fire-and-forget.
 
 ### OAuth login methods
 
-During `login_provider`, Atomic emits OAuth UI requests containing `type: "extension_ui_request"`, `id`, `provider`, `loginId`, and `method`:
+During [`login_provider`](/rpc/protocol#login_provider) with `"authType": "oauth"`, Atomic emits OAuth UI requests containing `type: "extension_ui_request"`, `id`, `provider`, `loginId`, and `method`:
 
-| Method | Additional fields | Response expected |
+<Warning>
+**Do NOT send `cancelled: true` to cancel `oauth_prompt` or `oauth_manual_code`.** Atomic turns `cancelled: true` into `undefined`, and both `oauth_prompt` and `oauth_manual_code` coalesce `undefined` to an empty string (`""`) — submitting an empty answer instead of cancelling the sign-in flow! (Only `oauth_select` receives `undefined`.) To cancel an OAuth login, send [`cancel_login_provider`](/rpc/protocol#cancel_login_provider) with the matching `provider` and `loginId`. Unlike standard dialogs, cancelling an OAuth flow does **not** emit a `method: "cancel"` notification for `oauth_prompt` or `oauth_select` (close any open prompt when you send `cancel_login_provider` or when `login_provider` responds).
+</Warning>
+
+| Method | Payload fields | Response expected |
 | --- | --- | --- |
-| `oauth_auth` | `info` (`OAuthAuthInfo`: authorization URL and optional instructions) | None (fire-and-forget) |
-| `oauth_device_code` | `info` (`OAuthDeviceCodeInfo`: verification URI and user code) | None (fire-and-forget) |
-| `oauth_progress` | `message` (status update string) | None (fire-and-forget) |
-| `oauth_info` | `message`, `links` (`AuthInfoLink[]`) | None (fire-and-forget) |
-| `oauth_prompt` | `prompt` (`OAuthPrompt`) | `extension_ui_response` with `value` or `cancelled: true` |
-| `oauth_select` | `prompt` (`OAuthSelectPrompt`) | `extension_ui_response` with `value` or `cancelled: true` |
-| `oauth_manual_code` | None | `extension_ui_response` with `value` or `cancelled: true` |
-| `oauth_manual_code_cancel` | None | None (close pending manual-code prompt) |
+| `oauth_auth` | `info`: `{ url: string, instructions?: string }` | None (fire-and-forget) |
+| `oauth_device_code` | `info`: `{ userCode: string, verificationUri: string, openBrowserOnConfirm?: boolean, copyCodeOnConfirm?: boolean, intervalSeconds?: number, expiresInSeconds?: number }` | None (fire-and-forget) |
+| `oauth_progress` | `message: string` | None (fire-and-forget) |
+| `oauth_info` | `message: string`, `links: Array<{ url: string, label?: string }>` | None (fire-and-forget) |
+| `oauth_prompt` | `prompt`: `{ message: string, placeholder?: string, allowEmpty?: boolean }` | `extension_ui_response` with `value: string` (to abort login, send `cancel_login_provider`) |
+| `oauth_select` | `prompt`: `{ message: string, options: Array<{ id: string, label: string }> }` | `extension_ui_response` with `value` (selected option `id`) or `cancelled: true` (resolves `undefined`) |
+| `oauth_manual_code` | None | `extension_ui_response` with `value: string` (to abort login, send `cancel_login_provider`) |
+| `oauth_manual_code_cancel` | None | None (close pending `oauth_manual_code` prompt without responding) |
+
+Concrete wire payloads for each OAuth UI request:
+
+```json
+{"type":"extension_ui_request","id":"oa-1","method":"oauth_auth","provider":"anthropic","loginId":"login-1","info":{"url":"https://console.anthropic.com/oauth/authorize?...","instructions":"Open the URL to authorize Atomic."}}
+{"type":"extension_ui_request","id":"oa-2","method":"oauth_device_code","provider":"github-copilot","loginId":"login-2","info":{"userCode":"ABCD-1234","verificationUri":"https://github.com/login/device","openBrowserOnConfirm":true,"copyCodeOnConfirm":true,"intervalSeconds":5,"expiresInSeconds":900}}
+{"type":"extension_ui_request","id":"oa-3","method":"oauth_progress","provider":"github-copilot","loginId":"login-2","message":"Waiting for authorization..."}
+{"type":"extension_ui_request","id":"oa-4","method":"oauth_info","provider":"openai-codex","loginId":"login-3","message":"Review workspace access:","links":[{"url":"https://chatgpt.com/settings","label":"Account settings"}]}
+{"type":"extension_ui_request","id":"oa-5","method":"oauth_prompt","provider":"anthropic","loginId":"login-1","prompt":{"message":"Paste the authorization code","placeholder":"code#state","allowEmpty":false}}
+{"type":"extension_ui_request","id":"oa-6","method":"oauth_select","provider":"google-gemini-cli","loginId":"login-4","prompt":{"message":"Choose a project","options":[{"id":"proj-a","label":"Project A"},{"id":"proj-b","label":"Project B"}]}}
+{"type":"extension_ui_request","id":"oa-7","method":"oauth_manual_code","provider":"openai-codex","loginId":"login-3"}
+{"type":"extension_ui_request","id":"oa-8","method":"oauth_manual_code_cancel","provider":"openai-codex","loginId":"login-3"}
+```
 
 ## Extension UI responses (stdin)
 
@@ -258,10 +277,9 @@ Send responses for dialog methods (`select`, `confirm`, `input`, `editor`, `ques
 - For `select`, `input`, and `editor`, a non-cancelled response without `value` resolves to `undefined`. `select` does not validate `value` against the original `options` list, so clients should send one of the offered options.
 - For `confirm`, a non-cancelled response without `confirmed` resolves to `false`.
 - For `questionnaire`, see [questionnaire](#questionnaire) for answer validation.
+- For `oauth_prompt` and `oauth_manual_code`, send `value` as a string; to cancel sign-in, send [`cancel_login_provider`](/rpc/protocol#cancel_login_provider) rather than `cancelled: true`.
 
-### Value response (`select`, `input`, `editor`)
-
-Also used for `oauth_prompt`, `oauth_select`, and `oauth_manual_code`:
+### Value response (`select`, `input`, `editor`, `oauth_prompt`, `oauth_select`, `oauth_manual_code`)
 
 ```json
 {"type": "extension_ui_response", "id": "uuid-1", "value": "Allow"}
@@ -273,9 +291,9 @@ Also used for `oauth_prompt`, `oauth_select`, and `oauth_manual_code`:
 {"type": "extension_ui_response", "id": "uuid-2", "confirmed": true}
 ```
 
-### Cancellation response (any dialog)
+### Cancellation response (standard dialogs and `oauth_select`)
 
-Dismiss any dialog method. The extension receives `undefined` (for `select`, `input`, `editor`), `false` (for `confirm`), or `{ answers: [], cancelled: true }` (for `questionnaire`).
+Dismiss a standard dialog (`select`, `confirm`, `input`, `editor`, or `questionnaire`) or resolve `oauth_select` to `undefined`. Standard dialogs receive `undefined` (for `select`, `input`, `editor`), `false` (for `confirm`), or `{ answers: [], cancelled: true }` (for `questionnaire`). Do not use this to cancel `oauth_prompt` or `oauth_manual_code` — send `cancel_login_provider` instead.
 
 ```json
 {"type": "extension_ui_response", "id": "uuid-3", "cancelled": true}
@@ -283,6 +301,14 @@ Dismiss any dialog method. The extension receives `undefined` (for `select`, `in
 
 ## See also
 
-- [RPC mode](/rpc): startup flags, JSONL framing, and shutdown signals.
-- [RPC protocol reference](/rpc/protocol): all commands, events, and structured error codes.
-- [RPC client examples](/rpc/examples): `RpcClient` extension UI handling and standalone Node.js examples.
+<Columns cols={2}>
+  <Card title="Drive Atomic over RPC" href="/rpc">
+    Startup flags, command concurrency lanes, JSONL framing, and shutdown signals.
+  </Card>
+  <Card title="RPC protocol reference" href="/rpc/protocol">
+    All commands, streamed events, and structured error codes.
+  </Card>
+  <Card title="Connect with RPC clients" href="/rpc/examples">
+    TypeScript `RpcClient` recipes and standalone Node.js examples.
+  </Card>
+</Columns>

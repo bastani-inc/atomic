@@ -1,50 +1,94 @@
 ---
 title: "Task guides"
-sidebarTitle: "All guides"
-description: "Task guides for interactive and non-interactive work, sessions, compaction, subagents, providers, and security."
+sidebarTitle: "Task guides"
+description: "Task guides for everyday terminal work, sessions, compaction, subagents, models, and security."
 ---
 
-New to Atomic? Follow the [Quickstart](/quickstart) to install, authenticate, run your first session, and add project instructions. To extend or embed Atomic, go to [Build with Atomic](/build). For exact flags, settings, events, or types, go to the [Reference index](/reference).
+New to Atomic? Start with the [Quickstart](/quickstart) to install, authenticate, run your first session, and add project instructions, or read [How Atomic works](/how-atomic-works) for the complete mental model.
 
 ## Use Atomic daily
 
-- **[Interactive mode](/usage).** Use the terminal editor, slash commands, startup typing, message queue, and context files.
-- **[Non-interactive mode](/guides/non-interactive).** Run one-shot prompts with `-p`, stream JSON events, or drive Atomic over RPC.
-- **[Configure Atomic](/guides/configuration).** Create a global settings file and override settings per project.
-- **[Sessions](/sessions).** Save, resume, name, search, and branch sessions.
-- **[Worktree snapshots](/worktree-snapshots).** Capture and restore repository state alongside your session history.
-- **[Resume on any machine and blueprints](/guides/resume-on-any-machine).** Continue a session on another machine that shares your storage, and automate dependency rebuilds with [`.atomic/blueprint.yaml` blueprints](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint).
-- **[Storage](/storage).** Choose where sessions are kept: a [local SQLite](/storage/sqlite) file, [JSONL files](/storage/jsonl), or a [PostgreSQL](/storage/postgres) database that several machines share. Move sessions between stores with export and import. To run many agents on PostgreSQL, see [PgBouncer](/storage/postgres/pgbouncer) and [server tuning](/storage/postgres/tuning). For apps built on the SDK, see [SDK session storage](/sdk/storage).
-- **[Context and compaction](/compaction).** Keep long sessions inside the model's context window, or plug in a [custom remote compactor](/compaction#customize-morph-or-add-a-remote-compactor).
-- **[MCP servers](/mcp-servers).** Connect external tools and data sources over Model Context Protocol.
+<Columns cols={2}>
+  <Card title="Use interactive mode" href="/usage">
+    Terminal editor, `@` file references, `!` shell commands, message queueing, and prompt history search.
+  </Card>
+  <Card title="Run non-interactively" href="/guides/non-interactive">
+    One-shot prompts with `-p`, piped stdin, JSON event streams, and headless scripting.
+  </Card>
+  <Card title="Configure Atomic" href="/guides/configuration">
+    Set up global defaults in `~/.atomic/agent/settings.json` and project-level overrides.
+  </Card>
+  <Card title="Manage sessions" href="/sessions">
+    Resume, name, search, branch with `/tree`, fork, clone, and recall past sessions.
+  </Card>
+  <Card title="Worktree snapshots" href="/worktree-snapshots">
+    Capture and restore Git repository state alongside your session history.
+  </Card>
+  <Card title="Resume on any machine" href="/guides/resume-on-any-machine">
+    Continue sessions across hosts over shared PostgreSQL and rebuild environments with `.atomic/blueprint.yaml`.
+  </Card>
+  <Card title="Context and compaction" href="/compaction">
+    Keep long runs within context limits with zero-call memory compaction or custom remote compactors.
+  </Card>
+  <Card title="Custom compaction models" href="/compaction/custom-compactors">
+    Use built-in Morph compaction or connect your own remote compactor endpoint with automatic fallback.
+  </Card>
+</Columns>
 
 ## Delegate and automate
 
-- **[Plan a task with subagents](/guides/orchestration).** Distribute multi-step work across subagents and verify the results.
-- **[Subagents](/guides/subagents).** Delegate independent tasks to fresh or forked subagents in the background (see the full [Subagents guide](/subagents)).
-- **[Background tasks](/background-tasks).** Launch, inspect, steer, and stop background subagents and shells.
-- **[Intercom](/guides/intercom).** Coordinate live sessions and subagents on one machine or across a shared database (see the full [Intercom guide](/intercom)).
-- **[Team and CI setup](/guides/team-setup).** Share Intercom with a team through one PostgreSQL database while sessions stay private, and configure CI runners.
-- **[Structured decisions](/sdk/structured-decisions).** Make typed classifier or chat decisions with `decide()` and `generateStructuredOutput()`.
-- **[Computer use](/computer-use).** Automate desktop apps, browsers, and terminals across macOS, Linux, and Windows.
-- **[Verification](/verification).** Reproduce bugs and collect verifiable evidence across terminal, browser, and desktop environments.
+<Columns cols={2}>
+  <Card title="Orchestrate multi-step work" href="/orchestration">
+    Combine skills, subagents, and verification loops to plan and validate larger tasks.
+  </Card>
+  <Card title="Run subagents" href="/subagents">
+    Delegate independent work to fresh or forked subagents, isolate edits in worktrees, and control runs.
+  </Card>
+  <Card title="Background tasks" href="/background-tasks">
+    Launch, inspect, steer, pause, and stop background subagents and shells in `/tasks`.
+  </Card>
+  <Card title="Coordinate sessions with Intercom" href="/intercom">
+    Message and ask live sessions or sibling subagents on one machine or across a shared database.
+  </Card>
+  <Card title="Team and CI setup" href="/guides/team-setup">
+    Share Intercom across a team with PostgreSQL while keeping sessions private, and set up CI runners.
+  </Card>
+  <Card title="Computer use" href="/computer-use">
+    Automate browsers, native desktop apps, and terminals across macOS, Linux, and Windows.
+  </Card>
+  <Card title="Verification" href="/verification">
+    Reproduce bugs and gather verifiable evidence across terminal, browser, and desktop workflows.
+  </Card>
+</Columns>
 
 ## Models and providers
 
-- **[Providers](/providers).** Configure subscription logins, API keys, and cloud providers.
-- **[Local models](/llama-cpp).** Run local models with llama.cpp.
+<Columns cols={2}>
+  <Card title="Choose a model" href="/models/choose-a-model">
+    Decide between subscriptions, API keys, local models, and custom endpoints, and configure model cycling.
+  </Card>
+  <Card title="Model providers" href="/providers">
+    Connect subscription logins, API keys, and cloud gateways (Bedrock, Vertex AI, Azure, NIM).
+  </Card>
+  <Card title="Local models with llama.cpp" href="/llama-cpp">
+    Run local GGUF models with a `llama.cpp` router and manage them with `/llama`.
+  </Card>
+</Columns>
 
 ## Security and isolation
 
-- **[Security](/security).** Review project trust, sandbox boundaries, and credential export guarantees.
-- **[Containerization](/containerization).** Run Atomic or its tools inside Gondolin, Docker, or OpenShell.
+<Columns cols={2}>
+  <Card title="Security" href="/security">
+    Review project trust boundaries, OS tool permissions, and credential guarantees.
+  </Card>
+  <Card title="Containerization" href="/containerization">
+    Isolate Atomic or its tool execution inside Gondolin, Docker, or OpenShell.
+  </Card>
+</Columns>
 
-## Quick references
+## Build and reference
 
-- **[CLI reference](/reference/cli).** Look up commands, flags, subcommands, and exit codes.
-- **[Built-in tools](/tools)**, **[Codemode](/codemode)**, and **[Web access](/web-access).** Review default tools, sandbox scripting, and search/fetch controls.
-- **[Herdr](/herdr).** Configure status indicators and session restore inside Herdr panes.
-- **[Settings](/settings).** Browse the full `settings.json` reference.
-- **[Environment variables](/environment-variables).** Look up Atomic variables, legacy aliases, color controls, and provider credentials.
-- **[Keybindings](/keybindings).** Look up default shortcuts and custom bindings.
-- **[Diagnostics and debugging](/development).** Capture debug snapshots, trace UI stalls, and report bugs.
+Looking to extend, embed, or look up exact flags and schemas?
+
+- **[Build with Atomic](/build):** Write [skills](/skills), [prompt templates](/prompt-templates), [themes](/themes), [extensions](/extensions), [custom models](/models) and [providers](/custom-provider), [Atomic packages](/packages), or embed Atomic via the [TypeScript SDK, RPC, or JSON mode](/programmatic).
+- **[Reference index](/reference):** Look up [CLI options](/reference/cli), [Slash commands](/slash-commands), [Settings](/settings), [Environment variables](/environment-variables), [Keybindings](/keybindings), [Built-in tools](/tools), [Codemode](/codemode), [MCP servers](/mcp-servers), [Web access](/web-access), [Storage](/storage), [Platform setup](/reference#platform-setup), and [Diagnostics and debugging](/development).

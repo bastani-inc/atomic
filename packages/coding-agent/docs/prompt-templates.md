@@ -1,63 +1,41 @@
 ---
-title: "Prompt templates"
-sidebarTitle: "Prompt templates"
+title: "Create prompt templates"
+sidebarTitle: "Create prompt templates"
 description: "Create reusable Markdown slash commands with bash-style argument placeholders, defaults, and slicing."
 ---
 
-Prompt templates are Markdown snippets that expand into full prompts. Type `/name` in the editor to invoke a template, where `name` is the filename without `.md`.
+Prompt templates are reusable Markdown snippets that expand into full prompts when you type `/name` in Atomic, where `name` is the filename without `.md`.
 
-**Prerequisites:** Atomic installed and running in a project. See the [Quickstart](/quickstart). No code or build step is required.
+Use prompt templates for recurring prompts you invoke yourself with no code or build step. Use a [skill](/skills) when the model should decide when to load instructions, or an [extension](/extensions) when you need TypeScript code.
 
-Use prompt templates when you repeat the same instructions and want a slash command for them. They are Atomic's lightest customization option. Use a [skill](/skills) if the agent should decide when to load the instructions, or an [extension](/extensions) if you need to run code.
+## Create your first template
 
-## Locations and loading rules
+<Steps>
+  <Step title="Save a Markdown file">
+    Create `.atomic/prompts/review.md` for your project (or `~/.atomic/agent/prompts/review.md` for every project):
 
-Atomic loads prompt templates from these sources:
+    ```markdown
+    ---
+    description: Review staged git changes
+    argument-hint: "[focus area]"
+    ---
+    Review the staged changes (`git diff --cached`).
+    Focus: ${1:-correctness, security, and error handling}.
+    ```
+  </Step>
+  <Step title="Reload your session">
+    Run `/reload` in an active Atomic session so it picks up the new template without restarting.
+  </Step>
+  <Step title="Invoke the command">
+    Type `/review` or `/review "auth edge cases"` in the editor. Autocomplete shows the command, its `argument-hint`, and its `description`.
+  </Step>
+</Steps>
 
-- **Global:** `~/.atomic/agent/prompts/*.md` (legacy `~/.pi/agent/prompts/*.md`)
-- **Project** (only after you grant [project trust](/security#project-trust)): `.atomic/prompts/*.md` (legacy `.pi/prompts/*.md`)
-- **Packages:** `prompts/` directories, `atomic.prompts`, or legacy `pi.prompts` entries in `package.json`
-- **Settings:** `prompts` array in global or project `settings.json` ([Resource settings](/settings#resources)), which accepts files, directories, and filter patterns (`!glob`, `+path`, `-path` with `~` expansion; see [Package filtering](/packages/reference#package-filtering))
-- **CLI:** `--prompt-template <path>` (repeatable; accepts either a `.md` file or a directory, and still loads with `--no-prompt-templates`; see [CLI resource options](/reference/cli#resource-options))
+## Format and frontmatter
 
-Disable default discovery with `--no-prompt-templates` (short flag `-np`). Explicit `--prompt-template` paths and `-e` package prompts still load.
-
-### Discovery and precedence rules
-
-- Auto-discovery in `~/.atomic/agent/prompts/` and `.atomic/prompts/` is non-recursive. To load templates from subdirectories, add them explicitly in `settings.json` `prompts` or in a package manifest.
-- Scanning skips dotfiles, `node_modules`, broken symlinks, and files matched by `.gitignore`, `.ignore`, or `.fdignore` inside the `prompts/` directory. Direct symlinks to `.md` files are followed.
-- When multiple templates share a filename, Atomic keeps the first match in this order:
-  1. Packages passed with `-e` / `--extension`
-  2. Project `settings.json` `prompts` array
-  3. Project auto-discovered directories (`.atomic/prompts/`, then legacy `.pi/prompts/`)
-  4. Global `settings.json` `prompts` array
-  5. Global auto-discovered directories (`~/.atomic/agent/prompts/`, then legacy `~/.pi/agent/prompts/`)
-  6. Configured packages (project packages, then global packages)
-  7. Bundled packages
-  8. Explicit CLI `--prompt-template <path>` paths
-- Exception: if an inherited legacy `.pi` template collides with a bundled template, the bundled template wins.
-- Built-in interactive commands and extension slash commands take precedence over prompt templates with the same name.
-
-## Format
-
-```markdown
----
-description: Review staged git changes
----
-Review the staged changes (`git diff --cached`). Focus on:
-- Bugs and logic errors
-- Security issues
-- Error handling gaps
-```
-
-- The filename becomes the command name. `review.md` becomes `/review`.
-- `description` is optional. If omitted, Atomic uses the first non-empty line of the template body, truncated to 60 characters with `...` appended when longer.
-- `argument-hint` is optional. When set, the hint appears before the description in the autocomplete dropdown.
-- Invalid YAML frontmatter (for example an unquoted `description: Broken: value`) skips only that template and reports a warning naming the file and parse position. Valid sibling templates still load.
-
-### Argument hints
-
-Use `argument-hint` in frontmatter to show expected arguments in autocomplete. Use `<angle brackets>` for required arguments and `[square brackets]` for optional ones:
+- The filename becomes the slash command: `review.md` registers `/review`.
+- `description` is optional. If omitted (or set to a non-string YAML value), Atomic uses the first non-empty line of the template body, truncated to 60 characters with `...`.
+- `argument-hint` is optional (non-string YAML values are ignored). Use `<angle brackets>` for required arguments and `[square brackets]` for optional ones; Atomic shows the hint before the description in autocomplete:
 
 ```markdown
 ---
@@ -66,8 +44,6 @@ argument-hint: "<PR-URL>"
 ---
 ```
 
-This renders in the autocomplete dropdown as:
-
 ```text
 → pr   <PR-URL>       Review PRs from URLs with structured issue and code analysis
   is   <issue>        Analyze GitHub issues (bugs or feature requests)
@@ -75,37 +51,38 @@ This renders in the autocomplete dropdown as:
   cl                  Audit changelog entries before release
 ```
 
-## Usage
+<Warning>
+Invalid YAML frontmatter (such as an unquoted colon in `description: Broken: value`) skips only that template and reports a warning with the filename and parse position. Valid sibling templates still load.
+</Warning>
 
-Type `/` followed by the template name in the editor. Autocomplete shows available templates with hints and descriptions.
+## Use prompt templates
+
+Type `/` followed by the template name and any arguments:
 
 ```text
 /review                           # Expands review.md
-/component Button                 # Expands with argument
-/component Button "click handler" # Multiple arguments
+/component Button                 # Expands with one argument
+/component Button "click handler" # Expands with multiple arguments
 ```
 
-The template name ends at the first space, tab, or line break, so arguments can also start on a new line with Shift+Enter. Line breaks inside the arguments are preserved. The same rule applies to extension commands and `/skill:name` commands.
-
-Run `/reload` after adding or editing `.md` template files to pick up changes without restarting Atomic. While viewing a subagent, invoking a prompt template expands and sends the prompt to that viewed subagent rather than `main` ([Commands while viewing a subagent](/background-tasks#commands-while-viewing-a-subagent)).
+- **Multiline arguments.** The command name ends at the first space, tab, or line break, so arguments can start on the next line with `Shift+Enter`, and line breaks inside arguments are preserved.
+- **Subagent views.** While viewing a subagent, invoking a prompt template expands and sends the prompt to that subagent instead of `main` ([Commands while viewing a subagent](/background-tasks/reference#commands-while-viewing-a-subagent)).
+- **Non-interactive and queued inputs.** Prompt templates also expand in print (`-p`), JSON, and RPC modes as well as queued `steer` and `followUp` messages. From extensions, `atomic.sendUserMessage()` expands templates only when `{ expandPromptTemplates: true }` is passed. Skill commands (`/skill:...`) expand before prompt templates.
 
 ## Arguments and placeholders
 
-Templates support bash-style positional arguments, defaults, and slicing. Substitution is single-pass (not recursive), so argument values containing `$1` or `$@` remain literal text.
+Templates support bash-style positional arguments, defaults, and slicing. Substitution runs in a single pass (not recursively), so argument values containing `$1` or `$@` stay literal text.
 
 | Placeholder | Expansion |
 | --- | --- |
-| `$1`, `$2`, `$10`, ... | Positional argument by 1-based index. Missing arguments and `$0` expand to `""` (empty string). |
+| `$1`, `$2`, `$10`, ... | 1-based positional argument. Missing arguments and `$0` expand to `""`. |
 | `$@` or `$ARGUMENTS` | All arguments joined with single spaces. Interchangeable except for slicing. |
-| `${N:-default}` | Argument `N` when present and non-empty; otherwise `default`. Empty defaults like `${1:-}` expand to `""`. |
-| `${@:-default}` or `${ARGUMENTS:-default}` | All arguments joined with spaces when present and non-empty; otherwise `default`. |
+| `${N:-default}` | Argument `N` when present and non-empty; otherwise `default`. `${0:-default}` always expands to `default`; empty defaults like `${1:-}` expand to `""`. |
+| `${@:-default}` or `${ARGUMENTS:-default}` | All arguments joined with spaces when present and non-empty; otherwise `default`. `${@:-1}` uses `"1"` as the default (not negative slicing). |
 | `${@:N}` | Arguments from 1-based position `N` to the end, joined with spaces. `N = 0` clamps to `1`; `N` past the last argument expands to `""`. |
-| `${@:N:L}` | Up to `L` arguments starting at 1-based position `N`, joined with spaces. `L = 0` expands to `""`. Slicing works with `@` only (not `${ARGUMENTS:N}`). |
+| `${@:N:L}` | Up to `L` arguments starting at 1-based position `N`, joined with spaces. `L = 0` expands to `""`. Works with `@` only (not `${ARGUMENTS:N}`). |
 
-Default-value syntax rules:
-
-- `default` inside `${N:-default}` or `${@:-default}` cannot contain a closing `}`.
-- If `default` is longer than 1,024 characters, the placeholder does not match and remains literal text in the expanded prompt.
+Default-value limits: `default` inside `${N:-default}` or `${@:-default}` cannot contain `}`, and defaults longer than 1,024 characters do not match and stay literal text.
 
 Example with positional arguments and `$@`:
 
@@ -116,26 +93,50 @@ description: Create a component
 Create a React component named $1 with features: $@
 ```
 
-Usage: `/component Button "onClick handler" "disabled support"`
+Invoking `/component Button "onClick handler" "disabled support"` fills `$1` with `Button` and `$@` with `Button onClick handler disabled support`.
 
-Example with a default value:
-
-```markdown
-Summarize the current state in ${1:-7} bullet points.
-```
-
-Use `""` or `''` to pass an empty argument without shifting later positions. For a template containing `Review $2. Focus: ${1:-correctness}.`, `/review "" src/index.ts` expands to `Review src/index.ts. Focus: correctness.`
+Use `""` or `''` to pass an empty positional argument without shifting later positions. For `Review $2. Focus: ${1:-correctness}.`, `/review "" src/index.ts` expands to `Review src/index.ts. Focus: correctness.`
 
 ### Quoting and splitting rules
 
-- Arguments split on space (` `) and tab (`\t`) only, **not on newlines (`\n`)**. If arguments span multiple lines (via Shift+Enter) without spaces or tabs between them, the newline stays inside the same positional argument.
-- Quotes (`"` or `'`) start a quoted argument only at the beginning of a token. Apostrophes inside words such as `doesn't` remain ordinary characters.
-- An unclosed quote is treated as a literal character, and the rest of the text is tokenized normally.
-- Backslash escaping works only for a matching quote inside a quoted argument (`\"` inside `"..."` or `\'` inside `'...'`). For example, `/review "the \"fast\" path"` passes `the "fast" path`. All other backslashes (including `\\` and backslashes outside quotes) remain literal.
+- Arguments split on space (` `) and tab (`\t`) only, **not on newlines (`\n`)**. Multiline text without spaces or tabs between lines stays in one argument.
+- Quotes (`"` or `'`) start a quoted argument only at the start of a token, so apostrophes inside words (`doesn't`) stay literal. Unquoted characters immediately after a closing quote stay in the same argument (`"hello"world` becomes `helloworld`).
+- An unclosed quote is treated as a literal character and the remaining text tokenizes normally.
+- Backslash escaping applies only to a matching quote inside a quoted argument (`\"` inside `"..."` or `\'` inside `'...'`). All other backslashes (including `\\` and unquoted backslashes) stay literal.
+
+## Locations and loading rules
+
+Atomic loads prompt templates from these sources:
+
+- **Global:** `~/.atomic/agent/prompts/*.md`
+- **Project** (requires [project trust](/security#project-trust)): `.atomic/prompts/*.md`
+- **Packages:** `prompts/` directories or `atomic.prompts` entries in `package.json`
+- **Settings:** `prompts` array in global or project `settings.json` ([Resource settings](/settings#resources)), accepting files, directories, and filter patterns (`!glob`, `+path`, `-path` with `~` expansion; see [Package filtering](/packages/reference#package-filtering))
+- **CLI:** `--prompt-template <path>` (repeatable; accepts a `.md` file or a directory and still loads with `--no-prompt-templates` / `-np`; see [CLI resource options](/reference/cli#resource-options))
+
+Discovery and precedence behavior:
+
+- Auto-discovery in `~/.atomic/agent/prompts/` and `.atomic/prompts/` is non-recursive and skips dotfiles, `node_modules`, broken symlinks, and files matched by `.gitignore`, `.ignore`, or `.fdignore` inside `prompts/` (direct symlinks to `.md` files are followed).
+- Explicit `--prompt-template <dir>` paths read all `.md` files in that directory without applying dotfile or `.gitignore` filters, and passing a non-`.md` file path to `--prompt-template` is ignored silently.
+- Built-in [slash commands](/slash-commands) and extension slash commands always take precedence over prompt templates with the same name. Among templates themselves, `-e` packages win first, then project overrides global, both override configured and bundled packages, and explicit `--prompt-template` paths apply last—see [Resource precedence order](/packages/reference#resource-precedence-order).
+
+<Note>
+Legacy `.pi` paths (`~/.pi/agent/prompts/*.md`, `.pi/prompts/*.md`, and `pi.prompts` in `package.json`) continue to load alongside `.atomic` paths. If an inherited legacy `.pi` template collides with a bundled template, the bundled template wins.
+</Note>
 
 ## Next steps
 
-- [Use and organize skills](/skills). Provide instructions the agent loads on its own when a task matches, instead of requiring an explicit slash command.
-- [Subagents](/subagents). Delegate a focused, bounded task to a child agent.
-- [Install and manage packages](/packages). Bundle your prompt templates with skills, themes, and extensions to share them.
-- [Build with Atomic](/build). Compare every customization option.
+<Columns cols={2}>
+  <Card title="Use skills" href="/skills">
+    Provide instructions that the agent loads automatically when a task matches.
+  </Card>
+  <Card title="Subagents" href="/subagents">
+    Delegate a focused, bounded task to a child agent.
+  </Card>
+  <Card title="Install and manage packages" href="/packages">
+    Bundle prompt templates with skills, themes, and extensions to share with your team.
+  </Card>
+  <Card title="Build with Atomic" href="/build">
+    Compare every customization option in Atomic.
+  </Card>
+</Columns>

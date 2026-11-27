@@ -1,14 +1,35 @@
 ---
-title: "Terminal setup"
-sidebarTitle: "Terminal setup"
-description: "Configure terminal emulators for modified keys, mouse and clipboard behavior, inline images, hyperlinks, and status reporting."
+title: "Configure your terminal"
+sidebarTitle: "Configure your terminal"
+description: "Configure terminal emulators for modified keys, Shift+Enter, mouse and clipboard behavior, inline images, hyperlinks, and status reporting."
 ---
 
-## How keyboard detection works
+Atomic enables the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) when your terminal supports it and falls back to xterm `modifyOtherKeys` where available. Most modern terminals work out of the box; a few need one setting for `Shift+Enter`, `Option+Enter`, or fast trackpad scrolling.
 
-Atomic enables the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) when your terminal supports it and falls back to xterm `modifyOtherKeys` where available. Most modern terminal emulators work out of the box; a few need one setting or keybinding override.
+<Tip>
+Both `Shift+Enter` and `Ctrl+J` insert a newline by default (`tui.input.newLine`). If your terminal cannot distinguish `Shift+Enter` from `Enter`, press `Ctrl+J` right away with no configuration changes.
+</Tip>
 
-Both `Shift+Enter` and `Ctrl+J` insert a newline by default (`tui.input.newLine`). If your terminal cannot tell `Shift+Enter` apart from `Enter`, press `Ctrl+J` right away without changing any config.
+## Terminal compatibility
+
+Atomic detects capabilities automatically:
+
+| Terminal | `Shift+Enter` | Inline images | OSC 8 hyperlinks | Color mode |
+| --- | --- | --- | --- | --- |
+| [Kitty](#kitty) | Out of the box | Kitty protocol | Yes | Truecolor |
+| [Ghostty](#ghostty) | Out of the box (optional `Option+Backspace` tweak) | Kitty protocol | Yes | Truecolor |
+| [WezTerm](#wezterm) | Out of the box (optional Kitty/Alt config) | Kitty protocol | Yes | Truecolor |
+| [iTerm2](#iterm2) | Out of the box | iTerm2 protocol | Yes | Truecolor |
+| Warp, [Herdr](/herdr), Rex, Orca (`ORCA_IMAGE_PROTOCOL=kitty`) | Out of the box | Kitty protocol | Yes | Truecolor |
+| [Windows Terminal](#windows-terminal) (`WT_SESSION`) | Out of the box on Windows; [config for WSL/SSH](#windows-terminal) | No | Yes | Truecolor |
+| [Alacritty](#alacritty) | Out of the box (optional macOS `Option+Enter` config) | No | Yes | Truecolor |
+| [VS Code](#vs-code-integrated-terminal) | Out of the box on 1.109.5+ ([config for older](#vs-code-integrated-terminal)) | No | Yes | Truecolor |
+| [Zed](#zed-integrated-terminal) | [Config needed](#zed-integrated-terminal) | No | Yes | Truecolor |
+| [Apple Terminal](#apple-terminal) | Local macOS fallback (use `Ctrl+J` over SSH) | No | No | 256-color |
+| [IntelliJ IDEA](#intellij-idea-integrated-terminal) (`JetBrains-JediTerm`), Windows consoles without `WT_SESSION` | Use `Ctrl+J` | No | No | Truecolor |
+| [xfce4-terminal / terminator](#xfce4-terminal-and-terminator) | Use `Ctrl+J` | No | No | Truecolor / 256-color |
+| GNU Screen (without `COLORTERM=truecolor`) | Depends on outer terminal | No | No | 256-color |
+| [tmux](/tmux) | Requires `extended-keys` ([tmux setup](/tmux)) | Off by default | Only when `hyperlinks` is in `client_termfeatures` | Truecolor when `COLORTERM=truecolor`/`24bit` or `TERM` ends in `-direct` |
 
 ## Terminal emulator settings
 
@@ -22,14 +43,20 @@ Key reporting, iTerm2 inline images, OSC 8 hyperlinks, and truecolor work out of
 
 iTerm2's default fast-trackpad setting can drop most of an accelerated wheel delta in those reports, making fullscreen scrolling feel slower than native scrolling. If fast trackpad scrolls move only about one line at a time:
 
-1. Open iTerm2 settings and go to **Advanced**.
-2. Search for **Trackpad scrolls fast?** and set it to **No**.
+<Steps>
+  <Step title="Open iTerm2 Advanced settings">
+    Open iTerm2 settings and go to **Advanced**.
+  </Step>
+  <Step title="Disable fast-trackpad throttling">
+    Search for **Trackpad scrolls fast?** and set it to **No**.
+  </Step>
+</Steps>
 
 This setting applies across iTerm2 and may also affect native trackpad scrolling. See [iTerm2 issue 9619](https://gitlab.com/gnachman/iterm2/-/work_items/9619).
 
 ### Apple Terminal
 
-Atomic enables enhanced key reporting when available. If Terminal.app still sends plain Return or `ESC+CR` when you press `Shift+Enter`, Atomic uses a local macOS modifier fallback to recognize `Shift+Enter`. This fallback works only when Atomic runs on the same Mac as Terminal.app, not over remote SSH.
+Atomic enables enhanced key reporting when available. If Terminal.app still sends plain Return or `ESC+CR` when you press `Shift+Enter`, Atomic uses a local macOS modifier fallback to recognize `Shift+Enter` (this works only on the same Mac as Terminal.app, not over remote SSH).
 
 Apple Terminal does not support 24-bit truecolor, so Atomic automatically uses 256-color mode. Because Terminal.app draws gaps between rows of the block-character logo, Atomic displays a text `∀ Atomic` wordmark with version and session details instead.
 
@@ -41,13 +68,7 @@ Add this line to your Ghostty config (`~/Library/Application Support/com.mitchel
 keybind = alt+backspace=text:\x1b\x7f
 ```
 
-Older setups may have added:
-
-```text
-keybind = shift+enter=text:\n
-```
-
-That mapping sends a raw linefeed byte (`Ctrl+J`), preventing tmux and Atomic from seeing a real `Shift+Enter` key event. Remove it unless another tool still needs it. Because `Ctrl+J` is already bound to `tui.input.newLine` (`["shift+enter", "ctrl+j"]`), keeping it still inserts a newline in Atomic with no change to `~/.atomic/agent/keybindings.json`.
+Older setups may have added `keybind = shift+enter=text:\n`. That mapping sends a raw linefeed byte (`Ctrl+J`), preventing tmux and Atomic from seeing a real `Shift+Enter` key event—remove it unless another tool still needs it. Because `Ctrl+J` is already bound to `tui.input.newLine` (`["shift+enter", "ctrl+j"]`), keeping it still inserts a newline in Atomic with no keybinding changes.
 
 In the fullscreen TUI, links stay clickable, though Ghostty hides its hover underline and lower-left URL preview while Atomic captures mouse input. Hold `Shift+Command` on macOS or `Shift+Ctrl` on Linux to use Ghostty's native link handling.
 
@@ -133,7 +154,7 @@ On native Windows, Atomic checks the native Shift modifier on Return automatical
 }
 ```
 
-On Windows and WSL, follow-up queueing defaults to `Ctrl+Q` and dequeue defaults to `Alt+Q`, so you do not need to remap `Alt+Enter` for default shortcuts. Only add an `alt+enter` action (`"input": "\u001b[13;3u"`) if you bind an Atomic action to `alt+enter` yourself. If you already have an `actions` array, append the entry to it and fully reopen Windows Terminal.
+On Windows and WSL, follow-up queueing defaults to `Ctrl+Q` and dequeue defaults to `Alt+Q`, so you do not need to remap `Alt+Enter` for default shortcuts. Add an `alt+enter` action (`"input": "\u001b[13;3u"`) only if you bind an Atomic action to `alt+enter` yourself. If you already have an `actions` array, append the entry to it and fully reopen Windows Terminal.
 
 ### xfce4-terminal and terminator
 
@@ -162,29 +183,20 @@ In the fullscreen TUI, Atomic captures mouse input for clicking expandable block
 
 - **Auto-copy and scroll settings:** Text selection copies automatically on mouse release unless `"fullscreenCopyOnSelect": false` is set in [Settings](/settings). Adjust wheel speed with `fullscreenWheelScrollLines` (`"auto"` or `1` to `100`) and scrollbar visibility with `fullscreenScrollbar` (`"auto"`, `"always"`, or `"hidden"`).
 - **Windows right-click paste:** On native Windows outside VS Code's integrated terminal, an unmodified secondary mouse click pastes clipboard text into the focused input.
-- **Multiplexers:** Inside tmux, GNU Screen, and Zellij, Atomic uses button-motion mouse reporting (`1002h`) instead of all-motion reporting (`1003h`) to keep terminal traffic light while preserving clicks, scrolling, and drag selection.
+- **Multiplexers:** Inside tmux, GNU Screen, and Zellij, Atomic reports mouse movement only while dragging instead of tracking every pointer move, keeping terminal traffic light while preserving clicks, scrolling, and drag selection.
 - **Native terminal override:** Hold `Shift` (or `Shift+Command` on macOS / `Shift+Ctrl` on Linux in Ghostty) to bypass Atomic's mouse capture and use your terminal emulator's own selection or link handling.
 
-## Inline images, hyperlinks, and colors
+## Override detected capabilities {#inline-images-hyperlinks-and-colors}
 
-Atomic detects terminal capabilities automatically:
+Override detected image, hyperlink, and color capabilities in `~/.atomic/agent/settings.json` (settings take precedence over environment variables) or with environment variables:
 
-| Terminal | Inline images | OSC 8 hyperlinks | Color mode |
-| --- | --- | --- | --- |
-| Kitty, Ghostty, WezTerm, Warp, [Herdr](/herdr), Rex, Orca (`ORCA_IMAGE_PROTOCOL=kitty`) | Kitty protocol | Yes | Truecolor |
-| iTerm2 | iTerm2 protocol | Yes | Truecolor |
-| Windows Terminal (`WT_SESSION`), Alacritty, VS Code, Zed | No | Yes | Truecolor |
-| IntelliJ IDEA (`JetBrains-JediTerm`), Windows consoles without `WT_SESSION` | No | No | Truecolor |
-| Apple Terminal, GNU Screen (without `COLORTERM=truecolor`) | No | No | 256-color |
-| tmux | Off by default | Only when `hyperlinks` is in `client_termfeatures` | Truecolor when `COLORTERM=truecolor`/`24bit` or `TERM` ends in `-direct` |
+| Capability | Setting (`settings.json`) | Environment variable |
+| --- | --- | --- |
+| Inline images | `terminal.images` (`"kitty"`, `"iterm2"`, `"auto"`, `false`); display controls: `terminal.showImages`, `terminal.imageWidthCells` | `ATOMIC_IMAGE_PROTOCOL` (`kitty`, `iterm2`, `none`, `0`, `auto`) |
+| OSC 8 hyperlinks | `terminal.hyperlinks` (`true`, `false`, `"auto"`) | `ATOMIC_HYPERLINKS` (`1`, `0`, `auto`) |
+| 24-bit color | `terminal.trueColor` (`true`, `false`, `"auto"`) | `ATOMIC_TRUE_COLOR` (`1`, `0`, `auto`) |
 
-Override detected capabilities in `~/.atomic/agent/settings.json` (settings take precedence over environment variables) or with environment variables:
-
-- **Inline images:** `terminal.images` (`"kitty"`, `"iterm2"`, `"auto"`, or `false`) or `ATOMIC_IMAGE_PROTOCOL` (`kitty`, `iterm2`, `none`, `0`, or `auto`). Control visibility and width with `terminal.showImages` and `terminal.imageWidthCells`.
-- **OSC 8 hyperlinks:** `terminal.hyperlinks` (`true`, `false`, or `"auto"`) or `ATOMIC_HYPERLINKS` (`1`, `0`, or `auto`).
-- **24-bit color:** `terminal.trueColor` (`true`, `false`, or `"auto"`) or `ATOMIC_TRUE_COLOR` (`1`, `0`, or `auto`).
-
-See [tmux setup](/tmux) for multiplexer-specific image and hyperlink details.
+See [Run Atomic in tmux](/tmux) for multiplexer-specific image and hyperlink details.
 
 ## SSH and Escape key delay
 
@@ -208,6 +220,6 @@ Atomic reports its state using the [Program Status Protocol (OSC 7501)](https://
 | `error` | A run or manual `/compact` ended with an error that is not retried. The message is the first line of the error. |
 | `idle` | Atomic started, or you cancelled the run or compaction. |
 
-Reports never include prompts or model output. Status messages are capped at 2,048 UTF-8 bytes and control characters are replaced with spaces. On normal exit or `Ctrl+Z` suspend, Atomic sends `state=clear` to remove the indicator (and re-sends its status on resume).
+Reports never include prompts or model output. Status messages are capped at 2,048 UTF-8 bytes and control characters are replaced with spaces. On normal exit or `Ctrl+Z` suspend, Atomic sends `state=clear` to remove the indicator and re-sends its status on resume.
 
 Atomic sends reports only after the terminal answers its support query; tmux and GNU Screen do not forward OSC 7501. Set `ATOMIC_PROGRAM_STATUS=1` to force reports without querying, or `ATOMIC_PROGRAM_STATUS=0` to disable them (`PI_PROGRAM_STATUS` is a legacy alias). Any other value queries the terminal normally.

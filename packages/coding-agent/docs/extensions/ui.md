@@ -1,16 +1,41 @@
 ---
-title: "Extension UI"
-sidebarTitle: "Custom UI"
-description: "Build dialogs, widgets, status indicators, host-native pickers and forms, custom overlays, editors, and message renderers."
+title: "Build custom UI"
+sidebarTitle: "Build custom UI"
+description: "Build dialogs, host-native pickers and forms, status widgets, custom components, overlays, and message renderers."
 ---
 
 <div id="custom-ui" />
 
-Extensions interact with users through `ctx.ui` methods and customize how messages, entries, and tools render.
+Extensions interact with users through `ctx.ui` methods and customize how messages, entries, and tools appear in the terminal.
 
-Check `ctx.hasUI` (or `ctx.mode === "tui"`) before showing interactive UI. For reusable component patterns (`SelectList`, `BorderedLoader`, `SettingsList`, working indicators, widgets, autocomplete, and custom footers), see [TUI components](/tui).
+Check `ctx.hasUI` (or `ctx.mode === "tui"`) before rendering terminal UI, and check `ctx.hasHumanInput` before calling dialogs in extensions that may run outside interactive mode. For reusable component patterns (`SelectList`, `BorderedLoader`, `SettingsList`, widgets, autocomplete, and custom footers), see [TUI components](/tui).
 
-> **Interactive mode note:** In default interactive mode, extensions run in a separate background worker process. Dialogs, `ctx.ui.custom()`, widgets, status, notifications, and host-native pickers and forms work everywhere. APIs that require synchronous terminal UI callbacks (`onTerminalInput`, sync `getEditorText`, `setEditorComponent`, `addAutocompleteProvider`, `setHeader`, and `setFooter`) warn and do not run in default interactive mode. See [Responsive UI and crash recovery](/extensions#interactive-callback-isolation).
+<Warning>
+In **default interactive CLI mode** (`atomic`), extensions run in an isolated background worker process so slow code cannot freeze your keyboard. Dialogs, `ctx.ui.custom()`, widgets, status, notifications, and host-native pickers and forms work normally, while synchronous TUI callbacks, theme switching, working-indicator customization, and `registerMarkdownTransformer()` require an **embedded in-process TUI** host created via the SDK. There is no CLI flag to disable worker isolation.
+</Warning>
+
+## UI API compatibility matrix
+
+Use this matrix to see what each UI API does across Atomic's four runtimes:
+
+| API | Default interactive CLI (worker) | Embedded in-process TUI (SDK) | Headless RPC (`--mode rpc`) | Print / JSON (`-p`, `--mode json`, no `humanInput`) |
+| --- | --- | --- | --- | --- |
+| `select()`, `confirm()`, `input()` (incl. `{ timeout }`) | Supported (live countdown) | Supported (live countdown) | Supported via RPC dialog requests | Rejects with `HumanInputUnavailable` |
+| `editor(title, prefill, { timeout })` | Supported, but `timeout` auto-cancels locally with **no countdown display** | Supported (live countdown) | Supported via RPC (`timeout` omitted from request) | Rejects with `HumanInputUnavailable` |
+| `notify()`, `setStatus()`, `setTitle()`, `setEditorText()` | Supported | Supported | Supported (fire-and-forget RPC requests) | No-op |
+| `setWidget(key, lines)` | Supported | Supported | Supported | No-op |
+| `setWidget(key, factoryFn)` | Supported | Supported | **Throws** `Error("Component-factory widgets are unavailable in this RPC host.")` | No-op |
+| `custom(factory, options)` | Supported (return value must be JSON-serializable) | Supported | Resolves `undefined` | Rejects with `HumanInputUnavailable` |
+| `hostSessionPicker()`, `hostInputForm()` | Supported (runs natively in TUI host) | Supported | Omitted (`undefined`) | Omitted (`undefined`) |
+| `hostQuestionnaire()` | Omitted (interactive TUI renders questionnaire directly) | Omitted | Supported when client advertises `questionnaire` capability; else resolves `undefined` | Omitted (`undefined`) |
+| `requestRender()`, `getHostCustomUiState()`, `onHostCustomUiStateChange()`, `focusHostInlineCustomUi()`, `onWidgetRelease()` | Supported | Supported | No-op / default idle state | No-op / omitted |
+| `pasteToEditor(text)` | Delegates to `setEditorText(text)` (**replaces** editor text; no paste collapse) | Full paste handling and large-paste collapse | Delegates to `setEditorText(text)` | No-op |
+| `getToolsExpanded()` / `setToolsExpanded()` | Worker-local boolean only (does not read or change host TUI state) | Reads and toggles live TUI expansion | Worker-local boolean only | `false` / no-op |
+| `getChatRenderSettings()` | Reads host `hideThinkingBlock`, `fullscreenScrollbar`, `fullscreenWheelScrollLines`, and tool/message renderers; hardcodes `hiddenThinkingLabel: "Thinking..."`, `showImages: false`, `imageWidthCells: 60`, `markdownTransformers: []` | Full live TUI settings | Static defaults | Static defaults |
+| `setWorkingMessage()`, `setWorkingVisible()`, `setWorkingIndicator()`, `setHiddenThinkingLabel()` | Silent no-op | Supported | Silent no-op | Silent no-op |
+| `setTheme()`, `getAllThemes()`, `getTheme()` | `setTheme()` returns `{ success: false, error: "Theme switching not supported in RPC mode" }`; `getAllThemes()` returns `[]`; `getTheme()` returns `undefined` | Supported | Same as worker | `setTheme()` returns `{ success: false, error: "UI not available" }`; `[]` / `undefined` |
+| `onTerminalInput()`, `getEditorText()`, `setEditorComponent()`, `addAutocompleteProvider()`, `setHeader()`, `setFooter()` | Emits a one-time warning and does not run (`getEditorText()` returns `""`) | Supported | Silent no-op (`getEditorText()` returns `""`) | Silent no-op (`getEditorText()` returns `""`) |
+| `atomic.registerMarkdownTransformer()` | Does not run | Supported | Does not run | Does not run |
 
 ## Dialogs
 
@@ -31,11 +56,11 @@ const text = await ctx.ui.editor("Edit:", "prefilled text");
 ctx.ui.notify("Done!", "info");  // "info" | "warning" | "error"
 ```
 
-Notifications emitted during extension loading or startup always appear below the startup `RESOURCES` line.
+Notifications emitted during extension loading or startup appear below the startup `RESOURCES` line.
 
 ### Timed dialogs with countdown
 
-Dialogs accept `{ timeout }` (in milliseconds) to auto-dismiss with a live countdown:
+Pass `{ timeout }` (in milliseconds) to auto-dismiss a dialog:
 
 ```typescript
 // Shows "Title (5s)", "Title (4s)", and auto-dismisses at 0
@@ -46,17 +71,19 @@ const confirmed = await ctx.ui.confirm(
 );
 ```
 
-Return values on timeout or caller abort:
+Return values when a dialog times out or your own `signal` aborts:
 
 - `select()` returns `undefined`
 - `confirm()` returns `false`
 - `input()` and `editor()` return `undefined`
 
-Cancelling all pending input, closing the session, or replacing its input host can still reject with `HumanInputCancelled`.
+<Note>
+In default interactive CLI mode and RPC mode, `select()`, `confirm()`, and `input()` forward `timeout` to display a live countdown, whereas `editor()` cancels locally after `timeout` ms without rendering a countdown. If the session closes, cancels all pending input, or swaps its input host while a dialog is waiting, the promise rejects with an error whose `code` is `"HumanInputCancelled"` (or `"SessionClosed"` if the session already closed).
+</Note>
 
 ### Manual dismissal with AbortSignal
 
-Pass `{ signal }` to dismiss a dialog programmatically and distinguish a timeout from a user cancel:
+Pass `{ signal }` to dismiss a dialog programmatically and tell a timeout apart from a user cancellation:
 
 ```typescript
 const controller = new AbortController();
@@ -83,15 +110,17 @@ See [examples/extensions/timed-confirm.ts](https://github.com/bastani-inc/atomic
 
 ## Host-native pickers and forms
 
-These APIs render directly in the terminal UI process so typing, search, validation, and keybindings stay instant even in default interactive mode. They are omitted in print and headless RPC modes (check before calling).
+These APIs render directly inside the terminal UI process so typing, search, validation, and keybindings stay instant even in default interactive CLI mode. They are `undefined` in print, JSON, and headless RPC modes, so guard calls with optional chaining.
 
 ### Session picker (`ctx.ui.hostSessionPicker`)
 
-Open a searchable session-style picker with JSON-safe `HostSessionPickerRow` items (`SessionInfo` with `createdAt` and `modifiedAt` in epoch milliseconds):
+Open a searchable session-style picker with JSON-safe `HostSessionPickerRow` items (`SessionInfo` with `createdAt` and `modifiedAt` flattened to epoch milliseconds):
 
 ```typescript
 const picker = ctx.ui.hostSessionPicker?.({
   title: "Resume session",
+  variant: "sessions", // "sessions" | "runs"
+  showRenameHint: false,
   sessions: rows,
   onDelete: async (path) => {
     await deleteSession(path);
@@ -105,47 +134,154 @@ picker?.error("Could not refresh list");
 const selectedPath = await picker?.result; // Selected path or undefined on cancel
 ```
 
+Each `HostSessionPickerRow` accepts standard session metadata (`path`, `id`, `cwd`, `createdAt`, `modifiedAt`, `messageCount`, `firstMessage`, optional `summary`, `allMessagesText`, `name`) plus optional synthetic display fields (`title`, `detail`, `messageColor`: `"success" | "warning" | "accent" | "error"`, `canDelete`).
+
 The returned `HostSessionPickerHandle` exposes `result`, `update(rows)`, `error(message)`, and `close()`. See [Host-native session picker](/tui/reference#host-native-session-picker).
 
 ### Structured input form (`ctx.ui.hostInputForm`)
 
-Open an inline structured form with JSON-safe field descriptors (`string`, `text`, `number`, `integer`, `boolean`, or `select`) and raw `initialValue` strings:
+Open an inline structured form with JSON-safe field descriptors (`string`, `text`, `number`, `integer`, `boolean`, or `select`) and raw string `initialValue` entries:
 
 ```typescript
 const values = await ctx.ui.hostInputForm?.({
   title: "Configure endpoint",
+  heading: "API settings",
+  submitLabel: "Save",
   fields: [
-    { name: "url", label: "Base URL", type: "string", initialValue: "https://api.example.com" },
-    { name: "retries", label: "Retries", type: "integer", initialValue: "3" },
+    {
+      name: "url",
+      type: "string",
+      description: "Base URL for API requests",
+      required: true,
+      placeholder: "https://api.example.com",
+      initialValue: "https://api.example.com",
+    },
+    {
+      name: "retries",
+      type: "integer",
+      description: "Maximum retry attempts",
+      initialValue: "3",
+    },
+    {
+      name: "mode",
+      type: "select",
+      choices: ["fast", "strict"],
+      initialValue: "fast",
+    },
   ],
 });
 ```
 
-`hostInputForm()` resolves to a raw `Record<string, string>` or `undefined` on cancel, and rejects with `"The host could not read this input form."` if the host cannot read the form. See [Host-native input form](/tui/reference#host-native-input-form).
+`HostInputFormField` supports `name`, `type`, `initialValue`, and optional `description`, `required`, `choices` (for `"select"`), and `placeholder`. `hostInputForm()` resolves to a `Record<string, string>` or `undefined` on cancel, and rejects with `"The host could not read this input form."` if the host cannot read the form. See [Host-native input form](/tui/reference#host-native-input-form).
 
 ### Native questionnaire (`ctx.ui.hostQuestionnaire`)
 
-Optional `ctx.ui.hostQuestionnaire?(params, signal)` delegates a full `ask_user_question` questionnaire to a host that implements native question UI. It returns the `QuestionnaireResult`, or `undefined` when the host cannot display it (so the caller renders the questionnaire itself).
+In headless RPC mode, optional `ctx.ui.hostQuestionnaire?(params, signal)` delegates a full `ask_user_question` questionnaire as a single RPC request when the client advertises `questionnaire` capability. It returns the `QuestionnaireResult`, or `undefined` when the host cannot display it (so the caller renders the questionnaire itself).
 
-## Widgets, status, header, and footer
+## Status, widgets, and editor controls
 
-Inline custom UIs opened with `{ purpose: "navigation" }` temporarily hide all `setWidget()` widgets above and below the editor (including the agent panel) as well as queued-message and pending-shell previews. Widgets keep updating in the background and return with their latest content once the navigation view closes. Overlays and `"prompt"` custom UIs do not hide them.
+### Status bar and terminal title
+
+These methods work in default interactive CLI mode, embedded in-process TUI, and RPC mode:
 
 ```typescript
-// Status in footer (persistent until cleared)
+// Status text in the footer (persistent until cleared with undefined)
 ctx.ui.setStatus("my-ext", "Processing...");
 ctx.ui.setStatus("my-ext", undefined);
 
-// Request a TUI repaint after async state changes
+// Terminal window/tab title
+ctx.ui.setTitle("atomic - my-project");
+
+// Request a TUI repaint after async extension state changes
 ctx.ui.requestRender();
 
-// Working loader customization (active from prompt submission through the turn)
+// Read built-in footer data (git branch, extension statuses, available providers)
+const footerData = ctx.ui.getFooterDataProvider();
+```
+
+### Widgets
+
+Place persistent status panels above or below the editor using either string lines or a component factory:
+
+```typescript
+import { Text } from "@bastani/atomic-tui";
+
+// Plain string lines above (default) or below the editor
+ctx.ui.setWidget("my-widget", ["Line 1", "Line 2"]);
+ctx.ui.setWidget("my-widget", ["Line 1", "Line 2"], { placement: "belowEditor" });
+
+// Component factory (supported in default interactive CLI and embedded TUI; throws in standalone headless RPC)
+ctx.ui.setWidget("my-widget", (_tui, theme) => ({
+  render: (width) => new Text(theme.fg("accent", "Custom widget"), 0, 0).render(width),
+  invalidate() {},
+  dispose() {
+    // Optional cleanup hook run when the widget is cleared or replaced
+  },
+}));
+
+// Clear the widget
+ctx.ui.setWidget("my-widget", undefined);
+```
+
+For taller content, opt into a host-managed scroll viewport (`ScrollableWidgetComponent` with optional `getScrollRequest?()`, `onScroll?()`, and `dispose?()`) and subscribe to host release notifications:
+
+```typescript
+ctx.ui.setWidget(
+  "my-scrollable",
+  (_tui, _theme) => myScrollableComponent,
+  { placement: "aboveEditor", scroll: { maxHeight: 12, maxHeightFraction: 0.35 } },
+);
+
+const unsubscribeRelease = ctx.ui.onWidgetRelease?.("my-scrollable", () => {
+  // Clean up timers or subscriptions if the host releases this widget
+});
+```
+
+For widgets driven by reactive snapshots or periodic timers, `@bastani/atomic` also exports `installReactiveWidget()` and `decideReactiveWidgetAction()` to coalesce mount, unmount, and redraw updates cleanly.
+
+<Note>
+Inline custom UIs opened with `{ purpose: "navigation" }` temporarily hide all `setWidget()` widgets above and below the editor (including the agent panel) along with queued-message and pending-shell previews. Widgets keep updating in the background and reappear once the navigation view closes. Overlays and `"prompt"` custom UIs do not hide widgets.
+</Note>
+
+### Editor text and host UI state
+
+```typescript
+// Prefill or replace the main input editor
+ctx.ui.setEditorText("Draft prompt");
+
+// Paste text (in embedded in-process TUI, applies large-paste collapse;
+// in default CLI worker and RPC mode, replaces editor text via setEditorText)
+ctx.ui.pasteToEditor("pasted content");
+
+// Inspect or react to whether an inline blocking custom UI is mounted
+const uiState = ctx.ui.getHostCustomUiState?.();
+const stopObserving = ctx.ui.onHostCustomUiStateChange?.((nextState) => {
+  if (nextState.blockingInlineCustomUiActive) {
+    // Move keyboard focus back to a deferred inline custom UI when ready
+    ctx.ui.focusHostInlineCustomUi?.();
+  }
+});
+
+// Read active chat render preferences (see compatibility matrix for worker defaults)
+const renderSettings = ctx.ui.getChatRenderSettings();
+```
+
+### In-process TUI only
+
+<Note>
+The APIs below require direct access to the terminal UI process and **only work in embedded in-process TUI sessions** (created via the SDK). In default interactive CLI mode, working-indicator, hidden-thinking, and theme calls are silent no-ops/stubs, while header, footer, editor-read, and raw terminal input calls emit a warning and skip.
+</Note>
+
+#### Working indicator and collapsed thinking label
+
+```typescript
+// Customize the loading text shown from prompt submission through the turn
 ctx.ui.setWorkingMessage("Thinking deeply...");
-ctx.ui.setWorkingMessage();        // Restore default
-ctx.ui.setWorkingVisible(false);   // Hide working row (compaction indicator stays visible)
+ctx.ui.setWorkingMessage();      // Restore default
+ctx.ui.setWorkingVisible(false); // Hide working row (compaction indicator stays visible)
 ctx.ui.setWorkingVisible(true);
 
-// Working indicator customization (see TUI Pattern 4b)
+// Customize the animated working indicator (default pulses Atomic's ∀ spinner across 6 brightness tones)
 ctx.ui.setWorkingIndicator({ frames: [ctx.ui.theme.fg("accent", "●")] });
 ctx.ui.setWorkingIndicator({
   frames: [
@@ -157,83 +293,67 @@ ctx.ui.setWorkingIndicator({
   intervalMs: 120,
 });
 ctx.ui.setWorkingIndicator({ frames: [] }); // Hide indicator
-ctx.ui.setWorkingIndicator();               // Restore default ∀ ramp
+ctx.ui.setWorkingIndicator();               // Restore default animated spinner
 
 // Label shown when thinking blocks are collapsed (Ctrl+T)
 ctx.ui.setHiddenThinkingLabel("Pondering...");
 ctx.ui.setHiddenThinkingLabel();            // Restore default
+```
 
-// Widget above or below editor
-ctx.ui.setWidget("my-widget", ["Line 1", "Line 2"]);
-ctx.ui.setWidget("my-widget", ["Line 1", "Line 2"], { placement: "belowEditor" });
-ctx.ui.setWidget("my-widget", (tui, theme) => new Text(theme.fg("accent", "Custom"), 0, 0));
-ctx.ui.setWidget("my-widget", undefined);   // Clear
+`ATOMIC_REDUCED_MOTION=1` makes the default spinner static, and `NO_COLOR` disables foreground colors. Custom frames render verbatim; apply theme colors with `ctx.ui.theme.fg(...)` when needed. See [Working indicator customization](/tui#pattern-4b-working-indicator-customization).
 
-// Scrollable widget with capped height and release callback
-ctx.ui.setWidget(
-  "my-scrollable",
-  (tui, theme) => myScrollableComponent,    // Implements ScrollableWidgetComponent (getScrollRequest?, onScroll?)
-  { placement: "aboveEditor", scroll: { maxHeight: 12, maxHeightFraction: 0.35 } },
-);
-const unsubscribeRelease = ctx.ui.onWidgetRelease?.("my-scrollable", () => {
-  // Clean up resources when the host releases this widget
-});
+#### Custom header, footer, raw input, and tool expansion
 
-// Custom startup header and custom footer (embedded/non-worker interactive sessions)
-ctx.ui.setHeader((tui, theme) => new Text(theme.fg("accent", "Custom header"), 0, 0));
-ctx.ui.setHeader(undefined);                // Restore built-in header
+```typescript
+// Replace startup header or footer (factories may return an optional dispose() cleanup hook)
+ctx.ui.setHeader((_tui, theme) => new Text(theme.fg("accent", "Custom header"), 0, 0));
+ctx.ui.setHeader(undefined); // Restore built-in header
 
-ctx.ui.setFooter((tui, theme, footerData) => ({
-  render(width) {
+ctx.ui.setFooter((_tui, theme, footerData) => ({
+  render(_width) {
     const branch = footerData.getGitBranch() ?? "";
     return [theme.fg("dim", `Custom footer ${branch}`)];
   },
   invalidate() {},
+  dispose() {},
 }));
-ctx.ui.setFooter(undefined);                // Restore built-in footer
+ctx.ui.setFooter(undefined); // Restore built-in footer
 
-// Read built-in footer data (git branch, extension statuses) directly
-const footerData = ctx.ui.getFooterDataProvider();
-
-// Terminal window/tab title
-ctx.ui.setTitle("atomic - my-project");
-
-// Editor text and paste
-ctx.ui.setEditorText("Prefill text");
+// Read editor text synchronously
 const current = ctx.ui.getEditorText();
-ctx.ui.pasteToEditor("pasted content");     // Applies normal paste handling and large-paste collapse
 
-// Raw terminal input interceptor (embedded/non-worker interactive sessions)
+// Intercept or transform raw terminal input before Atomic handles it
 const stopInput = ctx.ui.onTerminalInput((data) => {
-  if (data === "\x07") return { consume: true };
-  return undefined;
+  if (data === "\x07") return { consume: true }; // Drop key
+  if (data === "a") return { data: "A" };        // Rewrite key data
+  return undefined;                              // Pass through unchanged
 });
 
-// Tool output expansion
+// Read or toggle tool output expansion (no-op if already equal to target value)
 const wasExpanded = ctx.ui.getToolsExpanded();
 ctx.ui.setToolsExpanded(true);
 ctx.ui.setToolsExpanded(wasExpanded);
+```
 
-// Theme management
-const themes = ctx.ui.getAllThemes();       // [{ name: "dark", path: "/..." | undefined }, ...]
+#### Theme switching
+
+```typescript
+const themes = ctx.ui.getAllThemes(); // [{ name: "dark", path: "/..." | undefined }, ...]
 const lightTheme = ctx.ui.getTheme("light");
 const result = ctx.ui.setTheme("light");
 if (!result.success) {
   ctx.ui.notify(`Failed: ${result.error}`, "error");
 }
 if (lightTheme) ctx.ui.setTheme(lightTheme);
-ctx.ui.theme.fg("accent", "styled text");
 ```
-
-Calling `setToolsExpanded()` with the current value is a no-op. `ATOMIC_REDUCED_MOTION=1` makes the default `∀` working indicator static, and `NO_COLOR` disables foreground colors. Custom frames render verbatim; apply theme colors with `ctx.ui.theme.fg(...)` when needed.
-
-These APIs customize display only; they do not start turns or emit stream events. See [Working indicator customization](/tui#pattern-4b-working-indicator-customization) for timing details.
 
 ## Autocomplete providers
 
-Use `ctx.ui.addAutocompleteProvider()` (available when running directly in the terminal UI process) to layer custom completion on top of built-in slash-command and path completion.
+<Note>
+`ctx.ui.addAutocompleteProvider()` requires an **embedded in-process TUI** host. In default interactive CLI mode, calling it emits a warning and does not register the provider.
+</Note>
 
-Return the complete result from the wrapped provider, including its metadata. Slash-command suggestions can set `completeOnConfirm: false` so `Enter` submits the typed command literally until the user navigates the list, while `Tab` still accepts the highlighted item.
+Use `ctx.ui.addAutocompleteProvider()` to layer custom completion on top of built-in slash-command and path completion. Return the complete result from the wrapped provider, including its metadata. Slash-command suggestions can set `completeOnConfirm: false` so `Enter` submits the typed command literally until the user navigates the list, while `Tab` still accepts the highlighted item.
 
 ```typescript
 atomic.on("session_start", (_event, ctx) => {
@@ -270,7 +390,7 @@ See [github-issue-autocomplete.ts](https://github.com/bastani-inc/atomic/blob/ma
 
 ## Custom components
 
-Use `ctx.ui.custom()` to mount an interactive component until it calls `done(value)`. The `factory` callback may be synchronous or async (`Promise<ExtensionCustomComponent>`):
+Use `ctx.ui.custom()` to mount an interactive component until it calls `done(value)`. Works in both default interactive CLI mode and embedded in-process TUI hosts. The `factory` callback may be synchronous or async (`Promise<ExtensionCustomComponent>`), and the component may define an optional `dispose?()` cleanup method that runs when it unmounts:
 
 ```typescript
 import { Text, type Component } from "@bastani/atomic-tui";
@@ -307,7 +427,7 @@ The factory receives four arguments:
 - `tui`: TUI instance for screen dimensions and focus management
 - `theme`: current theme for styling
 - `keybindings`: configured `KeybindingsManager` for shortcut matching
-- `done(value)`: closes the component and resolves `ctx.ui.custom()` with `value` (must be JSON-serializable in default interactive mode)
+- `done(value)`: closes the component and resolves `ctx.ui.custom()` with `value` (must be JSON-serializable in default interactive CLI mode)
 
 Supported `options`:
 
@@ -319,10 +439,10 @@ Supported `options`:
 | `onHandle` | `(handle: OverlayHandle) => void` | Receive the overlay handle to show or hide it programmatically. |
 | `reserveTranscriptRows` | `boolean` | Overlay-only. Reserves at least six visible transcript rows above a bottom-anchored blocking dialog. |
 | `handlesCtrlC` | `boolean` | Set `true` when the component handles `Ctrl+C` itself; otherwise Atomic closes it on the first `Ctrl+C` press. |
-| `handlesInternalUiAction` | `boolean` | Declare that the component handles internal UI actions such as jump-to-bottom links. |
-| `deferInlineCustomUiFocus` | `boolean` | Keep a pending inline custom UI unfocused in the background while this overlay is open. |
-| `blocked` | `{ kind: ProgramStatus["kind"], message: string }` | Report Atomic as blocked on user input (OSC 7501 status) while waiting. |
-| `signal` | `AbortSignal` | Dismiss the custom UI programmatically. In default interactive mode, aborting resolves `ctx.ui.custom()` with `undefined` (like user cancel); when embedded in the same process, it rejects with the signal's abort reason. |
+| `handlesInternalUiAction` | `boolean` | Route Atomic's internal terminal click actions (such as clicking a jump-to-bottom transcript link) to this component's `handleInput()` instead of letting the host handle them directly. |
+| `deferInlineCustomUiFocus` | `boolean` | When an inline custom UI is already open in the editor slot, keep keyboard focus on this overlay rather than shifting focus back to the inline UI while the overlay is visible. |
+| `blocked` | `{ kind: ProgramStatus["kind"], message: string }` | Signals supporting terminals and multiplexers that Atomic is waiting for user input while this component is active. |
+| `signal` | `AbortSignal` | Dismiss the custom UI programmatically. In default interactive CLI mode, aborting resolves `ctx.ui.custom()` with `undefined` (like user cancel); in an embedded in-process TUI, it rejects with the signal's abort reason. |
 
 ### Input handling contract
 
@@ -382,7 +502,11 @@ render(width: number): string[] {
 
 ## Custom editor
 
-Replace the main input editor (available when extensions run directly in the terminal UI process) by extending `CustomEditor`:
+<Note>
+`ctx.ui.setEditorComponent()` requires an **embedded in-process TUI** host. In default interactive CLI mode, calling it emits a warning and keeps the built-in editor.
+</Note>
+
+Replace the main input editor by extending `CustomEditor`:
 
 ```typescript
 import { CustomEditor, type ExtensionAPI } from "@bastani/atomic";
@@ -450,7 +574,7 @@ Return-value contract for `registerMessageRenderer`:
 - **`null`:** Suppresses the message completely (zero rows, no spacer, and no default fallback box). Useful for hiding rehydrated messages whose backing state no longer exists.
 - **`undefined`:** Falls back to Atomic's default boxed `[customType]` rendering.
 
-In fullscreen mode, clicking a custom message toggles `expanded` for that message alone (just as `Ctrl+O` toggles every block) and calls your renderer again. When running directly in the terminal UI process, a component can intercept clicks first by returning `{ handled: true }` from `handleMouse`; in default interactive mode, rendered rows are sent without custom mouse callbacks. A tool's title row always toggles first.
+In fullscreen mode, clicking a custom message toggles `expanded` for that message alone (just as `Ctrl+O` toggles every block) and calls your renderer again. In an embedded in-process TUI, a component can intercept clicks first by returning `{ handled: true }` from `handleMouse`; in default interactive CLI mode, rendered rows are sent without custom mouse callbacks. A tool's title row always toggles first.
 
 Send matching messages with `atomic.sendMessage()`:
 
@@ -463,7 +587,7 @@ await atomic.sendMessage({
 });
 ```
 
-## Theme colors
+## Theme colors and formatting helpers
 
 All render functions receive the active `theme` object. See [Customize themes](/themes) and [Theme reference](/themes/reference) for all color tokens.
 
@@ -491,13 +615,13 @@ theme.getFgAnsi("accent")
 theme.getBgAnsi("selectedBg")
 ```
 
-Syntax highlighting helper for custom renderers:
+Syntax highlighting helper for custom renderers (`highlightCode(code, lang?)` reads the active theme automatically and returns highlighted lines):
 
 ```typescript
 import { highlightCode, getLanguageFromPath } from "@bastani/atomic";
 
 const lang = getLanguageFromPath("/path/to/file.rs"); // "rust"
-const highlighted = highlightCode("fn main() {}", lang, theme);
+const highlighted = highlightCode("fn main() {}", lang);
 ```
 
 Line-range label helper for `read`-like tools (`formatReadLineRange` accepts numbers, numeric strings, and `null`, returning `""` for missing or malformed ranges):

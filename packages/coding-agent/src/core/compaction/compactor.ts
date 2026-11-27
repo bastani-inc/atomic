@@ -10,13 +10,8 @@ export { CompactorFailure };
 
 /** Default wall-clock bound on one compactor request unless overridden by model `timeoutMs`; past it the context is cleared instead. */
 export const COMPACTOR_REQUEST_TIMEOUT_MS = 120_000;
-/** Lines longer than this are wrapped before they are sent, so the compactor can keep or drop parts of them. */
-export const COMPACTOR_LINE_WIDTH = 2_000;
-/** Upper bound, in estimated tokens, on compacted text an extension hook supplies; longer text clears the context. A compactor model's output has no bound. */
-export const COMPACTED_OUTPUT_MAX_TOKENS = 32_000;
-/** Compacted text an extension hook supplies never fills more than this share of the context the automatic trigger allows. */
-export const COMPACTED_OUTPUT_MAX_TRIGGER_SHARE = 0.5;
 
+const COMPACTOR_LINE_WIDTH = 2_000;
 const DEFAULT_COMPACTOR_ENDPOINT_PATH = "/compact";
 const HTTP_ERROR_EXCERPT_MAX_CHARS = 500;
 const HTTP_ERROR_BODY_MAX_BYTES = 8192;
@@ -133,13 +128,6 @@ export function buildCompactorMessages(
 	return [...boundaries, ...rest].flatMap((message) =>
 		messageIsLlmVisible(message) ? (compactorMessage(message, isBoundary) ?? []) : [],
 	);
-}
-
-/** Largest compacted text an extension hook may supply, in estimated tokens, for a model whose automatic trigger fires above `triggerTokens`. */
-export function compactedOutputTokenCap(triggerTokens: number, maxOutputTokens = COMPACTED_OUTPUT_MAX_TOKENS): number {
-	const limit =
-		Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : COMPACTED_OUTPUT_MAX_TOKENS;
-	return Math.max(0, Math.min(limit, Math.floor(triggerTokens * COMPACTED_OUTPUT_MAX_TRIGGER_SHARE)));
 }
 
 /** A conservative token estimate for text: four characters per token, one per character outside ASCII. */

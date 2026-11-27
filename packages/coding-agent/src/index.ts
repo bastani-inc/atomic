@@ -489,15 +489,36 @@ export { TEAM_JOIN_COMMAND } from "./core/storage/libsql-removed.js";
  * update without an ESM missing-export error.
  */
 export const COMPACTOR_COMPRESSION_RATIO = 0.5;
+/**
+ * @deprecated Built-in compacted output caps were removed; kept only so running 0.10.x processes survive an in-place
+ * update without an ESM missing-export error.
+ */
+export const COMPACTED_OUTPUT_MAX_TOKENS = 32_000;
+/**
+ * @deprecated Built-in compacted output caps were removed; kept only so running 0.10.x processes survive an in-place
+ * update without an ESM missing-export error.
+ */
+export const COMPACTED_OUTPUT_MAX_TRIGGER_SHARE = 0.5;
+/**
+ * @deprecated Internal framing detail; kept only so running 0.10.x processes survive an in-place update without an ESM
+ * missing-export error.
+ */
+export const COMPACTOR_LINE_WIDTH = 2_000;
+/**
+ * @deprecated Built-in compacted output caps were removed; kept only so running 0.10.x processes survive an in-place
+ * update without an ESM missing-export error.
+ */
+export function compactedOutputTokenCap(triggerTokens: number, maxOutputTokens = COMPACTED_OUTPUT_MAX_TOKENS): number {
+	const limit =
+		Number.isFinite(maxOutputTokens) && maxOutputTokens > 0 ? maxOutputTokens : COMPACTED_OUTPUT_MAX_TOKENS;
+	return Math.max(0, Math.min(limit, Math.floor(triggerTokens * COMPACTED_OUTPUT_MAX_TRIGGER_SHARE)));
+}
 
 export {
 	type BranchPreparation,
 	type BranchSummaryResult,
 	buildBoundaryText,
 	buildCompactorMessages,
-	COMPACTED_OUTPUT_MAX_TOKENS,
-	COMPACTED_OUTPUT_MAX_TRIGGER_SHARE,
-	COMPACTOR_LINE_WIDTH,
 	COMPACTOR_REQUEST_TIMEOUT_MS,
 	type CollectEntriesResult,
 	type CompactionBackend,
@@ -527,7 +548,6 @@ export {
 	calculateContextTokens,
 	classifyCompactionModel,
 	collectEntriesForBranchSummary,
-	compactedOutputTokenCap,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateTextTokens,
 	estimateTokens,

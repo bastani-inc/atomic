@@ -1,57 +1,51 @@
 ---
-title: "Run many agents on PostgreSQL with PgBouncer"
+title: "Use PgBouncer with PostgreSQL"
 sidebarTitle: "PgBouncer"
-description: "Put PgBouncer between Atomic and PostgreSQL when your agents need more connections than the server allows, with a complete configuration, checks, and fixes for common errors."
+description: "Run PgBouncer in transaction mode between Atomic and PostgreSQL when agent processes exceed the server's connection limit, with TLS, SCRAM auth, pool sizing, and checks."
 ---
 
-PgBouncer is a small server that sits between Atomic and PostgreSQL. Thousands of connections from Atomic go to PgBouncer, and PgBouncer runs their work over a few dozen connections to PostgreSQL. Use it when your agents need more connections than PostgreSQL allows.
+PgBouncer is a lightweight connection pooler that sits between Atomic and PostgreSQL. Thousands of client connections from Atomic terminate at PgBouncer, which multiplexes their transactions over a few dozen server connections to PostgreSQL.
 
-This guide assumes you already set up the database and roles as in [PostgreSQL setup](/storage/postgres). It uses these names, which you replace with your own:
+This guide builds on [PostgreSQL setup](/storage/postgres) and uses these placeholder names:
 
-| Name | Meaning |
+| Placeholder | Meaning |
 | --- | --- |
-| `db.example.com` | The PostgreSQL server's host name |
-| `pgbouncer.example.com` | The PgBouncer server's host name |
-| `atomic` | The database Atomic uses |
-| `atomic_runtime` | The runtime role, which every Atomic machine logs in as |
-| `pgbouncer_auth` | A role PgBouncer uses only to look up passwords |
+| `db.example.com` | PostgreSQL server hostname |
+| `pgbouncer.example.com` | PgBouncer server hostname |
+| `atomic` | Atomic database name |
+| `atomic_runtime` | Runtime role that agent machines connect as |
+| `pgbouncer_auth` | Restricted lookup role PgBouncer uses to verify passwords |
 
 ## When you need PgBouncer
 
-Every connection an Atomic process opens counts against PostgreSQL's `max_connections`. [Count the connections Atomic needs](/storage/postgres#count-the-connections-atomic-needs) with this rule:
+Every connection an Atomic process opens counts against PostgreSQL's `max_connections` ([count your connections](/storage/postgres#count-the-connections-atomic-needs)):
 
-- An agent process uses up to `maxConnections` plus `readerMaxConnections`.
-- An Intercom broker uses the same, plus 1 for wake-ups.
+- **Agent process:** up to `maxConnections + readerMaxConnections`
+- **Intercom broker:** up to `maxConnections + readerMaxConnections + 1` (for wake-ups)
 
-Add these up over every machine. If the server cannot give every process at least 2 connections for `maxConnections`, you need PgBouncer.
+If PostgreSQL cannot spare at least `maxConnections: 2` per process across your fleet, deploy PgBouncer.
 
-For example, 150 CI runners each run one agent process and one Intercom broker. That is 300 processes, of which 150 are brokers. The server has `max_connections = 300`, 3 slots reserved for administrators, and 10 connections used by other clients, so 287 are left for Atomic. With the smallest settings, `maxConnections: 1` and `readerMaxConnections: 0`, the processes need 300 × 1 + 150 = 450 connections. That is more than the server has.
-
-With PgBouncer, those 300 processes connect to PgBouncer instead. The 150 brokers keep one direct connection each for wake-ups, which leaves 287 − 150 = 137 for PgBouncer. The configuration below shares 85 connections to PostgreSQL between all 300 processes: a pool of 80 plus 5 in reserve. With the brokers' connections, that is 235, which fits in 287.
+**Example:** 150 CI runners each run 1 agent and 1 Intercom broker (300 processes, 150 brokers) against a server with `max_connections = 300`, 3 reserved admin slots, and 10 non-Atomic clients (287 slots available). Even at `maxConnections: 1` and `readerMaxConnections: 0`, the fleet needs `300 + 150 = 450` connections. With PgBouncer, all 300 processes connect to PgBouncer, the 150 brokers hold 1 direct wake-up connection each (`287 − 150 = 137` slots left), and PgBouncer multiplexes all 300 processes over an 85-connection server pool (`80 + 5` reserve, totaling 235 server connections).
 
 ## How Atomic works with PgBouncer
 
-**Transaction mode.** Run PgBouncer in transaction mode. In this mode, PgBouncer lends a connection to PostgreSQL to a client for one transaction, then gives it to the next client. Atomic works this way:
+**Transaction mode.** Run PgBouncer with `pool_mode = transaction`. PgBouncer lends a PostgreSQL backend connection to a client for one transaction and returns it to the pool as soon as the transaction commits or rolls back. Atomic scopes every session setting (`search_path`, timeouts) and advisory lock to the transaction, so nothing depends on pinning a backend connection between transactions.
 
-- Settings that Atomic changes, such as the schema it uses and its time limits, last only for the transaction that set them.
-- Locks that Atomic takes are released when the transaction ends.
-- A statement outside a transaction is a transaction of its own.
+<Warning>
+Never use `pool_mode = statement` with Atomic—statement pooling breaks multi-statement transactions.
+</Warning>
 
-So nothing Atomic does depends on keeping the same connection to PostgreSQL between transactions. Do not use statement mode, which breaks transactions.
+**Direct wake-ups via `listenUrl`.** Intercom brokers receive instant message notices via PostgreSQL `LISTEN`/`NOTIFY`, which requires a persistent backend connection that transaction pooling cannot maintain. Point `listenUrl` directly at PostgreSQL so each broker opens one direct `atomic-listen` connection while all other queries flow through PgBouncer.
 
-**Wake-ups need a direct connection.** An Intercom broker learns about new messages through PostgreSQL's `LISTEN` command. `LISTEN` only works on a connection that stays with the broker, and transaction mode does not keep one. So point the `listenUrl` setting straight at PostgreSQL. Each broker then holds one direct connection for wake-ups, and all other work goes through PgBouncer.
+If you omit `listenUrl`, Atomic detects the pooler and falls back to polling wake-up hints every 0.5 seconds (instead of instant notifications with a 5-second hint poll and 30-second backup outbox scan). Messages still arrive, at slightly higher latency and query volume.
 
-If you leave out `listenUrl`, Atomic notices that it is behind a pooler and stops waiting for wake-ups. Brokers then check the database for new messages every half second instead of every 5 seconds. Messages still arrive, a little later, and the database gets more queries.
+**Prepared statements.** PostgreSQL plans a prepared statement once and reuses the plan. PgBouncer 1.21+ tracks prepared statements across transaction pooling when `max_prepared_statements > 0` (PgBouncer 1.24+ defaults this to `200`). Atomic probes PgBouncer on its first connection and configures prepared statements automatically:
 
-**Prepared statements.** A prepared statement is a query that PostgreSQL parses and plans once, then runs many times. Atomic can keep its frequent queries prepared, which saves the server work, but only if the pooler keeps track of them. PgBouncer 1.21 and later does, when its `max_prepared_statements` setting is above `0`. PgBouncer 1.24 and later set it to 200 by default.
+- **PgBouncer 1.21+ with `max_prepared_statements > 0`:** enabled automatically.
+- **Older PgBouncer, `max_prepared_statements = 0`, Supavisor, or unknown poolers:** disabled automatically to avoid missing-statement errors.
+- **Pooler on a port other than `6432` or `6543`:** Atomic may not infer a pooler automatically—set `listenUrl` or `maxPreparedStatements: 0`.
 
-Atomic checks on its first connection whether it is talking to such a PgBouncer, and turns prepared statements on only if it is. You do not need to set anything:
-
-- **PgBouncer 1.21 or later with `max_prepared_statements` above `0`:** on.
-- **Anything else:** off. That includes PgBouncer before 1.21, PgBouncer with `max_prepared_statements = 0`, Supabase's Supavisor, and any pooler Atomic cannot identify. Off is the safe choice, because a pooler that loses prepared statements makes queries fail.
-- **A pooler on a port other than 6432 or 6543:** Atomic may not notice it. Set `listenUrl`, which a pooler needs for wake-ups anyway, or `maxPreparedStatements: 0`.
-
-Atomic's `maxPreparedStatements` setting overrides this. Set it to `0` to keep prepared statements off, or to `256` to turn them on without the check. If you change PgBouncer's `max_prepared_statements` to `0` while Atomic runs, the next query that needs a lost statement fails once and runs again, and Atomic stops preparing statements until it restarts.
+Setting `maxPreparedStatements` explicitly overrides auto-detection (`0` forces off, `256` forces on). If PgBouncer's `max_prepared_statements` is later lowered to `0` at runtime, Atomic retries the failed query once and disables prepared statements for the remainder of the process.
 
 ```text
 agent processes ──> PgBouncer :6432 ──> PostgreSQL :5432
@@ -63,25 +57,25 @@ Intercom brokers ──> PgBouncer :6432 ──> PostgreSQL :5432
 
 ### Connection limits
 
-PostgreSQL needs room for:
+Size PostgreSQL's `max_connections` (requires restart) to cover:
 
-- PgBouncer's connections: its pool size plus its reserve pool, `default_pool_size` plus `reserve_pool_size` in the configuration below.
-- One wake-up connection per Intercom broker.
-- Administrators, monitoring, and other applications.
+- PgBouncer's server pool (`default_pool_size + reserve_pool_size`)
+- One wake-up connection per Intercom broker (when using `listenUrl`)
+- Administrators, monitoring, and other applications
 
-Set `max_connections` to at least their sum. Changing it needs a restart of PostgreSQL. On a managed service, change the server parameter in the service's console.
-
-To stop Atomic's runtime role from taking every slot, you can cap it. The cap counts every connection the role opens, including PgBouncer's connections for that role. Set it to PgBouncer's pool plus one wake-up connection per broker, plus a margin. In the example in [When you need PgBouncer](#when-you-need-pgbouncer), that is 85 + 150 = 235, plus a margin:
+Cap `atomic_runtime` so a runaway fleet cannot exhaust admin slots. The cap includes both PgBouncer's pooled connections for `atomic_runtime` and direct broker wake-up connections (for the 150-runner example: `85 + 150 = 235`, plus margin):
 
 ```sql
 ALTER ROLE atomic_runtime CONNECTION LIMIT 250;
 ```
 
-Raise the cap if PgBouncer logs `too many connections for role "atomic_runtime"`.
+Raise this cap if PgBouncer logs `too many connections for role "atomic_runtime"`.
 
 ### A role for password lookups
 
-PgBouncer checks each client's password against the one PostgreSQL stores, so you do not keep a second copy of every password. It runs a lookup query as a role that can do nothing else. Creating that lookup needs a superuser. On a managed service without one, use the service's own pooler instead, or list each role's password in PgBouncer's `auth_file`. As a superuser, connected to the `atomic` database, run:
+Instead of duplicating user passwords in PgBouncer, configure `auth_query` with a restricted lookup role (`pgbouncer_auth`). Creating this function requires a superuser; on managed services without superuser access, use the provider's built-in pooler or list roles in PgBouncer's `auth_file`.
+
+Connected to the `atomic` database as a superuser, run:
 
 ```sql
 CREATE ROLE pgbouncer_auth LOGIN PASSWORD '<auth role password>';
@@ -101,15 +95,11 @@ REVOKE ALL ON FUNCTION pgbouncer.get_auth(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION pgbouncer.get_auth(text) TO pgbouncer_auth;
 ```
 
-The function runs with the rights of the superuser who created it, so `pgbouncer_auth` can read one password at a time without reading the password table itself. It returns only the roles you list, never a superuser, so no one can log in through PgBouncer as any other role. List every role your Atomic machines log in as. Declare the result with `RETURNS TABLE`, as above. PgBouncer refuses a lookup that returns a row of empty values, and logs `auth_query response contained null user name`.
-
-When you change a role's password with `ALTER ROLE`, PgBouncer uses the new one at once. You do not need to reload it.
-
-Passwords must use SCRAM, PostgreSQL's default since version 14. Check with `SHOW password_encoding;`, which should say `scram-sha-256`.
+`SECURITY DEFINER` lets `pgbouncer_auth` look up only the allowlisted non-superuser roles without direct access to `pg_authid`. List every role Atomic machines log in as, and keep `RETURNS TABLE`—a scalar/record null row causes PgBouncer to log `auth_query response contained null user name`. Password changes via `ALTER ROLE` take effect immediately without reloading PgBouncer. Verify SCRAM encoding with `SHOW password_encoding;` (`scram-sha-256`).
 
 ### Who may connect
 
-PostgreSQL's `pg_hba.conf` file decides which hosts may log in. Allow PgBouncer's address, and the machines that run Intercom brokers for their wake-up connections, over TLS:
+Allow PgBouncer, agent hosts (for direct `listenUrl` wake-ups), and your migration host over TLS in `pg_hba.conf`, then reload with `SELECT pg_reload_conf();`:
 
 ```text
 # TYPE   DATABASE  USER            ADDRESS          METHOD
@@ -119,11 +109,11 @@ hostssl  atomic    atomic_runtime  10.0.2.0/24      scram-sha-256
 hostssl  atomic    atomic_owner    10.0.3.10/32     scram-sha-256
 ```
 
-Here `10.0.1.5` is PgBouncer, `10.0.2.0/24` is the network of the agent machines, and `10.0.3.10` is the machine you run `atomic storage migrate` on. Run `atomic storage migrate` against PostgreSQL directly, on port 5432, not through PgBouncer. Reload PostgreSQL after editing the file, for example with `SELECT pg_reload_conf();`.
+Here `10.0.1.5` is PgBouncer, `10.0.2.0/24` is the agent subnet, and `10.0.3.10` runs `atomic storage migrate` directly against PostgreSQL on port `5432` (never through PgBouncer).
 
 ## Configure PgBouncer
 
-This configuration is for PgBouncer 1.21 or later, the first version that keeps prepared statements. Save it as `/etc/pgbouncer/pgbouncer.ini`:
+Save this configuration (for PgBouncer 1.21+) as `/etc/pgbouncer/pgbouncer.ini`:
 
 ```ini
 ;; Which databases PgBouncer offers, and where each one really is.
@@ -183,29 +173,31 @@ query_wait_timeout = 120
 stats_users = pgbouncer_auth
 ```
 
-Save the lookup role's password as `/etc/pgbouncer/userlist.txt`, readable only by the user PgBouncer runs as:
+Save `pgbouncer_auth`'s password in `/etc/pgbouncer/userlist.txt`, readable only by the PgBouncer service user:
 
 ```text
 "pgbouncer_auth" "<auth role password>"
 ```
 
-PgBouncer needs this password in readable form, because it logs in to PostgreSQL with it. Every other role's password stays only in PostgreSQL.
+Only `pgbouncer_auth` needs its password in `userlist.txt`; all other role passwords remain solely inside PostgreSQL.
 
 ### Choose the pool sizes
 
-- **`default_pool_size`**: how many connections to PostgreSQL PgBouncer opens for Atomic's role. It can be at most what PostgreSQL can spare: `max_connections`, minus the reserved slots, minus one per Intercom broker for wake-ups, minus other clients, minus `reserve_pool_size`. In the example in [When you need PgBouncer](#when-you-need-pgbouncer), that is 137 − 5 = 132. More is not always faster. The [PostgreSQL wiki](https://wiki.postgresql.org/wiki/Number_Of_Database_Connections) suggests about twice the number of CPU cores as a starting point, for example 32 on a 16-core server. The configuration above uses 80, for a server of about 40 cores. Raise it while `cl_waiting` in `SHOW POOLS` stays above `0` and the server's CPU has room. A database far from the agents needs a larger pool than a nearby one, because each transaction holds its connection while it waits for the network.
-- **`reserve_pool_size`**: a few extra connections for bursts. PgBouncer lends them only after a client has waited `reserve_pool_timeout` seconds.
-- **`max_db_connections`**: a cap on all of PgBouncer's connections to the database. Set it to `default_pool_size` plus `reserve_pool_size`.
-- **`max_client_conn`**: how many connections PgBouncer accepts from clients. Connections to PgBouncer are cheap, so set it well above the number of Atomic processes times their pools. Each client connection uses a file descriptor, so raise the PgBouncer server's open-file limit (`ulimit -n`, or `LimitNOFILE` in a systemd unit) above `max_client_conn`.
-- **Lock waits hold connections.** A transaction that waits for a lock keeps its PostgreSQL connection while it waits, so waits can fill the pool. If `cl_waiting` climbs while `sv_active` sits at the cap, raise `default_pool_size` and `max_db_connections`, as far as `max_connections` allows.
+- **`default_pool_size`:** Server connections PgBouncer opens for `atomic_runtime`. Must not exceed PostgreSQL's remaining capacity (`max_connections` minus reserved slots, broker wake-ups, other clients, and `reserve_pool_size`—132 in the 150-runner example). Start near 2× server CPU cores (for example `32` on a 16-core server; `80` above assumes ~40 cores) and raise only if `cl_waiting > 0` in `SHOW POOLS` while PostgreSQL CPU has headroom. Higher network latency between agents and PostgreSQL requires a slightly larger pool.
+- **`reserve_pool_size`:** Burst slots lent after a client waits `reserve_pool_timeout` seconds.
+- **`max_db_connections`:** Hard cap on total server connections for `atomic` (`default_pool_size + reserve_pool_size`).
+- **`max_client_conn`:** Client connections accepted by PgBouncer. Set well above `processes × (maxConnections + readerMaxConnections)`, and raise the OS open-file limit (`ulimit -n` / `LimitNOFILE`) above `max_client_conn`.
+- **Lock waits hold pool slots:** Transactions waiting on locks retain their PostgreSQL backend connection. If `cl_waiting` climbs while `sv_active` hits the cap, raise `default_pool_size` and `max_db_connections` within `max_connections`.
 
-With PgBouncer in front, keep Atomic's `maxConnections` at its default of 8 or higher. Atomic's connections only reach PgBouncer, which queues them for its pool.
+Behind PgBouncer, keep Atomic's `maxConnections` at its default of `8` or higher—PgBouncer queues client transactions for its server pool.
 
 ### Start PgBouncer
 
-Start PgBouncer with the configuration file, for example `pgbouncer -d /etc/pgbouncer/pgbouncer.ini`, or through your distribution's service, `systemctl restart pgbouncer`. After a change to the file, reload it from PgBouncer's console with `RELOAD;`.
+Start PgBouncer (`pgbouncer -d /etc/pgbouncer/pgbouncer.ini` or `systemctl restart pgbouncer`). After subsequent edits to `pgbouncer.ini`, run `RELOAD;` on PgBouncer's admin console.
 
-The Ubuntu and Debian service starts PgBouncer with a limit of 1024 open files, which is too low for `max_client_conn = 5000`. PgBouncer logs `kernel file descriptor limit: 1024` at start. Raise the limit with a systemd drop-in, then restart:
+<Warning>
+**Ubuntu and Debian default `LimitNOFILE=1024`.** The distro unit starts PgBouncer with only 1,024 file descriptors—too low for `max_client_conn = 5000` (logged as `kernel file descriptor limit: 1024`). Raise the limit with a systemd drop-in, then run `systemctl daemon-reload && systemctl restart pgbouncer`:
+</Warning>
 
 ```ini
 # /etc/systemd/system/pgbouncer.service.d/limits.conf
@@ -213,37 +205,41 @@ The Ubuntu and Debian service starts PgBouncer with a limit of 1024 open files, 
 LimitNOFILE=16384
 ```
 
-Run `systemctl daemon-reload` and `systemctl restart pgbouncer` after creating the file.
-
-If PgBouncer runs on the database server and connects to PostgreSQL as `127.0.0.1`, the server's certificate does not name that address. Use `server_tls_sslmode = verify-ca` there, which checks the certificate authority without the host name, or connect by the name the certificate carries.
+<Note>
+If PgBouncer runs on the PostgreSQL host and connects via `127.0.0.1`, PostgreSQL's certificate typically does not include `127.0.0.1`. Use `server_tls_sslmode = verify-ca`, or connect via the hostname on the server certificate.
+</Note>
 
 ## Configure Atomic
 
-Point `url` at PgBouncer and `listenUrl` at PostgreSQL. Both use the runtime role and the same password. On each machine:
+Point `url` at PgBouncer and `listenUrl` directly at PostgreSQL (both use `atomic_runtime` and the same password). On each agent machine:
 
-1. Join the database through PgBouncer:
+<Steps>
+  <Step title="Join the database through PgBouncer">
+    ```bash
+    (umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
+    atomic storage join 'postgresql://atomic_runtime@pgbouncer.example.com:6432/atomic' --password-file ~/atomic-db-password
+    rm ~/atomic-db-password  # atomic storage join keeps its own copy
+    ```
+  </Step>
+  <Step title="Add listenUrl to ~/.atomic/agent/settings.json">
+    `atomic storage join` does not set `listenUrl`, so add the direct PostgreSQL endpoint:
 
-   ```bash
-   (umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
-   atomic storage join 'postgresql://atomic_runtime@pgbouncer.example.com:6432/atomic' --password-file ~/atomic-db-password
-   rm ~/atomic-db-password  # atomic storage join keeps its own copy
-   ```
+    ```bash
+    jq '.storage.options.listenUrl = "postgresql://atomic_runtime@db.example.com:5432/atomic"' ~/.atomic/agent/settings.json > ~/.atomic/agent/settings.json.new \
+      && mv ~/.atomic/agent/settings.json.new ~/.atomic/agent/settings.json
+    ```
+  </Step>
+  <Step title="Restart Intercom and verify wake-ups">
+    ```bash
+    atomic intercom restart
+    atomic storage status
+    ```
 
-2. Add `listenUrl`, which `atomic storage join` has no option for, to the `storage` setting it wrote:
+    Confirm `atomic storage status` reports `wake-ups: LISTEN/NOTIFY`.
+  </Step>
+</Steps>
 
-   ```bash
-   jq '.storage.options.listenUrl = "postgresql://atomic_runtime@db.example.com:5432/atomic"' ~/.atomic/agent/settings.json > ~/.atomic/agent/settings.json.new \
-     && mv ~/.atomic/agent/settings.json.new ~/.atomic/agent/settings.json
-   ```
-
-3. Restart Intercom, and check that `atomic storage status` reports `wake-ups: LISTEN/NOTIFY`:
-
-   ```bash
-   atomic intercom restart
-   atomic storage status
-   ```
-
-The setting in `~/.atomic/agent/settings.json` then looks like this. `atomic storage join` created the password file and chose its name, shown here as `storage-token.28ab7041-05e2-4ad5-80af-854329035d8c`. The path is relative to `~/.atomic`:
+The resulting `~/.atomic/agent/settings.json` entry looks like this (keep the exact `storage-token.<id>` filename that `atomic storage join` created on your machine; `storage-token.example` is a placeholder):
 
 ```json
 {
@@ -254,14 +250,14 @@ The setting in `~/.atomic/agent/settings.json` then looks like this. `atomic sto
       "listenUrl": "postgresql://atomic_runtime@db.example.com:5432/atomic",
       "maxConnections": 8
     },
-    "secrets": { "password": { "file": "agent/storage-token.28ab7041-05e2-4ad5-80af-854329035d8c" } }
+    "secrets": { "password": { "file": "agent/storage-token.example" } }
   }
 }
 ```
 
-Atomic checks the certificate and host name of both PgBouncer and PostgreSQL. If PgBouncer's certificate comes from a private certificate authority, add `?sslrootcert=/path/to/root.crt` to `url`. See [TLS](/storage/postgres#tls).
+Atomic verifies the certificate and hostname of both PgBouncer and PostgreSQL; append `?sslrootcert=/path/to/root.crt` if signed by a private CA (see [TLS](/storage/postgres#tls)).
 
-The same options in an SDK app:
+Equivalent SDK configuration:
 
 ```typescript
 import { openPostgresDatabase } from "@bastani/atomic-storage-postgres";
@@ -276,28 +272,26 @@ const database = await openPostgresDatabase({
 
 ## Check that it works
 
-**Atomic.** Run `atomic storage status` on an agent machine. It should report `wake-ups: LISTEN/NOTIFY`, or `wake-ups: connecting` for a few seconds after a restart. If it reports `wake-ups: polling only, notifications do not pass the URL's transaction pooler`, `listenUrl` is missing or points at PgBouncer.
+**Atomic:** Run `atomic storage status` on an agent host and confirm `wake-ups: LISTEN/NOTIFY` (or `wake-ups: connecting` immediately after restart). If it shows `polling only, notifications do not pass the URL's transaction pooler`, check that `listenUrl` points directly to PostgreSQL.
 
-**PgBouncer.** Connect to PgBouncer's console, a built-in database named `pgbouncer`, as a role listed in `stats_users`:
+**PgBouncer:** Inspect the `atomic` / `atomic_runtime` row via PgBouncer's console:
 
 ```bash
 psql -h pgbouncer.example.com -p 6432 -U pgbouncer_auth pgbouncer -c 'SHOW POOLS'
 ```
 
-`SHOW POOLS` prints one row per database and role. In the row for `atomic` and `atomic_runtime`:
-
-| Column | Meaning | What to look for |
+| Column | Meaning | Healthy value |
 | --- | --- | --- |
-| `cl_active` | Clients connected to PgBouncer | Roughly the number of Atomic connections. |
-| `cl_waiting` | Clients waiting for a PostgreSQL connection | `0` most of the time. A number that stays above `0` means the pool is too small or the server too slow. |
-| `sv_active` | PostgreSQL connections running a transaction | At most `default_pool_size` plus `reserve_pool_size`. |
-| `sv_idle` | PostgreSQL connections ready for the next transaction | Some idle connections are normal. |
-| `maxwait` | How many seconds the oldest waiting client has waited | Below a second. Higher values mean clients queue for the pool. |
-| `pool_mode` | The pool mode | `transaction` |
+| `cl_active` | Client connections to PgBouncer | Roughly total Atomic client pool connections |
+| `cl_waiting` | Clients waiting for a PostgreSQL backend | `0` most of the time; sustained `> 0` indicates pool saturation or slow queries |
+| `sv_active` | Active PostgreSQL server connections | At most `default_pool_size + reserve_pool_size` |
+| `sv_idle` | Ready PostgreSQL server connections | Some idle connections are normal |
+| `maxwait` | Seconds the oldest waiting client has waited | `< 1` second |
+| `pool_mode` | Active pooling mode | `transaction` |
 
-`SHOW CLIENTS` lists each client connection, and `SHOW STATS` shows queries and wait times per database.
+Use `SHOW CLIENTS` and `SHOW STATS` for per-client details and query/wait totals.
 
-**PostgreSQL.** As an administrator, count the connections by application and state. PgBouncer's connections report Atomic's application name `atomic`, and each broker's wake-up connection reports `atomic-listen`:
+**PostgreSQL:** Verify pooled (`atomic`) and direct wake-up (`atomic-listen`) counts on the database server:
 
 ```sql
 SELECT application_name, state, count(*)
@@ -307,38 +301,38 @@ GROUP BY 1, 2
 ORDER BY 3 DESC;
 ```
 
-The `atomic` connections should stay at or below PgBouncer's pool size, and there should be one `atomic-listen` connection per broker.
+`atomic` connections should stay at or below PgBouncer's `max_db_connections`, with one `atomic-listen` connection per broker.
 
 ## Common errors
 
-Atomic reports these as `StorageUnavailableError` or `StorageTransientError`. The message below is the error's cause, which Atomic prints with the error.
+Atomic wraps these causes in `StorageUnavailableError` or `StorageTransientError`:
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| `no more connections allowed (max_client_conn)` | More clients connected to PgBouncer than `max_client_conn` allows. | Raise `max_client_conn`, and the open-file limit with it. |
-| `query_wait_timeout` | A client waited `query_wait_timeout` seconds for a PostgreSQL connection. | Check `cl_waiting` and `maxwait` in `SHOW POOLS`. Raise `default_pool_size` if PostgreSQL has room, or look for long transactions with the queries in [Tuning](/storage/postgres#check-the-effect). |
-| `SSL required` | Atomic connected without TLS. Atomic leaves TLS off for addresses on the same machine, such as `localhost`. | Add `?sslmode=verify-full&sslrootcert=/path/to/root.crt` to `url`. |
-| `SASL authentication failed` | The password is wrong, the role does not exist, or the database is not listed in `[databases]`. | Check the password file, the role, and the database name. Check that the lookup function exists in that database. |
-| `wake-ups: polling only, notifications do not pass the URL's transaction pooler` in `atomic storage status` | `listenUrl` is missing or points at PgBouncer. | Set `listenUrl` to PostgreSQL's own address. |
-| `too many connections for role "atomic_runtime"` | The role's `CONNECTION LIMIT` is lower than PgBouncer's pool plus the brokers' wake-up connections. | Raise the limit, or lower `default_pool_size`. |
-| `sorry, too many clients already` | PostgreSQL's `max_connections` is lower than PgBouncer's pool plus the wake-up and other connections. | Raise `max_connections`, or lower `default_pool_size` and `max_db_connections`. |
-| `prepared statement "atomic_…" does not exist` | Atomic sends prepared statements, but PgBouncer does not keep them: it is older than 1.21, or `max_prepared_statements` is `0`. Atomic turns them on by itself only behind a PgBouncer that keeps them, so this follows setting `maxPreparedStatements` by hand, or changing `max_prepared_statements` while Atomic runs. | Set `max_prepared_statements` above `0` in PgBouncer, or set `maxPreparedStatements` to `0` in Atomic. |
-| `unsupported startup parameter: <name>` | A client sent a connection setting that PgBouncer does not forward. Atomic sends only `application_name`, which PgBouncer forwards. | Add the name to `ignore_startup_parameters` for other clients that need it, such as `extra_float_digits` for Java clients. Never add `application_name`. |
-| `bouncer config error`, with `auth_query response contained null user name` in PgBouncer's log | The lookup function returned a row of empty values for an unknown role. | Declare the function with `RETURNS TABLE`, as in [A role for password lookups](#a-role-for-password-lookups). |
-| `kernel file descriptor limit: 1024` in PgBouncer's log | The service's open-file limit is below `max_client_conn`. | Raise `LimitNOFILE`, as in [Start PgBouncer](#start-pgbouncer). |
+| `no more connections allowed (max_client_conn)` | Client connections exceeded `max_client_conn`. | Raise `max_client_conn` and `LimitNOFILE`. |
+| `query_wait_timeout` | Client waited past `query_wait_timeout` for a server connection. | Check `cl_waiting` / `maxwait` in `SHOW POOLS`, raise `default_pool_size` if PostgreSQL has capacity, or check [active waits](/storage/postgres#check-the-effect). |
+| `SSL required` | Connected without TLS (Atomic skips TLS for `localhost` by default). | Append `?sslmode=verify-full&sslrootcert=/path/to/root.crt` to `url`. |
+| `SASL authentication failed` | Wrong password, unknown role, missing `[databases]` entry, or missing `pgbouncer.get_auth`. | Verify password, role allowlist, database entry, and lookup function. |
+| `wake-ups: polling only, notifications do not pass the URL's transaction pooler` | `listenUrl` is unset or points at PgBouncer. | Point `listenUrl` directly at PostgreSQL. |
+| `too many connections for role "atomic_runtime"` | Role `CONNECTION LIMIT` is below PgBouncer's pool plus broker wake-ups. | Raise `CONNECTION LIMIT` or lower `default_pool_size`. |
+| `sorry, too many clients already` | PostgreSQL `max_connections` is too low for pool + wake-ups + other clients. | Raise `max_connections` or lower `default_pool_size` and `max_db_connections`. |
+| `prepared statement "atomic_…" does not exist` | Prepared statements forced on behind a pooler that drops them, or `max_prepared_statements` was zeroed at runtime. | Set `max_prepared_statements > 0` in PgBouncer 1.21+, or set `maxPreparedStatements: 0` in Atomic. |
+| `unsupported startup parameter: <name>` | Another client sent a startup parameter PgBouncer does not forward (Atomic sends only `application_name`). | Add that parameter to `ignore_startup_parameters` (never add `application_name`). |
+| `bouncer config error` / `auth_query response contained null user name` | `pgbouncer.get_auth` returned a null row for an unknown role. | Declare with `RETURNS TABLE` as in [A role for password lookups](#a-role-for-password-lookups). |
+| `kernel file descriptor limit: 1024` | Service `LimitNOFILE` is below `max_client_conn`. | Raise `LimitNOFILE` (see [Start PgBouncer](#start-pgbouncer)). |
 
 ## Managed services
 
-These services include a pooler of their own. Check the service's documentation for its current host names and ports.
-
-- **Supabase.** The shared pooler, Supavisor, runs transaction mode on port 6543. Point `url` at port 6543 and `listenUrl` at the direct connection on port 5432. Supavisor does not keep prepared statements, so leave `maxPreparedStatements` unset. Atomic keeps them off there, because it does not identify Supavisor as a PgBouncer that keeps them.
-- **Neon.** The pooled host name ends in `-pooler` and runs PgBouncer in transaction mode. Point `url` at the pooled host and `listenUrl` at the same host name without `-pooler`.
-- **Azure Database for PostgreSQL Flexible Server.** Turn on the built-in PgBouncer with the `pgbouncer.enabled` server parameter, on General Purpose and Memory Optimized tiers. It listens on port 6432 of the same host. Point `listenUrl` at port 5432.
-- **Amazon RDS Proxy.** RDS Proxy does not pass `LISTEN`, so point `listenUrl` at the database instance's own endpoint. RDS Proxy listens on port 5432, where Atomic does not expect a pooler, so also set `maxPreparedStatements: 0`.
+| Provider | Pooled endpoint (`url`) | Direct endpoint (`listenUrl`) | Prepared statements |
+| --- | --- | --- | --- |
+| **Supabase** | Supavisor transaction mode on port `6543` | Direct host on port `5432` | Leave `maxPreparedStatements` unset (auto-disabled behind Supavisor) |
+| **Neon** | `-pooler` host (PgBouncer transaction mode) | Same host without `-pooler` | Auto-detected |
+| **Azure Flexible Server** | Built-in PgBouncer (`pgbouncer.enabled`) on port `6432` | Same host on port `5432` | Auto-detected |
+| **Amazon RDS Proxy** | Proxy endpoint (port `5432`) | DB instance endpoint | Set `maxPreparedStatements: 0` explicitly (port `5432` does not auto-detect a pooler) |
 
 ## Related pages
 
-- [Tuning for many concurrent agents](/storage/postgres#tuning-for-many-concurrent-agents): count connections and size `maxConnections`.
-- [Tune PostgreSQL for many agents](/storage/postgres/tuning): the server-side settings that go with PgBouncer.
-- [Connection poolers](/storage/postgres#connection-poolers) and [Wake-ups](/storage/postgres#wake-ups) on the PostgreSQL setup page.
-- [PgBouncer's configuration reference](https://www.pgbouncer.org/config.html).
+- [Tuning for many concurrent agents](/storage/postgres#tuning-for-many-concurrent-agents): connection arithmetic and `maxConnections` sizing.
+- [Tune PostgreSQL for many agents](/storage/postgres/tuning): server memory, `pg_stat_statements`, autovacuum, and `lz4` compression.
+- [Connection poolers](/storage/postgres#connection-poolers) and [Wake-ups](/storage/postgres#wake-ups).
+- [PgBouncer configuration reference](https://www.pgbouncer.org/config.html).

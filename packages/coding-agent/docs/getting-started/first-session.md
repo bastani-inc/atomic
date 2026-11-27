@@ -1,64 +1,78 @@
 ---
 title: "Run your first session"
-sidebarTitle: "First session"
-description: "Start Atomic in a repository, run your first task, inspect background work, and verify saved sessions."
+sidebarTitle: "Run your first session"
+description: "Complete first-time setup, run your first task in a repository, inspect background work, and verify saved sessions."
 ---
 
-**Outcome:** You complete one interactive task and verify its saved session.
+**Outcome:** You complete first-time setup, finish one interactive task in a repository, and verify that the session was saved.
 
 **Prerequisites:** [Authenticate a provider](/getting-started/authentication) is complete.
 
-## Start Atomic
+## Start Atomic and finish first-time setup
 
-Start Atomic in a repository directory:
+Start Atomic inside a repository directory:
 
 ```bash
 cd /path/to/project
 atomic
 ```
 
-The first time you open an empty interactive session with no initial prompt on the command line, Atomic displays a one-time overview above the input box (after any What's New notes). Returning users skip it automatically; stored credentials alone do not skip it.
+### First-Time Setup wizard
 
-The prompt is ready immediately. Type a request, run `/login` to connect a provider, or run `/agents` to browse available subagents.
+On a fresh install (when using the default `~/.atomic/agent/` directory before `settings.json` exists), interactive mode opens a two-step **First-Time Setup** screen before the prompt:
+
+1. **Pick a theme:** Choose **Dark**, **Light**, or **System** (matching your terminal colors). Atomic pre-selects the option matching your detected terminal appearance and updates the theme live as you move through the list.
+2. **Anonymous usage analytics:** Choose **Share anonymous usage data** or **Don't share**. Your choice and a local random tracking ID are written to `~/.atomic/agent/settings.json`. Atomic does not transmit analytics data in this release, and you can change this setting anytime in `/settings`.
+
+Use `↑`/`↓` or `j`/`k` to move between choices, `Enter` to continue or finish, and `Esc` or `Ctrl+C` to skip setup without writing `settings.json`.
+
+### Your first prompt
+
+After setup finishes—on your first empty interactive session launched with no CLI prompt—Atomic displays a brief one-time welcome overview above the input box. Returning users skip both setup and the welcome overview automatically.
+
+Type any request to start working, run `/login` to connect a provider, or run `/agents` to browse available subagents.
 
 ## Verify the session
 
-Run a bounded task in a repository you know:
+<Steps>
+  <Step title="Run a bounded repository task">
+    Ask Atomic to inspect a repository you know:
 
-```text
-List the top-level directories in this repository and say what each one holds.
-```
+    ```text
+    List the top-level directories in this repository and say what each one holds.
+    ```
 
-Expected result: Atomic streams a response and calls `read`, `find`, or `bash` at least once, showing each tool call inline as it runs. It finishes with a summary naming directories that exist in your checkout. If it names nothing from your repository, quit, `cd` into the repository, and start Atomic again.
+    Atomic streams its response and calls tools such as `read`, `find`, or `bash` inline as it works, then summarizes the directories in your checkout. If it mentions nothing from your repository, exit, `cd` into the repository, and launch `atomic` again.
+  </Step>
+  <Step title="Confirm the session saved">
+    Exit Atomic with `/exit`, then open the session picker:
 
-Exit Atomic (`/exit`) and verify the session was saved:
+    ```bash
+    atomic -r
+    ```
 
-```bash
-atomic -r
-```
-
-Expected result: the session picker lists the run you just finished. Run `atomic -c` to resume it.
+    Your completed session appears at the top of the list. Select it with `Enter`, or run `atomic -c` next time to continue the most recent session immediately.
+  </Step>
+</Steps>
 
 ## Explore built-in capabilities
 
-Once your first session works, reach for these capabilities as needed.
+Once your first session works, reach for these capabilities as your tasks grow.
 
 ### Delegate a larger task
 
-Ask Atomic to split independent work across [subagents](/subagents):
+Ask Atomic to split independent work across background [subagents](/subagents):
 
 ```text
 Ask one subagent to trace the retry logic and another to find its tests. Compare their findings and show me any gaps.
 ```
 
-- Run `/tasks` to inspect background subagents and read their output.
-- Run `/resume` to return to a saved session.
-
-Converting an older Atomic workflow file? Give Atomic its path in a trusted project and ask it to convert the file into a skill. See [Migrating workflows](/orchestration/migrating-workflows).
+- Run `/tasks` to inspect background subagents and shells, peek at their output, or send them follow-up instructions.
+- Run `/resume` to return to any saved session.
 
 ### Top skills to invoke directly
 
-Skills are reusable instructions invoked with `/skill:<name>`:
+Skills are reusable procedures invoked with `/skill:<name>`:
 
 | Skill | When to use | Example |
 | --- | --- | --- |
@@ -71,34 +85,30 @@ Skills are reusable instructions invoked with `/skill:<name>`:
 | `agent-desktop` | Drive a native desktop app through its accessibility tree: snapshot, act on a ref, wait for postcondition. | `/skill:agent-desktop` |
 | `qlty` | Lint, auto-format, and measure complexity, duplication, and code smells across languages. | `/skill:qlty check this branch before I hand it off` |
 | `liteparse` | Extract text, tables, or values from PDF, DOCX, PPTX, XLSX, and images locally. | `/skill:liteparse` |
-| `show-me` | Explain topics visually with diagrams, code sketches, or focused HTML views (HumanLayer, MIT). | `/skill:show-me` |
+| `show-me` | Explain topics visually with diagrams, code sketches, or focused HTML views. | `/skill:show-me` |
 
-Atomic bundles these skills with every release, and you can also add your own project or user skills. Note that `agent-browser`, `agent-desktop`, `qlty`, and `liteparse` require their external CLI binaries to be installed on your machine. See [Skills](/skills) for skill discovery, requirements, and authoring details.
+Atomic bundles these skills with every release, and you can add your own user or project skills. `agent-browser`, `agent-desktop`, `qlty`, and `liteparse` require their corresponding external CLI tools to be installed on your machine. See [Skills](/skills) for discovery and authoring details.
 
-### Default tools and prompts
+### Built-in tools
 
-Type any plain request and press Enter:
+By default, Atomic gives the model these core coding tools (see [Built-in tools](/tools) for full inputs and options):
 
-```text
-Summarize this repository and tell me how to run its checks.
-```
-
-By default, Atomic gives the model these built-in coding tools:
-
-- **`read`:** Read files, directories, images, archives, URLs, and SQLite selectors.
+- **`read`:** Read files, directories, images, archives, URLs, and SQLite databases (using table/row selectors).
 - **`bash`:** Run shell commands.
-- **`kill`:** Cancel background shell tasks by task ID.
+- **`kill`:** Stop background shell tasks by task ID.
 - **`edit`:** Patch files with exact text replacement.
 - **`write`:** Create or overwrite files.
-- **`find`:** Discover files by glob pattern.
+- **`find`:** Find files by glob pattern.
 - **`search`:** Search file contents with regular expressions.
-- **`ask_user_question`:** Ask structured questions in the terminal UI.
-- **`todo`:** Manage file-based todos.
-- **`codemode`:** Compose permitted tool calls in a sandboxed script.
+- **`ask_user_question`:** Prompt you with structured choices or text questions in the terminal UI.
+- **`todo`:** Track file-based todos for multi-step work.
+- **`codemode`:** Compose permitted tool calls inside a sandboxed JavaScript runtime (see [Codemode](/codemode)).
 
-On native Windows, `powershell` is also enabled when a PowerShell executable is available. Bundled integration tools such as `subagent`, `intercom`, `web_search`, and `fetch_content` are enabled alongside the coding tools by default; run `/tools` to inspect every active tool.
+On native Windows, `powershell` is also enabled when a PowerShell executable is available. Bundled integration tools—including `subagent`, `intercom`, `web_search`, and `fetch_content`—are enabled alongside the coding tools by default. Run `/tools` anytime to see every active tool.
 
-Atomic runs in your current working directory and can modify files there, so use Git or another checkpointing workflow for easy rollback.
+<Note>
+Atomic runs in your current working directory and can edit files or run shell commands with your OS permissions. Work inside a Git repository (or rely on [Worktree snapshots](/worktree-snapshots)) for easy rollback, and see [Security](/security) for trust boundaries.
+</Note>
 
 ## Next step
 

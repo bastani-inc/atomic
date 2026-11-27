@@ -8,11 +8,39 @@ description: "Reference for extension lifecycle events, payloads, handler chaini
 
 Subscribe to lifecycle events with `atomic.on(event, handler)`. Every `atomic.on()` call returns an unsubscribe function `() => void` if you need to detach a listener before reload or shutdown.
 
+## Quick-reference event index
+
+| Event | Fires when | Can modify or cancel? |
+| --- | --- | --- |
+| [`project_trust`](#project_trust) | Before deciding whether to trust project config | Decide trust (`"yes"` / `"no"` / `"undecided"`) |
+| [`resources_discover`](#resources_discover) | After `session_start` on startup or `/reload` | Contribute skill, prompt, and theme paths |
+| [`session_start`](#session_start) | Session starts, reloads, switches, or forks | Notification-only |
+| [`session_recovery_restore`](#session_recovery_restore) / `session_recovery_replay` | Recovering unfinished work after an earlier exit | Return notices; replay, drop, or defer pending cards |
+| [`session_info_changed`](#session_info_changed) | Session display name changes | Notification-only |
+| [`session_before_switch`](#session_before_switch) | Before `/new` or `/resume` | Cancel |
+| [`session_before_fork`](#session_before_fork) | Before `/fork` or `/clone` | Cancel or skip conversation restore |
+| [`session_before_compact`](#session_before_compact) | Before `/compact` or automatic compaction | Cancel or return `{ compactedText }` |
+| [`session_compact`](#session_before_compact) / `session_compact_failed` | After compaction persists, fails, or cancels | Notification-only |
+| [`session_before_tree`](#session_before_tree) / `session_tree` | Before / after `/tree` navigation | Cancel, customize summary prompt/label, or supply summary |
+| [`session_shutdown`](#session_shutdown) | Before quit, reload, switch, or fork | Cleanup; thrown errors propagate as `AggregateError` |
+| [`input`](#input) | User input arrives (after slash commands, before skill/template expansion) | Transform text/images or handle (`"handled"`) |
+| [`before_agent_start`](#before_agent_start) | Before a model run begins | Inject custom message; edit system prompt or active tools |
+| [`agent_start`](#agent_start) / `agent_end` / `agent_settled` | Start, end, and final settlement of an agent run | Notification-only |
+| [`agent_before_settle`](#agent_start) | Final actionable boundary before going idle | Append entries and request one continuation |
+| [`ui_prompt_start`](#ui_prompt_start) / `ui_prompt_end` | Blocking user prompt opens or closes | Notification-only |
+| [`turn_start`](#turn_start) / `turn_end` | Around each model turn + tool batch | `turn_end`: append entries and request continuation |
+| [`message_start`](#message_start) / `message_update` / `message_end` | Message lifecycle and streaming deltas | `message_end`: replace finalized message (same role) |
+| [`context`](#context) / [`context_with_system`](#context_with_system) | Before each provider request | Filter or rewrite messages (`context_with_system` includes system messages) |
+| [`before_provider_headers`](#before_provider_headers) / [`before_provider_request`](#before_provider_request) | Before HTTP dispatch | Mutate headers / replace request payload |
+| [`after_provider_response`](#after_provider_response) / [`provider_stream_event`](#provider_stream_event) | HTTP response received / raw stream chunk arrives | Notification-only |
+| [`tool_execution_start`](#tool_execution_start) / `_update` / `_end` | Around each tool execution | Notification-only |
+| [`tool_call`](#tool_call) | Before tool `execute()` | Patch arguments, block call, or terminate turn |
+| [`tool_result`](#tool_result) | After tool finishes, before persistence | Patch `content`, `structuredContent`, `details`, `usage`, `isError` |
+| [`model_select`](#model_select) / [`thinking_level_select`](#thinking_level_select) | Active model or thinking level changes | Notification-only |
+| [`cache_warming_decision`](#cache_warming_decision) | Prompt cache warmer evaluates a tick | Override `{ action: "warm" \| "stop" }` |
+| [`user_bash`](#user_bash) | User runs `!` or `!!` shell command | Return custom `{ operations }` or direct `{ result }` |
+
 ## Lifecycle overview
-
-When interactive startup needs to ask whether you trust a project, user, global, and CLI `-e` extensions start first (receiving `session_start` and `resources_discover`) so they can participate in `project_trust` and display UI. After trust is granted, project extensions load, receive `session_start`, and `resources_discover` runs again for the full set.
-
-A `resources_discover` handler that fails both passes with the same error is reported once. Different handlers are reported separately even if they throw the same message. Extensions already started during the first pass keep their session and do not receive a second `session_start`. Non-interactive startup resolves trust before running the normal lifecycle.
 
 ```text
 Atomic starts
@@ -118,7 +146,7 @@ atomic.on("project_trust", async (event, ctx) => {
 
 A `project_trust` handler must return `{ trusted: "yes" | "no" | "undecided" }`. The first `"yes"` or `"no"` decision wins and suppresses the built-in trust prompt. Set `remember: true` to persist the decision; otherwise it applies to the current process only.
 
-Return `"undecided"` to pass control to later handlers or Atomic's built-in trust flow, and check `ctx.hasUI` before prompting. If no handler decides, saved `trust.json` decisions apply first, then `defaultProjectTrust` decides whether Atomic asks, trusts, or declines.
+Return `"undecided"` to pass control to later handlers or Atomic's built-in trust flow, and check `ctx.hasUI` before prompting. If a handler throws an error, Atomic records the error and continues to the next handler. Any dialogs opened by a handler are automatically aborted when that handler settles. If no handler decides, saved `trust.json` decisions apply first, then `defaultProjectTrust` decides whether Atomic asks, trusts, or declines.
 
 ## Resource events
 
@@ -137,6 +165,10 @@ atomic.on("resources_discover", async (event, _ctx) => {
   };
 });
 ```
+
+<Note>
+When interactive startup must ask whether to trust a project, user, global, and CLI `-e` extensions start first (receiving `session_start` and `resources_discover`) so they can participate in `project_trust`. After trust is granted, project extensions load, receive `session_start`, and `resources_discover` runs again for the full set. Already-started extensions do not receive a second `session_start`, and a `resources_discover` handler that fails both passes with the same error is reported once (different handlers are reported separately). Non-interactive startup resolves trust before running the normal lifecycle.
+</Note>
 
 ## Session events
 
@@ -159,7 +191,7 @@ atomic.on("session_start", async (event, ctx) => {
 
 If a handler throws, interactive mode shows the error with the extension's path and keeps the session open; print mode, RPC mode, and SDK sessions fail startup instead. See [Error handling](/extensions/api-reference#error-handling).
 
-### session_recovery_restore / session_recovery_replay
+### session_recovery_restore / session_recovery_replay {#session_recovery_restore}
 
 Fired once per session when recovering unfinished work from an earlier process. Interactive mode runs them after the transcript renders; SDK and RPC hosts run them when calling `session.startPendingRecovery()` or sending `start_pending_recovery`.
 
@@ -234,19 +266,20 @@ atomic.on("session_before_fork", async (event) => {
 
 After a successful fork or clone, Atomic emits `session_shutdown`, reloads extensions for the new session, and emits `session_start` with `reason: "fork"` and `previousSessionId`.
 
-### session_before_compact / session_compact / session_compact_failed
+### session_before_compact / session_compact / session_compact_failed {#session_before_compact}
 
 Fired by `/compact` and automatic compaction, including when tool output pushes the prospective next-turn context past the threshold. Atomic prepares all context since the last compaction boundary.
 
-Handlers on `session_before_compact` can cancel compaction (`{ cancel: true }`, short-circuiting later handlers) or return `{ compactedText }`. When `compactedText` is provided, Atomic skips the configured compactor and inserts that text verbatim into a `Context compacted` boundary message followed by history recovery instructions. Empty or whitespace-only text counts as no replacement.
+Handlers on `session_before_compact` can cancel compaction (`{ cancel: true }`, short-circuiting later handlers) or return `{ compactedText }`. When non-empty `compactedText` is provided, Atomic skips any configured compactor model and inserts that text verbatim into a `Context compacted` boundary message followed by history recovery instructions. Empty or whitespace-only text counts as no replacement so the configured compaction form runs instead.
 
-If replacement text exceeds the compactor's output limit or still exceeds the automatic trigger together with the system prompt and recovery instructions, Atomic clears the context instead. A successful post-tool compaction feeds its rebuilt context directly into the active turn loop; cancellation or failure stops the follow-up model request.
+Extension-provided `compactedText` has **no built-in size limit** and does not fall back to clearing the context. Keep it concise so the rebuilt context fits comfortably in the active model's context window. (For automatic compaction, Atomic skips compaction before calling `session_before_compact` if even a cleared context plus the system prompt would still reach the threshold.) A successful post-tool compaction feeds its rebuilt context directly into the active turn loop; cancellation or failure stops the follow-up model request.
 
 ```typescript
 atomic.on("session_before_compact", async (event) => {
   const { preparation, branchEntries, parameters, reason, signal } = event;
   // preparation.region.lines - role-tagged lines since the last boundary (deep-frozen)
-  // preparation.firstKeptEntryId - always null
+  // preparation.firstKeptEntryId - always null (backward-compatibility field; verbatim
+  //   compaction replaces everything before the boundary rather than keeping a tail)
   // preparation.tokensBefore - whole-context token estimate
   // parameters.query - /compact instructions or latest user request
   // branchEntries - raw entries on the active branch
@@ -263,7 +296,8 @@ atomic.on("session_before_compact", async (event) => {
 
 atomic.on("session_compact", async (event) => {
   // event.result - VerbatimCompactionResult (compactedText, form, backend, model, fallbackReason, history, stats)
-  // event.compactionEntry - saved CompactionEntry with strategy "verbatim-lines"
+  // event.compactionEntry - saved CompactionEntry (details.strategy is "verbatim-lines",
+  //   identifying Atomic's verbatim-history compaction format)
   // event.fromExtension - true when session_before_compact provided compactedText
   // Notification-only: handler errors are logged and do not affect the saved compaction.
 });
@@ -276,7 +310,7 @@ atomic.on("session_compact_failed", async (event) => {
 });
 ```
 
-### session_before_tree / session_tree
+### session_before_tree / session_tree {#session_before_tree}
 
 Fired on `/tree` navigation. See [Sessions](/sessions) for tree navigation concepts.
 
@@ -323,7 +357,11 @@ atomic.on("session_shutdown", async (event) => {
 
 `fromSignal` is set only when `reason === "quit"` came from an OS signal (`SIGTERM`, `SIGHUP`, or terminal close); `Ctrl+D` and `/quit` leave it unset.
 
-Handlers have about 5 seconds to finish on Linux and macOS quit or signal shutdown (a second `SIGTERM` exits immediately), and about 4 seconds on Windows console close or OS shutdown after startup finishes. Any running [`atomic.exec`](/extensions/api-reference#atomic-exec-command-args-options) command is stopped first so it cannot block shutdown handlers.
+<Warning>
+Unlike most lifecycle events, uncaught errors from `session_shutdown` handlers (and tracked shutdown work) are **not** silently ignored: Atomic collects them into an `AggregateError("Extension shutdown failed")` with `code: "ShutdownFailed"` and re-throws it. During retired cleanup on reload or session switch, `atomic.events.emit()` is silently ignored and session-mutating actions throw stale-context errors.
+</Warning>
+
+Handlers have about 5 seconds to finish on Linux and macOS quit or signal shutdown (a second `SIGTERM` exits immediately), and about 4 seconds on Windows console close or OS shutdown after startup finishes. Any running [`atomic.exec`](/extensions/api-reference#atomic-exec-command-args-options) command is stopped first (1-second grace) so it cannot block shutdown handlers; commands started inside `session_shutdown` run without that 1-second pre-shutdown kill.
 
 ## Agent events
 
@@ -358,7 +396,7 @@ atomic.on("before_agent_start", async (event) => {
 
 Prefer mutating `event.systemPromptOptions.sections`, `selectedTools`, or `promptGuidelines` instead of returning a full `systemPrompt` override so prompt caching stays intact. Editing `selectedTools` or calling `atomic.setActiveTools()` here applies to the same run's executable tools as well as its prompt text.
 
-### agent_start / agent_end / agent_before_settle / agent_settled
+### agent_start / agent_end / agent_before_settle / agent_settled {#agent_start}
 
 - `agent_start` marks the start of one low-level model run.
 - `agent_end` marks the end of that run (Atomic may still retry, compact and retry, or deliver queued follow-ups).
@@ -397,9 +435,11 @@ atomic.on("agent_settled", async (event, ctx) => {
 
 If aborted during `agent_before_settle`, valid entries still persist while `continue: true` is suppressed. Input queued from `agent_before_settle` with `deliverAs: "steer"` or `"followUp"` joins the requested continuation instead of starting a second run.
 
-Each provider request builds from the persisted session after earlier event handlers (`agent_start`, `turn_start`, `message_start`, `message_end`, `tool_execution_*`) settle, because `message_end` can modify a saved message. Do not await something later in the same run inside one of those handlers; wait in `agent_end` or `agent_settled` instead.
+<Warning>
+Each provider request builds from the persisted session only after earlier event handlers (`agent_start`, `turn_start`, `message_start`, `message_end`, `tool_execution_*`) finish, because `message_end` can modify a saved message. Never await work that depends on a later step of the same run inside those handlers; wait in `agent_end` or `agent_settled` instead.
+</Warning>
 
-### ui_prompt_start / ui_prompt_end
+### ui_prompt_start / ui_prompt_end {#ui_prompt_start}
 
 Notification-only events wrapping blocking user-facing prompts:
 
@@ -420,7 +460,7 @@ atomic.on("ui_prompt_end", (event) => {
 });
 ```
 
-### turn_start / turn_end
+### turn_start / turn_end {#turn_start}
 
 Fired around each turn (one model response plus its tool calls). `turn_end` runs after the assistant message and tool results persist, and lets extensions append structural entries and request a continuation.
 
@@ -434,7 +474,7 @@ atomic.on("turn_end", async (event) => {
   // event.turnIndex, event.message, event.toolResults
   // event.messageEntryId, event.toolResultEntryIds, event.outcome
   // event.entries - entries proposed by earlier handlers
-  // event.context - rebuilt projection (contextEntries, contextMessages, llmMessages, pendingMessages, canContinue)
+  // event.context - preview of the context after applying proposed entries
   if (replacedResponse || event.outcome !== "completed" || event.toolResults.length > 0) return;
   replacedResponse = true;
   return {
@@ -453,14 +493,22 @@ atomic.on("turn_end", async (event) => {
 });
 ```
 
+`event.context` (`BoundaryContextPreview`, present on both `turn_end` and `agent_before_settle`) previews the next request after applying all `entries` proposed so far:
+
+- `contextEntries`: projected session entries that will remain in context.
+- `contextMessages`: agent messages built from `contextEntries`.
+- `llmMessages`: provider-ready messages converted from `contextMessages`.
+- `pendingMessages`: queued steering or follow-up messages waiting to be delivered.
+- `canContinue`: `true` when the turn or run can legally start another model request (`false` after an `"aborted"` or `"error"` outcome).
+
 Boundary rules shared by `turn_end` and `agent_before_settle`:
 
-- Allowed draft entry types are `custom`, `custom_message`, `context_edit`, and `compaction` (`summary` text with `firstKeptEntryId: null`).
+- Allowed draft entry types are `custom`, `custom_message`, `context_edit`, and `compaction` (`{ type: "compaction", summary, firstKeptEntryId, usage? }`, where `firstKeptEntryId` is either an existing entry ID to keep from that point onward or `null` to replace the entire pre-boundary transcript).
 - Returning `entries` or `continue` updates only that field; omitted fields keep earlier handlers' proposals.
-- Atomic validates the combined proposal before appending entries in order. A handler error is reported without stopping later handlers.
+- Atomic validates the combined proposal after each handler. If a handler throws, the error is reported without stopping later handlers. **If the final combined `entries` fail validation, Atomic discards all proposed `entries` (including valid ones from earlier handlers) and forces `continue` to `false`.**
 - `continue: true` ensures one next model request when tool results, steering, or follow-ups do not already trigger one. Always guard `continue: true` so it cannot loop indefinitely. Error and aborted outcomes stop regardless.
 
-### message_start / message_update / message_end
+### message_start / message_update / message_end {#message_start}
 
 - `message_start` and `message_end` fire for `user`, `assistant`, and `toolResult` messages.
 - `message_update` fires for streaming assistant deltas (`event.assistantMessageEvent`).
@@ -486,7 +534,7 @@ atomic.on("message_end", async (event) => {
 });
 ```
 
-### tool_execution_start / tool_execution_update / tool_execution_end
+### tool_execution_start / tool_execution_update / tool_execution_end {#tool_execution_start}
 
 Fired around each tool execution. Nested tool calls invoked through `ctx.executeTool()` include `event.parentToolCallId`.
 
@@ -523,7 +571,12 @@ atomic.on("context", async (event) => {
 });
 ```
 
-`event.messages` excludes system messages so filtering cannot drop Atomic's prompt or tool declarations. When a handler modifies or returns a new message list, Atomic replays the active prompt sections and tool declarations into one leading system message ahead of your returned messages. Leaving `event.messages` unchanged preserves mid-conversation system patches for prompt caching. To change prompts or tools durably, use [`before_agent_start`](#before_agent_start) or `atomic.setActiveTools()`; to edit system messages directly for one request, use [`context_with_system`](#context_with_system).
+`event.messages` excludes system messages so filtering cannot drop Atomic's prompt or tool declarations. Handlers may either return `{ messages }` or mutate `event.messages` in place:
+
+- **In-place field edits on the same element references** preserve mid-conversation system patches so prompt caching stays intact.
+- **Splicing, filtering, or replacing message elements** triggers Atomic to replay the active prompt sections and tool declarations into one leading system message ahead of your returned messages.
+
+To change prompts or tools durably, use [`before_agent_start`](#before_agent_start) or `atomic.setActiveTools()`; to edit system messages directly for one request, use [`context_with_system`](#context_with_system).
 
 ### context_with_system
 
@@ -539,7 +592,7 @@ atomic.on("context_with_system", async (event) => {
 });
 ```
 
-Keep a system message at index `0` (dropping it triggers an extension error). Verify your result with `getCurrentSystemPrompt()` and `getCurrentTools()` from `@bastani/atomic-ai`. A `systemPrompt` forced in `before_agent_start` still applies afterward.
+Keep a system message at index `0`. If a handler removes the leading system message, Atomic reports an extension error **but still sends your returned array verbatim to the provider**. Verify your result with `getCurrentSystemPrompt()` and `getCurrentTools()` from `@bastani/atomic-ai`. A `systemPrompt` forced in `before_agent_start` still applies afterward.
 
 ### before_provider_headers
 
@@ -744,6 +797,8 @@ atomic.on("tool_result", async (event, ctx) => {
 
 Fired when the user runs `!` or `!!` shell commands. Return `{ operations }` to customize execution (optionally wrapping `createLocalBashOperations()` from `@bastani/atomic`) or `{ result }` to return a result directly.
 
+The **first** handler returning a non-`undefined` value wins and short-circuits later handlers. Return shapes are strictly validated: returning both `operations` and `result`, or omitting required fields (`operations.exec` or `{ output, exitCode, cancelled, truncated }`), throws an invalid-result error. Unlike most events, any error thrown by a `user_bash` handler is re-thrown and aborts the `!` command rather than falling back to local execution.
+
 ```typescript
 import { createLocalBashOperations } from "@bastani/atomic";
 
@@ -816,4 +871,4 @@ See [input-transform.ts](https://github.com/bastani-inc/atomic/blob/main/package
 
 ## Next steps
 
-Continue with [Extension UI](/extensions/ui) to add dialogs, pickers, widgets, and custom components, or inspect all context properties in the [Extension API reference](/extensions/api-reference#extensioncontext).
+Continue with [Build custom UI](/extensions/ui) to add dialogs, pickers, widgets, and custom components, or inspect all context properties in the [Extension API reference](/extensions/api-reference#extensioncontext).

@@ -1,63 +1,84 @@
 ---
 title: "Configure custom models"
-sidebarTitle: "Custom models"
-description: "Add local or proxied models and remote compactors in models.json, override built-in providers, and use classifier models."
+sidebarTitle: "Configure Custom Models"
+description: "Add local or proxied chat and compactor models in models.json, configure prompt cache lifetimes, override built-in providers, and use image and classifier models."
 ---
 
 Add custom providers, chat models, and remote compactors (such as Ollama, vLLM, LM Studio, and API proxies) through `~/.atomic/agent/models.json`. Set `ATOMIC_CODING_AGENT_DIR` (or legacy `PI_CODING_AGENT_DIR`) to use another directory.
 
-| If you want to | Edit or use | Read |
+| If you want to | Use this | Read |
 | --- | --- | --- |
-| Add custom chat or compactor models, proxy endpoints, headers, or `modelOverrides` | `~/.atomic/agent/models.json` | This page and [Model configuration reference](/models/reference) |
-| Choose default models, model scopes (`enabledModels`), `fallbackModels`, `decisionModel`, or `compactionModel` | `settings.json` or CLI flags (`--model`, `--models`) | [Settings reference](/settings#models-and-thinking) and [CLI model options](/reference/cli#model-options) |
-| Configure subscriptions, API keys, or cloud credentials | `/login`, `~/.atomic/agent/auth.json`, or env vars | [Model providers](/providers) |
-| Register custom streaming, image, classifier, or compactor APIs, OAuth flows, dynamic discovery, or account aliases | Extension calling `atomic.registerProvider()` | [Build custom providers](/custom-provider) |
+| Pick a daily model, switch thinking levels, scope models, or set fallbacks | `/model`, `/thinking`, `/scoped-models`, or `settings.json` | [Choose a model](/models/choose-a-model) and [Settings reference](/settings#models-and-thinking) |
+| Sign in with subscriptions, store API keys, or set up cloud providers | `/login`, `~/.atomic/agent/auth.json`, or env vars | [Connect model providers](/providers) |
+| Add custom chat or compactor models, proxy URLs, headers, or `modelOverrides` | `~/.atomic/agent/models.json` | This page and [Model runtime & overrides](/models/reference) |
+| Register custom streaming, image, classifier, or compactor APIs, OAuth flows, or dynamic discovery | Extension calling `atomic.registerProvider()` | [Build custom providers](/custom-provider) |
 
-- **Single file, no merging.** Atomic reads only `models.json` from the active agent directory. It does not read project-scoped `.atomic/models.json`, fall back to `~/.pi/agent/models.json`, or merge `.pi` and `.atomic` model files (unlike files that fall back to `~/.pi/agent/`, such as `settings.json` and `auth.json`).
-- **Syntax and schema.** `models.json` allows `//` line comments, trailing commas, and leading UTF-8 BOMs (`/* */` block comments are not supported). Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json"` for editor completion and validation.
-- **Reloading and errors.** Open `/model`, open `/scoped-models`, or run `/reload` after saving `models.json` to reload changes without restarting. If `models.json` has a JSON or schema error, Atomic ignores the file, keeps built-in providers working, and shows the error banner in `/model`.
+<Note>
+- **Single file, no merging.** Atomic reads only `models.json` from the active agent directory. It does not read project-scoped `.atomic/models.json`, fall back to `~/.pi/agent/models.json`, or merge `.pi` and `.atomic` model files.
+- **Syntax and schema.** `models.json` supports `//` line comments, trailing commas, and leading UTF-8 BOMs (`/* */` block comments are not supported). Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json"` for editor validation and completion.
+- **Reloading and errors.** Open `/model`, open `/scoped-models`, or run `/reload` after saving `models.json` to reload without restarting. If `models.json` contains a JSON or schema error, Atomic ignores the file, keeps built-in providers working, and shows an error banner in `/model`.
+</Note>
 
-This page gives minimal and full `models.json` examples. For every schema field, see [`models.json` field reference](/models-configuration). For compatibility rules, value resolution, overrides, pricing tiers, and derived fast variants, see [Model configuration reference](/models/reference). For SDK catalog persistence and `modelsPath`, see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh).
+For every schema field, see [`models.json` field reference](/models-configuration). For compatibility flags, value resolution, overrides, cost tiers, and derived fast variants, see [Model runtime & overrides](/models/reference).
 
-## Minimal example
+## Add a local or OpenAI-compatible model
 
-For local servers (Ollama, LM Studio, vLLM), only `id` is required per model:
+For local servers such as Ollama, LM Studio, or vLLM, only `id` is required per model; add explicit limits, modalities, pricing, and prompt cache lifetimes when needed.
 
-```json
-{
-  "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json",
-  "providers": {
-    "ollama": {
-      "baseUrl": "http://localhost:11434/v1",
-      "api": "openai-completions",
-      "apiKey": "ollama",
-      "models": [
-        { "id": "llama3.1:8b" },
-        { "id": "qwen2.5-coder:7b" }
-      ]
+<Tabs>
+  <Tab title="Minimal">
+    ```json
+    {
+      "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json",
+      "providers": {
+        "ollama": {
+          "baseUrl": "http://localhost:11434/v1",
+          "api": "openai-completions",
+          "apiKey": "ollama",
+          "models": [
+            { "id": "llama3.1:8b" },
+            { "id": "qwen2.5-coder:7b" }
+          ]
+        }
+      }
     }
-  }
-}
-```
+    ```
+  </Tab>
+  <Tab title="Full">
+    ```json
+    {
+      "$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/models.schema.json",
+      "providers": {
+        "ollama": {
+          "baseUrl": "http://localhost:11434/v1",
+          "api": "openai-completions",
+          "apiKey": "ollama",
+          "models": [
+            {
+              "id": "llama3.1:8b",
+              "name": "Llama 3.1 8B (Local)",
+              "reasoning": false,
+              "input": ["text"],
+              "contextWindow": 128000,
+              "maxTokens": 32000,
+              "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+              "promptCache": { "short": 300, "long": 3600 }
+            }
+          ]
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
 
-- **`apiKey` is optional in `models.schema.json`.** You can omit `apiKey` on a custom provider and save a key later via `/login <provider>` in `auth.json`. However, Atomic lists a provider's models as available only when some credential is configured, which is why local servers like Ollama use a placeholder such as `"apiKey": "ollama"`.
-- **Non-empty provider entries.** Every provider object in `models.json` must include at least one of `baseUrl`, `headers`, `compat`, non-empty `models` or `modelOverrides`, `apiKey`, or `authHeader`. An empty `{}` entry, or an entry with only `"models": []` or `"modelOverrides": {}`, fails validation.
-
-### Proxy a built-in provider
-
-To route a built-in provider through a proxy while keeping its built-in models and authentication, set only `baseUrl`:
-
-```json
-{
-  "providers": {
-    "anthropic": { "baseUrl": "https://proxy.example.com/v1" }
-  }
-}
-```
+- **`apiKey` is optional in the schema**, so you can omit it and save a key later via `/login <provider>`. However, Atomic lists a provider's models as available only when some credential is present, which is why local servers such as Ollama use a placeholder like `"apiKey": "ollama"`.
+- **Every provider entry must be non-empty** and include at least one of `baseUrl`, `headers`, `compat`, non-empty `models` or `modelOverrides`, `apiKey`, or `authHeader`. An empty `{}` object, or an entry containing only `"models": []` or `"modelOverrides": {}`, fails validation.
+- **Required fields for custom `models`:** Any custom provider defining `models` requires `baseUrl` (unless overriding a built-in provider that already has one) and an `api` at either the provider or model level.
 
 ### OpenAI-compatible server compatibility
 
-Some OpenAI-compatible servers (such as Ollama, vLLM, or SGLang) do not accept the `developer` role or `reasoning_effort`. Set `compat.supportsDeveloperRole` or `compat.supportsReasoningEffort` to `false` at the provider level (applies to all models) or model level (overrides provider defaults):
+Some OpenAI-compatible servers (such as Ollama, vLLM, or SGLang) reject the `developer` role or `reasoning_effort`. Set `compat` flags at the provider level (applies to every model under that provider) or the model level (overrides provider defaults):
 
 ```json
 {
@@ -81,26 +102,24 @@ Some OpenAI-compatible servers (such as Ollama, vLLM, or SGLang) do not accept t
 }
 ```
 
-## Full example
+### Prompt cache lifetimes
 
-Override defaults when you need explicit limits, modalities, or pricing:
+Declare `promptCache` with positive lifetimes in seconds for `short` and `long` cache-retention tiers when configuring a custom model or overriding a built-in model:
 
 ```json
 {
   "providers": {
-    "ollama": {
-      "baseUrl": "http://localhost:11434/v1",
-      "api": "openai-completions",
-      "apiKey": "ollama",
+    "my-gateway": {
+      "baseUrl": "https://gateway.example.com/v1",
+      "api": "anthropic-messages",
+      "apiKey": "$MY_GATEWAY_KEY",
       "models": [
         {
-          "id": "llama3.1:8b",
-          "name": "Llama 3.1 8B (Local)",
-          "reasoning": false,
-          "input": ["text"],
-          "contextWindow": 128000,
-          "maxTokens": 32000,
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+          "id": "claude-sonnet-4-6",
+          "promptCache": {
+            "short": 300,
+            "long": 3600
+          }
         }
       ]
     }
@@ -108,7 +127,21 @@ Override defaults when you need explicit limits, modalities, or pricing:
 }
 ```
 
-## Google AI Studio example
+Atomic's [cache warming](/settings#models-and-thinking) runs only for retention tiers with a declared lifetime. Omit a tier (or `promptCache` altogether) if your endpoint does not advertise a predictable prompt-cache TTL.
+
+## Proxy a built-in provider
+
+To route a built-in provider through an HTTP proxy while keeping its built-in models, authentication, and derived `-fast` variants, set only `baseUrl`:
+
+```json
+{
+  "providers": {
+    "anthropic": { "baseUrl": "https://proxy.example.com/v1" }
+  }
+}
+```
+
+## Add a Google AI Studio model
 
 Use `google-generative-ai` with a `baseUrl` to add Google AI Studio models such as Gemma 4:
 
@@ -133,24 +166,19 @@ Use `google-generative-ai` with a `baseUrl` to add Google AI Studio models such 
 }
 ```
 
-Any custom provider that defines `models` requires a `baseUrl` (unless overriding a built-in provider that already has one) and an `api` at the provider or model level.
-
 ## Catalog refresh and startup defaults
 
-`/model` and `/scoped-models` show the cached authenticated catalog immediately while refreshing network-backed catalogs in the background for up to 15 seconds. Closing either selector cancels the refresh. From the shell, use [`--model`, `--models`, `--list-models`](/reference/cli#model-options), and `atomic update --models` to inspect or refresh catalogs; SDK hosts can configure `ModelRuntime` and `modelsPath` (see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh)).
+`/model` and `/scoped-models` display cached authenticated catalogs immediately while refreshing network-backed catalogs in the background for up to 15 seconds. Closing either picker cancels the refresh. From the shell, use [`--model`, `--models`, `--list-models`](/reference/cli#model-options) and `atomic update --models` to inspect or refresh catalogs.
 
-- **Direct `/model <model_name>`:** When no model scope (`enabledModels` / `--models`) is active, `/model <model_name>` checks the cache first and waits for refresh only on a miss. When a model scope is active, `/model <model_name>` searches only the scoped models and does not trigger a refresh.
-- **Failed or slow refreshes:** If a refresh times out or fails, the selector reports that it is using cached models; you do not need to reset `auth.json` or `~/.atomic`. Login and logout changes stay in effect even if an earlier refresh finishes afterward.
-- **Unsupported `defaultProvider`/`defaultModel`:** Saved defaults in `settings.json` resolve after built-in, `models.json`, and extension providers load. If the saved provider is still unsupported:
-  - **Interactive mode** warns about the saved configuration and leaves model selection open instead of silently switching providers.
-  - **Print and JSON modes** write the error to stderr and exit nonzero before prompting, keeping JSON stdout valid JSONL.
-  - **RPC mode** rejects `prompt` with the same error until `set_model` selects an available model or model cycling returns a different available model.
+- **Direct `/model <name>`:** Without an active model scope (`enabledModels` / `--models`), `/model <name>` checks cached models first and waits for a network refresh only on a miss. With a scope active, `/model <name>` searches only scoped models without triggering a refresh.
+- **Failed or slow refreshes:** If a refresh times out or fails, Atomic keeps showing cached models; you do not need to reset `auth.json` or `~/.atomic`. Login and logout changes stay in effect even if an earlier background refresh finishes afterward.
+- **Unsupported `defaultProvider`/`defaultModel`:** Saved defaults resolve after built-in, `models.json`, and extension providers finish loading. If the saved provider is still unsupported, interactive mode warns and leaves model selection open, print and JSON modes write the error to stderr and exit nonzero (keeping JSON stdout valid JSONL), and RPC rejects `prompt` until a valid model is selected.
 
-If the provider is supported but the model is unknown or lacks credentials, automatic selection picks an available authenticated model. See [Models and thinking](/settings#models-and-thinking).
+For the full startup priority order and daily model switching, see [Choose a model](/models/choose-a-model#how-atomic-picks-your-startup-model). For programmatic catalog persistence in SDK hosts, see [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh).
 
-## Remote compaction models
+## Remote compaction models {#remote-compaction-models}
 
-Add a custom remote compaction endpoint by setting `"type": "compactor"` on a model entry, or override built-in `morph/morph-compactor` parameters under `modelOverrides`. Custom compactor models are excluded from `/model` and appear automatically in `/settings` under **Compaction model**:
+Add a custom remote compaction endpoint by setting `"type": "compactor"` on a model entry, or override built-in `morph/morph-compactor` parameters under `modelOverrides`. Custom compactor models never appear in `/model`; they appear automatically under `/settings` → **Compaction model**:
 
 ```json
 {
@@ -180,22 +208,58 @@ Add a custom remote compaction endpoint by setting `"type": "compactor"` on a mo
 }
 ```
 
-Every custom compactor requires `"api"` at the provider or model level (just like custom chat models; built-in Morph defines its own `"api": "morph-compact"`). Atomic sends `{ messages, query, model }` plus any keys in `compactionParams` (omitting `compactionParams` lets the remote API use its own defaults). A compactor's output has no built-in size limit; set `maxTokens` on the compactor model to reject output longer than that many estimated tokens, or use the endpoint's own size option in `compactionParams` to ask for shorter output. See [Customize Morph or add a remote compactor](/compaction#customize-morph-or-add-a-remote-compactor) and [Compaction reference](/compaction/reference#compactor-request-contract).
+Every custom compactor requires `"api"` at the provider or model level (built-in Morph defines `"api": "morph-compact"`). Atomic sends `{ messages, query, model }` plus any keys in `compactionParams` (omitting `compactionParams` lets the remote API apply its own defaults). Compactor output has no built-in size cap; set `maxTokens` on the compactor model to reject output longer than that many estimated tokens, or pass the endpoint's own compression parameter in `compactionParams`. See [Configure Morph or add a custom compactor](/compaction/custom-compactors#configure-morph-or-add-a-custom-compactor) and [Compaction reference](/compaction/reference#compactor-request-contract).
 
-## Use classifier models
+## Use classifier models {#use-classifier-models}
 
-Classifier models answer typed questions about JSON state instead of chatting and do not appear in `/model`. Configure one for `structured_output` and `decide()` with [`decisionModel`](/settings#decisionmodel) (see [Structured decisions](/sdk/structured-decisions)), or call classifiers from [codemode](/tools#codemode) using `models.getAvailableOfType("classifier")` and `models.classify(model, { state, questions })` (see [Codemode](/codemode#classify)).
+Classifier models answer typed questions (`choice`, `bool`, `score`) about structured JSON state instead of generating chat replies, and they do not appear in `/model`. Pin a classifier for Atomic's structured-decision tool (`structured_output`) and SDK/extension decisions (`decide()`) via [`decisionModel`](/settings#decisionmodel) (see [Structured decisions](/sdk/structured-decisions)), or call classifiers directly from [codemode](/codemode#classify) with `models.getAvailableOfType("classifier")` and `models.classify()`.
 
 Built-in classifiers:
 
-- **GitHub Copilot:** `github-copilot/microsoft-decision-1` (text only, 32,768-token context) through Copilot's System One endpoint, authenticated with Copilot OAuth or `COPILOT_GITHUB_TOKEN`.
 - **OpenAI Decisions:** `openai-decisions/gpt-6-luna` via OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions). It has no `/login` entry and reuses the first OpenAI API key found (`openai-api`, `openai` API key, then `OPENAI_API_KEY`), skipping ChatGPT sign-in. It accepts up to 128 images and up to 922K tokens; requests above roughly 600K tokens may hit a gateway 504 timeout that is not retried. (`openai/gpt-6-luna` always selects the chat model.)
-- **TypeSafe Jev and Cloudflare Clef:** Direct TypeSafe (`typesafe/jev-latest`, `typesafe/jev-1.14.0`, up to 262K tokens with PNG/JPEG images; see [TypeSafe Jev](/providers#typesafe-jev)); Cloudflare Workers AI (`typesafe/jev`, `typesafe/jev-1.14.0` with PNG/JPEG images; Clef, Clef Flash, and Clef Omni with up to four PNG/JPEG/WebP images); OpenRouter (`~typesafe/jev-latest`, `typesafe/jev-1.13`, `typesafe/jev-1.14`, and Clef models with image input where listed); Vercel AI Gateway and OpenCode Zen (text-only Jev).
+- **TypeSafe Jev (direct):** `typesafe/jev-latest` and `typesafe/jev-1.14.0` (up to 262K tokens with PNG/JPEG images; see [TypeSafe Jev](/providers#typesafe-jev)).
+- **Cloudflare Workers AI:** Cloudflare Clef (`@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`, `@cf/cloudflare/clef-omni`, up to four PNG/JPEG/WebP images) and TypeSafe Jev (`typesafe/jev`, `typesafe/jev-1.14.0`, PNG/JPEG images).
+- **OpenRouter:** TypeSafe Jev (`~typesafe/jev-latest`, `typesafe/jev-1.13`, `typesafe/jev-1.14`), Cloudflare Clef, plus additional third-party classifiers such as Liquid D1 (`~liquid/d1-latest`), Perplexity Decider (`~perplexity/pplx-decider-latest`), Baseten (`baseten/bison-1`), Microsoft Decision (`microsoft/microsoft-decision-1.1`), Morph Reflex (`morph/reflex`), and Respan.
+- **Vercel AI Gateway and OpenCode Zen:** Text-only TypeSafe Jev plus additional Vercel AI Gateway classifiers (including Baseten Bison/Mammoth, Liquid D1.2, Microsoft Decision 1/1.1, Perplexity Decider, Google Gemini Decision 1, and OpenAI GPT-6 Luna Decisions).
+- **GitHub Copilot:** `github-copilot/microsoft-decision-1` (text only, 32,768-token context), authenticated with Copilot OAuth or `COPILOT_GITHUB_TOKEN`.
 - **Local llama.cpp:** Native decision models and a next-token-probability fallback for chat models; see [Local classification](/llama-cpp#classification).
 
-System One services expect different image request formats, controlled by `compat.imageInput`. Built-in models configure it automatically, so overriding `baseUrl` preserves it. For a custom proxy that reaches another classifier service, set `imageInput` and `sendImageOptInHeader` in provider-level `compat`; see [System One compatibility](/models-configuration#typesafe-system-one). A proxy in front of OpenRouter needs `"imageInput": "state-image-urls"` and `"sendImageOptInHeader": false` so OpenRouter does not silently drop images.
+Open `/settings` → **Decision model** or run `models.getAvailableOfType("classifier")` in codemode to see every classifier available for your authenticated providers.
 
-## Fallbacks and credentials
+TypeSafe's **System One** classifier protocol (`/v1/systemone`)—also used by Cloudflare Workers AI, OpenRouter, GitHub Copilot, and Vercel AI Gateway classifiers—accepts different image request layouts depending on the host, controlled by `compat.imageInput` (`"assets"`, `"images"`, or `"state-image-urls"`). Built-in entries configure this automatically, so overriding `baseUrl` preserves it. For a custom proxy targeting another classifier service, set `imageInput` and `sendImageOptInHeader` in provider-level `compat` (for example, a proxy in front of OpenRouter needs `"imageInput": "state-image-urls"` and `"sendImageOptInHeader": false` so OpenRouter does not silently drop images). See [System One compatibility](/models-configuration#typesafe-system-one).
+
+## Use image models {#use-image-models}
+
+Image models generate and edit images instead of chatting and never appear in `/model`. Call them from [codemode](/codemode#generate-images) via `models.getAvailableOfType("image")` and `models.generateImages()`, or from an extension via `ctx.modelRegistry.generateImages()`.
+
+Built-in image providers:
+
+- **OpenAI Images (`openai-images`):**
+  - Models: `gpt-image-1`, `gpt-image-1-mini`, `gpt-image-1.5`, `gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2.6-flare`, and `gpt-image-2.6-sunburst`.
+  - **Authentication:** No separate `/login` entry; reuses the first OpenAI API key found (`openai-api`, `openai` API key, then `OPENAI_API_KEY`), skipping ChatGPT sign-in. If you only signed in with ChatGPT, save a key via `/login openai-api` or set `OPENAI_API_KEY`.
+  - **Editing and options:** Pass text and image blocks in `input` (the first untagged image is the base image, extra untagged images are references, and optional `role: "markup"` on GPT Image 2.5+ or `role: "mask"` are mutually exclusive). Supported options include `size`, `quality`, `n`, `background` (`"transparent"` requires `"png"` or `"webp"`), `outputFormat` (`"png"`, `"jpeg"`, `"webp"`, plus `"svg"` and `"gif"` on GPT Image 2.6), `outputCompression` (`0`–`100` for JPEG/WebP), `complexity` (`"low"`, `"medium"`, or `"high"` on GPT Image 2.6), `moderation`, and `safetyIdentifier` (up to 128 characters).
+  - **SVG and animated GIF (GPT Image 2.6):** `outputFormat: "svg"` requires `n: 1` (or omitted); leave `svg` unset so Atomic retries automatically with `gpt-6.1-sol` if your account requires `svg.model`, or pass `svg: { model, reasoning }` to pin a specific authoring model. `outputFormat: "gif"` accepts `frameCount` (`2`–`16`, default `9`) and `frameDurationMs` (`20`–`2000`, default `200`, rounded to 10 ms).
+- **OpenRouter (`openrouter`):**
+  - Reuses your OpenRouter credential (`/login openrouter` or `OPENROUTER_API_KEY`).
+  - Exposes multi-vendor image models through OpenRouter's image generation API—such as `google/gemini-2.5-flash-image`, `google/gemini-3-pro-image`, `black-forest-labs/flux.2-pro`, `black-forest-labs/flux-3-image`, `openai/gpt-image-2.6-flare`, and `recraft/recraft-v4-pro-vector`. OpenAI-specific `ImagesOptions` are ignored by OpenRouter image models.
+
+Example in [codemode](/codemode#generate-images):
+
+```javascript
+// @options: {"timeout_ms": 180000}
+const painter = await models.getModelOfType("image", "openai-images", "gpt-image-2.6-flare");
+const result = await models.generateImages(
+  painter,
+  { input: [{ type: "text", text: "A minimalist geometric compass icon, flat vector" }] },
+  { outputFormat: "svg" }
+);
+if (result.stopReason !== "stop") return result.error ?? result.errorMessage;
+return { svgModel: result.svgModel, mimeTypes: result.output.map((block) => block.mimeType) };
+```
+
+To register a custom image provider or API, see [Build custom providers](/custom-provider).
+
+## Fallbacks and credentials {#fallbacks-and-credentials}
 
 A model chain starts with a pinned model followed by `fallbackModels` in a session or subagent; `model: "auto"` starts with your configured default model:
 
@@ -205,10 +269,11 @@ A model chain starts with a pinned model followed by `fallbackModels` in a sessi
 
 For full fallback, model-scope, and subagent selection rules, see [`fallbackModels`](/settings#fallbackmodels), [`enabledModels`](/settings#enabledmodels), [CLI model options](/reference/cli#model-options), and [Automatic model selection](/subagents/reference#automatic-model-selection).
 
-## Related reference
-
-- [`models.json` field reference](/models-configuration): every provider, model, override, and compatibility field.
-- [Model configuration reference](/models/reference): supported APIs, value resolution, custom headers, OpenAI built-in models, image limits, sampling parameters, cost tiers, thinking level maps, overrides, fast variants, and API compatibility rules.
-- [Model providers](/providers): subscription sign-ins, API keys, `auth.json`, and credential precedence.
-- [Build custom providers](/custom-provider): register custom streaming, image, classifier, or compactor APIs and OAuth flows in an extension.
-- [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh): programmatic `ModelRuntime` and `modelsPath` configuration.
+<Columns cols={2}>
+  <Card title="Model runtime & overrides" href="/models/reference">
+    Supported APIs, secret/header resolution, overrides, cost tiers, fast variants, and API compatibility rules.
+  </Card>
+  <Card title="models.json field reference" href="/models-configuration">
+    Complete schema table for every provider, model, override, and compatibility field.
+  </Card>
+</Columns>

@@ -1,8 +1,17 @@
 ---
 title: "Custom provider API reference"
-sidebarTitle: "Custom provider API"
-description: "TypeScript interfaces and methods for registerProvider(), registerProviderAlias(), unregisterProvider(), and model definitions."
+sidebarTitle: "Custom Provider API"
+description: "Package imports, TypeScript interfaces, and method signatures for registerProvider(), registerProviderAlias(), unregisterProvider(), OAuth callbacks, and native Provider registrations."
 ---
+
+## Package imports
+
+Extension registration interfaces live in `@bastani/atomic`, while core provider, streaming, and OAuth credential types live in `@bastani/atomic-ai`:
+
+| Package | Exports |
+| --- | --- |
+| `@bastani/atomic` | `ExtensionAPI`, `ProviderConfig`, `ProviderModelConfig`, `ProviderChatModelConfig`, `ProviderImageModelConfig`, `ProviderClassifierModelConfig`, `ProviderCompactorModelConfig`, `ProviderAliasConfig`, `AtomicProviderCompat`, `OAuthRefreshRejectedError`, `isOAuthRefreshRejectedError` |
+| `@bastani/atomic-ai` | `Provider`, `ProviderAuth`, `ApiKeyAuth`, `OAuthAuth`, `ProviderImages`, `ProviderClassifier`, `RefreshModelsContext`, `ModelsStoreEntry`, `ModelsPublication`, `Credential`, `OAuthCredentials`, `OAuthLoginCallbacks`, `OAuthRefreshRejectedError`, `Api`, `ImageApi`, `ClassifierApi`, `CompactorApi`, `Model`, `Context`, `TranscriptContext`, `SimpleStreamOptions`, `AssistantMessageEventStream`, `createAssistantMessageEventStream`, `calculateCost`, `getCurrentSystemPrompt`, `getCurrentTools`, `ToolCallArgumentsStream`, `SystemOneCompat`, `ImageModelCapabilities`, `ModelInputLimits` |
 
 ## Extension methods
 
@@ -17,26 +26,26 @@ interface ExtensionAPI {
 }
 ```
 
-- Calling `registerProvider(name, config)` again for the same `name` merges defined fields over the previous registration (except when setting or replacing `aliasOf`, which resets it).
-- `registerProvider`, `registerProviderAlias`, and `unregisterProvider` take effect immediately when called after initial extension loading without running `/reload`.
+- Calling `registerProvider(name, config)` again for the same `name` merges defined fields over the previous registration, except when setting or replacing `aliasOf`, which resets it.
+- Calls made after initial extension loading take effect immediately without running `/reload`.
 
-## Config reference
+## ProviderConfig
 
 ```typescript
 interface ProviderConfig {
   /** Display name for the provider in UI such as /login. */
   name?: string;
 
-  /** Source provider ID to alias (shorthand equivalent of registerProviderAlias). No other config fields may be set alongside aliasOf except name. */
+  /** Source provider ID to alias (equivalent to registerProviderAlias). Only `name` may be set alongside `aliasOf`. */
   aliasOf?: string;
 
   /** API endpoint URL. Required at provider or model level when defining models (unless overriding a built-in provider). */
   baseUrl?: string;
 
-  /** Optional API key literal or config value ("$ENV_VAR", "${ENV_VAR}", or "!command"). Omitting it lets users authenticate via /login <provider> in auth.json. */
+  /** Optional API key literal or config value ("$ENV_VAR", "${ENV_VAR}", or "!command"). Omitting it lets users authenticate via /login <provider>. */
   apiKey?: string;
 
-  /** Default API for chat and compactor models. Required at provider level when supplying streamSimple, and at provider or model level when defining chat or compactor models. */
+  /** Default API for chat and compactor models. Required at provider level when supplying `streamSimple`, and at provider or model level when defining chat or compactor models. */
   api?: Api;
 
   /** Custom streaming implementation for non-standard chat APIs. */
@@ -46,16 +55,16 @@ interface ProviderConfig {
     options?: SimpleStreamOptions
   ) => AssistantMessageEventStream;
 
-  /** Image API implementations keyed by each image model's api. */
+  /** Image API implementations keyed by each image model's `api`. */
   images?: Partial<Record<ImageApi, ProviderImages>>;
 
-  /** Classifier API implementations keyed by each classifier model's api. */
+  /** Classifier API implementations keyed by each classifier model's `api`. */
   classifiers?: Partial<Record<ClassifierApi, ProviderClassifier>>;
 
-  /** Custom headers sent with every request. Values use the same config-value syntax as apiKey. */
+  /** Custom headers sent with every request. Values use the same config-value syntax as `apiKey`. */
   headers?: Record<string, string>;
 
-  /** When true, sends Authorization: Bearer <apiKey>. Fails if no API key resolves. */
+  /** When true, sends `Authorization: Bearer <apiKey>`. Fails if no API key resolves. */
   authHeader?: boolean;
 
   /** Models to register. Replaces all existing chat, image, classifier, and compactor models for this provider. */
@@ -64,7 +73,7 @@ interface ProviderConfig {
   /** Refresh this provider's catalog. Returned definitions replace extension-provided models. */
   refreshModels?(context: RefreshModelsContext): Promise<ProviderModelConfig[]>;
 
-  /** OAuth provider for /login support. */
+  /** OAuth provider configuration for /login support. See OAuthLoginCallbacks and OAuthCredentials below. */
   oauth?: {
     name: string;
     loginLabel?: string;
@@ -78,9 +87,9 @@ interface ProviderConfig {
 }
 ```
 
-## Model definition reference
+## ProviderModelConfig
 
-`ProviderModelConfig` is a discriminated union of chat (`type?: "chat"`), image (`type: "image"`), classifier (`type: "classifier"`), and compactor (`type: "compactor"`) model definitions:
+`ProviderModelConfig` is a discriminated union of chat (`type?: "chat"`), image (`type: "image"`), classifier (`type: "classifier"`), and compactor (`type: "compactor"`) definitions:
 
 ```typescript
 interface ProviderModelConfigBase {
@@ -109,7 +118,7 @@ interface ProviderModelConfigBase {
     cacheRead: number;
     cacheWrite: number;
     tiers?: Array<{
-      /** Tier applies only when input + cacheRead + cacheWrite strictly exceeds this value. */
+      /** Tier applies only when `input + cacheRead + cacheWrite` strictly exceeds this value. */
       inputTokensAbove: number;
       input: number;
       output: number;
@@ -135,7 +144,7 @@ interface ProviderChatModelConfig extends ProviderModelConfigBase {
   /** Best-effort prompt cache lifetimes in seconds for short and long retention tiers. */
   promptCache?: { short?: number; long?: number };
   samplingParams?: Record<string, unknown>;
-  /** Sampling parameter overrides applied per Atomic thinking level on top of samplingParams. */
+  /** Sampling parameter overrides applied per Atomic thinking level on top of `samplingParams`. */
   samplingParamsByThinkingLevel?: Partial<
     Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", Record<string, unknown>>
   >;
@@ -154,8 +163,8 @@ interface ProviderClassifierModelConfig extends ProviderModelConfigBase {
   type: "classifier";
   api?: ClassifierApi;
   contextWindow: number;
-  /** Classifier API compatibility overrides (such as System One imageInput and sendImageOptInHeader). */
-  compat?: ClassifierCompat;
+  /** Compatibility overrides for System One classifier APIs (`typesafe-system-one`, `cloudflare-workers-ai-system-one`). */
+  compat?: SystemOneCompat;
 }
 
 interface ProviderCompactorModelConfig extends ProviderModelConfigBase {
@@ -168,7 +177,7 @@ interface ProviderCompactorModelConfig extends ProviderModelConfigBase {
   compactionParams?: Record<string, unknown>;
   /** Wall-clock request timeout in milliseconds (default `120000`). */
   timeoutMs?: number;
-  /** Optional upper bound on compacted output in estimated tokens; longer output clears the context instead. No default: omitted means no size limit. */
+  /** Optional upper bound on compacted output in estimated tokens; longer output clears the context instead. Omitted means no limit. */
   maxTokens?: number;
 }
 
@@ -187,13 +196,76 @@ For how Atomic sends requests to `ProviderCompactorModelConfig` endpoints, see [
 
 ### Compatibility and capability flags
 
-For the complete list of per-API `compat` fields (`thinkingFormat`, `chatTemplateKwargs`, `chatTemplateArgs`, `thinkingTokenBudgetField`, `vllmPriority`, `cacheControlFormat`, `supportsToolSearch`, `supportsAdditionalTools`, `supportsExplicitPromptCacheMode`, `supportsMidConvoEffort`, and more), see [`models.json` field reference](/models-configuration#compatibility).
+For the complete list of per-API `compat` fields, see [`models.json` compatibility fields](/models-configuration#compatibility). Keep these rules in mind when declaring capabilities on custom providers:
 
-Keep these rules in mind when declaring capabilities on custom providers:
-
-- **Capability flags are enforcement claims, not preferences.** `supportsStrictMode` controls strict JSON-schema tools for OpenAI-compatible APIs and Amazon Bedrock Converse (`bedrock-converse-stream`); `supportsStrictTools` applies to Anthropic Messages (`anthropic-messages`) only; `supportsOpenAIGrammarTools` (or Atomic's alias `supportsGrammarTools`, where the canonical field wins on conflict) controls OpenAI Lark/regex custom tools. Leave these unset or `false` unless the endpoint actually enforces them. See [Constrained sampling](/extensions/authoring#constrained-sampling).
+- **Capability flags are enforcement claims, not preferences.** `supportsStrictMode` enables strict JSON-schema tools for OpenAI-compatible APIs and Amazon Bedrock Converse (`bedrock-converse-stream`); `supportsStrictTools` applies to Anthropic Messages (`anthropic-messages`) only; `supportsOpenAIGrammarTools` (or Atomic's alias `supportsGrammarTools`, where the canonical field wins on conflict) enables OpenAI Lark/regex custom tools. Leave these unset or `false` unless the endpoint actually enforces them ([Constrained sampling](/extensions/authoring#constrained-sampling)).
 - **Session affinity headers differ by OpenAI API.** For `openai-responses`, `compat.sessionAffinityFormat: "openai"` sends `session-id` (with `-`) and `x-client-request-id`, `"openai-nosession"` sends only `x-client-request-id`, and `"openrouter"` sends `x-session-id`. For `openai-completions`, `"openai"` sends `session_id` (with `_`), `x-client-request-id`, and `x-session-affinity`.
 - **Responses gateway options.** Set `supportsToolSearch: true` only on `openai-responses` providers that support deferred tool loading. `supportsMaxOutputTokens` defaults to `true`; set it to `false` for Responses-compatible gateways that reject `max_output_tokens` with HTTP 400.
+
+## OAuthLoginCallbacks
+
+`callbacks` exposes the user-interaction surface passed to `ProviderConfig.oauth.login()` (see [Add OAuth login to a provider](/custom-provider/oauth)):
+
+```typescript
+interface OAuthLoginCallbacks {
+  /** Open a URL in the browser (for OAuth redirects). */
+  onAuth(info: { url: string; instructions?: string }): void;
+
+  /** Show a device code (for device authorization flows). */
+  onDeviceCode(info: {
+    userCode: string;
+    verificationUri: string;
+    openBrowserOnConfirm?: boolean; // default true
+    copyCodeOnConfirm?: boolean; // default true
+    intervalSeconds?: number;
+    expiresInSeconds?: number;
+  }): void;
+
+  /** Prompt the user for input (for manual code or token entry). */
+  onPrompt(prompt: {
+    message: string;
+    placeholder?: string;
+    allowEmpty?: boolean;
+  }): Promise<string>;
+
+  /** Report non-blocking status updates during login. */
+  onProgress?(message: string): void;
+
+  /** Read a manually pasted redirect URL or authorization code. */
+  onManualCodeInput?(): Promise<string>;
+
+  /** Let the user pick from a list of options (for example tenant or workspace). */
+  onSelect(prompt: {
+    message: string;
+    options: Array<{ id: string; label: string }>;
+  }): Promise<string | undefined>;
+
+  /** Cancellation signal for the active login attempt. */
+  signal?: AbortSignal;
+}
+```
+
+In `/login`, pressing **Enter** on a device-code prompt opens the verification URL and copies `userCode` by default. Set `openBrowserOnConfirm: false` or `copyCodeOnConfirm: false` to disable either action.
+
+## OAuthCredentials
+
+OAuth credentials persist to `~/.atomic/agent/auth.json` (Atomic may also read legacy `~/.pi/agent/auth.json`):
+
+```typescript
+interface OAuthCredentials {
+  /** Refresh token passed to refreshToken(). */
+  refresh: string;
+
+  /** Access token returned by getApiKey(). */
+  access: string;
+
+  /** Expiration timestamp in Unix milliseconds. */
+  expires: number;
+
+  /** Optional provider-specific metadata persisted alongside the tokens. */
+  [key: string]: unknown;
+}
+```
 
 ## ProviderAliasConfig
 
@@ -217,8 +289,22 @@ interface ProviderAliasConfig {
 Passed to `refreshModels(context)` on both `ProviderConfig` and native `Provider` registrations:
 
 ```typescript
+interface ModelsStoreEntry {
+  /** Persisted models of every type (chat, image, classifier, compactor). */
+  models: readonly AnyModel[];
+  /** Optional Last-Modified Unix timestamp from the remote catalog. */
+  lastModified?: number;
+}
+
+interface ModelsPublication {
+  /** Persisted catalog entry for models-store.json. Omit to leave storage unchanged; null deletes it. */
+  persist?: ModelsStoreEntry | null;
+  /** Optional synchronous callback to update provider-private in-memory catalog state. */
+  update?: () => void;
+}
+
 interface RefreshModelsContext {
-  /** Effective configured credential (OAuth tokens are refreshed before network access). */
+  /** Effective configured credential (`ApiKeyCredential | OAuthCredential`). OAuth tokens are refreshed before network access. */
   credential?: Credential;
 
   /** Immutable provider-scoped catalog snapshot read from models-store.json before this refresh. */
@@ -271,6 +357,12 @@ interface ProviderClassifier {
 For full control over authentication flows, credential-scoped model filtering, and persisted catalog state, pass a native `Provider<TApi>` object from `@bastani/atomic-ai` directly to `atomic.registerProvider(provider)`:
 
 ```typescript
+/** At least one of `apiKey` or `oauth` is required. */
+interface ProviderAuth {
+  apiKey?: ApiKeyAuth;
+  oauth?: OAuthAuth;
+}
+
 interface Provider<TApi extends Api = Api> {
   readonly id: string;
   readonly name: string;
@@ -289,3 +381,5 @@ interface Provider<TApi extends Api = Api> {
   classify?(model: ClassifierModel<ClassifierApi>, context: ClassifierContext, options?: ClassifierOptions): Promise<ClassifierResult>;
 }
 ```
+
+`Credential` is the union of stored API-key credentials (`{ type: "api_key"; key?: string; env?: Record<string, string> }`) and stored OAuth credentials (`{ type: "oauth"; refresh: string; access: string; expires: number; [key: string]: unknown }`).

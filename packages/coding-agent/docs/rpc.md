@@ -1,19 +1,29 @@
 ---
-title: "RPC mode"
-sidebarTitle: "RPC mode"
-description: "Drive a long-lived Atomic process over stdin and stdout using newline-delimited JSON commands and events."
+title: "Drive Atomic over RPC"
+sidebarTitle: "Drive over RPC"
+description: "Drive a long-lived Atomic process over stdin and stdout using newline-delimited JSON commands, concurrency lanes, and streamed events."
 ---
 
 RPC mode runs Atomic headless over a JSON Lines protocol on stdin and stdout. Use it to integrate Atomic into non-Node languages, editors, IDEs, or custom UIs.
 
-If you are building a Node.js or TypeScript application, you can embed `AgentSession` directly with the [TypeScript SDK](/sdk) or use the typed `RpcClient` exported from `@bastani/atomic` (see [RPC client examples](/rpc/examples)). Compare all three programmatic modes on [Programmatic integration](/programmatic).
+If you are building a Node.js or TypeScript application, you can embed `AgentSession` directly with the [TypeScript SDK](/sdk) or use the typed `RpcClient` exported from `@bastani/atomic` (see [Connect with RPC clients](/rpc/examples)). Compare all four programmatic modes on [Choose an integration mode](/programmatic).
 
 ## Reference pages
 
-- [RPC protocol reference](/rpc/protocol): every command, streamed event, error code, and JSON type.
-- [RPC extension UI protocol](/rpc/extension-ui): handle extension dialogs, widgets, questionnaires, and OAuth prompts.
-- [RPC client examples](/rpc/examples): TypeScript `RpcClient` and standalone Node.js examples.
-- [Stored session summaries](/rpc/protocol#stored-session-summaries): inspect saved sessions without starting a model turn.
+<Columns cols={2}>
+  <Card title="RPC protocol reference" href="/rpc/protocol">
+    Every RPC command, streamed event, structured error code, and JSON wire type.
+  </Card>
+  <Card title="Handle extension UI over RPC" href="/rpc/extension-ui">
+    Answer extension dialogs, notifications, widgets, questionnaires, and OAuth prompts.
+  </Card>
+  <Card title="Connect with RPC clients" href="/rpc/examples">
+    TypeScript `RpcClient` recipes, caveats, and a standalone Node.js client.
+  </Card>
+  <Card title="Stored session summaries" href="/rpc/protocol#stored-session-summaries">
+    Inspect saved sessions with `get_session_summary` and `list_sessions` without starting a model turn.
+  </Card>
+</Columns>
 
 ## Starting RPC mode
 
@@ -36,19 +46,42 @@ Common startup options:
 - `--storage '<json>'` / `--storage-file <path>`: select storage for this process's sessions.
 - `--tools <list>` / `--no-tools` / `--exclude-tools <list>`: control which tools are active.
 
+<Note>
+`@file` CLI arguments are **not supported** in RPC mode; passing any `@file` argument writes an error to stderr and exits immediately with code `1`. Send file content or base64 `images` inside `prompt`, `steer`, or `follow_up` commands instead.
+</Note>
+
 To isolate an RPC subprocess's session store without changing user settings, start it with `ATOMIC_STORAGE` or `--storage` set to the same JSON object as the `storage` setting (for example, an adapter config reading secrets from `{ "env": "..." }`). `list_sessions` reports that store while other `atomic` processes keep their own settings. Invalid storage selections fail at startup with `StorageConfigError`. See [Selecting storage per process](/storage#selecting-storage-per-process).
 
 ## Protocol overview
 
-- **Commands**: JSON objects written to stdin, one per line.
-- **Responses**: JSON objects with `type: "response"` reporting command success or failure.
-- **Events**: session events streamed to stdout as JSON lines.
+- **Commands:** JSON objects written to stdin, one per line.
+- **Responses:** JSON objects with `type: "response"` reporting command success or failure.
+- **Events:** session events streamed to stdout as JSON lines.
 
 Every command accepts an optional `id` string for request correlation. When you send `id`, the matching response echoes the same `id`.
 
 If a saved default `provider/model` names a provider that remains unsupported after startup, the process stays alive and `prompt` returns a correlated error containing the configuration diagnostic before emitting any event. Non-prompt commands such as `get_available_models` keep working. Clear the error state with a successful explicit `set_model`, or a `cycle_model` that switches to a different available model (an unchanged or `null` cycle does not clear it). Supported providers with an unknown model or missing credentials fall back automatically as usual.
 
-On compacted or branched sessions, `get_entries` and `get_tree` return the loaded context window, while `get_fork_messages` still includes prompts from older branches using short picker labels. Use [`get_history_page`](/rpc/protocol#get_history_page) (following `nextCursor`) and `get_history_chunk` to read older entries and oversized items.
+On compacted or branched sessions, `get_entries` and `get_tree` return the loaded context window, while `get_fork_messages` still includes prompts from older branches using short picker labels. Use [`get_history_page`](/rpc/protocol#get_history_page) (following `nextCursor`) and [`get_history_chunk`](/rpc/protocol#get_history_chunk) to read older entries and oversized items.
+
+### Waiting for turns to finish (`agent_settled` vs. `agent_end`)
+
+A single `prompt` can trigger retries, model fallbacks, automatic compaction recovery, or queued turns:
+
+- Check the `prompt` response's `data.disposition` first. If `disposition` is `"handled"`, an extension command or input hook consumed the message and **no turn started** — do not wait for `agent_end` or `agent_settled`.
+- `agent_end` fires after **one** low-level agent loop finishes, even when a retry (`retryPending: true`), post-compaction continuation, or queued follow-up is about to run next.
+- **`agent_settled`** fires once the entire turn chain finishes with no automatic work remaining (`{ "type": "agent_settled", "aborted": false }`). Wait for `agent_settled` rather than `agent_end` before closing stdin or treating a multi-step prompt as done.
+
+## Command execution and concurrency
+
+Atomic dispatches stdin frames across two lanes so cancellations and extension UI replies are never blocked behind slow commands:
+
+| Lane | Commands | Behavior |
+| --- | --- | --- |
+| **Sequential (FIFO) lane** | Ordinary commands (`get_state`, `set_model`, `switch_session`, `compact`, `prompt`, etc.) | Executed strictly one at a time in arrival order. `prompt` responds once preflight completes and detaches immediately so later commands run while the turn streams. In standalone RPC mode, `compact` holds this lane until compaction completes. |
+| **Concurrent / control lane** | Interrupts (`abort`, `cancel_login_provider`, `abort_compaction`, `abort_branch_summary`, `abort_retry`, `abort_bash`, `pause_queued_messages`, `resume_queued_messages`, `clear_queue`), `extension_ui_response`, and concurrent commands (`bash`, `user_bash`, `refresh_models`, `set_compaction_model`, `set_decision_model`, `start_pending_recovery`, `stop_all_background`) | Bypass the sequential queue and run immediately even while an ordinary command (such as `compact` or a slow `switch_session`) is in flight. |
+
+Because the first sequential frame starts synchronously before the next line is read, a follow-up interrupt sent immediately after a command cannot overtake the command's initialization.
 
 ### Framing
 
@@ -62,7 +95,9 @@ Client framing rules:
 - Strip an optional trailing `\r` from `\r\n` lines.
 - Avoid generic line readers that split on Unicode line separators (`U+2028`, `U+2029`) or bare `\r`.
 
-Node's `readline` module is not protocol-compliant because it splits on `U+2028` and `U+2029`, which are valid unescaped inside JSON strings. Similarly, Python's `text=True` universal newlines mode splits on bare `\r`; read raw bytes and split on `b"\n"`.
+<Warning>
+Node's `readline` module is **not** protocol-compliant because it splits on `U+2028` and `U+2029`, which are valid unescaped inside JSON strings. Similarly, Python's `text=True` universal newlines mode splits on bare `\r`; always read raw bytes and split strictly on `b"\n"`.
+</Warning>
 
 ## Shutdown and signals
 
@@ -74,7 +109,7 @@ Node's `readline` module is not protocol-compliant because it splits on `U+2028`
 
 ## Example Python client
 
-This minimal client reads stdout as binary lines split strictly on `\n`, sends one prompt, prints streamed text deltas, and closes stdin for orderly shutdown:
+This minimal client reads stdout as binary lines split strictly on `\n`, sends one correlated `prompt`, checks `data.disposition` in case an extension command handled it without starting a turn, streams text deltas, waits for `agent_settled` (covering any retries or continuations), and closes stdin for orderly shutdown:
 
 ```python
 import json
@@ -108,13 +143,18 @@ def read_events():
                 yield json.loads(line.decode("utf-8"))
 
 try:
-    send({"type": "prompt", "message": "Hello!"})
+    send({"id": "p-1", "type": "prompt", "message": "Hello!"})
     for event in read_events():
-        if event.get("type") == "message_update":
+        if event.get("type") == "response" and event.get("id") == "p-1":
+            if not event.get("success"):
+                raise RuntimeError(event.get("error", "prompt failed"))
+            if event.get("data", {}).get("disposition") == "handled":
+                break
+        elif event.get("type") == "message_update":
             delta = event.get("assistantMessageEvent", {})
             if delta.get("type") == "text_delta":
                 print(delta["delta"], end="", flush=True)
-        if event.get("type") == "agent_end":
+        elif event.get("type") == "agent_settled":
             print()
             break
 finally:

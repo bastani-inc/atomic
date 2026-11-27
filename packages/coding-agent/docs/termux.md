@@ -1,52 +1,77 @@
 ---
-title: "Termux (Android) setup"
-sidebarTitle: "Termux (Android)"
-description: "Install Atomic in Termux on Android, build the required native module, and configure clipboard access."
+title: "Run Atomic on Android (Termux)"
+sidebarTitle: "Run on Android (Termux)"
+description: "Install Atomic in Termux on Android, compile the required native module locally, and configure clipboard and storage access."
 ---
 
 [Termux](https://termux.dev/) provides a terminal emulator and Linux environment on Android.
 
+<Warning>
+**Community-supported platform:** Android uses bionic libc rather than glibc or musl, so Atomic's `install.sh` installer does not run on Termux (it exits with `unsupported Linux libc: bionic`) and Atomic does not publish prebuilt Android ARM64 native binaries. You must install Atomic via npm and compile the required native module (`@bastani/atomic-natives`) locally with Rust before starting a session.
+</Warning>
+
 ## Requirements and limitations
 
-- **Do not run `install.sh`:** Termux uses Android's bionic libc rather than glibc or Alpine's musl libc. Running Atomic's release-archive installer exits with `unsupported Linux libc: bionic`.
-- **Local Android ARM64 native module required:** Atomic requires `@bastani/atomic-natives` to start any session and exits with `NativeModuleUnavailableError` when no compatible binary is found. Atomic does not publish a prebuilt Android ARM64 package. Build the addon locally from `crates/atomic-natives` in the [Atomic repository](https://github.com/bastani-inc/atomic) using Rust and `@napi-rs/cli` (NAPI-RS), then set `NAPI_RS_NATIVE_LIBRARY_PATH` to the compiled `.node` file. Setting `NAPI_RS_NATIVE_LIBRARY_PATH` bypasses Atomic's exact native-module release version check; add the `export` line to `~/.bashrc` so it persists across shells.
-- **Install `fd` and `ripgrep` from Termux:** On Android, Atomic does not auto-download Linux `fd` or `rg` binaries because they cannot run on bionic libc. Install both packages through `pkg`.
-- **Termux apps:** Install [Termux](https://github.com/termux/termux-app#installation) and [Termux:API](https://github.com/termux/termux-api#installation) from GitHub or F-Droid (the Google Play version is deprecated).
+- **Termux apps:** Install both [Termux](https://github.com/termux/termux-app#installation) and [Termux:API](https://github.com/termux/termux-api#installation) from GitHub or F-Droid (the Google Play version is deprecated).
+- **Install `fd` and `ripgrep` through `pkg`:** On Android, Atomic does not auto-download Linux `fd` or `rg` binaries because they cannot run on bionic libc.
 - **Text-only clipboard:** Image clipboard paste (`Ctrl+V`) is not supported on Termux.
 - **Shared storage access:** Run `termux-setup-storage` once to grant access to `/storage/emulated/0`.
 
 ## Install Atomic in Termux
 
-```bash
-# Update packages
-pkg update && pkg upgrade
+<Steps>
+  <Step title="Install Termux dependencies">
+    Update Termux packages and install Node.js, Git, Termux:API CLI helpers, `fd`, `ripgrep`, and the Rust/C toolchain needed to compile the native module:
 
-# Install Node.js, Git, Termux:API CLI tools, fd, and ripgrep
-pkg install nodejs termux-api git fd ripgrep
+    ```bash
+    pkg update && pkg upgrade
+    pkg install nodejs termux-api git fd ripgrep rust clang
+    ```
+  </Step>
 
-# Install Atomic with npm (included with Termux's nodejs package)
-npm install -g --ignore-scripts @bastani/atomic
+  <Step title="Install the Atomic CLI">
+    Install `@bastani/atomic` globally with npm (included with Termux's `nodejs` package). Atomic does not require npm install scripts, so `--ignore-scripts` is safe:
 
-# Create config directory
-mkdir -p ~/.atomic/agent
+    ```bash
+    npm install -g --ignore-scripts @bastani/atomic
+    mkdir -p ~/.atomic/agent
+    ```
+  </Step>
 
-# Point Atomic to your locally built Android ARM64 native module
-export NAPI_RS_NATIVE_LIBRARY_PATH=/path/to/atomic_natives.android-arm64.node
-echo 'export NAPI_RS_NATIVE_LIBRARY_PATH=/path/to/atomic_natives.android-arm64.node' >> ~/.bashrc
+  <Step title="Compile the Android ARM64 native module">
+    Clone the Atomic release tag matching your installed npm version, compile the native library with Cargo, and copy the resulting `.node` binary into `~/.atomic/agent`:
 
-# Run Atomic
-atomic
-```
+    ```bash
+    ATOMIC_VER="$(node -p "require('$(npm root -g)/@bastani/atomic/package.json').version")"
+    git clone --depth 1 --branch "$ATOMIC_VER" https://github.com/bastani-inc/atomic.git ~/atomic-src
+    cd ~/atomic-src
+    cargo build --release --manifest-path crates/atomic-natives/Cargo.toml
+    cp target/release/libatomic_natives.so ~/.atomic/agent/atomic_natives.android-arm64.node
+    ```
 
-Atomic does not require npm install scripts, so `--ignore-scripts` is safe.
+    You can remove `~/atomic-src` after copying the compiled `.node` binary.
+  </Step>
+
+  <Step title="Point Atomic to the compiled native module and start">
+    Set `NAPI_RS_NATIVE_LIBRARY_PATH` in your current shell and persist it in `~/.bashrc`, then launch Atomic:
+
+    ```bash
+    export NAPI_RS_NATIVE_LIBRARY_PATH="$HOME/.atomic/agent/atomic_natives.android-arm64.node"
+    echo 'export NAPI_RS_NATIVE_LIBRARY_PATH="$HOME/.atomic/agent/atomic_natives.android-arm64.node"' >> ~/.bashrc
+    atomic
+    ```
+  </Step>
+</Steps>
+
+<Note>
+Setting `NAPI_RS_NATIVE_LIBRARY_PATH` bypasses Atomic's exact native-module release version check. When you upgrade `@bastani/atomic` later, rebuild the `.node` file from the matching release tag so native bindings stay in sync.
+</Note>
 
 ## Clipboard support
 
 When `TERMUX_VERSION` is set, Atomic uses `termux-clipboard-set` and `termux-clipboard-get` for text clipboard operations. Both commands time out after 5 seconds and require both the Termux:API Android app and the `termux-api` package.
 
-If `termux-clipboard-set` fails, Atomic does not automatically fall back to OSC 52 unless you are connected over SSH, Mosh, or Rex, or set `ATOMIC_CLIPBOARD_OSC52=1`. Otherwise Atomic reports that the clipboard is unavailable.
-
-Image clipboard paste (`Ctrl+V`) is not supported on Termux.
+If `termux-clipboard-set` fails, Atomic does not automatically fall back to OSC 52 unless you are connected over SSH, Mosh, or Rex, or set `ATOMIC_CLIPBOARD_OSC52=1`. Otherwise Atomic reports that the clipboard is unavailable. Image clipboard paste (`Ctrl+V`) is not supported on Termux.
 
 ## Example AGENTS.md for Termux
 
@@ -77,14 +102,17 @@ Create `~/.atomic/agent/AGENTS.md` to document your Termux environment and helpe
 
 ## Troubleshooting
 
+### Native module failed to load
+
+Confirm `NAPI_RS_NATIVE_LIBRARY_PATH` points to an existing `.node` file built from the same Atomic release version:
+
+```bash
+ls -la "$NAPI_RS_NATIVE_LIBRARY_PATH"
+```
+
 ### Clipboard not working
 
-Install both Android apps from GitHub or F-Droid:
-
-1. Termux
-2. Termux:API
-
-Then install the CLI helper package:
+Install both Android apps from GitHub or F-Droid (Termux and Termux:API), then install the CLI helper package:
 
 ```bash
 pkg install termux-api
@@ -100,7 +128,7 @@ termux-setup-storage
 
 ### Missing `fd` or `rg` warnings
 
-If Atomic warns that `fd` or `rg` could not be found on Android, install them with `pkg`:
+Install both packages through Termux:
 
 ```bash
 pkg install fd ripgrep
@@ -108,9 +136,7 @@ pkg install fd ripgrep
 
 ### Package installation issues
 
-Termux has no official `pkg install bun` package. Use npm from the `nodejs` package unless you installed Bun separately.
-
-If npm fails, clear its cache and retry:
+Termux has no official `pkg install bun` package; use npm from the `nodejs` package unless you installed Bun separately. If npm fails, clear its cache and retry:
 
 ```bash
 npm cache clean --force

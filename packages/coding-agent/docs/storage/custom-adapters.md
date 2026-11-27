@@ -1,21 +1,21 @@
 ---
 title: "Custom storage adapters"
 sidebarTitle: "Custom adapters"
-description: "Select a storage adapter, ship one in an Atomic package, wrap your own SQL driver, implement a session store, and test it with the conformance suites."
+description: "Build, package, configure, and test custom SQL or SessionStore storage adapters for Atomic."
 ---
 
-This page is for developers who want Atomic to keep sessions in a database it does not support out of the box. You do that with a **storage adapter**: a JavaScript or TypeScript module that opens a connection to your database and hands it to Atomic. Atomic's own [PostgreSQL](/storage/postgres) support is an adapter too. Only the built-in SQLite, JSONL, and in-memory stores work without one.
+A **storage adapter** is a JavaScript or TypeScript module that connects Atomic to a database backend it does not support out of the box. Atomic's own [PostgreSQL](/storage/postgres) support is implemented as an adapter; only local SQLite, JSONL, and in-memory stores are built in.
 
-What kind of adapter you write depends on your database:
+Choose the adapter hook that fits your database:
 
-- **A SQL database that runs SQLite's SQL**, such as a SQLite-compatible server, returns a `SqliteDatabase` from `openDatabase`. Atomic then keeps sessions and Intercom there. Atomic sends SQLite SQL to such an adapter, so the database must run it, or the adapter must translate it.
-- **Any other database** implements `openSessionStore` instead. It holds sessions only, so Intercom cannot route between machines through it.
-
-The page covers selecting an adapter, shipping one in an Atomic package, wrapping your own database driver, and testing the result.
+| Backend type | Implement | Capabilities |
+| --- | --- | --- |
+| SQLite-compatible (or PostgreSQL-dialect) SQL database | `openDatabase(options, context)` returning `SqliteDatabase` | Full support for sessions, prefixes, snapshots, and multi-node Intercom |
+| Non-SQL or custom document/KV database | `openSessionStore(options, context, { prefix? })` returning `SessionStore` | Sessions only (Intercom multi-node routing requires a SQL `openDatabase` adapter) |
 
 ## Selecting an adapter
 
-A storage adapter is a module whose default export satisfies `StorageAdapterModule`:
+An adapter module's default export satisfies `StorageAdapterModule`:
 
 ```typescript
 import type { StorageAdapterModule } from "@bastani/atomic/storage";
@@ -28,33 +28,31 @@ export default {
 } satisfies StorageAdapterModule;
 ```
 
-Here `openMyDatabase` stands for your own code that connects to the database. [Custom driver adapter example](#custom-driver-adapter-example) shows a complete one.
+Select an adapter in `sessions.storage` or top-level `storage` in [settings](/settings#sessions), or pass `sessionStore: { kind: "adapter", module, options, secrets, prefix }` in the SDK. Relative module paths resolve from the agent directory (`~/.atomic/agent` by default). Bare package names resolve from user-scope [Atomic packages](#adapters-from-atomic-packages), host extension directories, or the agent directory—never from an embedding app's `node_modules`.
 
-Select an adapter in `sessions.storage` or top-level `storage` in [settings](/settings#sessions), or pass `sessionStore: { kind: "adapter", module, options, secrets, prefix }` in the SDK. Relative module paths resolve from the agent directory (`~/.atomic/agent` by default). Bare package names resolve from user-scope [Atomic packages](#adapters-from-atomic-packages), host extension directories, or the agent directory, never from an embedding application's `node_modules`. Project settings follow the project trust boundary, and adapter code runs with Atomic's privileges.
+<Warning>
+Adapter modules execute code with Atomic's full OS privileges. Project-level storage settings follow Atomic's [project trust boundary](/security)—review adapter packages carefully before trusting a project.
+</Warning>
 
-Choose the installation method that matches how you open the adapter:
+Match installation method to how you open the adapter:
 
-- **Direct SDK database handles (`{ kind: "database", database }`).** Install the package in your project with `npm install`, call the adapter's open function, such as `openPostgresDatabase()`, and pass the handle to `sessionStore: { kind: "database", database, prefix? }` or `SqlSessionStore.open(database, { prefix? })`. See [SDK session storage](/sdk/storage).
-- **Adapter-resolved selections (`{ kind: "adapter", module }`, `settings.json`, or `ATOMIC_STORAGE`).** Install the package in user scope with `atomic install npm:<package>` (without `-l`), or register a local package directory with `DefaultResourceLoader({ additionalExtensionPaths })` or `--extension`.
+- **Direct SDK handles (`{ kind: "database", database }`):** install the adapter in your app with `npm install`, call its opener (such as `openPostgresDatabase()`), and pass the handle to `sessionStore: { kind: "database", database, prefix? }` or `SqlSessionStore.open(database, { prefix? })`. See [SDK session storage](/sdk/storage).
+- **Adapter-resolved selections (`{ kind: "adapter", module }`, `settings.json`, or `ATOMIC_STORAGE`):** install in user scope with `atomic install npm:<package>` (without `-l`), or register a local package directory via `--extension <dir>` or `DefaultResourceLoader({ additionalExtensionPaths })`.
 
-Adapter modules can import `@bastani/atomic/storage` and `@bastani/atomic` directly in both npm installs and standalone binaries. This works for the adapter entry file and any ES module or TypeScript file it imports relatively (including `.mjs` files and `.js` files in `"type": "module"` packages). CommonJS files outside the entry file resolve from `node_modules` instead. List `@bastani/atomic` under `peerDependencies`, not `dependencies`.
+<Note>
+**Packaging imports:** Adapters can import `@bastani/atomic/storage` and `@bastani/atomic` directly in both npm installs and standalone binaries—both in the adapter entry file and in any ES module or TypeScript file it imports relatively (`.ts`, `.mjs`, or `.js` under `"type": "module"`). CommonJS files outside the entry file resolve from `node_modules`. Declare `@bastani/atomic` in `peerDependencies`, never `dependencies`.
+</Note>
 
-`options` holds strings, numbers, booleans, or `null`. `secrets` maps secret names to `{ env }`, `{ file }`, or (in the SDK only) `inMemorySecret(value)` (`{ value }`), overriding same-named keys in `options`. Atomic strips one trailing `\n` or `\r\n` from `{ file }` secrets and keeps other whitespace intact. `inMemorySecret()` serializes as `[redacted]` and is refused outside the SDK (`in-memory-secret-unsupported`).
+### Options, secrets, and lifecycle
 
-`context` provides `agentDir`, `domain: "sessions" | "intercom"`, an optional `signal`, and `secret(name)` to reread `secrets[name]` on demand. An adapter that reads fresh credentials for each new connection (such as a rotated password file) declares `liveSecrets` on its `StorageAdapterModule` (for example `liveSecrets: ["password"]`). Atomic omits names listed in `liveSecrets` from `options` and expects the adapter to call `context.secret(name)`, which throws `StorageConfigError` (`reason: "secret-missing"`) when the secret is missing from `secrets`.
-
-Adapter hooks and lifecycle:
-
-- Implement `openDatabase(options, context): Promise<SqliteDatabase>` for SQL-backed adapters so Atomic manages schemas, prefixes, and Intercom tables.
-- Implement `openSessionStore(options, context, { prefix? })` for non-SQL session stores. When both hooks exist, `openSessionStore` takes priority for sessions.
-- Missing hooks raise `StorageConfigError` (`reason: "adapter-domain-unsupported"`). Load failures raise `StorageAdapterLoadError`, and driver open failures raise `StorageUnavailableError`.
-- `new StorageProvider().openSessionStore(selection, context)` opens stores programmatically (`kind`: `"memory"`, `"jsonl"`, `"sqlite"`, `"database"`, or `"adapter"`). `loadStorageAdapter(module, context, hostModules)` loads an adapter module.
-- `StorageProvider` instances share one process-wide map of provider-owned databases across matching selections and close each owned database when its last returned store closes. Caller-owned `database` handles passed through `{ kind: "database", database }` are never closed by the provider.
-- If opening storage fails and closing its owned database also fails, Atomic throws the original opening error with a `cleanupCause` field holding the cleanup failure.
+- **`options` and `secrets`:** `options` accepts `string | number | boolean | null`. `secrets` maps secret names to `{ env }`, `{ file }`, or (SDK only) `inMemorySecret(value)` (`{ value }`), overriding same-named keys in `options`. Atomic strips one trailing `\n` or `\r\n` from `{ file }` secrets and leaves other whitespace intact. `inMemorySecret()` serializes as `[redacted]` and is refused outside the SDK (`in-memory-secret-unsupported`).
+- **`context` and `liveSecrets`:** `context` supplies `{ agentDir, domain: "sessions" | "intercom", signal?, secret(name) }`. Adapters that re-read rotating credentials per connection declare `liveSecrets` on `StorageAdapterModule` (for example `liveSecrets: ["password"]`): Atomic omits those names from `options` and expects the adapter to call `await context.secret(name)`, which throws `StorageConfigError` (`secret-missing`) if absent from `secrets`.
+- **Hook priority and errors:** When an adapter exports both `openDatabase` and `openSessionStore`, `openSessionStore` takes priority for `"sessions"` while `openDatabase` handles `"intercom"`. Missing hooks throw `StorageConfigError` (`adapter-domain-unsupported`); module load failures throw `StorageAdapterLoadError`; connection failures throw `StorageUnavailableError`.
+- **Programmatic pooling (`StorageProvider`):** `new StorageProvider().openSessionStore(selection, context)` opens `"memory"`, `"jsonl"`, `"sqlite"`, `"database"`, or `"adapter"` stores programmatically (`loadStorageAdapter(module, context, hostModules)` loads an adapter module directly). `StorageProvider` shares one process-wide map of provider-owned databases across matching selections and closes an owned database when its last returned store closes. Caller-owned handles (`{ kind: "database", database }`) are never closed by the provider. If opening fails and closing an owned database also fails, Atomic throws the opening error with `cleanupCause` set.
 
 ### Adapters from Atomic packages
 
-An [Atomic package](/packages) can bundle storage adapters and their driver dependencies by listing adapter paths under `atomic.storageAdapters` in `package.json`:
+An [Atomic package](/packages) can bundle adapters and their driver dependencies under `atomic.storageAdapters` in `package.json`:
 
 ```json
 {
@@ -65,7 +63,7 @@ An [Atomic package](/packages) can bundle storage adapters and their driver depe
 }
 ```
 
-Install the package with `atomic install npm:@example/atomic-mydb` and select it by package name:
+Install with `atomic install npm:@example/atomic-mydb` and reference it by package name:
 
 ```json
 {
@@ -77,57 +75,79 @@ Install the package with `atomic install npm:@example/atomic-mydb` and select it
 }
 ```
 
-The bare package name selects the first listed adapter. When a package exports several adapters, select one with `<package>/<name>` using the adapter filename without its extension (such as `@example/atomic-mydb/mydb-adapter`).
+A bare package name selects the first listed adapter. For multi-adapter packages, select `<package>/<file-stem>` (filename without extension, such as `@example/atomic-mydb/mydb-adapter`).
 
-Host applications embedding Atomic can expose their own adapter without installing it separately. Pass the package directory via `--extension <dir>` or `additionalExtensionPaths: [packageRoot]` on `DefaultResourceLoader` before opening storage, then select `"adapter": "@example/app"` or `"@example/app/<name>"`.
+Host applications can expose an adapter without installing it globally by passing the package directory via `--extension <dir>` or `DefaultResourceLoader({ additionalExtensionPaths: [packageRoot] })` before opening storage, then referencing `"@example/app"` or `"@example/app/<name>"`.
 
-Atomic resolves adapter package names in this order:
+Resolution order for bare adapter package names:
 
 1. Extension package directories passed to the process (or inherited from the launching Atomic process).
-2. Packages in effective global settings (including the older `~/.pi/agent/settings.json` for the default agent directory). Project packages are not searched.
+2. Packages in effective global settings (including legacy `~/.pi/agent/settings.json` for the default agent directory). Project packages are never searched.
 3. Module resolution from the agent directory.
 
-Child processes that Atomic starts (such as subagents and the Intercom broker) automatically inherit adapters resolved from the host's packages without reloading the host package. `atomic storage status` shows the resolved path when run inside such a process, and resolves from global settings or the agent directory when run directly from a shell.
+Child processes launched by Atomic (subagents and the Intercom broker) inherit resolved host adapters automatically without reloading host packages.
 
 ## Bring your own driver
 
-To wrap a SQLite-compatible driver into a `SqliteDatabase`, call `createSqliteDatabase` from `@bastani/atomic/storage` with these driver hooks:
+Wrap any SQLite-compatible (or PostgreSQL-dialect) driver into a `SqliteDatabase` with `createSqliteDatabase(driver)` from `@bastani/atomic/storage`. Driver hooks may return sync values or promises.
 
-- `descriptor` provides `{ adapter, location }` for diagnostics (redacted through `redact`).
-- `execute(sql, params)` runs one parameterized statement and returns `{ columns, rows, changes }`. Return integers as `bigint` to preserve 64-bit precision.
-- `executeMultiple(sql)` runs zero or more unparameterized statements.
-- `beginTransaction()` starts a write transaction and returns `{ execute, executeMultiple, commit, rollback, close? }`.
-- `close()` releases the driver connection.
-- `batch(statements)` (optional) executes `{ sql, params }` statements in one atomic write transaction sent as a single request. Provide this only when the driver sends the whole batch at once.
-- `redact(text)` (optional) strips credentials from error text. Use `redactSecrets(secrets)` to build one that removes raw, URI-encoded, and decoded forms.
-- `transientFailure(failure)` (optional) classifies retryable driver errors from structured fields (never message text) and returns `{ code, outcome, hop? }`. Set `outcome` to `"not-applied"` when the database cannot have changed, or `"unknown"` when the write may have committed. Set `hop: { name, failure }` when an intermediate hop such as a proxy failed before reaching the database.
-- `freeBytes()` (optional) returns writable free bytes on the filesystem holding a local database file, or `undefined`.
-- `openReader()` (optional) returns a driver with connections of its own on the same database, for reads. Atomic exposes it as `SqliteDatabase.openReader()`. The reader gets its own call queue and closes when the main database closes. Atomic's stores send only reads through it, so its connections may refuse writes. A store's read through it first waits for any of that store's own writes to the same data that have started but not finished, so a caller that starts a write and then reads without waiting still reads what it wrote.
-- `concurrentTransactions` (optional) marks a driver that runs each transaction on its own connection, as the PostgreSQL adapter does. Atomic then runs calls that cannot conflict at the same time. See the queue rules below.
-- `pipelinedTransactions` (optional) marks a transaction connection that accepts a statement before the previous one is answered. The PostgreSQL adapter sets it. Atomic then sends each statement of a transaction without waiting for the answer before it. It can also send a transaction's last writes together with its commit.
-  - `beginTransaction` receives `leading`, the reads the transaction makes first. The driver may send them with the begin and answer the transaction's first calls from them.
-- `beginTransaction` receives `relaxedDurability: true` for a write whose loss in a server crash is harmless, such as a lease renewal. The driver may then answer the commit before the transaction reaches disk, as the PostgreSQL adapter does with `synchronous_commit = off`. Drivers may ignore it.
-  - If a statement sent ahead of an earlier answer, or with the commit, fails, the driver's commit must fail, so nothing commits. The transaction then fails with that statement's error.
-  - A statement whose connection broke after the commit was sent reports `outcome: "unknown"`, because the commit may have applied.
-- `concurrentReads` (optional) is a positive integer for a driver that runs reads on connections or streams of their own, up to that many at once. Atomic then runs read-only transactions, and statements outside a transaction that `readsOnly` accepts, beside each other. Every other call still waits for each call before it, and a read waits for the writes queued before it. With `concurrentTransactions` as well, Atomic runs at most this many reads at once.
-- `readsOnly(sql)` (optional) says whether a statement run outside a transaction only reads. With `concurrentReads` or `concurrentTransactions`, such a statement runs beside other reads. Answer `true` only for a statement that can never write.
-- On a driver with `concurrentTransactions`, a read-only transaction returns once its reads are answered. Its commit only ends the snapshot, so it finishes in the background, and `close()` waits for it.
+### Required `SqliteDriver` hooks
 
-Driver hooks may return values or promises. Atomic runs one operation at a time unless the driver sets `concurrentTransactions`. It copies binary parameters on call, rejects NUL text bindings with `StorageInvalidTextError`, converts safe-range integers to `number`, expires transaction handles after settlement, and drains accepted work on `close()`. Unclassified driver errors reject with `StorageUnavailableError` (with redacted `cause`), and failed rollbacks reject with `StorageRollbackError`.
+| Hook | Signature / behavior |
+| --- | --- |
+| `descriptor` | `{ adapter: string; location: string }` for diagnostics (`location` is passed through `redact`). |
+| `execute(sql, params)` | Runs one parameterized statement and returns `{ columns, rows, changes }`. Return integers as `bigint` to preserve 64-bit precision. |
+| `executeMultiple(sql)` | Runs zero or more unparameterized SQL statements. |
+| `beginTransaction(options?)` | Starts a transaction and returns `{ execute, executeMultiple, commit, rollback, close? }`. |
+| `close()` | Releases driver connections after accepted work drains. |
 
-Transient retry and queue bounds:
+### Optional resilience, metadata, and concurrency hooks
 
-- Recognized transient failures reject with `StorageTransientError`. Statements and batches that failed before writing retry up to `STORAGE_TRANSIENT_RETRY_ATTEMPTS` (5) times starting at 250 ms with exponential backoff and up to 20% jitter. Writes with `outcome: "unknown"` never retry automatically.
-- Transactions retry (re-running their callback) only when called with `{ retryTransientFailures: true }` and only for callbacks that have no external side effects. Non-boolean values throw `StorageConfigError`. The first retried failure on a database emits a one-time process warning.
-- On a driver with `concurrentTransactions`, a call waits only for earlier unfinished calls it conflicts with. Statements and batches outside a transaction, and serial transactions without a `domain`, conflict with every call. A serial transaction with a `domain` conflicts with others of the same domain. A read-only transaction waits for writes queued before it, but not for other read-only transactions or later writes. Conflicting calls run in call order, and calls that do not conflict, such as appends to different sessions, run concurrently. Other drivers run one call at a time.
-- While a call runs without settling, waiting priority batches (batches sent with `{ priority: true }`) fail after `STORAGE_PRIORITY_CALL_MAX_WAIT_MS` (10 seconds), and other waiting calls fail after `STORAGE_QUEUED_CALL_MAX_WAIT_MS` (60 seconds), both with `StorageUnavailableError`. On a driver with `concurrentTransactions`, only calls waiting behind the stuck call (directly or through other waiting calls) fail. Timers reset for each call that begins running.
-- For shared local SQLite files, enable WAL mode with `switchToWriteAheadLog(exec, busyTimeoutMs)` from `@bastani/atomic/storage`. It retries `SQLITE_BUSY` up to `busyTimeoutMs` and retries Windows `SQLITE_IOERR_TRUNCATE` for up to 5 seconds (or `busyTimeoutMs`, whichever is shorter).
+| Hook | Purpose |
+| --- | --- |
+| `dialect` | `StorageDialect` spoken by the backend (`sqliteDialect` when omitted, or `postgresDialect` from `@bastani/atomic/storage`). |
+| `batch(statements, options?)` | Runs `{ sql, params }[]` atomically in a single write request (`options`: `{ lockWaitMs?, priority? }`). Provide only when the driver sends the whole batch in one round trip. |
+| `redact(text)` | Strips secrets from diagnostic locations and error text. Build one with `redactSecrets(secrets)` to cover raw, URI-encoded, and decoded forms. |
+| `transientFailure(failure)` | Classifies retryable driver errors from structured fields (never message text) into `{ code, outcome: "not-applied" \| "unknown", hop?: { name, failure } }`. Set `outcome: "not-applied"` only when the database could not have changed; set `hop` when an intermediate proxy failed before reaching the server. |
+| `lockBusy(failure)` | Recognizes a `batch()` write-lock contention error that wrote nothing; Atomic retries outside its queue with randomized backoff up to `lockWaitMs`. |
+| `payloadLimits` | `{ value?: number; response?: number }` byte limits reported in `StoragePayloadTooLargeError`. |
+| `notifications` | `StorageNotifications` (`notify`, `listen`, `state`, optional `send`) for push wake-ups such as PostgreSQL `LISTEN`/`NOTIFY`. |
+| `freeBytes()` | Returns writable free bytes on the filesystem holding a local database file, or `undefined`. |
+| `openReader()` | Returns a read-only driver on dedicated connections (`SqliteDatabase.openReader()`). Reads through it wait for that store's own in-flight writes to the same data so read-your-writes holds, and it closes automatically with the main handle. |
+| `takeOpenedCatalog()` | Returns the schema catalog read during initial connection open once (`StorageOpenedCatalog`), skipping duplicate schema queries on store open. |
+| `databaseIdentity()` | Returns a canonical identity string shared only by handles targeting the exact same database and schema (or `undefined` when unknown, such as in memory). |
+| `concurrentTransactions` | Set `true` if each transaction runs on its own connection (as in PostgreSQL) so non-conflicting transactions run in parallel. |
+| `concurrentReads` | Positive integer capping concurrent read-only transactions and read-only statements on drivers with dedicated read connections/streams. |
+| `readsOnly(sql)` | Returns `true` only when a statement run outside a transaction can never write; enables parallel read execution under `concurrentReads` or `concurrentTransactions`. |
+| `pipelinedTransactions` | Set `true` if a transaction connection accepts statements before prior responses arrive, allowing Atomic to pipeline statements and batch final writes with `COMMIT`. |
 
-You can also implement `SqliteDatabase` directly. In either case, verify your implementation with the [conformance suite](#adapter-conformance).
+### Transaction options and concurrency scopes
+
+When Atomic calls `beginTransaction(options)`, `options` (`SqliteDriverTransactionOptions`) specifies how to lock and pipeline the transaction:
+
+- **`concurrency` (`TransactionConcurrency`, always set):**
+  - `{ kind: "serial", domain?: string }` (default): runs as the sole writer for the whole database (when `domain` is absent) or for a named scope `domain` (a store passes a prefixed table name so independent domains or prefixes run in parallel on `concurrentTransactions` drivers).
+  - `{ kind: "fenced", audit, excludesSerial?: boolean }`: runs under `READ COMMITTED` and locks only the rows the body touches; with `excludesSerial: true`, also excludes whole-database `serial` transactions. SQLite drivers treat both kinds as `BEGIN IMMEDIATE`.
+- **`readOnly`:** Opens a consistent read snapshot without taking a write lock. On `concurrentTransactions` drivers, a read-only transaction resolves once its reads finish and commits in the background (`close()` awaits it).
+- **`lockWaitMs`:** Per-transaction lock wait override.
+- **`relaxedDurability`:** When `true` (never set on read-only transactions), the write is repeatable and losing it in a server crash is harmless (such as a lease heartbeat), so the driver may acknowledge commit before flushing to disk (for example `synchronous_commit = off` on PostgreSQL).
+- **Pipelining hints (`leading`, `leadingOnly`, `onCommit`, `lockIfLeadingFinds`):** On `pipelinedTransactions` drivers, Atomic may supply initial statements in `leading` to send alongside `BEGIN` (or commit immediately behind them when `leadingOnly: true`, calling `onCommit?.()` right before writing `COMMIT` so any later connection drop keeps `outcome: "unknown"`). `lockIfLeadingFinds` lets a `serial` domain transaction acquire locks in its first leading read only if a row matches. If any pipelined statement fails, `commit()` must fail so nothing commits.
+
+### Facade guarantees, retries, and queue bounds
+
+`createSqliteDatabase` automatically copies `Uint8Array` bindings on call, rejects NUL (`U+0000`) strings with `StorageInvalidTextError`, converts safe-range integers to `number`, expires transaction handles once settled, wraps unclassified driver errors in `StorageUnavailableError` (redacted), and rejects failed rollbacks with `StorageRollbackError`.
+
+- **Transient retries:** Recognized transient failures reject with `StorageTransientError`. Statements and batches that failed before writing make up to `STORAGE_TRANSIENT_RETRY_ATTEMPTS` (**5**) total attempts—1 initial attempt plus up to 4 retries—starting at 250 ms with exponential backoff and up to 20% jitter. Writes with `outcome: "unknown"` never retry automatically.
+- **Transaction retries:** Transactions re-run their callback only when called with `{ retryTransientFailures: true }` (use only for side-effect-free callbacks; non-boolean values throw `StorageConfigError`). The first retry on a database emits a one-time process warning.
+- **Call queue scheduling:** Without `concurrentTransactions`, calls execute one at a time. With `concurrentTransactions`, a call waits only for earlier unfinished calls it conflicts with: standalone statements/batches and whole-database `serial` transactions (no `domain`) conflict with all calls; `serial` transactions with a `domain` conflict only with matching domains (and whole-database calls); read-only transactions wait for earlier writes but run in parallel with other reads and later writes.
+- **Stuck-call bounds:** While an active call stalls without settling, queued priority batches (`{ priority: true }`) fail after `STORAGE_PRIORITY_CALL_MAX_WAIT_MS` (10 seconds) and ordinary queued calls fail after `STORAGE_QUEUED_CALL_MAX_WAIT_MS` (60 seconds), both with `StorageUnavailableError` (with `concurrentTransactions`, only calls blocked behind the stalled call fail).
+- **WAL helper for local SQLite files:** Call `switchToWriteAheadLog(exec, busyTimeoutMs)` from `@bastani/atomic/storage` to enable WAL with retries on `SQLITE_BUSY` and Windows `SQLITE_IOERR_TRUNCATE` (up to `min(5000, busyTimeoutMs)` ms).
+
+You can also implement `SqliteDatabase` directly. Either way, validate your implementation with the [conformance suite](#adapter-conformance).
 
 ### Custom driver adapter example
 
-This example wraps the SQLite driver built into Node.js, `node:sqlite`, to show how `createSqliteDatabase` and `StorageAdapterModule` fit together. A real adapter wraps the client library of your database in the same way. Save it as `custom-adapter.ts`:
+This complete example wraps Node.js's built-in `node:sqlite` driver to show how `createSqliteDatabase` and `StorageAdapterModule` fit together. Save as `custom-adapter.ts`:
 
 ```typescript
 import { DatabaseSync } from "node:sqlite";
@@ -192,7 +212,7 @@ export default {
 } satisfies StorageAdapterModule;
 ```
 
-The default export lets settings select this module as an [adapter](#selecting-an-adapter), with the file in `options.path`. From the SDK, call your open function directly and pass the database to `createAgentSession`:
+Use it through settings as an [adapter](#selecting-an-adapter), or pass a caller-owned handle directly in the SDK:
 
 ```typescript
 import { createAgentSession } from "@bastani/atomic";
@@ -213,22 +233,77 @@ Multiple stores can share one caller-owned `database` without closing it.
 
 ### Custom `SessionStore` contracts
 
-Non-SQL backends can implement `openSessionStore` directly (each session has one writer):
+Non-SQL backends implement `openSessionStore` returning a `SessionStore` (imported from `@bastani/atomic/storage`). Required methods are `create`, `append`, `replace`, `load`, `readHeader`, `delete`, `list`, `findMostRecent`, and `close`.
 
-- **Required for `history://`.** Implement `readEntryRange(id, query)` honoring `fromSeq`, `toSeq`, `seqs`, `maxChars`, `largeEntryBytes`, `skipTypes`, and `signal`. When `query.seqs` lists sequence numbers, return only the entries at those numbers. A `history://` search reads the entries it found, and the lines around them, this way, in one call. A store that returns the whole range instead still gives the same results, but reads more. Return freshly owned UTF-8 JSON buffers and `{ entries: [{ seq, entry }], throughSeq, lastSeq }` without falling back to whole-session `load()`.
-- **Optional fast-path methods.** Implementing these avoids loading entire sessions into memory (stores implementing only `load()` still work with higher memory use):
+#### Required for `history://` reads
 
-| Method | Purpose |
+Implement `readEntryRange` to power `history://` reads and search without loading entire sessions into memory:
+
+```typescript
+import type {
+  SessionEntriesPage,
+  SessionEntriesQuery,
+  SessionStore,
+} from "@bastani/atomic/storage";
+
+// Query and response shapes:
+// SessionEntriesQuery: {
+//   fromSeq: number;
+//   toSeq: number;
+//   seqs?: readonly number[];       // specific ascending sequence numbers to return in one call
+//   maxChars?: number;              // stop page before exceeding this character budget (unless first entry)
+//   largeEntryBytes?: number;       // byte threshold for streaming rawChunks on oversized entries
+//   skipTypes?: readonly string[];  // entry types to omit from the page
+//   signal?: AbortSignal;
+// }
+// SessionEntriesPage: {
+//   lastSeq: number;
+//   throughSeq: number;
+//   entries: readonly { seq: number; entry: SessionEntry; rawChunks?: readonly Uint8Array[]; rawFormatVersion?: number }[];
+// }
+```
+
+When `query.seqs` is provided, return only entries at those sequence numbers so `history://` search fetches matches and surrounding context in a single call (returning the whole `[fromSeq, toSeq]` range remains valid but reads more). Return freshly owned UTF-8 buffers for `rawChunks` rather than falling back to whole-session `load()`.
+
+#### Optional capability hooks
+
+| Hook / property | Purpose |
 | --- | --- |
-| `readTail(id, fromSeq)` | Header and entries from `fromSeq`, plus earlier live state and omitted usage totals |
-| `readRange(id, startSeq, endSeq)` | Inclusive 1-based range with `seqs`, `lastSeq`, and `epoch` |
-| `findLatestCompaction(id, leafId?)` | Latest active compaction boundary, sequence, and retained start |
-| `readResume(id, leafId?)` | Atomic resume snapshot (header, active branch from compaction, live state, omitted totals, `deliveryOpIds`, `lastSeq`, `lastEntryId`, `leafId`, `epoch`) |
-| `findEntrySeq(id, entryId)` | 1-based entry sequence, or `undefined` |
-| `readEntrySizes` / `readEntryChunk` / `readScanPage` | Byte-bounded streaming exports and remote page reads |
+| `putBlob(sessionId, data)` / `getBlob(sessionId, hash)` | Store and retrieve SHA-256 content-addressed tool output files (`tool-output://`); omitted stores throw `SessionBlobError` (`blobs-unsupported`). |
+| `snapshotBlobs` (`SnapshotBlobStore`) | Content-addressed storage for [worktree snapshots](/worktree-snapshots); omit to disable snapshots. |
+| `openMarkers` (`SessionOpenMarkerStore`) | Cross-host open-session tracking (`put`, `remove`, `list`) for delete protection and upgrade gating; falls back to local agent-dir files when omitted. |
+| `chatRecords` | Reader-only chat metadata (such as subagent child records) stored outside the conversation tree. |
+| `searchIndex` (`SessionSearchIndex`) | Indexed full-text search backing `history://` queries. |
+| `createFork(header, entries, source, location?)` | Optimized or receipt-preserving fork creation (return `undefined` to fall back to standard copying). |
+| `updateHeader(header, options)` | Update session header metadata in place (rotates `epoch`) without rewriting entries. |
+| `releaseSession(sessionId)` | Advisory hint that no live handle holds the session, allowing in-memory stores to spill history to disk until reopened. |
 
-- **Epochs and indexes.** Keep `epoch` constant on appends, rotate it on `replace` or recreate, and reject mismatched `epoch` writes with `SessionConflictError`. Mark read-only stores `readOnly: true` to skip cleanup writes. Set `estimated: true` on `SessionSummary` when metadata is unindexed.
-- **Forks and cloning.** `/fork`, `/clone`, and `SessionManager.forkFrom` stream entries in pages (same-store forks copy all branches; cross-store forks copy current context and mark the parent in another store; see [`/tree`, `/fork`, and `/clone`](/sessions#tree-fork-and-clone)).
+#### Optional fast-path read hooks
+
+Stores implementing only `load()` still work, but implementing these methods avoids loading full session history into RAM:
+
+| Method signature | Purpose |
+| --- | --- |
+| `readTail(sessionId, fromSeq): Promise<SessionTail>` | Header and entries from `fromSeq`, plus prior live state and omitted usage totals. |
+| `readRange(sessionId, startSeq, endSeq, expectedEpoch?): Promise<SessionEntryRange>` | Inclusive 1-based entry range returning `entries`, `seqs`, `lastSeq`, and `epoch`. |
+| `findLatestCompaction(sessionId, leafId?): Promise<SessionCompactionPoint \| undefined>` | Latest active compaction boundary, its sequence, and retained tail start sequence. |
+| `readResume(sessionId, leafId?, options?): Promise<SessionResume>` | Single-call resume snapshot: header, active branch from compaction, live state, omitted totals, `recovery` (`SessionRecoveryState` carrying `admissionDigests`, `intercomDeliveredIds`, and optional `deliveryOpIds` for deduplicating replayed deliveries), `lastSeq`, `lastEntryId`, `leafId`, and `epoch`. |
+| `readResumeAt(sessionId, leafId, throughSeq, options?): Promise<SessionResume>` | Resume snapshot bounded to a specific historical watermark (`throughSeq`). |
+| `findEntrySeq(sessionId, entryId): Promise<number \| undefined>` | 1-based sequence number for an entry ID, or `undefined`. |
+| `readEntrySizes(sessionId, startSeq, endSeq, limit?): Promise<SessionEntrySizes>` | Entry byte sizes for sizing paged history reads before decoding payloads. |
+| `readEntryChunk(reference, offset, bytes?): Promise<Uint8Array>` | Stream raw UTF-8 bytes of an `OversizedSessionEntry` in chunks (rejects stale `epoch`). |
+| `readScanPage(sessionId, startSeq, endSeq, epoch, limit, options?): Promise<SessionScanPage>` | Single-read byte-bounded forward scan page (with header, `epoch`, `lastSeq`, `throughSeq`, and optional oversized references) used by exports and remote readers. |
+| `readTreeOutline(sessionId, fromSeq, toSeq, epoch?)` | Body-free tree structure metadata for `/tree` navigation without reading message content. |
+| `readBranchSpan(sessionId, cut)` | Contiguous range on a single branch without reading sibling branches. |
+| `readSnapshotCut(sessionId, options?)` | Index lookup locating `worktree_snapshot` entries without scanning bodies. |
+| `readSelectedPage(sessionId, seqs, epoch, options?)` | Byte-bounded page of specific ascending sequences (forward or backward). |
+| `readForkWindow(sessionId, entryId, options?)` | Active branch window and labels needed to fork from a specific entry. |
+
+#### Epochs, read-only stores, and forks
+
+- **Epochs:** Keep `epoch` constant across `append()` calls, rotate it on `replace()`, `updateHeader()`, or recreation, and reject writes with a mismatched `epoch` using `SessionConflictError`.
+- **Read-only and estimated summaries:** Mark read-only stores so cleanup writes are skipped, and set `estimated: true` on `SessionSummary` when metadata is unindexed.
+- **Forks and cloning:** `/fork`, `/clone`, and `SessionManager.forkFrom()` stream entries in pages (same-store forks copy all branches; cross-store forks copy active context and set `parentInOtherStore: true`; see [`/tree`, `/fork`, and `/clone`](/sessions#tree-fork-and-clone)).
 
 ## Adapter conformance
 
@@ -245,11 +320,11 @@ registerSqliteDatabaseConformance({ describe, it }, "my adapter", withSubject);
 registerSqliteConnectionConformance({ describe, it }, "my adapter connections", withConnections);
 ```
 
-- `withSubject` creates a fresh database per test case and passes `{ database, reopen, withRollbackFailure }` to the callback, cleaning up afterward. `reopen()` closes and reopens the same persistent database, and `withRollbackFailure(error, callback)` injects a rollback failure for the duration of `callback`. The suite verifies parameter binding, exact 64-bit integers, binary snapshots, NUL rejection, transaction ordering and expiration, commit and rollback errors, reopening, and close semantics.
-- `withConnections` (for adapters supporting multiple connections to one database) opens two database handles on the same fresh database and closes both afterward. The suite verifies concurrent write queuing and event-loop responsiveness.
+- `withSubject` creates a fresh database per test and passes `{ database, reopen, withRollbackFailure }` to the callback, cleaning up afterward (`reopen()` closes and reopens the persistent database; `withRollbackFailure(error, callback)` injects a rollback failure). Verifies parameter binding, 64-bit integer precision, binary snapshots, NUL rejection, transaction ordering/expiration, commit/rollback errors, reopen persistence, and close semantics.
+- `withConnections` (for multi-connection adapters) opens two handles on one fresh database and closes both afterward. Verifies concurrent write queuing and event-loop responsiveness.
 
-Helper utilities exported from `@bastani/atomic/storage` for custom adapters:
+Helper utilities exported from `@bastani/atomic/storage`:
 
-- `validateStoragePrefix(prefix, dialect?)` validates optional table prefixes (ASCII letters, digits, and `_`, not starting with `sqlite_`, case-insensitively). Passing `"postgres"` also enforces lowercase and `POSTGRES_MAX_STORAGE_PREFIX_LENGTH` (24).
-- `renderStorageIdentifiers("sessions", names, prefix)` returns a frozen map of table names with the `session_` prefix applied.
-- `assertStorageSchemaVersion(domain, found, supported)` throws `StorageSchemaVersionError` when stored and supported versions differ.
+- `validateStoragePrefix(prefix, dialect?)`: validates optional table prefixes (ASCII letters, digits, `_`; cannot start with `sqlite_`, case-insensitively). Passing `"postgres"` also enforces lowercase and `POSTGRES_MAX_STORAGE_PREFIX_LENGTH` (24).
+- `renderStorageIdentifiers("sessions", names, prefix)`: returns a frozen map of table names with the `session_` prefix applied.
+- `assertStorageSchemaVersion(domain, found, supported)`: throws `StorageSchemaVersionError` when stored and supported versions mismatch.
