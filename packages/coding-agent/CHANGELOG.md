@@ -4,10 +4,11 @@
 
 ### Added
 
-- Choose Gemini Decision 1 in `/settings` for structured decisions or call it from codemode. It reuses the key you saved with `/login google` ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
+- Gemini Decision 1 can answer structured questions about text and images using your existing Gemini API key. To use it, select `google-decisions/gemini-decision-1` under **Decision model** in `/settings`, or call it from codemode; your chat model does not change ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
 
 ### Fixed
 
+- Classifier decisions in extensions now use your configured server retry delay cap instead of the default cap. No settings changes are needed ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
 - Chat moves to the next available fallback model when a provider asks it to wait past the retry limit. Retry and fallback attempts are saved in the session, and if no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774)).
 
 - Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.

@@ -477,11 +477,30 @@ Classifiers, image models, and remote compactors never appear in `/model` and ne
 
 ### Gemini Decisions {#gemini-decisions}
 
-`google-decisions/gemini-decision-1` uses Google's [Gemini Decisions API](https://aistudio.google.com/docs/decisions-api) for typed decisions about text and images. Run `/login google` to save a Gemini API key, or set `GEMINI_API_KEY` or `GOOGLE_API_KEY`. Atomic uses the saved `google` key first, then checks those variables in order. There is no separate `/login google-decisions` entry. The endpoint is not available on Vertex AI and does not use Vertex credentials.
+`google-decisions/gemini-decision-1` uses Google's [Gemini Decisions API](https://aistudio.google.com/docs/decisions-api) to answer yes/no, choice, and score questions about text and images. It is a classifier, not a chat model.
 
-- **Selection:** Pin `google-decisions/gemini-decision-1` in [`decisionModel`](/settings#decisionmodel) or call it with [`models.classify()`](/codemode#classify). Configuring a key does not change the active decision model.
-- **Limits:** Gemini allows up to 1,000 questions per request and 2 to 255 options or levels per question. It checks the shared 262,144-token context limit. Atomic sends images inline and caps the encoded request at 100 MB.
-- **Failures and fallback:** Temporary HTTP 429 throttles use the existing retry policy and honor Google's retry delay within its cap. Missing credentials, exhausted quotas, oversized requests, refusals, and invalid answers move to the next eligible decision candidate when fallback is allowed. See [Google's rate limits](https://aistudio.google.com/docs/rate-limits#gemini-decision) and [Structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
+1. If you already saved a Gemini key with `/login google`, reuse it. Otherwise, [get a Gemini API key from Google AI Studio](https://aistudio.google.com/app/apikey), then run `/login google` or set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) before starting Atomic. Atomic checks the saved `google` key first, then `GEMINI_API_KEY`, then `GOOGLE_API_KEY`. There is no `/login google-decisions` entry, and the API is not available through Vertex AI.
+2. Open `/settings` → **Decision model** and choose `google-decisions/gemini-decision-1`, or add this to [your `settings.json`](/settings#decisionmodel) and run `/reload`:
+
+   ```json
+   { "decisionModel": "google-decisions/gemini-decision-1" }
+   ```
+
+Saving a key alone does not switch your decision model. Set `decisionModel` to `"auto"` to use your current chat model again. To use Gemini only for individual requests, leave your setting alone. In codemode, get the model with `models.getModelOfType("classifier", "google-decisions", "gemini-decision-1")` and pass it to [`models.classify()`](/codemode#classify).
+
+**Limits:** Each request can have 1 to 1,000 questions. Choice questions need 2 to 255 options; score questions need 2 to 255 levels. Google checks the 262,144-token limit across the input and all questions. Atomic sends images inline and caps the encoded request at 100 MB. See Google's [supported image formats](https://aistudio.google.com/docs/decisions-api#input) and [request limits](https://aistudio.google.com/docs/decisions-api#limits).
+
+**If a request fails:**
+
+| What you see | What to do |
+| --- | --- |
+| No key, rejected key, or permission denied (HTTP 400 with `API_KEY_INVALID`, 401, or 403) | Save a valid Gemini Developer API key with `/login google` or check the environment variables above. A Vertex credential will not work. |
+| Invalid or oversized request (HTTP 400 or 413) | Check question and option counts, shorten the input, split the questions across calls, or remove large images. |
+| Model or endpoint not found (HTTP 404) | Check the exact model ID above. If you use a proxy, check that it forwards the Gemini Decisions endpoint. |
+| Temporary rate limit (HTTP 429) or server error (HTTP 5xx) | Atomic can retry. It honors a temporary rate limit's wait time only if it is within the retry cap; a longer wait or an exhausted daily quota skips same-model retries. See [Google's rate limits](https://aistudio.google.com/docs/rate-limits#gemini-decision). |
+| Google blocks the input, or returns an invalid answer | Atomic does not retry the same request. Revise the input or choose another classifier if the problem persists. |
+
+Structured decisions try the next eligible candidate or the current chat model when fallback is allowed. Chat fallback does not return probabilities. Direct codemode calls report the failure instead of choosing another model. See [Structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
 
 ### TypeSafe Jev {#typesafe-jev}
 
