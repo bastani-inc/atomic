@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.11-alpha.4] - 2026-11-27
+
 ### Added
 
 - `StorageNotifications.send(notices)` sends already-committed notifications together in one coalesced round trip outside the database facade's serial call queue, and waits for in-flight sends before `close()` ends the pool ([#6712](https://github.com/bastani-inc/atomic/issues/6712)).
