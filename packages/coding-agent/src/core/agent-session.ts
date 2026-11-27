@@ -109,6 +109,7 @@ class AgentSessionBase {
 	protected _fallbackAttemptedKeys: Set<string> = new Set();
 	/** Models condemned for this turn by a failure retrying them cannot repair. */
 	protected _fallbackBlockedModels: Array<Model<Api>> = [];
+	/** Rejected account identities, or provider IDs when request auth could not identify the account. */
 	protected _fallbackBlockedProviders: Set<string> = new Set();
 	protected _fallbackOriginModel: Model<Api> | undefined;
 	protected _fallbackOriginThinkingLevel: ThinkingLevel | undefined;

@@ -22,14 +22,17 @@ interface ProviderLimit {
 	requests: number[];
 }
 
-/** The limit a failure was recorded against: the whole provider or one of its models. */
+/** The limit a failure was recorded against: the whole account or one of its models. */
 export interface ProviderLimitScope {
 	readonly key: string;
+	readonly account?: string;
 }
 
 interface ProviderLimitState {
 	readonly providers: Map<string, ProviderLimit>;
-	/** Failures already recorded, with the limit (provider or model) they were recorded against. */
+	accounts?: Map<string, ProviderLimit & { scope: ProviderLimitScope }>;
+	providerAccounts?: Map<string, Set<string>>;
+	/** Failures already recorded, with the limit (account or model) they were recorded against. */
 	readonly observedFailures: WeakMap<object, ProviderLimitScope>;
 	/** Listeners told when this process records or extends a limit; absent on state created by an older copy. */
 	observers?: Set<(observation: ProviderRateLimitObservation) => void>;
@@ -53,6 +56,8 @@ export type ProviderRequestGate = (provider: string, model: string, signal?: Abo
 export interface ProviderRateLimitObservation {
 	readonly provider: string;
 	readonly model?: string;
+	/** Hash of the endpoint and credential, when known. */
+	readonly account?: string;
 	/** `cooldown` holds requests back; `unavailable` (an exhausted quota) makes the fallback walk skip the account. */
 	readonly kind: "cooldown" | "unavailable";
 	readonly untilEpochMs: number;
@@ -80,10 +85,59 @@ function modelLimitKey(provider: string, model: string): string {
 	return `${provider}/${model}`;
 }
 
-function scopedLimits(provider: string, model: string | undefined): ProviderLimit[] {
+function accountLimitKey(account: string, model?: string): string {
+	return model === undefined ? account : modelLimitKey(account, model);
+}
+
+function scopedLimits(provider: string, model: string | undefined, account?: string | null): ProviderLimit[] {
 	const limits = [state.providers.get(provider)];
 	if (model !== undefined) limits.push(state.providers.get(modelLimitKey(provider, model)));
+	// An omitted account requests a provider summary. Admission passes null when the account is unknown.
+	const accounts = account === undefined ? state.providerAccounts?.get(provider) : account === null ? [] : [account];
+	for (const id of accounts ?? []) {
+		limits.push(state.accounts?.get(id));
+		if (model !== undefined) limits.push(state.accounts?.get(accountLimitKey(id, model)));
+	}
 	return limits.filter((limit): limit is ProviderLimit => limit !== undefined);
+}
+
+function observationScope({
+	key,
+	account,
+}: ProviderLimitScope): Pick<ProviderRateLimitObservation, "provider" | "model" | "account"> {
+	const slash = key.indexOf("/");
+	return {
+		...(slash < 0 ? { provider: key } : { provider: key.slice(0, slash), model: key.slice(slash + 1) }),
+		...(account === undefined ? {} : { account }),
+	};
+}
+
+function limitForScope(scope: ProviderLimitScope): ProviderLimit {
+	if (scope.account === undefined) return providerLimit(scope.key);
+	const { provider, model } = observationScope(scope);
+	const account = scope.account;
+	state.providerAccounts ??= new Map();
+	let accounts = state.providerAccounts.get(provider);
+	if (!accounts) {
+		accounts = new Set();
+		state.providerAccounts.set(provider, accounts);
+	}
+	accounts.add(account);
+	state.accounts ??= new Map();
+	const key = accountLimitKey(account, model);
+	let limit = state.accounts.get(key);
+	if (!limit) {
+		limit = { scope, cooldownUntil: 0, unavailableUntil: 0, rateLimitCount: 0, consecutiveLimits: 0, requests: [] };
+		state.accounts.set(key, limit);
+	}
+	return limit;
+}
+
+export function hasActiveAccountLimit(now = Date.now()): boolean {
+	for (const limit of state.accounts?.values() ?? []) {
+		if (limit.cooldownUntil > now || limit.unavailableUntil > now) return true;
+	}
+	return false;
 }
 
 export function configureProviderRequestBudget(provider: string, budget: ProviderRequestBudget | undefined): void {
@@ -104,7 +158,9 @@ export function configureProviderRequestBudget(provider: string, budget: Provide
 
 export function providerRateLimitSnapshot(provider: string): ProviderRateLimitSnapshot | undefined {
 	const limit = state.providers.get(provider);
-	return limit ? { provider, rateLimitCount: limit.rateLimitCount, cooldownUntil: limit.cooldownUntil } : undefined;
+	if (!limit) return undefined;
+	const cooldownUntil = Math.max(0, ...scopedLimits(provider, undefined).map((entry) => entry.cooldownUntil));
+	return { provider, rateLimitCount: limit.rateLimitCount, cooldownUntil };
 }
 
 export function providerIdForModel(model: string | object | undefined): string | undefined {
@@ -124,23 +180,33 @@ export function modelIdForModel(model: string | object | undefined): string | un
  * Time until requests to the provider (and, when given, this model) are admitted again. Pass `now` to compare
  * several limits against one clock reading.
  */
-export function providerCooldownMs(provider: string | undefined, model?: string, now = Date.now()): number {
+export function providerCooldownMs(
+	provider: string | undefined,
+	model?: string,
+	now = Date.now(),
+	account?: string | null,
+): number {
 	if (provider === undefined) return 0;
-	const until = Math.max(0, ...scopedLimits(provider, model).map((limit) => limit.cooldownUntil));
+	const until = Math.max(0, ...scopedLimits(provider, model, account).map((limit) => limit.cooldownUntil));
 	return Math.max(0, until - now);
 }
 
 /** Time until an exhausted quota on the provider (and, when given, this model) resets. */
-export function providerUnavailableMs(provider: string | undefined, model?: string, now = Date.now()): number {
+export function providerUnavailableMs(
+	provider: string | undefined,
+	model?: string,
+	now = Date.now(),
+	account?: string | null,
+): number {
 	if (provider === undefined) return 0;
-	const until = Math.max(0, ...scopedLimits(provider, model).map((limit) => limit.unavailableUntil));
+	const until = Math.max(0, ...scopedLimits(provider, model, account).map((limit) => limit.unavailableUntil));
 	return Math.max(0, until - now);
 }
 
-export function providerAdmissionDelayMs(provider: string, model?: string): number {
+export function providerAdmissionDelayMs(provider: string, model?: string, account?: string): number {
 	const limit = state.providers.get(provider);
 	const now = Date.now();
-	const cooldown = providerCooldownMs(provider, model);
+	const cooldown = providerCooldownMs(provider, model, now, account ?? null);
 	if (!limit?.budget) return cooldown;
 	limit.requests = limit.requests.filter((timestamp) => timestamp > now - limit.budget!.intervalMs);
 	const budgetDelay =
@@ -150,8 +216,8 @@ export function providerAdmissionDelayMs(provider: string, model?: string): numb
 	return Math.max(cooldown, budgetDelay);
 }
 
-export function tryAdmitProviderRequest(provider: string, model?: string): number {
-	const delay = providerAdmissionDelayMs(provider, model);
+export function tryAdmitProviderRequest(provider: string, model?: string, account?: string): number {
+	const delay = providerAdmissionDelayMs(provider, model, account);
 	if (delay === 0) {
 		const limit = state.providers.get(provider);
 		if (limit?.budget) limit.requests.push(Date.now());
@@ -263,39 +329,52 @@ export function recordProviderRateLimit(
 	provider: string | undefined,
 	error: unknown,
 	model?: string,
+	account?: string,
 ): number | undefined {
 	if (provider === undefined) return undefined;
 	const kind = normalizeModelFailureSignal(error)?.kind;
 	if (kind !== "rate_limit" && kind !== "quota_exhausted") return undefined;
-	const remaining = () =>
-		kind === "quota_exhausted" ? providerUnavailableMs(provider, model) : providerCooldownMs(provider, model);
+	const remaining = (identity?: string) =>
+		(kind === "quota_exhausted" ? providerUnavailableMs : providerCooldownMs)(
+			provider,
+			model,
+			Date.now(),
+			identity ?? null,
+		);
 	for (const value of failureObjects(error)) {
 		const scope = state.observedFailures.get(value);
 		if (scope !== undefined) {
 			state.observedFailures.delete(value);
 			// Already counted; a server hint on this later view of the failure can still extend the limit.
 			recordProviderRetryHint(provider, error, scope);
-			return remaining();
+			return remaining(scope.account);
 		}
 	}
 	const providerEntry = providerLimit(provider);
-	const key = providerLimitScope(provider, error, model).key;
-	const limit = providerLimit(key);
+	const scope = providerLimitScope(provider, error, model, account);
+	const limit = limitForScope(scope);
 	providerEntry.rateLimitCount += 1;
 	limit.consecutiveLimits += 1;
 	const backoff = Math.min(60_000, 1000 * 2 ** Math.min(limit.consecutiveLimits - 1, 6));
-	extendLimit(key, kind, providerRetryHint(error).retryAfterMs ?? backoff * (0.5 + Math.random() * 0.5));
-	return remaining();
+	extendLimit(scope, kind, providerRetryHint(error).retryAfterMs ?? backoff * (0.5 + Math.random() * 0.5));
+	return remaining(account);
 }
 
-/** The limit a failure belongs to: its model when the failure names that model, else the whole provider. */
-export function providerLimitScope(provider: string, error: unknown, model?: string): ProviderLimitScope {
-	return { key: model !== undefined && failureNamesModel(error, model) ? modelLimitKey(provider, model) : provider };
+/** The limit a failure belongs to: its model when the failure names that model, else the whole account. */
+export function providerLimitScope(
+	provider: string,
+	error: unknown,
+	model?: string,
+	account?: string,
+): ProviderLimitScope {
+	// An account quota can name the model that encountered it without limiting the quota to that model.
+	const perModel = model !== undefined && isProviderRateLimit(error) && failureNamesModel(error, model);
+	return { key: perModel ? modelLimitKey(provider, model) : provider, ...(account === undefined ? {} : { account }) };
 }
 
-function extendLimit(key: string, kind: "rate_limit" | "quota_exhausted", delay: number): void {
+function extendLimit(scope: ProviderLimitScope, kind: "rate_limit" | "quota_exhausted", delay: number): void {
 	const until = Math.ceil(Date.now() + Math.max(1, delay));
-	const observation = raiseLimit(key, kind === "quota_exhausted" ? "unavailable" : "cooldown", until);
+	const observation = raiseLimit(scope, kind === "quota_exhausted" ? "unavailable" : "cooldown", until);
 	if (observation === undefined || state.observers === undefined) return;
 	for (const observer of state.observers) {
 		// An observer must never change how the request that hit the limit is handled, nor starve the others.
@@ -315,18 +394,15 @@ let observerFailureReported = false;
 
 /** Raise one limit to `until`; returns the limit as an observation when it grew, and nothing otherwise. */
 function raiseLimit(
-	key: string,
+	scope: ProviderLimitScope,
 	kind: ProviderRateLimitObservation["kind"],
 	until: number,
 ): ProviderRateLimitObservation | undefined {
-	const limit = providerLimit(key);
+	const limit = limitForScope(scope);
 	const field = kind === "unavailable" ? "unavailableUntil" : "cooldownUntil";
 	if (until <= limit[field]) return undefined;
 	limit[field] = until;
-	const slash = key.indexOf("/");
-	return slash < 0
-		? { provider: key, kind, untilEpochMs: until }
-		: { provider: key.slice(0, slash), model: key.slice(slash + 1), kind, untilEpochMs: until };
+	return { ...observationScope(scope), kind, untilEpochMs: until };
 }
 
 /**
@@ -335,25 +411,28 @@ function raiseLimit(
  * Observers are not told: the observation came from elsewhere, so sending it on would echo it back.
  */
 export function applyProviderRateLimitObservation(observation: ProviderRateLimitObservation): boolean {
-	const { provider, model, kind, untilEpochMs } = observation;
+	const { provider, model, account, kind, untilEpochMs } = observation;
 	if (!provider || provider.includes("/") || (kind !== "cooldown" && kind !== "unavailable")) return false;
+	if (account !== undefined && !/^[a-f0-9]{64}$/.test(account)) return false;
 	if (!Number.isFinite(untilEpochMs) || untilEpochMs <= Date.now()) return false;
-	const key = model === undefined ? provider : modelLimitKey(provider, model);
-	return raiseLimit(key, kind, Math.ceil(untilEpochMs)) !== undefined;
+	const scope = { key: model === undefined ? provider : modelLimitKey(provider, model), account };
+	return raiseLimit(scope, kind, Math.ceil(untilEpochMs)) !== undefined;
 }
 
 /** Every limit of this process that has not ended yet, as observations another process can apply. */
 export function providerRateLimitObservations(): ProviderRateLimitObservation[] {
 	const now = Date.now();
 	const observations: ProviderRateLimitObservation[] = [];
-	for (const [key, limit] of state.providers) {
-		const slash = key.indexOf("/");
-		const scope = slash < 0 ? { provider: key } : { provider: key.slice(0, slash), model: key.slice(slash + 1) };
+	const collect = (scope: ProviderLimitScope, limit: ProviderLimit) => {
+		if (limit.cooldownUntil <= now && limit.unavailableUntil <= now) return;
+		const fields = observationScope(scope);
 		if (limit.cooldownUntil > now)
-			observations.push({ ...scope, kind: "cooldown", untilEpochMs: limit.cooldownUntil });
+			observations.push({ ...fields, kind: "cooldown", untilEpochMs: limit.cooldownUntil });
 		if (limit.unavailableUntil > now)
-			observations.push({ ...scope, kind: "unavailable", untilEpochMs: limit.unavailableUntil });
-	}
+			observations.push({ ...fields, kind: "unavailable", untilEpochMs: limit.unavailableUntil });
+	};
+	for (const [key, limit] of state.providers) collect({ key }, limit);
+	for (const limit of state.accounts?.values() ?? []) collect(limit.scope, limit);
 	return observations;
 }
 
@@ -379,11 +458,11 @@ export function recordProviderRetryHint(provider: string | undefined, error: unk
 	const kind = normalizeModelFailureSignal(error)?.kind;
 	if (kind !== "rate_limit" && kind !== "quota_exhausted") return;
 	const retryAfterMs = providerRetryHint(error).retryAfterMs;
-	if (retryAfterMs !== undefined) extendLimit(scope.key, kind, retryAfterMs);
+	if (retryAfterMs !== undefined) extendLimit(scope, kind, retryAfterMs);
 }
 
-export function recordProviderSuccess(provider: string, model?: string): void {
-	for (const limit of scopedLimits(provider, model)) limit.consecutiveLimits = 0;
+export function recordProviderSuccess(provider: string, model?: string, account?: string): void {
+	for (const limit of scopedLimits(provider, model, account ?? null)) limit.consecutiveLimits = 0;
 }
 
 export function providerRetryHint(error: unknown): { retryAfterMs?: number } {
