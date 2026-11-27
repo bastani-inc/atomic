@@ -14,6 +14,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 - Preserve error codes and retry hints when an OpenAI Responses stream fails without an HTTP error status. OpenAI Responses and Codex no longer retry requests rejected because of a known quota limit.
 - Preserve retry delays sent inside failed Codex stream events, and treat OpenAI spending caps as exhausted quotas rather than temporary throttles.
+- Z.ai and Zhipu Coding CN can now trace each request attempt, including retries, using a unique ID ([#6798](https://github.com/bastani-inc/atomic/issues/6798)).
 
 ## [0.10.11] - 2026-11-27
 
