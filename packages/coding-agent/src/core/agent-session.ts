@@ -362,6 +362,12 @@ class AgentSessionBase {
 		this.sessionManager.haltAppendsOnConflictWhile(
 			() => this._activePromptCount > 0 || this.agent.state.isStreaming || this._isPreparingRun !== false,
 		);
+		this.sessionManager.bindAppendRecovery({
+			lifetime: sessionLifetime(this),
+			signal: () => this.agent.signal,
+			notify: (notice) =>
+				(this as unknown as AgentSessionInternalSurface)._emit({ type: "session_storage_reconnect", ...notice }),
+		});
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
 		this._configuredFallbackModels = config.fallbackModels;

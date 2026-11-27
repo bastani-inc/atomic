@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import type { Duplex } from "node:stream";
 import { inspect } from "node:util";
 import { type FencedPathId, StorageTransientError, StorageUnavailableError } from "@bastani/atomic/storage";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { transactionFinisher } from "../../packages/coding-agent/src/core/storage/statement-sequence.js";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 import {
@@ -10,7 +13,7 @@ import {
 	startPostgresProxy,
 	writeProxyCertificates,
 } from "../helpers/postgres-proxy.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 /**
  * A fault-injecting PostgreSQL wire-protocol proxy that parses backend v3 messages (`type` + 4-byte length)
@@ -18,12 +21,14 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
  * `CommandComplete("COMMIT")` durably, before the reply reaches the client).
  */
 type FaultPlan =
-	| { readonly kind: "drop-after-commit"; readonly forwardReadyBeforeHold: number }
+	| { readonly kind: "drop-after-commit"; readonly forwardReadyBeforeHold: number; readonly cut?: true }
 	| { readonly kind: "drop-on-client-marker"; readonly marker: string };
 
 async function startFaultProxy(): Promise<{
 	url(databaseUrl: string): string;
 	arm(plan: FaultPlan): void;
+	cut(): void;
+	reconnect(): void;
 	readonly dropped: number;
 	close(): Promise<void>;
 }> {
@@ -31,8 +36,20 @@ async function startFaultProxy(): Promise<{
 	const certificate = postgresTestUsesTls() ? writeProxyCertificates(directory) : undefined;
 	let activePlan: FaultPlan | undefined;
 	let dropped = 0;
+	let offline = false;
+	const clients = new Set<Duplex>();
+	const cut = () => {
+		offline = true;
+		for (const client of clients) client.destroy();
+	};
 
 	const proxy = await startPostgresProxy(certificate, (client, upstream, first) => {
+		if (offline) {
+			client.destroy();
+			return;
+		}
+		clients.add(client);
+		client.once("close", () => clients.delete(client));
 		let connPlan: FaultPlan | undefined;
 		let readyForwarded = 0;
 		let holding = false;
@@ -40,6 +57,7 @@ async function startFaultProxy(): Promise<{
 
 		const dropNow = () => {
 			dropped++;
+			if (connPlan?.kind === "drop-after-commit" && connPlan.cut) cut();
 			connPlan = undefined;
 			client.destroy();
 			upstream.destroy();
@@ -113,6 +131,10 @@ async function startFaultProxy(): Promise<{
 		arm(plan) {
 			activePlan = plan;
 		},
+		cut,
+		reconnect() {
+			offline = false;
+		},
 		get dropped() {
 			return dropped;
 		},
@@ -122,6 +144,71 @@ async function startFaultProxy(): Promise<{
 		},
 	};
 }
+
+describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL session append recovery (#6752)", () => {
+	test("a lost COMMIT acknowledgement is checked after reconnect, not replayed or overtaken (#6752)", async () => {
+		await withPostgresDatabase(async ({ open, url }) => {
+			const proxy = await startFaultProxy();
+			try {
+				const direct = await SqlSessionStore.open(await open());
+				const store = await SqlSessionStore.open(await open({ url: proxy.url(url) }));
+				const writer = await SessionManager.create(store, process.cwd());
+				const sessionId = writer.getSessionId();
+				await writer.appendCustomEntry("probe", "before");
+				proxy.arm({ kind: "drop-after-commit", forwardReadyBeforeHold: Number.POSITIVE_INFINITY, cut: true });
+				const settled = Promise.all([
+					writer.appendCustomEntry("probe", "committed before the drop"),
+					writer.appendCustomEntry("probe", "after reconnect"),
+				]);
+				const outcome = settled.catch((error: unknown) => error);
+				const saved = async () =>
+					(await direct.load(sessionId)).entries.flatMap((entry) =>
+						entry.type === "custom" && entry.customType === "probe" ? [entry.data] : [],
+					);
+				try {
+					await vi.waitFor(() => assert.equal(proxy.dropped, 1));
+					assert.deepEqual(await saved(), ["before", "committed before the drop"]);
+					// Outlast the facade's own retry budget for the read of the uncertain append.
+					await sleep(5_500);
+					proxy.reconnect();
+					await settled;
+					assert.deepEqual(await saved(), ["before", "committed before the drop", "after reconnect"]);
+				} finally {
+					proxy.reconnect();
+					await outcome;
+				}
+			} finally {
+				await proxy.close();
+			}
+		});
+	});
+
+	/** Keeping the real query path disconnected for the full standalone recovery budget is the behavior under test. */
+	const BARE_OUTAGE_TEST_TIMEOUT_MS = 85_000;
+	test(
+		"a bare writer gives up after about a minute of continuing connection failures (#6752)",
+		async () => {
+			await withPostgresDatabase(async ({ open, url }) => {
+				const proxy = await startFaultProxy();
+				try {
+					const database = await open({ url: proxy.url(url) });
+					const store = await SqlSessionStore.open(database);
+					const writer = await SessionManager.create(store, process.cwd());
+					proxy.cut();
+					const started = performance.now();
+					await assert.rejects(writer.appendCustomEntry("probe", "cannot save"), { code: "connection-refused" });
+					assert.ok(
+						performance.now() - started >= 59_000,
+						"the transient failure should not surface before the bare writer's wait",
+					);
+				} finally {
+					await proxy.close();
+				}
+			});
+		},
+		BARE_OUTAGE_TEST_TIMEOUT_MS,
+	);
+});
 
 describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL dropped connection after COMMIT (#6711)", () => {
 	test("savepoint-recovered lock timeout followed by connection drop after COMMIT reports unknown and does not retry (#6711)", async () => {

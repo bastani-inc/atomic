@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Live sessions wait for PostgreSQL to come back after a connection outage instead of stopping or losing messages and subagent records. Atomic reports a long wait and when saving resumes. If another process writes to the same session in the meantime, the old run still stops rather than writing over it ([#6752](https://github.com/bastani-inc/atomic/issues/6752)).
+
 ## [0.10.12] - 2026-11-27
 
 This patch fixes a silent failure in `atomic storage migrate` for PostgreSQL.

@@ -203,15 +203,17 @@ function getUnsavedInput(this: AgentSession): UnsavedInput | undefined {
  * an earlier run could not save and nothing has saved since, and a context refresh does not drop them (#5135).
  */
 function getPersistenceFailure(this: AgentSession): PersistenceFailure | undefined {
-	const error = this._persistenceFailure;
+	const run = runFailures.get(this);
+	// After an uncertain write, the last message can be confirmed saved even though a peer's newer entry stopped us.
+	const conflict = run?.conflict ?? this.sessionManager.getAppendHalt();
+	const error = this._persistenceFailure ?? conflict?.message;
 	if (error === undefined) return undefined;
 	const retained = retainedInputs.get(this);
-	const run = runFailures.get(this);
 	const unsavedMessages = [...(retained?.messages.values() ?? []), ...(run?.outputs ?? [])];
 	return {
 		error,
 		unsavedMessages,
-		...(run?.conflict === undefined ? {} : { conflict: run.conflict }),
+		...(conflict === undefined ? {} : { conflict }),
 		...(retained === undefined || retained.dropped === 0 ? {} : { droppedUnsavedMessages: retained.dropped }),
 	};
 }

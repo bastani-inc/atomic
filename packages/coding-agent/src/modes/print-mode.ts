@@ -26,6 +26,7 @@ import {
 	onBlueprintBuildWaiting,
 } from "../core/resume/blueprint/barrier.ts";
 import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
+import { formatAppendRecoveryNotice } from "../core/session-append-recovery.js";
 import { ranOnModelLine } from "../core/tasks/completion.js";
 import { reportDiagnostics } from "../main-stdio.ts";
 import { startedWithHangupIgnored } from "../utils/inherited-hangup.js";
@@ -166,6 +167,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let fallbackTarget: { model: string; thinkingLevel?: string } | undefined;
 	let suppressFinalOutput = false;
 	let activePromptHadCommandError = false;
+	let stoppedByWriterConflict = false;
 	/** Whether the last prompt's extension commands answered with messages they queued (#6113). */
 	let commandAnswered = false;
 	/**
@@ -260,6 +262,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			}
 			const conflict = session.getPersistenceFailure()?.conflict;
 			if (conflict !== undefined) {
+				stoppedByWriterConflict = true;
 				exitCode = 1;
 				console.error(sessionConflictMessage(conflict));
 			}
@@ -314,6 +317,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				terminatingStructuredOutputCallIds.add(event.toolCallId);
 			}
 			if (event.type === "message_end" && event.message.role === "assistant") repliedThisRun = true;
+			if (event.type === "session_storage_reconnect") {
+				reportDiagnostics([
+					{ type: event.state === "waiting" ? "warning" : "info", message: formatAppendRecoveryNotice(event) },
+				]);
+			}
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			} else if (event.type === "message_end" && event.message.role === "assistant") {
@@ -364,6 +372,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		}
 
 		for (const message of messages) {
+			// A newer writer owns the saved turn; unattended prompts must not continue past it.
+			if (stoppedByWriterConflict) break;
 			await promptWithScopedCommandSuppression(message);
 		}
 

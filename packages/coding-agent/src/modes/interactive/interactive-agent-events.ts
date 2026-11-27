@@ -5,6 +5,7 @@ import { chatReceipt } from "../../core/chat-receipts.js";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { keepDroppedQueuedMessages } from "../../core/queued-message-delivery.ts";
+import { formatAppendRecoveryNotice } from "../../core/session-append-recovery.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { carryRowSource, noteRowSource, noteSavedSeq } from "../../core/tasks/transcript-origin.js";
@@ -832,6 +833,12 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			break;
 		}
 
+		case "session_storage_reconnect": {
+			const message = formatAppendRecoveryNotice(event);
+			if (event.state === "waiting") this.showWarning(message);
+			else this.showStatus(message);
+			break;
+		}
 		case "worktree_snapshot_unavailable": {
 			if (!WORKSPACE_ABSENCE_CODES.has(event.reason.code ?? "")) this.showWarning(event.reason.message);
 			break;
