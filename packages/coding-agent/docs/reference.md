@@ -52,11 +52,11 @@ Look up exact commands, settings, configuration schemas, tool behaviors, and API
 
 ## Platform setup
 
-- [Run on Windows](/windows)
 - [Configure your terminal](/terminal-setup)
-- [Run in tmux](/tmux)
-- [Herdr](/herdr)
 - [Shell aliases](/shell-aliases)
+- [Run on Windows](/windows)
+- [Run in Tmux](/tmux)
+- [Run in Herdr](/herdr)
 
 ## Diagnostics and changelog
 

@@ -1,6 +1,6 @@
 ---
-title: "Integrate with Herdr"
-sidebarTitle: "Herdr"
+title: "Run Atomic in Herdr"
+sidebarTitle: "Run in Herdr"
 description: "Use Atomic's built-in Herdr status indicators, automatic session restore, troubleshooting steps, and privacy controls."
 ---
 
