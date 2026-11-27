@@ -62,10 +62,14 @@ export function buildItemsForQuestion(question: QuestionData): WrappingSelectIte
 	return items;
 }
 
+const selfContainedQuestionGuidance =
+	"Make each question answerable on its own. State the decision and relevant facts and numbers in the question; explain the consequence of each option in its description or preview. Include this context even if you already gave it in a progress update.";
+
 export const askUserQuestionToolSystemPromptContribution = Object.freeze({
 	snippet: `Ask all user questions through this tool, including clarifications and approvals; up to ${MAX_QUESTIONS} questions with ${MIN_OPTIONS}-${MAX_OPTIONS} options each`,
 	guidelines: Object.freeze([
 		"When ask_user_question or an equivalent question tool is available, all questions to the user must use that tool instead of plain text, including clarifications, preferences, confirmations, approvals, and permission to proceed. Prefer ask_user_question when available. In these sessions, do not end a progress update or final response with a prose-only question such as 'Proceed?'.",
+		selfContainedQuestionGuidance,
 		"Ask only when a decision is needed; do not seek approval again for already-authorized work. For a confirmation, put the concrete action and its scope in the question and offer explicit proceed and decline options. A cancelled or unanswered question is not approval.",
 		`Each question MUST have ${MIN_OPTIONS}-${MAX_OPTIONS} options. Every option requires a concise label (1-5 words) and a description explaining what the choice means or its trade-offs. The user can additionally type a custom answer ("Type something." row is appended automatically to single-select questions) or pick "Chat about this" to abandon the questionnaire.`,
 		`Set multiSelect: true when multiple answers are valid; this suppresses the "Type something." row. Provide an options[].preview markdown string when an option benefits from richer side-by-side context (mockups, code snippets, diagrams, configs) — single-select only. NOTE: any non-empty preview on a single-select question ALSO suppresses the "Type something." row (no room in the side-by-side layout); "Chat about this" remains the escape hatch. If you recommend a specific option, make it the first option and append "(Recommended)" to its label.`,
@@ -104,6 +108,7 @@ function defineAskUserQuestionTool(
 4. Request confirmation, approval, or permission to proceed
 
 Usage notes:
+- ${selfContainedQuestionGuidance}
 - Ask only for decisions that are needed; do not re-request existing authorization. State the exact action and scope, with explicit proceed and decline options for confirmations. A cancelled or unanswered question is not approval.
 - If ask_user_question is unavailable, use an equivalent available question tool with its supported schema. If no usable question tool is available, continue autonomously using best judgment and state evidence-backed assumptions. Tool unavailability alone is not a blocker; preserve safety and authorization constraints.
 - Users will always be able to type a custom answer ("Type something." row is appended automatically to every single-select question) or pick "Chat about this" to abandon the questionnaire and continue in free-form conversation. Do NOT author "Other" / "Type something." / "Chat about this" labels yourself — duplicates are rejected at runtime.
