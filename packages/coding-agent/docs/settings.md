@@ -69,11 +69,20 @@ See [Choose a model](/models/choose-a-model) for everyday model selection, [Mode
 
 ### Claude progress updates and reasoning summaries
 
-With Claude Opus 5.5, Sonnet 5.5, Fable 5/5.1/5.2, and Mythos 5.1/5.2 on Anthropic's API, Atomic shows the model's progress updates before tool calls as assistant text, even when `hideThinkingBlock` is on. Print mode writes these updates to stderr and keeps the final answer on stdout. Anthropic supplies a short summary of each progress update and does not return reasoning summaries in this mode.
+On Anthropic's API, Claude Opus 5.5, Sonnet 5.5, Fable 5/5.1/5.2, and Mythos 5.1/5.2 previously mixed the model's progress updates into its reasoning summaries. For these models, Atomic now asks Anthropic for progress updates only (`display: "updates"`). The updates appear as assistant text before tool calls, even when `hideThinkingBlock` is on. No change to your settings is needed to see them. Print mode writes progress to stderr and leaves only the final answer on stdout.
 
-To see reasoning summaries instead, set `"anthropicThinkingDisplay": "summarized"` and leave `hideThinkingBlock` off. Anthropic mixes progress and reasoning in this mode without distinguishing them, so both are treated as thinking. This setting does not change other models or providers. Earlier messages saved in summarized mode cannot be separated retroactively.
+Anthropic sends a short summary of each update, not the full note, and does not send reasoning summaries in the new default mode. To get the old reasoning summaries back, add these settings to `~/.atomic/agent/settings.json`:
 
-SDK callers can override the display per request with `anthropicThinkingDisplay` in `streamSimple` or with `thinkingDisplay` in Anthropic-specific stream options. Models can set their default in `compat.thinkingDisplay`.
+```json
+{
+  "anthropicThinkingDisplay": "summarized",
+  "hideThinkingBlock": false
+}
+```
+
+In `"summarized"` mode Anthropic still mixes progress and reasoning together, so Atomic shows both as thinking. To switch back to visible progress, remove `anthropicThinkingDisplay` or set it to `"updates"`. Other models and providers are unchanged. Atomic leaves earlier messages as saved because it cannot tell which parts of an old summary were progress updates.
+
+SDK callers can override the display per request with `anthropicThinkingDisplay` in `streamSimple` or with `thinkingDisplay` in Anthropic-specific stream options. Set `compat.thinkingDisplay` in your [model configuration](/models-configuration#anthropic-messages) to change the default for one model.
 
 ### Model scope (enabledModels) {#enabledmodels}
 
