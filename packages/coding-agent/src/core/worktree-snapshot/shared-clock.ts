@@ -229,6 +229,28 @@ const sharedClockFs = { ...fs, stat: sharedStat, utimes: sharedUtimes, rmdir: sh
  * holding it (#5050): a holder on a host whose clock lags keeps its lock, and one whose clock runs ahead loses it once
  * it stopped refreshing it for the stale time.
  */
-export function lockShared(path: string, options: LockOptions): Promise<() => Promise<void>> {
-	return lockfile.lock(path, { ...options, fs: sharedClockFs });
+export async function lockShared(
+	path: string,
+	options: LockOptions,
+	removeStale?: (lockPath: string) => Promise<void>,
+): Promise<() => Promise<void>> {
+	if (removeStale === undefined) return lockfile.lock(path, { ...options, fs: sharedClockFs });
+	let created = false;
+	// proper-lockfile calls mkdir with just the path and callback. Once it succeeds, rmdir is our own cleanup.
+	const mkdir = ((file: fs.PathLike, callback: fs.NoParamCallback) => {
+		fs.mkdir(file, (error) => {
+			created = error === null;
+			callback(error);
+		});
+	}) as typeof fs.mkdir;
+	const rmdir = ((file: fs.PathLike, callback: fs.NoParamCallback) => {
+		if (created) return sharedRmdir(file, callback);
+		const lockPath = String(file);
+		readings.delete(lockPath);
+		void removeStale(lockPath).then(
+			() => callback(null),
+			(error: NodeJS.ErrnoException) => callback(error),
+		);
+	}) as typeof fs.rmdir;
+	return lockfile.lock(path, { ...options, fs: { ...sharedClockFs, mkdir, rmdir } });
 }

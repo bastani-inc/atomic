@@ -15,6 +15,7 @@ interface RestoreJob {
 	readonly mode: "exact" | "best";
 	readonly snapshot: WorktreeSnapshot;
 	readonly storeDir: string;
+	readonly into?: string;
 	readonly git: GitExecutable;
 }
 
@@ -25,7 +26,7 @@ await new Promise<void>((resolve) => lines.once("line", () => resolve()));
 lines.close();
 
 async function run(): Promise<{ status: string; path?: string; error?: string }> {
-	const options = { storeDir: job.storeDir, git: job.git };
+	const options = { storeDir: job.storeDir, into: job.into, git: job.git };
 	if (job.mode === "exact") return { status: "restored", path: (await restoreWorktree(job.snapshot, options)).path };
 	const best = await restoreBestWorktree(job.snapshot, options);
 	if (best.status === "unrestored") return { status: "unrestored", error: String(best.reason) };

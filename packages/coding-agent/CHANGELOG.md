@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Resuming after a crash no longer waits 30 seconds for a worktree snapshot lock when Atomic can tell the process holding it is gone. If another Atomic is still restoring the repository, the resume shows why it is waiting ([#6800](https://github.com/bastani-inc/atomic/issues/6800)).
+
 - When you use Claude Opus 5.5 or another supported Claude model directly through Anthropic, progress before tool calls now appears as assistant text instead of being mixed into thinking summaries. To see the old summaries instead, set `"anthropicThinkingDisplay": "summarized"` and `"hideThinkingBlock": false` in `settings.json` ([#6776](https://github.com/bastani-inc/atomic/issues/6776)).
 
 - Chat moves to the next available fallback model when a provider asks it to wait past the retry limit. Retry and fallback attempts are saved in the session, and if no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774)).

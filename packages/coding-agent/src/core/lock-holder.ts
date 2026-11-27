@@ -124,7 +124,7 @@ export async function recordLockHolderAsync(lockPath: string): Promise<void> {
 		await writeFile(temporary, JSON.stringify(record));
 		await renameReplacingAsync(temporary, path);
 	} catch {
-		await rm(temporary, { force: true });
+		await rm(temporary, { force: true }).catch(() => {});
 	}
 }
 
@@ -161,11 +161,27 @@ async function readHolderRecordAsync(lockPath: string): Promise<LockHolderRecord
 
 function parseHolderRecord(content: string): LockHolderRecord | undefined {
 	const record = JSON.parse(content) as Partial<LockHolderRecord>;
-	if (typeof record.host !== "string" || !Number.isSafeInteger(record.pid) || typeof record.lock !== "string")
+	if (
+		typeof record.host !== "string" ||
+		typeof record.pid !== "number" ||
+		!Number.isSafeInteger(record.pid) ||
+		record.pid <= 0 ||
+		typeof record.lock !== "string"
+	)
 		return undefined;
 	if (record.started !== undefined && typeof record.started !== "string") return undefined;
 	if (record.lockId !== undefined && typeof record.lockId !== "string") return undefined;
 	return record as LockHolderRecord;
+}
+
+/** Whether the current lock names a local holder. Only a process check, not age, may displace such a holder. */
+export async function lockNamesLocalHolder(lockPath: string, pid?: number): Promise<boolean> {
+	const record = await readHolderRecordAsync(lockPath);
+	return (
+		record?.host === hostname() &&
+		(pid === undefined || record.pid === pid) &&
+		matchesHolderRecord(await readLockIdentityAsync(lockPath), record)
+	);
 }
 
 export async function prepareLockTakeover(lockPath: string): Promise<void> {

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { takeoverLockPath } from "../src/core/lock-takeover.js";
 import { renameWithRetry } from "../src/core/rename-retry.ts";
 import {
 	type PreparedSessionResume,
@@ -273,9 +274,11 @@ describe("pooled worktrees and object stores belong to one repository (#4989)", 
 			snapshots: [snapshot],
 		});
 		assert.equal(readFileSync(join(restored.path, "a.txt"), "utf8"), "A\n");
+		const storeName = `${checkoutStoreIdOf(snapshot.root)}.git`;
+		const mutexFile = basename(takeoverLockPath(`${storeName}.lock`));
 		assert.deepEqual(
-			readdirSync(join(storeDir(), "repositories")).filter((name) => !name.startsWith(".")),
-			[`${checkoutStoreIdOf(snapshot.root)}.git`],
+			readdirSync(join(storeDir(), "repositories")).filter((name) => !name.startsWith(".") && name !== mutexFile),
+			[storeName],
 		);
 	});
 });

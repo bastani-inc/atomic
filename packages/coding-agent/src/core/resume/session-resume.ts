@@ -46,6 +46,7 @@ import {
 	pendingLfsDownload,
 	type VerifyWorktreeOptions,
 	verifyWorktree,
+	withRepositoryLockProgress,
 } from "../worktree-snapshot/restore.ts";
 import { holdsSessionSnapshotRef } from "../worktree-snapshot/session-refs.ts";
 import type {
@@ -429,7 +430,9 @@ export async function prepareSessionResume(
 	let prepared: PreparedSessionResume;
 	try {
 		options.signal?.throwIfAborted();
-		prepared = await timings.run(() => prepareResume(sessionManager, options, buildSettled));
+		prepared = await timings.run(() =>
+			withRepositoryLockProgress(options.onProgress, () => prepareResume(sessionManager, options, buildSettled)),
+		);
 	} catch (error) {
 		await releaseSessionWorktrees(sessionManager);
 		throw error;

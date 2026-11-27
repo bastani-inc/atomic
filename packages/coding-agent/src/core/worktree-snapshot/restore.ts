@@ -18,6 +18,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { pathExists } from "../../utils/path-exists.ts";
+import { asyncScope } from "../async-scope.ts";
+import { takeOverDeadHolderAsync } from "../lock-holder.js";
 import { releaseLock } from "../lock-release.ts";
 import { takeTakeoverMutexAsync } from "../lock-takeover.js";
 import { renameWithRetry } from "../rename-retry.ts";
@@ -68,6 +70,7 @@ import {
 	type WorktreeSnapshotSettingsInput,
 } from "./settings.ts";
 import { lockShared } from "./shared-clock.ts";
+import { lockSharedWithHolder } from "./shared-lock.ts";
 import type {
 	SnapshotBlobStore,
 	WorkspaceBinding,
@@ -249,10 +252,18 @@ async function withProcessRepositoryLock<T>(store: string, action: () => Promise
 	}
 }
 
-/** The repository lock's constants: a stopped process loses it after 30 seconds; a held one is checked every 50 ms. */
+/** A lock without a locally identifiable holder keeps its 30-second heartbeat timeout (#6800). */
 const REPOSITORY_LOCK_STALE_MS = 30_000;
 const REPOSITORY_LOCK_UPDATE_MS = 10_000;
 const REPOSITORY_LOCK_POLL_MS = 50;
+/** Don't announce brief contention, such as two restores entering the store just to read its refs. */
+const REPOSITORY_LOCK_NOTICE_MS = 500;
+const repositoryLockProgress = asyncScope<(message: string) => void>();
+
+/** Sends repository-lock progress to the resume UI rather than writing over it on stderr. */
+export function withRepositoryLockProgress<T>(onProgress: ((message: string) => void) | undefined, run: () => T): T {
+	return onProgress === undefined ? run() : repositoryLockProgress.run(onProgress, run);
+}
 /** How long, on Windows, the repository lock is tried again while its directory is refused with EPERM. */
 export const REPOSITORY_LOCK_REFUSED_MS = 10_000;
 
@@ -268,8 +279,9 @@ function refusedForAMoment(error: unknown): boolean {
  * Serializes work on one shared object store, in this process and across processes (#4951): creating the store,
  * configuring its remotes, fetching into it and updating its refs. Git's own locks fail rather than wait, so two
  * processes doing either at once would fail one of them. Waiters in this process queue behind each other; across
- * processes, the store's lock file `<store>.lock` is polled until it is free or its holder stopped refreshing it. On
- * Windows a lock directory refused with EPERM is polled too, for up to {@link REPOSITORY_LOCK_REFUSED_MS} on end.
+ * processes, `<store>.lock` is polled until it is free or its holder is proven gone. A lock without a locally
+ * identifiable holder still ages out. On Windows a lock directory refused with EPERM is polled too, for up to
+ * {@link REPOSITORY_LOCK_REFUSED_MS} on end.
  */
 function withRepositoryLock<T>(
 	store: string,
@@ -296,28 +308,36 @@ async function lockRepository(
 ): Promise<() => Promise<void>> {
 	const repositories = dirname(store);
 	await writing(repositories, snapshotId, () => mkdir(repositories, { recursive: true }));
+	const lockPath = `${store}.lock`;
 	let refusedSince: number | undefined;
+	let waitingSince: number | undefined;
+	let announced = false;
 	for (;;) {
 		signal?.throwIfAborted();
 		try {
-			return await lockShared(store, {
+			return await lockSharedWithHolder(store, {
 				realpath: false,
 				stale: REPOSITORY_LOCK_STALE_MS,
 				update: REPOSITORY_LOCK_UPDATE_MS,
 				retries: 0,
-				// A lost lock only lets another process into the store early, where Git's own locks still guard each write.
-				onCompromised: () => {},
 			});
 		} catch (error) {
 			if (refusedForAMoment(error)) {
 				refusedSince ??= Date.now();
 				// A refusal that lasts is a directory this process may not write to.
 				if (Date.now() - refusedSince >= REPOSITORY_LOCK_REFUSED_MS)
-					throw unwritablePathError(`${store}.lock`, snapshotId, error);
+					throw unwritablePathError(lockPath, snapshotId, error);
 			} else if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
 				refusedSince = undefined;
+				if (await takeOverDeadHolderAsync(lockPath)) continue;
+				waitingSince ??= performance.now();
+				if (!announced && performance.now() - waitingSince >= REPOSITORY_LOCK_NOTICE_MS) {
+					announced = true;
+					const message = `Waiting for another Atomic process restoring this repository (${store})`;
+					(repositoryLockProgress.getStore() ?? process.emitWarning)(message);
+				}
 			} else {
-				throw unwritablePathError(`${store}.lock`, snapshotId, error);
+				throw unwritablePathError(lockPath, snapshotId, error);
 			}
 		}
 		await sleep(REPOSITORY_LOCK_POLL_MS);
