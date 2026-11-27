@@ -22,7 +22,7 @@ import {
 	isUnrecognizedModelFailure,
 	normalizeModelFailureSignal,
 } from "./model-fallback-failures.ts";
-import { providerCooldownMs } from "./provider-rate-limits.ts";
+import { providerCooldownMs } from "./provider-rate-limits.js";
 import { isLongStreamCut, LONG_STREAM_CUT_ADVICE, nextRetryDecision, repeatsLongStreamCut } from "./retry-policy.ts";
 import type { ModelFallbackRecord } from "./session-manager-types.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
@@ -121,13 +121,20 @@ function overCapRateLimitDelay(message: AssistantMessage, capMs: number): number
 	return capMs > 0 && hint !== undefined && Number.isFinite(hint) && hint > capMs ? hint : undefined;
 }
 
-export function rateLimitGuidance(message: AssistantMessage, capMs = DEFAULT_MAX_RETRY_DELAY_MS): string {
+export function rateLimitGuidance(
+	message: AssistantMessage,
+	capMs = DEFAULT_MAX_RETRY_DELAY_MS,
+	status?: number,
+): string {
+	const http429 = status === 429 || /(?:^429(?:\s|:|$)|\bHTTP 429\b)/.test(message.errorMessage ?? "");
+	const summary = `Provider rate limit reached${http429 ? " (HTTP 429)" : ""}.`;
 	const overCap = overCapRateLimitDelay(message, capMs);
 	if (overCap !== undefined) {
-		return `Provider rate limit reached. The ${Math.ceil(overCap / 1000)}s wait exceeds the configured ${Math.ceil(capMs / 1000)}s retry limit. Switch models or try again after the rate limit resets.`;
+		const cap = capMs % 1000 === 0 ? `${capMs / 1000}s` : `${capMs}ms`;
+		return `${summary} The ${Math.ceil(overCap / 1000)}s wait exceeds the configured ${cap} retry limit. Switch models or try again after the rate limit resets.`;
 	}
 	const seconds = message.retryAfterMs !== undefined ? Math.ceil(message.retryAfterMs / 1000) : 0;
-	return `Provider rate limit reached. Switch models or try again ${seconds > 0 ? `in ${seconds}s` : "after the rate limit resets"}.`;
+	return `${summary} Switch models or try again ${seconds > 0 ? `in ${seconds}s` : "after the rate limit resets"}.`;
 }
 
 /** Whether an assistant error may advance the configured fallback chain. */

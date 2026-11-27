@@ -653,10 +653,14 @@ export function _applyProviderErrorGuidance(this: AgentSession, event: AgentEven
 
 	const assistantMessage = event.message as AssistantMessage;
 	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return;
+	// A preflight failure stops the run before the next provider request. Leave its identity intact so agent_end
+	// does not treat retryable wording from the compactor as a failed main-chat attempt.
+	if (assistantMessage.errorMessage === this._postToolCompactionPreflightError) return;
 
+	const signal = normalizeModelFailureSignal(assistantMessage);
 	assistantMessage.errorMessage =
-		normalizeModelFailureSignal(assistantMessage).kind === "rate_limit"
-			? rateLimitGuidance(assistantMessage, this.settingsManager.getRetrySettings().maxRetryDelayMs)
+		signal.kind === "rate_limit"
+			? rateLimitGuidance(assistantMessage, this.settingsManager.getRetrySettings().maxRetryDelayMs, signal.status)
 			: formatCodexProviderError(assistantMessage.provider, assistantMessage.errorMessage);
 }
 
