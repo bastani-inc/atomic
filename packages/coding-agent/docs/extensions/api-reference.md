@@ -4,7 +4,7 @@ sidebarTitle: "Extension API"
 description: "Reference for ExtensionContext, ExtensionToolContext, ExtensionCommandContext, ExtensionAPI methods, and typed errors."
 ---
 
-This page documents `ExtensionContext`, `ExtensionToolContext`, `ExtensionCommandContext`, `ExtensionAPI` methods, and typed errors. For setup and discovery, see [Extensions overview](/extensions). For patterns and custom tools, see [Write an extension](/extensions/authoring). For embedding Atomic and loading inline extension factories, see [SDK overview](/sdk), [SDK extensions](/sdk/reference#extensions), and [Structured decisions](/sdk/structured-decisions).
+This page documents `ExtensionContext`, `ExtensionToolContext`, `ExtensionCommandContext`, `ExtensionAPI` methods, and typed errors. For setup and discovery, see [Build extensions](/extensions). For patterns and custom tools, see [Write an extension](/extensions/authoring). For embedding Atomic and loading inline extension factories, see [SDK overview](/sdk), [SDK extensions](/sdk/reference#extensions), and [Structured decisions](/sdk/structured-decisions).
 
 ## ExtensionContext
 
@@ -12,7 +12,7 @@ All event handlers, tool callbacks, and command handlers receive `ctx: Extension
 
 ### ctx.ui
 
-UI methods for user interaction. See [Extension UI](/extensions/ui#custom-ui) for full details.
+UI methods for user interaction. See [Build custom UI](/extensions/ui#custom-ui) and the [UI API compatibility matrix](/extensions/ui#ui-api-compatibility-matrix).
 
 ### ctx.mode
 
@@ -20,11 +20,11 @@ Current run mode: `"tui" | "rpc" | "json" | "print"`. Use `ctx.mode === "tui"` t
 
 ### ctx.hasUI
 
-`false` in print mode (`-p`) and JSON mode; `true` in interactive and RPC modes. In RPC mode, dialog methods (`select`, `confirm`, `input`, `editor`) run through the extension UI sub-protocol and fire-and-forget methods (`notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`) send requests to the client. Some TUI-specific methods are no-ops or return defaults (see [RPC extension UI](/rpc/extension-ui#extension-ui-protocol)).
+`false` in print (`-p`) and JSON modes; `true` in interactive and RPC modes. In RPC mode, dialog methods (`select`, `confirm`, `input`, `editor`) run through the extension UI sub-protocol and fire-and-forget methods (`notify`, `setStatus`, `setWidget`, `setTitle`, `setEditorText`) send requests to the client. See [RPC extension UI](/rpc/extension-ui#extension-ui-protocol).
 
 ### ctx.hasHumanInput
 
-`boolean` indicating whether a human-input adapter is available independently of terminal rendering.
+`boolean` indicating whether a host input adapter is bound to answer interactive prompts (`confirm`, `select`, `input`, `editor`, `questionnaire`), even when no terminal UI is present—for example when an SDK host supplies `extensionBindings.humanInput` in a headless run. When both `ctx.hasUI` and `ctx.hasHumanInput` are `false` (default print and JSON modes), dialog methods and `ctx.ui.custom()` reject with `HumanInputUnavailable`.
 
 ### ctx.isPresentationOnly
 
@@ -85,9 +85,23 @@ To inspect older history without loading the entire session into memory:
 
 ### ctx.modelRegistry / ctx.model / ctx.scopedModels {#ctx-modelregistry-ctx-model-ctx-scopedmodels}
 
-Access models, authentication state, and provider-aware requests.
+Access models, authentication state, and provider-aware requests through `ctx.modelRegistry` (`ModelRegistry`):
 
-Use `ctx.modelRegistry.complete()` for non-streaming model calls and `ctx.modelRegistry.streamSimple()` or `ctx.modelRegistry.stream()` for streaming calls. All three run through Atomic's active provider configuration and request-time authentication, including extension-registered providers (global standalone helpers do not see extension providers):
+| Method | Purpose |
+| --- | --- |
+| `getAll()` / `getAvailable()` | List all configured chat models, or only those with configured auth |
+| `find(provider, modelId)` | Look up one chat model by provider and ID |
+| `getModelsOfType(type, provider?)` / `getAvailableOfType(type, provider?, options?)` | List models of type `"chat" \| "image" \| "classifier" \| "compactor"` |
+| `getModelOfType(type, provider, id)` / `getClassifierModel(provider, modelId)` | Look up one typed model |
+| `complete(model, context, options?)` | Non-streaming chat completion using active provider config and request-time auth |
+| `stream(model, context, options?)` / `streamSimple(model, context, options?)` | Streaming chat completion with provider-specific or provider-neutral options |
+| `classify(model, context, options?)` | Run a registered classifier model |
+| `generateImages(model, context, options?)` | Run a registered image model (returns `stopReason`, `errorMessage`, and `error` instead of rejecting) |
+| `hasConfiguredAuth(model)` / `getProviderAuthStatus(provider)` / `isUsingOAuth(model)` | Inspect provider authentication state |
+| `getApiKeyAndHeaders(model)` / `getProvider(provider)` | Inspect resolved request auth or the underlying `Provider` object |
+| `refresh(options?)` | Reload `models.json` and dynamic provider catalogs; returns `{ aborted, errors }` |
+
+Always prefer `ctx.modelRegistry.complete()`, `streamSimple()`, `stream()`, `classify()`, and `generateImages()` over standalone library helpers so active provider configuration, request-time authentication, and extension-registered providers all apply:
 
 ```typescript
 const model = ctx.modelRegistry.find("github-copilot", "gpt-5.5");
@@ -96,11 +110,7 @@ if (!model) throw new Error("Model not found");
 const response = await ctx.modelRegistry.complete(model, { messages }, { signal: ctx.signal });
 ```
 
-Use `ctx.modelRegistry.generateImages(model, context, options)` to call an image model with request-time authentication. It returns generated blocks and usage and reports provider failures via `stopReason`, `errorMessage`, and `error` instead of rejecting.
-
-For `openai-images` models, `options` accepts `size`, `quality`, `n`, `background`, `outputFormat` (`png`, `jpeg`, `webp`, `gif`, `svg`), `outputCompression`, `frameCount`, `frameDurationMs`, `complexity`, `svg`, `moderation`, and `safetyIdentifier`. Image inputs with `role: "markup"` or `role: "mask"` map to those edit roles, and the first remaining image is the base image. GIF, SVG, `complexity`, and frame options require a GPT Image 2.6 model declaring those capabilities.
-
-`outputFormat: "svg"` works without passing `svg`: when an account requires `svg.model`, Atomic retries once with `gpt-6.1-sol` (`DEFAULT_SVG_AUTHOR_MODEL` from `@bastani/atomic-ai`) and reports it in `result.svgModel`, retrying once more without `svg` if rejected as unsupported. An explicit `svg: { model, reasoning }` object is sent verbatim. Leave `timeoutMs` unset (10-minute default) or set at least `180000` for SVG requests.
+For image generation (including OpenAI GPT Image 2.6 formats such as GIF and SVG, edit roles, and `imageGenerationErrorFromData()`), look up an image model with `getModelOfType("image", ...)` and call `generateImages()`—see [Image generation](/libraries/ai#image-generation) and [Providers reference](/providers/reference):
 
 ```typescript
 const flare = ctx.modelRegistry.getModelOfType("image", "openai-images", "gpt-image-2.6-flare");
@@ -114,13 +124,9 @@ const logo = await ctx.modelRegistry.generateImages(
 if (logo.stopReason !== "stop") throw new Error(logo.errorMessage);
 ```
 
-When image generation fails, rebuild `result.error` (`ImageGenerationErrorData`) with `imageGenerationErrorFromData()` from `@bastani/atomic-ai` and branch on its class, type guards (`isImageGenerationError`, `isImageGenerationConfigError`, `findImageGenerationError`, `isRetryableImageGenerationError`), or `code`. Cancelled requests resolve with `stopReason: "aborted"` and no `error`. See [Image generation](/libraries/ai#image-generation).
+For SDK-side runtime credential overrides (`modelRuntime.setRuntimeApiKey()`), see [API keys and OAuth in the SDK](/sdk/reference#api-keys-and-oauth).
 
-Use `getApiKeyAndHeaders()` only when inspecting credentials before dispatch. `await ctx.modelRegistry.refresh(options)` returns `{ aborted, errors }` with per-provider errors. Calling `ModelRuntime.setRuntimeApiKey(providerId, apiKey, options)` stores a runtime credential without refreshing the catalog; call `refresh({ providers: [providerId], signal })` explicitly if needed (see [API keys and OAuth in the SDK](/sdk/reference#api-keys-and-oauth)).
-
-OpenRouter Chat Completions and Anthropic Messages requests send `x-session-id` by default when `sessionId` is supplied and prompt caching is active; set `compat.sendSessionAffinityHeaders: false` or `cacheRetention: "none"` to opt out.
-
-`ctx.scopedModels` is the read-only list of models scoped to the current session (matching `/scoped-models`, resolved from `--models` and `enabledModels`; empty when unscoped). Each entry is `{ model, thinkingLevel? }`, resolved at access time so it stays current in default interactive mode as well as embedded sessions. Every read returns fresh frozen copies (`ScopedModel` and `ExtensionScopedModels` are exported from `@bastani/atomic`):
+`ctx.scopedModels` is the read-only list of models scoped to the current session (matching `/scoped-models`, resolved from `--models` and `enabledModels`; empty when unscoped). Each entry is `{ model, thinkingLevel? }`, resolved at access time and returned as fresh frozen copies (`ScopedModel` and `ExtensionScopedModels` are exported from `@bastani/atomic`):
 
 ```typescript
 import type { ExtensionScopedModels, ScopedModel } from "@bastani/atomic";
@@ -224,9 +230,14 @@ Returns Atomic's current system prompt string. Inside `before_agent_start`, it r
 
 ### ctx.getSkillCatalog()
 
-Optional method returning the loader-owned `SkillCatalog`. Use `catalog.resolve(selector)` to look up exact skill selectors.
+Optional method returning the active session's `SkillCatalog`, which exposes:
 
-Note that source-qualified selectors such as `"tdd@builtin"` exist **only** when two or more distinct skill files collide on `"tdd"`. When only one file defines `"tdd"`, `catalog.resolve("tdd@builtin")` returns `{ ok: false, kind: "unknown" }` and you should resolve `"tdd"` instead:
+- `candidates`: all discovered `SkillCandidate` entries (`{ id, skill, selector }`).
+- `commands`: all invocable `/skill:...` command entries (`{ name, description, sourceInfo, candidateId, skill }`).
+- `resolve(selector)`: resolves an exact skill selector to `{ ok: true, candidate }` or `{ ok: false, kind: "unknown" | "ambiguous", selector, message, candidates }`.
+- `modelSkills()`: returns the skills visible in the model's system prompt.
+
+Source-qualified selectors such as `"tdd@builtin"` exist **only** when two or more distinct skill files collide on `"tdd"`. When only one file defines `"tdd"`, `catalog.resolve("tdd@builtin")` returns `{ ok: false, kind: "unknown" }` and you should resolve `"tdd"` instead:
 
 ```typescript
 atomic.on("session_start", (_event, ctx) => {
@@ -240,14 +251,17 @@ atomic.on("session_start", (_event, ctx) => {
 
 `atomic.getCommands()` returns the same advertised `/skill:name` and `/skill:name@source` names. See [Skill commands](/skills#skill-commands).
 
-### Additional optional context getters
+### Additional optional context properties
 
-These optional methods are present when supported by the host:
+These optional members are present when supported by the host:
 
 - **`ctx.getHttpIdleTimeoutMs?(): number`:** Returns the session's `httpIdleTimeoutMs` setting in milliseconds (`0` means idle timeout is disabled).
 - **`ctx.getPackageAgents?(): readonly PackageAgentFile[]`:** Returns enabled subagent definition files contributed by installed packages (only from project packages when the project is trusted).
 - **`ctx.getExtensionPaths?(): string[]`:** Returns the file paths of loaded extensions.
 - **`ctx.isSessionSummaryEnabled?(): boolean`:** Returns whether background session summaries are enabled.
+- **`ctx.internalResourceRouter`:** Session-scoped internal resource router (for resolving schemes such as `artifact://`).
+- **`ctx.subagentPolicy`:** Read-only `SubagentChildPolicy` when this session is an admitted in-process subagent child.
+- **`ctx.intercomPolicy`:** Read-only `IntercomPolicyView` describing the session's Intercom home group and reach when configured by the host.
 
 ## ExtensionToolContext
 
@@ -420,8 +434,8 @@ Options (`SendMessageOptions`):
 - `triggerTurn`: start a model turn immediately if idle (required for `"interrupt"`, ignored for `"nextTurn"`).
 - `excludeFromContext`: render and persist the message without adding it to model context.
 - `interruptAbortMessage`: custom abort text when `deliverAs: "interrupt"` stops an active turn.
-- `persistWhenStreaming`: persist the custom message immediately even while a turn is streaming.
-- `stageAdmissionKey`: optional deduplication key for staged recovery deliveries.
+- `persistWhenStreaming`: commits one visible display-only card immediately while a turn is streaming, then delivers a separate hidden model-facing reconciliation message at the next safe turn boundary. The hidden reconciliation survives queue clearing without interrupting the active response.
+- `stageAdmissionKey`: stable deduplication key so deliveries that are retried or replayed during restart recovery (see [`session_recovery_replay`](/extensions/events#session_recovery_restore)) are admitted at most once.
 
 In print (`-p`) and JSON modes, Atomic waits for messages queued before a command handler returns (and the turns they trigger) before exiting.
 
@@ -490,7 +504,7 @@ Set a string bookmark label on an entry (shown in `/tree`), or pass `undefined` 
 
 ### atomic.registerCommand(name, options)
 
-Register a slash command. If multiple extensions register the same command name, **all** colliding commands receive numeric suffixes in load order (`/review:1`, `/review:2`), and no bare `/review` command remains.
+Register a slash command. If multiple extensions register the same command name, **all** colliding commands receive numeric suffixes in load order (`/review:1`, `/review:2`), skipping any suffixed name already taken by another registration, and no bare `/review` command remains.
 
 `getArgumentCompletions(prefix)` may return `AutocompleteItem[] | null` or `Promise<AutocompleteItem[] | null>`:
 
@@ -536,15 +550,24 @@ Register a TUI renderer for custom messages with `customType`. Options include `
 
 ### atomic.registerToolRenderer(resolver) {#atomic-registertoolrenderer-resolver}
 
-Register a resolver `(toolName, next) => renderers` supplying `renderCall`, `renderResult`, and optional `renderShell` for any tool (including MCP tools in resumed sessions before their server connects). Resolvers run in extension load order; `next()` returns the remaining resolvers' choice and then the tool's own renderers. See [Custom rendering](/extensions/authoring#custom-rendering).
-
-<div id="pi-registermarkdowntransformer-transformer" />
+Register a resolver `(toolName, next) => renderers` supplying `renderCall`, `renderResult`, and optional `renderShell` and `label` overrides for any tool (including MCP tools in resumed sessions before their server connects). Resolvers run in extension load order; `next()` returns the remaining resolvers' choice and then the tool's own renderers. See [Custom rendering](/extensions/authoring#custom-rendering).
 
 ### atomic.registerMarkdownTransformer(transformer, options?)
 
-Register a synchronous, display-only Markdown transformer for interactive rendering. Transformers run in load order (one per extension; a second call replaces the first). Optional `options.messageTypes` selects which message kinds to transform (default `["user", "assistant", "assistant-thinking"]`; also supports `"custom"`, `"summary"`, `"changelog"`).
+<Warning>
+Display Markdown transformers do **not** run in default interactive CLI mode because extensions execute in an isolated worker process. They run only in embedded in-process TUI sessions.
+</Warning>
 
-Context fields passed to the transformer: `messageType`, `isStreaming`, `availableWidth`, `messageId` (`undefined` for live messages and changelog), and `timestamp` (`undefined` for live messages and changelog). Display transformers do not run when extensions execute in the separate interactive worker process.
+Register a synchronous, display-only Markdown transformer for interactive rendering. Transformers run in load order (one per extension; a second call replaces the first).
+
+Optional `options.messageTypes` selects which Markdown surfaces to transform (default `["user", "assistant", "assistant-thinking"]`):
+
+- `"user"`, `"assistant"`, `"assistant-thinking"`: transcript messages (default).
+- `"custom"`: custom messages without a custom renderer, plus expanded skill blocks (content without Atomic's header).
+- `"summary"`: expanded branch summaries (content without Atomic's header).
+- `"changelog"`: startup "What's New" and `/changelog`.
+
+Context fields passed to the transformer: `messageType`, `isStreaming`, `availableWidth`, `messageId` (`undefined` for live messages and changelog), and `timestamp` (`undefined` for live messages and changelog).
 
 ```typescript
 atomic.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
@@ -568,7 +591,7 @@ atomic.registerShortcut("ctrl+shift+p", {
 
 Conflict policy:
 
-- **17 reserved built-in actions cannot be overridden** (`app.interrupt`, `app.clear`, `app.exit`, `app.suspend`, `app.thinking.cycle`, `app.model.cycleForward`, `app.model.cycleBackward`, `app.model.select`, `app.tools.expand`, `app.thinking.toggle`, `app.editor.external`, `app.message.followUp`, `tui.input.submit`, `tui.select.confirm`, `tui.select.cancel`, `tui.input.copy`, `tui.editor.deleteToLineEnd`). Registering their keys skips with a warning.
+- **17 reserved built-in actions cannot be overridden** (`app.interrupt`, `app.clear`, `app.exit`, `app.suspend`, `app.thinking.cycle`, `app.model.cycleForward`, `app.model.cycleBackward`, `app.model.select`, `app.tools.expand`, `app.thinking.toggle`, `app.editor.external`, `app.message.followUp`, `tui.input.submit`, `tui.select.confirm`, `tui.select.cancel`, `tui.input.copy`, `tui.editor.deleteToLineEnd`). Registering a literal key bound to one of these skips with a warning; using `keybinding` silently strips reserved keys without warning.
 - **Non-reserved built-in shortcuts** are overridden by extensions (with a warning) unless `preferEditor: true` is set, which yields to the editor binding.
 - **Between two extensions**, the **last** registered shortcut wins (with a warning).
 - Optional `keybinding` selects keys from an existing named action in `keybindings.json` instead of a hardcoded key; an empty action binding disables the shortcut.
@@ -589,13 +612,17 @@ if (atomic.getFlag("plan")) {
 }
 ```
 
-Flag rules:
+Flag rules and CLI parsing behavior:
 
+- Registered flags appear automatically under `Extension CLI Flags:` in `atomic --help`. Both `--name value` and `--name=value` forms are accepted.
 - `default`, if supplied, must match `type` (`boolean` or `string`) or `registerFlag()` throws.
 - Across extensions, the **first** extension registering a flag name wins.
 - `atomic.getFlag(name)` reads **only** flags registered by that same extension; it returns `undefined` for other extensions' flags or built-in CLI flags.
+- Passing a `type: "string"` flag without a value produces `Extension flag "--<name>" requires a value`. Passing an unregistered `--flag` produces `Unknown option(s): --<name>`.
 
-<div id="pi-registeragentpanelsource-source" />
+<Warning>
+**Boolean flag parsing pitfalls:** CLI arguments are parsed before extensions load, so an unknown flag followed by a non-flag word (`atomic --plan "fix bug"`) consumes `"fix bug"` as the flag's value. When `plan` later resolves as `type: "boolean"`, `"fix bug"` is **silently discarded** and `plan` is set to `true`. Likewise, `--plan=false` still sets a boolean flag to `true`. Place positional prompts before boolean extension flags, or separate them with `--` (`atomic --plan -- "fix bug"`).
+</Warning>
 
 ### atomic.registerAgentPanelSource(source) {#atomic-registeragentpanelsource-source}
 
@@ -694,9 +721,7 @@ atomic.events.emit("my:event", { ok: true });
 unsubscribe();
 ```
 
-Do not retain `atomic.events` across `/reload` (calling `on()` or `emit()` on a retired handle throws). Pass `atomic.events` to [`sessionScopedExtensionState`](/extensions/authoring#session-scoped-in-memory-state) to preserve in-memory state across reloads.
-
-Embedded hosts implementing `ExtensionRuntime` must implement `trackEventBusSubscription(unsubscribe)` and return `markdownTransformers` (plus optional `renderLatex`, `fullscreenScrollbar`, `fullscreenWheelScrollLines`) from `ExtensionUIContext.getChatRenderSettings()`. See [SDK extensions](/sdk/reference#extensions).
+Do not retain `atomic.events` across `/reload` (calling `on()` or `emit()` on a retired handle throws; during retired `session_shutdown` cleanup, `emit()` is silently ignored). Pass `atomic.events` to [`sessionScopedExtensionState`](/extensions/authoring#session-scoped-in-memory-state) to preserve in-memory state across reloads.
 
 ### Native providers
 
@@ -793,7 +818,11 @@ await atomic.registerProvider("corporate-ai", {
 - `apiKey`: literal key or environment variable reference (`$ENV_VAR` or `${ENV_VAR}`; required when defining models unless `oauth` is set).
 - `api`: API protocol (`"anthropic-messages"`, `"openai-completions"`, `"openai-responses"`, etc.).
 - `headers`, `authHeader`: extra headers, or `authHeader: true` to send `Authorization: Bearer`.
-- `models`: array of `ProviderModelConfig` entries (`type?: "chat" | "image" | "classifier"`, defaulting to `"chat"`). Chat models support `reasoning`, `thinkingLevelMap`, `contextWindow`, `maxTokens`, `samplingParams`, `samplingParamsByThinkingLevel`, `promptCache`, and `compat`; image models support `output` and `capabilities`; classifier models support `contextWindow` and `compat`. Individual models may set `baseUrl`.
+- `models`: array of `ProviderModelConfig` entries (`type?: "chat" | "image" | "classifier" | "compactor"`, defaulting to `"chat"`). Every model type supports base fields `id`, `name`, `input`, `cost`, plus optional `api`, `baseUrl`, `inputLimits`, and per-model `headers`:
+  - **Chat (`type?: "chat"`):** `reasoning`, `contextWindow`, `maxTokens`, plus optional `thinkingLevelMap`, `samplingParams`, `samplingParamsByThinkingLevel`, `promptCache`, and `compat`.
+  - **Image (`type: "image"`):** `output` (`("text" | "image")[]`) and optional `capabilities`.
+  - **Classifier (`type: "classifier"`):** `contextWindow` and optional `compat`.
+  - **Compactor (`type: "compactor"`):** optional `api` (`CompactorApi`), `endpointPath`, `compactionParams`, `timeoutMs`, and `maxTokens` (when omitted, compacted output has no default size limit; see [Custom compactors](/compaction/custom-compactors)).
 - `refreshModels?(context)`: dynamically refresh the provider's model catalog (replaces extension-provided models on success).
 - `images`, `classifiers`: custom image or classifier API handlers keyed by API name.
 - `streamSimple`: custom streaming implementation for non-standard APIs.
@@ -823,7 +852,7 @@ Remove a previously registered provider and its models, restoring any built-in m
 
 ### atomic.registerMcpServer(name, config) {#atomic-registermcpserver-name-config}
 
-Contribute an MCP server whose configuration is computed at runtime (for example, a dynamically bound local port). `name` must match `^[A-Za-z0-9_-]+$`, and `config` follows the [`mcp.json`](/mcp-servers#configure-servers) schema (`url`, `command`, `args`, `env`, `cwd`, `headers`, OAuth settings, `exposure`, positive `timeout` in seconds, `${VAR}` / `$env:VAR` URL interpolation). `type: "sse"` is rejected (use streamable HTTP).
+Contribute an MCP server whose configuration is computed at runtime (for example, a dynamically bound local port). `name` must be a non-empty string matching `^[A-Za-z0-9_-]+$`, and `config` must be a plain object following the [`mcp.json`](/mcp-servers#configure-servers) schema (`url`, `command`, `args`, `env`, `cwd`, `headers`, OAuth settings, `exposure`, positive `timeout` in seconds, `${VAR}` / `$env:VAR` URL interpolation). `type: "sse"` is rejected (use streamable HTTP).
 
 ```typescript
 export default function (atomic: ExtensionAPI) {
@@ -837,27 +866,41 @@ export default function (atomic: ExtensionAPI) {
 }
 ```
 
-Call from the extension factory or `session_start`; servers connect immediately without `/reload`, and re-registering the same name replaces the previous registration. Extension-registered servers override package-manifest servers while user and trusted-project `mcp.json` entries take precedence over both (set `"enabled": false` on a file-configured entry to disable it).
+Registration rules:
 
-`auth.provider` is allowed on extension-registered servers (requiring HTTPS or a loopback URL) and global `mcp.json`, not project config or package manifests. Shell `atomic mcp` commands do not load extensions. Call `atomic.getMcpServerContributions()` to inspect all package and extension server contributions.
+- Call from the extension factory or `session_start`; servers connect immediately without `/reload`, and re-registering the exact same name replaces the previous registration.
+- `registerMcpServer()` throws if `name` is empty/whitespace, if `config` is not a plain object, or if `name` collides with a different registered server after normalizing `-` to `_` (for example `my-api` vs `my_api`).
+- If no loaded extension consumes MCP servers (for example under `--no-mcp` or when built-in MCP support was replaced), Atomic emits an extension error naming the unhandled server.
+- Extension-registered servers override package-manifest servers while user and trusted-project `mcp.json` entries take precedence over both (set `"enabled": false` on a file-configured entry to disable it).
+- `auth.provider` is allowed on extension-registered servers (requiring HTTPS or a loopback URL) and global `mcp.json`, not project config or package manifests. Shell `atomic mcp` commands do not load extensions.
+
+Inspection and change notifications:
+
+- `atomic.getMcpServerContributions?.()` returns all package and extension server contributions for the current session.
+- `atomic.onMcpServerContributionsChanged?.(listener)` subscribes to post-startup `registerMcpServer()` changes and returns an unsubscribe function.
 
 ## Error handling
 
 - Uncaught errors in most event handlers are logged and the session continues.
 - In interactive mode, an error thrown in `session_start` or `resources_discover` is shown once with the extension's path and error while keeping the session open and the extension loaded. In print mode (`-p`), standalone RPC mode (`--mode rpc`), and SDK sessions, startup fails with `ExtensionStartupError` naming each failing extension.
 - If a `tool_call` handler throws an error, Atomic blocks the tool call and reports the error to the model instead of running the tool.
+- If a `user_bash` handler throws an error (or returns an invalid result shape), Atomic re-throws the error and aborts the `!` command.
+- Uncaught errors from `session_shutdown` handlers are collected into an `AggregateError("Extension shutdown failed")` with `code: "ShutdownFailed"` and re-thrown.
 - Inside tool `execute()`, throw an `Error` to report failure; Atomic catches it, sends it to the model with `isError: true`, and continues.
 
-### Typed errors from built-in tools and providers
+### Typed errors from built-in tools, host input, and providers
 
-These error classes and type guards are exported from `@bastani/atomic` (see [Session and storage errors](/sdk/reference#session-and-storage-errors) for session, storage, and startup errors). Branch on the class, its type guard, or `code` rather than `message`. Each tool/provider error includes `hint`, `retryable`, and `toJSON()` for cross-process serialization (credentials in URLs are stripped). Use `rehydrateShellToolError()` and `rehydrateLlamaServerError()` to rebuild serialized instances.
+These error classes, codes, and type guards are exported from `@bastani/atomic` (see [Session and storage errors](/sdk/reference#session-and-storage-errors) for session, storage, and startup errors). Branch on the class, its type guard, or `code` rather than `message`. Built-in tool and provider error classes include `hint`, `retryable`, and `toJSON()` for cross-process serialization (credentials in URLs are stripped). Use `rehydrateShellToolError()`, `rehydrateLlamaServerError()`, `rehydrateEditToolError()`, and `rehydrateWriteSelectorError()` to rebuild serialized instances.
 
-| Class | `code` | When | Key fields / notes |
+| Class / Error | `code` | When | Key fields / notes |
 | --- | --- | --- | --- |
+| `EditToolError` (`EditInputError`, `EditMatchError`, `EditTargetError`) | `edits-empty`, `old-text-empty`, `text-splits-character`, `text-not-found`, `text-not-unique`, `edits-overlap`, `no-change`, `target-inaccessible`, `target-not-utf8` | Built-in `edit` failed before modifying the file. | Non-retryable without a new call; guard with `isEditToolError` / subclass guards. |
+| `WriteSelectorError` | `sqlite-query-parameters`, `sqlite-not-found`, `conflict-*`, `unsupported-scheme` | Built-in `write` refused an archive, SQLite, `conflict://`, or URL selector before writing. | Guard with `isWriteSelectorError(error)`. |
+| `FileToolAbortedError` | `aborted` | Built-in `edit` or `write` aborted via `AbortSignal`. | `name === "AbortError"`, `retryable: false`; guard with `isFileToolAbortedError(error)`. |
 | `ShellTimeoutError` (`ShellToolError`) | `shell-timeout` | `createLocalBashOperations()` hit the command timeout (`phase: "draining-output"` means the shell exited while background children kept stdout/stderr open). | `timeoutMs`, `elapsedMs`, `phase`, `shellExit`. Redirect background output or increase `timeout`. |
+| Host input errors (`Error & { code }`) | `HumanInputUnavailable`, `HumanInputCancelled`, `InvalidHostInput`, `SessionClosed` | Dialog (`select`, `confirm`, `input`, `editor`) or `custom()` called without an available UI / `humanInput` adapter, cancelled by host/session teardown, invalid adapter response, or closed session. | Check `error.code` (for example `HumanInputUnavailable` in print/JSON mode without `humanInput`). |
 | `LlamaServerUnreachableError` (`LlamaServerError`) | `server-unreachable` | A `llama.cpp` router request failed before any response (connection refused, DNS error, TLS mismatch). | `serverUrl`, `detail`; `retryable: true`. Start `llama serve` or fix URL with `/login llama.cpp` / `LLAMA_BASE_URL`. |
 | `LlamaServerRequestError` (`LlamaServerError`) | `request-rejected` | The runtime refused to send a `llama.cpp` request (credentials in URL or blocked port such as `6000`). | `serverUrl`, `detail`; `retryable: false`. Use a plain `http`/`https` URL without embedded credentials. |
 | `OAuthRefreshRejectedError` | *(OAuth refresh)* | Thrown by an extension's `oauth.refreshToken()` when the provider permanently rejects stored credentials (such as `invalid_grant`). | Prompts the user to re-authenticate with `/login <provider>`. |
 | `DecisionModelUnavailableError` | *(decision model)* | `ctx.getDecisionModel()` called in a host without decision-model support (`reason: "host-unsupported"`). | Check host support or handle gracefully before invoking decision helpers. |
-| `NativeModuleUnavailableError` | *(native addon)* | Optional native N-API bindings (`@bastani/atomic-natives`) are unavailable on the host runtime. | Exported from `@bastani/atomic` for callers checking native-module fallbacks. |
 | `MissingSessionCwdError` | `session-cwd-missing` | `ctx.switchSession()` targeted a session whose recorded working directory no longer exists. | Guard with `isMissingSessionCwdError(error)`. |

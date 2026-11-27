@@ -4,15 +4,15 @@ sidebarTitle: "@bastani/atomic-schema"
 description: "Build and validate JSON Schema drafts 2020-12 and 7 without eval, with zero runtime dependencies and optional coercion."
 ---
 
-JSON Schema builders and validation without `eval`. Each schema compiles once into plain closures, so validation runs without code generation, works under a strict Content Security Policy, and needs no runtime dependencies.
+JSON Schema builders and validation without `eval`. Each schema compiles once into plain closures, so validation runs without code generation, works under a strict Content Security Policy, and requires zero runtime dependencies.
 
 - Supports JSON Schema drafts 2020-12 and 7.
 - Builders return plain JSON Schema objects typed with the values they accept, and compiled checks narrow values to that type.
-- Errors include JSON Pointer paths. Missing and unknown fields report at the field path.
+- Errors include JSON Pointer paths; missing and unknown fields report at the field path.
 - Schemas are never mutated, so frozen schemas work.
-- Format checks live in an optional subpath import.
+- Format checks live in an optional subpath import (`@bastani/atomic-schema/formats`).
 
-Atomic validates tool arguments with `@bastani/atomic-schema`. See [Tool parameter schemas](/extensions#tool-parameter-schemas) and [Standalone libraries](/libraries). Extensions can import `@bastani/atomic-schema` from the host without installing it.
+Atomic validates tool arguments with `@bastani/atomic-schema` (see [Tool parameter schemas](/extensions#tool-parameter-schemas) and [Standalone libraries](/libraries)). Extensions can import it without installing it.
 
 ## Installation
 
@@ -26,16 +26,16 @@ npm install @bastani/atomic-schema
 import { compile, int, obj, oneOf, opt, type Static, str } from "@bastani/atomic-schema";
 
 const Read = obj({
-	path: str({ description: "Path to the file", minLength: 1 }),
-	offset: opt(int({ minimum: 1 })),
-	mode: oneOf(["text", "binary"]),
+  path: str({ description: "Path to the file", minLength: 1 }),
+  offset: opt(int({ minimum: 1 })),
+  mode: oneOf(["text", "binary"]),
 });
 type Read = Static<typeof Read>; // { path: string; mode: "text" | "binary"; offset?: number }
 
 const read = compile(Read);
 const value: unknown = { path: "README.md", mode: "text" };
 if (read.check(value)) {
-	console.log(value.path); // value is narrowed to Read
+  console.log(value.path); // narrowed to Read
 }
 
 read.errors({ offset: 0, extra: true });
@@ -47,15 +47,15 @@ read.errors({ offset: 0, extra: true });
 // ]
 ```
 
-`Read` is plain JSON Schema (`{ type: "object", properties: {...}, required: ["path", "mode"], additionalProperties: false }`), ready for a tool definition or `JSON.stringify`. `compile()` accepts any JSON Schema, whether created with the builders or written by hand.
+`Read` is a plain JSON Schema object (`{ type: "object", properties: {...}, required: ["path", "mode"], additionalProperties: false }`), ready for tool definitions or `JSON.stringify`. `compile()` accepts any JSON Schema, built or handwritten.
 
-`check(value)` is the fast boolean path. It is a standalone function you can pass around, and it avoids allocations for most schemas.
-
-`errors(value)` explains failures and returns `ValidationError[]` (`{ path: string; keyword: string; message: string }`), or `[]` for valid values. The error explainer is built on the first failure and reused, so schemas whose inputs always pass never pay for it. `validate(value)` runs both without modifying the input and returns `ParseResult<T>` (`{ ok: true; value: T } | { ok: false; errors: ValidationError[] }`).
+- `check(value)` is the fast boolean path (standalone function, allocation-free for most schemas).
+- `errors(value)` returns `ValidationError[]` (`{ path, keyword, message }`), building the error explainer lazily on the first failure.
+- `validate(value)` returns `ParseResult<T>` (`{ ok: true; value: T } | { ok: false; errors: ValidationError[] }`) without modifying the input.
 
 ### Builders
 
-| Builder | Schema | Type |
+| Builder | Schema | Inferred type |
 | --- | --- | --- |
 | `str({ minLength, maxLength, pattern, format })` | `{ type: "string", ... }` | `string` |
 | `num({ minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf })`, `int(...)` | `{ type: "number" }`, `{ type: "integer" }` | `number` |
@@ -73,26 +73,31 @@ read.errors({ offset: 0, extra: true });
 | `unsafe<T>(schema)` | `schema` as given (`{}` by default) | `T`, unchecked |
 | `recursive<T>(id, (self) => schema)` | `schema` with `$id: id`; `self` is `{ $ref: id }` | `T` |
 
-Every builder also accepts `title`, `description`, `examples`, `deprecated`, and `default`. A `default` is an annotation only, and validation never inserts it.
+Every builder accepts `title`, `description`, `examples`, `deprecated`, and `default`.
 
-A union of objects tagged by a `lit()` property checks and reports errors by the tag. Only the branch matching the tag runs.
+<Note>
+`default` is a schema annotation only—validation and coercion never insert default values into your data.
+</Note>
+
+Unions of objects discriminated by a `lit()` property check only the matching branch and report tag errors directly:
 
 ```typescript
-const Block = union([obj({ kind: lit("text"), text: str() }), obj({ kind: lit("image"), width: int({ minimum: 0 }) })]);
+const Block = union([
+  obj({ kind: lit("text"), text: str() }),
+  obj({ kind: lit("image"), width: int({ minimum: 0 }) }),
+]);
 compile(Block).errors({ kind: "video" });
 // [{ path: "/kind", keyword: "anyOf", message: 'expected one of ["text","image"]' }]
 ```
 
-A recursive schema needs an explicit type argument because TypeScript cannot infer recursive types from builders. Its `id` must be unique among recursive schemas inside the same root schema:
+Recursive schemas require an explicit type argument and a unique `id` within the root schema:
 
 ```typescript
 type Tree = { name: string; children: Tree[] };
 const Tree = recursive<Tree>("Tree", (self) => obj({ name: str(), children: arr(self) }));
 ```
 
-`Static` also infers types for TypeBox 1.x schemas by reading TypeBox's type shapes without importing TypeBox. Supported TypeBox kinds are `String`, `Number`, `Integer`, `Boolean`, `Null`, `Literal`, `Array`, `Object` (with `Type.Optional` and `Type.Readonly` properties), `Union`, `Record`, `Enum`, `Tuple`, `BigInt`, `Undefined`, `Unsafe`, `Unknown`, and `Any`. For example, `Static<typeof Type.Object({ path: Type.String() })>` resolves to `{ path: string }`.
-
-Other TypeBox kinds such as `Intersect`, `Cyclic`, and `Ref` resolve to `unknown`, as do plain JSON Schema objects without builder brands.
+`Static` also infers types for TypeBox 1.x schemas without importing TypeBox (`String`, `Number`, `Integer`, `Boolean`, `Null`, `Literal`, `Array`, `Object` with `Type.Optional`/`Type.Readonly`, `Union`, `Record`, `Enum`, `Tuple`, `BigInt`, `Undefined`, `Unsafe`, `Unknown`, and `Any`). Other TypeBox kinds (`Intersect`, `Cyclic`, `Ref`) and unbranded plain JSON Schemas resolve to `unknown`.
 
 ### Options
 
@@ -100,74 +105,75 @@ Other TypeBox kinds such as `Intersect`, `Cyclic`, and `Ref` resolve to `unknown
 import { formats } from "@bastani/atomic-schema/formats";
 
 const validator = compile(schema, {
-	draft: "7", // "2020-12" (default) or "7"
-	formats, // check `format`; without it `format` is an annotation, as 2020-12 specifies
-	schemas: { "https://example.com/point.json": point }, // documents for $refs to other documents, by URI
-	unresolvedRefs: "reject", // a $ref that names nothing rejects values at its place; default "throw"
-	coerce: true, // adds coerce() and parse(), see Coercion
+  draft: "7",                  // "2020-12" (default) or "7"
+  formats,                     // check `format`; omitted keeps `format` as an annotation
+  schemas: { "https://example.com/point.json": point }, // external $ref documents by URI
+  unresolvedRefs: "reject",    // compile dangling $ref as false instead of throwing (default "throw")
+  coerce: true,                // enable coerce() and parse() (see Coercion below)
 });
 ```
 
-`formats` includes all 21 supported format keys: `date`, `date-time`, `duration`, `email`, `hostname`, `idn-email`, `idn-hostname`, `ipv4`, `ipv6`, `iri`, `iri-reference`, `json-pointer`, `json-pointer-uri-fragment`, `regex`, `relative-json-pointer`, `time`, `uri`, `uri-reference`, `uri-template`, `url`, and `uuid`. Pass your own record to check a subset of formats or add custom checks.
+`formats` provides 21 checks: `date`, `date-time`, `duration`, `email`, `hostname`, `idn-email`, `idn-hostname`, `ipv4`, `ipv6`, `iri`, `iri-reference`, `json-pointer`, `json-pointer-uri-fragment`, `regex`, `relative-json-pointer`, `time`, `uri`, `uri-reference`, `uri-template`, `url`, and `uuid`. You can also pass a custom format map.
 
-By default, an unresolved `$ref` (a missing definition or a document not in `schemas`) throws during `compile()`. With `unresolvedRefs: "reject"`, that reference compiles as `false` instead. Only values at that position fail, with the error `unresolved reference <ref>`, while the rest of the schema continues to validate. Use this option for external schemas such as MCP tool schemas whose references may dangle.
+With `unresolvedRefs: "reject"`, a dangling `$ref` compiles as `false` so only values at that location fail with `unresolved reference <ref>` while the rest of the schema validates normally (useful for external MCP tool schemas).
 
 ### TypeBox schemas
 
-TypeBox 1.x schemas are JSON Schema objects, so they compile directly. Inside Atomic extensions and SDK apps, import `Type` from `@bastani/atomic/typebox`; in standalone apps using `@bastani/atomic-schema` alone, import from `typebox` directly:
+TypeBox 1.x schemas are plain JSON Schema objects and compile directly. Inside Atomic extensions and SDK apps, import `Type` from `@bastani/atomic/typebox`; in standalone apps, import from `typebox`:
 
 ```typescript
-import Type from "typebox"; // standalone app; inside Atomic use: import { Type } from "@bastani/atomic/typebox"
+import Type from "typebox"; // inside Atomic use: import { Type } from "@bastani/atomic/typebox"
 
 const user = compile(Type.Object({ name: Type.String(), tags: Type.Array(Type.String()) }));
 ```
 
-TypeBox's `BigInt` and `Undefined` types are supported (see Values). JavaScript-only types such as `Function` and `Symbol`, along with refinements and codecs, are not JSON Schema and are not supported.
+TypeBox's `BigInt` and `Undefined` types are supported (see [Values](#values)). JavaScript-only types (`Function`, `Symbol`), refinements, and codecs are not JSON Schema and are not supported.
 
 ### Coercion
 
-`compile(schema, { coerce: true })` adds `coerce()` and `parse()` for loosely typed inputs such as model tool call arguments. Without `coerce: true`, the validator exposes neither method and builds no coercion code. Even with `coerce: true`, coercion rules are built lazily on the first call to `coerce()` or `parse()`.
+Pass `{ coerce: true }` to `compile()` to enable `coerce()` and `parse()` for loosely typed inputs such as model tool-call arguments. Without `coerce: true`, neither method is exposed and no coercion code is built; with it, coercion compiles lazily on the first call.
 
 ```typescript
 const read = compile(Read, { coerce: true });
 
-read.coerce({ path: "a.txt", offset: "10", mode: "text" }); // { path: "a.txt", offset: 10, mode: "text" }
+read.coerce({ path: "a.txt", offset: "10", mode: "text" });
+// { path: "a.txt", offset: 10, mode: "text" }
 
 const result = read.parse({ path: "a.txt", offset: "ten", mode: "text" });
 if (result.ok) result.value.offset; // number
 else result.errors; // [{ path: "/offset", keyword: "type", message: "expected integer, got string" }]
 ```
 
-`coerce(value)` returns the coerced value. It copies only changed paths, returns `value` unchanged when no rule applies, and never mutates `value`. `parse(value)` coerces and then validates, returning `{ ok: true, value }` for a valid coerced value or `{ ok: false, errors }` when validation fails.
+`coerce(value)` returns the converted value without mutating `value` (copying only changed paths and returning `value` unchanged when nothing changes). `parse(value)` coerces and then validates, returning `{ ok: true, value }` or `{ ok: false, errors }`.
 
-Three passes run in order:
+Coercion runs three passes in order:
 
-1. **Optional nulls.** A `null` in an optional property whose schema rejects `null` is dropped as if omitted.
-2. **TypeBox-style conversions.** Runs on the first applicable JSON Schema keyword. `$ref` follows the reference. `const` and `enum` pick the member the value converts to. `anyOf` and `oneOf` keep a value one branch already accepts, or take the first branch conversion that passes the whole schema. `allOf` converts with each member in order. Otherwise, conversion follows `type`:
-   * `string`: numbers and booleans become text, and `null` becomes `"null"`.
-   * `number`: numeric strings (`""` becomes `0`), `"true"` and `"false"`, booleans become `1` or `0`, and `null` becomes `0`.
-   * `integer`: same as `number`, then truncated (`"3.5"` and `3.5` become `3`).
-   * `boolean`: `"true"` and `"false"` in any case, `"1"` and `"0"`, `1` and `0`, and `null` becomes `false`.
-   * `null`: `"null"`, `"undefined"`, `""`, `"0"`, `0`, and `false`.
-   * `bigint`: integer strings (`"12"`, `"12n"`, with `"12.9"` truncated), numbers truncated, `"true"`, `"false"`, and booleans become `1n` or `0n`, and `null` becomes `0n`.
-   * `undefined`: `"undefined"`, `"null"`, `""`, `"0"`, `0`, `0n`, `false`, and `null`.
-   * `array`: a single value becomes a one-item array, then each item converts. A tuple (`prefixItems` or a draft-7 `items` array) converts its items without wrapping.
-   * `object`: each property converts according to `properties`, `patternProperties`, or `additionalProperties`.
-3. **Scalar coercion by type.** Matches Ajv's `coerceTypes` for values left by pass 2, such as type arrays like `["integer", "null"]`. Numbers convert from numeric strings and booleans, booleans from `"true"`, `"false"`, `1`, and `0`, strings from numbers and booleans, `null` from `""`, `0`, and `false`, and `null` converts to `""`, `0`, or `false`. A value that already matches one type in a type array stays unchanged.
+1. **Drop optional nulls:** Removes `null` from any optional object property (under `properties`, `patternProperties`, or `additionalProperties`) whose schema rejects `null`, treating the field as omitted.
+2. **Schema-driven conversion:** Follows `$ref`, `const`/`enum` (converting to a matching member), `anyOf`/`oneOf` (keeping an already-valid value, or picking the first branch conversion that satisfies the full schema), and `allOf` (converting through each member in order). For typed schemas, converts according to the table below:
 
-Where passes 2 and 3 disagree, pass 2 wins. For example, `null` for a required string becomes `"null"`, not `""`.
+| Target type | Accepted conversions (Pass 2) |
+| --- | --- |
+| `string` | Numbers and booleans convert to text; `null` converts to `"null"`. |
+| `number` | Numeric strings (`""` → `0`), `"true"`/`"false"`, booleans (`true` → `1`, `false` → `0`), and `null` (`0`). |
+| `integer` | Same as `number`, then truncated toward zero (`"3.5"` and `3.5` → `3`). |
+| `boolean` | `"true"`/`"false"` (case-insensitive), `"1"`/`"0"`, `1`/`0`, and `null` (`false`). |
+| `null` | `"null"`, `"undefined"`, `""`, `"0"`, `0`, and `false`. |
+| `bigint` | Integer strings (`"12"`, `"12n"`, `"12.9"` → `12n`), truncated numbers, `"true"`/`"false"`, booleans (`1n`/`0n`), and `null` (`0n`). |
+| `undefined` | `"undefined"`, `"null"`, `""`, `"0"`, `0`, `0n`, `false`, and `null`. |
+| `array` | Wraps a non-array value in a single-item array, then converts each item. Tuples (`prefixItems` or draft-7 `items` arrays) convert items in place without wrapping. |
+| `object` | Converts each property using `properties`, `patternProperties`, or `additionalProperties`. |
 
-Union branches convert in order and stop at the first accepted branch. If a union node also declares properties, those properties convert into each candidate before checking it. In recursive schemas reached through `$ref`, a value that cannot convert stays unchanged so `check()` reports it, and `$ref` results are reused within one call so recursive unions do not re-convert the same child for every branch.
+3. **Type-array scalar fallback:** For values untouched by pass 2—most notably multi-type arrays such as `["integer", "null"]`—applies standard scalar conversions (numeric strings/booleans to numbers, `"true"`/`"false"`/`1`/`0` to booleans, numbers/booleans to strings, `""`/`0`/`false` to `null`, and `null` to `""`/`0`/`false`) while leaving any value that already matches one type in the array unchanged.
 
-Pass 1 drops optional nulls inside values of `properties`, `patternProperties`, and `additionalProperties`, while leaving pattern and additional keys themselves intact. Items past a draft-7 `items` array (`additionalItems`) are not coerced by any pass.
+When passes 2 and 3 differ, pass 2 wins (for example, `null` for a required `string` becomes `"null"`, not `""`). Union branches evaluate in order and reuse recursive `$ref` conversions within a call; unconvertible values remain unchanged so validation reports them cleanly. Items beyond a draft-7 `items` tuple (`additionalItems`) are not coerced.
 
 ### Values
 
-- An optional property whose value is `undefined` counts as absent, matching TypeBox. A required property set to `undefined` counts as present. It is valid when its schema accepts `undefined` (`Type.Undefined()`, `Type.Unknown()`, or `Type.Any()`), and reported as missing otherwise.
-- `{ type: "bytes", minLength, maxLength }` matches a `Uint8Array` within those length bounds for binary values that do not pass through JSON.
-- `{ type: "bigint" }` matches a `bigint`. Number bounds (`minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`) apply to both numbers and bigints with bounds of either kind.
+- An optional property whose value is `undefined` counts as absent. A required property set to `undefined` counts as present—valid only if its schema accepts `undefined`, and reported as missing otherwise.
+- `{ type: "bytes", minLength, maxLength }` matches a `Uint8Array` within those length bounds.
+- `{ type: "bigint" }` matches a `bigint`; numeric bounds (`minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`) work with both `number` and `bigint` bounds.
 - `{ type: "undefined" }` matches `undefined`.
-- `equal(a, b)` checks JSON value equality using the same rules as `const`, `enum`, and `uniqueItems`.
+- `equal(a, b)` tests JSON value equality with the same rules as `const`, `enum`, and `uniqueItems`.
 
 ## Supported keywords
 

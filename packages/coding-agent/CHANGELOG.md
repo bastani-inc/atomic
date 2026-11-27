@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `shellPath` in `settings.json` now expands a leading `~` (`~/...`, plus `~\...` on Windows) to your home directory, matching its documented schema.
+
+### Changed
+
+- Extension `session_before_compact` hooks no longer enforce a built-in 32,000-token, 50%-trigger-share, or trigger-overflow output cap, matching remote compactor models. `COMPACTED_OUTPUT_MAX_TOKENS`, `COMPACTED_OUTPUT_MAX_TRIGGER_SHARE`, `COMPACTOR_LINE_WIDTH`, and `compactedOutputTokenCap` are removed from compaction logic and deprecated as root compatibility exports; `COMPACTOR_REQUEST_TIMEOUT_MS` remains the exported request timeout default.
+- Reorganized and audited Atomic's Mintlify documentation for readability without source code: split Compaction into Memory Compaction, Custom Compactors, and Branch Summaries; grouped Models Reference with `models.json` fields and trimmed GitHub Copilot error classes out of the main Providers Reference; added `How Atomic works`, `Slash commands`, `Choose a model`, `Worktree snapshots reference`, and `Background tasks reference`; flattened single-page storage folders; and fixed verified inaccuracies and broken links across the docs.
+
 ## [0.10.14] - 2026-11-27
 
 This patch accepts `null` optional arguments across waitable tools and fixes PostgreSQL background snapshot collection.

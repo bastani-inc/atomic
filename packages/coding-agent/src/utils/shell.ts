@@ -15,6 +15,7 @@ import { findHelperExecutable, findHelperExecutableAsync } from "./helper-comman
 import { type HostChildProcess, spawnContainedProcess } from "./host-spawn.ts";
 import { resolutionBaseUrl } from "./module-require.js";
 import { pathExists as shellPathExistsAsync } from "./path-exists.ts";
+import { getHomeDir } from "./paths.ts";
 import { getGitShellEnvironment, getGitShellEnvironmentAsync } from "./tools-manager.ts";
 import {
 	DEFAULT_WINDOWS_CWD_TIMEOUT_MS,
@@ -150,9 +151,18 @@ async function lookupExecutableOnPathAsync(executable: string): Promise<string |
 	return (await findHelperExecutableAsync(executable, { ...LOOKUP_OPTIONS, platform: process.platform })) ?? null;
 }
 
-/** A configured shell given by name alone is looked up as any shell is; a path is taken as written. */
+/** A configured shell given by name alone is looked up as any shell is; a path is taken as written (expanding leading `~`). */
 function isShellName(shellPath: string): boolean {
 	return !/[\\/]/.test(shellPath) && !(process.platform === "win32" && shellPath.includes(":"));
+}
+
+function expandCustomShellPath(shellPath: string): string {
+	if (shellPath === "~") return getHomeDir();
+	if (shellPath.startsWith("~/") || (process.platform === "win32" && shellPath.startsWith("~\\"))) {
+		const joinPath = process.platform === "win32" ? win32.join : join;
+		return joinPath(getHomeDir(), shellPath.slice(2));
+	}
+	return shellPath;
 }
 
 /**
@@ -167,7 +177,8 @@ function isShellName(shellPath: string): boolean {
 export function getShellConfig(customShellPath?: string): ShellConfig {
 	// 1. Check user-specified shell path
 	if (customShellPath) {
-		const shell = isShellName(customShellPath) ? findExecutableOnPath(customShellPath) : customShellPath;
+		const expanded = expandCustomShellPath(customShellPath);
+		const shell = isShellName(expanded) ? findExecutableOnPath(expanded) : expanded;
 		if (shell !== null && executableCandidateExists(shell)) {
 			return getBashShellConfig(shell);
 		}
@@ -222,7 +233,8 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 
 export async function getShellConfigAsync(customShellPath?: string): Promise<ShellConfig> {
 	if (customShellPath) {
-		const shell = isShellName(customShellPath) ? await findExecutableOnPathAsync(customShellPath) : customShellPath;
+		const expanded = expandCustomShellPath(customShellPath);
+		const shell = isShellName(expanded) ? await findExecutableOnPathAsync(expanded) : expanded;
 		if (shell !== null && (await executableCandidateExistsAsync(shell))) {
 			return getBashShellConfig(shell);
 		}

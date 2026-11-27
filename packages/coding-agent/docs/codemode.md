@@ -1,14 +1,29 @@
 ---
-title: "Codemode reference"
+title: "Codemode"
 sidebarTitle: "Codemode"
 description: "Write JavaScript scripts inside Atomic's sandbox to compose tool calls, persist state across turns, and call classifier or image models."
 ---
 
-`codemode` lets the model run a JavaScript script that calls Atomic tools and non-LLM models (classifiers and image generators) and returns only the filtered result. It is enabled by default. Toggle it from the CLI or settings ([`codemode` in Built-in tools](/tools#codemode)), or from the SDK with `tools: ["-codemode"]`, `noTools: "builtin"`, or `DefaultResourceLoader({ disabledBuiltinExtensions: ["codemode"] })` ([SDK extensions](/sdk/reference#extensions)). For multi-step subagent workflows in codemode, see [Orchestrate with codemode and subagents](/orchestration). To embed the sandbox in your own application, see [`@bastani/atomic-codemode`](/libraries/codemode).
+`codemode` lets the model run JavaScript inside a sandboxed worker to call permitted Atomic tools, chain or parallelize steps, call classifier and image models, and return only the filtered result. It is enabled by default.
+
+<Columns cols={2}>
+  <Card title="Enable or disable codemode" href="/tools#codemode">
+    Toggle `codemode` via CLI flags, `settings.json`, or SDK options.
+  </Card>
+  <Card title="Orchestrate with codemode" href="/orchestration">
+    Coordinate parallel subagents, save handoff state, and recover after interruptions.
+  </Card>
+  <Card title="MCP servers" href="/mcp-servers">
+    Discover and call `codemode` and `deferred` MCP tools from scripts.
+  </Card>
+  <Card title="Embed @bastani/atomic-codemode" href="/libraries/codemode">
+    Embed the standalone codemode sandbox in your own Node.js or Cloudflare Workers app.
+  </Card>
+</Columns>
 
 ## Scripts
 
-Pass raw JavaScript source with no JSON wrapper or markdown code fences. Code runs as an async function body inside a sandboxed JavaScript runtime, so top-level `await` and `return` work. The sandbox has no Node or Bun APIs, filesystem, network, or timers; all external access goes through `tools` and `models`.
+Pass raw JavaScript source with no JSON wrapper or markdown code fences. Code runs as an async function body inside a sandboxed QuickJS runtime, so top-level `await` and `return` work.
 
 ```javascript
 const [readme, pkg] = await Promise.all([
@@ -18,16 +33,19 @@ const [readme, pkg] = await Promise.all([
 return { name: JSON.parse(pkg).name, excerpt: readme.slice(0, 400) };
 ```
 
-An optional first-line directive sets the output budget and timeout. It must be line 1 followed by JavaScript code; unknown keys or a script with no code after the directive fail immediately:
+- **Available built-ins.** Standard ECMAScript built-ins plus `atob`, `btoa`, `DOMException`, `eval`, and `Function` work inside the sandbox. `TextEncoder`, `TextDecoder`, `URL`, `fetch`, `crypto`, `setTimeout`, and all Node or Bun filesystem, network, and process APIs are unavailable—every external interaction goes through `tools` and `models`.
+- **Per-script options directive.** An optional first-line comment sets the output budget and timeout. It must appear on **line 1** followed by JavaScript code; placing `// @options:` on any later line, using unknown keys, or sending an empty script fails before execution starts:
 
 ```javascript
 // @options: {"max_output_tokens": 2000, "timeout_ms": 60000}
 ```
 
-- **`max_output_tokens` (default `10000`).** Non-negative safe integer (`0` is accepted; budget is `max_output_tokens * 4` characters). Overflow keeps the start and end and writes full output to a temp file whose path is included in the result.
-- **`timeout_ms` (unset by default).** Hard deadline in milliseconds for the whole script, including waiting for a worker slot. Must be a positive integer up to `2147483647` (about 24.8 days); `0`, negative numbers, decimals, or larger values fail before running. Avoid short deadlines when generating images, which can take minutes.
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `max_output_tokens` | `10000` | Non-negative safe integer (`0` is accepted; character budget is `max_output_tokens * 4`). Text overflow keeps the start and end and writes full text to a temp file named in the result. Emitted images survive text truncation and keep their `[Image saved to ...]` paths intact. |
+| `timeout_ms` | Unset | Hard deadline in milliseconds for the whole script, including waiting for a worker slot. Must be a positive integer up to `2147483647` (about 24.8 days); `0`, negative numbers, decimals, or larger values fail before running. Avoid short deadlines when generating images, which can take minutes. |
 
-**Result format.** Starts with `Script completed` or `Script failed` plus wall time, followed by text and image items in order. Multiple text items (from `text()` or `return`) are separated by `==> text N/M <==`. `console.*` output follows in one `<console_output>` block. On failure, partial output is kept before `Script error:`. Side effects from completed tool calls are **not** rolled back; still-running calls are cancelled and unawaited promises are dropped when the script exits.
+**Result format.** Every run starts with `Script completed` or `Script failed` plus wall time, followed by text and image items in order. Multiple text items (from `text()` or `return`) are separated by `==> text N/M <==`, and `console.*` output follows in one `<console_output>` block. On failure, partial output is kept before `Script error:`. Side effects from completed tool calls are **not** rolled back; still-running tool calls are cancelled and unawaited promises are dropped when the script exits.
 
 ## Globals
 
@@ -36,40 +54,57 @@ Use `await` with every async global (`tools.*`, `searchTools()`, `describeTool()
 | Global | Sync / Async | Purpose |
 | --- | --- | --- |
 | `tools.<name>(args)` | Async (`await`) | Call a permitted tool. See [Call tools](#call-tools). |
-| `text(value)` | Sync | Emit a text item (strings verbatim, other values as JSON). |
-| `image(value)` | Sync | Emit an image from a base64 `data:` URL, `{ image_url }`, or `{ type: "image", data, mimeType }` (PNG, JPEG except JPEG-LS, GIF, or WebP; no remote URLs or SVG; see [Generate images](#generate-images)). Inspects base64 magic bytes instead of trusting the declared MIME type, strips whitespace and newlines, throws `TypeError` on invalid or mismatched base64, saves a temp file, and prints its path. |
+| `text(value)` | Sync | Emit a text item (primitives as `String(value)`, objects as JSON). |
+| `image(value)` | Sync | Emit an image from a base64 `data:` URL, `{ image_url }`, or `{ type: "image", data, mimeType }` (PNG, JPEG except JPEG-LS, GIF, or WebP; no remote URLs or SVG). Validates base64 magic bytes instead of trusting the declared MIME type, strips whitespace/newlines, throws `TypeError` on invalid or mismatched data, saves a temp file, and prints its path. |
 | `console.log(...)` | Sync | Append a space-joined line to `<console_output>` (`info`, `warn`, `error`, and `debug` behave identically). |
-| `return value` | Sync | Top-level `return` emits `value` like `text()`. |
+| `return value` | Sync | Emit the script's final value across the sandbox bridge via `JSON.stringify` (strings emit verbatim). Unlike `text()`, `return undefined` emits nothing, `return NaN` and `return Infinity` serialize to `"null"`, and non-JSON-serializable values (`BigInt`, circular objects) fail. |
 | `exit()` | Sync | End the script immediately with success. Persists prior `store()` writes, takes no argument (call `text()` first to emit output), and ignores further `text()` or `image()` calls inside `finally` blocks. |
-| `store(key, value)` / `load(key)` | Sync | Persist small JSON values across `codemode` calls on this branch. See [Store values](#store-values). |
+| `store(key, value)` / `load(key)` | Sync | Persist small JSON values across `codemode` calls on the current branch. See [Store values](#store-values). |
 | `ALL_TOOLS` | Value | Array of `{ name, description }` for every script-callable tool (excludes [model-only tools](#model-only-tools)). |
-| `searchTools(query, { limit?, namespace? })` | Async (`await`) | BM25 search over script-callable tools (`limit` must be a positive integer, default `8`). Exact tool names or suffixes after `__` (such as `thread_read` for `mcp__app__thread_read`) rank first. Querying an exact active model-only tool name returns a hint to call it directly unless `namespace` is passed. |
-| `describeTool(name)` | Async (`await`) | Returns a script-callable tool's description and TypeScript declaration, a direct-call hint for an active model-only tool, or `undefined`. Accepts exact names, JS identifiers, `mcp.<server>.<tool>`, `mcp__<raw-server>__<tool>`, `<server>__<tool>`, or `<tool>` suffixes, and throws an ambiguity error if a shorthand matches multiple tools. |
+| `searchTools(query, { limit?, namespace? })` | Async (`await`) | Ranked keyword search over script-callable tools (`limit` must be a positive integer, default `8`). Exact tool names or suffixes after `__` (such as `thread_read` for `mcp__app__thread_read`) rank first. Querying an exact active model-only tool name returns a hint to call it directly unless `namespace` is passed. |
+| `describeTool(name)` | Async (`await`) | Returns a script-callable tool's description and TypeScript declaration, a direct-call hint for an active model-only tool, or `undefined`. Accepts exact names, JS identifiers, `mcp.<server>.<tool>`, `mcp__<raw-server>__<tool>`, `<server>__<tool>`, or `<tool>` suffixes; throws on ambiguous shorthand. |
 | `describeNamespace(name)` | Async (`await`) | Returns `{ name, description?, instructions?, tools }` for a namespace (such as an MCP server), or `undefined`. |
-| `models` | Async methods (`await`) | Inspect and invoke classifier and image models. See [Models](#models). Not exposed in routing-only subagents. |
+| `models` | Async methods (`await`) | Inspect and invoke classifier and image models. See [Models](#models). |
 
 ## Call tools
 
 Every script-callable tool is exposed on `tools` under both its normalized JavaScript identifier (non-identifier characters replaced with `_`, such as `tools.mcp__dev_docs__search`) and its raw tool name (`tools["mcp__dev-docs__search"]`). If two tool names normalize to the same identifier, the first registered tool keeps the normalized key. Each method accepts one argument object.
 
-**Return values:**
-- **Tools with `outputSchema`.** Resolve to their structured object (including structured failures). `bash` resolves to `{ output, truncated, full_output_path?, exit_code, wall_time_seconds }` even for nonzero exit codes; `output` keeps up to 1 MiB (the first and last 512 KiB around an omission marker if truncated, with full text in `full_output_path`).
-- **MCP tools.** Resolve to `CallToolResult` (`content`, `isError`, and typed `structuredContent`, with `_meta` stripped).
-- **`read`.** Resolves to plain LF text with `[Lines S-E of N]` range headers on partial reads (no per-line numbers or local path headers; URL reads include `URL:`, `Status:`, and `Content-Type:` headers; append `:raw` for exact bytes). For images, resolves to `{ type: "image", data, mimeType, note }` usable directly with `image()`.
-- **Other tools (`edit`, `write`, and similar).** Resolve to text.
+### Return values by tool
 
-**Errors and discovery:**
-- Failed, blocked, or invalid calls reject with `Error` (except schema-backed tools that return a structured error value; check `exit_code` or `isError`). Use `Promise.allSettled()` for independent calls.
-- Accessing an unknown tool throws with close-match suggestions (for example `tools.Bash` suggests `tools.bash`). Check availability with `"name" in tools`.
-- Inline tool declarations share a `3000`-token budget (`codemode.inlineBudget` in [settings](/settings#tools)); deferred tools stay unlisted and are found via `await searchTools()`, `await describeTool()`, `await describeNamespace()`, or `ALL_TOOLS`.
-- `codemode.mode` in [settings](/settings#tools) controls tool visibility: `"on"` (default) keeps direct tools declared alongside codemode; `"only"` hides ordinary direct tools so the model calls them through codemode while keeping active model-only tools (like `ask_user_question`) top-level. Declarations in `codemode`, `describeTool()`, and `ALL_TOOLS` carry each tool's prompt guidelines.
+| Tool | Resolves to | Notes and failure behavior |
+| --- | --- | --- |
+| `bash`, `powershell` (foreground finish) | `{ output, truncated, full_output_path?, exit_code, wall_time_seconds }` | Resolves with this object even for nonzero `exit_code`. `output` keeps up to 1 MiB (first and last 512 KiB around an omission marker if truncated, with full output at `full_output_path`). Rejects if the command times out or is aborted. |
+| `bash`, `powershell` (background yield or `action: "wait"`) | Plain `string` | When a command yields to the background (via `wait: { kind: "background" }` or after the default 10-second wait) or is observed with `{ action: "wait", id }`, the call returns a plain string rather than a structured object. Rejects if a waited command was stopped by its execution timeout or aborted. |
+| `read` (text / URLs) | Plain `string` | Plain LF text with `[Lines S-E of N]` headers on partial reads (`:raw` returns exact bytes). Unselected HTTP(S) URL reads include `URL:`, `Content-Type:`, `Method:` (and optional `Notes:`) followed by `---`; only line-selected URL reads include `URL:`, `Status:`, and `Content-Type:`. |
+| `read` (images) | `{ type: "image", data, mimeType, note }` | Pass directly to `image()` or `models.classify()`. |
+| MCP tools | `{ content, isError?, structuredContent? }` | Complete untruncated MCP result (`_meta` stripped). Does not throw on `isError: true`—check `res.isError`, then read `res.structuredContent` or text blocks in `res.content`. |
+| `subagent`, `intercom`, other structured tools | Tool-specific structured object | Returns structured results (including structured error objects when the tool defines an output schema). |
+| `edit`, `write`, `find`, `search`, `todo`, `kill`, other text tools | Plain `string` | Rejects with `Error` on failure. |
+
+Reading an MCP tool result safely:
+
+```javascript
+const res = await tools.mcp__docs__search({ query: "compaction" });
+if (res.isError) throw new Error("Docs search failed");
+const textOut = res.structuredContent ?? res.content.find((b) => b.type === "text")?.text;
+return textOut;
+```
+
+### Errors and tool discovery
+
+- **Forwarded error details.** Failed, blocked, or invalid calls reject with `Error` (except structured tools that return `exit_code` or `isError`). When a tool throws an `Error` with extra JSON-serializable own properties (such as `code`, `hint`, or `fields`), those properties are copied onto the `Error` caught in your script. Use `Promise.allSettled()` for independent parallel calls.
+- **Checking tool availability.** Accessing an unknown property on `tools` throws with close-match suggestions (for example `tools.Bash` suggests `tools.bash`). Check availability with `"name" in tools`.
+- **Inline catalog and schema limits.** Inline tool declarations share a `3000`-token budget (`codemode.inlineBudget` in [settings](/settings#tools)); deferred tools stay unlisted and are found via `await searchTools()`, `await describeTool()`, `await describeNamespace()`, or `ALL_TOOLS`. Declarations carry each tool's usage instructions. If a tool's input schema exceeds 16,000 characters, `describeTool()` and inline declarations drop constraint annotations first and collapse it to `unknown` if still oversized.
+- **Visibility mode.** `codemode.mode` in [settings](/settings#tools) defaults to `"on"` (direct tools declared alongside codemode). Setting `"only"` hides ordinary direct tools so the model calls them through codemode while keeping active model-only tools (such as `ask_user_question`) top-level.
 
 ### Model-only tools
 
 Tools without script access (such as `ask_user_question` and `tool_search`) are absent from `tools`, `ALL_TOOLS`, and `searchTools()` rankings. Call them as top-level tools instead. Querying their exact name with `await searchTools()` or `await describeTool()` returns a hint to call them directly without making them script-callable.
 
 Two tools expose a script-safe subset:
-- **`tools.subagent`.** Launches subagents (`{ agent, task }` or `{ tasks }`) and returns task IDs at admission; also supports `status`, bounded `wait`, `pause`, `quit`, `resume`, and agent and model inspection. A script timeout cancels `wait`, not the subagent; admitted subagents continue after a script returns or throws. See [Subagents from codemode scripts](/subagents#from-codemode-scripts).
+
+- **`tools.subagent`.** Launches subagents (`{ agent, task }` or `{ tasks }`) and returns task IDs at admission; also supports `status`, bounded `wait`, `pause`, `quit`, `resume`, and agent/model inspection. A script timeout cancels `wait`, not the subagent; admitted subagents keep running after a script returns or throws. See [Subagents from codemode scripts](/subagents#from-codemode-scripts).
 - **`tools.intercom`.** Supports `list`, `status`, `pending`, and `send` to an exact target (returning structured results). Other actions and glob or `subagents:` targets must be called directly. See [Intercom from codemode scripts](/intercom/reference#from-codemode-scripts).
 
 ## Store values
@@ -77,17 +112,21 @@ Two tools expose a script-safe subset:
 `store(key, value)` synchronously saves a JSON value for subsequent `codemode` calls; `store(key, undefined)` deletes it; `load(key)` synchronously reads it back (or returns `undefined`).
 
 - Writes become visible to `load()` immediately inside the same script. They persist to the session history only when the script succeeds (including via `exit()`), so values survive resume and stay isolated per session branch. Failed scripts discard uncommitted writes.
-- Keys must be strings. Non-JSON-serializable values (functions, BigInt, circular references) throw `TypeError`.
-- Size caps are 262,144 JSON characters per value (`json.length`) and 1,048,576 characters total across all stored entries (`key.length + json.length`). Do not store images; emit them with `image()`, which writes a temp file automatically.
+- Keys must be strings. Non-JSON-serializable values (functions, `BigInt`, circular references) throw `TypeError`.
+- Size caps are **262,144** JSON characters per value (`json.length`) and **1,048,576** characters total across all stored entries (`key.length + json.length`). Do not store images; emit them with `image()`, which writes a temp file automatically.
 
 ## Models
 
-`models` accesses the model catalog and calls non-LLM models using the session's credentials. Routing-only subagents do not expose `models`.
+`models` accesses the model catalog and calls non-LLM models using the session's credentials.
 
 - **Classifiers.** Answer typed questions about JSON state (and images when supported). Examples: [TypeSafe Jev](/providers#typesafe-jev), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp).
 - **Image models.** Generate or edit images. Examples: OpenRouter (`provider: "openrouter"`, IDs such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, reusing your OpenRouter credential) and OpenAI (`provider: "openai-images"`, such as `gpt-image-2.6-flare`, reusing your [OpenAI API key](/providers#subscription-and-api-key-at-the-same-time)).
 
 Chat models are listed in the catalog (with active service-tier pricing) but cannot be called from scripts. Neither classifiers nor image models appear in `/model`.
+
+<Note>
+When a forked subagent does not declare `codemode` in its own tool list, Atomic may still provide a routing-only `codemode` channel so the child can call its own tools without altering its parent's tool declarations. Those routing-only subagents do not expose `models`.
+</Note>
 
 ```typescript
 type ModelType = "chat" | "image" | "classifier";
@@ -117,7 +156,7 @@ declare const models: {
 
 - Pass a `ModelInfo` or `{ provider, id }`; script-supplied `baseUrl` or headers are ignored so credentials cannot be redirected.
 - Provider errors do not throw; check `stopReason`, `errorMessage`, and (for images) `error`. Malformed arguments or unknown models do throw and point to `models.getAvailableOfType(type)`.
-- Up to 4 model calls run concurrently per script (extra calls queue, so `Promise.all()` is safe). Token usage and cost count toward the session total.
+- Up to **4** model calls run concurrently per script (extra calls queue, so `Promise.all()` is safe). Token usage and cost count toward the session total.
 
 ### Classify
 
@@ -237,12 +276,39 @@ type TextBlock = { type: "text"; text: string };
 type ImageBlock = { type: "image"; data: string; mimeType: string; role?: "markup" | "mask" };
 ```
 
-- **Provider options.** `ImagesOptions` targets OpenAI's `openai-images` models (OpenRouter models ignore them). The first untagged image is the base image to edit; additional untagged images are references. `role: "markup"` (a same-size transparent PNG overlay) and `role: "mask"` (an alpha mask) are mutually exclusive and require an untagged base image earlier in `input`.
-- **OpenAI option validation.** `outputCompression` accepts integers `0` to `100` and is valid only with `outputFormat: "jpeg"` or `"webp"`. `background: "transparent"` is valid only with `"png"`, `"webp"`, or the default format. `safetyIdentifier` has a 128-character limit. `complexity` (`"low"`, `"medium"`, or `"high"`, API default `"high"`) applies to GPT Image 2.6 only.
-- **GIF and SVG.** `outputFormat: "gif"` and `"svg"` require a GPT Image 2.6 model with text-only input. For GIF, `frameCount` (`2` to `16`, API default `9`) and `frameDurationMs` (`20` to `2000`, API default `200`, rounded to 10 ms) are rejected unless `outputFormat` is `"gif"`. For SVG, `n` must be `1` or omitted, and the `svg` option is rejected unless `outputFormat` is `"svg"`.
-- **SVG authoring model.** `{ outputFormat: "svg" }` works without extra options. If an account requires `svg.model` and you omitted `svg`, Atomic retries once with `gpt-6.1-sol` (reported in `result.svgModel`), and retries once without `svg` if rejected as unsupported. An explicit `svg: { model, reasoning }` is sent verbatim without automatic fallback. Allow at least `timeout_ms: 180000` for SVG requests (Atomic's own request timeout is at least 10 minutes).
-- **Structured errors.** Invalid options fail locally with `stopReason: "error"`, `error.code: "invalid-option"`, and `error.fields.field` (plus `error.fields.reason`: `required-by-api`, `rejected-by-api`, or `unsupported-by-api` for SVG). Other codes are `moderation-blocked`, `user-error`, `quota-exceeded`, `rate-limited`, `server-error`, `timeout`, and `api-error`. Branch on `error.code` and `error.retryable` (see [Image generation](/libraries/ai#image-generation)).
-- **Displaying and saving output.** Call `image(block)` for PNG, JPEG, GIF, and WebP (never print base64 `data` via `text()` or `return`; scripts that generate images without showing any receive a note). `image()` also saves each image to a private temp file and prints its path. For SVG (`image/svg+xml`), Atomic automatically saves a private temp `.svg` file (`[SVG saved to <path> (image/svg+xml, <size>)]`), and scripts can inspect XML text via `atob(block.data)`.
+#### OpenAI image options and constraints
+
+`ImagesOptions` targets OpenAI's `openai-images` models (OpenRouter models ignore them). For image editing, the first untagged image in `input` is the base image and additional untagged images are references; `role: "markup"` (a same-size transparent PNG overlay) and `role: "mask"` (an alpha mask) are mutually exclusive and require an untagged base image earlier in `input`.
+
+| Option | Constraints |
+| --- | --- |
+| `outputCompression` | Integer `0`–`100`; valid only with `outputFormat: "jpeg"` or `"webp"`. |
+| `background: "transparent"` | Valid only with `outputFormat: "png"`, `"webp"`, or omitted. |
+| `safetyIdentifier` | Maximum 128 characters. |
+| `complexity` | `"low"`, `"medium"`, or `"high"` (API default `"high"`); GPT Image 2.6 only. |
+| `outputFormat: "gif"` | Requires GPT Image 2.6 and text-only input. `frameCount` (`2`–`16`, API default `9`) and `frameDurationMs` (`20`–`2000`, API default `200`, rounded to 10 ms) are valid only with `"gif"`. |
+| `outputFormat: "svg"` | Requires GPT Image 2.6 and text-only input; `n` must be `1` or omitted; `svg` is valid only with `"svg"`. Allow at least `timeout_ms: 180000` (Atomic's own request timeout is at least 10 minutes). |
+
+**SVG authoring model fallback.** `{ outputFormat: "svg" }` works without extra options. If an account requires `svg.model` and you omitted `svg`, Atomic retries once with `gpt-6.1-sol` (reported in `result.svgModel`), and retries once without `svg` if rejected as unsupported. An explicit `svg: { model, reasoning }` is sent verbatim without automatic fallback.
+
+#### Structured errors
+
+Branch on `result.error.code` and `result.error.retryable` rather than message text (see [Image generation](/libraries/ai#image-generation)):
+
+| `error.code` | Meaning |
+| --- | --- |
+| `invalid-option` | Local or API option validation failure. `error.fields.field` names the field; SVG errors also set `error.fields.reason` (`required-by-api`, `rejected-by-api`, or `unsupported-by-api`). |
+| `moderation-blocked` | Prompt or output blocked by provider safety filters. |
+| `user-error` | Non-retryable client request error. |
+| `quota-exceeded` | Account quota or billing limit reached. |
+| `rate-limited` | Provider rate limit hit (`retryable: true`). |
+| `server-error` | Provider 5xx failure (`retryable: true`). |
+| `timeout` | Request exceeded its deadline. |
+| `api-error` | Other provider API error. |
+
+#### Displaying and saving generated images
+
+Call `image(block)` for PNG, JPEG, GIF, and WebP—never print base64 `data` via `text()` or `return` (scripts that generate images without showing any receive a reminder note). `image()` automatically saves a private temp file and prints its path. For SVG (`image/svg+xml`), Atomic automatically saves a private temp `.svg` file (`[SVG saved to <path> (image/svg+xml, <size>)]`), and scripts can inspect the XML via `atob(block.data)`.
 
 ```javascript
 // @options: {"timeout_ms": 300000}
@@ -279,9 +345,12 @@ Extensions can call `ctx.modelRegistry.classify()` and `ctx.modelRegistry.genera
 
 ## Limits
 
-- **Memory.** 256 MiB per script sandbox (`InternalError: out of memory`); filter or aggregate data instead of buffering everything in memory.
-- **Hard output caps.** Across `text()`, `image()`, and `console.*`, a script can emit at most 16 MiB (`16,777,216` characters) total and `100,000` items. Exceeding either cap stops the script immediately with an uncatchable `RangeError`.
+- **Memory and stack.** **256 MiB** heap per script sandbox (`InternalError: out of memory`) and a **512 KiB** QuickJS recursion stack guard (deep recursion throws a catchable `RangeError` rather than crashing the worker). Filter or aggregate data instead of buffering everything in memory.
+- **Hard output caps.** Across `text()`, `image()`, and `console.*`, a script can emit at most **16 MiB** (`16,777,216` characters) total and **100,000** items. Exceeding either cap stops the script immediately with an uncatchable `RangeError`.
 - **Frozen built-in prototypes.** Standard JavaScript globals and built-in prototypes are frozen before your script starts. Monkey-patching built-in prototypes throws `TypeError`; normal own properties on your own objects (`name`, `message`, `toString`, `toJSON`, and custom keys) work normally.
-- **Cancellation.** Stopping a script or hitting `timeout_ms` cancels execution promptly. In the standalone binary release, a single long-running native built-in operation (such as a catastrophic regex) finishes before the worker exits.
-- **Worker concurrency.** Default limit is `2` concurrent script workers per Atomic process (override with `ATOMIC_CODEMODE_MAX_WORKERS` or legacy `PI_CODEMODE_MAX_WORKERS`). Cancelled workers occupy a slot until they exit. Additional scripts queue in FIFO order and fail if no slot opens within 60 seconds (or `timeout_ms`).
+- **Worker concurrency.** Default limit is **2** concurrent script workers per Atomic process (override with `ATOMIC_CODEMODE_MAX_WORKERS`). Cancelled workers occupy a slot until they exit. Additional scripts queue in FIFO order and fail if no slot opens within 60 seconds (or `timeout_ms`).
 - **Deadlocks and nesting.** Waiting on a promise with no pending tool call fails immediately because there are no timers. Scripts cannot invoke `codemode` recursively.
+
+<Note>
+**Cancellation in standalone binaries.** Stopping a script or hitting `timeout_ms` cancels execution promptly. In the standalone binary release, a single long-running native built-in operation (such as a catastrophic regular expression) finishes before the worker exits.
+</Note>

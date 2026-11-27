@@ -4,22 +4,50 @@ sidebarTitle: "Built-in tools"
 description: "Reference for Atomic's default coding tools, path and resource selectors, background shell execution, task tracking, and output persistence."
 ---
 
-By default, Atomic enables `read`, `write`, `edit`, `bash`, `kill`, `find`, `search`, `ask_user_question`, `todo`, and `codemode` (plus `powershell` on native Windows when `pwsh.exe` or `powershell.exe` is on `PATH`). Two more built-in tools, `ls` and `tool_search`, are off by default and can be enabled with `--tools` or `defaultTools`.
+Atomic ships a default set of coding tools for reading, editing, running commands, searching files, tracking tasks, and scripting multi-step operations. Two additional built-in tools (`ls` and `tool_search`) are off by default and can be enabled per run or in settings.
 
-- [Read files, archives, SQLite, and URLs](#read-and-path-selectors)
-- [Edit existing files](#edit) or [write files](#write)
-- [Run shell commands](#bash) or [stop background shells](#kill)
-- [Find paths and search contents](#find-and-search) or [list directories](#ls)
-- [Track file-based tasks with `todo`](#todo) or [ask interactive questions](#ask_user_question)
-- [Compose tool calls with `codemode`](#codemode) or [discover deferred tools](#tool_search)
+| Tool | Default | Purpose |
+| --- | --- | --- |
+| [`read`](#read-and-path-selectors) | Enabled | Read files, directories, images, documents, archives, SQLite databases, internal resources, and public URLs. |
+| [`edit`](#edit) | Enabled | Apply exact-text replacements to an existing file. |
+| [`write`](#write) | Enabled | Create or overwrite files, archive members, SQLite rows, and merge-conflict resolutions. |
+| [`bash`](#bash) | Enabled | Run shell commands and observe background shell tasks. |
+| [`powershell`](#powershell) | Windows only | Run PowerShell commands on native Windows when `pwsh.exe` or `powershell.exe` is on `PATH`. |
+| [`kill`](#kill) | Enabled | Stop a running background shell or history task started in this session. |
+| [`find`](#find-and-search) | Enabled | Locate filesystem paths by glob. |
+| [`search`](#find-and-search) | Enabled | Search file and resource contents with a regular expression. |
+| [`todo`](#todo) | Enabled | Manage file-based tasks in `.atomic/todos`. |
+| [`ask_user_question`](#ask_user_question) | Enabled | Ask interactive multiple-choice or confirmation questions in the terminal UI. |
+| [`codemode`](#codemode) | Enabled | Run sandboxed JavaScript to compose tool calls and return filtered output. |
+| [`ls`](#ls) | Off | List directory entries alphabetically. |
+| [`tool_search`](#tool_search) | Off | Activate deferred tools on demand for direct calls. |
 
-Bundled integrations also add [public repository search](#code_search), [web access](/web-access), and [MCP servers](/mcp-servers).
+Bundled integrations also add [`code_search`](#code_search), web search and fetching, MCP servers, subagents, and Intercom:
 
-**Tool concurrency.** Within a single assistant turn, `edit`, `write`, `todo`, `ask_user_question`, and `bash` or `powershell` with `pty: true` run one at a time in call order. `read`, `find`, `search`, `ls`, and non-PTY shell commands can run in parallel.
+<Columns cols={2}>
+  <Card title="Codemode" href="/codemode">
+    Sandbox globals, return shapes, branch storage, classifiers, image generation, and limits.
+  </Card>
+  <Card title="Background tasks" href="/background-tasks">
+    Observe, steer, and stop long-running shells, subagents, and slow history reads.
+  </Card>
+  <Card title="Web access" href="/web-access">
+    Search the web, fetch webpages, PDFs, GitHub repos, and videos, and query DeepWiki.
+  </Card>
+  <Card title="MCP servers" href="/mcp-servers">
+    Connect external stdio and streamable HTTP tools, resources, and OAuth logins.
+  </Card>
+</Columns>
 
-**Inspecting active tools.** Run `/tools` to see active tools, why inactive tools are off, and any unregistered names in `defaultTools`. Its **Git** section reports which `git` binary Atomic uses: `system` (from your `PATH`), `provisioned` (Atomic's managed portable Git copy), or `unavailable` (with an install command), plus any failed portable Git update. See [Git](/getting-started/installation#git). SDK and RPC clients get the same report from [`session.getToolStatus()`](/sdk/reference#checking-tool-status) and [`get_tools`](/rpc/protocol#get_tools). If portable Git cannot be selected, ordinary shell commands still run while Git-dependent features report the error.
+### Execution rules and diagnostics
 
-**Malformed tool arguments.** If a model produces invalid or truncated JSON tool arguments, Atomic rejects the call instead of executing a partial request and returns the original arguments so the model can retry.
+- **Tool concurrency.** Within a single assistant turn, tools fall into three modes:
+  - **Exclusive:** `codemode` acts as a turn barrier—it waits for earlier tool calls to finish and blocks later calls until it completes.
+  - **Sequential:** `edit`, `write`, `todo`, `ask_user_question`, and `bash` or `powershell` with `pty: true` run one at a time in call order.
+  - **Parallel:** `read`, `find`, `search`, `ls`, `kill`, `tool_search`, non-PTY shell commands, MCP tools, and web-access tools can run in parallel.
+- **Interrupting stuck tools.** When you interrupt a turn (for example with `Esc`), Atomic waits up to **10 seconds** for a tool call that ignores cancellation to stop before abandoning it with an `Operation aborted` error and discarding any late return. Override this grace period in milliseconds with `ATOMIC_TOOL_ABORT_GRACE_MS` (up to `2147483647`; `0` skips waiting).
+- **Inspecting active tools.** Run `/tools` to see active tools, why inactive tools are off, and any unrecognized names in `defaultTools`. Its **Git** section reports which `git` binary Atomic uses (`system`, `provisioned` portable Git, or `unavailable` with an install command) and any failed portable Git update. See [Git](/getting-started/installation#git). SDK and RPC clients get the same report from [`session.getToolStatus()`](/sdk/reference#checking-tool-status) and [`get_tools`](/rpc/protocol#get_tools).
+- **Malformed tool arguments.** If a model produces invalid or truncated JSON arguments, Atomic rejects the call without executing a partial request and returns the original arguments so the model can retry.
 
 ## Enabling and restricting tools
 
@@ -38,8 +66,8 @@ Control which tools a session exposes from the CLI, settings, SDK, or extensions
 
 It supports two mutually exclusive call modes:
 
-1. **Read a target:** pass `path` (required), plus optional `wait` (used for `history://` URLs; ignored for local files, directories, archives, SQLite, and web URLs).
-2. **Wait on an existing background history read:** pass `action: "wait"`, `id` (the task ID returned earlier, such as `"history-3"`), and optional `budgetMs` (milliseconds; omit to use the default 10-second wait, or pass `0` to check immediately). Do not combine `action: "wait"` with `path` or `wait`.
+1. **Read a target:** pass `path` (required), plus optional `wait` (used only for `history://` URLs; ignored for local files, directories, archives, SQLite, and web URLs).
+2. **Wait on a background history read:** pass `action: "wait"`, `id` (the task ID returned earlier, such as `"history-3"`), and optional `budgetMs` (milliseconds; omit for the default 10-second wait, or pass `0` to check immediately). Do not combine `action: "wait"` with `path` or `wait`.
 
 ```json
 { "path": "src/example.ts:10-40" }
@@ -57,7 +85,11 @@ It supports two mutually exclusive call modes:
 { "action": "wait", "id": "history-3", "budgetMs": 15000 }
 ```
 
-- **Observation options (`wait`, `action: "wait"`).** On a `history://` read, omitting `wait` (or passing `wait: { kind: "foreground" }` without `budgetMs`) waits up to 10 seconds by default before continuing in the background and returning a `history-N` task ID. Pass `wait: { kind: "background" }` to return immediately with a task ID, or `wait: { kind: "foreground", budgetMs }` to wait up to `budgetMs` milliseconds (`budgetMs` inside `wait` is valid only with `kind: "foreground"`). Omitted optional fields sent as `null` (for example by strict-schema tool callers) are treated as omitted. See [Slow history searches](/sessions#slow-history-searches) and [Background history searches](/background-tasks#background-history-searches).
+On a `history://` read, omitting `wait` (or passing `wait: { kind: "foreground" }` without `budgetMs`) waits up to 10 seconds before continuing in the background and returning a `history-N` task ID. Pass `wait: { kind: "background" }` to return a task ID immediately, or `wait: { kind: "foreground", budgetMs }` to wait up to `budgetMs` milliseconds (`budgetMs` inside `wait` is valid only with `kind: "foreground"`). Passing `null` for optional fields works the same as omitting them.
+
+<Note>
+Background `history-N` tasks are process-local: unlike shell tasks, they do not appear in `/tasks`, and they are cancelled without a completion notice if the session closes or `/reload` runs. See [Slow history searches](/sessions#slow-history-searches) and [Background tasks](/background-tasks).
+</Note>
 
 Reading a directory returns a depth-2 tree sorted by most-recent modification time (with sizes and ages). It prunes `.git` and `node_modules` and caps each child directory at 12 entries while preserving the oldest shown entry with an elision marker.
 
@@ -66,10 +98,14 @@ Reading a directory returns a depth-2 tree sorted by most-recent modification ti
 For local text files, `read` returns plain text with LF line endings, no per-line numbers, and no trailing newline. Existing file or directory names take priority over selector parsing (so `notes:0` or `build:12` reads that literal file when it exists). Otherwise, a trailing `:...` is parsed as a selector:
 
 - **Line selectors.** Supported forms are `file.ts:5-16`, `file.ts:L5-L16`, `file.ts:5..16`, `file.ts:5+3` (start plus count), `file.ts:5-` or `file.ts:5` (line 5 to end of file without widening), `file.ts:5:16` (colon range or grep-style `file:LINE:COL`), comma-separated ranges (`file.ts:5-16,960-973`), and URL line ranges (`https://example.test/page:5-8`). Line numbers are 1-indexed (`:0` fails with an error), and adjacent or overlapping ranges sort and merge automatically. Bounded reads add 1 leading and 3 trailing context lines, prefix each slice with `[Lines 9-14 of 40]`, and end limited reads with the continuation selector. Append `:raw` for exact bytes, CRLF endings, or raw notebook JSON without labels. Out-of-range selectors report beyond EOF. On `history://sessions/<id>:A-B`, numbers select 1-indexed session entries rather than lines.
-- **Oversized selected ranges.** If an explicit selected range exceeds 50,000 characters (or 50 KiB for archive, SQLite, document, internal resource, or URL selectors), `read` stops with an error (`isError: true`) and asks for a narrower range or byte slice instead of silently truncating.
-- **Images.** `read` detects supported image files, resizes them automatically by default (`autoResizeImages: true`, matching the active model's resize profile), and returns an image block. If the active model does not accept image inputs, the result sets `details.imageUnsupportedByModel`.
-- **Archives (`read`, `search`, `write`).** Supports `.zip`, `.jar`, `.tar`, `.tgz`, `.tar.gz`, and `.gz` members without Python. Limits are 256 MiB per tar archive, 64 MiB per member, and 500 entries per directory listing. Member names may contain `raw`, `conflicts`, `1`, `L1`, or `raw:notes.txt`. Archive writes reject directory targets ending in `/`. Tar writes preserve all other members and file modes and refuse to overwrite links, directories, duplicate members, or damaged headers.
-- **SQLite (`read`, `search`, `write`).** Supports `.sqlite`, `.sqlite3`, `.db`, and `.db3` files (including Windows drive paths). Select tables and rows with `limit`, `offset`, `where`, `order`, `schema`, `sampleRows` (or `sample_rows`), and `id`. Non-SQLite files with those extensions are treated as plain files.
+- **Oversized reads (blocking vs. truncation).** Local text reads—both unselected whole-file reads and explicit line ranges—stop with an error when the output exceeds **50,000 characters**, asking for a narrower line range or byte slice rather than silently truncating. Head truncation at 3,000 lines or 50 KiB applies only when the read stays within 50,000 characters (for example, more than 3,000 short lines or multi-byte UTF-8 exceeding 50 KiB inside 50,000 characters). Archive, SQLite, document, and internal-URL reads also stop with an error whenever the unselected or selected text exceeds 50,000 characters or 50 KiB. Only unselected HTTP(S) URL reads truncate automatically (see [Documents and URLs](#documents-and-urls)).
+- **Images.** `read` detects supported image files, resizes them automatically by default to match the active model's resize profile, and returns an image block. If the active model does not accept images, Atomic warns you and sends a placeholder instead.
+- **Archives (`read`, `search`, `write`).** Supports `.zip`, `.jar`, `.tar`, `.tgz`, `.tar.gz`, and `.gz` (gzipped tar archives only—not standalone single-file `.gz` streams) without Python. Limits are 256 MiB per tar archive, 64 MiB per member, and 500 entries per directory listing. ZIP reading supports stored and deflate entries; ZIP selective writes reject entries with data descriptors. Tar rejects sparse files and base-256 numeric fields, and tar writes preserve other members and file modes while refusing to overwrite links, directories, duplicate members, or damaged headers. Member names may contain `raw`, `conflicts`, `1`, `L1`, or `raw:notes.txt`. Archive writes reject directory targets ending in `/`.
+- **SQLite (`read`, `search`, `write`).** Supports `.sqlite`, `.sqlite3`, `.db`, and `.db3` files (including Windows drive paths). Non-SQLite files with those extensions are treated as plain files. See [SQLite limits and writes](#sqlite-limits-and-writes) for syntax and examples.
+
+<Note>
+**Workspace containment.** Archive selectors (`archive.zip:member`) and SQLite selectors (`app.db:users`)—like `local://`—must stay inside the current working directory and reject any path outside it, even through symlinks. Ordinary file paths in `read`, `write`, and `search` are not restricted to the working directory.
+</Note>
 
 ### Internal URLs and web schemes
 
@@ -78,20 +114,35 @@ Each URL scheme has a fixed set of supported tools and permissions:
 | Scheme | Supported tools | Access | Purpose |
 | --- | --- | --- | --- |
 | `local://` | `read`, `search`, `write`, `find`, `bash` | Read and write | Workspace-relative local resources mapped to their underlying filesystem paths. |
-| `skill://` | `read`, `search`, `find`, `bash` | Read-only | Loaded skills by name, as the model's skill list shows them: `skill://tdd` is the skill's `SKILL.md`, `skill://tdd/references/guide.md` is a file in its folder, and `skill://tdd:10-40` is a few lines. A plain name means the winning skill when two share it; `skill://tdd@user` picks one. See [Skill addresses](/skills#skill-addresses). Edit skills where they are stored. |
-| `artifact://<id>` | `read`, `search`, `find`, `bash` | Read-only | Saved tool output artifacts. |
+| `skill://` | `read`, `search`, `find`, `bash` | Read-only | Loaded skills by name: `skill://tdd` reads the skill's `SKILL.md`, `skill://tdd/references/guide.md` reads a bundled file, and `skill://tdd:10-40` selects lines. A plain name resolves the winning skill; `skill://tdd@user` picks a specific scope. Whole reads of `skill://<name>` (no subpath, range, or `:raw`) prepend `Base directory for this skill: skill://<name>/`. See [Skill addresses](/skills#skill-addresses). |
+| `artifact://<id>` | `read`, `search`, `find`, `bash` | Read-only | Saved tool output artifacts (such as full text from truncated URL reads). |
 | `conflict://` | `read`, `search`, `write` | Read and write | Inspect and resolve Git merge conflicts under the working directory (individual sides are read-only; rejected by `find`; stays literal in `bash`). |
-| `history://` | `read`, `search` | Read-only | Past sessions for this project ([Recalling earlier work](/sessions#recalling-earlier-work)) (rejected by `find` and `write`; stays literal in `bash`). |
-| `tool-output://<sha256>` | `read`, `search` | Read-only | Persisted session-blob tool output, including line ranges like `tool-output://<sha256>:1-200` (rejected by `find` and `write`; stays literal in `bash`). |
+| `history://` | `read`, `search` | Read-only | Past sessions for this project ([Recalling earlier work](/sessions#recalling-earlier-work); rejected by `find` and `write`; stays literal in `bash`). |
+| `tool-output://<sha256>` | `read`, `search` | Read-only | Persisted tool output stored in a blob-capable session store, including line ranges like `tool-output://<sha256>:1-200` (rejected by `find` and `write`; stays literal in `bash`). |
 | `http://`, `https://` | `read` | Read-only | Public web pages (rejected by `search` and `write`; stays literal in `bash`). |
 
-Any other `scheme://` is rejected by `read`, `search`, and `write`, and stays literal text in `bash`. `local://` paths cannot leave the workspace, even through symlinks, and `skill://` paths cannot leave the skill's folder. Cancelling `read` or `find` throws `FileToolAbortedError` (see [Edit and write errors](#edit-and-write-errors)).
+Any other `scheme://` is rejected by `read`, `search`, and `write`, and stays literal text in `bash`. `local://` paths cannot leave the workspace (even through symlinks), and `skill://` paths cannot leave the skill's folder.
 
 ### SQLite limits and writes
 
-- **Read limits.** Table reads return the schema plus 5 sample rows by default (`sampleRows` or `sample_rows` clamps from `0` to `100`, `schema=true` or `schema=1` requests schema output, `order=col:asc,col2:desc` sets sort order defaulting to `asc`, and `id` aliases `:rowId`). Query reads default to 20 rows (max 500). Raw `?q=` accepts a single `SELECT` statement only (max 1,000 rows) and blocks `sqlite_%`, `pragma_*`, `ATTACH`, `DETACH`, `UNION`, `INTERSECT`, `EXCEPT`, `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `REPLACE`, `VACUUM`, `REINDEX`, `load_extension`, comments (`--` and `/*`), and `;`. Table listings cap at 500 (excluding `sqlite_%`); row counts probe up to 50,001 rows.
-- **Writes.** Table writes accept `{}` (`INSERT DEFAULT VALUES`). Row writes accept non-empty JSON5 objects (unquoted keys, single quotes, comments, trailing commas, `+`, and hex numbers) and validate columns and scalar values. Empty row writes delete only when a row ID is specified.
-- **Row addressing.** Target a row by primary key (`data.sqlite:users:42`), `rowid` (tables without a primary key), or a full JSON array for composite keys (`data.sqlite:members:["acme",2]`; partial keys are rejected). Row IDs are never misread as line ranges (`data.sqlite:events:2024-01-05`), untyped key columns match numeric IDs numerically, and any update or delete affecting more than 1 row is aborted.
+Use colon and query selectors to inspect tables, filter rows, run read-only SQL, or write individual rows:
+
+```json
+{ "path": "data/app.db:users?where=active=1&order=created_at:desc&limit=10" }
+```
+
+```json
+{ "path": "data/app.db?q=SELECT id, email FROM users WHERE active = 1 LIMIT 20" }
+```
+
+```json
+{ "path": "data/app.db:users:42" }
+```
+
+- **Read limits.** Reading a table (`app.db:users`) returns its schema plus 5 sample rows by default. Supported query parameters are `limit` (max `500`), `offset`, `where`, `order` (`col:asc,col2:desc`, defaulting to `asc`), `schema=true` (or `1`), `sampleRows` / `sample_rows` (clamped `0` to `100`), and `id` (aliases `:rowId`). Query reads default to 20 rows (max `500`). Table listings cap at 500 (excluding `sqlite_%`); row counts probe up to 50,001 rows.
+- **Query and filter safety.** Raw `?q=` accepts a single `SELECT` statement (max `1,000` rows). Both `?q=` and `where=` block `sqlite_%`, `pragma_*`, `ATTACH`, `DETACH`, `UNION`, `INTERSECT`, `EXCEPT`, `load_extension`, comments (`--`, `/*`, `*/`), and `;`. Raw `?q=` also blocks mutating DDL/DML (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `REPLACE`, `VACUUM`, `REINDEX`), and `where=` also blocks `SELECT`, `LIMIT`, `OFFSET`, and `PRAGMA`.
+- **Writes.** Table writes (`write` to `app.db:users`) accept `{}` (`INSERT DEFAULT VALUES`) or a JSON5 object (unquoted keys, single quotes, comments, trailing commas, `+`, and hex numbers) with valid column names and scalar values. On table inserts, a JSON `"id"` key automatically maps to a single primary key column of another name. Row writes (`app.db:users:42`) update that row; empty content deletes the row only when a row ID is specified. SQLite writes reply `Inserted row into <table>`, `Updated row ...`, or `Deleted row ...`.
+- **Row addressing.** Target a row by primary key (`data.sqlite:users:42`), `rowid` (tables without a primary key), or a JSON array for composite keys (`data.sqlite:members:["acme",2]`; partial keys are rejected). Row IDs are never misread as line ranges (`data.sqlite:events:2024-01-05`), untyped key columns match numeric IDs numerically, and any update or delete affecting more than 1 row is aborted.
 
 ### Conflict resolution and file writes
 
@@ -102,9 +153,13 @@ Any other `scheme://` is rejected by `read`, `search`, and `write`, and stays li
 ### Documents and URLs
 
 - **Formats.** Extracts readable text from HTML URLs, Jupyter notebooks (0-based `cell:N` IDs, preserving unknown fields), and PDF, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xls`, `.xlsx`, `.rtf`, and `.epub` documents (including extensionless downloads identified by `Content-Type`).
-- **URL fetching.** Public HTTP(S) fetches use a 10-second timeout, follow up to 5 redirects, cap response bodies at 10 MiB, and keep a session-scoped cache of 100 entries. Atomic checks for native markdown representations first (alternate `<link>`, `.md` suffix, `Accept: text/markdown`, `llms.txt`, and `llms.md`) and converts HTML to markdown otherwise.
-- **Output caps.** Unselected local text reads cap at 3,000 lines or 50 KiB; unselected URL reads cap at 300 rendered lines or 50 KiB (truncated with metadata rather than blocked). Explicit selected ranges over 50,000 characters (or 50 KiB for resource selectors) stop with an error instead of truncating. Successful reads populate `details.meta.source`, `sourcePath`, `truncation`, and `limits`.
-- **Network safety.** Blocks private, localhost, cloud-metadata, multicast, and reserved IP targets (including alternate numeric IPv4 and IPv6 forms and redirects). Use public URLs.
+- **URL normalization and fetching.** `read` accepts `http://`, `https://`, bare `www.*` URLs (defaulting to `https://`), and repairs collapsed single-slash schemes (`https:/example.com`). Fetches use a 10-second timeout, follow up to 5 redirects, cap response bodies at 10 MiB, and keep a session-scoped cache of 100 entries.
+- **Markdown discovery.** For HTML pages, `read` first checks for a native markdown representation via an alternate `<link>` tag, a `.md` URL suffix, or `Accept: text/markdown` content negotiation. Otherwise it converts the HTML to markdown; only if conversion yields 100 characters or fewer or looks low-quality does it probe `llms.txt` / `llms.md` endpoints (including `/.well-known/llms.txt` and parent path segments).
+- **Output caps and line ranges on URLs.** Unselected HTTP(S) URL reads cap at **300 rendered lines or 50 KiB** and truncate rather than blocking, saving the full output as an artifact (`Full output: artifact://<id>`). Passing a line range on a URL (`https://example.com/page:5-20`) bypasses the session cache, markdown discovery, and HTML-to-markdown conversion (falling back to plain HTML stripping), and blocks with an error if the selected range exceeds 50,000 characters or 50 KiB.
+
+<Warning>
+**Network safety.** `read` blocks private, `localhost`, `.localhost`, cloud-metadata, multicast, and reserved IP targets (including alternate numeric IPv4/IPv6 forms and redirects). Set `ATOMIC_ALLOW_PRIVATE_URL_READS=1` only when a workflow must read private URLs. By contrast, [`fetch_content`](/web-access#fetch-pages-and-media) allows direct local/private HTTP fetches while keeping private URLs out of third-party fallbacks.
+</Warning>
 
 ## `edit`
 
@@ -122,12 +177,12 @@ Any other `scheme://` is rejected by `read`, `search`, and `write`, and stays li
 
 - **Unique, non-overlapping matches.** Each `oldText` must match exactly once against the current file (overlapping occurrences count: `}\n}` occurs twice in `}\n}\n}`). Edits match against the original file simultaneously and cannot overlap; merge adjacent changes into one edit.
 - **No prior `read` required.** Matches against the file's current bytes on disk, even if changed by `bash` or another process.
-- **Fallback normalization.** If no exact match exists, `edit` retries after applying NFKC normalization per grapheme cluster, stripping trailing whitespace per line, and mapping smart single quotes (`U+2018` through `U+201B` to `'`), smart double quotes (`U+201C` through `U+201F` to `"`), Unicode dashes (`U+2010` through `U+2015` and `U+2212` to `-`), and Unicode spaces (`U+00A0`, `U+2002` through `U+200A`, `U+202F`, `U+205F`, and `U+3000` to ASCII space). Normalization locates the region only; `newText` replaces that exact slice and leaves surrounding bytes untouched. A single exact match always wins over normalized matches.
-- **Encoding and line endings.** UTF-8 text only (invalid UTF-8 fails with `target-not-utf8`). `oldText` and `newText` cannot split surrogate pairs (`text-splits-character`). Preserves UTF-8 BOM and surrounding line endings (LF, CRLF, or lone CR when the file contains no LF at all); newlines in `newText` adopt the line ending where the match starts.
+- **Fallback normalization.** If no exact match exists, `edit` retries after normalizing compatible Unicode variants (such as full-width characters, while keeping multi-code-point characters intact), stripping trailing whitespace per line, and mapping smart single quotes (`U+2018`–`U+201B` to `'`), smart double quotes (`U+201C`–`U+201F` to `"`), Unicode dashes (`U+2010`–`U+2015`, `U+2212` to `-`), and Unicode spaces (`U+00A0`, `U+2002`–`U+200A`, `U+202F`, `U+205F`, `U+3000` to ASCII space). Normalization locates the region only; `newText` replaces that exact slice and leaves surrounding bytes untouched. A single exact match always wins over normalized matches.
+- **Encoding and line endings.** UTF-8 text only (invalid UTF-8 fails without modifying the file). `oldText` and `newText` cannot split surrogate pairs. Preserves UTF-8 BOM and surrounding line endings (LF, CRLF, or lone CR when the file contains no LF at all); newlines in `newText` adopt the line ending where the match starts.
 - **Atomicity.** Either all edits apply or the file stays unchanged.
 - **Notebooks.** `.ipynb` files are edited using the `# %% [code] cell:N` format shown by `read`, preserving cell metadata, outputs, and execution counts.
 
-Returns the replacement count plus `details` (`diff`, unified `patch`, and `firstChangedLine`). Interactive mode previews file diffs as soon as arguments arrive (notebook diffs appear with the result). See [Edit and write errors](#edit-and-write-errors) for typed error codes.
+Interactive mode previews file diffs as soon as arguments arrive (notebook diffs appear with the result). See [Edit and write errors](#edit-and-write-errors) for typed error codes.
 
 ## `write`
 
@@ -154,90 +209,74 @@ Returns the replacement count plus `details` (`diff`, unified `patch`, and `firs
 { "action": "wait", "id": "task-1234", "budgetMs": 15000 }
 ```
 
-- **Observation and background yield (`wait`, `action: "wait"`).** `wait` controls how long the tool observes output and never changes the execution `timeout`. When `wait` is omitted (or `wait: { kind: "foreground" }` omits `budgetMs`) in interactive and standard sessions, Atomic yields automatically after 10 seconds by default while the command keeps running in the background. Pass `wait: { kind: "background" }` (without `budgetMs`) to return immediately with the task ID after the command starts, or `wait: { kind: "foreground", budgetMs }` to wait up to `budgetMs` milliseconds before yielding. Call `{ action: "wait", id, budgetMs? }` to observe an owned background task later (omitting `budgetMs` uses the default yield budget; `0` checks immediately). Omitted optional fields sent as `null` (for example by strict-schema tool callers) are treated as omitted, while non-null conflicting fields or invalid values are rejected. Background mode and task waits require sessions with background task support; standalone SDK sessions without background task support wait until the command finishes.
+- **Observation and background yield (`wait`, `action: "wait"`).** `wait` controls how long the tool observes output and never changes the execution `timeout`. When `wait` is omitted (or `wait: { kind: "foreground" }` omits `budgetMs`) in interactive and standard sessions, Atomic yields automatically after 10 seconds while the command keeps running in the background. Pass `wait: { kind: "background" }` (without `budgetMs`) to return immediately with the task ID after the command starts, or `wait: { kind: "foreground", budgetMs }` to wait up to `budgetMs` milliseconds before yielding. Passing `null` for optional fields works the same as omitting them; non-null conflicting fields or invalid values are rejected. Background mode and task waits require a session with background task support (standalone SDK sessions without a task supervisor wait until the command finishes).
+- **Incremental paging on `action: "wait"`.** Calling `{ action: "wait", id, budgetMs? }` (`0` checks immediately) on a **still-running** task reads incremental output from the last observed byte offset in **8 KiB pages** (printing `[Additional output not shown; wait again to retrieve retained output.]` if more output is already buffered). Once the task finishes, waiting reads the full retained output from byte 0.
 - **`cwd` and leading `cd`.** Sets the working directory for the command. If `cwd` is omitted, a leading `cd <path> && ...` or `cd <path>; ...` sets the working directory when `<path>` is a single literal word (optionally single- or double-quoted, with no variables, globs, or leading `-`). Unquoted `~` and `~/` expand to your home directory. Atomic skips stripping when `CDPATH` applies to a non-dot relative path or the local directory cannot be entered.
-- **`env` and session variables.** Adds or overrides environment variables for the command. Every key in `env` must match `^[A-Za-z_][A-Za-z0-9_]*$`; invalid names fail before spawning. Atomic automatically sets `ATOMIC_SESSION_ID`, `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL` (plus legacy `PI_*` aliases) and strips any caller-supplied values for those keys as well as `ATOMIC_SESSION_FILE` and `PI_SESSION_FILE`.
-- **How long a command runs, and `timeout`.** A command has no time limit: it runs until it finishes, someone stops it (`kill` or `/tasks`), or the session closes. How long the call waits (`wait`) never stops it. To give it a deadline, pass `timeout` in seconds: `{ "command": "npm run e2e", "timeout": 7200 }` stops it after 2 hours. The values work like this:
+- **`env` and session variables.** Adds or overrides environment variables for the command. Every key must match `^[A-Za-z_][A-Za-z0-9_]*$`; invalid names fail before spawning. Atomic automatically sets `ATOMIC_SESSION_ID`, `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL` (and legacy `PI_*` aliases) and strips caller-supplied overrides for those keys plus `ATOMIC_SESSION_FILE` / `PI_SESSION_FILE`.
+- **Execution `timeout`.** Commands have no time limit by default and run until they finish, someone stops them (`kill` or `/tasks`), or the session closes. `wait` never stops a command. Pass `timeout` in seconds to set a hard execution deadline:
 
-  | `timeout` | What happens |
+  | `timeout` | Behavior |
   | --- | --- |
-  | left out | No time limit. The command runs until it finishes or is stopped. Use this for dev servers and watchers. |
-  | a positive number, such as `7200` | The command is stopped after that many seconds. There is no upper limit. |
-  | `0` or a negative number, such as `-1` | Refused before the command starts. Leave `timeout` out instead if you want no limit. |
+  | Omitted | No time limit. Runs until completion, `kill` / `/tasks`, or session close. |
+  | Positive number (e.g. `7200`) | Stops the command after that many seconds. No upper limit. |
+  | `0` or negative number | Refused before starting (`Invalid timeout ...`). Omit `timeout` for no limit. |
 
-  A refused value shows: `Invalid timeout 0: timeout must be a positive number of seconds. Leave timeout out for no time limit.`
-
-  `timeout` only decides when a command is stopped. To check on a command without waiting, use `wait` instead: `{ "action": "wait", "id": "<task id>", "budgetMs": 0 }` returns its current output at once. Before this release a command stopped after 300 seconds by default and could ask for 3600 seconds at most; both limits are gone. See [How long a command runs](/background-tasks#background-shells).
-- **At most 64 at once.** A session runs up to 64 commands at the same time, its subagents' shells included. At that limit a new command is refused with `64 commands are already running in this session, the most it runs at once. Stop one you no longer need with kill or /tasks, or wait for one to finish, then run this command again.` Nothing running is stopped to make room. See [How many commands run at once](/background-tasks#how-many-commands-run-at-once).
-- **`pty: true`.** Runs the command in the bundled native PTY. In interactive and standard sessions, native PTY errors fail the call rather than silently falling back to pipes; standalone SDK sessions without background task support fall back to pipes if the native PTY is unavailable. Set `ATOMIC_NO_PTY=1` to force pipes (`ATOMIC_NO_PTY=0` overrides a legacy `PI_NO_PTY=1`).
-- **`heartbeatMs`.** Background [task heartbeat](/background-tasks#task-heartbeats) interval in milliseconds (defaults to `tasks.heartbeatMs` or 15 minutes; `0` disables; minimum `60000`).
-
-Model-facing output truncates at 3,000 lines or 50 KiB with `Full output: <path>`. Structured output (used by codemode) keeps up to 1 MiB (the first and last 512 KiB around an omission marker if longer). Foreground results include `timeoutSeconds` (only when `timeout` was set), `requestedTimeoutSeconds`, `wallTimeMs`, non-zero `exitCode`, and `fullOutputPath` when truncated.
+- **Concurrency cap (64 commands).** A session runs up to **64** shell commands concurrently (including subagents' shells). Additional commands fail with an error until an active command finishes or is stopped; nothing running is stopped to make room.
+- **`pty: true`.** Runs the command in the bundled native PTY. In interactive and standard sessions, native PTY errors fail the call rather than silently falling back to pipes; unbound standalone SDK sessions fall back to pipes if the native PTY is unavailable. Set `ATOMIC_NO_PTY=1` to force pipes (see [Environment variables](/environment-variables)). On Windows with a WSL stdin-transport bash shell, supervised execution fails with `ContainmentUnavailable: run Atomic inside WSL to supervise Linux guest commands`.
+- **`heartbeatMs`.** Background task heartbeat interval in milliseconds (defaults to `tasks.heartbeatMs` or 15 minutes; `0` disables; minimum `60000`). See [Background tasks reference](/background-tasks/reference).
+- **Tail truncation.** Model-facing output keeps the **last** 3,000 lines or 50 KiB (truncating an oversized trailing line to its final 50 KiB) and writes `[Showing lines ... Full output: <path>]`. Structured output returned to codemode keeps up to 1 MiB (first and last 512 KiB around an omission marker if longer).
 
 ### Long-running servers and watchers
 
-A dev web server, a file watcher, a local database, or a tunnel can run for as long as you work. Start it in the background:
-
-```json
-{ "command": "npm run dev", "wait": { "kind": "background" } }
-```
-
-The call returns at once with a task ID such as `task-1-0-5`. Nothing stops the server on a timer: it runs until you stop it with `kill`, it exits on its own, or the session ends.
-
-- **Check its output** with a short wait, which leaves it running: `{ "action": "wait", "id": "task-1-0-5", "budgetMs": 1000 }`.
-- **Stop it** with `kill({ id: "task-1-0-5" })`, or from `/tasks`.
-- **It counts toward the 64 commands** a session runs at once, for as long as it runs.
-- **When the session ends**, Atomic stops it and the processes it started. Resuming the session does not start it again; the chat shows `Background shell stopped (session closed)` for it, and you run it again if you still need it.
-
-See [Long-running servers and watchers](/background-tasks#long-running-servers-and-watchers).
+Start dev servers, file watchers, local databases, or tunnels with `wait: { kind: "background" }`. They run with no timeout until you stop them with `kill({ id })` or `/tasks`, they exit, or the session closes (resuming a session does not restart prior servers). They count toward the 64-command limit while active. See [Background tasks](/background-tasks) for day-to-day management and `/tasks` controls.
 
 **Internal URL expansion (`skill://`, `local://`, `artifact://`):**
-- Only unquoted URLs starting a plain shell word expand to shell-quoted filesystem paths (for example `printf %s local://notes.txt`, or `bash skill://my-skill/scripts/check.sh` to run a script that ships with a skill). Other schemes (`conflict://`, `history://`, `tool-output://`, `http://`, `https://`) stay literal text.
-- URLs inside quotes, heredocs, comments, escapes, command substitutions, or directly after `$`, `[`, or quotes stay verbatim. Expansion also stops after the first `((`, `=(`, or non-test `[` (arithmetic, array subscripts, compound assignments). In PowerShell, typographic single and double quotes (`U+2018` to `U+201B` and `U+201C` to `U+201F`), `<#...#>` block comments, and anything after `--%` are not expanded.
-- Structured `cwd` and `env` values always expand supported URLs.
-- Avoid combining URL expansion with custom command prefixes or spawn wrappers that leave quotes, substitutions, or heredocs open; pass paths in structured `cwd` or `env` instead.
+
+- Only unquoted URLs starting a plain shell word expand to shell-quoted filesystem paths (for example `bash skill://my-skill/scripts/check.sh` or `printf %s local://notes.txt`). Other schemes (`conflict://`, `history://`, `tool-output://`, `http://`, `https://`) stay literal text.
+- URLs inside quotes, heredocs, comments, escapes, command substitutions, or directly after `$`, `[`, or quotes stay verbatim. Expansion also stops after the first `((`, `=(`, or non-test `[`. In PowerShell, typographic single quotes (`U+2018`–`U+201B`), typographic double quotes (`U+201C`–`U+201E`), `<#...#>` block comments, and anything after `--%` are not expanded.
+- Structured `cwd` and `env` values always expand supported URLs. When using custom command prefixes or spawn wrappers, pass URLs in `cwd` or `env` instead of relying on inline command expansion.
 
 ### PowerShell
 
-On native Windows, Atomic enables the `powershell` tool automatically when `pwsh.exe` or `powershell.exe` resolves on `PATH`. It accepts the same parameters and wait modes as `bash`, preferring PowerShell 7 and falling back to Windows PowerShell 5.1. A PowerShell command has no time limit either, takes the same optional `timeout`, and counts toward the same 64 commands a session runs at once.
+On native Windows, Atomic enables `powershell` automatically when `pwsh.exe` or `powershell.exe` resolves on `PATH`, preferring PowerShell 7 and falling back to Windows PowerShell 5.1. It takes the same parameters, wait modes, optional `timeout`, and 64-command concurrency pool as `bash`.
 
-- Resolved paths use PowerShell single-quoted literals (doubling ASCII apostrophes and `U+2018` to `U+201B` smart single quotes). `bash` always uses POSIX quoting, even on Windows.
-- Redirected stderr on a successful native command (such as `git push 2>&1 | Select-Object -Last 3`) still reports success. Failed final statements report failure, and scripts can return an explicit status with `exit <code>`.
+- Resolved paths use PowerShell single-quoted literals (doubling ASCII apostrophes and `U+2018`–`U+201B` smart single quotes). `bash` always uses POSIX quoting, even on Windows.
+- PowerShell commands force UTF-8 console output (`[Console]::OutputEncoding`). Redirected stderr on a successful native command (such as `git push 2>&1 | Select-Object -Last 3`) still reports success; on Windows PowerShell 5.1, this exit-status handling is skipped if the command ends with a trailing backtick (`` ` ``).
+- Unlike `bash`, standalone SDK PowerShell sessions do **not** fall back to pipes if the native PTY fails.
 
 ## `kill`
 
-`kill({ id: taskId })` stops a task that is running in the background. It works on two kinds of task:
+`kill({ id: taskId })` stops a background task started in the current session:
 
-- A shell command started by `bash` or `powershell`, including one that moved to the background on its own after the default wait.
-- A slow `read` or `search` of past sessions, with an ID such as `history-3`. See [Slow history searches](/sessions#slow-history-searches).
+- A shell command started by `bash` or `powershell`, including one that yielded to the background after the default wait.
+- A slow `history://` `read` or `search` task (with an ID such as `history-3`).
 
-Pass the task ID exactly as the tool returned it, not a process ID. `kill` works only in the session that started the task, and it never stops subagents or another session's tasks. Stopping a history task replies `History search history-3 was stopped; it no longer reads the session store.` and sends no completion notice.
+Pass the task ID returned by the tool, not an OS process ID. `kill` never stops subagents or another session's tasks. Stopping a history task replies `History search <id> was stopped; it no longer reads the session store.` and sends no completion notice.
 
-For a shell task, `kill` returns the cancellation decision plus execution and cleanup state. A cancellation request does not guarantee immediate termination; repeated calls preserve the first decision, finished tasks keep their outcome, and cleanup errors are reported explicitly. See [Stop a shell task from a tool call](/background-tasks#stop-a-shell-task-from-a-tool-call).
+For a shell task, `kill` returns the cancellation decision plus execution and cleanup state. A cancellation request does not guarantee immediate termination; repeated calls preserve the first decision, finished tasks keep their outcome, and cleanup errors are reported explicitly. See [Background tasks](/background-tasks).
 
 ## `find` and `search`
 
-Use `find` to locate paths by glob and `search` to match file contents by regular expression.
+Use `find` to locate paths by glob and `search` to match file and resource contents by regular expression.
 
 ### Finding paths
 
-`find` takes a required non-empty `paths` string array (unlike `search`, it does not accept a bare string), plus optional `hidden` (default `true`), `gitignore` (default `true`), `limit` (default `200`, clamped from `1` to `200`), and `timeout` (default `5` seconds, clamped from `0.5` to `60`).
+`find` requires a non-empty `paths` string array (unlike `search`, it does not accept a bare string), plus optional `hidden` (default `true`), `gitignore` (default `true`), `limit` (default `200`, clamped `1`–`200`), and `timeout` (default `5` seconds, clamped `0.5`–`60`).
 
-Entries in `paths` can be files, directories (including filesystem roots), globs, or `local://`, `skill://`, and `artifact://` selectors. A `skill://<name>` selector with a glob (such as `skill://tmux/**/*.sh`) searches the skill directory rather than `SKILL.md`. Virtual schemes (`history://`, `conflict://`, and `tool-output://`) are rejected with an error directing you to `read` or `search`.
+Entries in `paths` can be files, directories (including filesystem roots), globs, or `local://`, `skill://`, and `artifact://` selectors. A `skill://<name>` selector with a glob (such as `skill://tmux/**/*.sh`) searches the skill folder rather than `SKILL.md`. Virtual schemes (`history://`, `conflict://`, `tool-output://`) are rejected with an error directing you to `read` or `search`.
 
 - **Anchoring and case.** Relative globs start at `cwd` (`src/**/*.ts` searches `src/`; `**/src/**/*.ts` searches any nested `src/`). Rooted globs (`/**/*.ts`, `C:\**\*.ts`, `\\server\share\**\*.ts`) search that root. Glob matching is case-sensitive on every platform (`*.ts` never matches `A.TS`).
 - **Defaults and pruning.** Includes hidden files and respects nested `.gitignore` rules by default. Prunes `.git` and `node_modules` even with `gitignore: false` (name `node_modules` explicitly to scan it).
 - **Literal glob characters.** If a path exists verbatim on disk (such as `app/[id]/page.tsx`), it matches literally. Otherwise escape `[`, `]`, `*`, `?`, `{`, or `}` with `\` (`app/\[id\]/*.tsx`); on Windows and UNC paths `\` is always a separator, so only the exact-path rule applies.
-- **Path splitting.** Strips surrounding quotes. Existing paths with spaces, commas, or semicolons stay intact; otherwise comma or semicolon lists split if any part resolves, and whitespace lists split only if every part resolves.
-
-Returns `scopePath`, `fileCount`, `files`, truncation and missing-path metadata, and streaming progress snapshots.
+- **Path splitting and missing paths.** Strips surrounding quotes. Existing paths with spaces, commas, or semicolons stay intact; otherwise comma or semicolon lists split if any part resolves, and whitespace lists split only if every part resolves. When multiple targets are passed, missing paths are skipped and noted instead of failing the call; a single missing target errors.
+- **Output and sorting.** Formats results as a Markdown heading tree with collapsed single-child directories (`# a/b/\nfile.ts`), sorts native results by most-recent modification time before applying `limit`, and caps output at 50 KiB.
 
 ### Searching contents
 
 `search` searches file and resource contents with a regular expression and can observe background `history://` searches using the same `wait` and `action: "wait"` model as `bash` and `read`. It supports two mutually exclusive call modes:
 
 1. **Search contents:** pass `pattern` (required), plus optional `paths` (string or string array; omitted or empty searches `.`), `i` (boolean), `case` (boolean), `gitignore` (default `true`), `skip` (non-negative integer or `null`, floored; ignored in single-file mode), and `wait` (used when `paths` includes a `history://` URL). Hidden files are searched by default.
-2. **Wait on an existing background history search:** pass `action: "wait"`, `id` (such as `"history-3"`), and optional `budgetMs` (omit to use the default 10-second wait, or pass `0` to check immediately). Do not combine `action: "wait"` with search fields (`pattern`, `paths`, `i`, `case`, `gitignore`, `skip`, or `wait`).
+2. **Wait on a background history search:** pass `action: "wait"`, `id` (such as `"history-3"`), and optional `budgetMs` (omit for the default 10-second wait, or pass `0` to check immediately). Do not combine `action: "wait"` with search fields (`pattern`, `paths`, `i`, `case`, `gitignore`, `skip`, or `wait`).
 
 ```json
 { "pattern": "connection refused", "paths": "history://sessions" }
@@ -248,19 +287,15 @@ Returns `scopePath`, `fileCount`, `files`, truncation and missing-path metadata,
 ```
 
 ```json
-{ "pattern": "connection refused", "paths": "history://sessions", "wait": { "kind": "foreground", "budgetMs": 30000 } }
-```
-
-```json
 { "action": "wait", "id": "history-3", "budgetMs": 15000 }
 ```
 
-- **Slow history searches and reads.** For a `history://` target, `wait` works identically to `bash`: omitting `wait` (or passing `wait: { kind: "foreground" }`) waits 10 seconds by default, `wait: { kind: "background" }` returns a task ID immediately, and `wait: { kind: "foreground", budgetMs }` waits up to `budgetMs` milliseconds (`budgetMs` inside `wait` is valid only with `kind: "foreground"`). A call still running when the observation wait ends keeps running in the background with **no time limit** and returns a task ID such as `history-3`; its result arrives later as a completion notice. Wait for it with `search({ action: "wait", id: "history-3", budgetMs? })` (or `read({ action: "wait", id: "history-3", budgetMs? })` — both tools share the session's history tasks, and Atomic retains the 16 most recently finished tasks for late waits) or stop it with `kill({ id: "history-3" })`. Omitted optional fields sent as `null` are treated as omitted. A session runs at most 4 active history searches and reads at once (separate from the 64 shell commands); a call past that limit fails with `4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.` See [Slow history searches](/sessions#slow-history-searches) and [Background history searches](/background-tasks#background-history-searches).
-- **Targets.** Searches files, directories, globs, archive members, SQLite selectors (`.sqlite`, `.sqlite3`, `.db`, `.db3`), and supported internal URLs (`local://`, `skill://`, `artifact://`, `conflict://`, `history://`, `tool-output://`). Rejects `http://` and `https://`.
+- **Slow history searches and reads.** On `history://` targets, `wait` works identically to `bash` and `read`: omitting `wait` waits 10 seconds before yielding, `wait: { kind: "background" }` returns a task ID immediately, and `wait: { kind: "foreground", budgetMs }` waits up to `budgetMs` ms. Running history tasks have **no time limit** and return a completion notice when finished. You can wait via either `search({ action: "wait", id })` or `read({ action: "wait", id })` (both share the session's history tasks, retaining the 16 most recently finished tasks for late waits) or stop one with `kill({ id })`. A session runs at most **4** active history searches/reads at once (separate from the 64 shell commands). History tasks are process-local, do not appear in `/tasks`, and cancel without completion notices on session close or `/reload`. See [Slow history searches](/sessions#slow-history-searches).
+- **Targets and path splitting.** Searches files, directories, globs, archive members, SQLite selectors (`.sqlite`, `.sqlite3`, `.db`, `.db3`), and supported internal URLs (`local://`, `skill://`, `artifact://`, `conflict://`, `history://`, `tool-output://`). Rejects `http://` and `https://`. String `paths` values use the same comma, semicolon, and whitespace splitting rules as `find`; missing paths are skipped when multiple targets are supplied (a single missing target errors).
 - **Patterns and case sensitivity.** Whitespace-only patterns are rejected; all other patterns pass verbatim, including inline `(?i)`, `(?m)`, `(?s)`, and `(?x)` flags at the start of patterns on resource-backed selectors. Setting `i: true` or `case: false` enables case-insensitive matching (if both `i: true` and `case: true` are passed, case-insensitive matching wins).
-- **Line selectors.** Line-range selectors (`file.ts:10-50`) work on single files only (directories and globs fail with an error) and restrict matches before adding context lines.
-- **Paging and context.** Multi-file searches return 20 files per page (up to 20 matches per file), and `skip` paginates files in multi-file mode. Single-file searches return up to 200 matches. Pagination over internal and resource selectors collects at most 2,000 matches. Context defaults to 1 line before and 3 after (`search.contextBefore` and `search.contextAfter`).
-- **Limits and format.** Local files cap at 4 MiB and lines truncate at 512 characters. Output is plain text (`path:LINE: text` for matches, `path-LINE- text` for context). `fileLimitReached` and `meta.limits.fileLimit` indicate more pages.
+- **Line selectors.** Line-range selectors work on single files only (directories and globs fail with an error) and restrict matches before adding context lines. Unlike `read`, `search` supports only `:N` (matches **only line N**, not N-to-EOF), `:A-B`, `:A..B`, `:A+C`, and comma-separated combinations; open-ended `:N-`, `L`-prefixed `:L5-L10`, and colon `:5:10` forms are rejected.
+- **Paging, caps, and context.** Multi-file searches return 20 files per page (up to 20 matches per file), and `skip` paginates files in multi-file mode. Single-file searches return up to 200 matches. **Regular filesystem searches collect at most 2,000 matches before `skip` pagination** (refine the pattern or path if that cap is hit). Archive, SQLite, and internal-URL searches do not use the 2,000-match cap (SQLite tables default to 1,000 rows; `history://` uses its own byte/row/time budgets and cursor pagination). Context defaults to 1 line before and 3 after (`search.contextBefore` and `search.contextAfter`).
+- **Limits and format.** Local files cap at 4 MiB, lines truncate at 512 characters, combined output caps at 50 KiB, and native filesystem grep uses a 30-second timeout. Output is plain text (`path:LINE: text` for matches, `path-LINE- text` for context).
 
 ## `ls`
 
@@ -271,19 +306,20 @@ Returns `scopePath`, `fileCount`, `files`, truncation and missing-path metadata,
 
 ## `todo`
 
-`todo` manages file-based task lists stored in `.atomic/todos` (override the directory with `ATOMIC_TODO_PATH` or legacy `PI_TODO_PATH`). Each task is a standalone `<hex>.md` file starting with a JSON frontmatter object (`id`, `title`, `tags`, `status`, `created_at`, and optional `assigned_to_session`) followed by optional markdown notes.
+`todo` manages file-based task lists stored in `.atomic/todos` (override the directory with `ATOMIC_TODO_PATH`). Each task is a standalone `<hex>.md` file starting with a JSON frontmatter object (`id`, `title`, `tags`, `status`, `created_at`, and optional `assigned_to_session`) followed by optional markdown notes.
 
 - **IDs.** Task IDs are 8 lowercase hex characters (`^[a-f0-9]{8}$`, matched case-insensitively). Tasks display as `TODO-<hex>`, and `id` accepts `TODO-<hex>`, `#<hex>`, or the raw 8-hex string.
 - **Statuses and ordering.** New tasks default to `"open"`. Only `"closed"` and `"done"` (case-insensitive) count as closed; updating a task to `"closed"` or `"done"` clears `assigned_to_session` automatically. `list` returns open tasks sorted with assigned tasks first, then unassigned tasks by `created_at` ascending. `list-all` returns every task including closed ones.
 - **Locking.** While a session edits a task, Atomic creates a `<hex>.lock` file with a 30-minute lifetime. Within 30 minutes, conflicting writes fail immediately. After 30 minutes, interactive mode prompts to take over the stale lock while non-interactive mode fails with an error.
-- **Actions and parameters.** Required `action`: `list`, `list-all`, `get`, `create`, `update` (replaces `body` and updates fields), `append` (appends to `body`), `delete`, `claim` (assigns a task to the current session; pass `force: true` to override another session's assignment), and `release`. Optional parameters: `id`, `title`, `body`, `status`, `tags`, and `force`.
+- **Actions and parameters.** Required `action`: `list`, `list-all`, `get`, `create`, `update` (replaces `body` and updates fields), `append` (appends to `body`), `delete`, `claim` (assigns an open task to the current session—fails on closed tasks; pass `force: true` to override another session's assignment), and `release` (clears assignment; pass `force: true` to release another session's assignment). Optional parameters: `id`, `title`, `body`, `status`, `tags`, and `force`. Validation and lock errors return plain text error messages in the tool result rather than throwing.
 
 ## `ask_user_question`
 
 When `ask_user_question` is enabled, the agent displays interactive multiple-choice and free-text prompts in the TUI for clarifications, preferences, and explicit confirmations instead of asking in plain chat text. `ask_user_question` is model-only and cannot be called inside codemode scripts.
 
-- **Limits and validation.** Each call accepts 1 to 4 questions with 2 to 4 options per question, `header` up to 16 characters, and option `label` up to 60 characters. Duplicate questions and duplicate option labels are rejected. Reserved labels (`"Other"`, `"Type something."`, `"Chat about this"`, and multi-select navigation labels) are rejected even on `multiSelect: true`.
+- **Limits and validation.** Each call accepts 1 to 4 questions with 2 to 4 options per question, `header` up to 16 characters, and option `label` up to 60 characters. Duplicate questions and duplicate option labels are rejected. Reserved labels (`"Other"`, `"Type something."`, `"Chat about this"`, and `"Next"`) are rejected even on `multiSelect: true`.
 - **Multi-select and previews.** Pass `multiSelect: true` to let the user choose multiple options (this hides the custom `"Type something."` choice). On single-select questions, options can include a markdown `preview` rendered side by side (which also hides `"Type something."` while keeping `"Chat about this"`). See [Keybindings](/keybindings#tui-fullscreen-viewport) for dialog controls.
+- **Custom prompt guidance.** Machine-level overrides in `~/.config/rpiv-ask-user-question/config.json` can customize `guidance.promptSnippet` and `guidance.promptGuidelines`.
 - **Scoped approvals.** A confirmation question should name the exact action, identify the target PRs or resources, and offer explicit proceed and decline choices:
 
 ```json
@@ -313,8 +349,6 @@ Disable it in `~/.atomic/agent/settings.json` or `.atomic/settings.json`:
 
 Disable it for one run with `atomic --tools -codemode`. Explicit allowlists must name every desired tool (for example `atomic --tools read,search,find,codemode`). MCP servers configured for codemode exposure activate `codemode` if `defaultTools` omits it, but not after an explicit `-codemode`.
 
-Example call (`codemode({ code: "..." })` supports top-level `await` and `return`):
-
 ```javascript
 // @options: {"max_output_tokens": 2000, "timeout_ms": 60000}
 const files = await Promise.all([
@@ -328,7 +362,7 @@ return files.map((text) => text.slice(0, 1000));
 - **Sandbox and permissions.** Runs with no Node, filesystem, network, timer, or credential globals. Tool calls run with the session's permissions, and side effects are not rolled back if a script fails.
 - **Settings and MCP.** Configure `codemode.inlineBudget` (default `3000` estimated tokens) and `codemode.mode` in [tool settings](/settings#tools). Atomic's [MCP host](/mcp-servers) remains the sole MCP connection owner.
 
-See the [Codemode reference](/codemode) for globals, return shapes, `store()` and `load()`, `models.classify()`, `models.generateImages()`, subagent and Intercom access, and limits.
+See [Codemode](/codemode) for globals, return shapes, `store()` and `load()`, `models.classify()`, `models.generateImages()`, subagent and Intercom access, and limits.
 
 ## `tool_search`
 
@@ -353,22 +387,25 @@ code_search({ repoName: "facebook/react", query: "How does useEffect cleanup wor
 
 ## Persisted tool output
 
-Text tool results over 50,000 characters are saved automatically and replaced inline with a 2,000-byte preview inside `<persisted-output>` tags, referencing `Full output: <path>` (for `bash`) or `Full output saved to: <path>`. Tool results that contain images are not redirected.
+Text tool results over 50,000 characters are saved automatically and replaced inline with a 2,000-byte head preview inside `<persisted-output>` tags referencing `Full output saved to: <path>`. Tool results containing images are not redirected. `bash` and `read` opt out of `<persisted-output>` (`bash` applies its own tail truncation with `Full output: <path>`, and `read` blocks oversized local/resource reads or saves URL reads as `artifact://<id>`).
 
-- **Session-directory sessions.** Saved under `<sessionDir>/tool-results/`, content-addressed by SHA-256 (`Content: sha256:<hex>`).
-- **Blob-capable session stores.** When a background subagent or detached tool result runs on SQLite, PostgreSQL, or an in-memory store, output is saved as a session blob addressed by `tool-output://<sha256>` (readable via `read` with line ranges such as `tool-output://<sha256>:1-200`, or `search`). Blobs share across hosts and branches, export with the session, and delete when the session is deleted. Custom stores without blob storage fall back to the temp tree below.
-- **Bash overflow, spill files, and sessions without a session directory.** Stored in a session-scoped temp tree (POSIX `0700` directories and `0600` files; unsafe shared or symlinked temp paths are refused; Windows uses an account-specific name instead of `<uid>`):
+Where persisted output is stored depends on the session store and execution context:
 
-```text
-<tmpdir>/atomic-<uid>/<session-id>/
-```
+| Where it ran | Saved location | How to read it |
+| --- | --- | --- |
+| Local session with a session directory | `<sessionDir>/tool-results/` (content-addressed by SHA-256) | `read` or `search` the printed path. |
+| Background subagent or detached tool result on SQLite, PostgreSQL, or in-memory store | Stored as a session blob (`tool-output://<sha256>`) | `read` (including line ranges like `tool-output://<sha256>:1-200`) or `search`. Blobs share across hosts/branches, export with the session, and delete with the session. |
+| `bash` overflow, spill files, custom stores without blobs, or sessions without a session directory | `<tmpdir>/atomic-<uid>/<session-id>/` (POSIX `0700` dirs / `0600` files; account-scoped on Windows; unsafe shared or symlinked temp paths are refused) | `read` or `search` the printed path. |
 
-- **Size cap.** 64 MiB per persisted file; excess bytes are replaced with `[Output truncated: persisted-output cap of 67108864 bytes reached]` without splitting UTF-8 characters.
-- **Retention and cleanup.** A cleanup sweep runs 10 seconds after startup (at most once every 24 hours) and deletes temp trees and `tool-results/` directories (including custom `--session-dir` and `ATOMIC_CODING_AGENT_SESSION_DIR` roots) whose newest file is over 30 days old. Active sessions are protected, session `.jsonl` transcripts are never deleted, and symlinks are never followed. Copy output you need long-term elsewhere.
+Each persisted file caps at **64 MiB**; excess bytes are replaced with `[Output truncated: persisted-output cap of 67108864 bytes reached]` without splitting UTF-8 characters.
+
+<Note>
+**30-day automatic cleanup.** Ten seconds after startup (at most once every 24 hours), Atomic deletes temp trees and `tool-results/` directories (including custom `--session-dir` and `ATOMIC_CODING_AGENT_SESSION_DIR` roots) whose newest file is more than 30 days old. Active sessions are protected, session `.jsonl` transcripts are never deleted, and symlinks are never followed. Copy output you need long-term elsewhere.
+</Note>
 
 ## Edit and write errors
 
-`edit` and `write` failures are typed. In extensions and SDK integrations, branch on the error class or `code` rather than message text. Every error sets `hint` (next step) and `retryable: false`.
+For extension and SDK integrations, `edit` and `write` failures are typed. Branch on the error class or `code` rather than message text. Every error sets `hint` (next step) and `retryable: false`.
 
 | Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
@@ -394,3 +431,4 @@ Text tool results over 50,000 characters are saved automatically and replaced in
 
 - **Inheritance and cross-process helpers (SDK).** `EditInputError`, `EditMatchError`, and `EditTargetError` extend `EditToolError`. Type guards (`isEditToolError`, `isEditInputError`, `isEditMatchError`, `isEditTargetError`, and `isWriteSelectorError`) also match cross-process copies by `name` and `code`. Use `serializeFileToolError` (which strips URL credentials from causes) with `rehydrateEditToolError` and `rehydrateWriteSelectorError` across process boundaries.
 - **Aborts and OS errors.** Cancelling `read`, `find`, `edit`, or `write` throws `FileToolAbortedError` (`name: "AbortError"`, `code: "aborted"`, `cause` set to the abort reason). OS write errors (`EACCES`, `EISDIR`, and similar) propagate directly.
+- **SDK tool details.** Extension hooks and SDK consumers can inspect structured `details` returned by built-in tools: `read` populates `meta` (`source`, `sourcePath`, `truncation`, `limits`) and `imageUnsupportedByModel`; `edit` returns `diff`, unified `patch`, and `firstChangedLine`; `bash` returns `wallTimeMs`, non-zero `exitCode`, `timeoutSeconds` (and `requestedTimeoutSeconds` when a fractional timeout was rounded to milliseconds), and `fullOutputPath`; `find` returns `scopePath`, `fileCount`, and `files`; `search` sets `fileLimitReached` and `meta.limits.fileLimit`.

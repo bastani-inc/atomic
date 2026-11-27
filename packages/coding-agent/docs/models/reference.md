@@ -1,12 +1,19 @@
 ---
-title: "Model configuration reference"
-sidebarTitle: "Model overrides"
-description: "Supported APIs, value resolution, overrides, pricing tiers, thinking maps, derived fast variants, and API compatibility rules."
+title: "Model runtime & overrides"
+sidebarTitle: "Runtime & Overrides"
+description: "Supported APIs, credential and header value resolution, model capabilities, overrides, derived fast variants, and API compatibility rules."
 ---
 
-This page covers provider and model behavior, compatibility rules, and built-in model details. For the complete schema-generated field list for `models.json`, see [`models.json` field reference](/models-configuration). For custom streaming APIs or OAuth flows, see [Build custom providers](/custom-provider).
+This page explains how `models.json` behaves at runtime: supported APIs, secret and header resolution, model capabilities, overrides, derived fast variants, and API compatibility flags.
 
-Jump to: [Supported APIs](#supported-apis) · [Provider configuration](#provider-configuration) · [Model configuration](#model-configuration) · [Overriding built-in providers](#overriding-built-in-providers) · [Per-model overrides](#per-model-overrides) · [Derived fast model variants](#derived-fast-model-variants) · [Anthropic messages compatibility](#anthropic-messages-compatibility) · [OpenAI compatibility](#openai-compatibility) · [Catalog freshness and precedence](#catalog-freshness-and-precedence).
+<Columns cols={2}>
+  <Card title="models.json field reference" href="/models-configuration">
+    Complete schema-generated table of every provider, model, override, and compatibility field.
+  </Card>
+  <Card title="Build custom providers" href="/custom-provider">
+    Register custom streaming, image, classifier, or compactor APIs and OAuth flows in an extension.
+  </Card>
+</Columns>
 
 ## Supported APIs
 
@@ -19,9 +26,9 @@ Jump to: [Supported APIs](#supported-apis) · [Provider configuration](#provider
 
 Set `api` at provider level (default for chat and compactor models) or model level (override per model).
 
-Atomic also registers six provider-specific chat APIs (`mistral-conversations`, `azure-openai-responses`, `openai-codex-responses`, `bedrock-converse-stream`, `google-vertex`, and `pi-messages`). You can use them in `models.json` when connecting to a compatible gateway or proxy, such as `"api": "pi-messages"` for a gateway speaking the `pi-messages` protocol or `"api": "mistral-conversations"` for a native Mistral endpoint.
+Atomic also registers six provider-specific chat APIs (`mistral-conversations`, `azure-openai-responses`, `openai-codex-responses`, `bedrock-converse-stream`, `google-vertex`, and `pi-messages`). You can use them in `models.json` when connecting to a compatible gateway or proxy—such as `"api": "pi-messages"` for a gateway speaking Atomic's native `pi-messages` protocol, or `"api": "mistral-conversations"` for a native Mistral endpoint.
 
-Models with `"type": "compactor"` declare their own compactor `api` string (such as `"custom-compact"` or `"morph-compact"`). See [Customize Morph or add a remote compactor](/compaction#customize-morph-or-add-a-remote-compactor).
+Models with `"type": "compactor"` declare their own compactor `api` string (such as `"custom-compact"` or `"morph-compact"`). See [Custom compaction models](/compaction/custom-compactors).
 
 ## Provider configuration
 
@@ -47,10 +54,12 @@ See [Providers fields](/models-configuration#providers) for the full list of pro
 
 Legacy bare uppercase names such as `MY_API_KEY` migrate to `$MY_API_KEY` on startup only when that variable is set in the environment; otherwise Atomic keeps them as literals. Use explicit `${ENV_VAR}` or `$ENV_VAR` syntax in new configs. When resolution fails, Atomic omits `!command` text; braced `${NAME}` references always report the unset variable name, whereas unbraced `$NAME` references report the name only when it reads like a POSIX environment variable name so literal secrets containing `$` do not leak fragments.
 
-Important runtime differences:
+<Note>
+**Runtime nuances for `apiKey` resolution:**
 
-- **Uncached `!command` in `models.json` vs cached in `auth.json`:** In `models.json`, shell commands run uncached on every request. If a command is slow, rate-limited, or needs caching, wrap that logic in a local script. By contrast, `auth.json` caches `!command` results (including failures) for the lifetime of the process. `/model` availability checks verify auth presence without running shell commands.
+- **Uncached `!command` in `models.json` vs. cached in `auth.json`:** Shell commands in `models.json` run uncached on every request. Wrap slow or rate-limited commands in a local caching script. By contrast, `auth.json` caches `!command` results (including failures) for the lifetime of the process. `/model` availability checks verify auth presence without running shell commands.
 - **Built-in provider `apiKey` precedence:** Setting `apiKey` on a built-in provider in `models.json` takes precedence over that provider's built-in environment variable. If you set `"apiKey": "$UNSET_VAR"` and `UNSET_VAR` is unset or empty, resolution stops and returns no credential instead of falling back to the built-in environment variable. See [Credential resolution order](/providers/reference#resolution-order).
+</Note>
 
 ### Custom headers
 
@@ -65,7 +74,9 @@ Important runtime differences:
         "x-portkey-api-key": "$PORTKEY_API_KEY",
         "x-secret": "!op read 'op://vault/item/secret'"
       },
-      "models": []
+      "models": [
+        { "id": "claude-sonnet-4-6" }
+      ]
     }
   }
 }
@@ -82,6 +93,7 @@ Key display and modality rules:
 - `/model`, [`--list-models`](/reference/cli#model-options), the footer, fallback notices, and subagent labels show the raw `provider/id` (or `id` when the provider is clear) followed by the active thinking level, such as `anthropic/claude-sonnet-4-5 high`. That is the exact value `--model provider/id:level` accepts.
 - `name` is used for `--model` and `enabledModels` fuzzy matching and secondary text in `/model`; it never replaces `id`.
 - `input` declares the modalities Atomic sends: `["text"]`, `["text", "image"]`, or `["text", "image", "pdf"]`.
+- `promptCache` accepts `{ "short": <seconds>, "long": <seconds> }` (positive numbers) declaring best-effort prompt-cache lifetimes for [cache warming](/settings#models-and-thinking); see [Prompt cache lifetimes](/models#prompt-cache-lifetimes).
 
 Anthropic documents that [all active Claude models support PDF input](https://platform.claude.com/docs/en/build-with-claude/pdf-support). Atomic advertises `"pdf"` only where it serializes document blocks (Anthropic Messages and Amazon Bedrock Converse); Claude mirrors on other providers stay at `["text", "image"]` and turn attached PDFs into a visible placeholder rather than dropping them silently. Bedrock Converse needs citations enabled for visual PDF processing and otherwise extracts text. Only `application/pdf` is accepted for `"pdf"`.
 
@@ -231,7 +243,7 @@ In `modelOverrides`, scalar cost fields merge individually and preserve inherite
   "providers": {
     "openai": {
       "modelOverrides": {
-        "gpt-5.6-sol": {
+        "gpt-6.2-sol": {
           "cost": {
             "input": 4,
             "tiers": []
@@ -284,7 +296,7 @@ Model where thinking cannot be disabled:
 
 Requesting `off` on a model with `"off": null` runs it at its lowest supported level rather than leaving effort to the provider's default. Sessions, `:off` subagents, and branch summaries select the lowest supported level in the map, so mark unsupported levels `null`.
 
-SDK requests arriving without a reasoning level fall back automatically. OpenAI Responses, OpenAI Completions, and Mistral send the lowest mapped string value (or keep the provider default if none is mapped); `thinkingFormat: "openrouter"` sends the lowest supported level even without an explicit string value; budget-based Gemini models use that level's `thinkingBudgets` value. The response records `thinking_off_fallback` in `diagnostics`.
+SDK requests arriving without a reasoning level fall back automatically. OpenAI Responses, OpenAI Completions, and Mistral send the lowest mapped string value (or keep the provider default if none is mapped); `thinkingFormat: "openrouter"` sends the lowest supported level even without an explicit string value; budget-based Gemini models use that level's `thinkingBudgets` value. When this fallback happens, Atomic records a `thinking_off_fallback` diagnostic entry on the assistant message.
 
 Move older `compat.reasoningEffortMap` entries to model-level `thinkingLevelMap`.
 
@@ -358,7 +370,9 @@ Include `models` to upsert custom entries alongside built-in models:
       "baseUrl": "https://my-proxy.example.com/v1",
       "apiKey": "$ANTHROPIC_API_KEY",
       "api": "anthropic-messages",
-      "models": []
+      "models": [
+        { "id": "claude-custom-alias", "name": "Custom Claude" }
+      ]
     }
   }
 }
@@ -409,9 +423,9 @@ Rules for `models.json`:
 
 - **Custom entries in `models` never get derived fast or ultrafast variants**, even when replacing a built-in model ID. Use `modelOverrides` instead of `models` to customize a built-in model while keeping its derived sibling.
 - **Exact IDs win.** If a provider, `models.json`, or an extension defines the exact `<base>-fast` or `<base>-ultrafast` ID, Atomic keeps that entry without deriving a duplicate and warns at startup. The `-fast` or `-ultrafast` suffix alone never adds fast routing.
-- **`modelOverrides` works on derived IDs.** Overriding the base model flows down to its derived sibling; overriding the derived ID (such as `modelOverrides["gpt-5.6-sol-fast"]`) wins while keeping fast-route metadata intact.
+- **`modelOverrides` works on derived IDs.** Overriding the base model flows down to its derived sibling; overriding the derived ID (such as `modelOverrides["gpt-6.2-sol-fast"]`) wins while keeping fast-route metadata intact.
 
-Derived `-fast` variants inherit the base model's `cost` because the adapter applies the priority/speed multiplier at request time. Do not pre-multiply costs in overrides. Ultrafast variants carry their published Ultrafast rates directly and can be overridden by their own ID.
+Both derived `-fast` and `-ultrafast` variants inherit the base model's standard `cost` and its built-in `serviceTiers` pricing metadata. At request time, the adapter bills from the serving tier's `serviceTiers` rates (or applies the Fast multiplier when no tier table is defined), ignoring `model.cost` whenever a matching tier rate exists. Do not pre-multiply standard costs in `modelOverrides`, and note that overriding `cost` on a derived `-ultrafast` variant (or a `-fast` variant that carries `serviceTiers`) does not change billed tier rates because `modelOverrides` has no `serviceTiers` field. Other override fields (`name`, `contextWindow`, `thinkingLevelMap`, `headers`, `compat`) still apply to derived `-fast` and `-ultrafast` IDs.
 
 ## Anthropic messages compatibility
 
@@ -442,7 +456,7 @@ By default, Atomic sends per-tool `eager_input_streaming: true`. If a proxy reje
 }
 ```
 
-`supportsMidConvoEffort` and `enforcesPreservedThinkingBinding` compose independently. Enable `supportsMidConvoEffort` only for exact transports that accept effort-only system messages (it also enables `drop_block` so effort changes do not break signed thinking prefixes). Use `enforcesPreservedThinkingBinding` for transports that enforce preserved-thinking prefixes without supporting effort-only system messages.
+`supportsMidConvoEffort` and `enforcesPreservedThinkingBinding` compose independently. Enable `supportsMidConvoEffort` only for exact transports that accept effort-only system messages; it also instructs Anthropic (`prefix_mismatch_behavior: "drop_block"`) to drop invalidated signed thinking blocks rather than rejecting the request when effort changes mid-conversation. Use `enforcesPreservedThinkingBinding` for transports that enforce preserved-thinking prefixes without supporting effort-only system messages.
 
 `supportsForcedToolChoice` and `supportsTemperature` also apply on `bedrock-converse-stream` and `openai-completions` models because they describe model behavior across every mirror. On `openai-completions`, `supportsTemperature: false` strips `temperature`, `top_p`, and `top_k` after merging `samplingParams`.
 
@@ -482,9 +496,9 @@ Scope notes: Claude Fable 5 is not restricted (only Fable 5.1 / Mythos 5.1 restr
 
 On first-party `anthropic` models, switching to Claude Fable 5.1 preserves earlier Claude reasoning blocks, and switching back drops unreadable blocks without billing for them. Text, tool calls, and tool results always remain intact. See [Anthropic's preserved-thinking guide](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking).
 
-When changes to the system prompt, tools, or prefix invalidate signed reasoning, Atomic asks Fable 5.1 to drop affected blocks rather than fail the turn and records `anthropic_input_transformations` in assistant `diagnostics`. [Compaction](/compaction) resets the signed reasoning chain; earlier thinking blocks do not cross a compaction boundary.
+When changes to the system prompt, tools, or prefix invalidate signed reasoning, Atomic asks Fable 5.1 to drop affected thinking blocks rather than fail the turn and records an `anthropic_input_transformations` diagnostic entry on the assistant message summarizing the dropped blocks. [Compaction](/compaction) resets the signed reasoning chain; earlier thinking blocks do not cross a compaction boundary.
 
-Server-side fallback may continue a declined Fable 5.1 response with Claude Opus 4.8 or Claude Opus 5. Fable 5.2 (`claude-fable-5-2`) falls back only to Claude Opus 5 because Opus 4.8 does not accept per-message effort. Assistant messages retain a `fallback` marker recording the serving model for cost tracking; do not remove or reorder it when replaying history.
+Server-side fallback may continue a declined Claude Fable 5 (`claude-fable-5`) response with Claude Opus 4.8 or Claude Opus 5. Both Fable 5.1 (`claude-fable-5-1`) and Fable 5.2 (`claude-fable-5-2`) fall back only to Claude Opus 5 (`claude-opus-5`) because Opus 4.8 does not accept per-message effort. When a server-side fallback answers a turn, the assistant message keeps a `fallback` metadata marker recording which model served the response so usage and cost tracking stay accurate; keep that marker intact when replaying history in SDK callers.
 
 These behaviors apply automatically only on first-party `anthropic` routes. Enable `compat.delegatesThinkingModelBinding` and `compat.enforcesPreservedThinkingBinding` on custom providers only when the backend supports them.
 
@@ -502,7 +516,9 @@ Use provider-level or model-level `compat` overrides for partial OpenAI-compatib
         "supportsUsageInStreaming": false,
         "maxTokensField": "max_tokens"
       },
-      "models": []
+      "models": [
+        { "id": "llama-3.3-70b" }
+      ]
     }
   }
 }
@@ -510,18 +526,41 @@ Use provider-level or model-level `compat` overrides for partial OpenAI-compatib
 
 ### Thinking formats and gateway routing
 
-Choose the `compat.thinkingFormat` your OpenAI-compatible endpoint expects:
+Choose the `compat.thinkingFormat` your OpenAI-compatible endpoint expects (when omitted, Atomic auto-detects from the provider URL):
 
-- `openrouter` sends `reasoning: { effort }`.
-- `together` sends `reasoning: { enabled }` (plus `reasoning_effort` when `supportsReasoningEffort` is enabled).
-- `qwen` sends top-level `enable_thinking`.
-- `qwen-chat-template` sends `chat_template_kwargs.enable_thinking` and `preserve_thinking` for local Qwen servers.
-- `chat-template` sends configurable `chat_template_kwargs` via `chatTemplateKwargs` (for example `{ "thinking": { "$var": "thinking.enabled" } }` on vLLM DeepSeek V3.x templates).
-- `baseten` sends configurable `chat_template_args` via `chatTemplateArgs` and optionally top-level `reasoning_effort`.
+- `openai`: sends top-level `reasoning_effort`.
+- `openrouter`: sends `reasoning: { effort }`.
+- `deepseek`: sends `thinking: { type }` plus `reasoning_effort` when supported.
+- `together`: sends `reasoning: { enabled }` plus `reasoning_effort` when `supportsReasoningEffort` is enabled.
+- `baseten`: sends configurable `chat_template_args` via `chatTemplateArgs` plus `reasoning_effort` when supported.
+- `zai`: sends `thinking: { type }`.
+- `qwen`: sends top-level `enable_thinking`.
+- `qwen-chat-template`: sends `chat_template_kwargs.enable_thinking` and `preserve_thinking` for local Qwen servers.
+- `chat-template`: sends configurable `chat_template_kwargs` via `chatTemplateKwargs`.
+- `string-thinking`: sends a top-level string `thinking` field.
+- `ant-ling`: sends `reasoning: { effort }` only when the mapped effort is non-null.
+
+Each entry in `chatTemplateKwargs` (`thinkingFormat: "chat-template"`) or `chatTemplateArgs` (`thinkingFormat: "baseten"`) accepts either a literal JSON primitive (`string`, `number`, `boolean`, or `null`) or a dynamic variable object:
+
+```json
+{
+  "compat": {
+    "thinkingFormat": "chat-template",
+    "chatTemplateKwargs": {
+      "thinking": { "$var": "thinking.enabled" },
+      "reasoning_effort": { "$var": "thinking.effort", "omitWhenOff": true },
+      "thinking_budget": { "$var": "thinking.budget", "omitWhenOff": true },
+      "preserve_thinking": true
+    }
+  }
+}
+```
+
+Set `"omitWhenOff": true` on a `$var` entry to omit that key completely when thinking is `off`.
 
 `thinkingTokenBudgetField` is independent of `thinkingFormat`. Do not enable it on DashScope Qwen models that send `reasoning_effort`, because DashScope rejects both fields together. Set `cacheControlFormat: "anthropic"` for OpenAI-compatible proxies that accept Anthropic-style `cache_control` markers on text and tool definitions.
 
-OpenRouter routing example:
+OpenRouter routing example (`max_price` accepts `prompt`, `completion`, `image`, `audio`, and `request` as numbers or strings; `preferred_min_throughput` and `preferred_max_latency` accept `p50`, `p75`, `p90`, and `p99` cutoffs, or a single number shorthand applying to `p50`):
 
 ```json
 {
@@ -551,14 +590,19 @@ OpenRouter routing example:
               },
               "max_price": {
                 "prompt": 10,
-                "completion": 20
+                "completion": 20,
+                "image": 1,
+                "audio": 1,
+                "request": 0.05
               },
               "preferred_min_throughput": {
                 "p50": 100,
+                "p75": 80,
                 "p90": 50
               },
               "preferred_max_latency": {
                 "p50": 1,
+                "p75": 2,
                 "p90": 3,
                 "p99": 5
               }
@@ -608,13 +652,13 @@ With an API key on `openai` or `openai-api`, changing thinking effort mid-sessio
 
 Enable `compat.supportsMidConvoEffort` on custom `openai-responses` endpoints only if they accept `configuration_update` items; set it to `false` if an endpoint rejects them.
 
-### Constrained tool sampling
+## Constrained tool sampling
 
 Tools may request `{ type: "json_schema", strict: "prefer" | "require" }` or `{ type: "grammar", variants: { openai_lark?: string, openai_regex?: string } }`. `prefer` falls back to standard tool calling when strict enforcement is unavailable; `require` fails the request. Grammar tools use OpenAI custom-tool syntax and fall back to ordinary functions when unsupported.
 
 Atomic checks explicit model capability metadata rather than guessing from provider names. Strict JSON-schema sampling is supported on capable OpenAI, Anthropic, Bedrock Converse, Mistral, and Gemini 3 (Google/Vertex) models; earlier Gemini models fall back on `prefer` and fail on `require`. OpenAI grammar tools require capable GPT-5+ models on endpoints that preserve custom tools without gateway normalization.
 
-### Catalog freshness and precedence
+## Catalog freshness and precedence
 
 Atomic caches remote catalogs in `~/.atomic/agent/models-store.json`, keeps each provider's last usable snapshot on refresh failure, and prefers newer built-in data over stale remote caches. Final resolution layers built-in catalogs, fresh persisted or remote data, the active agent directory's single `models.json`, and extension provider registrations and overrides. Project `.atomic`/`.pi` model files and legacy agent-directory model files are never merged. For catalog URL and offline variables, see [Environment variables](/environment-variables); for programmatic catalog control, see [SDK](/sdk) and [Model catalog persistence and refresh](/sdk/reference#model-catalog-persistence-and-refresh).
 

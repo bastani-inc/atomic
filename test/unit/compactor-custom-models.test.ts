@@ -6,14 +6,12 @@ import { describe, test } from "vitest";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import {
 	AuthStorage,
-	COMPACTED_OUTPUT_MAX_TOKENS,
 	CompactionCancelledError,
 	CompactionConfigError,
 	CompactionError,
 	CompactionStateError,
 	CompactorFailure,
 	type CompactorModel,
-	compactedOutputTokenCap,
 	createAgentSession,
 	DefaultResourceLoader,
 	findCompactionError,
@@ -364,13 +362,6 @@ describe("custom remote compactor models", () => {
 				return true;
 			},
 		);
-	});
-
-	test("compactedOutputTokenCap honors per-model maxTokens while staying capped at 50% of trigger budget", () => {
-		assert.equal(compactedOutputTokenCap(200_000), COMPACTED_OUTPUT_MAX_TOKENS);
-		assert.equal(compactedOutputTokenCap(200_000, 60_000), 60_000);
-		assert.equal(compactedOutputTokenCap(40_000, 60_000), 20_000);
-		assert.equal(compactedOutputTokenCap(200_000, 10_000), 10_000);
 	});
 
 	test("extension registerProvider registers custom compactor models and RPC/RemoteModelCatalog relays them", async () => {

@@ -6,14 +6,23 @@ description: "Reference for every Atomic RPC command, streamed event, structured
 
 ## Commands
 
-### Stored session summaries
+Ordinary commands execute sequentially in FIFO order, while interrupts, `extension_ui_response`, and concurrent commands (`bash`, `user_bash`, `refresh_models`, `set_compaction_model`, `set_decision_model`, `start_pending_recovery`, `stop_all_background`) bypass the queue immediately. See [Command execution and concurrency](/rpc#command-execution-and-concurrency).
 
-These read-only commands do not start a model turn. Stored summaries remain available even when `sessionSummary.enabled` is `false`.
+| Category | Commands |
+| --- | --- |
+| **Prompting & queue** | [`prompt`](#prompt), [`steer`](#steer), [`follow_up`](#follow_up), [`abort`](#abort), [`clear_queue`](#clear_queue), [`pause_queued_messages`](#pause_queued_messages), [`resume_queued_messages`](#resume_queued_messages), [`set_steering_mode`](#set_steering_mode), [`set_follow_up_mode`](#set_follow_up_mode) |
+| **State & tasks** | [`get_state`](#get_state), [`get_messages`](#get_messages), [`get_tools`](#get_tools), [`stop_all_background`](#stop_all_background) |
+| **Models & auth** | [`set_model`](#set_model), [`cycle_model`](#cycle_model), [`set_scoped_models`](#set_scoped_models), [`get_available_models`](#get_available_models), [`login_provider`](#login_provider), [`cancel_login_provider`](#cancel_login_provider), [`save_provider_credential`](#save_provider_credential), [`logout_provider`](#logout_provider), [`refresh_models`](#refresh_models) |
+| **Thinking** | [`set_thinking_level`](#set_thinking_level), [`cycle_thinking_level`](#cycle_thinking_level), [`get_available_thinking_levels`](#get_available_thinking_levels) |
+| **Compaction & retry** | [`compact`](#compact), [`set_auto_compaction`](#set_auto_compaction), [`set_compaction_model`](#set_compaction_model), [`set_decision_model`](#set_decision_model), [`abort_compaction`](#abort_compaction), [`abort_branch_summary`](#abort_branch_summary), [`set_auto_retry`](#set_auto_retry), [`abort_retry`](#abort_retry) |
+| **Extension UI & debug** | [`set_extension_ui_capabilities`](#set_extension_ui_capabilities), [`set_debug`](#set_debug) |
+| **Shell** | [`bash`](#bash), [`user_bash`](#user_bash), [`abort_bash`](#abort_bash) |
+| **Session & history** | [`get_session_summary` / `list_sessions`](#stored-session-summaries), [`new_session`](#new_session), [`delete_session`](#delete_session), [`switch_session`](#switch_session), [`import_session`](#import_session), [`start_pending_recovery`](#start_pending_recovery), [`fork`](#fork), [`clone`](#clone), [`get_fork_messages`](#get_fork_messages), [`get_entries`](#get_entries), [`get_context_window`](#get_context_window), [`get_history_page`](#get_history_page), [`get_history_chunk`](#get_history_chunk), [`get_tree`](#get_tree), [`navigate_tree`](#navigate_tree), [`set_label`](#set_label), [`get_last_assistant_text`](#get_last_assistant_text), [`set_session_name`](#set_session_name), [`get_session_stats`](#get_session_stats), [`export_html`](#export_html), [`find_queued_messages`](#find_queued_messages), [`reload`](#reload), [`get_shortcuts`](#get_shortcuts), [`invoke_shortcut`](#invoke_shortcut) |
+| **Slash commands** | [`get_commands`](#get_commands), [`get_command_completions`](#get_command_completions) |
 
-| Command | Response `data` | TypeScript `RpcClient` method |
-| --- | --- | --- |
-| `{"type":"get_session_summary"}` | `{ summary: SessionSummaryEntry \| null }`, including `summary` and `summarizedThroughId`; always `null` for an unsaved (`--no-session`) session | `getSessionSummary()` |
-| `{"type":"list_sessions"}` | `{ sessions: RpcSessionInfo[] }` for the current project or session directory, including `summary` and `summarizedThroughId`; `created` and `modified` are ISO strings | `listSessions()` |
+<Note>
+Several additional commands on the internal TypeScript `RpcCommand` union (`open_task_inspector`, `open_agent_panel`, `set_stop_all_notice`, `agent_view_*`, `get_task_prompts`, `set_viewed_agent`, and `start_pending_recovery_restore`) are internal to Atomic's interactive TUI engine and either reject with `"requires an interactive host"` or are not intended for standalone RPC clients.
+</Note>
 
 ### Prompting
 
@@ -151,16 +160,12 @@ Response:
     "typed": {
       "steering": ["Change direction"],
       "followUp": ["Summarize when finished"]
-    },
-    "images": {
-      "steering": [null],
-      "followUp": [null]
     }
   }
 }
 ```
 
-`steering` and `followUp` contain each message after `input` hooks, skill expansion, and prompt templates ran. `typed` contains the original submitted text when any message was transformed; restore `typed` when returning text to a user editor so expansions do not run twice (`typed` is omitted when nothing was transformed). Optional `images` carries `{ steering: (ImageContent[] | undefined)[], followUp: (ImageContent[] | undefined)[] }` aligned with the cleared messages.
+`steering` and `followUp` contain each message after `input` hooks, skill expansion, and prompt templates ran. `typed` contains the original submitted text when any message was transformed; restore `typed` when returning text to a user editor so expansions do not run twice (`typed` is omitted when nothing was transformed). `images` is **omitted entirely** when no cleared message carried images; when at least one cleared message had images, `images` holds `{ steering: (ImageContent[] | null)[], followUp: (ImageContent[] | null)[] }` aligned with the cleared messages (messages without images serialize as `null` in the array).
 
 To mirror interactive `Esc`, send `clear_queue` before `abort` and restore the returned messages in your editor.
 
@@ -193,56 +198,6 @@ Response:
 ```
 
 `data.released` is `true` if held messages were released into processing, or `false` if nothing was waiting.
-
-#### new_session
-
-Start a fresh session. A `session_before_switch` extension hook can cancel it.
-
-```json
-{"type": "new_session"}
-```
-
-With optional parent session tracking:
-
-```json
-{"type": "new_session", "parentSession": "parent-session-id"}
-```
-
-Response:
-
-```json
-{"type": "response", "command": "new_session", "success": true, "data": {"cancelled": false}}
-```
-
-If an extension cancelled:
-
-```json
-{"type": "response", "command": "new_session", "success": true, "data": {"cancelled": true}}
-```
-
-#### delete_session
-
-Delete a stored session and its entries from the active session store (SQLite or JSONL). Use `list_sessions` to discover IDs.
-
-```json
-{"id": "req-2", "type": "delete_session", "sessionId": "019fdf86-cf98-7327-8a73-21365028f6ae"}
-```
-
-`sessionId` selects the session to delete, while `id` is the request correlation ID echoed in the response. If `sessionId` is omitted, `id` is used as the session ID too; if both are present, `sessionId` wins. Omitting both returns an error (`delete_session requires sessionId`).
-
-Response:
-
-```json
-{"id": "req-2", "type": "response", "command": "delete_session", "success": true}
-```
-
-You cannot delete the session currently open in this process; start or switch to another session first. Deleting an ID that does not exist succeeds without error.
-
-```json
-{"id": "req-2", "type": "response", "command": "delete_session", "success": false, "error": "Cannot delete the session that is currently open: 019fdf86-cf98-7327-8a73-21365028f6ae"}
-```
-
-TypeScript `RpcClient` method: `deleteSession(sessionId)`.
 
 ### State
 
@@ -286,14 +241,20 @@ Key fields on `data`:
 
 - `model`: full [Model](#model-type) object when a model is selected, or **omitted** (not `null`) when no model is active. Its `contextWindow` is the model's token budget.
 - `modelFallbackMessage` / `modelFallbackReason`: present when startup fell back from a requested or default model.
+- `sessionLocation`: display path or store label for saved sessions; **omitted** for unsaved (`--no-session`) sessions.
 - `sessionName`: display name set via `set_session_name` or `--name`, omitted when unset.
 - `queuedMessagesPaused`: `true` when queued message delivery is currently held.
-- `retryStatus`: present while waiting to retry or switch fallback models; carries the `auto_retry_start` or `model_fallback_start` event (and `retryAt` in Unix epoch milliseconds for retries). Use `retryStatus` rather than `isStreaming` to render retry waits.
+- `retryStatus`: present while waiting to retry or switch fallback models. Use `retryStatus` rather than `isStreaming` to render retry waits. Either an `auto_retry_start` object with an added `retryAt` Unix epoch timestamp in milliseconds (`{"type": "auto_retry_start", "attempt": 1, "maxAttempts": 3, "delayMs": 2000, "errorMessage": "...", "retryAt": 1760000002000}`) or a `model_fallback_start` object (`{"type": "model_fallback_start", "from": "anthropic/claude-sonnet-4", "to": "openai/gpt-5", "reason": "...", "attempt": 1}`).
 - `turnStartedAt`: Unix epoch timestamp in milliseconds of the active turn's first request; stays stable across retries and fallbacks and is omitted when idle.
 - `compactionReason` / `compactionStartedAt`: present only while `isCompacting` is `true`, reporting why compaction started and its start timestamp in Unix epoch milliseconds.
-- `projectTrusted` / `pendingProjectResourcesTrusted`: current project trust state while deciding or after trust resolution.
+- `projectTrusted`: current project trust state (`true` or `false`; omitted while undecided). `pendingProjectResourcesTrusted` appears only during deferred interactive-engine startup while trust is pending.
 - `resourceErrors` / `resourceWarnings`: extension load failures and warnings from the last startup or reload.
-- `resourceOverlaps` / `resourceExtensions`: overlapping resource diagnostics and loaded extension descriptors (`{ path, sourceInfo?, hidden }`).
+- `resourceOverlaps`: array of `{ resourceType: "tool" | "command" | "prompt" | "flag" | "shortcut", name: string, bundled: SourceInfo, inherited: SourceInfo }` diagnostics when a bundled resource overlaps an inherited one.
+- `resourceExtensions`: loaded extension descriptors (`{ path: string, sourceInfo?: SourceInfo, hidden: boolean }`).
+
+<Note>
+`get_state` reports the session path as `sessionLocation`, whereas `get_session_stats` reports it as `sessionFile`. Neither field is a `switch_session` target — pass `sessionId` to `switch_session`.
+</Note>
 
 #### get_messages
 
@@ -345,7 +306,9 @@ Response:
 
 #### set_model
 
-Switch to a specific model. Pass optional `thinkingLevel` (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`) to set both model and reasoning level in one call. Unsupported levels for that model clamp to a supported level; unrecognized values return an error response without changing the model.
+Switch to a specific authenticated model. `set_model` checks only the currently available (authenticated) model snapshot and returns `Model not found: <provider>/<modelId>` for unauthenticated catalog models (unlike `set_scoped_models`, which accepts unauthenticated models from the catalog).
+
+Pass optional `thinkingLevel` (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`) to set both model and reasoning level in one call. Unsupported levels for that model clamp to a supported level; unrecognized values return an error response without changing the model.
 
 Omit `persist` (or pass `false`) to change only the active session. Pass `"persist": true` to also save `defaultProvider`, `defaultModel`, and the effective thinking level in global settings, matching interactive `/model`.
 
@@ -421,7 +384,7 @@ List all configured models and auth metadata.
 {"type": "get_available_models"}
 ```
 
-Response contains an array of full [Model](#model-type) objects:
+Response contains the full catalog:
 
 ```json
 {
@@ -429,20 +392,56 @@ Response contains an array of full [Model](#model-type) objects:
   "command": "get_available_models",
   "success": true,
   "data": {
-    "models": [],
+    "models": [
+      {
+        "id": "claude-sonnet-4-20250514",
+        "name": "Claude Sonnet 4",
+        "api": "anthropic-messages",
+        "provider": "anthropic",
+        "baseUrl": "https://api.anthropic.com",
+        "reasoning": true,
+        "input": ["text", "image"],
+        "contextWindow": 200000,
+        "maxTokens": 16384,
+        "cost": {"input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75}
+      }
+    ],
     "scopedModels": [],
-    "compactorModels": [],
-    "customAuthProviders": [],
-    "oauthProviders": [],
-    "providerAuthStatuses": []
+    "compactorModels": [
+      {
+        "id": "morph-compactor",
+        "name": "Morph Compactor",
+        "provider": "morph",
+        "api": "morph-compact",
+        "baseUrl": "https://api.morphllm.com/v1"
+      }
+    ],
+    "customAuthProviders": [
+      {"id": "acme-gateway", "name": "Acme Gateway"}
+    ],
+    "oauthProviders": [
+      {
+        "id": "anthropic",
+        "name": "Anthropic",
+        "loginLabel": "Claude Pro / Max",
+        "usesCallbackServer": false,
+        "isSubscription": true
+      }
+    ],
+    "providerAuthStatuses": [
+      {
+        "provider": "acme-gateway",
+        "status": {"configured": true, "source": "environment", "label": "ACME_API_KEY"}
+      }
+    ]
   }
 }
 ```
 
 - `compactorModels`: dedicated compactor models registered in the session (`morph/morph-compactor`, custom `models.json` compactors, and extension-registered compactors).
-- `customAuthProviders`: extension-registered providers (`{ id, name }`) accepting API-key login through `login_provider`.
-- `oauthProviders`: providers supporting interactive OAuth login through `login_provider`.
-- `providerAuthStatuses`: auth status of extension-registered providers (`{ provider, status }`, where `status` is `{ configured, source?, label? }`) when credentials do not come from `auth.json` (for example, an environment variable).
+- `customAuthProviders`: extension-registered providers (`{ id, name }`) accepting API-key login through `login_provider` in interactive hosts.
+- `oauthProviders`: providers supporting interactive OAuth login (`{ id, name, loginLabel?, usesCallbackServer?, isSubscription? }`) through `login_provider` with `"authType": "oauth"`.
+- `providerAuthStatuses`: auth status of extension-registered providers (`{ provider, status }`, where `status` is `{ configured: boolean, source?, label? }`) when credentials do not come from `auth.json` (for example, an environment variable).
 
 The raw subprocess protocol returns full `Model` objects. The TypeScript `RpcClient.getAvailableModels()` helper returns the compact `ModelInfo` shape (`provider`, `id`, `contextWindow`, `reasoning`, plus optional `compat`). When present, `compat` exposes constrained-sampling flags (`supportsStrictTools`, `supportsStrictMode`, `supportsOpenAIGrammarTools`, and the synchronized `supportsGrammarTools` alias). Treat omitted flags as unsupported; do not infer support from provider names.
 
@@ -456,15 +455,24 @@ if (capabilities?.supportsStrictTools) {
 
 #### login_provider
 
-Start an API-key or interactive OAuth sign-in flow for a provider, save the resulting credential, and refresh the catalog.
+Start an interactive OAuth sign-in flow (or, inside Atomic's interactive host only, an API-key login form), save the resulting credential, and refresh the catalog.
+
+<Warning>
+**API-key login via `login_provider` is unavailable in standalone RPC mode.** `authType` defaults to `"api_key"`, which requires Atomic's interactive input host and fails in standalone `atomic --mode rpc` with `"Provider login requires an interactive input host"`. This also affects `RpcClient.loginProvider()` because it omits `authType`.
+
+In standalone RPC mode:
+- Use [`save_provider_credential`](#save_provider_credential) to save API keys directly.
+- Always pass `"authType": "oauth"` explicitly to run interactive OAuth sign-in over RPC.
+</Warning>
 
 ```json
 {"type": "login_provider", "provider": "anthropic", "authType": "oauth", "loginId": "login-1"}
 ```
 
-- `authType`: `"oauth"` or `"api_key"` (defaults to `"api_key"` when omitted).
-- `loginId`: optional correlation string echoed on `oauth_*` extension UI requests so you can cancel a specific login with `cancel_login_provider`.
+- `authType`: `"oauth"` or `"api_key"` (defaults to `"api_key"`, which works only inside Atomic's interactive host).
+- `loginId`: optional correlation string echoed on `oauth_*` extension UI requests so you can cancel a specific login with [`cancel_login_provider`](#cancel_login_provider).
 - For `"oauth"`, Atomic emits `oauth_*` requests over the [RPC extension UI protocol](/rpc/extension-ui#oauth-login-methods) and waits for interactive prompt responses.
+- Concurrent logins for the same provider are rejected with `"Login already in progress: <provider>"`.
 
 Response when sign-in succeeds (returns the refreshed `RpcModelCatalog` plus `provider` and `cancelled: false`, without echoing the raw secret):
 
@@ -505,7 +513,12 @@ Response:
 
 #### save_provider_credential
 
-Persist a provider `Credential` object directly (without driving interactive prompts) and return the refreshed model catalog.
+Persist a provider `Credential` object directly (without driving interactive prompts) and return the refreshed model catalog. Use this command to configure API keys in standalone RPC mode.
+
+`credential` accepts either credential variant:
+
+- **API key:** `{"type": "api_key", "key": "sk-...", "env": {"OPTIONAL_PROVIDER_VAR": "value"}}` (`key` and `env` are optional depending on the provider).
+- **OAuth tokens:** `{"type": "oauth", "access": "...", "refresh": "...", "expires": 1760000000000}` (Unix epoch milliseconds; providers may include extra metadata fields).
 
 ```json
 {
@@ -599,7 +612,7 @@ Current Atomic versions include the effective level after capability clamping an
 {"type": "response", "command": "set_thinking_level", "success": true, "data": {"level": "high", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514"}}
 ```
 
-Older clients may also encounter a data-less success response (`{"type": "response", "command": "set_thinking_level", "success": true}`). Record persisted overrides against the acknowledgement's `provider` and `modelId`, and keep newer `thinking_level_changed` events if an older acknowledgement arrives later. `RpcClient.setThinkingLevel(level)` remains a one-argument `Promise<void>` method.
+`data.level` is the effective thinking level after model capability clamping, and `provider`/`modelId` identify the active model it applied to (older Atomic versions may omit `data`). `RpcClient.setThinkingLevel(level)` remains a one-argument `Promise<void>` helper.
 
 #### cycle_thinking_level
 
@@ -718,7 +731,7 @@ Response:
 }
 ```
 
-`compactedText` is the full boundary message seen by the model. `firstKeptEntryId` is always `null`. `form` is `"cleared"` or `"compacted"`; compacted results also carry `backend` (`"compactor"` or `"extension"`) and, for a compactor, `model`. `fallbackReason` explains why a configured compactor was skipped. See [Persistence and resume](/compaction/reference#persistence-and-resume).
+`compactedText` is the full boundary message seen by the model. `firstKeptEntryId` is always `null`. `form` is `"cleared"` or `"compacted"`; compacted results also carry `backend` (`"compactor"` or `"extension"`) and, for a compactor, `model`. `fallbackReason` explains why a configured compactor was skipped. Treat `promptVersion` and `stats.rangeCount` as opaque internal metadata. See [Persistence and resume](/compaction/reference#persistence-and-resume).
 
 `RpcClient.compact(instructions?)` sends this command and resolves with `data`.
 
@@ -792,19 +805,9 @@ Response:
 {"type": "response", "command": "abort_branch_summary", "success": true}
 ```
 
-#### set_background_compaction
-
-Background compaction was removed. `set_background_compaction` and `set_background_compaction_threshold` remain accepted as no-ops for backward compatibility.
-
-```json
-{"type": "set_background_compaction", "enabled": false}
-```
-
-Response:
-
-```json
-{"type": "response", "command": "set_background_compaction", "success": true}
-```
+<Note>
+Background compaction was removed. Legacy `set_background_compaction` and `set_background_compaction_threshold` commands remain accepted as no-ops returning `success: true` for backward compatibility.
+</Note>
 
 ### Extension UI
 
@@ -979,6 +982,121 @@ Response:
 
 ### Session
 
+#### Stored session summaries {#stored-session-summaries}
+
+Read-only commands for inspecting stored sessions and summaries without starting a model turn. Stored summaries remain readable even when `sessionSummary.enabled` is `false`.
+
+##### `get_session_summary`
+
+Return the active session's stored summary (`null` for an unsaved `--no-session` session). TypeScript `RpcClient` method: `getSessionSummary()`.
+
+```json
+{"type": "get_session_summary"}
+```
+
+Response:
+
+```json
+{
+  "type": "response",
+  "command": "get_session_summary",
+  "success": true,
+  "data": {
+    "summary": {
+      "type": "session_summary",
+      "id": "sum-1",
+      "parentId": "entry-42",
+      "timestamp": "2026-06-06T00:00:00.000Z",
+      "summary": "Refactored token parser and added regression tests.",
+      "summarizedThroughId": "entry-42"
+    }
+  }
+}
+```
+
+##### `list_sessions`
+
+List stored sessions for the current project or session directory. `created` and `modified` are ISO-8601 strings. TypeScript `RpcClient` method: `listSessions()`.
+
+```json
+{"type": "list_sessions"}
+```
+
+Response:
+
+```json
+{
+  "type": "response",
+  "command": "list_sessions",
+  "success": true,
+  "data": {
+    "sessions": [
+      {
+        "id": "019fdf86-cf98-7327-8a73-21365028f6ae",
+        "cwd": "/path/to/project",
+        "name": "my-feature-work",
+        "summary": "Refactored token parser and added regression tests.",
+        "summarizedThroughId": "entry-42",
+        "created": "2026-06-05T18:00:00.000Z",
+        "modified": "2026-06-06T00:00:00.000Z",
+        "messageCount": 14,
+        "firstMessage": "Refactor the token parser"
+      }
+    ]
+  }
+}
+```
+
+#### new_session
+
+Start a fresh session. A `session_before_switch` extension hook can cancel it.
+
+```json
+{"type": "new_session"}
+```
+
+With optional parent session tracking:
+
+```json
+{"type": "new_session", "parentSession": "parent-session-id"}
+```
+
+Response:
+
+```json
+{"type": "response", "command": "new_session", "success": true, "data": {"cancelled": false}}
+```
+
+If an extension cancelled:
+
+```json
+{"type": "response", "command": "new_session", "success": true, "data": {"cancelled": true}}
+```
+
+#### delete_session
+
+Delete a stored session and its entries from the active session store (SQLite, JSONL, or adapter). Use `list_sessions` to discover IDs.
+
+```json
+{"id": "req-2", "type": "delete_session", "sessionId": "019fdf86-cf98-7327-8a73-21365028f6ae"}
+```
+
+`sessionId` selects the session to delete, while `id` is the request correlation ID echoed in the response. If `sessionId` is omitted, `id` is used as the session ID too; if both are present, `sessionId` wins. Omitting both returns an error (`delete_session requires sessionId`).
+
+Response:
+
+```json
+{"id": "req-2", "type": "response", "command": "delete_session", "success": true}
+```
+
+You cannot delete the session currently open in this process; start or switch to another session first. Deleting an ID that does not exist succeeds without error.
+
+```json
+{"id": "req-2", "type": "response", "command": "delete_session", "success": false, "error": "Cannot delete the session that is currently open: 019fdf86-cf98-7327-8a73-21365028f6ae"}
+```
+
+TypeScript `RpcClient` method: `deleteSession(sessionId)`.
+
 #### get_session_stats
 
 Return token totals, cost statistics, and current context-window usage.
@@ -1084,12 +1202,17 @@ Response (abbreviated):
         "reason": "selected by the defaultTools setting, but no built-in, extension, SDK custom tool, or MCP server has registered a tool named \"tool-search\"; did you mean \"tool_search\"?"
       }
     ],
-    "excluded": []
+    "excluded": [],
+    "git": {
+      "source": "system",
+      "version": "2.45.0",
+      "path": "/usr/bin/git"
+    }
   }
 }
 ```
 
-`selection.source` is `"default-tools-setting"`, `"built-in-defaults"`, `"tools-allowlist"`, `"explicit-selection"`, `"no-built-in-tools"`, or `"no-tools"`. `get_tools` waits until extensions finish loading so their tools are included. `RpcClient.getTools()` returns `data`.
+`selection.source` is `"default-tools-setting"`, `"built-in-defaults"`, `"tools-allowlist"`, `"explicit-selection"`, `"no-built-in-tools"`, or `"no-tools"`. `git` reports `"source": "system"` or `"provisioned"` with `version`, `path`, and optional `update`, or `{"source": "unavailable", "error": { ... }}` carrying a serialized [Git error](/sdk/reference#git-errors). `get_tools` waits until extensions finish loading so their tools are included. `RpcClient.getTools()` returns `data`.
 
 #### export_html
 
@@ -1285,6 +1408,30 @@ Response:
 
 `leafId` is the current leaf entry ID (`null` on an empty session).
 
+#### get_context_window
+
+Return the current loaded context window entries and `leafId` without `since` diffing (used by `RpcClient.getEntries({ windowOnly: true })`). For unsaved sessions with archived rows, `data` may also include `privateArchive` metadata.
+
+```json
+{"type": "get_context_window"}
+```
+
+Response:
+
+```json
+{
+  "type": "response",
+  "command": "get_context_window",
+  "success": true,
+  "data": {
+    "entries": [
+      {"type": "message", "id": "def456", "parentId": "abc123", "timestamp": "2026-01-01T00:00:00.000Z", "message": {"role": "user", "content": "Hello"}}
+    ],
+    "leafId": "def456"
+  }
+}
+```
+
 #### get_history_page
 
 Read one page of the full saved session in append order, including pre-compaction entries and abandoned branches. Pass optional inclusive `fromSeq` / `toSeq` and optional `pageEntries`, or pass `cursor: data.nextCursor` (without a range) to fetch the next page.
@@ -1302,21 +1449,26 @@ Response:
   "success": true,
   "data": {
     "items": [
-      {"seq": 1, "entry": {"type": "message", "id": "abc123", "parentId": null}}
+      {"seq": 1, "entry": {"type": "message", "id": "abc123", "parentId": null}},
+      {"kind": "oversized", "sessionId": "abc123", "epoch": "epoch-1", "seq": 12, "bytes": 2097152}
     ],
     "nextCursor": "eyJ..."
   }
 }
 ```
 
-Each page contains up to 64 entries and 1 MiB of serialized JSON; an entry exceeding that limit is returned alone as an oversized reference item readable via `get_history_chunk`. Later appends do not shift the snapshot's end sequence.
+Each page contains up to 64 entries and 1 MiB of serialized JSON. Normal entries arrive as `{"seq": number, "entry": SessionEntry}`. Any entry exceeding the page limit is returned as an `OversizedSessionEntry` reference (`{"kind": "oversized", "sessionId": string, "epoch": string, "seq": number, "bytes": number}`) readable via [`get_history_chunk`](#get_history_chunk). Later appends do not shift the snapshot's end sequence.
 
 #### get_history_chunk
 
-Read up to 64 KiB of the original UTF-8 bytes of one oversized item returned by `get_history_page`. Pass `reference` (the complete oversized item) and `offset` (`0` for the first chunk).
+Read up to 64 KiB of the original UTF-8 bytes of one oversized item returned by `get_history_page`. Pass `reference` (the exact `OversizedSessionEntry` object from `get_history_page.data.items`) and `offset` (`0` for the first chunk).
 
 ```json
-{"type": "get_history_chunk", "reference": {"oversized": true, "seq": 12, "id": "big123", "byteLength": 2097152}, "offset": 0}
+{
+  "type": "get_history_chunk",
+  "reference": {"kind": "oversized", "sessionId": "abc123", "epoch": "epoch-1", "seq": 12, "bytes": 2097152},
+  "offset": 0
+}
 ```
 
 Response:
@@ -1333,7 +1485,35 @@ Response:
 }
 ```
 
-Decode `data.data` from base64 and continue requesting at `data.nextOffset` until `nextOffset` is omitted. Session replacement invalidates prior references.
+Decode `data.data` from base64 and continue requesting at `data.nextOffset` until `nextOffset` is omitted (`offset + chunkBytes >= reference.bytes`). Session replacement invalidates prior references.
+
+#### find_queued_messages
+
+Check which queued message IDs (assigned via `prompt.queuedMessageId`) were committed to the session store after entry sequence `after` (optional `epoch`, `sessionId`, and `sessionFile` to inspect another session in the same store or JSONL file).
+
+```json
+{
+  "type": "find_queued_messages",
+  "ids": ["qm-1", "qm-2"],
+  "after": 42
+}
+```
+
+Response:
+
+```json
+{
+  "type": "response",
+  "command": "find_queued_messages",
+  "success": true,
+  "data": {
+    "saved": ["qm-1"],
+    "absent": ["qm-2"]
+  }
+}
+```
+
+An ID omitted from both `saved` and `absent` could not be determined. TypeScript `RpcClient` method: `findQueuedMessages(query)`.
 
 #### get_tree
 
@@ -1608,6 +1788,7 @@ Events stream to stdout as JSON lines. Most events carry no `id`; `bash_executio
 | `agent_settled` | No automatic session work remains (`{ aborted: boolean }`) |
 | `session_released` | Session was released to idle storage (`{ released: ReleasedAgentSession }`) |
 | `entry_appended` | A durable `SessionEntry` was appended (`{ entry: SessionEntry }`) |
+| `session_storage_reconnect` | Ordered PostgreSQL session save is waiting for reconnection or recovered (`{ state, elapsedMs, reconnecting }`) |
 | `session_info_changed` | Session display name changed (`{ name: string \| undefined }`) |
 | `model_changed` | Active model changed (`{ model, previousModel, source: "set" \| "cycle" \| "restore" \| "fallback" }`) |
 | `thinking_level_changed` | Active thinking level changed (`{ level }`) |
@@ -1662,17 +1843,87 @@ Emitted when the agent begins an attempt. `turnStartedAt` records when the turn'
 {"type": "agent_settled", "aborted": false}
 ```
 
-### Session metadata and fallback events
+### session_storage_reconnect
+
+Emitted when a PostgreSQL-backed session's ordered write queue waits on a dropped or refused connection (after ~10 seconds, repeating every 60 seconds with `state: "waiting"`), and once more with `state: "recovered"` after the write commits following a reported wait:
+
+```json
+{"type": "session_storage_reconnect", "state": "waiting", "elapsedMs": 10012, "reconnecting": true}
+{"type": "session_storage_reconnect", "state": "recovered", "elapsedMs": 14380, "reconnecting": true}
+```
+
+### Session metadata, fallback, and lifecycle events
 
 - `session_info_changed`: `{"type": "session_info_changed", "name": "my-feature-work"}` (`name` is omitted when cleared).
-- `model_changed`: `{"type": "model_changed", "model": {}, "previousModel": {}, "source": "set"}` (`source` is `"set"`, `"cycle"`, `"restore"`, or `"fallback"`).
+- `model_changed`: `{"type": "model_changed", "model": { ... }, "previousModel": { ... }, "source": "set"}` (`source` is `"set"`, `"cycle"`, `"restore"`, or `"fallback"`).
 - `thinking_level_changed`: `{"type": "thinking_level_changed", "level": "high"}`.
-- `entry_appended`: `{"type": "entry_appended", "entry": {}}`.
-- `session_released`: `{"type": "session_released", "released": {}}`.
-- `agent_continue_error`: `{"type": "agent_continue_error", "source": "post_compaction", "errorMessage": "..."}`.
-- `model_fallback_start` / `model_fallback_end`: bracket automatic model fallback switches across configured `fallbackModels`.
-- `task_cleanup_quarantined`: reports background task resources that failed cleanup (`taskId`, `resources`).
-- `worktree_snapshot_unavailable`: reports why a worktree snapshot could not be recorded (`reason`).
+- `agent_continue_error`: `{"type": "agent_continue_error", "source": "post_compaction", "errorMessage": "Failed to send queued message: ..."}`.
+
+`entry_appended`: emitted when a durable entry is persisted to the session store:
+
+```json
+{
+  "type": "entry_appended",
+  "entry": {"type": "custom", "id": "ent-7", "parentId": "ent-6", "timestamp": "2026-06-06T00:00:00.000Z", "customType": "my-ext", "data": {"ok": true}}
+}
+```
+
+`session_released`: emitted right before an idle session releases its in-memory resources:
+
+```json
+{
+  "type": "session_released",
+  "released": {"sessionId": "abc123", "cwd": "/path/to/project", "sessionFile": "/path/to/session.jsonl"}
+}
+```
+
+`model_fallback_start` and `model_fallback_end`: bracket automatic switches across configured `fallbackModels`:
+
+```json
+{
+  "type": "model_fallback_start",
+  "from": "anthropic/claude-sonnet-4",
+  "to": "openai/gpt-5",
+  "fromThinkingLevel": "medium",
+  "toThinkingLevel": "medium",
+  "reason": "529 overloaded_error",
+  "attempt": 1
+}
+{"type": "model_fallback_end", "success": true, "from": "anthropic/claude-sonnet-4", "to": "openai/gpt-5"}
+```
+
+`task_cleanup_quarantined`: emitted when background task cleanup fails and unconfirmed resources are quarantined:
+
+```json
+{
+  "type": "task_cleanup_quarantined",
+  "taskId": "task-42",
+  "resources": [{"kind": "process-group", "identifier": "12345", "reason": "EPERM"}]
+}
+```
+
+`worktree_snapshot_unavailable`: emitted when a worktree snapshot could not be recorded for a turn:
+
+```json
+{
+  "type": "worktree_snapshot_unavailable",
+  "reason": {"name": "WorkspaceGitError", "code": "git-failed", "message": "...", "hint": "...", "retryable": false, "fields": {}}
+}
+```
+
+### blueprint_build_waiting and blueprint_build_finished
+
+Emitted when resuming a worktree whose environment blueprint build runs asynchronously behind the first turn (`blueprint_build_waiting` may arrive before the first command response if waiting on another process's build of the same worktree):
+
+```json
+{"type": "blueprint_build_waiting", "root": "/home/u/.atomic/agent/worktree-snapshots/worktrees/...", "message": "Waiting for blueprint build..."}
+{
+  "type": "blueprint_build_finished",
+  "sessionId": "abc123",
+  "roots": ["/home/u/.atomic/agent/worktree-snapshots/worktrees/..."],
+  "notices": [{"type": "warning", "message": "Partial build: step 2 exited with status 1"}]
+}
+```
 
 ### turn_start / turn_end
 
@@ -1845,7 +2096,7 @@ Emitted when manual or automatic compaction starts and finishes. `reason` is `"m
 }
 ```
 
-If a compactor model fails, Atomic clears the context instead (`result.form: "cleared"` with `result.fallbackReason`). If `reason` is `"overflow"` and compaction succeeds, `willRetry` is `true` and Atomic automatically retries the prompt. If aborted, `result` is `null` and `aborted` is `true`. Check `result` and `errorMessage` independently because a mid-turn compaction can commit a durable boundary before a follow-up request exceeds the provider's hard input limit. Exhausted overflow recovery sets `"unresolvedOverflow": true` alongside `errorMessage`.
+If a compactor model fails, Atomic clears the context instead (`result.form: "cleared"` with `result.fallbackReason`). Treat `promptVersion` and `stats.rangeCount` as opaque internal metadata. If `reason` is `"overflow"` and compaction succeeds, `willRetry` is `true` and Atomic automatically retries the prompt. If aborted, `result` is `null` and `aborted` is `true`. Check `result` and `errorMessage` independently because a mid-turn compaction can commit a durable boundary before a follow-up request exceeds the provider's hard input limit. Exhausted overflow recovery sets `"unresolvedOverflow": true` alongside `errorMessage`.
 
 ### compaction_usage
 

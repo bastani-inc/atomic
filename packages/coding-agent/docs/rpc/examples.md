@@ -1,14 +1,18 @@
 ---
-title: "RPC client examples"
-sidebarTitle: "RPC examples"
+title: "Connect with RPC clients"
+sidebarTitle: "RPC client examples"
 description: "Connect to Atomic RPC mode using the typed RpcClient in TypeScript or a standalone Node.js script."
 ---
 
 ## Typed TypeScript client (`RpcClient`)
 
-Install `@bastani/atomic` and use `RpcClient` to spawn Atomic in a child process, send typed commands, stream events, answer extension UI requests, and wait for turns to settle.
+Install `@bastani/atomic` and use `RpcClient` to spawn Atomic in a child process, send typed commands, stream events, and answer extension UI requests.
 
-By default `RpcClient` launches `bun dist/cli.js`. To launch the installed package under Node.js, pass `runtimeExecutable: process.execPath` and resolve `@bastani/atomic/rpc-entry`. To drive an `atomic` binary already on `PATH`, pass `runtimeExecutable: "atomic"` and `cliPath: ""`.
+<Warning>
+By default, `RpcClient` launches `bun dist/cli.js`, which fails under Node.js or npm installs. Always pass `runtimeExecutable: process.execPath` with `cliPath: fileURLToPath(import.meta.resolve("@bastani/atomic/rpc-entry"))` for Node.js apps, or `runtimeExecutable: "atomic"` with `cliPath: ""` to drive an installed `atomic` binary on `PATH`.
+</Warning>
+
+**About `@bastani/atomic/rpc-entry`:** This dedicated RPC entry script sets `process.title = "atomic-rpc"`, suppresses Node runtime warnings so stderr stays clean, and injects `--mode rpc` before any `--` terminator so caller `--mode` flags cannot accidentally switch away from RPC mode.
 
 ### `RpcClientOptions`
 
@@ -24,13 +28,49 @@ By default `RpcClient` launches `bun dist/cli.js`. To launch the installed packa
 | `runtimeArgs` | `[]` | Arguments passed to `runtimeExecutable` before `cliPath`. |
 | `requestTimeoutMs` | `30000` | Timeout in milliseconds for short metadata and control commands. |
 
-**Request timeout exemptions:** `requestTimeoutMs` (default `30_000` ms) applies only to short metadata and control requests such as `get_state`, `get_available_models`, `set_model`, `get_entries`, and `list_sessions`. Long-lived or interaction-gated commands (`prompt`, `steer`, `follow_up`, `resume_queued_messages`, `bash`, `user_bash`, `compact`, `login_provider`, `fork`, `clone`, `switch_session`, `new_session`, `import_session`, `navigate_tree`, `invoke_shortcut`, `start_pending_recovery`, `start_pending_recovery_restore`) and cooperative cancellation commands (`abort`, `abort_bash`, `abort_compaction`, `abort_branch_summary`, `abort_retry`, `cancel_login_provider`) are exempt and never time out on the client timer. If the child exits or the transport breaks, pending requests reject immediately.
+**Request timeout exemptions:** `requestTimeoutMs` (default `30_000` ms) applies only to short metadata and control requests such as `get_state`, `get_available_models`, `set_model`, `get_entries`, and `list_sessions`. Long-lived or interaction-gated commands (`prompt`, `steer`, `follow_up`, `resume_queued_messages`, `bash`, `user_bash`, `compact`, `login_provider`, `fork`, `clone`, `switch_session`, `new_session`, `import_session`, `navigate_tree`, `invoke_shortcut`, `start_pending_recovery`) and cooperative cancellation commands (`abort`, `abort_bash`, `abort_compaction`, `abort_branch_summary`, `abort_retry`, `cancel_login_provider`) are exempt and never time out on the client timer. If the child exits or the transport breaks, pending requests reject immediately.
 
-### Basic prompt and streaming
+**Startup and shutdown lifecycle:** In standalone mode, `client.start()` waits a fixed 100 ms after spawning the subprocess. `client.stop()` terminates the subprocess with `SIGTERM` and a **250 ms** grace period before escalating to `SIGKILL` (on Windows, `SIGTERM` terminates immediately). Wait for `agent_settled` and any pending writes before calling `stop()`.
+
+### Prompting and waiting for turns to settle
+
+<Warning>
+**`promptAndWait()`, `waitForIdle()`, and `collectEvents()` stop on the first `agent_end`, not `agent_settled`:**
+1. They resolve as soon as the first low-level `agent_end` event arrives — **before** automatic retries (`retryPending: true`), post-compaction continuations, or queued turns complete.
+2. `promptAndWait()` does **not** inspect the `prompt` response's `disposition`. If an extension command or input hook returns `"handled"`, no turn starts and `promptAndWait()` hangs until its 60-second timeout fires.
+
+For reliable turn completion in production clients, call `client.prompt()`, return early when `disposition === "handled"`, and wait for `event.type === "agent_settled"`.
+</Warning>
 
 ```typescript
 import { fileURLToPath } from "node:url";
-import { RpcClient } from "@bastani/atomic";
+import { RpcClient, type RpcEvent } from "@bastani/atomic";
+
+async function runPromptUntilSettled(client: RpcClient, message: string): Promise<RpcEvent[]> {
+  const events: RpcEvent[] = [];
+  let resolveSettled!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  });
+
+  const unsubscribe = client.onEvent((event) => {
+    events.push(event);
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+      process.stdout.write(event.assistantMessageEvent.delta);
+    }
+    if (event.type === "agent_settled") resolveSettled();
+  });
+
+  try {
+    const disposition = await client.prompt(message);
+    if (disposition === "handled") return events;
+    await settled;
+    process.stdout.write("\n");
+    return events;
+  } finally {
+    unsubscribe();
+  }
+}
 
 const client = new RpcClient({
   runtimeExecutable: process.execPath,
@@ -39,21 +79,27 @@ const client = new RpcClient({
   requestTimeoutMs: 30_000,
 });
 
-const unsubscribe = client.onEvent((event) => {
-  if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-    process.stdout.write(event.assistantMessageEvent.delta);
-  }
-});
-
 try {
   await client.start();
-  await client.promptAndWait("Explain this repository");
-  process.stdout.write("\n");
+  await runPromptUntilSettled(client, "Explain this repository");
 } finally {
-  unsubscribe();
   await client.stop();
 }
 ```
+
+### Sending commands without a typed wrapper
+
+`RpcClient` provides typed helpers for the most common commands plus several lower-level helpers:
+
+- **`client.requestInternal<T>(command)`:** Sends any [`RpcCommand`](/rpc/protocol#commands) and unwraps its response `data`. Use this for protocol commands without a dedicated typed wrapper on `RpcClient` (`set_scoped_models`, `pause_queued_messages`, `resume_queued_messages`, `abort_compaction`, `abort_branch_summary`, `import_session`, `navigate_tree`, `set_label`, `reload`, `get_shortcuts`, `invoke_shortcut`, `stop_all_background`, and OAuth `login_provider` with `authType: "oauth"`).
+- **`client.userBashWithUpdates(command, onUpdate, options?)`:** Streams correlated `stdout`/`stderr` deltas and supports `excludeFromContext` and `onRequestId` (by contrast, `client.bash(command)` does not expose `excludeFromContext`).
+- **`client.getEntries({ windowOnly: true })`:** Sends `get_context_window` instead of `get_entries`.
+- **`client.findQueuedMessages(query)`:** Checks which queued message IDs were committed to the session store after a sequence number.
+- **`client.getStderr()`:** Returns bounded stderr text captured from the child process for diagnostics.
+
+<Warning>
+Do **not** call `client.loginProvider(provider)` in standalone RPC mode: it omits `authType` (defaulting to `"api_key"`), which requires Atomic's interactive input host and fails in standalone `atomic --mode rpc`. Save API keys with `await client.saveProviderCredential(provider, { type: "api_key", key })`, or start OAuth login with `await client.requestInternal({ type: "login_provider", provider, authType: "oauth", loginId })`.
+</Warning>
 
 ### Handling extension UI and questionnaires
 
@@ -96,7 +142,7 @@ More TypeScript examples live in the repository under [`examples/rpc-client.ts`]
 
 ### Isolating subprocess storage
 
-Pass `--storage-file <path>`, `--session-store <path>`, or `ATOMIC_STORAGE` in `RpcClientOptions` to give each RPC subprocess its own session store without editing user settings (see [Selecting storage per process](/storage#selecting-storage-per-process) and [SDK storage guide](/sdk/storage)):
+Pass `--storage-file <path>`, `--session-store <path>`, or `ATOMIC_STORAGE` in `RpcClientOptions` to give each RPC subprocess its own session store without editing user settings (see [Selecting storage per process](/storage#selecting-storage-per-process) and [Configure session storage](/sdk/storage)):
 
 ```typescript
 import { fileURLToPath } from "node:url";
@@ -143,7 +189,7 @@ try {
 
 ## Standalone Node.js client
 
-This ESM script spawns an installed `atomic --mode rpc` binary without importing `@bastani/atomic`, parses stdout with strict LF-only JSONL framing (avoiding Node's `readline`, which splits on `U+2028` and `U+2029`), aborts on `SIGINT`, and closes stdin cleanly when the turn finishes:
+This ESM script spawns an installed `atomic --mode rpc` binary without importing `@bastani/atomic`, parses stdout with strict LF-only JSONL framing (avoiding Node's `readline`, which splits on `U+2028` and `U+2029`), checks `disposition` on the `prompt` response, aborts on `SIGINT`, and closes stdin cleanly once `agent_settled` arrives:
 
 ```javascript
 import { spawn } from "node:child_process";
@@ -180,17 +226,27 @@ function attachJsonlReader(stream, onLine) {
 attachJsonlReader(agent.stdout, (line) => {
   const event = JSON.parse(line);
 
+  if (event.type === "response" && event.id === "p-1") {
+    if (!event.success) {
+      console.error(event.error);
+      agent.stdin.end();
+    } else if (event.data?.disposition === "handled") {
+      agent.stdin.end();
+    }
+    return;
+  }
+
   if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
     process.stdout.write(event.assistantMessageEvent.delta);
   }
 
-  if (event.type === "agent_end") {
+  if (event.type === "agent_settled") {
     process.stdout.write("\n");
     agent.stdin.end();
   }
 });
 
-agent.stdin.write(JSON.stringify({ type: "prompt", message: "Hello" }) + "\n");
+agent.stdin.write(JSON.stringify({ id: "p-1", type: "prompt", message: "Hello" }) + "\n");
 
 process.on("SIGINT", () => {
   agent.stdin.write(JSON.stringify({ type: "abort" }) + "\n");

@@ -4,8 +4,6 @@ import type { Message } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, it, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import {
-	COMPACTED_OUTPUT_MAX_TOKENS,
-	compactedOutputTokenCap,
 	estimateTextTokens,
 	estimateTokens,
 	findUnansweredToolCall,
@@ -165,25 +163,18 @@ describe("compaction clears the context window without calling a model", () => {
 		assert.equal(boundaries(), 1);
 	});
 
-	it("a cleared context with the largest compacted text stays below the automatic trigger", async () => {
+	it("a cleared context stays well below the automatic trigger", async () => {
 		harness = await bigHarness();
 		harness.setResponses([fauxAssistantMessage("answer")]);
 		await harness.session.prompt("task");
 		const { compactedText } = await harness.session.compact();
-		const trigger = WINDOW - RESERVE;
-		const cap = compactedOutputTokenCap(trigger);
-		assert.ok(cap <= COMPACTED_OUTPUT_MAX_TOKENS);
 		const cleared = harness.session.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
 		assert.ok(
-			!shouldCompact(cleared + estimateTextTokens(compactedText) + cap, WINDOW, {
+			!shouldCompact(cleared + estimateTextTokens(compactedText), WINDOW, {
 				enabled: true,
 				reserveTokens: RESERVE,
 			}),
 		);
-		for (const window of [32_000, 128_000, 200_000]) {
-			const smallTrigger = window - RESERVE;
-			assert.ok(compactedOutputTokenCap(smallTrigger) * 2 <= smallTrigger, `cap for a ${window} window`);
-		}
 	});
 
 	it("an automatic trigger does not clear a context whose system prompt alone reaches the trigger", async () => {

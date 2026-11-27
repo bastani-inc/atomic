@@ -1,10 +1,10 @@
 ---
 title: "Keybindings"
 sidebarTitle: "Keybindings"
-description: "Default keyboard shortcuts and custom ~/.atomic/agent/keybindings.json configuration rules."
+description: "Default keyboard shortcuts, selector controls, extension shortcut rules, and ~/.atomic/agent/keybindings.json configuration."
 ---
 
-Customize keyboard shortcuts in `~/.atomic/agent/keybindings.json` (relocated by `ATOMIC_CODING_AGENT_DIR`; see [Environment variables](/environment-variables)). Run `/reload` after editing the file to apply changes without restarting. Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/keybindings.schema.json"` for editor completion and validation (Atomic ignores `$schema` at load time). See [Interactive mode](/usage) for editor and queue workflows, and [tmux setup](/tmux) if `Shift+Enter` or `Escape` behaves unexpectedly inside tmux.
+Customize keyboard shortcuts in `~/.atomic/agent/keybindings.json` (relocated by `ATOMIC_CODING_AGENT_DIR`; see [Environment variables](/environment-variables)). Run `/reload` after editing the file to apply changes without restarting. Add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/keybindings.schema.json"` for editor completion and validation (Atomic ignores `$schema` at load time). See [Use interactive mode](/usage) for editor and queue workflows, and [tmux setup](/tmux) if `Shift+Enter` or `Escape` behaves unexpectedly inside tmux.
 
 ## Key format
 
@@ -20,10 +20,13 @@ Examples: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+super+x`, `ctr
 
 **Key syntax rules:**
 
-- Key names and modifiers are **case-insensitive** (`pageUp` and `pageup`, `CTRL+P` and `ctrl+p` are equivalent).
 - Modifier order does not matter (`ctrl+shift+p` and `shift+ctrl+p` are equivalent), but duplicate modifiers (such as `ctrl+ctrl+x`) are invalid and never match.
 - **`escape` and `esc` never match with any modifier.** Bind plain `escape` or `esc` only.
 - Binding `+` with modifiers works (`ctrl++`, `alt++`).
+
+<Note>
+**Case sensitivity with `$schema`:** At runtime, key names and modifiers are case-insensitive (`CTRL+P` and `pageup` work). However, the published JSON Schema (`keybindings.schema.json`) validates lowercase modifiers and camelCase special keys (`ctrl+p`, `pageUp`, `pageDown`). Use lowercase modifiers and camelCase special keys if your editor validates against `$schema`.
+</Note>
 
 ## Custom configuration
 
@@ -42,9 +45,27 @@ Create `~/.atomic/agent/keybindings.json`:
 **Configuration rules:**
 
 - **Replacement semantics:** Setting an action in `keybindings.json` **completely replaces** its default keys rather than appending to them. Pass an array to keep defaults alongside a new key, or pass `[]` to unbind the action.
-- **Invalid config fallback:** Malformed JSON or a non-object top-level value is silently ignored and all defaults apply with no warning. Unknown action IDs, entries whose value is not a string or string array, and unrecognized key strings are also silently ignored.
-- **Legacy migration:** If your file contains older pre-namespaced action names (such as `cursorUp`, `expandTools`, `app.tasks.inspect`, or `app.tasks.cancel`), Atomic migrates them automatically on startup and **rewrites `~/.atomic/agent/keybindings.json` in place** (sorting known keys and dropping any legacy key whose current namespaced equivalent is already present).
+- **Invalid config fallback:** Malformed JSON or a non-object top-level value is ignored and all defaults apply with no warning. Unknown action IDs and entries whose value is not a string or string array are also ignored, leaving defaults intact.
 - **Windows and WSL defaults:** WSL defaults apply on Linux whenever `WSL_DISTRO_NAME` or `WSL_INTEROP` is set. On native Windows, `app.suspend` defaults to `alt+z` and opens an interactive PowerShell subshell (leaving `ctrl+z` for editor undo; type `exit` to return while background tasks keep running). On WSL, standard Linux `ctrl+z`/`fg` suspension applies and `tui.editor.undo` defaults to `alt+z`. See [Windows](/windows).
+
+<Warning>
+**Two gotchas in `keybindings.json`:**
+- **Unrecognized key strings unbind defaults.** Setting a valid action ID to an unrecognized key string (such as `"bogus"` or `"ctrl+ctrl+p"`) replaces its default keys and effectively unbinds the action, with no warning, because the string never matches any keypress.
+- **Legacy names rewrite the file in place.** If your file contains older pre-namespaced action names (such as `cursorUp`, `expandTools`, `app.tasks.inspect`, or `app.tasks.cancel`), Atomic migrates them automatically on startup and **rewrites `~/.atomic/agent/keybindings.json` in place** (sorting known keys and dropping any legacy key whose current namespaced equivalent is already present).
+</Warning>
+
+### Reserved built-in actions and extension shortcuts
+
+Extensions can register custom shortcuts, which interact with built-in actions and `keybindings.json` as follows:
+
+- **17 reserved built-in actions block extension shortcuts.** If an extension registers a key currently bound to any of these actions, Atomic skips the extension shortcut and logs a warning:
+  - `app.interrupt`, `app.clear`, `app.exit`, `app.suspend`
+  - `app.thinking.cycle`, `app.thinking.toggle`, `app.model.cycleForward`, `app.model.cycleBackward`, `app.model.select`
+  - `app.tools.expand`, `app.editor.external`, `app.message.followUp`
+  - `tui.input.submit`, `tui.select.confirm`, `tui.select.cancel`, `tui.input.copy`, `tui.editor.deleteToLineEnd`
+- **Remapping moves the reservation.** Rebinding a reserved action in `keybindings.json` moves the reservation to its newly bound key and frees the old key for extensions.
+- **Non-reserved built-in actions can be overridden.** If an extension claims a key bound to a non-reserved built-in action, Atomic logs a warning and activates the extension's shortcut. When two extensions claim the same key, the later extension wins with a warning.
+- **Duplicate bindings in `keybindings.json` do not warn.** Atomic does not display a UI warning if you assign the same key to two actions in `keybindings.json`, so avoid overlapping keys within the same view.
 
 ## All actions
 
@@ -86,7 +107,7 @@ Dedicated history actions switch prompt history entries regardless of cursor lin
 | --- | --- | --- |
 | `tui.input.newLine` | `shift+enter`, `ctrl+j` | Insert new line |
 | `tui.input.submit` | `enter` | Submit input |
-| `tui.input.tab` | `tab` | Tab / autocomplete |
+| `tui.input.tab` | `tab` | Tab / autocomplete (also toggles scope in `/model` and `/resume`) |
 
 ### TUI kill ring
 
@@ -100,7 +121,7 @@ Dedicated history actions switch prompt history entries regardless of cursor lin
 
 | Keybinding id | Default | Description |
 | --- | --- | --- |
-| `tui.input.copy` | `ctrl+c` | Copy selection |
+| `tui.input.copy` | `ctrl+c` | Reserved editor `Ctrl+C` binding (hands `Ctrl+C` to clear/interrupt/exit rather than editing; does not copy selected text—mouse selection copies automatically in fullscreen mode, and `/copy` copies the last assistant message) |
 | `tui.select.up` | `up` | Move selection up |
 | `tui.select.down` | `down` | Move selection down |
 | `tui.select.pageUp` | `pageUp` | Page up in list |
@@ -108,35 +129,15 @@ Dedicated history actions switch prompt history entries regardless of cursor lin
 | `tui.select.confirm` | `enter` | Confirm selection |
 | `tui.select.cancel` | `escape`, `ctrl+c` | Cancel selection |
 
-Local copy requires a working clipboard utility (`wl-clipboard` on Wayland, `xclip` or `xsel` on X11, or Termux:API on Termux). Atomic forwards copies through OSC 52 over SSH, Mosh, and Rex and as a headless Linux fallback; set `ATOMIC_CLIPBOARD_OSC52=1` (legacy `PI_CLIPBOARD_OSC52=1`) to force OSC 52 after local copy. See [Terminal setup](/terminal-setup) for terminal clipboard and mouse configuration.
+Local copy (for `/copy` and mouse auto-copy) requires a working clipboard utility (`wl-clipboard` on Wayland, `xclip` or `xsel` on X11, or Termux:API on Termux). Atomic forwards copies through OSC 52 over SSH, Mosh, and Rex and as a headless Linux fallback; set `ATOMIC_CLIPBOARD_OSC52=1` (legacy `PI_CLIPBOARD_OSC52=1`) to force OSC 52 after local copy. See [Terminal setup](/terminal-setup).
 
-<div id="tui-fullscreen-viewport" />
+### Fullscreen transcript scrolling {#tui-fullscreen-viewport}
 
-### Transcript scrolling and mouse
+Actions under the `tui.altScreen.*` namespace control scrolling in the fullscreen transcript viewport above the prompt editor. For mouse clicks, text selection, auto-copy, and `ask_user_question` dialog controls, see [Transcript scrolling and mouse](#transcript-scrolling-and-mouse).
 
-Interactive sessions run in fullscreen with a scrollable transcript above the docked input box. `app.tools.expand` (`Ctrl+O` by default) expands or collapses all tool and summary blocks in the displayed transcript.
+While the main editor has focus, `home` and `end` stay with the editor, `ctrl+home` and `ctrl+end` jump to the transcript top and bottom, `pageUp` and `pageDown` scroll the transcript, and `ctrl+pageUp` and `ctrl+pageDown` scroll the editor. Focused overlays and scrollable lists (autocomplete, `/settings`, `/model`) capture scrolling keys first.
 
-**Clicking blocks:**
-
-- Clicking any expandable block (title, preview, `... +N lines`, or its inline `(ctrl+o to expand)` hint) opens or folds that single block on `main` or a subagent, including grouped-call summaries, finished-agent cards, `!` shell blocks, Intercom messages, task notices, skill blocks, branch summaries, and compaction boundaries.
-- Single clicks wait half a second after release so double-clicks, triple-clicks, and drags select text without toggling blocks. Clicking a link opens the link.
-- A block stays in its clicked state until `Ctrl+O` resets every block together. Thinking blocks toggle separately with `app.thinking.toggle`.
-
-**Clicking key hints:**
-
-- Clicking a key hint under the prompt, at the bottom of `/tasks`, in dialogs or pickers, in the `?` overlay, or inside notices triggers that key for the active view (except inline `(ctrl+o to expand)` inside a block, which toggles only that block).
-- In multi-key hints (`pgup/pgdn scroll`, `↑↓ select`, `1-4 pick`), click the specific key; the trailing label triggers the last key. Slash-command hints such as `/tasks to manage` run the command while preserving your prompt draft.
-- Empty-prompt keys such as `?` and `↓` work when clicked even if the prompt holds text. Dragging across a hint selects text; hints behind an open dialog stay inactive.
-
-**Scrolling and mouse selection:**
-
-- The mouse wheel scrolls the region under the pointer (and scrolls the transcript when over the editor or footer). Hold `Alt` while scrolling to move five times as far when your terminal forwards Alt with mouse wheel events.
-- When scrolled up, a centered `↓ jump to bottom · ctrl+end` pill appears above the editor (counting new messages as they arrive) and the current turn's opening prompt stays pinned at the top. Viewed subagent transcripts and `/tasks` shell views scroll independently without moving `main`.
-- Drag to select characters, double-click for a word or path, and triple-click for a line. Selection copies automatically unless `fullscreenCopyOnSelect` is `false`. On Windows, pressing the secondary mouse button pastes clipboard text into the focused component. See [Terminal setup](/terminal-setup) for mouse and trackpad behavior.
-
-**Editor vs. transcript scrolling:** While the main editor has focus, `home` and `end` stay with the editor, `ctrl+home` and `ctrl+end` jump to the transcript top and bottom, `pageUp` and `pageDown` scroll the transcript, and `ctrl+pageUp` and `ctrl+pageDown` scroll the editor. Focused overlays and scrollable lists (autocomplete, `/settings`, `/model`) capture scrolling actions first.
-
-| Key | Editor action | Fullscreen action |
+| Key | Editor focus | Transcript focus |
 | --- | --- | --- |
 | `home`, `end` | Editor | Editor |
 | `ctrl+home`, `ctrl+end` | *(none)* | Transcript |
@@ -144,8 +145,6 @@ Interactive sessions run in fullscreen with a scrollable transcript above the do
 | `ctrl+pageUp`, `ctrl+pageDown` | Editor | Editor |
 
 Rebind these like any other action: for example `"tui.altScreen.pageUp": "ctrl+pageUp"` keeps `pageUp` in the editor and moves transcript paging to `ctrl+pageUp`, and `[]` unbinds a shortcut. Focused custom components may consume viewport keys first; see the [input handling contract](/extensions/ui#custom-components).
-
-**[`ask_user_question`](/tools) controls:** Transcript scroll keys also work while the bottom-pinned `ask_user_question` dialog or Notes is open. Inside `ask_user_question`, use `↑`/`↓` to move between options, `Enter` to pick (`Enter` or `Space` to toggle multi-select boxes), type on **Type something.** for a custom answer, `n` to add a note, `Tab` or `←`/`→` to switch questions, and `Esc` to cancel.
 
 | Keybinding id | Default | Description |
 | --- | --- | --- |
@@ -155,12 +154,14 @@ Rebind these like any other action: for example `"tui.altScreen.pageUp": "ctrl+p
 | `tui.altScreen.halfPageDown` | *(none)* | Scroll the transcript down by half a page |
 | `tui.altScreen.lineUp` | *(none)* | Scroll the transcript up by one line |
 | `tui.altScreen.lineDown` | *(none)* | Scroll the transcript down by one line |
-| `tui.altScreen.previousPrompt` | `ctrl+shift+up`, `ctrl+up` (`ctrl+up` alone on Windows and WSL) | Jump to the previous marked message |
-| `tui.altScreen.nextPrompt` | `ctrl+shift+down`, `ctrl+down` (`ctrl+down` alone on Windows and WSL) | Jump to the next marked message |
+| `tui.altScreen.previousPrompt` | `ctrl+shift+up`, `ctrl+up` (`ctrl+up` alone on Windows and WSL) | Jump to the previous message turn (user or assistant message) |
+| `tui.altScreen.nextPrompt` | `ctrl+shift+down`, `ctrl+down` (`ctrl+down` alone on Windows and WSL) | Jump to the next message turn (user or assistant message) |
 | `tui.altScreen.top` | `ctrl+home` | Scroll to the beginning of the transcript |
 | `tui.altScreen.bottom` | `ctrl+end` | Scroll to the transcript end and follow new output |
 
-Atomic does not ship a find-in-transcript shortcut. The four `tui.altScreen.search*` actions remain in the keybinding table so an existing `keybindings.json` still validates, but they have no default keys and do nothing.
+<Note>
+Atomic does not ship a find-in-transcript shortcut. Four compatibility action IDs—`tui.altScreen.search`, `tui.altScreen.searchNext`, `tui.altScreen.searchPrevious`, and `tui.altScreen.searchClose`—remain recognized so existing `keybindings.json` files stay valid, but they have no default keys and do nothing.
+</Note>
 
 ### Application
 
@@ -193,24 +194,37 @@ Atomic does not ship a find-in-transcript shortcut. The four `tui.altScreen.sear
 | `app.session.tree` | *(none)* | Open session tree navigator (`/tree`) |
 | `app.session.fork` | *(none)* | Fork current session (`/fork`) |
 | `app.session.resume` | *(none)* | Open session resume picker (`/resume`) |
-| `app.session.togglePath` | `ctrl+p` | Toggle path display |
-| `app.session.toggleSort` | `ctrl+s` | Toggle sort mode |
-| `app.session.toggleNamedFilter` | `ctrl+n` | Toggle named-only filter |
-| `app.session.rename` | `ctrl+r` | Rename session |
-| `app.session.delete` | `ctrl+d` | Delete session |
-| `app.session.deleteNoninvasive` | `ctrl+backspace` | Delete session when query is empty |
+| `app.session.togglePath` | `ctrl+p` | Toggle path display in the session picker |
+| `app.session.toggleSort` | `ctrl+s` | Toggle sort mode in the session picker |
+| `app.session.toggleNamedFilter` | `ctrl+n` | Toggle named-only filter in the session picker |
+| `app.session.rename` | `ctrl+r` | Rename the selected session (interactive `/resume` only) |
+| `app.session.delete` | `ctrl+d` | Delete the selected session |
+| `app.session.deleteNoninvasive` | `ctrl+backspace` | Delete the selected session when the search query is empty |
 
-While viewing a subagent, `app.session.new`, `app.session.tree`, and `app.session.fork` ask for confirmation before acting on `main`; `app.session.resume` opens its picker in place.
+**Session picker controls and limits (`/resume` and `atomic -r`):**
+
+- `Tab` (`tui.input.tab`) switches between sessions in the current directory and sessions across all directories.
+- `Space` (when the search box is empty) toggles a preview pane for the selected session. Press `Esc` to close the preview before cancelling the picker.
+- `?` (`app.keys.help`) opens the picker's key overview.
+- **Deleting sessions (`Ctrl+D` or `Ctrl+Backspace`):** Requires confirmation (`Enter` confirms; `Esc` or `Ctrl+C` cancels), cannot delete the currently open session, and is **disabled for JSONL session storage**.
+- **Renaming sessions (`Ctrl+R`):** Available in interactive `/resume`, **not** in CLI `atomic -r` / `--resume`.
+- Cancelling `atomic -r` prints `No session selected` and exits `0`.
+- While viewing a subagent, `app.session.new`, `app.session.tree`, and `app.session.fork` ask for confirmation before acting on `main`; `app.session.resume` opens its picker in place.
 
 ### Models and thinking
 
 | Keybinding id | Default | Description |
 | --- | --- | --- |
-| `app.model.select` | `ctrl+l` | Open model selector |
+| `app.model.select` | `ctrl+l` | Open model selector (`/model`) |
 | `app.model.cycleForward` | `ctrl+p` | Cycle to next model |
 | `app.model.cycleBackward` | `shift+ctrl+p` (`alt+p` on Windows and WSL) | Cycle to previous model |
 | `app.thinking.cycle` | `shift+tab` | Cycle thinking level |
 | `app.thinking.toggle` | `ctrl+t` | Collapse or expand thinking blocks |
+
+**`/model` (`Ctrl+L`) selector controls:**
+
+- **`←` / `→`:** Adjust the thinking/effort level of the highlighted reasoning model before selecting it.
+- **`Tab` (`tui.input.tab`):** Switch between scoped models and all available models when a model scope (`enabledModels` or `--models`) is active.
 
 Interactive model and thinking choices save automatically as startup defaults; there is no separate save-default shortcut. While viewing a subagent, model and thinking-level changes are refused with a notice (switch to `main` to change them); `app.thinking.toggle` applies to the viewed transcript.
 
@@ -240,15 +254,17 @@ Atomic shares one chat screen across `main` and its subagents, with the [agent p
 | `app.agents.focus` | `down` | Focus the agent panel from an empty prompt |
 | `app.agents.chord` | `ctrl+x` | Start a background-work chord in the main chat |
 | `app.agents.stopAll` | `ctrl+k` | After the chord key: stop all background subagents and shells (press twice to confirm) |
-| `app.tasks.open` | *(none)* | Command-only `/tasks` route |
-| `app.tasks.input` | *(none)* | Focus stdin only when the selected task has writable input |
+| `app.tasks.open` | *(none)* | Reserved for opening the task list (currently has no key handler; use `/tasks` instead) |
+| `app.tasks.input` | *(none)* | Open the input box to send standard input to an interactive background shell task in `/tasks` (only when the selected task accepts input) |
 | `app.tasks.openWaited` | `alt+w` | Open the output of the shell a waiting subagent waits on, while viewing that subagent or from its `/tasks` row |
 
 On macOS, `Alt+W` requires your terminal to send Option as Meta (enable **Use Option as Meta key** in Terminal.app, set Option to **Esc+** in iTerm2, set `macos-option-as-alt` in Ghostty, or set `macos_option_as_alt both` in kitty). Otherwise remap `app.tasks.openWaited`. Avoid binding `alt+w` to another editor action because `app.tasks.openWaited` takes priority while viewing a waiting subagent or its `/tasks` row.
 
-Open question prompts and the main input box keep keyboard priority; `Esc` leaves stdin or task detail before leaving task focus, and unbound actions show no key hint.
+Open question prompts and the main input box keep keyboard priority; `Esc` leaves task stdin or task detail before leaving task focus, and unbound actions show no key hint.
 
 ### Tree navigation
+
+Inside `/tree`, typing filters entries live (automatically unfolding branches), `Backspace` edits the search query, `Esc` clears the search before closing the picker, and `←`/`→` (`tui.editor.cursorLeft` / `tui.editor.cursorRight`) page up and down alongside `PageUp`/`PageDown`.
 
 | Keybinding id | Default | Description |
 | --- | --- | --- |
@@ -287,6 +303,26 @@ These shortcuts are not configured through `keybindings.json`:
 | `Alt+M` | Bundled [Intercom](/intercom) extension | Open the Intercom session list overlay |
 | `Ctrl+Shift+S` | Bundled [Web access](/web-access#slash-commands-and-shortcuts) extension | Open the browser search curator while a search runs (configure via `shortcuts.curate` in `~/.atomic/web-search.json`) |
 | `Ctrl+Shift+W` | Bundled [Web access](/web-access#slash-commands-and-shortcuts) extension | Toggle the live web-search activity monitor (configure via `shortcuts.activity` in `~/.atomic/web-search.json`) |
+
+## Transcript scrolling and mouse
+
+Interactive sessions run fullscreen with a scrollable transcript above the docked editor. See [Fullscreen transcript scrolling](#tui-fullscreen-viewport) for keyboard paging and jump bindings.
+
+- **Clicking blocks:** Single-click any expandable block (title, preview, `... +N lines`, or its inline `(ctrl+o to expand)` hint) to open or fold that single block on `main` or a subagent—including grouped-call summaries, finished-agent cards, `!` shell blocks, Intercom messages, task notices, skill blocks, branch summaries, and compaction boundaries. Single clicks wait half a second after release so double-clicks, triple-clicks, and drags select text without toggling blocks; clicking a link opens the link. A block keeps its clicked state until `Ctrl+O` resets every block together (thinking blocks toggle separately with `Ctrl+T`).
+- **Clicking key hints:** Click a key hint under the prompt, at the bottom of `/tasks`, in dialogs or pickers, in the `?` overlay, or inside notices to trigger that key for the active view. In multi-key hints (`pgup/pgdn scroll`, `↑↓ select`, `1-4 pick`), click the specific key; the trailing label triggers the last key. Slash-command hints such as `/tasks to manage` run the command while preserving your prompt draft, and empty-prompt keys (`?`, `↓`) work when clicked even if the editor holds text. Dragging across a hint selects text; hints behind an open dialog stay inactive.
+- **Mouse scrolling and selection:** The mouse wheel scrolls the region under the pointer (and scrolls the transcript when over the editor or footer). Hold `Alt` while scrolling to move five times as far when your terminal forwards Alt with wheel events. While scrolled up, a centered `↓ jump to bottom · ctrl+end` pill appears above the editor and the current turn's opening prompt stays pinned at the top. Viewed subagent transcripts and `/tasks` shell views scroll independently without moving `main`.
+- **Auto-copy and Windows right-click paste:** Drag to select characters, double-click for a word or path, and triple-click for a line. Selection copies automatically unless `fullscreenCopyOnSelect` is `false`. On native Windows, pressing the secondary mouse button pastes clipboard text into the focused component, except inside VS Code's integrated terminal (`TERM_PROGRAM=vscode`). See [Terminal setup](/terminal-setup) for mouse and trackpad behavior.
+
+### Dialog controls (`ask_user_question`)
+
+Transcript scroll keys remain active while the bottom-pinned [`ask_user_question`](/tools) dialog or Notes view is open:
+
+- `↑` / `↓` — move between options
+- `Enter` — pick an option (`Enter` or `Space` toggles multi-select checkboxes)
+- Type on **Type something.** — enter a custom free-text answer
+- `n` — add a note
+- `Tab` or `←` / `→` — switch between questions
+- `Esc` — cancel the dialog
 
 ## Preset examples
 

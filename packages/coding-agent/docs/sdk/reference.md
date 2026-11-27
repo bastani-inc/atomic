@@ -57,22 +57,24 @@ const { session, workspace: binding } = await createAgentSession({
 });
 ```
 
-`workspace` accepts a `workspace({ ... })` value or an already resolved `BoundWorkspace`. The session's `cwd` becomes the bound worktree, an explicit `cwd` must stay inside it, and a read-only workspace removes and refuses `write`, `edit`, and `todo`. `result.workspace` and `session.workspace` hold the resolved binding. See [Workspaces](/sdk#workspaces).
+`workspace` accepts a `workspace({ ... })` value or an already resolved `BoundWorkspace`. The session's `cwd` becomes the bound worktree, an explicit `cwd` must stay inside it, and a read-only workspace removes and refuses `write`, `edit`, and `todo`. `result.workspace` and `session.workspace` hold the resolved binding.
+
+- **`WorkspaceOptions`:** `repo` (local repo root path, `file://` URL, SCP `git@host:owner/repo`, or `host/owner/repo`), `base` (starting ref/branch for new branches), `branch`, `worktree` (`"auto"` or an absolute path), `sandbox` (`"read-write"` default or `"read-only"`), and optional `label`.
+- **Workspace helpers:** `resolveWorkspace(spec, options?)`, `bindSessionWorkspace(workspace, sessionManager, signal?)`, `restoreWorkspace(binding, { recreateMissingBranch?, recordedHeads?, signal? })`, `acquireWorkspaceWriterLease(binding, options?)`, `workspaceChangeSet(binding, options?)` (returns `{ repo, baseCommit, branch, headCommit, diffStat }`), and `publishPullRequest(changeSet, options?)` (requires an authenticated `gh` CLI against a GitHub `origin` remote; idempotently returns `{ url, draft, created }`).
+- **Workspace errors:** All extend `WorkspaceError` (`isWorkspaceError`, `findWorkspaceError`, `isRetryableWorkspaceError`, `serializeWorkspaceError`, `rehydrateWorkspaceError`): `WorkspaceConfigError`, `WorkspaceBindingError`, `WorkspaceRestoreError`, `WorkspacePublicationError`, `WorkspaceTimeoutError`, `WorkspaceSandboxError`, `WorkspaceDriftError`, `WorkspaceGitError`, `WorkspaceSnapshotError`, and `WorkspaceCollectionError`.
+
+See [Workspaces](/sdk#workspaces).
 
 ### Model
 
 ```typescript
-import { getModel } from "@bastani/atomic-ai/compat";
-import { ModelRuntime } from "@bastani/atomic";
+import { createAgentSession, ModelRuntime } from "@bastani/atomic";
 
 const modelRuntime = await ModelRuntime.create();
 
-// Find specific built-in model (doesn't check if credentials exist)
-const opus = getModel("anthropic", "claude-opus-4-5");
+// Find any model by provider/id, including built-in and custom models from models.json
+const opus = modelRuntime.getModel("anthropic", "claude-opus-4-5");
 if (!opus) throw new Error("Model not found");
-
-// Find any model by provider/id, including custom models from models.json
-const customModel = modelRuntime.getModel("my-provider", "my-model");
 
 // Get only models whose providers have configured authentication
 const available = await modelRuntime.getAvailable();
@@ -80,16 +82,29 @@ const available = await modelRuntime.getAvailable();
 const { session } = await createAgentSession({
   model: opus,
   thinkingLevel: "medium", // off, minimal, low, medium, high, xhigh, max (when supported by the model)
-  
-  // Models for cycling (CTRL+P in interactive mode)
+
+  // Models for cycling (Ctrl+P in interactive mode)
   scopedModels: [
     { model: opus, thinkingLevel: "high" },
-    { model: haiku, thinkingLevel: "off" },
   ],
-  
+
+  // Ordered fallback chain (explicit array freezes the chain; omit to track settings.fallbackModels dynamically)
+  fallbackModels: ["openai/gpt-5:medium"],
+
   modelRuntime,
 });
 ```
+
+Additional model, prompt, and child-session options on `CreateAgentSessionOptions`:
+
+- `fallbackModels?: string[]`: ordered `provider/model[:thinkingLevel]` fallback chain. Passing an explicit array freezes the chain for the session; omitting it tracks `settings.fallbackModels` dynamically (including after project trust resolves).
+- `isFallbackModelAllowed?: (model, effort) => boolean`: hard eligibility filter evaluated before switching to a fallback candidate (intersected with `scopedModels` for child sessions).
+- `systemPromptTransform?: (prompt: string) => string`: transforms the assembled base system prompt at session construction.
+- `initialContextTransform?: (messages: AgentMessage[]) => AgentMessage[]`: filters inherited session messages before they enter the session (and acts as the session's context projection transform).
+- `sessionStartEvent?: SessionStartEvent`: start metadata (`{ type: "session_start", reason, previousSessionId? }`) delivered to extension `session_start` hooks.
+- `parentUsageSink?: (usage: Usage) => void`: receives token usage for every model call made by this session and its children (used to emit `child_session_usage` on a parent session).
+- `resourceAdmissionDelegated?: boolean`: marks this session's `resourceAdmission.acquire("session", ...)` call as a delegated child so the host grants immediately or throws instead of deadlocking behind the parent's permit.
+- `releaseWhenIdle?: { afterMs: number }`: releases the session after `afterMs` of idle time (`0` to `2,147,483,647`). Passing `releaseWhenIdle` together with `sessionManager: SessionManager.inMemory()` rejects immediately with `AgentRehydrateError` (`code: "not-reopenable"`) before constructing the session.
 
 `ModelRegistry` keeps synchronous reads for extension compatibility, while catalog refresh is asynchronous. Extensions should await `modelRegistry.refresh()` before synchronous `getAll()`, `find()`, or `getAvailable()` reads when a provider may update its catalog. New SDK integrations use `ModelRuntime`; `await modelRuntime.refresh()` reports `aborted` and per-provider `errors`, and failed providers retain their last-known models.
 
@@ -148,7 +163,7 @@ const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(
 
 `createAgentSession()` does not fetch an account model list at startup. If cache restore found no GitHub Copilot catalog and the first prompt has no usable model or fallback, the session can look up the exact saved Copilot model unless `allowModelNetwork: false` was passed to `ModelRuntime.create()`. A supplied `model`, a working preset or fallback, and a cached catalog need no lookup. Only that session uses the result; `models-store.json`, credentials, and model listings do not change.
 
-The `modelFallbackMessage` returned by `createAgentSession()` describes startup. If the account confirms the model is absent, the first prompt's error says so; a refused, offline, or cancelled lookup keeps the usual error. Pass `signal` to `createAgentSession()` to cancel the lookup, or pass `allowModelNetwork: false` to `ModelRuntime.create()` to disable it. Custom asynchronous-only credential stores keep normal local selection; discovery never waits on their read queue.
+The `modelFallbackMessage` returned by `createAgentSession()` describes startup. If the account confirms the model is absent, the first prompt's error says so; a refused, offline, or cancelled lookup keeps the usual error. Pass `signal` to `createAgentSession()` to cancel the lookup, or pass `allowModelNetwork: false` to `ModelRuntime.create()` to disable it. Custom asynchronous-only credential stores still use normal local selection; model discovery never blocks waiting on asynchronous credential reads.
 
 ```typescript
 const refreshedRuntime = await ModelRuntime.create({
@@ -213,9 +228,9 @@ const builtinsOnly = await ModelRuntime.create({ modelsPath: null });
 
 Use `generateStructuredOutput()` for one schema-validated decision without starting an agent session. Pass optional exact `model` and `fallbackModels` IDs, `currentModel`, `modelRegistry`, `instructions`, `state`, and `schema`. Omit `model` to start on `currentModel`, or on `decisionModel` when you pass `settings`; `currentModel` is also the final fallback.
 
-With `settings`, `decisionModel` resolves as `decide()` resolves it and rejects with a `DecisionError` on failure. Atomic resolves each ID through `modelRegistry`: chat models use chat inference, and registered classifiers use the generic `classify` operation when the schema is a finite Choice (and are skipped otherwise). See [Structured decisions](/sdk/structured-decisions).
+When `settings` is passed **and** `model` is omitted, `generateStructuredOutput()` resolves `decisionModel` and wraps resolution, output, and provider failures into `DecisionError` subclasses (input validation errors still throw plain `Error`). Passing an explicit `model` causes `settings` to be ignored so non-timeout failures throw plain `Error`. Timeouts always throw `DecisionTimeoutError`. Atomic resolves each ID through `modelRegistry`: chat models use chat inference, and registered classifiers use the generic `classify` operation when the schema is a finite Choice (and are skipped otherwise). See [Make structured decisions](/sdk/structured-decisions).
 
-Use `decide()` to ask the configured `decisionModel` typed Choice, yes/no, and Score questions over `state`. It returns typed answers, with probabilities when a classifier answered, and rejects with a `DecisionError`. The `structured_output` tool starts on the same decision model. See [decide](/sdk/structured-decisions#decide).
+Use `decide()` to ask the configured `decisionModel` typed Choice, yes/no, and Score questions over `state`. It returns typed answers, with probabilities when a classifier answered, and always rejects with a `DecisionError` (or `signal.reason` on caller abort). The `structured_output` tool uses the same decision model unless the calling model supplies an explicit `model`. See [Make typed decisions with `decide()`](/sdk/structured-decisions#decide).
 
 ### System prompt
 
@@ -318,70 +333,7 @@ Inactive (2)
 
 Each entry in `tools` has `name`, `active`, `exposure`, `source`, `sourcePath`, `summary`, and, for inactive tools, `inactiveReason`. `missing` and `excluded` list `{ name, reason }` entries; a `missing` name usually means a typo or a failed extension load. Pass `{ heading, dim, warning }` functions as the second argument to `formatToolStatus()` for terminal colors. Interactive mode shows the same report with `/tools`, and RPC clients request it with [`get_tools`](/rpc/protocol#get_tools).
 
-The report's `git` field reports which Git Atomic runs: `{ source: "system" | "provisioned", version, path, update? }`, or `{ source: "unavailable", error }` with a serialized [git error](#git-errors). A provisioned install of an older pinned release carries `update: { pinnedTag, installedTag?, reason? }`. `reason` appears if a replacement attempt failed in this process; failed replacements are not retried until the next process start. Reading status never downloads Git.
-
-#### Resolving git
-
-Atomic runs Git 2.30.0 or newer (`GIT_MINIMUM_VERSION`) from `PATH`, and otherwise a portable Git downloaded into `getBinDir()/git` (see [Git](/getting-started/installation#git)). Use the same resolver for your own Git commands:
-
-```typescript
-import { spawnSync } from "node:child_process";
-import { resolveGit } from "@bastani/atomic";
-
-const git = await resolveGit();
-spawnSync(git.path, ["status", "--short"], { cwd: projectDir, env: git.env, encoding: "utf8" });
-```
-
-| Function | Returns |
-|---|---|
-| `resolveGit({ signal?, onStatus? })` | `Promise<ResolvedGit>`. May download and verify portable Git. `onStatus` receives `{ type: "info" \| "warning", message }` progress. Aborting `signal` rejects with `signal.reason`; concurrent callers share one download, which stops only when every caller aborts. |
-| `resolveGitSync()` | `ResolvedGit` without downloading. Throws in order: `GitUnavailableError` (`unsupported-platform` or `offline`), else the last failed `resolveGit()` error in this process (`GitUnavailableError` or `GitProvisionTimeoutError`), else `GitUnavailableError` (`not-installed`). Check `isRetryableGitProvisionError()` to see whether `await resolveGit()` can help. |
-| `getGitStatus()` | `GitToolStatus`, the value in the tools report. Never downloads. |
-
-`ResolvedGit` provides `path` (absolute executable path), `source` (`"system"` or `"provisioned"`), `version`, and `env`. For provisioned Git, `env` copies `process.env` and adds `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_SYSTEM` (macOS and Linux), and `GIT_SSL_CAINFO` (Linux and Windows), preserving any `GIT_CONFIG_SYSTEM` or `GIT_SSL_CAINFO` already set. `env` is computed per call so later changes to `process.env` apply.
-
-For provisioned Git, the returned `path` and `env` stay valid across automatic updates. Keep them together for a running command, and resolve again when starting work with the latest release. Do not construct executable or helper paths from the cache directory yourself.
-
-#### Git errors
-
-Every Git resolution failure is a `GitProvisionError` carrying `code`, `hint`, `retryable`, and JSON-safe `fields`. Invalid SDK options fail before provisioning starts. Failed downloads, checksums, and verification never activate a partial install, and failed updates leave earlier resolved paths usable. Branch on `code` or the class, never on `message`.
-
-| Class | `code` | When | Fields | What to do |
-|---|---|---|---|---|
-| `GitUnavailableError` | `unsupported-platform` | No portable build for this system: `reason` is `musl`, `glibc-too-old`, `architecture`, or `platform` | `platform`, `arch`, `reason`, `libc?`, `systemGit?` | Run `installCommand` (for example `apk add git` on Alpine) or install Git 2.30.0+ |
-| `GitUnavailableError` | `offline` | `ATOMIC_OFFLINE` is set and no usable Git exists | `platform`, `arch`, `offlineVariable`, `systemGit?` | Unset the variable or install Git 2.30.0+ |
-| `GitUnavailableError` | `not-installed` | `resolveGitSync()` found no usable Git and does not download | `platform`, `arch`, `installDir`, `systemGit?` | Call `await resolveGit()` first, or install Git 2.30.0+ |
-| `GitUnavailableError` | `checksum-mismatch` | Download SHA-256 differs from the pinned value | `platform`, `arch`, `asset`, `url`, `expectedSha256`, `actualSha256` | Check for a proxy altering downloads, or install Git yourself. Not retryable |
-| `GitUnavailableError` | `download-failed` | Download failed; `httpStatus` is absent for network errors | `platform`, `arch`, `asset`, `url`, `httpStatus?` | Check access to github.com and retry. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
-| `GitUnavailableError` | `install-failed` | Reading, staging, extracting, verifying, or promoting failed (`phase`: `stage`, `extract`, `verify`, `promote`) | `platform`, `arch`, `phase`, `asset`, `installDir`, `detail?` | Free disk space or fix permissions on `installDir`; for `verify`, check cache readability or install Git yourself |
-| `GitProvisionTimeoutError` | `provision-timeout` | A step exceeded its limit (`phase`: `lock`, `download`, `extract`, `verify`) | `phase`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
-| `GitProvisionConfigError` | `invalid-option` | A `resolveGit()` option had the wrong type; checked before any probe | `source` (`"sdk"`), `field`, `expected` | Fix the option |
-
-When present, `systemGit` describes the unusable Git found on `PATH`: `{ path, problem: "below-minimum" | "probe-failed", version? }`. `GitUnavailableError` also exposes `platform`. Every `GitUnavailableError` and `GitProvisionTimeoutError` sets `installCommand` when Atomic recognizes the OS or distribution (for example, Linux root commands, using the `git-core` PPA on Ubuntu earlier than 22.04). `hint` ends with `installCommand`, and rehydrated errors preserve the originating machine's command. Cleanup failures attach as `cleanupCause` without replacing the original error.
-
-Guards match across realms and processes by `name` and `code`: `isGitProvisionError`, `isGitUnavailableError`, `isGitProvisionTimeoutError`, and `isGitProvisionConfigError`. `findGitProvisionError(error)` searches a cause chain to a bounded depth, and `isRetryableGitProvisionError(error)` checks whether any error in the chain is retryable. `JSON.stringify(error)` outputs `{ name, code, message, hint, retryable, fields, cause? }`, and `rehydrateGitProvisionError(payload)` restores the class and cause chain (unknown names become `GitProvisionError` keeping their `name` and `code`).
-
-```typescript
-import { isGitUnavailableError, resolveGit } from "@bastani/atomic";
-
-try {
-  await resolveGit();
-} catch (error) {
-  if (isGitUnavailableError(error) && error.code === "unsupported-platform") console.error(error.hint);
-  else throw error;
-}
-```
-
-#### fd and ripgrep download errors
-
-When `fd` or `ripgrep` is neither in `getBinDir()` nor on `PATH`, the `find` and `search` tools download the latest release from GitHub. If a request fails, the tool call rejects with a `ManagedToolError` naming the request, interactive startup shows the same warning, and nothing is installed. Offline mode, unsupported platforms, and unreadable archives still reject with plain errors.
-
-| Class | `code` | When | Fields | What to do |
-|---|---|---|---|---|
-| `ManagedToolDownloadError` | `download-failed` | Release lookup (`phase: "resolve-version"`) or archive download (`phase: "download"`) failed, or the response was unusable (`cause` holds the underlying error) | `tool` (`"fd"` or `"rg"`), `phase`, `url`, `httpStatus?`, `detail?` | Check access to github.com and retry, or install the tool with your package manager. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
-| `ManagedToolTimeoutError` | `download-timeout` | Request exceeded its limit: 10 s for release lookup, 120 s for archive download | `tool`, `phase`, `url`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
-
-`isManagedToolError`, `isManagedToolDownloadError`, and `isManagedToolTimeoutError` match across realms by `name` and `code`. `isRetryableManagedToolError(error)` inspects a cause chain to a bounded depth. Branch on `code` or the class, never on `message`.
+The report's `git` field reports which Git Atomic runs: `{ source: "system" | "provisioned", version, path, update? }`, or `{ source: "unavailable", error }` with a serialized [Git error](#git-errors). A provisioned install of an older pinned release carries `update: { pinnedTag, installedTag?, reason? }`. `reason` appears if a replacement attempt failed in this process; failed replacements are not retried until the next process start. Reading status never downloads Git. For standalone Git resolution and `fd`/`ripgrep` download errors, see [Managed tools and Git](#managed-tools-and-git).
 
 #### Bash tool behavior
 
@@ -479,7 +431,7 @@ Inspection preserves optional-property identity (`undefined` stays present when 
 
 Factory-created `createBashTool()` instances receive the same execution-time `ATOMIC_SESSION_*` and `PI_SESSION_*` snapshot as the built-in `bash` tool unless you pass `exposeSessionEnvironment: false`. `MessageRenderOptions.outputPad` is forwarded to all custom message renderers.
 
-Normal sessions expose `kill({ id: taskId })` for owned `bash` and `powershell` background tasks. Include `kill` in any explicit `tools` allowlist if the agent should be able to stop tasks. `createKillTool` and `createKillToolDefinition` accept `KillToolOptions.taskOwner` (the same trusted binding used by shell launches) and reject without one. Result details carry the supervisor's `CancelReceipt`. See [Stop a shell task from a tool call](/background-tasks#stop-a-shell-task-from-a-tool-call).
+Normal sessions expose `kill({ id: taskId })` for owned `bash` and `powershell` background tasks. Include `kill` in any explicit `tools` allowlist if the agent should be able to stop tasks. `createKillTool` and `createKillToolDefinition` accept `KillToolOptions.taskOwner` (the same trusted binding used by shell launches) and reject without one. Result details carry the supervisor's `CancelReceipt`. See [Stopping tasks and `CancelReceipt`](/background-tasks/reference#stop-a-shell-task-from-a-tool-call).
 
 #### Detachable tool calls
 
@@ -611,13 +563,22 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 - **Synthetic builtin factories:** Named `extensionFactories` descriptors may set `builtin: true` to expose a `builtin:<name>` resource and `replaceable: true` to yield if another extension registers the same tool, command, or flag. Pass `additionalExtensionPaths: ["builtin:codemode"]` for explicit loading even with `noExtensions: true`. See [built-in extension resources](/extensions#built-in-extension-resources).
 - **Inline built-in extensions:** `DefaultResourceLoader` includes `codemode`, `tool-search`, and `llama.cpp` as `builtin:<name>` paths. `codemode` is active by default (opt out with `tools: ["-codemode"]`), while `tool_search` is opt-in. Turn off an inline builtin with `noExtensions: true`, `disabledBuiltinExtensions: ["codemode"]`, or `extensions: ["-builtin:codemode"]`.
-- **Bindings and startup (`ExtensionBindings`):** Pass `extensionBindings` to `createAgentSession()` to install bindings before `session_start` runs: `humanInput`, `onDiagnostic`, `onUIPrompt`, `uiContext`, `onStatus` (receives extension `setStatus` writes when no `uiContext` is bound), `isPresentationOnly`, `mode`, `commandContextActions`, `shutdownHandler`, `onError`, and `reportStartupErrors` (when `true`, forwards `session_start` and `resources_discover` errors to `onError` and keeps the session open instead of rolling back). Later `bindExtensions()` calls update bindings without replaying `session_start`.
+- **Bindings and startup (`ExtensionBindings`):** Pass `extensionBindings` to `createAgentSession()` to install host callbacks before `session_start` runs:
+  - `humanInput`: implements the five dialog methods (`confirm`, `select`, `input`, `editor`, `questionnaire`) for headless hosts.
+  - `uiContext`: full `ExtensionUIContext` for custom UI hosts; `onStatus` receives `setStatus` updates when `uiContext` is omitted.
+  - `mode`: `"interactive" | "print" | "json" | "rpc"` (sets `ctx.mode`).
+  - `onDiagnostic`, `onError`, `shutdownHandler`, and `reportStartupErrors` (when `true`, forwards `session_start` and `resources_discover` errors to `onError` and keeps the session open instead of rolling back).
+  - `onUIPrompt`: observes dialog start/end lifecycle events (`ui_prompt_start` / `ui_prompt_end`).
+  - `commandContextActions`: supplies host actions (`waitForIdle`, `newSession`, `fork`, `navigateTree`, `switchSession`, `reload`) for extension commands.
+  - `isPresentationOnly`: marks a display-only binding that cannot answer interactive prompts.
+  Later `bindExtensions()` calls update bindings without replaying `session_start`.
 - **Strict reloads:** `failOnExtensionErrors: true` requires transactional `prepareReload()` support (`DefaultResourceLoader` implements it). Custom loaders without `prepareReload()` work for ordinary reloads, while strict reload fails before calling their mutating `reload()`.
+- **Bundled extension and tool factories:** `@bastani/atomic` also exports `createCodemodeExtension`, `createCodemodeTool`, `createCodemodeToolDefinition`, `createCodemodeDescription`, `createToolSearchExtension`, `createToolSearchToolDefinition`, `createMcpExtension`, and `McpOAuthCredentialStore` for hosts assembling custom extension sets directly.
 
-#### Reload lifecycle and resource ownership
+#### Reload lifecycle and resource ownership {#reload-lifecycle-and-resource-ownership}
 
-- **Transactional vs. ordinary reload:** Failed transactional reloads keep the previous extension generation active; failed ordinary reloads do not. Both clean up newly acquired resources and report cleanup failures through an `AggregateError` tagged with `code: "ShutdownFailed"`.
-- **Lifecycle effects:** Acquire shared resources in `session_start` (or register `session_shutdown` immediately if acquired earlier). Use `publishExtensionContextEffect(ctx, effect)` (default `"start"` phase after retirement, or synchronous `"commit"` phase before revocation) to publish shared state only on commit, and `registerExtensionContextRetirementEffect(ctx, dispose)` for synchronous pre-revocation cleanup. Never cache `ctx.ui` across reloads.
+- **Transactional vs. ordinary reload:** When `/reload` (or `session.reload()`) runs transactionally, Atomic loads and initializes the next extension generation before retiring the previous one. If the reload fails, the previous generation stays active; in an ordinary (non-transactional) reload, failure leaves extensions unloaded. Both clean up newly acquired resources and report cleanup failures through an `AggregateError` tagged with `code: "ShutdownFailed"`.
+- **Publishing state safely on reload:** Acquire shared resources in `session_start` (or register `session_shutdown` immediately if acquired earlier). To avoid leaking partial state when a reload rolls back, wrap side effects (such as emitting a "ready" event or registering global handles) with `publishExtensionContextEffect(ctx, effect)` — it runs only if the reload succeeds (`"start"` phase after the old generation retires, or `"commit"` phase synchronously right before the swap). Register synchronous teardown for when a generation retires with `registerExtensionContextRetirementEffect(ctx, dispose)`. Never cache `ctx.ui` across reloads.
 
 ```typescript
 import { publishExtensionContextEffect, type ExtensionFactory } from "@bastani/atomic";
@@ -630,32 +591,6 @@ const extension: ExtensionFactory = (atomic) => {
   );
 };
 ```
-
-#### Session disposal and lifecycle
-
-Always `await session.dispose()`. Disposal seals new admission immediately and waits for active work, extension shutdown handlers, pending settings writes, pending notice-line saves, lease release, and up to 5 seconds for in-flight extension transpile-cache writes started by that session.
-
-Once `dispose()` resolves, nothing the session started is still writing to its session store or extension transpile cache, so deleting `agentDir` or a caller-owned store directory right afterward will not race. (Transpile-cache writes still unfinished after 5 seconds are logged to debug output and left to finish asynchronously.)
-
-- Concurrent `dispose()` calls share one promise.
-- Disposal failures reject with an `AggregateError` tagged with `code: "ShutdownFailed"` (not an exported class); inspect `error.errors` for individual component failures. A failed close still leaves the session closed.
-- Settings persistence failures can reject disposal; repair storage and repeat the write before closing (`dispose()` does not drain `SettingsManager.drainErrors()`).
-- Caller-supplied settings, storage, and model runtimes remain caller-owned. Do not add manual MCP or Intercom teardown.
-- `AgentSessionRuntime` uses the same awaited close during session replacement and transfers bindings before the replacement starts. Reload invalidates stale input requests and subscriptions so late replies cannot authorize new work.
-- Duplicate `executeBash()` IDs act as correlation IDs: `abortBash(id)` cancels every active call with that ID.
-
-For reload, replacement, and resource ownership patterns, see [Draining work on reload and shutdown](/sdk#finishing-admitted-work).
-
-#### Prompting options
-
-`session.prompt(text, options?)` accepts:
-
-- `expandPromptTemplates` (default `true`): expands file-based prompt templates, skill commands, and extension commands.
-- `images`: optional `ImageContent[]` attachments.
-- `streamingBehavior`: `"steer"` or `"followUp"` when sending while a turn is active; omitting it while streaming rejects with `AgentSessionBusyError`.
-- `startTurnOnly`: when `true`, starts a turn only if the session is idle and queued messages are not paused. When a turn is already running or queued input is paused, nothing is sent or queued, `preflightResult` is called with `(true, "handled")`, and `prompt()` resolves with `undefined`.
-- `source`: `InputSource` metadata for `input` hooks.
-- `preflightResult`: callback `(success, disposition?)` invoked once preflight accepts (`"handled"`, `"queued"`, or `"started"`) or rejects the prompt.
 
 Extensions can register tools, subscribe to events, add commands, and more. See [Extensions](/extensions) for the full API.
 
@@ -756,7 +691,7 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 ### Session management
 
-Sessions use a tree structure with `id`/`parentId` linking, enabling in-place branching. See the **[SDK storage guide](/sdk/storage)** for full recipes across all five storage backends, `createAgentSessionRuntime()` store wiring, ownership rules, and error handling, and [Storage errors](/storage#storage-errors) for `StorageError` subclasses.
+Sessions use a tree structure with `id`/`parentId` linking, enabling in-place branching. See [Configure session storage](/sdk/storage) for full recipes across all four storage backends, `createAgentSessionRuntime()` store wiring, ownership rules, `@bastani/atomic/storage/testing` conformance testing, and error handling, and [Storage errors](/storage#storage-errors) for `StorageError` subclasses.
 
 ```typescript
 import {
@@ -899,8 +834,8 @@ Coordinate single-writer session ownership across processes with session claims 
 
 When managing multiple sessions that share a working directory (or inside `createAgentSessionRuntime()`), split directory-scoped service initialization from session creation:
 
-- **`createAgentSessionServices({ cwd, agentDir?, settingsManager?, modelRuntime?, ... })`:** Builds shared `AgentSessionServices` (`cwd`, `agentDir`, `modelRuntime`, `settingsManager`, `resourceLoader`, `diagnostics`).
-- **`createAgentSessionFromServices({ services, sessionManager, sessionStartEvent?, ... })`:** Creates an `AgentSession` backed by those shared services without re-discovering extensions, skills, or models.
+- **`createAgentSessionServices(options)`:** Accepts `{ cwd, agentDir?, settingsManager?, modelRuntime?, extensionFlagValues?, resourceLoaderOptions?, resourceLoaderReloadOptions? }` and returns shared `AgentSessionServices` (`cwd`, `agentDir`, `modelRuntime`, `settingsManager`, `resourceLoader`, `diagnostics`).
+- **`createAgentSessionFromServices(options)`:** Creates an `AgentSession` backed by those shared services without re-discovering extensions, skills, or models. Accepts `{ services, sessionManager, sessionStartEvent?, model?, thinkingLevel?, fallbackModels?, isFallbackModelAllowed?, scopedModels?, tools?, builtins?, excludedTools?, noTools?, customTools?, extensionBindings?, releaseWhenIdle?, intercom? }`. It does **not** accept `workspace`, `snapshots`, `storage`, `sessionStore`, `resourceAdmission`, `systemPromptTransform`, or `initialContextTransform` (bind storage via `sessionManager` and scope `resourceAdmission` via `withResourceAdmission()`).
 
 `SessionManager.create()`, `open()`, `continueRecent()`, `forkFrom()`, and all mutations are asynchronous. `SessionManager.inMemory()` with no entries is synchronous; when supplying entries, await `SessionManager.inMemory(cwd, options, entries)` and keep the input array stable until it resolves. A resolved write is committed (there is no `flush()` method), and a failed write rejects with the store's typed error without publishing the entry. Reads remain synchronous.
 
@@ -942,7 +877,7 @@ await sm.createBranchedSession(leafId);       // Extract path to new file
 - **`createAgentSession({ sessionManager })`:** Prepares a supplied session that has worktree snapshots unless `cwd` or `workspace` is passed. A local path with a different tree is restored like a missing checkout. Sessions without snapshots or with `snapshots: { enabled: false }` start as supplied.
 - **Path mapping:** Session tools map recorded checkout paths to restored worktrees. To map paths the same way in host code, run inside `withWorktreeRootMappings(sessionManager.getWorktreeRootMappings(), work, outer)` and call `mapPathForCwd(path, cwd)` (`outer` defaults to `currentWorktreeRootMappings()`).
 - **`prepareSessionResume(sessionManager, options)`:** Runs preparation for a `SessionManager` you opened yourself and returns the opened session plus `notices`.
-- **Non-blocking secondary checkouts:** Only the session's primary checkout needs to be restorable; other missing or changed checkouts emit a warning notice rather than refusing resume (`switchSession()`, `rehydrate()`, and `createAgentSession()` do not print those notices).
+- **Non-blocking secondary checkouts:** Only the session's primary checkout needs to be restorable; other missing or changed checkouts emit a warning notice rather than refusing resume (`switchSession()`, `rehydrate()`, and `createAgentSession()` do not print those notices; retrieve them once via `runtime.takeResumeNotices()`).
 - **Shared-storage timeout:** `switchSession()` and `rehydrate()` bound catalog lookup by `RESUME_CATALOG_TIMEOUT_MS` (15 seconds).
 
 Resume errors extend `ResumeError` (`isResumeError`, `findResumeError`, `isResumeFailure`), carry `code`, `hint`, and JSON-safe `fields`, and cross processes via `serializeResumeError` and `rehydrateResumeError`.
@@ -1065,7 +1000,7 @@ Package MCP servers discovered by `DefaultResourceLoader` connect through the bu
 
 ### Copying extension handlers in `extensionsOverride`
 
-If your override rebuilds a discovered extension without changing its `resources_discover` handler, keep the callback supplied by the loader on **that load**. You can copy the handler map without wrapping its functions:
+If your `extensionsOverride` callback clones an extension object without changing its `resources_discover` handler, copy the handler map directly instead of wrapping each handler in a new closure:
 
 ```typescript
 const loader = new DefaultResourceLoader({
@@ -1081,9 +1016,7 @@ const loader = new DefaultResourceLoader({
 });
 ```
 
-During interactive startup, Atomic can run resource discovery twice (before and after optional extensions finish loading). Both calls run, and if the same registration reports the same error, the terminal shows it once. A later `/reload` reports the failure again.
-
-Creating `(...args) => handler(...args)` on every load registers a new callback each time, so you can see two startup errors. Keep separate callbacks when your override changes the handler, adds a step that can fail, or forwards on behalf of separate installations. Don't cache a previous load's handler or share a forwarder by extension name.
+Atomic deduplicates identical handler errors during startup by handler reference. Creating a fresh wrapper `(...args) => handler(...args)` on every load registers a new function identity each time and can display duplicate startup errors. Only create a new wrapper when your override changes behavior or forwards for a distinct installation; never cache handlers across reloads.
 
 ## Return value
 
@@ -1113,6 +1046,122 @@ interface LoadExtensionsResult {
   runtime: ExtensionRuntime;
 }
 ```
+
+## AgentSession and AgentSessionRuntime
+
+### Prompting options
+
+`session.prompt(text, options?)` accepts:
+
+- `expandPromptTemplates` (default `true`): expands file-based prompt templates, skill commands, and extension commands.
+- `images`: optional `ImageContent[]` attachments.
+- `streamingBehavior`: `"steer"` or `"followUp"` when sending while a turn is active; omitting it while streaming rejects with `AgentSessionBusyError`.
+- `startTurnOnly`: when `true`, starts a turn only if the session is idle and queued messages are not paused. When a turn is already running or queued input is paused, nothing is sent or queued, `preflightResult` is called with `(true, "handled")`, and `prompt()` resolves with `undefined`.
+- `source`: `InputSource` metadata for `input` hooks.
+- `preflightResult`: callback `(success, disposition?)` invoked once preflight accepts (`"handled"`, `"queued"`, or `"started"`) or rejects the prompt.
+
+### Session disposal and lifecycle
+
+Always `await session.dispose()`. Disposal seals new admission immediately and waits for active work, extension shutdown handlers, pending settings writes, pending notice-line saves, lease release, and up to 5 seconds for in-flight extension transpile-cache writes started by that session.
+
+Once `dispose()` resolves, nothing the session started is still writing to its session store or extension transpile cache, so deleting `agentDir` or a caller-owned store directory right afterward will not race. (Transpile-cache writes still unfinished after 5 seconds are logged to debug output and left to finish asynchronously.)
+
+- Concurrent `dispose()` calls share one promise.
+- Disposal failures reject with an `AggregateError` tagged with `code: "ShutdownFailed"` (not an exported class); inspect `error.errors` for individual component failures. A failed close still leaves the session closed.
+- Settings persistence failures can reject disposal; repair storage and repeat the write before closing (`dispose()` does not drain `SettingsManager.drainErrors()`).
+- Caller-supplied settings, storage, and model runtimes remain caller-owned. Do not add manual MCP or Intercom teardown.
+- `AgentSessionRuntime` uses the same awaited close during session replacement and transfers bindings before the replacement starts. Reload invalidates stale input requests and subscriptions so late replies cannot authorize new work.
+- Duplicate `executeBash()` IDs act as correlation IDs: `abortBash(id)` cancels every active call with that ID.
+
+For reload, replacement, and resource ownership patterns, see [Draining work on reload and shutdown](/sdk#finishing-admitted-work).
+
+### Additional `AgentSession` methods
+
+Beyond the core methods shown in [Driving a session](/sdk#driving-a-session), `AgentSession` exposes:
+
+| Category | Methods and properties |
+| --- | --- |
+| **Messages & turns** | `sendUserMessage(content, options?)`, `sendCustomMessage(msg, options?)`, `sendCustomMessages(msgs, options?)`, `stopTurns(reason?)` (halts further model calls within the active turn without starting new tool calls), `interruptTurn()`, `pauseTurn()`, `resumeTurn()`, `turnPaused`, `entryReceipt(message)` |
+| **Shell execution** | `executeBash(command, onChunk?, options?)`, `recordBashResult(command, result, options?)`, `abortBash(id?)`, `isBashRunning`, `hasPendingBashMessages` |
+| **Tools & models** | `getActiveToolNames()`, `getCallableToolNames()`, `getAllTools()`, `getToolDefinition(name)`, `setActiveToolsByName(names)`, `setScopedModels(models)`, `cacheWarmingStatus`, `setCacheWarmingMode(mode)` |
+| **Queue, retry & compaction** | `setSteeringMode(mode)`, `setFollowUpMode(mode)`, `setAutoCompactionEnabled(enabled)`, `setAutoRetryEnabled(enabled)`, `abortRetry()`, `abortBranchSummary()`, `abortSessionSummary()` |
+| **Export, stats & metadata** | `getSessionStats()`, `getContextUsage()`, `getLastAssistantText()`, `getUserMessagesForForking()`, `setSessionName(name)`, `exportToJsonl(outputPath?, { includeShareContext?, snapshotContent?, toolOutputContent? })`, `exportToHtml(outputPath?, { themeName? })`, `reload(options?)`, `getPersistenceFailure()`, `getUnsavedInput()`, `discardUnsavedInput()` |
+
+### `AgentSessionRuntime` options and methods
+
+`createAgentSessionRuntime(createRuntime, options)` accepts `{ cwd, agentDir, sessionManager, sessionStartEvent?, interactive? }`. When `interactive` is omitted or `false` (default), resuming a worktree snapshot starts the first turn while its blueprint build runs in the background unless `resume.waitForBlueprint` is set.
+
+- **`newSession({ parentSession?, setup?, withSession? })`:** Creates and switches to a fresh session.
+- **`switchSession(sessionId, { cwdOverride?, sessionDirectory?, withSession?, projectTrustContextFactory?, history? })`:** Opens a stored session (`history` defaults to `"tail"`; pass `"full"` to load every branch into memory).
+- **`fork(entryId, { position?, withSession? })`:** Forks before `entryId` (`position: "before"`, default) or clones through `entryId` (`position: "at"`).
+- **`importFromJsonl(inputPath, cwdOverride?)`:** Imports a JSONL export into the active store and switches to it.
+- **`takeResumeNotices()` / `queueResumeNotices(notices)`:** Drains accumulated resume warnings (each returned once) or appends warnings prepared by another process.
+- **Provider auth & lifecycle hooks:** `loginOAuthProvider()`, `loginApiKeyProvider()`, `logoutProvider()`, `setRebindSession(fn)`, `setBeforeSessionInvalidate(fn)`, `dispose({ fromSignal? })`.
+
+## Managed tools and Git
+
+### Resolving Git {#resolving-git}
+
+Atomic runs Git 2.30.0 or newer (`GIT_MINIMUM_VERSION`) from `PATH`, and otherwise a portable Git downloaded into `<agentDir>/bin/git` (default `~/.atomic/agent/bin/git`; see [Git](/getting-started/installation#git)). Use the same resolver for your own Git commands:
+
+```typescript
+import { spawnSync } from "node:child_process";
+import { resolveGit } from "@bastani/atomic";
+
+const git = await resolveGit();
+spawnSync(git.path, ["status", "--short"], { cwd: projectDir, env: git.env, encoding: "utf8" });
+```
+
+| Function | Returns |
+|---|---|
+| `resolveGit({ signal?, onStatus? })` | `Promise<ResolvedGit>`. May download and verify portable Git. `onStatus` receives `{ type: "info" \| "warning", message }` progress. Aborting `signal` rejects with `signal.reason`; concurrent callers share one download, which stops only when every caller aborts. |
+| `resolveGitSync()` | `ResolvedGit` without downloading. Throws in order: `GitUnavailableError` (`unsupported-platform` or `offline`), else the last failed `resolveGit()` error in this process (`GitUnavailableError` or `GitProvisionTimeoutError`), else `GitUnavailableError` (`not-installed`). Check `isRetryableGitProvisionError()` to see whether `await resolveGit()` can help. |
+| `getGitStatus()` | `GitToolStatus`, the value in the tools report. Never downloads. |
+
+`ResolvedGit` provides `path` (absolute executable path), `source` (`"system"` or `"provisioned"`), `version`, and `env`. For provisioned Git, `env` copies `process.env` and adds `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_SYSTEM` (macOS and Linux), and `GIT_SSL_CAINFO` (Linux and Windows), preserving any `GIT_CONFIG_SYSTEM` or `GIT_SSL_CAINFO` already set. `env` is computed per call so later changes to `process.env` apply.
+
+For provisioned Git, the returned `path` and `env` stay valid across automatic updates. Keep them together for a running command, and resolve again when starting work with the latest release. Do not construct executable or helper paths from the cache directory yourself.
+
+### Git errors {#git-errors}
+
+Every Git resolution failure is a `GitProvisionError` carrying `code`, `hint`, `retryable`, and JSON-safe `fields`. Invalid SDK options fail before provisioning starts. Failed downloads, checksums, and verification never activate a partial install, and failed updates leave earlier resolved paths usable. Branch on `code` or the class, never on `message`.
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `GitUnavailableError` | `unsupported-platform` | No portable build for this system: `reason` is `musl`, `glibc-too-old`, `architecture`, or `platform` | `platform`, `arch`, `reason`, `libc?`, `systemGit?` | Run `installCommand` (for example `apk add git` on Alpine) or install Git 2.30.0+ |
+| `GitUnavailableError` | `offline` | `ATOMIC_OFFLINE` is set and no usable Git exists | `platform`, `arch`, `offlineVariable`, `systemGit?` | Unset the variable or install Git 2.30.0+ |
+| `GitUnavailableError` | `not-installed` | `resolveGitSync()` found no usable Git and does not download | `platform`, `arch`, `installDir`, `systemGit?` | Call `await resolveGit()` first, or install Git 2.30.0+ |
+| `GitUnavailableError` | `checksum-mismatch` | Download SHA-256 differs from the pinned value | `platform`, `arch`, `asset`, `url`, `expectedSha256`, `actualSha256` | Check for a proxy altering downloads, or install Git yourself. Not retryable |
+| `GitUnavailableError` | `download-failed` | Download failed; `httpStatus` is absent for network errors | `platform`, `arch`, `asset`, `url`, `httpStatus?` | Check access to github.com and retry. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
+| `GitUnavailableError` | `install-failed` | Reading, staging, extracting, verifying, or promoting failed (`phase`: `stage`, `extract`, `verify`, `promote`) | `platform`, `arch`, `phase`, `asset`, `installDir`, `detail?` | Free disk space or fix permissions on `installDir`; for `verify`, check cache readability or install Git yourself |
+| `GitProvisionTimeoutError` | `provision-timeout` | A step exceeded its limit (`phase`: `lock`, `download`, `extract`, `verify`) | `phase`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
+| `GitProvisionConfigError` | `invalid-option` | A `resolveGit()` option had the wrong type; checked before any probe | `source` (`"sdk"`), `field`, `expected` | Fix the option |
+
+When present, `systemGit` describes the unusable Git found on `PATH`: `{ path, problem: "below-minimum" | "probe-failed", version? }`. `GitUnavailableError` also exposes `platform`. Every `GitUnavailableError` and `GitProvisionTimeoutError` sets `installCommand` when Atomic recognizes the OS or distribution (for example, Linux root commands, using the `git-core` PPA on Ubuntu earlier than 22.04). `hint` ends with `installCommand`, and rehydrated errors preserve the originating machine's command. Cleanup failures attach as `cleanupCause` without replacing the original error.
+
+Guards match across realms and processes by `name` and `code`: `isGitProvisionError`, `isGitUnavailableError`, `isGitProvisionTimeoutError`, and `isGitProvisionConfigError`. `findGitProvisionError(error)` searches a cause chain to a bounded depth, and `isRetryableGitProvisionError(error)` checks whether any error in the chain is retryable. `JSON.stringify(error)` outputs `{ name, code, message, hint, retryable, fields, cause? }`, and `rehydrateGitProvisionError(payload)` restores the class and cause chain (unknown names become `GitProvisionError` keeping their `name` and `code`).
+
+```typescript
+import { isGitUnavailableError, resolveGit } from "@bastani/atomic";
+
+try {
+  await resolveGit();
+} catch (error) {
+  if (isGitUnavailableError(error) && error.code === "unsupported-platform") console.error(error.hint);
+  else throw error;
+}
+```
+
+### `fd` and `ripgrep` download errors {#fd-and-ripgrep-download-errors}
+
+When `fd` or `ripgrep` is neither in `<agentDir>/bin` (default `~/.atomic/agent/bin`) nor on `PATH`, the `find` and `search` tools download the latest release from GitHub. If a request fails, the tool call rejects with a `ManagedToolError` naming the request, interactive startup shows the same warning, and nothing is installed. Offline mode, unsupported platforms, and unreadable archives still reject with plain errors.
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `ManagedToolDownloadError` | `download-failed` | Release lookup (`phase: "resolve-version"`) or archive download (`phase: "download"`) failed, or the response was unusable (`cause` holds the underlying error) | `tool` (`"fd"` or `"rg"`), `phase`, `url`, `httpStatus?`, `detail?` | Check access to github.com and retry, or install the tool with your package manager. `retryable` is true for network errors and HTTP 408, 425, 429, 500, 502, 503, 504 |
+| `ManagedToolTimeoutError` | `download-timeout` | Request exceeded its limit: 10 s for release lookup, 120 s for archive download | `tool`, `phase`, `url`, `timeoutMs`, `elapsedMs` | Retry; `retryable` is true |
+
+`isManagedToolError`, `isManagedToolDownloadError`, and `isManagedToolTimeoutError` match across realms by `name` and `code`. `isRetryableManagedToolError(error)` inspects a cause chain to a bounded depth. Branch on `code` or the class, never on `message`.
 
 ## Run modes
 
@@ -1280,6 +1329,10 @@ try {
 }
 ```
 
+## Compaction errors {#compaction-errors}
+
+Compaction settings, session compaction calls, and direct `requestCompactorOutput()` calls throw subclasses of `CompactionError` (`CompactionConfigError`, `CompactionCancelledError`, `CompactionStateError`, and `CompactorFailure`). Branch on the class or `code`, not the message. Every `CompactionError` exposes `code`, `hint`, `retryable`, and `fields()`, and comes with cross-realm guards (`isCompactionError`, `isCompactionConfigError`, `isCompactionCancelledError`, `isCompactionStateError`, `isCompactorFailure`, `findCompactionError`, `isRetryableCompactionError`) plus `serializeCompactionError()`, `parseSerializedCompactionError()`, and `rehydrateCompactionError()`. The RPC client automatically rehydrates `compaction_error` responses (for example when `set_compaction_model` or `compact` rejects). See [Compaction errors](/compaction/reference#compaction-errors).
+
 ## Session start errors
 
 A subagent that does not start within its start budget fails with a `SessionStartTimeoutError`; see [Subagent start timeouts](/subagents#subagent-start-timeouts) for the budget and how to change it. The child's result carries it serialized as `startError`, and its `error` text is the error's `message`. Every error in this family extends `SessionStartError`. Branch on the class, a guard, or `code`, never on the message:
@@ -1326,10 +1379,6 @@ Both extend `DebugError`, whose `code` is a `DebugErrorCode` and whose `fields()
 
 To pass one between processes, `serializeDebugError(error)` turns it into a `SerializedDebugError` (`name`, `code`, `message`, `hint`, `retryable`, `fields`, and a cause chain of at most eight errors), and `rehydrateDebugError(serialized)` rebuilds the same class with the same fields. An unknown `name` comes back as a `DebugError` that keeps its `name`, `code`, `fields` and `retryable`. The RPC client does this for you: when Atomic refuses `set_debug`, `setDebug()` rejects with the `DebugConfigError`.
 
-### Compaction errors
-
-Compaction settings, session compaction calls, and direct `requestCompactorOutput()` calls throw subclasses of `CompactionError` (`CompactionConfigError`, `CompactionCancelledError`, `CompactionStateError`, and `CompactorFailure`). Branch on the class or `code`, not the message. Every `CompactionError` exposes `code`, `hint`, `retryable`, and `fields()`, and comes with cross-realm guards (`isCompactionError`, `isCompactionConfigError`, `isCompactionCancelledError`, `isCompactionStateError`, `isCompactorFailure`, `findCompactionError`, `isRetryableCompactionError`) plus `serializeCompactionError()`, `parseSerializedCompactionError()`, and `rehydrateCompactionError()`. The RPC client automatically rehydrates `compaction_error` responses (for example when `set_compaction_model` or `compact` rejects). See [Compaction errors](/compaction/reference#compaction-errors).
-
 ## Nonblocking helpers
 
 Use the asynchronous helpers in a host that must keep accepting input while it reads files, checks trust or resolves tools. Existing synchronous SDK forms remain available.
@@ -1339,10 +1388,10 @@ Use the asynchronous helpers in a host that must keep accepting input while it r
 | `getProjectTrustOptionsAsync`, `hasProjectTrustInputsAsync`, `hasTrustRequiringProjectResourcesAsync`, `savedProjectTrustAsync` | Read project trust inputs without synchronous file access; `savedProjectTrustAsync()` returns a predicate whose trust result must be awaited |
 | `buildSkillCatalogAsync`, `emptySkillCatalog` | Load a skill catalog asynchronously, or create an empty catalog without reading files |
 | `latestSessionSnapshotAsync`, `mapPathForCwdAsync`, `mapRestoredPathAsync`, `workspaceSessionCwdAsync` | Read snapshot metadata and resolve restored paths and workspace working directories asynchronously |
-| `loadMcpConfigAsync`, `updateMcpServerConfigAsync`, `addMcpServerConfigAsync`, `removeMcpServerConfigAsync` | Read and edit MCP configuration asynchronously; await edits before reading their result |
+| `updateMcpServerConfigAsync` | Edit MCP server configuration asynchronously (synchronous form: `updateMcpServerConfig`); await edits before reading their result |
 | `AuthStorage.createAsync`, `SettingsManager.createAsync` | Load credential or settings storage asynchronously |
 | `ModelRuntime.getCompatibilityRequestConfigAsync`, `ModelRuntime.getCatalogInputsGenerationAsync` | Read provider request configuration or observe catalog input changes asynchronously |
-| `selectProcessStorageAsync`, `processSharedStorageSelectionAsync`, `processStorageEnvironmentAsync` | Read process storage inputs or a team token file asynchronously when building storage selections or child environments |
+| `selectProcessStorageAsync`, `processSharedStorageSelectionAsync`, `processStorageEnvironmentAsync` | Read process storage overrides (`ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, `--storage`, `--storage-file`) asynchronously when building storage selections or child environments |
 | `storageHomeDirAsync`, `workflowsStorageDirAsync`, `defaultSessionDatabasePathAsync`, `defaultSharedStoragePathAsync`, `storagePathBaseDirAsync` from `@bastani/atomic/storage` | Resolve storage homes and paths asynchronously while preserving custom agent-directory isolation |
 | `readClaimFileAsync`, `claimFileAtomicallyAsync`, `sameDirectoryAsync`, `selectStorageAsync` from `@bastani/atomic/storage` | Read or publish ownership claims, compare directories or resolve a storage selection without blocking the host |
 | `takeTakeoverMutexAsync` | Acquire a takeover mutex asynchronously; await the returned mutex's `release()` |
@@ -1365,408 +1414,245 @@ On Windows, the native module reads directory ownership and access lists directl
 
 ## Exports
 
-The main entry point exports:
+`@bastani/atomic` exports the main SDK surface from the package root, plus dedicated subpath entry points:
 
-```typescript
-// Session factories and runtime
-createAgentSession
-createAgentSessionServices
-createAgentSessionFromServices
-createAgentSessionRuntime
-AgentSession
-AgentSessionRuntime
-AgentSessionBusyError, isAgentSessionBusyError
-NativeModuleUnavailableError
+| Entry point | Primary exports |
+| --- | --- |
+| `@bastani/atomic` | Session factories, `AgentSession`, `AgentSessionRuntime`, `ModelRuntime`, `SessionManager`, `SettingsManager`, `DefaultResourceLoader`, `workspace`, `decide`, `generateStructuredOutput`, `RpcClient`, `AgentTaskHost`, tool/extension factories, and typed error families |
+| `@bastani/atomic/storage` | `openNodeSqliteDatabase`, `StorageProvider`, storage selections, path/claim helpers, and `StorageError` classes (also re-exported from root) |
+| `@bastani/atomic/storage/testing` | `registerSqliteDatabaseConformance` conformance test suite for custom `SqliteDatabase` adapters |
+| `@bastani/atomic/typebox` (`/*`) | Atomic's shared TypeBox instance so custom tool formats reach validation |
+| `@bastani/atomic/rpc-entry` | Standalone Node.js entry script forcing `--mode rpc` for `RpcClient` subprocesses |
 
-// Auth and Models
-ModelRuntime
-type CreateModelRuntimeOptions
-type ModelRuntimeAuthOverrides
-CredentialSynchronizationError
-AuthStorage
-type AuthStorageBackend
-FileAuthStorageBackend
-InMemoryAuthStorageBackend
-readStoredCredential
-ModelRegistry
-NoUsableModelError, partitionByCredentials
-createGatewayBindingFetch
-resolveAutoModel
-resolveRestoredModelReference
-resolveModelScopeFromModels
-resolveModelScopeWithDiagnostics
-type ResolveModelScopeResult
-type ModelScopeDiagnostic
-OAuthLoginTransactionError
-OAuthRefreshRejectedError, isOAuthRefreshRejectedError
-GitHubCopilotError, GitHubCopilotAuthenticationError, GitHubCopilotContentFilterError
-GitHubCopilotEmptyResponseError, GitHubCopilotInvalidRequestError, GitHubCopilotModelUnavailableError
-GitHubCopilotPromptTooLargeError, GitHubCopilotQuotaExhaustedError, GitHubCopilotRateLimitError
-GitHubCopilotServiceUnavailableError, GitHubCopilotStreamEndedEarlyError, GitHubCopilotUnrecognizedResponseError
-LlamaServerError, LlamaServerRequestError, LlamaServerUnreachableError
+<AccordionGroup>
+  <Accordion title="Sessions, runtime, models, and auth">
+    ```typescript
+    // Session factories, runtime, and output
+    createAgentSession, createAgentSessionServices, createAgentSessionFromServices, createAgentSessionRuntime
+    AgentSession, AgentSessionRuntime, CacheWarmer, CACHE_WARMING_MODES
+    AgentSessionBusyError, isAgentSessionBusyError, NativeModuleUnavailableError
+    createTranscript, type Transcript, type TranscriptOptions, type TranscriptPart
+    type CreateAgentSessionOptions, type CreateAgentSessionResult
 
-// Workspaces and Intercom policy / errors
-workspace
-bindSessionWorkspace
-resolveWorkspace
-restoreWorkspace
-workspaceChangeSet
-publishPullRequest
-acquireWorkspaceWriterLease
-inheritWorkspace
-isWorkspace, isBoundWorkspace, assertWorkspace
-workspaceSessionCwd, workspaceSessionCwdAsync
-WorkspaceError, WorkspaceConfigError, WorkspaceBindingError, WorkspaceGitError
-WorkspaceSnapshotError, WorkspaceRestoreError, WorkspaceDriftError, WorkspacePublicationError
-WorkspaceSandboxError, WorkspaceTimeoutError, WorkspaceCollectionError
-isWorkspaceError, findWorkspaceError, isRetryableWorkspaceError, serializeWorkspaceError, rehydrateWorkspaceError
-isWorkspaceConfigError, isWorkspaceBindingError, isWorkspacePublicationError, isWorkspaceRestoreError
-isWorkspaceSandboxError, isWorkspaceTimeoutError, isWorkspaceCollectionError
-isWorkspaceDriftError, isWorkspaceGitError, isWorkspaceSnapshotError
-IntercomPolicyError, MAX_INTERCOM_REACHABLE_GROUPS
-confinedIntercomChildGroup, readRuntimeIntercomGroup, RUNTIME_INTERCOM_GROUP_ENV
-type IntercomSessionOptions, type SessionIntercom
-IntercomBrokerError, IntercomBrokerProtocolError, IntercomBrokerStopTimeoutError
-IntercomBrokerSuccessorTimeoutError, IntercomBrokerUpgradeError
-isIntercomBrokerError, isIntercomBrokerProtocolError, isIntercomBrokerStopTimeoutError
-isIntercomBrokerSuccessorTimeoutError, isIntercomBrokerUpgradeError, isRetryableIntercomBrokerError
-serializeIntercomBrokerError, rehydrateIntercomBrokerError, type SerializedIntercomBrokerError
-IntercomRoutingError, IntercomRoutingChangedError, IntercomRoutingMismatchError
-IntercomRoutingTimeoutError, IntercomRoutingUnavailableError
-isIntercomRoutingError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError
-isIntercomRoutingTimeoutError, isIntercomRoutingUnavailableError, isRetryableIntercomRoutingError
-ProjectGroupError, isProjectGroupError, type ProjectGroupErrorCode
+    // Releasing idle sessions and wake dispatcher
+    AgentWakeDispatcher, agentWakeDispatcher, wakeKeyNamespace
+    AgentRehydrateError, AgentReleaseConfigError
+    isAgentRehydrateError, isAgentReleaseConfigError, isRetryableAgentRehydrateError
+    isLocalOnlySessionStorage, serializeAgentRehydrateError, rehydrateAgentRehydrateError
+    type ReleasedAgentSession, type ReleaseWhenIdleOptions, type AgentWake, type AgentWakeKind
+    type AgentWakeHandler, type AgentWakeHandlerOptions, type AgentWakeSlot, type AgentWakeClock
+    type AgentWakeTimer, type AgentWakeDispatcherOptions, type AgentWakeDispatcherStats, type AgentWakeFailureListener
+    type AgentRehydrateErrorCode, type AgentRehydrateErrorFields, type AgentReleaseConfigSource
+    type AgentSessionActivity, type SerializedAgentRehydrateError, type SerializedAgentErrorCause
 
-// Resource loading and MCP configuration
-DefaultResourceLoader
-type ResourceLoader
-type McpServerConfig, type McpServerContribution
-createEventBus
+    // Auth and models
+    ModelRuntime, type CreateModelRuntimeOptions, type ModelRuntimeAuthOverrides, CredentialSynchronizationError
+    AuthStorage, type AuthStorageBackend, FileAuthStorageBackend, InMemoryAuthStorageBackend, readStoredCredential
+    ModelRegistry, NoUsableModelError, partitionByCredentials, createGatewayBindingFetch
+    resolveAutoModel, resolveRestoredModelReference, resolveModelScopeFromModels, resolveModelScopeWithDiagnostics
+    type ResolveModelScopeResult, type ModelScopeDiagnostic
+    OAuthLoginTransactionError, OAuthRefreshRejectedError, isOAuthRefreshRejectedError
+    GitHubCopilotError, GitHubCopilotAuthenticationError, GitHubCopilotContentFilterError
+    GitHubCopilotEmptyResponseError, GitHubCopilotInvalidRequestError, GitHubCopilotModelUnavailableError
+    GitHubCopilotPromptTooLargeError, GitHubCopilotQuotaExhaustedError, GitHubCopilotRateLimitError
+    GitHubCopilotServiceUnavailableError, GitHubCopilotStreamEndedEarlyError, GitHubCopilotUnrecognizedResponseError
+    LlamaServerError, LlamaServerRequestError, LlamaServerUnreachableError
+    ```
+  </Accordion>
+  <Accordion title="Workspaces, Intercom, and event subscriptions">
+    ```typescript
+    // Workspaces
+    workspace, bindSessionWorkspace, resolveWorkspace, restoreWorkspace
+    workspaceChangeSet, publishPullRequest, acquireWorkspaceWriterLease, inheritWorkspace
+    isWorkspace, isBoundWorkspace, assertWorkspace, workspaceSessionCwd, workspaceSessionCwdAsync
+    WorkspaceError, WorkspaceConfigError, WorkspaceBindingError, WorkspaceGitError
+    WorkspaceSnapshotError, WorkspaceRestoreError, WorkspaceDriftError, WorkspacePublicationError
+    WorkspaceSandboxError, WorkspaceTimeoutError, WorkspaceCollectionError
+    isWorkspaceError, findWorkspaceError, isRetryableWorkspaceError, serializeWorkspaceError, rehydrateWorkspaceError
+    isWorkspaceConfigError, isWorkspaceBindingError, isWorkspacePublicationError, isWorkspaceRestoreError
+    isWorkspaceSandboxError, isWorkspaceTimeoutError, isWorkspaceCollectionError
+    isWorkspaceDriftError, isWorkspaceGitError, isWorkspaceSnapshotError
 
-// Constants and helpers
-CONFIG_DIR_NAME
-defineTool
-STRUCTURED_OUTPUT_TOOL_NAME
-createStructuredOutputTool
-createStructuredOutputCapture
-generateStructuredOutput
-getAgentDir
-getPackageDir
-getReadmePath
-getDocsPath
-getExamplesPath
-generateDiffString
-generateUnifiedPatch
-type EditDiffResult
+    // Intercom policies and errors
+    IntercomPolicyError, MAX_INTERCOM_REACHABLE_GROUPS
+    confinedIntercomChildGroup, readRuntimeIntercomGroup, RUNTIME_INTERCOM_GROUP_ENV
+    type IntercomSessionOptions, type SessionIntercom
+    IntercomBrokerError, IntercomBrokerProtocolError, IntercomBrokerStopTimeoutError
+    IntercomBrokerSuccessorTimeoutError, IntercomBrokerUpgradeError
+    isIntercomBrokerError, isIntercomBrokerProtocolError, isIntercomBrokerStopTimeoutError
+    isIntercomBrokerSuccessorTimeoutError, isIntercomBrokerUpgradeError, isRetryableIntercomBrokerError
+    serializeIntercomBrokerError, rehydrateIntercomBrokerError, type SerializedIntercomBrokerError
+    IntercomRoutingError, IntercomRoutingChangedError, IntercomRoutingMismatchError
+    IntercomRoutingTimeoutError, IntercomRoutingUnavailableError
+    isIntercomRoutingError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError
+    isIntercomRoutingTimeoutError, isIntercomRoutingUnavailableError, isRetryableIntercomRoutingError
+    ProjectGroupError, isProjectGroupError, type ProjectGroupErrorCode
 
-// Releasing idle sessions and waking them (see "Releasing idle sessions" in the SDK guide)
-type ReleasedAgentSession
-type ReleaseWhenIdleOptions
-AgentWakeDispatcher
-agentWakeDispatcher
-wakeKeyNamespace
-type AgentWake
-type AgentWakeKind
-type AgentWakeHandler
-type AgentWakeHandlerOptions
-type AgentWakeSlot
-type AgentWakeClock
-type AgentWakeTimer
-type AgentWakeDispatcherOptions
-type AgentWakeDispatcherStats
-type AgentWakeFailureListener
-AgentRehydrateError
-AgentReleaseConfigError
-type AgentRehydrateErrorCode
-type AgentRehydrateErrorFields
-type AgentReleaseConfigSource
-type AgentSessionActivity
-type SerializedAgentRehydrateError
-type SerializedAgentErrorCause
-isAgentRehydrateError
-isAgentReleaseConfigError
-isRetryableAgentRehydrateError
-isLocalOnlySessionStorage
-serializeAgentRehydrateError
-rehydrateAgentRehydrateError
-TEAM_JOIN_COMMAND
+    // Event subscriptions
+    githubChecks, githubReviews, logTail, webhook, interval, publishEvent, openEventSubscription
+    createWakeDispatcher, sharedWakeDispatcher
+    type EventSource, type SubscriptionEvent, type Subscription, type SubscriptionStats
+    type SessionEventChild, type SessionEventHandler, type SessionSubscribeOptions
+    SubscriptionError, SubscriptionClosedError, SubscriptionConfigError, SubscriptionEventError
+    EventSourceError, SubscriptionHandlerError, SubscriptionChildUnavailableError
+    SubscriptionSetupError, SubscriptionSubscriberUnavailableError, SubscriptionRecordError, SubscriptionTimeoutError
+    isSubscriptionError, isSubscriptionClosedError, isSubscriptionConfigError, isSubscriptionEventError
+    isEventSourceError, isSubscriptionHandlerError, isSubscriptionChildUnavailableError
+    isSubscriptionSetupError, isSubscriptionSubscriberUnavailableError, isSubscriptionRecordError, isSubscriptionTimeoutError
+    isRetryableSubscriptionError, serializeSubscriptionError, deserializeSubscriptionError
+    ```
+  </Accordion>
+  <Accordion title="Storage, session management, resume, and blueprints">
+    ```typescript
+    // Session management and claims
+    SessionManager, SettingsManager, JsonlSessionStore, MemorySessionStore, SqlSessionStore, resolveSessionStore
+    type SessionStorageOptions, claimSession, prepareSessionClaim, attachSessionClaim, SESSION_ALREADY_OPEN_EXIT_CODE
+    SessionAlreadyOpenError, SessionConflictError, SessionDeletedError, SessionEntryError, SessionExistsError
+    SessionFormatVersionError, SessionHistoryNotLoadedError, SessionIdError, SessionIdMismatchError
+    SessionImportFileNotFoundError, SessionInvalidTextError, SessionInvalidTimestampError, SessionNotFoundError
+    SessionOpenElsewhereError, SessionWorkUnsettledError, SettingsFileChangedError, JsonlStoragePoisonedError
+    StorageTransferError, StorageImportIncompleteError
+    MissingSessionCwdError, isMissingSessionCwdError, serializeMissingSessionCwdError
+    rehydrateMissingSessionCwdError, isSerializedMissingSessionCwdError
 
-// Session output
-createTranscript
-type Transcript
-type TranscriptOptions
-type TranscriptPart
+    // Storage adapters, blobs, history, and StorageError family (also in @bastani/atomic/storage)
+    openNodeSqliteDatabase, wrapNodeSqliteDatabase, sqliteFilePath, createSqliteDatabase
+    getWriterQueueStats, getWriterQueueDegradation, DEFAULT_GROUP_COMMIT_HOLD_MS, type WriterQueueStats
+    StorageProvider, type StorageSelection, type StorageOpenContext, type StorageAdapterModule
+    type AdapterOptions, type SecretRef, type SessionStorageOption, type SessionStore
+    loadStorageAdapter, resolveAdapterOptions, adapterOpenContext, storageSelectionKey
+    secretFilePath, secretFilePathAsync, POSTGRES_ADAPTER_PACKAGE, LOCAL_SESSIONS_STORAGE, REDACTED_SECRET
+    inMemorySecret, type InMemorySecretRef, getTeamProfile, isPostgresUrl
+    selectStorage, selectStorageAsync, selectProcessStorage, selectProcessStorageAsync
+    processSharedStorageSelection, processSharedStorageSelectionAsync, processStorageEnvironment, processStorageEnvironmentAsync
+    configuredSecretRedactor, redactSecrets, switchToWriteAheadLog, validateStoragePrefix
+    storageMigrationTable, assertStorageSchemaVersion, assertStoredSchemaVersion
+    type SqliteDatabase, type SqliteDriver, type StorageDescriptor
+    readSessionHistory, readSessionHistoryChunks, findInSessionHistory
+    readSessionChildCatalog, readExpandedChildDetails, readSavedChildLaunch
+    copySessionBlobs, assertSessionBlobStore, sessionBlobHashes, toolOutputUrl
+    SqlSnapshotBlobStore, MemorySnapshotBlobStore, type SnapshotBlobStore
+    StorageError, StorageUnavailableError, StoreClosedError, StorageTransactionClosedError, StorageRollbackError
+    StorageInvalidTextError, StorageSchemaVersionError, StoragePrefixError, StorageConfigError, StorageAdapterLoadError
+    StorageOutcomeUnknownError, StoragePayloadTooLargeError, StorageWriteLockTimeoutError, StorageUnsupportedOperationError
+    StorageWriterQueueDegradedError, StorageWriterQueueUnusableError, StorageTransientError, SessionBlobError, SessionSpillError
+    TeamProfileError, TeamProfileTimeoutError, TeamProfileConfigError
+    isStorageError, isStorageConfigError, isStorageWriteLockTimeoutError, isStorageUnsupportedOperationError
+    isStorageWriterQueueDegradedError, isStorageWriterQueueUnusableError, isStorageTransientError
+    isSessionBlobError, isSessionSpillError, isStorageResponseRefusal, findStorageWriteLockTimeoutError, isRetryableStorageError
+    isTeamProfileError, isTeamProfileTimeoutError, isTeamProfileConfigError, isRetryableTeamProfileError
+    serializeStorageError, rehydrateStorageError, serializeTeamError, rehydrateTeamError
+    describeStorageError, describeStorageFailure
 
-// Storage, adapters, team profiles, history, blobs, and StorageError family
-// (re-exported from @bastani/atomic/storage, plus root process-selection and blob-copy helpers)
-openNodeSqliteDatabase, wrapNodeSqliteDatabase, sqliteFilePath
-getWriterQueueStats, getWriterQueueDegradation, DEFAULT_GROUP_COMMIT_HOLD_MS, type WriterQueueStats
-StorageProvider, type StorageSelection, type StorageOpenContext, type StorageAdapterModule
-type AdapterOptions, type SecretRef, type SessionStorageOption, type SessionStore
-loadStorageAdapter, resolveAdapterOptions, adapterOpenContext, storageSelectionKey
-secretFilePath, secretFilePathAsync
-POSTGRES_ADAPTER_PACKAGE, LOCAL_SESSIONS_STORAGE, REDACTED_SECRET
-inMemorySecret, type InMemorySecretRef
-getTeamProfile, isPostgresUrl
-selectStorage, selectStorageAsync, type StorageInputSelection, type StorageSettingsSelection
-selectProcessStorage, selectProcessStorageAsync, type ProcessStorageChoice, type StorageDomain
-processSharedStorageSelection, processSharedStorageSelectionAsync
-processStorageEnvironment, processStorageEnvironmentAsync
-createSqliteDatabase, configuredSecretRedactor, redactSecrets, switchToWriteAheadLog
-validateStoragePrefix, storageMigrationTable, assertStorageSchemaVersion, assertStoredSchemaVersion
-type SqliteDatabase, type SqliteDriver, type StorageDescriptor
-readSessionHistory, readSessionHistoryChunks, findInSessionHistory
-readSessionChildCatalog, readExpandedChildDetails, readSavedChildLaunch
-copySessionBlobs, assertSessionBlobStore, sessionBlobHashes, toolOutputUrl
-SqlSnapshotBlobStore, MemorySnapshotBlobStore, type SnapshotBlobStore
-StorageError, StorageUnavailableError, StoreClosedError, StorageTransactionClosedError
-StorageRollbackError, StorageInvalidTextError, StorageSchemaVersionError, StoragePrefixError
-StorageConfigError, StorageAdapterLoadError, StorageOutcomeUnknownError, StoragePayloadTooLargeError
-StorageWriteLockTimeoutError, StorageUnsupportedOperationError, StorageWriterQueueDegradedError
-StorageWriterQueueUnusableError, StorageTransientError, SessionBlobError, SessionSpillError
-TeamProfileError, TeamProfileTimeoutError, TeamProfileConfigError
-isStorageError, isStorageConfigError, isStorageWriteLockTimeoutError, isStorageUnsupportedOperationError
-isStorageWriterQueueDegradedError, isStorageWriterQueueUnusableError, isStorageTransientError
-isSessionBlobError, isSessionSpillError, isStorageResponseRefusal
-findStorageWriteLockTimeoutError, isRetryableStorageError
-isTeamProfileError, isTeamProfileTimeoutError, isTeamProfileConfigError, isRetryableTeamProfileError
-serializeStorageError, rehydrateStorageError, serializeTeamError, rehydrateTeamError
-describeStorageError, describeStorageFailure, type SerializedStorageError, type SerializedTeamError
+    // Resume and blueprint errors
+    ResumeError, ResumeNotFoundError, ResumePreconditionError, ResumeCatalogUnavailableError, ResumeCatalogTimeoutError
+    isResumeError, findResumeError, isRetryableResumeError, serializeResumeError, rehydrateResumeError
+    BlueprintError, BlueprintInvalidError, BlueprintStepFailedError, BlueprintStepTimedOutError
+    BlueprintUsesUnsupportedError, BlueprintBuildFailedError
+    isBlueprintError, findBlueprintError, serializeBlueprintError, rehydrateBlueprintError
+    ```
+  </Accordion>
+  <Accordion title="Structured decisions, compaction, and session start errors">
+    ```typescript
+    // Structured decisions and structured_output
+    decide, generateStructuredOutput, STRUCTURED_OUTPUT_TOOL_NAME
+    createStructuredOutputTool, createStructuredOutputCapture
+    type DecisionRequest, type DecisionResult, type DecisionQuestion, type DecisionQuestions
+    type DecisionChoiceQuestion, type DecisionBoolQuestion, type DecisionScoreQuestion
+    type DecisionAnswers, type DecisionChoiceAnswer, type DecisionBoolAnswer, type DecisionScoreAnswer, type DecisionSource
+    type StructuredOutputCapture, type StructuredOutputToolOptions, type StructuredOutputRequest, type StructuredOutputResult
+    DecisionError, DecisionConfigError, DecisionRequestError, DecisionModelUnavailableError
+    DecisionTimeoutError, DecisionOutputError, DecisionProviderError
+    isDecisionError, isDecisionConfigError, isDecisionRequestError, isDecisionModelUnavailableError
+    isDecisionTimeoutError, isDecisionOutputError, isDecisionProviderError
+    findDecisionError, isRetryableDecisionError, serializeDecisionError, parseSerializedDecisionError, rehydrateDecisionError
 
-// Session management and resume
-SessionManager
-SettingsManager
-JsonlSessionStore
-MemorySessionStore
-SqlSessionStore
-resolveSessionStore
-type SessionStorageOptions
-claimSession
-prepareSessionClaim
-attachSessionClaim
-SESSION_ALREADY_OPEN_EXIT_CODE
-SessionAlreadyOpenError
-SessionConflictError
-SessionDeletedError
-SessionEntryError
-SessionExistsError
-SessionFormatVersionError
-SessionHistoryNotLoadedError
-SessionIdError
-SessionIdMismatchError
-SessionImportFileNotFoundError
-SessionInvalidTextError
-SessionInvalidTimestampError
-SessionNotFoundError
-SessionOpenElsewhereError
-SessionWorkUnsettledError
-SettingsFileChangedError
-JsonlStoragePoisonedError
-StorageTransferError
-StorageImportIncompleteError
-ResumeError, ResumeNotFoundError, ResumePreconditionError, ResumeCatalogUnavailableError, ResumeCatalogTimeoutError
-isResumeError, findResumeError, isRetryableResumeError, serializeResumeError, rehydrateResumeError
-BlueprintError, BlueprintInvalidError, BlueprintStepFailedError, BlueprintStepTimedOutError, BlueprintUsesUnsupportedError, BlueprintBuildFailedError
-isBlueprintError, findBlueprintError, serializeBlueprintError, rehydrateBlueprintError
-type SessionJsonValue
-type SessionTextField
-type SessionTimestampField
-type StorageTransferErrorInit
-type TransferredIds
+    // Compaction and custom compactor models
+    type CompactorModel, type CompactorApi
+    type ProviderCompactorModelConfig, type ProviderChatModelConfig, type ProviderClassifierModelConfig, type ProviderImageModelConfig
+    type CompactorRequest, type CompactorMessage, type CompactionModelSelection, type CompactionModelKind
+    CompactionError, CompactionConfigError, CompactionCancelledError, CompactionStateError, CompactorFailure
+    isCompactionError, isCompactionConfigError, isCompactionCancelledError, isCompactionStateError, isCompactorFailure
+    findCompactionError, isRetryableCompactionError, serializeCompactionError, parseSerializedCompactionError, rehydrateCompactionError
+    requestCompactorOutput, buildCompactorMessages, classifyCompactionModel, resolveCompactionModel
+    estimateTextTokens, wrapLongLines, COMPACTOR_REQUEST_TIMEOUT_MS
 
-// Decision service
-decide
-type DecisionRequest
-type DecisionResult
-type DecisionQuestion, DecisionQuestions, DecisionChoiceQuestion, DecisionBoolQuestion, DecisionScoreQuestion
-type DecisionAnswers, DecisionChoiceAnswer, DecisionBoolAnswer, DecisionScoreAnswer, DecisionSource
-DecisionError, DecisionConfigError, DecisionRequestError, DecisionModelUnavailableError
-DecisionTimeoutError, DecisionOutputError, DecisionProviderError
-type DecisionErrorCode, DecisionConfigErrorCode, DecisionRequestErrorReason, DecisionModelUnavailableReason
-isDecisionError, isDecisionConfigError, isDecisionRequestError, isDecisionModelUnavailableError
-isDecisionTimeoutError, isDecisionOutputError, isDecisionProviderError
-findDecisionError, isRetryableDecisionError, serializeDecisionError, parseSerializedDecisionError, rehydrateDecisionError
+    // Session start errors
+    SessionStartError, SessionStartTimeoutError, SessionStartConfigError
+    isSessionStartError, isSessionStartTimeoutError, isSessionStartConfigError
+    findSessionStartError, isRetryableSessionStartError, serializeSessionStartError, rehydrateSessionStartError
+    parseSessionStartTimeoutMs, MAX_SESSION_START_TIMEOUT_MS
+    ```
+  </Accordion>
+  <Accordion title="Tools, extensions, task supervision, Git, and debug">
+    ```typescript
+    // Resource loading, extensions, and bundled factories
+    DefaultResourceLoader, type ResourceLoader, createEventBus, defineTool
+    updateMcpServerConfig, updateMcpServerConfigAsync, type McpServerConfig, type McpServerContribution
+    createCodemodeExtension, createCodemodeTool, createCodemodeToolDefinition, createCodemodeDescription
+    createToolSearchExtension, createToolSearchToolDefinition, createMcpExtension, McpOAuthCredentialStore
+    CONFIG_DIR_NAME, getAgentDir, getPackageDir, getReadmePath, getDocsPath, getExamplesPath
+    generateDiffString, generateUnifiedPatch, type EditDiffResult
+    type ExtensionFactory, type ExtensionAPI, type ToolDefinition, type Skill, type PromptTemplate, type Tool
 
-// Session start errors
-SessionStartError
-SessionStartTimeoutError
-SessionStartConfigError
-isSessionStartError
-isSessionStartTimeoutError
-isSessionStartConfigError
-findSessionStartError
-isRetryableSessionStartError
-serializeSessionStartError
-rehydrateSessionStartError
-parseSessionStartTimeoutMs
-MAX_SESSION_START_TIMEOUT_MS
-type SessionStartErrorCode
-type SessionStartPhase
-type SessionStartStep
-type SessionStartStepTiming
-type SessionStartEventLoopSample
-type SessionStartTimeoutDetails
-type SessionStartConfigSource
-type SessionStartConfigReason
-type SerializedSessionStartError
-type SerializedSessionStartCause
+    // Tool factories and shell/file tool errors
+    createCodingTools, createReadOnlyTools
+    createReadTool, createBashTool, createPowerShellTool, createKillTool
+    createEditTool, createWriteTool, createSearchTool, createFindTool, createLsTool
+    ShellToolError, ShellTimeoutError, isShellToolError, isShellTimeoutError, rehydrateShellToolError
+    EditToolError, EditInputError, EditMatchError, EditTargetError, WriteSelectorError, FileToolAbortedError
+    isEditToolError, isEditInputError, isEditMatchError, isEditTargetError, isWriteSelectorError, isFileToolAbortedError
+    serializeFileToolError, rehydrateEditToolError, rehydrateWriteSelectorError
 
-// Owner-bound task supervisor, cleanup errors, and finished task retention
-AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory
-OwnerTaskStore, bindOwnerTaskStore, getOwnerTaskStore, getOwnerTaskSession
-scopedBackgroundTasks, sessionTasks, belongsToSession, ownerTaskViewSource, bindTaskResumer, type TaskViewSource
-heldPrompts, watchHeldPromptAttention, isHeldPromptInput, isPresentationHostInput, routeNamesPrompt
-type HeldPrompt, type HeldPrompts
-TaskCleanupError, TaskCleanupAdmissionTimeoutError
-isTaskCleanupError, isTaskCleanupAdmissionTimeoutError, isRetryableTaskError, rehydrateTaskCleanupError
-type TaskCleanupErrorCode, type TaskCleanupFailure, type TaskCleanupPhase, type TaskCleanupAdmissionTiming
-FINISHED_TASK_RETENTION
-TaskEvictedError, isTaskEvictedError, findTaskEvictedError, rehydrateTaskEvictedError
-type TaskEvictedErrorCode, type TaskEvictedErrorFields
-TaskToolError, isTaskToolError, rehydrateTaskToolError
-type TaskToolFailureCode, type TaskToolErrorFields, type SerializedTaskToolError
+    // Task supervision, held prompts, and detachable tool calls
+    AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory
+    OwnerTaskStore, bindOwnerTaskStore, getOwnerTaskStore, getOwnerTaskSession
+    scopedBackgroundTasks, sessionTasks, belongsToSession, ownerTaskViewSource, bindTaskResumer, type TaskViewSource
+    heldPrompts, watchHeldPromptAttention, isHeldPromptInput, isPresentationHostInput, routeNamesPrompt
+    type HeldPrompt, type HeldPrompts
+    TaskCleanupError, TaskCleanupAdmissionTimeoutError, isTaskCleanupError, isTaskCleanupAdmissionTimeoutError
+    isRetryableTaskError, rehydrateTaskCleanupError
+    FINISHED_TASK_RETENTION, TaskEvictedError, isTaskEvictedError, findTaskEvictedError, rehydrateTaskEvictedError
+    TaskToolError, isTaskToolError, rehydrateTaskToolError
+    TaskMessageError, TaskMessageTimeoutError, isTaskMessageError, isTaskMessageTimeoutError
+    findTaskMessageError, isRetryableTaskMessageError, rehydrateTaskMessageError
+    ToolDetachmentError, isToolDetachmentError, findToolDetachmentError, deserializeToolDetachmentError
+    MAX_TOOL_DETACHMENT_AFTER_MS, markToolCallReadyForDetachment, toolCallNeedsDetachmentHandoff
 
-// Messages typed into a task's transcript (see "Task transcript references")
-TaskMessageError, TaskMessageTimeoutError, isTaskMessageError, isTaskMessageTimeoutError
-findTaskMessageError, isRetryableTaskMessageError, rehydrateTaskMessageError
-type TaskMessageErrorCode, type TaskMessageErrorFields, type TaskMessageTimeoutErrorFields
-type TaskMessageTimeoutPhase, type SerializedTaskMessageError
-
-// Detachable tool calls (see "Detachable tool calls")
-ToolDetachmentError, isToolDetachmentError, findToolDetachmentError, deserializeToolDetachmentError
-MAX_TOOL_DETACHMENT_AFTER_MS
-markToolCallReadyForDetachment, toolCallNeedsDetachmentHandoff
-type ToolDetachmentErrorCode, type ToolDetachmentErrorFields, type SerializedToolDetachmentError
-type DetachedCallFailure, type DetachedCallFailureCause
-
-// Git resolution (see "Resolving git")
-resolveGit, resolveGitSync, resolveInstalledGit, getGitStatus, getGitStatusAsync, GIT_MINIMUM_VERSION
-GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionConfigError
-isGitProvisionError, isGitUnavailableError, isGitProvisionTimeoutError, isGitProvisionConfigError
-findGitProvisionError, isRetryableGitProvisionError, rehydrateGitProvisionError
-type ResolvedGit, type ResolveGitOptions, type GitToolStatus, type GitUnavailableCode, type GitUnavailableFields
-
-// Private temp directories (see "Private temp directories")
-ensurePrivateTempDirAsync, assertPrivateDirectoryAsync, ensurePrivateTempDir, assertPrivateDirectory, TempDirRefusedError
-
-// fd and ripgrep download errors (see "fd and ripgrep download errors")
-ManagedToolError, ManagedToolDownloadError, ManagedToolTimeoutError
-isManagedToolError, isManagedToolDownloadError, isManagedToolTimeoutError, isRetryableManagedToolError
-type ManagedToolName, type ManagedToolRequestPhase, type ManagedToolErrorCode, type ManagedToolDownloadFields, type ManagedToolTimeoutFields
-
-// Debug output
-isDebugEnabled
-reportDebug
-reportDebugAsync
-appendDebugRecord
-appendDebugRecordAsync
-flushDebugLog
-DEBUG_AREA_VARIABLES
-getDebugLogFailure
-setDebugSetting
-onDebugSettingChange
-DebugError
-DebugLogUnwritableError
-DebugConfigError
-isDebugError
-isDebugLogUnwritableError
-isDebugConfigError
-serializeDebugError
-rehydrateDebugError
-type SerializedDebugError
-type SerializedErrorCause
-type DebugConfigErrorFields
-type DebugArea
-type DebugFields
-type DebugValue
-type DebugErrorCode
-type DebugSettingSource
-
-// Session working directory
-MissingSessionCwdError
-isMissingSessionCwdError
-serializeMissingSessionCwdError
-rehydrateMissingSessionCwdError
-isSerializedMissingSessionCwdError
-type SerializedMissingSessionCwdError
-type MissingSessionCwdErrorCode
-type MissingSessionCwdFields
-type SessionCwdIssue
-
-// Event subscriptions (session.subscribe, ctx.subscribe, ctx.events)
-type EventSource
-type SubscriptionEvent
-type Subscription
-type SubscriptionStats
-type SessionEventChild
-type SessionEventHandler
-type SessionSubscribeOptions
-githubChecks, githubReviews, logTail, webhook, interval
-publishEvent, openEventSubscription
-createWakeDispatcher, sharedWakeDispatcher
-SubscriptionError, SubscriptionClosedError, SubscriptionConfigError, SubscriptionEventError
-EventSourceError, SubscriptionHandlerError, SubscriptionChildUnavailableError
-SubscriptionSetupError, SubscriptionSubscriberUnavailableError, SubscriptionRecordError, SubscriptionTimeoutError
-isSubscriptionError, isSubscriptionClosedError, isSubscriptionConfigError, isSubscriptionEventError
-isEventSourceError, isSubscriptionHandlerError, isSubscriptionChildUnavailableError
-isSubscriptionSetupError, isSubscriptionSubscriberUnavailableError, isSubscriptionRecordError, isSubscriptionTimeoutError
-isRetryableSubscriptionError, serializeSubscriptionError, deserializeSubscriptionError
-type SubscriptionErrorCode, type SubscriptionConfigReason, type SubscriptionSetupMissing, type SubscriberUnavailableReason, type SubscriptionRecordKind, type SubscriptionTimeoutPhase, type WebhookRequestFailures
-
-// Tool factories and shell/file tool errors
-createCodingTools
-createReadOnlyTools
-createReadTool, createBashTool, createPowerShellTool, createKillTool
-createEditTool, createWriteTool, createSearchTool, createFindTool, createLsTool
-ShellToolError, ShellTimeoutError, isShellToolError, isShellTimeoutError, rehydrateShellToolError
-EditToolError, EditInputError, EditMatchError, EditTargetError, WriteSelectorError, FileToolAbortedError
-isEditToolError, isEditInputError, isEditMatchError, isEditTargetError, isWriteSelectorError, isFileToolAbortedError
-serializeFileToolError, rehydrateEditToolError, rehydrateWriteSelectorError
-
-// Compaction, errors, and custom compactor models
-type CompactorModel, type CompactorApi
-type ProviderCompactorModelConfig, type ProviderChatModelConfig, type ProviderClassifierModelConfig, type ProviderImageModelConfig
-type CompactorRequest, type CompactorMessage, type CompactionModelSelection, type CompactionModelKind
-CompactionError, CompactionConfigError, CompactionCancelledError, CompactionStateError, CompactorFailure
-type CompactionErrorCode, type CompactionConfigErrorCode, type CompactionStateErrorCode, type CompactorFailureCode
-type CompactionConfigSource, type CompactionSettingsScope, type CompactionCancelReason, type CompactionErrorFieldValue
-type CompactionConfigErrorFields, type CompactionCancelledErrorFields, type CompactionStateErrorFields, type CompactorFailureOptions
-type SerializedCompactionError
-isCompactionError, isCompactionConfigError, isCompactionCancelledError, isCompactionStateError, isCompactorFailure
-findCompactionError, isRetryableCompactionError, serializeCompactionError, parseSerializedCompactionError, rehydrateCompactionError
-requestCompactorOutput, buildCompactorMessages, compactedOutputTokenCap, classifyCompactionModel, resolveCompactionModel
-estimateTextTokens, wrapLongLines
-COMPACTOR_REQUEST_TIMEOUT_MS, COMPACTOR_LINE_WIDTH
-COMPACTED_OUTPUT_MAX_TOKENS, COMPACTED_OUTPUT_MAX_TRIGGER_SHARE
-
-// Types
-type CreateAgentSessionOptions
-type CreateAgentSessionResult
-type StructuredOutputCapture
-type StructuredOutputToolOptions
-type StructuredOutputRequest
-type StructuredOutputResult
-type ExtensionFactory
-type ExtensionAPI
-type ToolDefinition
-type Skill
-type PromptTemplate
-type Tool
-```
+    // Git resolution, managed tools, private temp dirs, and debug output
+    resolveGit, resolveGitSync, resolveInstalledGit, getGitStatus, getGitStatusAsync, GIT_MINIMUM_VERSION
+    GitProvisionError, GitUnavailableError, GitProvisionTimeoutError, GitProvisionConfigError
+    isGitProvisionError, isGitUnavailableError, isGitProvisionTimeoutError, isGitProvisionConfigError
+    findGitProvisionError, isRetryableGitProvisionError, rehydrateGitProvisionError
+    ManagedToolError, ManagedToolDownloadError, ManagedToolTimeoutError
+    isManagedToolError, isManagedToolDownloadError, isManagedToolTimeoutError, isRetryableManagedToolError
+    ensurePrivateTempDirAsync, assertPrivateDirectoryAsync, ensurePrivateTempDir, assertPrivateDirectory, TempDirRefusedError
+    isDebugEnabled, reportDebug, reportDebugAsync, appendDebugRecord, appendDebugRecordAsync, flushDebugLog
+    DEBUG_AREA_VARIABLES, getDebugLogFailure, setDebugSetting, onDebugSettingChange
+    DebugError, DebugLogUnwritableError, DebugConfigError, isDebugError, isDebugLogUnwritableError, isDebugConfigError
+    serializeDebugError, rehydrateDebugError
+    ```
+  </Accordion>
+</AccordionGroup>
 
 For extension types, see [Extensions](/extensions) for the full API.
 
 ## Owner-bound task supervisor
 
-For trusted custom hosts, the package exports `AgentTaskHost` and its integration types rather than the raw native supervisor. Bind the host scope and a mandatory `authorizeLaunch` guard. Never accept ownership or authorization from model input or reconstruct a lease from a task ID or saved history.
+For trusted custom hosts, the package exports `AgentTaskHost` and its integration types rather than the raw native supervisor. Instantiate `new AgentTaskHost(binding)` with a host-owned `scope` (`{ kind: "session", sessionId }`) and a mandatory `authorizeLaunch` guard (call `host.updateBinding(binding)` to update callbacks without changing native identity). Never accept ownership or authorization from model input or reconstruct a lease from a task ID or saved history.
 
-`startAgentTask(intent, operation, runnerFactory)` returns a Result containing `{ taskId, lease }` after setup. The factory receives the original `AbortSignal`, reference, and `reportActivity` context, and returns separate `result` and `cleanup` promises (report cleanup only once confirmed). Replaying the same operation reuses execution without calling another factory.
+Supervisor operations return a discriminated `Result<T, E>` union (`{ ok: true; value: T } | { ok: false; error: E }`, where failures carry `{ code, message }`), and task waits yield a `WaitOutcome`:
 
-Use `observeAgentLaunch(taskId, policy?)`, `waitForTask`, `resolveTask`, `cancelTask`, `watchOwnerTasks`, and `close` within the bound owner:
+- `{ kind: "settled"; taskId; result }`: the task finished before the wait budget elapsed.
+- `{ kind: "yielded"; taskId; waitId; reason }`: the observation returned while the task kept running (`reason` is `"explicit"`, `"default-background"`, `"elapsed"`, `"intercom-coordination"`, or `"input-needed"`).
 
-- Observation returns a `Result` / `WaitOutcome`. Launch observation returns once registered, with reason `explicit` for `{ kind: "background" }` and `default-background` without a policy (subagents run in the background).
-- `waitForTask(taskId, budgetMs?, onRegistered?, signal?)` waits up to `budgetMs` (or the owner's agent budget if omitted); aborting `signal` ends the wait immediately with `ObserverCancelled`.
-- Yielding or cancelling an observation does not stop execution. Cancellation and cleanup failures stay observable, and owner close can stay pending until the runner acknowledges cleanup.
+`host.startAgentTask(intent, operation, runnerFactory)` returns `Promise<Result<{ taskId, lease }, StartFailure>>` after setup. The factory receives the original `AbortSignal`, reference, and `reportActivity` context, and returns separate `result` and `cleanup` promises (report cleanup only once confirmed). Replaying the same operation reuses execution without calling another factory.
+
+Use `observeAgentLaunch(taskId, policy?)`, `waitForTask`, `resolveTask`, `cancelTask`, `watchOwnerTasks`, and `close(cause)` on `AgentTaskHost`:
+
+- `observeAgentLaunch()` returns once registered, yielding with reason `"explicit"` for `{ kind: "background" }` and `"default-background"` without a policy (subagents run in the background).
+- `waitForTask(taskId, budgetMs?, onRegistered?, signal?)` waits up to `budgetMs` (or the owner's agent budget if omitted); aborting `signal` ends the wait immediately with `{ ok: false, error: { code: "ObserverCancelled", message } }`.
+- Yielding or cancelling an observation does not stop execution. Cancellation and cleanup failures stay observable, and `host.close(cause)` stays pending until runners acknowledge cleanup.
 
 ### Finished task retention and eviction
 
@@ -1775,8 +1661,8 @@ An owner keeps its 256 most recently finished tasks (`FINISHED_TASK_RETENTION`),
 - Queued, running, stopping, quarantined-cleanup, and failed-cleanup tasks are never evicted.
 - Beyond 256 finished tasks, the oldest finished task is evicted, emitting `task-evicted` on `watchOwnerTasks` and omitting it from later snapshots.
 - While open or closing, a finished task is evicted only after live owner subscriptions have drained it. Atomic sessions also hold each finished task until its completion notice is delivered.
-- Custom hosts can hold and release finished records with `retainTaskRecord(taskId)` and `releaseTaskRecord(taskId)` on `AgentTaskHost`. Hold from `onTaskSettled` if needed, because `retainTaskRecord` returns `TaskEvicted` once a task is evicted.
-- On owner close, newly settled tasks stay available until `onTaskSettled` finishes for all of them; `closeTaskOwner` then trims the closed owner to its 256 most recent finished tasks and sends subscriptions the final retained set before stopping.
+- Custom hosts can hold and release finished records with `retainTaskRecord(taskId)` and `releaseTaskRecord(taskId)` on `AgentTaskHost`. Hold from `onTaskSettled` if needed, because `retainTaskRecord` returns `{ ok: false, error: { code: "TaskEvicted", ... } }` once a task is evicted.
+- When `host.close(cause)` runs, newly settled tasks stay available until `onTaskSettled` finishes for all of them; closing then trims the closed owner to its 256 most recent finished tasks and sends subscriptions the final retained set before stopping.
 - A settled wait registered before eviction still returns its outcome. Operation replay reuses a task only while it is retained; afterward the same operation starts a new task.
 
 `resolveTask`, `waitForTask`, `cancelTask`, `retainTaskRecord`, and output reads for an evicted task fail with `TaskEvicted` (carrying the `TaskEvictedError` message). The `wait` and `kill` tools throw `TaskToolError` with code `TaskEvicted` and a `TaskEvictedError` `cause`.
@@ -1790,9 +1676,9 @@ Use `isTaskToolError(value)` and `rehydrateTaskToolError(value)` to inspect and 
 
 ### Supervised command SDK
 
-For shell integration, use the exported Bash and PowerShell factories with a trusted `taskOwner` binding. Execution timeout and observation budget are separate. The automatic command wait is normally 10000 ms; `until-settled` waits for completion. A yielded command remains owned, and later waits can read retained output with explicit omission markers.
+For shell integration, use the exported Bash and PowerShell factories with a trusted `taskOwner` binding. Execution timeout and observation budget are separate. The automatic command wait is normally 10,000 ms; `until-settled` waits for completion. A yielded command remains owned, and later waits can read retained output with explicit omission markers.
 
-Without a supported owner, explicit background execution is refused. Native Windows legacy WSL `bash.exe` is not supported for owned commands; run Atomic inside WSL instead. See [Waiting for existing shell tasks](#waiting-for-existing-shell-tasks) and [Background tasks](/background-tasks) for caller usage.
+Without a supported owner, explicit background execution is refused. Native Windows legacy WSL `bash.exe` is not supported for owned commands; run Atomic inside WSL instead. See [Waiting for existing shell tasks](#waiting-for-existing-shell-tasks), [Background tasks](/background-tasks), and [Background tasks reference](/background-tasks/reference) for caller usage.
 
 ### Session-local task prompts
 
@@ -1812,26 +1698,17 @@ Without a supported owner, explicit background execution is refused. Native Wind
 
 Only Atomic's interactive hosts with a task inspector hold child prompts automatically. Plain RPC and SDK `uiContext` hosts continue presenting dialogs directly; custom hosts needing session-local forms should supply `humanInput` and route by `HostInputOptions.sessionId`.
 
-### Task transcript references
-
-Custom live transcript sources should implement `getEntrySeq(id)` and `entryReceipt(message)` for bounded paging across compaction. Without either, a chat holding an unsaved stateful card keeps the original live transcript rather than discarding or mis-matching the card.
+### Task transcript references {#task-transcript-references}
 
 Task inspectors display references to the bound child conversation: prompts, responses, provider errors, thinking blocks, tool calls and results, shell commands and output, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and non-rendered entries are excluded. Unbound or empty histories report `Transcript unavailable`, and saved history grants no authority to restart or control a task.
 
-`readTaskTranscript(task, cursor?)` returns task-scoped item references and continuation cursors for both saved and live tasks:
-
-- The first occurrence of a repeated public item ID wins.
-- Indexed stores check candidate records by sequence; unindexed archives scan earlier metadata in bounded pages only on explicit lookup (never during normal scroll or repaint).
-- Reference pages hold at most 100 items and normally at most 1 MiB of identifiers (oversized single identifiers are returned whole with their real `source.entryId` without assembling unrelated text, arguments, or results).
-
 #### Steering and pausing agent tasks
 
-`TaskViewSource` and `TaskTranscriptSource` expose optional methods for sending messages to, clearing queues on, and pausing or resuming running agent tasks:
+`TaskViewSource` exposes optional methods for sending messages to, clearing queues on, and pausing or resuming running agent tasks:
 
 - **`TaskViewSource.sendTaskMessage(id, text, lane?)`:** Delivers typed text directly to an agent task's session on `lane` (`"steer"` default or `"followUp"`, `TaskMessageLane`). While busy, text waits in the task's queue and is delivered raw at that lane's boundary; idle tasks start a turn, and finished subagents resume. Resolves once the session accepts the text.
 - **`TaskViewSource.clearTaskQueue(id)`:** Removes queued typed messages (`QueuedTaskMessages`: `{ steering, followUp }`) for the editor without removing messages from other agents.
 - **`TaskViewSource.pauseTask(id)` and `resumeTask(id)`:** `pauseTask(id)` interrupts the task's active turn (like `Esc` in a subagent chat), returns removed typed messages (plus an optional `warning` if pause state could not be persisted), and holds remaining queued work until `resumeTask(id)` releases the queue before the next prompt.
-- **`TaskTranscriptSource` hooks:** Implement `queueMessage(text, lane)`, `clearQueue()`, `pauseTurn()`, `resumeTurn()`, `turnPaused()`, and `getQueuedMessages()` on custom transcript sources. Sources without `queueMessage` fall back to `sendMessage(text)` over Intercom if available, and otherwise refuse with `messages-unsupported`. Without `pauseTurn()`, `pauseTask` interrupts the turn via `interruptTurn()` without taking queued messages back.
 
 Failures reject with `TaskMessageError` (or `TaskMessageTimeoutError`):
 
@@ -1844,5 +1721,3 @@ Failures reject with `TaskMessageError` (or `TaskMessageTimeoutError`):
 | `TaskMessageError` | `delivery-unconfirmed` | Channel threw or dropped without confirming (`retryable: false`; message may have arrived). | `taskId`, `target?`, `detail`, `hint`, `cause?` | Check the transcript before resending. |
 
 Use `isTaskMessageError(value)`, `isTaskMessageTimeoutError(value)`, `findTaskMessageError(error)`, `isRetryableTaskMessageError(error)`, and `rehydrateTaskMessageError(value)` (restoring from `toJSON()`, or returning `undefined` for invalid payloads).
-
-An agent task's chat is a `ChatSessionHost`. It queues follow-ups and dequeues messages only on the keys bound to `app.message.followUp` and `app.message.dequeue` (`Alt+Enter` and `Alt+Up` by default; `Ctrl+Q` and `Alt+Q` on Windows and WSL) through its editor's `onAction`, or directly when no editor is attached. `Ctrl+F` moves the cursor right.

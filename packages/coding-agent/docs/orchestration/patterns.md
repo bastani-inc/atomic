@@ -1,43 +1,24 @@
 ---
 title: "Orchestration patterns"
-sidebarTitle: "Patterns"
+sidebarTitle: "Orchestration patterns"
 description: "Seven reusable patterns for splitting work across subagents, isolating edits, and verifying results."
 ---
 
-Give each subagent one concrete deliverable, explicit inputs, clear edit rules, and a verification check. Put conflicting edits in separate worktrees, and run final verification in your main session. A subagent claiming "done" is not proof.
+Give each subagent one concrete deliverable, explicit inputs, clear edit rules, and a verification check. Put conflicting edits in separate worktrees, and run final verification in your main session — a subagent claiming "done" is not proof.
 
-Each snippet below is a short [codemode](/codemode) call from the main chat, not a long-lived script. After any restart, reconcile `status` with [saved task IDs](/orchestration#what-survives-interruption) persisted via [the codemode store](/codemode#store-values) before launching more subagents. For background and mechanics behind these patterns, see [Orchestrate with codemode and subagents](/orchestration), [Run subagents](/subagents), and [Manage background tasks](/background-tasks).
+## Choose a pattern
 
-## Prompt anatomy
+| Pattern | Use when | Isolation | Key check |
+| --- | --- | --- | --- |
+| [Classify-and-act](#classify-and-act) | Incoming work needs triage before choosing a specialist | Fresh read-only triage, then specialist | Validate the returned label in the main session before dispatch |
+| [Fan-out-and-synthesize](#fan-out-and-synthesize) | Independent angles or platforms can be investigated in parallel | Parallel batch (`group: true` for peers) | Wait for every required subagent and reconcile contradictions against code |
+| [Adversarial verification](#adversarial-verification) | You want an unbiased attempt to break a candidate fix | `context: "fresh"`, read-only | Reproduce reported failing inputs in the main session with real exit codes |
+| [Generate-and-filter](#generate-and-filter) | Multiple candidate edge cases or options need objective filtering | `context: "fresh"`, read-only | Run every parsed candidate through one deterministic check in codemode |
+| [Tournament](#tournament) | Two or more implementation strategies compete on shared fixtures | `context: "fresh"` + separate named worktrees | Compare scores on identical fixtures; never pick a candidate failing checks |
+| [Loop-until-done](#loop-until-done) | A failing test suite needs bounded diagnose-and-repair rounds | Main-session test runs + `debugger` rounds | Cap rounds explicitly and re-run the real suite after each fix |
+| [Stacked slices](#stacked-slices) | Dependent implementation stages build strictly on prior commits | Named worktree branching from prior commit SHA | Verify each slice against its base and run integration checks at the tip |
 
-Make every subagent assignment self-contained so it does not rely on the main chat's full history:
-
-- **Objective and why it matters.** Name the decision or change that depends on the output.
-- **Inputs and permissions.** List the exact files or paths to read, what may be edited, and what is out of scope.
-- **Deliverable.** Specify the expected verdict with `file:line` citations, output file path, or tested commit.
-
-Example prompt:
-
-> Check the Windows install instructions in `docs/install.md` against the CLI flags in this checkout. Report each discrepancy as a command, its documented behavior, and the behavior you observed. Return "no discrepancies" if all commands agree. Do not edit files or install software.
-
-### Done criteria
-
-Specify observable outcomes rather than effort:
-
-- For fixes, name the changed behavior, adjacent behavior that must remain unchanged, and checks proving both.
-- For reviews, distinguish "checked and found nothing" from "could not verify." Re-run key checks in your main session before acting on results. See [Verification and evidence](/verification).
-
-### Stop conditions
-
-Define upfront when to halt, such as an attempt cap, a missing prerequisite, contradictory inputs, or actions that need user approval like API breaks, data migrations, or publishing. On a failed check within scope, pass the exact observed failure to the next attempt rather than broadening the prompt.
-
-## Design checklist
-
-- **Fit.** Check whether one direct command answers the question faster than delegation.
-- **Isolation.** Give each writer a distinct worktree or disjoint files, and launch dependent tasks only after prerequisites pass.
-- **Handoffs.** Pass file paths and output schemas rather than raw transcripts.
-- **Recovery.** Store subagent IDs, target commits, and next checks so restarts reconcile before re-running side effects.
-- **Approval.** Keep permission to publish or merge separate from permission to implement.
+Each snippet below is a short [codemode](/codemode) call from the main chat, not a long-lived script. After any restart, reconcile `status` with [saved task IDs](/orchestration#what-survives-interruption) persisted via [the codemode store](/codemode#store-values) before launching more subagents.
 
 ## Classify-and-act
 
@@ -89,21 +70,21 @@ Verify reported failures in the main session by checking real exit codes before 
 
 ## Generate-and-filter
 
-Ask subagents for concrete candidates, then filter all of them with one deterministic check in codemode. Pass `context: "fresh"` (or use a read-only agent) so generators do not inherit the main chat's history (`worker` defaults to [forked context](/subagents#fresh-vs-forked-context) and edit tools):
+Ask fresh read-only subagents to inspect the implementation and propose concrete candidate cases, then filter every candidate with one deterministic check in codemode:
 
 ```js
 const r = await tools.subagent({
   context: "fresh",
-  tasks: ["year boundary", "leap day"].map((topic) => ({
+  tasks: ["year-boundary", "leap-day"].map((category) => ({
     agent: "codebase-analyzer",
-    task: `Return three distinct dates around a ${topic} as a JSON string array. Don't edit files.`,
+    task: `Inspect src/date.ts for ${category} edge cases. Return a JSON array of up to three { input, expected, line } test cases targeting risky branches. Don't edit files.`,
   })),
 });
-store("dates:generators", r.tasks);
+store("date:candidates", r.tasks);
 return r.tasks;
 ```
 
-Parse each result as data, drop malformed or duplicate entries, and keep only values passing the real check. Returning "none passed" is valid.
+Parse each returned result as data, drop malformed or duplicate entries, and run the real formatter or test harness in your main session to keep only candidates that reproduce a real discrepancy or gap. Returning "none passed" is valid.
 
 ## Tournament
 
@@ -122,10 +103,9 @@ store("candidates:round1", r.tasks);
 return r.tasks;
 ```
 
-Note two details when running `worker` in named worktrees:
-
-- `worker` defaults to `context: "fork"`, so pass `context: "fresh"` when you want independent attempts without the main chat's prior reasoning ([Fresh vs. forked context](/subagents#fresh-vs-forked-context)).
-- Named worktrees (`worktree: { branch }`) are never deleted automatically and do not symlink `node_modules`. Have each competitor install dependencies if its test command needs them, or remove finished branches and worktrees manually when the tournament ends.
+<Tip>
+`worker` defaults to `context: "fork"`, so pass `context: "fresh"` when you want independent attempts without the main chat's prior reasoning ([Fresh vs. forked context](/subagents#fresh-vs-forked-context)). Named worktrees (`worktree: { branch }`) are permanent and do not symlink `node_modules` — have competitors install dependencies if needed and remove unused branches/worktrees when the tournament ends.
+</Tip>
 
 Record scores, commit SHAs, and round numbers so restarts never double-advance a candidate. Never pick a winner that fails a required check.
 
@@ -154,9 +134,9 @@ store("repair:last", r.tasks);
 return r.tasks;
 ```
 
-When `bash` exceeds its foreground observation budget (10 seconds by default), it yields to the background and returns a plain status string instead of structured output. Passing a larger `budgetMs` and checking `typeof check === "string"` avoids crashing on slower test suites.
+When `bash` exceeds its foreground observation budget (10 seconds by default), it yields to the background and returns a plain status string instead of structured output. Passing a larger `budgetMs` and checking `typeof check === "string"` avoids crashing on slower suites.
 
-Run a new repair round only after the previous subagent settles, and stop on refusal, missing prerequisites, or approval gates. On restart, inspect the checkout and rerun the check before spending another round.
+Start a new repair round only after the previous subagent settles, and stop on refusal, missing prerequisites, or approval gates. On restart, inspect the checkout and re-run the check before spending another round.
 
 ## Stacked slices
 
@@ -174,4 +154,19 @@ store("cli-slice", r.tasks);
 return r.tasks;
 ```
 
-Because `worker` defaults to `context: "fork"`, each slice sees the main chat's verified decisions unless you pass `context: "fresh"` ([Fresh vs. forked context](/subagents#fresh-vs-forked-context)). [Named worktrees](/subagents#named-worktrees) keep their branches and do not symlink `node_modules`. Verify each slice against its base and run full integration checks at the tip. Run independent slices in parallel instead.
+Because `worker` defaults to `context: "fork"`, each slice sees the main chat's verified decisions unless you pass `context: "fresh"`. Verify each slice against its base and run full integration checks at the tip; run independent slices in parallel instead.
+
+## Before you delegate
+
+Keep every subagent prompt self-contained so it does not rely on unspoken context:
+
+- **Objective and deliverable.** Name the decision or change that depends on the output, exact files to inspect, edit boundaries, and expected output shape (`file:line` citations, output file, or verified commit).
+- **Done criteria.** Name observable outcomes and proof checks rather than effort. Distinguish "checked and found nothing" from "could not verify," and re-run key checks in your main session ([Verification and evidence](/verification)).
+- **Stop conditions.** Set attempt caps, missing-prerequisite halts, and user-approval gates (API breaks, migrations, publishing) upfront. On a failed check, pass the exact observed failure to the next attempt rather than broadening scope.
+- **Fit and isolation.** Confirm a single direct command wouldn't be faster; give writers distinct worktrees or disjoint files; pass file paths rather than raw transcripts; store task IDs and commit SHAs so restarts reconcile before repeating side effects.
+
+Example self-contained prompt:
+
+```text
+Check the Windows install instructions in docs/install.md against the CLI flags in this checkout. Report each discrepancy as a command, its documented behavior, and the behavior you observed. Return "no discrepancies" if all commands agree. Do not edit files or install software.
+```

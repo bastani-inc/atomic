@@ -1,26 +1,28 @@
 ---
-title: "JSONL setup"
-sidebarTitle: "Setup"
-description: "Keep sessions as plain JSONL files in a directory on one machine: when to choose it, how to select it, where the files go, how several Atomic processes share it, what it doesn't do, and how to move to SQLite or PostgreSQL."
+title: "JSONL storage"
+sidebarTitle: "JSONL"
+description: "Store Atomic sessions as plain JSONL text files in a local directory: selection options, file layout and sidecars, multi-process concurrency, limitations, and migration."
 ---
 
-A JSONL store keeps each session as a plain text file in a directory you choose. Each line of the file is one JSON object. The first line describes the session, and each later line is one entry of the conversation. [Session file format](/session-format) describes every field.
+A JSONL store saves each session as one plain text file in a directory you choose. Every line is a JSON object: line 1 is the session header, and each subsequent line is one conversation entry. See [Session file format](/session-format) for the complete schema.
+
+<Note>
+A JSONL store holds **sessions only**. Intercom continues using its own store (local files by default, or top-level `storage` when configured).
+</Note>
 
 ## When to choose JSONL
 
-Choose JSONL when you want your sessions as ordinary files on one machine:
+Choose JSONL when you want sessions as ordinary plain-text files on a single machine:
 
-- You can read, search, or compare a session with any text tool.
-- You can back up or copy the directory like any other folder.
-- You can delete a session by deleting its file.
+- Inspect, grep, or diff sessions with standard text tools.
+- Copy or back up the folder like any regular directory.
+- Delete individual sessions by deleting their files.
 
-Otherwise, keep the default [local SQLite](/storage/sqlite) store. To share sessions between machines, use [PostgreSQL](/storage/postgres).
-
-A JSONL store holds sessions only. Intercom keeps using the store it would use without it.
+For most single-machine workflows, keep the default [local SQLite](/storage/sqlite) store (which adds worktree snapshots and zero-copy forks). To share sessions across machines, use [PostgreSQL](/storage/postgres).
 
 ## Select a JSONL store
 
-Add `sessions.storage` to `~/.atomic/agent/settings.json`, or to a trusted project's `.atomic/settings.json`:
+Configure `sessions.storage` in `~/.atomic/agent/settings.json` or a trusted project's `.atomic/settings.json`:
 
 ```json
 {
@@ -30,28 +32,28 @@ Add `sessions.storage` to `~/.atomic/agent/settings.json`, or to a trusted proje
 }
 ```
 
-You can select the same store in other ways:
+You can also select a JSONL directory from the environment or CLI:
 
-| Where | What to set | A relative path starts from |
+| Source | Setting / flag | Relative path resolves from |
 | --- | --- | --- |
-| Settings | `sessions.storage` set to `{ "dir": "<directory>" }` | The [storage home](/storage#storage-home) |
-| Environment | `ATOMIC_SESSIONS_STORAGE='{"dir":"<directory>"}'` | The storage home |
-| Environment | `ATOMIC_CODING_AGENT_SESSION_DIR=<directory>` | The current directory |
-| Command line | `atomic --session-dir <directory>` | The current directory |
+| Settings | `sessions.storage` set to `{ "dir": "<directory>" }` | [Storage home](/storage#storage-home) |
+| Environment | `ATOMIC_SESSIONS_STORAGE='{"dir":"<directory>"}'` | [Storage home](/storage#storage-home) |
+| Environment | `ATOMIC_CODING_AGENT_SESSION_DIR=<directory>` | Current working directory |
+| Command line | `atomic --session-dir <directory>` | Current working directory |
 
-Use an absolute path to avoid surprises. Atomic creates the directory if it is missing. From the SDK, pass `sessionStore: { kind: "jsonl", dir }`, as [SDK session storage](/sdk/storage) shows.
+Use an absolute path to avoid path-resolution surprises. Atomic creates the directory automatically if it does not exist. From the SDK, pass `sessionStore: { kind: "jsonl", dir }` (see [SDK session storage](/sdk/storage)).
 
-Rules for these settings:
+Validation rules:
 
-- `"dir"` works only in `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. In top-level `storage`, `--storage`, `--storage-file`, or `ATOMIC_STORAGE`, it fails with `StorageConfigError`.
-- `--session-dir` can't be combined with `--session-store` or `--no-session`.
-- A non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` can't be combined with `ATOMIC_SESSIONS_STORAGE`, `--storage`, or `--storage-file`. Atomic stops at startup with `StorageConfigError` (`conflicting-overrides`).
+- `{ "dir": "..." }` is valid only in `sessions.storage` and `ATOMIC_SESSIONS_STORAGE`. Using it in top-level `storage`, `--storage`, `--storage-file`, or `ATOMIC_STORAGE` fails with `StorageConfigError`.
+- `--session-dir` cannot be combined with `--session-store` or `--no-session`.
+- A non-empty `ATOMIC_CODING_AGENT_SESSION_DIR` cannot be combined with `ATOMIC_SESSIONS_STORAGE`, `--storage`, or `--storage-file` (`StorageConfigError` with reason `conflicting-overrides`).
 
-When several of these are set, the one higher in [the precedence list](/storage#which-selection-wins) wins. Run `atomic storage status` in your project to see which store Atomic uses and where the choice came from.
+When multiple options are set, see [Which selection wins](/storage#which-selection-wins). Run `atomic storage status` in your project directory to inspect the active store.
 
 ## Where the files go
 
-Every session file sits directly in the directory you chose:
+Session files sit directly inside the directory you selected:
 
 ```text
 /home/me/atomic-sessions/
@@ -59,59 +61,72 @@ Every session file sits directly in the directory you chose:
   2026-11-26T10-02-14-512Z_9f1c03ab…41d0b2.jsonl
 ```
 
-A file's name is the time the session was created, with `:` and `.` replaced by `-`, then `_`, then the SHA-256 hash of the session ID in hex. Sessions from every project share the directory. The first line of each file records the project's working directory (`cwd`), which is how `/resume` finds the sessions of the current project.
+Filenames combine the creation timestamp (`:` and `.` replaced with `-`), `_`, and the hex SHA-256 hash of the session ID. Sessions from all projects share the same directory; line 1 records `cwd`, which `/resume` uses to filter sessions for the current project.
 
-Atomic can also put these next to the session files:
+Alongside `.jsonl` files, Atomic maintains these sidecars and folders:
 
-- **`.session.lock` and `.session.lock.*`.** `.session.lock` is a folder present while any Atomic process is writing. Persistent `.session.lock.*` files next to it hold operating-system advisory locks for coordinating concurrent writers. See [Several Atomic processes](#several-atomic-processes).
-- **Backups before compaction.** Before Atomic [compacts](/compaction) a session, it saves a copy beside the file, named `<session file>.<timestamp>.<label>.bak`. Atomic never deletes these, so remove old ones yourself.
-- **`tool-results/`.** Long tool output saved in files. Atomic deletes a `tool-results/` folder once its newest file is more than 30 days old.
+| Entry | Purpose |
+| --- | --- |
+| `<session>.jsonl.idx` | Index sidecar that accelerates reopening and history reads (verified against the `.jsonl` file on cold load). Deleting via `/resume` (`Ctrl+D`) removes it automatically; if you delete a `.jsonl` file manually, remove its `.idx` file too (orphaned `.idx` files are otherwise ignored). |
+| `.atomic-chat-<sha256>` | Sidecar files storing reader-only chat metadata (such as subagent child records) outside the main conversation file. |
+| `.session.lock` and `.session.lock.*` | Lock directory and striped OS advisory lock files coordinating concurrent writers. |
+| `<session>.<timestamp>.<label>.bak` | Pre-[compaction](/compaction) backup saved before writing a compaction boundary. Never auto-deleted—prune old backups yourself. |
+| `tool-results/` | Overflow files for long tool output. Deleted automatically once the newest file in `tool-results/` is over 30 days old. |
 
-To delete a session, delete its `.jsonl` file, or select it in `/resume`, press `Ctrl+D`, and confirm. Atomic moves the file to the trash when the `trash` command is installed.
+To delete a session, select it in `/resume` and press `Ctrl+D` (moves to trash when a `trash` command is installed), or delete its `.jsonl` and `.jsonl.idx` files directly.
 
 ## Several Atomic processes
 
-Several Atomic processes on one machine can use the same directory at once:
+Multiple Atomic processes on one machine can safely share the same JSONL directory at the same time:
 
-- **Operating-system advisory locks and per-session-file locking.** Writers coordinate through OS advisory locks (`flock` on Unix, `LockFileEx` on Windows) while holding the `.session.lock` folder together as a group so older Atomic versions remain excluded. Writes to different session files run concurrently across a fixed set of striped lock files, while writes to the same session file stay serialized. If a writer process is killed, the operating system releases its advisory locks immediately and the next writer cleans up `.session.lock` right away instead of waiting for the 10-second stale window.
-- **Durable grouped writes.** Saves that queue up while another save holds the lock are written together under one lock, and every save waits until its bytes are synced to disk before it is acknowledged. A new, forked, or replaced session file is synced before it is linked or renamed into place, and its folder is synced after. On macOS this uses plain `fsync(2)`, matching the default local SQLite store (`fullfsync` off) and the standalone binary; Linux uses `fdatasync(2)` and Windows uses `FlushFileBuffers` (NTFS journals directory entries, so Windows skips the directory sync).
-- **Files kept open while writing.** While a session is being written, Atomic keeps its file open between saves and closes it soon after the last one. On Windows, Atomic closes each file after it writes, because Windows won't delete or replace an open file.
+- **Parallel across sessions, serialized per session.** Writers coordinate through operating-system advisory locks striped across 32 lock files (while also maintaining `.session.lock` for compatibility with older Atomic releases). Writes to different session files proceed concurrently, while writes to the same session file wait in order. If a writer process crashes or is killed, the OS releases its lock immediately so the next writer proceeds without waiting out a 10-second stale timeout.
+- **Crash-safe grouped saves.** Saves queued behind an active write are batched together under one lock, and every save waits until its bytes are synced to disk before being acknowledged. New, forked, or replaced session files are synced before being renamed into place.
+- **File handles during writes.** On Unix/macOS, Atomic keeps an active session file open between rapid saves and closes it once writes pause. On Windows, Atomic closes each file immediately after writing so other operations can delete or replace it.
 
-Keep the directory on a local disk of one machine. Don't share it between machines through a network drive or a cloud-synced folder.
+<Warning>
+Keep a JSONL directory on a local disk of a single machine. Do **not** share it across machines over a network drive (NFS/SMB) or cloud-synced folder.
+</Warning>
 
 ## What JSONL doesn't do
 
-Compared with local SQLite, a JSONL store:
+Compared with local SQLite or PostgreSQL, a JSONL directory store:
 
-- **Can't be shared between machines.** Use [PostgreSQL](/storage/postgres) for that.
-- **Copies forks.** In SQLite and PostgreSQL, a fork [shares its parent's history](/storage#shared-history-forks). In JSONL, a fork writes a new file with a full copy of that history, so forking a long session takes longer and uses more disk.
-- **Records no worktree snapshots.** [Worktree snapshots](/worktree-snapshots) need a SQL database store.
-- **Keeps subagents on this machine.** Subagents launched from a session in a JSONL store can't be [resumed on another machine](/guides/resume-on-any-machine).
+- **Cannot be shared across machines.** Use [PostgreSQL](/storage/postgres) for multi-machine access.
+- **Writes full copies on fork.** Unlike SQLite and PostgreSQL [shared-history forks](/storage#shared-history-forks), JSONL forks duplicate the full parent file on disk.
+- **Does not record worktree snapshots.** [Worktree snapshots](/worktree-snapshots) require a SQL database store.
+- **Cannot resume subagents on another machine.** Subagents launched from a JSONL store stay tied to the local machine (see [Resume on any machine](/guides/resume-on-any-machine)).
 
 ## Move to SQLite or PostgreSQL
 
-Export the sessions while the JSONL store is still selected. If you select it with `--session-dir`, set `ATOMIC_SESSIONS_STORAGE` for this one command instead, because `atomic storage export` doesn't take `--session-dir`:
+<Steps>
+  <Step title="Export your JSONL sessions">
+    Run `atomic storage export` while the JSONL store is still selected. If you normally select it with `--session-dir`, pass `ATOMIC_SESSIONS_STORAGE` for this command instead (`atomic storage export` does not accept `--session-dir`):
 
-```bash
-ATOMIC_SESSIONS_STORAGE='{"dir":"/home/me/atomic-sessions"}' atomic storage export ~/moved
-```
+    ```bash
+    ATOMIC_SESSIONS_STORAGE='{"dir":"/home/me/atomic-sessions"}' atomic storage export ~/moved
+    ```
+  </Step>
+  <Step title="Stop selecting the JSONL store">
+    Remove `sessions.storage` from your settings, and unset `ATOMIC_SESSIONS_STORAGE` and `ATOMIC_CODING_AGENT_SESSION_DIR`.
+  </Step>
+  <Step title="Import into SQLite or PostgreSQL">
+    **Into default local SQLite:**
 
-Then stop selecting the JSONL store. Remove `sessions.storage` from your settings, and unset `ATOMIC_SESSIONS_STORAGE` and `ATOMIC_CODING_AGENT_SESSION_DIR`.
+    ```bash
+    atomic storage import ~/moved
+    ```
 
-To move the sessions into the default local SQLite store, import them:
+    **Into PostgreSQL** (after completing [Set up the database](/storage/postgres#set-up-the-database)):
 
-```bash
-atomic storage import ~/moved
-```
-
-To move them into PostgreSQL, [set up the database](/storage/postgres#set-up-the-database), join it, and import into it by name:
-
-```bash
-(umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
-atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
-rm ~/atomic-db-password  # atomic storage join keeps its own copy
-jq .storage ~/.atomic/agent/settings.json > new-storage.json
-atomic storage import ~/moved --storage-file new-storage.json
-```
-
-Import leaves the JSONL files in place. Delete the directory once you have checked the sessions in their new store. See [Exporting and importing sessions](/storage#exporting-and-importing-sessions) for what an export holds.
+    ```bash
+    (umask 077; printf 'Runtime password: '; read -rs password; printf '\n'; printf '%s' "$password" > ~/atomic-db-password)
+    atomic storage join 'postgresql://atomic_runtime@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+    rm ~/atomic-db-password  # atomic storage join keeps its own copy
+    jq .storage ~/.atomic/agent/settings.json > new-storage.json
+    atomic storage import ~/moved --storage-file new-storage.json
+    ```
+  </Step>
+  <Step title="Verify and clean up">
+    Confirm your sessions appear in `/resume` and `atomic storage status` shows the new store. Import leaves the original JSONL files untouched—delete the directory once you verify everything migrated. See [Exporting and importing sessions](/storage#exporting-and-importing-sessions) for details.
+  </Step>
+</Steps>

@@ -180,13 +180,15 @@ describe("compaction extension hooks", () => {
 		expect(result.compactedText.startsWith("Context cleared.")).toBe(true);
 	});
 
-	it("clears the context instead when the extension text is over the compacted-output cap", async () => {
-		await create(extension(() => ({ compactedText: "word ".repeat(200_000) })));
+	it("keeps long extension replacement text with no built-in size limit", async () => {
+		const replacement = "word ".repeat(200_000);
+		await create(extension(() => ({ compactedText: replacement })));
 		const result = await session.compact();
-		expect(result.form).toBe("cleared");
-		expect(result.backend).toBeUndefined();
-		expect(result.fallbackReason).toMatch(/^extension failed: output too long \(\d+ > \d+ tokens\)$/u);
-		expect(result.compactedText).not.toContain("word word");
+		expect(result.form).toBe("compacted");
+		expect(result.backend).toBe("extension");
+		expect(result.fallbackReason).toBeUndefined();
+		expect(result.compactedText).toContain(`<compacted-context>\n${replacement}\n</compacted-context>`);
+		expect(after[0].fromExtension).toBe(true);
 		expect(after[0].compactionEntry.summary).toBe(result.compactedText);
 	});
 

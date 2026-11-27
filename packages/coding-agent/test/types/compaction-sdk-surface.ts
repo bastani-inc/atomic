@@ -14,15 +14,13 @@ import type {
 	VerbatimCompactionResult,
 } from "../../src/index.ts";
 import {
-	COMPACTED_OUTPUT_MAX_TRIGGER_SHARE,
-	COMPACTOR_LINE_WIDTH,
+	COMPACTOR_REQUEST_TIMEOUT_MS,
 	CompactionCancelledError,
 	CompactionConfigError,
 	CompactionError,
 	CompactionStateError,
 	CompactorFailure,
 	classifyCompactionModel,
-	compactedOutputTokenCap,
 	estimateTextTokens,
 	findCompactionError,
 	isCompactionCancelledError,
@@ -93,8 +91,7 @@ export const compactorRequestShape: CompactorRequest = {
 };
 
 export const compactorHelpers = {
-	COMPACTED_OUTPUT_MAX_TRIGGER_SHARE,
-	COMPACTOR_LINE_WIDTH,
+	COMPACTOR_REQUEST_TIMEOUT_MS,
 	CompactionError,
 	CompactionConfigError,
 	CompactionCancelledError,
@@ -111,7 +108,6 @@ export const compactorHelpers = {
 	parseSerializedCompactionError,
 	rehydrateCompactionError,
 	classifyCompactionModel,
-	compactedOutputTokenCap,
 	estimateTextTokens,
 	wrapLongLines,
 };

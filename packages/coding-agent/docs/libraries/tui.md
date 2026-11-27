@@ -4,7 +4,7 @@ sidebarTitle: "@bastani/atomic-tui"
 description: "Terminal UI framework with differential rendering, alternate-screen viewports, components, overlays, key handling, and images."
 ---
 
-Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications (requires Node.js 24.20+).
+Minimal terminal UI framework with differential rendering and synchronized output for flicker-free interactive CLI applications (requires Node.js 24.20+). See [Standalone libraries](/libraries) for all standalone packages, or [Build TUI components](/tui) when writing Atomic extensions.
 
 ## Installation
 
@@ -14,16 +14,12 @@ npm install @bastani/atomic-tui
 
 ## Features
 
-- **Interchangeable renderers.** Shared `TUI` interface with main-screen and alternate-screen implementations.
-- **Differential rendering.** Updates only changed lines or viewport rows.
-- **Application-owned scrolling.** Alternate-screen viewport supports mouse, trackpad, and keyboard navigation.
-- **Synchronized output.** Uses CSI 2026 for atomic, flicker-free screen updates.
-- **Bracketed paste mode.** Handles large pastes with compact markers for pastes over 10 lines.
-- **Component-based.** Simple `Component` interface with `render(width)` and optional `renderSized(width, height)`.
-- **Theme support.** Components accept theme interfaces for styling.
-- **Built-in components.** `Text`, `TruncatedText`, `Input`, `Editor`, `Markdown`, `Loader`, `CancellableLoader`, `SelectList`, `SettingsList`, `MouseRegion`, `Spacer`, `Image`, `Box`, `Container`, `WindowedContainer`, `VStack`, `HStack`, and `ScrollView`.
-- **Inline images.** Renders images in terminals supporting Kitty or iTerm2 graphics protocols.
-- **Autocomplete support.** File paths and slash commands.
+- **Interchangeable renderers:** Shared `TUI` interface with main-screen (`TuiMainScreen`) and alternate-screen (`TuiAltScreen`) implementations.
+- **Differential rendering & synchronized output:** Updates only changed lines or viewport rows inside CSI 2026 synchronized frames.
+- **Application-owned scrolling:** Alternate-screen viewports support mouse, trackpad, scrollbar dragging, and keyboard navigation.
+- **Bracketed paste & autocomplete:** Compact paste markers for pastes over 10 lines plus slash-command and file-path completion.
+- **Built-in components:** `Text`, `TruncatedText`, `Input`, `Editor`, `Markdown`, `Loader`, `CancellableLoader`, `SelectList`, `SettingsList`, `MouseRegion`, `Spacer`, `Image`, `Box`, `Container`, `WindowedContainer`, `VStack`, `HStack`, and `ScrollView`.
+- **Inline images:** Renders PNG, JPEG, GIF, and WebP images in terminals supporting Kitty or iTerm2 graphics protocols.
 
 ## Quick start
 
@@ -39,11 +35,9 @@ import {
   TuiMainScreen,
 } from "@bastani/atomic-tui";
 
-// Create terminal and main-screen renderer
 const terminal = new ProcessTerminal();
 const tui: TUI = new TuiMainScreen(terminal);
 
-// Add header text
 tui.addChild(new Text("Welcome to my app!"));
 
 const editorTheme: EditorTheme = {
@@ -66,7 +60,7 @@ tui.addChild(editor);
 // Focus the editor so it receives keyboard input
 tui.setFocus(editor);
 
-// In raw mode Ctrl+C does not send SIGINT, so intercept it here to exit
+// In raw mode Ctrl+C does not send SIGINT, so intercept it to exit
 tui.addInputListener((data) => {
   if (matchesKey(data, Key.ctrl("c"))) {
     tui.stop();
@@ -74,7 +68,6 @@ tui.addInputListener((data) => {
   }
 });
 
-// Start rendering
 tui.start();
 ```
 
@@ -82,31 +75,50 @@ tui.start();
 
 ### TUI interface and renderers
 
-`TUI` is the shared interface for component management, focus, overlays, input, lifecycle, terminal queries, and rendering. Choose a concrete renderer only when constructing the application:
+`TUI` is the shared interface for component management, focus, overlays, input, lifecycle, terminal queries, and rendering. Choose a concrete renderer when constructing the app:
 
-- `TuiMainScreen` renders into the main terminal buffer and preserves terminal scrollback.
-- `TuiAltScreen` renders a fixed-height viewport in the alternate terminal buffer with application-owned scrolling. When stopped, it restores the main buffer and prints the complete final document.
+- `new TuiMainScreen(terminal, showHardwareCursor?, logDirectory?)` renders into the main terminal buffer and preserves terminal scrollback.
+- `new TuiAltScreen(terminal, showHardwareCursor?, logDirectory?, options?)` renders a fixed-height viewport in the alternate terminal buffer with application-owned scrolling. When stopped, it restores the main buffer and prints the complete final document.
+
+<Note>
+In `new TuiAltScreen(terminal, showHardwareCursor?, logDirectory?, options?)`, `options` (`TuiAltScreenOptions`) is the **fourth** positional argument—pass `undefined` for `showHardwareCursor` and `logDirectory` when you want defaults:
+
+```typescript
+const tui = new TuiAltScreen(terminal, undefined, undefined, { mouse: true, wheelScrollLines: "auto" });
+```
+</Note>
 
 ```typescript
 import { type TUI, TuiAltScreen, TuiMainScreen } from "@bastani/atomic-tui";
 
 const tui: TUI = new TuiMainScreen(terminal);
-// To use an application-owned viewport in the alternate terminal buffer instead:
-// const tui: TUI = new TuiAltScreen(terminal);
+// Or alternate screen with options:
+// const tui: TUI = new TuiAltScreen(terminal, false, undefined, { copyOnSelect: true });
 
 tui.addChild(component);
 tui.removeChild(component);
 tui.start();
 tui.stop();
-tui.requestRender(); // Request a re-render
+tui.requestRender();
 
 // Global debug key handler (Shift+Ctrl+D)
 tui.onDebug = () => console.log("Debug triggered");
 ```
 
+### Debug logging and escape timing
+
+Four environment variables control standalone TUI diagnostics and escape-key timing (legacy `PI_*` aliases work when `ATOMIC_*` is unset):
+
+| Variable | Behavior |
+| --- | --- |
+| `ATOMIC_TUI_WRITE_LOG` | Captures raw ANSI bytes written to stdout (file path, or a directory path for one `tui-<timestamp>-<pid>.log` per process). |
+| `ATOMIC_TUI_DEBUG=1` | Writes main-screen render snapshots to `/tmp/tui/render-<timestamp>-<random>.log` (`TuiMainScreen` only, not `TuiAltScreen`). |
+| `ATOMIC_TUI_DEBUG_REDRAW=1` | Logs main-screen full-redraw triggers to `<logDirectory>/pi-tui-debug.log` (`TuiMainScreen` only; requires `logDirectory` in the constructor; the `pi-` filename prefix is intentional). |
+| `ATOMIC_TUI_ESC_TIMEOUT` | Wait in milliseconds after a lone `ESC` byte before dispatching `Escape` instead of a legacy `Alt`/escape sequence. Defaults to `10` ms locally, `100` ms when `SSH_CONNECTION` or `SSH_TTY` is set. |
+
 ### Colors and terminal styles
 
-Colors are values that can be converted or mixed before terminal rendering:
+Colors are values that can be parsed, converted, or mixed before rendering:
 
 ```typescript
 import {
@@ -130,21 +142,21 @@ const text = styleText(
 );
 ```
 
-`Color` is an indexed ANSI color, an sRGB color, or an OKLCH color. Every color converts to sRGB, so color math such as `mixColors()` always works. Indices 0-15 follow the user's terminal palette, so their sRGB values are approximations. `styleText()` converts colors to truecolor or 256-color output based on the requested terminal mode.
+`Color` represents an indexed ANSI color, an sRGB color, or an OKLCH color. Every color converts to sRGB so `mixColors()` always works (ANSI indices `0`–`15` approximate the user's terminal palette). `styleText()` emits truecolor or 256-color ANSI codes based on the requested terminal mode.
 
-`parseColor()` also accepts OKHSL strings using either percentages (`okhsl(250 60% 55%)`) or 0 to 1 decimals (`okhsl(250 0.6 0.55)`), with an optional `deg` unit on the hue. Use `okhslColor(h, s, l)` to construct an OKHSL color in code and `colorToOkhsl()` to read any color's OKHSL channels. OKHSL saturation is relative to the sRGB gamut at that hue and lightness, so every value stays in gamut and equal saturation looks evenly colorful across hues. OKHSL colors convert to sRGB on creation.
+`parseColor()` also accepts OKHSL strings (`okhsl(250 60% 55%)` or `okhsl(250 0.6 0.55)`, with an optional `deg` unit on hue). Use `okhslColor(h, s, l)` and `colorToOkhsl()` in code; OKHSL colors stay inside the sRGB gamut and convert to sRGB on creation.
 
-Conversions are not cached. OKLCH colors, especially ones outside the sRGB gamut, are more expensive to convert than sRGB or indexed colors. For colors used on every render, convert once and reuse the result:
+Because OKLCH conversions are not cached, convert repeated colors once and reuse the resulting sRGB or ANSI sequence:
 
 ```typescript
 const { r, g, b } = colorToRgb(mixColors(accent, background, 0.2));
-const foreground = rgbColor(r, g, b); // cheap to render repeatedly
+const foreground = rgbColor(r, g, b);
 const foregroundCode = foregroundAnsi(foreground, getTerminalColorMode());
 ```
 
 ### Alternate-screen viewport layouts
 
-`TuiAltScreen` can render an explicit terminal-height layout. `VStack` and `HStack` allocate constrained regions, while `ScrollView` owns scrolling for one region. These semantics are intentionally unavailable on `TuiMainScreen`, where the terminal owns scrollback.
+`TuiAltScreen` supports explicit terminal-height layouts built with `VStack`, `HStack`, and `ScrollView` (unavailable on `TuiMainScreen`, where the terminal owns scrollback):
 
 ```typescript
 import {
@@ -158,136 +170,91 @@ import {
 const transcript = new Container();
 transcript.addChild(new Text("History"));
 
-const editorAndFooter = new VStack([
-  editor,
-  new Text("status"),
-]);
+const editorAndFooter = new VStack([editor, new Text("status")]);
 
 if (isViewportTUI(tui)) {
-  tui.setLayoutRoot(new VStack([
-    {
-      component: new ScrollView(transcript, {
-        follow: "end",
-        primary: true,
-        overscroll: "chain",
-      }),
-      basis: 0,
-      grow: 1,
-      minSize: 1,
-    },
-    {
-      component: editorAndFooter,
-      basis: "auto",
-      shrink: 1,
-      minSize: 1,
-    },
-  ]));
+  tui.setLayoutRoot(
+    new VStack([
+      {
+        component: new ScrollView(transcript, {
+          follow: "end",
+          primary: true,
+          overscroll: "chain",
+        }),
+        basis: 0,
+        grow: 1,
+        minSize: 1,
+      },
+      {
+        component: editorAndFooter,
+        basis: "auto",
+        shrink: 1,
+        minSize: 1,
+      },
+    ]),
+  );
 }
 ```
 
-Stack entries support `basis`, `grow`, `shrink`, `minSize`, `maxSize`, and responsive `visible` callbacks. Mouse-wheel input targets the scroll view under the pointer, and unused delta chains to outer scroll views by default.
-
-The primary scroll view receives alternate-screen keyboard navigation actions and wheel input over non-scrollable regions. It can also jump between OSC 133 semantic prompt markers.
-
-Press `Ctrl+Shift+F` to open or close the primary scroll view's bordered search panel. The panel displays the configured previous and next shortcuts with clickable arrow controls. By default, `Enter` or `Ctrl+G` moves to the next match, `Shift+Enter` or `Ctrl+Shift+G` moves to the previous match, and `Escape` closes search. Customize match highlighting through `TuiAltScreenOptions.searchMatchStyle` and `searchCurrentMatchStyle`, and arrow button styling through `searchNavigationButtonStyle` (which receives hover state).
-
-`TuiAltScreenOptions.scrollToEndIndicator` renders a clickable label centered on the last row of a `follow: "end"` primary scroll view while scrolled away from the end. Clicking it resumes end-following.
+Stack entries accept `basis`, `grow`, `shrink`, `minSize`, `maxSize`, and responsive `visible` callbacks. Mouse-wheel input targets the scroll view under the pointer and chains unused delta to outer scroll views by default. The primary scroll view handles alternate-screen keyboard scrolling, OSC 133 prompt jumps, and built-in transcript search (`Ctrl+Shift+F`, with `Enter`/`Ctrl+G` next, `Shift+Enter`/`Ctrl+Shift+G` previous, `Escape` close).
 
 **`TuiAltScreenOptions` summary:**
 
 | Option | Type | Description |
 | --- | --- | --- |
 | `wheelScrollLines` | `number \| "auto"` | Logical lines moved per wheel event (default `1`; `"auto"` accelerates fast spins; Alt+wheel moves 5x). |
-| `mouse` | `boolean` | Capture mouse events for scrolling and application-owned text selection. |
+| `mouse` | `boolean` | Capture mouse events for scrolling and application-owned text selection (default `true`). |
 | `copyOnSelect` | `boolean` | Automatically copy dragged selections on mouse release (default `true`). |
 | `copySelection` | `(text: string) => Promise<boolean \| string>` | Custom system clipboard writer; falls back to OSC 52 when omitted. |
 | `openUrl` | `(url: string) => void` | Handler invoked when clicking an OSC 8 hyperlink. |
-| `onRightClickPaste` | `() => void` | Secondary-button paste handler (currently Windows only). |
+| `onRightClickPaste` | `() => void` | Secondary-button paste handler (Windows). |
 | `searchMatchStyle` / `searchCurrentMatchStyle` | `(text: string) => string` | Highlighters for transcript search matches and the active match. |
 | `searchNavigationButtonStyle` | `(text: string, hovered: boolean) => string` | Styling callback for the search panel's previous/next buttons. |
-| `scrollToEndIndicator` | `() => string` | Clickable jump-to-end indicator shown when scrolled away from the bottom. |
+| `scrollToEndIndicator` | `() => string` | Clickable jump-to-end indicator shown when scrolled away from the bottom of a `follow: "end"` primary scroll view. |
 | `scrollPinnedPrompt` | `{ isPrompt, render }` | Pins matching prompt rows at the top of the scroll viewport. |
 
-Layout geometry is rebuilt for each requested frame. Stateful components are retained, and their existing rendered-line caches remain effective. Calling `render(width)` directly on these layout components produces an unbounded document, which is also used when alt mode restores the main screen.
+Layout geometry rebuilds per frame while retaining stateful components and their rendered-line caches. Calling `render(width)` directly on layout components produces an unbounded document (also used when `TuiAltScreen` stops and prints to the main buffer).
 
 ### Overlays
 
-Overlays render components on top of existing content without replacing it. Useful for dialogs, menus, and modal UI.
+Overlays render floating components on top of existing content:
 
 ```typescript
-// Show overlay with default options (centered, max 80 cols)
-const handle = tui.showOverlay(component);
-
-// Show overlay with custom positioning and sizing
-// Values can be numbers (absolute) or percentage strings (e.g., "50%")
 const handle = tui.showOverlay(component, {
-  // Sizing
-  width: 60,              // Fixed width in columns
-  width: "80%",           // Width as percentage of terminal
-  minWidth: 40,           // Minimum width floor
-  maxHeight: 20,          // Maximum height in rows
-  maxHeight: "50%",       // Maximum height as percentage of terminal
+  // Sizing: number or percentage string
+  width: "80%",
+  minWidth: 40,
+  maxHeight: "50%",
 
-  // Anchor-based positioning (default: 'center')
-  anchor: 'bottom-right', // Position relative to anchor point
-  offsetX: 2,             // Horizontal offset from anchor
-  offsetY: -1,            // Vertical offset from anchor
+  // Positioning: absolute row/col > percentage row/col > anchor (default "center")
+  anchor: "bottom-right", // center, top-left, top-right, bottom-left, bottom-right, top-center, bottom-center, left-center, right-center
+  offsetX: 2,
+  offsetY: -1,
 
-  // Percentage-based positioning (alternative to anchor)
-  row: "25%",             // Vertical position (0%=top, 100%=bottom)
-  col: "50%",             // Horizontal position (0%=left, 100%=right)
-
-  // Absolute positioning (overrides anchor/percent)
-  row: 5,                 // Exact row position
-  col: 10,                // Exact column position
-
-  // Margin from terminal edges
-  margin: 2,              // All sides
+  // Margin clamping from terminal edges
   margin: { top: 1, right: 2, bottom: 1, left: 2 },
 
-  // Responsive visibility
-  visible: (termWidth, termHeight) => termWidth >= 100  // Hide on narrow terminals
+  // Responsive visibility evaluated each frame
+  visible: (termWidth, _termHeight) => termWidth >= 100,
 
-  // Focus behavior
-  nonCapturing: true       // Don't auto-focus when shown
+  // Set true to avoid auto-focusing when shown
+  nonCapturing: false,
 });
 
-// OverlayHandle methods
-handle.hide();              // Permanently remove the overlay
-handle.setHidden(true);     // Temporarily hide (can show again)
-handle.setHidden(false);    // Show again after hiding
-handle.isHidden();          // Check if temporarily hidden
-handle.focus();             // Focus and bring to visual front
-handle.unfocus();           // Release focus to normal fallback
-handle.unfocus({ target: baseComponent }); // Release this overlay to a specific component
-handle.unfocus({ target: null });   // Release this overlay and leave focus empty
-handle.isFocused();         // Check if overlay has focus
-handle.getBounds();         // Get last rendered terminal-relative bounds
+handle.hide();                             // Permanently remove
+handle.setHidden(true);                    // Temporarily hide
+handle.isHidden();
+handle.focus();                            // Focus and bring to front
+handle.unfocus();                          // Release focus to fallback target
+handle.unfocus({ target: baseComponent }); // Release focus to a specific component (or null)
+handle.isFocused();
+handle.getBounds();                        // Last rendered terminal-relative bounds
 
-handle.unfocus();
-// Overlay loses focus; TUI falls back to another visible capturing overlay or the previous focus target.
-
-handle.unfocus({ target: null });
-// Overlay loses focus; no component receives input until focus is set again.
-
-// A focused visible overlay reclaims keyboard input after temporary replacement UI
-// releases focus. If you want a specific component to receive input while overlays remain
-// visible, call handle.unfocus({ target: component }).
-
-// Hide topmost overlay
-tui.hideOverlay();
-
-// Check if any visible overlay is active
-tui.hasOverlay();
+tui.hideOverlay(); // Hide topmost overlay
+tui.hasOverlay();  // Check if any visible overlay is active
 ```
 
-**Anchor values**: `'center'`, `'top-left'`, `'top-right'`, `'bottom-left'`, `'bottom-right'`, `'top-center'`, `'bottom-center'`, `'left-center'`, `'right-center'`
-
-**Resolution order**:
-1. `minWidth` is applied as a floor after width calculation
-2. For position: absolute `row`/`col` > percentage `row`/`col` > `anchor`
-3. `margin` clamps final position to stay within terminal bounds
-4. `visible` callback controls whether overlay renders (called each frame)
+A focused visible overlay reclaims input after temporary non-overlay replacement UI closes; use `handle.unfocus({ target })` to send input elsewhere while keeping the overlay visible.
 
 ### Component interface
 
@@ -310,24 +277,37 @@ interface Component {
 
 | Member | Description |
 | --- | --- |
-| `render(width)` | Returns an array of strings, one per line. Each line **must not exceed `width`** or the TUI throws an error. Use `truncateToWidth()` or manual wrapping. |
+| `render(width)` | Returns one string per line. Each line **must not exceed `width`** or the TUI throws an error; use `truncateToWidth()` or `wrapTextWithAnsi()`. |
 | `renderSized?(width, height)` | Optional sized renderer invoked instead of `render()` when a layout slot allocates a fixed row height. |
-| `handleInput?(data)` | Called when the component has focus and receives keyboard input. The `data` string contains raw terminal input, which may include ANSI escape sequences. |
-| `handleMouse?(event)` | Called by `TuiAltScreen` for normalized pointer input targeted at the component. |
-| `paintedRowKey?(row)` | Optional stable identity for what the last render drew on `row`, so press and release become a click only when both target the same item across repaints. |
-| `selectionTextMayChangeOnReplay` | Set to `true` on a `WindowedContainer` component whose text cannot be recreated from saved input. Fullscreen selection then keeps the selected fragments in memory until dismissed or replaced. Leave unset for deterministic rows. |
-| `historyReplayable` | Set to `true` on a chat-rendered component that can be discarded offscreen and recreated from saved input without losing state. |
+| `handleInput?(data)` | Receives raw keyboard input (including ANSI/Kitty escape sequences) while focused. |
+| `handleMouse?(event)` | Receives normalized pointer input targeted at the component in `TuiAltScreen`. |
+| `paintedRowKey?(row)` | Optional stable identity for what the last render drew on `row`, so press and release become a click only when both hit the same item across repaints. |
+| `selectionTextMayChangeOnReplay` | Set `true` on a `WindowedContainer` child whose text cannot be recreated from saved input, keeping selected fragments in memory until dismissed. |
+| `historyReplayable` | Set `true` on a component that can be evicted offscreen and recreated from saved input without losing state. |
 | `wantsKeyRelease` | When `true`, receives Kitty key release events in `handleInput()`. Default: `false`. |
-| `capturesViewportInput` | When `true` on the focused component, `TuiAltScreen` forwards viewport scrolling and prompt-jump keys (`tui.altScreen.*` except search) to the component instead of scrolling the viewport, matching focused overlays. `SelectList`, `SettingsList`, and `Editor` (while autocomplete is open) set this so PageUp and PageDown move selection. Use `getSelectPageIndex(keybindings, data, selectedIndex, itemCount, pageSize)` to compute page movement. |
-| `invalidate()` | Required. Clears cached render state so the next `render()` rebuilds from scratch. Stateless components can leave the body empty. |
+| `capturesViewportInput` | When `true` on the focused component, `TuiAltScreen` forwards viewport navigation keys (`tui.altScreen.pageUp`, `pageDown`, `halfPageUp`, `halfPageDown`, `lineUp`, `lineDown`, `previousPrompt`, `nextPrompt`, `top`, `bottom`) to the component instead of scrolling the viewport (search keys `tui.altScreen.search*` remain handled by `TuiAltScreen`). `SelectList`, `SettingsList`, and `Editor` (while autocomplete is open) set this flag. |
+| `invalidate()` | Required. Clears cached render state so the next `render()` rebuilds cleanly. |
 
-The TUI appends a full SGR reset and OSC 8 reset at the end of each rendered line, so styles do not carry across lines. Reapply styles per line or use `wrapTextWithAnsi()` to preserve styling across wrapped lines.
+For selectable lists that set `capturesViewportInput = true`, use `getSelectPageIndex()` to compute page jumps cleanly:
+
+```typescript
+import { getKeybindings, getSelectPageIndex } from "@bastani/atomic-tui";
+
+// Returns the next clamped index on tui.select.pageUp / tui.select.pageDown,
+// or undefined for any other key (returns 0 on an empty list, so guard itemCount > 0).
+const nextIndex = getSelectPageIndex(getKeybindings(), data, selectedIndex, items.length, maxVisible);
+if (nextIndex !== undefined && items.length > 0) {
+  selectedIndex = nextIndex;
+}
+```
+
+The TUI appends a full SGR reset and OSC 8 reset at the end of every rendered line, so styles never leak across lines; reapply styles per line or use `wrapTextWithAnsi()`.
 
 ### Mouse input
 
-`TuiAltScreen` normalizes SGR mouse input and hit-tests components and overlays. Events contain component-local `x` and `y`, absolute `screenX` and `screenY`, bounds, button, modifiers, click count, and wheel delta. `TuiMainScreen` does not capture mouse input because the terminal owns its scrollback.
+`TuiAltScreen` normalizes SGR mouse input and hit-tests components and overlays (`TuiMainScreen` does not capture mouse input). Events include component-local `x`/`y`, absolute `screenX`/`screenY`, bounds, button, modifiers, `clickCount` (`1`, `2`, or `3`), and wheel delta.
 
-`isPointerIdle()` returns `true` while no text selection, press, drag, pending single click, or search depends on row positions. To observe changes without polling, `onViewportChange(listener)` invokes the listener at most once per event-loop turn after each input, deferred single click, or painted frame, and returns an unsubscribe function.
+`isPointerIdle()` returns `true` when no selection, press, drag, pending single click, or search depends on row positions. `onViewportChange(listener)` fires at most once per event-loop turn after input, deferred clicks, or painted frames, and returns an unsubscribe function.
 
 ```typescript
 import type { TuiMouseEvent, TuiMouseEventResult } from "@bastani/atomic-tui";
@@ -348,43 +328,26 @@ handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 }
 ```
 
-Returning `handled` suppresses renderer fallback behavior. `capture` routes subsequent drag and release events to the same component, and `focus` requests keyboard focus. The optional `render` flag controls repainting: press, click, drag, and wheel repaint by default, while move and release do not. Set `render: true` when hover state changes visibly, or `render: false` for a handled no-op. Render requests coalesce and output remains differential.
+- `handled`: suppresses renderer fallback behavior.
+- `capture`: routes subsequent drag and release events to the same component.
+- `focus`: requests keyboard focus.
+- `render`: overrides default repainting (press, click, drag, and wheel repaint by default; move and release do not).
+- `whenSingleClick` / `onSingleClickCancel`: defers a single-click action until `MULTI_CLICK_INTERVAL_MS` (`500` ms) elapses without a second press at the same spot (so double-clicks can select text without triggering single-click toggles). Capture item identity rather than screen coordinates and read mutable state inside the callback; hiding or removing an overlay cancels its pending single click.
 
-Each click carries `clickCount` (`1`, `2`, or `3`). When a single click should perform an action that a double-click must not (such as expanding a block whose text a double-click would select), return `{ handled: true, whenSingleClick: () => toggle() }` instead of running it immediately. `TuiAltScreen` invokes `whenSingleClick` once `MULTI_CLICK_INTERVAL_MS` (500 ms) passes after the press with no second press on the same spot, then repaints.
-
-A second press at that location cancels the deferred action even if the button stays held past the deadline, and the same timing applies when the component handles the press itself. Pass `onSingleClickCancel` alongside `whenSingleClick` to release any reserved resources on cancellation. Hiding or removing an overlay cancels its pending single-click action even if you show it again before a repaint.
-
-A held single click does not trigger `whenSingleClick` on release, though a control that claimed the press still receives button-up. When a double- or triple-click also selects text, a row that did not take the press still decides whether to handle the click or let the terminal copy the selection.
-
-Capture the clicked item's identity rather than its screen coordinates because items can move before the callback runs. Read mutable state when the action executes rather than when the click arrives: two fast clicks on different rows are both single clicks, so the first may run right before the second.
-
-Unhandled gestures retain alternate-screen defaults: wheel input scrolls the nearest `ScrollView` and chains unused delta, primary-button drags select text, OSC 8 links open before parent click handlers, and unhandled right-click runs configured paste behavior. Click events fire only when press and release complete without a drag.
-
-Use `MouseRegion` to attach mouse handling without changing a component's rendering:
-
-```typescript
-const collapsible = new MouseRegion(content, (event) => {
-  if (event.type !== "click" || event.button !== "left") return undefined;
-  expanded = !expanded;
-  return { handled: true };
-});
-```
-
-`Container` and `Box` route events to nested children using geometry recorded during the last frame, so pointer motion does not rerender children just to hit-test them. Explicit `VStack`, `HStack`, and `ScrollView` layouts use the alternate-screen layout frame directly.
+Unhandled gestures keep alternate-screen defaults: wheel scrolls the nearest `ScrollView` (chaining unused delta), primary drags select text, OSC 8 links open before parent click handlers, and right-click runs `onRightClickPaste`. Wrap any component with `new MouseRegion(content, handler)` to add mouse handling without changing its rendering.
 
 ### Focusable interface (IME support)
 
-Components that display a text cursor and need IME (Input Method Editor) support should implement the `Focusable` interface:
+Components displaying a text cursor that need IME (Input Method Editor) candidate-window positioning should implement `Focusable`:
 
 ```typescript
 import { CURSOR_MARKER, type Component, type Focusable, renderFakeCursor } from "@bastani/atomic-tui";
 
 class MyInput implements Component, Focusable {
-  focused: boolean = false;  // Set by TUI when focus changes
-  
-  render(width: number): string[] {
+  focused = false; // Set by TUI when focus changes
+
+  render(_width: number): string[] {
     const marker = this.focused ? CURSOR_MARKER : "";
-    // Emit marker right before the fake cursor
     return [`> ${beforeCursor}${marker}${renderFakeCursor(atCursor)}${afterCursor}`];
   }
 
@@ -392,27 +355,20 @@ class MyInput implements Component, Focusable {
 }
 ```
 
-When a `Focusable` component has focus, TUI:
-1. Sets `focused = true` on the component
-2. Scans rendered output for `CURSOR_MARKER` (a zero-width APC escape sequence)
-3. Positions the hardware terminal cursor at that location
-4. Shows the hardware cursor only when `showHardwareCursor` is enabled
+When a `Focusable` component has focus, TUI locates `CURSOR_MARKER`, positions the hardware terminal cursor there, and shows the hardware cursor only when `showHardwareCursor` is enabled (hiding the directly following `renderFakeCursor()` reverse-video cell so only the real cursor renders). Built-in `Editor` and `Input` implement `Focusable` automatically.
 
-`renderFakeCursor()` wraps the cursor cell in zero-width markers. TUI renders them as reverse video. When `showHardwareCursor` is enabled, TUI removes the fake cursor that directly follows `CURSOR_MARKER`, so the focused component shows only the terminal cursor. Fake cursors without a preceding `CURSOR_MARKER` stay visible.
-
-The hardware cursor remains hidden by default. This keeps the fake cursor rendering, while still positioning the hardware cursor for terminals that track IME candidate windows with hidden cursors. Some terminals require a visible hardware cursor for IME positioning; enable it with the renderer constructor's `showHardwareCursor` argument or `setShowHardwareCursor(true)`. The `Editor` and `Input` built-in components already implement this interface.
-
-**Container components with embedded inputs:** When a container component (dialog, selector, etc.) contains an `Input` or `Editor` child, the container must implement `Focusable` and propagate the focus state to the child:
+Container components wrapping an `Input` or `Editor` must also implement `Focusable` and propagate `focused` to their child input so IME candidate windows position accurately:
 
 ```typescript
 import { Container, type Focusable, Input } from "@bastani/atomic-tui";
 
 class SearchDialog extends Container implements Focusable {
-  private searchInput: Input;
-
-  // Propagate focus to child input for IME cursor positioning
+  private searchInput = new Input();
   private _focused = false;
-  get focused(): boolean { return this._focused; }
+
+  get focused(): boolean {
+    return this._focused;
+  }
   set focused(value: boolean) {
     this._focused = value;
     this.searchInput.focused = value;
@@ -420,19 +376,16 @@ class SearchDialog extends Container implements Focusable {
 
   constructor() {
     super();
-    this.searchInput = new Input();
     this.addChild(this.searchInput);
   }
 }
 ```
 
-Without this propagation, typing with an IME (Chinese, Japanese, Korean, etc.) will show the candidate window in the wrong position.
-
 ## Built-in components
 
 ### Container
 
-Groups child components vertically.
+Groups child components vertically:
 
 ```typescript
 const container = new Container();
@@ -442,52 +395,68 @@ container.removeChild(component);
 
 ### WindowedContainer
 
-Virtualized vertical container for large transcripts inside `ScrollView`. Keeps only visible children mounted in memory and materializes or evicts off-screen rows on demand (respecting `historyReplayable` and `selectionTextMayChangeOnReplay` for fullscreen text selection).
+Virtualized vertical container for large transcripts inside `ScrollView`. Keeps only visible children mounted in memory and materializes or evicts off-screen rows on demand while respecting `historyReplayable` and `selectionTextMayChangeOnReplay`.
+
+Key supporting contracts exported alongside `WindowedContainer`:
+
+| Type | Purpose |
+| --- | --- |
+| `HistorySource` | `{ readonly last: number; read(from, to, width): Promise<readonly HistoryRowsBlock[]> }` — supplies unmounted saved rows on demand (for scrolling and fullscreen copy across evicted history). |
+| `WindowRequest` | `{ width, top, moved?, exact?, height, followEnd, requestRender }` — viewport request passed by `ScrollView` to compute a visible row window. |
+| `WindowRows` | Virtualized row accessor (`length`, `at(index)`, plus optional row tracking and history inspection hooks) returned for a layout frame. |
+| `WindowLayout` | Extends `WindowRows` with the resolved `top` offset for the frame. |
 
 ### Box
 
-Container that applies padding and background color to all children.
+Container applying padding and optional background styling to all children:
 
 ```typescript
+import { Box, getTerminalColorMode, parseColor, styleText, Text } from "@bastani/atomic-tui";
+
+const mode = getTerminalColorMode();
+const bgGray = (s: string) => styleText(s, { bg: parseColor("#30343c") }, mode);
+const bgBlue = (s: string) => styleText(s, { bg: parseColor("#1e3a5f") }, mode);
+
 const box = new Box(
-  1,                              // paddingX (default: 1)
-  1,                              // paddingY (default: 1)
-  (text) => chalk.bgGray(text)   // optional background function
+  1,      // paddingX (default: 1)
+  1,      // paddingY (default: 1)
+  bgGray, // optional background function
 );
 box.addChild(new Text("Content"));
-box.setBgFn((text) => chalk.bgBlue(text));  // Change background dynamically
+box.setBgFn(bgBlue); // update background dynamically
 ```
 
 ### Text
 
-Displays multi-line text with word wrapping and padding.
+Multi-line text with word wrapping, padding, and optional background function:
 
 ```typescript
-const text = new Text(
-  "Hello World",                  // text content
-  1,                              // paddingX (default: 1)
-  1,                              // paddingY (default: 1)
-  (text) => chalk.bgGray(text)   // optional background function
-);
+import { getTerminalColorMode, parseColor, styleText, Text } from "@bastani/atomic-tui";
+
+const mode = getTerminalColorMode();
+const bgGray = (s: string) => styleText(s, { bg: parseColor("#30343c") }, mode);
+const bgBlue = (s: string) => styleText(s, { bg: parseColor("#1e3a5f") }, mode);
+
+const text = new Text("Hello World", 1, 1, bgGray);
 text.setText("Updated text");
-text.setCustomBgFn((text) => chalk.bgBlue(text));
+text.setCustomBgFn(bgBlue);
 ```
 
 ### TruncatedText
 
-Single-line text that truncates to fit viewport width. Useful for status lines and headers.
+Single-line text that truncates to viewport width (useful for headers and status bars):
 
 ```typescript
 const truncated = new TruncatedText(
   "This is a very long line that will be truncated...",
-  0,  // paddingX (default: 0)
-  0   // paddingY (default: 0)
+  0, // paddingX (default: 0)
+  0, // paddingY (default: 0)
 );
 ```
 
 ### Input
 
-Single-line text input with horizontal scrolling.
+Single-line text input with horizontal scrolling (click to position cursor and focus in `TuiAltScreen`):
 
 ```typescript
 const input = new Input();
@@ -496,21 +465,11 @@ input.setValue("initial");
 input.getValue();
 ```
 
-Clicking positions the cursor and gives the input keyboard focus in alternate-screen mode.
-
-**Key bindings:**
-
-- `Enter`: Submit
-- `Ctrl+A` / `Ctrl+E`: Line start or end
-- `Ctrl+W` or `Alt+Backspace`: Delete word backwards
-- `Ctrl+U`: Delete to start of line
-- `Ctrl+K`: Delete to end of line
-- `Ctrl+Left` / `Ctrl+Right` or `Alt+Left` / `Alt+Right`: Word navigation
-- Arrow keys, `Backspace`, and `Delete`: Standard cursor and character editing
+Supports `Enter` (submit), `Ctrl+A`/`Ctrl+E` (line start/end), `Ctrl+W`/`Alt+Backspace` (delete word back), `Ctrl+U`/`Ctrl+K` (delete to start/end), `Ctrl+Left`/`Right` or `Alt+Left`/`Right` (word jump), and standard cursor editing.
 
 ### Editor
 
-Multi-line text editor with autocomplete, file completion, paste handling, and vertical scrolling when content exceeds terminal height.
+Multi-line text editor with autocomplete, paste markers (over 10 lines), history, click-to-position cursor, and height-aware scrolling:
 
 ```typescript
 interface EditorTheme {
@@ -520,50 +479,28 @@ interface EditorTheme {
 }
 
 interface EditorOptions {
-  paddingX?: number;                // Horizontal padding (default: 0)
-  autocompleteMaxVisible?: number;  // Maximum visible autocomplete rows
+  paddingX?: number;               // Horizontal padding (default: 0)
+  autocompleteMaxVisible?: number; // Maximum visible autocomplete rows
 }
 
-const editor = new Editor(tui, theme, options?);  // tui is required for height-aware scrolling
+const editor = new Editor(tui, theme, options?);
 editor.onSubmit = (text) => console.log(text);
 editor.onChange = (text) => console.log("Changed:", text);
-editor.disableSubmit = true; // Disable submit temporarily
+editor.disableSubmit = true;
 editor.setAutocompleteProvider(provider);
-editor.borderColor = (s) => chalk.blue(s); // Change border dynamically
-editor.setPaddingX(1); // Update horizontal padding dynamically
-editor.getPaddingX();  // Get current padding
-editor.getHistory();
+editor.borderColor = (s) => `\x1b[34m${s}\x1b[0m`; // update border color dynamically
+editor.setPaddingX(1);
+editor.getPaddingX();
+editor.getHistory(); // past prompts, newest first
 ```
 
-`getHistory()` returns past prompts, newest first. `autocompleteHint` draws one line below an open completion menu. Its entries name the available actions and labels, with `essential` marking actions to keep on narrow terminals. Resolve `actions` through the active keybindings; when `resolvedKeys` is present, use those keys instead (including an empty array, because `CustomEditor` supplies only keys that reach the menu after app shortcuts). Without `autocompleteHint`, the editor draws no menu hint.
+`autocompleteHint` draws one line below an open completion menu, using `resolvedKeys` when provided (including an empty array when outer shortcuts shadow keys) and keeping `essential` entries on narrow terminals.
 
-**Features:**
-
-- Click-to-position cursor and clickable autocomplete rows in alternate-screen mode
-- Multi-line editing with word wrap
-- Slash command autocomplete (type `/`)
-- File path autocomplete (press `Tab`)
-- Large paste handling (more than 10 lines creates a `[paste #1 +50 lines]` marker)
-- Horizontal lines above and below the editor
-- Fake cursor rendering (hidden real cursor)
-
-**Key bindings:**
-
-- `Enter`: Submit
-- `Shift+Enter`, `Ctrl+Enter`, or `Alt+Enter`: New line (terminal-dependent; `Alt+Enter` is the most reliable)
-- `Tab`: Autocomplete
-- `Ctrl+K`: Delete to end of line
-- `Ctrl+U`: Delete to start of line
-- `Ctrl+W` or `Alt+Backspace`: Delete word backwards
-- `Alt+D` or `Alt+Delete`: Delete word forwards
-- `Ctrl+A` / `Ctrl+E`: Line start or end
-- `Ctrl+]`: Jump forward to character (awaits next keypress, then moves cursor to first occurrence)
-- `Ctrl+Alt+]`: Jump backward to character
-- Arrow keys, `Backspace`, and `Delete`: Standard cursor and character editing
+Supports `Enter` (submit), `Shift+Enter`/`Ctrl+Enter`/`Alt+Enter` (newline), `Tab` (autocomplete), `Ctrl+A`/`Ctrl+E`, `Ctrl+U`/`Ctrl+K`, `Ctrl+W`/`Alt+Backspace`, `Alt+D`/`Alt+Delete`, and `Ctrl+]`/`Ctrl+Alt+]` (jump forward/backward to next typed character).
 
 ### Markdown
 
-Renders markdown with syntax highlighting and theming support.
+Renders Markdown with optional syntax highlighting, LaTeX math rendering, caching, and per-instance options:
 
 ```typescript
 interface MarkdownTheme {
@@ -582,6 +519,7 @@ interface MarkdownTheme {
   strikethrough: (text: string) => string;
   underline: (text: string) => string;
   highlightCode?: (code: string, lang?: string) => string[];
+  codeBlockIndent?: string; // Prefix per rendered code block line (default: "  ")
 }
 
 interface DefaultTextStyle {
@@ -593,63 +531,52 @@ interface DefaultTextStyle {
   underline?: boolean;
 }
 
+interface MarkdownOptions {
+  hyperlinks?: boolean;                 // Override OSC 8 hyperlink emission for this instance
+  images?: boolean;                     // Override inline image rendering for this instance
+  preserveOrderedListMarkers?: boolean; // Keep original ordered list numbering
+  preserveBackslashEscapes?: boolean;   // Keep backslash-escaped punctuation verbatim
+  transform?: (markdown: string, availableWidth: number) => string; // Pre-parse transform
+  renderLatex?: boolean;                // Render supported LaTeX math as Unicode (default: true)
+}
+
 const md = new Markdown(
   "# Hello\n\nSome **bold** text",
-  1,              // paddingX
-  1,              // paddingY
-  theme,          // MarkdownTheme
-  defaultStyle    // optional DefaultTextStyle
+  1,            // paddingX
+  1,            // paddingY
+  theme,        // MarkdownTheme
+  defaultStyle, // optional DefaultTextStyle
+  options,      // optional MarkdownOptions
 );
 md.setText("Updated markdown");
 ```
 
-**Features:**
-- Headings, bold, italic, code blocks, lists, links, blockquotes
-- HTML tags rendered as plain text
-- Optional syntax highlighting via `highlightCode`
-- Padding support
-- Render caching for performance
+HTML tags render as plain text, and top-level blocks cache syntax-highlighted lines across resizes until `invalidate()`.
 
-### Loader
+### Loader and CancellableLoader
 
-Animated loading spinner.
+Animated spinners (`CancellableLoader` adds `Escape` cancellation and an `AbortSignal`):
 
 ```typescript
-const loader = new Loader(
-  tui,                              // TUI instance for render updates
-  (s) => chalk.cyan(s),            // spinner color function
-  (s) => chalk.gray(s),            // message color function
-  "Loading..."                      // message (default: "Loading...")
-);
+import { CancellableLoader, Loader } from "@bastani/atomic-tui";
+
+const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
+const gray = (s: string) => `\x1b[90m${s}\x1b[0m`;
+
+const loader = new Loader(tui, cyan, gray, "Loading...");
 loader.start();
 loader.setMessage("Still loading...");
 loader.stop();
+
+const cancellable = new CancellableLoader(tui, cyan, gray, "Working...");
+cancellable.onAbort = () => done(null); // triggered on Escape
+// cancellable.signal: AbortSignal, cancellable.aborted: boolean
+doAsyncWork(cancellable.signal).then(done);
 ```
-
-### CancellableLoader
-
-Extends Loader with Escape key handling and an AbortSignal for cancelling async operations.
-
-```typescript
-const loader = new CancellableLoader(
-  tui,                              // TUI instance for render updates
-  (s) => chalk.cyan(s),            // spinner color function
-  (s) => chalk.gray(s),            // message color function
-  "Working..."                      // message
-);
-loader.onAbort = () => done(null); // Called when user presses Escape
-doAsyncWork(loader.signal).then(done);
-```
-
-**Properties:**
-
-- `signal: AbortSignal`: Aborted when the user presses `Escape`.
-- `aborted: boolean`: Whether the loader was aborted.
-- `onAbort?: () => void`: Callback invoked when the user presses `Escape`.
 
 ### SelectList
 
-Interactive selection list with keyboard navigation.
+Interactive selection list with keyboard and mouse navigation:
 
 ```typescript
 interface SelectItem {
@@ -671,26 +598,19 @@ const list = new SelectList(
     { value: "opt1", label: "Option 1", description: "First option" },
     { value: "opt2", label: "Option 2", description: "Second option" },
   ],
-  5,      // maxVisible
-  theme   // SelectListTheme
+  5,     // maxVisible
+  theme, // SelectListTheme
 );
 
 list.onSelect = (item) => console.log("Selected:", item);
 list.onCancel = () => console.log("Cancelled");
 list.onSelectionChange = (item) => console.log("Highlighted:", item);
-list.setFilter("opt"); // Filter items
+list.setFilter("opt");
 ```
-
-**Controls:**
-- Mouse move/wheel: Highlight rows in alternate-screen mode
-- Click: Select a row
-- Arrow keys: Navigate
-- Enter: Select
-- Escape: Cancel
 
 ### SettingsList
 
-Settings panel with value cycling and submenus.
+Settings panel with value cycling and submenus:
 
 ```typescript
 interface SettingItem {
@@ -698,7 +618,7 @@ interface SettingItem {
   label: string;
   description?: string;
   currentValue: string;
-  values?: string[];  // If provided, Enter/Space cycles through these
+  values?: string[];
   submenu?: (currentValue: string, done: (selectedValue?: string) => void) => Component;
 }
 
@@ -713,26 +633,19 @@ interface SettingsListTheme {
 const settings = new SettingsList(
   [
     { id: "theme", label: "Theme", currentValue: "dark", values: ["dark", "light"] },
-    { id: "model", label: "Model", currentValue: "gpt-4", submenu: (val, done) => modelSelector },
+    { id: "model", label: "Model", currentValue: "gpt-4", submenu: (_val, _done) => modelSelector },
   ],
-  10,      // maxVisible
-  theme,   // SettingsListTheme
+  10,
+  theme,
   (id, newValue) => console.log(`${id} changed to ${newValue}`),
-  () => console.log("Cancelled")
+  () => console.log("Cancelled"),
 );
 settings.updateValue("theme", "light");
 ```
 
-**Controls:**
-- Mouse move/wheel: Highlight rows in alternate-screen mode
-- Click: Activate a row
-- Arrow keys: Navigate
-- Enter/Space: Activate (cycle value or open submenu)
-- Escape: Cancel
-
 ### Spacer
 
-Empty lines for vertical spacing.
+Empty lines for vertical spacing:
 
 ```typescript
 const spacer = new Spacer(2); // 2 empty lines (default: 1)
@@ -740,7 +653,7 @@ const spacer = new Spacer(2); // 2 empty lines (default: 1)
 
 ### Image
 
-Renders images inline for terminals that support the Kitty graphics protocol (Kitty, Ghostty, WezTerm) or iTerm2 inline images. Falls back to a text placeholder on unsupported terminals.
+Renders PNG, JPEG, GIF, and WebP images inline in Kitty or iTerm2-capable terminals (automatically parsing header dimensions), falling back to a text placeholder elsewhere:
 
 ```typescript
 interface ImageTheme {
@@ -753,26 +666,17 @@ interface ImageOptions {
   filename?: string;
 }
 
-const image = new Image(
-  base64Data,       // base64-encoded image data
-  "image/png",      // MIME type
-  theme,            // ImageTheme
-  options           // optional ImageOptions
-);
+const image = new Image(base64Data, "image/png", theme, options);
 tui.addChild(image);
 ```
 
-Supported formats: PNG, JPEG, GIF, WebP. Dimensions are parsed from the image headers automatically.
-
-#### Alternate-screen image compatibility
-
-`TuiAltScreen` supports inline images and partial viewport cropping in terminals that implement the Kitty graphics protocol, including Kitty and Ghostty. iTerm2's inline-image protocol does not provide operations to delete an existing placement or crop its source while scrolling. To prevent stale images from remaining over repainted content, `TuiAltScreen` renders image components as text placeholders in iTerm2. `TuiMainScreen` continues to render iTerm2 inline images normally.
+<Note>
+**Alternate-screen image compatibility:** `TuiAltScreen` renders inline Kitty images with partial viewport cropping (Kitty, Ghostty). Because the iTerm2 inline-image protocol cannot delete or crop placements during scrolling, `TuiAltScreen` renders text placeholders in iTerm2, while `TuiMainScreen` renders iTerm2 inline images normally.
+</Note>
 
 ## Autocomplete
 
-### CombinedAutocompleteProvider
-
-Supports both slash commands and file paths.
+`CombinedAutocompleteProvider` provides slash-command (`/`) and file-path (`Tab`, `~/`, `./`, `../`, `@`) completion:
 
 ```typescript
 import { CombinedAutocompleteProvider } from "@bastani/atomic-tui";
@@ -783,77 +687,51 @@ const provider = new CombinedAutocompleteProvider(
     { name: "clear", description: "Clear screen" },
     { name: "delete", description: "Delete last message" },
   ],
-  process.cwd() // base path for file completion
+  process.cwd(), // base path for file completion
 );
 
 editor.setAutocompleteProvider(provider);
 ```
 
-A lookup triggered before the editor received a provider (typing `/`, an `@` token, a trigger character, or pressing `Tab`) starts once `setAutocompleteProvider()` attaches a provider, provided the prompt text and cursor have not moved. Any intervening edit, cursor move, undo, history step, `Escape`, or cursor-placing click cancels that pending lookup.
-
-`snapshotDraft()` captures any pending lookup, and `restoreDraft()` resumes it immediately or when the target editor receives a provider. `setTextAsTyped(text)` sets the prompt text like `setText(text)` and starts whatever lookup typing its last character would trigger.
-
-Replacing the built-in editor's provider normally closes any open menu. Call `editor.setAutocompleteProvider(provider, { preserveSelection: true })` to keep the current menu while switching providers for future lookups. An open menu keeps the provider that produced its rows. Any in-flight lookup or empty lookup for the current text retries against the new provider (preserving whether the user pressed `Tab`), and a failed lookup leaves the prompt intact so later lookups still run.
-
-Add `refreshMenu: true` to query the new provider for any open menu (commands, arguments, `@` files, or a `Tab` file menu) where the user has not chosen a row. A non-empty answer for the same text replaces the rows and selects an exact match. User selection, thrown or rejected lookups, empty answers, or answers arriving after the text changed leave the menu unchanged, and background refreshes never delay the editor's own lookups. Atomic forwards the same options to extension-provided editors' `setAutocompleteProvider()`, which may ignore them.
-
-Lookup results appear on the next render. Until then, menu keys (`Up`, `Down`, `Page Up`, `Page Down`, `Tab`, `Enter`, `Escape`) and pointer clicks act on the drawn menu while it matches the prompt text; once the user types further, keys act on the answer for the new text. Clicks on rows that changed since they were drawn select nothing. A provider that throws or rejects returns no suggestions, and a provider that ignores its abort signal holds the next lookup for at most 100 ms.
-
-**Features:**
-
-- Type `/` to see slash commands
-- Press `Tab` for file path completion
-- Works with `~/`, `./`, `../`, and `@` prefixes
-- Filters to attachable files for the `@` prefix
+- **Pending lookups & drafts:** A lookup triggered before a provider attaches runs automatically once `setAutocompleteProvider()` is called (unless canceled by edits, cursor moves, undo, history, or `Escape`). `snapshotDraft()` / `restoreDraft()` preserve pending lookups across editor swaps, and `setTextAsTyped(text)` inserts text while triggering any completion its last character would start.
+- **Swapping providers cleanly:** Pass `{ preserveSelection: true }` to `setAutocompleteProvider()` to keep an open menu active while updating the provider for future lookups, and add `refreshMenu: true` to silently re-query open menus where the user has not chosen a row yet.
+- **Error isolation:** Lookups that throw or reject yield no suggestions; providers that ignore their abort signal hold the next lookup for at most 100 ms.
 
 ## Key detection
 
-Use `matchesKey()` with the `Key` helper for detecting keyboard input (supports Kitty keyboard protocol):
+Use `matchesKey()` with `Key` helpers (or string literals) to detect keyboard input across legacy terminals, xterm `modifyOtherKeys`, and the Kitty keyboard protocol:
 
 ```typescript
-import { matchesKey, Key } from "@bastani/atomic-tui";
+import { Key, matchesKey } from "@bastani/atomic-tui";
 
-if (matchesKey(data, Key.ctrl("c"))) {
-  process.exit(0);
-}
-
-if (matchesKey(data, Key.enter)) {
-  submit();
-} else if (matchesKey(data, Key.escape)) {
-  cancel();
-} else if (matchesKey(data, Key.up)) {
-  moveUp();
-}
+if (matchesKey(data, Key.ctrl("c"))) process.exit(0);
+if (matchesKey(data, Key.enter)) submit();
+else if (matchesKey(data, Key.escape)) cancel();
+else if (matchesKey(data, Key.up)) moveUp();
 ```
 
-**Key identifiers** (use `Key.*` for autocomplete, or string literals):
-
-- Basic keys: `Key.enter`, `Key.escape`, `Key.tab`, `Key.space`, `Key.backspace`, `Key.delete`, `Key.home`, `Key.end`
-- Arrow keys: `Key.up`, `Key.down`, `Key.left`, `Key.right`
-- With modifiers: `Key.ctrl("c")`, `Key.shift("tab")`, `Key.alt("left")`, `Key.ctrlShift("p")`
-- String format also works: `"enter"`, `"ctrl+c"`, `"shift+tab"`, `"ctrl+shift+p"`
+- **Basic keys:** `Key.enter`, `Key.escape`, `Key.tab`, `Key.space`, `Key.backspace`, `Key.delete`, `Key.home`, `Key.end`, `Key.up`, `Key.down`, `Key.left`, `Key.right`
+- **Modified keys:** `Key.ctrl("c")`, `Key.shift("tab")`, `Key.alt("left")`, `Key.ctrlShift("p")` (string literals like `"ctrl+shift+p"` also work)
 
 ## Rendering modes
 
-`TuiMainScreen` uses three rendering strategies:
+- **`TuiMainScreen`:** Outputs all lines on first render without clearing scrollback; clears and fully re-renders on width changes or changes above the viewport; otherwise moves to the first changed line, clears to end, and writes changed lines.
+- **`TuiAltScreen`:** Owns a fixed terminal-height viewport with differential in-place updates, bottom-following streaming, hover-expanding draggable scrollbars, OSC 133 prompt jumps, OSC 8 clickable links, drag-to-select with auto-scroll and OSC 52 copy, and Kitty image cropping.
 
-1. **First render.** Output all lines without clearing scrollback.
-2. **Width changed or change above viewport.** Clear screen and fully re-render.
-3. **Normal update.** Move the cursor to the first changed line, clear to the end, and render changed lines.
-
-`TuiAltScreen` owns a terminal-height viewport. Without an explicit layout root it keeps single-document scrolling; with `setLayoutRoot()`, `VStack`, `HStack`, and nested `ScrollView` components allocate fixed regions and scroll constrained regions independently. It updates changed rows in place, follows streaming output at the bottom, and holds a manual scroll position while content grows.
-
-Mouse-wheel and keyboard navigation scroll without altering terminal scrollback, including jumps between OSC 133 semantic prompt markers. Scrollbars support hover expansion, thumb dragging, and track-click jumping. Clicking an OSC 8 hyperlink invokes the configured `openUrl` handler.
-
-Dragging with the primary mouse button selects text and, unless `TuiAltScreenOptions.copyOnSelect` is `false`, copies it with OSC 52. Holding a drag at a scroll view's top or bottom edge auto-scrolls and extends the selection into off-screen content. Kitty images support vertical viewport cropping, while iTerm2 inline images render as text placeholders because the iTerm2 protocol cannot delete or crop placements during viewport repainting.
-
-Both renderers wrap updates in **synchronized output** (`\x1b[?2026h` ... `\x1b[?2026l`) for atomic, flicker-free rendering.
+Both renderers wrap frames in **synchronized output** (`\x1b[?2026h` ... `\x1b[?2026l`) for flicker-free updates.
 
 ## Terminal interface
 
-The TUI works with any object implementing the `Terminal` interface:
+The TUI runs against any implementation of `Terminal` (`ProcessTerminal` wraps `process.stdin`/`process.stdout`; pass a mock implementation for headless tests):
 
 ```typescript
+interface ProgramStatus {
+  state: "idle" | "working" | "blocked" | "done" | "error" | "clear";
+  app?: string;                             // Stable app name ([A-Za-z0-9_.+-]{1,32})
+  kind?: "permission" | "question" | "auth";// Only used when state === "blocked"
+  message?: string;                         // Single line, capped at 2,048 UTF-8 bytes
+}
+
 interface Terminal {
   start(onInput: (data: string) => void, onResize: () => void): void;
   stop(): void;
@@ -879,25 +757,21 @@ interface Terminal {
 }
 ```
 
-**Built-in implementation:** `ProcessTerminal`, which reads from `process.stdin` and writes to `process.stdout`. For automated tests, provide a mock or headless implementation of `Terminal`.
+Key lifecycle and protocol hooks on `Terminal`:
+
+- **`handOff?(held?)` and `continuedFromHandOff`:** Allows switching from one renderer (such as a fast startup screen) to another without resetting terminal modes or clearing the screen; input arriving during the hand-off is buffered and replayed in order after `held` once the next renderer calls `start()`.
+- **`restoreOnExit?(before, after)`:** Synchronously writes terminal mode resets (`before`, the terminal's own resets, then `after`) from a process `exit` handler if `stop()` did not run.
+- **`setProgramStatus(status)`:** Emits an [OSC 7501 Program Status](https://www.superlogical.com/rex/docs/build/program-status) update once the terminal confirms support, re-sending the latest state when support is confirmed or the terminal restarts.
 
 ## Utilities
 
 ```typescript
-import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 
-// Get visible width of string (ignoring ANSI codes)
-const width = visibleWidth("\x1b[31mHello\x1b[0m"); // 5
-
-// Truncate string to width (preserving ANSI codes and closing active styles)
-const truncated = truncateToWidth("Hello World", 8); // "Hello..."
-
-// Truncate without ellipsis
-const truncatedNoEllipsis = truncateToWidth("Hello World", 8, ""); // "Hello Wo"
-
-// Wrap text to width (preserving ANSI codes across line breaks)
-const lines = wrapTextWithAnsi("This is a long line that needs wrapping", 20);
-// ["This is a long line", "that needs wrapping"]
+const width = visibleWidth("\x1b[31mHello\x1b[0m");               // 5
+const truncated = truncateToWidth("Hello World", 8);              // "Hello..."
+const noEllipsis = truncateToWidth("Hello World", 8, "");         // "Hello Wo"
+const wrapped = wrapTextWithAnsi("A long line to wrap nicely", 14);
 ```
 
 Additional exported helpers:
@@ -905,7 +779,7 @@ Additional exported helpers:
 | Export | Purpose |
 | --- | --- |
 | `fuzzyFilter` / `fuzzyMatch` | Fuzzy matching and ranked filtering for pickers and search inputs. |
-| `KeybindingsManager` / `TUI_KEYBINDINGS` | Configurable TUI keybinding definitions and lookup. |
+| `KeybindingsManager` / `TUI_KEYBINDINGS` / `getSelectPageIndex` | Configurable TUI keybinding definitions, matching, and list paging helper. |
 | `decodePrintableKey` | Decode printable Kitty CSI-u and `modifyOtherKeys` sequences. |
 | `normalizePastedText` | Normalize bracketed paste text (CRLF/CR, tmux control bytes, tabs, C0 control filtering). |
 | `stripTerminalSequences` / `sliceByColumn` | Strip ANSI/OSC sequences or slice styled strings by display column range. |
@@ -916,10 +790,10 @@ Additional exported helpers:
 
 ## Creating custom components
 
-When building a custom `Component`, keep every line returned by `render(width)` within `width` columns using `truncateToWidth()`, `wrapTextWithAnsi()`, or `visibleWidth()`, handle keys via `matchesKey()` (see [Key detection](#key-detection)), and cache rendered output by width until `invalidate()` runs:
+Keep every line returned by `render(width)` within `width` columns, match keys via `matchesKey()`, and cache lines by width until `invalidate()` runs:
 
 ```typescript
-import { Key, matchesKey, truncateToWidth, type Component } from "@bastani/atomic-tui";
+import { type Component, Key, matchesKey, truncateToWidth } from "@bastani/atomic-tui";
 
 class CachedList implements Component {
   private selectedIndex = 0;
@@ -944,9 +818,7 @@ class CachedList implements Component {
   }
 
   render(width: number): string[] {
-    if (this.cachedLines && this.cachedWidth === width) {
-      return this.cachedLines;
-    }
+    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
     this.cachedWidth = width;
     this.cachedLines = this.items.map((item, i) =>
       truncateToWidth(`${i === this.selectedIndex ? "> " : "  "}${item}`, width),
@@ -963,7 +835,7 @@ class CachedList implements Component {
 
 ## Example
 
-A self-contained alternate-screen chat interface combining `ScrollView`, `Markdown`, `Loader`, `Spacer`, `Editor`, and `CombinedAutocompleteProvider`:
+A self-contained alternate-screen chat app combining `ScrollView`, `Markdown`, `Loader`, `Spacer`, `Editor`, and `CombinedAutocompleteProvider`:
 
 ```typescript
 import {

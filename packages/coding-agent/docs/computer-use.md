@@ -1,106 +1,100 @@
 ---
-title: "Automate browsers, desktops, and terminals"
-sidebarTitle: "Computer use"
+title: "Automate apps, browsers, and terminals"
+sidebarTitle: "Automate apps and browsers"
 description: "Automate desktop apps, web browsers, interactive terminals, and creative files with Atomic on macOS, Linux, and Windows."
 ---
 
-Atomic can operate desktop applications, web browsers, interactive terminals, and file-generation tools alongside ordinary code edits. Use computer use to build a Blender scene, assemble a presentation, edit media, or test a real user interface.
+Atomic can operate desktop applications, web browsers, interactive terminals, and file-generation tools alongside ordinary code edits. Use computer use to test real user interfaces, assemble slides or media, or drive interactive terminal apps.
 
-This guide covers tool selection, setup, platform requirements, and safe operation. For choosing checks, reproducing user interactions, and attaching pull-request evidence, see [Verify changes with evidence](/verification).
-
-Jump to [desktop automation](#desktop-automation-with-agent-desktop), [browser automation](#browser-automation-with-agent-browser), [terminal automation](#terminal-automation-with-herdr), [application scripting](#application-scripting-and-apis), or [creative workflows](#creative-work-and-computer-use-workflows). Platform notes: [macOS](#macos), [Linux](#linux), and [Windows](#windows).
+<Columns cols={2}>
+  <Card title="Desktop apps (agent-desktop)" href="#desktop-automation-with-agent-desktop">
+    Drive native macOS, Linux, and Windows apps through OS accessibility trees.
+  </Card>
+  <Card title="Web browsers (agent-browser)" href="#browser-automation-with-agent-browser">
+    Automate Chrome/Chromium, Mobile Safari in iOS Simulator, and Electron apps.
+  </Card>
+  <Card title="Interactive terminals (Herdr & tmux)" href="#terminal-automation-with-herdr">
+    Send real keystrokes and inspect TUI panes with Herdr, tmux, or Windows psmux.
+  </Card>
+  <Card title="Verify changes with evidence" href="/verification">
+    Choose checks, reproduce bugs cleanly, and attach screenshots or clips to PRs.
+  </Card>
+</Columns>
 
 ## Choose the right tool
 
-Start with the output you need instead of the app you would click through manually. When a file library, CLI, or API can produce that result directly, a short script is faster and uses fewer tokens than repeated UI actions. Reach for UI automation when a task needs visual inspection, a UI-only control, or end-to-end interface verification.
+Start from the output you need, not the app you would click through manually. When a file library, CLI, or API produces the result directly, a short script is faster and cheaper than repeated UI clicks. Reach for UI automation when a task needs visual inspection, a UI-only control, or end-to-end interface verification.
 
 | Task | Preferred tool | When to switch |
 | --- | --- | --- |
-| Create or edit presentations, documents, spreadsheets, or media | **A file library or CLI** | Use an app API or desktop UI when the library drops required features or you need rendered visual checks. |
-| Interactive terminal or TUI | **Herdr** | Fall back to tmux on macOS and Linux, or native psmux on Windows, when Herdr is unavailable. Plain shell commands need no multiplexer. |
-| Websites in Chrome/Chromium, Mobile Safari in the iOS Simulator or a connected iPhone/iPad, an Electron desktop app (VS Code, Slack, Discord, Figma, Notion, Spotify) or another CDP app, Slack workspaces, or cloud browsers | **agent-browser** | Prefer it for any web content it can reach because text snapshots and element refs cost far fewer tokens than screenshots. See [what agent-browser covers](#what-agent-browser-covers). Switch to agent-desktop for native apps or whenever agent-browser hits a limitation. |
-| Native desktop apps, menu bars, desktop Safari or Firefox, browser chrome, OS dialogs, cross-app tasks, or any agent-browser limitation | **agent-desktop** | Use app scripting or a CLI when direct automation is simpler or safer. agent-desktop reads accessibility trees only; native iOS apps and Android emulators need `xcrun simctl`, Appium with XCUITest, or `adb`. See [coverage and limits](#coverage-and-limits). |
+| Create or edit presentations, documents, spreadsheets, or media | **File library or CLI** (`python-pptx`, `openpyxl`, FFmpeg, Blender Python) | Switch to UI automation when you need rendered visual checks or UI-only controls. |
+| Interactive terminal or TUI | **Herdr** (inside a Herdr pane) | Fall back to `tmux` (macOS/Linux) or `psmux` (Windows). Ordinary commands need no multiplexer. |
+| Websites, Mobile Safari (iOS Simulator/device), Electron apps (VS Code, Slack, Figma), or other Chrome DevTools Protocol (CDP) apps | **`agent-browser`** | Prefer it for any reachable web content—text snapshots cost far fewer tokens than screenshots. Switch to `agent-desktop` for native dialogs, browser chrome, or unsupported browsers. |
+| Native desktop apps, desktop Safari/Firefox, menu bars, OS dialogs, cross-app flows | **`agent-desktop`** | Switch to native mobile tooling (`xcrun simctl`, Appium/XCUITest, `adb`) for native iOS/Android apps. |
 
-You can mix tools within one task. For example, build slides with `python-pptx` and inspect them in a viewer, generate repeated Blender geometry with Python before adjusting the scene visually, or drive web forms through DOM controls instead of desktop clicks.
+You can mix tools in one task—for example, generate slides with `python-pptx` and inspect them in a viewer, or build Blender geometry with Python before adjusting the scene visually.
 
-Atomic's bundled skills (`agent-desktop`, `herdr`, `agent-browser`, and `tmux`) provide operating instructions, not installed binaries or OS permissions. Check the installed command's `--help` before relying on version-specific flags.
-
-Herdr automation requires an explicit request and a session running inside a Herdr-managed pane with `HERDR_ENV=1`. Launch Atomic inside Herdr rather than setting `HERDR_ENV` manually to bypass the check.
+<Note>
+**Bundled skills vs. installed binaries.** Atomic bundles `agent-desktop`, `agent-browser`, `herdr`, and `tmux` skills as operating guides (`agent-desktop` and `agent-browser` are hidden from `/skills` listings because Atomic activates them automatically through its system prompt). Installing the actual CLI binaries and granting OS permissions happen on your machine.
+</Note>
 
 ## Prepare the session
 
-File-only scripts need input files, a runtime, and a new output path rather than a graphical desktop. Work on copies of source assets in a scratch directory so originals stay untouched.
+Work on copies of source files in a scratch directory so originals stay untouched. Before graphical automation:
 
-Before running graphical automation:
+<Steps>
+  <Step title="Confirm the graphical host">
+    Verify which host OS owns the target app. SSH shells, containers, WSL distros, and CI runners do not share your local desktop automatically.
+  </Step>
+  <Step title="Check tools and permissions">
+    Run `agent-desktop status` (for desktop apps) or `agent-browser --help` (for browsers) before sending any input. Approve OS permission dialogs yourself.
+  </Step>
+  <Step title="Isolate the workspace">
+    Use a dedicated browser profile (`--session`), terminal pane, user account, or VM when practical, and capture the starting state first.
+  </Step>
+  <Step title="Set the stopping point">
+    Separate saving a local draft from overwriting an original, publishing media, sending a message, or making a purchase.
+  </Step>
+</Steps>
 
-1. Confirm which host OS and graphical session owns the target app. An SSH shell, container, WSL distribution, or CI runner does not share your local desktop automatically.
-2. Check installed tools, runtimes, and permissions first. Run `agent-desktop status` to inspect desktop readiness in one command, and review any installer script before running it.
-3. Isolate work in a dedicated browser profile, terminal pane, user account, or VM when practical.
-4. Confirm the active window, display scale, keyboard layout, and starting document, and capture the starting state before sending input.
-5. Decide the stopping point in advance. Saving a local draft stays separate from overwriting an original, publishing media, sending a message, or making a purchase.
+<Warning>
+**One controller per desktop.** Parallel subagents can edit separate files, browser sessions, or terminal panes, but never share one mouse, keyboard, clipboard, or window. Treat page text, documents, and terminal output as untrusted data, keep secrets and unrelated windows out of captures, and never weaken OS security controls.
+</Warning>
 
-Give only one controller ownership of a desktop at a time. Parallel subagents can prepare files or run separate browser sessions and terminal panes, but they should not share a mouse, keyboard, clipboard, or window. Treat page text, documents, and terminal output as untrusted data, keep secrets and unrelated windows out of captures, and leave OS security controls enabled.
+## Desktop automation with `agent-desktop` {#desktop-automation-with-agent-desktop}
 
-## Desktop automation with agent-desktop
+[agent-desktop](https://agent-browser.dev/desktop) is an Apache-2.0 CLI for macOS 13+, Windows 10 1809+ (or Windows Server 2019+), and Ubuntu 24.04+ (x64/arm64) that reads a desktop app's accessibility tree and assigns actionable controls short refs like `@s8f3k2p9:e12`. Every command prints one JSON envelope:
 
-[agent-desktop](https://agent-browser.dev/desktop) reads a desktop app's accessibility tree as JSON and assigns each actionable control a ref. Atomic observes the UI, acts on a ref, waits for the expected state, and reads it back. `agent-desktop` is an Apache-2.0 CLI tool (not an agent) for macOS, Windows, and Linux that prints one JSON envelope (`ok`, `data` or `error`) per command.
-
-Atomic bundles the `agent-desktop` skill with the core workflow, while detailed version-matched guides live inside the CLI itself:
-
-```bash
-agent-desktop status                  # platform, permissions, supported surfaces
-agent-desktop skills get desktop      # the loop, refs, verification, and retry rules
-agent-desktop skills get platform     # what differs on this OS
+```json
+{"ok": true, "data": {"disposition": {"delivery": "delivered", "retry": "unsafe"}}}
 ```
 
-Read topic references as needed (such as `agent-desktop skills get desktop workflows` or `agent-desktop skills get linux troubleshooting`). Each command returns Markdown in `data.content`.
+Full version-matched manuals live inside the CLI itself:
 
-Choose between interactive turns and a dedicated script depending on how repeatable the flow is:
+```bash
+agent-desktop status                      # platform, permissions, supported surfaces
+agent-desktop skills get desktop          # observe/act/verify loop and retry rules
+agent-desktop skills get platform         # OS-specific behavior and limits
+agent-desktop skills get desktop <topic>  # commands-observation, commands-interaction, commands-system, workflows
+```
 
-| Situation | How | Why |
-| --- | --- | --- |
-| Interactive exploration or one-off tasks | Atomic's bundled `agent-desktop` skill with one-shot CLI commands | Atomic chooses each step from live snapshots and keeps JSON results, screenshots, and traces as evidence. |
-| Repeatable checks with a fixed sequence | A shell or Node script invoking the `agent-desktop` CLI | The script checks each JSON envelope, stops on failure, and inspects live state before retrying. |
+### Install and check readiness
 
-`agent-desktop` has no TypeScript SDK; its JSON CLI envelope is the interface. Because Atomic bundles the `agent-desktop` skill automatically, you do not need to install a separate copy with `npx skills add` (a duplicate copy in `~/.agents/skills` can drift behind CLI updates).
-
-### Install if missing
-
-Check `agent-desktop version`. If missing, install it globally on Node 18 or newer:
+Check `agent-desktop version` first. If missing, install globally on Node 18+:
 
 ```bash
 npm install -g agent-desktop
 agent-desktop version
-```
-
-Supported platforms are macOS 13+, Windows 10 1809+ (or Windows Server 2019+), and Ubuntu 24.04+ on x64 and arm64. Installing without `-g` places the CLI in `./node_modules/.bin` (run via `npx agent-desktop`). Platform helpers install automatically (`agent-desktop-macos-helper` on macOS and `agent-desktop-linux-clipboard-owner` on Linux; Windows needs none).
-
-Its `postinstall` script links the native binary. If your package manager blocks install scripts (the default in npm 12), the Node wrapper still works but adds over 100 ms per call and prints a notice. Approve the script and reinstall:
-
-```bash
-npm install-scripts approve agent-desktop                    # npm 12
-npm install -g agent-desktop --allow-scripts=agent-desktop   # npm 11
-```
-
-Homebrew taps and Scoop buckets were removed in 1.0.1 and can shadow newer npm installs. If `agent-desktop version` is older than expected, check `command -v agent-desktop` (PowerShell: `Get-Command agent-desktop`), remove the older package-manager copy, and reinstall via npm.
-
-### Check readiness
-
-Checking `agent-desktop version` confirms only the binary. Run `agent-desktop status` before any UI action:
-
-```bash
 agent-desktop status
 ```
 
-- `data.permissions` reports `accessibility`, `automation`, and `screen_recording` (`granted`, `denied`, `unknown`, or `not_required`).
-- `data.supported_surfaces` lists the readable overlay types on this OS (`window`, `sheet`, `alert`, `menu`, and platform shell elements).
-- `data.state_root` shows where sessions and traces live (`~/.agent-desktop`, overridden by an absolute path in `AGENT_DESKTOP_HOME`).
+- **Interactive vs. script install policy.** In interactive sessions, Atomic's default system prompt lets the agent make one bounded `npm install -g agent-desktop` attempt when `agent-desktop version` fails (reporting what it installed). Reusable scripts in a [skill's `scripts/` folder](/skills/authoring) should check `agent-desktop version` and `agent-desktop status` upfront and report missing binaries or permissions as blocked rather than installing mid-run.
+- **Avoid slow startup or shadowed installs.** If npm blocks `postinstall` scripts, the CLI falls back to a slower Node launcher—approve its install script (`npm install-scripts approve agent-desktop` on npm 12, or `npm install -g agent-desktop --allow-scripts=agent-desktop` on npm 11) and reinstall. Remove older Homebrew tap or Scoop bucket copies that can shadow npm. Do not run `npx skills add` for `agent-desktop` since Atomic already bundles the skill.
+- **Readiness check.** `agent-desktop status` reports OS permissions (`accessibility`, `automation`, `screen_recording`), readable overlay surfaces (`window`, `sheet`, `alert`, `menu`), and the state folder (`~/.agent-desktop`, overridden by `AGENT_DESKTOP_HOME`). Atomic pauses for you to approve OS consent dialogs rather than clicking through them.
 
-Read OS-specific rules with `agent-desktop skills get platform` and the platform sections below ([macOS](#macos), [Linux](#linux), [Windows](#windows)). Fix any missing macOS permission, absent Linux accessibility bus, or missing install, then rerun `agent-desktop status`. Confirm OS consent dialogs yourself when prompted; Atomic pauses rather than attempting to click through system permission dialogs.
+### Core workflow and key rules
 
-### Drive an app from the shell
-
-Map an app with a shallow skeleton, drill into one region, act on a ref, wait for the change, and read it back. Refs are tied to the snapshot that issued them:
+Map the app with a shallow snapshot, drill into one region, act on a ref, wait for the postcondition, and read it back (use `find --app ... --role ... --name ... --exact` when you already know the control):
 
 ```bash
 agent-desktop snapshot --app "Notes" --skeleton -i --compact
@@ -110,334 +104,188 @@ agent-desktop wait --element @s8f3k2p9:e5 --predicate value --value "Done" --tim
 agent-desktop get @s8f3k2p9:e5 --property value
 ```
 
-Use refs discovered from the current run. When you already know the role and name, `find --app "Notes" --role button --name "Save" --exact` is cheaper than a full snapshot.
+Keep five operational rules in mind:
 
-- **Verify with reads and check `disposition`.** Use `wait` instead of fixed sleeps. Action results place delivery metadata on `data.disposition`, while error responses place it on **`error.disposition`** (observation commands like `snapshot` have no `disposition` on success; their errors and `INVALID_ARGS` refusals report `delivery: "not_delivered"` and `retry: "safe"`). Retry an action only when `disposition.retry` is `"safe"`; otherwise read live UI state first so you do not submit or click twice.
-- **Drilling with `--root` and `STALE_REF`.** A `--root` drill adds new refs to the same snapshot ID. Refs outside the drilled subtree and the drilled root itself remain valid, while old refs inside the drilled subtree are replaced and return `STALE_REF`. On `STALE_REF` or `SNAPSHOT_NOT_FOUND`, take a fresh snapshot and use the new ref.
-- **`AMBIGUOUS_TARGET` on macOS versus Windows and Linux.** On **macOS**, refs retain each control's native element address, so identical twin controls (such as repeated Delete buttons in a list) each keep a distinct ref. On **Windows and Linux**, a ref resolves only when the element is unique across the entire window by role, native ID, name, and description. Identical twin controls on Windows and Linux have **no ref path** regardless of `--root` or `find`; the only way to click one is `--headed mouse-click --xy X,Y`, which takes foreground focus and is refused on Linux Wayland. If `AMBIGUOUS_TARGET` returns `details.kind: "identity_not_unique"` because a snapshot timed out before reading the full window, retake the snapshot with a larger `--timeout-ms`.
-- **Overlays.** When an action opens a menu, sheet, or alert listed in `data.surfaces`, snapshot that overlay rather than the window behind it. Never pass `--skeleton` on an overlay surface (`--surface menu`, `sheet`, or `alert`).
-- **Headless first.** Ref calls use semantic accessibility APIs without stealing focus, cursor, or clipboard. Pass `--headed` only when physical input (double-click, hover, drag, focus) is needed and approved, never as a fallback for headless failures. Destructive shortcuts such as quit and lock require `--force`.
-- **PowerShell quoting.** Quote every ref (`'@s8f3k2p9:e12'`) because unquoted `@` triggers splatting in PowerShell.
-- **Sessions and batching.** Use `agent-desktop session start --name run-1` and pass `--session` (or `AGENT_DESKTOP_SESSION`) to isolate refs and traces, closing only your session with `agent-desktop session end <id>`. `agent-desktop batch '[...]'` runs commands in one process without transactional rollback.
-- **Evidence.** Keep JSON outputs and save screenshots with `agent-desktop screenshot --app "Notes" after.png` (or export an HTML trace with `agent-desktop trace export`). For pull requests, attach before and after PNGs with `gh pr create --body-file body.md --attach 'before.png#Before' --attach 'after.png#After'` after checking captures for private data.
-
-To inspect web content inside a Chromium or Electron app launched fresh, run `agent-desktop launch "Obsidian" --cdp` to open a loopback debugging port and connect with `agent-browser connect <port>` (see `agent-browser skills get electron`). Confirm before closing an already-running app so unsaved state is not lost. Keep native menus, dialogs, and window controls in `agent-desktop`, and run `close-app` when finished because any local process under your user can access an open CDP port.
+- **Retry only when safe.** Action responses report delivery status (`disposition.retry` on `data` or `error`). Retry automatically only when `retry` is `"safe"` (or on a `TIMEOUT` where element identity could not be resolved, meaning nothing was sent). Otherwise inspect live state (`get`, `is`, a fresh snapshot, or `details.post_state`) before acting again so you do not submit or toggle twice. If `details.retryable` is `false`, waiting will not resolve the error.
+- **Refresh stale refs.** Refs belong to one snapshot. Drilling with `--root` replaces old refs inside that subtree (returning `STALE_REF` if reused) while keeping refs outside it valid. On `STALE_REF` or `SNAPSHOT_NOT_FOUND`, take a fresh snapshot.
+- **Repeated twin controls on Windows and Linux.** On macOS, identical twin buttons (such as Delete buttons in a list) each keep a distinct ref. On Windows and Linux, a ref only resolves when it is unique across the window—identical twins return `AMBIGUOUS_TARGET` and have no ref path, requiring `--headed mouse-click --xy X,Y` (which takes focus and is refused on Linux Wayland). If a snapshot timed out before capturing the full window, retake it with a larger `--timeout-ms`.
+- **Headless first and overlays.** Ref actions use semantic accessibility APIs without stealing focus, cursor, or clipboard. Use `--headed` only when physical input (double-click, hover, drag) is needed and approved—never as a fallback for a failed headless call. Destructive shortcuts (quit, lock) require `--force`. When an action opens a menu, sheet, or alert, snapshot that overlay directly without `--skeleton`.
+- **Sessions, PowerShell, and Electron CDP.** Isolate concurrent runs with `agent-desktop session start --name run-1` and `--session` (or `AGENT_DESKTOP_SESSION`), ending only your own session. In PowerShell, quote every ref (`'@s8f3k2p9:e12'`) so `@` does not trigger splatting. To inspect web content inside a freshly launched Chromium or Electron app, run `agent-desktop launch "App" --cdp` and connect with `agent-browser connect <port>`—then close the app when finished, since any local process under your user can access an open CDP port.
 
 ### macOS VM sandboxes
 
-On Apple Silicon Macs running macOS 13 or later, `agent-desktop sandbox` manages isolated local macOS virtual machines. Linux and Windows have no built-in sandbox provider (run `agent-desktop` inside a self-managed Docker container instead).
+On Apple Silicon Macs (macOS 13+), `agent-desktop sandbox` runs isolated local macOS VMs (Linux and Windows have no built-in sandbox provider; run `agent-desktop` inside a self-managed Docker container instead):
 
 ```bash
-agent-desktop sandbox install                                       # check provider state
 agent-desktop sandbox install macos                                 # build and sign the VM host
-agent-desktop sandbox create demo --provider macos --set from=base  # clone a configured sandbox
-agent-desktop sandbox start demo                                    # start headless (add --window to show UI)
+agent-desktop sandbox create demo --provider macos --set from=base  # clone a configured VM
+agent-desktop sandbox start demo                                    # start headless (add --window for UI)
 agent-desktop sandbox status demo                                   # wait until state is "running"
 agent-desktop sandbox exec demo -- status                           # run a command inside the guest
-agent-desktop sandbox stop demo
-agent-desktop sandbox rm demo
+agent-desktop sandbox stop demo && agent-desktop sandbox rm demo
 ```
 
-- **Names and sources.** Sandbox names must be 1 to 32 lowercase letters, digits, or hyphens starting with a letter or digit. `create` requires exactly one source: `--set from=<sandbox>` (recommended for cloning a configured VM), `--set ipsw=latest`, or `--set ipsw=<path>` (downloads a multi-gigabyte macOS IPSW image; first-time IPSW installs are experimental).
-- **Lifecycle.** `start` reports `working` until the guest answers; check `status` (or `list`) and wait for `running` before running `exec`. Stop a running sandbox before removing it with `rm`. Read `state`, `message`, and `next` in the JSON output rather than assuming `ok: true` means the VM is ready.
-- **Isolation boundary.** A sandbox isolates the desktop, not the network or host services. Sandboxes on the same host share a virtual network and can reach host network services, so keep one trust level per host.
+Sandbox names use 1–32 lowercase letters, digits, or hyphens starting with a letter or digit. `create` takes one source: `--set from=<sandbox>` (recommended), `--set ipsw=latest`, or `--set ipsw=<path>` (a multi-gigabyte macOS IPSW system restore image; first-time IPSW installs are experimental). Check `state` and `next` in JSON output rather than assuming `ok: true` means ready: states progress through `unavailable`, `missing`, `ready`, `working`, `needs_setup`, `running`, `stopped`, and `broken`. Stop a running sandbox before `rm`.
 
-### Run a scenario from a script
+<Warning>
+**Sandbox isolation boundary.** A macOS sandbox isolates the desktop, not the network. Sandboxes on the same host share a virtual network and can reach host network services, so keep one trust level per host. Each sandbox stores its pinned SSH key under `<state root>/sandboxes/<name>/`, and inside the guest Accessibility belongs to `sshd-keygen-wrapper`.
+</Warning>
 
-Store repeatable desktop checks in a [skill's `scripts/` directory](/skills/authoring) and call them through a permitted shell or codemode step:
+### Coverage and limits {#coverage-and-limits}
 
-- **Preflight.** Run `agent-desktop version` and `agent-desktop status` first. Report a missing binary, permission, or accessibility bus as blocked rather than installing mid-run.
-- **Structured calls.** Spawn one `agent-desktop` process per command, parse its JSON envelope, and branch on `ok`, `error.code`, and `data.disposition` or `error.disposition` instead of message text. Give every subprocess a timeout and forward cancellation.
-- **Loop and result.** Run `snapshot` (verifying `data.complete`), narrow to one control, act on the ref, `wait` for the postcondition, and read it back. A helpful script convention is to emit `verified`, `refuted`, `blocked`, or `unknown` and exit nonzero for anything other than `verified`. Treat timed-out or uncertain deliveries as `unknown` and inspect live state before replaying mutations.
+- **No pixel matching.** Controls without an accessibility tree (custom canvases, games, some remote desktops) have no refs. When approved, capture a `screenshot` to inspect visually and send coordinate clicks (`--headed mouse-click --xy X,Y`), noting what stayed unverified.
+- **No native iOS or Android apps.** `agent-desktop` sees mobile simulators only as host windows. Use `xcrun simctl`, Appium with XCUITest, or `adb` with UI Automator for native mobile apps, and `agent-browser -p ios` for Mobile Safari.
+- **Non-Chromium browsers.** Desktop Safari and Firefox expose partial accessibility trees; inspect a snapshot first and prefer `agent-browser` for web pages.
+- **Input actions.** `key-down`, `key-up`, `mouse-down`, and `mouse-up` never send input on any OS; use `press`, `mouse-click`, or `drag`.
 
-### Coverage and limits
+### Stay safe {#stay-safe}
 
-`agent-desktop` relies on operating-system accessibility APIs:
+Keep one controller per desktop, work in a dedicated session or account, exclude unrelated windows from captures, and pause before destructive or publishing actions. After any timeout or interruption, inspect the open document and output files before retrying because saves or exports can finish after a lost response.
 
-- **No pixel matching.** Controls without an accessibility tree (custom canvases, games, or some remote-desktop windows) cannot be targeted by ref. When you approve screenshots and headed input, Atomic can capture a `screenshot` for visual inspection and send coordinate clicks (`--headed mouse-click --xy X,Y`), noting what stayed unverified.
-- **No native iOS or Android support.** `agent-desktop` sees simulators and emulators only as host desktop windows, which often omit simulated device controls. Use `xcrun simctl` (including `simctl io booted recordVideo`), Appium with XCUITest, or `adb` with UI Automator for native mobile apps. For Mobile Safari, use [agent-browser's iOS mode](#what-agent-browser-covers).
-- **Non-Chromium browsers.** Desktop Safari and Firefox expose varying accessibility trees; inspect a snapshot first and prefer `agent-browser` for supported pages.
-- **Reserved input.** `key-down`, `key-up`, `mouse-down`, and `mouse-up` never send input on any OS; use `press`, `mouse-click`, or `drag`.
-- **Platform specifics.** Check `agent-desktop skills get platform` for OS-specific `--headed` requirements and unsupported actions.
+## Browser automation with `agent-browser` {#browser-automation-with-agent-browser}
 
-### Stay safe
+Use [agent-browser](https://agent-browser.dev/) whenever the target is web content it supports. Its `snapshot` returns a compact accessibility tree with `@eN` refs, targeting real DOM controls at a fraction of screenshot token cost.
 
-Keep one controller per desktop, work in a dedicated session or account when practical, exclude unrelated windows from captures, and pause before destructive or publishing actions. After any timeout or interruption, inspect the open document and output files before retrying because saves or exports can finish after a lost response. Never weaken OS security controls to make automation pass.
-
-## Browser automation with agent-browser
-
-Use [agent-browser](https://agent-browser.dev/) whenever the target is web content it supports. Its `snapshot` returns a compact accessibility tree with `@eN` refs, using far fewer tokens than screenshots and targeting real DOM controls. Fall back to [agent-desktop](#desktop-automation-with-agent-desktop) for native apps or when `agent-browser` hits a limitation. For data fetches that need no browser interaction, prefer an authorized API.
-
-### What agent-browser covers
+### What `agent-browser` covers {#what-agent-browser-covers}
 
 | Target | How | Notes |
 | --- | --- | --- |
-| Websites and web apps in Chrome/Chromium (macOS, Linux, Windows) | Default engine (headless or `--headed`), `--executable-path` for Brave or other Chromium builds, or `--engine lightpanda` | Supports forms, uploads, downloads, JS dialogs (`dialog accept`/`dismiss`), tabs, iframes, network routing, HAR, console/errors, `a11y` audits, Web Vitals, React inspection, and `record` videos. |
-| Mobile Safari in the iOS Simulator or a USB-connected iPhone/iPad | `agent-browser -p ios --device "iPhone 16 Pro" open <url>`, then `snapshot`, `tap`, `fill`, `swipe`, `screenshot` (`agent-browser device list` lists simulators) | Requires macOS, Xcode simulator runtimes, `npm install -g appium`, and `appium driver install xcuitest` (plus a signed WebDriverAgent for physical devices). Single tab only; no `record`, PDF export, `a11y` audits, or `--allowed-domains`. Record video with `xcrun simctl io booted recordVideo <file>.mp4`. First launch takes 30 to 60 seconds; shut down with `agent-browser -p ios close`. |
-| Mobile viewport emulation in Chrome | `agent-browser set device "iPhone 14"` or `set viewport <w> <h> <scale>` | Emulates viewport and user agent in Chromium, not WebKit; use `-p ios` for real Safari behavior. |
-| Electron desktop apps (VS Code, Slack, Discord, Figma, Notion, Spotify) | Launch with `--remote-debugging-port=<port>` and run `agent-browser connect <port>` (see `agent-browser skills get electron`) | Windows and `<webview>` targets appear in `agent-browser tab`. |
-| Other CDP targets | `agent-browser connect <port\|ws-url>` or `--auto-connect` for running Chrome | Covers WebView2 on Windows and remote-debugging Chrome. Attach to personal browsers only when authorized. |
-| Slack workspaces | `agent-browser skills get slack` | Browser-based Slack automation. |
-| Cloud and sandboxed browsers | `-p browserbase`, `browserless`, `browseruse`, `kernel`, or `agentcore`; `agent-browser skills get vercel-sandbox` | Reads credentials from each provider's environment variables. |
-| Local HTML or PDF files | `agent-browser --allow-file-access open file:///path/to/file` | Chromium only. |
+| Websites in Chrome/Chromium (macOS, Linux, Windows) | Default engine (headless or `--headed`), `--executable-path` for Brave/Chromium, or `--engine lightpanda` | Forms, uploads, downloads, JS dialogs, tabs, iframes, network routing, HAR, console/errors, `a1y` audits, Web Vitals, React inspection, and `record` videos. |
+| Mobile Safari in iOS Simulator or USB iPhone/iPad | `agent-browser -p ios --device "iPhone 16 Pro" open <url>` | Requires macOS, Xcode simulators, `appium`, and `xcuitest`. Single tab only; no `record`, PDF export, `a1y`, or `--allowed-domains` (record with `xcrun simctl io booted recordVideo`). Close with `agent-browser -p ios close`. |
+| Mobile viewport emulation in Chrome | `agent-browser set device "iPhone 14"` or `set viewport <w> <h> <scale>` | Emulates Chromium viewport/UA, not WebKit Safari. |
+| Electron apps (VS Code, Slack, Discord, Figma, Notion, Spotify) & other CDP targets | Launch with `--remote-debugging-port=<port>` and run `agent-browser connect <port>` (or `--auto-connect`) | Covers WebView2 on Windows and remote-debugging Chrome. See `agent-browser skills get electron`. Attach to personal browsers only when authorized. |
+| Slack workspaces, cloud browsers, local HTML/PDF | `agent-browser skills get slack`, `-p browserbase\|browserless\|browseruse\|kernel\|agentcore`, or `--allow-file-access open file://...` | Cloud providers read credentials from their environment variables. |
 
-Switch to `agent-desktop` for native apps without CDP, already-running Electron apps you cannot restart, desktop Safari or Firefox, browser chrome (toolbars, extension popups, print or save dialogs), OS pickers that `agent-browser upload` cannot bypass, cross-app flows, or unsupported commands.
-
-Native mobile apps sit outside both tools: `agent-browser`'s iOS mode drives Mobile Safari only, and `agent-desktop` sees a simulator window as an ordinary app. Use `xcrun simctl`, Appium with XCUITest, or `adb` with UI Automator instead. Check `agent-browser --help` and `agent-browser skills get core` for version-specific options.
+Switch to `agent-desktop` for native apps without CDP, already-running Electron apps you cannot restart, desktop Safari or Firefox, browser chrome (toolbars, extension popups, print/save dialogs), OS pickers that `agent-browser upload` cannot bypass, or cross-app flows.
 
 ### Setup and first session
 
-Install `agent-browser` globally if missing (use `agent-browser install --with-deps` on Linux to pull required system libraries):
+Install globally (use `agent-browser install --with-deps` on Linux to pull system libraries):
 
 ```bash
 npm i -g agent-browser
 agent-browser install
-agent-browser --help
+agent-browser --session demo open https://example.com --headed
+agent-browser --session demo snapshot
+agent-browser --session demo screenshot browser-before.png
+agent-browser --session demo close
 ```
 
-Open a uniquely named session, inspect its snapshot, act on live refs, capture evidence, and close only your own session:
+- Reuse one unique `--session` name (or `AGENT_BROWSER_SESSION`) per flow, refresh snapshots after navigation or DOM changes, and close only sessions you created.
+- Prefer fresh profiles over attaching to personal browsers, and never commit cookies, auth profiles, or sensitive network logs.
+- Use `--headed` for visual verification, check `console`, `errors`, and `network requests` alongside UI state, and use `agent-browser upload` instead of OS file pickers. Run `agent-browser skills get core --full` for the complete command reference.
 
-```bash
-agent-browser --session desktop-demo open https://example.com --headed
-agent-browser --session desktop-demo snapshot
-agent-browser --session desktop-demo screenshot browser-before.png
-agent-browser --session desktop-demo close
-```
+## Terminal automation with Herdr {#terminal-automation-with-herdr}
 
-Refresh the snapshot after navigation or major DOM changes. Run `agent-browser skills get core --full` for the full command reference.
+Use Herdr for interactive terminal or TUI automation when explicitly requested and running inside a Herdr-managed pane. Run ordinary non-interactive commands through the standard shell tools instead.
 
-### Best practices
+<Note>
+**Herdr environment and status integration.** Built-in Herdr status reporting runs in interactive TUI sessions when all four managed-pane environment variables are present: `HERDR_ENV=1`, `HERDR_BIN_PATH`, `HERDR_PANE_ID`, and `HERDR_SOCKET_PATH`. Launch Atomic inside Herdr rather than setting `HERDR_ENV` manually. Disable status reporting with `{ "herdr": { "enabled": false } }` in `settings.json` plus `/reload`. See [Herdr](/herdr).
+</Note>
 
-- Reuse the same `--session` name (or `AGENT_BROWSER_SESSION`) across a flow and close only sessions you created.
-- Prefer fresh profiles over attaching to personal browsers, and never commit or upload cookies, saved auth profiles, or sensitive network logs.
-- Use `--headed` for visual verification; headless runs check DOM behavior without proving native dialogs or desktop integration.
-- Check `agent-browser console`, `agent-browser errors`, and `agent-browser network requests` alongside visible state, and use `agent-browser upload` for file inputs instead of OS pickers.
-- Keep `screenshot` PNGs and `record` recordings from the verified flow. When work ends in a pull request, attach them with `gh pr create --attach` next to the scenario they prove after checking for private data.
-- Label emulated viewports clearly: `set device` tests Chromium viewport layout, `-p ios` tests Mobile Safari, and native mobile apps require `adb`, `xcrun simctl`, or Appium with XCUITest.
+### Dedicated pane and commands
 
-## Terminal automation with Herdr
-
-Use Herdr for interactive terminal or TUI automation on macOS, Linux, and Windows when [eligible](#choose-the-right-tool). Run ordinary builds and non-interactive commands through the standard shell tools instead.
-
-### Setup and a dedicated pane
-
-Check `herdr --version` and `herdr --help`, or install from the [Herdr installation guide](https://github.com/herdrdev/herdr/tree/v0.9.5#install) (`brew install herdr` on macOS, plus official shell and PowerShell installers). Inside a managed pane, check `herdr status` without restarting an active server.
-
-Atomic's built-in Herdr status reporting runs in interactive TUI sessions (not subagents or non-TUI runs). To disable it, set `{ "herdr": { "enabled": false } }` in `settings.json` and run `/reload` (which releases the pane registration). See [Herdr integration](/herdr) for details.
-
-Create a dedicated sibling pane without stealing focus:
+Install from the [Herdr installation guide](https://github.com/herdrdev/herdr/tree/v0.9.5#install) (`brew install herdr` on macOS, or the official shell/PowerShell installers). Check `herdr status` without restarting an active server, then split a dedicated sibling pane without stealing focus:
 
 ```bash
 herdr pane split --current --direction right --cwd "$PWD" --no-focus
-```
-
-Use the returned `<pane-id>` to run commands, wait for output, and capture the screen:
-
-```bash
 herdr pane run <pane-id> "<command>"
 herdr pane wait-output <pane-id> --match "<expected text>" --timeout 10000
-herdr pane wait-output <pane-id> --regex "<rust-regex>" --timeout 10000
 herdr pane read <pane-id> --source visible
 ```
 
-- `pane run` submits with Enter, while `pane send-text` does not.
-- `pane wait-output` accepts `--match` for a literal substring or `--regex` for a Rust regular expression. Omitting `--timeout` waits indefinitely. Because `wait-output` inspects existing output immediately, use a fresh pane or unique marker and verify the final exit status or state.
-- Use `--source recent-unwrapped --lines 120` for logs and `--source visible` for layout, capturing alternate-screen views before leaving them.
-
-**Controlling coding agents and saved SSH machines.** Herdr also tracks recognized coding agents inside panes and can target saved SSH machine profiles:
+- `pane run` submits with Enter; `pane send-text` does not (avoid sending very long single lines on macOS canonical TTY buffers). `pane move` assigns a new pane ID.
+- `pane wait-output` supports `--match` (literal substring) or `--regex` (Rust regex) and inspects existing output immediately—use a fresh pane or unique marker, and pass `--timeout` so it does not wait indefinitely.
+- Use `--source recent-unwrapped --lines 120` for logs and `--source visible` for TUI layout, capturing alternate-screen views before leaving them.
+- **Coding agents and SSH machines.** Manage recognized coding agents in idle shell panes (`herdr agent start` never splits a pane and uses a 30s startup timeout; `herdr agent prompt --wait` uses a 5s activity gate and refuses blocked agents):
 
 ```bash
 herdr agent start reviewer --kind codex --pane <pane-id>
 herdr agent prompt reviewer "Review the diff and report actionable findings." --wait --timeout 120000
-herdr agent wait reviewer --until blocked --timeout 120000
 herdr agent read reviewer --source recent-unwrapped --lines 120
 ```
 
-To target a saved SSH machine profile, prepend `--machine <label-or-id>` to discovery and subsequent commands (for example `herdr --machine build-box agent list`). Do not combine `--machine` with `--session`, `--remote`, or `--current`.
+Prepend `--machine <label-or-id>` to target saved SSH machine profiles (do not combine `--machine` with `--session`, `--remote`, or `--current`). Herdr exits `1` on server JSON errors and `2` on CLI syntax errors.
 
-### tmux and psmux fallbacks
+### `tmux` and `psmux` fallbacks
 
-When Herdr is unavailable or ineligible, use tmux on macOS and Linux, or [psmux](https://github.com/psmux/psmux) for native Windows terminals. Never take over an unrelated pane or kill the entire multiplexer server during cleanup.
-
-In tmux, start a uniquely named session and read its actual pane ID instead of assuming `%0`:
+When Herdr is unavailable, use `tmux` on macOS and Linux, or [psmux](https://github.com/psmux/psmux) for native Windows terminals. Never hijack an unrelated pane or kill the whole server during cleanup.
 
 ```bash
 tmux new-session -d -s atomic-demo
 tmux list-panes -t atomic-demo -F '#{pane_id}'
-```
-
-Send literal text separately from Enter, then capture the pane:
-
-```bash
-tmux send-keys -t <pane-id> -l -- "<command>"
+tmux send-keys -t <pane-id> -l -- "npm test; printf '%s%s\n' 'DONE_' 'a1b2c3'"
 tmux send-keys -t <pane-id> Enter
 tmux capture-pane -p -t <pane-id>
 ```
 
-Use the bundled tmux skill's `scripts/wait-for-text.sh -t <pane-id> -F -p <marker> -T <seconds>` to wait for completion markers; on timeout, inspect the pane before retrying. For psmux commands, see the [psmux scripting guide](https://github.com/psmux/psmux/blob/master/docs/scripting.md). For modified-key setup in Atomic, see [tmux setup](/tmux).
+Use the bundled wait helper `skill://tmux/scripts/wait-for-text.sh -t <pane-id> -F -p <marker> -T <seconds>` (`-T 0` times out immediately). Split completion markers across arguments (as in `printf '%s%s\n' 'DONE_' 'a1b2c3'`) so `wait-for-text.sh` does not match the echoed command line in scrollback. See [tmux setup](/tmux) for interactive keybinding setup and the [psmux scripting guide](https://github.com/psmux/psmux/blob/master/docs/scripting.md) for Windows.
 
 ## Application scripting and APIs
 
-Direct file libraries handle structured slide decks, documents, and spreadsheets without opening an Office app or graphical session. Use an application's scripting runtime or API when you need app-specific features, and keep `agent-desktop` for remaining UI steps.
+Prefer direct file libraries or app APIs for structured slides, documents, spreadsheets, media, and 3D scenes; reserve `agent-desktop` for visual checks and UI-only steps. Always work on a disposable copy and reopen saved outputs to verify them.
 
-| Mechanism | Good uses | Limits to check first |
+| Mechanism | Best for | Quick start & limits to check |
 | --- | --- | --- |
-| `python-pptx`, `python-docx`, `openpyxl` | Create or edit `.pptx`, `.docx`, and `.xlsx` files without Office installed. | `python-pptx` does not render slides or export PDF, and `openpyxl` does not calculate Excel formulas. Verify complex templates in a real viewer. |
-| Media CLIs (such as FFmpeg) | Batch-convert, trim, or combine audio and video. | Exports are not editable timeline projects; check codec, audio, and timing. |
-| AppleScript or JXA (`osascript`) | Automate scriptable macOS apps and document objects directly. | macOS only; scripting dictionary coverage varies by app. |
-| Office Scripts | Repeatable Excel edits from the Automate tab and supported Power Automate flows. | Excel only; depends on account, app version, and organization policy. |
-| PowerShell COM or Office VBA | Automate desktop Excel, Word, or PowerPoint object models. | Needs desktop Office and permitted macros; Windows COM is not portable to macOS or Excel on the web. |
-| Application APIs (such as Blender Python) | Generate geometry, batch-edit scenes, and render headlessly. | Run inside the app's own Python runtime (`blender --background ...`) rather than a plain `uv` environment. |
+| `python-pptx`, `python-docx`, `openpyxl` | Generating or editing `.pptx`, `.docx`, `.xlsx` without Office installed | Run via `uv run --no-project --with python-pptx python script.py` and write to a new path (`open("xb")`). Does not render slides or recalculate Excel formulas—verify complex layouts in a viewer. |
+| Media CLIs (FFmpeg) | Batch-converting, trimming, or combining audio/video | Exports are flat media, not editable timeline projects; check codec, audio, and timing. |
+| AppleScript / JXA (`osascript`) | Driving scriptable macOS apps directly | Pass dynamic strings via `argv` rather than interpolating into code (`osascript -l JavaScript` for JXA). Requires one-time macOS Automation permission. |
+| Office Scripts / VBA / COM | Automating Excel, Word, or PowerPoint object models | Keep VBA inside a trusted `.xlsm` copy targeting `ThisWorkbook` and named sheets; respect Trust Center policies. Windows COM is not portable to macOS or Excel on the web. |
+| Blender Python | Generating geometry, batch-editing scenes, headless renders | Run inside Blender's Python: `blender --background input.blend --python-exit-code 1 --python script.py` and save/export explicitly to a new path. |
 
-Check the target library or app API reference before scripting, start on a disposable copy, and reopen saved outputs to verify them. Appearance checks still need a viewer or renderer.
+## Platform setup
 
-### Example recipes
+### macOS {#macos}
 
-**macOS (`osascript`):** Inspect an app's scripting dictionary via Script Editor (`File > Open Dictionary`) and pass dynamic text as script arguments instead of interpolating it into code:
+- Install `agent-desktop` via npm (macOS 13+, Intel or Apple Silicon) and `uv` via `brew install uv`.
+- Grant **Accessibility** to the launching terminal app (Terminal, iTerm2, Warp, VS Code—and `agent-desktop` if listed) via `agent-desktop permissions --guide`. Grants apply on the next call without restarting. **Screen Recording** is needed only for `screenshot`; AppleScript prompts once for **Automation**.
+- Default `agent-browser` runs Chromium, not Safari—use `agent-browser -p ios` for Mobile Safari and `agent-desktop` for desktop Safari.
 
-```bash
-osascript -e 'on run argv' -e 'tell application "TextEdit" to make new document with properties {text:(item 1 of argv)}' -e 'end run' "Draft outline"
-```
+### Linux {#linux}
 
-macOS prompts once for Automation permission; grant it interactively. JavaScript for Automation (JXA) is another macOS option via `osascript -l JavaScript script.js`; it uses Apple's automation objects rather than browser DOM or Node.js APIs. See Apple's [scripting terminology guide](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AboutScriptingTerminology.html).
+- Install `agent-desktop` via npm (Ubuntu 24.04+ on x64/arm64; other distros need `at-spi2-core` per `agent-desktop skills get linux`) and `agent-browser install --with-deps` to pull browser libraries.
+- Run `agent-desktop status` inside the graphical session owning the target apps so the **AT-SPI** (Linux desktop accessibility bus) session bus and display are inherited. An empty surface list means AT-SPI did not answer (common on bare SSH shells, TTYs, or containers).
+- Semantic ref actions work on both X11 and Wayland; pointer gestures (`double-click`, `hover`, `drag`, `--headed mouse-click --xy`) and wheel scrolling require X11 with `--headed` and return `ACTION_NOT_SUPPORTED` on Wayland. For unattended X11 runs, Xvfb with `xfce4` and a session bus works well (though it does not verify real Wayland/GPU rendering).
 
-**Presentations (`python-pptx` with `uv`):** Save this script as `create_deck.py` in a scratch directory:
+### Windows {#windows}
 
-```python
-from pathlib import Path
-from pptx import Presentation
+- Install `agent-desktop` via npm from PowerShell and `uv` via `winget install --id=astral-sh.uv -e`.
+- Run inside the signed-in user's interactive desktop session (Windows 10 1809+ or Windows Server 2019+). Session 0 services, Server Core, UAC secure desktops, and locked desktops are unsupported. No permission dialog is required.
+- Windows **UIPI** (User Interface Privilege Isolation) blocks input from a non-elevated terminal into an elevated app—handle elevated windows yourself instead of elevating Atomic.
+- In PowerShell, quote refs (`'@s8f3k2p9:e1'`) and set env vars with `$env:NAME = 'value'`. Restore minimized windows first (`agent-desktop restore --app <name>`) and prefer `set-value` over `--headed` `type`.
+- Fall back to native `psmux` when Herdr is unavailable (WSL `tmux` does not test Windows **ConPTY**, the Windows pseudo-console). See [Windows setup](/windows).
 
-deck = Presentation()
-title_slide = deck.slides.add_slide(deck.slide_layouts[0])
-title_slide.shapes.title.text = "Quarterly review"
-title_slide.placeholders[1].text = "Draft for discussion"
+## Creative and cross-app workflows
 
-summary = deck.slides.add_slide(deck.slide_layouts[1])
-summary.shapes.title.text = "Next steps"
-body = summary.placeholders[1].text_frame
-body.text = "Review the results"
-body.add_paragraph().text = "Agree on next quarter's priorities"
+Choose the deliverable first and keep editable project files alongside final exports (never substitute a screenshot for an editable `.blend`, `.pptx`, or video project):
 
-output = Path("quarterly-review-draft.pptx")
-with output.open("xb") as stream:
-    deck.save(stream)
-print(f"Created {output.resolve()}")
-```
+<Steps>
+  <Step title="Prepare assets and confirm permissions">
+    Copy source assets to a scratch folder, confirm the target app and output format, and verify `agent-desktop status`.
+  </Step>
+  <Step title="Combine APIs with UI steps">
+    Generate repetitive structure with Python/CLI tools (Blender Python, `python-pptx`, FFmpeg), then refine layout or inspect visuals in `agent-desktop`, saving checkpoints as you go.
+  </Step>
+  <Step title="Reopen and verify deliverables">
+    Reopen exported files to verify fonts, assets, audio, and timing. Keep originals untouched and confirm approval before paid renders or uploads.
+  </Step>
+</Steps>
 
-Run it with [uv](https://docs.astral.sh/uv/) using `--no-project` so you do not modify an unrelated project environment:
-
-```bash
-uv run --no-project --with python-pptx python create_deck.py
-```
-
-Exclusive creation (`open("xb")`) prevents overwriting an existing file. See the [python-pptx quickstart](https://python-pptx.readthedocs.io/en/latest/user/quickstart.html), [python-docx](https://python-docx.readthedocs.io/en/latest/), and [openpyxl](https://openpyxl.readthedocs.io/en/stable/).
-
-**Desktop Office (VBA and Office Scripts):** Keep VBA macros inside a trusted `.xlsm` copy, reference `ThisWorkbook` and named sheets instead of `Selection` or `ActiveSheet`, and respect organization Trust Center policies rather than lowering macro security:
-
-```vb
-Option Explicit
-
-Sub FormatSummary()
-    Dim report As Worksheet
-    Set report = ThisWorkbook.Worksheets("Summary")
-
-    report.Range("A1:D1").Font.Bold = True
-    report.Range("B2:D20").NumberFormat = "#,##0.00"
-    report.Range("A1:D20").Columns.AutoFit
-End Sub
-```
-
-For Excel on the web or Microsoft 365 with the Automate tab, see [Office Scripts versus VBA](https://learn.microsoft.com/en-us/office/dev/scripts/resources/vba-differences).
-
-**Blender batch scripting:** Load the `.blend` file before the script and pass `--python-exit-code 1` so Python errors return a nonzero exit status:
-
-```bash
-blender --background input.blend --python-exit-code 1 --python scene-script.py
-```
-
-The script must explicitly save or export to a new path. See the [Blender Python quickstart](https://docs.blender.org/api/current/info_quickstart.html) and [command-line reference](https://docs.blender.org/manual/en/latest/advanced/command_line/arguments.html).
-
-## macOS
-
-### macOS permissions and native tools
-
-- Install `agent-desktop` via [`npm install -g agent-desktop`](#install-if-missing) (macOS 13+, Intel or Apple Silicon) and `uv` via `brew install uv` or the [uv installer](https://docs.astral.sh/uv/getting-started/installation/).
-- Accessibility permission applies to the app launching the command (Terminal, iTerm2, Warp, VS Code). Run `agent-desktop permissions` to check state and `agent-desktop permissions --guide` to open System Settings so you can approve with Touch ID or your password. New grants take effect on the next call without restarting the terminal. Grant the `agent-desktop` binary too if System Settings lists it. Screen Recording is needed only for `screenshot`.
-- AppleScript may prompt for Automation permission (`agent-desktop permissions` shows `unknown` until macOS prompts).
-- Prefer refs over coordinates. Before any coordinate action, read live `bounds` from the same snapshot (`get --property bounds` reports `data.live`). Use `osascript`, `System Events` ([Apple UI scripting guide](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AutomatetheUserInterface.html)), `screencapture`, or QuickTime Player when native macOS tooling fits best.
-
-### macOS browsers and terminals
-
-Default `agent-browser` runs Chromium, not Safari. Use `agent-browser -p ios` with an iOS Simulator for Mobile Safari, and `agent-desktop` for desktop Safari. Homebrew ships both Herdr and tmux.
-
-## Linux
-
-### Linux accessibility bus and display
-
-- Install `agent-desktop` via [`npm install -g agent-desktop`](#install-if-missing) (Ubuntu 24.04+ on x86_64 or aarch64; other distros need the `at-spi2-core` bridge steps in `agent-desktop skills get linux`) and `uv` via the [uv installer](https://docs.astral.sh/uv/getting-started/installation/) or your distro package manager.
-- Run `agent-desktop status` inside the graphical session that owns the target apps so the [AT-SPI](https://gnome.pages.gitlab.gnome.org/at-spi2-core/) session bus, display, and runtime directory are inherited. An empty `supported_surfaces` means AT-SPI did not respond (common on TTY logins, bare SSH shells, or containers without a session bus).
-- Observation and semantic ref actions work on both X11 and Wayland without helper tools. Pointer gestures (`double-click`, `hover`, `drag`, `--headed mouse-click --xy`) and wheel scrolling require X11 with `--headed` and return `ACTION_NOT_SUPPORTED` on Wayland.
-- For unattended X11 automation, a virtual display such as Xvfb with `xfce4` and a session bus works well, though it does not substitute for a real Wayland or GPU test. `xdotool` and `wmctrl` can supplement window placement on X11; OBS or a native recorder handles desktop video.
-
-### Linux browsers and terminals
-
-Run `agent-browser install --with-deps` on minimal Linux hosts to install system libraries alongside Chromium. Headed browsers need a display; headless mode works over SSH or CI without desktop access. Use Herdr when eligible, or tmux on local and remote POSIX shells.
-
-## Windows
-
-### Windows desktop sessions and UI Automation
-
-- Install `agent-desktop` via [`npm install -g agent-desktop`](#install-if-missing) from PowerShell and verify `agent-desktop version` (open a new shell if `Path` changed). Install `uv` with `winget install --id=astral-sh.uv -e` or the [uv installer](https://docs.astral.sh/uv/getting-started/installation/).
-- Run inside the signed-in user's interactive desktop session (Windows 10 1809+ or Windows Server 2019+). Session 0 services, Server Core, the UAC secure desktop, the sign-in screen, locked desktops, and other users' sessions are unsupported. No permission dialog exists (`automation` reports `not_required`).
-- Windows blocks input from a non-elevated terminal into an elevated app (UIPI). Handle elevated windows yourself or use a non-elevated path instead of running Atomic with elevated privileges just to force input through.
-- In PowerShell, quote refs (`'@s8f3k2p9:e1'`) and set env vars with `$env:NAME = 'value'`. Restore minimized windows first (`agent-desktop restore --app <name>`) and prefer `set-value` over `--headed` `type`. Keep remote desktop sessions unlocked and recheck coordinates after DPI or monitor changes.
-- `agent-desktop` reads [Windows UI Automation](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-overview) trees directly; use Snipping Tool or OBS when desktop recordings are needed.
-
-### Windows browsers and terminals
-
-Use native Windows `agent-browser` for Windows browsers, downloads, and dialogs, quoting paths and URLs for PowerShell. Check `$env:HERDR_ENV -eq '1'` and use `(Get-Location).Path` for native Herdr; fall back to native psmux when Herdr cannot be used (WSL tmux does not test Windows ConPTY). See [Windows setup](/windows) for shell configuration.
-
-## Creative work and computer-use workflows
-
-Choose the deliverable first and add UI interaction only where scripting cannot create or verify the result.
-
-| Task | Practical approach | Useful deliverables |
-| --- | --- | --- |
-| Blender 3D modeling | Use Blender Python for repeatable geometry or scene setup; use `agent-desktop` for visible editor tweaks and inspection. | Editable `.blend` file, exported model, and preview render. |
-| Presentations | Generate slides with `python-pptx`, inspect in a viewer, and use `agent-desktop` for layout refinements or slideshow checks. | Editable `.pptx` deck plus exported PDF or slide previews. |
-| Video editing | Use media CLIs or editor APIs for repetitive transforms; use `agent-desktop` for timeline adjustments and playback review. | Editable project, source references, and final export. |
-| Cross-app work | Combine native scripting for file operations with `agent-desktop` addressing each window by app name and window ID. | Saved documents and a short record of completed steps. |
-
-Keep the editable project and requested export intact rather than substituting a screenshot. Reopen saved files to check assets, fonts, audio, and timing. Keep originals untouched, save to explicit output paths, and confirm authorization before paid renders or uploads.
-
-Typical desktop sequence:
-
-1. Prepare assets and confirm the target app, output format, and permissions.
-2. Open the dedicated desktop session and inspect its starting state.
-3. Combine app APIs with `agent-desktop` steps, saving checkpoints along the way.
-4. Reopen and verify deliverables, making bounded fixes as needed.
-5. Hand off local files and publish only to authorized destinations.
-
-When delegating computer use to subagents, keep desktop control with one agent at a time, share scripts, project files, and artifact paths instead of long click logs, and keep approvals in your main chat.
+When delegating computer use to subagents, keep desktop control with one agent at a time, pass scripts and output paths rather than long click logs, and keep publication approvals in your main chat.
 
 ## Troubleshooting
 
 | Symptom | What to check |
 | --- | --- |
-| `agent-desktop`, `uv`, or another CLI is missing | Install once when permitted, refresh `PATH`, and recheck its version in the same shell. |
-| Every `agent-desktop` call is slow, or warns about the Node launcher | Approve its install script (`npm install-scripts approve agent-desktop` on npm 12, or `npm install -g agent-desktop --allow-scripts=agent-desktop` on npm 11) and reinstall. |
-| `agent-desktop version` is outdated or points to an unexpected path | Remove any older Homebrew tap or Scoop bucket install shadowing npm, then reinstall globally via npm. |
-| `permissions` shows `denied`, an app tree is empty, or `PERM_DENIED` | On macOS, run `agent-desktop permissions --guide` to grant Accessibility (and Screen Recording for screenshots) to the launching app. Check `status` before assuming an app has no UI. |
-| `supported_surfaces` is empty on Linux, or no apps appear | AT-SPI did not respond. Run inside the user's graphical session (not a TTY, bare SSH shell, or container) and recheck `agent-desktop status`. |
-| `STALE_REF` or `SNAPSHOT_NOT_FOUND` | Take a fresh snapshot (remember `--root` drills replace old refs inside the drilled subtree while keeping refs outside it) and act on the new ref. |
-| `AMBIGUOUS_TARGET` | On Windows and Linux, identical twin controls have no ref path regardless of `--root` or `find`; target a unique control or use `--headed mouse-click --xy X,Y` (not available on Wayland). If `details.kind` is `identity_not_unique` after an incomplete capture, retake the snapshot with a larger `--timeout-ms`. |
-| Action succeeded or errored, and UI looks unchanged | Use `wait` or read the state back. Retry only when `data.disposition.retry` (on success) or `error.disposition.retry` (on error) is `"safe"`. |
-| Snapshot is thin or `data.complete` is `false` | Drill with `--root` or raise `--timeout-ms` (a cold Chromium or Electron app can take 10 to 25 seconds to expose its web tree). |
-| Black screenshot or missing desktop | Check screen permissions, display ownership, X11 versus Wayland, and remote-session lock state. |
-| Input lands in the wrong app | Stop and confirm focus, window identity, scaling, and exclusive desktop ownership. |
-| Browser element ref fails | Take a fresh snapshot and locate the updated control. |
-| Herdr exists but control fails | Check explicit user request, `HERDR_ENV=1` managed-pane context, and client/server compatibility; fall back to tmux or psmux instead of replacing an active server. |
-| Save or export timed out | Inspect output files and app state before retrying; keep partial output for diagnosis. |
-| Install or graphical access is blocked | Finish any safe API or shell checks and report what remains blocked or unverified. |
+| `agent-desktop` is slow or warns about the Node launcher | Approve its install script (`npm install-scripts approve agent-desktop` on npm 12, or `--allow-scripts=agent-desktop` on npm 11) and reinstall. |
+| `agent-desktop version` is outdated | Remove older Homebrew tap or Scoop bucket installs shadowing npm (`command -v agent-desktop` / `Get-Command agent-desktop`) and reinstall via npm. |
+| Empty app tree or `PERM_DENIED` on macOS | Run `agent-desktop permissions --guide` and grant Accessibility (plus Screen Recording for screenshots) to the launching terminal app. |
+| No apps or empty surfaces on Linux | Run inside the graphical session with an active AT-SPI bus (not a bare SSH shell, TTY, or container) and recheck `agent-desktop status`. |
+| `STALE_REF` or `SNAPSHOT_NOT_FOUND` | Take a fresh snapshot (`--root` drills invalidate earlier refs inside that subtree) and act on the new ref. |
+| `AMBIGUOUS_TARGET` on Windows or Linux | Identical twin controls have no ref path; target a unique control or use `--headed mouse-click --xy X,Y` (X11/Windows only, refused on Wayland). If caused by a slow window capture, raise `--timeout-ms`. |
+| Action succeeded or timed out, and UI looks unchanged | Use `wait` or read live state back before retrying. Retry automatically only when `disposition.retry` is `"safe"`. |
+| Incomplete desktop snapshot | Drill with `--root` or increase `--timeout-ms` (cold Chromium/Electron apps can take 10–25 seconds to expose their web tree). |
+| Black screenshot or input in wrong app | Check Screen Recording permission, X11 vs. Wayland, locked remote sessions, window focus, display scaling, and exclusive desktop ownership. |
+| Herdr command fails | Confirm an explicit request, all four `HERDR_*` managed-pane env vars, and server health (`herdr status`); fall back to `tmux` or `psmux` rather than restarting an active server. |
 
-When a tool or permission is unavailable, choose another supported path or report the limitation clearly instead of simulating success.
+When a tool or permission is unavailable, use another supported path or report the limitation clearly instead of simulating success.

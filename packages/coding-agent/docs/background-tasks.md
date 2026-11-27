@@ -1,46 +1,36 @@
 ---
 title: "Manage background tasks"
-sidebarTitle: "Background tasks"
-description: "Monitor, steer, and stop background subagents and shell commands while continuing your conversation."
+sidebarTitle: "Manage background tasks"
+description: "Monitor, steer, and stop background subagents, shell commands, and history searches while continuing your conversation."
 ---
 
-Background subagents and shell commands keep running after their launch tool call returns. You can keep chatting in your main session, inspect live output, send steering messages, or stop individual tasks without losing your place.
+Background subagents, shell commands, and history searches keep running after their tool call returns. You can keep chatting in your main session, inspect live output, steer subagents, or stop individual tasks without losing your place.
+
+| What you want | Use this |
+| --- | --- |
+| See running subagents and switch views | Focus the [agent panel](#the-agent-panel) (`↓` on an empty prompt) |
+| Inspect all subagents, shells, and full output | Run [`/tasks`](#open-the-task-inspector) (or `/tasks <id>`) |
+| Wait for a task's result from a tool call | Pass `{ action: "wait", id, budgetMs? }` to `subagent`, `bash`, `powershell`, `read`, or `search` |
+| Stop one shell or history task | Call `kill({ id })`, or press `x` twice in `/tasks` |
+| Pause, quit, or resume a subagent | Call `subagent({ action: "pause" \| "quit" \| "resume", id })`, or press `x` twice in `/tasks` or the agent panel |
+| Stop all background subagents and shells | Press `Ctrl+X` then `Ctrl+K` (twice within 3 seconds) |
+
+For the full tool wait matrix, slash-command routing inside subagent views, heartbeat sampling rules, cgroup cleanup controls, and SDK error classes, see the [Background tasks reference](/background-tasks/reference).
 
 ## Background subagents
 
-Every subagent runs in the background. Ask Atomic to delegate a bounded task in plain language:
+Every subagent runs in the background. Describe bounded work in plain language and keep working in your main chat while the subagent runs:
 
 ```text
 Have a codebase-analyzer trace the authentication flow in the background.
 Keep working with me here while it runs.
 ```
 
-Tool callers launch single or parallel background subagents:
-
-```ts
-subagent({
-  agent: "codebase-analyzer",
-  task: "Trace the authentication flow. Do not edit files.",
-})
-
-subagent({
-  tasks: [
-    { agent: "codebase-analyzer", task: "Trace request authentication." },
-    { agent: "codebase-pattern-finder", task: "Find authorization test patterns." },
-  ],
-  concurrency: 2,
-})
-```
-
-Parallel tasks get independent IDs, and tasks beyond the concurrency limit wait in the queue. Run `/agents` to browse bundled and custom specialists before choosing one.
-
-[Intercom](/intercom) messaging never cancels a parallel batch. An `intercom` `ask` returns as soon as it is delivered and delivers late replies as messages, while a blocking `contact_supervisor` decision waits only inside the requesting subagent and continues that subagent once answered. Sends and progress updates never block. A parent's `subagent({ action: "wait", id })` yields so the parent can reply while keeping running subagents, concurrency slots, and queued siblings intact.
-
-A launch result says **Launched in background**. That records that the subagent started, not its live state. Check the agent panel or `/tasks` for current status.
+Each launch returns immediately with **Launched in background** and each subagent's task ID. Parallel launches get independent IDs, and tasks beyond the concurrency limit wait in the queue. Run `/agents` to browse available specialists.
 
 ### Waiting is not restarting
 
-When your next step depends on a subagent's result, wait on the task ID returned at launch:
+When your next step depends on a subagent's result, wait on its task ID instead of launching a second subagent:
 
 ```ts
 subagent({ agent: "codebase-analyzer", task: "Trace the authentication flow." })
@@ -48,20 +38,11 @@ subagent({ action: "wait", id: taskId, budgetMs: 120000 })
 subagent({ action: "status", id: taskId })
 ```
 
-If the wait budget expires or you press `Esc`, the same subagent keeps running in the background. Neither is a timeout or a stop. Wait again or let its completion notice arrive, and never launch a duplicate subagent just to get a result.
-
-An `action: "wait"` call also yields when user steering or an Intercom message reaches your main session, leaving the subagent running under the same task ID while you respond. To hold, stop, or continue a subagent, use `pause`, `quit`, and `resume`; see [Run control](/subagents#run-control).
+If the wait budget expires, you press `Esc`, or a user message or [Intercom](/intercom) message yields the wait, the subagent keeps running under the same task ID. Wait again or let its completion notice arrive. To hold, stop, or continue a subagent, use `pause`, `quit`, and `resume` ([Run control](/subagents#run-control)).
 
 ### Completion messages
 
-When a background task ends, Atomic adds one unshaded notice line to the launching chat without waiting for a model reply. The glyph and color match the agent panel and `/tasks`:
-
-- Green `●` completed
-- `✗` failed
-- Red `◯` stopped (user stops, shells stopped by their `timeout`, and paused or quit subagents awaiting resume)
-- Dim `◌` [released while waiting](/subagents#released-subagents)
-
-Each notice names the task or agent, its outcome, and how long it ran. A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows only its summary line. Press `Ctrl+O` to expand the shell's retained output lines or the subagent's full retained result:
+When a background task finishes or stops, Atomic adds one notice line to the launching chat without waiting for a model reply. Press `Ctrl+O` to expand a shell's retained output lines or a subagent's full result:
 
 ```text
  ● Background command "npm run build" completed (exit code 0) · 3m 2s
@@ -73,434 +54,146 @@ Each notice names the task or agent, its outcome, and how long it ran. A collaps
  ◌ worker is waiting on bash (toolu_01) · 16m 16s
 ```
 
-Main chat and subagent views render the same notice format. Long titles shorten to fit one terminal row, expanded results wrap to the terminal width, and previews are bounded while keeping the subagent's full result intact.
-
-- **Delivery and turn scheduling.** A notice goes only to the session that launched the task. Tasks that finish together reach the model in one batch and start one turn in an idle chat. A notice arriving mid-turn is read at the next safe point without starting an extra turn. After an interrupt, notices wait for your next message. Restored notices join the transcript without starting a turn.
-- **Supervisor progress updates.** Progress messages appear as **Historical supervisor update** with their original `Sent:` timestamp. They describe the subagent's state when sent, can arrive after completion, and never override a final result or `/tasks`.
-- **Two kinds of pause and stop.** Pressing `Esc` while viewing a subagent pauses only its active turn (`‖ paused` in yellow under **Working**; sending a message continues it). Calling `subagent({ action: "pause" | "quit", id })`, pressing `x` twice within 3 seconds in `/tasks` or the agent panel, or pressing `Ctrl+X Ctrl+K` stops the subagent resumably (red `◯` stopped, showing **paused · awaiting resume** or **quit · awaiting resume**). Both states stay resumable by sending a message while viewing the subagent or calling `subagent({ action: "resume", id })`.
-- **Paused and quit notices.** Stopping a subagent with `pause` or `quit` (or pressing `x` twice) delivers a notice showing **paused · awaiting resume** or **quit · awaiting resume**, along with `Stop reason: pause` or `quit` and the exact `subagent({ action: "resume", id: "<child-id>" })` call.
-- **Completed and failed notices.** Completed and failed subagents keep their sessions. Their notices tell the model that execution ended, advise against relaunching just to retrieve results, and include the `resume` call and Intercom name when available.
-- **Resume IDs.** Expanding a completed, failed, paused, or quit subagent notice (`Ctrl+O`) shows `resume id <child-id>`. In `/tasks`, expanded rows and detail pages show it on the latest attempt only. Permanently cancelled subagents, released subagents, and background shells display no resume ID.
-- **Deduplication and restoration.** Repeated stops or late results never duplicate a notice or overwrite a settled outcome. Closing the launching session suppresses late notices. Restored completions report available identity and outcome without inventing missing output.
+- **Delivery.** Notices go only to the session that launched the task. Multiple tasks that finish together arrive in one batch and start one turn in an idle chat. After an interrupt, notices wait for your next message.
+- **Two kinds of pause and stop.** Pressing `Esc` while viewing a subagent pauses only its active turn (`‖ paused` in yellow under **Working**; sending a message continues it). Calling `subagent({ action: "pause" | "quit", id })`, pressing `x` twice in `/tasks` or the agent panel, or pressing `Ctrl+X Ctrl+K` stops the subagent resumably (red `◯` stopped, showing **paused · awaiting resume** or **quit · awaiting resume**). Both stay resumable by messaging the subagent or calling `resume`.
+- **Resume IDs.** Expanding a completed, failed, paused, or quit subagent notice (`Ctrl+O`) shows `resume id <child-id>`. Permanently cancelled subagents, released subagents, and shells have no resume ID.
 
 ## Background shells
 
-When the model runs a command with [`bash`](/tools#bash) (or [`powershell`](/tools#powershell) on Windows), Atomic watches its output for a short while. If the command is still running when that time is up, Atomic stops watching and the command goes on **in the background**: it keeps running while you and the model carry on, and its result arrives later as a message in the chat. Each background command gets a **task ID**, a short name such as `task-1-0-3` that you use to check on it or stop it. Shells that subagents start are managed by your main session; see [Shells started by subagents](#shells-started-by-subagents).
-
-### What changed in this release
-
-- **Before:** a command stopped after 5 minutes (300 seconds) unless the model asked for longer, and it could ask for 1 hour (3600 seconds) at most. A longer job had to be split into shorter commands.
-- **Now:** a command has no time limit. It runs until it finishes, someone stops it, or the session closes. A deadline is still available when you want one, and it can be as long as you like.
-- **New:** a session runs at most 64 commands at once, so a runaway loop cannot start commands without end.
-
-### What happens when you run a long command
+When Atomic runs a [`bash`](/tools#bash) or [`powershell`](/tools#powershell) command, it watches the command for up to 10 seconds by default. If the command is still running when that observation window ends, Atomic returns a task ID (such as `task-1-0-3`) and leaves the command running in the background until it exits, you stop it, it hits a `timeout` or the 5 GiB disk output cap, or the session closes.
 
 ```ts
-// An ordinary command: Atomic watches it for up to 10 seconds, then lets it go on in the background.
+// Watch for up to 10 seconds, then continue in the background if still running
 bash({ command: "npm test" })
 
-// Go to the background at once, when there is other work to do meanwhile.
+// Start in the background immediately
 bash({ command: "npm run build", wait: { kind: "background" } })
 
-// Watch for up to 30 seconds first, when the result is needed next.
+// Watch for up to 30 seconds before backgrounding
 bash({ command: "npm test", wait: { kind: "foreground", budgetMs: 30000 } })
-```
 
-How long Atomic watches (`wait`) only decides when the call returns. It never stops the command.
-
-**What you see.** The tool line in the chat turns into:
-
-```text
-⧗ Bash(npm run build) · background
-  ⎿  Running in background · /tasks to manage
-```
-
-The model is told the task ID and what will stop the command:
-
-```text
-Command is still running (task task-1-0-3). It has no time limit: it runs until it exits, kill stops it, or this session ends.
-```
-
-When the command finishes, a completion message with its exit code and the end of its output appears in the chat, and the model reads it on its next turn.
-
-### Check on it, wait for it, stop it
-
-```ts
-// Check on it: wait at most 5 seconds and show the output so far.
+// Check progress or wait on a running shell
 bash({ action: "wait", id: "task-1-0-3", budgetMs: 5000 })
 
-// Wait for it: wait as long as the session's default (10 seconds) allows, then return again.
-bash({ action: "wait", id: "task-1-0-3" })
-
-// Stop it.
+// Stop a running shell
 kill({ id: "task-1-0-3" })
 ```
 
-Use `powershell({ action: "wait", id })` the same way for a PowerShell command. A wait that returns before the command ends shows `⧗ still running · showing output so far`; waiting never stops or restarts the command. You can also open `/tasks` to see every running command with how long it has run, read its output, and press `x` to stop it. `Ctrl+X Ctrl+K` stops every background command and subagent in the session at once.
-
-### Set a deadline
-
-If a command must not run longer than a known time, give it a `timeout` in seconds. Any positive number works, with no upper limit. Leaving `timeout` out is what gives a command no time limit. `0`, a negative number, or anything that is not a number is refused before the command starts, with a message saying to leave `timeout` out for no limit.
-
-```ts
-// Stop the end-to-end tests if they are still running after 2 hours.
-bash({ command: "npm run e2e", wait: { kind: "background" }, timeout: 7200 })
-```
-
-The model is told the deadline when the command goes to the background:
-
-```text
-Command is still running (task task-1-0-4). Its timeout stops it after 7200 seconds.
-```
-
-When the deadline passes, Atomic stops the command. Its completion message reads `Background shell timed out after 7200 seconds`, and a wait on it ends with `Task task-1-0-4 was cancelled (timed out after 7200 seconds).`
+- **Optional deadline (`timeout`).** Commands have no time limit unless you pass a positive `timeout` in seconds (no upper limit). When the deadline passes, Atomic stops the command and reports a timeout failure.
+- **Cancelling `wait` vs. cancelling a launch.** Pressing `Esc` during `action: "wait"` ends only the wait and leaves the command running. Pressing `Esc` during the initial foreground wait of a brand-new `bash` or `powershell` call stops the command.
+- **Stopping with `kill`.** Pass only the shell's task ID (not a PID or subagent ID). `kill` starts teardown and reports whether cleanup finished; wait for settlement before assuming files or ports are free. See [Stopping tasks and CancelReceipt](/background-tasks/reference#stop-a-shell-task-from-a-tool-call).
 
 ### Long-running servers and watchers
 
-Some commands are meant to keep running while you work: a dev web server, a file watcher, a local database, or a tunnel. Start one in the background:
-
-```ts
-bash({ command: "npm run dev", wait: { kind: "background" } })
-```
-
-- **It keeps running.** Nothing stops it on a timer. It runs until you stop it with `kill`, it exits on its own (for example, it crashes), or the session ends.
-- **Check its output later** with a short wait, which shows what it has printed so far and leaves it running:
-
-  ```ts
-  bash({ action: "wait", id: "task-1-0-5", budgetMs: 1000 })
-  ```
-
-- **Stop it** with `kill({ id: "task-1-0-5" })`, or from `/tasks`.
-- **It counts toward the limit** of 64 commands running at once, for as long as it runs.
-- **Heartbeats.** Every 15 minutes by default, Atomic reminds the model that it is still running; see [Task heartbeats](#task-heartbeats). Turn them off for a server with `heartbeatMs: 0`.
-- **When the session ends**, Atomic stops it together with everything it started. When you resume the session later, the server does **not** start again: the chat shows `Background shell stopped (session closed)` for it, and you or the model run the command again if you still need it. If Atomic itself crashes, the server and its child processes are stopped as well, and a resumed session says the command no longer runs because Atomic restarted.
+Start dev servers, file watchers, or tunnels with `wait: { kind: "background" }`. They run without a time limit until stopped with `kill` or `/tasks`, they exit on their own, or the session ends. Pass `heartbeatMs: 0` if you do not want periodic heartbeat check-ins. When the session closes or Atomic exits, background servers stop with their child processes and do not restart automatically on resume.
 
 ### How many commands run at once
 
-One session runs at most **64** commands at the same time, counting the shells its subagents start. The limit stops a runaway loop that keeps starting commands and never ends them. A command that is being stopped no longer counts. At the limit, a new command does not start, and the call fails with:
-
-```text
-64 commands are already running in this session, the most it runs at once. Stop one you no longer need with kill or /tasks, or wait for one to finish, then run this command again.
-```
-
-Nothing already running is stopped to make room.
-
-### More about waiting
-
-- Pass the exact task ID from the same session. An unknown ID fails with `No background task "<id>" in this session`.
-- A wait on a finished command shows one status line above the output, the same as `/tasks`: `● completed · exit 0`, `✗ exited 1`, or a red `◯ cancelled`. Long output ends with a dim line naming the file that holds all of it.
-- While a command runs, each new wait shows the output printed since the last one. A wait on a finished command shows all the output again.
-- A wait takes only `action`, `id`, and `budgetMs`. Cancelling a wait ends only the wait: the command keeps running, with the same deadline, if it has one.
-
-### Stop a shell task from a tool call
-
-Call `kill` with the exact task ID returned by `bash` or `powershell`:
-
-```ts
-kill({ id: taskId })
-```
-
-Pass the task ID only, never a process ID, shell name, or subagent ID. `/tasks` stop controls remain available alongside `kill`. `kill` also stops a slow search of past sessions by its ID, such as `kill({ id: "history-3" })`. See [Slow history searches](/sessions#slow-history-searches).
-
-The transcript shows `◼ stopping · cancellation requested`, `◯ cancelled`, or `● already completed · exit 0`. The structured result includes `taskId`, `decision`, `execution`, and `cleanup`. A cancellation request starts teardown rather than guaranteeing that every child process has exited immediately; wait until execution has settled and process cleanup is confirmed before assuming files or ports are free. If the command finished before `kill` ran, the original outcome is preserved.
-
-If cleanup of a stopped shell cannot be confirmed within a few seconds (for example, because a background descendant still holds output open), `kill` reports `CleanupUnconfirmed` while Atomic continues verifying teardown for up to 15 seconds in the background. Killing a task never erases its output or completion notice.
-
-Nonzero shell exits display as failures (`✗`), while user stops read `was stopped by the user`. Native Windows refuses background shell launches it cannot supervise, and legacy Windows WSL `bash.exe` stdin transport is unsupported (run Atomic inside WSL for POSIX Bash).
+A session runs at most **64** shell commands concurrently, counting shells started by its subagents. Commands currently stopping do not count toward the cap. At the limit, new commands are refused until an existing command finishes or is stopped.
 
 ### Shells started by subagents
 
-Subagents can run background `bash` and `powershell` commands. Those shells are managed by the launching main session so they can outlive the subagent, while still belonging to that subagent (only the subagent receives their notices, and they do not appear as top-level main-chat rows in `/tasks`). Subagents cannot launch other subagents.
+Subagents can run background `bash` and `powershell` commands. Your launching main session supervises their lifecycle so they can outlive the subagent until the main session closes, while their completion notices go only to the subagent that started them.
 
-- **Agent panel nesting.** Running shells started by a subagent appear indented beneath that subagent (`⧗ shell <command>`) and leave once finished. Press `Enter` on a nested row to view output in `/tasks` without changing the viewed agent (`←` returns to the focused panel), or press `x` twice within 3 seconds to stop only that shell.
-- **Navigation hints inside subagent chats.** On a subagent's page in `/tasks`, a backgrounded command block displays a clickable `· /tasks to manage` hint (while the chat accepts input and color is enabled) that opens that subagent's own task list rather than the main chat's. On the main screen while viewing a released subagent waiting on a shell, the newest waited shell block displays a clickable `· alt+w opens it` hint bound to `app.tasks.openWaited`.
-- **Control and ownership.** A subagent can wait on and `kill` only its own shells. Your main session can also wait on or stop a subagent's shell by task ID (`bash({ action: "wait", id })` or `kill({ id })`), and `Ctrl+X Ctrl+K` stops them along with all other tasks.
-- **Completion delivery.** A shell's completion notice goes only to the subagent that started it, never to the main chat. Running subagents read it in their current turn, released subagents wake automatically, and finished, paused, or quit subagents receive it when next resumed or messaged.
-- **Lifetime and early stops.** Shells keep running after their subagent finishes and stop when the launching main session closes. Early stops report their cause (`timed out after <n> seconds`, `stopped by a pause`, `session closed`, or `Atomic shut down`), and shells stopped by session close deliver their notice once when the session reopens.
-
-Processes started in an external terminal outside Atomic are not tracked in `/tasks`.
+- Running subagent shells nest directly beneath their subagent in the agent panel (`⧗ shell <command>`). Press `Enter` on a nested shell to inspect its output in `/tasks` (`←` returns to the panel), or press `x` twice to stop only that shell.
+- A subagent can wait on and `kill` only its own shells; your main session can wait on or stop them by task ID or stop everything together with `Ctrl+X Ctrl+K`.
 
 ## Background history searches
 
-A `read` or `search` of `history://` (your past sessions) mirrors `bash` and `powershell` observation semantics: Atomic waits up to 10 seconds by default, and if the scan is still running it continues in the background with a task ID such as `history-3` and **no time limit** — running until it finishes (or hits the 40,000-byte output cap or 250,000-entry scan cap, returning a `continue with` URL), `kill` stops it, or the session closes or reloads.
-
-```ts
-// Start a history search or read immediately in the background.
-search({ pattern: "connection refused", paths: "history://sessions", wait: { kind: "background" } })
-read({ path: "history://sessions/019f6a2e-...:1-200", wait: { kind: "background" } })
-
-// Wait up to 30 seconds before continuing in the background.
-search({ pattern: "connection refused", paths: "history://sessions", wait: { kind: "foreground", budgetMs: 30000 } })
-
-// Observe a running history task (omit budgetMs for the default 10s wait, or pass 0 to poll immediately).
-search({ action: "wait", id: "history-3", budgetMs: 5000 })
-read({ action: "wait", id: "history-4" })
-
-// Stop a running history task (sends no completion notice).
-kill({ id: "history-3" })
-```
-
-- **Mutually exclusive wait mode.** Just like `bash` and `powershell`, `{ action: "wait", id, budgetMs? }` cannot be combined with `path`, `pattern`, `paths`, `wait`, or other call fields. Either `read` or `search` can wait on any `history-N` task from the same session.
-- **Completion notices and late waits.** If a task finishes while no wait is observing it, its result arrives as a completion notice in chat. If a wait is observing it when it finishes, the wait returns the result directly with no duplicate notice. Atomic keeps the 16 most recently finished history tasks so a late `{ action: "wait", id }` call still returns the result.
-- **Concurrency limit (4 per session).** A session runs at most 4 active history searches and reads at once (including calls currently being observed in the foreground), separately from its 64 shell commands: they run inside Atomic on the session store and a shared regex worker, so more at once would only slow each other down. At the limit, a new call fails with:
-
-  ```text
-  4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.
-  ```
-
-- **Differences from background shells.** History tasks take no `timeout` and emit no heartbeats, do not appear in `/tasks` or the agent panel, stop when the session closes or reloads, and are not restarted when a session is resumed. For non-`history://` paths, `read` and `search` always run inline. See [Slow history searches](/sessions#slow-history-searches) for URL syntax, entry selectors, continuations, and a full comparison table.
-
-## Choose how long to wait
-
-The agent chooses foreground-first or background observation for each shell call and each `history://` `read` or `search` call. Every subagent runs in the background; wait on one with `subagent({ action: "wait", id })` when the next step depends on its result. Neither choice requires extra confirmation or changes tool permissions.
-
-For ordinary commands and history queries, omit `wait` rather than routinely passing a 1-second budget. Short budgets background fast calls unnecessarily and add extra wait calls. Use explicit background observation when you have independent work to do, and a short budget only when you need control back sooner.
-
-Keep immediately blocking work inline unless specialist focus, isolated context, or your request makes delegation worthwhile. After launching a subagent, continue independent work without duplicating it. Wait when its result becomes a dependency, and otherwise let completion notices arrive instead of polling.
-
-| Call | Observation behavior |
-| --- | --- |
-| `bash`, `powershell`, or `history://` `read`/`search` without `wait` | Waits for the session's command observation budget (default 10 seconds), then yields automatically with a task ID (`task-...` or `history-...`) if still running. |
-| `bash`, `powershell`, or `history://` `read`/`search` with `wait: { kind: "background" }` | Returns a task ID immediately without waiting for completion (`budgetMs` is not allowed with `kind: "background"`). |
-| `bash`, `powershell`, or `history://` `read`/`search` with `wait: { kind: "foreground" }` | Waits for the session's command observation budget (default 10 seconds), then continues in the background if still running. |
-| `bash`, `powershell`, or `history://` `read`/`search` with `wait: { kind: "foreground", budgetMs: 1000 }` | Waits up to 1 second (`budgetMs` must be finite and non-negative), then yields automatically if still running. |
-| `{ action: "wait", id, budgetMs? }` on `bash`, `powershell`, `read`, or `search` | Observes an existing background task for `budgetMs` milliseconds (default 10 seconds when omitted; `0` checks immediately without cancelling the task). |
-| `subagent` launch | Returns as soon as the subagent starts; every subagent runs in the background. Any `wait` passed on launch is ignored, and a foreground `wait` adds a note pointing to `action: "wait"`. |
-| `subagent({ action: "wait", id })` | Waits for the session's agent wait budget (default 30 seconds), or for `budgetMs`. `Esc` ends the wait immediately. |
-
-If a task finishes during observation, the call returns its final result directly. Automatic backgrounding means the observation budget elapsed, not a timeout failure, restart, or second run. If a wait for a dependency ends early, wait for actual completion before using the result.
-
-`budgetMs` accepts finite non-negative milliseconds, where `0` returns immediately without cancelling the task. On launches (`bash`, `powershell`, and `history://` `read`/`search`), put `budgetMs` inside a foreground `wait`; on existing-task `action: "wait"` calls, pass `budgetMs` at the top level. Custom SDK sessions can override default budgets or set `tasks.wait.kind: "until-settled"` so omitted foreground budgets wait until completion, while explicit per-call budgets still take precedence (see [Supervised command SDK](/sdk/reference#supervised-command-sdk)).
+A `read` or `search` over `history://` follows the same 10-second default watch window and continues in the background as `history-N` with no time limit. Each session allows up to **4** concurrent `history://` searches or reads (separate from the 64 shell cap). Stop one with `kill({ id: "history-3" })` (`Ctrl+X Ctrl+K` stops subagents and shells only, not history tasks). History tasks do not appear in `/tasks` or the agent panel and emit no heartbeats. See [Slow history searches](/sessions#slow-history-searches).
 
 ## The agent panel
 
-Below the prompt, the agent panel lists the session's active background subagents, one row each. A `main` row comes first and represents the main chat. Whichever agent the screen shows has a filled `●` and reads in bold:
+Below the prompt, the agent panel lists `main` followed by the session's active background subagents (and any running shells nested beneath them). The currently viewed chat has a filled `●` and bold label:
 
 ```text
   ● main
   ◯ worker    openai/gpt-5.4 high                    fix shipping batches           41m · ↓ 96.1k tokens
-  ◯ debugger  anthropic/claude-opus-4-6 medium       #5220 spawn lock               18m · ↓ 87.4k tokens
+  ◯ debugger  anthropic/claude-opus-4-6 medium       fix spawn lock                 18m · ↓ 87.4k tokens
     ⧗ shell                                          npm test                                        12s
   ◯ worker    anthropic/claude-sonnet-4-6 high       picker clamp                           stopped · 6m
 ```
 
-- **Row contents.** Each row shows the status mark, agent name, active model and reasoning level, current task, elapsed time, and token usage. A row waiting for input shows its question. Task titles shorten cleanly and end in `…`.
-- **Viewed marker (`●`).** While viewing the main chat, `● main` is bold. While viewing a subagent, its row is bold with `●` and `main` shows a muted `◯`. A resumed subagent stays one row, and `●` follows its latest attempt.
-- **Model column.** The model column displays `provider/model-id` and reasoning level, matching the footer (omitting the level for models without reasoning levels). It caps at 40 columns, truncating the model ID while keeping the reasoning level intact, and updates whenever a subagent falls back to another model, resumes on a different one, or changes effort. Stopped or paused rows show the last turn's model; unknown models leave the column blank.
-- **Responsive column sizing.** As the terminal narrows, task titles shorten first. Below 100 columns (or when a row lacks room for its task or elapsed time), the model column hides. Below 70 columns, the token count hides. If fewer than 8 columns remain for the task title, the task title hides completely.
-- **Row limits.** Up to four rows appear while the prompt has focus, followed by `+N more`. The focused panel shows eight rows at a time. The `main` row does not count toward either limit. The viewed subagent and its running shells stay visible inside the four unfocused rows, and `+N more` counts every omitted row, including nested shells.
-- **Finished and stopped rows.** Finished subagents leave the panel right away unless you are currently viewing them; a viewed finished subagent stays until you switch away or dismiss it with `x`, which returns to `main`. A stopped, paused, or interrupted subagent stays while other work runs, dims after 30 seconds, and leaves once nothing else is running. Finished subagents remain available in `/tasks`.
+Status marks are shared across the agent panel, `/tasks`, and completion notices:
 
-Status glyphs are shared across the agent panel, `/tasks`, completion notices, launch cards, subagent results, and `wait` or `kill` lines:
+| Mark | Meaning |
+| --- | --- |
+| `◯` (grey) / `●` (bold) | Running (`●` marks the chat currently on screen) |
+| `◆` | Needs input (displays the subagent's question) |
+| `‖` (yellow) | Active turn paused with `Esc` |
+| `○` | Queued for a concurrency slot |
+| `◌` (dim) | [Released while waiting](/subagents#released-subagents) on a long-running call or shell |
+| `●` (green) / `✗` | Completed / Failed |
+| `◼` / `◯` (red) | Stopping / Stopped (user stop, timeout, or `pause`/`quit` awaiting resume) |
+| `⧗` | Running shell nested under its subagent |
 
-- `◯` running, in grey (`●` while you view it)
-- `◆` needs input, showing its question
-- `‖` active turn paused with `Esc`
-- `○` queued
-- `◌` waiting on a detached call or shell (released)
-- `●` done, in green
-- `✗` failed, showing the reason
-- `◼` stopping
-- `◯` stopped, in red (`●` while you view it; covers user stops, timeouts, and `pause`/`quit` awaiting resume)
-- `⧗` running shell nested under the subagent that started it
+Press `↓` on an empty prompt to focus the agent panel. The selected row shows Atomic's selection cursor (`∀`) before its status mark:
 
-The main footer shows `↓ N agents` for the panel's subagent rows, and `N needs input` for rows awaiting an answer (including rows folded into `+N more`). When no panel rows are shown but `/tasks` holds subagents for this session, the footer shows `/tasks to see subagents`. While main-chat background shells run, `N shells · /tasks to manage` appears instead.
-
-Main-chat background shells are counted in the footer and inspected through [`/tasks`](#open-the-task-inspector). A subagent's own running shells appear as indented rows (`⧗ shell <command>`) directly beneath that subagent and leave once they finish or when their parent subagent leaves.
-
-Press `↓` on an empty prompt to focus the panel from either `main` or a subagent (while a viewed subagent's question form has focus, `↓` moves its selection instead).
-
-The panel remembers the row you chose last, so `↓` takes you back to it:
-
-- If you last chose `main`, `↓` selects `main` again. If the panel no longer shows a `main` row, it selects the first row.
-- If you open a subagent from `/tasks` with `Enter` or a click, the panel selects that subagent next time. Moving through `/tasks` and leaving with `Esc` does not change the remembered row.
-- If the remembered subagent has left the panel, the nearest remaining row is selected. Once the panel is empty, the next visit starts at the top row.
-
-The panel also keeps the scroll position you left it at. In the focused panel:
-
-- `↑` and `↓` select rows, including `main` and nested shell rows. `↓` on the last row moves back to the first row and scrolls to the top. The selected row shows `∀` before its mark in default text color.
-- `Enter` or `→` on a subagent switches the chat screen to that subagent and returns focus to the prompt.
-- `Enter` or `→` on `main` switches back to the main chat and returns focus to the prompt.
-- `Enter` or `→` on a nested shell opens that shell's output in `/tasks` without changing the viewed agent (`←` returns to the focused panel).
-- `x` pressed twice within 3 seconds stops the selected subagent or nested shell. Pressing `x` once dismisses a finished subagent.
-- `Esc`, `←`, or `↑` past the top row returns focus to the prompt without switching agents. `?` shows the panel keys.
-
-In fullscreen mode, clicking any row acts like `Enter`. Clicking `main` switches back to `main` when viewing a subagent, or returns to the prompt when the panel is focused. Footer hints click too: `↓ N agents` focuses the panel, `/tasks to manage` and `/tasks to see subagents` open `/tasks`, and key hints trigger their bound action.
-
-If an extension panel source fails, Atomic hides its invalid rows and warns once per source while keeping other rows and chat usable. Fix the extension and run `/reload` to register it again. Extension authors can add rows with [`atomic.registerAgentPanelSource()`](/extensions/api-reference#atomic-registeragentpanelsource-source).
+- `↑` / `↓` move across `main`, subagents, and nested shells (wrapping from bottom to top).
+- `Enter` or `→` switches the chat screen to that subagent (or opens a nested shell's output in `/tasks`).
+- `x` pressed twice within 3 seconds stops a running subagent or shell; `x` once dismisses a finished row.
+- `Esc`, `←`, or `↑` past the top row returns focus to the prompt without switching views. `?` shows panel keys.
+- In fullscreen mode, click any row or footer hint (`↓ N agents`, `/tasks to manage`) to switch or open it directly.
 
 ## Viewing a subagent
 
-Atomic uses one chat screen for the main chat and every subagent. Selecting a subagent from the agent panel or `/tasks` displays its live transcript and points the prompt box at that subagent.
+Selecting a subagent swaps the shared chat screen to its live transcript and aims the prompt box at that subagent while your main session continues uninterrupted.
 
-- **Prompt and chrome.** The top rule shows `<agent> · <title> · <state>` with live elapsed time while running. The empty prompt reads `Message @<agent>…`, `Answer @<agent>…`, `Message @<agent> to wake it…`, `Paused · send to continue`, `Stopped · send to resume`, or why the subagent is read-only. The usage meter, footer, and agent panel stay below the prompt, while the working line and stop hint (`esc to pause`) follow the viewed subagent.
-- **Switching back.** Press `←` on an empty prompt (the hint reads `← main chat`), or select `main` in the panel and press `Enter` or click `main`. The subagent keeps running with its queued messages and draft intact, and main's scroll position and draft are restored. When the prompt has text, `←` moves the cursor.
-- **Per-agent drafts.** Each agent keeps its own unsent draft (text, cursor, pasted blocks, and undo history) across switches and resumes. Keys typed while a subagent view opens land in its prompt once ready; pressing `Esc` cancels the switch and keeps what you typed for that subagent.
-- **Prompt history.** `↑`, `↓`, and `Ctrl+R` walk and search the viewed agent's own history (for a subagent: its task, resume messages, and messages you sent it). Returning to `main` restores main's history. Messages still queued return via `Alt+Up` or `Esc`, not `↑`.
-- **Steering, queuing, and pausing.** While a viewed subagent works, `Enter` queues a steering message and `Alt+Enter` queues a follow-up (`Steering:` and `Follow-up:` rows above the prompt). `Alt+Up` pulls queued messages back into the prompt. Pressing `Esc` (or `Ctrl+C` on an empty prompt) pauses the viewed subagent's active turn (`‖ paused`) without affecting main chat or switching back to `main`. Sending a message to a finished, paused, or stopped subagent continues or resumes it in the same task.
-- **Questions, scrolling, and notices.** When a viewed subagent waits on `ask_user_question` or an approval form, the form opens at the bottom of its transcript and takes input until answered. Scrolling, click-to-expand, `Ctrl+O`, `Ctrl+T`, and selection act on the viewed transcript. Main chat notices still record in main's transcript and mirror up to three rows under the subagent's view.
-- **When a viewed subagent is gone.** If the viewed subagent is dismissed, removed, or Atomic's background process restarts, Atomic returns to `main` and places any unsent draft into main's prompt with the notice `<name> is gone; your message to it is in the prompt.` If you submit that unedited text and it runs a main-conversation or model-changing command, Atomic asks to confirm first.
-- **Waited shell shortcut.** While viewing a released subagent waiting on a shell (`◌ waiting on bash`), the newest waited shell shows a clickable `· alt+w opens it` hint. Press `Alt+W` (`app.tasks.openWaited`) or click the hint to open its output in `/tasks`; `←` returns to the subagent view.
-
-### Commands while viewing a subagent
-
-| What you type or press | Behavior while viewing a subagent |
-| --- | --- |
-| `/settings`, `/scoped-models`, `/tasks`, `/resume`, `/export`, `/share`, `/trust`, `/login`, `/logout`, `/reload`, `/quit`, `/exit`, and the resume shortcut (`app.session.resume`) | Run on `main` in place while the subagent stays on screen. `/tasks` lists all tasks of the session; `/resume` opens the session picker. |
-| Bundled extension commands (`/agents`, `/mcp`, `/intercom`, `/curator`, `/google-account`, `/search`, `/websearch`, `/llama`) | Run on `main` in place while the subagent stays on screen. |
-| `/session`, `/tools`, `/changelog`, `/hotkeys`, `/name` | Switch to `main` first so output prints in the main transcript while preserving main's draft. |
-| `/compact`, `/tree`, `/fork`, `/clone`, `/new`, `/import`, registered `/clear` or `/rewind`, and session shortcuts (`app.session.new/tree/fork`) | Ask to confirm: `/<command> acts on the main conversation, not <agent>` (**Cancel** selected first). Once confirmed, they run on `main`: `/new` and `/import` switch to `main` immediately, while `/fork` and `/clone` switch to `main` once the replacement finishes. **Cancel** or `Esc` restores the text in the subagent's prompt. |
-| `/model`, `/thinking`, model selector or cycling (`Ctrl+L`, `Ctrl+P`, `Shift+Ctrl+P`), thinking cycling (`Shift+Tab`) | Refused with a notice under the subagent's transcript. Switch to `main` to change main's model or thinking level. |
-| `!cmd`, `!!cmd` | Refused with `` `!` commands run in the main chat. Switch to main to run them. `` Text stays in the prompt. |
-| `/copy` | Copies the viewed subagent's last assistant message to the clipboard. |
-| `/skill:<name>`, prompt templates, user or project extension commands, and ordinary text | Sent to the viewed subagent's own session using its own skills, templates, and working directory. |
-
-Command interception depends on arguments:
-
-- Commands that take arguments (`/tasks`, `/model`, `/thinking`, `/export`, `/import`, `/name`, `/login`, `/logout`, `/compact`, `/resume`, plus `/session snapshot`) are intercepted even when followed by arguments.
-- All other built-in commands (`/settings`, `/scoped-models`, `/share`, `/trust`, `/reload`, `/quit`, `/exit`, `/tools`, `/changelog`, `/hotkeys`, `/tree`, `/fork`, `/clone`, `/new`, `/copy`) match only when typed bare. Adding extra text (such as `/copy that` or `/new idea`) sends the line to the subagent as ordinary text.
-
-Typing `/` completes built-ins, bundled extension commands, and the viewed subagent's skills, templates, and extension commands. `@` and `Tab` complete paths in the subagent's working directory. See [Task inspection](/subagents#task-inspection).
+- **Switch back.** Press `←` on an empty prompt (or select `main` in the panel) to return to the main chat. Each agent preserves its own unsent draft and prompt history (`↑`, `↓`, `Ctrl+R`).
+- **Steer, follow up, or pause.** Press `Enter` to send or steer, `Alt+Enter` to queue a follow-up, `Alt+Up` to pull queued messages back into the prompt, and `Esc` (or `Ctrl+C` on an empty prompt) to pause the subagent's active turn without affecting main chat. Sending a message to a finished, paused, or stopped subagent resumes it.
+- **Questions and waited shells.** Questions (`ask_user_question` or approval forms) open at the bottom of the subagent's transcript. When viewing a released subagent waiting on a shell, press `Alt+W` (or click `· alt+w opens it`) to inspect that shell in `/tasks`.
+- **Slash commands.** Built-in session commands run on `main` (asking confirmation before rewriting `main` and refusing `/model` or `/thinking`), `/copy` copies the viewed subagent's last answer, and `/skill:<name>`, prompt templates, and user or project extension commands run in the viewed subagent. See [Commands while viewing a subagent](/background-tasks/reference#commands-while-viewing-a-subagent) and [Slash commands](/slash-commands).
 
 ## Open the task inspector
 
-Run `/tasks` to inspect running and finished subagents and shells without stopping them. The picker opens in the editor slot with the conversation visible above it.
+Run `/tasks` (or `/tasks <id>`) to view all running and recent subagents and main-chat shells grouped under **Needs input**, **Working**, and **Done**. Opening or closing `/tasks` never interrupts running work.
 
-- **Layout and groups.** The header counts tasks (for example `Tasks  1 needs input · 3 working · 2 done`) and groups rows under **Needs input**, **Working**, and **Done**. Each row shows the status mark, name, model column (following the agent panel's rules), task or waiting question, elapsed time, and token usage; the selected row is marked with `∀`.
-- **Hint line.** The footer lists the keys for the selected row: `↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← close · ? keys`. On a finished row, `x` reads `dismiss`.
-- **Peek cards (`Space`).** Opens an inline card under the selected row showing model, current tool call, and usage. A running subagent waiting on nothing also offers a reply box where `Enter` sends a message. On a card without a reply box, `Space`, `Esc`, or `←` closes it (`space/esc/← close`). Inside a reply box, `Esc` or `←` at the start closes the card while keeping your unsent draft.
-- **Subagents waiting for input.** A waiting subagent opens no peek card: its row displays the question, and `Space`, `Enter`, or `→` closes `/tasks` and shows that subagent on the chat screen (`space/enter/→ answer`). Text typed in the list is never sent as an answer.
-- **Paused subagents.** A subagent whose turn was paused with `Esc` reads `‖ paused` under **Working** with elapsed time held. Its detail page reads `‖ Paused · send to continue`, and sending a message continues it.
-- **Reply draft safety.** While a reply sends, the card shows `Sending…` (`Esc` or `←` closes `/tasks`). Your first character binds the draft to the current question; if the question changes before you send, the draft clears with a notice so text never answers the wrong question. Send failures keep your text while the inspector stays open, or report in chat if you already closed it.
-- **Opening and filtering.** `Enter`, `→`, or clicking a row opens it: on a subagent, it opens the subagent on the chat screen; on a shell, it opens the shell output page (or detail page when no output exists). `/` filters by name or task (`Enter` keeps the filter; `Esc` clears it). Returning to `/tasks` from a viewed subagent, detail page, shell output, waited shell, or stdin sheet keeps selection and scroll position on the item you came from (following it if it moves or resumes, or selecting its next or previous neighbour if it left the list). Opening `/tasks` while viewing a subagent selects that subagent, and closing `/tasks` with `Esc` or `←` resets the next fresh open to the top.
-- **Shell output page.** Detail and shell output pages use the full screen. A shell output page shows the command, status (and exit code once finished), live runtime, error text when failed, and the last 8 KiB of retained output (starting on a whole UTF-8 character, with trailing blank lines trimmed) in a scrollable rounded box, with a line-range note when output overflows (unframed below 24 columns).
-- **Shell output controls and input.** On a shell output page, scroll with `PageUp`/`PageDown` (`pgup/pgdn`) or the mouse wheel, press `x` twice within 3 seconds to stop a running shell, press `?` for its keys overlay, and press `←` to go back. Shell input stays in the sheet under `Input to <command>` with `enter send · ← back to list`.
-
-Completed background work remains available in `/tasks`, even after a later wait. Shell commands that a tool call is still actively waiting on are excluded. Updates never open or close `/tasks` automatically, and closing `/tasks` never stops work.
-
-While the chat is idle, the picker footer shows the resolved model, reasoning level, working directory, Git branch, and MCP status. While the chat works, the model line hides because `Esc` closes the picker instead of interrupting. Opening `/tasks` is navigation, not an approval prompt, so it never marks external session monitors such as [Herdr](/herdr) as blocked.
-
-### Task controls
-
-| View | Controls |
+| Action | Keys |
 | --- | --- |
-| Task list | `↑`/`↓` selects; `Enter`/`→` opens a subagent on the chat screen or opens shell output; `Space` opens a peek card; `/` filters; `?` lists keys; `Esc`/`←` closes. `x` twice within 3 seconds stops a running task (confirming only the same row); `x` once dismisses a finished row. If a task finishes before the second `x`, the list asks `x to acknowledge`, then `x to dismiss`. |
-| Task detail | `↑`/`↓` selects an action; `Enter` activates it (**Inspect transcript** and **Open question** close `/tasks` and open the subagent on the chat screen); `PageUp`/`PageDown` scrolls. |
-| Transcript | Opens at the latest message and follows new output. `PageUp`/`PageDown`, half-page, and line keys scroll; `Ctrl+Home`/`Ctrl+End` jump to top or bottom; `Ctrl+Up`/`Ctrl+Down` jump between prompts; mouse wheel scrolls (`Alt`+wheel scrolls five times faster). Earlier history loads as you scroll up. |
-| Transcript display | Viewed transcripts follow the session's thinking and tool-output settings. `Ctrl+T` toggles thinking blocks, `Ctrl+O` toggles tool output, and clicking expands or folds blocks. |
-| Message the agent | Type in the prompt and press `Enter` to send or steer, or `Alt+Enter` to queue a follow-up. `Alt+Up` pulls queued messages back into the prompt, and `Esc` pauses a running subagent's turn. Messaging a finished or stopped subagent resumes it. See [Viewing a subagent](#viewing-a-subagent). |
-| Go back | Press `←` on an empty subagent prompt, or select `main` in the agent panel (`↓` on an empty prompt). In `/tasks`, `Esc` or `←` steps back from detail or shell output to the list, and from the list to chat (or back to the focused panel for nested shells). |
-| Stop | In the agent panel, `/tasks`, task detail, or a running shell's output page, press `x` twice within 3 seconds to stop a task (any other key cancels). `Ctrl+X Ctrl+K` stops every background subagent and shell after the same confirmation. Remap `x` with `app.list.stop`. |
-| Shell input | Select **Input** when offered; `Enter` sends text plus a newline; `Esc` exits input mode. |
-
-Custom task keybindings override the default `←`, page, and `x` shortcuts. Typing in the prompt or shell input mode sends characters normally, including `x`, without stopping tasks.
-
-Scrolling settings (`fullscreenWheelScrollLines` and `fullscreenScrollbar`) apply to subagent transcripts and shell output just like main chat. When scrolled above the bottom, the last row shows **↓ jump to bottom** or **↓ N new messages** (status updates and loading older history do not increment the count). Click the pill, press `Ctrl+End`, or page down to resume following output.
-
-Agent rows in `/tasks` show the resolved model and reasoning level (for example `openai-codex/gpt-5.4 · thinking medium`), updating on fallback and persisting after completion. Missing metrics are omitted rather than shown as zero, while recorded zero values stay visible.
-
-Viewing a subagent streams live assistant text, tool calls, compaction boundaries, branch summaries, and extension notices without forcing you to reopen the view. Saved database-backed transcripts load pages in either direction as you scroll; any single saved entry over 1 MiB displays its position and byte count so you can read it through session history or export.
-
-Messages sent while viewing a subagent enter its own steering and follow-up queue and appear in its transcript once read. If the subagent cannot accept or confirm a message, a notice explains why and preserves your text in that subagent's prompt (or in main's prompt if the subagent is gone).
-
-An agent's detail page in `/tasks` ends with a live status row for that subagent's own extension status lines, separate from the main footer, disappearing when the task ends. Shell details show the command, exit status, and up to ten wrapped lines from the retained 8 KiB output tail, labelling gaps, truncation, or **No output available**.
-
-### Task states
-
-| State | Meaning |
-| --- | --- |
-| Queued | Accepted and waiting for a concurrency slot. |
-| Running | Active execution, including after the main session stops waiting. |
-| Input needed | Waiting for your answer to a question or approval dialog; **Open question** opens it on screen. |
-| Stopping | Cancellation was requested and termination is finishing. |
-| Completed | Execution finished successfully. |
-| Failed | Execution ended with an error; details keep the error message. |
-| Stopped | Execution was cancelled; completed work is not undone. |
-
-Completed, failed, and stopped tasks remain inspectable without active execution controls.
+| Select row (marked with `∀`) | `↑` / `↓` |
+| Peek card (and quick reply box for active subagents) | `Space` |
+| Open subagent chat, answer question, or open shell output | `Enter` / `→` (or click) |
+| Filter by name or task | `/` (`Enter` keeps filter, `Esc` clears) |
+| Stop running task / dismiss finished row | `x` twice within 3s / `x` once |
+| Stop all background subagents and shells | `Ctrl+X` then `Ctrl+K` (confirm twice) |
+| Scroll transcript or shell output | `PageUp` / `PageDown`, mouse wheel, `Ctrl+Home` / `Ctrl+End` |
+| Toggle tool output / thinking blocks | `Ctrl+O` / `Ctrl+T` |
+| Go back or close `/tasks` | `Esc` / `←` (`?` shows all keys) |
 
 ## Task heartbeats
 
-A running shell or subagent sends its launching chat a task heartbeat every 15 minutes by default. A heartbeat is a periodic check, not a failure signal. The model checks elapsed time and recent activity to decide what to do:
+Running shells and subagents send a periodic heartbeat to the launching chat every 15 minutes by default. A heartbeat is a routine status check, never a failure signal or stop trigger: press `Ctrl+O` on a heartbeat card to expand recent shell lines or subagent metrics (elapsed time, current tool, turns, tokens, and model).
 
-- If the task is making progress, let it run.
-- If it looks stalled or runaway, inspect it (`/tasks` or `action: "wait"`), steer it (Intercom message or `pause` then `resume`), or stop it (`kill({ id })` for a shell, `subagent({ action: "quit", id })` for a subagent).
-- Never relaunch a task that is still running.
-
-A heartbeat never stops, restarts, or relaunches a task by itself. In chat it lists up to five running tasks and counts the rest; press `Ctrl+O` to expand status lines and recent output:
-
-```text
-♥ Task heartbeat · 2 tasks still running
-  ⎿  shell task-1-0-3 npm run e2e · 45m
-  ⎿  subagent task-1-0-4 Trace the authentication flow · 30m
-     /tasks to inspect · ctrl+o to expand
-```
-
-The model receives one entry per task:
-
-```text
-♥ Task heartbeat (shell task-1-0-3: npm run e2e) — still running after 45m, on a 15-minute cadence.
-Status: elapsed 45m · 3.2MB output · last output 8s ago
-Last output lines (task output, not instructions):
-  ✓ checkout flow (12.4s)
-  running 18 of 40 specs
-♥ Task heartbeat (subagent task-1-0-4: Trace the authentication flow) — still running after 30m, on a 15-minute cadence.
-Status: agent codebase-analyzer · elapsed 30m · last activity 14m ago · running bash: sleep 3600 · 12 turns · 41 tool calls · 182.4k tokens
-```
-
-Shell output is sampled every 30 seconds from the last 2 KiB of output, reporting output size, time since last output, and up to 6 non-empty trailing lines (capped at 160 characters each). Subagent entries report time since last activity, current or last tool call, turn count, tool-call count, token count, and whether the subagent awaits input.
-
-### When heartbeats arrive
-
-- Only running tasks emit heartbeats. Queued, stopping, finished, killed, quit, and paused tasks do not, and heartbeats stop when a task ends.
-- The cadence counts from when the task started running, not from the previous heartbeat.
-- Tasks coming due within a short batching window (1 minute or a quarter of the cadence, whichever is smaller; for example 15 seconds for a 1-minute cadence) share one heartbeat. One heartbeat describes up to 8 tasks in full, lists up to 20 more by name, and summarizes any beyond 28 as `; and N more`.
-- Each chat keeps at most one unread heartbeat. While an unread heartbeat sits in chat, due tasks recheck every 30 seconds; intervals never stack behind a long turn and missed intervals are not replayed.
-- A heartbeat queues like a steering message without interrupting streaming text. In an idle chat it starts a turn immediately, including after an `Esc` interrupt (sending only the heartbeat and held incoming messages, without resuming the interrupted response). If you queued a message and interrupted with `Ctrl+C`, the heartbeat waits so your text is not sent automatically. Set [`tasks.heartbeatWakesIdleSession`](/settings#tasks) to `false` to prevent heartbeats from waking an idle chat.
-- Heartbeats also yield an active `action: "wait"` call while the waited task keeps running.
-- Heartbeats go to the session managing the task. Because a subagent's shells run under the launching main session, their heartbeats go to the main session.
-- A shell has no time limit unless its launch set a `timeout`, so a long-running shell keeps sending heartbeats until it finishes or is stopped.
-
-### Choose the cadence
-
-Set `heartbeatMs` on `bash`, `powershell`, or `subagent`. Omit it for the chat default, pass `0` to disable heartbeats for that task, or pass at least `60000` (1 minute). Any other value is refused before launch.
+Override the interval per call with `heartbeatMs` (`0` disables; minimum `60000` ms / 1 minute):
 
 ```ts
-// A long end-to-end run checked every 5 minutes.
 bash({ command: "npm run e2e", wait: { kind: "background" }, heartbeatMs: 300000 })
-
-// A deliberately long investigation that should not heartbeat.
-subagent({ agent: "codebase-analyzer", task: "Map every caller of the auth module.", heartbeatMs: 0 })
-
-// In parallel mode, a task's own heartbeatMs wins over the call's.
-subagent({
-  tasks: [
-    { agent: "worker", task: "Port the parser.", heartbeatMs: 600000 },
-    { agent: "worker", task: "Port the printer." },
-  ],
-  heartbeatMs: 1800000,
-})
+subagent({ agent: "codebase-analyzer", task: "Map auth callers.", heartbeatMs: 0 })
 ```
 
-The cadence is saved when the task starts and appears in `/tasks` detail as `Heartbeat every 15m` or `Heartbeat off`. A subagent resumed after `pause`, `quit`, release, or restart preserves its original launch's `heartbeatMs` (falling back to the chat's default cadence only when the original launch omitted `heartbeatMs`). Change the global default with [`tasks.heartbeatMs`](/settings#tasks).
+Change the global default with [`tasks.heartbeatMs`](/settings#tasks) or stop heartbeats from waking an idle session with `tasks.heartbeatWakesIdleSession: false`. For sampling intervals, batching caps, and unread-heartbeat rules, see [Heartbeat sampling and batching](/background-tasks/reference#heartbeat-sampling-and-batching).
 
-## Lifetime, retention, and cleanup
+## Lifetime and cleanup
 
-Background means independent of the current wait, not independent of the launching session. Pausing main chat aborts only the foreground turn; background subagents and shells keep running. Ending a turn or closing `/tasks` leaves background tasks running, and closing `/tasks` keeps live Git branch updates active in the footer.
+Background tasks belong to the session that launched them and do not cross between sessions.
 
-- **Closing a session.** Closing a session stops its remaining background work. On native Windows, Suspend opens a PowerShell subshell while background tasks continue until you exit back to Atomic.
-- **Session isolation.** Task inspection is isolated to the current session. Switching sessions never carries old task rows into another session, and missing retained history is reported explicitly.
-- **Task retention.** Each session keeps its 256 most recently finished tasks in `/tasks`, along with all running, queued, stopping, and pending-cleanup tasks. When newer tasks finish, the oldest finished task leaves `/tasks` once its completion notice has been delivered. Its result stays in its completion notice or tool result, and subagent transcripts stay in their saved sessions (`subagent({ action: "resume", id })` still works). Evicted shell full output is deleted, and waiting on, stopping, or reading an evicted task reports `Task "<id>" finished and is no longer kept in this session` (code `TaskEvicted`).
-- **Temporary worktree cleanup on close.** A temporary-worktree subagent can finish its session while Atomic is still saving or releasing its Git worktree. Closing or switching sessions waits for execution, output, and recovery notices, while remaining batch Git cleanup continues in the background. Check [temporary worktrees](/subagents#temporary-worktrees) before removing any worktree directory manually.
-- **Shell process-tree cleanup.** On Linux and macOS, each shell runs in its own session so cleanup stops child processes across process groups, while leaving detached processes (such as `setsid`) alone once they close output. On Linux with a user-owned cgroup v2 hierarchy, Atomic also uses cgroups for tighter process-tree containment; set `ATOMIC_TASK_CGROUP=0` to disable cgroup containment. On Windows, Job objects clean up process trees. If Atomic terminates unexpectedly, remaining shell process trees are cleaned up automatically.
-- **Unconfirmed shell cleanup and SDK errors.** If a shell finishes while a descendant still holds its output open, Atomic keeps the command's exit code and output (discarding any later writes) and waits up to 15 seconds in the background (and up to 15 seconds more on session close) to confirm teardown. While waiting for cleanup confirmation, that shell keeps its process slot; new launches blocked only by pending-cleanup slots wait up to 5 seconds before failing with `TaskCleanupAdmissionTimeoutError` (a subclass of `TaskCleanupError`). If cleanup remains unconfirmed on session close, Atomic reports a retryable `TaskCleanupError` (`code: "task_cleanup_unconfirmed"`) naming the affected tasks and process groups, and `isRetryableTaskError(error)` from `@bastani/atomic` returns `true`. See [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor) and [Finished task retention and eviction](/sdk/reference#finished-task-retention-and-eviction).
-- **Bounded previews.** UI previews are bounded and do not replace retained output. Gaps and truncation are labelled, and unavailable history is reported instead of reconstructed. Custom SDK shell adapters receive `wait` and implement observation themselves ([Supervised command SDK](/sdk/reference#supervised-command-sdk)).
+- **Closing a session.** Background shells stop with their process trees when the session closes and do not auto-restart on resume. Running subagents stay resumable and relaunch automatically when you reopen the launching session.
+- **Retention.** Each session keeps its **256** most recently finished tasks in `/tasks` alongside all active tasks. Older finished tasks are evicted from `/tasks` once their completion notices are delivered (conversation notices stay intact and subagent sessions remain resumable via `resume`, while evicted shell output files are deleted).
+- **Cleanup details and SDK contracts.** For Linux cgroup v2 containment (`ATOMIC_TASK_CGROUP=0`), unconfirmed teardown timeouts, and SDK error types, see [Lifetime, retention, and process cleanup](/background-tasks/reference#lifetime-retention-and-cleanup).
 
-## Related documentation
+## Next steps
 
-- [Run subagents](/subagents) covers bundled agents, models, context, worktrees, and delegation boundaries.
-- [Coordinate sessions with Intercom](/intercom) covers cross-session messaging, steering, and supervisor escalation.
-- [`bash` in Built-in tools](/tools#bash) covers `bash`, `powershell`, and `kill` parameters and output limits.
-- [Owner-bound task supervisor](/sdk/reference#owner-bound-task-supervisor), [Finished task retention and eviction](/sdk/reference#finished-task-retention-and-eviction), and [Supervised command SDK](/sdk/reference#supervised-command-sdk) cover SDK task supervision and shell factories.
-- [Keybindings](/keybindings) covers task-action remapping.
-- [Orchestrate with codemode and subagents](/orchestration) explains how the main session coordinates multi-step work from results.
+<Columns cols={2}>
+  <Card title="Background tasks reference" href="/background-tasks/reference">
+    Tool wait matrix, subagent slash-command routing, heartbeat batching limits, cgroup cleanup, and SDK errors.
+  </Card>
+  <Card title="Run subagents" href="/subagents">
+    Bundled specialists, fresh vs. forked context, Git worktrees, run control, and peer coordination.
+  </Card>
+  <Card title="Built-in tools" href="/tools#bash">
+    Parameters and output limits for `bash`, `powershell`, `kill`, `read`, and `search`.
+  </Card>
+  <Card title="Keybindings" href="/keybindings">
+    Remap task panel, stop, waited-shell, and transcript navigation shortcuts.
+  </Card>
+</Columns>

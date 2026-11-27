@@ -4,32 +4,39 @@ sidebarTitle: "Migrate workflows"
 description: "Convert legacy Atomic workflow files into reusable skills without executing or modifying the originals."
 ---
 
-Ask Atomic in chat or invoke `/skill:workflow-files`:
+Convert legacy `.ts`, `.js`, `.mjs`, or `.cjs` workflow files into reusable [skills](/skills#skills-as-workflows) without importing, running, or modifying the original files.
 
-```text
-Convert .atomic/workflows/triage.ts into a skill
-```
+<Steps>
+  <Step title="Start the conversion">
+    Ask Atomic in chat or invoke `/skill:workflow-files` with the workflow path:
 
-```text
-/skill:workflow-files .atomic/workflows/triage.ts
-```
+    ```text
+    Convert .atomic/workflows/triage.ts into a skill
+    ```
 
-To convert and run immediately, include your inputs, for example: "Run the triage workflow on these reports." At startup, Atomic scans directly inside `workflows/` directories for legacy `.ts`, `.js`, `.mjs`, and `.cjs` files (excluding `.d.ts` files and subdirectories) and notes up to 20 discovered files (with `+N more` if additional files exist). Atomic never writes or converts anything automatically.
+    ```text
+    /skill:workflow-files .atomic/workflows/triage.ts
+    ```
 
-How conversion works:
+    To convert and run immediately, include your inputs (for example, "Run the triage workflow on these reports").
+  </Step>
+  <Step title="Review the generated skill and scripts">
+    Atomic reads the workflow file and any local helpers as plain text and generates a new `SKILL.md` plus deterministic helper scripts under `scripts/`. It never imports, executes, edits, or deletes the original workflow file, and never overwrites an existing skill directory or follows symlinks into an occupied target path.
+  </Step>
+  <Step title="Reload and invoke">
+    Run `/reload`, then invoke `/skill:<name>` with your inputs.
+  </Step>
+</Steps>
 
-- Atomic reads the workflow file and local helpers as plain text and uses `skill-creator` to write `SKILL.md` plus deterministic scripts under `scripts/`.
-- The original workflow file is never imported, executed, edited, or deleted.
-- Existing skills are never overwritten. Atomic checks symlinks at the target skill path before writing and never writes into an occupied directory. Pick a new name or reuse the existing skill.
-- Workflow files in untrusted projects are never offered for conversion, and Atomic never writes into an untrusted project directory. Global workflows still convert. For an explicitly supplied, trusted external source inside an untrusted project, Atomic asks before saving globally.
+At startup, Atomic scans directly inside `workflows/` directories for legacy `.ts`, `.js`, `.mjs`, and `.cjs` files (excluding `.d.ts` files and subdirectories) and notes up to 20 discovered files (`+N more` if additional files exist). Nothing is converted or written automatically.
+
+Workflow files in untrusted projects are never offered for conversion, and Atomic never writes into an untrusted project directory. Global workflows still convert; for an explicitly supplied trusted external source inside an untrusted project, Atomic asks before saving globally.
 
 | Workflow source | Output skill location |
 | --- | --- |
 | Trusted project `.atomic/workflows/`, `.pi/workflows/`, project settings paths, project-installed packages | `.atomic/skills/<name>/` |
 | `~/.atomic/agent/workflows/`, global settings paths, globally installed packages | `~/.atomic/agent/skills/<name>/` (or `skills/` in your agent directory) |
 | Package loaded via `-e`, or a trusted external project directory | Current trusted project's `.atomic/skills/<name>/` (never the external tree) |
-
-After reviewing the generated skill and scripts, run `/reload`, then invoke `/skill:<name>` with your inputs. See [skills as workflows](/skills#skills-as-workflows) and [Orchestrate with codemode and subagents](/orchestration).
 
 ## What conversion preserves
 
@@ -43,7 +50,7 @@ After reviewing the generated skill and scripts, run `/reload`, then invoke `/sk
 | Nested `ctx.workflow` | Separately converted skill called by name (the main session still owns all subagent launches). |
 | Structured outputs, `ctx.exit`, blocked states | Per-subagent output files validated by codemode, stopping on failure or missing prerequisites. |
 
-Running the new skill starts fresh work. Earlier workflow run IDs cannot resume old checkpoints. Verify which external side effects already ran before repeating them. See [What survives interruption](/orchestration#what-survives-interruption).
+Running the new skill starts fresh work; earlier workflow run IDs cannot resume old checkpoints. Verify which external side effects already ran before repeating them ([What survives interruption](/orchestration#what-survives-interruption)).
 
 ### Pinned stages
 
