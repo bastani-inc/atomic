@@ -261,11 +261,11 @@
           {
             "group": "Platform setup",
             "pages": [
-              "windows",
               "terminal-setup",
+              "shell-aliases",
+              "windows",
               "tmux",
-              "herdr",
-              "shell-aliases"
+              "herdr"
             ]
           },
           {

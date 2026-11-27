@@ -1,6 +1,6 @@
 ---
-title: "Run Atomic in tmux"
-sidebarTitle: "Run in tmux"
+title: "Run Atomic in Tmux"
+sidebarTitle: "Run in Tmux"
 description: "Configure tmux for modified keys, Escape timing, hyperlinks, clipboard copy, mouse scrolling, and image paste with Atomic."
 ---
 
