@@ -257,15 +257,23 @@ test("an opener falls back from tryMaintenance polling to a waiting transaction 
 	await holderReady;
 
 	let fallbackTxCalls = 0;
+	let fallbackReached!: () => void;
+	const reachedFallback = new Promise<void>((resolve) => {
+		fallbackReached = resolve;
+	});
 	const origTx = opener.transaction.bind(opener);
 	opener.transaction = ((callback, options) => {
-		if (options?.readOnly !== true) fallbackTxCalls += 1;
+		if (options?.readOnly !== true) {
+			fallbackTxCalls += 1;
+			fallbackReached();
+		}
 		return origTx(callback, options);
 	}) as SqliteDatabase["transaction"];
 
-	// Hold the write lock past SQLITE_BATCH_WAIT_MS (1000 ms) so opener falls back to database.transaction.
+	// The write lock stays held until the opener has given up polling and entered its waiting transaction, so the
+	// order is fixed however slowly either side is scheduled (#6745).
 	const opening = SqlSessionStore.open(opener);
-	await new Promise((resolve) => setTimeout(resolve, 1_200));
+	await reachedFallback;
 	releaseHolder();
 	await writerTx;
 
