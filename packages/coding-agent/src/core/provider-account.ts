@@ -33,7 +33,26 @@ function normalizedEndpoint(model: Model<Api>, options: AccountOptions): string 
 	}
 }
 
+function codexAccountId(apiKey: string | undefined): string | undefined {
+	const parts = apiKey?.split(".");
+	if (parts?.length !== 3 || !parts[1]) return undefined;
+	try {
+		const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
+			"https://api.openai.com/auth"?: { chatgpt_account_id?: unknown };
+		} | null;
+		const id = claims?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+		return typeof id === "string" && id.length > 0 ? id : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function credentialIdentity(model: Model<Api>, options: AccountOptions): readonly (string | undefined)[] | undefined {
+	if (model.api === "openai-codex-responses") {
+		// Codex sends this account ID alongside the bearer token. It stays the same when the token rotates.
+		const account = codexAccountId(options.apiKey);
+		if (account) return ["codex-account", account];
+	}
 	const headers = new Map(
 		[...Object.entries(model.headers ?? {}), ...Object.entries(options.headers ?? {})].map(([name, value]) => [
 			name.toLowerCase(),

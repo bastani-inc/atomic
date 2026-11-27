@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { zstdDecompressSync } from "node:zlib";
 import type { Model } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
@@ -79,7 +80,13 @@ interface FixtureOptions {
 		alias?: boolean;
 		separateAliasKey?: boolean;
 		modelScoped?: boolean;
+		codex?: boolean;
 	};
+}
+
+function codexToken(account: string, revision: number): string {
+	const payload = { "https://api.openai.com/auth": { chatgpt_account_id: account }, exp: 2_000_000_000 + revision };
+	return `fixture.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
 }
 
 async function endpoint(
@@ -98,6 +105,7 @@ async function endpoint(
 	const backup = `backup-${crypto.randomUUID().slice(0, 8)}`;
 	const alias = `${provider}-alias`;
 	const siblingProvider = accountFailure?.alias ? alias : provider;
+	const codexAccount = (isAlias: boolean) => (isAlias && accountFailure?.separateAliasKey ? alias : provider);
 	let releaseBackup: () => void = () => {};
 	const backupReady = hold
 		? new Promise<void>((resolve) => {
@@ -109,7 +117,9 @@ async function endpoint(
 		request.on("data", (chunk: Buffer) => body.push(chunk));
 		request.on("end", () => {
 			const account = request.url?.split("/")[1] ?? "";
-			const { model } = JSON.parse(Buffer.concat(body).toString()) as { model: string };
+			const bytes = Buffer.concat(body);
+			const json = request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(bytes) : bytes;
+			const { model } = JSON.parse(json.toString()) as { model: string };
 			requests.push({
 				model: `${model.startsWith("other-model-") ? siblingProvider : account}/${model}`,
 				at: performance.now(),
@@ -129,7 +139,14 @@ async function endpoint(
 					response.end(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`);
 					return;
 				}
-				assert.equal(request.headers.authorization, "Bearer fixture-key");
+				if (accountFailure.codex) {
+					const isAlias = model !== primaryId;
+					assert.equal(request.headers["chatgpt-account-id"], codexAccount(isAlias));
+					assert.equal(
+						request.headers.authorization,
+						`Bearer ${codexToken(codexAccount(isAlias), isAlias ? 2 : 1)}`,
+					);
+				} else assert.equal(request.headers.authorization, "Bearer fixture-key");
 				response.writeHead(accountFailure.status, { "content-type": "application/json", ...headers });
 				const message =
 					accountFailure.code === "insufficient_quota"
@@ -179,8 +196,13 @@ async function endpoint(
 				? getFixtureModel("openai", "gpt-4o-mini")!
 				: getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const baseUrl = `http://127.0.0.1:${address.port}/${account === alias ? `${provider}/` : account}`;
-		const api = accountFailure && account !== backup ? ("openai-completions" as const) : base.api;
-		const models: Model<"anthropic-messages" | "openai-responses" | "openai-completions">[] = ids.map((id) => ({
+		const api =
+			accountFailure && account !== backup
+				? accountFailure.codex
+					? "openai-codex-responses"
+					: "openai-completions"
+				: base.api;
+		const models: Model<typeof api>[] = ids.map((id) => ({
 			...base,
 			api,
 			baseUrl,
@@ -191,9 +213,11 @@ async function endpoint(
 		const apiKey =
 			accountFailure && account === backup
 				? "backup-key"
-				: accountFailure?.separateAliasKey && account === alias
-					? "alias-key"
-					: "fixture-key";
+				: accountFailure?.codex
+					? codexToken(codexAccount(account === alias), account === alias ? 2 : 1)
+					: accountFailure?.separateAliasKey && account === alias
+						? "alias-key"
+						: "fixture-key";
 		return { api, baseUrl, apiKey, models };
 	};
 	const siblingsIds = Array.from({ length: siblings }, (_, index) => `other-model-${index}`);
@@ -225,6 +249,7 @@ async function setupSdk(
 	}
 	const settingsManager = SettingsManager.inMemory({
 		cacheWarming: "off",
+		...(fixtureOptions?.accountFailure?.codex ? { transport: "sse" } : {}),
 		defaultProvider: fixture.provider,
 		defaultModel: primaryId,
 		fallbackModels: fixture.fallbackModels,
@@ -371,6 +396,29 @@ test.each([false, true])("chat skips an exhausted account (provider alias: %s) (
 	);
 	assert.ok(harness.events.some((event) => event.type === "model_fallback_end" && event.success));
 });
+
+test.each([
+	{ status: 429, code: "rate_limit_exceeded", separateAliasKey: false },
+	{ status: 401, code: "invalid_api_key", separateAliasKey: false },
+	{ status: 429, code: "insufficient_quota", separateAliasKey: false },
+	{ status: 429, code: "rate_limit_exceeded", separateAliasKey: true },
+])(
+	"chat checks the Codex account rather than the token after $code (independent account: $separateAliasKey) (#6779)",
+	async (failure) => {
+		const harness = await setupSdk({ "retry-after": "360" }, 1, {
+			siblings: 1,
+			accountFailure: { ...failure, alias: true, codex: true },
+		});
+		await prompt(harness);
+		assert.deepEqual(
+			harness.requests.map(({ model }) => model),
+			failure.separateAliasKey
+				? [harness.primaryRef, harness.fallbackModels[0], harness.backupRef]
+				: [harness.primaryRef, harness.backupRef],
+		);
+		assert.ok(harness.events.some((event) => event.type === "model_fallback_end" && event.success));
+	},
+);
 
 const transientResponsesFailures = ["rate_limit_exceeded", "policy_capacity_unavailable"].flatMap((code) =>
 	[false, true].map((fallback) => ({ code, fallback })),
