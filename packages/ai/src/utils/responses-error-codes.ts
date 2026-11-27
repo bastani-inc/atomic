@@ -9,9 +9,12 @@ export function responsesErrorKind(
 		case "context_length_exceeded":
 		case "context_window_exceeded":
 			return "context_overflow";
+		case "api_key_spend_limit_exceeded":
 		case "credit_balance_exhausted":
 		case "insufficient_quota":
+		case "organization_spend_limit_exceeded":
 		case "organization_usage_limit_exceeded":
+		case "project_spend_limit_exceeded":
 		case "quota_exceeded":
 		case "usage_limit":
 		case "usage_limit_exceeded":
@@ -21,6 +24,7 @@ export function responsesErrorKind(
 		case "rate_limit_exceeded":
 		case "slow_down":
 			return "rate_limit";
+		case "policy_capacity_unavailable":
 		case "server_error":
 		case "server_is_overloaded":
 			return "provider_unavailable";

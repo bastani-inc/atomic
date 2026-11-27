@@ -11,6 +11,7 @@ import { startPtyProgram } from "../../../test/helpers/pty-program.ts";
 import { bunExecutable } from "../../../test/helpers/runtime.ts";
 import type { AgentSessionEvent } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import { normalizeModelFailureSignal } from "../src/core/model-fallback-failures.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -71,7 +72,7 @@ interface FixtureOptions {
 	exhaust?: boolean;
 	hold?: boolean;
 	fallback?: boolean;
-	responsesFailure?: { code: string; message: string; headers?: Record<string, string>; http?: true };
+	responsesFailure?: { code: string; message: string; headers?: Record<string, string>; http?: "code" | "type" };
 }
 
 async function endpoint(
@@ -102,7 +103,7 @@ async function endpoint(
 				const { code, message, headers, http } = responsesFailure;
 				if (http) {
 					response.writeHead(429, { "content-type": "application/json", ...headers });
-					response.end(JSON.stringify({ error: { type: code, message } }));
+					response.end(JSON.stringify({ error: { [http]: code, message } }));
 				} else {
 					response.writeHead(200, { "content-type": "text/event-stream" });
 					response.end(
@@ -245,12 +246,16 @@ test.each(cases)("SDK reaches the fallback after a 429 with $name (#6774)", asyn
 	}
 });
 
-test.each([false, true])(
-	"retries a statusless Responses throttle within the budget (fallback enabled: %s)",
-	async (fallback) => {
+const transientResponsesFailures = ["rate_limit_exceeded", "policy_capacity_unavailable"].flatMap((code) =>
+	[false, true].map((fallback) => ({ code, fallback })),
+);
+
+test.each(transientResponsesFailures)(
+	"retries a statusless Responses $code within the budget (fallback enabled: $fallback)",
+	async ({ code, fallback }) => {
 		const harness = await setupSdk({}, 0, {
 			fallback,
-			responsesFailure: { code: "rate_limit_exceeded", message: "Please wait.", headers: shortAfter },
+			responsesFailure: { code, message: "Request rejected.", headers: shortAfter },
 		});
 		await prompt(harness);
 		const { requests, events, primaryRef, backupRef } = harness;
@@ -285,7 +290,11 @@ test("an unknown statusless Responses code does not start an automatic retry wit
 });
 
 test.each([
-	{ code: "usage_not_included", http: true as const },
+	{ code: "usage_not_included", http: "type" as const },
+	{ code: "api_key_spend_limit_exceeded", http: "code" as const },
+	{ code: "project_spend_limit_exceeded", http: "code" as const },
+	{ code: "organization_spend_limit_exceeded", http: "code" as const },
+	{ code: "api_key_spend_limit_exceeded" },
 	{ code: "usage_not_included" },
 	{ code: "usage_limit_reached" },
 	{ code: "insufficient_quota" },
@@ -294,11 +303,19 @@ test.each([
 		responsesFailure: { ...failure, message: "Cannot serve.", headers: shortAfter },
 	});
 	await prompt(harness);
-	const { requests, events, primaryRef, backupRef } = harness;
+	const { requests, events, primaryRef, backupRef, sessionManager } = harness;
 	assert.deepEqual(
 		requests.map(({ model }) => model),
 		[primaryRef, backupRef],
 	);
+	const failed = sessionManager
+		.getEntries()
+		.find(
+			(entry) =>
+				entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "error",
+		);
+	assert.ok(failed?.type === "message");
+	assert.equal(normalizeModelFailureSignal(failed.message).kind, "quota_exhausted");
 	assert.equal(
 		events.some((event) => event.type === "auto_retry_start"),
 		false,

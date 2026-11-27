@@ -281,7 +281,8 @@ function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | 
 
 function refusalKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
-	if (normalizedCode === undefined) return undefined;
+	// An explicit capacity code such as `policy_capacity_unavailable` is not a content policy refusal.
+	if (normalizedCode === undefined || responsesErrorKind(normalizedCode) !== undefined) return undefined;
 	// A refused tool call, such as `tool_call_refusal` or `tool_use_refused_by_policy`, before the policy words.
 	if (/(?:^|_)tool(?:_|$)/.test(normalizedCode) && normalizedCode.includes("refus")) return "task_failure";
 	if (normalizedCode.includes("content_filter") || normalizedCode.includes("contentfilter")) return "content_filter";
@@ -697,10 +698,10 @@ const MODEL_BLOCKING_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new 
 ]);
 
 /**
- * The direct message's signal, unless the failure's own HTTP status or provider code names a transient failure and
- * the text would condemn the model instead. Structured fields decide first; text is the fallback (#4918).
+ * The direct message's signal, unless its text would condemn the model over a structured transient or quota
+ * failure. A quota can name its API key without rejecting that key (#4918).
  */
-function directMessageSignalUnlessTransient(
+function directMessageSignalUnlessMoreSpecific(
 	value: unknown,
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
@@ -708,13 +709,16 @@ function directMessageSignalUnlessTransient(
 	if (signal === undefined || !MODEL_BLOCKING_FAILURE_KINDS.has(signal.kind)) return signal;
 	// An adapter's `provider_response_failure` diagnostic carries the HTTP status of the failed request (#4994).
 	const rawDiagnostics = field(value, "diagnostics");
-	const structuredKinds = [value, ...(Array.isArray(rawDiagnostics) ? rawDiagnostics : [])].flatMap((source) => [
-		kindFromStatus(statusFrom(source)),
-		kindFromCode(codeFrom(source)),
-	]);
-	return structuredKinds.some((kind) => kind !== undefined && SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(kind))
-		? undefined
-		: signal;
+	const knownFailure = [value, ...(Array.isArray(rawDiagnostics) ? rawDiagnostics : [])].some((source) => {
+		const code = codeFrom(source);
+		return (
+			responsesErrorKind(normalizeCode(code)) === "quota_exhausted" ||
+			[kindFromStatus(statusFrom(source)), kindFromCode(code)].some(
+				(kind) => kind !== undefined && SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(kind),
+			)
+		);
+	});
+	return knownFailure ? undefined : signal;
 }
 
 function classifyAssistantRefusalSignal(
@@ -827,7 +831,7 @@ function structuredSignal(
 	)
 		return makeSignal("model_unavailable", value, source);
 
-	const directMessageSignal = directMessageSignalUnlessTransient(value, source);
+	const directMessageSignal = directMessageSignalUnlessMoreSpecific(value, source);
 	// An exhausted quota the failure names outranks a generic request error: Anthropic answers an account out of
 	// credit with HTTP 400 and `invalid_request_error`.
 	const quotaExhausted =

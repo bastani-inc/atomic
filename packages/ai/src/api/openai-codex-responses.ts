@@ -786,13 +786,18 @@ async function processStream(
 class CodexApiError extends Error {
 	readonly code?: string;
 	readonly payload?: Record<string, unknown>;
+	readonly retryAfterMs?: number;
 
-	constructor(message: string, options?: { code?: string; payload?: Record<string, unknown>; cause?: unknown }) {
+	constructor(
+		message: string,
+		options?: { code?: string; payload?: Record<string, unknown>; cause?: unknown; retryAfterMs?: number },
+	) {
 		super(message);
 		this.name = "CodexApiError";
 		this.code = options?.code;
 		this.payload = options?.payload;
 		this.cause = options?.cause;
+		this.retryAfterMs = options?.retryAfterMs;
 	}
 }
 
@@ -892,9 +897,12 @@ async function* mapCodexEvents(
 
 		if (type === "response.failed") {
 			const response = (event as { response?: { error?: { code?: string; message?: string } } }).response;
-			const code = response?.error?.code;
-			const message = response?.error?.message;
-			throw new CodexApiError(message || "Codex response failed", { code, payload: event });
+			const failure = response?.error;
+			throw new CodexApiError(failure?.message || "Codex response failed", {
+				code: failure?.code,
+				payload: event,
+				retryAfterMs: failure && typeof failure === "object" ? getProviderRetryAfterMs(failure) : undefined,
+			});
 		}
 
 		if (type === "response.done" || type === "response.completed" || type === "response.incomplete") {

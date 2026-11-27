@@ -584,6 +584,7 @@ describe("model fallback classifier conformance (subagents and host)", () => {
 		["organization_usage_limit_exceeded", "quota_exhausted", false],
 		["slow_down", "rate_limit", true],
 		["server_is_overloaded", "provider_unavailable", true],
+		["policy_capacity_unavailable", "provider_unavailable", true],
 		["server_error", "provider_unavailable", true],
 		["invalid_prompt", "request_incompatible", false],
 	] as const)("classifies a Responses rejection with the code %s and opaque prose", (errorCode, kind, retry) => {
