@@ -92,7 +92,7 @@ import {
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { isOpenAITracingEndpoint, openAIRequestFetch } from "./openai-request-headers.js";
-import { RetryHintOpenAI } from "./openai-retry-hint-client.ts";
+import { openAIIdempotencyConflictCode, RetryHintOpenAI } from "./openai-retry-hint-client.ts";
 import {
 	buildBaseOptions,
 	clampThinkingBudgetToAnswerRoom,
@@ -469,6 +469,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
+					noRetry: (error) => openAIIdempotencyConflictCode(error) !== undefined,
 				},
 				retryTransport,
 			);
@@ -834,7 +835,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			}
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
-			appendProviderResponseFailureDiagnostic(output, error);
+			appendProviderResponseFailureDiagnostic(output, error, openAIIdempotencyConflictCode(error));
 			recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			// Some providers via OpenRouter give additional information in this field.

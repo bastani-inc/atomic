@@ -127,7 +127,7 @@ For example, [OP Inference supports idempotency keys for Chat Completions](https
 }
 ```
 
-OP Inference returns a `409 idempotency_conflict` for a duplicate chat completion instead of replaying the answer. A retry can therefore avoid a second charge without recovering a lost response. Don't set a static `Idempotency-Key` in `headers`: a key must never be shared between unrelated requests.
+OP Inference returns a `409 idempotency_conflict` for a duplicate chat completion instead of replaying the answer. Atomic stops retrying that request when it gets this error. If you configured a fallback model, Atomic can still try it as a new request, which may incur a separate charge. Don't set a static `Idempotency-Key` in `headers`: a key must never be shared between unrelated requests.
 
 ### Prompt cache lifetimes
 

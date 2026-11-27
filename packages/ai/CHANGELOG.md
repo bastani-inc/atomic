@@ -6,7 +6,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ### Added
 
-- Added an opt-in idempotency key for OpenAI-compatible Chat Completions and Responses endpoints that support it, so retrying the same request can avoid a duplicate charge ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
+- Added an opt-in idempotency key for OpenAI-compatible Chat Completions and Responses endpoints that support it, so retrying the same request can avoid a duplicate charge. If the endpoint reports an idempotency conflict, Atomic stops retrying that request ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
 
 ### Fixed
 

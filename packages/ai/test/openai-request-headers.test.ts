@@ -90,3 +90,34 @@ it.each(["chat", "responses"] as const)(
 		assert.ok(requests.every((headers) => !headers.has("x-client-request-id")));
 	},
 );
+
+it.each([
+	["chat", "idempotency_conflict", 1],
+	["responses", "idempotency_conflict", 1],
+	["chat", "conflict", 3],
+	["responses", "conflict", 3],
+] as const)("handles %s HTTP 409 code %s with %i attempt(s) (#6794)", async (api, code, expectedAttempts) => {
+	let attempts = 0;
+	const fetch = Object.assign(async () => {
+		attempts++;
+		return new Response(JSON.stringify({ error: { code, message: "Request conflict" } }), {
+			status: 409,
+			headers: { "content-type": "application/json", "retry-after-ms": "1" },
+		});
+	}, globalThis.fetch);
+	const gateway = {
+		...model,
+		baseUrl: "https://gateway.example/v1",
+		provider: "example",
+		compat: { sendIdempotencyKey: true },
+	};
+	const options = { apiKey: "test", fetch, maxRetries: 2 };
+	const stream =
+		api === "chat"
+			? streamChat({ ...gateway, api: "openai-completions" }, context, options)
+			: streamResponses(gateway, context, options);
+	const result = await stream.result();
+	assert.equal(attempts, expectedAttempts);
+	assert.equal(result.stopReason, "error");
+	assert.ok(result.errorMessage?.includes(code));
+});

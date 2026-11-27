@@ -1,6 +1,19 @@
 import OpenAI, { type APIError } from "openai";
 import { getRetryAfterMs } from "../utils/retry-hints.ts";
 
+export function openAIIdempotencyConflictCode(error: unknown): "idempotency_conflict" | undefined {
+	if (
+		error instanceof Error &&
+		"status" in error &&
+		error.status === 409 &&
+		"code" in error &&
+		error.code === "idempotency_conflict"
+	) {
+		return error.code;
+	}
+	return undefined;
+}
+
 /**
  * OpenAI client whose status errors carry `retryAfterMs` from the full response:
  * the SDK keeps only the body's `error` field, which drops a top-level Cloudflare
