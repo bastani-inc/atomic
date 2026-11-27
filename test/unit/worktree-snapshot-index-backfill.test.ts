@@ -529,7 +529,11 @@ describe("the backfill works in short transactions that resume where they stoppe
 			transaction: (callback, options) => database.transaction(callback, options),
 			all: async <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => {
 				const rows = await database.all<T>(sql, ...params);
-				if (!held && sql.startsWith("SELECT source, watermark, backfilled_through FROM")) {
+				if (
+					!held &&
+					(sql.startsWith("SELECT source, watermark, backfilled_through FROM") ||
+						sql.startsWith("SELECT 'object' AS kind"))
+				) {
 					held = true;
 					reached();
 					await hold;

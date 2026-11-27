@@ -83,6 +83,7 @@ import {
 	useWrappedFile,
 } from "./node-sqlite-file-gate.js";
 import {
+	type BeginContendedAnswer,
 	type ConnectionAnswer,
 	type ConnectionRequest,
 	type LeadAnswer,
@@ -236,7 +237,7 @@ const waitingHere = new Set<string>();
  * processes aging tickets on their own clocks took live tickets for stale and overtook their writers (#4387).
  */
 class SqliteWriteQueue {
-	private readonly directory: string;
+	readonly directory: string;
 	private readonly noticeDirectory: string;
 	private readonly degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void;
 	/** Now on the database's clock, in milliseconds, read where the connection runs. */
@@ -654,6 +655,32 @@ class SqliteHolderRecord {
 		} catch (cause) {
 			this.unavailable(cause);
 		}
+	}
+
+	/** Open descriptor for writing on the connection thread; undefined once closed or degraded. */
+	fd(): number | undefined {
+		return this.descriptor;
+	}
+
+	/** Records a write failure observed on the connection thread, retiring the descriptor immediately. */
+	failed(cause: unknown): void {
+		const descriptor = this.descriptor;
+		this.descriptor = undefined;
+		this.unavailable(cause);
+		if (descriptor === undefined) return;
+		this.writes = this.writes.then(async () => {
+			try {
+				await closeFile(descriptor);
+				await unlink(this.path);
+			} catch {
+				// Already gone; a leftover record of an exited process is ignored and removed by whoever reads it.
+			}
+		});
+	}
+
+	/** Waits for any queued write or failure cleanup on this record to finish. */
+	drain(): Promise<void> {
+		return this.writes;
 	}
 
 	/** Records that this connection is about to try for the lock; written before its first attempt. */
@@ -1239,6 +1266,9 @@ interface TransactionLead {
 	readonly aborted?: Error;
 }
 
+/** Sentinel returned by `attemptBegin` when a `checkQueue` probe saw entries in the writers'-queue directory. */
+const BEGIN_CONTENDED = Symbol("begin-contended");
+
 /**
  * Where a transaction's callback hands its last statements (`transactionFinisher`): kept until the callback returns,
  * then sent in one request with `end`, its COMMIT or its savepoint's RELEASE. A callback that throws instead sends none.
@@ -1739,15 +1769,38 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * Callers reach this only through `enqueue` and the transaction gate, so nothing else runs on the connection in
 	 * between.
 	 */
+	/** Applies any holder-record write failure the connection thread reported, retiring and unlinking its file. */
+	private async flushThreadHolderError(): Promise<void> {
+		if (!(this.connection instanceof ThreadConnection)) return;
+		const error = this.connection.takeHolderError();
+		if (error === undefined || this.holderRecord === undefined) return;
+		this.holderRecord.failed(error);
+		await this.holderRecord.drain();
+	}
+
+	/** Whether the connection's worker thread handles holder-record writes and writers'-queue directory checks. */
+	private threadManagesLock(): boolean {
+		return this.connection instanceof ThreadConnection && this.connection.inTransaction !== undefined;
+	}
+
 	private tryBegin(
 		statements: readonly SequencedStatement[] | undefined,
-	): undefined | LeadAnswer | Promise<undefined | LeadAnswer> {
+		checkQueue = false,
+	): undefined | LeadAnswer | BeginContendedAnswer | Promise<undefined | LeadAnswer | BeginContendedAnswer> {
 		const lock = this.fileLock;
+		const threadLock = this.threadManagesLock();
 		return this.call({
 			kind: "begin",
 			...(lock === undefined ? {} : { lockState: lock.buffer, lockTag: lock.tag }),
 			...(statements === undefined ? {} : { statements }),
-		}) as undefined | LeadAnswer | Promise<undefined | LeadAnswer>;
+			...(threadLock
+				? {
+						holderFd: this.holderRecord?.fd(),
+						...(this.writeQueue === undefined ? {} : { writersDir: this.writeQueue.directory }),
+						...(checkQueue ? { checkQueue: true } : {}),
+					}
+				: {}),
+		}) as undefined | LeadAnswer | BeginContendedAnswer | Promise<undefined | LeadAnswer | BeginContendedAnswer>;
 	}
 
 	/** Changes whenever another connection commits to the database: the lock is being used, not held idle. */
@@ -1773,21 +1826,41 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		let ticket: SqliteWriteTicket | undefined;
 		let notices: ReleaseNotices | undefined;
 		let holding = false;
+		const threadManaged = this.threadManagesLock();
 		try {
-			// Before its first attempt, so a holder stopped or starved the moment it takes the lock is still named. The writers'
-			// queue is looked at meanwhile, so the two file system calls cost one wait for its threads instead of two.
 			const queue = this.writeQueue;
 			queue?.observe();
-			const [, contended] = await Promise.all([this.holderRecord?.trying(), queue?.contendedOffLoop()]);
-			// Writers already waiting in other processes go first.
-			if (queue !== undefined && contended === true) {
-				const waiting = await this.queueFileOp(() => queue.liveTicketsOffLoop());
-				if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
+			let lastCause: unknown;
+			if (threadManaged) {
+				// Uncontended fast path: the connection thread checks the writers'-queue directory, writes the holder
+				// record, and attempts BEGIN IMMEDIATE (+ leading statements) in one request with zero thread-pool waits.
+				const fast = await this.attemptBegin(statements, true);
+				if (fast === undefined) {
+					holding = true;
+					this.lockUse.acquired(waitStarted);
+					return this.takeLed();
+				}
+				if (fast === BEGIN_CONTENDED && queue !== undefined) {
+					const waiting = await this.queueFileOp(() => queue.liveTicketsOffLoop());
+					if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
+				} else if (fast !== BEGIN_CONTENDED) {
+					lastCause = fast;
+					if (queue !== undefined)
+						ticket = await this.queueFileOp(async () => queue.join(await queue.liveTicketsOffLoop()));
+				}
+			} else {
+				// Before its first attempt, so a holder stopped or starved the moment it takes the lock is still named. The writers'
+				// queue is looked at meanwhile, so the two file system calls cost one wait for its threads instead of two.
+				const [, contended] = await Promise.all([this.holderRecord?.trying(), queue?.contendedOffLoop()]);
+				// Writers already waiting in other processes go first.
+				if (queue !== undefined && contended === true) {
+					const waiting = await this.queueFileOp(() => queue.liveTicketsOffLoop());
+					if (waiting.length > 0) ticket = await this.queueFileOp(() => queue.join(waiting));
+				}
 			}
 			// Read only once this writer waits, so an uncontended transaction pays nothing for it.
-			let version = ticket === undefined ? undefined : await this.dataVersion();
+			let version = ticket === undefined && lastCause === undefined ? undefined : await this.dataVersion();
 			let stalledSince = performance.now();
-			let lastCause: unknown;
 			for (;;) {
 				notices?.clear();
 				if (ticket !== undefined) notices = await this.watchTicket(ticket, notices);
@@ -1797,7 +1870,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 					const refused = attempt instanceof Promise ? await attempt : attempt;
 					if (refused === undefined) {
 						holding = true;
-						this.acquired(waitStarted);
+						if (threadManaged) this.lockUse.acquired(waitStarted);
+						else this.acquired(waitStarted);
 						return this.takeLed();
 					}
 					lastCause = refused;
@@ -1819,7 +1893,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				if (stalledMs >= lockWaitMs) throw await this.lockWaitTimeout(lockWaitMs, stalledMs, behind, lastCause);
 				if (!behind && committed && (await this.attemptThroughRelease(statements))) {
 					holding = true;
-					this.acquired(waitStarted);
+					if (threadManaged) this.lockUse.acquired(waitStarted);
+					else this.acquired(waitStarted);
 					return this.takeLed();
 				}
 				const recheckMs =
@@ -1836,36 +1911,54 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			// the holder could not go on. Its ticket leaves while the transaction runs; the release waits for it to be gone.
 			if (holding && ticket !== undefined) this.leaving = { ticket: ticket.name, left: ticket.leave() };
 			else await ticket?.leave();
-			if (!holding) await this.holderRecord?.free();
+			if (!holding) {
+				await this.flushThreadHolderError();
+				await this.holderRecord?.free();
+			}
 		}
 	}
 
 	/**
-	 * One attempt at the lock: `undefined` once it is taken, or the SQLITE_BUSY that refused it. Anything else fails.
-	 * Answered at once on the calling thread, and as a promise by a connection on a thread of its own.
+	 * One attempt at the lock: `undefined` once it is taken, `BEGIN_CONTENDED` when `checkQueue` found entries in the
+	 * writers'-queue directory, or the SQLITE_BUSY that refused it. Anything else fails. Answered at once on the
+	 * calling thread, and as a promise by a connection on a thread of its own.
 	 */
-	private attemptBegin(statements?: readonly SequencedStatement[]): unknown {
+	private attemptBegin(statements?: readonly SequencedStatement[], checkQueue = false): unknown {
 		const refusal = (error: unknown): unknown => {
 			const cause = error instanceof StorageUnavailableError ? error.cause : undefined;
 			if (!isSqliteBusy(cause)) throw error;
 			return cause;
 		};
+		const isContended = (value: undefined | LeadAnswer | BeginContendedAnswer): value is BeginContendedAnswer =>
+			typeof value === "object" && value !== null && "contended" in value;
 		// Open from the moment BEGIN is sent: the connection's thread may take the lock while this thread runs on.
 		const hold = this.fileGate?.role === "holds" ? holdFile(this.fileGate.file) : undefined;
-		let attempt: undefined | LeadAnswer | Promise<undefined | LeadAnswer>;
+		let attempt:
+			| undefined
+			| LeadAnswer
+			| BeginContendedAnswer
+			| Promise<undefined | LeadAnswer | BeginContendedAnswer>;
 		try {
-			attempt = this.tryBegin(statements);
+			attempt = this.tryBegin(statements, checkQueue);
 		} catch (error) {
 			releaseHold(hold);
 			return refusal(error);
 		}
 		if (!(attempt instanceof Promise)) {
+			if (isContended(attempt)) {
+				releaseHold(hold);
+				return BEGIN_CONTENDED;
+			}
 			this.current.hold = hold;
 			this.led = attempt;
 			return undefined;
 		}
 		return attempt.then(
 			(led) => {
+				if (isContended(led)) {
+					releaseHold(hold);
+					return BEGIN_CONTENDED;
+				}
 				this.current.hold = hold;
 				this.led = led;
 				return undefined;
@@ -1950,15 +2043,19 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.current.hold = undefined;
 		releaseHold(hold);
 		this.lockUse.released(committed);
-		const recorded = this.holderRecord?.free();
+		const release = this.connection instanceof ThreadConnection ? this.connection.takeReleaseState() : undefined;
+		await this.flushThreadHolderError();
+		const recorded = release?.freed === true ? undefined : this.holderRecord?.free();
 		const leaving = this.leaving;
 		this.leaving = undefined;
 		// Gone before the turn is handed on, so the writer it wakes finds no ticket of this one ahead of it.
 		await leaving?.left;
-		try {
-			await this.writeQueue?.wakeNext(leaving?.ticket);
-		} catch (cause) {
-			this.degraded("wake-failed", cause);
+		if (leaving !== undefined || release?.hasWaiters !== false) {
+			try {
+				await this.writeQueue?.wakeNext(leaving?.ticket);
+			} catch (cause) {
+				this.degraded("wake-failed", cause);
+			}
 		}
 		await recorded;
 	}
@@ -2362,23 +2459,43 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				// The queue's directory outlives its writers: only a live ticket means a writer is waiting. One that cannot be
 				// read counts as a writer waiting.
 				const queue = this.writeQueue;
-				if (queue !== undefined && (await queue.contendedOffLoop())) {
-					const waiting = await queue.liveTicketsOffLoop().catch(() => undefined);
-					if (waiting === undefined || waiting.length > 0) return false;
-				}
 				const start = performance.now();
-				await this.holderRecord?.trying();
-				try {
-					const attempt = this.attemptBegin();
-					if ((attempt instanceof Promise ? await attempt : attempt) !== undefined) {
+				const threadManaged = this.threadManagesLock();
+				if (threadManaged) {
+					try {
+						let attempt = await this.attemptBegin(undefined, true);
+						if (attempt === BEGIN_CONTENDED && queue !== undefined) {
+							const waiting = await queue.liveTicketsOffLoop().catch(() => undefined);
+							if (waiting === undefined || waiting.length > 0) return false;
+							attempt = await this.attemptBegin();
+						}
+						if (attempt !== undefined) {
+							await this.holderRecord?.free();
+							return false;
+						}
+					} catch (error) {
 						await this.holderRecord?.free();
-						return false;
+						throw error;
 					}
-				} catch (error) {
-					await this.holderRecord?.free();
-					throw error;
+					this.lockUse.acquired(start);
+				} else {
+					if (queue !== undefined && (await queue.contendedOffLoop())) {
+						const waiting = await queue.liveTicketsOffLoop().catch(() => undefined);
+						if (waiting === undefined || waiting.length > 0) return false;
+					}
+					await this.holderRecord?.trying();
+					try {
+						const attempt = this.attemptBegin();
+						if ((attempt instanceof Promise ? await attempt : attempt) !== undefined) {
+							await this.holderRecord?.free();
+							return false;
+						}
+					} catch (error) {
+						await this.holderRecord?.free();
+						throw error;
+					}
+					this.acquired(start);
 				}
-				this.acquired(start);
 				return new Promise<boolean>((resolve, reject) => {
 					void this.commitAlone({ callback, resolve: () => resolve(true), reject, scope }).catch(reject);
 				});

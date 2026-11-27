@@ -582,7 +582,8 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 		assert.match(start ?? "", /^[0-9a-f]{12}$/, `the start of process ${child.pid} can be read`);
 		return { pid: child.pid!, start: start!, stop };
 	};
-	const startsSupported = process.platform === "linux" || process.platform === "win32";
+	const startsSupported =
+		process.platform === "linux" || process.platform === "win32" || process.platform === "darwin";
 
 	test.skipIf(!startsSupported)("a lease this process takes names when it started (#5141)", async () => {
 		await admit();

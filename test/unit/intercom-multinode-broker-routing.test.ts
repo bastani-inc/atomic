@@ -27,6 +27,7 @@ import {
 	BROKER_LEASE_RENEW_INTERVAL_MS,
 	type IntercomBrokerStateOptions,
 	KNOWN_SESSION_RETENTION_MS,
+	OUTBOX_CLAIM_STALE_AFTER_MS,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import {
 	resolveBrokerStateSource,
@@ -35,11 +36,15 @@ import {
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { releasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import { RESTORING_RECIPIENT_HOLD_MS } from "../../packages/intercom/broker/restoring-recipients.js";
-import type { BrokerConnectedSession, SendClientMessage } from "../../packages/intercom/broker/send-handler.js";
+import {
+	type BrokerConnectedSession,
+	deliveryTargetIdentity,
+	type SendClientMessage,
+} from "../../packages/intercom/broker/send-handler.js";
 import { buildMessageSendSignature } from "../../packages/intercom/broker/send-signature.js";
 import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
-import type { WakeUpBus } from "../../packages/intercom/broker/wake-up-bus.js";
+import type { WakeUpBus, WakeUpListener } from "../../packages/intercom/broker/wake-up-bus.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
 import { NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../../packages/intercom/recipient-purpose.js";
 import { RECIPIENT_RECEIPT_TIMEOUT_MS, SEND_RESPONSE_TIMEOUT_MS } from "../../packages/intercom/retry-policy.js";
@@ -1486,6 +1491,152 @@ test("a renewal renews every message a broker is delivering in one call, not one
 	}
 });
 
+test("a resync scans a broker's idle recipients in one read of the outbox, and claims only for one whose message lost its wake-up (#6560)", async () => {
+	const listeners: WakeUpListener[] = [];
+	const [a] = await cluster(1, (_node, bus) => ({
+		publish: (hint) => bus.publish(hint),
+		subscribe: (brokerId, listener) => {
+			listeners.push(listener);
+			return bus.subscribe(brokerId, listener);
+		},
+		close: () => bus.close(),
+	}));
+	const outbox = a!.opened.state.outbox;
+	const claim = outbox.claim.bind(outbox);
+	const claimedFor: string[] = [];
+	let claiming = 0;
+	const claimSpy = vi.spyOn(outbox, "claim").mockImplementation(async (request) => {
+		claimedFor.push(request.targetIdentity);
+		claiming++;
+		try {
+			return await claim(request);
+		} finally {
+			claiming--;
+		}
+	});
+	const withUndelivered = outbox.withUndelivered!.bind(outbox);
+	const probes: (readonly string[])[] = [];
+	const probeSpy = vi.spyOn(outbox, "withUndelivered").mockImplementation((identities) => {
+		probes.push([...identities]);
+		return withUndelivered(identities);
+	});
+	try {
+		const recipients: BrokerConnectedSession[] = [];
+		for (let index = 0; index < 6; index++) recipients.push(await a!.connect(`idle-${index}`));
+		// Each registration's own first scan has ended.
+		await vi.waitFor(() => assert.ok(claimedFor.length >= recipients.length && claiming === 0), {
+			timeout: CROSS_NODE_WAIT_MS,
+		});
+		claimedFor.length = 0;
+		probes.length = 0;
+		const lost = recipients[3]!;
+		// Queued by another broker whose wake-up hint never arrived: only a scan finds it.
+		const id = randomUUID();
+		const queued = await outbox.enqueue({
+			targetIdentity: deliveryTargetIdentity(lost),
+			originBrokerId: "other-origin",
+			digest: id,
+			frame: { type: "message", from: lost.info, message: { id, timestamp: 1, content: { text: "lost hint" } } },
+		});
+		assert.equal(queued.status, "inserted");
+		for (const listener of listeners) listener({ kind: "resync", cause: "reconnected" });
+		await waitFor(() => messageFrames(lost, id)[0]);
+		assert.deepEqual(
+			probes.map((identities) => [...identities].sort()),
+			[recipients.map(deliveryTargetIdentity).sort()],
+			"one read for every recipient",
+		);
+		assert.deepEqual(claimedFor, [deliveryTargetIdentity(lost)], "a claim only where there is a row");
+	} finally {
+		claimSpy.mockRestore();
+		probeSpy.mockRestore();
+	}
+});
+
+test("a renewal renews every mirrored restoring reservation in one call, dropping stale ones and falling back on custom stores (#6714)", async () => {
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+	try {
+		const [a, b] = await cluster();
+		const owner = await b!.connect("owner", { group: "crew" });
+		const caps = [0, 1, 2].map((index) => ({
+			capability: `${randomUUID()}.capability`,
+			child: `restored-child-${index}`,
+		}));
+		const keys = caps.map(({ capability }) => createHash("sha256").update(capability).digest("hex"));
+		for (const { capability, child } of caps)
+			await b!.router.restoringReserved(capability, owner.info.id, child, normalizeGroup("crew"), [], false);
+		// End the middle reservation remotely so the next renewal tick sees mixed renewed + stale answers.
+		const midRead = await a!.opened.state.reservations.read(keys[1]!);
+		assert.equal(midRead.status, "active");
+		if (midRead.status !== "active") return;
+		assert.equal(
+			(
+				await a!.opened.state.reservations.release({
+					reservationKey: keys[1]!,
+					ownerSessionId: midRead.reservation.ownerSessionId,
+					fencingToken: midRead.reservation.fencingToken,
+				})
+			).status,
+			"released",
+		);
+
+		const reservations = b!.opened.state.reservations;
+		const renewMany = reservations.renewMany!.bind(reservations);
+		const batchedCalls: Promise<Awaited<ReturnType<typeof renewMany>>>[] = [];
+		const renewManySpy = vi.spyOn(reservations, "renewMany").mockImplementation((leases) => {
+			const pending = renewMany(leases);
+			batchedCalls.push(pending);
+			return pending;
+		});
+		const renewAloneSpy = vi.spyOn(reservations, "renew");
+		try {
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(batchedCalls.length, 1), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				renewManySpy.mock.calls[0]![0].map((lease) => lease.reservationKey),
+				keys,
+			);
+			assert.deepEqual(
+				(await batchedCalls[0]!).map((result) => result.status),
+				["renewed", "stale", "renewed"],
+			);
+			assert.equal(renewAloneSpy.mock.calls.length, 0);
+
+			// Next tick only renews the two remaining live mirrored reservations (the stale one was dropped).
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(batchedCalls.length, 2), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				renewManySpy.mock.calls[1]![0].map((lease) => lease.reservationKey),
+				[keys[0]!, keys[2]!],
+			);
+			assert.deepEqual(
+				(await batchedCalls[1]!).map((result) => result.status),
+				["renewed", "renewed"],
+			);
+			assert.equal(renewAloneSpy.mock.calls.length, 0);
+		} finally {
+			renewManySpy.mockRestore();
+			renewAloneSpy.mockRestore();
+		}
+
+		// Custom store fallback: when `renewMany` is absent, the router falls back to serial `renew()` calls.
+		Object.assign(reservations, { renewMany: undefined });
+		const fallbackSpy = vi.spyOn(reservations, "renew");
+		try {
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(() => assert.equal(fallbackSpy.mock.calls.length, 2), { timeout: CROSS_NODE_WAIT_MS });
+			assert.deepEqual(
+				fallbackSpy.mock.calls.map(([lease]) => lease.reservationKey),
+				[keys[0]!, keys[2]!],
+			);
+		} finally {
+			fallbackSpy.mockRestore();
+		}
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 test("a departing recipient releases all its in-flight messages in one releaseClaims call and keeps order (#6713)", async () => {
 	const [a, b] = await cluster();
 	const sender = await a!.connect("sender");
@@ -1706,6 +1857,46 @@ test("an ask whose route write fails is redelivered and keeps its reply route in
 	assert.deepEqual(frame, { type: "message", from: replier.info, message: reply });
 });
 
+test("a late received after a broker reclaims a stale claim settles the current claim token (#6712)", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("recipient");
+	const sent = message({ content: { text: "slow save across reclaim" } });
+	a!.send(sender, "recipient", sent);
+
+	await waitFor(() => messageFrames(recipient, sent.id)[0]);
+	const firstRow = await a!.opened.state.outbox.read(sent.id);
+	assert.equal(firstRow.status, "found");
+	if (firstRow.status === "found") assert.equal(firstRow.row.claimAttempts, 1);
+
+	// Age the claim past staleness and nudge broker b to reclaim under a new token (T2) while the recipient is still
+	// saving frame 1, producing a duplicate frame on the wire.
+	await b!.database.run(
+		"UPDATE mn_intercom_outbox SET claim_renewed_at = claim_renewed_at - ? WHERE message_id = ?",
+		OUTBOX_CLAIM_STALE_AFTER_MS + 5_000,
+		sent.id,
+	);
+	await a!.opened.bus.publish({
+		brokerId: b!.router.brokerId,
+		reason: "outbox",
+		version: firstRow.status === "found" ? firstRow.row.sequence : 1,
+	});
+	await waitFor(() => (messageFrames(recipient, sent.id).length >= 2 ? true : undefined));
+	const reclaimedRow = await a!.opened.state.outbox.read(sent.id);
+	assert.equal(reclaimedRow.status, "found");
+	if (reclaimedRow.status === "found") {
+		assert.equal(reclaimedRow.row.state, "claimed");
+		assert.equal(reclaimedRow.row.claimAttempts, 2);
+	}
+
+	// A single received confirmation (without re-confirming the duplicate frame) settles broker b's current claim (T2).
+	assert.equal(b!.router.received(recipient, sent.id), true);
+	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "delivered");
+	const settled = await a!.opened.state.outbox.read(sent.id);
+	assert.equal(settled.status, "found");
+	if (settled.status === "found") assert.equal(settled.row.state, "delivered");
+});
+
 test("an away session's asks move to the shared state only once it has them, and stay here otherwise (#4997)", async () => {
 	const [a] = await cluster(1);
 	const pendingAsks = a!.opened.state.pendingAsks;
@@ -1853,4 +2044,61 @@ test("an ask to an offline terminal child is refused like an ask to a live one",
 	const plain = message();
 	a!.send(asker, "child", plain);
 	assert.equal((await waitFor(() => outcomeOf(asker, plain.id))).type, "queued", "a plain send is still queued");
+});
+
+test("settleDelivered wakes the origin inside markDelivered for non-replies and waits for clearReply on replies (#6715)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker", { group: "team-a" });
+	const replier = await b!.connect("replier", { group: "team-a" });
+
+	// Spy on broker b's bus.publish to verify a plain/ask settlement needs no separate outcome publish.
+	const bPublishes: { brokerId: string; reason: string }[] = [];
+	const origBPublish = b!.opened.bus.publish.bind(b!.opened.bus);
+	b!.opened.bus.publish = async (hint) => {
+		bPublishes.push({ brokerId: hint.brokerId, reason: hint.reason });
+		return origBPublish(hint);
+	};
+
+	const ask = message({ expectsReply: true, content: { text: "status?" } });
+	a!.send(asker, replier.info.id, ask);
+	await waitFor(() => messageFrames(replier, ask.id)[0]);
+	b!.router.received(replier, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+	assert.deepEqual(
+		bPublishes.filter((p) => p.reason === "outcome"),
+		[],
+		"settling an ask writes its outcome hint inside markDelivered without an extra bus.publish",
+	);
+
+	// For a reply, delay broker a's pendingAsks.clearReply and confirm broker b does NOT receive an outcome hint
+	// before clearReply commits, so a second reply sent right after `delivered` is always refused.
+	const clearStarted = Promise.withResolvers<void>();
+	const releaseClear = Promise.withResolvers<void>();
+	const origClear = a!.opened.state.pendingAsks.clearReply.bind(a!.opened.state.pendingAsks);
+	a!.opened.state.pendingAsks.clearReply = async (route) => {
+		clearStarted.resolve();
+		await releaseClear.promise;
+		return origClear(route);
+	};
+
+	const reply = message({ replyTo: ask.id, content: { text: "green" } });
+	b!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
+	await waitFor(() => messageFrames(asker, reply.id)[0]);
+	a!.router.received(asker, reply.id);
+	await clearStarted.promise;
+	// While clearReply is still in flight, replier must not have been woken by an inline outcome hint.
+	await new Promise((resolve) => setTimeout(resolve, BUS_POLL_INTERVAL_MS * 4));
+	assert.equal(outcomeOf(replier, reply.id), undefined, "reply outcome waits until clearReply commits");
+
+	releaseClear.resolve();
+	assert.equal((await waitFor(() => outcomeOf(replier, reply.id))).type, "delivered");
+
+	const again = message({ replyTo: ask.id, content: { text: "second" } });
+	b!.send(replier, asker.info.id, again, { requirePendingReply: true });
+	const refused = await waitFor(() => outcomeOf(replier, again.id));
+	assert.equal(refused.type, "delivery_failed");
+	assert.equal(
+		refused.type === "delivery_failed" && refused.reason,
+		"Pending question route does not authorize this public reply",
+	);
 });

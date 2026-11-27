@@ -12,6 +12,7 @@ import * as migrations from "../migrations.js";
 import { applyStorageMigrations, ensureStorageSchema, withShortSchemaLockWaits } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
 import { schemaCatalogOf } from "../schema-catalog.js";
+import { queueSqliteSchemaSetup } from "../sqlite-open-batch.js";
 import { type RunSequence, sequenceRunner } from "../statement-sequence.js";
 import type {
 	SessionSearchCoverage,
@@ -237,17 +238,35 @@ interface TrigramEngine {
 	 * Absent where the engine keeps nothing aside.
 	 */
 	mergePending?(database: SqliteDatabase, dialect: StorageDialect, tables: SearchTables): Promise<boolean>;
-	candidates(
+	firstCandidatesWindow(
+		tables: SearchTables,
+		sessionId: string,
+		sets: readonly (readonly string[])[],
+		fromSeq: number,
+		cappedTo: number,
+		limit: number,
+	): SqliteStatement;
+	candidatesFromFirstWindow(
 		database: SqliteDatabase,
 		tables: SearchTables,
 		sid: number,
-		anyOf: readonly (readonly string[])[],
+		sets: readonly (readonly string[])[],
 		fromSeq: number,
-		toSeq: number,
+		through: number,
 		limit: number,
+		firstRows: readonly SeqRow[],
 		signal?: AbortSignal,
 	): Promise<readonly number[]>;
 }
+
+type SearchStateRow = SqliteRow & {
+	sid: number | bigint;
+	indexed_seq: number | bigint;
+	generation: string;
+	whole_seqs: string;
+};
+
+type SeqRow = SqliteRow & { seq: number | bigint };
 
 function trigramsOf(literal: string): string[] {
 	const chars = Array.from(literal);
@@ -387,22 +406,53 @@ const sqliteFts: TrigramEngine = {
 			params: [sessionId, sessionId],
 		};
 	},
-	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit, signal) {
-		signal?.throwIfAborted();
-		const sets = normalizeSets(anyOf);
-		if (sets.length === 0) return [];
-		const seqs: number[] = [];
+	firstCandidatesWindow(tables, sessionId, sets, fromSeq, cappedTo, limit) {
 		if (sets.every((all) => all.length === 1)) {
 			const query = sets.map((all) => `(${ftsLiteral(all[0]!)})`).join(" OR ");
-			for (let from = fromSeq; from <= toSeq && seqs.length < limit; ) {
+			return {
+				sql: `SELECT (rowid >> ${PART_BITS}) & ${SEQ_MASK} AS seq FROM ${tables.fts} WHERE ${tables.fts} MATCH ? AND rowid BETWEEN (SELECT (sid << 40) + (? << ${PART_BITS}) FROM ${tables.state} WHERE session_id = ?) AND (SELECT (sid << 40) + (min(?, indexed_seq) << ${PART_BITS}) + ${PART_MASK} FROM ${tables.state} WHERE session_id = ?) ORDER BY rowid LIMIT ?`,
+				params: [query, fromSeq, sessionId, cappedTo, sessionId, CANDIDATE_ROWS],
+			};
+		}
+		const firstWinCap = Math.min(cappedTo, fromSeq + SEQ_WINDOW - 1);
+		const arms: string[] = [];
+		const params: SqliteValue[] = [];
+		for (const [setIndex, all] of sets.entries()) {
+			for (const [litIndex, literal] of all.entries()) {
+				arms.push(
+					`SELECT (rowid >> ${PART_BITS}) & ${SEQ_MASK} AS seq, ${setIndex} AS set_id, ${litIndex} AS lit_id, ${all.length} AS need FROM ${tables.fts} WHERE ${tables.fts} MATCH ? AND rowid BETWEEN (SELECT (sid << 40) + (? << ${PART_BITS}) FROM ${tables.state} WHERE session_id = ?) AND (SELECT (sid << 40) + (min(?, indexed_seq) << ${PART_BITS}) + ${PART_MASK} FROM ${tables.state} WHERE session_id = ?)`,
+				);
+				params.push(ftsLiteral(literal), fromSeq, sessionId, firstWinCap, sessionId);
+			}
+		}
+		return {
+			sql: `SELECT DISTINCT seq FROM (
+				SELECT seq, set_id FROM (${arms.join(" UNION ALL ")})
+				GROUP BY seq, set_id HAVING count(DISTINCT lit_id) = max(need)
+			) ORDER BY seq LIMIT ?`,
+			params: [...params, limit],
+		};
+	},
+	async candidatesFromFirstWindow(database, tables, sid, sets, fromSeq, through, limit, firstRows, signal) {
+		signal?.throwIfAborted();
+		const seqs: number[] = [];
+		for (const row of firstRows) {
+			const seq = Number(row.seq);
+			if (seqs.at(-1) !== seq && seqs.length < limit) seqs.push(seq);
+		}
+		if (sets.every((all) => all.length === 1)) {
+			if (firstRows.length < CANDIDATE_ROWS || seqs.length >= limit) return seqs;
+			const query = sets.map((all) => `(${ftsLiteral(all[0]!)})`).join(" OR ");
+			for (let from = Number(firstRows.at(-1)!.seq) + 1; from <= through && seqs.length < limit; ) {
+				await yieldTurn();
 				signal?.throwIfAborted();
-				const rows = await database.all<SqliteRow & { seq: number | bigint }>(
+				const rows = await database.all<SeqRow>(
 					`SELECT (rowid >> ${PART_BITS}) & ${SEQ_MASK} AS seq FROM ${tables.fts} WHERE ${tables.fts} MATCH ? AND rowid BETWEEN (? << 40) + (? << ${PART_BITS}) AND (? << 40) + (? << ${PART_BITS}) + ${PART_MASK} ORDER BY rowid LIMIT ?`,
 					query,
 					sid,
 					from,
 					sid,
-					toSeq,
+					through,
 					CANDIDATE_ROWS,
 				);
 				for (const row of rows) {
@@ -411,13 +461,13 @@ const sqliteFts: TrigramEngine = {
 				}
 				if (rows.length < CANDIDATE_ROWS) break;
 				from = Number(rows.at(-1)!.seq) + 1;
-				await yieldTurn();
 			}
 			return seqs;
 		}
-		for (let from = fromSeq; from <= toSeq && seqs.length < limit; from += SEQ_WINDOW) {
+		for (let from = fromSeq + SEQ_WINDOW; from <= through && seqs.length < limit; from += SEQ_WINDOW) {
+			await yieldTurn();
 			signal?.throwIfAborted();
-			const winTo = Math.min(toSeq, from + SEQ_WINDOW - 1);
+			const winTo = Math.min(through, from + SEQ_WINDOW - 1);
 			const arms: string[] = [];
 			const params: SqliteValue[] = [];
 			for (const [setIndex, all] of sets.entries()) {
@@ -428,7 +478,7 @@ const sqliteFts: TrigramEngine = {
 					params.push(ftsLiteral(literal), sid, from, sid, winTo);
 				}
 			}
-			const rows = await database.all<SqliteRow & { seq: number | bigint }>(
+			const rows = await database.all<SeqRow>(
 				`SELECT DISTINCT seq FROM (
 					SELECT seq, set_id FROM (${arms.join(" UNION ALL ")})
 					GROUP BY seq, set_id HAVING count(DISTINCT lit_id) = max(need)
@@ -440,7 +490,6 @@ const sqliteFts: TrigramEngine = {
 				const seq = Number(row.seq);
 				if (seqs.at(-1) !== seq && seqs.length < limit) seqs.push(seq);
 			}
-			if (winTo < toSeq && seqs.length < limit) await yieldTurn();
 		}
 		return seqs;
 	},
@@ -590,11 +639,8 @@ const postgresTrigrams: TrigramEngine = {
 			params: [sessionId],
 		};
 	},
-	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit, signal) {
-		signal?.throwIfAborted();
-		const sets = normalizeSets(anyOf);
-		if (sets.length === 0) return [];
-		const seqs: number[] = [];
+	firstCandidatesWindow(tables, sessionId, sets, fromSeq, cappedTo, limit) {
+		const firstWinCap = Math.min(cappedTo, fromSeq + SEQ_WINDOW - 1);
 		if (sets.every((all) => all.length === 1)) {
 			const params: SqliteValue[] = [];
 			const where = sets
@@ -604,10 +650,51 @@ const postgresTrigrams: TrigramEngine = {
 					return `${likeColumn(literal)} LIKE ? ESCAPE '\\'`;
 				})
 				.join(" OR ");
-			for (let from = fromSeq; from <= toSeq && seqs.length < limit; from += SEQ_WINDOW) {
+			return {
+				sql: `SELECT DISTINCT seq FROM ${tables.entries} WHERE sid = (SELECT sid FROM ${tables.state} WHERE session_id = ?) AND seq >= ? AND seq <= (SELECT LEAST(?, indexed_seq) FROM ${tables.state} WHERE session_id = ?) AND (${where}) ORDER BY seq LIMIT ?`,
+				params: [sessionId, fromSeq, firstWinCap, sessionId, ...params, limit],
+			};
+		}
+		const arms: string[] = [];
+		const params: SqliteValue[] = [];
+		for (const [setIndex, all] of sets.entries()) {
+			for (const [litIndex, literal] of all.entries()) {
+				arms.push(
+					`SELECT seq, ${setIndex} AS set_id, ${litIndex} AS lit_id, ${all.length} AS need FROM ${tables.entries} WHERE sid = (SELECT sid FROM ${tables.state} WHERE session_id = ?) AND seq >= ? AND seq <= (SELECT LEAST(?, indexed_seq) FROM ${tables.state} WHERE session_id = ?) AND ${likeColumn(literal)} LIKE ? ESCAPE '\\'`,
+				);
+				params.push(sessionId, fromSeq, firstWinCap, sessionId, likePattern(literal));
+			}
+		}
+		return {
+			sql: `SELECT DISTINCT seq FROM (
+				SELECT seq, set_id FROM (${arms.join(" UNION ALL ")}) AS hits
+				GROUP BY seq, set_id HAVING count(DISTINCT lit_id) = max(need)
+			) AS matched ORDER BY seq LIMIT ?`,
+			params: [...params, limit],
+		};
+	},
+	async candidatesFromFirstWindow(database, tables, sid, sets, fromSeq, through, limit, firstRows, signal) {
+		signal?.throwIfAborted();
+		const seqs: number[] = [];
+		for (const row of firstRows) {
+			const seq = Number(row.seq);
+			if (seqs.at(-1) !== seq && seqs.length < limit) seqs.push(seq);
+		}
+		if (sets.every((all) => all.length === 1)) {
+			if (fromSeq + SEQ_WINDOW > through || seqs.length >= limit) return seqs;
+			const params: SqliteValue[] = [];
+			const where = sets
+				.map((all) => {
+					const literal = all[0]!;
+					params.push(likePattern(literal));
+					return `${likeColumn(literal)} LIKE ? ESCAPE '\\'`;
+				})
+				.join(" OR ");
+			for (let from = fromSeq + SEQ_WINDOW; from <= through && seqs.length < limit; from += SEQ_WINDOW) {
+				await yieldTurn();
 				signal?.throwIfAborted();
-				const winTo = Math.min(toSeq, from + SEQ_WINDOW - 1);
-				const rows = await database.all<SqliteRow & { seq: number | bigint }>(
+				const winTo = Math.min(through, from + SEQ_WINDOW - 1);
+				const rows = await database.all<SeqRow>(
 					`SELECT DISTINCT seq FROM ${tables.entries} WHERE sid = ? AND seq >= ? AND seq <= ? AND (${where}) ORDER BY seq LIMIT ?`,
 					sid,
 					from,
@@ -616,13 +703,13 @@ const postgresTrigrams: TrigramEngine = {
 					limit - seqs.length,
 				);
 				for (const row of rows) seqs.push(Number(row.seq));
-				if (winTo < toSeq && seqs.length < limit) await yieldTurn();
 			}
 			return seqs;
 		}
-		for (let from = fromSeq; from <= toSeq && seqs.length < limit; from += SEQ_WINDOW) {
+		for (let from = fromSeq + SEQ_WINDOW; from <= through && seqs.length < limit; from += SEQ_WINDOW) {
+			await yieldTurn();
 			signal?.throwIfAborted();
-			const winTo = Math.min(toSeq, from + SEQ_WINDOW - 1);
+			const winTo = Math.min(through, from + SEQ_WINDOW - 1);
 			const arms: string[] = [];
 			const params: SqliteValue[] = [];
 			for (const [setIndex, all] of sets.entries()) {
@@ -633,7 +720,7 @@ const postgresTrigrams: TrigramEngine = {
 					params.push(sid, from, winTo, likePattern(literal));
 				}
 			}
-			const rows = await database.all<SqliteRow & { seq: number | bigint }>(
+			const rows = await database.all<SeqRow>(
 				`SELECT DISTINCT seq FROM (
 					SELECT seq, set_id FROM (${arms.join(" UNION ALL ")}) AS hits
 					GROUP BY seq, set_id HAVING count(DISTINCT lit_id) = max(need)
@@ -645,7 +732,6 @@ const postgresTrigrams: TrigramEngine = {
 				const seq = Number(row.seq);
 				if (seqs.at(-1) !== seq && seqs.length < limit) seqs.push(seq);
 			}
-			if (winTo < toSeq && seqs.length < limit) await yieldTurn();
 		}
 		return seqs;
 	},
@@ -690,14 +776,39 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		database: SqliteDatabase,
 		sessionTables: SessionTables,
 		prefix: string | undefined,
+		onUnavailable?: () => void,
 	): Promise<SqlSessionSearchIndex | undefined> {
 		const tables = renderStorageIdentifiers("sessions", SESSION_SEARCH_TABLES, prefix);
-		const engine = engineFor(dialectOf(database));
+		const dialect = dialectOf(database);
+		const engine = engineFor(dialect);
 		const ledger = storageMigrationTable(prefix);
 		let created = false;
 		try {
 			if (await SqlSessionSearchIndex.tablesExist(database, tables))
 				return new SqlSessionSearchIndex(database, sessionTables, tables);
+			if (!dialect.versionedMigrations) {
+				const { int, text, rowKey } = dialect.types;
+				const stateSql = `CREATE TABLE IF NOT EXISTS ${tables.state} (sid ${rowKey}, session_id ${text} NOT NULL UNIQUE, format ${int} NOT NULL, indexed_seq ${int} NOT NULL, revision ${text} NOT NULL, entry_id ${text} NOT NULL)${dialect.tableOptions}`;
+				const ftsSql = `CREATE VIRTUAL TABLE IF NOT EXISTS ${tables.fts} USING fts5(body, content='', contentless_delete=1, tokenize='trigram', detail='none')`;
+				if (
+					queueSqliteSchemaSetup(database, ledger, {
+						optional: true,
+						verify: (catalog) => catalog.hasTable(tables.state) && catalog.hasTable(tables.fts),
+						onFailure: onUnavailable,
+						run(ctx) {
+							if (!ctx.tableExisted(tables.state)) {
+								ctx.enqueue(stateSql);
+								ctx.noteTableCreated(tables.state);
+							}
+							if (!ctx.tableExisted(tables.fts)) {
+								ctx.enqueue(ftsSql);
+								ctx.noteTableCreated(tables.fts);
+							}
+						},
+					})
+				)
+					return new SqlSessionSearchIndex(database, sessionTables, tables);
+			}
 			await applyStorageMigrations(
 				database,
 				SESSION_SEARCH_DOMAIN,
@@ -722,9 +833,9 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 				],
 				{ table: ledger, acceptNewer: true },
 			);
-			if (!(await engine.ready(database, dialectOf(database), tables))) return undefined;
+			if (!(await engine.ready(database, dialect, tables))) return undefined;
 			// Tuning is for speed only: a failure leaves the index as it was, and searches go on using it.
-			if (!created) await engine.tune?.(database, dialectOf(database), tables, ledger).catch(() => undefined);
+			if (!created) await engine.tune?.(database, dialect, tables, ledger).catch(() => undefined);
 		} catch {
 			return undefined;
 		}
@@ -734,9 +845,9 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	private static async tablesExist(database: SqliteDatabase, tables: SearchTables): Promise<boolean> {
 		const dialect = dialectOf(database);
 		if (dialect.versionedMigrations) return false;
-		// The catalog an open read answers both, without a read of their own (#6560).
+		// The catalog an open read answers both, without a read of their own (#6560, #6709).
 		const catalog = await schemaCatalogOf(database);
-		if (catalog?.hasTable(tables.state) === true && catalog.hasTable(tables.fts)) return true;
+		if (catalog !== undefined) return catalog.hasTable(tables.state) && catalog.hasTable(tables.fts);
 		const probes = [tables.state, tables.fts].map((table) => dialect.tableExists(table));
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
 		return found.every((row) => row !== undefined);
@@ -1057,33 +1168,62 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	): Promise<readonly number[] | undefined> {
 		signal?.throwIfAborted();
 		if (anyOf.length === 0 || fromSeq > toSeq) return [];
-		const state = await this.database.get<
-			SqliteRow & {
-				sid: number | bigint;
-				indexed_seq: number | bigint;
-				generation: string;
-				whole_seqs: string;
+		const stateStatement: SqliteStatement = {
+			sql: `SELECT sid, indexed_seq, revision AS generation, entry_id AS whole_seqs FROM ${this.tables.state} WHERE session_id = ?`,
+			params: [sessionId],
+		};
+		const sets = normalizeSets(anyOf);
+		const cappedTo = Math.min(toSeq, SEQ_SPACE - 1);
+		const sqlFrom = Math.max(0, fromSeq);
+		if (sets.length === 0 || limit <= 0 || sqlFrom > cappedTo) {
+			const state = await this.database.get<SearchStateRow>(stateStatement.sql, ...stateStatement.params);
+			signal?.throwIfAborted();
+			if (!state) return generation !== undefined ? undefined : [];
+			const indexedSeq = Number(state.indexed_seq);
+			if (generation !== undefined && (state.generation !== generation || indexedSeq < toSeq)) {
+				return undefined;
 			}
-		>(
-			`SELECT sid, indexed_seq, revision AS generation, entry_id AS whole_seqs FROM ${this.tables.state} WHERE session_id = ?`,
-			sessionId,
+			const through = Math.min(cappedTo, indexedSeq);
+			if (fromSeq > through) return [];
+			const wholeSeqs = parseWholeSeqs(state.whole_seqs).filter((seq) => seq >= fromSeq && seq <= through);
+			return mergeCandidateSeqs([], wholeSeqs, limit);
+		}
+		const firstWindow = this.engine.firstCandidatesWindow(this.tables, sessionId, sets, sqlFrom, cappedTo, limit);
+		const initial = await this.database.transaction<{
+			readonly state: SearchStateRow | undefined;
+			readonly rows: readonly SeqRow[];
+		}>(
+			async (tx) => {
+				const state = await tx.get<SearchStateRow>(stateStatement.sql, ...stateStatement.params);
+				if (!state) return { state, rows: [] };
+				const indexedSeq = Number(state.indexed_seq);
+				if (generation !== undefined && (state.generation !== generation || indexedSeq < toSeq)) {
+					return { state, rows: [] };
+				}
+				if (fromSeq > Math.min(cappedTo, indexedSeq)) return { state, rows: [] };
+				const rows = await tx.all<SeqRow>(firstWindow.sql, ...firstWindow.params);
+				return { state, rows };
+			},
+			{ readOnly: true, retryTransientFailures: true, leading: [stateStatement, firstWindow], leadingOnly: true },
 		);
 		signal?.throwIfAborted();
+		const { state } = initial;
 		if (!state) return generation !== undefined ? undefined : [];
 		const indexedSeq = Number(state.indexed_seq);
 		if (generation !== undefined && (state.generation !== generation || indexedSeq < toSeq)) {
 			return undefined;
 		}
-		const through = Math.min(toSeq, indexedSeq, SEQ_SPACE - 1);
+		const through = Math.min(cappedTo, indexedSeq);
 		if (fromSeq > through) return [];
-		const engineSeqs = await this.engine.candidates(
+		const engineSeqs = await this.engine.candidatesFromFirstWindow(
 			this.database,
 			this.tables,
 			Number(state.sid),
-			anyOf,
-			fromSeq,
+			sets,
+			sqlFrom,
 			through,
 			limit,
+			initial.rows,
 			signal,
 		);
 		signal?.throwIfAborted();

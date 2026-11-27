@@ -11,6 +11,8 @@ import { interceptConnectionRequests } from "../helpers/sqlite-connection-reques
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { ensureStorageSchema, storageSchemaCurrent } from "../../packages/coding-agent/src/core/storage/migrations.js";
 import { withStorageSchemaCatalog } from "../../packages/coding-agent/src/core/storage/schema-catalog.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 
 registerSqliteDatabaseConformance({ describe, it: test }, "node SQLite on Bun", withNodeSqliteDatabase);
 
@@ -93,6 +95,55 @@ test("a SQLite store's stamped schema setup is believed until the schema changes
 		assert.equal(await current(), false, "a later change to the schema leaves the stamp behind");
 	} finally {
 		await database.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("SQLite open-scope batching pins waits and write locks on Bun for store and broker opens (#6709)", async () => {
+	const directory = makeTempDirectory("atomic-storage-open-batch-bun-");
+	async function measure(run: () => Promise<void>) {
+		const unanswered = new WeakMap<object, number>();
+		let waits = 0;
+		let locks = 0;
+		const interception = interceptConnectionRequests((request, send, connection) => {
+			const pending = unanswered.get(connection) ?? 0;
+			if (pending === 0) waits += 1;
+			if (request.kind === "begin") locks += 1;
+			unanswered.set(connection, pending + 1);
+			return send(request).finally(() => {
+				unanswered.set(connection, (unanswered.get(connection) ?? 1) - 1);
+			});
+		});
+		try {
+			await run();
+		} finally {
+			interception.restore();
+		}
+		return { waits, locks };
+	}
+	try {
+		const storePath = join(directory, "store.sqlite");
+		const openStore = async () => {
+			const db = await openNodeSqliteDatabase(storePath);
+			const store = await SqlSessionStore.open(db);
+			await store.close();
+			await db.close();
+		};
+		assert.deepEqual(await measure(openStore), { waits: 7, locks: 1 }, "Store, new database");
+		assert.deepEqual(await measure(openStore), { waits: 5, locks: 0 }, "Store, warm");
+
+		const brokerPath = join(directory, "broker.sqlite");
+		const openBroker = async () => {
+			const { state, bus } = await openIntercomBrokerState({
+				openDatabase: () => openNodeSqliteDatabase(brokerPath),
+			});
+			await bus.close();
+			await state.close();
+		};
+		assert.deepEqual(await measure(openBroker), { waits: 10, locks: 1 }, "Broker, new database");
+		assert.deepEqual(await measure(openBroker), { waits: 8, locks: 0 }, "Broker, second open");
+		assert.deepEqual(await measure(openBroker), { waits: 8, locks: 0 }, "Broker, warm");
+	} finally {
 		removeTempDirectory(directory);
 	}
 });

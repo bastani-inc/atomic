@@ -224,21 +224,15 @@ test("a broker reopened after another prefix changed the schema checks its store
 	);
 });
 
-test("a broker's first open of a new database stamps nothing, so it costs what it did before stamps (#6560)", async () => {
+test("a broker's first open of a new database sets up and stamps every store in one write transaction (#6560, #6709)", async () => {
 	const path = databasePath();
 	const sent = recordKinds();
 	await withBroker(current, path);
 	const first = sent.take();
-	// Its setups' transactions only: no stamps statement, no end-of-open transaction, no read of a missing stamps table.
-	// Each call that adds columns adds them all in one, where it took one for each column before (#6560).
-	assert.equal(first.filter((kind) => kind === "begin").length, 24);
-	assert.equal(
-		await onFile(path, (database) =>
-			database.get("SELECT name FROM sqlite_master WHERE name = 'atomic_schema_stamps'"),
-		),
-		undefined,
-	);
+	// Every store's setup, added columns, indexes, counter seed and schema stamps commit in one write transaction (#6709).
+	assert.equal(first.filter((kind) => kind === "begin").length, 1);
+	assert.equal((await stampsOf(path)).behind, 0);
 	await withBroker(current, path);
-	assert.equal(sent.take().filter((kind) => kind === "begin").length, 1, "the second open stamps every store in one");
+	assert.equal(sent.take().filter((kind) => kind === "begin").length, 0, "the second open takes no write lock");
 	assert.equal((await stampsOf(path)).behind, 0);
 });

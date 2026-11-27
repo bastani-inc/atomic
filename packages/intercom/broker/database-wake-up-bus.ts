@@ -25,7 +25,13 @@ import type {
 	WakeUpSubscription,
 } from "./wake-up-bus.js";
 import { addMissingColumns } from "./sql-add-column.js";
-import { ensureBrokerSchema, openCatalogOf, RETRY_UNAPPLIED, withBrokerSchemaCatalog } from "./sql-schema.js";
+import {
+	ensureBrokerSchema,
+	openCatalogOf,
+	queueBrokerSqliteSetup,
+	RETRY_UNAPPLIED,
+	withBrokerSchemaCatalog,
+} from "./sql-schema.js";
 
 /**
  * S4 wake-up bus (specs/2026-10-19-intercom-multi-node.md §5.6): a hint log in the shared storage database. Each
@@ -70,6 +76,8 @@ const WAKE_UP_PRUNE_AGE_MS = WAKE_UP_HINT_RETENTION_MS - WAKE_UP_PRUNE_INTERVAL_
  * statements of bounded size.
  */
 export const WAKE_UP_POLL_BATCH_SIZE = 500;
+/** The most hints one publish transaction writes together (#6715). */
+const WAKE_UP_PUBLISH_BATCH_MAX = 500;
 /** Longest wait between attempts to reopen an unavailable database; the backup poll covers the gap. */
 export const WAKE_UP_RECONNECT_MAX_DELAY_MS = OUTBOX_BACKUP_POLL_INTERVAL_MS;
 
@@ -188,7 +196,25 @@ async function createSchema(database: SqliteDatabase, table: string, prefix: str
 	const catalog = await openCatalogOf(database);
 	const existed = catalog === undefined || catalog.hasTable(table);
 	await ensureBrokerSchema(database, prefix, "wakeups", (tx) => tx.exec(schema));
-	if (existed) await addMissingColumns(database, table, { target_identity: "TEXT" });
+	if (dialectOf(database).name === "sqlite") {
+		if (
+			!(catalog !== undefined && catalog.hasColumn(table, "target_identity")) &&
+			!queueBrokerSqliteSetup(database, prefix ?? "", {
+				verify: (found) => found.hasColumn(table, "target_identity"),
+				run(ctx) {
+					// Add target_identity only when an older build created the table before this transaction without it.
+					if (ctx.tableExisted(table) && !ctx.hasColumn(table, "target_identity")) {
+						ctx.enqueue(`ALTER TABLE ${table} ADD COLUMN target_identity TEXT`);
+						ctx.noteColumnAdded(table, "target_identity");
+					}
+				},
+			})
+		) {
+			if (existed) await addMissingColumns(database, table, { target_identity: "TEXT" });
+		}
+	} else if (existed) {
+		await addMissingColumns(database, table, { target_identity: "TEXT" });
+	}
 	await ensureUnloggedHints(database, table, prefix);
 }
 
@@ -296,6 +322,13 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	private pollAgain = false;
 	/** When a publish last deleted the hints past the retention, by this process's clock. */
 	private prunedAt: number | undefined;
+	/** Publishes waiting for the next batch transaction, in the order they were made (#6715). */
+	private readonly pendingPublishes: {
+		readonly hint: WakeUpHint;
+		readonly resolve: (result: WakeUpPublishResult) => void;
+	}[] = [];
+	/** The drain loop currently writing batches of queued publishes, if any. */
+	private publishing: Promise<void> | undefined;
 
 	constructor(options: DatabaseWakeUpBusOptions, table: string, database: SqliteDatabase) {
 		this.options = options;
@@ -307,24 +340,67 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		this.schedule = options.schedule ?? scheduleTimeout;
 	}
 
-	async publish(hint: WakeUpHint): Promise<WakeUpPublishResult> {
-		if (hint.brokerId.length === 0) return { status: "invalid", reason: "empty-broker-id" };
+	publish(hint: WakeUpHint): Promise<WakeUpPublishResult> {
+		if (hint.brokerId.length === 0) return Promise.resolve({ status: "invalid", reason: "empty-broker-id" });
+		if (this.closed) return Promise.resolve({ status: "unavailable" });
+		return new Promise<WakeUpPublishResult>((resolve) => {
+			this.pendingPublishes.push({ hint, resolve });
+			if (this.publishing === undefined) this.publishing = this.drainPublishes();
+		});
+	}
+
+	private async drainPublishes(): Promise<void> {
+		try {
+			// Publishes made in the same turn as the first go with it.
+			await undefined;
+			while (this.pendingPublishes.length > 0) {
+				if (this.closed) {
+					for (const { resolve } of this.pendingPublishes.splice(0)) resolve({ status: "unavailable" });
+					return;
+				}
+				const batch = this.pendingPublishes.splice(0, WAKE_UP_PUBLISH_BATCH_MAX);
+				const result = await this.publishBatch(batch.map(({ hint }) => hint));
+				for (const { resolve } of batch) resolve(result);
+			}
+		} finally {
+			this.publishing = undefined;
+		}
+	}
+
+	private async publishBatch(hints: readonly WakeUpHint[]): Promise<WakeUpPublishResult> {
 		const database = await this.connection(false);
 		if (database === undefined) return { status: "unavailable" };
-		const { nowMs } = dialectOf(database);
-		const insert: SqliteStatement = {
-			sql: `INSERT INTO ${this.table} (broker_id, reason, version, created_at, target_identity) VALUES (?, ?, ?, ${nowMs}, ?)`,
-			params: [hint.brokerId, hint.reason, hint.version, hint.targetIdentity ?? null],
-		};
+		const { name: dialect, nowMs, types } = dialectOf(database);
+		const payload = JSON.stringify(
+			hints.map((hint) => [hint.brokerId, hint.reason, hint.version, hint.targetIdentity ?? null]),
+		);
+		const insert: SqliteStatement =
+			dialect === "postgres"
+				? {
+						sql: `INSERT INTO ${this.table} (broker_id, reason, version, created_at, target_identity)
+							SELECT h ->> 0, h ->> 1, CAST(h ->> 2 AS ${types.int}), ${nowMs}, h ->> 3
+							FROM jsonb_array_elements(?::jsonb) WITH ORDINALITY AS t(h, ord)
+							ORDER BY ord`,
+						params: [payload],
+					}
+				: {
+						sql: `INSERT INTO ${this.table} (broker_id, reason, version, created_at, target_identity)
+							SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]'),
+								CAST(json_extract(value, '$[2]') AS ${types.int}), ${nowMs}, json_extract(value, '$[3]')
+							FROM json_each(?)
+							ORDER BY key`,
+						params: [payload],
+					};
 		const notifications = database.notifications;
 		try {
 			if (notifications === undefined) await database.run(insert.sql, ...insert.params);
 			else {
-				// The notifications go out once the hint commits, so the poll they start finds the hint: on Postgres right
-				// behind its commit, in the same round trip, and the insert goes with the transaction's start (#6560). A hint
-				// is a new row that no write checks first, so its writers take no lock domain: see
-				// `fencedPath("intercom-wakeup-hint")`.
-				const notices = wakeUpNotices(notifications, this.table, this.leases, hint.brokerId);
+				// The notifications go out once the hints commit, one per distinct broker, so the poll they start finds
+				// them: on Postgres right behind the commit, in the same round trip, and the batch insert goes with the
+				// transaction's start (#6560, #6715). Hints are new rows that no write checks first, so their writers take
+				// no lock domain: see `fencedPath("intercom-wakeup-hint")`.
+				const brokers = [...new Set(hints.map((hint) => hint.brokerId))];
+				const notices = brokers.flatMap((brokerId) => wakeUpNotices(notifications, this.table, this.leases, brokerId));
 				await database.transaction(
 					async (tx) => {
 						await Promise.all([insert, ...notices].map(({ sql, params }) => tx.run(sql, ...params)));
@@ -383,6 +459,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		this.stopListening();
 		for (const subscription of this.subscriptions) subscription.open = false;
 		this.subscriptions.clear();
+		await this.publishing;
 		await this.polling;
 		await this.opening;
 		const database = this.database;

@@ -901,6 +901,7 @@ module.exports.CommandTaskKind = nativeBinding.CommandTaskKind
 module.exports.containProcessTree = nativeBinding.containProcessTree
 module.exports.containProcessTreeAllowingBreakaway = nativeBinding.containProcessTreeAllowingBreakaway
 module.exports.FileType = nativeBinding.FileType
+module.exports.fsyncDescriptor = nativeBinding.fsyncDescriptor
 module.exports.glob = nativeBinding.glob
 module.exports.grep = nativeBinding.grep
 module.exports.GrepOutputMode = nativeBinding.GrepOutputMode

@@ -6,6 +6,7 @@ import {
 	brokerWakeUpChannel,
 	type DatabaseWakeUpBusOptions,
 	openDatabaseWakeUpBus,
+	wakeUpNotices,
 } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
@@ -32,6 +33,7 @@ import { countRoundTrips } from "../helpers/postgres-round-trips.js";
 
 const PREFIX = "np_";
 const TABLE = `${PREFIX}intercom_wakeups`;
+const LEASES = `${PREFIX}intercom_leases`;
 /** The schema the test databases keep Atomic's tables in, which names their channels. */
 const SCHEMA = "atomic";
 /** A poll interval no test waits for: a hint that arrives came by a notification. */
@@ -176,6 +178,90 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 		});
 	});
 
+	test("concurrent publishes share one transaction and one notice per distinct broker, in two round trips (#6715)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const publisher = await openBus(scope);
+			const subscriber = await openBus(scope);
+			try {
+				await members(scope, { "broker-b": "current", "broker-c": "current" });
+				// Warm up the publisher's pool & prune timer before subscribing so the warm-up notifications cannot arrive
+				// late and race the count; only the subscriber's initial listening poll delivers these hints (#6688).
+				assert.deepEqual(await publisher.publish({ brokerId: "broker-b", reason: "outbox", version: 0 }), {
+					status: "published",
+				});
+				assert.deepEqual(await publisher.publish({ brokerId: "broker-c", reason: "outbox", version: 0 }), {
+					status: "published",
+				});
+				const toB = await collect(subscriber, "broker-b");
+				const toC = await collect(subscriber, "broker-c");
+				const ownB = await rawListener(scope, [brokerWakeUpChannel(TABLE, "broker-b")]);
+				const ownC = await rawListener(scope, [brokerWakeUpChannel(TABLE, "broker-c")]);
+				try {
+					await toB.until(1, LISTENING_BOUND_MS);
+					await toC.until(1, LISTENING_BOUND_MS);
+					await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 4));
+					ownB.received.length = 0;
+					ownC.received.length = 0;
+
+					const batch: WakeUpHint[] = Array.from({ length: 12 }, (_, index) =>
+						index % 2 === 0
+							? {
+									brokerId: "broker-b",
+									reason: "outbox",
+									version: index + 1,
+									targetIdentity: `alice-${index}`,
+								}
+							: {
+									brokerId: "broker-c",
+									reason: "outcome",
+									version: index + 1,
+								},
+					);
+					const trips = countRoundTrips();
+					restores.push(trips.restore);
+					const texts = recordStatements();
+					const results = await Promise.all(batch.map((hint) => publisher.publish(hint)));
+					const publishTrips = trips.take();
+					assert.deepEqual(
+						results,
+						batch.map(() => ({ status: "published" })),
+					);
+					assert.equal(publishTrips, 2, "all concurrent hints share one transaction and its commit + notices");
+					const inserts = texts.filter((text) => text.includes(`INSERT INTO ${TABLE}`));
+					assert.equal(inserts.length, 1, `expected one batch insert, got ${JSON.stringify(inserts)}`);
+					const commit = texts.indexOf("COMMIT");
+					const insertIndex = texts.findIndex((text) => text.includes(`INSERT INTO ${TABLE}`));
+					const notify = texts.findIndex((text) => text.includes("pg_notify"));
+					assert.ok(insertIndex >= 0 && insertIndex < commit, "the batch insert commits with the transaction");
+					assert.ok(notify > commit, `notifications go out after commit: ${JSON.stringify(texts)}`);
+					assert.ok(
+						texts.slice(commit + 1, notify).some((text) => text.includes("SET LOCAL synchronous_commit TO off")),
+						"notifications run in their own no-flush transaction",
+					);
+					await toB.until(7, NOTIFIED_BOUND_MS);
+					await toC.until(7, NOTIFIED_BOUND_MS);
+					assert.deepEqual(
+						toB.hints.slice(1),
+						batch.filter((hint) => hint.brokerId === "broker-b"),
+					);
+					assert.deepEqual(
+						toC.hints.slice(1),
+						batch.filter((hint) => hint.brokerId === "broker-c"),
+					);
+					await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 4));
+					assert.equal(ownB.received.length, 1, "one notice for broker-b across all its hints in the batch");
+					assert.equal(ownC.received.length, 1, "one notice for broker-c across all its hints in the batch");
+				} finally {
+					await ownB.close();
+					await ownC.close();
+				}
+			} finally {
+				await publisher.close();
+				await subscriber.close();
+			}
+		});
+	});
+
 	test("an offline recipient's send writes its hint and notifies after its commit, at no extra round trip, on its host's channel alone", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const { state, bus } = await openIntercomBrokerState(
@@ -260,6 +346,85 @@ describe.skipIf(postgresSkipReason !== undefined)("Intercom wake-ups on PostgreS
 				} finally {
 					await own.close();
 					await others.close();
+				}
+			} finally {
+				await bus.close();
+				await state.close();
+			}
+		});
+	});
+
+	test("an offline send's post-commit notification does not stall behind an unrelated serial transaction on the same database (#6712)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const database = await scope.open();
+			const { state, bus } = await openIntercomBrokerState(
+				{ openDatabase: async () => database, prefix: PREFIX },
+				{ pollIntervalMs: NEVER_POLL_MS, listeningPollIntervalMs: NEVER_POLL_MS },
+			);
+			const presence = {
+				kind: "presence",
+				targetIdentity: "alice",
+				session: { id: "alice", name: "alice", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
+			} as const;
+			try {
+				await members(scope, { "broker-b": "current" });
+				assert.equal(
+					(await state.leases.acquire(presence, "broker-b", BROKER_LEASE_STALE_AFTER_MS)).status,
+					"acquired",
+				);
+				const own = await rawListener(scope, [brokerWakeUpChannel(TABLE, "broker-b")]);
+				let releaseUnrelated!: () => void;
+				const unrelatedGate = new Promise<void>((resolve) => {
+					releaseUnrelated = resolve;
+				});
+				let enteredUnrelated!: () => void;
+				const unrelatedStarted = new Promise<void>((resolve) => {
+					enteredUnrelated = resolve;
+				});
+				const unrelated = database.transaction(
+					async () => {
+						enteredUnrelated();
+						await unrelatedGate;
+					},
+					{ concurrency: { kind: "serial", domain: `${PREFIX}unrelated-domain` } },
+				);
+				try {
+					await unrelatedStarted;
+					const sent = await state.outbox.enqueue({
+						targetIdentity: "alice",
+						originBrokerId: "broker-a",
+						digest: "m-unblocked",
+						frame: {
+							type: "message",
+							from: presence.session,
+							message: { id: "m-unblocked", timestamp: 1, content: { text: "hello" } },
+						},
+						wakeHostWithinMs: BROKER_LEASE_STALE_AFTER_MS,
+					});
+					assert.equal(sent.status === "inserted" && sent.woke, "broker-b");
+					// The notification must arrive while the unrelated serial transaction is still held open: going through
+					// `database.run` (PLAIN_SCOPE) would block behind it until releaseUnrelated().
+					const deadline = performance.now() + 1_500;
+					while (own.received.length === 0 && performance.now() < deadline)
+						await new Promise((resolve) => setTimeout(resolve, 10));
+					assert.deepEqual(own.received, [
+						{ channel: physical(brokerWakeUpChannel(TABLE, "broker-b")), payload: "broker-b" },
+					]);
+					// Sending wakeUpNotices directly batches both notices into one round trip, and rejects non-notice SQL.
+					await new Promise((resolve) => setTimeout(resolve, NOTIFY_COALESCE_MS * 2));
+					const trips = countRoundTrips();
+					restores.push(trips.restore);
+					const notifications = database.notifications!;
+					await notifications.send!(wakeUpNotices(notifications, TABLE, LEASES, "broker-b"));
+					assert.equal(trips.take(), 1);
+					await assert.rejects(
+						() => notifications.send!([{ sql: "SELECT 1", params: [] }]),
+						/accepts only statements from notify/,
+					);
+				} finally {
+					releaseUnrelated();
+					await unrelated;
+					await own.close();
 				}
 			} finally {
 				await bus.close();

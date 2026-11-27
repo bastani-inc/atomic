@@ -13,6 +13,7 @@ process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
 const { getBrokerSocketPath, getIntercomDirPath } = await import("../../packages/intercom/broker/paths.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+const { DurableInbox } = await import("../../packages/intercom/durable-inbox.js");
 
 afterAll(() => {
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
@@ -185,6 +186,71 @@ test("an asker remembers the latest 1000 outcomes it heard, forgetting the oldes
 		writeMessage(broker, failureOf("ask-1"));
 		writeMessage(broker, failureOf("ask-0"));
 		assert.deepEqual(await heardBefore(broker, heard, "m2"), ["ended:ask-1000", "ended:ask-0"]);
+		await client.disconnect();
+	});
+});
+
+test("an outcome whose save failed is heard again when redelivered on the same connection, while a saved outcome stays deduplicated (#6712)", async () => {
+	await withFakeBroker(async ({ sockets, confirmed }) => {
+		const { client, heard } = asker(true);
+		await client.connect(SESSION);
+		const broker = sockets[0]!;
+		writeMessage(broker, failureOf("ask-unsaved"));
+		assert.deepEqual(await heardBefore(broker, heard, "m1"), ["ended:ask-unsaved"]);
+		// Save failed transiently without disconnecting: clearing the unsaved outcome lets a redelivery retry saving.
+		client.forgetUnsavedOutcome("ended:ask-unsaved");
+		writeMessage(broker, failureOf("ask-unsaved"));
+		assert.deepEqual(await heardBefore(broker, heard, "m2"), ["ended:ask-unsaved"]);
+		// Once saved and confirmed, calling forgetUnsavedOutcome is a no-op and duplicates only re-confirm.
+		client.acknowledgeReceived("ended:ask-unsaved");
+		client.forgetUnsavedOutcome("ended:ask-unsaved");
+		writeMessage(broker, failureOf("ask-unsaved"));
+		assert.deepEqual(await heardBefore(broker, heard, "m3"), []);
+		assert.deepEqual(await confirmedBefore(client, confirmed, "c1"), ["ended:ask-unsaved", "ended:ask-unsaved"]);
+		await client.disconnect();
+	});
+});
+
+test("a reply whose durable inbox save fails transiently recovers on same-connection redelivery and settles once (#6712)", async () => {
+	await withFakeBroker(async ({ sockets, confirmed }) => {
+		const client = new IntercomClient("asker", { connectTimeoutMs: 2_000, acknowledgesReceipt: true });
+		client.on("error", () => {});
+		let appendCalls = 0;
+		let shown = 0;
+		const inbox = new DurableInbox({
+			durable: () => true,
+			entries: () => [],
+			append: async () => {
+				appendCalls += 1;
+				if (appendCalls === 1) throw new Error("transient journal write failure");
+			},
+			appendHandled: async () => {},
+		});
+		client.on("message", (from, message, channel) => {
+			void inbox
+				.receive(from, message, channel, () => client.acknowledgeReceived(message.id))
+				.then((arrival) => {
+					if (arrival === "unsaved") client.forgetUnsavedOutcome(message.id);
+					else if (arrival === "fresh") shown += 1;
+				});
+		});
+		await client.connect(SESSION);
+		const broker = sockets[0]!;
+		writeMessage(broker, failureOf("ask-retry"));
+		await vi.waitFor(() => assert.equal(appendCalls, 1));
+		// First save failed: not confirmed and not shown yet.
+		assert.deepEqual(await confirmedBefore(client, confirmed, "c1"), []);
+		assert.equal(shown, 0);
+
+		// Redelivered on the same connection: heard again, saved, confirmed, and shown once.
+		writeMessage(broker, failureOf("ask-retry"));
+		await vi.waitFor(() => assert.equal(shown, 1));
+		assert.deepEqual(await confirmedBefore(client, confirmed, "c2"), ["ended:ask-retry"]);
+
+		// Another duplicate on the same connection re-confirms without showing a second time.
+		writeMessage(broker, failureOf("ask-retry"));
+		assert.deepEqual(await confirmedBefore(client, confirmed, "c3"), ["ended:ask-retry"]);
+		assert.equal(shown, 1);
 		await client.disconnect();
 	});
 });

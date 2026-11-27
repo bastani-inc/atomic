@@ -48,7 +48,7 @@ for (const version of [undefined, 1, 2, 3]) {
 			assert.equal(recent.getHeader()?.version, 4);
 			assert.equal(await SessionManager.findById(directory, "source", directory), undefined);
 			assert.deepEqual(
-				(await readdir(directory)).sort(),
+				(await readdir(directory)).filter((name) => !name.startsWith(".session.lock.")).sort(),
 				["source.jsonl", recent.getSessionFile()!.split(/[\\/]/).at(-1)!].sort(),
 			);
 			assert.deepEqual((await SessionManager.open(recent.getSessionFile()!)).getHeader(), recent.getHeader());

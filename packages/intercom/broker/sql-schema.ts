@@ -23,6 +23,7 @@ const catalogApi: Partial<
 		| "refreshStorageSchemaCatalog"
 		| "setUpStorageOnce"
 		| "ensureStorageSchemaOnce"
+		| "queueSqliteSchemaSetup"
 	>
 > = storage;
 
@@ -52,15 +53,27 @@ export async function withBrokerSchemaCatalog<T>(
 }
 
 /**
+ * Queues a SQLite schema setup into the broker open's active schema catalog scope so every needed store setup commits
+ * in one write transaction before the open returns (#6709). Returns false on PostgreSQL, outside an open scope, or on
+ * an Atomic installation older than #6709.
+ */
+export function queueBrokerSqliteSetup(
+	database: SqliteDatabase,
+	prefix: string | undefined,
+	setup: storage.SqliteSchemaBatchSetup,
+): boolean {
+	const queue = catalogApi.queueSqliteSchemaSetup;
+	if (queue === undefined || dialectOf(database).versionedMigrations) return false;
+	return queue(database, prefix === undefined ? undefined : storageMigrationTable(prefix), setup);
+}
+
+/**
  * Runs `setup`, a broker store's idempotent schema statements, in a transaction of its own, unless the prefix's ledger
  * records `revision` for `store` already (#5218): on PostgreSQL a current schema runs no DDL, so a role with only DML
  * privileges opens the store. Raise `revision` whenever `setup` creates or alters anything new. Inside an open that read
- * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560). On SQLite the
- * store's stamp records it. A setup that runs stamps nothing: later setups of the same open would leave its
- * stamp behind, and stamping costs a new database's first open statements and a transaction. The next open finds the
- * store in the catalog instead; there a setup whose objects the catalog holds is checked again, and a counter it seeds
- * seeded, in the one transaction the open's end stamps every such store in, so later opens of a current schema take no
- * write lock and answer every store from its stamp.
+ * the catalog (`withStorageSchemaCatalog`), a revision it found recorded skips the transaction too (#6560). On SQLite,
+ * setups needed within one open scope are queued and committed together in one write transaction with their stamps
+ * (#6709), so subsequent opens answer every store from its stamp with no write lock.
  */
 export async function ensureBrokerSchema(
 	database: SqliteDatabase,
@@ -72,8 +85,26 @@ export async function ensureBrokerSchema(
 	const schema = { ledger: storageMigrationTable(prefix), domain: `intercom-${store}`, revision };
 	if (await catalogApi.storageSchemaCurrent?.(database, schema)) return;
 	const found = await foundInCatalog(database, setup);
-	if (foundSetUp(database, schema, setup, found)) return;
 	const dialect = dialectOf(database);
+	if (
+		!dialect.versionedMigrations &&
+		queueBrokerSqliteSetup(database, prefix ?? "", {
+			stamp: schema,
+			verify: found?.verify,
+			run: async (ctx) => {
+				if (found !== undefined) {
+					if (ctx.catalog !== undefined && found.verify(ctx.catalog) && !found.seeds) return;
+					for (const script of found.scripts) ctx.enqueue(script);
+					for (const table of found.tables) ctx.noteTableCreated(table);
+					return;
+				}
+				await ctx.flushWrites();
+				await setup(ctx.tx);
+			},
+		})
+	)
+		return;
+	if (foundSetUp(database, schema, setup, found)) return;
 	// Idempotent, and run again when a busy database ended it before it wrote anything. Brokers that open a new
 	// database at once set each store up once: the others wait for it without its lock, and find
 	// it set up in the catalog they read again (#6560).
@@ -224,6 +255,8 @@ async function foundInCatalog(
 			readonly verify: (catalog: storage.StorageSchemaCatalog) => boolean;
 			readonly seeds: boolean;
 			readonly present: boolean;
+			readonly scripts: readonly string[];
+			readonly tables: readonly string[];
 	  }
 	| undefined
 > {
@@ -265,7 +298,8 @@ async function foundInCatalog(
 	}
 	const verify = (found: storage.StorageSchemaCatalog) =>
 		created.every(({ name, type }) => found.sqliteObjectType?.(name) === type);
-	return { verify, seeds, present: verify(catalog) };
+	const tables = created.filter(({ type }) => type === "table").map(({ name }) => name);
+	return { verify, seeds, present: verify(catalog), scripts, tables };
 }
 
 /** `INSERT INTO … ON CONFLICT … DO NOTHING`: rows a setup seeds once, which writing again leaves as they are. */

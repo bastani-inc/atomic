@@ -64,6 +64,7 @@ import {
 	type ReleasedAskRecord,
 	type RestoringReservation,
 	type RestoringReservationLease,
+	type RestoringReservationRenewResult,
 	reservationKeyFor,
 	returnAddressOf,
 	type SentMessageReservation,
@@ -588,6 +589,7 @@ interface SendProgress {
 	readonly messageId: string;
 	readonly attemptId?: string;
 	readonly ticket?: SendOrderTicket;
+	readonly requirePendingReplyLocal?: true;
 	waitingOnReplyKey?: string;
 	scheduledFireAt?: number;
 	stopReporting?: () => void;
@@ -3675,6 +3677,7 @@ export class MultiNodeRouter {
 			messageId: request.message.id,
 			...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
 			ticket,
+			...(request.localTarget !== undefined && request.requirePendingReply ? { requirePendingReplyLocal: true as const } : {}),
 		};
 		this.sendProgress.set(request.clientMessage, progress);
 		this.ticketProgress.set(ticket, progress);
@@ -3998,7 +4001,29 @@ export class MultiNodeRouter {
 		if (upstream !== undefined && upstream.hadProgress) {
 			latest = latest === undefined ? upstream.lastProgressAt : Math.max(latest, upstream.lastProgressAt);
 		}
+		const active = upstream ?? own;
+		if (
+			latest === undefined &&
+			active.requirePendingReplyLocal === true &&
+			active.waitingOnReplyKey === undefined &&
+			this.storeAnsweredAt >= active.startedAt
+		) {
+			latest = this.storeAnsweredAt;
+		}
 		return latest;
+	}
+
+	/**
+	 * Store-silence window for a plain local send waiting on `earlier`. A local `requirePendingReply` reply has a
+	 * `PRESENCE_REGISTRATION_BOUND_MS` shared-route adoption budget, so once the shared store is proven responsive a
+	 * single contended write (> 300 ms) must not let later plain sends overtake it; soft replies and unsettled outbox
+	 * retries keep `LOCAL_RETRY_LOOKUP_BOUND_MS`.
+	 */
+	private localBlockerSilenceMs(earlier: SendOrderTicket): number {
+		const own = this.ticketProgress.get(earlier);
+		if (own === undefined) return LOCAL_RETRY_LOOKUP_BOUND_MS;
+		const active = this.resolveBlockerProgress(own, earlier) ?? own;
+		return active.requirePendingReplyLocal === true ? PRESENCE_REGISTRATION_BOUND_MS : LOCAL_RETRY_LOOKUP_BOUND_MS;
 	}
 
 	/** Wait for strictly earlier sends from the same sender to `target` before performing a local commit. */
@@ -4037,7 +4062,7 @@ export class MultiNodeRouter {
 			...(hasBound
 				? {
 						blockerProgressAt: (earlier) => this.blockerProgressAt(earlier),
-						progressSilenceMs: LOCAL_RETRY_LOOKUP_BOUND_MS,
+						progressSilenceMs: (earlier) => this.localBlockerSilenceMs(earlier),
 						maxLocalWaitUntil: (ownProgress?.startedAt ?? performance.now()) + PRESENCE_REGISTRATION_BOUND_MS,
 					}
 				: {}),
@@ -5834,10 +5859,28 @@ export class MultiNodeRouter {
 		return done;
 	}
 
+	/**
+	 * Scans every recipient this broker hosts. With several, one read first finds those with undelivered rows, and only
+	 * they are claimed for: a backup poll or resync across idle recipients costs one statement, not a claim each (#6560).
+	 * A row queued after the read is claimed when its send's wake-up hint arrives, or at the next scan, as one queued
+	 * right after a claim's own read is. When the read fails, every recipient is claimed for, as without it.
+	 */
 	private scanAll(): void {
-		for (const identity of new Set([...this.host.sessions.values()].map(deliveryTargetIdentity))) {
-			this.scanIdentity(identity);
+		const identities = [...new Set([...this.host.sessions.values()].map(deliveryTargetIdentity))];
+		const outbox = this.state.outbox;
+		if (identities.length < 2 || outbox.withUndelivered === undefined) {
+			for (const identity of identities) this.scanIdentity(identity);
+			return;
 		}
+		void outbox.withUndelivered(identities).then(
+			(found) => {
+				for (const identity of identities) if (found.has(identity)) this.scanIdentity(identity);
+			},
+			(error: unknown) => {
+				this.report(error);
+				for (const identity of identities) this.scanIdentity(identity);
+			},
+		);
 	}
 
 	private localSessionFor(identity: string): BrokerConnectedSession | undefined {
@@ -6026,7 +6069,12 @@ export class MultiNodeRouter {
 						});
 					}
 				}
-				const delivered = await this.state.outbox.markDelivered(inflight.claim);
+				// Replies clear their shared pending-ask route after `markDelivered` commits; keeping `wakeOrigin` after
+				// `clearReply` prevents the replier from hearing `delivered` and sending a second reply before the route
+				// is cleared (#6715). Non-reply deliveries write the outcome hint atomically inside the settlement.
+				const delivered = await this.state.outbox.markDelivered(inflight.claim, {
+					wakeOrigin: frame.message.replyTo === undefined,
+				});
 				this.storeAnswered();
 				marked = true;
 				this.firstHandedOverAt.delete(messageId);
@@ -6051,7 +6099,7 @@ export class MultiNodeRouter {
 					inflight.handedOverAt,
 				);
 				finishOpening?.();
-				await this.wakeOrigin(inflight.row);
+				if (delivered.woke !== inflight.row.originBrokerId) await this.wakeOrigin(inflight.row);
 			} finally {
 				finishOpening?.();
 			}
@@ -6498,9 +6546,21 @@ export class MultiNodeRouter {
 			const renewed = await outbox.renewClaims(inflights.map((inflight) => inflight.claim));
 			inflights.forEach((inflight, index) => dropUnrenewed(inflight, renewed[index]!));
 		} else for (const inflight of inflights) dropUnrenewed(inflight, await outbox.renewClaim(inflight.claim));
-		for (const [key, mirror] of this.mirrored) {
-			const renewed = await this.state.reservations.renew(mirror.lease);
+		const mirrors = [...this.mirrored];
+		const dropUnrenewedMirror = (
+			key: string,
+			mirror: MirroredReservation,
+			renewed: RestoringReservationRenewResult,
+		) => {
 			if (renewed.status !== "renewed" && this.mirrored.get(key) === mirror) this.mirrored.delete(key);
+		};
+		const reservations = this.state.reservations;
+		if (mirrors.length > 0 && reservations.renewMany !== undefined) {
+			const renewed = await reservations.renewMany(mirrors.map(([, mirror]) => mirror.lease));
+			mirrors.forEach(([key, mirror], index) => dropUnrenewedMirror(key, mirror, renewed[index]!));
+		} else {
+			for (const [key, mirror] of mirrors)
+				dropUnrenewedMirror(key, mirror, await reservations.renew(mirror.lease));
 		}
 		// #5352: a reservation whose write failed or did not answer is written again, in order behind its key's steps.
 		for (const [key, pending] of this.unpublished) {

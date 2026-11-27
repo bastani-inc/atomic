@@ -7,7 +7,7 @@ import {
 	validateStoragePrefix,
 } from "@bastani/atomic/storage";
 import { isMissingPrivilege } from "./sql-add-column.js";
-import { brokerSchemaCurrent, ensureBrokerSchema, openCatalogOf } from "./sql-schema.js";
+import { brokerSchemaCurrent, ensureBrokerSchema, openCatalogOf, queueBrokerSqliteSetup } from "./sql-schema.js";
 
 /** The most rows one retention statement deletes, as River's job cleaner and Oban's pruner bound theirs. */
 export const RETENTION_DELETE_BATCH = 1_000;
@@ -137,5 +137,14 @@ export async function ensureRetentionIndexes(database: SqliteDatabase, prefix: s
 			? (await database.all("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (?, ?)", ...retired))
 					.length > 0
 			: retired.some((index) => catalog.sqliteObjectType?.(index) === "index");
-	if (present) await database.transaction((tx) => tx.exec(drops.join(";\n")));
+	if (present) {
+		const queued = queueBrokerSqliteSetup(database, prefix ?? "", {
+			verify: (found) => !retired.some((index) => found.sqliteObjectType?.(index) === "index"),
+			run(ctx) {
+				if (ctx.catalog === undefined || retired.some((index) => ctx.catalog?.sqliteObjectType?.(index) === "index"))
+					ctx.enqueue(drops.join(";\n"));
+			},
+		});
+		if (!queued) await database.transaction((tx) => tx.exec(drops.join(";\n")));
+	}
 }
