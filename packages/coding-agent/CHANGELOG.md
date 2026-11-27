@@ -2,12 +2,19 @@
 
 ## [Unreleased]
 
+## [0.10.16-alpha.1] - 2026-11-27
+
+Atomic recovers from rate limits and provider errors without making chat wait unnecessarily.
+
+- **No long waits on rate limits.** Chat tries the next configured fallback when a provider requests a delay beyond the retry cap. The terminal keeps the fallback notice visible, and if nothing can run, Atomic explains how to recover ([#6774](https://github.com/bastani-inc/atomic/issues/6774), [#6775](https://github.com/bastani-inc/atomic/pull/6775)).
+- **Compaction before fallback.** Chat compacts first when Codex or OpenAI Responses reports a context limit, even if the error text leaves out the reason ([#6777](https://github.com/bastani-inc/atomic/pull/6777)).
+- **Retries only when they can help.** Temporary OpenAI Responses failures get bounded retries even without an HTTP status, and Codex stream retries honor the server's delay within the retry cap. Spending caps and rejected prompts go straight to the fallback chain ([#6777](https://github.com/bastani-inc/atomic/pull/6777)).
+
 ### Fixed
 
-- Chat moves to the next available fallback model when a provider asks it to wait past the retry limit. Retry and fallback attempts are saved in the session, and if no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774)).
-
-- Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.
-- Chat treats temporary OpenAI capacity errors as retryable instead of content refusals. If OpenAI reports an API key, project, or organization spending cap, chat goes straight to the fallback chain.
+- Chat tries the next configured fallback when a provider asks it to wait past the retry cap. Retry and fallback attempts are saved in the session, and the terminal keeps the fallback notice visible after the switch. If no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774), [#6775](https://github.com/bastani-inc/atomic/pull/6775)).
+- Chat compacts before falling back when Codex or OpenAI Responses reports a context limit, even if the error message does not give the reason ([#6777](https://github.com/bastani-inc/atomic/pull/6777)).
+- Chat retries temporary OpenAI Responses errors within a bound even without an HTTP status, and treats temporary capacity errors as retryable rather than content refusals. Exhausted quotas, including API key, project, or organization spending caps, and rejected prompts go straight to the fallback chain ([#6777](https://github.com/bastani-inc/atomic/pull/6777)).
 
 ## [0.10.15] - 2026-11-27
 
