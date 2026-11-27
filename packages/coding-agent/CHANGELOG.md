@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.10.15-alpha.2] - 2026-11-27
+
+This prerelease removes unsupported Termux documentation and cleans up the Platform setup navigation.
+
+- **Cleaner Platform setup docs.** Removed unsupported Android/Termux documentation (`termux.md` and Termux references across guides and READMEs, redirecting `/termux` to `/getting-started/installation`) and reordered Platform setup to Configure your terminal, Shell aliases, Run on Windows, Run in Tmux, and Run in Herdr ([#6765](https://github.com/bastani-inc/atomic/pull/6765), [#6766](https://github.com/bastani-inc/atomic/pull/6766)).
+
+### Changed
+
+- Reordered the Platform setup sidebar to **Configure your terminal**, **Shell aliases**, **Run on Windows**, **Run in Tmux**, and **Run in Herdr**, and aligned the Tmux and Herdr titles ([#6766](https://github.com/bastani-inc/atomic/pull/6766)).
+
+### Removed
+
+- Removed unsupported Android/Termux documentation (`packages/coding-agent/docs/termux.md` and Termux references across guides and READMEs), redirecting `/termux` to `/getting-started/installation` ([#6765](https://github.com/bastani-inc/atomic/pull/6765)).
+
 ## [0.10.15-alpha.1] - 2026-11-27
 
 This patch removes the remaining built-in compaction output caps, adds `~` home expansion to `shellPath`, and overhauls the documentation for clarity without reading source code.
