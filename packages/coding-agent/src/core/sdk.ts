@@ -862,6 +862,8 @@ async function constructAgentSession(
 								: "short");
 				const fastRouteStreamOptions = withFastRouteStreamOptions(fastRoute, {
 					...streamOptions,
+					anthropicThinkingDisplay:
+						streamOptions?.anthropicThinkingDisplay ?? settingsManager.getAnthropicThinkingDisplay(),
 					apiKey: auth.apiKey,
 					env,
 					cacheRetention,

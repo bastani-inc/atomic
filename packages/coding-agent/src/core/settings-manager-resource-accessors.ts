@@ -1,10 +1,17 @@
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
 import { settingsInternals, stringEntries } from "./settings-manager-internals.ts";
-import type { DefaultProjectTrust, PackageSource, QuietStartup, ThinkingBudgetsSettings } from "./settings-types.ts";
+import type {
+	DefaultProjectTrust,
+	PackageSource,
+	QuietStartup,
+	Settings,
+	ThinkingBudgetsSettings,
+} from "./settings-types.ts";
 
 interface SettingsManagerResourceAccessors {
 	getHideThinkingBlock(): boolean;
+	getAnthropicThinkingDisplay(): Settings["anthropicThinkingDisplay"];
 	getExternalEditorCommand(): string | undefined;
 	setHideThinkingBlock(hide: boolean): void;
 	getShellPath(): string | undefined;
@@ -56,6 +63,10 @@ declare module "./settings-manager-core.ts" {
 const resourceAccessors: SettingsManagerResourceAccessors = {
 	getHideThinkingBlock() {
 		return settingsInternals(this).settings.hideThinkingBlock ?? SETTINGS_DEFAULTS.hideThinkingBlock;
+	},
+
+	getAnthropicThinkingDisplay() {
+		return settingsInternals(this).settings.anthropicThinkingDisplay;
 	},
 
 	getExternalEditorCommand() {

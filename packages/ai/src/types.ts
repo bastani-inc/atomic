@@ -1,5 +1,5 @@
 import type { TelemetryContext } from "@bastani/atomic-telemetry";
-import type { AnthropicOptions } from "./api/anthropic-messages.ts";
+import type { AnthropicOptions, AnthropicThinkingDisplay } from "./api/anthropic-messages.ts";
 import type { AzureOpenAIResponsesOptions } from "./api/azure-openai-responses.ts";
 import type { BedrockOptions } from "./api/bedrock-converse-stream.ts";
 import type { GoogleOptions } from "./api/google-generative-ai.ts";
@@ -434,6 +434,8 @@ export interface SimpleStreamOptions extends StreamOptions {
 	/** Provider-neutral tool selection for simple requests. When omitted, adapters use provider-specific behavior. */
 	toolChoice?: ToolChoice;
 	reasoning?: ThinkingLevel;
+	/** Override progress vs. reasoning display on supported Anthropic models. */
+	anthropicThinkingDisplay?: AnthropicThinkingDisplay;
 	/** Ask a capable provider to return a durable handle and continue the request asynchronously. */
 	deferred?: boolean | { window?: "15m" | "1h" | "24h" };
 	/** Custom token budgets for thinking levels (token-based providers only) */
@@ -479,6 +481,8 @@ export interface TextContent {
 	type: "text";
 	text: string;
 	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
+	/** Visible Anthropic progress update, replayed as a thinking block with this signature. */
+	anthropicProgressSignature?: string;
 }
 
 export interface ThinkingContent {
