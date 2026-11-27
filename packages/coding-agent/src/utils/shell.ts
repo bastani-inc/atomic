@@ -1,6 +1,6 @@
 import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
-import { delimiter, join, win32 } from "node:path";
+import { delimiter, join, posix, win32 } from "node:path";
 import { Worker } from "node:worker_threads";
 import { type ChildProcess, spawn } from "child_process";
 import { getBinDir } from "../config.js";
@@ -159,7 +159,7 @@ function isShellName(shellPath: string): boolean {
 function expandCustomShellPath(shellPath: string): string {
 	if (shellPath === "~") return getHomeDir();
 	if (shellPath.startsWith("~/") || (process.platform === "win32" && shellPath.startsWith("~\\"))) {
-		const joinPath = process.platform === "win32" ? win32.join : join;
+		const joinPath = process.platform === "win32" ? win32.join : posix.join;
 		return joinPath(getHomeDir(), shellPath.slice(2));
 	}
 	return shellPath;
