@@ -320,15 +320,16 @@ When `ask_user_question` is enabled, the agent displays interactive multiple-cho
 - **Limits and validation.** Each call accepts 1 to 4 questions with 2 to 4 options per question, `header` up to 16 characters, and option `label` up to 60 characters. Duplicate questions and duplicate option labels are rejected. Reserved labels (`"Other"`, `"Type something."`, `"Chat about this"`, and `"Next"`) are rejected even on `multiSelect: true`.
 - **Multi-select and previews.** Pass `multiSelect: true` to let the user choose multiple options (this hides the custom `"Type something."` choice). On single-select questions, options can include a markdown `preview` rendered side by side (which also hides `"Type something."` while keeping `"Chat about this"`). See [Keybindings](/keybindings#tui-fullscreen-viewport) for dialog controls.
 - **Custom prompt guidance.** Machine-level overrides in `~/.config/rpiv-ask-user-question/config.json` can customize `guidance.promptSnippet` and `guidance.promptGuidelines`.
+- **Decision context.** The question and options should tell you what you’re deciding, the facts you need, and what happens for each choice, without relying on earlier progress updates.
 - **Scoped approvals.** A confirmation question should name the exact action, identify the target PRs or resources, and offer explicit proceed and decline choices:
 
 ```json
 {
   "questions": [{
     "header": "Merge approval",
-    "question": "Remove the stack grouping, then admin-merge the same seven PRs in dependency order without changing repository protections?",
+    "question": "Remove the stack grouping for PRs #101–#107 in acme/widgets, then admin-merge them in dependency order without changing repository protections?",
     "options": [
-      { "label": "Proceed", "description": "Remove the grouping and admin-merge those seven PRs in dependency order. Leave repository protections unchanged." },
+      { "label": "Proceed", "description": "Remove the grouping and admin-merge the seven listed PRs in dependency order. Leave repository protections unchanged." },
       { "label": "Do not proceed", "description": "Leave the grouping and PRs unchanged." }
     ]
   }]
