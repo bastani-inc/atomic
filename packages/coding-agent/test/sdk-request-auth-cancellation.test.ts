@@ -166,7 +166,8 @@ describe("createAgentSession request-auth cancellation", () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-3085-sdk-"));
 		cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
 		const credentials = AuthStorage.inMemory({
-			probe: { type: "oauth", access: "fabricated", refresh: "fabricated", expires: 1 },
+			// The fallback is an independent account on the same endpoint as the rate-limited primary.
+			probe: { type: "oauth", access: "fabricated-probe-access", refresh: "fabricated", expires: 1 },
 			primary: { type: "api_key", key: "fabricated" },
 		});
 		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
@@ -573,6 +574,40 @@ describe("createAgentSession request-auth cancellation", () => {
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(f.refreshes()).toBe(0);
 		expect(f.calls()).toBe(0);
+	});
+
+	it("cancels fallback account lookup even if its auth never settles (#6779)", async () => {
+		const f = await fixture({
+			fallback: true,
+			primaryStream: (model) =>
+				response(model, {
+					content: [],
+					stopReason: "error",
+					errorMessage: "429 rate limit exceeded",
+					retryAfterMs: 360_000,
+				}),
+		});
+		const originalAuth = f.runtime.getRequestAuth.bind(f.runtime);
+		const entered = deferred<AbortSignal | undefined>();
+		const held = deferred<undefined>();
+		vi.spyOn(f.runtime, "getRequestAuth").mockImplementation((model, options) => {
+			if (model.provider !== "probe") return originalAuth(model, options);
+			entered.resolve(options?.signal);
+			return held.promise;
+		});
+		const prompt = f.session.prompt("go");
+		const signal = await entered.promise;
+		const abort = f.session.abort();
+		try {
+			await expectSettledWithinIoHeadroom(Promise.all([abort, prompt]));
+			expect(signal?.aborted).toBe(true);
+			expect(f.session.model?.provider).toBe("primary");
+			expect(f.calls()).toBe(0);
+		} finally {
+			held.resolve(undefined);
+			await abort;
+			await prompt;
+		}
 	});
 
 	it("keeps a long tool pending past the auth bound then completes", async () => {
