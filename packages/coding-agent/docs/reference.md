@@ -22,7 +22,6 @@ Look up exact commands, settings, configuration schemas, tool behaviors, and API
 ## Models, sessions, and storage
 
 - [Provider reference](/providers/reference) covers credential resolution order, normalized stop reasons, and cross-provider error handling.
-- [GitHub Copilot errors](/providers/github-copilot-errors) documents the 11 typed Copilot error classes, retry/fallback matrix, diagnostics, and SDK helpers.
 - [Model configuration reference](/models/reference) covers supported APIs, value resolution, capabilities, overrides, fast variants, and API compatibility.
 - [`models.json` field reference](/models-configuration) lists every provider, model, override, and compatibility field (including [remote compaction models](/models#remote-compaction-models)).
 - [Session format](/session-format) specifies the JSONL format, entry types, and `SessionManager` API.

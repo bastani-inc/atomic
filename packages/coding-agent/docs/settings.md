@@ -317,7 +317,7 @@ Do not set `retry.provider.timeoutMs` to `0` to disable timeouts—an explicit `
 
 - **Server retry hints.** Atomic honors `Retry-After-Ms`, `Retry-After`, Cloudflare 5xx `retry_after`, and Google `RetryInfo.retryDelay` up to `retry.provider.maxRetryDelayMs`, failing immediately if the server asks for longer (such as a 5-hour quota reset). This applies across OpenAI, OpenAI-compatible, Codex, Anthropic, Azure OpenAI, Mistral, Google, Vertex, and Bedrock. Cloudflare 520 to 524 and connection resets count as transient; non-retryable 4xx and quota errors fail immediately.
 - **Refused TLS certificates.** Untrusted certificates (such as a self-signed certificate or corporate TLS proxy) are never retried. The error names the host, the error code (such as `SELF_SIGNED_CERT_IN_CHAIN`), and how to trust a private CA with [`NODE_EXTRA_CA_CERTS`](/environment-variables#tls-certificates). Connection resets during TLS handshakes still retry.
-- **GitHub Copilot long cuts.** A stream cut after 5 minutes or more gets 1 retry; a second consecutive long cut switches to `fallbackModels` or fails with guidance. See [Streams cut after a long attempt](/providers#streams-cut-after-a-long-attempt) and [GitHub Copilot errors](/providers/github-copilot-errors).
+- **GitHub Copilot long cuts.** A stream cut after 5 minutes or more gets 1 retry; a second consecutive long cut switches to `fallbackModels` or fails with guidance. See [Streams cut after a long attempt](/providers#streams-cut-after-a-long-attempt).
 - **SDK retry deadlines.** Programmatic callers can pass a monotonic `retryDeadline` with `signal` on provider requests to avoid starting backoff past a local budget; see [Custom provider streaming](/custom-provider/streaming).
 
 ```json

@@ -150,7 +150,7 @@ Atomic classifies every failed Copilot request into one of 11 typed error classe
 - **Compaction (no fallback):** prompt exceeds the model's prompt-token limit (or HTTP 413).
 - **Content filter:** retries or falls back according to `retry.fallbackOnContentFilter`.
 
-For the complete 11-class error table, error codes, and SDK helper functions, see [GitHub Copilot errors](/providers/github-copilot-errors).
+For SDK error inspection helpers, see [Provider errors](/providers/reference#provider-errors).
 
 #### Streams cut after a long attempt
 
@@ -166,11 +166,9 @@ Streams cut during long thinking or large tool calls often fail at the same poin
 - A second consecutive long cut stops retrying that model and moves to [`fallbackModels`](/settings#fallbackmodels) (which can include the same model at a lower effort, such as `github-copilot/claude-opus-5.5:medium`), or ends with the error.
 - Partial output from a cut stream is never replayed; every retry restarts the turn.
 
-For SDK extraction and serialization helpers, see [GitHub Copilot SDK error helpers](/providers/github-copilot-errors#sdk-error-helpers).
-
 #### Responses that end without a finish reason
 
-Copilot occasionally closes a Chat Completions stream cleanly without a finish reason (commonly on Gemini models). Because an abnormally cut stream never sends `data: [DONE]`, Atomic uses `[DONE]` to distinguish normal completion from a cut stream: complete tool calls finish as `toolUse`, text finishes as `stop`, empty responses fail as `empty-response` and retry, and incomplete tool calls or streams ending without `[DONE]` fail as `stream-ended-early`. When Atomic infers the stop reason, the raw provider stop reason stays unset and an inferred stop-reason diagnostic appears in `/debug` and session exports (see [GitHub Copilot SDK error helpers](/providers/github-copilot-errors#sdk-error-helpers)).
+Copilot occasionally closes a Chat Completions stream cleanly without a finish reason (commonly on Gemini models). Because an abnormally cut stream never sends `data: [DONE]`, Atomic uses `[DONE]` to distinguish normal completion from a cut stream: complete tool calls finish as `toolUse`, text finishes as `stop`, empty responses fail as `empty-response` and retry, and incomplete tool calls or streams ending without `[DONE]` fail as `stream-ended-early`. When Atomic infers the stop reason, the raw provider stop reason stays unset and an inferred stop-reason diagnostic appears in `/debug` and session exports.
 
 #### Endpoint routing for personal access tokens
 

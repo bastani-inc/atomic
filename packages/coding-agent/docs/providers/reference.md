@@ -1,6 +1,6 @@
 ---
 title: "Provider reference"
-sidebarTitle: "Provider Reference"
+sidebarTitle: "Providers"
 description: "How Atomic resolves credentials across providers, maps terminal stop reasons, configures SDK login options, and surfaces provider errors."
 ---
 
@@ -57,10 +57,10 @@ For custom streaming providers, see [Implement provider streaming](/custom-provi
 
 ## Provider errors
 
-Across all providers, transient HTTP/stream failures follow your [`retry` settings](/settings#retry) and then [`fallbackModels`](/settings#fallbackmodels), while context-overflow errors trigger [compaction](/compaction) and retry the turn once.
+Across all providers, transient HTTP and stream failures follow your [`retry` settings](/settings#retry) and then [`fallbackModels`](/settings#fallbackmodels), while context-overflow errors trigger [compaction](/compaction) and retry the turn once. Authentication failures, unavailable models, and incompatible requests skip same-model retries and fall back to the next configured model immediately.
 
-For GitHub Copilot, Atomic additionally classifies failures into 11 typed error classes with per-class retry/fallback policies and SDK helper functions:
+<Accordion title="GitHub Copilot typed error classes and SDK helpers">
+For GitHub Copilot requests, Atomic classifies failures into `GitHubCopilotError` subclasses (`GitHubCopilotModelUnavailableError`, `GitHubCopilotRateLimitError`, `GitHubCopilotQuotaExhaustedError`, `GitHubCopilotContentFilterError`, `GitHubCopilotPromptTooLargeError`, `GitHubCopilotInvalidRequestError`, `GitHubCopilotAuthenticationError`, `GitHubCopilotServiceUnavailableError`, `GitHubCopilotStreamEndedEarlyError`, `GitHubCopilotEmptyResponseError`, `GitHubCopilotUnrecognizedResponseError`), each carrying `code`, `retryable`, `hint`, `modelId`, `api`, `status`, `providerCode`, `requestId`, `detail`, and `cause`.
 
-<Card title="GitHub Copilot errors" href="/providers/github-copilot-errors">
-  Error class table, retry and fallback matrix, diagnostics keys, and SDK extraction and serialization helpers.
-</Card>
+SDK callers can inspect or serialize them with `getGitHubCopilotError()`, `findGitHubCopilotError()`, `classifyGitHubCopilotFailure()`, `serializeGitHubCopilotError()`, `deserializeGitHubCopilotError()`, `isGitHubCopilotError()`, `isRetryableGitHubCopilotError()`, per-class `isGitHubCopilot*Error()` guards, `describeGitHubCopilotModel()`, and `GITHUB_COPILOT_ERROR_DIAGNOSTIC` from `@bastani/atomic` or `@bastani/atomic-ai` (`GITHUB_COPILOT_INFERRED_STOP_REASON_DIAGNOSTIC` is exported from `@bastani/atomic-ai`).
+</Accordion>

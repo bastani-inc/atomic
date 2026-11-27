@@ -208,13 +208,7 @@
           {
             "group": "Models, sessions, and storage",
             "pages": [
-              {
-                "group": "Providers",
-                "pages": [
-                  "providers/reference",
-                  "providers/github-copilot-errors"
-                ]
-              },
+              "providers/reference",
               {
                 "group": "Models",
                 "pages": [
