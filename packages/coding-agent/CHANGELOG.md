@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- You can opt a model into reusing an idempotency key across chat retries when its endpoint supports it. This can prevent duplicate charges after a dropped connection ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
+
 ### Fixed
 
 - When you use Claude Opus 5.5 or another supported Claude model directly through Anthropic, progress before tool calls now appears as assistant text instead of being mixed into thinking summaries. To see the old summaries instead, set `"anthropicThinkingDisplay": "summarized"` and `"hideThinkingBlock": false` in `settings.json` ([#6776](https://github.com/bastani-inc/atomic/issues/6776)).
@@ -10,6 +14,7 @@
 
 - Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.
 - Chat treats temporary OpenAI capacity errors as retryable instead of content refusals. If OpenAI reports an API key, project, or organization spending cap, chat goes straight to the fallback chain.
+- Atomic sends a fresh tracing ID for every OpenAI Chat Completions and Responses attempt, so separate requests can be traced even within the same session ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
 
 ## [0.10.15] - 2026-11-27
 

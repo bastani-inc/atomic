@@ -19,6 +19,7 @@ import {
 	toToolDeclaration,
 	validateToolArguments,
 } from "@bastani/atomic-ai";
+import { assistantRequestIds } from "./request-identity.js";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AgentContext,
@@ -179,7 +180,7 @@ async function runLoop(
 	streamFunction: StreamFn,
 ): Promise<void> {
 	let currentContext = initialContext;
-	let config = initialConfig;
+	let { logicalRequestId: retryRequestId, ...config } = initialConfig;
 	let lastCompletedTurn: PrepareNextTurnContext | undefined;
 	let explicitContinuation = false;
 	// Check for steering messages at start (user may have typed while waiting)
@@ -249,7 +250,15 @@ async function runLoop(
 			}
 
 			// Stream assistant response
-			const message = await streamAssistantResponse(currentContext, config, signal, emit, streamFunction);
+			const message = await streamAssistantResponse(
+				currentContext,
+				config,
+				signal,
+				emit,
+				streamFunction,
+				retryRequestId,
+			);
+			retryRequestId = undefined;
 			newMessages.push(message);
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -394,6 +403,7 @@ async function streamAssistantResponse(
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 	streamFunction: StreamFn,
+	retryRequestId?: string,
 ): Promise<AssistantMessage> {
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
@@ -410,8 +420,17 @@ async function streamAssistantResponse(
 	const resolvedApiKey =
 		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
 
+	const { api, compat } = config.model;
+	const logicalRequestId =
+		(api === "openai-completions" || api === "openai-responses") &&
+		compat &&
+		"sendIdempotencyKey" in compat &&
+		compat.sendIdempotencyKey === true
+			? (retryRequestId ?? crypto.randomUUID())
+			: undefined;
 	const response = await streamFunction(config.model, llmContext, {
 		...config,
+		...(logicalRequestId === undefined ? {} : { logicalRequestId }),
 		apiKey: resolvedApiKey,
 		identity: mergeClientIdentity(DEFAULT_AGENT_IDENTITY, config.identity),
 		signal,
@@ -420,11 +439,14 @@ async function streamAssistantResponse(
 	const requestedThinkingBudget = config.reasoning
 		? thinkingBudgetForLevel(config.reasoning, config.thinkingBudgets)
 		: undefined;
-	const result = async () =>
-		Object.assign(await response.result(), {
+	const result = async () => {
+		const message = Object.assign(await response.result(), {
 			thinkingLevel: config.reasoning ?? "off",
 			...(requestedThinkingBudget === undefined ? {} : { requestedThinkingBudget }),
 		});
+		if (logicalRequestId !== undefined) assistantRequestIds.set(message, logicalRequestId);
+		return message;
+	};
 
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;

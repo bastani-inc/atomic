@@ -4,7 +4,13 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Added
+
+- Added an opt-in idempotency key for OpenAI-compatible Chat Completions and Responses endpoints that support it, so retrying the same request can avoid a duplicate charge ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
+
 ### Fixed
+
+- OpenAI Chat Completions and Responses requests now carry a fresh tracing ID on each attempt without changing prompt caching ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
 
 - Preserve error codes and retry hints when an OpenAI Responses stream fails without an HTTP error status. OpenAI Responses and Codex no longer retry requests rejected because of a known quota limit.
 - Preserve retry delays sent inside failed Codex stream events, and treat OpenAI spending caps as exhausted quotas rather than temporary throttles.

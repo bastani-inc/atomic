@@ -356,7 +356,6 @@ describe("openai-responses provider defaults", () => {
 
 		expect(captured.sessionId).toBe("session-123");
 		expect(captured.legacySessionId).toBeNull();
-		expect(captured.clientRequestId).toBe("session-123");
 	});
 
 	it("clamps prompt_cache_key to OpenAI's 64-character limit", async () => {
@@ -391,7 +390,7 @@ describe("openai-responses provider defaults", () => {
 		expect(capturedPayload?.prompt_cache_key).toBe("x".repeat(64));
 	});
 
-	it("sets cache-affinity headers for proxy OpenAI Responses requests with a sessionId", async () => {
+	it("keeps session affinity without adding request tracing on a proxy Responses endpoint (#6794)", async () => {
 		const proxyModel: Model<"openai-responses"> = {
 			...getFixtureModel("openai", "gpt-5.4"),
 			provider: "opencode",
@@ -400,7 +399,7 @@ describe("openai-responses provider defaults", () => {
 		const captured = await captureOpenAIResponseHeaders({ sessionId: "session-123" }, proxyModel);
 
 		expect(captured.sessionId).toBe("session-123");
-		expect(captured.clientRequestId).toBe("session-123");
+		expect(captured.clientRequestId).toBeNull();
 	});
 
 	it("uses OpenRouter session-affinity header when configured", async () => {
@@ -533,11 +532,11 @@ describe("openai-responses provider defaults", () => {
 		expect(captured.clientRequestId).toBe("override-request");
 	});
 
-	it("omits OpenAI cache-affinity headers when cacheRetention is none", async () => {
+	it("keeps tracing enabled with OpenAI cache affinity disabled (#6794)", async () => {
 		const captured = await captureOpenAIResponseHeaders({ cacheRetention: "none", sessionId: "session-123" });
 
 		expect(captured.sessionId).toBeNull();
-		expect(captured.clientRequestId).toBeNull();
+		expect(captured.clientRequestId).toMatch(/^[\x20-\x7e]{1,512}$/);
 	});
 
 	it.each([

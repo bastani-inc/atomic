@@ -15,7 +15,7 @@ const emptyUsage: Usage = {
 
 const compat: Omit<
 	Required<OpenAICompletionsCompat>,
-	"promptCacheKeyMode" | "thinkingTokenBudgetField" | "vllmPriority"
+	"promptCacheKeyMode" | "thinkingTokenBudgetField" | "vllmPriority" | "sendIdempotencyKey"
 > & {
 	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
 } = {

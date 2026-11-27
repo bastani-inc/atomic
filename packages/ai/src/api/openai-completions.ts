@@ -47,7 +47,6 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
-import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -59,16 +58,17 @@ import {
 } from "../utils/openrouter-cost.ts";
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
-import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { admitOpenAIRequests, getFetchAdmission, wrapFetchPreservingAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { DoneEventWatch } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
-import { TOOL_RESULTS_BRIDGE_TEXT } from "../utils/tool-results-bridge.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { recordLowestThinkingOffFallback, recordThinkingOffFallback } from "../utils/thinking-off.ts";
+import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
+import { TOOL_RESULTS_BRIDGE_TEXT } from "../utils/tool-results-bridge.ts";
 import {
 	getDeclaredTools,
 	resolveRequestTranscript,
@@ -91,6 +91,7 @@ import {
 	preserveCopilotIntegrationHeader,
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
+import { isOpenAITracingEndpoint, openAIRequestFetch } from "./openai-request-headers.js";
 import { RetryHintOpenAI } from "./openai-retry-hint-client.ts";
 import {
 	buildBaseOptions,
@@ -208,6 +209,7 @@ type ResolvedOpenAICompletionsCompat = Omit<
 	| "vllmPriority"
 	| "supportsTemperature"
 	| "supportsForcedToolChoice"
+	| "sendIdempotencyKey"
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
 	promptCacheKeyMode?: OpenAICompletionsCompat["promptCacheKeyMode"];
@@ -435,6 +437,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				cacheSessionId,
 				compat,
 				options?.apiKey,
+				options?.logicalRequestId,
 			);
 			const thinkingOffFallback = options?.reasoningEffort
 				? undefined
@@ -900,6 +903,7 @@ function createClient(
 	sessionId?: string,
 	compat: ResolvedOpenAICompletionsCompat = getCompat(model),
 	copilotApiKey?: string,
+	logicalRequestId?: string,
 ) {
 	const headers: ProviderHeaders = { ...getIdentityHeaders(model, identity), ...model.headers };
 	if (model.provider === "github-copilot") {
@@ -915,6 +919,7 @@ function createClient(
 		Object.assign(headers, copilotHeaders);
 	}
 
+	const tracesRequests = isOpenAITracingEndpoint(model.baseUrl);
 	const sessionAffinityHeaders: ProviderHeaders = {};
 	if (sessionId && compat.sendSessionAffinityHeaders) {
 		if (compat.sessionAffinityFormat === "openrouter") {
@@ -923,7 +928,7 @@ function createClient(
 			if (compat.sessionAffinityFormat === "openai") {
 				sessionAffinityHeaders.session_id = sessionId;
 			}
-			sessionAffinityHeaders["x-client-request-id"] = sessionId;
+			if (!tracesRequests) sessionAffinityHeaders["x-client-request-id"] = sessionId;
 			sessionAffinityHeaders["x-session-affinity"] = sessionId;
 		}
 	}
@@ -938,7 +943,7 @@ function createClient(
 			apiKey,
 			baseURL: model.baseUrl,
 			dangerouslyAllowBrowser: true,
-			fetch: transportFetch(getFetchAdmission(fetch)?.fetch ?? fetch),
+			fetch: openAIRequestFetch(model, getFetchAdmission(fetch)?.fetch ?? fetch, headers, logicalRequestId),
 			// Affinity defaults yield to explicit model and request headers, including null suppression.
 			defaultHeaders: { ...sessionAffinityHeaders, ...headers },
 		}),
