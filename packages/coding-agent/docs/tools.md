@@ -34,7 +34,30 @@ Control which tools a session exposes from the CLI, settings, SDK, or extensions
 
 ## `read` and path selectors
 
-`read` reads files, directories, images, documents, archives, SQLite databases, internal Atomic resources, and public HTTP(S) URLs through one `path` parameter. A `read` of a `history://` URL also accepts `wait`, so a slow read can keep running in the background. See [Slow history searches](/sessions#slow-history-searches).
+`read` reads files, directories, images, documents, archives, SQLite databases, internal Atomic resources, and public HTTP(S) URLs through one `path` parameter. When reading past sessions via `history://`, it also supports background observation using the same `wait` and `action: "wait"` model as `bash`.
+
+It supports two mutually exclusive call modes:
+
+1. **Read a target:** pass `path` (required), plus optional `wait` (used for `history://` URLs; ignored for local files, directories, archives, SQLite, and web URLs).
+2. **Wait on an existing background history read:** pass `action: "wait"`, `id` (the task ID returned earlier, such as `"history-3"`), and optional `budgetMs` (milliseconds; omit to use the default 10-second wait, or pass `0` to check immediately). Do not combine `action: "wait"` with `path` or `wait`.
+
+```json
+{ "path": "src/example.ts:10-40" }
+```
+
+```json
+{ "path": "history://sessions/019f6a2e:1-50", "wait": { "kind": "foreground", "budgetMs": 30000 } }
+```
+
+```json
+{ "path": "history://sessions/019f6a2e", "wait": { "kind": "background" } }
+```
+
+```json
+{ "action": "wait", "id": "history-3", "budgetMs": 15000 }
+```
+
+- **Observation options (`wait`, `action: "wait"`).** On a `history://` read, omitting `wait` (or passing `wait: { kind: "foreground" }` without `budgetMs`) waits up to 10 seconds by default before continuing in the background and returning a `history-N` task ID. Pass `wait: { kind: "background" }` to return immediately with a task ID, or `wait: { kind: "foreground", budgetMs }` to wait up to `budgetMs` milliseconds (`budgetMs` inside `wait` is valid only with `kind: "foreground"`). Omitted optional fields sent as `null` (for example by strict-schema tool callers) are treated as omitted. See [Slow history searches](/sessions#slow-history-searches) and [Background history searches](/background-tasks#background-history-searches).
 
 Reading a directory returns a depth-2 tree sorted by most-recent modification time (with sizes and ages). It prunes `.git` and `node_modules` and caps each child directory at 12 entries while preserving the oldest shown entry with an elision marker.
 
@@ -131,7 +154,7 @@ Returns the replacement count plus `details` (`diff`, unified `patch`, and `firs
 { "action": "wait", "id": "task-1234", "budgetMs": 15000 }
 ```
 
-- **Observation and background yield (`wait`, `action: "wait"`).** `wait` controls how long the tool observes output and never changes the execution `timeout`. When `wait` is omitted in interactive and standard sessions, Atomic yields automatically after 10 seconds by default while the command keeps running in the background. Pass `wait: { kind: "background" }` to return immediately with the task ID after the command starts, or `wait: { kind: "foreground", budgetMs }` to wait up to `budgetMs` milliseconds before yielding. Call `{ action: "wait", id, budgetMs? }` to observe an owned background task later (omitting `budgetMs` uses the default yield budget). Background mode and task waits require sessions with background task support; standalone SDK sessions without background task support wait until the command finishes.
+- **Observation and background yield (`wait`, `action: "wait"`).** `wait` controls how long the tool observes output and never changes the execution `timeout`. When `wait` is omitted (or `wait: { kind: "foreground" }` omits `budgetMs`) in interactive and standard sessions, Atomic yields automatically after 10 seconds by default while the command keeps running in the background. Pass `wait: { kind: "background" }` (without `budgetMs`) to return immediately with the task ID after the command starts, or `wait: { kind: "foreground", budgetMs }` to wait up to `budgetMs` milliseconds before yielding. Call `{ action: "wait", id, budgetMs? }` to observe an owned background task later (omitting `budgetMs` uses the default yield budget; `0` checks immediately). Omitted optional fields sent as `null` (for example by strict-schema tool callers) are treated as omitted, while non-null conflicting fields or invalid values are rejected. Background mode and task waits require sessions with background task support; standalone SDK sessions without background task support wait until the command finishes.
 - **`cwd` and leading `cd`.** Sets the working directory for the command. If `cwd` is omitted, a leading `cd <path> && ...` or `cd <path>; ...` sets the working directory when `<path>` is a single literal word (optionally single- or double-quoted, with no variables, globs, or leading `-`). Unquoted `~` and `~/` expand to your home directory. Atomic skips stripping when `CDPATH` applies to a non-dot relative path or the local directory cannot be entered.
 - **`env` and session variables.** Adds or overrides environment variables for the command. Every key in `env` must match `^[A-Za-z_][A-Za-z0-9_]*$`; invalid names fail before spawning. Atomic automatically sets `ATOMIC_SESSION_ID`, `ATOMIC_PROVIDER`, `ATOMIC_MODEL`, and `ATOMIC_REASONING_LEVEL` (plus legacy `PI_*` aliases) and strips any caller-supplied values for those keys as well as `ATOMIC_SESSION_FILE` and `PI_SESSION_FILE`.
 - **How long a command runs, and `timeout`.** A command has no time limit: it runs until it finishes, someone stops it (`kill` or `/tasks`), or the session closes. How long the call waits (`wait`) never stops it. To give it a deadline, pass `timeout` in seconds: `{ "command": "npm run e2e", "timeout": 7200 }` stops it after 2 hours. The values work like this:
@@ -211,9 +234,28 @@ Returns `scopePath`, `fileCount`, `files`, truncation and missing-path metadata,
 
 ### Searching contents
 
-`search` takes a required `pattern` regex plus optional `paths` (string or string array; omitted or empty searches `.`), `i` (boolean), `case` (boolean), `gitignore` (default `true`), `skip` (non-negative integer or `null`, floored; ignored in single-file mode), and `wait` (for `history://` targets). Hidden files are searched by default.
+`search` searches file and resource contents with a regular expression and can observe background `history://` searches using the same `wait` and `action: "wait"` model as `bash` and `read`. It supports two mutually exclusive call modes:
 
-- **Slow history searches.** For a `history://` target, `wait` works as it does in `bash`. A search still running after the default wait of 10 seconds keeps running in the background, with no time limit, and returns a task ID such as `history-3`. Wait for its result with `search({ action: "wait", id: "history-3" })`, or stop it with `kill({ id: "history-3" })`. `read` of a `history://` URL works the same way. A session runs at most 4 at once; a call past that fails with `4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.` See [Slow history searches](/sessions#slow-history-searches).
+1. **Search contents:** pass `pattern` (required), plus optional `paths` (string or string array; omitted or empty searches `.`), `i` (boolean), `case` (boolean), `gitignore` (default `true`), `skip` (non-negative integer or `null`, floored; ignored in single-file mode), and `wait` (used when `paths` includes a `history://` URL). Hidden files are searched by default.
+2. **Wait on an existing background history search:** pass `action: "wait"`, `id` (such as `"history-3"`), and optional `budgetMs` (omit to use the default 10-second wait, or pass `0` to check immediately). Do not combine `action: "wait"` with search fields (`pattern`, `paths`, `i`, `case`, `gitignore`, `skip`, or `wait`).
+
+```json
+{ "pattern": "connection refused", "paths": "history://sessions" }
+```
+
+```json
+{ "pattern": "connection refused", "paths": "history://sessions", "wait": { "kind": "background" } }
+```
+
+```json
+{ "pattern": "connection refused", "paths": "history://sessions", "wait": { "kind": "foreground", "budgetMs": 30000 } }
+```
+
+```json
+{ "action": "wait", "id": "history-3", "budgetMs": 15000 }
+```
+
+- **Slow history searches and reads.** For a `history://` target, `wait` works identically to `bash`: omitting `wait` (or passing `wait: { kind: "foreground" }`) waits 10 seconds by default, `wait: { kind: "background" }` returns a task ID immediately, and `wait: { kind: "foreground", budgetMs }` waits up to `budgetMs` milliseconds (`budgetMs` inside `wait` is valid only with `kind: "foreground"`). A call still running when the observation wait ends keeps running in the background with **no time limit** and returns a task ID such as `history-3`; its result arrives later as a completion notice. Wait for it with `search({ action: "wait", id: "history-3", budgetMs? })` (or `read({ action: "wait", id: "history-3", budgetMs? })` — both tools share the session's history tasks, and Atomic retains the 16 most recently finished tasks for late waits) or stop it with `kill({ id: "history-3" })`. Omitted optional fields sent as `null` are treated as omitted. A session runs at most 4 active history searches and reads at once (separate from the 64 shell commands); a call past that limit fails with `4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.` See [Slow history searches](/sessions#slow-history-searches) and [Background history searches](/background-tasks#background-history-searches).
 - **Targets.** Searches files, directories, globs, archive members, SQLite selectors (`.sqlite`, `.sqlite3`, `.db`, `.db3`), and supported internal URLs (`local://`, `skill://`, `artifact://`, `conflict://`, `history://`, `tool-output://`). Rejects `http://` and `https://`.
 - **Patterns and case sensitivity.** Whitespace-only patterns are rejected; all other patterns pass verbatim, including inline `(?i)`, `(?m)`, `(?s)`, and `(?x)` flags at the start of patterns on resource-backed selectors. Setting `i: true` or `case: false` enables case-insensitive matching (if both `i: true` and `case: true` are passed, case-insensitive matching wins).
 - **Line selectors.** Line-range selectors (`file.ts:10-50`) work on single files only (directories and globs fail with an error) and restrict matches before adding context lines.

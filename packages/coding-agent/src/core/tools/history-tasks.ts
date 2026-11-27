@@ -10,6 +10,7 @@ import {
 } from "../tasks/completion.js";
 import type { WaitPolicy } from "../tasks/contracts.js";
 import { historyTaskTimeBudget } from "./history-session.js";
+import { isValidBudgetMs, normalizeWaitPolicy, prepareWaitableToolInput } from "./wait-args.js";
 
 /**
  * History calls one session runs at once with no time limit; a call past it is refused. They are scans in this process,
@@ -335,21 +336,9 @@ export function namesHistoryUrl(paths: string | readonly string[] | undefined): 
 	return (typeof paths === "string" ? [paths] : paths).some((path) => path.trim().startsWith("history://"));
 }
 
-/** Validates a `wait` policy of `read` or `search`, as bash validates its own. */
+/** Validates and normalizes a `wait` policy of `read` or `search`, as bash validates its own. */
 export function validateHistoryWait(wait: unknown): WaitPolicy | undefined {
-	if (wait === undefined) return undefined;
-	const policy = wait as WaitPolicy;
-	if (
-		!policy ||
-		typeof policy !== "object" ||
-		(policy.kind !== "background" && policy.kind !== "foreground") ||
-		Object.keys(policy).some((key) => key !== "kind" && (policy.kind !== "foreground" || key !== "budgetMs")) ||
-		(policy.kind === "foreground" &&
-			policy.budgetMs !== undefined &&
-			(typeof policy.budgetMs !== "number" || !Number.isFinite(policy.budgetMs) || policy.budgetMs < 0))
-	)
-		throw new Error("Invalid wait: expected background or foreground with a finite non-negative budgetMs");
-	return policy;
+	return normalizeWaitPolicy(wait, "wait");
 }
 
 /** The `wait` parameter of `read` and `search`, the same observation policy as bash's. */
@@ -387,19 +376,23 @@ export const historyWaitActionProperties = {
 export type HistoryWaitInput = { action: "wait"; id: string; budgetMs?: number };
 
 /**
- * Checks the shape of a `read` or `search` call: a wait names `action`, `id` and optionally `budgetMs` only; any other
- * call names `required` and neither `id` nor `budgetMs`.
+ * Prepares and checks the shape of a `read` or `search` call: strips omitted `null`/`undefined` optional fields
+ * (including `wait.budgetMs`), requires `action: "wait"` with `id` and optional `budgetMs` only in wait mode, and
+ * requires `required` with neither `id` nor `budgetMs` in call mode.
  */
-export function prepareHistoryAwareInput<T>(args: unknown, tool: string, required: string): T {
-	if (typeof args !== "object" || args === null || Array.isArray(args)) return args as T;
-	const has = (key: string) => Object.hasOwn(args, key);
-	if (has("action")) {
-		if (!has("id") || Object.keys(args).some((key) => !["action", "id", "budgetMs"].includes(key)))
-			throw new Error(`Invalid ${tool} wait: expected action wait, id, and optional finite non-negative budgetMs`);
-	} else if (!has(required) || has("id") || has("budgetMs")) {
-		throw new Error(`Invalid ${tool} call: ${required} is required; id and budgetMs require action wait`);
-	}
-	return args as T;
+export function prepareHistoryAwareInput<T>(
+	args: unknown,
+	tool: string,
+	required: string,
+	optionalCallKeys: readonly string[] = ["wait"],
+): T {
+	return prepareWaitableToolInput<T>(args, {
+		requiredKey: required,
+		optionalCallKeys,
+		waitLabel: `${tool} wait`,
+		callLabel: `${tool} call`,
+		waitPolicyLabel: "wait",
+	});
 }
 
 /** Runs `action: "wait"` of `read` or `search` against the session's history tasks. */
@@ -409,13 +402,13 @@ export function waitForHistoryTask(
 	tool: string,
 	signal: AbortSignal | undefined,
 ): Promise<AgentToolResult<unknown>> {
+	const budgetMs = input.budgetMs === null ? undefined : input.budgetMs;
 	if (
 		input.action !== "wait" ||
 		typeof input.id !== "string" ||
-		(input.budgetMs !== undefined &&
-			(typeof input.budgetMs !== "number" || !Number.isFinite(input.budgetMs) || input.budgetMs < 0))
+		(budgetMs !== undefined && !isValidBudgetMs(budgetMs))
 	)
 		throw new Error(`Invalid ${tool} wait: expected action wait, id, and optional finite non-negative budgetMs`);
 	if (!registry) throw new Error("History task wait requires a session");
-	return registry.wait(input.id, input.budgetMs as number | undefined, signal);
+	return registry.wait(input.id, budgetMs, signal);
 }

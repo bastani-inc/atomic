@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `read`, `search`, `bash`, and `powershell` rejecting omitted optional fields sent as `null` (for example under strict JSON Schema providers such as Gemini), including `action: null`, `id: null`, `budgetMs: null`, `wait: null`, and `wait: { kind: "background" | "foreground", budgetMs: null }`, while still strictly rejecting invalid values and mixed call/wait arguments.
+- Fixed background snapshot garbage collection failing on PostgreSQL when its non-blocking write transaction passed `lockWaitMs: 0` or encountered a not-applied `lock-conflict` (`SQLSTATE 55P03`).
+
 ## [0.10.13] - 2026-11-27
 
 This patch keeps live sessions running through brief PostgreSQL restarts.

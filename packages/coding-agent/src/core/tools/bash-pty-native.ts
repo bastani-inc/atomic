@@ -8,6 +8,7 @@ import { OutputAccumulator, type OutputAccumulatorOptions } from "./output-accum
 import { completeUtf8PrefixLength } from "./persisted-output-file.ts";
 import { startShellDeadline } from "./shell-deadline.ts";
 import { EMPTY_OUTPUT_TEXT, TaskToolError, waitResultTail } from "./shell-task-status.ts";
+import { normalizeWaitPolicy } from "./wait-args.js";
 
 const NATIVE_PACKAGE = "@bastani/atomic-natives";
 /** The longest timeout the native PTY takes, in milliseconds (a `u32`); a longer one is kept here instead. */
@@ -197,20 +198,11 @@ export async function waitForSupervisedCommand(
 	}
 }
 
-export function validateBashWait(wait: WaitPolicy | undefined, ownerSupported = true): void {
-	if (wait === undefined) return;
-	if (
-		!wait ||
-		typeof wait !== "object" ||
-		(wait.kind !== "background" && wait.kind !== "foreground") ||
-		Object.keys(wait).some((key) => key !== "kind" && (wait.kind !== "foreground" || key !== "budgetMs")) ||
-		(wait.kind === "foreground" &&
-			wait.budgetMs !== undefined &&
-			(typeof wait.budgetMs !== "number" || !Number.isFinite(wait.budgetMs) || wait.budgetMs < 0))
-	)
-		throw new Error("Invalid bash wait: expected background or foreground with a finite non-negative budgetMs");
-	if (wait.kind === "background" && !ownerSupported)
+export function validateBashWait(wait: WaitPolicy | null | undefined, ownerSupported = true): WaitPolicy | undefined {
+	const normalized = normalizeWaitPolicy(wait, "bash wait");
+	if (normalized?.kind === "background" && !ownerSupported)
 		throw new Error("Background bash observation requires a supported task owner");
+	return normalized;
 }
 
 export async function executeSupervisedCommand(
@@ -219,7 +211,7 @@ export async function executeSupervisedCommand(
 	options: NativePtyExecOptions,
 	pty: boolean,
 ): Promise<SupervisedCommandResult> {
-	validateBashWait(options.wait, !!options.taskOwner);
+	const wait = validateBashWait(options.wait, !!options.taskOwner);
 	if (options.signal?.aborted) throw new Error("aborted");
 	const context = options.taskOwner;
 	if (!context) throw new Error("Supervised command requires its task owner");
@@ -287,7 +279,7 @@ export async function executeSupervisedCommand(
 	if (options.signal?.aborted) abort();
 	let done = false;
 	let offset = "0";
-	const observation = context.supervisor.initialObservation(task, options.wait).finally(() => {
+	const observation = context.supervisor.initialObservation(task, wait).finally(() => {
 		done = true;
 	});
 	const drain = async () => {
@@ -351,8 +343,8 @@ export async function executeNativePty(
 	cwd: string,
 	options: NativePtyExecOptions,
 ): Promise<SupervisedCommandResult> {
-	validateBashWait(options.wait, !!options.taskOwner);
-	if (options.taskOwner) return executeSupervisedCommand(command, cwd, options, true);
+	const wait = validateBashWait(options.wait, !!options.taskOwner);
+	if (options.taskOwner) return executeSupervisedCommand(command, cwd, { ...options, wait }, true);
 	const loaded = loadNativePtyBinding();
 	if (!loaded.ok) throw loaded.error;
 	const shellConfig = options.shellConfig ?? (await getShellConfigAsync(options.shellPath));

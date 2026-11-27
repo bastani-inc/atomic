@@ -222,42 +222,55 @@ Processes started in an external terminal outside Atomic are not tracked in `/ta
 
 ## Background history searches
 
-A `read` or `search` of `history://` (your past sessions) that takes longer than about 10 seconds also goes on in the background, like a shell command. It gets a task ID such as `history-3`, and it has **no time limit**: it runs until it finishes, you stop it, or the session closes or reloads. Before this release, such a search stopped after a few seconds and returned a `continue with` link instead.
+A `read` or `search` of `history://` (your past sessions) mirrors `bash` and `powershell` observation semantics: Atomic waits up to 10 seconds by default, and if the scan is still running it continues in the background with a task ID such as `history-3` and **no time limit** — running until it finishes (or hits the 40,000-byte output cap or 250,000-entry scan cap, returning a `continue with` URL), `kill` stops it, or the session closes or reloads.
 
 ```ts
+// Start a history search or read immediately in the background.
 search({ pattern: "connection refused", paths: "history://sessions", wait: { kind: "background" } })
-search({ action: "wait", id: "history-3", budgetMs: 5000 })   // check on it
-kill({ id: "history-3" })                                     // stop it
+read({ path: "history://sessions/019f6a2e-...:1-200", wait: { kind: "background" } })
+
+// Wait up to 30 seconds before continuing in the background.
+search({ pattern: "connection refused", paths: "history://sessions", wait: { kind: "foreground", budgetMs: 30000 } })
+
+// Observe a running history task (omit budgetMs for the default 10s wait, or pass 0 to poll immediately).
+search({ action: "wait", id: "history-3", budgetMs: 5000 })
+read({ action: "wait", id: "history-4" })
+
+// Stop a running history task (sends no completion notice).
+kill({ id: "history-3" })
 ```
 
-A session runs at most 4 history searches and reads at once, separately from its 64 commands: they run inside Atomic and share one pattern matcher, so more at once would only slow each other down. At the limit, the call fails with:
+- **Mutually exclusive wait mode.** Just like `bash` and `powershell`, `{ action: "wait", id, budgetMs? }` cannot be combined with `path`, `pattern`, `paths`, `wait`, or other call fields. Either `read` or `search` can wait on any `history-N` task from the same session.
+- **Completion notices and late waits.** If a task finishes while no wait is observing it, its result arrives as a completion notice in chat. If a wait is observing it when it finishes, the wait returns the result directly with no duplicate notice. Atomic keeps the 16 most recently finished history tasks so a late `{ action: "wait", id }` call still returns the result.
+- **Concurrency limit (4 per session).** A session runs at most 4 active history searches and reads at once (including calls currently being observed in the foreground), separately from its 64 shell commands: they run inside Atomic on the session store and a shared regex worker, so more at once would only slow each other down. At the limit, a new call fails with:
 
-```text
-4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.
-```
+  ```text
+  4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.
+  ```
 
-History searches take no `timeout`, are not restarted when a session is resumed, and do not appear in `/tasks`. See [Slow history searches](/sessions#slow-history-searches) for what the model sees and how results arrive.
+- **Differences from background shells.** History tasks take no `timeout` and emit no heartbeats, do not appear in `/tasks` or the agent panel, stop when the session closes or reloads, and are not restarted when a session is resumed. For non-`history://` paths, `read` and `search` always run inline. See [Slow history searches](/sessions#slow-history-searches) for URL syntax, entry selectors, continuations, and a full comparison table.
 
 ## Choose how long to wait
 
-The agent chooses foreground-first or background observation for each shell call. Every subagent runs in the background; wait on one with `subagent({ action: "wait", id })` when the next step depends on its result. Neither choice requires extra confirmation or changes tool permissions.
+The agent chooses foreground-first or background observation for each shell call and each `history://` `read` or `search` call. Every subagent runs in the background; wait on one with `subagent({ action: "wait", id })` when the next step depends on its result. Neither choice requires extra confirmation or changes tool permissions.
 
-For ordinary shell commands, omit `wait` rather than routinely passing a 1-second budget. Short budgets background fast commands unnecessarily and add extra wait calls. Use explicit background observation when you have independent work to do, and a short budget only when you need control back sooner.
+For ordinary commands and history queries, omit `wait` rather than routinely passing a 1-second budget. Short budgets background fast calls unnecessarily and add extra wait calls. Use explicit background observation when you have independent work to do, and a short budget only when you need control back sooner.
 
 Keep immediately blocking work inline unless specialist focus, isolated context, or your request makes delegation worthwhile. After launching a subagent, continue independent work without duplicating it. Wait when its result becomes a dependency, and otherwise let completion notices arrive instead of polling.
 
 | Call | Observation behavior |
 | --- | --- |
-| `bash` or `powershell` without `wait` | Waits for the session's command observation budget (default 10 seconds), then returns automatically if still running. |
+| `bash`, `powershell`, or `history://` `read`/`search` without `wait` | Waits for the session's command observation budget (default 10 seconds), then yields automatically with a task ID (`task-...` or `history-...`) if still running. |
+| `bash`, `powershell`, or `history://` `read`/`search` with `wait: { kind: "background" }` | Returns a task ID immediately without waiting for completion (`budgetMs` is not allowed with `kind: "background"`). |
+| `bash`, `powershell`, or `history://` `read`/`search` with `wait: { kind: "foreground" }` | Waits for the session's command observation budget (default 10 seconds), then continues in the background if still running. |
+| `bash`, `powershell`, or `history://` `read`/`search` with `wait: { kind: "foreground", budgetMs: 1000 }` | Waits up to 1 second (`budgetMs` must be finite and non-negative), then yields automatically if still running. |
+| `{ action: "wait", id, budgetMs? }` on `bash`, `powershell`, `read`, or `search` | Observes an existing background task for `budgetMs` milliseconds (default 10 seconds when omitted; `0` checks immediately without cancelling the task). |
 | `subagent` launch | Returns as soon as the subagent starts; every subagent runs in the background. Any `wait` passed on launch is ignored, and a foreground `wait` adds a note pointing to `action: "wait"`. |
 | `subagent({ action: "wait", id })` | Waits for the session's agent wait budget (default 30 seconds), or for `budgetMs`. `Esc` ends the wait immediately. |
-| `bash` or `powershell` with `wait: { kind: "background" }` | Returns as soon as the command starts without waiting for it to finish. |
-| `bash` or `powershell` with `wait: { kind: "foreground" }` | Waits for the session's command observation budget (default 10 seconds). |
-| `bash` or `powershell` with `wait: { kind: "foreground", budgetMs: 1000 }` | Waits up to 1 second, then yields automatically if the command is still running. |
 
 If a task finishes during observation, the call returns its final result directly. Automatic backgrounding means the observation budget elapsed, not a timeout failure, restart, or second run. If a wait for a dependency ends early, wait for actual completion before using the result.
 
-Shell `budgetMs` accepts finite non-negative milliseconds, where `0` returns immediately without cancelling the task. On command launches, put `budgetMs` inside a foreground `wait`; on existing-task `action: "wait"` calls, pass `budgetMs` at the top level. Custom SDK sessions can override default budgets or set `tasks.wait.kind: "until-settled"` so omitted foreground budgets wait until completion, while explicit per-call budgets still take precedence (see [Supervised command SDK](/sdk/reference#supervised-command-sdk)).
+`budgetMs` accepts finite non-negative milliseconds, where `0` returns immediately without cancelling the task. On launches (`bash`, `powershell`, and `history://` `read`/`search`), put `budgetMs` inside a foreground `wait`; on existing-task `action: "wait"` calls, pass `budgetMs` at the top level. Custom SDK sessions can override default budgets or set `tasks.wait.kind: "until-settled"` so omitted foreground budgets wait until completion, while explicit per-call budgets still take precedence (see [Supervised command SDK](/sdk/reference#supervised-command-sdk)).
 
 ## The agent panel
 

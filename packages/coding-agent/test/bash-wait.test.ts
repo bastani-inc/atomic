@@ -19,12 +19,30 @@ test("bash exposes a provider-friendly wait object and forwards observation inde
 	const schema = JSON.parse(JSON.stringify(tool.parameters));
 	assert.equal(schema.properties.wait.type, "object");
 	assert.deepEqual(schema.properties.wait.properties.kind.enum, ["background", "foreground"]);
-	for (const wait of [undefined, { kind: "background" }, { kind: "foreground", budgetMs: 0 }] satisfies Array<
-		WaitPolicy | undefined
-	>) {
-		await tool.execute("wait", { command: "true", wait }, undefined, undefined, {} as never);
+	for (const wait of [
+		undefined,
+		null,
+		{ kind: "background" },
+		{ kind: "background", budgetMs: null },
+		{ kind: "foreground", budgetMs: null },
+		{ kind: "foreground", budgetMs: 0 },
+	]) {
+		await tool.execute(
+			"wait",
+			{ command: "true", wait: wait as WaitPolicy | undefined },
+			undefined,
+			undefined,
+			{} as never,
+		);
 	}
-	assert.deepEqual(observed, [undefined, { kind: "background" }, { kind: "foreground", budgetMs: 0 }]);
+	assert.deepEqual(observed, [
+		undefined,
+		undefined,
+		{ kind: "background" },
+		{ kind: "background" },
+		{ kind: "foreground" },
+		{ kind: "foreground", budgetMs: 0 },
+	]);
 });
 
 test("malformed wait is rejected before hooks or operations", async () => {
@@ -42,14 +60,20 @@ test("malformed wait is rejected before hooks or operations", async () => {
 		},
 	});
 	for (const wait of [
-		null,
+		false,
+		"background",
+		[],
 		{},
+		{ kind: null },
 		{ kind: "ignore" },
 		{ kind: "background", budgetMs: 1 },
+		{ kind: "background", budgetMs: 0 },
 		{ kind: "foreground", budgetMs: -1 },
 		{ kind: "foreground", budgetMs: Infinity },
+		{ kind: "foreground", budgetMs: Number.NaN },
 		{ kind: "foreground", budgetMs: "1" },
 		{ kind: "foreground", ignore: true },
+		{ kind: "foreground", ignore: null },
 	]) {
 		await assert.rejects(
 			tool.execute("invalid", { command: "true", wait: wait as WaitPolicy }, undefined, undefined, {} as never),

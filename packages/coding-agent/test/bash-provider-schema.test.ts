@@ -26,9 +26,12 @@ function assertStructuredOutputsRoot(name: string, schema: ToolRootSchema): void
 		assert.equal(Object.hasOwn(schema, key), false, `${name} root schema must not declare ${key}`);
 }
 
-function prepareAndValidate(args: Record<string, string | number | object>) {
-	const tool = createBashToolDefinition(process.cwd());
-	const toolCall: ToolCall = { type: "toolCall", id: "test", name: "bash", arguments: args };
+function prepareAndValidate(
+	args: Record<string, unknown>,
+	factory: typeof createBashToolDefinition | typeof createPowerShellToolDefinition = createBashToolDefinition,
+) {
+	const tool = factory(process.cwd());
+	const toolCall: ToolCall = { type: "toolCall", id: "test", name: tool.name, arguments: args };
 	return validateToolArguments(tool, { ...toolCall, arguments: tool.prepareArguments?.(args) ?? args });
 }
 
@@ -39,22 +42,91 @@ const VALID_SHELL_INPUTS = [
 	{ action: "wait", id: "task-1", budgetMs: 0 },
 ];
 
-const INVALID_SHELL_INPUTS = [
+const NULLABLE_SHELL_INPUTS: ReadonlyArray<readonly [Record<string, unknown>, Record<string, unknown>]> = [
+	[
+		{
+			command: "echo hi",
+			action: null,
+			id: null,
+			budgetMs: null,
+			wait: null,
+			timeout: null,
+			pty: null,
+			cwd: null,
+			env: null,
+			heartbeatMs: null,
+		},
+		{ command: "echo hi" },
+	],
+	[
+		{
+			command: "echo hi",
+			wait: { kind: "background", budgetMs: null },
+			action: null,
+			id: null,
+			budgetMs: null,
+			timeout: null,
+		},
+		{ command: "echo hi", wait: { kind: "background" } },
+	],
+	[
+		{
+			command: "echo hi",
+			wait: { kind: "foreground", budgetMs: null },
+		},
+		{ command: "echo hi", wait: { kind: "foreground" } },
+	],
+	[
+		{
+			action: "wait",
+			id: "task-1",
+			budgetMs: null,
+			command: null,
+			wait: null,
+			timeout: null,
+			pty: null,
+			cwd: null,
+			env: null,
+			heartbeatMs: null,
+		},
+		{ action: "wait", id: "task-1" },
+	],
+];
+
+const INVALID_SHELL_INPUTS: Record<string, unknown>[] = [
 	{},
+	{ command: null, action: null, id: null, budgetMs: null, wait: null },
 	{ action: "wait" },
+	{ action: "wait", id: null },
+	{ action: "bogus", id: "task-1" },
 	{ id: "task-1" },
 	{ command: "true", action: "wait", id: "task-1" },
 	{ command: "true", id: "task-1" },
 	{ command: "true", budgetMs: 0 },
+	{ command: "true", wait: { kind: "background", budgetMs: 100 } },
+	{ command: "true", wait: { kind: "background", budgetMs: 0 } },
+	{ command: "true", wait: { kind: "foreground", budgetMs: -1 } },
+	{ command: "true", wait: { kind: "foreground", budgetMs: Number.NaN } },
+	{ command: "true", wait: { kind: "foreground", budgetMs: "100" } },
+	{ command: "true", wait: { kind: "foreground", extra: null } },
+	{ command: "true", extra: null },
 	{ action: "wait", id: "task-1", timeout: 60 },
 	{ action: "wait", id: "task-1", wait: { kind: "background" } },
+	{ action: "wait", id: "task-1", extra: null },
 	{ action: "wait", id: "task-1", budgetMs: -1 },
+	{ action: "wait", id: "task-1", budgetMs: Number.NaN },
+	{ action: "wait", id: "task-1", budgetMs: "100" },
 	{ command: {} },
 ];
 
-test("bash rejects mixed command and wait inputs before execution (#3220)", () => {
-	for (const args of VALID_SHELL_INPUTS) assert.deepEqual(prepareAndValidate(args), args);
-	for (const args of INVALID_SHELL_INPUTS) assert.throws(() => prepareAndValidate(args), JSON.stringify(args));
+test("bash and powershell reject mixed/invalid inputs and strip omitted null fields before execution (#3220)", () => {
+	for (const factory of [createBashToolDefinition, createPowerShellToolDefinition]) {
+		for (const args of VALID_SHELL_INPUTS) assert.deepEqual(prepareAndValidate(args, factory), args);
+		for (const [raw, normalized] of NULLABLE_SHELL_INPUTS)
+			assert.deepEqual(prepareAndValidate(raw, factory), normalized, `${factory.name}: ${JSON.stringify(raw)}`);
+		for (const args of INVALID_SHELL_INPUTS)
+			assert.throws(() => prepareAndValidate(args, factory), `${factory.name}: ${JSON.stringify(args)}`);
+	}
 });
 
 test("Grok receives an object-typed bash schema (#3031)", async () => {

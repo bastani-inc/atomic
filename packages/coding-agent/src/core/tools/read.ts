@@ -74,6 +74,7 @@ import {
 import { parseSkillUri } from "./skill-protocol.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
+import { isPlainObject } from "./wait-args.js";
 
 const readBaseSchema = Type.Object(
 	{
@@ -91,6 +92,9 @@ const readSchema = Type.Unsafe<ReadCallInput | (HistoryWaitInput & Partial<Recor
 	properties: { ...readBaseSchema.properties, ...historyWaitActionProperties },
 	required: [],
 });
+const readOptionalCallKeys = Object.keys(readBaseSchema.properties).filter((key) => key !== "path");
+const prepareReadInput = (args: unknown): ReadToolInput =>
+	prepareHistoryAwareInput<ReadToolInput>(args, "read", "path", readOptionalCallKeys);
 export const readToolSystemPromptContribution = Object.freeze({
 	snippet: "Read a path selector.",
 	guidelines: Object.freeze([
@@ -179,11 +183,14 @@ export interface ReadToolOptions {
 	/** The session's background history tasks, resolved per call; without them a history:// read runs inline. */
 	historyTasks?: () => HistoryTaskRegistry | undefined;
 }
-type ReadRenderArgs = { path?: string };
+type ReadRenderArgs = { path?: string; action?: string; id?: string };
 function formatReadLineRange(_args: ReadRenderArgs | undefined, _theme: Theme): string {
 	return "";
 }
 function formatReadCall(args: ReadRenderArgs | undefined, theme: Theme): string {
+	if (args?.action === "wait") {
+		return `${theme.fg("toolTitle", theme.bold("read wait"))} ${theme.fg("accent", str(args.id) || "...")}`;
+	}
 	const rawPath = str(args?.path);
 	const path = rawPath !== null ? shortenPath(rawPath) : null;
 	const invalidArg = invalidArgText(theme);
@@ -986,18 +993,23 @@ export function createReadToolDefinition(
 		name: "read",
 		label: "read",
 		description:
-			"Read files, directories, archives, SQLite databases, internal resources (including history:// for past sessions), images, documents, and URLs through one path string.",
+			'Read files, directories, archives, SQLite databases, internal resources (including history:// for past sessions), images, documents, and URLs through one path string, or observe an existing background history:// read with action: "wait", id, and optional budgetMs.',
 		promptSnippet: readToolSystemPromptContribution.snippet,
 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		parameters: readSchema,
 		outputSchema: readOutputSchema,
 		maxResultSizeChars: Infinity,
-		prepareArguments: (args: unknown) => prepareHistoryAwareInput<ReadToolInput>(args, "read", "path"),
-		async execute(toolCallId, input: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
+		prepareArguments: prepareReadInput,
+		async execute(toolCallId, rawInput: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
+			const input = prepareReadInput(rawInput);
+			if (!isPlainObject(input))
+				throw new Error("Invalid read call: path is required; id and budgetMs require action wait");
 			if (input.action !== undefined)
 				return asReadResult(await waitForHistoryTask(options?.historyTasks?.(), input, "read", signal));
 			const { path, wait } = input as ReadCallInput;
+			if (typeof path !== "string")
+				throw new Error("Invalid read call: path is required; id and budgetMs require action wait");
 			const policy = validateHistoryWait(wait);
 			const registry = namesHistoryUrl(path) ? options?.historyTasks?.() : undefined;
 			if (!registry) return readPath(toolCallId, path, signal, ctx);

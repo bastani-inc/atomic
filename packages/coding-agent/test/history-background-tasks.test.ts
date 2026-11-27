@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
+import { type ToolCall, validateToolArguments } from "@bastani/atomic-ai";
+import { makeStrictJsonSchema } from "@bastani/atomic-ai/api/constrained-sampling";
 import { describe, it, vi } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
@@ -383,5 +385,258 @@ describe("background history tasks", () => {
 		}
 		assert.equal(stopped?.aborted, true);
 		assert.equal(harness.session._getHistoryTasks(), undefined);
+	});
+
+	it("accepts null values for omitted optional arguments on read and search (strict JSON schema ergonomics)", async () => {
+		const { store, open } = await gatedStore();
+		const t = tools(store);
+		const readTool = createReadToolDefinition(PROJECT, { historyTasks: () => t.registry });
+		const searchTool = createSearchToolDefinition(PROJECT, { historyTasks: () => t.registry });
+
+		// Verify strict JSON schema conversion makes every read property required+nullable (like Gemini strict mode).
+		const strictReadSchema = makeStrictJsonSchema(readTool.parameters) as {
+			required?: string[];
+			properties?: Record<string, { properties?: Record<string, unknown>; required?: string[]; anyOf?: unknown[] }>;
+		};
+		assert.deepEqual([...(strictReadSchema.required ?? [])].sort(), ["action", "budgetMs", "id", "path", "wait"]);
+
+		const prepareAndValidate = (
+			tool: typeof readTool | typeof searchTool,
+			args: Record<string, unknown>,
+		): Record<string, unknown> => {
+			const prepared = tool.prepareArguments?.(args) ?? args;
+			const toolCall: ToolCall = {
+				type: "toolCall",
+				id: "test",
+				name: tool.name,
+				arguments: prepared as Record<string, unknown>,
+			};
+			return validateToolArguments(tool, toolCall) as Record<string, unknown>;
+		};
+
+		// read: all omitted nullable fields -> stripped cleanly
+		assert.deepEqual(
+			prepareAndValidate(readTool, {
+				path: "history://sessions/slow:1-3",
+				action: null,
+				id: null,
+				budgetMs: null,
+				wait: null,
+			}),
+			{ path: "history://sessions/slow:1-3" },
+		);
+		// read: wait with budgetMs: null (background and foreground)
+		assert.deepEqual(
+			prepareAndValidate(readTool, {
+				path: "history://sessions/slow:1-3",
+				action: null,
+				id: null,
+				budgetMs: null,
+				wait: { kind: "background", budgetMs: null },
+			}),
+			{ path: "history://sessions/slow:1-3", wait: { kind: "background" } },
+		);
+		assert.deepEqual(
+			prepareAndValidate(readTool, {
+				path: "history://sessions/slow:1-3",
+				wait: { kind: "foreground", budgetMs: null },
+			}),
+			{ path: "history://sessions/slow:1-3", wait: { kind: "foreground" } },
+		);
+		// read: action wait with nullable call fields and null budgetMs
+		assert.deepEqual(
+			prepareAndValidate(readTool, {
+				action: "wait",
+				id: "history-1",
+				budgetMs: null,
+				path: null,
+				wait: null,
+			}),
+			{ action: "wait", id: "history-1" },
+		);
+
+		// search: all omitted nullable fields including skip: null
+		assert.deepEqual(
+			prepareAndValidate(searchTool, {
+				pattern: "NEEDLE",
+				paths: "history://sessions/slow",
+				skip: null,
+				action: null,
+				id: null,
+				budgetMs: null,
+				wait: null,
+				i: null,
+				case: null,
+				gitignore: null,
+			}),
+			{ pattern: "NEEDLE", paths: "history://sessions/slow" },
+		);
+		assert.deepEqual(
+			prepareAndValidate(searchTool, {
+				pattern: "NEEDLE",
+				paths: null,
+				skip: null,
+				action: null,
+				id: null,
+				budgetMs: null,
+				wait: { kind: "background", budgetMs: null },
+				i: null,
+				case: null,
+				gitignore: null,
+			}),
+			{ pattern: "NEEDLE", wait: { kind: "background" } },
+		);
+		assert.deepEqual(
+			prepareAndValidate(searchTool, {
+				action: "wait",
+				id: "history-2",
+				budgetMs: null,
+				pattern: null,
+				paths: null,
+				i: null,
+				case: null,
+				gitignore: null,
+				skip: null,
+				wait: null,
+			}),
+			{ action: "wait", id: "history-2" },
+		);
+
+		// End-to-end execution with raw null fields (also covering direct execute without prepareArguments).
+		const bgRead = await t.read({
+			path: "history://sessions/slow:1-3",
+			action: null,
+			id: null,
+			budgetMs: null,
+			wait: { kind: "background", budgetMs: null },
+		});
+		const readTaskId = taskIdOf(bgRead);
+		const bgSearch = await t.search({
+			pattern: "NEEDLE",
+			paths: "history://sessions/slow",
+			skip: null,
+			action: null,
+			id: null,
+			budgetMs: null,
+			wait: { kind: "background", budgetMs: null },
+			i: null,
+			case: null,
+			gitignore: null,
+		});
+		const searchTaskId = taskIdOf(bgSearch);
+
+		open();
+		const waitedRead = await t.read({
+			action: "wait",
+			id: readTaskId,
+			budgetMs: null,
+			path: null,
+			wait: null,
+		});
+		assert.match(t.textOf(waitedRead), /the NEEDLE is here/);
+		const waitedSearch = await t.search({
+			action: "wait",
+			id: searchTaskId,
+			budgetMs: null,
+			pattern: null,
+			paths: null,
+			i: null,
+			case: null,
+			gitignore: null,
+			skip: null,
+			wait: null,
+		});
+		assert.match(t.textOf(waitedSearch), /history:\/\/sessions\/slow:2: the NEEDLE is here/);
+
+		// Direct foreground read/search with wait: null and action: null
+		const fgRead = await t.read({
+			path: "history://sessions/slow:1-3",
+			action: null,
+			id: null,
+			budgetMs: null,
+			wait: null,
+		});
+		assert.match(t.textOf(fgRead), /the NEEDLE is here/);
+		const fgSearch = await t.search({
+			pattern: "NEEDLE",
+			paths: "history://sessions/slow",
+			action: null,
+			id: null,
+			budgetMs: null,
+			wait: { kind: "foreground", budgetMs: null },
+			skip: null,
+		});
+		assert.match(t.textOf(fgSearch), /history:\/\/sessions\/slow:2: the NEEDLE is here/);
+
+		// Plain file read with strict-schema null fields (like Gemini's default read call)
+		const localRead = createReadToolDefinition(process.cwd());
+		const plain = await localRead.execute("plain-read", {
+			path: "package.json:1-3",
+			action: null,
+			id: null,
+			budgetMs: null,
+			wait: null,
+		} as never);
+		assert.match(t.textOf(plain), /@bastani\/atomic/);
+	});
+
+	it("still strictly rejects genuinely invalid read and search arguments", async () => {
+		const { store } = await gatedStore();
+		const t = tools(store);
+		const readTool = createReadToolDefinition(PROJECT, { historyTasks: () => t.registry });
+		const searchTool = createSearchToolDefinition(PROJECT, { historyTasks: () => t.registry });
+
+		const invalidReadInputs: Record<string, unknown>[] = [
+			{},
+			{ path: null, action: null, id: null, budgetMs: null, wait: null },
+			{ action: "wait" },
+			{ action: "wait", id: null },
+			{ action: "wait", id: 123 },
+			{ action: "wait", id: "history-1", path: "history://sessions" },
+			{ action: "wait", id: "history-1", wait: { kind: "background" } },
+			{ action: "wait", id: "history-1", extra: null },
+			{ action: "bogus", id: "history-1" },
+			{ action: "bogus", path: "history://sessions" },
+			{ path: "history://sessions", id: "history-1" },
+			{ path: "history://sessions", budgetMs: 0 },
+			{ path: "history://sessions", wait: { kind: "background", budgetMs: 100 } },
+			{ path: "history://sessions", wait: { kind: "background", budgetMs: 0 } },
+			{ path: "history://sessions", wait: { kind: "foreground", budgetMs: -1 } },
+			{ path: "history://sessions", wait: { kind: "foreground", budgetMs: Number.NaN } },
+			{ path: "history://sessions", wait: { kind: "foreground", budgetMs: "100" } },
+			{ path: "history://sessions", wait: { kind: "foreground", extra: null } },
+			{ action: "wait", id: "history-1", budgetMs: -1 },
+			{ action: "wait", id: "history-1", budgetMs: Number.NaN },
+			{ action: "wait", id: "history-1", budgetMs: "100" },
+		];
+		for (const args of invalidReadInputs) {
+			assert.throws(() => readTool.prepareArguments!(args), /Invalid/, `read prepare: ${JSON.stringify(args)}`);
+			await assert.rejects(t.read(args), /Invalid/, `read execute: ${JSON.stringify(args)}`);
+		}
+
+		const invalidSearchInputs: Record<string, unknown>[] = [
+			{},
+			{ pattern: null, paths: "history://sessions", action: null, id: null, budgetMs: null, wait: null },
+			{ action: "wait" },
+			{ action: "wait", id: null },
+			{ action: "wait", id: "history-1", pattern: "NEEDLE" },
+			{ action: "wait", id: "history-1", paths: "history://sessions" },
+			{ action: "wait", id: "history-1", wait: { kind: "background" } },
+			{ action: "wait", id: "history-1", i: true },
+			{ action: "wait", id: "history-1", extra: null },
+			{ action: "bogus", id: "history-1" },
+			{ pattern: "NEEDLE", id: "history-1" },
+			{ pattern: "NEEDLE", budgetMs: 10 },
+			{ pattern: "NEEDLE", wait: { kind: "background", budgetMs: 100 } },
+			{ pattern: "NEEDLE", wait: { kind: "foreground", budgetMs: -1 } },
+			{ pattern: "NEEDLE", wait: { kind: "foreground", budgetMs: "100" } },
+			{ action: "wait", id: "history-1", budgetMs: -1 },
+			{ action: "wait", id: "history-1", budgetMs: Number.NaN },
+			{ action: "wait", id: "history-1", budgetMs: "100" },
+		];
+		for (const args of invalidSearchInputs) {
+			assert.throws(() => searchTool.prepareArguments!(args), /Invalid/, `search prepare: ${JSON.stringify(args)}`);
+			await assert.rejects(t.search(args), /Invalid/, `search execute: ${JSON.stringify(args)}`);
+		}
 	});
 });

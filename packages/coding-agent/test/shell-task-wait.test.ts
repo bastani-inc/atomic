@@ -122,29 +122,142 @@ for (const factory of [createBashToolDefinition, createPowerShellToolDefinition]
 		});
 		for (const input of [
 			{},
+			{ command: null },
 			{ action: "other", id: "x" },
 			{ action: "wait" },
+			{ action: "wait", id: null },
 			{ action: "wait", id: 1 },
 			{ id: "x" },
 			{ command: "true", budgetMs: 0 },
-			...["command", "timeout", "wait", "env", "cwd", "pty"].map((key) => ({
+			...["command", "timeout", "wait", "env", "cwd", "pty", "heartbeatMs"].map((key) => ({
 				action: "wait",
 				id: "x",
 				[key]: key === "command" ? "true" : 1,
 			})),
-			...[-1, Infinity, NaN, "1", null].map((budgetMs) => ({ action: "wait", id: "x", budgetMs })),
+			...[-1, Infinity, NaN, "1", true, {}].map((budgetMs) => ({ action: "wait", id: "x", budgetMs })),
+			{ command: "true", timeout: 0 },
+			{ command: "true", timeout: -5 },
 		]) {
-			assert.equal(acceptsShellInput(tool, input), false, JSON.stringify(input));
+			if (!("timeout" in input && input.command === "true")) {
+				assert.equal(acceptsShellInput(tool, input), false, JSON.stringify(input));
+			}
 			await assert.rejects(tool.execute("invalid", input as never), /Invalid/);
 		}
 		for (const input of [
 			{ command: "" },
+			{
+				command: "true",
+				action: null,
+				id: null,
+				budgetMs: null,
+				wait: null,
+				timeout: null,
+				pty: null,
+				cwd: null,
+				env: null,
+				heartbeatMs: null,
+			},
+			{ command: "true", wait: { kind: "background", budgetMs: null } },
+			{ command: "true", wait: { kind: "foreground", budgetMs: null } },
 			{ action: "wait", id: "" },
 			{ action: "wait", id: " verbatim ", budgetMs: 0 },
 			{ action: "wait", id: "x", budgetMs: 1 },
+			{
+				action: "wait",
+				id: "x",
+				budgetMs: null,
+				command: null,
+				wait: null,
+				timeout: null,
+				pty: null,
+				cwd: null,
+				env: null,
+				heartbeatMs: null,
+			},
 		])
 			assert.equal(acceptsShellInput(tool, input), true, JSON.stringify(input));
+		assert.equal(
+			typeof tool.detachable === "function" && tool.detachable({ action: "wait", id: "x", budgetMs: null } as never),
+			true,
+		);
 	});
+	test(`${factory.name} rejects unbound background with null omitted fields before hooks`, async () => {
+		let hooked = false;
+		const tool = factory(process.cwd(), {
+			spawnHook(context) {
+				hooked = true;
+				return context;
+			},
+		});
+		await assert.rejects(
+			tool.execute("unbound", {
+				command: "true",
+				action: null,
+				id: null,
+				budgetMs: null,
+				timeout: null,
+				pty: null,
+				cwd: null,
+				env: null,
+				heartbeatMs: null,
+				wait: { kind: "background", budgetMs: null },
+			} as never),
+			/supported task owner/,
+		);
+		assert.equal(hooked, false);
+	});
+	test.runIf(process.platform !== "win32")(
+		`${factory.name} executes and waits on real tasks when omitted optional fields arrive as null`,
+		async () => {
+			const owner = host();
+			try {
+				const id = await launch(owner);
+				const tool = factory(process.cwd(), { taskOwner: owner.ownerBinding });
+				const yielded = await tool.execute("wait-null", {
+					action: "wait",
+					id,
+					budgetMs: null,
+					command: null,
+					wait: null,
+					timeout: null,
+					pty: null,
+					cwd: null,
+					env: null,
+					heartbeatMs: null,
+				} as never);
+				assert.equal(yielded.details?.observation?.kind, "yielded");
+				assert.equal(yielded.details?.observation?.taskId, id);
+				await release(owner, id);
+				const settled = await tool.execute("wait-finish", {
+					action: "wait",
+					id,
+					budgetMs: 5000,
+					command: null,
+					wait: null,
+				} as never);
+				assert.equal(settled.details?.observation?.kind, "settled");
+				assert.equal(settled.details?.exitCode, 7);
+				assert.match(settled.content[0].text, /hello/);
+				if (factory === createBashToolDefinition) {
+					const launched = await tool.execute("launch-nulls", {
+						command: "printf 'hi-nulls'",
+						action: null,
+						id: null,
+						budgetMs: null,
+						wait: { kind: "foreground", budgetMs: 5000 },
+						timeout: null,
+						pty: null,
+						cwd: null,
+						env: null,
+						heartbeatMs: null,
+					} as never);
+					assert.match(launched.content[0].text, /hi-nulls/);
+				}
+			} finally {
+				await owner.close("session-close");
+			}
+		},
+	);
 	test.runIf(process.platform !== "win32")(
 		`${factory.name} observes one real task across yields and retains terminal output and exit metadata`,
 		async () => {
