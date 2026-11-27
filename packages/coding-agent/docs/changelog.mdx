@@ -10,6 +10,14 @@ description: "What's new in Atomic"
   After each release, the publish-release skill regenerates this page in its own docs PR.
 */}
 
+<Update label="November 27, 2026" description="0.10.13-alpha.1">
+
+This patch keeps live sessions running through brief PostgreSQL restarts.
+
+- **Session writes resume after a restart.** Atomic retries saves, reports a wait after about 10 seconds and once a minute after that, and tells you when saving resumes. Storage calls outside a live session retry for up to a minute ([#6753](https://github.com/bastani-inc/atomic/pull/6753), [#6752](https://github.com/bastani-inc/atomic/issues/6752)).
+
+</Update>
+
 <Update label="November 27, 2026" description="0.10.12">
 
 This patch fixes a silent failure in `atomic storage migrate` for PostgreSQL.
