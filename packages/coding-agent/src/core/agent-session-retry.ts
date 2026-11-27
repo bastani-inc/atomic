@@ -23,7 +23,7 @@ import {
 	normalizeModelFailureSignal,
 } from "./model-fallback-failures.ts";
 import { failedProviderAccount, providerAccount } from "./provider-account.ts";
-import { hasActiveAccountLimit, providerCooldownMs, providerUnavailableMs } from "./provider-rate-limits.js";
+import { hasBlockingAccountLimit, providerCooldownMs, providerUnavailableMs } from "./provider-rate-limits.js";
 import { isLongStreamCut, LONG_STREAM_CUT_ADVICE, nextRetryDecision, repeatsLongStreamCut } from "./retry-policy.ts";
 import type { ModelFallbackRecord } from "./session-manager-types.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
@@ -459,6 +459,8 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 	const currentThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
 	const fromModel = currentModel;
 	const skipped: FallbackSkip[] = [];
+	const retryCapMs = () => this.settingsManager.getRetrySettings().maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+	const hasRejectedAccount = [...this._fallbackBlockedProviders].some((key) => key.startsWith("account:"));
 	for (const rawCandidate of this._fallbackModels) {
 		const candidate = resolveFallbackModel.call(this, rawCandidate);
 		if (!candidate) {
@@ -486,9 +488,10 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 			noteSkipped(skipped, nextModel, "auth-failed");
 			continue;
 		}
-		// Account limits can cover another model, even one configured under a different provider ID.
+		// Only prepare auth here when knowing the account can rule the model out. A short cooldown can
+		// wait at admission and must not delay the normal fallback lifecycle or start a second auth attempt.
 		const account =
-			this._fallbackBlockedProviders.size > 0 || hasActiveAccountLimit()
+			hasRejectedAccount || hasBlockingAccountLimit(retryCapMs)
 				? await resolveFallbackAccount(this, nextModel)
 				: undefined;
 		if (!retryIsCurrent(this, generation)) return true;
@@ -504,7 +507,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		}
 		const cooldownMs = providerCooldownMs(nextModel.provider, nextModel.id, now, account ?? null);
 		if (cooldownMs > 0) {
-			const capMs = this.settingsManager.getRetrySettings().maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+			const capMs = retryCapMs();
 			if (capMs > 0 && cooldownMs > capMs) {
 				noteSkipped(skipped, nextModel, "rate-limited");
 				continue;

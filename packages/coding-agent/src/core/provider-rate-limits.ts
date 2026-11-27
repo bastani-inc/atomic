@@ -133,11 +133,16 @@ function limitForScope(scope: ProviderLimitScope): ProviderLimit {
 	return limit;
 }
 
-export function hasActiveAccountLimit(now = Date.now()): boolean {
+/** A short cooldown is handled at request admission, not by rejecting a fallback candidate. */
+export function hasBlockingAccountLimit(retryCapMs: () => number, now = Date.now()): boolean {
+	let maxCooldownMs = 0;
 	for (const limit of state.accounts?.values() ?? []) {
-		if (limit.cooldownUntil > now || limit.unavailableUntil > now) return true;
+		if (limit.unavailableUntil > now) return true;
+		maxCooldownMs = Math.max(maxCooldownMs, limit.cooldownUntil - now);
 	}
-	return false;
+	if (maxCooldownMs === 0) return false;
+	const cap = retryCapMs();
+	return cap > 0 && maxCooldownMs > cap;
 }
 
 export function configureProviderRequestBudget(provider: string, budget: ProviderRequestBudget | undefined): void {

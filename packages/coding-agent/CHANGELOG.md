@@ -8,7 +8,7 @@
 
 - Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.
 - Chat treats temporary OpenAI capacity errors as retryable instead of content refusals. If OpenAI reports an API key, project, or organization spending cap, chat goes straight to the fallback chain.
-- Chat skips fallback models on the same account when a credential is rejected, quota runs out, or the rate-limit wait exceeds your retry limit, even if those models use different provider names. No settings change is needed ([#6779](https://github.com/bastani-inc/atomic/issues/6779)).
+- Chat and subagents skip fallback models on the same account when a credential is rejected, quota runs out, or the rate-limit wait exceeds your retry limit, even if those models use different provider names. No settings change is needed ([#6779](https://github.com/bastani-inc/atomic/issues/6779)).
 
 ## [0.10.15] - 2026-11-27
 

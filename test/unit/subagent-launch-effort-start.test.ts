@@ -131,7 +131,7 @@ class WedgedAdmission implements ResourceAdmission {
 interface EffortFixtureOptions {
 	/** The parent's own admission, as a workflow stage session holds one. */
 	readonly parentAdmission?: ResourceAdmission;
-	/** The requested model's quota is exhausted, so the child moves to its agent's first fallback. */
+	/** The requested account's quota is exhausted, so the child moves to its agent's first eligible fallback. */
 	readonly primaryQuotaExhausted?: boolean;
 	/** The levels the requested model supports. */
 	readonly requestedModelLevels?: Model<"anthropic-messages">["thinkingLevelMap"];
@@ -156,14 +156,22 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 		reasoning: true,
 		thinkingLevelMap: options.requestedModelLevels ?? UP_TO_XHIGH,
 	};
+	// Use a different endpoint for eligible backups to the primary whose account runs out of quota.
+	const backupBaseUrl = "https://backup.example.invalid";
 	// The parent's own chat model. A child launched on a named model never falls back to it unless its agent lists it.
 	const parentModel: Model<"anthropic-messages"> = {
 		...model,
 		id: "parent-model",
+		baseUrl: backupBaseUrl,
 		thinkingLevelMap: options.parentModelLevels ?? UP_TO_XHIGH,
 	};
 	// A third model, for a fallback chain entry that is neither the requested model nor the parent's.
-	const fallbackModel: Model<"anthropic-messages"> = { ...model, id: "fallback-model", thinkingLevelMap: UP_TO_XHIGH };
+	const fallbackModel: Model<"anthropic-messages"> = {
+		...model,
+		id: "fallback-model",
+		baseUrl: backupBaseUrl,
+		thinkingLevelMap: UP_TO_XHIGH,
+	};
 	const catalog = [model, parentModel, fallbackModel];
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
@@ -188,7 +196,9 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 				model: requestModel.id,
 				usage: usage(),
 				stopReason: exhausted ? "error" : "stop",
-				...(exhausted ? { errorMessage: "402 insufficient_quota: the requested model's quota is exhausted" } : {}),
+				...(exhausted
+					? { errorMessage: "402 insufficient_quota: the requested account's quota is exhausted" }
+					: {}),
 				timestamp: Date.now(),
 			};
 			if (exhausted) stream.push({ type: "error", reason: "error", error: message });

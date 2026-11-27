@@ -166,7 +166,8 @@ describe("createAgentSession request-auth cancellation", () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-3085-sdk-"));
 		cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
 		const credentials = AuthStorage.inMemory({
-			probe: { type: "oauth", access: "fabricated", refresh: "fabricated", expires: 1 },
+			// The fallback is an independent account on the same endpoint as the rate-limited primary.
+			probe: { type: "oauth", access: "fabricated-probe-access", refresh: "fabricated", expires: 1 },
 			primary: { type: "api_key", key: "fabricated" },
 		});
 		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
