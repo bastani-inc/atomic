@@ -167,6 +167,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let fallbackTarget: { model: string; thinkingLevel?: string } | undefined;
 	let suppressFinalOutput = false;
 	let activePromptHadCommandError = false;
+	let stoppedByWriterConflict = false;
 	/** Whether the last prompt's extension commands answered with messages they queued (#6113). */
 	let commandAnswered = false;
 	/**
@@ -259,8 +260,9 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				if (mode === "text") exitCode = 1;
 				activePromptHadCommandError = true;
 			}
-			const conflict = session.getPersistenceFailure()?.conflict ?? session.sessionManager.getAppendHalt();
+			const conflict = session.getPersistenceFailure()?.conflict;
 			if (conflict !== undefined) {
+				stoppedByWriterConflict = true;
 				exitCode = 1;
 				console.error(sessionConflictMessage(conflict));
 			}
@@ -371,7 +373,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		for (const message of messages) {
 			// A newer writer owns the saved turn; unattended prompts must not continue past it.
-			if (session.sessionManager.getAppendHalt() !== undefined) break;
+			if (stoppedByWriterConflict) break;
 			await promptWithScopedCommandSuppression(message);
 		}
 
