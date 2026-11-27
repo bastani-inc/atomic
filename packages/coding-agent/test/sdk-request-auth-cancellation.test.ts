@@ -576,6 +576,40 @@ describe("createAgentSession request-auth cancellation", () => {
 		expect(f.calls()).toBe(0);
 	});
 
+	it("cancels fallback account lookup even if its auth never settles (#6779)", async () => {
+		const f = await fixture({
+			fallback: true,
+			primaryStream: (model) =>
+				response(model, {
+					content: [],
+					stopReason: "error",
+					errorMessage: "429 rate limit exceeded",
+					retryAfterMs: 360_000,
+				}),
+		});
+		const originalAuth = f.runtime.getRequestAuth.bind(f.runtime);
+		const entered = deferred<AbortSignal | undefined>();
+		const held = deferred<undefined>();
+		vi.spyOn(f.runtime, "getRequestAuth").mockImplementation((model, options) => {
+			if (model.provider !== "probe") return originalAuth(model, options);
+			entered.resolve(options?.signal);
+			return held.promise;
+		});
+		const prompt = f.session.prompt("go");
+		const signal = await entered.promise;
+		const abort = f.session.abort();
+		try {
+			await expectSettledWithinIoHeadroom(Promise.all([abort, prompt]));
+			expect(signal?.aborted).toBe(true);
+			expect(f.session.model?.provider).toBe("primary");
+			expect(f.calls()).toBe(0);
+		} finally {
+			held.resolve(undefined);
+			await abort;
+			await prompt;
+		}
+	});
+
 	it("keeps a long tool pending past the auth bound then completes", async () => {
 		const entered = deferred();
 		const release = deferred();

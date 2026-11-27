@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@bastani/atomic-ai/compat";
+import { raceWithAbortSignal } from "@bastani/atomic-ai/utils/abort";
 import { DEFAULT_MAX_RETRY_DELAY_MS } from "@bastani/atomic-ai/utils/provider-retry";
 import { sleep } from "../utils/sleep.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
@@ -421,7 +422,10 @@ async function resolveFallbackAccount(session: AgentSession, model: Model<Api>):
 	const controller = new AbortController();
 	session._retryAbortController = controller;
 	try {
-		const auth = await session._modelRuntime.getRequestAuth(model, { signal: controller.signal });
+		const auth = await raceWithAbortSignal(
+			session._modelRuntime.getRequestAuth(model, { signal: controller.signal }),
+			controller.signal,
+		);
 		return auth && providerAccount(model, { ...auth.auth, env: auth.env });
 	} catch {
 		// A candidate's auth preparation still owns its own diagnostic if no account could be identified here.
