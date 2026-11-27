@@ -197,7 +197,11 @@ class ProfileSampler implements StackSampler {
 		});
 	}
 
-	exit(): void {}
+	exit(): void {
+		// Node can tear down tracing while V8's sampler is still streaming into it (#6787).
+		// Disconnect synchronously to stop the sampler without serializing its final profile.
+		if (!isBunRuntime) this.session.disconnect();
+	}
 
 	private scheduleCollection(): void {
 		if (this.collectionScheduled) return;
