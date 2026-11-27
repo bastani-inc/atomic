@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.10.15] - 2026-11-27
+
+This patch removes the remaining built-in compaction output caps, adds `~` home expansion to `shellPath`, and overhauls the documentation for clarity without reading source code.
+
+- **No built-in compaction output caps on extensions.** `session_before_compact` hooks now keep whatever replacement text they return without enforcing a 32,000-token, 50%-trigger-share, or trigger-overflow cap, matching remote compactor models, while retiring the unused cap and line-width constants from compaction logic ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
+- **Home-directory `~` expansion in `shellPath`.** Custom shell paths in `settings.json` now expand a leading `~/` (and `~\` on Windows) to your home directory, matching the documented schema ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
+- **Reorganized, source-verified documentation.** Split Compaction into Memory Compaction, Custom Compactors, and Branch Summaries; added `How Atomic works`, `Slash commands`, `Choose a model`, `Worktree snapshots reference`, and `Background tasks reference`; grouped Models Reference with `models.json` fields; flattened single-page storage folders; removed unsupported Termux docs and cleaned up Platform setup navigation; and corrected verified source-vs-docs discrepancies across the docs ([#6763](https://github.com/bastani-inc/atomic/pull/6763), [#6765](https://github.com/bastani-inc/atomic/pull/6765), [#6766](https://github.com/bastani-inc/atomic/pull/6766)).
+
+### Added
+
+- `shellPath` in `settings.json` now expands a leading `~` (`~/...`, plus `~\...` on Windows) to your home directory, matching its documented schema ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
+
+### Changed
+
+- Extension `session_before_compact` hooks no longer enforce a built-in 32,000-token, 50%-trigger-share, or trigger-overflow output cap, matching remote compactor models. `COMPACTED_OUTPUT_MAX_TOKENS`, `COMPACTED_OUTPUT_MAX_TRIGGER_SHARE`, `COMPACTOR_LINE_WIDTH`, and `compactedOutputTokenCap` are removed from compaction logic and deprecated as root compatibility exports; `COMPACTOR_REQUEST_TIMEOUT_MS` remains the exported request timeout default ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
+- Reorganized and audited Atomic's Mintlify documentation for readability without source code: split Compaction into Memory Compaction, Custom Compactors, and Branch Summaries; grouped Models Reference with `models.json` fields and trimmed GitHub Copilot error classes out of the main Providers Reference; added `How Atomic works`, `Slash commands`, `Choose a model`, `Worktree snapshots reference`, and `Background tasks reference`; flattened single-page storage folders; reordered Platform setup to **Configure your terminal**, **Shell aliases**, **Run on Windows**, **Run in Tmux**, and **Run in Herdr**; and fixed verified inaccuracies and broken links across the docs ([#6763](https://github.com/bastani-inc/atomic/pull/6763), [#6766](https://github.com/bastani-inc/atomic/pull/6766)).
+
+### Removed
+
+- Removed unsupported Android/Termux documentation (`packages/coding-agent/docs/termux.md` and Termux references across guides and READMEs), redirecting `/termux` to `/getting-started/installation` ([#6765](https://github.com/bastani-inc/atomic/pull/6765)).
+
 ## [0.10.15-alpha.2] - 2026-11-27
 
 This prerelease removes unsupported Termux documentation and cleans up the Platform setup navigation.
