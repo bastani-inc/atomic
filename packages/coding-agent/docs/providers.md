@@ -479,6 +479,8 @@ Classifiers, image models, and remote compactors never appear in `/model` and ne
 
 `google-decisions/gemini-decision-1` uses Google's [Gemini Decisions API](https://aistudio.google.com/docs/decisions-api) to answer yes/no, choice, and score questions about text and images. It is a classifier, not a chat model.
 
+This is a new provider. We tested it against a simulated server, but not yet against the live Gemini API ([#6788](https://github.com/bastani-inc/atomic/issues/6788)).
+
 1. If you already saved a Gemini key with `/login google`, reuse it. Otherwise, [get a Gemini API key from Google AI Studio](https://aistudio.google.com/app/apikey), then run `/login google` or set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) before starting Atomic. Atomic checks the saved `google` key first, then `GEMINI_API_KEY`, then `GOOGLE_API_KEY`. There is no `/login google-decisions` entry, and the API is not available through Vertex AI.
 2. Open `/settings` → **Decision model** and choose `google-decisions/gemini-decision-1`, or add this to [your `settings.json`](/settings#decisionmodel) and run `/reload`:
 

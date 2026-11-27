@@ -4,7 +4,7 @@
 
 ### Added
 
-- Gemini Decision 1 can answer structured questions about text and images using your existing Gemini API key. To use it, select `google-decisions/gemini-decision-1` under **Decision model** in `/settings`, or call it from codemode; your chat model does not change ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
+- Select `google-decisions/gemini-decision-1` under **Decision model** in `/settings` or call it from codemode to ask structured questions about text and images using your existing Gemini API key. This new provider was tested against a simulated server, not the live Gemini API ([#6773](https://github.com/bastani-inc/atomic/issues/6773), [#6788](https://github.com/bastani-inc/atomic/issues/6788)).
 
 ### Fixed
 

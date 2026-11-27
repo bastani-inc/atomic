@@ -6,7 +6,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ### Added
 
-- Select `google-decisions/gemini-decision-1` to ask yes/no, choice, or score questions about text and images. You can reuse the Gemini API key you already use for chat ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
+- Select `google-decisions/gemini-decision-1` to ask yes/no, choice, or score questions about text and images using your existing Gemini API key. This new provider was tested against a simulated server, not the live Gemini API ([#6773](https://github.com/bastani-inc/atomic/issues/6773), [#6788](https://github.com/bastani-inc/atomic/issues/6788)).
 
 ### Fixed
 
