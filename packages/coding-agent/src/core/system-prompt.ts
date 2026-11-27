@@ -223,6 +223,9 @@ function buildRules(
 	}
 	if (tools.length > 0) {
 		addGuideline(
+			"When using a question tool, include all context needed to answer in the question and options, even if you already gave it in a progress update.",
+		);
+		addGuideline(
 			"When human input is unavailable because no usable question tool exists or the session is headless, do not stall on a question. Choose the interpretation best supported by the stated objective and repository evidence: mine git history, commits, PRs, issues, and the user's own comments to infer how they would decide, record the assumption and rationale, and continue fully autonomously on best judgment. Tool unavailability alone is not a blocker. Preserve explicit approval gates, safety, authorization, and budget limits. A cancelled or unanswered available question is not permission to use this fallback.",
 		);
 	}
