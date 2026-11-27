@@ -1,11 +1,11 @@
 /**
- * Updates test/helpers/test-file-durations.json, the per-file weights the sharded suites are ordered and sharded by
- * (see test/helpers/duration-sequencer.ts), from vitest JSON reports. `durationDrift` finds the files of one run that
- * strayed far from those weights; scripts/run-test-suite.ts warns about them on every CI shard.
+ * Updates test/helpers/test-file-durations.json, the per-file weights used to order suites (see
+ * test/helpers/duration-sequencer.ts), from Vitest JSON reports. `durationDrift` finds the files of one run that
+ * strayed far from those weights; scripts/run-test-suite.ts warns about them in CI.
  *
  *   bun run scripts/test-file-durations.ts [--os linux|win32|storage-conformance] <report.json>...
  *
- * Pass the reports of recent CI runs, one per shard per run: the `test-diagnostics-*` artifacts of the
+ * Pass the reports of recent CI runs: the `test-diagnostics-*` artifacts of the
  * integration-tests, unit-tests, agent-suite and storage-conformance jobs each hold one JSON report per suite.
  * Without `--os`, each report's bucket comes from its artifact path (`storage-conformance`, `linux-x64`, or
  * `windows-x64`). A file that appears in several reports of one bucket gets
@@ -52,7 +52,7 @@ export function testFileDurations(reports: readonly VitestJsonReport[]): Record<
 /**
  * How far a file's measured duration may stray from the weight the sequencer gave it before the record counts as
  * stale for it: at least `DRIFT_MIN_MS` and a factor of `DRIFT_RATIO` either way. One busy runner moves a file by
- * tens of percent, which only skews the balance; a new heavy file the record weighs as unknown, or a file that
+ * tens of percent, which only skews the order; a new heavy file the record weighs as unknown, or a file that
  * gained or lost several cases, moves it by more.
  */
 export const DRIFT_MIN_MS = 30_000;

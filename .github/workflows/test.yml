@@ -38,10 +38,10 @@ on:
 # A catalog-only job selects one model data snapshot. All work jobs then run in parallel.
 #
 #   model-data          restore or hydrate one snapshot for this run
-#   unit-tests          build package -> one of eleven (Linux), twelve (Windows) or six (macOS) unit shards
-#   integration-tests   build package -> one of twelve (Linux, Windows) or six (macOS) integration shards
-#   storage-conformance build package -> one of four Linux server-backed storage shards
-#   agent-suite         build ai + native bindings -> one of nine (Linux) or eleven (Windows) coding-agent shards
+#   unit-tests          build package -> full unit suite (Linux, Windows, macOS; extra Linux Node floor job)
+#   integration-tests   build package -> full integration suite (Linux, Windows, macOS)
+#   storage-conformance build package -> server-backed storage tests (Linux)
+#   agent-suite         build ai + native bindings -> full coding-agent suite (Linux, Windows; extra Linux Node floor job)
 #   packages-suite      build forked packages -> atomic-ai and forked workspace package suites (per OS)
 #   release-archive     build package -> build-binaries.sh -> archive smoke
 #   static-checks       typecheck, docs, Mintlify, CI contracts (Linux)
@@ -109,57 +109,36 @@ jobs:
           overwrite: true
 
   unit-tests:
-    name: unit-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }}${{ matrix.node != 'newest' && format(', Node.js {0}', matrix.node) || '' }})
+    name: unit-tests (${{ matrix.binary_platform }}${{ matrix.node != 'newest' && format(', Node.js {0}', matrix.node) || '' }})
     needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Eleven shards on Linux, twelve on Windows and six on macOS, balanced by per-OS file durations measured on CI
-        # (test/helpers/duration-sequencer.ts; macOS uses Linux's). The result gate needs every shard. See docs/ci.md
-        # ("Sharded suites").
-        binary_platform: [linux-x64, windows-x64, darwin-arm64]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-        # The newest Node.js release that satisfies engines.node. The one entry below with another value runs on the
-        # engines.node floor instead. See docs/ci.md ("Node.js version").
-        node: [newest]
-        exclude:
-          - binary_platform: linux-x64
-            shard: 12
-          - { binary_platform: darwin-arm64, shard: 7 }
-          - { binary_platform: darwin-arm64, shard: 8 }
-          - { binary_platform: darwin-arm64, shard: 9 }
-          - { binary_platform: darwin-arm64, shard: 10 }
-          - { binary_platform: darwin-arm64, shard: 11 }
-          - { binary_platform: darwin-arm64, shard: 12 }
         include:
-          # The three suites run on 8 vCPU: on 4 vCPU they averaged 54-77% CPU, and
-          # Windows unit/integration hit their caps at p95. See docs/ci.md ("Sizing").
           - binary_platform: linux-x64
+            node: newest
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.linux-amd64
-            shards: 11
-            timeout_minutes: 14
+            workers: 8
+            timeout_minutes: 22
           - binary_platform: windows-x64
+            node: newest
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.windows-amd64
-            shards: 12
-            timeout_minutes: 14
-          # macOS catches what Linux cannot: /var resolving to /private/var, APFS birth times, no /bin/false. Six
-          # shards keep a run inside the workspace's macOS capacity; see docs/ci.md ("Sizing").
+            workers: 8
+            timeout_minutes: 28
           - binary_platform: darwin-arm64
+            node: newest
             runner: namespace-profile-atomic-ci-macos-arm64-6x14;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.macos-arm64
-            shards: 6
-            timeout_minutes: 14
-          # One more Linux shard on exactly the engines.node floor, the oldest Node.js an npm install accepts. It runs
-          # in parallel with the other shards, so the result gate takes about as long as before. The shard number is arbitrary.
+            workers: 6
+            timeout_minutes: 20
+          # The oldest Node.js release an npm install accepts. See docs/ci.md ("Node.js version").
           - binary_platform: linux-x64
-            shard: 2
             node: "24.20.0"
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.unit-tests.linux-amd64
-            shards: 11
-            timeout_minutes: 14
+            workers: 8
+            timeout_minutes: 22
       fail-fast: false
     runs-on: ${{ matrix.runner }}
-    # Calibrated for four shards (the slowest unsharded job, 925 s, 411 s of it setup with a 261 s checkout, with a
-    # quarter of its 514 s of tests, plus 50%) and kept at five; see docs/ci.md ("Per-job time limits").
+    # Calibrated from shard test-step totals plus one setup and cold-cache headroom (docs/ci.md, "Per-job time limits").
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       # One standard clone on every OS. The Namespace git mirror is not used: see
@@ -258,9 +237,9 @@ jobs:
       # The release checks its packed build against the newest published release and the newest stable one, which the
       # unit suite's committed records (packages/coding-agent/in-place-update/) do not hold: 0.10.11-alpha.2's release
       # failed on exports 0.10.11-alpha.1 lacked after every pull request passed. This runs the same check on this build,
-      # in one shard (two npm downloads and a few seconds of parsing).
+      # once (two npm downloads and a few seconds of parsing).
       - name: Check in-place updates from the newest published releases
-        if: matrix.binary_platform == 'linux-x64' && matrix.shard == 1
+        if: matrix.binary_platform == 'linux-x64' && matrix.node == 'newest'
         timeout-minutes: 5
         run: node scripts/in-place-update-exports.mjs published packages/coding-agent/in-place-update packages/coding-agent packages/ai packages/agent packages/tui packages/codemode packages/schema packages/telemetry
       # skill-creator's package_skill.py and quick_validate.py read SKILL.md with PyYAML. Linux's image has it; the
@@ -307,8 +286,8 @@ jobs:
           # The skill-creator tests that need PyYAML fail instead of skipping when it is missing.
           ATOMIC_REQUIRE_PYYAML: "1"
         run: >-
-          bun run scripts/run-test-suite.ts --label "unit tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of ${{ matrix.shards }}${{ matrix.node != 'newest' && format(' on Node.js {0}', matrix.node) || '' }})"
-          -- npm run test:unit -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
+          bun run scripts/run-test-suite.ts --label "unit tests (${{ matrix.binary_platform }}${{ matrix.node != 'newest' && format(' on Node.js {0}', matrix.node) || '' }})"
+          -- npm run test:unit -- --maxWorkers=${{ matrix.workers }}
       - name: Upload test diagnostics
         if: always()
         # The tests decide the job's result, not a failed diagnostics upload (such as an artifact service timeout).
@@ -317,47 +296,33 @@ jobs:
         with:
           # Artifact names must be unique across every job in the run:
           # actions/upload-artifact@v4+ fails the whole run on a duplicate.
-          name: test-diagnostics-unit-tests-${{ matrix.binary_platform }}-${{ matrix.shard }}${{ matrix.node != 'newest' && format('-node-{0}', matrix.node) || '' }}
+          name: test-diagnostics-unit-tests-${{ matrix.binary_platform }}${{ matrix.node != 'newest' && format('-node-{0}', matrix.node) || '' }}
           path: .ci-diagnostics/
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
 
   integration-tests:
-    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    name: integration-tests (${{ matrix.binary_platform }})
     needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Twelve shards on Linux and Windows and six on macOS, balanced by per-OS file durations measured on CI
-        # (test/helpers/duration-sequencer.ts; macOS uses Linux's). The result gate below needs every shard, so the
-        # required check covers the whole suite on every host.
-        binary_platform: [linux-x64, windows-x64, darwin-arm64]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-        exclude:
-          - { binary_platform: darwin-arm64, shard: 7 }
-          - { binary_platform: darwin-arm64, shard: 8 }
-          - { binary_platform: darwin-arm64, shard: 9 }
-          - { binary_platform: darwin-arm64, shard: 10 }
-          - { binary_platform: darwin-arm64, shard: 11 }
-          - { binary_platform: darwin-arm64, shard: 12 }
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.linux-amd64
-            shards: 12
-            timeout_minutes: 12
+            workers: 8
+            timeout_minutes: 26
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.windows-amd64
-            shards: 12
-            timeout_minutes: 12
+            workers: 8
+            timeout_minutes: 28
           - binary_platform: darwin-arm64
             runner: namespace-profile-atomic-ci-macos-arm64-6x14;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.macos-arm64
-            shards: 6
-            timeout_minutes: 12
+            workers: 6
+            timeout_minutes: 24
       fail-fast: false
     runs-on: ${{ matrix.runner }}
-    # Calibrated for three shards (the slowest four-shard job, 340 s, scaled to three, plus 50%) and kept now that there
-    # are five; see docs/ci.md ("Per-job time limits").
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -442,8 +407,8 @@ jobs:
           echo "$RUNNER_TEMP/atomic-test-bin" >> "$GITHUB_PATH"
       - name: Integration tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of ${{ matrix.shards }})"
-          -- npm run test:integration -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
+          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }})"
+          -- npm run test:integration -- --maxWorkers=${{ matrix.workers }}
         env:
           # Hard-require the installed-package Node smoke on both supported hosts.
           ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
@@ -453,26 +418,22 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-diagnostics-integration-tests-${{ matrix.binary_platform }}-${{ matrix.shard }}
+          name: test-diagnostics-integration-tests-${{ matrix.binary_platform }}
           path: .ci-diagnostics/
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
 
   # Every store's conformance suite on PostgreSQL (test/integration/storage-conformance-matrix.test.ts), plus the
-  # PostgreSQL adapter, Intercom and multi-node resume files. The integration shards run the same matrix on SQLite
+  # PostgreSQL adapter, Intercom and multi-node resume files. The integration jobs run the same matrix on SQLite
   # files only and skip the files that need PostgreSQL. Linux only: service containers need a Linux runner. See
   # docs/ci.md ("Storage backend matrix").
   storage-conformance:
-    name: storage-conformance (linux-x64, ${{ matrix.shard }}/4)
+    name: storage-conformance (linux-x64)
     needs: model-data
     if: ${{ !github.event.pull_request.draft }}
-    strategy:
-      matrix:
-        shard: [1, 2, 3, 4]
-      fail-fast: false
     runs-on: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.storage-conformance.linux-amd64
-    # Setup as in an integration shard, plus service startup and storage adapter conformance.
+    # The existing cap covers the combined suite and cold service setup.
     timeout-minutes: 30
     services:
       postgres:
@@ -572,64 +533,48 @@ jobs:
       # outbox claim tests directly and through PgBouncer, and forks on PostgreSQL in a process an in-place update caught.
       - name: Storage conformance and PostgreSQL tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64 ${{ matrix.shard }} of 4)"
+          bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64)"
           -- npm run test:integration -- storage-conformance-matrix storage-postgres intercom-postgres multinode-resume
-          intercom-outbox-claim in-place-update-forks --shard=${{ matrix.shard }}/4
+          intercom-outbox-claim in-place-update-forks --maxWorkers=8
       - name: Upload test diagnostics
         if: always()
         # The tests decide the job's result, not a failed diagnostics upload (such as an artifact service timeout).
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-diagnostics-storage-conformance-linux-x64-${{ matrix.shard }}
+          name: test-diagnostics-storage-conformance-linux-x64
           path: .ci-diagnostics/
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
 
   agent-suite:
-    name: agent-suite (${{ matrix.binary_platform }}, ${{ matrix.shard }}/${{ matrix.shards }}${{ matrix.node != 'newest' && format(', Node.js {0}', matrix.node) || '' }})
+    name: agent-suite (${{ matrix.binary_platform }}${{ matrix.node != 'newest' && format(', Node.js {0}', matrix.node) || '' }})
     needs: model-data
     if: ${{ !github.event.pull_request.draft }}
     strategy:
       matrix:
-        # Nine shards on Linux and eleven on Windows, running the coding-agent suite balanced by measured file duration.
-        binary_platform: [linux-x64, windows-x64]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-        # The newest Node.js release that satisfies engines.node. The one entry below with another value runs on the
-        # engines.node floor instead. See docs/ci.md ("Node.js version").
-        node: [newest]
-        exclude:
-          - binary_platform: linux-x64
-            shard: 10
-          - binary_platform: linux-x64
-            shard: 11
         include:
           - binary_platform: linux-x64
+            node: newest
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.linux-amd64
-            shards: 9
-            timeout_minutes: 10
+            timeout_minutes: 20
             ripgrep_target: x86_64-unknown-linux-musl.tar.gz
             ripgrep_sha256: 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
           - binary_platform: windows-x64
+            node: newest
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.windows-amd64
-            shards: 11
-            timeout_minutes: 10
+            timeout_minutes: 30
             ripgrep_target: x86_64-pc-windows-msvc.zip
             ripgrep_sha256: 71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5
-          # One more Linux shard on exactly the engines.node floor, as in unit-tests. The shard number is arbitrary.
           - binary_platform: linux-x64
-            shard: 2
             node: "24.20.0"
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.agent-suite.linux-amd64
-            shards: 9
-            timeout_minutes: 10
+            timeout_minutes: 20
             ripgrep_target: x86_64-unknown-linux-musl.tar.gz
             ripgrep_sha256: 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
       fail-fast: false
     runs-on: ${{ matrix.runner }}
-    # Slowest recent job (540 s, about 290 s of it setup with a 207 s checkout) with a third of its suites, plus 50%;
-    # see docs/ci.md ("Per-job time limits").
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       RIPGREP_VERSION: "15.2.0"
@@ -755,8 +700,8 @@ jobs:
           echo "Installed ${version%%$'\n'*} from ${asset} (SHA-256 verified)"
       - name: coding-agent vitest suite
         run: >-
-          bun run scripts/run-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of ${{ matrix.shards }}${{ matrix.node != 'newest' && format(' on Node.js {0}', matrix.node) || '' }})"
-          -- npm run test --workspace=@bastani/atomic -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
+          bun run scripts/run-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }}${{ matrix.node != 'newest' && format(' on Node.js {0}', matrix.node) || '' }})"
+          -- npm run test --workspace=@bastani/atomic -- --maxWorkers=8
         env:
           ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE: "1"
           ATOMIC_REQUIRE_PROVISIONED_RIPGREP: "1"
@@ -766,7 +711,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-diagnostics-agent-suite-${{ matrix.binary_platform }}-${{ matrix.shard }}${{ matrix.node != 'newest' && format('-node-{0}', matrix.node) || '' }}
+          name: test-diagnostics-agent-suite-${{ matrix.binary_platform }}${{ matrix.node != 'newest' && format('-node-{0}', matrix.node) || '' }}
           path: .ci-diagnostics/
           include-hidden-files: true
           if-no-files-found: ignore
