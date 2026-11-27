@@ -17,6 +17,7 @@
 - Atomic sends a fresh tracing ID for every OpenAI Chat Completions and Responses attempt, so separate requests can be traced even within the same session ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
 
 - Chat moves to the next available fallback model when a provider asks it to wait past the retry limit. Retry and fallback attempts are saved in the session, and if no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774)).
+- Chat no longer gets stuck loading when a provider never answers, sends only keepalive pings, or stalls while sending rate-limit details. Esc also stops waiting for unresponsive extensions or queued requests. Timeouts let Atomic retry or switch models according to your settings ([#6790](https://github.com/bastani-inc/atomic/issues/6790)).
 
 - Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.
 - Chat treats temporary OpenAI capacity errors as retryable instead of content refusals. If OpenAI reports an API key, project, or organization spending cap, chat goes straight to the fallback chain.

@@ -128,12 +128,13 @@ async function capturePayload(
 	model: Model<"bedrock-converse-stream"> = gptModel,
 ): Promise<BedrockRequestPayload> {
 	let capturedPayload: BedrockRequestPayload | undefined;
+	const controller = new AbortController();
 	const s = streamBedrock(model, normalizeContext(context), {
 		cacheRetention: "none",
-		signal: AbortSignal.abort(),
+		signal: controller.signal,
 		onPayload: (payload) => {
 			capturedPayload = payload as BedrockRequestPayload;
-			return payload;
+			controller.abort();
 		},
 	});
 	for await (const event of s) {

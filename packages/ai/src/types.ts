@@ -229,9 +229,9 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	 */
 	maxRetryDelayMs?: number;
 	/**
-	 * Do not start a provider backoff retry at or after this absolute `performance.now()` timestamp.
-	 * Local to the calling process. Does not limit the initial attempt or cancel a request in flight;
-	 * pass `signal` as well to interrupt active work and backoff waits.
+	 * Do not dispatch a provider retry at or after this absolute `performance.now()` timestamp.
+	 * Also ends an admission wait on a retry. Local to the calling process; does not limit the initial
+	 * attempt or cancel a request already in flight. Pass `signal` to interrupt active work.
 	 */
 	retryDeadline?: RetryDeadline;
 }
@@ -291,13 +291,10 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 */
 	websocketConnectTimeoutMs?: number;
 	/**
-	 * Maximum idle gap in milliseconds between two provider stream events.
-	 *
-	 * Enforced below the HTTP layer, so a response body that stalls without ever
-	 * rejecting the adapter's async iterator (for example a decompression failure
-	 * that destroys the stream silently, #2553) still settles the attempt as a
-	 * retryable transport error instead of hanging forever. The timer restarts on
-	 * every event, so it never caps total stream duration.
+	 * Maximum gap in milliseconds without assistant content progress after a provider stream opens.
+	 * Non-empty text, thinking and tool-call deltas, completed blocks and terminal events count as
+	 * progress; keepalives, empty deltas and metadata do not. A stalled stream settles as a
+	 * retryable transport error, without capping the total duration of a progressing stream.
 	 *
 	 * Defaults to 300000 ms. `0` (or any non-positive value) disables it.
 	 */

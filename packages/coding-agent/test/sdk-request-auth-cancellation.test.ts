@@ -610,6 +610,56 @@ describe("createAgentSession request-auth cancellation", () => {
 		}
 	});
 
+	it("moves on when fallback credential setup ignores the request deadline (#6790)", async () => {
+		const f = await fixture({
+			fallback: true,
+			primaryStream: (model) =>
+				response(model, {
+					content: [],
+					stopReason: "error",
+					errorMessage: "429 rate limit exceeded",
+					retryAfterMs: 360_000,
+				}),
+		});
+		vi.useFakeTimers();
+		const settings = f.session.settingsManager;
+		vi.spyOn(settings, "getProviderRetrySettings").mockReturnValue({
+			...settings.getProviderRetrySettings(),
+			timeoutMs: 25,
+		});
+		const retries = watchRetryTimers();
+		const originalAuth = f.runtime.getRequestAuth.bind(f.runtime);
+		const entered = deferred<AbortSignal | undefined>();
+		const held = deferred<undefined>();
+		let firstProbeLookup = true;
+		vi.spyOn(f.runtime, "getRequestAuth").mockImplementation((model, options) => {
+			if (model.provider !== "probe" || !firstProbeLookup) return originalAuth(model, options);
+			firstProbeLookup = false;
+			entered.resolve(options?.signal);
+			return held.promise;
+		});
+		let finished = false;
+		const prompt = f.session.prompt("go").finally(() => {
+			finished = true;
+		});
+		try {
+			const signal = await entered.promise;
+			await vi.advanceTimersByTimeAsync(24);
+			expect(signal?.aborted).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(signal?.aborted).toBe(true);
+			await waitForIo(() => retries(true) > 0);
+			await vi.advanceTimersByTimeAsync(1);
+			await expectSettledWithinIoHeadroom(prompt);
+			expect(f.calls()).toBe(1);
+			expect(f.session.getLastAssistantText()).toBe("ok");
+		} finally {
+			if (!finished) await f.session.abort();
+			held.resolve(undefined);
+			await prompt;
+		}
+	});
+
 	it("keeps a long tool pending past the auth bound then completes", async () => {
 		const entered = deferred();
 		const release = deferred();

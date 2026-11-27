@@ -1,5 +1,7 @@
 import type { AssistantMessage } from "../types.ts";
+import { raceWithAbortSignal } from "./abort.ts";
 import { type AssistantMessageDiagnostic, appendAssistantMessageDiagnostic } from "./diagnostics.ts";
+import { boundProviderErrorResponse } from "./provider-waits/timeout.ts";
 
 /**
  * A request that failed because TLS verification refused the certificate the endpoint (or a proxy on the way) showed
@@ -311,14 +313,25 @@ function requestUrl(input: Parameters<typeof globalThis.fetch>[0]): string | URL
 
 /**
  * `fetch` (the global one when undefined, read at each call), whose rejections are the request's own transport failures
- * for their URL (see `transportFailure`). Responses, and the errors of reading them, are untouched.
+ * for their URL (see `transportFailure`). The SDK's signal stops the wait for headers even if a custom fetch
+ * ignores it. If the SDK reads unsuccessful bodies itself, optionally bound that read here too.
+ * Successful response bodies remain untouched.
  */
-export function transportFetch(fetch: typeof globalThis.fetch | undefined): typeof globalThis.fetch {
+export function transportFetch(fetch: typeof globalThis.fetch | undefined, sdkReadsErrorBody = false): typeof globalThis.fetch {
 	return Object.assign(
 		async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+			const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+			let pending: Promise<Response> | undefined;
 			try {
-				return await (fetch ?? globalThis.fetch)(input, init);
+				signal?.throwIfAborted();
+				pending = (fetch ?? globalThis.fetch)(input, init);
+				const response = await (signal ? raceWithAbortSignal(pending, signal) : pending);
+				return sdkReadsErrorBody ? boundProviderErrorResponse(response, signal) : response;
 			} catch (error) {
+				if (signal?.aborted && pending) {
+					// A late response from an uncooperative fetch no longer has a consumer.
+					void pending.then((response) => response.body?.cancel()).catch(() => {});
+				}
 				throw transportFailure(error, requestUrl(input));
 			}
 		},

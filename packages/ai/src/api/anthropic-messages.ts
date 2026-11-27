@@ -60,7 +60,8 @@ import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { type ServerSentEvent, ServerSentEventDecoder } from "../utils/sse.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
@@ -869,7 +870,7 @@ class AtomicAnthropic extends Anthropic {
 		super({
 			...options,
 			// Only this client's own requests can be refused a certificate (#6114).
-			fetch: transportFetch(admission?.fetch ?? options.fetch),
+			fetch: transportFetch(admission?.fetch ?? options.fetch, true),
 			middleware: admission ? [tokenAdmission, ...(options.middleware ?? [])] : options.middleware,
 		});
 		this.admission = admission;
@@ -1073,7 +1074,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			timestamp: Date.now(),
 		};
 
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 		const streamAttempt = new GitHubCopilotStreamAttempt();
 
 		let inputTransformations: AnthropicInputTransformation[] | undefined;
@@ -1229,12 +1231,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			};
 
 			for await (const event of streamAttempt.observe(
-				withStreamDeadline(
-					iterateAnthropicEvents(response, streamDeadline.signal),
-					streamDeadline.deadlineMs,
-					streamDeadline.abort,
-					isAnthropicPing,
-				),
+				streamDeadline.wrap(iterateAnthropicEvents(response, streamDeadline.signal), isAnthropicPing),
 			)) {
 				await options?.onProviderStreamEvent?.(event, model);
 				if (event.type === "message_start") {

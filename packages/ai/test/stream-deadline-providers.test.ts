@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { crc32 } from "node:zlib";
 import assert from "node:assert/strict";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
 import { stream as streamGoogle } from "../src/api/google-generative-ai.ts";
 import { stream as streamVertex } from "../src/api/google-vertex.ts";
@@ -33,13 +33,14 @@ interface StalledServer {
 	requests: () => number;
 }
 
-/** A server that answers every request with headers and one event, then never writes again. */
-async function startStalledServer(contentType: string, firstEvent: string | Buffer): Promise<StalledServer> {
+/** A server that stalls before headers, or after headers and one event if supplied. */
+async function startStalledServer(contentType: string, firstEvent?: string | Buffer): Promise<StalledServer> {
 	const connections = new Set<Socket>();
 	let requests = 0;
 	const server = createServer((request, response) => {
 		requests++;
 		request.resume();
+		if (firstEvent === undefined) return;
 		response.writeHead(200, { "cache-control": "no-cache", "content-type": contentType });
 		response.write(firstEvent);
 	});
@@ -63,12 +64,16 @@ async function waitForClosedConnections(server: StalledServer): Promise<void> {
 }
 
 /** Resolve the stream's final message, or fail if it never settles (the #4904 hang). */
-async function settle(stream: AssistantMessageEventStream, deadlineMs: number): Promise<AssistantMessage> {
+async function settle(
+	stream: AssistantMessageEventStream,
+	deadlineMs: number,
+	marginMs = SETTLEMENT_MARGIN_MS,
+): Promise<AssistantMessage> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const hang = new Promise<never>((_resolve, reject) => {
 		timer = setTimeout(
-			() => reject(new Error(`stream did not settle within ${deadlineMs + SETTLEMENT_MARGIN_MS}ms`)),
-			deadlineMs + SETTLEMENT_MARGIN_MS,
+			() => reject(new Error(`stream did not settle within ${deadlineMs + marginMs}ms`)),
+			deadlineMs + marginMs,
 		);
 	});
 	try {
@@ -287,6 +292,113 @@ const STALL_CASES: Record<KnownApi, StallCase> = {
 		options: () => ({ apiKey: "test-key" }),
 	},
 };
+
+describe("response header timeout (#6790)", () => {
+	it.each(["openai-completions", "openai-responses", "azure-openai-responses", "anthropic-messages"] as const)(
+		"settles %s when a fetch override ignores its SDK's timeout signal (#6790)",
+		async (api) => {
+			vi.useFakeTimers();
+			const stalled = Promise.withResolvers<Response>();
+			const dispatched = Promise.withResolvers<void>();
+			const messages: AssistantMessage[] = [];
+			const stallCase = STALL_CASES[api];
+			const provider = getApiProvider(api);
+			assert.ok(provider);
+			const baseUrl = "https://unresponsive.test";
+			const result = provider.stream(stallCase.model(baseUrl), context, {
+				...stallCase.options(baseUrl),
+				timeoutMs: 25,
+				maxRetries: 0,
+				fetch: () => {
+					dispatched.resolve();
+					return stalled.promise;
+				},
+			}).result().then((message) => messages.push(message));
+			try {
+				await dispatched.promise;
+				await vi.advanceTimersByTimeAsync(25);
+				assert.equal(messages.length, 1, "waiting for the fetch promise after the SDK timed out");
+				assert.equal(messages[0]?.stopReason, "error");
+				assert.match(messages[0]?.errorMessage ?? "", /timed?\s*out/i);
+			} finally {
+				stalled.resolve(new Response(null, { status: 503 }));
+				await result;
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	it.each(["google-generative-ai", "google-vertex", "pi-messages", "bedrock-converse-stream"] as const)(
+		"times out a %s request whose server never sends headers",
+		async (api) => {
+			const stallCase = STALL_CASES[api];
+			const server = await startStalledServer(stallCase.contentType);
+			const provider = getApiProvider(api);
+			assert.ok(provider);
+			const timeoutMs = 250;
+			const message = await settle(
+				provider.stream(stallCase.model(server.baseUrl), context, {
+					...stallCase.options(server.baseUrl),
+					timeoutMs,
+					maxRetries: 0,
+				}),
+				timeoutMs,
+				1_500,
+			);
+			assert.equal(message.stopReason, "error");
+			assert.match(message.errorMessage ?? "", /response headers timed out/);
+			assert.equal(server.requests(), 1);
+			await waitForClosedConnections(server);
+		},
+	);
+});
+
+describe("provider error response body timeout (#6790)", () => {
+	it.each(["pi-messages", "openai-codex-responses", "openai-completions"] as const)(
+		"settles %s when an HTTP error body never ends (#6790)",
+		async (api) => {
+			vi.useFakeTimers();
+			const stallCase = STALL_CASES[api];
+			const provider = getApiProvider(api);
+			assert.ok(provider);
+			const baseUrl = "https://unresponsive.test";
+			try {
+				for (const endBy of ["Esc", "deadline"] as const) {
+					const controller = new AbortController();
+					const reading = Promise.withResolvers<void>();
+					const messages: AssistantMessage[] = [];
+					let body: ReadableStreamDefaultController<Uint8Array> | undefined;
+					let cancelled = false;
+					const result = provider.stream(stallCase.model(baseUrl), context, {
+						...stallCase.options(baseUrl),
+						timeoutMs: 25,
+						maxRetries: 0,
+						signal: controller.signal,
+						fetch: async () => new Response(new ReadableStream<Uint8Array>({
+							start: (stream) => { body = stream; },
+							pull: () => reading.resolve(),
+							cancel: () => { cancelled = true; },
+						}, { highWaterMark: 0 }), { status: 503 }),
+					}).result().then((message) => messages.push(message));
+					try {
+						await reading.promise;
+						if (endBy === "Esc") controller.abort();
+						await vi.advanceTimersByTimeAsync(endBy === "Esc" ? 0 : 25);
+						assert.equal(messages.length, 1, `HTTP error body outlived ${endBy}`);
+						assert.equal(messages[0]?.stopReason, endBy === "Esc" ? "aborted" : "error");
+						if (endBy === "deadline") assert.match(messages[0]?.errorMessage ?? "", /503/);
+						assert.equal(cancelled, true);
+					} finally {
+						if (!cancelled) body?.close();
+						await result;
+					}
+				}
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+});
 
 describe("stream deadline across every registered streaming provider (#4904)", () => {
 	it("has a stall case for every registered streaming API (#4904)", () => {

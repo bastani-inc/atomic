@@ -67,8 +67,10 @@ import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getAtomicEnvValue, getProviderEnvValue } from "../utils/provider-env.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { withResponseTimeout } from "../utils/provider-waits/timeout.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText } from "../utils/text.ts";
@@ -281,10 +283,24 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		// Kept outside the try so the catch can still correlate a mid-stream failure:
 		// exceptions delivered as stream events carry no HTTP metadata of their own.
 		let responseRequestId: string | undefined;
-		const streamDeadline = createStreamDeadline(options.streamDeadlineMs, options.signal);
+		const streamDeadline = createStreamDeadline(options.streamDeadlineMs, options.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 
 		try {
 			const supportsStrictMode = model.compat?.supportsStrictMode ?? false;
+			// Use the SDK's resolved handler (HTTP/2, HTTP/1.1 proxy, or browser); bound each wire attempt, not backoff.
+			config.extensions = [
+				{
+					configure({ httpHandler }) {
+						const handler = httpHandler();
+						const handle = handler.handle.bind(handler);
+						handler.handle = (request, requestOptions) =>
+							withResponseTimeout(options.timeoutMs, streamDeadline.signal, (signal) =>
+								handle(request, { ...requestOptions, abortSignal: signal }),
+							);
+					},
+				},
+			];
 			const client = new BedrockRuntimeClient(config);
 			addTransportFailureMiddleware(client, connection, streamDeadline.signal);
 			let observedRawResponse = false;
@@ -373,11 +389,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				await options?.onResponse?.({ status: response.$metadata.httpStatusCode, headers: responseHeaders }, model);
 			}
 
-			for await (const item of withStreamDeadline(
-				response.stream!,
-				streamDeadline.deadlineMs,
-				streamDeadline.abort,
-			)) {
+			for await (const item of streamDeadline.wrap(response.stream!)) {
 				await options.onProviderStreamEvent?.(item, model);
 				if (item.messageStart) {
 					if (item.messageStart.role !== ConversationRole.ASSISTANT) {

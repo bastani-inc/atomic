@@ -14,7 +14,8 @@ import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { getDeclaredTools, resolveRequestTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
@@ -85,7 +86,8 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 
 		try {
 			const thinkingOffFallback =
@@ -138,7 +140,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			stream.push({ type: "start", partial: output });
 
 			await processResponsesStream(
-				withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort),
+				streamDeadline.wrap(openaiStream),
 				output,
 				stream,
 				model,
@@ -214,7 +216,7 @@ function createClient(model: Model<"azure-openai-responses">, apiKey: string, op
 			apiKey,
 			apiVersion,
 			dangerouslyAllowBrowser: true,
-			fetch: transportFetch(getFetchAdmission(options?.fetch)?.fetch ?? options?.fetch),
+			fetch: transportFetch(getFetchAdmission(options?.fetch)?.fetch ?? options?.fetch, true),
 			defaultHeaders: headers,
 			baseURL: baseUrl,
 		}),
