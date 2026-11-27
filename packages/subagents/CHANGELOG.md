@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.10.11] - 2026-11-27
+
+### Changed
+
+- A subagent started with `context: "fork"` now shares its parent's history in the session store instead of copying it, so it starts about as fast from a long conversation as from a short one. It reads, resumes and exports as before. See [Shared-history forks](../coding-agent/docs/storage.md#shared-history-forks) in Atomic's storage guide ([#6608](https://github.com/bastani-inc/atomic/pull/6608), [#6560](https://github.com/bastani-inc/atomic/issues/6560)).
+- A subagent's session is now always kept in the session store of the session that launched it, whatever that store is. A subagent of a session kept in JSONL files now has its session file in the same directory as its parent's, instead of a directory of its own. The launch's `sessionDir` and `defaultSessionDir` in `config.json` are ignored, with a one-time deprecation warning. A child's working directory, its worktree, the storage settings of the project it runs in, and a resume after a restart never choose another store. A subagent that was queued but never started relaunches in its parent's store after a restart, even when an earlier release recorded a directory for it. Sessions written as files by earlier releases stay readable and restorable ([#6594](https://github.com/bastani-inc/atomic/pull/6594)).
+- A `context: "fork"` subagent's session is now internal, like a fresh subagent's. `/resume`, `atomic -r`, `-c` and the `history://sessions` list leave it out, and a fork differs from a fresh subagent only in starting from its parent's conversation ([#6594](https://github.com/bastani-inc/atomic/pull/6594)).
+- A skill given to a subagent now arrives with its `skill://<name>` address and the note `References are relative to skill://<name>/.`, so the subagent can open the skill's other files and scripts ([#6589](https://github.com/bastani-inc/atomic/pull/6589)).
+
+### Fixed
+
+- The skill-creator's review viewer now prints its URL and opens the browser as soon as it serves. Before, it first looked up the name of 127.0.0.1, which could take many seconds when the resolver was slow to answer, as on some Macs ([#6687](https://github.com/bastani-inc/atomic/pull/6687), [#6691](https://github.com/bastani-inc/atomic/issues/6691)).
+- When a subagent cannot start on a model, the error now says whether the model does not exist (`no such model in the catalog`) or is left out by `enabledModels`. For a Fast or Ultrafast version whose base model is allowed, the error names the exact ID to add, such as `Add "openai-codex/gpt-6.2-sol-ultrafast" to enabledModels.` ([#6569](https://github.com/bastani-inc/atomic/pull/6569)).
+
 ## [0.10.11-alpha.4] - 2026-11-27
 
 ### Fixed
