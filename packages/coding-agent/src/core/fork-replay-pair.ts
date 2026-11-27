@@ -68,6 +68,13 @@ function firstBlock(message: AgentMessage | undefined) {
 
 function leadsWithThinking(block: unknown): block is object {
 	if (!block || typeof block !== "object" || !("type" in block)) return false;
+	if (block.type === "text") {
+		return (
+			"anthropicProgressSignature" in block &&
+			typeof block.anthropicProgressSignature === "string" &&
+			block.anthropicProgressSignature.length > 0
+		);
+	}
 	return block.type === "thinking"
 		? "thinkingSignature" in block &&
 				typeof block.thinkingSignature === "string" &&

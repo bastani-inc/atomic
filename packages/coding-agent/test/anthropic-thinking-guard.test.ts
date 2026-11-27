@@ -64,6 +64,34 @@ function anthropicDoneResponse(): Response {
 }
 
 describe("restoreAnthropicReplayThinkingBlocks", () => {
+	it("repairs signed progress when a payload hook drops it (#6776)", () => {
+		const model = anthropicModel();
+		const sourceMessages: Message[] = [
+			{ role: "user", content: "continue", timestamp: 0 },
+			assistantMessage([
+				{ type: "text", text: "Opening the file.", anthropicProgressSignature: "signed-progress" },
+				{ type: "toolCall", name: "read", id: "toolu_1", arguments: {} },
+			]),
+		];
+		const toolUse = { type: "tool_use", name: "read", id: "toolu_1", input: {} };
+		const payload = {
+			messages: [
+				{ role: "user", content: "continue" },
+				{ role: "assistant", content: [toolUse] },
+			],
+		};
+		const repaired = restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model);
+		expect(repaired).toEqual({
+			messages: [
+				{ role: "user", content: "continue" },
+				{
+					role: "assistant",
+					content: [{ type: "thinking", thinking: "Opening the file.", signature: "signed-progress" }, toolUse],
+				},
+			],
+		});
+	});
+
 	it("restores signed thinking text byte-for-byte after provider sanitization", () => {
 		const sourceThinking = "exact thinking with unpaired surrogate \ud800 preserved";
 		const sourceMessages: Message[] = [

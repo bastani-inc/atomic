@@ -372,6 +372,19 @@
       "type": "boolean",
       "default": false
     },
+    "anthropicThinkingDisplay": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "updates"
+        },
+        {
+          "type": "string",
+          "const": "summarized"
+        }
+      ],
+      "description": "On supported Claude models, choose visible progress updates or reasoning summaries."
+    },
     "externalEditor": {
       "type": "string",
       "description": "Command for Ctrl+G external editor; takes precedence over VISUAL and EDITOR."

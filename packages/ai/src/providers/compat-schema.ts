@@ -449,6 +449,12 @@ export const OpenAIResponsesCompatSchema = Type.Object(
 
 export const AnthropicMessagesCompatSchema = Type.Object(
 	{
+		thinkingDisplay: Type.Optional(
+			Type.Union([Type.Literal("updates"), Type.Literal("summarized"), Type.Literal("omitted")], {
+				description:
+					"Default Anthropic thinking display for this model. Use summarized to prefer reasoning summaries over separately visible progress updates.",
+			}),
+		),
 		supportsEagerToolInputStreaming: Type.Optional(
 			Type.Boolean({
 				description:

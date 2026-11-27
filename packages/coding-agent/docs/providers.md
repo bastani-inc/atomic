@@ -107,6 +107,8 @@ When configuring Anthropic with environment variables instead of `/login`, Atomi
 
 Claude Opus 5 (`anthropic/claude-opus-5`, `anthropic/claude-opus-5-5`) and Claude Fable 5.2 (`anthropic/claude-fable-5-2`, $8 input / $40 output per million tokens, 1M context, 128K max output) are included in the Anthropic catalog. Both Fable 5.1 and Fable 5.2 support per-message effort and mid-conversation system messages and restrict server-side fallback to Claude Opus 5.
 
+On supported models connected directly to Anthropic, Atomic now displays progress updates before tool calls instead of requesting reasoning summaries. No setup change is needed. See [Claude progress updates and reasoning summaries](/settings#claude-progress-updates-and-reasoning-summaries) for the supported models and how to get the old reasoning summaries back.
+
 ### GitHub Copilot
 
 - Run `/login github-copilot` and press `Enter` for `github.com` or enter your GitHub Enterprise Server domain.

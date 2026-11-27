@@ -280,6 +280,14 @@ export function transformMessages<TApi extends Api>(
 				}
 
 				if (block.type === "text") {
+					if (
+						block.anthropicProgressSignature !== undefined &&
+						model.api === "anthropic-messages" &&
+						preservesThinking
+					) {
+						// Progress is visible locally but is a signed thinking block on the wire.
+						return precedesFallbackBoundary ? [] : block;
+					}
 					if (isSameModel) return block;
 					return {
 						type: "text" as const,
