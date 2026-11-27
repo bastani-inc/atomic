@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.14] - 2026-11-27
+
+### Fixed
+
+- Fixed `beginTransaction` rejecting `lockWaitMs: 0` with `StorageConfigError` (`positive-integer-required`), which broke background snapshot garbage collection on PostgreSQL. `lockWaitMs` now accepts non-negative integers and maps `0` to `SET LOCAL lock_timeout = 1` (1 ms, the shortest finite server timeout, instead of `0` which disables `lock_timeout` in PostgreSQL) ([#6758](https://github.com/bastani-inc/atomic/pull/6758)).
+
 ## [0.10.14-alpha.1] - 2026-11-27
 
 ### Fixed
