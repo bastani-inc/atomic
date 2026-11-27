@@ -4,6 +4,8 @@ All notable changes to Atomic's Intercom extension, `@bastani/intercom`, are doc
 
 ## [Unreleased]
 
+## [0.10.11-alpha.4] - 2026-11-27
+
 ### Changed
 
 - With multi-node routing on SQLite, messages that recipients confirm at about the same time are now recorded as delivered together in one batched statement and commit, matching PostgreSQL. A burst of N confirmations sent in the same turn now takes 3 requests to the connection thread with one write lock instead of 3N + 2 (with per-confirmation savepoints), while preserving per-message answers, call-order resolution, and full durability ([#6716](https://github.com/bastani-inc/atomic/issues/6716)).
