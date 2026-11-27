@@ -148,7 +148,7 @@ with an unclear result, reset, force-push, move a tag, or dispatch a duplicate p
 - Run one job per suite and covered OS (plus the Node.js floor jobs) so each PR uses fewer shared Namespace runners.
   Keep Windows coverage, per-job timeouts, and the required `test (all platforms)` gate in `.github/workflows/test.yml`.
   See [the CI guide](docs/ci.md#tests) for local commands and timeout sizing.
-- Keep pull-request jobs in `test.yml` and `codeql.yml` on Restricted `namespace-profile-atomic-ci-*` profiles.
+- Keep the jobs in `test.yml` and `codeql.yml` on Restricted `namespace-profile-atomic-ci-*` profiles.
   [Check `.github/` changes before approving a fork run](docs/ci.md#approving-fork-workflow-runs). See [release runner settings](docs/ci.md#runners).
 - Validate workflow changes with YAML parsing, actionlint, review, and hosted runs. Test product and release tooling, not workflow YAML.
 - Keep `publish-npm` on GitHub-hosted `ubuntu-latest` for `npm publish --provenance`. Configure npm trusted publishing for `publish.yml`

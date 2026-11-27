@@ -1,49 +1,26 @@
 name: CodeQL
 
-# This replaces GitHub's *default setup* for code scanning, which was migrated
-# to this advanced setup for one reason: default setup analyzes only pushes to
-# the default branch and pull requests **targeting** it, and that trigger set is
-# not configurable. Repository ruleset 9310196 carries a `code_scanning` rule
-# requiring CodeQL results, so a stacked pull request -- one whose base is
-# another feature branch rather than `main` -- arrived with no results and sat
-# at mergeStateStatus BLOCKED with every other check green. Retargeting it to
-# `main` did not help, because the head SHA had already been seen without an
-# analysis; only a fresh push produced one. PR #2235 hit exactly that.
-#
-# `pull_request:` below therefore carries no branch filter, matching test.yml:
-# every pull request is analyzed regardless of base, so a stacked PR satisfies
-# the rule on its first push.
-#
-# Default setup must be disabled for this workflow to upload results. The two
-# cannot coexist -- an advanced-setup run rejects its SARIF while default setup
-# owns the configuration -- so that switch is flipped as this lands rather than
-# as a follow-up.
+# CodeQL scans the whole repository once a week (and on manual dispatch) instead of on every pull request,
+# so pull requests don't wait for it or use runners for it. GitHub's Code Quality checks still run on pull
+# requests. Keep GitHub's CodeQL default setup disabled so this workflow can upload results.
 permissions:
   contents: read
 
 on:
-  pull_request:
-  # main is analyzed once a week instead of on every push: a full JavaScript/TypeScript analysis takes far
-  # longer than a pull request's, which analyzes only the code it changes, and every change reaching main has
-  # already been analyzed on its pull request. The weekly run, GitHub's default-setup cadence, also brings newly published CodeQL queries to
-  # code that is not being changed.
   schedule:
     - cron: "31 4 * * 1"
   workflow_dispatch:
 
-# A newer push supersedes an analysis still running for the same pull request or branch: only the latest
-# commit's results are ever used, so the older run is cancelled rather than left to use runner minutes.
 concurrency:
-  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  group: codeql-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   analyze:
     name: Analyze
-    # A pull request analyzes only the code it changes and finishes in minutes. The weekly schedule and manual
-    # runs analyze the whole tree, so the JavaScript/TypeScript job gets the larger runner.
-    runs-on: ${{ github.event_name != 'pull_request' && matrix.language == 'javascript-typescript' && 'namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.codeql-full.linux-amd64' || 'namespace-profile-atomic-ci-linux-amd64-4x8;overrides.cache-tag=bastani-inc.atomic.ci.codeql.linux-amd64' }}
-    timeout-minutes: ${{ github.event_name != 'pull_request' && matrix.language == 'javascript-typescript' && 60 || 30 }}
+    # A full JavaScript/TypeScript analysis is the slowest, so it gets the larger runner.
+    runs-on: ${{ matrix.language == 'javascript-typescript' && 'namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.codeql-full.linux-amd64' || 'namespace-profile-atomic-ci-linux-amd64-4x8;overrides.cache-tag=bastani-inc.atomic.ci.codeql.linux-amd64' }}
+    timeout-minutes: ${{ matrix.language == 'javascript-typescript' && 60 || 30 }}
     permissions:
       # Uploading the SARIF results is the whole point of the job.
       security-events: write
