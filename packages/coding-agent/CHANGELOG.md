@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.13-alpha.1] - 2026-11-27
+
+This patch keeps live sessions running through brief PostgreSQL restarts.
+
+- **Session writes resume after a restart.** Atomic retries saves, reports a wait after about 10 seconds and once a minute after that, and tells you when saving resumes. Storage calls outside a live session retry for up to a minute ([#6753](https://github.com/bastani-inc/atomic/pull/6753), [#6752](https://github.com/bastani-inc/atomic/issues/6752)).
+
 ### Fixed
 
 - Live sessions wait for PostgreSQL to come back after a connection outage instead of stopping or losing messages and subagent records. Atomic reports a long wait and when saving resumes. If another process writes to the same session in the meantime, the old run still stops rather than writing over it ([#6752](https://github.com/bastani-inc/atomic/issues/6752)).
