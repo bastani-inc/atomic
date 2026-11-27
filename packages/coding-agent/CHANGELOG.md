@@ -10,6 +10,7 @@
 
 - Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.
 - Chat treats temporary OpenAI capacity errors as retryable instead of content refusals. If OpenAI reports an API key, project, or organization spending cap, chat goes straight to the fallback chain.
+- Fixed a crash when quitting Atomic on macOS if optional stall diagnostics were collecting stack traces ([#6787](https://github.com/bastani-inc/atomic/issues/6787)).
 
 ## [0.10.15] - 2026-11-27
 
