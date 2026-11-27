@@ -17,6 +17,9 @@
 - When you use Claude Opus 5.5 or another supported Claude model directly through Anthropic, progress before tool calls now appears as assistant text instead of being mixed into thinking summaries. To see the old summaries instead, set `"anthropicThinkingDisplay": "summarized"` and `"hideThinkingBlock": false` in `settings.json` ([#6776](https://github.com/bastani-inc/atomic/issues/6776)).
 - Atomic sends a fresh tracing ID for every OpenAI Chat Completions and Responses attempt, so separate requests can be traced even within the same session ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
 
+- Large sessions resume faster over shared PostgreSQL. Atomic now reuses its storage connection, loads active subagent records in batches, and checks finished subagents’ worktree snapshots without opening their conversations. In one large session, checking those snapshots dropped from about 80 seconds to 4 seconds ([#6795](https://github.com/bastani-inc/atomic/issues/6795)).
+- Forking a session that is still receiving entries no longer replays its whole history when the store supports shared history. In a test with 68,000 entries, the fork step dropped from 11.7 seconds to 0.7 seconds without including anything appended after the fork’s starting point ([#6795](https://github.com/bastani-inc/atomic/issues/6795)).
+
 - Chat moves to the next available fallback model when a provider asks it to wait past the retry limit. Retry and fallback attempts are saved in the session, and if no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774)).
 
 - Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.

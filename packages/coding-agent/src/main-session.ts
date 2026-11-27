@@ -376,16 +376,23 @@ export async function createSessionManager(
 	sessionDir: string | undefined,
 	settingsManager: SettingsManager,
 	sessionStore?: SessionStore | StorageSelection,
+	probe?: {
+		selection: Extract<StorageSelection, { kind: "adapter" }>;
+		agentDir: string;
+		timeoutMs: number;
+	},
 ): Promise<SessionManager> {
 	validateImportFlags(parsed);
-	const store = await resolveSessionStore(cwd, {
-		sessionStore,
-		settings: settingsManager.getSettings(),
-		noSession: parsed.noSession,
-		sessionDir: parsed.sessionDir ?? sessionDir,
-		sessionStorePath: parsed.sessionStorePath,
-		sessionPrefix: parsed.sessionPrefix,
-	});
+	const store = probe
+		? await openProbedSessionStorage(cwd, probe.selection, probe.agentDir, parsed.session, probe.timeoutMs)
+		: await resolveSessionStore(cwd, {
+				sessionStore,
+				settings: settingsManager.getSettings(),
+				noSession: parsed.noSession,
+				sessionDir: parsed.sessionDir ?? sessionDir,
+				sessionStorePath: parsed.sessionStorePath,
+				sessionPrefix: parsed.sessionPrefix,
+			});
 	try {
 		const manager = await createSessionManagerWithStore(parsed, cwd, settingsManager, store);
 		if (store !== sessionStore) ownedSessionManagerStores.set(manager, store);
@@ -608,18 +615,37 @@ export function cliSessionStorageSelection(
 /** An id no session has, for probing storage when the resume names none. */
 const PROBE_SESSION_ID = "00000000-0000-7000-8000-000000000000";
 
-/** One point read through `selection`, proving the shared storage answers before the real lookup starts. */
-async function probeSessionStorage(
+/** Open the store and prove it answers before the real lookup, using that same store for the rest of the session. */
+async function openProbedSessionStorage(
 	cwd: string,
-	selection: StorageSelection,
+	selection: Extract<StorageSelection, { kind: "adapter" }>,
 	agentDir: string,
 	sessionId: string | undefined,
-): Promise<void> {
-	const store = await resolveSessionStore(cwd, { agentDir, sessionStore: selection });
+	timeoutMs: number,
+): Promise<SessionStore> {
+	const probing = (async () => {
+		const store = await resolveSessionStore(cwd, { agentDir, sessionStore: selection });
+		try {
+			await store.readHeader(sessionId ?? PROBE_SESSION_ID);
+			return store;
+		} catch (error) {
+			await closeStoreAfter(store, error);
+			throw error;
+		}
+	})();
 	try {
-		await store.readHeader(sessionId ?? PROBE_SESSION_ID);
-	} finally {
-		await store.close();
+		return await withResumeLookupDeadline(
+			probing,
+			{ subject: "session", id: sessionId ?? null, storage: selection.module },
+			timeoutMs,
+		);
+	} catch (error) {
+		// If the probe finishes after the deadline, nobody will take ownership of its store.
+		void probing.then(
+			(store) => closeStoreAfter(store, error),
+			() => undefined,
+		);
+		throw error;
 	}
 }
 
@@ -678,15 +704,10 @@ export async function openCliSession(
 	if (selection !== undefined) {
 		await checkResumeStoragePreconditions("cli", [{ domain: "sessions", selection }], options.agentDir, options.io);
 	}
-	if (selection?.kind === "adapter") {
-		await withResumeLookupDeadline(
-			probeSessionStorage(cwd, selection, options.agentDir, parsed.session),
-			{ subject: "session", id: parsed.session ?? null, storage: selection.module },
-			options.catalogTimeoutMs ?? RESUME_CATALOG_TIMEOUT_MS,
-		).catch((error: unknown) => {
-			throw resumeLookupError(error, "session", parsed.session ?? null);
-		});
-	}
+	const probe =
+		selection?.kind === "adapter"
+			? { selection, agentDir: options.agentDir, timeoutMs: options.catalogTimeoutMs ?? RESUME_CATALOG_TIMEOUT_MS }
+			: undefined;
 	const loading = parsed.session !== undefined || parsed.continue === true;
 	if (loading) options.progress?.phase("Loading the session history");
 	const stopObserving =
@@ -697,7 +718,14 @@ export async function openCliSession(
 					}
 				})
 			: undefined;
-	const sessionManager = await createSessionManager(parsed, cwd, undefined, settingsManager, options.sessionStorage)
+	const sessionManager = await createSessionManager(
+		parsed,
+		cwd,
+		undefined,
+		settingsManager,
+		options.sessionStorage,
+		probe,
+	)
 		.catch((error: unknown) => {
 			options.progress?.done();
 			throw resuming ? resumeLookupError(error, "session", parsed.session ?? null) : error;

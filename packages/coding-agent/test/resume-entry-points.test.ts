@@ -83,6 +83,57 @@ function isRefusedRecord(error: unknown): boolean {
 }
 
 describe("openCliSession (#4329)", () => {
+	test("a successful CLI resume opens its storage adapter only once (#6795)", async () => {
+		const store = await storeFor(sqliteSelection("single-open"));
+		const writer = await SessionManager.create(store, fixture.sandbox.root);
+		await writer.appendMessage({ role: "user", content: "resume me", timestamp: 1 });
+		const adapter = fixture.sandbox.path("counting-adapter.mjs");
+		fixture.sandbox.write(
+			adapter,
+			`export const atomicStorageAdapter = 1;
+export async function openSessionStore() { return globalThis.__atomicOpenCountingStore(); }
+`,
+		);
+		let opens = 0;
+		let closes = 0;
+		const global = globalThis as { __atomicOpenCountingStore?: () => SessionStore };
+		global.__atomicOpenCountingStore = () => {
+			opens++;
+			return new Proxy(store, {
+				get(target, property) {
+					if (property === "close")
+						return async () => {
+							closes++;
+						};
+					const value = Reflect.get(target, property, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+		};
+		cleanups.push(() => {
+			delete global.__atomicOpenCountingStore;
+		});
+		const opened = await openCliSession(
+			parseArgs(["--session", writer.getSessionId()]),
+			fixture.sandbox.root,
+			settings(),
+			{
+				agentDir: fixture.sandbox.path("agent"),
+				sessionStorage: { kind: "adapter", module: adapter },
+				trusted: () => false,
+				claim: false,
+			},
+		);
+		assert.ok(opened !== "cancelled");
+		try {
+			assert.equal(opened.sessionManager.getSessionId(), writer.getSessionId());
+			assert.deepEqual({ opens, closes }, { opens: 1, closes: 0 });
+		} finally {
+			await opened.sessionManager.getSessionStore().close();
+		}
+		assert.equal(closes, 1);
+	});
+
 	test("resuming a cross-store fork explains where the parent history went (#5594)", async () => {
 		const parent = SessionManager.inMemory(fixture.sandbox.root);
 		await parent.appendMessage({ role: "user", content: "current", timestamp: 1 });

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test } from "vitest";
+import { VERBATIM_COMPACTION_PROMPT_VERSION } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import { adoptSubagentCaptures } from "../../packages/coding-agent/src/core/session-worktree-snapshots.js";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { renderStorageIdentifiers } from "../../packages/coding-agent/src/core/storage/prefix.js";
@@ -10,6 +13,7 @@ import {
 	SESSION_TABLES,
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.js";
 import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import {
 	type PostgresScope,
@@ -161,6 +165,257 @@ for (const route of postgresRoutes) {
 	describe.skipIf(route.skipReason !== undefined)(
 		`PostgreSQL session resume rebuild and read-mode gate round trips (${route.name}) (#6710)`,
 		() => {
+			test("resume restores a page of active child records in at most twelve round trips (#6795)", async () => {
+				await withPostgresDatabase(async (scope) => {
+					const store = await SqlSessionStore.open(await route.open(scope));
+					try {
+						const session = await SessionManager.create(store, "/work");
+						const expected = [];
+						for (let index = 0; index < 18; index++) {
+							const data = {
+								version: 1,
+								childId: `child-${index}`,
+								runId: "run",
+								index,
+								agent: "worker",
+								cwd: "/work",
+								owner: { kind: "session", sessionId: session.getSessionId() },
+								state: "running",
+								taskId: `task-${index}`,
+								launch: { task: `preserve input ${index}` },
+							};
+							const id = await session.appendCustomEntry("subagent-child", data);
+							expected.push({ id, data });
+						}
+						await session.appendCompaction("cleared", null, 10, {
+							strategy: "verbatim-lines",
+							promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
+							parameters: { query: "test" },
+							stats: {
+								linesBefore: 1,
+								linesDeleted: 1,
+								linesKept: 0,
+								rangeCount: 1,
+								tokensBefore: 10,
+								tokensAfter: 0,
+								percentReduction: 100,
+							},
+							form: "cleared",
+						});
+						await SessionManager.open(store, session.getSessionId(), undefined, { history: "tail" });
+						await sleep(COMMIT_SETTLE_MS);
+
+						const trips = countRoundTrips();
+						const reopened = await SessionManager.open(store, session.getSessionId(), undefined, {
+							history: "tail",
+						});
+						await sleep(COMMIT_SETTLE_MS);
+						assert.deepEqual(
+							reopened
+								.getEntries()
+								.flatMap((entry) =>
+									entry.type === "custom" && entry.customType === "subagent-child"
+										? [{ id: entry.id, data: entry.data }]
+										: [],
+								),
+							expected,
+						);
+						const count = trips.take();
+						assert.ok(count <= 12, `expected <= 12 round trips for 18 active records, got ${count}`);
+					} finally {
+						await store.close();
+					}
+				});
+			});
+
+			test("resume finds the newest active-branch snapshot across finished children in bounded round trips (#6795)", async () => {
+				await withPostgresDatabase(async (scope) => {
+					const store = await SqlSessionStore.open(await route.open(scope));
+					try {
+						const parent = await SessionManager.create(store, "/work");
+						for (let index = 0; index < 20; index++) {
+							const donorId = `child-capture-${index}`;
+							const childSessionId = index === 19 ? "winner-fork" : donorId;
+							const root = index === 19 ? "/restored" : "/work";
+							const timestamp = new Date(Date.UTC(2026, 10, 26, 0, 0, index)).toISOString();
+							const snapshot: WorktreeSnapshot = {
+								version: 1,
+								id: `snapshot-${index}`,
+								root,
+								remotes: [],
+								branch: null,
+								head: "head",
+								snapshot: "commit",
+								tree: "tree",
+								envHash: "env",
+								chain: [],
+								bundle: null,
+								omitted: [],
+								filters: null,
+								delta: { base: "head", patch: null, bytes: 0 },
+								capturedAt: timestamp,
+							};
+							const abandoned = { ...snapshot, id: `abandoned-${index}` };
+							await store.create(header(donorId), [
+								...(index === 19
+									? [
+											{
+												type: "worktree_snapshot" as const,
+												id: "restored-root",
+												parentId: null,
+												timestamp,
+												root,
+												snapshotId: snapshot.id,
+												restore: {
+													from: "/work",
+													to: root,
+													snapshotId: snapshot.id,
+													tree: "tree",
+													restoredAt: timestamp,
+												},
+											},
+										]
+									: []),
+								{
+									type: "worktree_snapshot",
+									id: "capture",
+									parentId: index === 19 ? "restored-root" : null,
+									timestamp,
+									root,
+									snapshotId: snapshot.id,
+									snapshot,
+									captureMs: 1,
+								},
+								{
+									type: "worktree_snapshot",
+									id: "abandoned",
+									parentId: "capture",
+									timestamp: "2026-11-27T00:00:00.000Z",
+									root: "/work",
+									snapshotId: abandoned.id,
+									snapshot: abandoned,
+									captureMs: 1,
+								},
+								{
+									type: "message",
+									id: "active",
+									parentId: "capture",
+									timestamp,
+									message: { role: "user", content: "active path", timestamp: 0 },
+								},
+							]);
+							if (childSessionId !== donorId) await clone(store, donorId, childSessionId);
+							await parent.appendCustomEntry("subagent-child", {
+								version: 1,
+								childId: `child-${index}`,
+								runId: "run",
+								index,
+								agent: "worker",
+								cwd: "/work",
+								owner: { kind: "session", sessionId: parent.getSessionId() },
+								state: "terminal",
+								terminalStatus: "ok",
+								childSessionId,
+								worktreeCapturedAt: timestamp,
+							});
+						}
+						const single = await SessionManager.create(store, "/work");
+						await single.appendCustomEntry("subagent-child", {
+							version: 1,
+							childId: "child-19",
+							runId: "run",
+							index: 19,
+							agent: "worker",
+							cwd: "/work",
+							owner: { kind: "session", sessionId: single.getSessionId() },
+							state: "terminal",
+							terminalStatus: "ok",
+							childSessionId: "winner-fork",
+							worktreeCapturedAt: "2026-11-26T00:00:19.000Z",
+						});
+						await store.readResume("child-capture-0");
+						await sleep(COMMIT_SETTLE_MS);
+						const trips = countRoundTrips();
+						assert.deepEqual(await adoptSubagentCaptures(single), ["/work"]);
+						await sleep(COMMIT_SETTLE_MS);
+						const one = trips.take();
+						assert.deepEqual(await adoptSubagentCaptures(parent), ["/work"]);
+						await sleep(COMMIT_SETTLE_MS);
+						const many = trips.take();
+						assert.equal(parent.getLatestWorktreeSnapshots().get("/work")?.id, "snapshot-19");
+						assert.ok(
+							many <= 20 && many <= one + 2,
+							`expected a bounded batch for 20 child snapshots, got ${many} trips versus ${one} for one`,
+						);
+					} finally {
+						await store.close();
+					}
+				});
+			});
+
+			test("the snapshot batch returns the same winners as a full active-branch scan (#6795)", async () => {
+				await withPostgresDatabase(async (scope) => {
+					const store = await SqlSessionStore.open(await route.open(scope));
+					try {
+						let seed = 6795;
+						const choose = (limit: number) => {
+							seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+							return (seed >>> 8) % limit;
+						};
+						const expected = new Map<string, string[]>();
+						for (let example = 0; example < 12; example++) {
+							const id = `winner-property-${example}`;
+							const history = Array.from({ length: 40 }, (_, seq) => {
+								const previous = choose(4) === 0 ? choose(seq + 1) - 1 : seq - 1;
+								const root = `/root-${choose(4)}`;
+								return {
+									type: "worktree_snapshot" as const,
+									id: `row-${seq}`,
+									parentId: previous < 0 ? null : `row-${previous}`,
+									root,
+									snapshotId: `snapshot-${seq}`,
+									captureMs: 1,
+									timestamp:
+										example === 11 && seq === 39
+											? "2026-11-26T23:00:04-01:00"
+											: new Date(Date.UTC(2026, 10, 27, 0, 0, choose(5))).toISOString(),
+								};
+							});
+							await store.create(header(id), history);
+							const active = [];
+							for (let row = history.at(-1); row; row = history.find(({ id }) => id === row!.parentId))
+								active.unshift(row);
+							// A non-canonical legacy stamp retains every candidate for the original Date.parse comparison.
+							if (example === 11) {
+								expected.set(id, active.map(({ snapshotId }) => snapshotId).sort());
+								continue;
+							}
+							const winners = new Map<string, (typeof history)[number]>();
+							for (const row of active) {
+								const previous = winners.get(row.root);
+								if (!previous || Date.parse(previous.timestamp) <= Date.parse(row.timestamp))
+									winners.set(row.root, row);
+							}
+							expected.set(id, [...winners.values()].map(({ snapshotId }) => snapshotId).sort());
+						}
+						const actual = await store.readBranchSnapshotMetadata([...expected.keys()]);
+						for (const [id, winners] of expected) {
+							assert.deepEqual(
+								actual
+									.get(id)
+									?.entries.filter(({ capture }) => capture)
+									.map(({ snapshotId }) => snapshotId)
+									.sort(),
+								winners,
+								id,
+							);
+						}
+					} finally {
+						await store.close();
+					}
+				});
+			});
+
 			test(
 				"stale readTail and fork readResume rebuild in one snapshot and persist with conditional UPDATE RETURNING (#6710)",
 				async () => {

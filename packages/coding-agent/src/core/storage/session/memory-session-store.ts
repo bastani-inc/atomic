@@ -61,10 +61,10 @@ import type {
 	SessionEntryRange,
 	SessionEntrySizes,
 	SessionForkSeed,
-	SessionHistoryPage,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
+	SessionSelectedPage,
 	SessionSnapshot,
 	SessionSnapshotCut,
 	SessionStore,
@@ -1064,7 +1064,7 @@ export class MemorySessionStore implements SessionStore {
 		seqs: readonly number[],
 		epoch: string,
 		options: { readonly limit?: number; readonly backward?: boolean } = {},
-	): Promise<SessionHistoryPage> {
+	): Promise<SessionSelectedPage> {
 		const limit = entrySizeLimit(options.limit);
 		const wanted = options.backward ? seqs.slice(-limit) : seqs.slice(0, limit);
 		if (!wanted.length) return { items: [] };
@@ -1082,9 +1082,11 @@ export class MemorySessionStore implements SessionStore {
 				},
 				options.backward,
 			);
-			if ("oversized" in plan) return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
+			const lastSeq = held.lastSeq;
+			if ("oversized" in plan)
+				return { lastSeq, items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
 			const read = await this.entriesAt(sessionId, record, plan.seqs);
-			if (read !== undefined) return { items: read };
+			if (read !== undefined) return { lastSeq, items: read };
 		}
 	}
 	async readResume(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume> {

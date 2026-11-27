@@ -9,9 +9,9 @@ import type { SessionManager } from "./session-manager.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning, WorktreeSnapshotEntry } from "./session-manager-types.ts";
 import { findSessionOpenHolder } from "./session-open-markers.js";
 import { isStorageError } from "./storage/errors.js";
-import { readSessionTail } from "./storage/session/session-resume.js";
+import { readSessionRange, readSessionTail } from "./storage/session/session-resume.js";
 import { storeSnapshotIndex } from "./storage/session/snapshot-records.js";
-import type { SessionRecordHeader, SessionStore } from "./storage/session/types.js";
+import type { SessionBranchSnapshotMetadata, SessionRecordHeader, SessionStore } from "./storage/session/types.js";
 import {
 	type BestWorktreeRestore,
 	isRecoverableRestoreFailure,
@@ -1316,6 +1316,20 @@ function subagentCaptureHints(sessionManager: SessionManager): Map<string, Subag
 	return hints;
 }
 
+async function captureRecordAt(
+	store: SessionStore,
+	childId: string,
+	cut: SessionBranchSnapshotMetadata,
+	snapshotId: string,
+): Promise<WorktreeSnapshot | undefined> {
+	if (!Object.hasOwn(cut.records, snapshotId)) return undefined;
+	const seq = cut.records[snapshotId]!;
+	const read = await readSessionRange(store, childId, seq, seq, cut.epoch);
+	if (read.epoch !== cut.epoch || read.lastSeq < cut.lastSeq) return undefined;
+	const entry = read.entries[0];
+	return entry?.type === "worktree_snapshot" && entry.snapshotId === snapshotId ? entry.snapshot : undefined;
+}
+
 /**
  * Before a resume decides what to restore, each checkout the session recorded, or works in, that one of its own finished
  * subagents captured later than the session itself did gets that capture as the session's latest snapshot, so the
@@ -1344,9 +1358,10 @@ export async function adoptSubagentCaptures(sessionManager: SessionManager, sign
 			throw new Error("The session's branch changed while its subagents' captures were compared");
 	};
 	const mappings = sessionManager.getWorktreeRootMappings();
+	const canonical = canonicalPaths();
 	const own = new Map<string, { readonly root: string; at: number }>();
 	const note = async (root: string, at: number) => {
-		const original = await runCanonicalStepsAsync(originalRoot(root, mappings));
+		const original = await runCanonicalStepsAsync(originalRoot(root, mappings), canonical);
 		own.set(original, { root, at: Math.max(own.get(original)?.at ?? Number.NEGATIVE_INFINITY, at) });
 	};
 	// A subagent's capture an earlier resume took counts as of when the subagent took it, so a later resume neither
@@ -1360,56 +1375,85 @@ export async function adoptSubagentCaptures(sessionManager: SessionManager, sign
 		await note(entry.root, Number.isFinite(at) ? at : Number.NEGATIVE_INFINITY);
 	}
 	const pinned = new Set<string>();
-	for (const [original, checkout] of await runCanonicalStepsAsync(checkoutRecords(sessionManager, mappings)))
+	for (const [original, checkout] of await runCanonicalStepsAsync(
+		checkoutRecords(sessionManager, mappings),
+		canonical,
+	))
 		if (checkout.pin !== undefined && !checkout.pin.lapsed) pinned.add(original);
 	const cwd = sessionManager.getHeader()?.cwd ?? sessionManager.getCwd();
 	/** Whether the session works in checkout `original`: it recorded it, or its working directory is inside it. */
 	const works = async (original: string) =>
-		own.has(original) || (await runCanonicalStepsAsync(isInside(original, cwd)));
+		own.has(original) || (await runCanonicalStepsAsync(isInside(original, cwd), canonical));
 	// A subagent can capture any checkout the session works in, whatever its own working directory: one that captured
 	// nothing later than the session's oldest latest capture of them has nothing newer, and is not read.
 	let coversCwd = false;
-	for (const original of own.keys()) if (await runCanonicalStepsAsync(isInside(original, cwd))) coversCwd = true;
+	for (const original of own.keys())
+		if (await runCanonicalStepsAsync(isInside(original, cwd), canonical)) coversCwd = true;
 	let threshold = coversCwd ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
 	for (const checkout of own.values()) threshold = Math.min(threshold, checkout.at);
+	const eligible = [...hints.values()].filter((hint) => hint.at > threshold);
+	const store = sessionManager.getSessionStore();
+	signal?.throwIfAborted();
+	const candidates =
+		eligible.length === 0
+			? undefined
+			: await store.readBranchSnapshotMetadata?.(eligible.map(({ sessionId }) => sessionId)).catch(() => undefined);
 	const best = new Map<
 		string,
-		{ readonly child: SessionManager; readonly entry: WorktreeSnapshotEntry; at: number }
+		{
+			readonly childId: string;
+			readonly entry: SessionBranchSnapshotMetadata["entries"][number];
+			readonly readRecord: (snapshotId: string) => Promise<WorktreeSnapshot | undefined>;
+			readonly at: number;
+		}
 	>();
-	for (const hint of hints.values()) {
+	for (const { sessionId: childId } of eligible) {
 		signal?.throwIfAborted();
-		if (hint.at <= threshold) continue;
-		let child: SessionManager;
-		try {
-			child = await sessionManager.openSessionById(hint.sessionId, undefined, undefined, { history: "tail" });
-		} catch {
-			continue;
+		const candidate = candidates?.get(childId);
+		if (candidate === null) continue;
+		let entries: SessionBranchSnapshotMetadata["entries"];
+		let childMappings: WorktreeRootMapping[];
+		let readRecord: (snapshotId: string) => Promise<WorktreeSnapshot | undefined>;
+		if (candidate) {
+			entries = candidate.entries;
+			childMappings = entries.flatMap((entry) => (entry.restore ? [entry.restore] : []));
+			readRecord = (id) => captureRecordAt(store, childId, candidate, id);
+		} else {
+			try {
+				const child = await sessionManager.openSessionById(childId, undefined, undefined, { history: "tail" });
+				childMappings = child.getWorktreeRootMappings();
+				entries = (await branchSnapshotEntries(child, signal)).map((entry) => ({
+					...entry,
+					capture: isCapture(entry),
+				}));
+				readRecord = async (id) => (await snapshotRecordsOf(child, [id], signal)).get(id);
+			} catch {
+				continue;
+			}
 		}
-		const childMappings = child.getWorktreeRootMappings();
-		let entries: WorktreeSnapshotEntry[];
-		try {
-			entries = await branchSnapshotEntries(child, signal);
-		} catch {
-			continue;
-		}
+		const originals = new Map<string, string>();
 		for (const entry of entries) {
-			if (!isCapture(entry)) continue;
+			if (!entry.capture) continue;
 			const at = Date.parse(entry.timestamp);
-			const original = await runCanonicalStepsAsync(originalRoot(entry.root, childMappings));
+			let original = originals.get(entry.root);
+			if (original === undefined) {
+				original = await runCanonicalStepsAsync(originalRoot(entry.root, childMappings), canonical);
+				originals.set(entry.root, original);
+			}
 			if (pinned.has(original) || !(await works(original))) continue;
 			if (at <= (own.get(original)?.at ?? Number.NEGATIVE_INFINITY)) continue;
 			const chosen = best.get(original);
-			if (chosen === undefined || at > chosen.at || (chosen.child === child && at >= chosen.at))
-				best.set(original, { child, entry, at });
+			if (chosen === undefined || at > chosen.at || (chosen.childId === childId && at >= chosen.at))
+				best.set(original, { childId, entry, at, readRecord });
 		}
 	}
 	const adopted: string[] = [];
-	for (const [original, { child, entry }] of best) {
+	for (const [original, { entry, readRecord }] of best) {
 		signal?.throwIfAborted();
 		let record: WorktreeSnapshot | undefined;
 		let held: boolean;
 		try {
-			record = (await snapshotRecordsOf(child, [entry.snapshotId], signal)).get(entry.snapshotId);
+			record = await readRecord(entry.snapshotId);
 			held = (await snapshotRecordsOf(sessionManager, [entry.snapshotId], signal)).has(entry.snapshotId);
 		} catch (error) {
 			if (signal?.aborted) throw error;

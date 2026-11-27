@@ -114,10 +114,10 @@ import type {
 	SessionEntrySizes,
 	SessionForkRow,
 	SessionForkSeed,
-	SessionHistoryPage,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionResume,
+	SessionSelectedPage,
 	SessionSnapshot,
 	SessionSnapshotCut,
 	SessionStore,
@@ -2480,7 +2480,7 @@ export class JsonlSessionStore implements SessionStore {
 		seqs: readonly number[],
 		epoch: string,
 		options: { readonly limit?: number; readonly backward?: boolean } = {},
-	): Promise<SessionHistoryPage> {
+	): Promise<SessionSelectedPage> {
 		return this.run(
 			async () => {
 				const limit = entrySizeLimit(options.limit);
@@ -2495,8 +2495,10 @@ export class JsonlSessionStore implements SessionStore {
 					(seq) => spanEnd(jsonl, seq) - spanStart(jsonl, seq),
 					options.backward,
 				);
-				if ("oversized" in plan) return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
-				return { items: await this.entriesAt(path, jsonl, plan.seqs) };
+				const lastSeq = jsonl.index.seq;
+				if ("oversized" in plan)
+					return { lastSeq, items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized }] };
+				return { lastSeq, items: await this.entriesAt(path, jsonl, plan.seqs) };
 			},
 			{ kind: "sessions", sessionIds: () => [sessionId] },
 		);
