@@ -29,6 +29,7 @@ import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
 import { formatAppendRecoveryNotice } from "../core/session-append-recovery.js";
 import { ranOnModelLine } from "../core/tasks/completion.js";
 import { reportDiagnostics } from "../main-stdio.ts";
+import { stripTerminalControls } from "../utils/ansi.js";
 import { startedWithHangupIgnored } from "../utils/inherited-hangup.js";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
@@ -325,6 +326,15 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			if (mode === "json") {
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			} else if (event.type === "message_end" && event.message.role === "assistant") {
+				// Print mode keeps stdout for the final answer; show live tool progress separately.
+				if (event.message.stopReason === "toolUse") {
+					for (const part of event.message.content) {
+						if (part.type === "text" && part.anthropicProgressSignature !== undefined) {
+							const text = stripTerminalControls(part.text).trim();
+							if (text) console.error(text);
+						}
+					}
+				}
 				for (const warning of serviceTierWarnings(event.message)) console.error(`Warning: ${warning}`);
 			} else if (event.type === "model_fallback_start") {
 				fellBack = true;

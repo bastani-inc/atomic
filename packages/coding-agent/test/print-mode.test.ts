@@ -245,6 +245,36 @@ function emitLifecycleExtensionError(bindings: ExtensionBindings | undefined, er
 }
 
 describe("runPrintMode", () => {
+	it("shows Claude tool progress on stderr without mixing it into the printed answer (#6776)", async () => {
+		const progress: AssistantMessage = {
+			...createAssistantMessage({ stopReason: "toolUse" }),
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-opus-5-5",
+			content: [
+				{ type: "thinking", thinking: "Private reasoning" },
+				{ type: "text", text: "I’ll compare the files.", anthropicProgressSignature: "signed-update" },
+				{ type: "toolCall", id: "toolu_compare", name: "compare", arguments: {} },
+			],
+		};
+		const final = createAssistantMessage({ text: "The files match." });
+		const runtimeHost = createRuntimeHost(progress);
+		const stdoutChunks = captureStdout();
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		let beforeFinal: unknown;
+		runtimeHost.session.prompt.mockImplementation(async () => {
+			runtimeHost.session.emitEvent({ type: "message_end", message: progress });
+			beforeFinal = stderr.mock.calls.slice();
+			runtimeHost.session.state.messages.push(final);
+			runtimeHost.session.emitEvent({ type: "message_end", message: final });
+		});
+
+		assert.equal(await runPrintModeWithFakeHost(runtimeHost, { mode: "text", initialMessage: "compare" }), 0);
+		assert.equal(stdoutChunks.join(""), "The files match.\n");
+		assert.deepEqual(beforeFinal, [["I’ll compare the files."]]);
+		assert.deepEqual(stderr.mock.calls, [["I’ll compare the files."]]);
+	});
+
 	it("preserves partial output and exits non-zero on truncation (#10799)", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "partial", stopReason: "length" }));
 		const stdoutChunks = captureStdout();

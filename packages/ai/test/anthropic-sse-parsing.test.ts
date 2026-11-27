@@ -3,7 +3,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
-import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
+import { stream as streamAnthropic, streamSimple as streamSimpleAnthropic } from "../src/api/anthropic-messages.ts";
 import { transformMessages } from "../src/api/transform-messages.ts";
 import { normalizeContext } from "../src/compat.ts";
 import type { Api, Context, FetchFunction, Model, ToolCall } from "../src/types.ts";
@@ -124,6 +124,111 @@ function createResponseModelSseResponse(model: string, contentBlock: ResponseCon
 }
 
 describe("Anthropic raw SSE parsing", () => {
+	it("streams Opus 5.5 progress as text while replaying its signed thinking block (#6776)", async () => {
+		const model = getFixtureModel("anthropic", "claude-opus-5-5");
+		const messages = [{ role: "user" as const, content: "Keep me posted", timestamp: 1 }];
+		function sse(event: string, fields: Record<string, unknown>) {
+			return { event, data: JSON.stringify({ type: event, ...fields }) };
+		}
+		function block(index: number, content_block: object, ...deltas: object[]) {
+			return [
+				sse("content_block_start", { index, content_block }),
+				...deltas.map((delta) => sse("content_block_delta", { index, delta })),
+				sse("content_block_stop", { index }),
+			];
+		}
+		const requests: Array<{ display: string; betas: string[]; messages: { role: string; content: unknown }[] }> = [];
+		const fetch: FetchFunction = async (_input, init) => {
+			const body = JSON.parse(String(init?.body));
+			const betas = new Headers(init?.headers).get("anthropic-beta")?.split(",") ?? [];
+			requests.push({ display: body.thinking.display, betas, messages: body.messages });
+			const updates = body.thinking.display === "updates" && betas.includes("thinking-display-updates-2026-08-18");
+			return createSseResponse([
+				minimalAnthropicEvents[0],
+				...block(
+					0,
+					{ type: "thinking", thinking: "", signature: "" },
+					...(updates ? [] : [{ type: "thinking_delta", thinking: "Private reasoning summary" }]),
+					{ type: "signature_delta", signature: "private-signature" },
+				),
+				...block(1, { type: "text", text: "" }, { type: "text_delta", text: "Two files matched." }),
+				...block(2, { type: "text", text: "" }),
+				...block(3, { type: "text", text: "" }, { type: "text_delta", text: "Both look relevant." }),
+				...block(4, { type: "redacted_thinking", data: "redacted-payload" }),
+				...block(
+					5,
+					{ type: "thinking", thinking: "", signature: "" },
+					{ type: "thinking_delta", thinking: "I’ll compare " },
+					{ type: "thinking_delta", thinking: "their contents." },
+					{ type: "signature_delta", signature: "progress-" },
+					{ type: "signature_delta", signature: "signature" },
+				),
+				...block(6, { type: "tool_use", id: "toolu_compare", name: "compare", input: {} }),
+				sse("message_delta", { delta: { stop_reason: "tool_use" }, usage: { output_tokens: 20 } }),
+				sse("message_stop", {}),
+			]);
+		};
+		const stream = streamAnthropic(model, normalizeContext({ messages }), { apiKey: "test-key", fetch });
+		const deltas: Array<[string, number, string]> = [];
+		for await (const event of stream) {
+			if (event.type === "text_delta" || event.type === "thinking_delta") {
+				deltas.push([event.type, event.contentIndex, event.delta]);
+			}
+		}
+		const result = await stream.result();
+		expect(deltas).toEqual([
+			["text_delta", 1, "Two files matched."],
+			["text_delta", 3, "Both look relevant."],
+			["text_delta", 5, "I’ll compare "],
+			["text_delta", 5, "their contents."],
+		]);
+		expect(result.stopReason).toBe("toolUse");
+		expect(result.content.map((part) => part.type)).toEqual([
+			"thinking",
+			"text",
+			"text",
+			"text",
+			"thinking",
+			"text",
+			"toolCall",
+		]);
+		expect(result.content[2]).toEqual({ type: "text", text: "" });
+		expect(requests[0].display).toBe("updates");
+		expect(requests[0].betas).toContain("thinking-display-updates-2026-08-18");
+		await streamAnthropic(model, normalizeContext({ messages: [...messages, result] }), {
+			apiKey: "test-key",
+			fetch,
+		}).result();
+		expect(requests[1].messages.find((message) => message.role === "assistant")?.content).toEqual([
+			{ type: "thinking", thinking: "", signature: "private-signature" },
+			{ type: "text", text: "Two files matched." },
+			{ type: "text", text: "Both look relevant." },
+			{ type: "redacted_thinking", data: "redacted-payload" },
+			{ type: "thinking", thinking: "I’ll compare their contents.", signature: "progress-signature" },
+			{ type: "tool_use", id: "toolu_compare", name: "compare", input: {} },
+		]);
+
+		// Summarized mode does not label progress, so neither thinking block may be exposed as text.
+		const summarized = streamSimpleAnthropic(model, normalizeContext({ messages }), {
+			apiKey: "test-key",
+			fetch,
+			reasoning: "high",
+			anthropicThinkingDisplay: "summarized",
+		});
+		const summarizedDeltas: string[] = [];
+		for await (const event of summarized) {
+			if (event.type === "text_delta") summarizedDeltas.push(event.delta);
+		}
+		expect(summarizedDeltas).toEqual(["Two files matched.", "Both look relevant."]);
+		expect((await summarized.result()).content[5]).toEqual({
+			type: "thinking",
+			thinking: "I’ll compare their contents.",
+			thinkingSignature: "progress-signature",
+		});
+		expect(requests[2].display).toBe("summarized");
+		expect(requests[2].betas).not.toContain("thinking-display-updates-2026-08-18");
+	});
+
 	it("forwards parsed provider stream events in order", async () => {
 		const model = getFixtureModel("anthropic", "claude-haiku-4-5");
 		const providerEvents: unknown[] = [];

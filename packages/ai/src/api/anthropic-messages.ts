@@ -42,7 +42,6 @@ import { raceWithAbortSignal } from "../utils/abort.js";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { appendProviderResponseFailureDiagnostic, withCauseDetail } from "../utils/error-body.ts";
-import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -56,18 +55,19 @@ import {
 } from "../utils/openrouter-cost.ts";
 import { getAtomicEnvValue, getProviderEnvValue } from "../utils/provider-env.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
-import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { type ServerSentEvent, ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import {
-	getCurrentTools,
 	followsToolResults,
+	getCurrentTools,
 	getInitialSystemMessage,
 	resolveRequestTranscript,
 	type TranscriptContext,
@@ -231,7 +231,9 @@ function convertContentBlocks(content: (TextContent | ImageContent)[]):
 
 export type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
-export type AnthropicThinkingDisplay = "summarized" | "omitted";
+export type AnthropicThinkingDisplay = "summarized" | "omitted" | "updates";
+
+const THINKING_DISPLAY_UPDATES_BETA = "thinking-display-updates-2026-08-18";
 
 const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
@@ -479,6 +481,16 @@ function getAnthropicCompat(model: Model<"anthropic-messages">) {
 		// Copilot's endpoint does not accept the threads beta.
 		supportsMessageThreads: model.compat?.supportsMessageThreads ?? isAnthropicApiHost(model.baseUrl),
 	};
+}
+
+/** Claude models that return user-facing progress in thinking blocks. */
+function supportsThinkingDisplayUpdates(model: Model<"anthropic-messages">): boolean {
+	return (
+		isAnthropicApiHost(model.baseUrl) &&
+		/^claude-(?:(?:opus|sonnet)-5[.-]5|fable-5(?:[.-][12])?|mythos-5[.-][12])(?:-\d{8})?$/.test(
+			upstreamModelId(model),
+		)
+	);
 }
 
 /** Whether `baseUrl` is Anthropic's own API host, compared by parsed hostname (not a substring). */
@@ -776,14 +788,14 @@ export interface AnthropicOptions extends StreamOptions {
 	/**
 	 * Controls how thinking content is returned in API responses.
 	 * - "summarized": Thinking blocks contain summarized thinking text.
+	 * - "updates": Visible progress updates are returned as text; private reasoning is empty
+	 *   but keeps its signature. Supported by newer Claude models on Anthropic's own API.
 	 * - "omitted": Thinking blocks return an empty thinking field; the encrypted
 	 *   signature still travels back for multi-turn continuity. Use for faster
 	 *   time-to-first-text-token when your UI does not surface thinking.
 	 *
-	 * Note: Anthropic's API default for Claude Opus 4.7 and Claude Mythos Preview
-	 * is "omitted". We default to "summarized" here to keep behavior consistent
-	 * with older Claude 4 models. Set this explicitly to "omitted" to opt in.
-	 * Default: "summarized" when thinking is enabled.
+	 * Default: "updates" on supported models through Atomic's Anthropic client;
+	 * otherwise "summarized" when thinking is enabled.
 	 */
 	thinkingDisplay?: AnthropicThinkingDisplay;
 	/**
@@ -1106,7 +1118,6 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					);
 				}
 
-
 				const created = createClient(
 					model,
 					apiKey,
@@ -1138,7 +1149,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				retryProviderRequest(
 					() => {
 						streamAttempt.begin();
-						const transport = serializedBody ? { ...requestOptions, middleware: [serializedBody] } : requestOptions;
+						const transport = serializedBody
+							? { ...requestOptions, middleware: [serializedBody] }
+							: requestOptions;
 						serializedBody = undefined;
 						return client.beta.messages.create({ ...body, stream: true }, transport).asResponse();
 					},
@@ -1205,6 +1218,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			stream.push({ type: "start", partial: output });
 			streamAttempt.respond(response.headers);
 
+			// Classify only when the request actually asked for progress without reasoning summaries.
+			const displayUpdates =
+				(params.thinking as { display?: AnthropicThinkingDisplay } | undefined)?.display === "updates";
 			// Stream state per Anthropic block index, kept off the content blocks so it never reaches partials.
 			const openBlocks = new Map<number, { contentIndex: number; arguments?: ToolCallArgumentsStream }>();
 			const openBlock = (anthropicIndex: number) => {
@@ -1252,13 +1268,19 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						openBlocks.set(event.index, { contentIndex: output.content.length - 1 });
 						stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
 					} else if (event.content_block.type === "thinking") {
-						output.content.push({
-							type: "thinking",
-							thinking: event.content_block.thinking ?? "",
-							thinkingSignature: event.content_block.signature ?? "",
-						});
-						openBlocks.set(event.index, { contentIndex: output.content.length - 1 });
-						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
+						const thinking = event.content_block.thinking ?? "";
+						const signature = event.content_block.signature ?? "";
+						const index = output.content.length;
+						openBlocks.set(event.index, { contentIndex: index });
+						if (displayUpdates && thinking) {
+							output.content.push({ type: "text", text: thinking, anthropicProgressSignature: signature });
+							stream.push({ type: "text_start", contentIndex: index, partial: output });
+						} else {
+							output.content.push({ type: "thinking", thinking, thinkingSignature: signature });
+							// An empty start under `updates` may later receive progress text. Wait before
+							// publishing its type, while reserving its position and collecting its signature.
+							if (!displayUpdates) stream.push({ type: "thinking_start", contentIndex: index, partial: output });
+						}
 					} else if (event.content_block.type === "redacted_thinking") {
 						output.content.push({
 							type: "thinking",
@@ -1315,7 +1337,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				} else if (event.type === "content_block_delta") {
 					const open = openBlock(event.index);
 					if (event.delta.type === "text_delta") {
-						if (open?.block.type === "text") {
+						if (open?.block.type === "text" && open.block.anthropicProgressSignature === undefined) {
 							open.block.text += event.delta.text;
 							stream.push({
 								type: "text_delta",
@@ -1324,15 +1346,27 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								partial: output,
 							});
 						}
-					} else if (event.delta.type === "thinking_delta") {
-						if (open?.block.type === "thinking") {
-							open.block.thinking += event.delta.thinking;
-							stream.push({
-								type: "thinking_delta",
-								contentIndex: open.contentIndex,
-								delta: event.delta.thinking,
-								partial: output,
-							});
+					} else if (event.delta.type === "thinking_delta" && open) {
+						const { block, contentIndex } = open;
+						const delta = event.delta.thinking;
+						if (block.type === "thinking" && !block.redacted) {
+							if (!displayUpdates) {
+								block.thinking += delta;
+								stream.push({ type: "thinking_delta", contentIndex, delta, partial: output });
+							} else if (delta) {
+								const progress: TextContent = {
+									type: "text",
+									text: "",
+									anthropicProgressSignature: block.thinkingSignature ?? "",
+								};
+								output.content[contentIndex] = progress;
+								stream.push({ type: "text_start", contentIndex, partial: output });
+								progress.text = delta;
+								stream.push({ type: "text_delta", contentIndex, delta, partial: output });
+							}
+						} else if (block.type === "text" && block.anthropicProgressSignature !== undefined) {
+							block.text += delta;
+							stream.push({ type: "text_delta", contentIndex, delta, partial: output });
 						}
 					} else if (event.delta.type === "input_json_delta") {
 						if (open?.block.type === "toolCall" && open.arguments !== undefined) {
@@ -1345,9 +1379,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 							});
 						}
 					} else if (event.delta.type === "signature_delta") {
-						if (open?.block.type === "thinking") {
-							open.block.thinkingSignature = open.block.thinkingSignature || "";
-							open.block.thinkingSignature += event.delta.signature;
+						if (open?.block.type === "thinking" && !open.block.redacted) {
+							open.block.thinkingSignature = (open.block.thinkingSignature ?? "") + event.delta.signature;
+						} else if (open?.block.type === "text" && open.block.anthropicProgressSignature !== undefined) {
+							open.block.anthropicProgressSignature += event.delta.signature;
 						}
 					}
 				} else if (event.type === "content_block_stop") {
@@ -1363,6 +1398,9 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								partial: output,
 							});
 						} else if (block.type === "thinking") {
+							if (displayUpdates && !block.redacted) {
+								stream.push({ type: "thinking_start", contentIndex: index, partial: output });
+							}
 							stream.push({
 								type: "thinking_end",
 								contentIndex: index,
@@ -1542,6 +1580,7 @@ export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOpti
 	const base = {
 		...buildBaseOptions(model, context, options, options?.apiKey),
 		toolChoice: options?.toolChoice,
+		thinkingDisplay: supportsThinkingDisplayUpdates(model) ? options?.anthropicThinkingDisplay : undefined,
 	} satisfies AnthropicOptions;
 	if (!options?.reasoning) {
 		return stream(model, context, {
@@ -1704,7 +1743,10 @@ function createClient(
 			});
 			federationClient = { key, fetch, client };
 		}
-		return { client: federationClient.client.withOptions({ defaultHeaders, fetch: retryTransport?.fetch ?? fetch }), isOAuthToken: false };
+		return {
+			client: federationClient.client.withOptions({ defaultHeaders, fetch: retryTransport?.fetch ?? fetch }),
+			isOAuthToken: false,
+		};
 	}
 
 	const client = new AtomicAnthropic({
@@ -1719,12 +1761,14 @@ function createClient(
 	return { client, isOAuthToken: false };
 }
 
-function getNativeToolChangeBetas(
+function getRequestBetas(
 	model: Model<"anthropic-messages">,
 	context: TranscriptContext,
 	isOAuth: boolean,
 	options: AnthropicOptions | undefined,
 	messageThreads: boolean,
+	nativeToolChanges: boolean,
+	displayUpdates: boolean,
 ): NonNullable<MessageCreateParamsStreaming["betas"]> {
 	let configured: string | null | undefined;
 	for (const headers of [model.headers, options?.headers]) {
@@ -1732,17 +1776,15 @@ function getNativeToolChangeBetas(
 			if (name.toLowerCase() === "anthropic-beta") configured = value;
 		}
 	}
-	if (configured === null) return [];
-	if (configured !== undefined)
-		return [
-			...new Set(
-				configured
-					.split(",")
-					.map((feature) => feature.trim())
-					.filter(Boolean),
-			),
-		];
-	const features = [INLINE_TOOLS_BETA];
+	const features = displayUpdates ? [THINKING_DISPLAY_UPDATES_BETA] : [];
+	if (configured !== undefined) {
+		const explicit = (configured ?? "")
+			.split(",")
+			.map((feature) => feature.trim())
+			.filter(Boolean);
+		return [...new Set([...explicit, ...features])];
+	}
+	if (nativeToolChanges) features.push(INLINE_TOOLS_BETA);
 	if (isOAuth) features.push("claude-code-20250219", "oauth-2025-04-20");
 	if (shouldUseFineGrainedToolStreamingBeta(model, context)) features.push(FINE_GRAINED_TOOL_STREAMING_BETA);
 	if (
@@ -1841,8 +1883,6 @@ function buildParams(
 		max_tokens: options?.maxTokens ?? model.maxTokens,
 		stream: true,
 	};
-	if (nativeToolChanges)
-		params.betas = getNativeToolChangeBetas(model, context, isOAuthToken, options, messageThreads);
 	const speed = requestedSpeed(model);
 	if (speed !== undefined) params.speed = speed;
 
@@ -1895,12 +1935,18 @@ function buildParams(
 		}
 	}
 
+	const display =
+		options?.thinkingDisplay ??
+		model.compat?.thinkingDisplay ??
+		(!options?.client && supportsThinkingDisplayUpdates(model) ? "updates" : "summarized");
+	// The SDK types do not yet include `display: "updates"`.
+	const sdkDisplay = display as "summarized" | "omitted";
 	// Managed effort models always use adaptive thinking. Their per-turn markers
 	// carry the actual effort for every reply.
 	if (effortMessages) {
 		params.thinking = {
 			type: "adaptive",
-			display: options?.thinkingDisplay ?? "summarized",
+			display: sdkDisplay,
 			block_binding: { prefix_mismatch_behavior: "drop_block" },
 		} as unknown as NonNullable<MessageCreateParamsStreaming["thinking"]>;
 		// The top-level effort is part of the cached prompt, so it stays fixed. It is "low" because
@@ -1908,13 +1954,10 @@ function buildParams(
 		params.output_config = { effort: "low" };
 	} else if (model.reasoning) {
 		if (options?.thinkingEnabled || thinkingOffFallback) {
-			// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
-			// older Claude 4 models (whose API default is also "summarized").
-			const display: AnthropicThinkingDisplay = options?.thinkingDisplay ?? "summarized";
 			const effort = options?.effort ?? thinkingOffFallback?.effort;
 			if (model.compat?.forceAdaptiveThinking === true) {
 				// Adaptive thinking: Claude decides when and how much to think.
-				params.thinking = { type: "adaptive", display };
+				params.thinking = { type: "adaptive", display: sdkDisplay };
 				if (effort) {
 					// The Anthropic SDK types can lag newly supported effort values such as "xhigh".
 					params.output_config =
@@ -1927,7 +1970,7 @@ function buildParams(
 				params.thinking = {
 					type: "enabled",
 					budget_tokens: thinkingBudget ?? 1024,
-					display,
+					display: sdkDisplay,
 				};
 			}
 		} else if (options?.thinkingEnabled === false && model.thinkingLevelMap?.off !== null) {
@@ -1958,6 +2001,20 @@ function buildParams(
 				>;
 			}
 		}
+	}
+
+	const displayUpdates =
+		(params.thinking?.type === "adaptive" || params.thinking?.type === "enabled") && display === "updates";
+	if (nativeToolChanges || displayUpdates) {
+		params.betas = getRequestBetas(
+			model,
+			context,
+			isOAuthToken,
+			options,
+			messageThreads,
+			nativeToolChanges,
+			displayUpdates,
+		);
 	}
 
 	if (options?.metadata) {

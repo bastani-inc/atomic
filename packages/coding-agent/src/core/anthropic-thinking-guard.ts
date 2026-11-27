@@ -50,6 +50,15 @@ function readReplayThinkingBlock(block: unknown, allowEmptySignature = false): R
 		return typeof block.data === "string" ? { type: "redacted_thinking", data: block.data } : undefined;
 	}
 
+	if (
+		block.type === "text" &&
+		typeof block.text === "string" &&
+		typeof block.anthropicProgressSignature === "string" &&
+		block.anthropicProgressSignature.length > 0
+	) {
+		return { type: "thinking", thinking: block.text, signature: block.anthropicProgressSignature };
+	}
+
 	if (block.type !== "thinking") return undefined;
 
 	if (block.redacted === true) {
@@ -112,7 +121,14 @@ function nonThinkingBlocksAlign(message: AssistantMessage, providerBlocks: reado
 	const boundaryIndex = finalFallbackBoundaryIndex(message.content);
 	const sourceTypes = message.content.flatMap((block, index) => {
 		if (!isObject(block) || typeof block.type !== "string") return [];
-		if (block.type === "text") return typeof block.text === "string" && block.text.trim().length > 0 ? ["text"] : [];
+		if (block.type === "text") {
+			if (
+				readReplayThinkingBlock(block) ||
+				(boundaryIndex >= 0 && index < boundaryIndex && block.anthropicProgressSignature !== undefined)
+			)
+				return [];
+			return typeof block.text === "string" && block.text.trim().length > 0 ? ["text"] : [];
+		}
 		// The marker is replayed in place and is not thinking-like, so it survives the provider-side
 		// filter below and both sides must count it.
 		if (block.type === "fallback") return ["fallback"];
@@ -168,6 +184,7 @@ function repairAssistantContent(
 		}
 
 		if (originalBlock.type === "text") {
+			if (precedesBoundary && originalBlock.anthropicProgressSignature !== undefined) continue;
 			const providerText = takeProviderBlock(providerBlocks, providerIndex, "text");
 			if (providerText.block) {
 				repaired.push(providerText.block);

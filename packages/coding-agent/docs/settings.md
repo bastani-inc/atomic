@@ -55,7 +55,8 @@ See [Choose a model](/models/choose-a-model) for everyday model selection, [Mode
 | `decisionModel` | string | `""` | Model for `structured_output` (when omitted) and `decide()`: exact `provider/model` (chat or classifier), or `""`/`"auto"` for the current chat model. See [`decisionModel`](#decisionmodel) |
 | `defaultThinkingLevel` | string | unset | Startup thinking level (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`), clamped to model support |
 | `modelThinkingLevels` | object | unset | Per-model startup thinking levels keyed by `"provider/modelId"` |
-| `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
+| `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in the terminal UI; does not hide visible progress updates |
+| `anthropicThinkingDisplay` | `"updates"` or `"summarized"` | `"updates"` on supported direct Claude models | See [Claude progress updates and reasoning summaries](#claude-progress-updates-and-reasoning-summaries) |
 | `thinkingBudgets` | object | unset | Custom token budgets per thinking level (native on Anthropic, Google, and Bedrock; OpenAI-compatible when `compat.thinkingTokenBudgetField` or `supportsThinkingTokenBudget` is set) |
 | `showCacheMissNotices` | boolean | `false` | Show notices for significant prompt-cache misses, billed compaction or branch summaries, and provider recovery diagnostics (such as dropped Anthropic thinking blocks), including on resume |
 | `cacheWarming` | `"off" \| "streaming" \| "idle"` | `"idle"` | Keep eligible prompt caches warm during runs (`"streaming"`, up to 60 min after the starting request) or up to 30 min between runs (`"idle"`). `"off"` disables. Refreshes incur provider cost. Global setting only |
@@ -65,6 +66,14 @@ See [Choose a model](/models/choose-a-model) for everyday model selection, [Mode
 - **Compaction model (`compactionModel`).** Configured under [Compaction](#compaction) (default `""`/`"auto"` for memory compaction, or a registered compactor ID such as `morph/morph-compactor`). See [Custom compaction models](/compaction/custom-compactors).
 - **Unsupported saved default provider.** If `defaultProvider` and `defaultModel` name a provider still unsupported after extensions load, Atomic does not switch providers silently. Interactive mode warns, print and JSON modes warn on stderr and exit nonzero (stdout stays valid JSONL), and RPC rejects `prompt` until an explicit model switch succeeds. If the provider is supported but the model is unknown or unauthenticated, normal auto-selection applies.
 - **Subagents (`model: "auto"`).** Subagents use `defaultProvider`/`defaultModel` when authenticated (at agent `thinking`, else `modelThinkingLevels`, else `defaultThinkingLevel`, else `medium`), falling back to the launching session's model. When `enabledModels` or `--models` is active, subagent model selection must stay inside that scope. Built-in agent overrides live under `subagents.agentOverrides`; see [Subagent reference](/subagents/reference#automatic-model-selection).
+
+### Claude progress updates and reasoning summaries
+
+With Claude Opus 5.5, Sonnet 5.5, Fable 5/5.1/5.2, and Mythos 5.1/5.2 on Anthropic's API, Atomic shows the model's progress updates before tool calls as assistant text, even when `hideThinkingBlock` is on. Print mode writes these updates to stderr and keeps the final answer on stdout. Anthropic supplies a short summary of each progress update and does not return reasoning summaries in this mode.
+
+To see reasoning summaries instead, set `"anthropicThinkingDisplay": "summarized"` and leave `hideThinkingBlock` off. Anthropic mixes progress and reasoning in this mode without distinguishing them, so both are treated as thinking. This setting does not change other models or providers. Earlier messages saved in summarized mode cannot be separated retroactively.
+
+SDK callers can override the display per request with `anthropicThinkingDisplay` in `streamSimple` or with `thinkingDisplay` in Anthropic-specific stream options. Models can set their default in `compat.thinkingDisplay`.
 
 ### Model scope (enabledModels) {#enabledmodels}
 

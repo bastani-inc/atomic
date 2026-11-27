@@ -177,6 +177,7 @@ Also applies to `azure-openai-responses` and `openai-codex-responses`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `thinkingDisplay` | `"updates"`, `"summarized"`, or `"omitted"` | Model-dependent | Default display for this model. Choose `"summarized"` to get reasoning summaries instead of separately visible progress updates. Use `"updates"` only on endpoints and models that support Anthropic's thinking-display-updates beta. An explicit request option takes precedence. |
 | `supportsEagerToolInputStreaming` | boolean | `true` | Whether the provider accepts per-tool eager_input_streaming. When false, the Anthropic provider omits tools[].eager_input_streaming and sends the legacy fine-grained-tool-streaming-2025-05-14 beta header for tool-enabled requests. |
 | `supportsLongCacheRetention` | boolean | `true` | Whether the provider supports Anthropic long cache retention through cache_control.ttl. |
 | `sendSessionAffinityHeaders` | boolean |  | Whether to send x-session-affinity from options.sessionId when caching is enabled. Required for providers like Fireworks that use session affinity for prompt cache routing; requests to the same replica maximize cache hits. Default: true for OpenRouter endpoints, false otherwise. |
