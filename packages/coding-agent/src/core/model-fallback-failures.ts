@@ -355,6 +355,7 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "und_err_socket":
 			return "transport_error";
 		case "rate_limit":
+		case "rate_limit_error":
 		case "rate_limit_exceeded":
 		case "too_many_requests":
 		case "throttlingexception":
@@ -365,6 +366,7 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "usage_limit":
 		case "usage_limit_reached":
 		case "usage_limit_exceeded":
+		case "usage_not_included":
 		case "payment_required":
 		case "servicequotaexceededexception":
 			return "quota_exhausted";
@@ -828,6 +830,21 @@ function structuredSignal(
 	// credit with HTTP 400 and `invalid_request_error`.
 	const quotaExhausted =
 		directMessageSignal?.kind === "quota_exhausted" || bestNestedFallbackSignal?.kind === "quota_exhausted";
+	// A real 429 or explicit provider throttle code cannot be condemned by words quoted in its body.
+	// A structured abort/refusal (including on a cause) and an explicit quota error still retain their meaning.
+	if (directCancellationSignal === undefined && codeKind !== "content_filter" && codeKind !== "task_failure") {
+		const rateLimit =
+			codeKind === "rate_limit" || (statusFrom(value) === 429 && codeKind === undefined)
+				? makeSignal("rate_limit", value, source)
+				: bestNestedFallbackSignal?.kind === "rate_limit" && bestNestedFallbackSignal.status === 429
+					? bestNestedFallbackSignal
+					: undefined;
+		if (rateLimit !== undefined) {
+			if (QUOTA_EXHAUSTED_FAILURE_PATTERN.test(directMessageFrom(value) ?? ""))
+				return makeSignal("quota_exhausted", value, source);
+			if (!quotaExhausted) return rateLimit;
+		}
+	}
 	const directSignals = [
 		directRefusalSignal,
 		directCancellationSignal,

@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@bastani/atomic-ai/compat";
+import { DEFAULT_MAX_RETRY_DELAY_MS } from "@bastani/atomic-ai/utils/provider-retry";
 import { sleep } from "../utils/sleep.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { isCodexTokenInvalidationError } from "./codex-errors.ts";
@@ -21,7 +22,9 @@ import {
 	isUnrecognizedModelFailure,
 	normalizeModelFailureSignal,
 } from "./model-fallback-failures.ts";
+import { providerCooldownMs } from "./provider-rate-limits.js";
 import { isLongStreamCut, LONG_STREAM_CUT_ADVICE, nextRetryDecision, repeatsLongStreamCut } from "./retry-policy.ts";
+import type { ModelFallbackRecord } from "./session-manager-types.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 
 export function ensureRetryPromise(session: AgentSession): void {
@@ -95,7 +98,13 @@ function resolveFallbackModelLackingCredentials(this: AgentSession, value: strin
 	)?.model;
 }
 
-function noteSkipped(skipped: SkippedModel[], model: Model<Api>, reason: SkippedModel["reason"]): void {
+type FallbackSkip = NonNullable<ModelFallbackRecord["skipped"]>[number];
+
+function noteSkipped<Reason extends FallbackSkip["reason"]>(
+	skipped: { model: string; provider: string; reason: Reason }[],
+	model: Model<Api>,
+	reason: Reason,
+): void {
 	const label = modelLabel(model);
 	if (!skipped.some((entry) => entry.model === label))
 		skipped.push({ model: label, provider: model.provider, reason });
@@ -106,14 +115,37 @@ function fallsBackOnContentFilter(this: AgentSession): boolean {
 	return this.settingsManager.getRetrySettings().fallbackOnContentFilter !== false;
 }
 
+/** Only server hints use this cap; a rate limit without a hint keeps its ordinary local backoff. */
+function overCapRateLimitDelay(message: AssistantMessage, capMs: number): number | undefined {
+	const hint = message.retryAfterMs;
+	return capMs > 0 && hint !== undefined && Number.isFinite(hint) && hint > capMs ? hint : undefined;
+}
+
+export function rateLimitGuidance(
+	message: AssistantMessage,
+	capMs = DEFAULT_MAX_RETRY_DELAY_MS,
+	status?: number,
+): string {
+	const http429 = status === 429 || /(?:^429(?:\s|:|$)|\bHTTP 429\b)/.test(message.errorMessage ?? "");
+	const summary = `Provider rate limit reached${http429 ? " (HTTP 429)" : ""}.`;
+	const overCap = overCapRateLimitDelay(message, capMs);
+	if (overCap !== undefined) {
+		const cap = capMs % 1000 === 0 ? `${capMs / 1000}s` : `${capMs}ms`;
+		return `${summary} The ${Math.ceil(overCap / 1000)}s wait exceeds the configured ${cap} retry limit. Switch models or try again after the rate limit resets.`;
+	}
+	const seconds = message.retryAfterMs !== undefined ? Math.ceil(message.retryAfterMs / 1000) : 0;
+	return `${summary} Switch models or try again ${seconds > 0 ? `in ${seconds}s` : "after the rate limit resets"}.`;
+}
+
 /** Whether an assistant error may advance the configured fallback chain. */
 export function _isFallbackableError(this: AgentSession, message: AssistantMessage): boolean {
 	if (message.stopReason !== "error") return false;
+	const signal = normalizeModelFailureSignal(message);
+	if (signal.kind === "rate_limit") return true;
 	const contextWindow = this.model?.contextWindow ?? 0;
 	if (isContextOverflow(message, contextWindow)) return false;
 	const provider = message.provider || this.model?.provider;
 	if (provider && containsCodexTokenInvalidation(provider, message)) return true;
-	const signal = normalizeModelFailureSignal(message);
 	if (signal.kind === "cancelled" || signal.kind === "task_failure") return false;
 	if (signal.kind === "content_filter") return fallsBackOnContentFilter.call(this);
 	return isRetryableModelFailure(message);
@@ -129,6 +161,7 @@ export function _isFallbackableError(this: AgentSession, message: AssistantMessa
  */
 export function _isRetryableError(this: AgentSession, message: AssistantMessage): boolean {
 	if (message.stopReason !== "error") return false;
+	if (normalizeModelFailureSignal(message).kind === "rate_limit") return true;
 
 	// Context overflow is handled by compaction, not retry.
 	const contextWindow = this.model?.contextWindow ?? 0;
@@ -342,7 +375,7 @@ async function selectFallback(
 	to: Model<Api>,
 	toLevel: ThinkingLevel,
 	reason: string,
-	skipped: SkippedModel[],
+	skipped: FallbackSkip[],
 	generation: number,
 ): Promise<void> {
 	await session.sessionManager.appendModelChange(to.provider, to.id, {
@@ -404,7 +437,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 
 	const currentThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
 	const fromModel = currentModel;
-	const skipped: SkippedModel[] = [];
+	const skipped: FallbackSkip[] = [];
 	for (const rawCandidate of this._fallbackModels) {
 		const candidate = resolveFallbackModel.call(this, rawCandidate);
 		if (!candidate) {
@@ -431,6 +464,16 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		if (this._fallbackBlockedProviders.has(nextModel.provider)) {
 			noteSkipped(skipped, nextModel, "auth-failed");
 			continue;
+		}
+		// An account-wide limit can also cover another model on that provider. Do not select a fallback
+		// whose request admission would wait longer than the same limit that stopped retries.
+		const cooldownMs = providerCooldownMs(nextModel.provider, nextModel.id);
+		if (cooldownMs > 0) {
+			const capMs = this.settingsManager.getRetrySettings().maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+			if (capMs > 0 && cooldownMs > capMs) {
+				noteSkipped(skipped, nextModel, "rate-limited");
+				continue;
+			}
 		}
 
 		// Do not create a fallback lifecycle until a candidate can actually be
@@ -557,6 +600,10 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	if (this._agentRunAbortRequested) return false;
 	const generation = this._retryGeneration;
 	const settings = this.settingsManager.getRetrySettings();
+	const rateLimited = normalizeModelFailureSignal(message).kind === "rate_limit";
+	const overCap =
+		rateLimited &&
+		overCapRateLimitDelay(message, settings.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS) !== undefined;
 	const retryableError = this._isRetryableError?.(message) ?? true;
 	const fallbackableError = this._isFallbackableError?.(message) ?? retryableError;
 	const emptyCompletion = this._isEmptyCompletion?.(message) ?? false;
@@ -565,7 +612,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	// Empty completions have historically been allowed to spend a fallback after
 	// same-model retries. Provider safety refusals stay on the same model.
 	const canAdvanceToFallback = fallbackableError || emptyCompletion;
-	if (!settings.enabled || !canRetrySameModel) {
+	if (!settings.enabled || !canRetrySameModel || overCap) {
 		if (canAdvanceToFallback && (await this._trySwitchToFallbackModel(message))) return true;
 		if (this._retryAttempt > 0) {
 			this._emit({
@@ -587,9 +634,8 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	ensureRetryPromise(this);
 
 	// One shared policy decides the bounded same-model budget and its backoff, so
-	// each session applies the same settings. The
-	// counter still advances on the exhausting attempt, so `_trySwitchToFallbackModel`
-	// closes the retry lifecycle before the fallback lifecycle opens.
+	// each session applies the same settings. The counter still advances on the exhausting attempt so the retry lifecycle
+	// closes before the fallback lifecycle opens.
 	const decision = nextRetryDecision(
 		settings,
 		this._retryAttempt,
@@ -635,6 +681,13 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	// Keep the failed attempt in raw history while durably omitting it from model projection.
 	try {
 		await this._omitTrailingAssistantAttempt();
+		if (rateLimited) {
+			await this.sessionManager.appendCustomEntry("rate-limit-retry", {
+				model: modelLabel(this.model),
+				attempt: decision.attempt,
+				delayMs,
+			});
+		}
 	} catch (error) {
 		if (this._retryAbortController === backoff) this._retryAbortController = undefined;
 		if (retryIsCurrent(this, generation)) {

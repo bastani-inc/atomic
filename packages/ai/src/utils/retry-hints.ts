@@ -97,6 +97,26 @@ export function getRetryAfterMs(headers?: HeaderReader, body?: string, now = Dat
 	return hints.length ? Math.max(...hints) : undefined;
 }
 
+/** Claude API reset times are RFC 3339 timestamps, not Retry-After seconds. */
+function anthropicResetDelayMs(headers: HeaderReader, now = Date.now()): number | undefined {
+	let largest: number | undefined;
+	for (const prefix of [
+		"anthropic-ratelimit-requests",
+		"anthropic-ratelimit-tokens",
+		"anthropic-ratelimit-input-tokens",
+		"anthropic-ratelimit-output-tokens",
+		"anthropic-priority-input-tokens",
+		"anthropic-priority-output-tokens",
+	]) {
+		const reset = headers.get(`${prefix}-reset`);
+		const remaining = headers.get(`${prefix}-remaining`);
+		if (reset === null || (remaining !== null && Number(remaining) > 0)) continue;
+		const delay = positiveDelay(Date.parse(reset) - now);
+		if (delay !== undefined) largest = Math.max(largest ?? 0, delay);
+	}
+	return largest;
+}
+
 function errorHeaders(error: object): HeaderReader | undefined {
 	if ("headers" in error && typeof error.headers === "object" && isHeaderReader(error.headers)) return error.headers;
 	// AWS SDK service exceptions keep the raw HTTP response, with a plain header record, on `$response`.
@@ -123,5 +143,8 @@ function errorBody(error: object): string | undefined {
  */
 export function getProviderRetryAfterMs(error: object): number | undefined {
 	if ("retryAfterMs" in error && typeof error.retryAfterMs === "number") return positiveDelay(error.retryAfterMs);
-	return getRetryAfterMs(errorHeaders(error), errorBody(error));
+	const headers = errorHeaders(error);
+	const explicit = getRetryAfterMs(headers, errorBody(error));
+	if (explicit !== undefined || headers === undefined || !("status" in error) || error.status !== 429) return explicit;
+	return anthropicResetDelayMs(headers);
 }

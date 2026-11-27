@@ -242,6 +242,7 @@ const ATOMIC_CUSTOM_TYPES = new Set([
 	"intercom_sent",
 	"intercom_session_identity",
 	"intercom_session_memberships",
+	"rate-limit-retry",
 	"resume_timings",
 	"subagent-child",
 	"subagent-fork-start",

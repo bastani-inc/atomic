@@ -3,6 +3,7 @@ import { sessionCloseReason } from "../../core/agent-session-events.ts";
 import { createCacheMissModelSource, detectCacheMiss, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { chatReceipt } from "../../core/chat-receipts.js";
 import { createCustomMessage } from "../../core/messages.ts";
+import { normalizeModelFailureSignal } from "../../core/model-fallback-failures.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { keepDroppedQueuedMessages } from "../../core/queued-message-delivery.ts";
 import { formatAppendRecoveryNotice } from "../../core/session-append-recovery.js";
@@ -69,6 +70,27 @@ interface MainTurnToolBatch {
 const mainTurnToolBatches = new WeakMap<InteractiveModeBase, MainTurnToolBatch>();
 /** Tool rows whose call ended, until their result message's save receipt arrives with its `message_end`. */
 const toolRowsAwaitingResult = new WeakMap<InteractiveModeBase, Map<string, object>>();
+
+/** Pure rate-limit failures have no answer to display until retry and fallback have had their chance. */
+const pendingRateLimitCards = new WeakMap<
+	InteractiveModeBase,
+	{ card: AssistantMessageComponent; message: Extract<Message, { role: "assistant" }> }
+>();
+
+function clearPendingRateLimitCard(mode: InteractiveModeBase): void {
+	const pending = pendingRateLimitCards.get(mode);
+	if (!pending) return;
+	mode.chatContainer.removeChild(pending.card);
+	pendingRateLimitCards.delete(mode);
+}
+
+function isPureRateLimit(message: Extract<Message, { role: "assistant" }>): boolean {
+	return (
+		message.stopReason === "error" &&
+		!hasAssistantVisibleContent(message.content) &&
+		normalizeModelFailureSignal(message).kind === "rate_limit"
+	);
+}
 
 /**
  * Remember where the session saved a message the chat drew as it streamed: its rows can then be placed among the saved
@@ -275,6 +297,7 @@ InteractiveModeBase.prototype.subscribeToAgent = function (this: InteractiveMode
 			this.fallbackLoader.stop();
 			this.fallbackLoader = undefined;
 		}
+		pendingRateLimitCards.delete(this);
 		disposeAgentPanel();
 		disposeInteractiveTasks(this);
 	};
@@ -435,11 +458,17 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			this.ui.requestRender();
 			break;
 
-		case "agent_settled":
+		case "agent_settled": {
+			const pending = pendingRateLimitCards.get(this);
+			if (pending) {
+				pending.card.updateContent(pending.message, false);
+				pendingRateLimitCards.delete(this);
+			}
 			this.flushPendingBashComponents();
 			this.ui.requestRender();
 			await this.checkShutdownRequested();
 			break;
+		}
 
 		case "message_start":
 			if (event.message.role === "user" || (event.message.role === "custom" && event.message.display))
@@ -468,7 +497,8 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 				);
 				this.streamingMessage = beginStreamingAssistantMessage(event.message);
 				this.chatContainer.addChild(this.streamingComponent);
-				this.streamingComponent.updateContent(this.streamingMessage, true);
+				if (!isPureRateLimit(this.streamingMessage))
+					this.streamingComponent.updateContent(this.streamingMessage, true);
 				this.ui.requestRender();
 			}
 			break;
@@ -530,7 +560,9 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 					!hasAssistantVisibleContent(this.streamingMessage.content)
 						? currentInterruptedMainTools(this)
 						: undefined;
-				this.streamingComponent.updateContent(this.streamingMessage, false, interruptedActivity);
+				if (isPureRateLimit(this.streamingMessage)) {
+					pendingRateLimitCards.set(this, { card: this.streamingComponent, message: this.streamingMessage });
+				} else this.streamingComponent.updateContent(this.streamingMessage, false, interruptedActivity);
 				if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
 					mainTurnToolBatches.delete(this);
 				} else {
@@ -776,6 +808,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			break;
 
 		case "auto_retry_start": {
+			clearPendingRateLimitCard(this);
 			// Set up escape to abort retry
 			this.retryEscapeHandler = this.defaultEditor.onEscape;
 			this.defaultEditor.onEscape = () => {
@@ -817,6 +850,14 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 		}
 
 		case "model_fallback_start": {
+			const from = formatModelLabel(event.from, { thinkingLevel: event.fromThinkingLevel });
+			const to = formatModelLabel(event.to, { thinkingLevel: event.toThinkingLevel });
+			const notice = `Falling back from ${from} to ${to}`;
+			if (pendingRateLimitCards.has(this)) {
+				clearPendingRateLimitCard(this);
+				// The switch can finish before the terminal paints its spinner. Keep its notice in the live chat.
+				this.showStatus(`${notice} after a rate limit.`, true);
+			}
 			this.statusContainer.clear();
 			if (this.fallbackLoader) {
 				this.fallbackLoader.stop();
@@ -826,7 +867,7 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 				this.ui,
 				(spinner) => theme.fg("warning", spinner),
 				(text) => theme.fg("muted", text),
-				`Falling back from ${formatModelLabel(event.from, { thinkingLevel: event.fromThinkingLevel })} to ${formatModelLabel(event.to, { thinkingLevel: event.toThinkingLevel })}...`,
+				`${notice}...`,
 			);
 			this.statusContainer.addChild(this.fallbackLoader);
 			this.ui.requestRender();
@@ -879,7 +920,9 @@ async function handleAgentEvent(this: InteractiveModeBase, event: StartupEvent, 
 			if (!event.success) {
 				this.workingRunMeter.stop();
 				this.workingRunMeter.endTurn();
-				this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
+				if (!pendingRateLimitCards.has(this)) {
+					this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
+				}
 			}
 			this.ui.requestRender();
 			break;

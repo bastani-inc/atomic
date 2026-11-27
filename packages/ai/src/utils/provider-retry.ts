@@ -1,7 +1,8 @@
 import type { RetryDeadline } from "../types.ts";
 import { wrapFetchPreservingAdmission } from "./request-admission.ts";
-import { findTlsCertificateRefusal } from "./tls-certificate.ts";
+import { getProviderRetryAfterMs } from "./retry-hints.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "./retry-sleep.ts";
+import { findTlsCertificateRefusal } from "./tls-certificate.ts";
 
 export const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 
@@ -102,6 +103,11 @@ function validateServerRetryDelayMs(
 }
 
 function getRetryDelayMs(error: ProviderError, retryIndex: number, maxRetryDelayMs: number | undefined): number {
+	// On a throttle, use the same hint as request admission and the session, including a reset-only response.
+	if (error.status === 429) {
+		const hintMs = getProviderRetryAfterMs(error);
+		if (hintMs !== undefined) return validateServerRetryDelayMs(hintMs, maxRetryDelayMs, error);
+	}
 	const retryAfterMs = error.headers?.get("retry-after-ms");
 	if (retryAfterMs) {
 		const value = Number.parseFloat(retryAfterMs);

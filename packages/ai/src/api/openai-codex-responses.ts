@@ -44,7 +44,6 @@ import {
 	transportFailure,
 	transportFetch,
 } from "../utils/tls-certificate.ts";
-import { observeWebSocketTransport } from "../utils/websocket-transport.ts";
 import {
 	getDeclaredTools,
 	getInitialSystemMessage,
@@ -53,6 +52,7 @@ import {
 	resolveTranscriptTools,
 } from "../utils/transcript.ts";
 import { uuidv7 } from "../utils/uuid.ts";
+import { observeWebSocketTransport } from "../utils/websocket-transport.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import {
@@ -147,7 +147,7 @@ function assertSuccessfulOutput(output: AssistantMessage): asserts output is Suc
 // ============================================================================
 
 function isTerminalRateLimitError(errorText: string): boolean {
-	return /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing/i.test(
+	return /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|usage_limit_reached|usage_not_included|out of budget|quota exceeded|billing/i.test(
 		errorText,
 	);
 }
@@ -191,11 +191,14 @@ function getRetryAfterDelayMs(headers: Headers): number | undefined {
 
 class RetryDelayExceededError extends Error {}
 
-function validateRetryDelayMs(delayMs: number, options?: StreamOptions): number {
+function validateRetryDelayMs(delayMs: number, response: Response, options?: StreamOptions): number {
 	const maxRetryDelayMs = options?.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
 	if (maxRetryDelayMs > 0 && delayMs > maxRetryDelayMs) {
-		throw new RetryDelayExceededError(
-			`Server requested ${Math.ceil(delayMs / 1000)}s retry delay (max: ${Math.ceil(maxRetryDelayMs / 1000)}s)`,
+		throw Object.assign(
+			new RetryDelayExceededError(
+				`Server requested ${Math.ceil(delayMs / 1000)}s retry delay (max: ${Math.ceil(maxRetryDelayMs / 1000)}s)`,
+			),
+			{ status: response.status, retryAfterMs: delayMs },
 		);
 	}
 	return delayMs;
@@ -476,12 +479,14 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						}
 
 						const errorText = await response.text();
+						const retryAfterMs = getRetryAfterMs(response.headers, errorText);
 						if (attempt < maxRetries && isRetryableError(response.status, errorText)) {
-							const retryAfterDelayMs = getRetryAfterDelayMs(response.headers);
+							const retryAfterDelayMs =
+								response.status === 429 ? retryAfterMs : getRetryAfterDelayMs(response.headers);
 							const delayMs =
 								retryAfterDelayMs === undefined
 									? BASE_DELAY_MS * 2 ** attempt
-									: validateRetryDelayMs(retryAfterDelayMs, options);
+									: validateRetryDelayMs(retryAfterDelayMs, response, options);
 
 							await sleep(delayMs, options?.signal);
 							continue;
@@ -497,7 +502,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						// (exhausted quota) or 5xx is still recognizable once only the message survives.
 						throw Object.assign(new Error(info.friendlyMessage || `${response.status}: ${info.message}`), {
 							status: response.status,
-							retryAfterMs: getRetryAfterMs(response.headers, errorText),
+							code: info.code,
+							retryAfterMs,
 						});
 					} catch (error) {
 						if (error instanceof RetryDeadlineError) throw error;
@@ -591,7 +597,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
-			appendProviderResponseFailureDiagnostic(output, error);
+			const errorCode =
+				error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
+			appendProviderResponseFailureDiagnostic(output, error, errorCode);
+			if (error instanceof CodexApiError && errorCode !== undefined) {
+				appendAssistantMessageDiagnostic(output, createAssistantMessageDiagnostic("codex_response_failure", error));
+			}
 			// Codex's own error events, protocol errors and stream event callbacks are not the connection's TLS (#6114).
 			if (!isCodexNonTransportError(error)) recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
@@ -1195,7 +1206,8 @@ async function connectWebSocket(
 		let socket: WebSocketLike;
 
 		// Bun's WebSocket names a refused certificate on its error event; Node.js's does not, so its connection is observed.
-		const transport = typeof process !== "undefined" && process.versions?.bun ? undefined : observeWebSocketTransport();
+		const transport =
+			typeof process !== "undefined" && process.versions?.bun ? undefined : observeWebSocketTransport();
 		try {
 			socket = new WebSocketCtor(url, {
 				headers: wsHeaders,
@@ -1730,10 +1742,13 @@ async function processWebSocketStream(
 // Error Handling
 // ============================================================================
 
-async function parseErrorResponse(response: Response): Promise<{ message: string; friendlyMessage?: string }> {
+async function parseErrorResponse(
+	response: Response,
+): Promise<{ message: string; friendlyMessage?: string; code?: string }> {
 	const raw = await response.text();
 	let message = raw || response.statusText || "Request failed";
 	let friendlyMessage: string | undefined;
+	let code: string | undefined;
 
 	try {
 		const parsed = JSON.parse(raw) as {
@@ -1741,8 +1756,11 @@ async function parseErrorResponse(response: Response): Promise<{ message: string
 		};
 		const err = parsed?.error;
 		if (err) {
-			const code = err.code || err.type || "";
-			if (/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code) || response.status === 429) {
+			code = err.code || err.type;
+			if (
+				/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code ?? "") ||
+				response.status === 429
+			) {
 				const plan = err.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
 				const mins = err.resets_at
 					? Math.max(0, Math.round((err.resets_at * 1000 - Date.now()) / 60000))
@@ -1754,7 +1772,7 @@ async function parseErrorResponse(response: Response): Promise<{ message: string
 		}
 	} catch {}
 
-	return { message, friendlyMessage };
+	return { message, friendlyMessage, code };
 }
 
 // ============================================================================
