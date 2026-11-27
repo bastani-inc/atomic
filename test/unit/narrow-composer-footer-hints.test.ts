@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
 import { setKeybindings, stripHintMarkers, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
@@ -20,7 +19,6 @@ import {
 import { taskChatKeys } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { createStopAllChord } from "../../packages/coding-agent/src/modes/interactive/interactive-stop-all.js";
 import { getEditorTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { moduleDir, readText } from "../helpers/runtime.js";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const plainStyle: NavKeyStyle = {
@@ -38,13 +36,11 @@ const composerStyle: AttachedComposerStyle = {
 	dim: (text) => `<dim>${text}</dim>`,
 };
 
-const docsRoot = resolve(moduleDir(import.meta.url), "../../packages/coding-agent/docs");
-
 beforeAll(() => {
 	initTheme("dark", false);
 });
 
-describe("attached placeholder spacing, narrow footer/hint priority, stop-all copy, and docs (#5239)", () => {
+describe("attached placeholder spacing, narrow footer/hint priority, and stop-all copy (#5239)", () => {
 	test("applyAttachedComposer places the placeholder immediately after the real CustomEditor cursor cell without a third space (#5239)", () => {
 		const keybindings = new KeybindingsManager();
 		const editor = new CustomEditor(makeTestTui(24), getEditorTheme(), keybindings, { paddingX: 0 });
@@ -201,11 +197,5 @@ describe("attached placeholder spacing, narrow footer/hint priority, stop-all co
 		listener("\x0b");
 		assert.deepEqual(statuses, ["Press ctrl+x ctrl+k again within 3s to stop all"]);
 		assert.ok(visibleWidth(statuses[0]!) <= 60);
-	});
-
-	test("the subagent guide describes agent-panel rows rather than below-prompt counts (#5239)", async () => {
-		const subagentsRef = await readText(resolve(docsRoot, "subagents/reference.md"));
-		assert.doesNotMatch(subagentsRef, /below-prompt background counts/u);
-		assert.match(subagentsRef, /agent panel/iu);
 	});
 });

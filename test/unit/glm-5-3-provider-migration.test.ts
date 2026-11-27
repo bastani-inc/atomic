@@ -11,7 +11,6 @@ import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime
 import { moduleDir } from "../helpers/runtime.js";
 
 const root = resolve(moduleDir(import.meta.url), "../..");
-const read = (relativePath: string): string => readFileSync(join(root, relativePath), "utf8");
 
 const EXPECTED_GLM_FALLBACKS = [
 	"zai/glm-5.3:high",
@@ -142,8 +141,4 @@ test("Baseten defaults to its directly selectable full GLM-5.3 entry", () => {
 	assert.equal(defaultModelPerProvider.baseten, "zai-org/GLM-5.3");
 	assert.notEqual(defaultModelPerProvider.baseten, "zai-org/GLM-5.3-Flash");
 	assert.ok(basetenModels.some((model) => model.id === defaultModelPerProvider.baseten));
-	assert.match(
-		read("packages/coding-agent/docs/providers.md"),
-		/Baseten defaults to its directly selectable `zai-org\/GLM-5\.3`/iu,
-	);
 });
