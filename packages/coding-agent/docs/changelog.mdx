@@ -10,6 +10,16 @@ description: "What's new in Atomic"
   After each release, the publish-release skill regenerates this page in its own docs PR.
 */}
 
+<Update label="November 27, 2026" description="0.10.15-alpha.1">
+
+This patch removes the remaining built-in compaction output caps, adds `~` home expansion to `shellPath`, and overhauls the documentation for clarity without reading source code.
+
+- **No built-in compaction output caps on extensions.** `session_before_compact` hooks now keep whatever replacement text they return without enforcing a 32,000-token, 50%-trigger-share, or trigger-overflow cap, matching remote compactor models, while retiring the unused cap and line-width constants from compaction logic ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
+- **Home-directory `~` expansion in `shellPath`.** Custom shell paths in `settings.json` now expand a leading `~/` (and `~\` on Windows) to your home directory, matching the documented schema ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
+- **Reorganized, source-verified documentation.** Split Compaction into Memory Compaction, Custom Compactors, and Branch Summaries; added `How Atomic works`, `Slash commands`, `Choose a model`, `Worktree snapshots reference`, and `Background tasks reference`; grouped Models Reference with `models.json` fields; flattened single-page storage folders; and corrected verified source-vs-docs discrepancies across the docs ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
+
+</Update>
+
 <Update label="November 27, 2026" description="0.10.14">
 
 This patch accepts `null` optional arguments across waitable tools and fixes PostgreSQL background snapshot collection.
