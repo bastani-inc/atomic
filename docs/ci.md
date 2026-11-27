@@ -14,41 +14,37 @@ Pull requests need `test (all platforms)` and CodeQL results. Releases use a sep
 
 ## Tests
 
-- `unit-tests` and `integration-tests` run the root suites on Linux, Windows and macOS (Apple silicon). The first Linux unit-test shard also runs the release's in-place update check on the build (see [Release pipeline](#release-pipeline)).
-- `agent-suite` runs the coding-agent suite on both platforms.
-- `packages-suite` runs the AI and other compiled workspace packages' suites on both platforms.
+- `unit-tests` and `integration-tests` run the root suites on Linux, Windows and macOS (Apple silicon). The Linux unit job on the newest Node.js also runs the release's in-place update check on the build (see [Release pipeline](#release-pipeline)).
+- `agent-suite` runs the coding-agent suite on Linux and Windows.
+- `packages-suite` runs the AI and other compiled workspace packages' suites on Linux and Windows.
 - `storage-conformance` runs the database-backed suites on Linux.
 - `release-archive` builds and smoke tests the Linux and Windows archives without publishing them.
 - `static-checks` runs `npm run check`, documentation checks, script and CI contract tests, and installer smoke tests.
 
-The `test` job reports `test (all platforms)`. It runs even if work jobs fail and requires every work job and shard to succeed. Keep `always()` on the gate. GitHub counts skipped checks as passing. If you rename a required check, add its replacement and update the ruleset before removing the old name.
+The `test (all platforms)` check requires every work job to pass. Keep `always()` so the gate reports failures. If you rename a required check, add its replacement and update the ruleset before removing the old name.
 
 ### Draft pull requests
 
 Draft PRs skip the work jobs and do not report `test (all platforms)`. Keep the result gate's separate draft name so the skipped job cannot satisfy the required check. Mark a PR ready for review to start a full run. A new run cancels any in-progress run for the same PR. On `main`, a new run can replace a pending run but does not cancel one that has started.
 
-### Sharded suites
+### Test suites and durations
 
-The workflows split suites by file. To reproduce a shard locally, use the job's `--shard` value with its npm command:
+Each suite runs on one runner per covered OS, plus the [Node.js floor jobs](#nodejs-version). The machines are the same size, but each PR uses fewer of them. That leaves capacity for other PRs and releases. Vitest runs files in parallel: eight workers on Linux and Windows, six on macOS.
 
-```sh
-npm run test:unit -- --shard=1/11
-npm run test:integration -- --shard=1/12
-npm run test --workspace=@bastani/atomic -- --shard=1/9
-```
+Use the [development setup commands](../DEV_SETUP.md#test) to run a suite locally. To match CI, add its worker count, for example `npm run test:unit -- --maxWorkers=8`. Leave file isolation enabled.
 
-The macOS shards (six per suite) balance by the Linux weights, since the record has no macOS entry.
-
-Keep Vitest's default worker sizing and file isolation. If one file dominates a shard, split it by topic. If the weights in `test/helpers/test-file-durations.json` are stale, download the Linux and Windows `test-diagnostics-*` artifacts from several recent runs. Run the first command for each run ID, then update the weights:
+Vitest starts longer files first using `test/helpers/test-file-durations.json`. To refresh the record, download diagnostics from several recent runs, then update the weights:
 
 ```sh
-gh run download "$run_id" -p 'test-diagnostics-*-x64-*' -D "/tmp/test-reports/$run_id"
+gh run download "$run_id" -p 'test-diagnostics-*-linux-x64*' -p 'test-diagnostics-*-windows-x64*' -D "/tmp/test-reports/$run_id"
 bun run scripts/test-file-durations.ts /tmp/test-reports/*/*/*.json
 ```
 
 ### Per-job time limits
 
 Read the job's `timeout-minutes` in the workflow. It covers setup, tests and teardown, not runner queue time. Check the job log to find the blocked step. For a test failure, look at `.ci-diagnostics/` in the `test-diagnostics-*` artifact. Duration warnings are diagnostic. Actual test timeouts fail the suite.
+
+The limits are based on recent CI test times, checked against per-file duration records, with room for setup and cold caches. See [PR #6748](https://github.com/bastani-inc/atomic/pull/6748) for the baseline measurements.
 
 ### Storage backend matrix
 
@@ -76,13 +72,13 @@ Link the run from the PR if the change depends on macOS validation.
 
 ## Runners
 
-`test.yml` and `codeql.yml` use repository-specific `namespace-profile-atomic-ci-*` profiles, including `namespace-profile-atomic-ci-macos-arm64-6x14` for the macOS shards. In the [Namespace profile editor](https://cloud.namespace.so/workspace/actions/profiles), set their Access Level to Restricted. For the exact job mapping, see `runs-on` in each workflow. If a job stays queued, check that its profile exists and that Namespace has capacity.
+`test.yml` and `codeql.yml` use repository-specific `namespace-profile-atomic-ci-*` profiles, including `namespace-profile-atomic-ci-macos-arm64-6x14` for the macOS suites. In the [Namespace profile editor](https://cloud.namespace.so/workspace/actions/profiles), set their Access Level to Restricted. For the exact job mapping, see `runs-on` in each workflow. If a job stays queued, check that its profile exists and that Namespace has capacity.
 
 Most release jobs use inline `nscloud-*` labels. Both macOS release targets use `namespace-profile-atomic-release-macos-arm64-6x14`. The Intel build runs its smoke test under Rosetta. Keep `publish-npm` on GitHub-hosted `ubuntu-latest`. npm requires a GitHub-hosted runner for trusted publishing and provenance.
 
 ### Sizing
 
-The test suites use `8x16` profiles on Linux and Windows and the `6x14` Apple silicon profile on macOS. Smaller jobs use `4x8`. The workspace's macOS capacity (160 vCPU) is shared with release builds, so one run's twelve macOS shards use under half of it. Add macOS shards only after checking that limit with `nsc workspace concurrency`. Check CPU, memory and step logs before resizing. Set up the new profile with the same access and cache rules before changing `runs-on`.
+The test suites use `8x16` profiles on Linux and Windows and `6x14` on macOS. Smaller jobs use `4x8`. Namespace limits concurrent vCPU and memory by OS, not just the number of runners. Run `nsc workspace concurrency` to check shared capacity before resizing. Set up the new profile with the same access and cache rules before changing `runs-on`.
 
 ### Checkout and cache trust model
 
@@ -96,7 +92,7 @@ Open the PR's **Files changed** tab before approving each run from a fork. If it
 
 ### One model catalog snapshot per test run
 
-In `test.yml`, `model-data` restores a verified snapshot from `main` for pull requests. It fetches the catalogs once if there is no valid snapshot, and on pushes to `main`. The other jobs download the same run artifact, including its validation manifest, and build offline. A failed shard can rerun against the same artifact without checking upstream again.
+In `test.yml`, `model-data` restores a verified snapshot from `main` for pull requests. It fetches the catalogs once if there is no valid snapshot, and on pushes to `main`. The other jobs download the same run artifact, including its validation manifest, and build offline. A failed job can rerun against the same artifact without checking upstream again.
 
 All work jobs wait for this short catalog-only job. It installs no dependencies and prevents typecheck and the suites from testing different catalogs. A warm pull-request run can use older data until `main` refreshes the cache. The manual macOS workflow still restores or hydrates independently, and releases fetch live data.
 
@@ -189,7 +185,7 @@ Keep third-party actions pinned to full commit SHAs. Validate workflow changes w
 
 The root `package.json` `engines.node` is the one source for the Node.js version. Every `actions/setup-node` step and `.atomic/blueprint.yaml` read it with `node-version-file`. Jobs with a sparse `release-tooling` checkout read `release-tooling/package.json`. CI therefore runs the newest Node.js release that satisfies the floor. The root and every published package declare the same `engines.node`. There are two exceptions:
 
-- One Linux `unit-tests` shard and one Linux `agent-suite` shard run on exactly the floor (24.20.0), the oldest Node.js an npm install accepts. They are extra matrix entries with `node: "24.20.0"`, named for example `unit-tests (linux-x64, 2/11, Node.js 24.20.0)`, and their diagnostics artifacts end in `-node-24.20.0`. They run in parallel with the other shards, and the result gate requires them like any other shard. When you raise the floor, update the version in both matrix entries and in both `Node.js at the engines.node floor` steps.
+- One extra Linux job in each of `unit-tests` and `agent-suite` runs the full suite on exactly the floor (24.20.0), the oldest Node.js an npm install accepts. These matrix entries set `node: "24.20.0"`, are named for example `unit-tests (linux-x64, Node.js 24.20.0)`, and have diagnostics artifacts ending in `-node-24.20.0`. They run in parallel with the other jobs, and the result gate requires both to succeed. When you raise the floor, update the version in both matrix entries and in both `Node.js at the engines.node floor` steps.
 - The Mintlify step in `static-checks` switches to the newest Node 24 release because Mintlify refuses Node 25 and later.
 
 `test/ci/node-version-source.test.ts` enforces these rules.

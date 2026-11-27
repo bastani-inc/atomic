@@ -57,8 +57,7 @@ function safeName(value: string): string {
  * only the second would trade a diagnosable step log for a measurable one.
  *
  * The reporter flags are added here rather than in the workflow so the child
- * command stays exactly the one a developer runs locally --
- * test/ci/test-workflow-topology.test.ts asserts that.
+ * command stays the one a developer runs locally.
  */
 function withJsonReporter(command: string[], outputFile: string): string[] {
 	const flags = ["--reporter=default", "--reporter=json", `--outputFile.json=${outputFile}`];
@@ -211,10 +210,9 @@ async function reportDurations(result: RunResult, options: Options, name: string
 }
 
 /**
- * Advisory, never a failure: the files of this run whose measured duration strayed far from the record the shards are
- * balanced by (test/helpers/test-file-durations.json). The sequencer weighs a file the record lacks as unknown and a
- * file that grew at its old duration, so the shard that draws one runs long until the record is refreshed. A new test
- * file without a recorded duration is expected; only one far heavier than an unknown file's weight is named.
+ * Advisory, never a failure: the files of this run whose measured duration strayed far from the record the sequencer
+ * uses to order files (test/helpers/test-file-durations.json). A new test file without a recorded duration is expected;
+ * only one far heavier than an unknown file's weight is named.
  */
 function reportDurationDrift(report: string | undefined, options: Options): void {
 	if (report === undefined) return;
@@ -228,17 +226,18 @@ function reportDurationDrift(report: string | undefined, options: Options): void
 	const seconds = (ms: number) => `${(ms / 1000).toFixed(0)} s`;
 	const recorded = (drift: DurationDrift) =>
 		drift.recordedMs === undefined ? `none (weighed as ${seconds(UNKNOWN_FILE_MS)})` : seconds(drift.recordedMs);
-	const refresh = 'refresh test/helpers/test-file-durations.json from recent CI runs (docs/ci.md, "Sharded suites")';
+	const refresh =
+		'Refresh test/helpers/test-file-durations.json from recent CI runs (docs/ci.md, "Test suites and durations").';
 	console.error(
-		`::warning title=Stale test durations: ${options.label}::${drifted.length} file(s) took far longer or shorter than the duration record says, so this suite's shards may be unbalanced: ${drifted
+		`::warning title=Stale test durations: ${options.label}::${drifted.length} file(s) took far longer or shorter than the duration record says: ${drifted
 			.slice(0, 5)
 			.map((drift) => `${drift.path} took ${seconds(drift.measuredMs)}, recorded ${recorded(drift)}`)
-			.join("; ")}. To rebalance, ${refresh}.`,
+			.join("; ")}. ${refresh}`,
 	);
 	appendSummary(
 		[
 			`### ⚠️ Stale test durations: ${options.label}`,
-			`These files took far longer or shorter than the duration record the shards are balanced by. Advisory; to rebalance, ${refresh}.`,
+			`These files took far longer or shorter than the duration record used to order tests. Advisory. ${refresh}`,
 			"",
 			"| File | Measured | Recorded |",
 			"|---|---|---|",

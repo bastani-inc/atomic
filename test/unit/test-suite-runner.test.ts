@@ -395,7 +395,7 @@ test(
 	REAL_VITEST_SUITE_TIMEOUT_MS,
 );
 
-/** The integration job passes its shard through npm (`npm run test:integration -- --shard=i/n`). */
+/** CI passes Vitest's worker limit through npm (`npm run test:integration -- --maxWorkers=N`). */
 test(
 	"the wrapper scores a real vitest run whose `npm run <script>` command already passes arguments through",
 	async () => {
@@ -409,7 +409,7 @@ test(
 					scripts: { "test:unit": "vitest --run --project unit" },
 				}),
 			},
-			["npm", "run", "test:unit", "--", "--shard=1/1"],
+			["npm", "run", "test:unit", "--", "--maxWorkers=8"],
 		);
 		assertScoredRealSuite(result);
 		assert.match(result.output, /suite\.test\.ts/);

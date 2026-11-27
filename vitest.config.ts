@@ -98,7 +98,7 @@ const uiGate = "test/integration/interactive-event-loop-guard.test.ts";
  */
 export default defineConfig({
 	test: {
-		// Longest files first, and duration-balanced `--shard` (CI runs the unit and integration suites in shards).
+		// Longest files first, and duration-balanced `--shard` when requested locally.
 		sequence: { sequencer: DurationSequencer },
 		projects: [
 			project("unit", "test/unit/**/*.test.ts"),

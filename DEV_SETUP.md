@@ -73,6 +73,8 @@ To run one root test file, pass its path after `--`:
 npm run test:unit -- test/unit/config-package-identity.test.ts
 ```
 
+CI runs one job per suite and OS so one PR leaves room for others on the shared Namespace runners. Use the same npm commands locally. See the [CI guide](docs/ci.md#tests) for worker counts and job time limits.
+
 Finish builds and typechecks before starting tests so they don't rewrite files the tests are loading. See [Testing in AGENTS.md](AGENTS.md#testing) for test conventions.
 
 ## Lint and format

@@ -10,8 +10,8 @@ import { parse } from "yaml";
  * The root package.json `engines.node` is the one source of the Node.js version: CI's setup-node steps and the
  * repository blueprint read it with `node-version-file`, and every published package declares the same floor.
  * A hard-coded `node-version` once let CI pick a cached Node 22.23.3, which rejects valid IPv6 proxy certificates.
- * That resolves to the newest Node.js release, so one unit-tests shard and one agent-suite shard also run on exactly the
- * floor, the oldest Node.js an npm install accepts.
+ * That resolves to the newest Node.js release, so one Linux job in each of unit-tests and agent-suite also runs on
+ * exactly the floor, the oldest Node.js an npm install accepts.
  */
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -31,8 +31,6 @@ interface WorkflowStep {
 
 interface MatrixEntry {
 	readonly binary_platform?: string;
-	readonly shard?: number;
-	readonly shards?: number;
 	readonly node?: string;
 }
 
@@ -42,7 +40,7 @@ interface Workflow {
 		{
 			readonly steps?: readonly WorkflowStep[];
 			readonly strategy?: {
-				readonly matrix?: { readonly node?: readonly string[]; readonly include?: readonly MatrixEntry[] };
+				readonly matrix?: { readonly include?: readonly MatrixEntry[] };
 			};
 		}
 	>;
@@ -54,7 +52,7 @@ const EXPLICIT_VERSION_STEPS = new Set([
 	"test.yml static-checks Node.js 24 for Mintlify",
 ]);
 
-/** The jobs with one shard on exactly the engines.node floor, and the step that installs it. */
+/** Suites that run on exactly the engines.node floor, and the step that installs it. */
 const FLOOR_JOBS = ["unit-tests", "agent-suite"];
 const FLOOR_STEP = "Node.js at the engines.node floor";
 
@@ -102,7 +100,7 @@ test("every setup-node step reads engines.node from a checked-out root package.j
 						nodeFloor,
 						`${where} installs exactly the floor of engines.node`,
 					);
-					assert.equal(step.if, `matrix.node == '${nodeFloor}'`, `${where} runs only for the floor shard`);
+					assert.equal(step.if, `matrix.node == '${nodeFloor}'`, `${where} runs only for the floor job`);
 					continue;
 				}
 				if (EXPLICIT_VERSION_STEPS.has(where)) {
@@ -126,23 +124,19 @@ test("every setup-node step reads engines.node from a checked-out root package.j
 	expect(checked).toBeGreaterThan(0);
 });
 
-test("unit-tests and agent-suite each run one Linux shard on exactly the engines.node floor", () => {
+test("unit-tests and agent-suite each run one Linux job on exactly the engines.node floor", () => {
 	const workflow = parse(readFileSync(join(root, ".github/workflows/test.yml"), "utf8")) as Workflow;
 	for (const jobName of FLOOR_JOBS) {
 		const job = workflow.jobs[jobName];
-		assert.deepEqual(
-			job?.strategy?.matrix?.node,
-			["newest"],
-			`${jobName} runs every other shard on the newest Node.js`,
-		);
-		const floorShards = (job?.strategy?.matrix?.include ?? []).filter((entry) => entry.node !== undefined);
-		assert.equal(floorShards.length, 1, `${jobName} has one shard on another Node.js`);
-		const [floorShard] = floorShards;
-		assert.equal(floorShard?.node, nodeFloor, `${jobName}'s extra shard runs on the floor of engines.node`);
-		assert.equal(floorShard?.binary_platform, "linux-x64", jobName);
+		const entries = job?.strategy?.matrix?.include ?? [];
+		const floorJobs = entries.filter((entry) => entry.node !== "newest");
+		assert.equal(floorJobs.length, 1, `${jobName} runs every other job on the newest Node.js`);
+		const [floorJob] = floorJobs;
+		assert.equal(floorJob?.node, nodeFloor, `${jobName}'s extra job runs on the floor of engines.node`);
+		assert.equal(floorJob?.binary_platform, "linux-x64", jobName);
 		assert.ok(
-			floorShard?.shard !== undefined && floorShard.shards !== undefined && floorShard.shard <= floorShard.shards,
-			`${jobName}'s floor shard ${floorShard?.shard}/${floorShard?.shards} is one of the suite's shards`,
+			entries.some((entry) => entry.binary_platform === "linux-x64" && entry.node === "newest"),
+			`${jobName} also runs on the newest Node.js on Linux`,
 		);
 		const setupNode = (job?.steps ?? []).filter((step) => step.uses?.startsWith("actions/setup-node@"));
 		assert.deepEqual(

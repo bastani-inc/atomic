@@ -11,7 +11,7 @@ const defaultTestTimeoutMs = process.platform === "win32" ? 90_000 : 30_000;
 
 /**
  * Setup and teardown hooks here create git sandboxes and open SQLite session stores. Under a loaded
- * Windows shard that structural work regularly passes vitest's 10 s hook default, so Windows hooks get
+ * Windows runner that structural work regularly passes vitest's 10 s hook default, so Windows hooks get
  * the same headroom ratio as the tests; other platforms keep the default.
  */
 const defaultHookTimeoutMs = process.platform === "win32" ? 30_000 : 10_000;
@@ -91,7 +91,7 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 
 export default defineConfig({
 	test: {
-		// Longest files first, and duration-balanced `--shard` (CI runs nine Linux and eleven Windows shards).
+		// Longest files first, and duration-balanced `--shard` when requested locally.
 		sequence: { sequencer: DurationSequencer },
 		projects: [
 			project("agent", ["test/**/*.test.ts", "test/**/*.spec.ts", "test/**/*.suite.ts"], skippedSuites),
