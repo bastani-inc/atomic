@@ -3300,7 +3300,48 @@ describe("openai-codex streaming", () => {
 
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toBe("Server requested 2s retry delay (max: 1s)");
+		assert.equal(result.retryAfterMs, 2_000);
+		assert.equal(
+			result.diagnostics?.find((item) => item.type === "provider_response_failure")?.details?.status,
+			status,
+		);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("preserves a Codex usage limit and its reset advice without retrying (#6774)", async () => {
+		const fetch = vi.fn(async () =>
+			Response.json(
+				{
+					error: { type: "usage_limit_reached", plan_type: "plus", resets_at: Date.now() / 1000 + 3_600 },
+				},
+				{ status: 429, headers: { "retry-after": "3600" } },
+			),
+		);
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400_000,
+			maxTokens: 128_000,
+		};
+		const result = await streamOpenAICodexResponses(model, normalizeContext({ messages: [] }), {
+			apiKey: mockToken(),
+			transport: "sse",
+			maxRetries: 3,
+			fetch: fetch as typeof globalThis.fetch,
+		}).result();
+		assert.equal(fetch.mock.calls.length, 1);
+		assert.equal(result.stopReason, "error");
+		assert.match(result.errorMessage ?? "", /ChatGPT usage limit \(plus plan\).*Try again in ~60 min/);
+		assert.equal(
+			result.diagnostics?.find((item) => item.type === "provider_response_failure")?.details?.errorCode,
+			"usage_limit_reached",
+		);
 	});
 
 	it("zstd-compresses SSE request bodies", async () => {

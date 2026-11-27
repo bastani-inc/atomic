@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Chat moves to the next available fallback model when a provider asks it to wait past the retry limit. Retry and fallback attempts are saved in the session, and if no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774)).
+
 ## [0.10.15] - 2026-11-27
 
 This patch removes the remaining built-in compaction output caps, adds `~` home expansion to `shellPath`, and overhauls the documentation for clarity without reading source code.

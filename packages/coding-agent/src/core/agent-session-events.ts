@@ -30,7 +30,7 @@ import {
 import { normalizeQueuedMessageImages } from "./agent-session-prompt.ts";
 import { abortCurrentGeneration } from "./agent-session-queue-pause.ts";
 import { sessionClosing } from "./agent-session-release.ts";
-import { ensureRetryPromise, retryIsCurrent } from "./agent-session-retry.ts";
+import { ensureRetryPromise, rateLimitGuidance, retryIsCurrent } from "./agent-session-retry.ts";
 import { recordExplicitToolDeactivations } from "./agent-session-state.ts";
 import {
 	type AgentSessionEvent,
@@ -69,6 +69,7 @@ import type { SessionShutdownEvent } from "./extensions/types.ts";
 import { hostNoticeForEvent } from "./host-notices.js";
 import type { StageAdmittedCustomMessage } from "./messages.ts";
 import { normalizeMessageContent } from "./messages.ts";
+import { normalizeModelFailureSignal } from "./model-fallback-failures.ts";
 import {
 	carryDroppedQueuedMessages,
 	endQueuedMessageDelivery,
@@ -653,7 +654,10 @@ export function _applyProviderErrorGuidance(this: AgentSession, event: AgentEven
 	const assistantMessage = event.message as AssistantMessage;
 	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return;
 
-	assistantMessage.errorMessage = formatCodexProviderError(assistantMessage.provider, assistantMessage.errorMessage);
+	assistantMessage.errorMessage =
+		normalizeModelFailureSignal(assistantMessage).kind === "rate_limit"
+			? rateLimitGuidance(assistantMessage, this.settingsManager.getRetrySettings().maxRetryDelayMs)
+			: formatCodexProviderError(assistantMessage.provider, assistantMessage.errorMessage);
 }
 
 /** Resolve the pending retry promise */

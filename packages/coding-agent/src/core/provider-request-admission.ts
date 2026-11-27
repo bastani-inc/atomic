@@ -5,7 +5,6 @@ import { RetryDeadlineError, retryDeadlineReached } from "@bastani/atomic-ai/uti
 import { asyncScope } from "./async-scope.ts";
 import {
 	isProviderLimitFailure,
-	isProviderRateLimit,
 	markProviderRateLimitObserved,
 	type ProviderLimitScope,
 	providerAdmissionTurn,
@@ -153,7 +152,7 @@ export async function admitProviderStream(
 			return streamAdmission.run(state, invoke);
 		},
 		observeFailure(error) {
-			if (state.observedRateLimit && error.stopReason === "error" && !isProviderRateLimit(error)) {
+			if (state.observedRateLimit && error.stopReason === "error" && !isProviderLimitFailure(error)) {
 				error.errorMessage = `429 Too Many Requests: ${error.errorMessage ?? "provider rate limited the request"}`;
 			}
 			if (!isProviderLimitFailure(error)) return;
