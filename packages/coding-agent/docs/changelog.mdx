@@ -10,21 +10,13 @@ description: "What's new in Atomic"
   After each release, the publish-release skill regenerates this page in its own docs PR.
 */}
 
-<Update label="November 27, 2026" description="0.10.15-alpha.2">
-
-This prerelease removes unsupported Termux documentation and cleans up the Platform setup navigation.
-
-- **Cleaner Platform setup docs.** Removed unsupported Android/Termux documentation (`termux.md` and Termux references across guides and READMEs, redirecting `/termux` to `/getting-started/installation`) and reordered Platform setup to Configure your terminal, Shell aliases, Run on Windows, Run in Tmux, and Run in Herdr ([#6765](https://github.com/bastani-inc/atomic/pull/6765), [#6766](https://github.com/bastani-inc/atomic/pull/6766)).
-
-</Update>
-
-<Update label="November 27, 2026" description="0.10.15-alpha.1">
+<Update label="November 27, 2026" description="0.10.15">
 
 This patch removes the remaining built-in compaction output caps, adds `~` home expansion to `shellPath`, and overhauls the documentation for clarity without reading source code.
 
 - **No built-in compaction output caps on extensions.** `session_before_compact` hooks now keep whatever replacement text they return without enforcing a 32,000-token, 50%-trigger-share, or trigger-overflow cap, matching remote compactor models, while retiring the unused cap and line-width constants from compaction logic ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
 - **Home-directory `~` expansion in `shellPath`.** Custom shell paths in `settings.json` now expand a leading `~/` (and `~\` on Windows) to your home directory, matching the documented schema ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
-- **Reorganized, source-verified documentation.** Split Compaction into Memory Compaction, Custom Compactors, and Branch Summaries; added `How Atomic works`, `Slash commands`, `Choose a model`, `Worktree snapshots reference`, and `Background tasks reference`; grouped Models Reference with `models.json` fields; flattened single-page storage folders; and corrected verified source-vs-docs discrepancies across the docs ([#6763](https://github.com/bastani-inc/atomic/pull/6763)).
+- **Reorganized, source-verified documentation.** Split Compaction into Memory Compaction, Custom Compactors, and Branch Summaries; added `How Atomic works`, `Slash commands`, `Choose a model`, `Worktree snapshots reference`, and `Background tasks reference`; grouped Models Reference with `models.json` fields; flattened single-page storage folders; removed unsupported Termux docs and cleaned up Platform setup navigation; and corrected verified source-vs-docs discrepancies across the docs ([#6763](https://github.com/bastani-inc/atomic/pull/6763), [#6765](https://github.com/bastani-inc/atomic/pull/6765), [#6766](https://github.com/bastani-inc/atomic/pull/6766)).
 
 </Update>
 
