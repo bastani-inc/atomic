@@ -262,7 +262,6 @@
             "group": "Platform setup",
             "pages": [
               "windows",
-              "termux",
               "terminal-setup",
               "tmux",
               "herdr",
@@ -359,6 +358,7 @@
     { "source": "/decisions", "destination": "/sdk/structured-decisions" },
     { "source": "/structured-decisions", "destination": "/sdk/structured-decisions" },
     { "source": "/compactors", "destination": "/compaction/custom-compactors" },
+    { "source": "/termux", "destination": "/getting-started/installation" },
     { "source": "/blueprints", "destination": "/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint" }
   ]
 }

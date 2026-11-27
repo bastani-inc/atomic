@@ -53,7 +53,6 @@ Look up exact commands, settings, configuration schemas, tool behaviors, and API
 ## Platform setup
 
 - [Run on Windows](/windows)
-- [Run on Android (Termux)](/termux)
 - [Configure your terminal](/terminal-setup)
 - [Run in tmux](/tmux)
 - [Herdr](/herdr)

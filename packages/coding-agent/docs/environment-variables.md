@@ -136,7 +136,7 @@ Sessions default to `~/.atomic/workflows/journal.sqlite`. With a custom `ATOMIC_
 | `ATOMIC_TASK_CGROUP` | None | Exact `0` disables Linux cgroup v2 process-tree containment for background shell tasks. See [Lifetime, retention, and process cleanup](/background-tasks/reference#lifetime-retention-and-cleanup) |
 | `NODE_COMPILE_CACHE` | None | Override the directory for Node's persistent compile cache, enabled automatically on Node.js to speed up startup. On Windows, a cold default cache warms in a background helper during interactive runs; setting `NODE_COMPILE_CACHE` lets Node write it on exit instead |
 | `NODE_DISABLE_COMPILE_CACHE` | None | Any defined value (including empty string `""`) prevents Node from enabling the compile cache |
-| `NAPI_RS_NATIVE_LIBRARY_PATH` | None | Path to a locally compiled native addon (`.node` file), such as a custom build on [Termux](/termux); bypasses Atomic's release version check |
+| `NAPI_RS_NATIVE_LIBRARY_PATH` | None | Path to a locally compiled native addon (`.node` file); bypasses Atomic's release version check |
 
 ## Prompt-cache retention
 

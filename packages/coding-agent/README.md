@@ -85,7 +85,7 @@ atomic
 
 By default, Atomic provides built-in coding tools (`read`, `bash`, `kill`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`, `codemode`, plus `powershell` on native Windows when available). `edit` performs exact-text replacement without requiring an earlier `read`. See [docs/tools.md](docs/tools.md).
 
-**Platform guides:** [Windows](docs/windows.md) | [Alpine/musl Linux](docs/getting-started/installation.md#alpine-and-musl-linux-archives) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Herdr](docs/herdr.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
+**Platform guides:** [Windows](docs/windows.md) | [Alpine/musl Linux](docs/getting-started/installation.md#alpine-and-musl-linux-archives) | [tmux](docs/tmux.md) | [Herdr](docs/herdr.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
 ---
 

@@ -186,4 +186,4 @@ Use `--mode json` for a JSON event stream or `--mode rpc` for stdin/stdout proce
   </Card>
 </Columns>
 
-Also explore [Slash commands](/slash-commands), [Custom compaction models](/compaction/custom-compactors), [Worktree snapshots](/worktree-snapshots), [Resume on any machine](/guides/resume-on-any-machine), [Storage](/storage), [MCP servers](/mcp-servers), [CLI reference](/reference/cli), and [Platform setup](/reference#platform-setup) ([Windows](/windows), [Termux](/termux), [Terminal setup](/terminal-setup), [tmux](/tmux), [Herdr](/herdr), [Shell aliases](/shell-aliases)).
+Also explore [Slash commands](/slash-commands), [Custom compaction models](/compaction/custom-compactors), [Worktree snapshots](/worktree-snapshots), [Resume on any machine](/guides/resume-on-any-machine), [Storage](/storage), [MCP servers](/mcp-servers), [CLI reference](/reference/cli), and [Platform setup](/reference#platform-setup) ([Windows](/windows), [Terminal setup](/terminal-setup), [tmux](/tmux), [Herdr](/herdr), [Shell aliases](/shell-aliases)).
