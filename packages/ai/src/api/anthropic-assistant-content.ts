@@ -22,11 +22,11 @@ export function convertAnthropicAssistantContent(
 
 	for (const block of message.content) {
 		if (block.type === "text") {
-			if (block.text.trim().length === 0) continue;
-			blocks.push({
-				type: "text",
-				text: sanitizeSurrogates(block.text),
-			});
+			if (block.anthropicProgressSignature) {
+				blocks.push({ type: "thinking", thinking: block.text, signature: block.anthropicProgressSignature });
+			} else if (block.text.trim().length > 0) {
+				blocks.push({ type: "text", text: sanitizeSurrogates(block.text) });
+			}
 		} else if (block.type === "thinking") {
 			// Redacted thinking: pass the opaque payload back as redacted_thinking
 			if (block.redacted) {

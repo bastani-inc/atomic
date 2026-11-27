@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { Container, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import type { MarkdownTransformContext } from "../src/core/extensions/types.ts";
+import { SessionManager } from "../src/core/session-manager.js";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import {
 	chatEntriesFromAgentMessages,
@@ -58,6 +62,49 @@ function createAssistantMessage(
 }
 
 describe("AssistantMessageComponent", () => {
+	test("resumed Claude progress stays visible while legacy thinking obeys the visibility setting (#6776)", async () => {
+		initTheme("dark");
+		const dir = await mkdtemp(join(tmpdir(), "atomic-progress-"));
+		onTestFinished(() => rm(dir, { recursive: true, force: true }));
+		const session = await SessionManager.create(dir, dir);
+		await session.appendMessage({ role: "user", content: "Compare the files", timestamp: 1 });
+		await session.appendMessage({
+			...createAssistantMessage(
+				[
+					{ type: "thinking", thinking: "Legacy summary", thinkingSignature: "signed-legacy" },
+					{ type: "text", text: "I’ll compare the files.", anthropicProgressSignature: "signed-progress" },
+					{ type: "toolCall", id: "toolu_compare", name: "compare", arguments: {} },
+				],
+				{ stopReason: "toolUse" },
+			),
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-opus-5-5",
+		});
+		const file = session.getSessionFile();
+		await session.getSessionStore().close();
+		assert.ok(file);
+		const restored = await SessionManager.open(file);
+		onTestFinished(() => restored.getSessionStore().close());
+		const assistant = chatEntriesFromAgentMessages(restored.buildSessionContext().messages).find(
+			(entry) => entry.kind === "assistant",
+		);
+		assert.ok(assistant);
+		const render = (hideThinkingBlock: boolean) =>
+			stripAnsi(
+				renderChatMessageEntry(assistant, {
+					ui: { requestRender() {} },
+					cwd: dir,
+					hideThinkingBlock,
+				})
+					.render(80)
+					.join("\n"),
+			);
+		assert.match(render(true), /I’ll compare the files\./);
+		assert.doesNotMatch(render(true), /Legacy summary/);
+		assert.match(render(false), /Legacy summary[\s\S]*I’ll compare the files\./);
+	});
+
 	test("adds OSC 133 zone markers to assistant messages without tool calls", () => {
 		initTheme("dark");
 

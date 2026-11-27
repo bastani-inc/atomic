@@ -519,6 +519,11 @@ export const SettingsSchema = Type.Object(
 		resume: Type.Optional(ResumeSettingsSchema),
 		retry: Type.Optional(RetrySettingsSchema),
 		hideThinkingBlock: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.hideThinkingBlock })),
+		anthropicThinkingDisplay: Type.Optional(
+			Type.Union([Type.Literal("updates"), Type.Literal("summarized")], {
+				description: "On supported Claude models, choose visible progress updates or reasoning summaries.",
+			}),
+		),
 		externalEditor: Type.Optional(
 			Type.String({ description: "Command for Ctrl+G external editor; takes precedence over VISUAL and EDITOR." }),
 		),

@@ -55,7 +55,8 @@ See [Choose a model](/models/choose-a-model) for everyday model selection, [Mode
 | `decisionModel` | string | `""` | Model for `structured_output` (when omitted) and `decide()`: exact `provider/model` (chat or classifier), or `""`/`"auto"` for the current chat model. See [`decisionModel`](#decisionmodel) |
 | `defaultThinkingLevel` | string | unset | Startup thinking level (`"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`), clamped to model support |
 | `modelThinkingLevels` | object | unset | Per-model startup thinking levels keyed by `"provider/modelId"` |
-| `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
+| `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in the terminal UI; does not hide visible progress updates |
+| `anthropicThinkingDisplay` | `"updates"` or `"summarized"` | `"updates"` on supported direct Claude models | See [Claude progress updates and reasoning summaries](#claude-progress-updates-and-reasoning-summaries) |
 | `thinkingBudgets` | object | unset | Custom token budgets per thinking level (native on Anthropic, Google, and Bedrock; OpenAI-compatible when `compat.thinkingTokenBudgetField` or `supportsThinkingTokenBudget` is set) |
 | `showCacheMissNotices` | boolean | `false` | Show notices for significant prompt-cache misses, billed compaction or branch summaries, and provider recovery diagnostics (such as dropped Anthropic thinking blocks), including on resume |
 | `cacheWarming` | `"off" \| "streaming" \| "idle"` | `"idle"` | Keep eligible prompt caches warm during runs (`"streaming"`, up to 60 min after the starting request) or up to 30 min between runs (`"idle"`). `"off"` disables. Refreshes incur provider cost. Global setting only |
@@ -65,6 +66,23 @@ See [Choose a model](/models/choose-a-model) for everyday model selection, [Mode
 - **Compaction model (`compactionModel`).** Configured under [Compaction](#compaction) (default `""`/`"auto"` for memory compaction, or a registered compactor ID such as `morph/morph-compactor`). See [Custom compaction models](/compaction/custom-compactors).
 - **Unsupported saved default provider.** If `defaultProvider` and `defaultModel` name a provider still unsupported after extensions load, Atomic does not switch providers silently. Interactive mode warns, print and JSON modes warn on stderr and exit nonzero (stdout stays valid JSONL), and RPC rejects `prompt` until an explicit model switch succeeds. If the provider is supported but the model is unknown or unauthenticated, normal auto-selection applies.
 - **Subagents (`model: "auto"`).** Subagents use `defaultProvider`/`defaultModel` when authenticated (at agent `thinking`, else `modelThinkingLevels`, else `defaultThinkingLevel`, else `medium`), falling back to the launching session's model. When `enabledModels` or `--models` is active, subagent model selection must stay inside that scope. Built-in agent overrides live under `subagents.agentOverrides`; see [Subagent reference](/subagents/reference#automatic-model-selection).
+
+### Claude progress updates and reasoning summaries
+
+On Anthropic's API, Claude Opus 5.5, Sonnet 5.5, Fable 5/5.1/5.2, and Mythos 5.1/5.2 previously mixed the model's progress updates into its reasoning summaries. For these models, Atomic now asks Anthropic for progress updates only (`display: "updates"`). The updates appear as assistant text before tool calls, even when `hideThinkingBlock` is on. No change to your settings is needed to see them. Print mode writes progress to stderr and leaves only the final answer on stdout.
+
+Anthropic sends a short summary of each update, not the full note, and does not send reasoning summaries in the new default mode. To get the old reasoning summaries back, add these settings to `~/.atomic/agent/settings.json`:
+
+```json
+{
+  "anthropicThinkingDisplay": "summarized",
+  "hideThinkingBlock": false
+}
+```
+
+In `"summarized"` mode Anthropic still mixes progress and reasoning together, so Atomic shows both as thinking. To switch back to visible progress, remove `anthropicThinkingDisplay` or set it to `"updates"`. Other models and providers are unchanged. Atomic leaves earlier messages as saved because it cannot tell which parts of an old summary were progress updates.
+
+SDK callers can override the display per request with `anthropicThinkingDisplay` in `streamSimple` or with `thinkingDisplay` in Anthropic-specific stream options. Set `compat.thinkingDisplay` in your [model configuration](/models-configuration#anthropic-messages) to change the default for one model.
 
 ### Model scope (enabledModels) {#enabledmodels}
 
