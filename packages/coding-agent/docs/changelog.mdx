@@ -10,6 +10,15 @@ description: "What's new in Atomic"
   After each release, the publish-release skill regenerates this page in its own docs PR.
 */}
 
+<Update label="November 27, 2026" description="0.10.14-alpha.1">
+
+This patch accepts `null` optional arguments across waitable tools and fixes PostgreSQL background snapshot collection.
+
+- **Null optional tool arguments work across strict schema providers.** `read`, `search`, `bash`, and `powershell` now accept omitted optional fields sent as `null` (such as `action: null`, `id: null`, `budgetMs: null`, and `wait: null`) while continuing to reject invalid values and mixed call/wait arguments, alongside expanded `history://` and background-task documentation ([#6758](https://github.com/bastani-inc/atomic/pull/6758)).
+- **PostgreSQL background snapshot collection succeeds.** `@bastani/atomic-storage-postgres` now accepts `lockWaitMs: 0` (clamped to PostgreSQL's 1 ms `lock_timeout`), and background snapshot garbage collection retries PostgreSQL lock-conflict errors (`SQLSTATE 55P03`) on pace instead of failing ([#6758](https://github.com/bastani-inc/atomic/pull/6758)).
+
+</Update>
+
 <Update label="November 27, 2026" description="0.10.13">
 
 This patch keeps live sessions running through brief PostgreSQL restarts.
