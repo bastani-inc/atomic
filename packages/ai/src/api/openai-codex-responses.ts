@@ -30,7 +30,7 @@ import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget, resolveHttpsFallbackProxyUrl } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
-import { responsesErrorKind, responsesErrorRetryability } from "../utils/responses-error-codes.ts";
+import { responsesErrorKind, responsesErrorRetryability } from "../utils/responses-errors/codes.ts";
 import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "../utils/retry-sleep.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";

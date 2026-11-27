@@ -1,6 +1,6 @@
 import { type GitHubCopilotErrorCode, getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
 import type { AssistantMessage } from "../types.ts";
-import { responsesDiagnosticCode, responsesErrorKind } from "./responses-error-codes.ts";
+import { responsesDiagnosticCode, responsesErrorKind } from "./responses-errors/codes.ts";
 
 /**
  * Regex patterns to detect context overflow errors from different providers.

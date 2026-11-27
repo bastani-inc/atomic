@@ -1,4 +1,6 @@
-import type { AssistantMessageDiagnostic } from "./diagnostics.ts";
+import type { AssistantMessageDiagnostic } from "../diagnostics.ts";
+
+// Keep this cross-package entry in a new directory: Bun processes can hold the old utilities directory across updates.
 
 /** Explicit OpenAI Responses and Codex codes, independent of HTTP status and display text. */
 export function responsesErrorKind(

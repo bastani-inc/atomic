@@ -15,7 +15,7 @@ import {
 	GitHubCopilotStreamEndedEarlyError,
 	getTlsCertificateRefusal,
 } from "@bastani/atomic-ai";
-import { responsesErrorKind } from "@bastani/atomic-ai/utils/responses-error-codes";
+import { responsesErrorKind } from "@bastani/atomic-ai/utils/responses-errors/codes";
 import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
 
 const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
