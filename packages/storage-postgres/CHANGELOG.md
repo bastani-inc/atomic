@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A process whose last remaining work was closing a database exited in the middle of `close()`, with exit code 0, before the code after it ran. This made `atomic storage migrate` return at once, printing nothing and changing nothing. The wait for the server to close the connections, at most 5 seconds, now keeps the process running ([#6742](https://github.com/bastani-inc/atomic/issues/6742)).
+
 ## [0.10.11] - 2026-11-27
 
 ### Breaking Changes
