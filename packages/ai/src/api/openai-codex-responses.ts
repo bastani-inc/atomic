@@ -13,7 +13,6 @@ import type {
 	StreamFunction,
 	StreamOptions,
 	TranscriptContext,
-	Usage,
 } from "../types.ts";
 import { combineAbortSignals } from "../utils/abort-signals.ts";
 import {
@@ -31,6 +30,7 @@ import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget, resolveHttpsFallbackProxyUrl } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
+import { responsesErrorKind, responsesErrorRetryability } from "../utils/responses-error-codes.ts";
 import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "../utils/retry-sleep.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
@@ -152,7 +152,9 @@ function isTerminalRateLimitError(errorText: string): boolean {
 	);
 }
 
-function isRetryableError(status: number, errorText: string): boolean {
+function isRetryableError(status: number, errorText: string, code: string | undefined): boolean {
+	const typed = responsesErrorRetryability(code);
+	if (typed !== undefined) return typed;
 	if (status === 429 && isTerminalRateLimitError(errorText)) {
 		return false;
 	}
@@ -479,8 +481,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						}
 
 						const errorText = await response.text();
+						const info = parseErrorResponse(errorText, response);
 						const retryAfterMs = getRetryAfterMs(response.headers, errorText);
-						if (attempt < maxRetries && isRetryableError(response.status, errorText)) {
+						if (attempt < maxRetries && isRetryableError(response.status, errorText, info.code)) {
 							const retryAfterDelayMs =
 								response.status === 429 ? retryAfterMs : getRetryAfterDelayMs(response.headers);
 							const delayMs =
@@ -492,12 +495,6 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							continue;
 						}
 
-						// Parse error for friendly message on final attempt or non-retryable error
-						const fakeResponse = new Response(errorText, {
-							status: response.status,
-							statusText: response.statusText,
-						});
-						const info = await parseErrorResponse(fakeResponse);
 						// Keep the HTTP status in the text, as the other providers' `<status>: <body>` does, so a 402
 						// (exhausted quota) or 5xx is still recognizable once only the message survives.
 						throw Object.assign(new Error(info.friendlyMessage || `${response.status}: ${info.message}`), {
@@ -513,10 +510,10 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							}
 						}
 						lastError = error instanceof Error ? error : new Error(String(error));
-						// Network errors are retryable; a refused certificate is refused again (#6114).
+						// HTTP failures already went through the retry policy above. A refused certificate is refused again (#6114).
 						if (
 							attempt < maxRetries &&
-							!(lastError instanceof RetryDelayExceededError) &&
+							!("status" in lastError) &&
 							!lastError.message.includes("usage limit") &&
 							findTlsCertificateRefusal(lastError) === undefined
 						) {
@@ -598,11 +595,13 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
 			const errorCode =
-				error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
+				error instanceof Error &&
+				(error instanceof CodexApiError || "status" in error) &&
+				"code" in error &&
+				typeof error.code === "string"
+					? error.code
+					: undefined;
 			appendProviderResponseFailureDiagnostic(output, error, errorCode);
-			if (error instanceof CodexApiError && errorCode !== undefined) {
-				appendAssistantMessageDiagnostic(output, createAssistantMessageDiagnostic("codex_response_failure", error));
-			}
 			// Codex's own error events, protocol errors and stream event callbacks are not the connection's TLS (#6114).
 			if (!isCodexNonTransportError(error)) recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
@@ -1742,10 +1741,10 @@ async function processWebSocketStream(
 // Error Handling
 // ============================================================================
 
-async function parseErrorResponse(
+function parseErrorResponse(
+	raw: string,
 	response: Response,
-): Promise<{ message: string; friendlyMessage?: string; code?: string }> {
-	const raw = await response.text();
+): { message: string; friendlyMessage?: string; code?: string } {
 	let message = raw || response.statusText || "Request failed";
 	let friendlyMessage: string | undefined;
 	let code: string | undefined;
@@ -1757,10 +1756,8 @@ async function parseErrorResponse(
 		const err = parsed?.error;
 		if (err) {
 			code = err.code || err.type;
-			if (
-				/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code ?? "") ||
-				response.status === 429
-			) {
+			const kind = responsesErrorKind(code);
+			if (kind === "quota_exhausted" || (kind === undefined && response.status === 429)) {
 				const plan = err.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
 				const mins = err.resets_at
 					? Math.max(0, Math.round((err.resets_at * 1000 - Date.now()) / 60000))

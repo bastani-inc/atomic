@@ -66,7 +66,18 @@ function success(response: ServerResponse): void {
 	response.end(frames.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
 }
 
-async function endpoint(headers: Record<string, string>, { siblings = 0, exhaust = false, hold = false } = {}) {
+interface FixtureOptions {
+	siblings?: number;
+	exhaust?: boolean;
+	hold?: boolean;
+	fallback?: boolean;
+	responsesFailure?: { code: string; message: string; headers?: Record<string, string>; http?: true };
+}
+
+async function endpoint(
+	headers: Record<string, string>,
+	{ siblings = 0, exhaust = false, hold = false, fallback = true, responsesFailure }: FixtureOptions = {},
+) {
 	const requests: { model: string; at: number }[] = [];
 	const provider = `limited-${crypto.randomUUID().slice(0, 8)}`;
 	const backup = `backup-${crypto.randomUUID().slice(0, 8)}`;
@@ -87,6 +98,22 @@ async function endpoint(headers: Record<string, string>, { siblings = 0, exhaust
 				void backupReady.then(() => success(response));
 				return;
 			}
+			if (account === provider && responsesFailure) {
+				const { code, message, headers, http } = responsesFailure;
+				if (http) {
+					response.writeHead(429, { "content-type": "application/json", ...headers });
+					response.end(JSON.stringify({ error: { type: code, message } }));
+				} else {
+					response.writeHead(200, { "content-type": "text/event-stream" });
+					response.end(
+						`data: ${JSON.stringify({
+							type: "response.failed",
+							response: { status: "failed", error: { code, message, headers } },
+						})}\n\n`,
+					);
+				}
+				return;
+			}
 			response.writeHead(429, { "content-type": "application/json", ...headers });
 			response.end(JSON.stringify(rawFailure));
 		});
@@ -99,10 +126,13 @@ async function endpoint(headers: Record<string, string>, { siblings = 0, exhaust
 	});
 	const address = server.address();
 	assert.ok(address && typeof address === "object");
-	const base = getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 	const modelConfig = (account: string, ids: string[]) => {
+		const base =
+			account === provider && responsesFailure
+				? getFixtureModel("openai", "gpt-4o-mini")!
+				: getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const baseUrl = `http://127.0.0.1:${address.port}/${account}`;
-		const models: Model<"anthropic-messages">[] = ids.map((id) => ({
+		const models: Model<"anthropic-messages" | "openai-responses">[] = ids.map((id) => ({
 			...base,
 			baseUrl,
 			provider: account,
@@ -118,7 +148,7 @@ async function endpoint(headers: Record<string, string>, { siblings = 0, exhaust
 	};
 	const primaryRef = `${provider}/${primaryId}`;
 	const backupRef = `${backup}/${backupId}`;
-	const fallbackModels = [...siblingsIds.map((id) => `${provider}/${id}`), backupRef];
+	const fallbackModels = fallback ? [...siblingsIds.map((id) => `${provider}/${id}`), backupRef] : [];
 	return { requests, provider, providers, primaryRef, backupRef, fallbackModels, releaseBackup };
 }
 
@@ -213,6 +243,67 @@ test.each(cases)("SDK reaches the fallback after a 429 with $name (#6774)", asyn
 		if (retryMs === 50)
 			assert.ok(requests[1]!.at - requests[0]!.at >= 45, "retried before the server's delay elapsed");
 	}
+});
+
+test.each([false, true])(
+	"retries a statusless Responses throttle within the budget (fallback enabled: %s)",
+	async (fallback) => {
+		const harness = await setupSdk({}, 0, {
+			fallback,
+			responsesFailure: { code: "rate_limit_exceeded", message: "Please wait.", headers: shortAfter },
+		});
+		await prompt(harness);
+		const { requests, events, primaryRef, backupRef } = harness;
+		assert.deepEqual(
+			requests.map(({ model }) => model),
+			fallback ? [primaryRef, primaryRef, backupRef] : [primaryRef, primaryRef],
+		);
+		const retries = events.filter((event) => event.type === "auto_retry_start");
+		assert.equal(retries.length, 1);
+		assert.equal(retries[0]?.delayMs, 50);
+		assert.equal(
+			events.some((event) => event.type === "model_fallback_start"),
+			fallback,
+		);
+	},
+);
+
+test("an unknown statusless Responses code does not start an automatic retry without a fallback chain", async () => {
+	const harness = await setupSdk({}, 0, {
+		fallback: false,
+		responsesFailure: { code: "new_error_code", message: "Unexpected." },
+	});
+	await prompt(harness);
+	assert.deepEqual(
+		harness.requests.map(({ model }) => model),
+		[harness.primaryRef],
+	);
+	assert.equal(
+		harness.events.some((event) => event.type === "auto_retry_start"),
+		false,
+	);
+});
+
+test.each([
+	{ code: "usage_not_included", http: true as const },
+	{ code: "usage_not_included" },
+	{ code: "usage_limit_reached" },
+	{ code: "insufficient_quota" },
+])("advances without retrying when Responses reports $code", async (failure) => {
+	const harness = await setupSdk({}, 1, {
+		responsesFailure: { ...failure, message: "Cannot serve.", headers: shortAfter },
+	});
+	await prompt(harness);
+	const { requests, events, primaryRef, backupRef } = harness;
+	assert.deepEqual(
+		requests.map(({ model }) => model),
+		[primaryRef, backupRef],
+	);
+	assert.equal(
+		events.some((event) => event.type === "auto_retry_start"),
+		false,
+	);
+	assert.ok(events.some((event) => event.type === "model_fallback_end" && event.success));
 });
 
 test("an exhausted rate-limited chain keeps its failed attempts and ends with actionable guidance (#6774)", async () => {

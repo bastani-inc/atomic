@@ -3308,11 +3308,12 @@ describe("openai-codex streaming", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("preserves a Codex usage limit and its reset advice without retrying (#6774)", async () => {
+	const quotaCodes = ["usage_limit_reached", "credit_balance_exhausted", "organization_usage_limit_exceeded"];
+	it.each(quotaCodes)("preserves Codex %s and its reset advice without retrying (#6774)", async (code) => {
 		const fetch = vi.fn(async () =>
 			Response.json(
 				{
-					error: { type: "usage_limit_reached", plan_type: "plus", resets_at: Date.now() / 1000 + 3_600 },
+					error: { type: code, plan_type: "plus", resets_at: Date.now() / 1000 + 3_600 },
 				},
 				{ status: 429, headers: { "retry-after": "3600" } },
 			),
@@ -3340,7 +3341,7 @@ describe("openai-codex streaming", () => {
 		assert.match(result.errorMessage ?? "", /ChatGPT usage limit \(plus plan\).*Try again in ~60 min/);
 		assert.equal(
 			result.diagnostics?.find((item) => item.type === "provider_response_failure")?.details?.errorCode,
-			"usage_limit_reached",
+			code,
 		);
 	});
 

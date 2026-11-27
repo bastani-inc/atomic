@@ -4,6 +4,7 @@ import { ExtensionStartupError } from "../../packages/coding-agent/src/core/exte
 import {
 	isRetryableModelFailure as hostIsRetryable,
 	normalizeModelFailureSignal as hostNormalize,
+	isRetryableSameModelFailure,
 } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 import {
 	isRetryableModelFailure as subagentsIsRetryable,
@@ -576,6 +577,24 @@ describe("model fallback classifier conformance (subagents and host)", () => {
 			);
 			assert.equal(hostIsRetryable(fixture.failure), fixture.retryable, `host retryable for ${fixture.label}`);
 		}
+	});
+
+	test.each([
+		["credit_balance_exhausted", "quota_exhausted", false],
+		["organization_usage_limit_exceeded", "quota_exhausted", false],
+		["slow_down", "rate_limit", true],
+		["server_is_overloaded", "provider_unavailable", true],
+		["server_error", "provider_unavailable", true],
+		["invalid_prompt", "request_incompatible", false],
+	] as const)("classifies a Responses rejection with the code %s and opaque prose", (errorCode, kind, retry) => {
+		const failure = {
+			stopReason: "error",
+			errorMessage: "Request rejected.",
+			diagnostics: [{ type: "provider_response_failure", details: { errorCode } }],
+		};
+		assert.equal(hostNormalize(failure).kind, kind);
+		assert.equal(isRetryableSameModelFailure(failure), retry);
+		assert.equal(hostIsRetryable(failure), true);
 	});
 
 	test("classifiers agree on retryability for wrapper permutations", () => {

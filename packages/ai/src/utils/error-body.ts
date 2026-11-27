@@ -61,7 +61,7 @@ export function normalizeProviderError(error: unknown): NormalizedProviderError 
 /**
  * Record a failed request's HTTP status, and the provider's own error status when given, as a
  * `provider_response_failure` diagnostic, so retry and fallback decide on them rather than on the message text.
- * Nothing is recorded for a failure with no HTTP status.
+ * A provider's explicit code survives even when a stream failed without an HTTP error status.
  */
 export function appendProviderResponseFailureDiagnostic(
 	output: AssistantMessage,
@@ -69,11 +69,14 @@ export function appendProviderResponseFailureDiagnostic(
 	errorCode?: string,
 ): void {
 	const { status } = normalizeProviderError(error);
-	if (status === undefined) return;
+	if (status === undefined && errorCode === undefined) return;
 	appendAssistantMessageDiagnostic(output, {
 		type: "provider_response_failure",
 		timestamp: Date.now(),
-		details: errorCode === undefined ? { status } : { status, errorCode },
+		details: {
+			...(status === undefined ? {} : { status }),
+			...(errorCode === undefined ? {} : { errorCode }),
+		},
 	});
 }
 

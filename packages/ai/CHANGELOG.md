@@ -4,6 +4,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve error codes and retry hints when an OpenAI Responses stream fails without an HTTP error status. OpenAI Responses and Codex no longer retry requests rejected because of a known quota limit.
+
 ## [0.10.11] - 2026-11-27
 
 ### Breaking Changes
