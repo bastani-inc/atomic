@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { SqliteDatabase, SqliteExecutor } from "../../packages/coding-agent/src/core/storage/database.ts";
-import { StorageWriteLockTimeoutError, StoreClosedError } from "../../packages/coding-agent/src/core/storage/errors.ts";
+import {
+	StorageTransientError,
+	StorageWriteLockTimeoutError,
+	StoreClosedError,
+} from "../../packages/coding-agent/src/core/storage/errors.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
 	BackgroundCollectionPace,
@@ -309,6 +313,55 @@ describe("a background collection never waits for a write lock another connectio
 
 		const row = await shared.database.get<{ holder: string }>("SELECT holder FROM snapshot_collection");
 		assert.equal(row?.holder, "collector");
+	});
+
+	test("a background collection also retries a Postgres not-applied lock-conflict on the pace, and stops on other transient errors", async () => {
+		let conflictsRemaining = 2;
+		const proxied: SqliteDatabase = {
+			descriptor: { adapter: "postgres", location: "postgres://atomic@127.0.0.1/atomic" },
+			exec: (sql) => shared.database.exec(sql),
+			run: (sql, ...params) => shared.database.run(sql, ...params),
+			get: (sql, ...params) => shared.database.get(sql, ...params),
+			all: (sql, ...params) => shared.database.all(sql, ...params),
+			transaction: async (callback, options) => {
+				assert.equal(options?.lockWaitMs, 0);
+				if (conflictsRemaining-- > 0) {
+					throw new StorageTransientError(proxied.descriptor, {
+						code: "lock-conflict",
+						outcome: "not-applied",
+						attempts: 1,
+					});
+				}
+				return shared.database.transaction(callback, options);
+			},
+			close: () => shared.database.close(),
+		};
+		const store = await SqlSnapshotBlobStore.open(proxied);
+		const pace = new RecordedPace();
+		assert.equal(await store.claimCollection(3600, "pg-collector", pace), true);
+		assert.deepEqual(pace.waits, [
+			SNAPSHOT_COLLECTION_LOCK_RETRY_FIRST_MS,
+			SNAPSHOT_COLLECTION_LOCK_RETRY_FIRST_MS * 2,
+		]);
+
+		// Non-lock transient errors (or ambiguous outcomes) must NOT be retried as lock waits.
+		const failing: SqliteDatabase = {
+			...proxied,
+			transaction: async () => {
+				throw new StorageTransientError(proxied.descriptor, {
+					code: "connection-lost",
+					outcome: "unknown",
+					attempts: 1,
+				});
+			},
+		};
+		const failingStore = await SqlSnapshotBlobStore.open(failing);
+		const failPace = new RecordedPace();
+		await assert.rejects(
+			failingStore.recordCollection("pg-collector", { deleted: 0, errorCode: null }, failPace),
+			(error: unknown) => error instanceof StorageTransientError && error.code === "connection-lost",
+		);
+		assert.deepEqual(failPace.waits, []);
 	});
 
 	test("a write that fails for any other reason fails at once, without waiting", async () => {

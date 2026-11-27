@@ -10,7 +10,7 @@ import type {
 	StorageDescriptor,
 } from "../storage/database.js";
 import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTrigger } from "../storage/dialect.js";
-import { StorageWriteLockTimeoutError } from "../storage/errors.js";
+import { StorageTransientError, StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations, ensureStorageSchema, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
 import { type StorageSchemaCatalog, schemaCatalogOf, withStorageSchemaCatalog } from "../storage/schema-catalog.js";
@@ -3581,8 +3581,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	/**
 	 * Runs `body` in a write transaction. With `pace`, the transaction never waits for a write lock another connection
-	 * holds: it is refused at once and tried again after a wait on `pace` that doubles each time, so the process can
-	 * exit meanwhile; once the waits add up to {@link SNAPSHOT_COLLECTION_LEASE_SECONDS}, it rejects with the refusal.
+	 * holds: it is refused at once (SQLite `StorageWriteLockTimeoutError` or PostgreSQL not-applied `lock-conflict`) and
+	 * tried again after a wait on `pace` that doubles each time, so the process can exit meanwhile; once the waits add
+	 * up to {@link SNAPSHOT_COLLECTION_LEASE_SECONDS}, it rejects with the refusal.
 	 */
 	private async write<T>(
 		pace: BackgroundCollectionPace | undefined,
@@ -3594,8 +3595,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			try {
 				return await this.database.transaction(body, { lockWaitMs: 0 });
 			} catch (error) {
-				if (!(error instanceof StorageWriteLockTimeoutError) || waited >= SNAPSHOT_COLLECTION_LEASE_SECONDS * 1_000)
-					throw error;
+				const lockRefused =
+					error instanceof StorageWriteLockTimeoutError ||
+					(error instanceof StorageTransientError &&
+						error.code === "lock-conflict" &&
+						error.outcome === "not-applied");
+				if (!lockRefused || waited >= SNAPSHOT_COLLECTION_LEASE_SECONDS * 1_000) throw error;
 			}
 			await pace.wait(delay);
 			pace.signal?.throwIfAborted();

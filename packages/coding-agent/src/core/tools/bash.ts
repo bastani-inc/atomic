@@ -48,6 +48,7 @@ import { ShellTimeoutError } from "./shell-errors.ts";
 import { addShellOutputPreview, formatTruncationNotice, rebuildShellWaitResult } from "./shell-task-render.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult } from "./truncate.ts";
+import { isPlainObject, isValidBudgetMs, prepareWaitableToolInput } from "./wait-args.js";
 
 const STRUCTURED_OUTPUT_MAX_BYTES = 1024 * 1024;
 const bashOutputSchema = Type.Object({
@@ -126,18 +127,16 @@ const bashSchema = Type.Unsafe<ShellCommandInput | ShellWaitInput>({
 	},
 	required: [],
 });
-const shellCommandKeys = Object.keys(bashBaseSchema.properties);
+const shellOptionalCallKeys = Object.keys(bashBaseSchema.properties).filter((key) => key !== "command");
 
-function prepareShellInput(args: unknown): BashToolInput {
-	if (typeof args !== "object" || args === null || Array.isArray(args)) return args as BashToolInput;
-	const has = (key: string) => Object.hasOwn(args, key);
-	if (has("action")) {
-		if (!has("id") || shellCommandKeys.some(has))
-			throw new Error("Invalid shell wait: expected action wait, id, and optional finite non-negative budgetMs");
-	} else if (!has("command") || has("id") || has("budgetMs")) {
-		throw new Error("Invalid shell command: command is required; id and budgetMs require action wait");
-	}
-	return args as BashToolInput;
+export function prepareShellInput(args: unknown): BashToolInput {
+	return prepareWaitableToolInput<BashToolInput>(args, {
+		requiredKey: "command",
+		optionalCallKeys: shellOptionalCallKeys,
+		waitLabel: "shell wait",
+		callLabel: "shell command",
+		waitPolicyLabel: "bash wait",
+	});
 }
 export const bashToolSystemPromptContribution = Object.freeze({
 	snippet: "Execute a shell command.",
@@ -209,8 +208,8 @@ export function createLocalBashOperations(options?: {
 	taskOwner?: SupervisedCommandOwner;
 }): BashOperations {
 	return {
-		exec: async (command, cwd, { onData, signal, timeout, wait, env, pty, heartbeatMs }) => {
-			validateBashWait(wait, !!options?.taskOwner);
+		exec: async (command, cwd, { onData, signal, timeout, wait: rawWait, env, pty, heartbeatMs }) => {
+			const wait = validateBashWait(rawWait, !!options?.taskOwner);
 			if (timeout !== undefined) validateExplicitTimeoutSeconds(timeout);
 			if (pty && getEnvValue(`${APP_NAME.toUpperCase()}_NO_PTY`) !== "1") {
 				try {
@@ -405,12 +404,12 @@ export const BASH_SHELL_PRESENTATION: ShellToolPresentation = {
 };
 const BASH_UPDATE_THROTTLE_MS = 100;
 function formatBashCall(
-	args: { command?: string; timeout?: number; action?: string; id?: string } | undefined,
+	args: { command?: string; timeout?: number | null; action?: string | null; id?: string | null } | undefined,
 	prompt: string,
 ): string {
-	if (args?.action === "wait") return theme.fg("toolTitle", theme.bold(`${prompt} wait ${str(args.id) ?? "..."}`));
+	if (args?.action === "wait") return theme.fg("toolTitle", theme.bold(`${prompt} wait ${str(args.id) || "..."}`));
 	const command = str(args?.command);
-	const timeout = args?.timeout as number | undefined;
+	const timeout = typeof args?.timeout === "number" ? args.timeout : undefined;
 	const timeoutSuffix = timeout !== undefined ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
 	const commandDisplay = command === null ? invalidArgText(theme) : command ? command : theme.fg("toolOutput", "...");
 	return theme.fg("toolTitle", theme.bold(`${prompt} ${commandDisplay}`)) + timeoutSuffix;
@@ -488,7 +487,7 @@ export function createBashToolDefinition(
 	const definition: ToolDefinition<typeof bashSchema, BashToolDetails | undefined, ToolTimerState> = {
 		name: "bash",
 		concurrency: (args) => (args.pty === true ? "exclusive" : "shared"),
-		detachable: (args) => args.action === "wait" && args.budgetMs === undefined,
+		detachable: (args) => args.action === "wait" && args.budgetMs == null,
 		label: "bash",
 		description:
 			'Execute a shell command with optional PTY handling and foreground/background observation, or observe an existing task with action: "wait", id, and optional budgetMs. Omitted command wait uses owner policy (default 10s). A command runs until it exits or is stopped unless timeout sets a deadline in seconds; observation never stops it. A background command can run indefinitely, such as a dev server; stop it with kill. Background and existing-task waits require a supported task owner; unbound foreground execution waits until completion.',
@@ -499,16 +498,16 @@ export function createBashToolDefinition(
 		parameters: bashSchema,
 		outputSchema: bashOutputSchema,
 		maxResultSizeChars: Infinity,
-		async execute(_toolCallId, bashCommand: BashToolInput, signal?: AbortSignal, onUpdate?, ctx?: ExtensionContext) {
+		async execute(_toolCallId, rawCommand: BashToolInput, signal?: AbortSignal, onUpdate?, ctx?: ExtensionContext) {
+			const bashCommand = prepareShellInput(rawCommand);
+			if (!isPlainObject(bashCommand))
+				throw new Error("Invalid shell command: command is required; id and budgetMs require action wait");
 			if (bashCommand.action !== undefined) {
 				if (
 					bashCommand.action !== "wait" ||
 					typeof bashCommand.id !== "string" ||
 					Object.keys(bashCommand).some((key) => !["action", "id", "budgetMs"].includes(key)) ||
-					(bashCommand.budgetMs !== undefined &&
-						(typeof bashCommand.budgetMs !== "number" ||
-							!Number.isFinite(bashCommand.budgetMs) ||
-							bashCommand.budgetMs < 0))
+					(bashCommand.budgetMs !== undefined && !isValidBudgetMs(bashCommand.budgetMs))
 				)
 					throw new Error(
 						"Invalid shell wait: expected action wait, id, and optional finite non-negative budgetMs",
@@ -526,7 +525,7 @@ export function createBashToolDefinition(
 				throw new Error("Invalid shell command: command is required; id and budgetMs require action wait");
 			const { command } = bashCommand;
 			const timeout = normalizeTimeoutSeconds(bashCommand.timeout);
-			validateBashWait(bashCommand.wait, !!options?.operations || !!options?.taskOwner);
+			const wait = validateBashWait(bashCommand.wait, !!options?.operations || !!options?.taskOwner);
 			if (bashCommand.heartbeatMs !== undefined) validateTaskHeartbeatMs(bashCommand.heartbeatMs);
 			const sessionEnvironment = snapshotBashSessionEnvironment(ctx, exposeSessionEnvironment);
 			const resourceCtx = ctx as InternalResourceContext | undefined;
@@ -685,7 +684,7 @@ export function createBashToolDefinition(
 						onData: handleData,
 						signal,
 						timeout,
-						wait: bashCommand.wait,
+						wait,
 						env: executionContext.env,
 						pty: bashCommand.pty,
 						...(bashCommand.heartbeatMs === undefined ? {} : { heartbeatMs: bashCommand.heartbeatMs }),

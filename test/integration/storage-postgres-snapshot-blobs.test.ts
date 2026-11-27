@@ -7,6 +7,7 @@ import type {
 import { sessionWriteTransaction } from "../../packages/coding-agent/src/core/storage/session/session-transactions.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
+	BackgroundCollectionPace,
 	SNAPSHOT_BLOB_CHUNK_BYTES,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
@@ -284,6 +285,41 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL snapshot blob writ
 			);
 			await assertWhole(store, [...small, big, textBlob("four")]);
 			assert.equal((await store.listBlobHashes()).length, small.length + 255 + 256 + 2);
+		});
+	});
+
+	test("background paced snapshot collection uses lockWaitMs: 0 on PostgreSQL and retries until a held lock clears", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const holder = await open();
+			const collector = await SqlSnapshotBlobStore.open(await open());
+			const orphan = textBlob("orphan for paced pg collection");
+			await collector.putBlobs([orphan]);
+			await holder.run(`UPDATE ${collector.table} SET created_at = created_at - 100`);
+			const whole = holdOpen(holder, undefined);
+			let claimed: Promise<boolean> | undefined;
+			try {
+				await whole.held;
+				const pace = new BackgroundCollectionPace();
+				claimed = collector.claimCollection(3600, "pg-paced-holder", pace);
+				assert.equal(
+					await stillWaiting(claimed, HELD_LOCK_WATCH_MS),
+					true,
+					"paced claim retries while lock is held",
+				);
+				whole.release();
+				await whole.done;
+				assert.equal(await within(claimed, UNBLOCKED_WRITE_MS, "paced claim"), true);
+				const deleted = await within(
+					collector.collectGarbage({ graceSeconds: 10, holder: "pg-paced-holder", pace }),
+					UNBLOCKED_WRITE_MS,
+					"paced garbage collection",
+				);
+				assert.ok(deleted.includes(orphan.hash));
+				assert.equal(await collector.getBlob(orphan.hash), undefined);
+			} finally {
+				whole.release();
+				await claimed?.catch(() => {});
+			}
 		});
 	});
 });

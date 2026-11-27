@@ -40,6 +40,7 @@ import { buildSearchDetails, type SearchToolDetails } from "./search-details.ts"
 import { filterSearchOutputByLineRange, type SearchLineRange, splitLineRangeSelector } from "./search-line-ranges.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, truncateHead } from "./truncate.ts";
+import { isPlainObject } from "./wait-args.js";
 
 export type { SearchToolDetails } from "./search-details.ts";
 
@@ -86,6 +87,9 @@ const searchSchema = Type.Unsafe<SearchCallInput | (HistoryWaitInput & Partial<R
 	properties: { ...searchBaseSchema.properties, ...historyWaitActionProperties },
 	required: [],
 });
+const searchOptionalCallKeys = Object.keys(searchBaseSchema.properties).filter((key) => key !== "pattern");
+const prepareSearchInput = (args: unknown): SearchToolInput =>
+	prepareHistoryAwareInput<SearchToolInput>(args, "search", "pattern", searchOptionalCallKeys);
 export const searchToolSystemPromptContribution = Object.freeze({
 	snippet: "Search file contents with regex patterns.",
 	guidelines: Object.freeze([HISTORY_TASK_GUIDELINE] as const),
@@ -549,9 +553,22 @@ function dedupeRenderedSearchOutput(content: string): string {
 	return out.join("\n");
 }
 function formatSearchCall(
-	args: { pattern: string; path?: string; paths?: string | string[]; glob?: string; limit?: number } | undefined,
+	args:
+		| {
+				pattern?: string;
+				path?: string;
+				paths?: string | string[] | null;
+				glob?: string;
+				limit?: number;
+				action?: string;
+				id?: string;
+		  }
+		| undefined,
 	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
 ): string {
+	if (args?.action === "wait") {
+		return `${theme.fg("toolTitle", theme.bold("search wait"))} ${theme.fg("accent", str(args.id) || "...")}`;
+	}
 	const pattern = str(args?.pattern);
 	const rawPaths = Array.isArray(args?.paths) ? args.paths.join(", ") : args?.paths;
 	const rawPath = str(args?.path ?? rawPaths);
@@ -949,16 +966,21 @@ export function createSearchToolDefinition(
 		name: "search",
 		label: "search",
 		description:
-			"Search file contents with a regex across files, directories, globs, and internal URLs, including history:// for past sessions.",
+			'Search file contents with a regex across files, directories, globs, and internal URLs, including history:// for past sessions, or observe an existing background history:// search with action: "wait", id, and optional budgetMs.',
 		promptSnippet: searchToolSystemPromptContribution.snippet,
 		promptGuidelines: [...searchToolSystemPromptContribution.guidelines],
 		...experimentalToolSamplingProperty(),
 		parameters: searchSchema,
-		prepareArguments: (args: unknown) => prepareHistoryAwareInput<SearchToolInput>(args, "search", "pattern"),
-		async execute(toolCallId, input, signal, onUpdate, ctx?: ExtensionContext) {
+		prepareArguments: prepareSearchInput,
+		async execute(toolCallId, rawInput, signal, onUpdate, ctx?: ExtensionContext) {
+			const input = prepareSearchInput(rawInput);
+			if (!isPlainObject(input))
+				throw new Error("Invalid search call: pattern is required; id and budgetMs require action wait");
 			if (input.action !== undefined)
 				return asSearchResult(await waitForHistoryTask(options?.historyTasks?.(), input, "search", signal));
 			const { wait, ...params } = input as SearchCallInput;
+			if (typeof params.pattern !== "string")
+				throw new Error("Invalid search call: pattern is required; id and budgetMs require action wait");
 			const policy = validateHistoryWait(wait);
 			const registry = namesHistoryUrl(params.paths) ? options?.historyTasks?.() : undefined;
 			if (!registry) return runSearch(toolCallId, params, signal, onUpdate, ctx);

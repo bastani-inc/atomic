@@ -1976,7 +1976,9 @@ export async function openPostgresDatabase(options) {
 		// The facade always says how the transaction excludes other writers.
 		async beginTransaction(/** @type {import("@bastani/atomic/storage").SqliteDriverTransactionOptions} */ begin) {
 			const { concurrency } = begin;
-			const lockWaitMs = positiveInteger("lockWaitMs", begin.lockWaitMs, statementTimeoutMs);
+			// In PostgreSQL `lock_timeout = 0` disables the timeout and waits forever; `lockWaitMs: 0` asks not to wait for
+			// held locks (for example background snapshot GC), so clamp to 1 ms, the shortest finite server timeout.
+			const lockWaitMs = Math.max(1, nonNegativeInteger("lockWaitMs", begin.lockWaitMs, statementTimeoutMs));
 			// A serial transaction takes its domain's advisory lock, which makes it the only writer of that domain as
 			// `BEGIN IMMEDIATE` makes a SQLite transaction the only writer of its file; a fenced one locks its rows itself.
 			// The locks nest: one without a domain holds the whole database's lock, and one with a domain holds that lock

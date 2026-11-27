@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `beginTransaction` rejecting `lockWaitMs: 0` with `StorageConfigError` (`positive-integer-required`), which broke background snapshot garbage collection on PostgreSQL. `lockWaitMs` now accepts non-negative integers and maps `0` to `SET LOCAL lock_timeout = 1` (1 ms, the shortest finite server timeout, instead of `0` which disables `lock_timeout` in PostgreSQL).
+
 ## [0.10.12] - 2026-11-27
 
 ### Fixed

@@ -11,6 +11,7 @@ import {
 	type BashToolOptions,
 	bashToolSystemPromptContribution,
 	createBashToolDefinition,
+	prepareShellInput,
 	type ShellToolPresentation,
 	validateExplicitTimeoutSeconds,
 } from "./bash.js";
@@ -55,7 +56,7 @@ export function createLocalPowerShellOperations(binding?: {
 }): PowerShellOperations {
 	return {
 		exec: async (command, cwd, options) => {
-			validateBashWait(options.wait, !!binding?.taskOwner);
+			const wait = validateBashWait(options.wait, !!binding?.taskOwner);
 			if (options.timeout !== undefined) validateExplicitTimeoutSeconds(options.timeout);
 			if (options.signal?.aborted) throw new Error("aborted");
 			const { shell, args } = await getPowerShellConfigAsync();
@@ -66,6 +67,7 @@ export function createLocalPowerShellOperations(binding?: {
 				const encoded = Buffer.from(script, "utf16le").toString("base64");
 				const execution = {
 					...options,
+					wait,
 					shellConfig: { shell, args: [...args.slice(0, -1), "-EncodedCommand"] },
 					commandDescription: command,
 					taskOwner: binding?.taskOwner,
@@ -142,9 +144,11 @@ export function createPowerShellToolDefinition(cwd: string, options: PowerShellT
 		name: "powershell",
 		label: "powershell",
 		async execute(...args: Parameters<typeof definition.execute>) {
+			const prepared = prepareShellInput(args[1]);
 			// The internal local adapter is not evidence of a supported owner.
-			if (args[1].action === undefined) validateBashWait(args[1].wait, !!options.operations || !!options.taskOwner);
-			return definition.execute(...args);
+			if (typeof prepared === "object" && prepared !== null && prepared.action === undefined)
+				validateBashWait(prepared.wait, !!options.operations || !!options.taskOwner);
+			return definition.execute(args[0], prepared, args[2], args[3], args[4]);
 		},
 		description:
 			'Execute a PowerShell command or observe an existing task with action: "wait", id, and optional budgetMs. A command runs until it exits or is stopped unless timeout sets a deadline in seconds. A background command can run indefinitely, such as a dev server; stop it with kill. Owner-bound commands automatically yield after 10s by default without stopping execution. Unbound commands wait for completion; background and existing-task waits require a task owner.',

@@ -190,65 +190,113 @@ When `/tree` switches away from a branch, Atomic can optionally summarize the ab
 
 ## Recalling earlier work
 
-The agent can inspect past project sessions from any session or subagent using read-only `history://` URLs with `read` and `search`. These URLs work across SQLite, JSONL, memory, and custom stores:
+The agent can inspect past project sessions from any session or subagent using read-only `history://` URLs with `read` and `search`. These URLs work across SQLite, PostgreSQL, JSONL, memory, and custom stores:
 
-| URL | Returns |
+| URL | What it returns |
 | --- | --- |
-| `history://sessions` | Recent project sessions, newest first (`?limit=N` up to 200, default 25; `?offset=N`; add `?project=all` or `?project=<dir>` only when searching other projects). Uncached JSONL and legacy sessions may show estimated counts. |
+| `history://` | Overview of available history sources (`read`), or searches recent project sessions like `history://sessions` (`search`). |
+| `history://sessions` | Recent project sessions, newest first (`?limit=N` up to 200, default 25; `?offset=N`; add `?project=all` or `?project=<dir>` only when checking other projects). Uncached JSONL and legacy sessions may show estimated counts. |
 | `history://sessions/<id>` | Full transcript, or an outline with counts and `:N-M` turn links for sessions with more than 2,000 entries, oversized bodies, or cold JSONL files. Lines over 4,000 characters split cleanly. |
-| `history://sessions/<id>:N-M` | 1-based entry ranges (`:N`, `:N+C`, `:N-M,P-Q`; `:raw` omits the heading). |
+| `history://sessions/<id>:N-M` | 1-based **entry** ranges (not file lines): `:N` (from entry N), `:N-M`, `:N+C` (start plus count), or comma-separated ranges like `:1-20,90-120`. Append `:raw` to omit the transcript header. |
 
-- **Search behavior.** Searching `history://sessions` or `history://` scans the newest 25 sessions per page, excludes the current session (search the current session through its own ID URL), skips `custom` and `worktree_snapshot` entries, and caps output at 10 matches per session. Extra matches include a `?cursor=<seq>.<match>` continuation. Multi-line patterns match across up to 16,384 characters or 256 entries, with the same window for lookbehind, and matches crossing that boundary note the cutoff. After compaction, the boundary message gives the exact session URL and range to recover earlier details ([Context cleared](/compaction#context-cleared)).
-- **Budgets and continuations.** Every `history://` call enforces a 40,000-byte output cap, a 250,000-entry scan cap, and a 3-second nominal time budget. A call in a session that moves to the background has no time limit instead, as described in [Slow history searches](#slow-history-searches). When a call stops early, it returns a `continue with` URL containing `cursor`, `after=<activityMs>.<createdMs>[.<id>]`, and an optional `session=<id>`. Pass that URL unchanged; list continuations expire after 60 seconds.
+Concrete examples:
+
+```ts
+// List the newest 25 sessions for this project (or page further).
+read({ path: "history://sessions" })
+read({ path: "history://sessions?limit=50&offset=25" })
+read({ path: "history://sessions?project=all" })
+
+// Read an outline or a specific 1-based entry range of one session.
+read({ path: "history://sessions/019f6a2e-..." })
+read({ path: "history://sessions/019f6a2e-...:40-90" })
+read({ path: "history://sessions/019f6a2e-...:40+25:raw" })
+
+// Search across recent project sessions, or inside one specific session.
+search({ pattern: "connection refused", paths: "history://sessions" })
+search({ pattern: "retry.*backoff", paths: "history://sessions/019f6a2e-...", i: true })
+```
+
+- **Search behavior.** Searching `history://sessions` or `history://` scans the newest 25 sessions per page, excludes the current session (search the current session through its own ID URL, `history://sessions/<current-id>`), skips `custom` and `worktree_snapshot` entries, and caps output at 10 matches per session. Extra matches include a `?cursor=<seq>.<match>` continuation. Multi-line patterns match across up to 16,384 characters or 256 entries, with the same window for lookbehind, and matches crossing that boundary note the cutoff. After compaction, the boundary message gives the exact session URL and range to recover earlier details ([Context cleared](/compaction#context-cleared)).
+- **Budgets and continuations.** Every `history://` call enforces a 40,000-byte output cap and a 250,000-entry scan cap. Outside a live session (or after the session closes), calls also enforce a 3-second nominal time budget; inside a live session, a slow call moves to the background with no time limit instead (see [Slow history searches](#slow-history-searches)). Whenever a call hits the byte cap, the entry cap, or (outside a session) the time cap, it stops cleanly and prints a `continue with` URL carrying query parameters such as `cursor=<seq>.<match>`, `after=<activityMs>.<createdMs>[.<id>]`, and an optional `session=<id>`. Pass that URL back to `read` or `search` verbatim to pick up where it left off; multi-session list continuations expire after 60 seconds.
 - **Indexing and storage.** SQLite and PostgreSQL build a search index on the first search. PostgreSQL installs `pg_trgm` during `atomic storage migrate` or on open when permissions allow. Multi-line patterns scan linearly. The index roughly doubles text-heavy session storage and clears automatically when sessions are deleted or rewritten (`VACUUM` or `VACUUM FULL` reclaims disk space). Never edit active JSONL files in place outside Atomic's storage APIs.
 
 ### Slow history searches {#slow-history-searches}
 
-Reading or searching past sessions can take more than a few seconds when the session store is large or remote, such as a PostgreSQL database. In a session, the agent can keep working while such a call runs. Atomic treats a slow history call the way it treats a slow shell command:
+Reading or searching past sessions can take more than a few seconds when the session store is large or remote, such as a PostgreSQL database. Inside a session, Atomic handles slow `history://` calls in `read` and `search` the exact same way it handles slow commands in `bash` and `powershell`:
 
-1. The agent waits up to 10 seconds for the result, the same default wait as for shell commands. A call that finishes in time returns its result right away.
-2. A call that is still running after that becomes a background task. A background task keeps running while the agent does other work. The agent gets a task ID such as `history-3`.
-3. When the task finishes, its result arrives in the chat as a completion notice, and the agent reads it there.
+1. **Observe in the foreground first (10 seconds by default).** When `wait` is omitted, Atomic waits up to 10 seconds for the result (or whatever observation budget the session is configured with). If the call finishes in time, it returns its result inline.
+2. **Continue in the background with a task ID.** If the call is still running when the observation wait ends, Atomic keeps scanning in the background and returns a task ID such as `history-3` so the agent can do other work without waiting.
+3. **Deliver the result as a completion notice.** When the background scan finishes, its result arrives in the chat as a completion notice.
 
-A background history task has **no time limit**. It runs until it finishes, the agent stops it with `kill`, or the session closes or reloads. It still stops at the 40,000-byte output limit and after 250,000 entries; then its result ends with a `continue with` URL, as before. History calls take no `timeout`: to end a long one sooner, stop it with `kill`.
+A background history task has **no time limit**: it runs until it finishes, the agent stops it with `kill`, or the session closes or reloads. It still obeys the 40,000-byte output limit and 250,000-entry scan limit; if either is reached, the completed result ends with a `continue with` URL as usual.
 
-**What changed in this release.** Before, every history call stopped after 3 seconds and returned a `continue with` URL for the rest. Now a slow call in a session moves to the background and keeps running until it finishes.
-
-In the chat, the tool call shows `Search(history-3) · continues in background`, and the agent receives this reply:
+In the chat, a backgrounded call shows `Search(history-3) · continues in background` (or `Read(history-3) · continues in background`), and the agent receives:
 
 ```text
 History search is still running (task history-3). It has no time limit: it runs until it finishes, kill stops it, or this session ends. The result arrives as a completion notice; if it is too long, it ends with a "continue with" URL as usual. Wait for it with search({ action: "wait", id: "history-3" }) or stop it with kill({ id: "history-3" }). Never repeat the call to get its result.
 ```
 
-When the task finishes, a completion line appears:
+When the task finishes, a completion line appears in chat:
 
 ```text
  ● History search "/ERR_/ in history://sessions" completed · 12s
 ```
 
-The agent controls these tasks with the same options it uses for shell commands in the background. `read` takes the same options as `search`:
+#### Controlling wait time, checking progress, and stopping
+
+Both `read` and `search` accept the same `wait` parameter and the same `{ action: "wait", id, budgetMs? }` wait mode as `bash` and `powershell`:
+
+| Call shape | What happens |
+| --- | --- |
+| `wait` omitted (or `wait: { kind: "foreground" }`) | Waits up to the default observation budget (10 seconds), then returns a `history-N` task ID if still running. |
+| `wait: { kind: "background" }` | Returns a `history-N` task ID immediately while the read or search runs in the background. `budgetMs` is not allowed with `kind: "background"`. |
+| `wait: { kind: "foreground", budgetMs: 30000 }` | Waits up to `budgetMs` milliseconds (finite, non-negative; `0` checks immediately), then continues in the background if still running. |
+| `{ action: "wait", id: "history-3" }` | Observes an existing history task for up to the default observation budget (10 seconds). Cannot be combined with `path`, `pattern`, `paths`, `wait`, or other call fields. |
+| `{ action: "wait", id: "history-3", budgetMs: 5000 }` | Observes an existing history task for up to `budgetMs` milliseconds (`0` returns immediately with the result if finished, or the still-running status). |
+| `kill({ id: "history-3" })` | Stops the background history scan immediately and sends no completion notice. |
+
+Examples for both `search` and `read`:
 
 ```ts
-// Start the search in the background right away.
+// Start in the background right away.
 search({ pattern: "ERR_", paths: "history://sessions", wait: { kind: "background" } })
-// Wait up to 60 seconds before moving to the background.
+read({ path: "history://sessions/019f6a2e-...:1-500", wait: { kind: "background" } })
+
+// Wait up to 60 seconds inline before moving to the background.
 search({ pattern: "ERR_", paths: "history://sessions", wait: { kind: "foreground", budgetMs: 60000 } })
-// Wait up to 30 more seconds for a running task's result.
+read({ path: "history://sessions/019f6a2e-...", wait: { kind: "foreground", budgetMs: 60000 } })
+
+// Wait up to 30 more seconds for a running task's result (or poll immediately with budgetMs: 0).
 search({ action: "wait", id: "history-3", budgetMs: 30000 })
-// Stop the task.
+read({ action: "wait", id: "history-4", budgetMs: 0 })
+
+// Stop a running history task.
 kill({ id: "history-3" })
 ```
 
-- **Waiting for the result.** If the agent is waiting on the task when it finishes, the wait returns the result and no completion notice follows. A task stopped with `kill` sends no notice either.
-- **At most 4 at once.** A session runs up to 4 history reads and searches at a time. They run inside Atomic and share one pattern matcher, so more at once would only slow each other down; this limit is separate from the 64 shell commands a session can run. A call made while 4 are running does not start, and fails with:
+#### Rules, limits, and how history tasks compare to background shells
+
+- **No duplicate notices.** If an `action: "wait"` call is observing the task when it finishes, that wait returns the result directly and no completion notice is sent afterward. A task stopped with `kill` sends no completion notice either; calling `action: "wait"` on a stopped task returns an error noting it was stopped, and calling `kill` again reports that it had already finished.
+- **Late waits still work.** Atomic keeps the 16 most recently finished history tasks in the session so a late `{ action: "wait", id }` call still returns the result (both `read` and `search` can wait on any `history-N` task from the same session). Older evicted or unknown IDs fail with `Unknown history task <id>`.
+- **At most 4 active at once.** A session runs up to 4 active history reads and searches at once (counting both background tasks and calls currently being observed in the foreground). They run inside Atomic on the session's store and a shared regex worker, so more at once would only slow each other down. This limit is separate from the 64 shell commands a session can run. A fifth concurrent call is refused immediately with:
 
   ```text
   4 history searches and reads are already running in this session, the most it runs at once. Stop one you no longer need with kill, or wait for one to finish, then run this one again.
   ```
 
-  Stop one with `kill({ id: "history-3" })`, or wait for one to finish, then make the call again.
-- **Session lifetime.** Background history tasks stop when the session closes or reloads, and they do not start again when you resume the session.
-- **Where they show.** History tasks do not appear in `/tasks` or the agent panel yet.
+- **How they mirror — and differ from — background shells:**
+
+  | Capability | `bash` / `powershell` tasks | `read` / `search` `history://` tasks |
+  | --- | --- | --- |
+  | Default foreground wait | 10 seconds | 10 seconds |
+  | `wait` options | `{ kind: "background" }`, `{ kind: "foreground", budgetMs? }` | `{ kind: "background" }`, `{ kind: "foreground", budgetMs? }` |
+  | Observe existing task | `{ action: "wait", id, budgetMs? }` | `{ action: "wait", id, budgetMs? }` |
+  | Stop running task | `kill({ id })` | `kill({ id })` |
+  | Execution time limit | None unless `timeout` (seconds) is set | None (no `timeout` parameter; stops at 40,000-byte or 250,000-entry cap with a `continue with` URL) |
+  | Concurrency limit per session | 64 commands | 4 history reads/searches (separate pool) |
+  | Heartbeats and `/tasks` panel | Heartbeats every 15m; shown in `/tasks` | No heartbeats; not listed in `/tasks` |
+  | On session close or reload | Stopped; not restarted on resume | Stopped without notices; not restarted on resume |
 
 ### Searching a stored session in the background
 
