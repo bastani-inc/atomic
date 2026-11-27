@@ -79,7 +79,8 @@ Use `packages/coding-agent/test/helpers/sqlite.ts` for fixtures. Do not skip tes
   Do not repeat it in scripts, `.github/workflows/test.yml`, or `bunfig.toml`. Keep the separate Windows budget local to `packages/coding-agent/vitest.config.ts`.
 - Override only for inherently costly tests. Pass a named constant as the third argument. Do not repeat the default as an override.
 - Fix tests that fail under load at the test site. Give real work headroom and derive timing assertions from a named constant.
-  Do not skip, serialize, or shard tests to hide failures. Do not set `pool`, `maxWorkers`, `poolOptions`, or `fileParallelism`.
+  Do not skip, serialize, or shard tests to hide failures. Do not set `pool`, `maxWorkers`, `poolOptions`, or `fileParallelism`
+  in Vitest config. CI passes a worker count that matches the runner.
 - Keep whole-job timeouts. `scripts/run-test-suite.ts` must run each suite once, propagate failures, and write `.ci-diagnostics/<suite>-durations.md`
   even on success. Treat missing or unusable duration reports as harness failures when tests ran. Resolve budgets from the chosen project and
   overrides keyed by `scope > name`. Leave warnings off for unsupported commands. Keep `WARN_RATIO` at 40% and advisory. Do not raise timeouts to hide warnings.
@@ -144,7 +145,9 @@ with an unclear result, reset, force-push, move a tag, or dispatch a duplicate p
 
 ## CI
 
-- Keep Windows coverage, per-job timeouts, and the required `test (all platforms)` gate in `.github/workflows/test.yml`.
+- Run one job per suite and covered OS (plus the Node.js floor jobs) so each PR uses fewer shared Namespace runners.
+  Keep Windows coverage, per-job timeouts, and the required `test (all platforms)` gate in `.github/workflows/test.yml`.
+  See [the CI guide](docs/ci.md#tests) for local commands and timeout sizing.
 - Keep pull-request jobs in `test.yml` and `codeql.yml` on Restricted `namespace-profile-atomic-ci-*` profiles.
   [Check `.github/` changes before approving a fork run](docs/ci.md#approving-fork-workflow-runs). See [release runner settings](docs/ci.md#runners).
 - Validate workflow changes with YAML parsing, actionlint, review, and hosted runs. Test product and release tooling, not workflow YAML.

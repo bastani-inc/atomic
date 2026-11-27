@@ -21,7 +21,7 @@ Pull requests need `test (all platforms)` and CodeQL results. Releases use a sep
 - `release-archive` builds and smoke tests the Linux and Windows archives without publishing them.
 - `static-checks` runs `npm run check`, documentation checks, script and CI contract tests, and installer smoke tests.
 
-The `test` job reports `test (all platforms)`. It runs even if work jobs fail and requires every work job and matrix entry to succeed. Keep `always()` on the gate. GitHub counts skipped checks as passing. If you rename a required check, add its replacement and update the ruleset before removing the old name.
+The `test (all platforms)` check requires every work job to pass. Keep `always()` so the gate reports failures. If you rename a required check, add its replacement and update the ruleset before removing the old name.
 
 ### Draft pull requests
 
@@ -29,9 +29,11 @@ Draft PRs skip the work jobs and do not report `test (all platforms)`. Keep the 
 
 ### Test suites and durations
 
-Each suite runs on one runner per covered OS, plus the [Node.js floor jobs](#nodejs-version). Vitest runs files in parallel with eight workers on Linux and Windows and six on macOS. To reproduce CI locally, run the job's npm command with the same `--maxWorkers` argument. Leave file isolation enabled and fix tests that interfere with each other at the test site.
+Each suite runs on one runner per covered OS, plus the [Node.js floor jobs](#nodejs-version). The machines are the same size, but each PR uses fewer of them. That leaves capacity for other PRs and releases. Vitest runs files in parallel: eight workers on Linux and Windows, six on macOS.
 
-The duration sequencer starts long test files first. macOS uses the Linux weights because the record has no macOS entry. If the weights in `test/helpers/test-file-durations.json` are stale, download the Linux and Windows `test-diagnostics-*` artifacts from several recent runs. Run the first command for each run ID, then update the weights:
+Use the [development setup commands](../DEV_SETUP.md#test) to run a suite locally. To match CI, add its worker count, for example `npm run test:unit -- --maxWorkers=8`. Leave file isolation enabled.
+
+Vitest starts longer files first using `test/helpers/test-file-durations.json`. To refresh the record, download diagnostics from several recent runs, then update the weights:
 
 ```sh
 gh run download "$run_id" -p 'test-diagnostics-*-linux-x64*' -p 'test-diagnostics-*-windows-x64*' -D "/tmp/test-reports/$run_id"
@@ -42,14 +44,7 @@ bun run scripts/test-file-durations.ts /tmp/test-reports/*/*/*.json
 
 Read the job's `timeout-minutes` in the workflow. It covers setup, tests and teardown, not runner queue time. Check the job log to find the blocked step. For a test failure, look at `.ci-diagnostics/` in the `test-diagnostics-*` artifact. Duration warnings are diagnostic. Actual test timeouts fail the suite.
 
-The whole-suite limits use the highest sum of the old shard test steps from runs [45928220599](https://github.com/bastani-inc/atomic/actions/runs/45928220599), [45928346480](https://github.com/bastani-inc/atomic/actions/runs/45928346480) and [45929556729](https://github.com/bastani-inc/atomic/actions/runs/45929556729), plus one setup and room for cold caches and contention. These totals are estimates, not unsharded wall times. As a cross-check, the Linux and Windows file weights plus collection overhead imply roughly 9–13 minutes for the main suites at eight workers, before build/setup. The floor jobs use the same limit as their newest-Node Linux counterparts.
-
-| Suite | Linux: old test steps / new cap | Windows: old test steps / new cap | macOS: old test steps / new cap |
-| --- | --- | --- | --- |
-| Unit | 11:18 / 22 min | 14:53 / 28 min | 9:38 / 20 min |
-| Integration | 14:26 / 26 min | 15:46 / 28 min | 12:41 / 24 min |
-| Coding agent | 10:04 / 20 min | 17:22 / 30 min | — |
-| Storage conformance | 3:19 / 30 min (unchanged) | — | — |
+The limits are based on recent CI test times, checked against per-file duration records, with room for setup and cold caches. See [PR #6748](https://github.com/bastani-inc/atomic/pull/6748) for the baseline measurements.
 
 ### Storage backend matrix
 
@@ -83,7 +78,7 @@ Most release jobs use inline `nscloud-*` labels. Both macOS release targets use 
 
 ### Sizing
 
-The test suites use `8x16` profiles on Linux and Windows and the `6x14` Apple silicon profile on macOS. Smaller jobs use `4x8`. Namespace limits workspace concurrency by vCPU and memory, not just the number of runners; use `nsc workspace concurrency` to see the current limits by OS. One full `test.yml` run starts 18 runner jobs, down from 92. If all work jobs overlap, one run requests at most 64 Linux, 36 Windows and 12 macOS vCPUs, against workspace limits of 1,120, 160 and 160 respectively. Those limits are shared with other PRs and releases. Check CPU, memory and step logs before resizing. Set up the new profile with the same access and cache rules before changing `runs-on`.
+The test suites use `8x16` profiles on Linux and Windows and `6x14` on macOS. Smaller jobs use `4x8`. Namespace limits concurrent vCPU and memory by OS, not just the number of runners. Run `nsc workspace concurrency` to check shared capacity before resizing. Set up the new profile with the same access and cache rules before changing `runs-on`.
 
 ### Checkout and cache trust model
 

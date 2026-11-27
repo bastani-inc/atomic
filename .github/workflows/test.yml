@@ -6,21 +6,8 @@ env:
 permissions:
   contents: read
 
-# Only `main` runs on push. A release/** or prerelease/** branch always reaches
-# CI through its pull request (AGENTS.md, "Agent publishing requests"), so
-# listing those globs here made one SHA run the entire workflow twice: two sets
-# of runners competing for the same 4vCPU pool, and two competing check runs per
-# required context. GitHub keeps the latest result per context name, so one
-# spurious failure in the push run blocked the pull request permanently even
-# though the pull_request run for that exact SHA was fully green -- runs
-# 31047506585 (push, Linux `suites` cancelled on its cap) and 31047542976
-# (pull_request, every job green) on sha 772a373.
-#
-# A pull request's newer push cancels its older run: only the head SHA's result can gate the pull request, and a
-# superseded run held a full matrix of runners while newer heads queued behind it. `main` never cancels a run in
-# progress, so every published `test (...)` context on a started `main` SHA completes; GitHub keeps at most one pending
-# run per group, so a newer `main` push replaces a queued older one instead of piling up. See docs/ci.md
-# ("Tests (`test.yml`)").
+# Only `main` runs on push. Release branches use PR runs so a commit does not run the same checks twice.
+# A new PR run cancels its older run. A new push to `main` can replace a queued run, but not one already running.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -35,23 +22,10 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
-# A catalog-only job selects one model data snapshot. All work jobs then run in parallel.
-#
-#   model-data          restore or hydrate one snapshot for this run
-#   unit-tests          build package -> full unit suite (Linux, Windows, macOS; extra Linux Node floor job)
-#   integration-tests   build package -> full integration suite (Linux, Windows, macOS)
-#   storage-conformance build package -> server-backed storage tests (Linux)
-#   agent-suite         build ai + native bindings -> full coding-agent suite (Linux, Windows; extra Linux Node floor job)
-#   packages-suite      build forked packages -> atomic-ai and forked workspace package suites (per OS)
-#   release-archive     build package -> build-binaries.sh -> archive smoke
-#   static-checks       typecheck, docs, Mintlify, CI contracts (Linux)
-#   test                result gate; carries the required check contexts
-#
-# Every job runs on a `namespace-profile-atomic-ci-*` repository runner profile,
-# never an inline `nscloud-*` label: this workflow runs fork pull requests, and
-# only a profile can set Namespace's Access Level to Restricted, which disables
-# Namespace API access for the runner workload. The profiles hold the machine
-# shape; see docs/ci.md ("Runners") before resizing one.
+# After one shared model-data setup, each suite runs once per OS on the same runner sizes.
+# Unit and coding-agent also test the oldest supported Node.js on Linux. Running tests in parallel on
+# each machine leaves more Namespace capacity for other PRs and releases. See docs/ci.md for job time limits.
+# Use only Restricted `namespace-profile-atomic-ci-*` profiles, not inline `nscloud-*` labels, for fork safety.
 jobs:
   model-data:
     name: model-data (linux-x64)
@@ -138,7 +112,7 @@ jobs:
             timeout_minutes: 22
       fail-fast: false
     runs-on: ${{ matrix.runner }}
-    # Calibrated from shard test-step totals plus one setup and cold-cache headroom (docs/ci.md, "Per-job time limits").
+    # Based on recent test times plus one setup and room for cold caches (docs/ci.md, "Per-job time limits").
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       # One standard clone on every OS. The Namespace git mirror is not used: see
