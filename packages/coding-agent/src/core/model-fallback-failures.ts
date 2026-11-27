@@ -15,6 +15,7 @@ import {
 	GitHubCopilotStreamEndedEarlyError,
 	getTlsCertificateRefusal,
 } from "@bastani/atomic-ai";
+import { responsesErrorKind } from "@bastani/atomic-ai/utils/responses-errors/codes";
 import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
 
 const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
@@ -280,7 +281,8 @@ function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | 
 
 function refusalKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
-	if (normalizedCode === undefined) return undefined;
+	// An explicit capacity code such as `policy_capacity_unavailable` is not a content policy refusal.
+	if (normalizedCode === undefined || responsesErrorKind(normalizedCode) !== undefined) return undefined;
 	// A refused tool call, such as `tool_call_refusal` or `tool_use_refused_by_policy`, before the policy words.
 	if (/(?:^|_)tool(?:_|$)/.test(normalizedCode) && normalizedCode.includes("refus")) return "task_failure";
 	if (normalizedCode.includes("content_filter") || normalizedCode.includes("contentfilter")) return "content_filter";
@@ -303,13 +305,11 @@ const REQUEST_INCOMPATIBLE_CODES: ReadonlySet<string> = new Set([
 	"invalid_request",
 	"invalid_request_error",
 	"bad_request",
-	"context_length_exceeded",
 	"request_too_large",
 	"too_large",
 	"request_entity_too_large",
 	"max_tokens",
 	"max_context_length",
-	"context_window_exceeded",
 ]);
 
 function requestIncompatibleKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
@@ -325,6 +325,8 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 	if (CREDENTIAL_REJECTION_CODES.has(normalizedCode)) return "auth_on_candidate_provider";
 	const httpStatusKind = kindFromStatus(integerFrom(code));
 	if (httpStatusKind !== undefined) return httpStatusKind;
+	const mappedKind = responsesErrorKind(normalizedCode);
+	if (mappedKind !== undefined) return mappedKind === "context_overflow" ? "request_incompatible" : mappedKind;
 	const requestIncompatibleKind = requestIncompatibleKindFromCode(code);
 	if (requestIncompatibleKind !== undefined) return requestIncompatibleKind;
 
@@ -356,17 +358,10 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 			return "transport_error";
 		case "rate_limit":
 		case "rate_limit_error":
-		case "rate_limit_exceeded":
 		case "too_many_requests":
 		case "throttlingexception":
 		case "resource_exhausted":
 			return "rate_limit";
-		case "quota_exceeded":
-		case "insufficient_quota":
-		case "usage_limit":
-		case "usage_limit_reached":
-		case "usage_limit_exceeded":
-		case "usage_not_included":
 		case "payment_required":
 		case "servicequotaexceededexception":
 			return "quota_exhausted";
@@ -540,7 +535,15 @@ const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
 // A service-quota exception and a per-day quota violation in a JSON error body (`"quotaId": "...PerDay..."`)
 // also last until the quota resets.
 const QUOTA_EXHAUSTED_FAILURE_PATTERN =
-	/(?<![a-z0-9.])402(?![a-z0-9.])|payment[_\s-]*required|insufficient[_\s-]*quota|\bServiceQuotaExceededException\b|"quotaId"\s*:\s*"[^"]*PerDay|"(?:code|type|error_code)"\s*:\s*"(?:quota_exceeded|usage_limit|usage_limit_reached|usage_limit_exceeded)"/i;
+	/(?<![a-z0-9.])402(?![a-z0-9.])|payment[_\s-]*required|insufficient[_\s-]*quota|\bServiceQuotaExceededException\b|"quotaId"\s*:\s*"[^"]*PerDay/i;
+
+function isQuotaExhaustionText(message: string): boolean {
+	if (QUOTA_EXHAUSTED_FAILURE_PATTERN.test(message)) return true;
+	for (const [, code] of message.matchAll(/"(?:code|type|error_code)"\s*:\s*"([a-z_]+)"/gi)) {
+		if (responsesErrorKind(code) === "quota_exhausted") return true;
+	}
+	return false;
+}
 
 // An account out of credit or money: nothing serves it again until it is topped up, so a short rate-limit cooldown would
 // spend one failed request per cooldown. Anthropic answers with HTTP 400 and `invalid_request_error`, and OpenRouter's
@@ -608,7 +611,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
-	if (QUOTA_EXHAUSTED_FAILURE_PATTERN.test(message)) return "quota_exhausted";
+	if (isQuotaExhaustionText(message)) return "quota_exhausted";
 	const transientKind = transientKindFromMessage(message);
 	const hasRetryablePattern =
 		transientKind !== undefined ||
@@ -695,10 +698,10 @@ const MODEL_BLOCKING_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new 
 ]);
 
 /**
- * The direct message's signal, unless the failure's own HTTP status or provider code names a transient failure and
- * the text would condemn the model instead. Structured fields decide first; text is the fallback (#4918).
+ * The direct message's signal, unless its text would condemn the model over a structured transient or quota
+ * failure. A quota can name its API key without rejecting that key (#4918).
  */
-function directMessageSignalUnlessTransient(
+function directMessageSignalUnlessMoreSpecific(
 	value: unknown,
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
@@ -706,13 +709,16 @@ function directMessageSignalUnlessTransient(
 	if (signal === undefined || !MODEL_BLOCKING_FAILURE_KINDS.has(signal.kind)) return signal;
 	// An adapter's `provider_response_failure` diagnostic carries the HTTP status of the failed request (#4994).
 	const rawDiagnostics = field(value, "diagnostics");
-	const structuredKinds = [value, ...(Array.isArray(rawDiagnostics) ? rawDiagnostics : [])].flatMap((source) => [
-		kindFromStatus(statusFrom(source)),
-		kindFromCode(codeFrom(source)),
-	]);
-	return structuredKinds.some((kind) => kind !== undefined && SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(kind))
-		? undefined
-		: signal;
+	const knownFailure = [value, ...(Array.isArray(rawDiagnostics) ? rawDiagnostics : [])].some((source) => {
+		const code = codeFrom(source);
+		return (
+			responsesErrorKind(normalizeCode(code)) === "quota_exhausted" ||
+			[kindFromStatus(statusFrom(source)), kindFromCode(code)].some(
+				(kind) => kind !== undefined && SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(kind),
+			)
+		);
+	});
+	return knownFailure ? undefined : signal;
 }
 
 function classifyAssistantRefusalSignal(
@@ -825,7 +831,7 @@ function structuredSignal(
 	)
 		return makeSignal("model_unavailable", value, source);
 
-	const directMessageSignal = directMessageSignalUnlessTransient(value, source);
+	const directMessageSignal = directMessageSignalUnlessMoreSpecific(value, source);
 	// An exhausted quota the failure names outranks a generic request error: Anthropic answers an account out of
 	// credit with HTTP 400 and `invalid_request_error`.
 	const quotaExhausted =
@@ -840,8 +846,7 @@ function structuredSignal(
 					? bestNestedFallbackSignal
 					: undefined;
 		if (rateLimit !== undefined) {
-			if (QUOTA_EXHAUSTED_FAILURE_PATTERN.test(directMessageFrom(value) ?? ""))
-				return makeSignal("quota_exhausted", value, source);
+			if (isQuotaExhaustionText(directMessageFrom(value) ?? "")) return makeSignal("quota_exhausted", value, source);
 			if (!quotaExhausted) return rateLimit;
 		}
 	}

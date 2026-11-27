@@ -753,13 +753,41 @@ test("compaction disabled leaves an ordinary provider error resolvable by same-m
 	assert.equal(session._contextOverflowUnresolved, false);
 });
 
-test("a failed overflow compaction advances the real fallback chain end to end", async () => {
+const overflowSources = ["message text", "Codex HTTP code", "legacy Codex stream code", "Responses stream code"];
+test.each(overflowSources)("failed overflow compaction advances the real fallback chain (%s)", async (source) => {
 	// Runs the production compaction path — _checkCompaction into
 	// _runAutoCompaction — and the production fallback switch, rather than
 	// injecting the unresolved flag.
 	const primary = model("openai-codex", "gpt-5.5");
 	const fallback = model("anthropic", "claude-opus-4-8");
 	const overflow = overflowMessage();
+	if (source !== "message text") {
+		overflow.errorMessage = "Request rejected.";
+		overflow.diagnostics =
+			source === "Codex HTTP code"
+				? [
+						{
+							type: "provider_response_failure",
+							timestamp: 0,
+							details: { status: 400, errorCode: "context_length_exceeded" },
+						},
+					]
+				: source === "legacy Codex stream code"
+					? [
+							{
+								type: "codex_response_failure",
+								timestamp: 0,
+								error: { code: "context_length_exceeded", message: "Request rejected." },
+							},
+						]
+					: [
+							{
+								type: "provider_response_failure",
+								timestamp: 0,
+								details: { errorCode: "context_window_exceeded" },
+							},
+						];
+	}
 	const events: Array<{ type: string; [key: string]: unknown }> = [];
 	let continued = 0;
 	const session: Record<string, unknown> = {

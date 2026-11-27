@@ -20,17 +20,17 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
-import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
-import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { getDeclaredTools, resolveRequestTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import {
@@ -53,6 +53,8 @@ import {
 	type ResponsesServiceTier,
 	resolveChatGPTBackendServiceTier,
 	resolveRequestedServiceTier,
+	responsesProviderErrorCode,
+	skipResponsesProviderRetry,
 } from "./openai-responses-shared.ts";
 import { RetryHintOpenAI } from "./openai-retry-hint-client.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
@@ -264,11 +266,16 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				return client.responses.create(requestParams, requestOptions).withResponse();
 			};
 			const sendRequest = (requestParams: ResponseCreateParamsStreaming) =>
-				retryProviderRequest(() => createRequest(requestParams), {
-					maxRetries: options?.maxRetries,
-					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: streamDeadline.signal,
-				}, retryTransport);
+				retryProviderRequest(
+					() => createRequest(requestParams),
+					{
+						maxRetries: options?.maxRetries,
+						maxRetryDelayMs: options?.maxRetryDelayMs,
+						signal: streamDeadline.signal,
+						noRetry: skipResponsesProviderRetry,
+					},
+					retryTransport,
+				);
 			// Every attempt reports its HTTP response before its body is consumed, and the message stream starts
 			// once. A streamed request reports a rejected service_tier as an `error` event after HTTP 200, so the
 			// response preamble is read before the request counts as accepted.
@@ -337,7 +344,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			} else {
 				output.errorMessage = errorMessage;
 			}
-			appendProviderResponseFailureDiagnostic(output, error);
+			appendProviderResponseFailureDiagnostic(output, error, responsesProviderErrorCode(error));
 			recordTlsCertificateRefusal(output, error);
 			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamAttempt.snapshot());
 			stream.push({ type: "error", reason: output.stopReason, error: output });

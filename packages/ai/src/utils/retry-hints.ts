@@ -118,7 +118,9 @@ function anthropicResetDelayMs(headers: HeaderReader, now = Date.now()): number 
 }
 
 function errorHeaders(error: object): HeaderReader | undefined {
-	if ("headers" in error && typeof error.headers === "object" && isHeaderReader(error.headers)) return error.headers;
+	if ("headers" in error && typeof error.headers === "object" && error.headers !== null) {
+		return isHeaderReader(error.headers) ? error.headers : recordHeaderReader(error.headers);
+	}
 	// AWS SDK service exceptions keep the raw HTTP response, with a plain header record, on `$response`.
 	if ("$response" in error && typeof error.$response === "object" && error.$response !== null) {
 		const response = error.$response;

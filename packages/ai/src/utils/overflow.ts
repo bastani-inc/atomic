@@ -1,5 +1,6 @@
 import { type GitHubCopilotErrorCode, getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
 import type { AssistantMessage } from "../types.ts";
+import { responsesDiagnosticCode, responsesErrorKind } from "./responses-errors/codes.ts";
 
 /**
  * Regex patterns to detect context overflow errors from different providers.
@@ -70,6 +71,14 @@ const OVERFLOW_PATTERNS = [
 ];
 
 const DIRECT_OVERFLOW_PATTERNS = OVERFLOW_PATTERNS.filter((p) => p !== INPUT_TOKEN_COUNT_OVERFLOW_PATTERN);
+
+function hasContextOverflowCode(message: AssistantMessage): boolean {
+	return (
+		message.diagnostics?.some(
+			(diagnostic) => responsesErrorKind(responsesDiagnosticCode(diagnostic)) === "context_overflow",
+		) ?? false
+	);
+}
 
 /** Typed GitHub Copilot rejections too general to rule overflow out; their provider text is checked instead. */
 const TEXT_CHECKED_COPILOT_CODES: ReadonlySet<GitHubCopilotErrorCode> = new Set<GitHubCopilotErrorCode>([
@@ -224,7 +233,8 @@ export function isContextOverflow(message: AssistantMessage, contextWindow?: num
 		return copilotError.code === "prompt-too-large";
 	}
 
-	// Case 1: Check error message patterns
+	// Case 1: A provider can reject the context with a precise code but only generic prose.
+	if (message.stopReason === "error" && hasContextOverflowCode(message)) return true;
 	if (message.stopReason === "error" && message.errorMessage) {
 		// Skip messages matching known non-overflow patterns (e.g. throttling / rate-limit)
 		const isNonOverflow = NON_OVERFLOW_PATTERNS.some((p) => p.test(message.errorMessage!));

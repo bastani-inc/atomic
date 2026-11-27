@@ -7,16 +7,16 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
-import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
-import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
+import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { getDeclaredTools, resolveRequestTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { type AzureEndpointOptions, resolveAzureConfig, resolveDeploymentName } from "./azure-openai-config.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
@@ -26,6 +26,8 @@ import {
 	convertResponsesTools,
 	getResponsesToolSupport,
 	processResponsesStream,
+	responsesProviderErrorCode,
+	skipResponsesProviderRetry,
 } from "./openai-responses-shared.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
 
@@ -97,7 +99,11 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 			const retryTransport = ProviderRetryTransport.for(options);
-			const client = createClient(model, apiKey, retryTransport ? { ...options, fetch: retryTransport.fetch } : options);
+			const client = createClient(
+				model,
+				apiKey,
+				retryTransport ? { ...options, fetch: retryTransport.fetch } : options,
+			);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
 				getDeclaredTools(normalizedContext.messages),
 				model.compat?.supportsOpenAIGrammarTools ?? false,
@@ -124,6 +130,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
+					noRetry: skipResponsesProviderRetry,
 				},
 				retryTransport,
 			);
@@ -157,7 +164,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatAzureOpenAIError(error);
-			appendProviderResponseFailureDiagnostic(output, error);
+			appendProviderResponseFailureDiagnostic(output, error, responsesProviderErrorCode(error));
 			recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });

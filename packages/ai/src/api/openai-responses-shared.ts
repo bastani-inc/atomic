@@ -37,6 +37,8 @@ import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
+import { responsesErrorRetryability } from "../utils/responses-errors/codes.ts";
+import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
@@ -1072,18 +1074,19 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.completed" || event.type === "response.incomplete") {
 			finalizeResponse(event.response);
 		} else if (event.type === "error") {
-			throw responsesStreamError(`Error Code ${event.code}: ${event.message}`, event.code);
+			throw new ResponsesStreamError(`Error Code ${event.code}: ${event.message}`, event.code, event);
 		} else if (event.type === "response.failed") {
 			sawTerminalResponseEvent = true;
 			output.rawStopReason = event.response?.status;
 			const error = event.response?.error;
 			const details = event.response?.incomplete_details;
+			const code = responsesErrorCode(error);
 			const msg = error
-				? `${error.code || "unknown"}: ${error.message || "no message"}`
+				? `${code || "unknown"}: ${error.message || "no message"}`
 				: details?.reason
 					? `incomplete: ${details.reason}`
 					: "Unknown error (no error details in response)";
-			throw responsesStreamError(msg, error?.code);
+			throw new ResponsesStreamError(msg, code, error ?? undefined);
 		}
 	}
 	if (!sawTerminalResponseEvent) {
@@ -1101,9 +1104,33 @@ export async function processResponsesStream<TApi extends Api>(
 	}
 }
 
-/** A failure the stream reported in an event, keeping the provider's error code for typed classification. */
-function responsesStreamError(message: string, code: string | null | undefined): Error {
-	return code ? Object.assign(new Error(message), { code }) : new Error(message);
+/** A failure reported by a Responses event, not by the connection, stream parser or a callback. */
+class ResponsesStreamError extends Error {
+	readonly code?: string;
+	readonly retryAfterMs?: number;
+
+	constructor(message: string, code: string | null | undefined, payload?: object) {
+		super(message);
+		this.code = typeof code === "string" ? code : undefined;
+		this.retryAfterMs = payload === undefined ? undefined : getProviderRetryAfterMs(payload);
+	}
+}
+
+export function responsesProviderErrorCode(error: unknown): string | undefined {
+	if (error instanceof ResponsesStreamError) return error.code;
+	// The OpenAI SDK's APIError has these fields even for an SSE `error` event without an HTTP status.
+	if (!(error instanceof Error) || !("status" in error) || !("error" in error)) return undefined;
+	return responsesErrorCode(error);
+}
+
+function responsesErrorCode(error: unknown): string | undefined {
+	if (error === null || typeof error !== "object") return undefined;
+	if ("code" in error && typeof error.code === "string" && error.code) return error.code;
+	return "type" in error && typeof error.type === "string" ? error.type : undefined;
+}
+
+export function skipResponsesProviderRetry(error: Error): boolean {
+	return responsesErrorRetryability(responsesProviderErrorCode(error)) === false;
 }
 
 type CustomInput = Extract<ToolCallInput, { kind: "custom" }>;
