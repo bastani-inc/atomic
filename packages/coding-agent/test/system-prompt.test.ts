@@ -734,6 +734,17 @@ describe("buildSystemPrompt", () => {
 		const build = (tools: { selectedTools?: string[]; excludedTools?: string[] }) =>
 			buildSystemPrompt({ ...tools, contextFiles: [], skills: [], cwd: process.cwd() });
 
+		test.each(["ask_user_question", "ask_question"])(
+			"requires questions through %s to stand alone (#6791)",
+			(tool) => {
+				const prompt = build({ selectedTools: [tool] });
+				assert.match(
+					prompt,
+					/include all context needed to answer in the question and options, even if you already gave it in a progress update/,
+				);
+			},
+		);
+
 		test("routes every question through an available question tool and never stalls without one", () => {
 			const prompt = build({});
 			expect(prompt).toContain(questionToolRule);

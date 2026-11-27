@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Value } from "typebox/value";
@@ -134,6 +135,16 @@ describe("built-in tool system prompt contributions", () => {
 		expect(definition.promptSnippet).toContain("Ask all user questions through this tool");
 	});
 
+	test("requires each question to be answerable without earlier narration (#6791)", () => {
+		const definition = createAskUserQuestionToolDefinition();
+		for (const text of [definition.description, definition.promptGuidelines?.join("\n") ?? ""]) {
+			assert.match(text, /Make each question answerable on its own/);
+			assert.match(text, /decision and relevant facts and numbers in the question/);
+			assert.match(text, /consequence of each option in its description or preview/);
+			assert.match(text, /even if you already gave it in a progress update/);
+		}
+	});
+
 	test.each(["LF", "CRLF"])(
 		"documents a schema-valid scoped approval with an explicit decline option (%s)",
 		(lineEnding) => {
@@ -146,9 +157,8 @@ describe("built-in tool system prompt contributions", () => {
 			expect(example).toBeDefined();
 			const params = Value.Parse(QuestionParamsSchema, JSON.parse(example ?? "null"));
 			expect(validateQuestionnaire(params)).toEqual({ ok: true });
-			expect(params.questions[0]?.question).toContain(
-				"same seven PRs in dependency order without changing repository protections",
-			);
+			expect(params.questions[0]?.question).toContain("PRs #101–#107 in acme/widgets");
+			expect(params.questions[0]?.question).toContain("in dependency order without changing repository protections");
 			expect(params.questions[0]?.options.map((option) => option.label)).toEqual(["Proceed", "Do not proceed"]);
 			expect(section).toContain("identify the target PRs");
 			expect(section).toContain("A cancelled or unanswered question is not approval");

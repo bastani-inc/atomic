@@ -6,6 +6,10 @@
 
 - You can opt a model into reusing an idempotency key across chat retries when its endpoint supports it. This can prevent duplicate charges after a dropped connection ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
 
+### Changed
+
+- Atomic now asks the model to put the facts you need and what each choice would do in the question dialog, not just in earlier progress updates ([#6791](https://github.com/bastani-inc/atomic/issues/6791)).
+
 ### Fixed
 
 - When you use Claude Opus 5.5 or another supported Claude model directly through Anthropic, progress before tool calls now appears as assistant text instead of being mixed into thinking summaries. To see the old summaries instead, set `"anthropicThinkingDisplay": "summarized"` and `"hideThinkingBlock": false` in `settings.json` ([#6776](https://github.com/bastani-inc/atomic/issues/6776)).
