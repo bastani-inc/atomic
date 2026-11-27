@@ -320,7 +320,7 @@ The archive installer verifies `SHA256SUMS`, keeps versioned payloads, and links
 - `GITHUB_TOKEN` / `GH_TOKEN`: Optional. Raises GitHub API limits on shared networks.
 - `NO_COLOR`: Plain output with no colors, progress bar, or logo. The installer also switches to plain output when stdout is not a terminal or `CI` is set.
 
-The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step. Android and Termux are not supported by the release archive installer (see the [Termux guide](./packages/coding-agent/docs/termux.md) for package-manager setup). See [Installation](https://docs.bastani.ai/getting-started/installation) and [Windows](https://docs.bastani.ai/windows) for path-resolution and Windows `PATHEXT` details.
+The Linux musl archives bundle their C++ runtime libraries and run on stock Alpine without an `apk add` step. Android and Termux are not supported. See [Installation](https://docs.bastani.ai/getting-started/installation) and [Windows](https://docs.bastani.ai/windows) for path-resolution and Windows `PATHEXT` details.
 
 ### Authenticate and run
 

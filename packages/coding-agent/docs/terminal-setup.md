@@ -170,7 +170,7 @@ The hardware cursor is hidden by default for compatibility. To show it, set `"sh
 
 ### Clipboard and OSC 52
 
-Atomic writes to your local clipboard using the platform tool (`pbcopy` on macOS, `clip` on Windows, `wl-copy` from `wl-clipboard` on Wayland, `xclip` or `xsel` on X11, or `termux-clipboard-set` in Termux).
+Atomic writes to your local clipboard using the platform tool (`pbcopy` on macOS, `clip` on Windows, `wl-copy` from `wl-clipboard` on Wayland, or `xclip` / `xsel` on X11).
 
 - **Remote and headless sessions:** Over SSH, Mosh, or Rex (when `SSH_CONNECTION`, `SSH_CLIENT`, `MOSH_CONNECTION`, or `REX_SESSION` is set), and on headless Linux without `DISPLAY` or `WAYLAND_DISPLAY`, Atomic automatically sends copies through OSC 52 so your local client terminal receives the text.
 - **WSL:** Inside Windows Terminal (`WT_SESSION`), Atomic prefers OSC 52 and falls back to Windows clipboard interop.

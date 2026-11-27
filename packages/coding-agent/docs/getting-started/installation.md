@@ -142,7 +142,7 @@ atomic --version
 You should see a single version line (for example `0.10.14`). If your shell reports `command not found`, open a new terminal or add the installer's bin directory to your `PATH`.
 
 <Tip>
-**Linux, Termux, and SSH clipboard support:** To copy text from `/copy` or fullscreen selection on Linux or Termux, install `wl-clipboard` (Wayland), `xclip` or `xsel` (X11), or `termux-api` (Termux). Over SSH or headless Linux, Atomic automatically forwards clipboard writes via OSC 52. See [Clipboard and OSC 52](/terminal-setup#clipboard-and-osc-52).
+**Linux and SSH clipboard support:** To copy text from `/copy` or fullscreen selection on Linux, install `wl-clipboard` (Wayland) or `xclip` / `xsel` (X11). Over SSH or headless Linux, Atomic automatically forwards clipboard writes via OSC 52. See [Clipboard and OSC 52](/terminal-setup#clipboard-and-osc-52).
 </Tip>
 
 ## Which runtime runs Atomic
@@ -179,7 +179,7 @@ If no suitable Git is found and portable download is unavailable, install Git fo
 | Arch, Manjaro | `pacman -S git` |
 | Alpine and other musl distributions | `apk add git` |
 | Void, Gentoo, Mageia, NixOS | `xbps-install git`, `emerge --ask --verbose dev-vcs/git`, `urpmi git`, `nix-env -i git` |
-| Termux, FreeBSD, OpenBSD, illumos | `pkg install git`, `pkg install git`, `pkg_add git`, `pkg install developer/versioning/git` |
+| FreeBSD, OpenBSD, illumos | `pkg install git`, `pkg_add git`, `pkg install developer/versioning/git` |
 
 Run Linux package-manager commands as root. See [git-scm.com/downloads](https://git-scm.com/downloads) for other systems.
 

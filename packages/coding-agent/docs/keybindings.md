@@ -129,7 +129,7 @@ Dedicated history actions switch prompt history entries regardless of cursor lin
 | `tui.select.confirm` | `enter` | Confirm selection |
 | `tui.select.cancel` | `escape`, `ctrl+c` | Cancel selection |
 
-Local copy (for `/copy` and mouse auto-copy) requires a working clipboard utility (`wl-clipboard` on Wayland, `xclip` or `xsel` on X11, or Termux:API on Termux). Atomic forwards copies through OSC 52 over SSH, Mosh, and Rex and as a headless Linux fallback; set `ATOMIC_CLIPBOARD_OSC52=1` (legacy `PI_CLIPBOARD_OSC52=1`) to force OSC 52 after local copy. See [Terminal setup](/terminal-setup).
+Local copy (for `/copy` and mouse auto-copy) requires a working clipboard utility (`wl-clipboard` on Wayland, or `xclip` / `xsel` on X11). Atomic forwards copies through OSC 52 over SSH, Mosh, and Rex and as a headless Linux fallback; set `ATOMIC_CLIPBOARD_OSC52=1` (legacy `PI_CLIPBOARD_OSC52=1`) to force OSC 52 after local copy. See [Terminal setup](/terminal-setup).
 
 ### Fullscreen transcript scrolling {#tui-fullscreen-viewport}
 
