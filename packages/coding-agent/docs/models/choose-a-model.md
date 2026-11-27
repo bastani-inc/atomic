@@ -114,7 +114,7 @@ In addition to chat models, Atomic supports three specialized model kinds. None 
 | Model kind | Configured via | Built-in options | Learn more |
 | --- | --- | --- | --- |
 | **Chat** | `/model`, `defaultModel`, `enabledModels`, `fallbackModels` | All built-in, `models.json`, `llama.cpp`, and extension chat providers | [Connect providers](/providers) |
-| **Classifier** | `decisionModel` (`/settings` → **Decision model**) or codemode | `openai-decisions/gpt-6-luna`, `typesafe/jev-latest`, Cloudflare Clef and Jev, GitHub Copilot, OpenRouter, Vercel AI Gateway, OpenCode Zen, local `llama.cpp` | [Classifier models](/models#use-classifier-models) |
+| **Classifier** | `decisionModel` (`/settings` → **Decision model**) or codemode | `google-decisions/gemini-decision-1`, `openai-decisions/gpt-6-luna`, `typesafe/jev-latest`, Cloudflare Clef and Jev, GitHub Copilot, OpenRouter, Vercel AI Gateway, OpenCode Zen, local `llama.cpp` | [Classifier models](/models#use-classifier-models) |
 | **Compactor** | `compactionModel` (`/settings` → **Compaction model**) | `"auto"` (built-in memory compaction) or `morph/morph-compactor`, plus custom compactors in `models.json` | [Custom compactors](/compaction/custom-compactors) |
 | **Image** | Codemode (`models.generateImages()`) or extensions (`ctx.modelRegistry.generateImages()`) | `openai-images` (GPT Image 1 through GPT Image 2.6, including SVG and GIF) and `openrouter` image models | [Image models](/models#use-image-models) |
 

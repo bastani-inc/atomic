@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Choose Gemini Decision 1 in `/settings` for structured decisions or call it from codemode. It reuses the key you saved with `/login google` ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
+
 ### Fixed
 
 - Chat moves to the next available fallback model when a provider asks it to wait past the retry limit. Retry and fallback attempts are saved in the session, and if no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774)).

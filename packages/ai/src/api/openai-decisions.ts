@@ -176,7 +176,7 @@ export const classify: ClassifierFunction<ClassifierOptions> = async (model, con
 				questions: Object.entries(context.questions).map(([id, question]) => wireQuestion(id, question)),
 			},
 			options,
-			NO_RETRY_STATUSES,
+			{ noRetryStatuses: NO_RETRY_STATUSES },
 		);
 		if (!isRecord(body)) throw new Error(`${LABEL} returned an unexpected response`);
 		const usage = parseClassifierUsage(body.usage, model);

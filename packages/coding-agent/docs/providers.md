@@ -475,6 +475,14 @@ export GOOGLE_CLOUD_API_KEY=your-api-key
 
 Classifiers, image models, and remote compactors never appear in `/model` and never run as your chat model.
 
+### Gemini Decisions {#gemini-decisions}
+
+`google-decisions/gemini-decision-1` uses Google's [Gemini Decisions API](https://aistudio.google.com/docs/decisions-api) for typed decisions about text and images. Run `/login google` to save a Gemini API key, or set `GEMINI_API_KEY` or `GOOGLE_API_KEY`. Atomic uses the saved `google` key first, then checks those variables in order. There is no separate `/login google-decisions` entry. The endpoint is not available on Vertex AI and does not use Vertex credentials.
+
+- **Selection:** Pin `google-decisions/gemini-decision-1` in [`decisionModel`](/settings#decisionmodel) or call it with [`models.classify()`](/codemode#classify). Configuring a key does not change the active decision model.
+- **Limits:** Gemini allows up to 1,000 questions per request and 2 to 255 options or levels per question. It checks the shared 262,144-token context limit. Atomic sends images inline and caps the encoded request at 100 MB.
+- **Failures and fallback:** Temporary HTTP 429 throttles use the existing retry policy and honor Google's retry delay within its cap. Missing credentials, exhausted quotas, oversized requests, refusals, and invalid answers move to the next eligible decision candidate when fallback is allowed. See [Google's rate limits](https://aistudio.google.com/docs/rate-limits#gemini-decision) and [Structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
+
 ### TypeSafe Jev {#typesafe-jev}
 
 `typesafe/jev-latest` and `typesafe/jev-1.14.0` are Atomic's direct TypeSafe classifiers. Save your key with `/login typesafe` or set `TYPESAFE_API_KEY` (stored credentials take precedence).
@@ -484,7 +492,7 @@ Classifiers, image models, and remote compactors never appear in `/model` and ne
 - **Gateway Jev:** Atomic also registers Jev classifiers on **OpenRouter** (`openrouter/~typesafe/jev-latest`, `typesafe/jev-1.13`, `typesafe/jev-1.14`, 262K with images), **Vercel AI Gateway** (`vercel-ai-gateway/typesafe-ai/jev`, `jev-1.13.0`, `jev-1.14.0`, 32K text only), and **OpenCode Zen** (`opencode/jev-1.13`, `jev-1.13-free`, 32K text only).
 - **Failures and fallback:** Classifier candidates are skipped when a schema is not a finite Choice. Missing credentials, size rejections, refusals, or malformed classifier output fall back to your chat model or next candidate (HTTP 401 indicates an invalid key, HTTP 422 a contract error, HTTP 429/529 rate limit or overload). See [Structured decision limits](/sdk/structured-decisions#provider-behavior-and-limits).
 
-For all built-in classifiers (including OpenAI Decisions, Cloudflare Clef, OpenRouter, Vercel AI Gateway, and local `llama.cpp`) and image models (`openai-images`, `openrouter`), see [Use classifier models](/models#use-classifier-models) and [Use image models](/models#use-image-models).
+For all built-in classifiers (including Gemini Decisions, OpenAI Decisions, Cloudflare Clef, OpenRouter, Vercel AI Gateway, and local `llama.cpp`) and image models (`openai-images`, `openrouter`), see [Use classifier models](/models#use-classifier-models) and [Use image models](/models#use-image-models).
 
 ### Morph compaction {#morph-compaction}
 
