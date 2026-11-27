@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.10.12] - 2026-11-27
+
+This patch fixes a silent failure in `atomic storage migrate` for PostgreSQL.
+
+- **PostgreSQL migrations complete.** `atomic storage migrate` now waits for connections to close and reports when the tables are ready, instead of exiting early with a success code ([#6743](https://github.com/bastani-inc/atomic/pull/6743), [#6742](https://github.com/bastani-inc/atomic/issues/6742)).
+
 ## [0.10.12-alpha.1] - 2026-11-27
 
 This patch fixes a silent failure in `atomic storage migrate` for PostgreSQL.
