@@ -91,6 +91,7 @@ function interruptTurnInternal(this: AgentSession): Promise<void> {
 	this._extensionRunner.cancelHostInput();
 	abortTurnRetries.call(this);
 	if (this._isPreparingRun === "custom" && !this.agent.state.isStreaming) this._abortPreparedRunAtStart = true;
+	this.sessionManager.cancelAppendRecovery();
 	this.agent.abort();
 	return (async () => {
 		await this.agent.waitForIdle();
@@ -179,6 +180,7 @@ export function abortCurrentGeneration(this: AgentSession): Promise<void> {
 	this._compactionAbortController?.abort();
 	this._autoCompactionAbortController?.abort();
 	this._branchSummaryAbortController?.abort();
+	this.sessionManager.cancelAppendRecovery();
 	this.agent.abort();
 	const manualCompaction = this._manualCompactionPromise;
 	const automaticCompaction = this._autoCompactionCompletion;

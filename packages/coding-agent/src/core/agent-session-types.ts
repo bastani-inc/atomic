@@ -39,6 +39,8 @@ export type AgentSessionEvent =
 	/** The session let go of its in-memory state; only its stored history remains. Emitted before teardown. */
 	| { type: "session_released"; released: import("./agent-session-release.ts").ReleasedAgentSession }
 	| { type: "entry_appended"; entry: import("./session-manager.ts").SessionEntry }
+	/** An ordered session write is waiting for PostgreSQL, or was saved after a reported wait. */
+	| ({ type: "session_storage_reconnect" } & import("./session-append-recovery.js").AppendRecoveryNotice)
 	| {
 			type: "queue_update";
 			steering: readonly string[];

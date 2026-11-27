@@ -10,6 +10,11 @@ import { createSessionCwdMatcherAsync, normalizePath, pathsEqual, resolvePath } 
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import { forkContextPath, includeNamedForkOutputs } from "./fork-context-path.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import {
+	type LiveAppendRecovery,
+	postgresAppendConnectionFailure,
+	SessionAppendRecovery,
+} from "./session-append-recovery.js";
 import { SessionHistoryIndex } from "./session-history-index.ts";
 import { appendFailureWroteNothing } from "./session-manager-append-errors.ts";
 import { createBranchedSessionState } from "./session-manager-archive.ts";
@@ -446,6 +451,8 @@ export class SessionManager {
 	/** Another writer's entries stopped an append while `appendHaltPolicy` held: appends reject with it (#5135). */
 	private appendHalt: SessionConflictError | undefined;
 	private appendHaltPolicy: (() => boolean) | undefined;
+	private liveAppendRecovery: LiveAppendRecovery | undefined;
+	private pendingAppendRecovery: SessionAppendRecovery | undefined;
 	/** How many live sessions run on this manager; while any do, its session is marked open (#4971). */
 	private openHolds = 0;
 	private openMarker:
@@ -501,6 +508,16 @@ export class SessionManager {
 	haltAppendsOnConflictWhile(policy: () => boolean): void {
 		this.appendHalt = undefined;
 		this.appendHaltPolicy = policy;
+	}
+
+	/** @internal Allow a live session to wait for its database until the run or session is stopped. */
+	bindAppendRecovery(live: LiveAppendRecovery): void {
+		this.liveAppendRecovery = live;
+	}
+
+	/** @internal Stop waiting for the database, including a write started before the agent run. */
+	cancelAppendRecovery(): void {
+		this.pendingAppendRecovery?.cancel();
 	}
 
 	/** The conflict that halted appends, if one did (#5135). */
@@ -1375,27 +1392,52 @@ export class SessionManager {
 			if (target) this.restoreOpened({ resume: target }, this.sessionFile);
 			return this.applyAppended(entries);
 		}
-		for (let attempt = 1; ; attempt++) {
-			const expectSeq = this.lastSeq;
-			try {
-				const written = await this.store.append(this.sessionId, entries, {
-					expectSeq,
-					...(this.archiveOnlyEpoch || this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
-				});
-				if (target) this.restoreOpened({ resume: target }, this.sessionFile);
-				this.lastSeq = written.lastSeq;
-			} catch (error) {
-				if (error instanceof SessionNotFoundError) {
-					this.deletedFromStore = true;
-					throw new SessionDeletedError(this.sessionId, { cause: error });
+		const recovery =
+			this.store.descriptor.adapter === "postgres" ? new SessionAppendRecovery(this.liveAppendRecovery) : undefined;
+		this.pendingAppendRecovery = recovery;
+		let saved = false;
+		let reconciles = 0;
+		try {
+			for (;;) {
+				const expectSeq = this.lastSeq;
+				try {
+					const written = await this.store.append(this.sessionId, entries, {
+						expectSeq,
+						...(this.archiveOnlyEpoch || this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
+					});
+					if (target) this.restoreOpened({ resume: target }, this.sessionFile);
+					this.lastSeq = written.lastSeq;
+				} catch (error) {
+					if (error instanceof SessionNotFoundError) {
+						this.deletedFromStore = true;
+						throw new SessionDeletedError(this.sessionId, { cause: error });
+					}
+					const disconnected = recovery && postgresAppendConnectionFailure(error);
+					if (recovery && disconnected?.outcome === "not-applied") {
+						// Nothing ran. Retry the same entry IDs, sequence and history generation.
+						if (await recovery.wait()) continue;
+						throw error;
+					}
+					if (!disconnected && (appendFailureWroteNothing(error) || ++reconciles > MAX_APPEND_RECONCILES))
+						throw error;
+					if (disconnected) recovery?.markDisconnected();
+					const unknown =
+						disconnected?.outcome === "unknown" ||
+						(isStorageTransientError(error) && error.outcome === "unknown");
+					if (await this.reconcileAppend(entries, error, unknown, expectSeq, target, recovery)) {
+						saved = true;
+						return;
+					}
+					if (recovery && disconnected && !(await recovery.wait())) throw error;
+					continue;
 				}
-				if (appendFailureWroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
-				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
-				if (await this.reconcileAppend(entries, error, unknown, expectSeq, target)) return;
-				continue;
+				this.applyAppended(entries);
+				saved = true;
+				return;
 			}
-			this.applyAppended(entries);
-			return;
+		} finally {
+			this.pendingAppendRecovery = undefined;
+			recovery?.finish(saved);
 		}
 	}
 
@@ -1547,29 +1589,49 @@ export class SessionManager {
 		unknown: boolean,
 		expectSeq: number,
 		target?: SessionResume,
+		recovery?: SessionAppendRecovery,
 	): Promise<boolean> {
 		// Entries of an append that failed for certain are never in the store, so marking them too changes nothing.
 		for (const entry of entries) this.unconfirmed.add(entry.id);
-		let read: { readonly entries: readonly SessionEntry[]; readonly lastSeq: number };
-		try {
-			read = await readSessionRange(
-				this.store,
-				this.sessionId,
-				Math.max(1, this.lastSeq),
-				Number.MAX_SAFE_INTEGER,
-				this.archiveOnlyEpoch ? this.historyEpoch : undefined,
-			);
-		} catch {
-			// Still unreadable: the next append, at the same `lastSeq`, finds out whether these entries were saved.
-			throw error;
+		const conflict = error instanceof SessionConflictError;
+		let read: Awaited<ReturnType<typeof readSessionRange>>;
+		for (;;) {
+			try {
+				read = await readSessionRange(
+					this.store,
+					this.sessionId,
+					Math.max(1, this.lastSeq),
+					Number.MAX_SAFE_INTEGER,
+					this.archiveOnlyEpoch ? this.historyEpoch : undefined,
+				);
+				break;
+			} catch (readError) {
+				// Keep the same unresolved append at the head of the queue while its outcome cannot be read.
+				if (
+					recovery &&
+					(unknown || conflict) &&
+					postgresAppendConnectionFailure(readError) &&
+					(await recovery.wait())
+				)
+					continue;
+				if (conflict && this.appendHaltPolicy?.() === true) this.appendHalt ??= error;
+				throw error;
+			}
 		}
 		const stored = this.lastSeq > 0 ? read.entries : [undefined, ...read.entries];
 		const lastHeld = this.lastEntryId ?? undefined;
 		if (
 			stored[0]?.id !== lastHeld ||
 			(this.historyEpoch !== undefined && "epoch" in read && read.epoch !== this.historyEpoch)
-		)
+		) {
+			if (recovery?.reconnecting) {
+				const stop = conflict ? error : new SessionConflictError(this.sessionId, expectSeq, read.lastSeq);
+				if (this.appendHaltPolicy?.() === true) this.appendHalt ??= stop;
+				throw stop;
+			}
+			if (conflict && this.appendHaltPolicy?.() === true) this.appendHalt ??= error;
 			throw error;
+		}
 		const own = new Map(entries.map((entry) => [entry.id, entry]));
 		const tail = (stored.slice(1) as SessionEntry[]).map((entry) => own.get(entry.id) ?? entry);
 		const saved = tail.some((entry) => own.has(entry.id));
@@ -1586,8 +1648,12 @@ export class SessionManager {
 		this._buildIndex();
 		this.leafId = leafId;
 		this.lastSeq = read.lastSeq;
-		if (saved) return true;
-		const conflict = error instanceof SessionConflictError;
+		if (saved) {
+			// An acknowledged write remains saved, but after a disconnect we must not write past a peer that followed it.
+			if (recovery?.reconnecting && foreign && this.appendHaltPolicy?.() === true)
+				this.appendHalt ??= new SessionConflictError(this.sessionId, expectSeq + entries.length, this.lastSeq);
+			return true;
+		}
 		// The prepared target describes the old watermark. Keep our original leaf when it lost the race,
 		// but acknowledge the observed tail before reporting the conflict so a retry can prepare a fresh target.
 		if ((target && tail.length > 0) || foreign || (conflict && tail.length === 0)) {
