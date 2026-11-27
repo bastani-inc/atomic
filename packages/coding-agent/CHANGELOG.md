@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.10.14] - 2026-11-27
+
+This patch accepts `null` optional arguments across waitable tools and fixes PostgreSQL background snapshot collection.
+
+- **Null optional tool arguments work across strict schema providers.** `read`, `search`, `bash`, and `powershell` now accept omitted optional fields sent as `null` (such as `action: null`, `id: null`, `budgetMs: null`, and `wait: null`) while continuing to reject invalid values and mixed call/wait arguments, alongside expanded `history://` and background-task documentation ([#6758](https://github.com/bastani-inc/atomic/pull/6758)).
+- **PostgreSQL background snapshot collection succeeds.** `@bastani/atomic-storage-postgres` now accepts `lockWaitMs: 0` (clamped to PostgreSQL's 1 ms `lock_timeout`), and background snapshot garbage collection retries PostgreSQL lock-conflict errors (`SQLSTATE 55P03`) on pace instead of failing ([#6758](https://github.com/bastani-inc/atomic/pull/6758)).
+
+### Fixed
+
+- Fixed `read`, `search`, `bash`, and `powershell` rejecting omitted optional fields sent as `null` (for example under strict JSON Schema providers such as Gemini), including `action: null`, `id: null`, `budgetMs: null`, `wait: null`, and `wait: { kind: "background" | "foreground", budgetMs: null }`, while still strictly rejecting invalid values and mixed call/wait arguments ([#6758](https://github.com/bastani-inc/atomic/pull/6758)).
+- Fixed background snapshot garbage collection failing on PostgreSQL when its non-blocking write transaction passed `lockWaitMs: 0` or encountered a not-applied `lock-conflict` (`SQLSTATE 55P03`) ([#6758](https://github.com/bastani-inc/atomic/pull/6758)).
+
 ## [0.10.14-alpha.1] - 2026-11-27
 
 This patch accepts `null` optional arguments across waitable tools and fixes PostgreSQL background snapshot collection.
