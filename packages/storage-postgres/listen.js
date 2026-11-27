@@ -68,7 +68,6 @@ async function settlesWithin(promise, waitMs) {
 	let timer;
 	const late = new Promise((resolve) => {
 		timer = setTimeout(resolve, waitMs, false);
-		timer.unref?.();
 	});
 	try {
 		return /** @type {boolean} */ (

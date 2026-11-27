@@ -616,7 +616,6 @@ async function endPool(pool) {
 			connection.stream.destroy();
 		}
 	}, CLOSE_WAIT_MS);
-	timer.unref();
 	try {
 		await closed;
 	} finally {
