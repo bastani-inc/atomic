@@ -169,6 +169,7 @@ async function prebuild(
 		maxIdlePerRepository: settings.getWorktreePoolSettings().maxIdlePerRepository,
 		park: command.park,
 		setupCommand: settings.getResumeSetupCommand(),
+		onLedgerWait: (_root, message) => stderr(`${message}\n`),
 	});
 	for (const warning of outcome.warnings) stderr(`Warning: ${warning}\n`);
 	for (const line of formatResumeTimings(outcome.timings)) stderr(`${line}\n`);

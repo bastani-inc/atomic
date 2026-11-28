@@ -141,13 +141,13 @@ export interface ProcessRecord {
 	readonly started?: string;
 }
 
-/** Whether `pid` is a live process on this host; one this process may not signal (EPERM) still exists. */
+/** Whether `pid` may still run on this host. Only ESRCH proves that it does not exist. */
 function processAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
 		return true;
 	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
 	}
 }
 
@@ -165,9 +165,11 @@ export function processMayRun(record: ProcessRecord, readStart = processStartTok
 
 export async function processMayRunAsync(record: ProcessRecord): Promise<boolean> {
 	if (record.host !== hostname()) return true;
-	const started = record.started === undefined ? undefined : await processStartTokenAsync(record.pid);
-	if (started !== undefined) return started === record.started;
-	return processAlive(record.pid);
+	if (!processAlive(record.pid)) return false;
+	if (record.started === undefined) return true;
+	// Do not use a cached Windows fallback answer for a previous process with the same PID.
+	const started = await processStartTokenAsync(record.pid, { fresh: true });
+	return started === undefined ? processAlive(record.pid) : started === record.started;
 }
 
 let ownStart: Promise<string | undefined> | undefined;

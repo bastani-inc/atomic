@@ -1141,12 +1141,13 @@ async function setUpCheckoutBlueprints(
 		// Another process's build of one of them is waited for, or the steps of one whose process died are stopped,
 		// before the ledger says which need building.
 		// Settling another build never fails the resume: a failure to read or clean up its lock is a warning.
+		const onWait = (root: string, message: string) => {
+			options.onProgress?.(message);
+			announceBlueprintBuildWaiting(root, message);
+		};
 		const settled = await settleOtherBuilds(storeDir, claimed, {
 			signal: options.signal,
-			onWait: (root, message) => {
-				options.onProgress?.(message);
-				announceBlueprintBuildWaiting(root, message);
-			},
+			onWait,
 		}).catch((error: unknown) => {
 			if (options.signal?.aborted) throw error;
 			return {
@@ -1173,6 +1174,7 @@ async function setUpCheckoutBlueprints(
 						earlier: [...joined, ...candidates.filter((checkout) => !retried.includes(checkout))],
 						config: { ...options.blueprint, storeDir },
 						signal: options.signal,
+						onLedgerWait: onWait,
 					}),
 				(message) => unlocked.push(message),
 			);

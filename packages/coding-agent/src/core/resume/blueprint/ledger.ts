@@ -1,8 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import * as fs from "node:fs";
+import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
+import {
+	clearLockHolderAsync,
+	lockNamesLocalHolder,
+	recordLockHolderAsync,
+	takeOverDeadHolderAsync,
+} from "../../lock-holder.js";
 import { releaseLock } from "../../lock-release.ts";
+import { lockHolderAsync, takeTakeoverMutexAsync } from "../../lock-takeover.js";
 
 /** What the last build on this machine left for one workspace: a rebuild is needed unless it succeeded unchanged. */
 export interface WorkspaceLedgerEntry {
@@ -109,10 +117,87 @@ export async function readLedger(storeDir: string): Promise<BlueprintLedger> {
 
 const ledgerQueues = new Map<string, Promise<void>>();
 
-/** A lock held by a stopped process is given up after this long; a live holder refreshes it every few seconds. */
+/** A lock without a matching local holder record is stale after this long without a heartbeat. */
 const LEDGER_LOCK_STALE_MS = 15_000;
 const LEDGER_LOCK_UPDATE_MS = 5_000;
 const LEDGER_LOCK_RETRIES = { retries: 40, factor: 1.2, minTimeout: 20, maxTimeout: 250 } as const;
+const LEDGER_WAIT_NOTICE = "Waiting for another Atomic process to finish writing the blueprint ledger.";
+
+function ledgerLocked(): Error {
+	return Object.assign(new Error("Blueprint ledger lock is already being held"), { code: "ELOCKED" });
+}
+
+async function tryLockLedger(path: string, lockPath: string): Promise<() => Promise<void>> {
+	const mutex = await takeTakeoverMutexAsync(lockPath, 0);
+	if (mutex === undefined) {
+		// The directory-mutex fallback can also fail in a read-only directory.
+		await access(dirname(path), fs.constants.W_OK);
+		throw ledgerLocked();
+	}
+	try {
+		// New writers publish under the same mutex as both takeover paths. The library's mtime
+		// rule is only for locks without a matching local holder, not live writers with late heartbeats.
+		if ((await lockNamesLocalHolder(lockPath)) || !(await mutex.owned())) throw ledgerLocked();
+		let acquired = false;
+		let generation: string | undefined;
+		// Once acquired, a late release or process exit must not remove a lock that replaced ours.
+		// Older Atomic versions can still take over a stale lock without consulting the owner record.
+		const rmdir = ((candidate: fs.PathLike, callback: fs.NoParamCallback) => {
+			if (!acquired) return fs.rmdir(candidate, callback);
+			void lockHolderAsync(lockPath).then((current) => {
+				if (generation !== undefined && current === generation) fs.rmdir(candidate, callback);
+				else callback(null);
+			});
+		}) as typeof fs.rmdir;
+		const unlock = await lockfile.lock(path, {
+			realpath: false,
+			lockfilePath: lockPath,
+			stale: LEDGER_LOCK_STALE_MS,
+			update: LEDGER_LOCK_UPDATE_MS,
+			fs: {
+				...fs,
+				rmdir,
+				// proper-lockfile also tries to remove locks on exit. If normal release did not run,
+				// leave the owner record for the next writer instead of unlinking without the mutex.
+				rmdirSync: () => {},
+			},
+		});
+		generation = await recordLockHolderAsync(lockPath);
+		acquired = true;
+		return async () => {
+			const releaseMutex = await takeTakeoverMutexAsync(lockPath);
+			try {
+				await unlock();
+				// If we could not take the mutex, leave the record: it cannot match a new lock directory.
+				if (generation !== undefined && (await releaseMutex?.owned()))
+					await clearLockHolderAsync(lockPath, generation);
+			} finally {
+				await releaseMutex?.release();
+			}
+		};
+	} finally {
+		await mutex.release();
+	}
+}
+
+async function lockLedger(path: string, lockPath: string, onWait?: (message: string) => void) {
+	let retries = 0;
+	for (;;) {
+		try {
+			return await tryLockLedger(path, lockPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ELOCKED") throw error;
+			if (await takeOverDeadHolderAsync(lockPath)) continue;
+			if (retries >= LEDGER_LOCK_RETRIES.retries) throw error;
+			if (retries === 0) onWait?.(LEDGER_WAIT_NOTICE);
+			const delay = Math.min(
+				Math.round(LEDGER_LOCK_RETRIES.minTimeout * LEDGER_LOCK_RETRIES.factor ** retries++),
+				LEDGER_LOCK_RETRIES.maxTimeout,
+			);
+			await new Promise<void>((resolveWait) => setTimeout(resolveWait, delay));
+		}
+	}
+}
 
 /** Serializes work on one ledger within this process, in the order it was asked for. */
 async function inProcessTurn<T>(key: string, work: () => Promise<T>): Promise<T> {
@@ -135,22 +220,19 @@ async function inProcessTurn<T>(key: string, work: () => Promise<T>): Promise<T>
 /**
  * Applies `update` to the ledger as it is now and writes the result atomically. Updates are serialized, within this
  * process by a queue and across processes by a lock file, so builds that finish at about the same time keep each
- * other's entries. A lock that cannot be taken within its retries rejects with the lock's error.
+ * other's entries. Reports contention through `onWait`. A lock that cannot be taken within its retries rejects with
+ * the lock's error.
  */
 export async function updateLedger(
 	storeDir: string,
 	update: (ledger: BlueprintLedger) => BlueprintLedger,
+	onWait?: (message: string) => void,
 ): Promise<BlueprintLedger> {
-	const path = ledgerPath(storeDir);
+	const path = resolve(ledgerPath(storeDir));
+	const lockPath = `${path}.lock`;
 	return inProcessTurn(path, async () => {
 		await mkdir(dirname(path), { recursive: true });
-		const release = await lockfile.lock(dirname(path), {
-			realpath: false,
-			lockfilePath: `${path}.lock`,
-			stale: LEDGER_LOCK_STALE_MS,
-			update: LEDGER_LOCK_UPDATE_MS,
-			retries: LEDGER_LOCK_RETRIES,
-		});
+		const release = await lockLedger(path, lockPath, onWait);
 		try {
 			const next = update(await readLedger(storeDir));
 			const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -158,7 +240,7 @@ export async function updateLedger(
 			await rename(temporary, path);
 			return next;
 		} finally {
-			await releaseLock(release, `${path}.lock`);
+			await releaseLock(release, lockPath);
 		}
 	});
 }

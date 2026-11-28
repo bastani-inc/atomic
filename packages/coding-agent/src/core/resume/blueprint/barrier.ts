@@ -31,10 +31,10 @@ export interface BlueprintBuildFinished {
 	readonly notices: readonly BlueprintBuildNotice[];
 }
 
-/** A resume that waits for another blueprint build of a worktree before it builds it, as `onBlueprintBuildWaiting` tells it. */
+/** A resume waiting for another process's blueprint build or an update to the blueprint ledger. */
 export interface BlueprintBuildWaiting {
 	readonly type: "blueprint_build_waiting";
-	/** The worktree whose earlier build is waited for. */
+	/** The worktree whose build is waiting. */
 	readonly root: string;
 	readonly message: string;
 }
@@ -127,8 +127,8 @@ const unannouncedWaits: BlueprintBuildWaiting[] = [];
 const waitListeners = new Set<(waiting: BlueprintBuildWaiting) => void>();
 
 /**
- * Tells the user, through the listeners of {@link onBlueprintBuildWaiting}, that a resume waits for another blueprint
- * build of the worktree at `root`: one still running in another process, or the leftovers of one whose process died.
+ * Tells the user, through the listeners of {@link onBlueprintBuildWaiting}, that the build of `root` waits for another
+ * blueprint build, the leftovers of an interrupted build, or an update to the blueprint ledger.
  */
 export function announceBlueprintBuildWaiting(root: string, message: string): void {
 	const waiting: BlueprintBuildWaiting = { type: "blueprint_build_waiting", root, message };
@@ -137,8 +137,8 @@ export function announceBlueprintBuildWaiting(root: string, message: string): vo
 }
 
 /**
- * Tells `listener` each time a resume of this process starts waiting for another blueprint build of a worktree, and at
- * once of those that started before anyone listened, each told once. Returns the unsubscribe.
+ * Tells `listener` each time a resumed worktree's blueprint build starts waiting, and at once of waits that started
+ * before anyone listened. Returns the unsubscribe.
  */
 export function onBlueprintBuildWaiting(listener: (waiting: BlueprintBuildWaiting) => void): () => void {
 	waitListeners.add(listener);

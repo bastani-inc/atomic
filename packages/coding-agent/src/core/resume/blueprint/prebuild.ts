@@ -31,7 +31,7 @@ import {
 } from "../../worktree-snapshot/seeds.ts";
 import type { WorktreeSnapshot, WorktreeSnapshotSettings } from "../../worktree-snapshot/types.ts";
 import { type ResumeTimings, ResumeTimingsRecorder, timeCheckoutRestore } from "../timings.ts";
-import { type BlueprintBuildOutcome, runBlueprintBuild } from "./build.ts";
+import { type BlueprintBuildOutcome, type BlueprintLedgerWait, runBlueprintBuild } from "./build.ts";
 import { blueprintCacheKeys } from "./cache.ts";
 import { blueprintRepository } from "./resume.ts";
 
@@ -50,6 +50,7 @@ export interface PrebuildRepositoryOptions {
 	readonly park?: boolean;
 	/** The deprecated `resume.setupCommand`, run as a resume would. */
 	readonly setupCommand?: string;
+	readonly onLedgerWait?: BlueprintLedgerWait;
 	readonly signal?: AbortSignal;
 }
 
@@ -122,6 +123,7 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 				[{ ...blueprintRepository({ root: lease.path, remotes }), initialize: true }],
 				{ agentDir: options.agentDir, storeDir, trusted: () => true, setupCommand: options.setupCommand },
 				signal,
+				options.onLedgerWait,
 			);
 		} catch (error) {
 			await removeRestoredWorktree(lease.path, { storeDir }).catch(() => {});
