@@ -6,7 +6,7 @@ import { statSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, onTestFinished, test } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, onTestFinished, test } from "vitest";
 import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
 import { acquireSocketReplacementLock } from "../../packages/intercom/broker/socket-replacement-lock.js";
 import * as staleLockFile from "../../packages/intercom/broker/stale-lock-file.js";
@@ -74,19 +74,21 @@ const REUSED_PID_TAKEOVER_MS = 10_000;
 /** Windows releases a dead broker's inherited log handle a moment after the process exits. */
 const CLEANUP_RETRIES = { maxRetries: 20, retryDelay: 50 } as const;
 
-const agentDir = makeTempDirectory("ic3505-");
+const fixtureRoot = makeTempDirectory(process.platform === "win32" ? `ic3505-${randomUUID()}-` : "ic3505-");
 const previousAgentDirEnv = {
 	atomic: process.env.ATOMIC_CODING_AGENT_DIR,
 	pi: process.env.PI_CODING_AGENT_DIR,
 } as const;
-process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+process.env.ATOMIC_CODING_AGENT_DIR = fixtureRoot;
 delete process.env.PI_CODING_AGENT_DIR;
 
-const gateDir = join(agentDir, "gate");
-const startsFile = join(gateDir, "starts");
-const firstStartMarker = join(gateDir, "first");
-const gateFile = join(gateDir, "open");
-const preloadFile = join(gateDir, "hold-first-broker.mjs");
+let scenario = 0;
+let agentDir: string;
+let gateDir: string;
+let startsFile: string;
+let firstStartMarker: string;
+let gateFile: string;
+let preloadFile: string;
 
 /** Runs before any broker code, like the preload that reproduces the issue: the first process to start waits for the gate. */
 function holdFirstBrokerPreload(): string {
@@ -108,21 +110,29 @@ function holdFirstBrokerPreload(): string {
 const pathsModule = await import("../../packages/intercom/broker/paths.js");
 const spawnModule = await import("../../packages/intercom/broker/spawn.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
-const socketPath = pathsModule.getBrokerSocketPath();
-const intercomDir = pathsModule.getIntercomDirPath();
-const pidPath = pathsModule.getBrokerPidPath();
+let socketPath: string;
+let intercomDir: string;
+let pidPath: string;
 
 const directBrokers = new Map<number, SpawnedProcess>();
 const liveClients: InstanceType<typeof IntercomClient>[] = [];
 let brokerControl: BrokerProcessControl;
 let finishControlSetup: (() => void) | undefined;
 
-beforeAll(() => {
+beforeEach(async () => {
+	agentDir = join(fixtureRoot, String(++scenario));
+	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+	socketPath = pathsModule.getBrokerSocketPath();
+	intercomDir = pathsModule.getIntercomDirPath();
+	pidPath = pathsModule.getBrokerPidPath();
+	gateDir = join(agentDir, "gate");
+	startsFile = join(gateDir, "starts");
+	firstStartMarker = join(gateDir, "first");
+	gateFile = join(gateDir, "open");
+	preloadFile = join(gateDir, "hold-first-broker.mjs");
 	makeDirectorySync(gateDir, { recursive: true });
 	writeTextSync(preloadFile, holdFirstBrokerPreload());
-});
 
-beforeEach(async () => {
 	let finished = false;
 	finishControlSetup = () => {
 		finished = true;
@@ -210,8 +220,7 @@ afterEach(async () => {
 		}
 	}
 	await brokerControl?.close();
-	// Closing the control connection makes each controlled broker kill itself, but not at once. One still running
-	// keeps its socket: on Windows the named pipe stays taken, and the next test cannot listen on it (EADDRINUSE).
+	// Closing the control connection makes each controlled broker kill itself, but not at once.
 	const controlled = startedBrokerPids();
 	assert.ok(
 		await waitUntil(() => controlled.every((pid) => !isAlive(pid)), BROKER_BUDGET_MS),
@@ -219,8 +228,7 @@ afterEach(async () => {
 	);
 	for (const broker of directBrokers.values()) await terminateDirectBroker(broker);
 	directBrokers.clear();
-	removePathSync(intercomDir, { recursive: true, force: true, ...CLEANUP_RETRIES });
-	for (const file of [startsFile, firstStartMarker, gateFile]) removePathSync(file, { force: true });
+	removePathSync(agentDir, { recursive: true, force: true, ...CLEANUP_RETRIES });
 }, BROKER_TEST_TIMEOUT_MS);
 
 afterAll(() => {
@@ -228,7 +236,7 @@ afterAll(() => {
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDirEnv.atomic;
 	if (previousAgentDirEnv.pi === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousAgentDirEnv.pi;
-	removeTempDirectory(agentDir);
+	removeTempDirectory(fixtureRoot);
 });
 
 function newClient(): InstanceType<typeof IntercomClient> {
