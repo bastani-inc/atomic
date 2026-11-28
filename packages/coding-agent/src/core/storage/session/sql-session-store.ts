@@ -117,6 +117,13 @@ import {
 } from "./session-summary.js";
 import { sessionWriteTransaction } from "./session-transactions.js";
 import { sharedHistorySwitchHost } from "./shared-history-switch.js";
+import {
+	CAPTURE_HEADING,
+	captureHeadingIndex,
+	createPostgresCaptureHeadings,
+	ensureCaptureHeadings,
+	migrateCaptureHeadings,
+} from "./snapshot-capture-index.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import { type SqlSessionChatRecords, sqlChatRecords } from "./sql-chat-records.js";
 import { dropStoredNotes, storedEntryNotes, storedRows } from "./stored-entries.js";
@@ -836,6 +843,7 @@ export class SqlSessionStore implements SessionStore {
 	}
 	private readonly entryByteLength: (expression: string) => string;
 	private chunkRowids?: boolean;
+	private captureHeadings = false;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string | undefined; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -937,6 +945,14 @@ export class SqlSessionStore implements SessionStore {
 		// transaction and takes no lock, so processes starting together do not queue behind one another (#6560).
 		return withStorageSchemaCatalog(database, storageMigrationTable(options.prefix), () =>
 			SqlSessionStore.openWithCatalog(database, options),
+		);
+	}
+
+	static buildCaptureHeadingIndex(database: SqliteDatabase, prefix?: string): Promise<boolean> {
+		return migrateCaptureHeadings(
+			database,
+			renderStorageIdentifiers("sessions", SESSION_TABLES, prefix).entries,
+			prefix,
 		);
 	}
 
@@ -1073,6 +1089,8 @@ export class SqlSessionStore implements SessionStore {
 				],
 				[],
 			);
+			if (createdShared && dialect.name === "postgres")
+				await createPostgresCaptureHeadings(tx, dialect, tables.entries, options.prefix);
 		};
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
 		const ledger = storageMigrationTable(options.prefix);
@@ -1272,6 +1290,8 @@ export class SqlSessionStore implements SessionStore {
 		let searchIndex: SqlSessionSearchIndex | undefined;
 		let catalog: Awaited<ReturnType<typeof schemaCatalogOf>>;
 		let staged: Promise<boolean>;
+		const sqliteCaptureHeadings =
+			dialect.name === "sqlite" && (await ensureCaptureHeadings(database, tables.entries, options.prefix));
 		if (batchedSqliteSetup) {
 			// Queue snapshot tables, snapshot index triggers and search tables into the same SQLite write transaction as
 			// sessions, then commit them all together before inspecting outcomes or returning the store (#6709).
@@ -1384,6 +1404,10 @@ export class SqlSessionStore implements SessionStore {
 			appendsThroughFunction ? appendFunction : undefined,
 		);
 		store.openMarkers = markers;
+		store.captureHeadings =
+			dialect.name === "postgres"
+				? createdShared || (await ensureCaptureHeadings(database, tables.entries, options.prefix))
+				: sqliteCaptureHeadings;
 		// The switch is one way: what the open found or made holds for every later transaction.
 		if (shared) store.noteSchemaVersion(SESSION_SCHEMA_VERSION_SHARED_HISTORY);
 		if (await staged) await store.cleanupForkStaging();
@@ -5790,13 +5814,21 @@ $grant$`);
 						}
 					}
 					const pg = dialect.name === "postgres";
-					const entry = (key: string) => (pg ? `parsed.value->>'${key}'` : json("e.entry_json", key));
+					const indexed = this.captureHeadings;
+					const body = indexed ? CAPTURE_HEADING : "entry_json";
+					const entry = (key: string) => (pg ? `parsed.value->>'${key}'` : json(`e.${body}`, key));
 					const type = (key: string) =>
-						pg ? `jsonb_typeof(parsed.value->'${key}')` : dialect.jsonType("e.entry_json", key);
+						pg ? `jsonb_typeof(parsed.value->'${key}')` : dialect.jsonType(`e.${body}`, key);
+					const physical = "session_id=w.owner AND seq=w.seq";
 					const source = pg
-						? `LEFT JOIN LATERAL (SELECT chunks,entry_json FROM ${this.tables.entries} WHERE session_id=w.owner AND seq=w.seq OFFSET 0) e ON true
-							CROSS JOIN LATERAL (SELECT ${postgresJsonb("e.entry_json")} AS value OFFSET 0) parsed`
-						: `LEFT JOIN ${this.tables.entries} e ON e.session_id=w.owner AND e.seq=w.seq`;
+						? `${indexed ? "JOIN" : "LEFT JOIN"} LATERAL (SELECT chunks,${body} FROM ${this.tables.entries}
+							WHERE ${physical}${indexed ? ` AND ${body} IS NOT NULL` : ""} OFFSET 0) e ON true
+							CROSS JOIN LATERAL (SELECT ${postgresJsonb(`e.${body}`)} AS value OFFSET 0) parsed`
+						: `${indexed ? "JOIN" : "LEFT JOIN"} ${this.tables.entries} e${indexed ? ` INDEXED BY ${captureHeadingIndex(this.tables.entries)}` : ""}
+							ON e.session_id=w.owner AND e.seq=w.seq${indexed ? ` AND e.${body} IS NOT NULL` : ""}`;
+					const captured = indexed
+						? `CAST(${entry("capture")} AS ${dialect.types.int})`
+						: `CASE WHEN ${type("captureMs")} IS NOT NULL AND ${type("restore")} IS NULL AND ${type("unrestored")} IS NULL THEN 1 ELSE 0 END`;
 					const request = pg
 						? `SELECT * FROM jsonb_to_recordset((?)::jsonb) AS r(child TEXT,child_seq BIGINT,owner TEXT,seq BIGINT)`
 						: `SELECT ${json("value", "child")} AS child,${json("value", "child_seq")} AS child_seq,
@@ -5815,8 +5847,8 @@ $grant$`);
 					metadata AS MATERIALIZED (
 						SELECT w.owner,w.seq,e.chunks,${entry("root")} AS root,${entry("snapshotId")} AS snapshot_id,
 							${entry("timestamp")} AS stamp,${entry("restore")} AS restore,
-							CASE WHEN ${type("captureMs")} IS NOT NULL AND ${type("restore")} IS NULL AND ${type("unrestored")} IS NULL THEN 1 ELSE 0 END AS capture
-						FROM wanted w ${source} WHERE e.chunks IS NULL OR ${entry("type")}='worktree_snapshot'
+							${captured} AS capture
+						FROM wanted w ${source}${indexed ? "" : ` WHERE e.chunks IS NULL OR ${entry("type")}='worktree_snapshot'`}
 					), ranked AS (
 						SELECT r.child,r.child_seq,m.*,
 							min(CASE WHEN capture=0 OR (${canonical}) THEN 1 ELSE 0 END) OVER (PARTITION BY r.child${dialect.byteOrderCollation}) AS canonical_stamps,

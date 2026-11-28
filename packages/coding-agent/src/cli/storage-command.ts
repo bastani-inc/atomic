@@ -662,6 +662,9 @@ async function migrate(
 		const { SqlSnapshotBlobStore } = await import("../core/worktree-snapshot/blob-store.ts");
 		if ((await SqlSnapshotBlobStore.buildHotSessionLinksIndex(building, selection.prefix)) === "built")
 			log("Rebuilt an index of the worktree snapshot links without stopping writes to them.");
+		const { SqlSessionStore } = await import("../core/storage/session/sql-session-store.js");
+		if (await SqlSessionStore.buildCaptureHeadingIndex(building, selection.prefix))
+			log("Built the worktree capture index for faster session resume.");
 	} finally {
 		await building.close();
 	}

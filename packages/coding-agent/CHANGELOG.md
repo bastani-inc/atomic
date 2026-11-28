@@ -19,6 +19,7 @@
 
 - Large sessions resume faster over shared PostgreSQL. Atomic now reuses its storage connection, loads active subagent records in batches, and checks finished subagents’ worktree snapshots without opening their conversations. In one large session, checking those snapshots dropped from about 80 seconds to 4 seconds ([#6795](https://github.com/bastani-inc/atomic/issues/6795)).
 - Forking a session that is still receiving entries no longer replays its whole history when the store supports shared history. In a test with 68,000 entries, the fork step dropped from 11.7 seconds to 0.7 seconds without including anything appended after the fork’s starting point ([#6795](https://github.com/bastani-inc/atomic/issues/6795)).
+- Atomic no longer decodes full worktree snapshots just to decide which subagent capture to restore. On a test database with about 49,000 snapshots, that check dropped from 3.4–4.2 seconds to 0.5–0.8 seconds. For a large existing PostgreSQL store, run `atomic storage migrate` as the owner to build the index ([#6802](https://github.com/bastani-inc/atomic/issues/6802)).
 
 - Resuming after a crash no longer waits 30 seconds for a worktree snapshot lock when Atomic can tell the process holding it is gone. If another Atomic is still restoring the repository, the resume shows why it is waiting ([#6800](https://github.com/bastani-inc/atomic/issues/6800)).
 
