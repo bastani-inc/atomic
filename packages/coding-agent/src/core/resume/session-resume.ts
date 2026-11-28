@@ -46,9 +46,9 @@ import {
 	pendingLfsDownload,
 	type VerifyWorktreeOptions,
 	verifyWorktree,
-	withRepositoryLockProgress,
 } from "../worktree-snapshot/restore.ts";
 import { holdsSessionSnapshotRef } from "../worktree-snapshot/session-refs.ts";
+import { withWorktreeLockProgress } from "../worktree-snapshot/shared-lock.js";
 import type {
 	WorktreeRootMapping,
 	WorktreeSnapshot,
@@ -405,6 +405,13 @@ export async function prepareSessionResume(
 	sessionManager: SessionManager,
 	options: PrepareSessionResumeOptions,
 ): Promise<PreparedSessionResume> {
+	return withWorktreeLockProgress(options.onProgress, () => prepareSessionResumeWithTimings(sessionManager, options));
+}
+
+async function prepareSessionResumeWithTimings(
+	sessionManager: SessionManager,
+	options: PrepareSessionResumeOptions,
+): Promise<PreparedSessionResume> {
 	const storeDir = resolveStoreDir(options);
 	// The session holds the pooled worktrees it owns before anything is restored, so evicting idle slots never removes
 	// one it continues in, and until it closes (#4748).
@@ -430,9 +437,7 @@ export async function prepareSessionResume(
 	let prepared: PreparedSessionResume;
 	try {
 		options.signal?.throwIfAborted();
-		prepared = await timings.run(() =>
-			withRepositoryLockProgress(options.onProgress, () => prepareResume(sessionManager, options, buildSettled)),
-		);
+		prepared = await timings.run(() => prepareResume(sessionManager, options, buildSettled));
 	} catch (error) {
 		await releaseSessionWorktrees(sessionManager);
 		throw error;
@@ -1336,6 +1341,14 @@ export async function continueSessionWhereItWorked(
 	options: PrepareSessionResumeOptions,
 	reopen: (cwd: string) => Promise<SessionManager> = (cwd) =>
 		opened.openSessionById(opened.getSessionId(), cwd, undefined, { history: "tail" }),
+): Promise<SessionManager> {
+	return withWorktreeLockProgress(options.onProgress, () => continueSessionWithWorktrees(opened, options, reopen));
+}
+
+async function continueSessionWithWorktrees(
+	opened: SessionManager,
+	options: PrepareSessionResumeOptions,
+	reopen: (cwd: string) => Promise<SessionManager>,
 ): Promise<SessionManager> {
 	const storeDir = resolveStoreDir(options);
 	// The session holds the pooled worktrees it owns before anything else, so no eviction removes one while its

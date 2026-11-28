@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { bunExecutable, sleep } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { lockHolderPath } from "../src/core/lock-holder.js";
 import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { SessionManager } from "../src/core/session-manager.js";
 import { releaseSessionWorktrees, resumeSessionWorktree } from "../src/core/session-worktree-snapshots.js";
@@ -129,12 +130,12 @@ process.stdout.write(JSON.stringify(outcome));
 	};
 }
 
-/** Dates the slot's record lock back past its stale time, as a suspension longer than that leaves it. */
+/** Emulates an older Atomic that was suspended past the stale time without publishing its process identity. */
 function ageRecordLock(pool: string): void {
 	const past = new Date(Date.now() - LOCK_STALE_MS - 15_000);
-	const locks = readdirSync(pool).filter((name) => name === "0.json.lock");
-	assert.deepEqual(locks, ["0.json.lock"]);
-	utimesSync(join(pool, "0.json.lock"), past, past);
+	const lock = join(pool, "0.json.lock");
+	rmSync(lockHolderPath(lock), { force: true });
+	utimesSync(lock, past, past);
 }
 
 /** The owner continues meanwhile: it holds its slot again and works in it. */
@@ -159,7 +160,7 @@ return evictIdleWorktrees(${JSON.stringify(storeDir())}, ${JSON.stringify(reposi
 	);
 }
 
-describe.skipIf(process.platform === "win32")("a pool action suspended inside a slot's record lock (#4991)", () => {
+describe.skipIf(process.platform === "win32")("a suspended legacy pool holder (#4991)", () => {
 	test(
 		"a hold suspended between its lock check and its lease takes nothing back from a claim made meanwhile (#4991)",
 		async () => {

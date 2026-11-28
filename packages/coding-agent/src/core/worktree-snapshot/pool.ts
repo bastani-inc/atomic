@@ -3,6 +3,7 @@ import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/pro
 import { basename, dirname, join, resolve, toNamespacedPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "../debug.ts";
+import { lockNamesLocalHolder, takeOverDeadHolderAsync } from "../lock-holder.js";
 import { renameWithRetry } from "../rename-retry.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
@@ -13,6 +14,7 @@ import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-ho
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
 import { lockShared, sharedClockNow, windowsTemporaryFiles } from "./shared-clock.ts";
+import { lockSharedWithHolder, reportWorktreeLockProgress } from "./shared-lock.js";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
 export { processStartToken } from "../process-start-token.js";
@@ -120,6 +122,7 @@ const LEASE_STALE_MS = 30_000;
 const LEASE_UPDATE_MS = 10_000;
 const POOL_LOCK_POLL_MS = 50;
 const POOL_LOCK_WAIT_MS = 60_000;
+const POOL_LOCK_NOTICE_MS = 500;
 export const POOL_LOCK_REFUSED_MS = 10_000;
 /**
  * How long after a lease went stale it still keeps its slot from being claimed or evicted, and its lock from being
@@ -346,26 +349,28 @@ function refusedForAMoment(error: unknown, since: number): boolean {
 	);
 }
 
-function lockHeldAndWaiting(error: unknown, wait: boolean, startedAt: number): boolean {
-	return wait && (error as NodeJS.ErrnoException).code === "ELOCKED" && Date.now() - startedAt < POOL_LOCK_WAIT_MS;
-}
-
 /**
- * Locks `path` with the restore-record constants: a stopped process loses the lock after 30 seconds. `wait` retries a
- * lock another process holds for up to 60 seconds with 50 ms polls, as when a slot's record is briefly being written.
+ * Admission and slot-record locks identify their process so a dead local holder can be replaced before its heartbeat
+ * expires. Session leases still use the heartbeat and the separate lease/grace rules. `wait` polls a busy lock for up
+ * to 60 seconds; a dead lock can be reclaimed even when the caller would skip a busy slot.
  */
 async function lockPath(
 	path: string,
+	kind: "admission" | "slot" | "lease",
 	wait: boolean,
 	onLost?: (error: Error) => void,
 	signal?: AbortSignal,
 ): Promise<() => Promise<void>> {
+	const lock = kind === "lease" ? lockShared : lockSharedWithHolder;
+	const lockDirectory = `${path}.lock`;
 	const startedAt = Date.now();
 	let refusedSince: number | undefined;
+	let waitingSince: number | undefined;
+	let announced = false;
 	for (;;) {
 		signal?.throwIfAborted();
 		try {
-			return await lockShared(path, {
+			return await lock(path, {
 				realpath: false,
 				stale: LEASE_STALE_MS,
 				update: LEASE_UPDATE_MS,
@@ -378,8 +383,22 @@ async function lockPath(
 		} catch (error) {
 			const since = refusedSince ?? Date.now();
 			if (refusedForAMoment(error, since)) refusedSince = since;
-			else if (lockHeldAndWaiting(error, wait, startedAt)) refusedSince = undefined;
-			else throw error;
+			else if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+				refusedSince = undefined;
+				if (kind !== "lease" && (await takeOverDeadHolderAsync(lockDirectory))) continue;
+				if (!wait || Date.now() - startedAt >= POOL_LOCK_WAIT_MS) throw error;
+				waitingSince ??= performance.now();
+				if (
+					!announced &&
+					performance.now() - waitingSince >= POOL_LOCK_NOTICE_MS &&
+					(await lockNamesLocalHolder(lockDirectory))
+				) {
+					announced = true;
+					reportWorktreeLockProgress(
+						`Waiting for another Atomic process to finish updating the worktree pool (${path})`,
+					);
+				}
+			} else throw error;
 		}
 		await sleep(POOL_LOCK_POLL_MS, undefined, { signal });
 	}
@@ -427,6 +446,7 @@ async function withSlotLock<T>(
 	let lost = false;
 	const unlock = await lockPath(
 		file,
+		"slot",
 		wait,
 		() => {
 			lost = true;
@@ -524,6 +544,7 @@ async function leaseSlot(
 	const lease = `${file}.${await ownLease()}.lease`;
 	const unlock = await lockPath(
 		lease,
+		"lease",
 		false,
 		() => {
 			held.compromised = true;
@@ -724,6 +745,7 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 	let repositoryLost: Error | undefined;
 	const unlockRepository = await lockPath(
 		directory,
+		"admission",
 		true,
 		(error) => {
 			repositoryLost ??= error;

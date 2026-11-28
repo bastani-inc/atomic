@@ -296,10 +296,12 @@ await withWorktreeSnapshotGit({ path: ${JSON.stringify(git)}, env }, () =>
 });
 
 describe("what pool actions leave in the pool directory (#4991)", () => {
-	/** The pool directory of `snapshot`'s repository holds slot records and live leases, never a private file left over. */
+	/** Only slot records, live leases, and the reusable advisory lock files should remain. */
 	function assertOnlyRecordsAndLeases(snapshot: WorktreeSnapshot): void {
 		const pool = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes));
-		const leftovers = readdirSync(pool).filter((name) => !/^\d+\.json(?:\.[0-9a-f-]+\.lease\.lock)?$/.test(name));
+		const leftovers = readdirSync(pool).filter(
+			(name) => !/^\d+\.json(?:\.[0-9a-f-]+\.lease\.lock|\.lock\.takeover\.lock)?$/.test(name),
+		);
 		assert.deepEqual(leftovers, []);
 	}
 

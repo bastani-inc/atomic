@@ -2,9 +2,21 @@ import { constants } from "node:fs";
 import { access, rmdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { LockOptions } from "proper-lockfile";
+import { asyncScope } from "../async-scope.ts";
 import { clearLockHolderAsync, lockNamesLocalHolder, recordLockHolderAsync } from "../lock-holder.js";
 import { lockHolderAsync, removeLeftoverHolderFilesAsync, takeTakeoverMutexAsync } from "../lock-takeover.js";
 import { lockShared, sharedClockNow } from "./shared-clock.ts";
+
+const worktreeLockProgress = asyncScope<(message: string) => void>();
+
+/** Sends lock waits to the resume UI rather than writing over it on stderr. */
+export function withWorktreeLockProgress<T>(onProgress: ((message: string) => void) | undefined, run: () => T): T {
+	return onProgress === undefined ? run() : worktreeLockProgress.run(onProgress, run);
+}
+
+export function reportWorktreeLockProgress(message: string): void {
+	(worktreeLockProgress.getStore() ?? process.emitWarning)(message);
+}
 
 /**
  * Takes a shared-clock directory lock and records its holder. Publishing an acquisition and both kinds of takeover

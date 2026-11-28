@@ -26,14 +26,9 @@ import { MemorySnapshotBlobStore } from "../src/core/worktree-snapshot/blob-stor
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
 import { isWorkspaceRestoreError } from "../src/core/worktree-snapshot/errors.js";
 import { withPublicationFence } from "../src/core/worktree-snapshot/publication-fence.js";
-import {
-	objectStorePath,
-	REPOSITORY_LOCK_REFUSED_MS,
-	restoreWorktree,
-	withRepositoryLockProgress,
-} from "../src/core/worktree-snapshot/restore.js";
+import { objectStorePath, REPOSITORY_LOCK_REFUSED_MS, restoreWorktree } from "../src/core/worktree-snapshot/restore.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
-import { lockSharedWithHolder } from "../src/core/worktree-snapshot/shared-lock.js";
+import { lockSharedWithHolder, withWorktreeLockProgress } from "../src/core/worktree-snapshot/shared-lock.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
 /**
@@ -566,7 +561,7 @@ exec "$REAL_GIT" "$@"
 		const waiting = new Promise<string>((resolve) => {
 			notice = resolve;
 		});
-		const restoring = withRepositoryLockProgress(notice, () =>
+		const restoring = withWorktreeLockProgress(notice, () =>
 			restoreWorktree(snapshot, { storeDir, signal: AbortSignal.timeout(RECLAIM_BUDGET_MS) }),
 		);
 		try {

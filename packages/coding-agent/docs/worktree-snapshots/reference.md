@@ -67,6 +67,8 @@ An open session keeps its worktree reserved by refreshing its lease every 10 sec
 
 A worktree stays associated with the session it was restored for after the session closes so resuming it again continues in the same directory. If another session claims that idle worktree later, the original session gets a fresh worktree on its next resume.
 
+If another Atomic is still updating the pool, resume shows a waiting notice. It can continue right away if Atomic can tell the process holding the pool lock is gone. Locks from an older version or another machine still have to go 30 seconds without a refresh. This wait is separate from worktree leases: Atomic can skip a worktree that is still leased and restore into another one.
+
 ### Idle reuse, eviction, and set-aside worktrees
 
 - **Idle reuse.** Restore reuses an idle pooled worktree that still matches its last recorded snapshot with no extra untracked or excluded files, resetting tracked files while preserving ignored directories (`node_modules`, `target`, `.venv`) and preferring worktrees with a matching `envHash`. `/session snapshot` marks reused worktrees `(claimed)`.
