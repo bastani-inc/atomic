@@ -62,6 +62,34 @@ async function clone(store: SqlSessionStore, parent: string, child: string, coun
 }
 
 describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL round trips of forks that share history (#6560)", () => {
+	test("an append during whole-session fork startup does not replay the captured prefix (#6795)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const store = await SqlSessionStore.open(await open());
+			const peer = await SqlSessionStore.open(await open());
+			try {
+				const saved = entries("source", 10_000);
+				await store.create(header("source"), saved);
+				const cut = await store.readResume("source");
+				await peer.append("source", [{ ...saved.at(-1)!, id: "later", parentId: saved.at(-1)!.id }], {
+					expectSeq: cut.lastSeq,
+				});
+				const trips = countRoundTrips();
+				const fork = await store.createFork(
+					header("copy", "source"),
+					completeSessionForkStream("source", cut.epoch, cut.lastSeq),
+					{ store, sessionId: "source", epoch: cut.epoch, hashes: [], receipts: new Map() },
+				);
+				const count = trips.take();
+				trips.restore();
+				assert.equal(fork?.lastSeq, saved.length);
+				assert.deepEqual((await store.load("copy")).entries, saved);
+				assert.ok(count <= 4, `expected <= 4 round trips for the captured prefix, got ${count}`);
+			} finally {
+				await Promise.all([store.close(), peer.close()]);
+			}
+		});
+	});
+
 	test("a fork that shares its parent's history takes the round trips of creating a session, at any length or depth (#6560)", async () => {
 		await withPostgresDatabase(async ({ open }) => {
 			const store = await SqlSessionStore.open(await open());

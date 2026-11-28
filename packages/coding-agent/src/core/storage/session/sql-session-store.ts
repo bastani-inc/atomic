@@ -73,7 +73,7 @@ import {
 	sessionForkTables,
 	sharedHistoryTablesScript,
 } from "./fork-schema.js";
-import { assertForkSegments, type ForkSegment, prefixForkSegments } from "./fork-segments.js";
+import { assertForkSegments, type ForkSegment, locateForkSeq, prefixForkSegments } from "./fork-segments.js";
 import { tryCleanupForkStaging } from "./fork-staging-maintenance.js";
 import { forkStoreRelation, nativeForkReader, registerForkScope } from "./fork-store-scope.js";
 import {
@@ -126,6 +126,7 @@ import type {
 	OversizedSessionEntry,
 	SessionBlob,
 	SessionBranchPageCut,
+	SessionBranchSnapshotMetadata,
 	SessionCompactionPoint,
 	SessionCwdMatcher,
 	SessionEntriesPage,
@@ -849,6 +850,8 @@ export class SqlSessionStore implements SessionStore {
 		string,
 		{ readonly revision: string; readonly index: SessionResumeIndex }
 	>();
+	/** A just-opened session's exact prefix may be forked even if the source appended before the fork took its locks. */
+	private lastForkCut?: { readonly sessionId: string; readonly state: string; readonly index: SessionResumeIndex };
 	private readonly forkStagingTable: string;
 	/** The generation each recently read session's row held at a revision: see `generation`. */
 	private readonly generations = new Map<
@@ -2707,19 +2710,34 @@ export class SqlSessionStore implements SessionStore {
 		// session left any.
 		if (shared !== undefined) shared = await this.startSharedFork(tx, header.id, shared, source, withState);
 		const head = shared ?? read;
-		const { encodedForkRow } = await import("./fork-row-bytes.js");
-		const { foldForkRow } = await import("./fork-row-index.js");
 		const prefix = stream.prefix;
 		if (
 			shared !== undefined &&
 			prefix !== undefined &&
 			prefix.sessionId === source.sessionId &&
-			prefix.through === shared.lastSeq &&
+			prefix.through <= shared.lastSeq &&
 			(prefix.epoch === undefined || prefix.epoch === shared.epoch)
 		) {
-			const whole = await this.writeSharedPrefixFork(tx, header, source.sessionId, shared);
-			if (whole !== undefined) return whole;
+			const cached = this.lastForkCut;
+			const atHead = prefix.through === shared.lastSeq;
+			const captured =
+				!atHead &&
+				cached?.sessionId === source.sessionId &&
+				cached.index.seq === prefix.through &&
+				cached.index.epoch === shared.epoch
+					? cached
+					: undefined;
+			const state = atHead
+				? shared.state
+				: captured === undefined
+					? undefined
+					: (JSON.parse(captured.state) as StoredSummaryState);
+			const index = captured?.index ?? (state === undefined ? undefined : windowIndex(state, prefix.through));
+			if (state !== undefined && index !== undefined)
+				return this.writeSharedPrefixFork(tx, header, source.sessionId, shared, state, index);
 		}
+		const { encodedForkRow } = await import("./fork-row-bytes.js");
+		const { foldForkRow } = await import("./fork-row-index.js");
 		const reader = new SqlSessionStore(
 			{
 				descriptor: this.database.descriptor,
@@ -3061,38 +3079,38 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/**
-	 * A fork with shared history of the donor's whole view as it stands (#6560): its segments, its lineage and its
-	 * session row, whose summary is the donor's in a generation of its own, and no row of any entry. Undefined, for
-	 * the fork to read the donor's rows, when the donor's resume index does not cover its watermark.
+	 * A fork with shared history of an exact complete-session cut (#6560): its segments, its lineage and its session
+	 * row, whose summary is the donor's at the chosen cut in a generation of its own, and no row of any entry.
 	 */
 	private async writeSharedPrefixFork(
 		tx: SqliteExecutor,
 		header: SessionRecordHeader,
 		donorId: string,
 		donor: SharedForkDonor,
-	): Promise<(SessionWriteResult & { readonly remainingBlobs: readonly string[] }) | undefined> {
-		const index = donor.state === undefined ? undefined : windowIndex(donor.state, donor.lastSeq);
-		if (donor.state === undefined || index === undefined) return undefined;
+		state: StoredSummaryState,
+		index: SessionResumeIndex,
+	): Promise<SessionWriteResult & { readonly remainingBlobs: readonly string[] }> {
+		const through = index.seq;
 		const epoch = newRevision();
-		const segments = prefixForkSegments(donorId, donor.segments, donor.lastSeq, donor.lastSeq);
-		const { resume: _resume, windowResume: _window, epoch: _epoch, ...listed } = donor.state;
+		const segments = prefixForkSegments(donorId, donor.segments, donor.lastSeq, through);
+		const { resume: _resume, windowResume: _window, epoch: _epoch, ...listed } = state;
 		const summary = this.summaryWrite(
 			header.id,
-			{ header, entries: [], lastSeq: donor.lastSeq },
+			{ header, entries: [], lastSeq: through },
 			{ ...listed, epoch } as StoredSummaryState,
 			{ ...index, epoch },
 		);
 		const lineage = this.lineageTables();
-		assertForkSegments(header.id, segments, donor.lastSeq);
+		assertForkSegments(header.id, segments, through);
 		const statements = [
 			...forkSegmentInserts(lineage, header.id, 0, segments),
-			forkLineageWrite(lineage, header.id, { parentId: donorId, cutSeq: donor.lastSeq }),
+			forkLineageWrite(lineage, header.id, { parentId: donorId, cutSeq: through }),
 			summary.statement,
 		];
 		// The transaction's last writes: where its connection is pipelined, they go out with its commit.
 		if (transactionFinisher(tx)?.(statements) !== true)
 			for (const { sql, params } of statements) await tx.run(sql, ...params);
-		return { lastSeq: donor.lastSeq, epoch: summary.epoch, remainingBlobs: [] };
+		return { lastSeq: through, epoch: summary.epoch, remainingBlobs: [] };
 	}
 
 	/**
@@ -5681,9 +5699,169 @@ $grant$`);
 				options.backward,
 			);
 			if ("oversized" in plan)
-				return { items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized } as const] };
-			return { items: await this.readSeqs(tx, sessionId, plan.seqs) };
+				return {
+					lastSeq: head.lastSeq,
+					items: [{ kind: "oversized", sessionId, epoch, ...plan.oversized } as const],
+				};
+			return { lastSeq: head.lastSeq, items: await this.readSeqs(tx, sessionId, plan.seqs) };
 		});
+	}
+
+	/** Compare finished subagents' captures without opening or reading their conversations. */
+	async readBranchSnapshotMetadata(sessionIds: readonly string[]) {
+		this.assertOpen();
+		const result = new Map<string, SessionBranchSnapshotMetadata | null>();
+		const ids = [...new Set(sessionIds)];
+		for (const id of ids) validateSessionText("sessionId", id);
+		const { dialect } = this;
+		const json = (column: string, key: string) => dialect.jsonText(column, key);
+		// Keep the candidate group in one server request at typical sizes; on SQLite leave more room for other reads.
+		// Each result is metadata, never a conversation entry or the body of a snapshot.
+		const sessionsPerBatch = 256;
+		const entriesPerBatch = dialect.name === "postgres" ? 65_536 : 4096;
+		for (let start = 0; start < ids.length; start += sessionsPerBatch) {
+			const batch = ids.slice(start, start + sessionsPerBatch);
+			for (const id of batch) {
+				const unfinished = this.unfinishedWrites.get(id);
+				if (unfinished !== undefined) await Promise.all(unfinished);
+			}
+			const indexes = {
+				sql: `SELECT id,last_seq,summary_state FROM ${this.tables.sessions} WHERE ${inJsonList(dialect, "id")}`,
+				params: [JSON.stringify(batch)],
+			};
+			await this.readTransaction(
+				batch[0]!,
+				async (tx) => {
+					for (const id of batch) result.set(id, null);
+					const cuts = new Map<string, SessionSnapshotCut>();
+					type Projected = SessionBranchSnapshotMetadata["entries"][number];
+					type Requested = { child: string; child_seq: number; owner: string; seq: number };
+					const projected = new Map<string, Projected[]>();
+					const groups: Requested[][] = [[]];
+					const rows = await tx.all<{ id: string; last_seq: number; summary_state: string }>(
+						indexes.sql,
+						...indexes.params,
+					);
+					for (const { id, last_seq, summary_state } of rows) {
+						const index = windowIndex(JSON.parse(summary_state) as StoredSummaryState, Number(last_seq));
+						if (!index) {
+							result.delete(id);
+							continue;
+						}
+						const cut = snapshotCutOf(index, index.leafSeq);
+						// Keep a child's candidates together so the query can choose its winners.
+						if (cut.seqs.length > entriesPerBatch) result.delete(id);
+						else cuts.set(id, cut);
+					}
+					const { segments } = await this.viewTables(tx);
+					const segmentsById = new Map<string, ForkSegment[]>();
+					if (segments !== undefined && cuts.size !== 0) {
+						for (const row of await tx.all<{
+							session_id: string;
+							source_id: string;
+							from_seq: number;
+							to_seq: number;
+							base_seq: number;
+						}>(
+							`SELECT session_id,source_id,from_seq,to_seq,base_seq FROM ${segments} WHERE ${inJsonList(dialect, "session_id")} ORDER BY session_id,idx`,
+							JSON.stringify([...cuts.keys()]),
+						)) {
+							const held = segmentsById.get(row.session_id) ?? [];
+							if (held.length === 0) segmentsById.set(row.session_id, held);
+							held.push({
+								sourceId: row.source_id,
+								fromSeq: Number(row.from_seq),
+								toSeq: Number(row.to_seq),
+								baseSeq: Number(row.base_seq),
+							});
+						}
+					}
+					for (const [id, cut] of cuts) {
+						const segments = segmentsById.get(id) ?? [];
+						let group = groups.at(-1)!;
+						if (group.length + cut.seqs.length > entriesPerBatch) {
+							group = [];
+							groups.push(group);
+						}
+						projected.set(id, []);
+						for (const seq of cut.seqs) {
+							const stored = locateForkSeq(id, segments, seq);
+							group.push({ child: id, child_seq: seq, owner: stored.sessionId, seq: stored.seq });
+						}
+					}
+					const pg = dialect.name === "postgres";
+					const entry = (key: string) => (pg ? `parsed.value->>'${key}'` : json("e.entry_json", key));
+					const type = (key: string) =>
+						pg ? `jsonb_typeof(parsed.value->'${key}')` : dialect.jsonType("e.entry_json", key);
+					const source = pg
+						? `LEFT JOIN LATERAL (SELECT chunks,entry_json FROM ${this.tables.entries} WHERE session_id=w.owner AND seq=w.seq OFFSET 0) e ON true
+							CROSS JOIN LATERAL (SELECT ${postgresJsonb("e.entry_json")} AS value OFFSET 0) parsed`
+						: `LEFT JOIN ${this.tables.entries} e ON e.session_id=w.owner AND e.seq=w.seq`;
+					const request = pg
+						? `SELECT * FROM jsonb_to_recordset((?)::jsonb) AS r(child TEXT,child_seq BIGINT,owner TEXT,seq BIGINT)`
+						: `SELECT ${json("value", "child")} AS child,${json("value", "child_seq")} AS child_seq,
+							${json("value", "owner")} AS owner,${json("value", "seq")} AS seq FROM ${dialect.jsonValues("?")}`;
+					// Canonical UTC stamps from Atomic sort like Date.parse, even when the clock went backwards.
+					// Keep all captures for a child with an unusual stamp (including leap day), so the JS comparison is unchanged.
+					const iso = "####-##-##T##:##:##.###Z".replaceAll("#", "[0-9]");
+					const shape = pg ? `stamp ~ '^${iso.replace(".", "[.]")}$'` : `stamp GLOB '${iso}'`;
+					const month = "substr(stamp,6,2)";
+					const canonical = `${shape} AND ${month} BETWEEN '01' AND '12'
+						AND substr(stamp,9,2) BETWEEN '01' AND CASE WHEN ${month}='02' THEN '28'
+							WHEN ${month} IN ('04','06','09','11') THEN '30' ELSE '31' END
+						AND substr(stamp,12,2) <= '23' AND substr(stamp,15,2) <= '59' AND substr(stamp,18,2) <= '59'`;
+					const statement = `WITH requested AS MATERIALIZED (${request}),
+					wanted AS MATERIALIZED (SELECT DISTINCT owner,seq FROM requested),
+					metadata AS MATERIALIZED (
+						SELECT w.owner,w.seq,e.chunks,${entry("root")} AS root,${entry("snapshotId")} AS snapshot_id,
+							${entry("timestamp")} AS stamp,${entry("restore")} AS restore,
+							CASE WHEN ${type("captureMs")} IS NOT NULL AND ${type("restore")} IS NULL AND ${type("unrestored")} IS NULL THEN 1 ELSE 0 END AS capture
+						FROM wanted w ${source} WHERE e.chunks IS NULL OR ${entry("type")}='worktree_snapshot'
+					), ranked AS (
+						SELECT r.child,r.child_seq,m.*,
+							min(CASE WHEN capture=0 OR (${canonical}) THEN 1 ELSE 0 END) OVER (PARTITION BY r.child${dialect.byteOrderCollation}) AS canonical_stamps,
+							row_number() OVER (PARTITION BY r.child${dialect.byteOrderCollation},root${dialect.byteOrderCollation}
+								ORDER BY capture DESC,stamp${dialect.byteOrderCollation} DESC,r.child_seq DESC) AS rank
+						FROM requested r JOIN metadata m ON m.owner=r.owner AND m.seq=r.seq
+					) SELECT child,chunks,root,snapshot_id,stamp,restore,capture FROM ranked
+					WHERE chunks IS NULL OR chunks<>0 OR restore IS NOT NULL OR (capture=1 AND (rank=1 OR canonical_stamps=0))
+					ORDER BY child,child_seq`;
+					for (const group of groups) {
+						if (group.length === 0) continue;
+						const page = await tx.all<
+							SqliteRow & {
+								child: string;
+								root: string;
+								snapshot_id: string;
+								stamp: string;
+								restore: string | null;
+							}
+						>(statement, JSON.stringify(group));
+						for (const row of page) {
+							// A missing row or a chunked snapshot needs the original reader, which also checks the full entry.
+							if (row.chunks === null || Number(row.chunks) !== 0) projected.delete(row.child);
+							else
+								projected.get(row.child)?.push({
+									root: row.root,
+									snapshotId: row.snapshot_id,
+									timestamp: row.stamp,
+									capture: Number(row.capture) === 1,
+									...(row.restore === null
+										? {}
+										: { restore: JSON.parse(row.restore) as Projected["restore"] }),
+								});
+						}
+					}
+					for (const [id, cut] of cuts) {
+						const entries = projected.get(id);
+						if (entries === undefined) result.delete(id);
+						else result.set(id, { epoch: cut.epoch, lastSeq: cut.lastSeq, records: cut.records, entries });
+					}
+				},
+				[indexes],
+			);
+		}
+		return result;
 	}
 
 	/**
@@ -6545,10 +6723,15 @@ $grant$`);
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
+		const current = leafId === undefined && throughSeq === undefined;
 		return this.withResumeIndex(
 			sessionId,
-			(tx, { header, index }) => this.resumeIn(tx, sessionId, header, index, options),
-			leafId === undefined && throughSeq === undefined ? undefined : { leafId, throughSeq },
+			async (tx, { header, index, row }) => {
+				const resume = await this.resumeIn(tx, sessionId, header, index, options);
+				if (current && this.sharedHistorySeen) this.lastForkCut = { sessionId, state: row.summary_state, index };
+				return resume;
+			},
+			current ? undefined : { leafId, throughSeq },
 		);
 	}
 

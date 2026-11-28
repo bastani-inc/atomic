@@ -70,6 +70,7 @@ export class LegacySessionStore implements SessionStore {
 	readonly readSelectedPage?: SessionStore["readSelectedPage"];
 	readonly readScanPage?: SessionStore["readScanPage"];
 	readonly readSnapshotCut?: SessionStore["readSnapshotCut"];
+	readonly readBranchSnapshotMetadata?: SessionStore["readBranchSnapshotMetadata"];
 
 	constructor(inner: SessionStore, options: { readonly legacyDirectory: string; readonly databasePath: string }) {
 		this.inner = inner;
@@ -114,6 +115,13 @@ export class LegacySessionStore implements SessionStore {
 			this.readSnapshotCut = async (id, options) => {
 				await this.convert(id);
 				return inner.readSnapshotCut!(id, options);
+			};
+		if (inner.readBranchSnapshotMetadata)
+			this.readBranchSnapshotMetadata = async (ids) => {
+				const candidates = new Map(await inner.readBranchSnapshotMetadata!(ids));
+				// A session absent from the SQL store may still be available in legacy JSONL files.
+				for (const [id, candidate] of candidates) if (candidate === null) candidates.delete(id);
+				return candidates;
 			};
 		if (inner.readTreeOutline)
 			this.readTreeOutline = async (id, from, to, epoch) => {

@@ -4,6 +4,7 @@ import type {
 	LabelEntry,
 	SessionEntry,
 	SessionWorkflowMetadata,
+	WorktreeSnapshotEntry,
 } from "../../session-manager-types.ts";
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
@@ -106,6 +107,11 @@ export interface SessionHistoryPage {
 	readonly nextCursor?: string;
 	/** Adjacent ranges in the original snapshot, when the read requested them. */
 	readonly adjacent?: { readonly older?: string; readonly newer?: string; readonly current?: string };
+}
+
+/** A sparse page may also certify the current history watermark from the same read. */
+export interface SessionSelectedPage extends SessionHistoryPage {
+	readonly lastSeq?: number;
 }
 
 export interface SessionHistoryReadOptions {
@@ -335,6 +341,15 @@ export interface SessionChildReadCut {
 	readonly lastSeq: number;
 	readonly seqs: readonly number[];
 	readonly aliases: Readonly<Record<string, SessionChildAliases>>;
+}
+
+export interface SessionBranchSnapshotMetadata {
+	readonly epoch: string;
+	readonly lastSeq: number;
+	readonly records: SessionSnapshotCut["records"];
+	readonly entries: readonly (Pick<WorktreeSnapshotEntry, "root" | "snapshotId" | "timestamp" | "restore"> & {
+		readonly capture: boolean;
+	})[];
 }
 
 /** Where a session's `worktree_snapshot` entries are, as the store's index of its history locates them (#5554). */
@@ -739,6 +754,14 @@ export interface SessionStore {
 	readResume?(sessionId: string, leafId?: string, options?: { deferChildRecords: true }): Promise<SessionResume>;
 	readChildCatalogCut?(sessionId: string): Promise<SessionChildReadCut>;
 	/**
+	 * Active-branch restore mappings and capture candidates from one history cut per session, in branch order.
+	 * A store can retain only the newest capture per recorded root (ties go to the later entry). A null value means
+	 * the session does not exist; an omitted id requires the ordinary history reader.
+	 */
+	readBranchSnapshotMetadata?(
+		sessionIds: readonly string[],
+	): Promise<ReadonlyMap<string, SessionBranchSnapshotMetadata | null>>;
+	/**
 	 * Where the session's snapshot entries are, from the index the store keeps of its history, without reading an entry:
 	 * with `leafSeq`, only those on the branch from that sequence to the root. Undefined when that index does not cover
 	 * the session's history as it stands; a reader then reads the history itself. A store with it reads
@@ -760,7 +783,7 @@ export interface SessionStore {
 		seqs: readonly number[],
 		epoch: string,
 		options?: { readonly limit?: number; readonly backward?: boolean },
-	): Promise<SessionHistoryPage>;
+	): Promise<SessionSelectedPage>;
 	/** A local navigation from a stale manager may select a branch as of its original sequence watermark. */
 	/** Read the branch a forked child needs at its captured entry, with the current labels for copied targets. */
 	readForkWindow?(

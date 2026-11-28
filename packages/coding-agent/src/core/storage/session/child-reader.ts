@@ -71,13 +71,32 @@ export async function resolveDeferredChildren(store: SessionStore, resume: Sessi
 		retired = catalog.retire(metadata, resume.branch);
 	catalog.applyAliases(refs.aliases);
 	const state = [...resume.state];
-	for (const [i, row] of metadata.entries())
-		if (!retired.has(row.entry.id)) {
-			const source = await readSessionRange(store, id, row.seq, row.seq, epoch);
-			if (source.lastSeq < lastSeq || source.epoch !== epoch || source.entries[0]?.id !== row.entry.id)
-				throw new SessionConflictError(id, lastSeq, source.lastSeq);
-			state.push({ seq: row.seq, entry: source.entries[0], onBranch: refs.positions[i]!.onBranch });
+	const active = metadata.filter((row) => !retired.has(row.entry.id));
+	const loadOne = async (row: (typeof active)[number]) => {
+		const source = await readSessionRange(store, id, row.seq, row.seq, epoch);
+		if (source.lastSeq < lastSeq || source.epoch !== epoch || source.entries[0]?.id !== row.entry.id)
+			throw new SessionConflictError(id, lastSeq, source.lastSeq);
+		state.push({ ...row, entry: source.entries[0] });
+	};
+	let next = 0;
+	if (store.readSelectedPage) {
+		while (next < active.length) {
+			const seqs = active.slice(next, next + SESSION_HISTORY_PAGE_ENTRIES).map((row) => row.seq);
+			const page = await store.readSelectedPage(id, seqs, epoch);
+			// Older adapters cannot certify that the page covers the history cut used for the resume.
+			if (page.lastSeq === undefined) break;
+			if (page.lastSeq < lastSeq || page.items.length === 0)
+				throw new SessionConflictError(id, lastSeq, page.lastSeq);
+			for (const item of page.items) {
+				const row = active[next++];
+				if (!row || row.seq !== item.seq || ("entry" in item && row.entry.id !== item.entry.id))
+					throw new SessionConflictError(id, lastSeq, page.lastSeq);
+				if ("entry" in item) state.push({ ...row, entry: item.entry });
+				else await loadOne(row);
+			}
 		}
+	}
+	for (; next < active.length; next++) await loadOne(active[next]!);
 	return { ...resume, state: state.sort((a, b) => a.seq - b.seq), deferredChildren: undefined, childArchive: catalog };
 }
 
