@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongInterval } from "@bastani/atomic-timers";
 import type { CallbackActivity } from "../../core/callback-activity.ts";
 
 export interface ActivityWatchdogThresholds {
@@ -64,7 +65,7 @@ export class ActivityWatchdog {
 	private readonly thresholds: ActivityWatchdogThresholds;
 	private lastHeartbeatAt: number;
 	private readonly activities = new Map<string, CallbackActivity>();
-	private timer: ReturnType<typeof setInterval> | undefined;
+	private timer: LongTimeout | undefined;
 	private emittedBlocking = false;
 	private emittedUnresponsive = false;
 
@@ -77,12 +78,12 @@ export class ActivityWatchdog {
 
 	start(): void {
 		if (this.timer) return;
-		this.timer = setInterval(() => this.inspect(), this.thresholds.pollMs);
+		this.timer = setLongInterval(() => this.inspect(), this.thresholds.pollMs);
 		this.timer.unref?.();
 	}
 
 	stop(): void {
-		if (this.timer) clearInterval(this.timer);
+		this.timer?.clear();
 		this.timer = undefined;
 		this.activities.clear();
 	}

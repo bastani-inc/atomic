@@ -1,18 +1,13 @@
 import assert from "node:assert";
-import { describe, it, type TestContext } from "node:test";
+import { describe, it } from "node:test";
 import { type Component, Container, type TuiMouseEventResult } from "../src/tui.ts";
 import { MULTI_CLICK_INTERVAL_MS, TuiAltScreen } from "../src/tui-alt-screen.ts";
+import { mockMonotonicTimers as mockClickClock } from "./mock-monotonic-timers.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
 const press = (x: number, y: number) => `\x1b[<0;${x + 1};${y + 1}M`;
 const release = (x: number, y: number) => `\x1b[<0;${x + 1};${y + 1}m`;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function mockClickClock(t: TestContext): void {
-	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 100_000 });
-	// Node's mock timers advance Date and timeouts, but not performance.now().
-	t.mock.method(performance, "now", Date.now.bind(Date));
-}
 
 /**
  * A renderer that copies what a double-click selects, over rows whose single click acts only once it is known not to

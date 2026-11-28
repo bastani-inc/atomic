@@ -77,7 +77,7 @@ describe("issue #1647 Windows exit-code verification", () => {
 	});
 
 	it("waits for the real exit code when a held Windows handle sees termination before the exit event", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess(1647);
 		let resolved = false;
 		const handle = createFakeWindowsExitHandle(() => ({ exited: true, exitCode: 1, unknown: false }));
@@ -112,7 +112,7 @@ describe("issue #1647 Windows exit-code verification", () => {
 	it.each([0, 1, 2, 259] as const)(
 		"reads the proved exit code %i from a creation-time-verified handle when libuv's exit event never arrives",
 		async (expectedCode) => {
-			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 			const synthetic = createSyntheticChildProcess(1649);
 			let resolved = false;
 			const handle = createFakeWindowsExitHandle(() => ({
@@ -147,7 +147,7 @@ describe("issue #1647 Windows exit-code verification", () => {
 	it.each([0, 2] as const)(
 		"resolves with proved exit code %i when a detached descendant holds stdio open and libuv's exit event is lost",
 		async (expectedCode) => {
-			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 			const synthetic = createSyntheticChildProcess(1651);
 			const handle = createFakeWindowsExitHandle(() => ({
 				exited: true,
@@ -175,7 +175,7 @@ describe("issue #1647 Windows exit-code verification", () => {
 	);
 
 	it("does not fabricate exit code 0 when a Windows child's exit event is delayed past 1 s under load without natives", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess(1650);
 		let resolved = false;
 
@@ -202,7 +202,7 @@ describe("issue #1647 Windows exit-code verification", () => {
 	});
 
 	it("keeps waiting for libuv without natives until the caller's signal aborts, then rejects with exit status unknown instead of 0", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess(1652);
 		const controller = new AbortController();
 		let settled = false;
@@ -246,7 +246,7 @@ describe("issue #1647 Windows exit-code verification", () => {
 	});
 
 	it("waits for a still-running child after abort without natives before failing with exit status unknown", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess(1653);
 		const controller = new AbortController();
 		let alive = true;
@@ -290,7 +290,7 @@ describe("issue #1647 Windows exit-code verification", () => {
 	});
 
 	it("drops an unreadable handle and keeps waiting for a delayed libuv exit rather than failing at 1 s", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess(1654);
 		const handle = createFakeWindowsExitHandle(() => ({ exited: true, unknown: true }));
 		let resolved = false;
@@ -320,7 +320,7 @@ describe("issue #1647 Windows exit-code verification", () => {
 	});
 
 	it("rejects with exit status unknown (never 0) when an unreadable handle combines with caller abort and lost exit", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess(1655);
 		const controller = new AbortController();
 		const handle = createFakeWindowsExitHandle(() => ({ exited: true, unknown: true }));

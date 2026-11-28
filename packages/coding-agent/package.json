@@ -98,7 +98,7 @@
     "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
     "typecheck": "node ../../scripts/bun-typecheck.mjs -p tsconfig.build.json && node ../../scripts/bun-typecheck.mjs -p tsconfig.typetests.json",
     "build": "bun run build:tsc && bun run build:split && bun run build:declarations && bun run build:assets",
-    "build:tsc": "tsc -p tsconfig.build.json",
+    "build:tsc": "node ../../scripts/tsc-with-timers.mjs dist -p tsconfig.build.json",
     "build:split": "node scripts/split-dist.mjs",
     "build:declarations": "bun run scripts/unreachable-declarations.ts",
     "build:assets": "node scripts/build-codemode-worker.mjs && node ../../scripts/package-files.mjs executable dist/cli.js dist/rpc-entry.js && bun run copy-assets && node scripts/write-startup-files.mjs && node scripts/write-startup-stages.mjs",

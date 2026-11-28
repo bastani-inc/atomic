@@ -24,6 +24,7 @@ import {
 	type WorktreeRootMapping,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
+import { setLongTimeout } from "@bastani/atomic-timers";
 import type { ModelSingleResponse } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
 import type { AgentConfig, AgentScope, AgentSource } from "../../agents/agent-types.js";
@@ -1782,14 +1783,14 @@ function goneChildRefusal(label: string, record: SubagentChildRecord, reason?: s
 
 function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
 	return new Promise((resolve, reject) => {
-		const timer = setTimeout(() => resolve(undefined), Math.max(0, timeoutMs));
+		const timer = setLongTimeout(() => resolve(undefined), timeoutMs);
 		promise.then(
 			(value) => {
-				clearTimeout(timer);
+				timer.clear();
 				resolve(value);
 			},
 			(error: unknown) => {
-				clearTimeout(timer);
+				timer.clear();
 				reject(error);
 			},
 		);

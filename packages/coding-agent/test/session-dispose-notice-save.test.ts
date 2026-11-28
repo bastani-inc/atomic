@@ -158,7 +158,7 @@ async function stoppedDuringRetry(hold: () => Promise<void>) {
 
 /** Disposes `session` with its shutdown bound on a fake clock, passes the bound, and returns how disposal ended. */
 async function disposeAcrossTheBound(session: AgentSession): Promise<unknown> {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	try {
 		const outcome = session.dispose().then(
 			() => undefined,

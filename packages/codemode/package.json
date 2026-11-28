@@ -51,7 +51,7 @@
 	],
 	"scripts": {
 		"clean": "node ../../scripts/package-files.mjs clean dist",
-		"build": "tsc -p tsconfig.build.json",
+		"build": "node ../../scripts/tsc-with-timers.mjs dist -p tsconfig.build.json",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},

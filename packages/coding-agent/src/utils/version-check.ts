@@ -67,7 +67,7 @@ export async function getLatestPiRelease(
 ): Promise<LatestPiRelease | undefined> {
 	if (isTruthyEnvFlag(getEnvValue(ENV_OFFLINE))) return undefined;
 
-	const response = await fetchWithRetry(
+	const data = await fetchWithRetry(
 		LATEST_VERSION_URL,
 		{
 			headers: {
@@ -78,10 +78,10 @@ export async function getLatestPiRelease(
 			maxRetries: options.retry ? 2 : 0,
 			timeoutMs: options.timeoutMs ?? DEFAULT_VERSION_CHECK_TIMEOUT_MS,
 		},
+		async (response) =>
+			response.ok ? ((await response.json()) as { name?: unknown; version?: unknown; note?: unknown }) : undefined,
 	);
-	if (!response.ok) return undefined;
-
-	const data = (await response.json()) as { name?: unknown; version?: unknown; note?: unknown };
+	if (data === undefined) return undefined;
 	if (typeof data.version !== "string" || !data.version.trim()) return undefined;
 	const packageName = typeof data.name === "string" && data.name.trim() ? data.name.trim() : undefined;
 	const note = typeof data.note === "string" && data.note.trim() ? data.note.trim() : undefined;

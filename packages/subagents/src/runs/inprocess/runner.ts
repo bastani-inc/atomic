@@ -56,6 +56,7 @@ import {
 	type TerminationCause as NativeTerminationCause,
 	SubagentControl,
 } from "@bastani/atomic-natives";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type {
 	ChildCommandTaskOwner,
 	ChildTaskCompletionRoute,
@@ -692,11 +693,11 @@ function waitForExecutionCapacity(
 	}
 	return new Promise((resolveWait) => {
 		let settled = false;
-		let timer: ReturnType<typeof setTimeout>;
+		let timer: LongTimeout;
 		const settle = (result: CapacityWaitResult) => {
 			if (settled) return;
 			settled = true;
-			clearTimeout(timer);
+			timer.clear();
 			signals.abort.removeEventListener("abort", onAbort);
 			signals.interrupt.removeEventListener("abort", onInterrupt);
 			onSettled(result);
@@ -706,7 +707,7 @@ function waitForExecutionCapacity(
 		const onInterrupt = () => settle("interrupt");
 		signals.abort.addEventListener("abort", onAbort, { once: true });
 		signals.interrupt.addEventListener("abort", onInterrupt, { once: true });
-		timer = setTimeout(() => settle("retry"), delayMs);
+		timer = setLongTimeout(() => settle("retry"), delayMs);
 	});
 }
 

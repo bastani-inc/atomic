@@ -51,6 +51,12 @@ const SHARED_INPUTS = [
 
 /** Compiles a staged step's package into a staging directory and moves the changed files into its dist. */
 const STAGED_DIST_REFRESH = "scripts/refresh-package-dist.mjs";
+const TIMER_INPUTS = [
+	"packages/timers/src",
+	"packages/timers/package.json",
+	"packages/timers/tsconfig.build.json",
+	"scripts/tsc-with-timers.mjs",
+];
 
 /** Bundles each forked package's compiled modules into a few shared files (see the script). */
 const BUNDLER = "scripts/bundle-package-dist.mjs";
@@ -145,6 +151,7 @@ export const BUILD_STEPS = [
 			"packages/ai/tsconfig.base.json",
 			"packages/ai/tsconfig.build.json",
 			"packages/ai/tsconfig.json",
+			...TIMER_INPUTS,
 			BUNDLER,
 			BUNDLER_LITERALS,
 		],
@@ -161,6 +168,7 @@ export const BUILD_STEPS = [
 			"packages/tui/src",
 			"packages/tui/package.json",
 			"packages/tui/tsconfig.build.json",
+			...TIMER_INPUTS,
 			BUNDLER,
 			BUNDLER_LITERALS,
 		],
@@ -186,7 +194,12 @@ export const BUILD_STEPS = [
 	{
 		name: "codemode",
 		packageDir: "packages/codemode",
-		inputs: ["packages/codemode/src", "packages/codemode/package.json", "packages/codemode/tsconfig.build.json"],
+		inputs: [
+			"packages/codemode/src",
+			"packages/codemode/package.json",
+			"packages/codemode/tsconfig.build.json",
+			...TIMER_INPUTS,
+		],
 		outputs: ["packages/codemode/dist"],
 		scripts: [],
 		staged: true,
@@ -217,6 +230,7 @@ export const BUILD_STEPS = [
 			"packages/coding-agent/in-place-update",
 			"packages/coding-agent/package.json",
 			"packages/coding-agent/tsconfig.build.json",
+			...TIMER_INPUTS,
 			"packages/subagents",
 			"packages/mcp",
 			"packages/web-access",

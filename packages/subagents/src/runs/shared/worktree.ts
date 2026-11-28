@@ -14,6 +14,7 @@ import {
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "@bastani/atomic";
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { helperLaunchAsync, missingHelperOptions } from "@bastani/atomic-tui";
 import { asyncScope } from "../../shared/async-scope.js";
 import { pathExists } from "../../shared/path-exists.js";
@@ -147,7 +148,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 		const finish = (status: number | null) => {
 			if (settled) return;
 			settled = true;
-			if (timer !== undefined) clearTimeout(timer);
+			timer?.clear();
 			if (
 				status === null &&
 				!spawnError &&
@@ -182,7 +183,7 @@ function spawnCollect(command: string, args: string[], options: SpawnCollectOpti
 		};
 		const timer =
 			options.timeout !== undefined
-				? setTimeout(() => {
+				? setLongTimeout(() => {
 						stop(Object.assign(new Error(`spawn ${command} ETIMEDOUT`), { code: "ETIMEDOUT" }), true);
 					}, options.timeout)
 				: undefined;

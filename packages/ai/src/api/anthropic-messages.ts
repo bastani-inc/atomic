@@ -58,6 +58,7 @@ import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-
 import { getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
+import { sdkTimerBackstop } from "../utils/sdk-timeout.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { type ServerSentEvent, ServerSentEventDecoder } from "../utils/sse.ts";
 import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
@@ -1141,11 +1142,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				client = created.client;
 				isOAuth = created.isOAuthToken;
 			}
-			const requestOptions = {
-				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
-				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-				maxRetries: 0,
-			};
+			const requestOptions = { ...sdkTimerBackstop(options?.timeoutMs), signal: streamDeadline.signal, maxRetries: 0 };
 			let serializedBody: Middleware | undefined;
 			const send = (body: ThreadedParams) =>
 				retryProviderRequest(

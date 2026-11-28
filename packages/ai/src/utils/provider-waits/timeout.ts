@@ -1,4 +1,5 @@
 // Keep this cross-package entry in its own directory: Bun can cache the old contents of dist/utils during an update.
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { raceWithAbortSignal } from "../abort.ts";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 600_000;
@@ -23,18 +24,18 @@ export async function withProviderTimeout<T>(
 	label: string,
 ): Promise<T> {
 	const ms = timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-	if (!Number.isFinite(ms) || ms < 0) throw new Error(`Invalid timeoutMs: ${String(ms)}`);
+	if (ms !== Infinity && (!Number.isFinite(ms) || ms < 0)) throw new Error(`Invalid timeoutMs: ${String(ms)}`);
 	const controller = new AbortController();
 	// A returned response can still observe caller cancellation after this timer is cleared.
 	const signal = callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal;
 	const expire = () => controller.abort(new ProviderWaitTimeoutError(label, ms));
 	if (ms <= 0) expire();
-	const timer = ms > 0 ? setTimeout(expire, Math.min(ms, 2_147_483_647)) : undefined;
+	const timer = ms > 0 ? setLongTimeout(expire, ms) : undefined;
 	try {
 		signal.throwIfAborted();
 		return await raceWithAbortSignal(operation(signal), signal);
 	} finally {
-		clearTimeout(timer);
+		timer?.clear();
 	}
 }
 

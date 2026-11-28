@@ -12,8 +12,6 @@ export const CODEMODE_OPTIONS_PREFIX = "// @options:";
 
 const SUPPORTED_FIELDS = ["max_output_tokens", "timeout_ms"] as const;
 const SUPPORTED_FIELDS_TEXT = "`max_output_tokens` and `timeout_ms`";
-/** Largest delay `setTimeout` supports, which bounds `timeout_ms`. */
-const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /**
  * Lark grammar for providers with grammar-constrained tool input. It only fixes the shape of the
@@ -83,9 +81,9 @@ function parseOptions(directive: string): CodemodeSourceOptions {
 		options.maxOutputTokens = max_output_tokens;
 	}
 	if (timeout_ms !== undefined) {
-		if (!isSafeInteger(timeout_ms) || timeout_ms === 0 || timeout_ms > MAX_TIMEOUT_MS) {
+		if (!isSafeInteger(timeout_ms) || timeout_ms === 0) {
 			throw new CodemodeSourceError(
-				`@options field \`timeout_ms\` must be a positive integer up to ${MAX_TIMEOUT_MS}`,
+				"@options field `timeout_ms` must be a positive integer in JavaScript's safe range",
 			);
 		}
 		options.timeoutMs = timeout_ms;

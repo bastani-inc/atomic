@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { normalizeProviderId } from "@bastani/atomic-ai";
 import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { KeyId } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import { type AgentSessionRuntime, HOST_STARTED_SESSION } from "../../core/agent-session-runtime.ts";
@@ -511,14 +512,14 @@ export function createRpcCommandHandler({
 			case "refresh_models": {
 				const controller = command.timeoutMs === undefined ? undefined : new AbortController();
 				const timedOut = Symbol("model refresh timed out");
-				let timeout: ReturnType<typeof setTimeout> | undefined;
+				let timeout: LongTimeout | undefined;
 				const timeoutResult =
 					controller && command.timeoutMs !== undefined
 						? new Promise<typeof timedOut>((resolve) => {
-								timeout = setTimeout(() => {
+								timeout = setLongTimeout(() => {
 									controller.abort();
 									resolve(timedOut);
-								}, command.timeoutMs);
+								}, command.timeoutMs!);
 							})
 						: undefined;
 				try {
@@ -539,7 +540,7 @@ export function createRpcCommandHandler({
 						...createRpcModelCatalog(session),
 					});
 				} finally {
-					if (timeout) clearTimeout(timeout);
+					timeout?.clear();
 				}
 			}
 

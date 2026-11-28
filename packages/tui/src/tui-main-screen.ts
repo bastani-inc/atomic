@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { getTuiEnvValue } from "./env.ts";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
 import {
@@ -165,7 +166,7 @@ interface FrameGateState {
 	readonly timeoutMs: number;
 	onRelease: (() => void) | undefined;
 	held: HeldFrame | undefined;
-	timer: ReturnType<typeof setTimeout> | undefined;
+	timer: LongTimeout | undefined;
 }
 
 function sameFrame(a: RenderedFrame, b: RenderedFrame): boolean {
@@ -431,7 +432,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			return "write";
 		}
 		gate.held = { frame, start, row: drawn.row, children: drawn.children };
-		gate.timer = setTimeout(() => {
+		gate.timer = setLongTimeout(() => {
 			if (this.frameGate === gate) this.releaseFrameGate();
 		}, gate.timeoutMs);
 		return "held";
@@ -491,7 +492,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 	}
 
 	private endFrameGate(gate: FrameGateState): void {
-		if (gate.timer) clearTimeout(gate.timer);
+		gate.timer?.clear();
 		gate.timer = undefined;
 		gate.held = undefined;
 		gate.container = undefined;

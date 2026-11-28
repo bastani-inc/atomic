@@ -25,7 +25,7 @@ test("disposal stops waiting for a session save that never settles after SESSION
 	const sent = harness.session.sendCustomMessage(NOTICE);
 	void sent.catch(() => {});
 
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	const disposed = harness.session.dispose();
 	const outcome = disposed.then(
 		() => undefined,
@@ -66,7 +66,7 @@ test("disposal stops waiting after SESSION_WORK_DRAIN_MS for a turn whose messag
 		await new Promise((resolve) => setTimeout(resolve, 1));
 	assert.ok(saving, "the reply reached its save");
 
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	const outcome = harness.session.dispose().then(
 		() => undefined,
 		(error: unknown) => error,

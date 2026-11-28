@@ -361,6 +361,8 @@ const visitCompiled = (path) => {
 	}
 };
 for (const entry of COMPILED_PUBLIC_ENTRIES) visitCompiled(`${entry}.js`);
+// The timer implementation is embedded from its workspace, not an npm dependency or public entry.
+visitCompiled("__atomic_timers/index.js");
 /** The modules that run by path in a thread or process of their own, and the modules they import. */
 const threadModules = new Set();
 const visitThread = (path) => {

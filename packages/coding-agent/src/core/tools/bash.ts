@@ -590,7 +590,7 @@ export function createBashToolDefinition(
 			const emitOutputUpdate = () => {
 				if (!onUpdate || !updateDirty) return;
 				updateDirty = false;
-				lastUpdateAt = Date.now();
+				lastUpdateAt = performance.now();
 				const snapshot = output.snapshot({ persistIfTruncated: true });
 				onUpdate({
 					content: [{ type: "text", text: snapshot.content || "" }],
@@ -609,7 +609,7 @@ export function createBashToolDefinition(
 			const scheduleOutputUpdate = () => {
 				if (!onUpdate) return;
 				updateDirty = true;
-				const delay = BASH_UPDATE_THROTTLE_MS - (Date.now() - lastUpdateAt);
+				const delay = BASH_UPDATE_THROTTLE_MS - (performance.now() - lastUpdateAt);
 				if (delay <= 0) {
 					clearUpdateTimer();
 					emitOutputUpdate();

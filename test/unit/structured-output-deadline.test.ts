@@ -312,16 +312,16 @@ for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Numbe
 	});
 }
 
-test("a valid timeoutMs larger than the timer limit still bounds the decision at the limit (#3806)", async () => {
+test("a valid timeoutMs longer than the native timer limit keeps the full decision budget (#6807)", async () => {
 	const stream = vi.fn<Stream>((_model, _context, options) => hang(options));
-	const outcome = observe(generateStructuredOutput({ ...chatRequest(stream), timeoutMs: Number.MAX_SAFE_INTEGER }));
+	const outcome = observe(generateStructuredOutput({ ...chatRequest(stream), timeoutMs: 3_000_000_000 }));
 
-	await vi.advanceTimersByTimeAsync(2_147_483_646);
+	await vi.advanceTimersByTimeAsync(2_999_999_999);
 	assert.equal(outcome.state, "pending");
 	await vi.advanceTimersByTimeAsync(1);
 
 	assert.equal(outcome.state, "rejected");
-	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 2147483647ms deadline/);
+	assert.match(outcome.error?.message ?? "", /^Decision timed out: no answer within its 3000000000ms deadline/);
 });
 
 test("an exhausted repair budget reports how each attempt ended and how long it took (#3806)", async () => {

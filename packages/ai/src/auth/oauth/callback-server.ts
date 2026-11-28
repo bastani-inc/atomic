@@ -1,5 +1,6 @@
 /** Loopback OAuth redirect handler, loaded only by CLI OAuth flows. */
 import { createServer, type ServerResponse } from "node:http";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { oauthErrorHtml, oauthSuccessHtml } from "../../utils/oauth-page.ts";
 import type { ProviderAuthInteraction } from "../types.ts";
 
@@ -41,12 +42,12 @@ export async function startOAuthCallbackServer<T>(
 	waitPromise.catch(() => undefined);
 	let claimed = false;
 	let settled = false;
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: LongTimeout | undefined;
 	const onAbort = () => finish({ error: new Error("Login cancelled") });
 	const finish = (result: { value: T | undefined } | { error: Error }): void => {
 		if (settled) return;
 		settled = true;
-		if (timer) clearTimeout(timer);
+		timer?.clear();
 		signal?.removeEventListener("abort", onAbort);
 		if ("error" in result) rejectWait(result.error);
 		else resolveWait(result.value);
@@ -104,7 +105,7 @@ export async function startOAuthCallbackServer<T>(
 	}
 	server.on("error", (error) => finish({ error }));
 	if (options.timeoutMs !== undefined) {
-		timer = setTimeout(() => finish({ error: new Error(`${providerName} sign-in timed out`) }), options.timeoutMs);
+		timer = setLongTimeout(() => finish({ error: new Error(`${providerName} sign-in timed out`) }), options.timeoutMs);
 	}
 	signal?.addEventListener("abort", onAbort, { once: true });
 	if (signal?.aborted) onAbort();

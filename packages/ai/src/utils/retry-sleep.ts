@@ -1,3 +1,4 @@
+import { sleepFor } from "@bastani/atomic-timers";
 import type { RetryDeadline } from "../types.ts";
 
 /** Refuse an expired retry and let the timer owner deliver its usual timeout before returning. */
@@ -18,21 +19,8 @@ export class RetryDeadlineError extends Error {
 
 /** Resolve directly from the backoff timer; ordinary retries must not yield to other due timers. */
 export function sleepForRetry(ms: number, signal: AbortSignal | undefined, abortError: () => Error): Promise<void> {
-	if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
-	return new Promise((resolve, reject) => {
-		if (signal.aborted) {
-			reject(abortError());
-			return;
-		}
-		const finish = () => {
-			signal.removeEventListener("abort", onAbort);
-			resolve();
-		};
-		const timer = setTimeout(finish, ms);
-		const onAbort = () => {
-			clearTimeout(timer);
-			reject(abortError());
-		};
-		signal.addEventListener("abort", onAbort, { once: true });
+	if (!signal) return sleepFor(ms);
+	return sleepFor(ms, { signal }).catch((error) => {
+		throw signal.aborted ? abortError() : error;
 	});
 }

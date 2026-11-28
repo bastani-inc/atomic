@@ -5,6 +5,7 @@ import {
 	type SessionStartStepTiming,
 	SessionStartTimeoutError,
 } from "@bastani/atomic";
+import { type LongTimeout, setLongTimeoutAt } from "@bastani/atomic-timers";
 
 /**
  * How long a child may take to start: open its session, load its resources, create its agent session, including any
@@ -63,7 +64,7 @@ export class SessionStartBudget {
 	private readonly timeoutMs: number;
 	private readonly startedAt = performance.now();
 	private readonly timings: SessionStartStepTiming[] = [];
-	private readonly deadline: ReturnType<typeof setTimeout>;
+	private readonly deadline: LongTimeout;
 	private readonly probe: ReturnType<typeof setInterval>;
 	private step: SessionStartStep;
 	private stepStartedAt = this.startedAt;
@@ -85,7 +86,7 @@ export class SessionStartBudget {
 		this.timeoutMs = timeoutMs;
 		this.step = step;
 		this.onProgress = onProgress;
-		this.deadline = setTimeout(() => this.expire(), timeoutMs);
+		this.deadline = setLongTimeoutAt(() => this.expire(), this.startedAt + timeoutMs);
 		this.probe = setInterval(() => this.sampleTurn(), START_PROBE_INTERVAL_MS);
 		this.probe.unref();
 		this.report();
@@ -140,7 +141,7 @@ export class SessionStartBudget {
 
 	/** Stop the budget; a start that ran out of it is not over, so its progress stays where it stalled. */
 	private stop(reportEnd: boolean): void {
-		clearTimeout(this.deadline);
+		this.deadline.clear();
 		clearInterval(this.probe);
 		if (this.ended) return;
 		this.ended = true;

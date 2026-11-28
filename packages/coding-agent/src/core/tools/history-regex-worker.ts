@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { setLongTimeoutAt } from "@bastani/atomic-timers";
 import { EVAL_WORKER_BUILTIN, evalWorkerExecArgv } from "../../utils/worker-threads.js";
 
 export type WorkerOutlineKind = "user" | "compaction" | "branch summary";
@@ -450,7 +451,7 @@ function runWorkerTask<Op extends WorkerOp>(
 			settle(outcome) {
 				if (settled) return;
 				settled = true;
-				clearTimeout(timer);
+				timer?.clear();
 				clearTimeout(task.handOff);
 				signal?.removeEventListener("abort", onAbort);
 				if ("error" in outcome) reject(outcome.error);
@@ -485,9 +486,9 @@ function runWorkerTask<Op extends WorkerOp>(
 		};
 		// A call with no time limit (a background history task's) has no timer: only its signal stops it.
 		const timer = Number.isFinite(effectiveMs)
-			? setTimeout(() => {
+			? setLongTimeoutAt(() => {
 					removeOrCancel({ timedOut: true });
-				}, effectiveMs)
+				}, deadline)
 			: undefined;
 		signal?.addEventListener("abort", onAbort, { once: true });
 		waitingQueue.push(task);

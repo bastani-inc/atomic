@@ -212,6 +212,24 @@ describe("McpClient", () => {
 		await client.close();
 	});
 
+	it("keeps a silent MCP request open past the native timer limit (#6807)", async () => {
+		vi.useFakeTimers();
+		const { client, server } = await connect();
+		server.setHandler("tools/call", () => new Promise(() => {}));
+		const timeoutMs = 3_000_000_000;
+		let expired = false;
+		const result = client.callTool("wait", {}, { timeoutMs }).catch((error: Error) => {
+			expired = true;
+			return error;
+		});
+
+		await vi.advanceTimersByTimeAsync(timeoutMs - 1);
+		assert.equal(expired, false);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.ok((await result) instanceof McpTimeoutError);
+		await client.close();
+	});
+
 	it("cancels aborted and timed-out requests", async () => {
 		const { client, server } = await connect();
 		server.setHandler("tools/call", () => new Promise(() => {}));

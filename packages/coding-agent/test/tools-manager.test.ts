@@ -66,6 +66,7 @@ describe("managed tool downloads", () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		vi.restoreAllMocks();
 		vi.unstubAllEnvs();
 		vi.unstubAllGlobals();
@@ -430,32 +431,32 @@ describe("managed tool downloads", () => {
 		] as const)(
 			"reports a %s request to %s that outlives its %d ms limit as a timeout",
 			async (phase, url, timeoutMs) => {
-				const timedOut = new DOMException("The operation was aborted due to timeout", "TimeoutError");
-				const limits: number[] = [];
-				const deadlines: AbortController[] = [];
-				vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
-					limits.push(ms);
-					const deadline = new AbortController();
-					deadlines.push(deadline);
-					return deadline.signal;
-				});
+				vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+				const reached = Promise.withResolvers<AbortSignal>();
 				vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 					if (String(input) !== url) return releaseRedirect();
+					const signal = init?.signal;
+					assert.ok(signal);
+					reached.resolve(signal);
 					return new Promise<Response>((_resolve, reject) => {
-						init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
-						deadlines.at(-1)?.abort(timedOut);
+						signal.addEventListener("abort", () => reject(signal.reason), { once: true });
 					});
 				});
 
-				const failure = (await ensureRipgrep()).at(-1)?.error;
+				const installing = ensureRipgrep();
+				const signal = await reached.promise;
+				await vi.advanceTimersByTimeAsync(timeoutMs - 1);
+				assert.equal(signal.aborted, false);
+				await vi.advanceTimersByTimeAsync(1);
 
+				const failure = (await installing).at(-1)?.error;
 				assert.ok(isManagedToolTimeoutError(failure));
 				assert.equal(failure.code, "download-timeout");
-				assert.deepEqual({ ...failure.fields, elapsedMs: 0 }, { tool: "rg", phase, url, timeoutMs, elapsedMs: 0 });
-				assert.ok(failure.fields.elapsedMs >= 0 && failure.fields.elapsedMs < 60_000);
-				assert.equal(failure.cause, timedOut);
+				assert.deepEqual(failure.fields, { tool: "rg", phase, url, timeoutMs, elapsedMs: timeoutMs });
+				assert.ok(failure.cause instanceof DOMException);
+				assert.equal(failure.cause.name, "TimeoutError");
+				assert.equal(failure.cause, signal.reason);
 				assert.equal(failure.retryable, true);
-				assert.equal(limits.at(-1), timeoutMs);
 			},
 		);
 

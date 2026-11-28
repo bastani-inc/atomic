@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { QuestionnaireResult, QuestionParams } from "../tools/ask-user-question/tool/types.js";
 import type { ExtensionUIContext, ExtensionUIDialogOptions } from "./ui-types.js";
 
@@ -162,11 +163,11 @@ export class HostInputBridge {
 		options?.signal?.addEventListener("abort", cancelCaller, { once: true });
 		ownerSignal?.addEventListener("abort", abort, { once: true });
 		this.pending.add(controller);
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		if (options?.timeout !== undefined) timer = setTimeout(cancelCaller, options.timeout);
+		let timer: LongTimeout | undefined;
+		if (options?.timeout !== undefined) timer = setLongTimeout(cancelCaller, options.timeout);
 		let onAbort: (() => void) | undefined;
 		const cleanup = () => {
-			if (timer !== undefined) clearTimeout(timer);
+			timer?.clear();
 			options?.signal?.removeEventListener("abort", cancelCaller);
 			ownerSignal?.removeEventListener("abort", abort);
 			if (onAbort) controller.signal.removeEventListener("abort", onAbort);

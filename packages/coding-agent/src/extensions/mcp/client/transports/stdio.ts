@@ -2,6 +2,7 @@ import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process"
 import { open, realpath } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import crossSpawn from "cross-spawn";
 import * as processTreeContainment from "../../../../core/process-tree-containment.ts";
 import {
@@ -630,12 +631,12 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 		};
 		try {
 			await new Promise<void>((resolve) => {
-				const timers: ReturnType<typeof setTimeout>[] = [];
+				const timers: LongTimeout[] = [];
 				let childClosed = false;
 				child.once("close", () => {
 					childClosed = true;
 					closeAbort.abort();
-					for (const timer of timers) clearTimeout(timer);
+					for (const timer of timers) timer.clear();
 					if (process.platform !== "win32") {
 						// Children of the server in its process group that ignored stdin closing would otherwise outlive it;
 						// detached daemons live in their own group and survive.
@@ -656,28 +657,28 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 					// Wait for any running fallback kill helpers and remaining Job members, bounded by closeTimeoutMs.
 					const waits: Promise<void>[] = [...kills];
 					if (needsTreeDrain) waits.push(processTreeContainment.processTreeEnded(tree, closeTimeoutMs));
-					const bound = setTimeout(resolve, closeTimeoutMs);
+					const bound = setLongTimeout(resolve, closeTimeoutMs);
 					void Promise.all(waits).then(() => {
-						clearTimeout(bound);
+						bound.clear();
 						resolve();
 					});
 				});
 				const grace = Math.min(STDIN_CLOSE_GRACE_MS, closeTimeoutMs);
 				timers.push(
-					setTimeout(() => {
+					setLongTimeout(() => {
 						forcedKill = true;
 						kill("SIGTERM");
 					}, grace),
 				);
 				timers.push(
-					setTimeout(() => {
+					setLongTimeout(() => {
 						forcedKill = true;
 						kill("SIGKILL");
 					}, grace + closeTimeoutMs),
 				);
 				// A process that left the server's group can keep the pipes open after the kill; stop waiting for it.
 				timers.push(
-					setTimeout(
+					setLongTimeout(
 						() => {
 							child.stdin?.destroy();
 							child.stdout?.destroy();

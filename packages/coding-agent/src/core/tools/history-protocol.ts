@@ -1205,6 +1205,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				return bounded(`[the time budget ran out waiting for the store; continue with ${retry}]`);
 			}
 			throw error;
+		} finally {
+			budget.dispose();
 		}
 	}
 
@@ -1222,15 +1224,15 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			if (target.order) request.signal?.throwIfAborted();
 			const url = expanded?.url ?? (target.order ? withoutSearchPosition(input) : input);
 			const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
-			const budget = newBudget(
-				request.signal,
-				noteBytes(url, target, request.ranges, target.id === undefined ? 2 : 1, multiline),
-			);
 			selectRegexEngine(normalizeSearchPattern(request.pattern, request.ignoreCase), request.literal, multiline);
 			const prefilter = multiline ? undefined : indexLiterals(request.pattern, request.ignoreCase, request.literal);
 			const positions =
 				target.id === undefined ? new HistorySearchPositions(historyNoteWindows.get(rawRequest)) : undefined;
 			const render = (lines: string[]) => bounded(positions ? positions.render(lines) : lines.join("\n"));
+			const budget = newBudget(
+				request.signal,
+				noteBytes(url, target, request.ranges, target.id === undefined ? 2 : 1, multiline),
+			);
 			try {
 				if (!target.domain && limits.rows === 0) {
 					request.signal?.throwIfAborted();
@@ -1251,6 +1253,8 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					return render([note]);
 				}
 				throw error;
+			} finally {
+				budget.dispose();
 			}
 		},
 	};

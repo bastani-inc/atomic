@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { AgentRehydrateError, AgentReleaseConfigError } from "./agent-rehydrate-errors.ts";
 import type { DetachedToolResult } from "./agent-session-detached-tools.ts";
 import { WakeDeadlines } from "./agent-wake-deadlines.ts";
@@ -97,8 +98,8 @@ interface KeyState {
 /** Times wakes on the monotonic clock, so a step of the wall clock neither delays nor hastens them (#5058). */
 const systemClock: AgentWakeClock = {
 	now: () => performance.now(),
-	setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-	clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+	setTimer: setLongTimeout,
+	clearTimer: (timer) => (timer as LongTimeout).clear(),
 };
 
 /** The namespace of a wake key: the text before its first `:`, or the whole key. */

@@ -2414,6 +2414,11 @@ describe("the budget of a step", () => {
 			});
 			try {
 				let tries = 0;
+				const fetchHangingAction = planted({
+					"acme/fractional": {
+						"action.yml": compositeMetadata(["    - shell: sh", "      run: 'sleep 2; echo ran > marker'"]),
+					},
+				});
 				const exit = await stepStartingWatcher.run(
 					() => {
 						if (lookup.mock.calls.length === 0 || ++tries !== 2) return;
@@ -2421,13 +2426,29 @@ describe("the budget of a step", () => {
 						if (held !== undefined) closeSync(held);
 						held = undefined;
 					},
-					() => startRun("github.com/acme/fractional@v1", { timeoutMs: 200.5, fetchAction }).result,
+					() =>
+						stepProcessWatcher.run(
+							(_pid, running) => {
+								if (!running) return;
+								vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+								// Let the command arm its remaining budget, then advance both clocks by one millisecond.
+								queueMicrotask(() => {
+									active.mockReturnValue(201);
+									vi.advanceTimersByTime(1);
+									vi.useRealTimers();
+								});
+							},
+							() =>
+								startRun("github.com/acme/fractional@v1", { timeoutMs: 200.5, fetchAction: fetchHangingAction })
+									.result,
+						),
 				);
 				assert.equal(tries, 2);
 				assert.equal(exit.spawnError, undefined);
 				assert.equal(exit.timedOut, true);
 				assert.equal(existsSync(join(fixture.workspace, "marker")), false);
 			} finally {
+				vi.useRealTimers();
 				lookup.mockRestore();
 				active.mockRestore();
 				wall.mockRestore();

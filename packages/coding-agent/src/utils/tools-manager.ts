@@ -1,3 +1,4 @@
+import { createTimeoutSignal, sleepFor } from "@bastani/atomic-timers";
 import { execFile, spawnSync } from "child_process";
 import { createHash, randomUUID } from "crypto";
 import { type BigIntStats, existsSync, readdirSync, readFileSync, statSync } from "fs";
@@ -174,7 +175,7 @@ async function requestManagedTool<T>(
 ): Promise<T> {
 	const { tool, phase, url, timeoutMs } = request;
 	const startedAt = Date.now();
-	const timeout = AbortSignal.timeout(timeoutMs);
+	const { signal: timeout, clear } = createTimeoutSignal(timeoutMs);
 	try {
 		return await read(await fetchWithRetry(url, { ...request.init, signal: timeout }));
 	} catch (error) {
@@ -185,6 +186,8 @@ async function requestManagedTool<T>(
 				{ cause: error },
 			);
 		throw new ManagedToolDownloadError({ tool, phase, url, detail: describeFailure(error) }, { cause: error });
+	} finally {
+		clear();
 	}
 }
 
@@ -1996,7 +1999,7 @@ async function acquireGitInstallLock(
 				"starts",
 			);
 		}
-		await delay(gitProvisionSettings.lockPollMs, undefined, { signal });
+		await sleepFor(gitProvisionSettings.lockPollMs, { signal });
 	}
 }
 
@@ -2037,7 +2040,7 @@ async function removeAbandonedStagingDirectories(binDir: string): Promise<void> 
 
 async function downloadGitArchive(target: GitDistributionTarget, signal: AbortSignal): Promise<Buffer> {
 	const startedAt = Date.now();
-	const timeout = AbortSignal.timeout(gitProvisionSettings.downloadTimeoutMs);
+	const { signal: timeout, clear } = createTimeoutSignal(gitProvisionSettings.downloadTimeoutMs);
 	try {
 		const response = await fetchWithRetry(target.url, {
 			headers: { "User-Agent": getPiUserAgent(VERSION) },
@@ -2069,6 +2072,8 @@ async function downloadGitArchive(target: GitDistributionTarget, signal: AbortSi
 			{ code: "download-failed", asset: target.asset, url: target.url, ...(await hostPlatformAsync()) },
 			{ cause: error },
 		);
+	} finally {
+		clear();
 	}
 }
 
@@ -2092,7 +2097,7 @@ async function runProvisionStep(
 	},
 ): Promise<BoundedRunResult> {
 	const startedAt = Date.now();
-	const timeout = AbortSignal.timeout(options.timeoutMs);
+	const { signal: timeout, clear } = createTimeoutSignal(options.timeoutMs);
 	const timedOut = async (cause: unknown): Promise<never> => {
 		throw new GitProvisionTimeoutError(
 			{
@@ -2104,50 +2109,54 @@ async function runProvisionStep(
 			{ cause },
 		);
 	};
-	let launch: HelperLaunch;
 	try {
-		// The lookup counts against the step's time limit and ends with its cancellation; then nothing starts.
-		launch = await helperLaunchAsync(command, {
-			env: options.env,
-			signal: AbortSignal.any([options.signal, timeout]),
-		});
-	} catch (error) {
-		if (options.signal.aborted) throw options.signal.reason;
-		if (timeout.aborted) return timedOut(error);
-		throw error;
-	}
-	// A cancellation or the time limit that came as the lookup finished still starts nothing.
-	if (options.signal.aborted) throw options.signal.reason;
-	if (timeout.aborted) return timedOut(timeout.reason);
-	return new Promise((resolvePromise, rejectPromise) => {
-		execFile(
-			launch.file,
-			[...args],
-			{
+		let launch: HelperLaunch;
+		try {
+			// The lookup counts against the step's time limit and ends with its cancellation; then nothing starts.
+			launch = await helperLaunchAsync(command, {
 				env: options.env,
-				maxBuffer: 16 * 1024 * 1024,
 				signal: AbortSignal.any([options.signal, timeout]),
-				...missingHelperOptions(launch),
-			},
-			(error, stdout, stderr) => {
-				if (options.signal.aborted) {
-					rejectPromise(options.signal.reason);
-					return;
-				}
-				if (timeout.aborted) {
-					timedOut(error).catch(rejectPromise);
-					return;
-				}
-				if (error === null) {
-					resolvePromise({ ok: true, stdout });
-					return;
-				}
-				const status = typeof error.code === "number" ? `exited with status ${error.code}` : String(error.code);
-				const reason = stderr === "" ? "" : `: ${firstLine(stderr)}`;
-				resolvePromise({ ok: false, detail: `${command.split(/[\\/]/).pop()} ${status}${reason}` });
-			},
-		);
-	});
+			});
+		} catch (error) {
+			if (options.signal.aborted) throw options.signal.reason;
+			if (timeout.aborted) return timedOut(error);
+			throw error;
+		}
+		// A cancellation or the time limit that came as the lookup finished still starts nothing.
+		if (options.signal.aborted) throw options.signal.reason;
+		if (timeout.aborted) return timedOut(timeout.reason);
+		return await new Promise<BoundedRunResult>((resolvePromise, rejectPromise) => {
+			execFile(
+				launch.file,
+				[...args],
+				{
+					env: options.env,
+					maxBuffer: 16 * 1024 * 1024,
+					signal: AbortSignal.any([options.signal, timeout]),
+					...missingHelperOptions(launch),
+				},
+				(error, stdout, stderr) => {
+					if (options.signal.aborted) {
+						rejectPromise(options.signal.reason);
+						return;
+					}
+					if (timeout.aborted) {
+						timedOut(error).catch(rejectPromise);
+						return;
+					}
+					if (error === null) {
+						resolvePromise({ ok: true, stdout });
+						return;
+					}
+					const status = typeof error.code === "number" ? `exited with status ${error.code}` : String(error.code);
+					const reason = stderr === "" ? "" : `: ${firstLine(stderr)}`;
+					resolvePromise({ ok: false, detail: `${command.split(/[\\/]/).pop()} ${status}${reason}` });
+				},
+			);
+		});
+	} finally {
+		clear();
+	}
 }
 
 async function gitTarCommand(): Promise<string> {

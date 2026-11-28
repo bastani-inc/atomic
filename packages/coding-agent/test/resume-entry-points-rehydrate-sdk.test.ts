@@ -308,7 +308,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 			configurable: true,
 		});
 		store.readHeader = () => new Promise(() => {});
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 		try {
 			const pending = runtime.rehydrate(sessionId).then(
 				() => undefined,

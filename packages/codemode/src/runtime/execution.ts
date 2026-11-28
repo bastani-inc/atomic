@@ -21,6 +21,7 @@
  * terminated, an in-thread VM is interrupted and disposed, and a remote VM is told to stop at its
  * next exchange.
  */
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { toCodemodeIdentifier } from "../identifier.ts";
 import type {
 	CodemodeCall,
@@ -196,7 +197,7 @@ class Execution {
 	/** Result numbers `deliver()` used. */
 	private readonly delivered = new Set<number>();
 	private readonly signal: AbortSignal | undefined;
-	private readonly timer: ReturnType<typeof setTimeout> | undefined;
+	private readonly timer: LongTimeout | undefined;
 	private readonly output: CodemodeOutputItem[] = [];
 	private readonly calls: CodemodeCall[] = [];
 	private readonly pending = new Map<number, PendingCall>();
@@ -212,7 +213,7 @@ class Execution {
 		this.signal = options.signal;
 
 		if (Number.isFinite(options.timeoutMs)) {
-			this.timer = setTimeout(() => {
+			this.timer = setLongTimeout(() => {
 				this.finish({ kind: "timeout", message: `Execution timed out after ${options.timeoutMs} ms` });
 			}, options.timeoutMs);
 		}
@@ -415,7 +416,7 @@ class Execution {
 	): void {
 		if (this.finished) return;
 		this.finished = true;
-		clearTimeout(this.timer);
+		this.timer?.clear();
 		this.signal?.removeEventListener("abort", this.onAbort);
 
 		const now = performance.now();

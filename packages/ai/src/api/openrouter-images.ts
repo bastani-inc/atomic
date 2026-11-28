@@ -22,6 +22,7 @@ import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
+import { sdkTimerBackstop } from "../utils/sdk-timeout.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 
 interface OpenRouterGeneratedImage {
@@ -67,11 +68,7 @@ export const generateImages: ImagesFunction<ImagesOptions> = async (
 		if (nextParams !== undefined) {
 			params = nextParams as typeof params;
 		}
-		const requestOptions = {
-			...(options?.signal ? { signal: options.signal } : {}),
-			...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-			maxRetries: 0,
-		};
+		const requestOptions = { ...sdkTimerBackstop(options?.timeoutMs), signal: options?.signal, maxRetries: 0 };
 		const { data: response, response: rawResponse } = await retryProviderRequest(
 			() =>
 				client.chat.completions

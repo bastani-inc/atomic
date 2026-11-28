@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { sleepFor } from "@bastani/atomic-timers";
 import { getTuiEnvValue } from "./env.ts";
 import { setKittyProtocolActive } from "./keys.ts";
 import { isNativeModifierPressed } from "./native-modifiers.ts";
@@ -567,21 +568,20 @@ export class ProcessTerminal implements Terminal {
 		const previousHandler = this.inputHandler;
 		this.inputHandler = undefined;
 
-		let lastDataTime = Date.now();
+		let lastDataTime = performance.now();
 		const onData = () => {
-			lastDataTime = Date.now();
+			lastDataTime = performance.now();
 		};
 
 		process.stdin.on("data", onData);
-		const endTime = Date.now() + maxMs;
+		const endTime = performance.now() + maxMs;
 
 		try {
 			while (true) {
-				const now = Date.now();
-				const timeLeft = endTime - now;
+				const now = performance.now();
+				const timeLeft = Math.min(endTime, lastDataTime + idleMs) - now;
 				if (timeLeft <= 0) break;
-				if (now - lastDataTime >= idleMs) break;
-				await new Promise((resolve) => setTimeout(resolve, Math.min(idleMs, timeLeft)));
+				await sleepFor(timeLeft);
 			}
 		} finally {
 			process.stdin.removeListener("data", onData);

@@ -296,7 +296,7 @@ test("a call queued after the running call has run a while fails once that call 
 		assert.ok(failed.get("write") instanceof StorageUnavailableError);
 		const late = failure(database.run("late"));
 		const renewal = failure(database.batch!([{ sql: "renewal", params: [] }], { priority: true }));
-		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(1); // An already overdue call fails on the next native timer turn.
 		assert.ok((await late) instanceof StorageUnavailableError);
 		assert.ok((await renewal) instanceof StorageUnavailableError);
 		settle();

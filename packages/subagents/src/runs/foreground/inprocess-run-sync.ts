@@ -11,6 +11,7 @@ import {
 	spanElapsedMs,
 	type TaskElapsedSpan,
 } from "@bastani/atomic";
+import { setLongTimeout } from "@bastani/atomic-timers";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
 import { childSessionLocator } from "../../shared/child-session-store.js";
@@ -833,18 +834,12 @@ function startStall(outcome: AttemptOutcome): SessionStartTimeoutError | undefin
 /** Whether `promise` settled within `timeoutMs`. */
 function settledWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
 	return new Promise((resolve) => {
-		const timer = setTimeout(() => resolve(false), timeoutMs);
-		timer.unref?.();
-		void promise.then(
-			() => {
-				clearTimeout(timer);
-				resolve(true);
-			},
-			() => {
-				clearTimeout(timer);
-				resolve(true);
-			},
-		);
+		const timer = setLongTimeout(() => resolve(false), timeoutMs, { ref: false });
+		const settled = () => {
+			timer.clear();
+			resolve(true);
+		};
+		void promise.then(settled, settled);
 	});
 }
 

@@ -3,8 +3,8 @@ import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { type AdvisoryLock, renameNoReplaceAsync, tryAdvisoryLockAsync } from "@bastani/atomic-natives";
+import { sleepFor } from "@bastani/atomic-timers";
 import { pathExists } from "../../shared/path-exists.js";
 import { addNamedWorktree } from "./named-worktree-git.js";
 import { ensureWorktreeIgnore, runGit } from "./worktree.js";
@@ -105,13 +105,8 @@ async function gitChecked(cwd: string, args: string[]): Promise<string> {
 	return result.stdout;
 }
 
-async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-	try {
-		await delay(ms, undefined, { signal });
-	} catch (error) {
-		signal?.throwIfAborted();
-		throw error;
-	}
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	return sleepFor(ms, { signal });
 }
 
 async function comparablePath(value: string): Promise<string> {

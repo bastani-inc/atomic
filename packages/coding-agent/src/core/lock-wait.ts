@@ -1,4 +1,5 @@
 import type * as nodeFs from "node:fs";
+import { sleepFor } from "@bastani/atomic-timers";
 import {
 	guardLockRemoval,
 	guardLockRemovalSync,
@@ -81,25 +82,6 @@ class LockWaiter {
 	}
 }
 
-/** Waits `ms`, or rejects with the signal's reason as soon as it aborts. */
-function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(signal.reason);
-			return;
-		}
-		const onAbort = () => {
-			clearTimeout(timer);
-			reject(signal?.reason);
-		};
-		const timer = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
-}
-
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 
 /** The file system each attempt passes to proper-lockfile as its `fs` option. */
@@ -145,7 +127,7 @@ export async function waitForLock<T>(
 				const sleepMs = waiter.next(error, await lockHolderAsync(wait.lockPath));
 				void prepareTakeoverMutex(wait.lockPath);
 				signal?.throwIfAborted();
-				await delay(sleepMs, signal);
+				await sleepFor(sleepMs, { signal });
 			}
 		}
 	} finally {

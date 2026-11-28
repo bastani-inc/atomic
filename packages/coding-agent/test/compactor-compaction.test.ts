@@ -513,10 +513,7 @@ describe("compaction with a configured compactor model", () => {
 	}
 
 	it("falls back to clearing the context when the compactor request times out", async () => {
-		const realTimeout = AbortSignal.timeout.bind(AbortSignal);
-		const timeout = vi
-			.spyOn(AbortSignal, "timeout")
-			.mockImplementation((ms) => realTimeout(ms === COMPACTOR_REQUEST_TIMEOUT_MS ? 20 : ms));
+		const started = Promise.withResolvers<void>();
 		const fake = endpoint(() => new Promise<Response>(() => {}));
 		vi.stubGlobal(
 			"fetch",
@@ -524,18 +521,22 @@ describe("compaction with a configured compactor model", () => {
 				new Promise<Response>((_resolve, reject) => {
 					void fake.fetch(input, { ...init, signal: undefined });
 					init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+					started.resolve();
 				})) as typeof fetch,
 		);
 		harness = await compactorHarness(true);
-		const result = await harness.session.compact();
-		assert.ok(
-			timeout.mock.calls.some(([ms]) => ms === COMPACTOR_REQUEST_TIMEOUT_MS),
-			"the bounded wait was used",
-		);
-		timeout.mockRestore();
-		assert.equal(result.form, "cleared");
-		assert.match(result.fallbackReason ?? "", /timed out after/u);
-		assert.equal(fake.requests.length, 1);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+		try {
+			const pending = harness.session.compact();
+			await started.promise;
+			await vi.advanceTimersByTimeAsync(COMPACTOR_REQUEST_TIMEOUT_MS);
+			const result = await pending;
+			assert.equal(result.form, "cleared");
+			assert.match(result.fallbackReason ?? "", /timed out after/u);
+			assert.equal(fake.requests.length, 1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	async function budgetHarness(systemPrompt: string): Promise<Harness> {

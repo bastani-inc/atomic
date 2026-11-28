@@ -1,6 +1,7 @@
 import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { ImageContent, TextContent } from "@bastani/atomic-ai";
 import { Type } from "@bastani/atomic-ai/utils/typebox/index";
+import { sleepFor } from "@bastani/atomic-timers";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "../tasks/command-output.js";
 import {
 	completionTitleDescription,
@@ -93,18 +94,10 @@ function outcomeOf(result: Promise<ToolResult>, signal: AbortSignal): Promise<Ou
 }
 
 function delay(ms: number, signal: AbortSignal | undefined): Promise<"elapsed" | "aborted"> {
-	if (signal?.aborted) return Promise.resolve("aborted");
-	return new Promise((resolve) => {
-		const timer = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve("elapsed");
-		}, ms);
-		const onAbort = () => {
-			clearTimeout(timer);
-			resolve("aborted");
-		};
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
+	return sleepFor(ms, { signal }).then(
+		() => "elapsed",
+		() => "aborted",
+	);
 }
 
 function errorMessage(error: unknown): string {

@@ -1,3 +1,4 @@
+import { createTimeoutSignal } from "@bastani/atomic-timers";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import type {
 	AssistantMessage,
@@ -369,7 +370,7 @@ async function readMistralErrorBody(
 	timeoutMs: number,
 ): Promise<string> {
 	if (!response.body) return "";
-	const bodyTimeoutSignal = AbortSignal.timeout(timeoutMs);
+	const { signal: bodyTimeoutSignal, clear } = createTimeoutSignal(timeoutMs);
 	const combinedSignal = combineAbortSignals([requestSignal, bodyTimeoutSignal]);
 	const reader = response.body.getReader();
 	const onAbort = () => {
@@ -389,6 +390,7 @@ async function readMistralErrorBody(
 		return `Mistral error response body timed out after ${timeoutMs}ms`;
 	} finally {
 		combinedSignal.signal?.removeEventListener("abort", onAbort);
+		clear();
 		combinedSignal.cleanup();
 		void reader.cancel().catch(() => {});
 	}

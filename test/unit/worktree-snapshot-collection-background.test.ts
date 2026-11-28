@@ -98,11 +98,17 @@ describe("the pace of a background collection (#4355)", () => {
 		pace.keepProcessAlive();
 		assert.equal(timers[0]!.hasRef(), true, "the wait in progress now holds the process");
 		await first;
+		const firstWaitTimers = timers.length;
+		assert.ok(
+			timers.every((timer) => timer.hasRef()),
+			"any rearmed chunk also holds the process",
+		);
 		const second = pace.wait(0);
-		assert.equal(timers[1]!.hasRef(), true, "and so does every later wait");
+		assert.equal(timers[firstWaitTimers]!.hasRef(), true, "and so does every later wait");
 		await second;
+		const finishedTimers = timers.length;
 		pace.keepProcessAlive();
-		assert.equal(timers.length, 2);
+		assert.equal(timers.length, finishedTimers, "asking for a finished wait does not arm another timer");
 	});
 
 	test("a background backfill waits on its pace after every batch, and a sweep between its batches only", async () => {

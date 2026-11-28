@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { controlNotificationKey, formatControlNoticeMessage } from "../runs/shared/subagent-control.js";
 import type { ControlEvent, SubagentState } from "../shared/types.js";
 
@@ -29,7 +30,7 @@ export function clearPendingForegroundControlNotices(state: SubagentState, runId
 	if (!pending) return;
 	for (const [key, timer] of pending) {
 		if (runId !== undefined && !key.startsWith(`${runId}:`)) continue;
-		clearTimeout(timer);
+		timer.clear();
 		pending.delete(key);
 	}
 }
@@ -76,12 +77,12 @@ export function handleSubagentControlNotice(input: {
 		return;
 	}
 
-	const pending = input.state.pendingForegroundControlNotices ?? new Map<string, ReturnType<typeof setTimeout>>();
+	const pending = input.state.pendingForegroundControlNotices ?? new Map<string, LongTimeout>();
 	input.state.pendingForegroundControlNotices = pending;
 	const timerKey = noticeTimerKey(input.details);
 	const existing = pending.get(timerKey);
-	if (existing) clearTimeout(existing);
-	const timer = setTimeout(() => {
+	existing?.clear();
+	const timer = setLongTimeout(() => {
 		pending.delete(timerKey);
 		if (!isForegroundNoticeStillActionable(input.state, input.details)) return;
 		deliverControlNotice(input);

@@ -2,6 +2,7 @@ import { lstatSync, realpathSync, statSync } from "node:fs";
 import { lstat, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { win32 } from "node:path";
+import { setLongTimeout } from "@bastani/atomic-timers";
 
 /** Safe Win32 path length threshold for `CreateProcessW` `lpCurrentDirectory` without an extended `\\?\` prefix. */
 const SAFE_WINDOWS_CWD_LENGTH = 248;
@@ -333,13 +334,12 @@ function boundedFsCall<T>(work: Promise<T>, budgetMs: number, signal?: AbortSign
 		const done = (value: T | undefined) => {
 			if (settled) return;
 			settled = true;
-			clearTimeout(timer);
+			timer.clear();
 			signal?.removeEventListener("abort", onAbort);
 			resolve(value);
 		};
 		const onAbort = () => done(undefined);
-		const timer = setTimeout(() => done(undefined), budgetMs);
-		timer.unref?.();
+		const timer = setLongTimeout(() => done(undefined), budgetMs, { ref: false });
 		signal?.addEventListener("abort", onAbort, { once: true });
 		work.then(
 			(value) => done(value),

@@ -36,6 +36,7 @@ import { createRequire } from "node:module";
 import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isSharedFile, MODULES_DIRECTORY } from "./bundle-package-dist.mjs";
+import { embedTimers } from "./tsc-with-timers.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -209,6 +210,7 @@ export function refreshPackageDist(packageDir, { generateModelData = true, tsBui
 			},
 		);
 		if (compiled.status !== 0) throw new Error(`${name}: tsc failed (${compiled.status ?? compiled.signal})`);
+		if (name === "packages/ai" || name === "packages/tui" || name === "packages/codemode") embedTimers(staged);
 		if (copied) cpSync(join(packageDir, copied.from), join(staged, copied.to), { recursive: true });
 		// A package that ships bundled (see bundle-package-dist.mjs) is bundled before anything moves into its dist. The
 		// bundle names modules by their paths from the directory holding `dist`, so the staged files are bundled in a

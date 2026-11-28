@@ -284,7 +284,7 @@ One wall-clock deadline covers the entire call: credential screening, every repa
 - **Default deadline:**
   - `decide()` and `structured_output`: read `httpIdleTimeoutMs` from settings/session first, then fall back to 10 minutes (`600_000` ms).
   - Standalone `generateStructuredOutput()`: defaults directly to 10 minutes (`600_000` ms) and does **not** read `settings.getHttpIdleTimeoutMs()`. Pass `timeoutMs` explicitly to override it.
-  - Setting `httpIdleTimeoutMs` to `0` (`"disabled"`) uses JavaScript's maximum timer delay (`2,147,483,647` ms, ~24.8 days).
+  - Setting `httpIdleTimeoutMs` to `0` (`"disabled"`) uses a default decision deadline of `2,147,483,647` ms (~24.8 days). An explicit deadline can be longer.
 - **On expiration:** Atomic aborts the in-flight request (even if the provider ignores abort signals) and rejects with `DecisionTimeoutError`, including `timeoutMs`, `elapsedMs`, `phase`, `hint`, and per-attempt timings (for example, `Attempts: 1) stopReason=stop 25m02s; 2) still generating 4m58s.`). Timeouts are final and never trigger further repairs or fallbacks.
 
 ### Caller cancellation (`AbortSignal`)

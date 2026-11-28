@@ -30,7 +30,7 @@ import { stat as statAsync } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { dirname, resolve } from "node:path";
 import type { Readable } from "node:stream";
-import { clearTimeout, setTimeout } from "node:timers";
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { helperLaunchAsync, missingHelperOptions } from "../../utils/helper-command.ts";
 import { createModuleRequire } from "../../utils/module-require.js";
 import { windowsPowerShellEnvironment } from "../../utils/windows-powershell.ts";
@@ -313,7 +313,7 @@ class SharedSecurityRead {
 			const leave = (security: WindowsDirectorySecurity | undefined) => {
 				if (left) return;
 				left = true;
-				clearTimeout(deadline);
+				deadline.clear();
 				signal?.removeEventListener("abort", stopWaiting);
 				this.waiters -= 1;
 				if (!background) this.foregroundWaiters -= 1;
@@ -329,8 +329,7 @@ class SharedSecurityRead {
 				}
 			};
 			const stopWaiting = () => leave(undefined);
-			const deadline = setTimeout(stopWaiting, timeoutMs);
-			if (background) deadline.unref();
+			const deadline = setLongTimeout(stopWaiting, timeoutMs, { ref: !background });
 			signal?.addEventListener("abort", stopWaiting, { once: true });
 			void this.result.then(leave, () => leave(undefined));
 		});

@@ -1,4 +1,5 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { redactOAuthErrorText } from "./redact.js";
 
 export interface OAuthCallback {
@@ -43,7 +44,7 @@ export class OAuthCallbackServer {
 		{
 			resolve: (callback: OAuthCallback) => void;
 			reject: (error: Error) => void;
-			timer: ReturnType<typeof setTimeout>;
+			timer: LongTimeout;
 			path: string | undefined;
 			extraSecrets: readonly (string | undefined)[];
 		}
@@ -95,7 +96,7 @@ export class OAuthCallbackServer {
 	): Promise<OAuthCallback> {
 		if (this.pending.has(state)) throw new Error("OAuth state is already pending");
 		return new Promise((resolve, reject) => {
-			const timer = setTimeout(() => {
+			const timer = setLongTimeout(() => {
 				this.pending.delete(state);
 				reject(new Error("OAuth callback timed out"));
 			}, this.timeoutMs);
@@ -105,7 +106,7 @@ export class OAuthCallbackServer {
 
 	async close(): Promise<void> {
 		for (const pending of this.pending.values()) {
-			clearTimeout(pending.timer);
+			pending.timer.clear();
 			pending.reject(new Error("OAuth callback server closed"));
 		}
 		this.pending.clear();
@@ -139,7 +140,7 @@ export class OAuthCallbackServer {
 			this.reply(response, 400, { ok: false, message: "Invalid or expired OAuth state" });
 			return;
 		}
-		clearTimeout(pending.timer);
+		pending.timer.clear();
 		this.pending.delete(state);
 		if (pending.path !== undefined && url.pathname !== pending.path) {
 			pending.reject(new Error("The authorization response arrived on another redirect URI"));

@@ -15,6 +15,7 @@ import { constants as osConstants } from "node:os";
 import { basename, isAbsolute } from "node:path";
 import type { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { type LongTimeout, setLongInterval, setLongTimeout } from "@bastani/atomic-timers";
 import crossSpawn from "cross-spawn";
 import { applyDebugSettingToChildEnvironment } from "../core/debug-setting.ts";
 import { HOST_STORAGE_ADAPTERS_ENV, hostStorageAdaptersEnvironment } from "../core/storage/host-adapters.ts";
@@ -338,14 +339,14 @@ export function waitForChildProcess(
 		let settled = false;
 		let exited = false;
 		let exitCode: number | null = null;
-		let postExitIdleTimer: NodeJS.Timeout | undefined;
+		let postExitIdleTimer: LongTimeout | undefined;
 		let postExitIdleFallback: NodeJS.Immediate | undefined;
 		let postExitActiveDrainHardCapTimer: NodeJS.Timeout | undefined;
 		let postExitActiveDrainHardCapFallback: NodeJS.Immediate | undefined;
 		let stdoutEnded = child.stdout === null || child.stdout.readableEnded;
 		let stderrEnded = child.stderr === null || child.stderr.readableEnded;
-		let windowsExitPoll: NodeJS.Timeout | undefined;
-		let windowsExitCodeGraceTimer: NodeJS.Timeout | undefined;
+		let windowsExitPoll: LongTimeout | undefined;
+		let windowsExitCodeGraceTimer: LongTimeout | undefined;
 		let windowsExitCodeFallback: NodeJS.Immediate | undefined;
 		const platform = options.platform ?? process.platform;
 		const processAlive = options.isWindowsProcessAlive ?? isWindowsProcessAlive;
@@ -395,14 +396,10 @@ export function waitForChildProcess(
 		}
 
 		const cleanup = () => {
-			if (windowsExitPoll) {
-				clearInterval(windowsExitPoll);
-				windowsExitPoll = undefined;
-			}
-			if (postExitIdleTimer) {
-				clearTimeout(postExitIdleTimer);
-				postExitIdleTimer = undefined;
-			}
+			windowsExitPoll?.clear();
+			windowsExitPoll = undefined;
+			postExitIdleTimer?.clear();
+			postExitIdleTimer = undefined;
 			if (postExitIdleFallback) {
 				clearImmediate(postExitIdleFallback);
 				postExitIdleFallback = undefined;
@@ -415,10 +412,8 @@ export function waitForChildProcess(
 				clearImmediate(postExitActiveDrainHardCapFallback);
 				postExitActiveDrainHardCapFallback = undefined;
 			}
-			if (windowsExitCodeGraceTimer) {
-				clearTimeout(windowsExitCodeGraceTimer);
-				windowsExitCodeGraceTimer = undefined;
-			}
+			windowsExitCodeGraceTimer?.clear();
+			windowsExitCodeGraceTimer = undefined;
 			if (windowsExitCodeFallback) {
 				clearImmediate(windowsExitCodeFallback);
 				windowsExitCodeFallback = undefined;
@@ -461,12 +456,12 @@ export function waitForChildProcess(
 
 		const armIdleTimer = () => {
 			if (postExitActiveDrainHardCapFallback) return;
-			if (postExitIdleTimer) clearTimeout(postExitIdleTimer);
+			postExitIdleTimer?.clear();
 			if (postExitIdleFallback) {
 				clearImmediate(postExitIdleFallback);
 				postExitIdleFallback = undefined;
 			}
-			postExitIdleTimer = setTimeout(() => {
+			postExitIdleTimer = setLongTimeout(() => {
 				postExitIdleTimer = undefined;
 				// A loop held past the idle grace runs this timer before the poll phase delivers stdio chunks
 				// or EOF that arrived meanwhile: let one poll cycle run so ready output wins over cutoff.
@@ -481,10 +476,8 @@ export function waitForChildProcess(
 			if (postExitActiveDrainHardCapTimer || postExitActiveDrainHardCapFallback) return;
 			postExitActiveDrainHardCapTimer = setTimeout(() => {
 				postExitActiveDrainHardCapTimer = undefined;
-				if (postExitIdleTimer) {
-					clearTimeout(postExitIdleTimer);
-					postExitIdleTimer = undefined;
-				}
+				postExitIdleTimer?.clear();
+				postExitIdleTimer = undefined;
 				if (postExitIdleFallback) {
 					clearImmediate(postExitIdleFallback);
 					postExitIdleFallback = undefined;
@@ -522,14 +515,10 @@ export function waitForChildProcess(
 		};
 
 		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-			if (windowsExitPoll) {
-				clearInterval(windowsExitPoll);
-				windowsExitPoll = undefined;
-			}
-			if (windowsExitCodeGraceTimer) {
-				clearTimeout(windowsExitCodeGraceTimer);
-				windowsExitCodeGraceTimer = undefined;
-			}
+			windowsExitPoll?.clear();
+			windowsExitPoll = undefined;
+			windowsExitCodeGraceTimer?.clear();
+			windowsExitCodeGraceTimer = undefined;
 			if (windowsExitCodeFallback) {
 				clearImmediate(windowsExitCodeFallback);
 				windowsExitCodeFallback = undefined;
@@ -572,11 +561,9 @@ export function waitForChildProcess(
 
 		const armWindowsExitCodeGraceTimer = () => {
 			if (windowsExitCodeGraceTimer || windowsExitCodeFallback || exited || settled) return;
-			if (windowsExitPoll) {
-				clearInterval(windowsExitPoll);
-				windowsExitPoll = undefined;
-			}
-			windowsExitCodeGraceTimer = setTimeout(() => {
+			windowsExitPoll?.clear();
+			windowsExitPoll = undefined;
+			windowsExitCodeGraceTimer = setLongTimeout(() => {
 				windowsExitCodeGraceTimer = undefined;
 				// A loop held past the grace runs this timer before the events that arrived meanwhile, the child's exit among
 				// them: let those go first, so a reported exit code or signal always wins over the fallback.
@@ -618,7 +605,7 @@ export function waitForChildProcess(
 							armWindowsExitCodeGraceTimer();
 						}
 					} else if (windowsExitPoll) {
-						clearInterval(windowsExitPoll);
+						windowsExitPoll.clear();
 						windowsExitPoll = undefined;
 					}
 					return;
@@ -638,7 +625,7 @@ export function waitForChildProcess(
 		const onAbort = () => {
 			if (!needsWindowsFallback || exited || settled) return;
 			if (exitHandle === undefined && !windowsExitPoll && !windowsExitCodeGraceTimer && !windowsExitCodeFallback) {
-				windowsExitPoll = setInterval(pollWindowsExit, windowsExitPollIntervalMs);
+				windowsExitPoll = setLongInterval(pollWindowsExit, windowsExitPollIntervalMs);
 			}
 			pollWindowsExit();
 		};
@@ -662,7 +649,7 @@ export function waitForChildProcess(
 
 		if (needsWindowsFallback) {
 			if (exitHandle !== undefined) {
-				windowsExitPoll = setInterval(pollWindowsExit, windowsExitPollIntervalMs);
+				windowsExitPoll = setLongInterval(pollWindowsExit, windowsExitPollIntervalMs);
 			}
 			if (options.signal !== undefined) {
 				if (options.signal.aborted) {

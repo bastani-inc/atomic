@@ -336,6 +336,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 					}
 				}
 				for (const warning of serviceTierWarnings(event.message)) console.error(`Warning: ${warning}`);
+			} else if (event.type === "auto_retry_start" && event.delayMs >= 24 * 60 * 60 * 1000) {
+				const days = Math.ceil(event.delayMs / (24 * 60 * 60 * 1000));
+				console.error(
+					`Waiting about ${days} ${days === 1 ? "day" : "days"} before retrying the request. Press Ctrl+C to cancel.`,
+				);
 			} else if (event.type === "model_fallback_start") {
 				fellBack = true;
 				fallbackTarget = { model: event.to, thinkingLevel: event.toThinkingLevel };

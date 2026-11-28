@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { LAYOUT_NODE, type ScrollLayoutNode } from "../layout-node.ts";
 import { type Component, Container } from "../tui.ts";
 
@@ -49,7 +50,7 @@ export class ScrollView extends Container {
 	private requestRenderCallback: (() => void) | undefined;
 	private transientScrollbarVisible = false;
 	private scrollbarActive = false;
-	private scrollbarHideTimer: NodeJS.Timeout | undefined;
+	private scrollbarHideTimer: LongTimeout | undefined;
 	private historyNavigation?: (action: "older" | "newer" | "start" | "end") => void;
 
 	/** Observe explicit navigation, including a turn clamped at the edge of a partial transcript. Layout is silent. */
@@ -136,11 +137,11 @@ export class ScrollView extends Container {
 		if (this.scrollbar !== "auto" || this.contentHeight <= this.currentViewportHeight) return;
 		this.transientScrollbarVisible = true;
 		if (this.scrollbarHideTimer) {
-			clearTimeout(this.scrollbarHideTimer);
+			this.scrollbarHideTimer.clear();
 			this.scrollbarHideTimer = undefined;
 		}
 		if (this.scrollbarActive) return;
-		this.scrollbarHideTimer = setTimeout(() => {
+		this.scrollbarHideTimer = setLongTimeout(() => {
 			this.scrollbarHideTimer = undefined;
 			this.transientScrollbarVisible = false;
 			this.requestRenderCallback?.();
@@ -151,7 +152,7 @@ export class ScrollView extends Container {
 	private hideTransientScrollbar(): void {
 		this.transientScrollbarVisible = false;
 		if (!this.scrollbarHideTimer) return;
-		clearTimeout(this.scrollbarHideTimer);
+		this.scrollbarHideTimer.clear();
 		this.scrollbarHideTimer = undefined;
 	}
 

@@ -151,11 +151,15 @@ async function downloadRemoteCatalog(catalogBaseUrl: string, etag: string | unde
 	const url = new URL("api.json", catalogBaseUrl.endsWith("/") ? catalogBaseUrl : `${catalogBaseUrl}/`);
 	const headers: Record<string, string> = { accept: "application/json", "User-Agent": getPiUserAgent(VERSION) };
 	if (etag) headers["if-none-match"] = etag;
-	const response = await fetchWithRetry(
+	return fetchWithRetry(
 		url,
 		{ headers },
 		{ attemptTimeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS, timeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS * 3 },
+		(response) => readRemoteCatalog(response, url, etag),
 	);
+}
+
+async function readRemoteCatalog(response: Response, url: URL, etag: string | undefined): Promise<RemoteCatalog> {
 	// A server without the catalog (404, 501) means no overlay, not a failed refresh: the bundled catalog stays.
 	if (response.status === 404 || response.status === 501) return { byProvider: new Map(), lastModified: 0 };
 	if (response.status === 304 && etag) return { byProvider: new Map(), lastModified: 0, etag, notModified: true };

@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeoutAt } from "@bastani/atomic-timers";
 import type {
 	SqliteBatchOptions,
 	SqliteDatabase,
@@ -779,10 +780,10 @@ class LaneQueue {
 	private readonly normal: QueuedCall[] = [];
 	private readonly priority: QueuedCall[] = [];
 	private running = false;
-	/** When the running operation started, as `Date.now()`. */
+	/** When the running operation started, as `performance.now()`. */
 	private runningSince = 0;
 	private idle: (() => void)[] = [];
-	private watchdog?: ReturnType<typeof setTimeout>;
+	private watchdog?: LongTimeout;
 	/** The bound the planned check enforces, or undefined when none is planned. */
 	private watchdogBound?: number;
 	private readonly stalled: (ranMs: number) => Error;
@@ -817,10 +818,10 @@ class LaneQueue {
 			return;
 		}
 		this.running = true;
-		this.runningSince = Date.now();
+		this.runningSince = performance.now();
 		// Started on a later microtask, as a promise chain starts it, never inside the call that queued it.
 		void operation.run().finally(() => {
-			clearTimeout(this.watchdog);
+			this.watchdog?.clear();
 			this.watchdog = undefined;
 			this.watchdogBound = undefined;
 			this.running = false;
@@ -843,22 +844,19 @@ class LaneQueue {
 					: undefined;
 		// A priority call queued behind ordinary ones brings the planned check forward to its own, shorter bound.
 		if (bound === this.watchdogBound) return;
-		clearTimeout(this.watchdog);
+		this.watchdog?.clear();
 		this.watchdog = undefined;
 		this.watchdogBound = bound;
 		if (bound === undefined) return;
-		this.watchdog = setTimeout(
-			() => {
-				this.watchdog = undefined;
-				this.watchdogBound = undefined;
-				const ran = Date.now() - this.runningSince;
-				const failing = this.priority.splice(0);
-				if (ran >= STORAGE_QUEUED_CALL_MAX_WAIT_MS) failing.push(...this.normal.splice(0));
-				for (const waiting of failing) waiting.fail(this.stalled(ran));
-				this.watch();
-			},
-			Math.max(0, this.runningSince + bound - Date.now()),
-		);
+		this.watchdog = setLongTimeoutAt(() => {
+			this.watchdog = undefined;
+			this.watchdogBound = undefined;
+			const ran = performance.now() - this.runningSince;
+			const failing = this.priority.splice(0);
+			if (ran >= STORAGE_QUEUED_CALL_MAX_WAIT_MS) failing.push(...this.normal.splice(0));
+			for (const waiting of failing) waiting.fail(this.stalled(ran));
+			this.watch();
+		}, this.runningSince + bound);
 		// A stuck operation ahead of the queue never keeps the process alive on its own.
 		this.watchdog.unref();
 	}
@@ -900,7 +898,7 @@ interface ScopedCall extends QueuedCall {
 	readonly admitted: number;
 	/** When the call started, on that clock; undefined while it waits. */
 	started?: number;
-	/** When the call started, as `Date.now()`. */
+	/** When the call started, as `performance.now()`. */
 	runningSince: number;
 }
 
@@ -920,8 +918,8 @@ class ScopeQueue {
 	private seq = 0;
 	private clock = 0;
 	private idle: (() => void)[] = [];
-	private watchdog?: ReturnType<typeof setTimeout>;
-	/** When the planned check runs, as `Date.now()`, or undefined when none is planned. */
+	private watchdog?: LongTimeout;
+	/** When the planned check runs, as `performance.now()`, or undefined when none is planned. */
 	private watchdogAt?: number;
 	private readonly stalled: (ranMs: number) => Error;
 
@@ -976,7 +974,7 @@ class ScopeQueue {
 		for (const call of this.calls) {
 			if (call.started !== undefined || this.calls.some((other) => this.waitsFor(call, other))) continue;
 			call.started = this.clock++;
-			call.runningSince = Date.now();
+			call.runningSince = performance.now();
 			// Started on a later microtask, as a promise chain starts it, never inside the call that queued it.
 			void call.run().finally(() => {
 				this.calls.splice(this.calls.indexOf(call), 1);
@@ -1018,25 +1016,22 @@ class ScopeQueue {
 		for (const [call, since] of this.stuck())
 			if (Number.isFinite(since)) at = Math.min(at ?? Number.POSITIVE_INFINITY, since + ScopeQueue.bound(call));
 		if (at === this.watchdogAt) return;
-		clearTimeout(this.watchdog);
+		this.watchdog?.clear();
 		this.watchdog = undefined;
 		this.watchdogAt = at;
 		if (at === undefined) return;
-		this.watchdog = setTimeout(
-			() => {
-				this.watchdog = undefined;
-				this.watchdogAt = undefined;
-				const now = Date.now();
-				const failing: [ScopedCall, number][] = [];
-				for (const [call, since] of this.stuck())
-					if (now - since >= ScopeQueue.bound(call)) failing.push([call, now - since]);
-				for (const [call] of failing) this.calls.splice(this.calls.indexOf(call), 1);
-				for (const [call, ran] of failing) call.fail(this.stalled(ran));
-				this.next();
-				this.watch();
-			},
-			Math.max(0, at - Date.now()),
-		);
+		this.watchdog = setLongTimeoutAt(() => {
+			this.watchdog = undefined;
+			this.watchdogAt = undefined;
+			const now = performance.now();
+			const failing: [ScopedCall, number][] = [];
+			for (const [call, since] of this.stuck())
+				if (now - since >= ScopeQueue.bound(call)) failing.push([call, now - since]);
+			for (const [call] of failing) this.calls.splice(this.calls.indexOf(call), 1);
+			for (const [call, ran] of failing) call.fail(this.stalled(ran));
+			this.next();
+			this.watch();
+		}, at);
 		// A stuck call ahead of the queue never keeps the process alive on its own.
 		this.watchdog.unref();
 	}

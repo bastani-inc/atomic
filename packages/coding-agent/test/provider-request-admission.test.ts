@@ -126,6 +126,29 @@ describe("provider request admission (#6790)", () => {
 		}
 	});
 
+	it("does not spend the OpenAI request timeout waiting for permission to send (#6807)", async () => {
+		vi.useFakeTimers();
+		const gate = blockedGate();
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValue(
+				new Response(
+					'data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+					{ headers: { "content-type": "text/event-stream" } },
+				),
+			);
+		const pending = runStream(testModel("openai-completions"), { timeoutMs: 25, fetch });
+		try {
+			await gate.entered;
+			await vi.advanceTimersByTimeAsync(55);
+			assert.equal(fetch.mock.calls.length, 0);
+		} finally {
+			gate.release();
+		}
+		assert.equal((await pending).stopReason, "stop");
+		assert.equal(fetch.mock.calls.length, 1);
+	});
+
 	it("ends an SDK retry's gate wait at the running deadline without timing out its initial request (#6790)", async () => {
 		vi.useFakeTimers();
 		const controller = new AbortController();

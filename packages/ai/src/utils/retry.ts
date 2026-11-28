@@ -2,7 +2,7 @@ import { getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
 import type { AssistantMessage, RetryDeadline } from "../types.ts";
 import { DEFAULT_MAX_RETRY_DELAY_MS } from "./provider-retry.ts";
 import { isProviderQuotaCode, isProviderQuotaExhaustionText, responsesDiagnosticCode } from "./responses-errors/codes.ts";
-import { retryDeadlineReached } from "./retry-sleep.ts";
+import { retryDeadlineReached, sleepForRetry } from "./retry-sleep.ts";
 import { getTlsCertificateRefusal } from "./tls-certificate.ts";
 
 function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
@@ -138,7 +138,7 @@ export const DEFAULT_MAX_AGENT_RETRY_DELAY_MS = 60_000;
 
 export function retryDelayMs(policy: Pick<RetryPolicy, "baseDelayMs" | "maxAgentDelayMs">, attempt: number): number {
 	const delay = policy.baseDelayMs * 2 ** Math.max(0, attempt - 1);
-	const safeDelay = Number.isSafeInteger(delay) ? delay : Number.MAX_SAFE_INTEGER;
+	const safeDelay = Number.isFinite(delay) ? delay : Number.MAX_SAFE_INTEGER;
 	return Math.min(safeDelay, policy.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
 }
 
@@ -194,24 +194,6 @@ class RetrySleepAbortError extends Error {
 	constructor() {
 		super("Aborted");
 	}
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(new RetrySleepAbortError());
-			return;
-		}
-		const timeout = setTimeout(resolve, ms);
-		signal?.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(timeout);
-				reject(new RetrySleepAbortError());
-			},
-			{ once: true },
-		);
-	});
 }
 
 /**
@@ -273,7 +255,7 @@ export async function retryAssistantCall(
 		// Normalize aborts during retry backoff to the same AssistantMessage shape as
 		// provider stream aborts, so callers do not need to care when cancellation happened.
 		try {
-			await sleep(delayMs, signal);
+			await sleepForRetry(delayMs, signal, () => new RetrySleepAbortError());
 		} catch (error) {
 			await callbacks?.onRetryFinished?.(false, attempt, lastRetry.errorMessage);
 			if (error instanceof RetrySleepAbortError) {

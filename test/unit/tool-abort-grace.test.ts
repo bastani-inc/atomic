@@ -691,6 +691,6 @@ describe("ATOMIC_TOOL_ABORT_GRACE_MS (#5486)", () => {
 		assert.equal(toolAbortGraceMs({ ATOMIC_TOOL_ABORT_GRACE_MS: " 0 " }), 0);
 		for (const value of ["", "-1", "1.5", "10s", "abc"])
 			assert.equal(toolAbortGraceMs({ ATOMIC_TOOL_ABORT_GRACE_MS: value }), 10_000, value);
-		assert.equal(toolAbortGraceMs({ ATOMIC_TOOL_ABORT_GRACE_MS: "99999999999" }), 2_147_483_647);
+		assert.equal(toolAbortGraceMs({ ATOMIC_TOOL_ABORT_GRACE_MS: "99999999999" }), 99_999_999_999);
 	});
 });

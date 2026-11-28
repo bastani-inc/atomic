@@ -143,8 +143,8 @@ export function validateMcpServerConfig(name: string, raw: unknown): McpServerCo
 	if (enabled !== undefined && typeof enabled !== "boolean") return `server "${name}": enabled must be a boolean`;
 	if (description !== undefined && typeof description !== "string")
 		return `server "${name}": description must be a string`;
-	if (timeout !== undefined && (typeof timeout !== "number" || !(timeout > 0)))
-		return `server "${name}": timeout must be a positive number of seconds`;
+	if (timeout !== undefined && (typeof timeout !== "number" || !Number.isFinite(timeout * 1000) || !(timeout > 0)))
+		return `server "${name}": timeout must be a finite positive number of seconds`;
 	if (type === "sse") return `server "${name}": legacy SSE transport is not supported; use the streamable HTTP URL`;
 	if (typeof value.url === "string" && (type === undefined || type === "http" || type === "streamable-http")) {
 		let resolvedUrl: string;

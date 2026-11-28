@@ -1,3 +1,4 @@
+import { createTimeoutSignal } from "@bastani/atomic-timers";
 import { calculateCost } from "../models.ts";
 import type {
 	ClassifierApi,
@@ -146,7 +147,8 @@ export async function postClassifierRequest(
 	const requestFetch = retryTransport?.fetch ?? options.fetch ?? globalThis.fetch;
 	const { response, json } = await retryProviderRequest(
 		async () => {
-			const timeoutSignal = options.timeoutMs !== undefined ? AbortSignal.timeout(options.timeoutMs) : undefined;
+			const timeout = options.timeoutMs !== undefined ? createTimeoutSignal(options.timeoutMs) : undefined;
+			const timeoutSignal = timeout?.signal;
 			const signal =
 				options.signal && timeoutSignal
 					? AbortSignal.any([options.signal, timeoutSignal])
@@ -182,6 +184,8 @@ export async function postClassifierRequest(
 					throw transportError(error);
 				}
 				throw error;
+			} finally {
+				timeout?.clear();
 			}
 		},
 		{

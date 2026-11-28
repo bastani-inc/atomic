@@ -7,6 +7,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { createTimeoutSignal } from "@bastani/atomic-timers";
 import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME } from "../../config.js";
 import { validateMcpServerConfig } from "../../core/mcp-servers.ts";
@@ -715,6 +716,7 @@ async function login(
 
 	const openUrl = options.openUrl ?? openBrowser;
 	const interactive = process.stdin.isTTY === true && options.openUrl === undefined;
+	const deadline = createTimeoutSignal(timeoutMs);
 	try {
 		await signInMcpServer({
 			serverUrl: url,
@@ -729,7 +731,7 @@ async function login(
 				},
 				promptForRedirectUrl: (signal) => waitForRedirectUrl(signal, interactive),
 			},
-			signal: AbortSignal.timeout(timeoutMs),
+			signal: deadline.signal,
 		});
 	} catch (signInError) {
 		error(
@@ -738,6 +740,8 @@ async function login(
 				: `Sign-in to MCP server "${name}" failed: ${errorMessage(signInError)}`,
 		);
 		return 1;
+	} finally {
+		deadline.clear();
 	}
 	connection.challenge = undefined;
 	try {

@@ -50,10 +50,10 @@ test("structured output does not send its classifier retry if its timeout passed
 test("a structured output retry can expire while its provider slot is being granted (#5627)", async () => {
 	const chat = vi.fn(() => messageStream({ ...decisionMessage(), stopReason: "error", errorMessage: "503" }));
 	const input = await request(chat);
-	const clock = vi.spyOn(performance, "now").mockReturnValue(10);
+	const clock = vi.spyOn(performance, "now");
 	let admissions = 0;
 	setProviderRequestGate(async () => {
-		if (++admissions === 2) clock.mockReturnValue(1010);
+		if (++admissions === 2) clock.mockReturnValue(performance.now() + input.timeoutMs);
 	});
 	const failure = await generateStructuredOutput(input).catch((error: unknown) => error);
 	assert.equal(admissions, 2);

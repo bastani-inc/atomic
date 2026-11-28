@@ -1,3 +1,4 @@
+import { createTimeoutSignal } from "@bastani/atomic-timers";
 import type {
 	ClassifierAnswer,
 	ClassifierApi,
@@ -248,7 +249,8 @@ async function post(request: RequestContext, path: string, body: unknown, observ
 		) ?? {};
 	const { response, json } = await retryProviderRequest(
 		async () => {
-			const timeoutSignal = options?.timeoutMs !== undefined ? AbortSignal.timeout(options.timeoutMs) : undefined;
+			const timeout = options?.timeoutMs !== undefined ? createTimeoutSignal(options.timeoutMs) : undefined;
+			const timeoutSignal = timeout?.signal;
 			const signal =
 				options?.signal && timeoutSignal
 					? AbortSignal.any([options.signal, timeoutSignal])
@@ -265,6 +267,8 @@ async function post(request: RequestContext, path: string, body: unknown, observ
 			} catch (error) {
 				if (timeoutSignal?.aborted && !options?.signal?.aborted) throw timeoutError(options!.timeoutMs!);
 				throw error;
+			} finally {
+				timeout?.clear();
 			}
 		},
 		{ maxRetries: options?.maxRetries ?? 2, maxRetryDelayMs: options?.maxRetryDelayMs, signal: options?.signal },

@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeoutAt } from "@bastani/atomic-timers";
 import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
 import * as shellUtils from "../../utils/shell.ts";
 import * as processTreeContainment from "../process-tree-containment.ts";
@@ -8,7 +9,6 @@ export const WORKSPACE_PROCESS_STOP_GRACE_MS = 5_000;
 const GROUP_EXIT_POLL_MS = 50;
 /** How often a stopped Windows run checks whether its contained Job object has drained. */
 const TREE_EXIT_POLL_MS = 5;
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
 /** On POSIX each process runs in its own process group, so stopping it also stops what it started. */
 const OWN_PROCESS_GROUP = process.platform !== "win32";
 
@@ -141,7 +141,7 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 		const settle = (finish: () => void): void => {
 			if (settled) return;
 			settled = true;
-			clearTimeout(timer);
+			timer?.clear();
 			clearTimeout(escalation);
 			clearTimeout(groupPoll);
 			run.signal?.removeEventListener("abort", onAbort);
@@ -185,19 +185,12 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 			if (child.exitCode !== null || child.signalCode !== null) settleWhenStopped();
 		};
 		const onAbort = (): void => stop(() => reject(run.signal!.reason));
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		let timer: LongTimeout | undefined;
 		if (run.timeoutMs !== undefined) {
-			const timeoutMs = run.timeoutMs;
-			const onTimeout = (): void => {
-				const elapsedMs = performance.now() - startedAt;
-				const remainingMs = timeoutMs - elapsedMs;
-				if (remainingMs > 0) {
-					timer = setTimeout(onTimeout, Math.min(Math.ceil(remainingMs), MAX_TIMER_DELAY_MS));
-					return;
-				}
-				stop(() => reject(run.timeoutError!(Math.ceil(elapsedMs))));
-			};
-			timer = setTimeout(onTimeout, Math.min(Math.ceil(timeoutMs), MAX_TIMER_DELAY_MS));
+			timer = setLongTimeoutAt(() => {
+				const elapsedMs = Math.ceil(performance.now() - startedAt);
+				stop(() => reject(run.timeoutError!(elapsedMs)));
+			}, startedAt + run.timeoutMs);
 		}
 		run.signal?.addEventListener("abort", onAbort, { once: true });
 		child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));

@@ -11,6 +11,7 @@ In the `atomic-monorepo` npm workspace:
 - `packages/ai`, `packages/tui`, `packages/agent`, `packages/codemode`, `packages/schema`, and `packages/telemetry` are Atomic's pi forks.
   They compile with `tsc` and publish as `@bastani/atomic-*`, with `packages/agent` publishing as `@bastani/atomic-agent-core`.
   The CLI pins them to its release version. The loader resolves `@earendil-works/pi-*`, `@mariozechner/pi-*`, and `@bastani/pi-ai` aliases.
+- `packages/timers` holds the shared deadline timer source. It is a private workspace embedded in its consumers' builds, not a published dependency.
 - `packages/natives` builds the `@bastani/atomic-natives` N-API module from Rust code in `crates/`.
 - `packages/storage-postgres` publishes separately as JSDoc-checked ESM with type declarations.
   It has no compile step. Keep it out of the CLI's dependencies and `dist/builtin`.

@@ -1,5 +1,6 @@
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import chalk from "chalk";
 import { ENV_STDIN_TIMEOUT_MS, getEnvValue } from "./config.js";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
@@ -8,18 +9,12 @@ import type { SettingsManager } from "./core/settings-manager.ts";
 /** How long a run waits for the first piped byte, or the end of stdin, by default. */
 export const DEFAULT_STDIN_TIMEOUT_MS = 2_000;
 
-/** The longest delay a timer holds: a longer one fires after 1 ms instead. */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
-
-/**
- * `ATOMIC_STDIN_TIMEOUT_MS`: a whole number of milliseconds, at most `MAX_TIMER_DELAY_MS` (about 24.8 days); `0` waits
- * for the end of piped input.
- */
+/** `ATOMIC_STDIN_TIMEOUT_MS`: a whole number of milliseconds; `0` waits for the end of piped input. */
 function stdinTimeoutMs(): number {
 	const raw = getEnvValue(ENV_STDIN_TIMEOUT_MS)?.trim();
 	if (!raw) return DEFAULT_STDIN_TIMEOUT_MS;
 	const value = Number(raw);
-	return Number.isSafeInteger(value) && value >= 0 ? Math.min(value, MAX_TIMER_DELAY_MS) : DEFAULT_STDIN_TIMEOUT_MS;
+	return Number.isSafeInteger(value) && value >= 0 ? value : DEFAULT_STDIN_TIMEOUT_MS;
 }
 
 /** What `readPipedStdin` needs of stdin. */
@@ -53,7 +48,7 @@ export async function readPipedStdin(options: {
 		let data = "";
 		let received = false;
 		let settled = false;
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		let timer: LongTimeout | undefined;
 		// Decoded here rather than with `setEncoding`, which holds back a partial character: a first byte that arrived
 		// before the deadline, as part of a character whose rest came later, would not count as input arriving.
 		const decoder = new StringDecoder("utf8");
@@ -65,7 +60,7 @@ export async function readPipedStdin(options: {
 		const settle = (value: string | undefined) => {
 			if (settled) return;
 			settled = true;
-			if (timer) clearTimeout(timer);
+			timer?.clear();
 			stdin.off("data", onData);
 			stdin.off("end", onEnd);
 			resolve(value);
@@ -73,7 +68,7 @@ export async function readPipedStdin(options: {
 		stdin.on("data", onData);
 		stdin.on("end", onEnd);
 		if (timeoutMs > 0) {
-			timer = setTimeout(() => {
+			timer = setLongTimeout(() => {
 				if (received) return;
 				if (!options.hasPrompt) {
 					warn(

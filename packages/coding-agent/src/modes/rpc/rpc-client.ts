@@ -1,5 +1,6 @@
 import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@bastani/atomic-ai/compat";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { BashResult } from "../../core/bash-executor.ts";
 import { receiveChatReceipt } from "../../core/chat-receipts.js";
 import type { SessionTrustDecisions, StartupExtensionCheck } from "../../core/project-trust-state.ts";
@@ -356,7 +357,7 @@ export class RpcClient extends RpcClientApi {
 		const stopListening = this.onGenerationEnded((event) => {
 			if (event.generation === generation) done.resolve(false);
 		});
-		const timer = setTimeout(() => done.resolve(false), timeoutMs);
+		const timer = setLongTimeout(() => done.resolve(false), timeoutMs);
 		try {
 			// Ahead of whatever waits to be written: an engine too busy to read can hold an earlier write past the ack's
 			// deadline, and the stop that follows drops what is still queued.
@@ -366,7 +367,7 @@ export class RpcClient extends RpcClientApi {
 			);
 			return await done.promise;
 		} finally {
-			clearTimeout(timer);
+			timer.clear();
 			stopListening();
 			if (this.explicitQuitAck?.generation === generation) this.explicitQuitAck = undefined;
 		}
@@ -910,17 +911,17 @@ export class RpcClient extends RpcClientApi {
 		const id = `req_${++this.requestId}`;
 		onRequestId?.(id);
 		const fullCommand = { ...command, id } as RpcCommand;
-		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let timeout: LongTimeout | undefined;
 		let rejectResponse!: (error: Error) => void;
 		const response = new Promise<RpcResponse>((resolve, reject) => {
 			rejectResponse = reject;
 			this.pendingRequests.add(id, {
 				resolve: (value) => {
-					if (timeout) clearTimeout(timeout);
+					timeout?.clear();
 					resolve(value);
 				},
 				reject: (error) => {
-					if (timeout) clearTimeout(timeout);
+					timeout?.clear();
 					reject(error);
 				},
 			});
@@ -936,7 +937,7 @@ export class RpcClient extends RpcClientApi {
 			return response;
 		}
 		if (this.pendingRequests.has(id) && !LONG_LIVED_COMMANDS.has(command.type)) {
-			timeout = setTimeout(() => {
+			timeout = setLongTimeout(() => {
 				this.pendingRequests.delete(id);
 				rejectResponse(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.stderr}`));
 			}, this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);

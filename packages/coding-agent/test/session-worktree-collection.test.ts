@@ -69,7 +69,7 @@ test("closing a session schedules a collection of its store's blobs that starts 
 	const orphan = await agedOrphan(database, store);
 	const manager = await SessionManager.create(store, sandbox.root);
 	const harness = await createHarness({ sessionManager: manager });
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 
 	await harness.cleanup();
 
@@ -91,7 +91,7 @@ test("an interactive session schedules a collection once it has started, so a se
 	const manager = await SessionManager.create(store, sandbox.root);
 	const harness = await createHarness({ sessionManager: manager });
 	cleanups.push(() => harness.cleanup());
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 
 	await harness.session.bindExtensions({ mode: "tui" });
 
@@ -108,7 +108,7 @@ test("a session started for one print-mode prompt schedules no collection until 
 	const manager = await SessionManager.create(store, sandbox.root);
 	const harness = await createHarness({ sessionManager: manager });
 	cleanups.push(() => harness.cleanup());
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 
 	await harness.session.bindExtensions({ mode: "print" });
 	await vi.advanceTimersByTimeAsync(SNAPSHOT_COLLECTION_SESSION_DELAY_MS);

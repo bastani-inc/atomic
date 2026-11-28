@@ -594,7 +594,8 @@ describe("a live subagent's chat box (#4640)", () => {
 	});
 
 	test("shows the working line from a turn already under way when the page opens, until the turn ends (#4640)", async () => {
-		const { page, live } = await livePage({ isRunning: () => true });
+		const chatSession = { ...(await liveChatSession()), turnStartedAt: Date.now() - 10_000 };
+		const { page, live } = await livePage({ chatSession, isRunning: () => true });
 		assert.ok(plain(page.render(100, 20)).some((row) => WORKING_LINE.test(row)));
 		for (const listener of live.listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
 		assert.ok(!plain(page.render(100, 20)).some((row) => WORKING_MESSAGE.test(row)));

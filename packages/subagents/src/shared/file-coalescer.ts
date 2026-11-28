@@ -1,3 +1,5 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
+
 interface TimerApi {
 	setTimeout(handler: () => void, delayMs: number): unknown;
 	clearTimeout(handle: unknown): void;
@@ -9,8 +11,8 @@ interface FileCoalescer {
 }
 
 const defaultTimerApi: TimerApi = {
-	setTimeout: (handler, delayMs) => setTimeout(handler, delayMs),
-	clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	setTimeout: setLongTimeout,
+	clearTimeout: (handle) => (handle as LongTimeout).clear(),
 };
 
 export function createFileCoalescer(

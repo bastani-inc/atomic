@@ -108,6 +108,7 @@ test("control messages deliver locally without a result acknowledgement (#4521)"
 
 test("a timer without unref still bounds acknowledgement waiting (#4521)", async () => {
 	let fire: (() => void) | undefined;
+	const clock = vi.spyOn(performance, "now").mockReturnValue(0);
 	vi.stubGlobal("setTimeout", (callback: () => void) => {
 		fire = callback;
 		return 123;
@@ -116,12 +117,13 @@ test("a timer without unref still bounds acknowledgement waiting (#4521)", async
 	try {
 		const result = sendTaskTranscriptMessage({ on: () => () => {}, emit: () => {} }, "child", "hello", {
 			timeoutMs: 10,
-			now: () => 0,
 		});
 		assert.ok(fire);
+		clock.mockReturnValue(10);
 		fire();
-		assert.deepEqual(await result, { delivered: false, reason: "unconfirmed", timeoutMs: 10, elapsedMs: 0 });
+		assert.deepEqual(await result, { delivered: false, reason: "unconfirmed", timeoutMs: 10, elapsedMs: 10 });
 	} finally {
+		clock.mockRestore();
 		vi.unstubAllGlobals();
 	}
 });

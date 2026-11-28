@@ -14,6 +14,7 @@
  * that {@link isRetryableAssistantError} classifies as retryable.
  */
 
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { raceWithAbortSignal } from "./abort.ts";
 import { type CombinedAbortSignal, combineAbortSignals } from "./abort-signals.ts";
 import type { AssistantMessageEventStream } from "./event-stream.ts";
@@ -26,9 +27,6 @@ import type { AssistantMessageEventStream } from "./event-stream.ts";
  * generous enough for slow reasoning models that go quiet between events.
  */
 export const DEFAULT_STREAM_DEADLINE_MS = 300_000;
-
-/** The largest delay accepted by a platform timer without overflow. */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** Message text used when a stream exceeds its idle deadline. */
 export function streamDeadlineErrorMessage(deadlineMs: number): string {
@@ -116,36 +114,6 @@ export function createStreamDeadline(
 }
 
 /**
- * Schedule a timer without allowing the platform's 32-bit delay clamp to turn
- * a valid long deadline into a one-millisecond timeout.
- */
-function scheduleDeadline(callback: () => void, delayMs: number): () => void {
-	let remaining = delayMs;
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	let cancelled = false;
-
-	const arm = () => {
-		if (cancelled) return;
-		const delay = Math.min(remaining, MAX_TIMER_DELAY_MS);
-		timer = setTimeout(() => {
-			if (cancelled) return;
-			remaining -= delay;
-			if (remaining <= 0) {
-				callback();
-				return;
-			}
-			arm();
-		}, delay);
-	};
-
-	arm();
-	return () => {
-		cancelled = true;
-		if (timer !== undefined) clearTimeout(timer);
-	};
-}
-
-/**
  * Wrap an async iterable so each pending `next()` is bounded by an idle deadline.
  *
  * The timer caps the wait for progress, not the total stream duration.
@@ -189,10 +157,10 @@ export async function* withStreamDeadline<T, K extends T = never>(
 			if (deadlineMs !== undefined && !cancelTimer) {
 				const deadline = new AbortController();
 				waitSignal = callerSignal ? AbortSignal.any([callerSignal, deadline.signal]) : deadline.signal;
-				cancelTimer = scheduleDeadline(() => {
+				cancelTimer = setLongTimeout(() => {
 					deadline.abort(new StreamDeadlineError(deadlineMs));
 					onDeadline?.();
-				}, deadlineMs);
+				}, deadlineMs).clear;
 			}
 			waitSignal?.throwIfAborted();
 			const pending = Promise.resolve(iterator.next());

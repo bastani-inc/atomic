@@ -58,6 +58,7 @@ import {
 } from "../utils/openrouter-cost.ts";
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { sdkTimerBackstop } from "../utils/sdk-timeout.js";
 import { admitOpenAIRequests, getFetchAdmission, wrapFetchPreservingAdmission } from "../utils/request-admission.js";
 import { skipOpenAIProviderRetry } from "../utils/responses-errors/codes.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
@@ -458,11 +459,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			if (nextParams !== undefined) {
 				params = nextParams as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
 			}
-			const requestOptions = {
-				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
-				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-				maxRetries: 0,
-			};
+			const requestOptions = { ...sdkTimerBackstop(options?.timeoutMs), signal: streamDeadline.signal, maxRetries: 0 };
 			const { data: openaiStream, response } = await retryProviderRequest(
 				() => {
 					streamAttempt.begin();

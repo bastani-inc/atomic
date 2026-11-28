@@ -1,6 +1,7 @@
 // @ts-nocheck
 import type { EditorTheme } from "@bastani/atomic-tui";
 import { stripHintMarkers } from "@bastani/atomic-tui";
+import { vi } from "vitest";
 import {
 	ChatSessionHost,
 	type ChatSessionHostOpts,
@@ -71,6 +72,7 @@ export interface LifecycleFakeClock {
 	activeIntervalDelays(): readonly number[];
 	timeoutCount(): number;
 	capturedAnimationCallbacks(): readonly (() => void)[];
+	capturedTimeoutCallbacks(): readonly (() => void)[];
 	intervalDelays(): readonly number[];
 	timeoutDelays(): readonly number[];
 	restore(): void;
@@ -85,6 +87,7 @@ export function installLifecycleFakeClock(): LifecycleFakeClock {
 	const capturedIntervals: CapturedTimer[] = [];
 	const capturedTimeouts: CapturedTimer[] = [];
 	let now = 0;
+	const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
 	let nextOrder = 0;
 
 	const install = (callback: () => void, delayValue: number | undefined, repeat: boolean): object => {
@@ -144,9 +147,11 @@ export function installLifecycleFakeClock(): LifecycleFakeClock {
 		activeIntervalDelays: () => [...scheduled.values()].filter((timer) => timer.repeat).map(({ delay }) => delay),
 		timeoutCount: () => [...scheduled.values()].filter((timer) => !timer.repeat).length,
 		capturedAnimationCallbacks: () => capturedIntervals.map(({ callback }) => callback),
+		capturedTimeoutCallbacks: () => capturedTimeouts.map(({ callback }) => callback),
 		intervalDelays: () => capturedIntervals.map(({ delay }) => delay),
 		timeoutDelays: () => capturedTimeouts.map(({ delay }) => delay),
 		restore: () => {
+			clock.mockRestore();
 			globalThis.setInterval = previousSetInterval;
 			globalThis.clearInterval = previousClearInterval;
 			globalThis.setTimeout = previousSetTimeout;

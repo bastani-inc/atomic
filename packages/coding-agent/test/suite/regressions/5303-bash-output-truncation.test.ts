@@ -249,7 +249,7 @@ describe("issue #5303 bash output truncation past exit", () => {
 
 	it("re-arms the default idle grace on post-exit stdout and stderr data and resolves once quiet", async () => {
 		// The clock is fake; the turn the fallback waits for after the grace is a real one.
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess();
 
 		let stdoutText = "";
@@ -293,7 +293,7 @@ describe("issue #5303 bash output truncation past exit", () => {
 
 	it("enforces an active-drain hard cap when a detached child keeps writing after exit", async () => {
 		// The clock is fake; the turn the fallback waits for after the cap is a real one.
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess();
 
 		let output = "";
@@ -376,7 +376,7 @@ describe("issue #5303 bash output truncation past exit", () => {
 
 	it("drains already-queued output before finalizing at the active-drain hard cap without letting noisy writes postpone it", async () => {
 		// Fake timers control the 5s hard cap while setImmediate and MessageChannel use the real loop.
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess();
 		let output = "";
 		synthetic.stdout.on("data", (chunk: Buffer) => {
@@ -418,7 +418,7 @@ describe("issue #5303 bash output truncation past exit", () => {
 	});
 
 	it("clears pending post-exit fallback immediates when stdio ends before the check phase", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate", "performance"] });
 		const synthetic = createSyntheticChildProcess();
 
 		const wait = waitForChildProcess(synthetic.child);
@@ -437,7 +437,7 @@ describe("issue #5303 bash output truncation past exit", () => {
 	});
 
 	it("clears the pending idle timer when the active-drain hard cap fires and clears the hard-cap fallback on early stdio end", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate", "performance"] });
 		const synthetic = createSyntheticChildProcess();
 
 		const wait = waitForChildProcess(synthetic.child);
@@ -466,7 +466,7 @@ describe("issue #5303 bash output truncation past exit", () => {
 
 	it("clears an already-pending idle fallback immediate when the active-drain hard cap fires", async () => {
 		// Fake timers control the 100 ms and 5 s timers while real setImmediate preserves check-phase FIFO order.
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 		const synthetic = createSyntheticChildProcess();
 		const order: string[] = [];
 

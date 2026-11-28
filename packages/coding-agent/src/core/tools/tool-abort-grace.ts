@@ -1,12 +1,11 @@
 import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 
 /** How long a tool call may run on after its turn is interrupted before the turn stops waiting for it (#5486). */
 export const DEFAULT_TOOL_ABORT_GRACE_MS = 10_000;
-/** The longest delay a timer takes; a larger value would fire at once. */
-const MAX_TIMER_MS = 2_147_483_647;
 
 interface GraceOwnerState {
-	readonly timers: Set<ReturnType<typeof setTimeout>>;
+	readonly timers: Set<LongTimeout>;
 	keepAliveHolders: number;
 	released: boolean;
 }
@@ -122,13 +121,9 @@ export function holdToolAbortGraceWhenObserved<T>(owner: object, promise: Promis
  * The timer starts unref'd unless an observed abort caller is actively awaiting settlement for `owner`, and is unref'd
  * again once no awaited caller remains or {@link releaseToolAbortGraceTimers} runs during disposal.
  */
-export function armToolAbortGraceTimer(
-	owner: object | undefined,
-	graceMs: number,
-	onExpire: () => void,
-): ReturnType<typeof setTimeout> {
+export function armToolAbortGraceTimer(owner: object | undefined, graceMs: number, onExpire: () => void): LongTimeout {
 	const state = owner === undefined ? undefined : graceOwnerState(owner);
-	const timer = setTimeout(() => {
+	const timer = setLongTimeout(() => {
 		if (owner !== undefined && state !== undefined) {
 			state.timers.delete(timer);
 			pruneGraceOwner(owner, state);
@@ -145,12 +140,9 @@ export function armToolAbortGraceTimer(
 }
 
 /** Clear an abort-grace timer armed through {@link armToolAbortGraceTimer}. */
-export function clearToolAbortGraceTimer(
-	owner: object | undefined,
-	timer: ReturnType<typeof setTimeout> | undefined,
-): void {
+export function clearToolAbortGraceTimer(owner: object | undefined, timer: LongTimeout | undefined): void {
 	if (timer === undefined) return;
-	clearTimeout(timer);
+	timer.clear();
 	if (owner === undefined) return;
 	const state = graceOwners.get(owner);
 	if (state === undefined) return;
@@ -170,9 +162,8 @@ export function releaseToolAbortGraceTimers(owner: object | undefined): void {
 /** `ATOMIC_TOOL_ABORT_GRACE_MS` when it is a whole number of milliseconds, otherwise the default. */
 export function toolAbortGraceMs(env: NodeJS.ProcessEnv = process.env): number {
 	const value = env.ATOMIC_TOOL_ABORT_GRACE_MS?.trim();
-	return value !== undefined && /^\d+$/.test(value)
-		? Math.min(Number(value), MAX_TIMER_MS)
-		: DEFAULT_TOOL_ABORT_GRACE_MS;
+	const ms = value !== undefined && /^\d+$/.test(value) ? Number(value) : NaN;
+	return Number.isSafeInteger(ms) ? ms : DEFAULT_TOOL_ABORT_GRACE_MS;
 }
 
 function seconds(ms: number): string {
@@ -211,7 +202,7 @@ export function withToolAbortGrace(tool: AgentTool, owner?: object): AgentTool {
 			if (signal === undefined) return running;
 			const timerOwner = owner ?? signal;
 			const guarded = new Promise<AgentToolResult<unknown>>((resolve, reject) => {
-				let timer: ReturnType<typeof setTimeout> | undefined;
+				let timer: LongTimeout | undefined;
 				const startGrace = () => {
 					const graceMs = toolAbortGraceMs();
 					timer = armToolAbortGraceTimer(timerOwner, graceMs, () =>

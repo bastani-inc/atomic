@@ -9,6 +9,7 @@ import { Editor, wordWrapLine } from "../src/components/editor.ts";
 import { FAKE_CURSOR_START, renderFakeCursor, type TUI } from "../src/tui.ts";
 import { TuiMainScreen } from "../src/tui-main-screen.ts";
 import { stripTerminalSequences, visibleWidth } from "../src/utils.ts";
+import { mockMonotonicTimers } from "./mock-monotonic-timers.ts";
 import { defaultEditorTheme } from "./test-themes.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -2294,7 +2295,7 @@ describe("Editor component", () => {
 		});
 
 		it("triggers and debounces symbol completion after CJK punctuation", async (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+			mockMonotonicTimers(t);
 			for (const before of [
 				"查看，",
 				"\u3000",
@@ -2337,7 +2338,7 @@ describe("Editor component", () => {
 		});
 
 		it("does not auto-trigger after CJK letters or for unprefixed paths", async (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+			mockMonotonicTimers(t);
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			let requests = 0;
 			editor.setAutocompleteProvider({
@@ -2380,7 +2381,7 @@ describe("Editor component", () => {
 		});
 
 		it("requests path completion after CJK punctuation only on Tab", async (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+			mockMonotonicTimers(t);
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
 			const requests: Array<{ text: string; force: boolean | undefined }> = [];
 			editor.setAutocompleteProvider({
@@ -2423,7 +2424,7 @@ describe("Editor component", () => {
 		});
 
 		it("ends unquoted trigger and debounce contexts at whitespace or CJK punctuation", async (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+			mockMonotonicTimers(t);
 			for (const separator of [" ", "\u3000", "，", "。"]) {
 				for (const trigger of ["@", "#", "$"]) {
 					const editor = new Editor(createTestTUI(), defaultEditorTheme);
@@ -2456,7 +2457,7 @@ describe("Editor component", () => {
 		});
 
 		it("re-triggers CJK path completion after accepting directories and deleting", async (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+			mockMonotonicTimers(t);
 			const provider = new CombinedAutocompleteProvider([], process.cwd());
 			for (const directory of ["文档", "我的 文档", "资料，归档"]) {
 				const quoted = directory !== "文档";

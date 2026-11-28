@@ -7,6 +7,7 @@ import {
 } from "@bastani/atomic-ai/utils/provider-waits/timeout";
 import { createFetchWithAdmission } from "@bastani/atomic-ai/utils/request-admission";
 import { RetryDeadlineError, retryDeadlineReached } from "@bastani/atomic-ai/utils/retry-sleep";
+import { setLongTimeoutAt, setWallTimeoutAt } from "@bastani/atomic-timers";
 import { raceWithAbortSignal } from "../utils/abort.js";
 import { asyncScope } from "./async-scope.ts";
 import { observeFailedProviderAccount, providerAccount } from "./provider-account.ts";
@@ -119,16 +120,16 @@ function providerFetch(provider: string, model: string, originalFetch: typeof fe
 	return admitted;
 }
 
-function sleepForAdmission(ms: number, signal?: AbortSignal): Promise<void> {
+function sleepForAdmission(at: number, signal?: AbortSignal): Promise<void> {
 	signal?.throwIfAborted();
 	return new Promise((resolve, reject) => {
 		const cleanup = () => signal?.removeEventListener("abort", abort);
-		const timer = setTimeout(() => {
+		const timer = setWallTimeoutAt(() => {
 			cleanup();
 			resolve();
-		}, ms);
+		}, at);
 		const abort = () => {
-			clearTimeout(timer);
+			timer.clear();
 			cleanup();
 			reject(signal?.reason ?? new Error("Provider request aborted"));
 		};
@@ -147,10 +148,7 @@ async function waitForAdmission(
 	const controller = new AbortController();
 	const signal = callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal;
 	const retryAt = typeof retryDeadline === "number" ? retryDeadline : retryDeadline?.at;
-	const timeout = Math.min(
-		Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SETTINGS_DEFAULTS.httpIdleTimeoutMs,
-		2_147_483_647,
-	);
+	const timeout = timeoutMs > 0 ? timeoutMs : SETTINGS_DEFAULTS.httpIdleTimeoutMs;
 	const admissionAt = performance.now() + timeout;
 	const retryExpiresFirst = retryAt !== undefined && retryAt <= admissionAt;
 	const deadline = retryExpiresFirst ? retryAt : admissionAt;
@@ -162,7 +160,7 @@ async function waitForAdmission(
 		if (performance.now() >= deadline) expire();
 		signal.throwIfAborted();
 	};
-	const timer = setTimeout(expire, Math.max(0, Math.ceil(deadline - performance.now())));
+	const timer = setLongTimeoutAt(expire, deadline);
 	try {
 		let queued = false;
 		while (true) {
@@ -180,14 +178,14 @@ async function waitForAdmission(
 				check();
 				return;
 			}
-			await sleepForAdmission(Math.min(delay, 60_000), signal);
+			await sleepForAdmission(Date.now() + Math.min(delay, 60_000), signal);
 			queued = true;
 		}
 	} catch (error) {
 		if (retryError && error === retryError && typeof retryDeadline === "object") retryDeadline.onExpired();
 		throw error;
 	} finally {
-		clearTimeout(timer);
+		timer.clear();
 	}
 }
 

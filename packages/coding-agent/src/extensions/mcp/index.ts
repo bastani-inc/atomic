@@ -33,6 +33,7 @@
 
 import { join, resolve } from "node:path";
 import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { SelectItem } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.js";
 import type {
@@ -1730,14 +1731,14 @@ export function createMcpExtension(options: McpExtensionOptions = {}): Extension
 					: [],
 			);
 			if (ready.length === 0) return;
-			let timer: NodeJS.Timeout | undefined;
+			let timer: LongTimeout | undefined;
 			const finished = await Promise.race([
 				Promise.all(ready).then(() => true),
 				new Promise<boolean>((resolve) => {
-					timer = setTimeout(() => resolve(false), startupWaitMs);
+					timer = setLongTimeout(() => resolve(false), startupWaitMs);
 				}),
 			]);
-			clearTimeout(timer);
+			timer?.clear();
 			if (!finished) {
 				ctx.ui.notify("MCP servers are still connecting; their tools become available once connected.", "info");
 			}

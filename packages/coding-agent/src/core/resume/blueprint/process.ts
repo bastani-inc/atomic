@@ -3,6 +3,7 @@ import { write } from "node:fs";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { isChildProcessExitStatusUnknownError, waitForChildProcess } from "../../../utils/child-process.ts";
 import { killChildProcessTree } from "../../../utils/shell.ts";
 import { asyncScope } from "../../async-scope.ts";
@@ -86,7 +87,6 @@ const SPAWN_STEADY_WINDOW_MS = 500;
 const SPAWN_BACKOFF_MIN_MS = 100;
 const SPAWN_BACKOFF_MAX_MS = 400;
 const SPAWN_RETRY_WINDOW_MS = 2_000;
-const MAX_TIMER_MS = 2_147_483_647;
 
 /**
  * The refusals that pass once another program lets go of the file, as an antivirus scan or the installer that just wrote
@@ -240,15 +240,18 @@ export async function runLoggedProcess(
 			killChildProcessTree(child, exited);
 		};
 		const { timeoutMs } = options;
-		const remainingMs = Math.max(0, timeoutMs - waitedMs);
-		// Clamp finite budgets to the timer range, but let the runtime diagnose an invalid timeout itself.
-		const delayMs = Number.isFinite(timeoutMs)
-			? Math.max(1, Math.min(MAX_TIMER_MS, Math.floor(remainingMs)))
-			: remainingMs;
-		const timer = setTimeout(() => {
+		const expire = () => {
 			timedOut = true;
 			stop();
-		}, delayMs);
+		};
+		let cancelTimer: () => void;
+		if (Number.isNaN(timeoutMs)) {
+			// Preserve the runtime's once-only warning for an invalid SDK budget (#5707).
+			const invalidTimer = setTimeout(expire, Number.NaN);
+			cancelTimer = () => clearTimeout(invalidTimer);
+		} else {
+			cancelTimer = setLongTimeout(expire, timeoutMs - waitedMs).clear;
+		}
 		const onAbort = () => stop();
 		if (copiesOutput) {
 			const fail = (what: string, error: Error) => {
@@ -278,7 +281,7 @@ export async function runLoggedProcess(
 		}
 		const settle = () => {
 			if (child.pid !== undefined) watch?.(child.pid, false);
-			clearTimeout(timer);
+			cancelTimer();
 			options.signal?.removeEventListener("abort", onAbort);
 		};
 		options.signal?.addEventListener("abort", onAbort);
@@ -298,7 +301,7 @@ export async function runLoggedProcess(
 			});
 		};
 		const ended = async (exitStatus: number | null, exitSignal: NodeJS.Signals | null, exitError?: Error) => {
-			clearTimeout(timer);
+			cancelTimer();
 			options.signal?.removeEventListener("abort", onAbort);
 			await settleTree(tree, stopped);
 			await copying;
