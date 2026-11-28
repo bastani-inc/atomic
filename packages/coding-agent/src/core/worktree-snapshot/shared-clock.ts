@@ -224,6 +224,11 @@ function sharedRmdir(path: fs.PathLike, callback: (error: NodeJS.ErrnoException 
  */
 const sharedClockFs = { ...fs, stat: sharedStat, utimes: sharedUtimes, rmdir: sharedRmdir };
 
+interface SharedLockRemoval {
+	readonly stale: (lockPath: string) => Promise<void>;
+	readonly release: (lockPath: string) => Promise<void>;
+}
+
 /**
  * Takes a proper-lockfile lock of `path` whose staleness every host sharing it judges by the clock of the filesystem
  * holding it (#5050): a holder on a host whose clock lags keeps its lock, and one whose clock runs ahead loses it once
@@ -232,9 +237,9 @@ const sharedClockFs = { ...fs, stat: sharedStat, utimes: sharedUtimes, rmdir: sh
 export async function lockShared(
 	path: string,
 	options: LockOptions,
-	removeStale?: (lockPath: string) => Promise<void>,
+	removal?: SharedLockRemoval,
 ): Promise<() => Promise<void>> {
-	if (removeStale === undefined) return lockfile.lock(path, { ...options, fs: sharedClockFs });
+	if (removal === undefined) return lockfile.lock(path, { ...options, fs: sharedClockFs });
 	let created = false;
 	// proper-lockfile calls mkdir with just the path and callback. Once it succeeds, rmdir is our own cleanup.
 	const mkdir = ((file: fs.PathLike, callback: fs.NoParamCallback) => {
@@ -244,13 +249,14 @@ export async function lockShared(
 		});
 	}) as typeof fs.mkdir;
 	const rmdir = ((file: fs.PathLike, callback: fs.NoParamCallback) => {
-		if (created) return sharedRmdir(file, callback);
 		const lockPath = String(file);
 		readings.delete(lockPath);
-		void removeStale(lockPath).then(
+		void (created ? removal.release(lockPath) : removal.stale(lockPath)).then(
 			() => callback(null),
 			(error: NodeJS.ErrnoException) => callback(error),
 		);
 	}) as typeof fs.rmdir;
-	return lockfile.lock(path, { ...options, fs: { ...sharedClockFs, mkdir, rmdir } });
+	// proper-lockfile's synchronous exit hook cannot take the takeover mutex. Leave the holder record
+	// in place rather than unlink a successor's directory: the next process can reclaim this lock.
+	return lockfile.lock(path, { ...options, fs: { ...sharedClockFs, mkdir, rmdir, rmdirSync: () => {} } });
 }

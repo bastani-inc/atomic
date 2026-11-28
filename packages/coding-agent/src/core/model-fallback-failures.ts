@@ -1071,7 +1071,8 @@ export function isProviderCredentialRejection(error: unknown): boolean {
 		})
 	)
 		return true;
-	const message = `${signal.message}\n${typedFailure?.detail ?? stringField(error, "detail") ?? ""}`;
+	// A status-only transport diagnostic can win classification while the response body names the rejected key.
+	const message = `${signal.message}\n${errorMessage(error)}\n${typedFailure?.detail ?? stringField(error, "detail") ?? ""}`;
 	return (
 		API_KEY_REJECTED_FAILURE_PATTERN.test(message) ||
 		TOKEN_REJECTED_FAILURE_PATTERN.test(message) ||

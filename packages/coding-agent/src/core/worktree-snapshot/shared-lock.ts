@@ -3,7 +3,7 @@ import { access, rmdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { LockOptions } from "proper-lockfile";
 import { clearLockHolderAsync, lockNamesLocalHolder, recordLockHolderAsync } from "../lock-holder.js";
-import { removeLeftoverHolderFilesAsync, takeTakeoverMutexAsync } from "../lock-takeover.js";
+import { lockHolderAsync, removeLeftoverHolderFilesAsync, takeTakeoverMutexAsync } from "../lock-takeover.js";
 import { lockShared, sharedClockNow } from "./shared-clock.ts";
 
 /**
@@ -24,7 +24,15 @@ export async function lockSharedWithHolder(
 		throw Object.assign(new Error("Lock is changing hands"), { code: "ELOCKED" });
 	}
 	let compromised = false;
+	let published = false;
+	let generation: string | undefined;
 	let unlock: () => Promise<void>;
+	const releaseDirectory = async (candidate: string) => {
+		// Cleanup after an acquisition error is already under the mutex. Once acquired, even a late
+		// release (before the heartbeat noticed an older build's takeover) must not remove its successor.
+		if (published && (generation === undefined || (await lockHolderAsync(candidate)) !== generation)) return;
+		await rmdir(candidate);
+	};
 	try {
 		unlock = await lockShared(
 			file,
@@ -35,20 +43,24 @@ export async function lockSharedWithHolder(
 					options.onCompromised?.(error);
 				},
 			},
-			async (candidate) => {
-				// A live local holder keeps its lock even if it was paused longer than the heartbeat timeout.
-				if (await lockNamesLocalHolder(candidate)) return;
-				const now = await sharedClockNow(directory);
-				try {
-					if (now - (await stat(candidate)).mtimeMs <= options.stale || !(await mutex.owned())) return;
-					await rmdir(candidate);
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-				}
-				await removeLeftoverHolderFilesAsync(candidate);
+			{
+				stale: async (candidate) => {
+					// A live local holder keeps its lock even if it was paused longer than the heartbeat timeout.
+					if (await lockNamesLocalHolder(candidate)) return;
+					const now = await sharedClockNow(directory);
+					try {
+						if (now - (await stat(candidate)).mtimeMs <= options.stale || !(await mutex.owned())) return;
+						await rmdir(candidate);
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					}
+					await removeLeftoverHolderFilesAsync(candidate);
+				},
+				release: releaseDirectory,
 			},
 		);
-		await recordLockHolderAsync(lockPath);
+		generation = await recordLockHolderAsync(lockPath);
+		published = true;
 	} finally {
 		await mutex.release();
 	}
@@ -60,12 +72,9 @@ export async function lockSharedWithHolder(
 			// If the mutex is busy, leave the sidecar: it won't match the next lock directory.
 			if (releaseMutex !== undefined) {
 				try {
-					if (!compromised) await clearLockHolderAsync(lockPath);
-					else if (await lockNamesLocalHolder(lockPath, process.pid)) {
-						// A failed heartbeat can make proper-lockfile forget a lock that is still ours on disk.
-						await rmdir(lockPath).catch(() => {});
-						await clearLockHolderAsync(lockPath);
-					}
+					// A failed heartbeat can make proper-lockfile forget a lock that is still ours on disk.
+					if (compromised) await releaseDirectory(lockPath).catch(() => {});
+					if (generation !== undefined) await clearLockHolderAsync(lockPath, generation);
 				} finally {
 					await releaseMutex.release();
 				}

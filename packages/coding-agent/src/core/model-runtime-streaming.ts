@@ -30,7 +30,6 @@ import { normalizeModelProvider } from "./azure-provider-compat.js";
 import { usesChatGptCodexTransport, withChatGptCodexTransportRouting } from "./fast-model-routing.ts";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
 import type { ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
-import { recordProviderSuccess } from "./provider-rate-limits.js";
 import { admitProviderStream } from "./provider-request-admission.js";
 
 export function mergeHeaders(
@@ -266,7 +265,7 @@ export class ModelRuntimeStreaming {
 					let terminal = false;
 					for await (const event of source) {
 						if (event.type === "error") admission.observeFailure(event.error);
-						if (event.type === "done") recordProviderSuccess(prepared.model.provider, prepared.model.id);
+						if (event.type === "done") admission.observeSuccess();
 						if (event.type === "start") {
 							pending.push(event);
 							continue;
@@ -287,8 +286,7 @@ export class ModelRuntimeStreaming {
 					}
 					if (!rejection && !terminal) {
 						const result = await source.result();
-						if (result.stopReason !== "error" && result.stopReason !== "aborted")
-							recordProviderSuccess(prepared.model.provider, prepared.model.id);
+						if (result.stopReason !== "error" && result.stopReason !== "aborted") admission.observeSuccess();
 						if (result.stopReason === "error") admission.observeFailure(result);
 						const event: AssistantMessageEvent =
 							result.stopReason === "error" || result.stopReason === "aborted"

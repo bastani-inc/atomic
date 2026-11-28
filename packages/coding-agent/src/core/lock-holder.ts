@@ -107,7 +107,7 @@ export function recordLockHolder(lockPath: string): void {
 
 let ownStart: Promise<string | undefined> | undefined;
 
-export async function recordLockHolderAsync(lockPath: string): Promise<void> {
+export async function recordLockHolderAsync(lockPath: string): Promise<string | undefined> {
 	const identity = await readLockIdentityAsync(lockPath);
 	if (identity === undefined) return;
 	ownStart ??= processStartTokenAsync(process.pid);
@@ -126,6 +126,7 @@ export async function recordLockHolderAsync(lockPath: string): Promise<void> {
 	} catch {
 		await rm(temporary, { force: true }).catch(() => {});
 	}
+	return identity.exact;
 }
 
 /** Forgets this process as the holder of the lock at `lockPath`, before it releases the lock. */
@@ -137,7 +138,8 @@ export function clearLockHolder(lockPath: string): void {
 	}
 }
 
-export async function clearLockHolderAsync(lockPath: string): Promise<void> {
+export async function clearLockHolderAsync(lockPath: string, lockId?: string): Promise<void> {
+	if (lockId !== undefined && (await readHolderRecordAsync(lockPath))?.lockId !== lockId) return;
 	try {
 		await rm(lockHolderPath(lockPath), { force: true });
 	} catch {}
@@ -175,13 +177,9 @@ function parseHolderRecord(content: string): LockHolderRecord | undefined {
 }
 
 /** Whether the current lock names a local holder. Only a process check, not age, may displace such a holder. */
-export async function lockNamesLocalHolder(lockPath: string, pid?: number): Promise<boolean> {
+export async function lockNamesLocalHolder(lockPath: string): Promise<boolean> {
 	const record = await readHolderRecordAsync(lockPath);
-	return (
-		record?.host === hostname() &&
-		(pid === undefined || record.pid === pid) &&
-		matchesHolderRecord(await readLockIdentityAsync(lockPath), record)
-	);
+	return record?.host === hostname() && matchesHolderRecord(await readLockIdentityAsync(lockPath), record);
 }
 
 export async function prepareLockTakeover(lockPath: string): Promise<void> {

@@ -182,6 +182,7 @@ Confirm the intended account in your browser during login. An alias only isolate
 How aliases behave:
 
 - **Isolated credentials.** Each alias stores and refreshes its own credentials without borrowing the source's stored login or ambient environment keys. Keeping the same alias ID preserves saved credentials.
+- **Main-chat fallback.** Separate alias names do not make a shared key or Codex account independent. If aliases use the same account at the same endpoint, Atomic skips them together after a rejected credential, exhausted quota, or rate-limit wait beyond the retry cap. Use a separate account with its own quota for a backup. See [`fallbackModels`](/settings#fallbackmodels).
 - **Supported auth types.** Aliases work with OAuth logins and non-empty stored API keys. For ambient-only authentication (such as an AWS profile or environment-based service account), use the original provider or register a full custom provider instead.
 - **Inherited configuration.** Aliases inherit the source's endpoint, shared headers, models, derived Fast variants, OAuth callbacks, and request handling. Do not hard-code account secrets in source headers; supply per-account credentials through `/login`. Saved messages and callbacks keep the alias ID.
 - **Catalog updates.** Source catalog updates are shared across aliases while availability filters run per alias credential. Aliases do not run separate catalog discovery, except `github-copilot` aliases, which refresh their own account's model list independently.

@@ -30,6 +30,7 @@ import {
 	withRepositoryLockProgress,
 } from "../src/core/worktree-snapshot/restore.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
+import { lockSharedWithHolder } from "../src/core/worktree-snapshot/shared-lock.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
 /**
@@ -247,6 +248,17 @@ describe("concurrent first restores of one repository into a new store (#4951)",
 		assert.equal(readFileSync(join(target, "state.txt"), "utf8"), `state ${winner}\n`);
 		assertStoreHasNoLeftovers(store);
 	});
+});
+
+test("an old holder's release does not remove a replacement lock directory (#6800)", async () => {
+	const file = sandbox.path("shared");
+	const release = await lockSharedWithHolder(file, { realpath: false, stale: LEGACY_STALE_MS });
+	const lockPath = `${file}.lock`;
+	// As when an older version reaps a stalled holder's lock, before the holder can see the replacement.
+	rmSync(lockPath, { recursive: true });
+	mkdirSync(lockPath);
+	await release();
+	assert.ok(existsSync(lockPath), "the old holder removed the replacement's lock");
 });
 
 describe("the shared store's cross-process lock and initialisation (#4951)", () => {

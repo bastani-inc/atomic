@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@bastani/atomic-ai/compat";
+import { raceWithAbortSignal } from "@bastani/atomic-ai/utils/abort";
 import { DEFAULT_MAX_RETRY_DELAY_MS } from "@bastani/atomic-ai/utils/provider-retry";
 import { sleep } from "../utils/sleep.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
@@ -22,7 +23,8 @@ import {
 	isUnrecognizedModelFailure,
 	normalizeModelFailureSignal,
 } from "./model-fallback-failures.ts";
-import { providerCooldownMs } from "./provider-rate-limits.js";
+import { failedProviderAccount, providerAccount } from "./provider-account.ts";
+import { hasBlockingAccountLimit, providerCooldownMs, providerUnavailableMs } from "./provider-rate-limits.js";
 import { isLongStreamCut, LONG_STREAM_CUT_ADVICE, nextRetryDecision, repeatsLongStreamCut } from "./retry-policy.ts";
 import type { ModelFallbackRecord } from "./session-manager-types.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
@@ -416,9 +418,29 @@ async function selectFallback(
 	await session._recordSystemPromptForModelSwitch();
 }
 
+async function resolveFallbackAccount(session: AgentSession, model: Model<Api>): Promise<string | undefined> {
+	const controller = new AbortController();
+	session._retryAbortController = controller;
+	try {
+		const auth = await raceWithAbortSignal(
+			session._modelRuntime.getRequestAuth(model, { signal: controller.signal }),
+			controller.signal,
+		);
+		return auth && providerAccount(model, { ...auth.auth, env: auth.env });
+	} catch {
+		// A candidate's auth preparation still owns its own diagnostic if no account could be identified here.
+		return undefined;
+	} finally {
+		if (session._retryAbortController === controller) session._retryAbortController = undefined;
+	}
+}
+
 export async function _trySwitchToFallbackModel(this: AgentSession, message: AssistantMessage): Promise<boolean> {
 	const currentModel = this.agent.state.model ?? this.model;
 	if (this._fallbackModels.length === 0 || currentModel === undefined) return false;
+	const generation = this._retryGeneration;
+	const scopeGeneration = this._fallbackScopeGeneration;
+	if (!retryIsCurrent(this, generation)) return false;
 
 	// A failure the chain may spend a candidate on, but that requesting the same
 	// model again cannot repair — a rejected credential, an unavailable model, a
@@ -432,12 +454,17 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		}
 	}
 	if (isProviderCredentialRejection(message)) {
-		this._fallbackBlockedProviders.add(currentModel.provider);
+		const account = failedProviderAccount(message);
+		this._fallbackBlockedProviders.add(
+			account === undefined ? `provider:${currentModel.provider}` : `account:${account}`,
+		);
 	}
 
 	const currentThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
 	const fromModel = currentModel;
 	const skipped: FallbackSkip[] = [];
+	const retryCapMs = () => this.settingsManager.getRetrySettings().maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+	const hasRejectedAccount = [...this._fallbackBlockedProviders].some((key) => key.startsWith("account:"));
 	for (const rawCandidate of this._fallbackModels) {
 		const candidate = resolveFallbackModel.call(this, rawCandidate);
 		if (!candidate) {
@@ -461,15 +488,30 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		// Skipped before any lifecycle starts: a blocked variant emits no fallback
 		// event and opens no scope.
 		if (this._fallbackBlockedModels.some((blocked) => modelsAreEqual(blocked, nextModel))) continue;
-		if (this._fallbackBlockedProviders.has(nextModel.provider)) {
+		if (this._fallbackBlockedProviders.has(`provider:${nextModel.provider}`)) {
 			noteSkipped(skipped, nextModel, "auth-failed");
 			continue;
 		}
-		// An account-wide limit can also cover another model on that provider. Do not select a fallback
-		// whose request admission would wait longer than the same limit that stopped retries.
-		const cooldownMs = providerCooldownMs(nextModel.provider, nextModel.id);
+		// Only prepare auth here when knowing the account can rule the model out. A short cooldown can
+		// wait at admission and must not delay the normal fallback lifecycle or start a second auth attempt.
+		const account =
+			hasRejectedAccount || hasBlockingAccountLimit(retryCapMs)
+				? await resolveFallbackAccount(this, nextModel)
+				: undefined;
+		if (!retryIsCurrent(this, generation)) return true;
+		if (this._fallbackScopeGeneration !== scopeGeneration) return false;
+		if (account !== undefined && this._fallbackBlockedProviders.has(`account:${account}`)) {
+			noteSkipped(skipped, nextModel, "auth-failed");
+			continue;
+		}
+		const now = Date.now();
+		if (providerUnavailableMs(nextModel.provider, nextModel.id, now, account ?? null) > 0) {
+			noteSkipped(skipped, nextModel, "quota-exhausted");
+			continue;
+		}
+		const cooldownMs = providerCooldownMs(nextModel.provider, nextModel.id, now, account ?? null);
 		if (cooldownMs > 0) {
-			const capMs = this.settingsManager.getRetrySettings().maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+			const capMs = retryCapMs();
 			if (capMs > 0 && cooldownMs > capMs) {
 				noteSkipped(skipped, nextModel, "rate-limited");
 				continue;
@@ -480,7 +522,6 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		// selected. An exhausted or unresolvable chain has no start to close.
 
 		// Keep the failed attempt in raw history while durably omitting it from model projection.
-		const generation = this._retryGeneration;
 		const createdRetryPromise = this._retryPromise === undefined;
 		ensureRetryPromise(this); // Unresolved overflow may reach fallback without a same-model retry.
 		try {
