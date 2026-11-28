@@ -111,6 +111,9 @@ vi.mock("../src/core/worktree-snapshot/shared-clock.ts", async (importOriginal) 
 	return {
 		...actual,
 		lockShared,
+		// Owner-aware reaping samples shared time directly. On Windows the native probe bypasses the fs mocks below.
+		sharedClockNow: (directory: string) =>
+			pollClock.enabled && pollClock.filesystem ? Promise.resolve(Date.now()) : actual.sharedClockNow(directory),
 		windowsTemporaryFiles: () => (lockRefusals.deleteOnCloseUnavailable ? undefined : actual.windowsTemporaryFiles()),
 	};
 });
