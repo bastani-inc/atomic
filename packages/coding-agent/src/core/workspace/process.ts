@@ -188,7 +188,8 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 		let timer: LongTimeout | undefined;
 		if (run.timeoutMs !== undefined) {
 			timer = setLongTimeoutAt(() => {
-				stop(() => reject(run.timeoutError!(Math.ceil(performance.now() - startedAt))));
+				const elapsedMs = Math.ceil(performance.now() - startedAt);
+				stop(() => reject(run.timeoutError!(elapsedMs)));
 			}, startedAt + run.timeoutMs);
 		}
 		run.signal?.addEventListener("abort", onAbort, { once: true });

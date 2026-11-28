@@ -160,7 +160,7 @@ describe("bash timeout validation", () => {
 		async () => {
 			const held = heldCommand();
 			const timeoutSeconds = 30 * 86_400;
-			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 			try {
 				const running = createBashToolDefinition(process.cwd()).execute(
 					"month",
