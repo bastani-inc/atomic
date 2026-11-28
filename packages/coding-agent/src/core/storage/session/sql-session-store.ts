@@ -120,6 +120,7 @@ import { sharedHistorySwitchHost } from "./shared-history-switch.js";
 import {
 	CAPTURE_HEADING,
 	captureHeadingIndex,
+	createPostgresCaptureHeadings,
 	ensureCaptureHeadings,
 	migrateCaptureHeadings,
 } from "./snapshot-capture-index.js";
@@ -1088,6 +1089,8 @@ export class SqlSessionStore implements SessionStore {
 				],
 				[],
 			);
+			if (createdShared && dialect.name === "postgres")
+				await createPostgresCaptureHeadings(tx, dialect, tables.entries, options.prefix);
 		};
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
 		const ledger = storageMigrationTable(options.prefix);
@@ -1403,7 +1406,7 @@ export class SqlSessionStore implements SessionStore {
 		store.openMarkers = markers;
 		store.captureHeadings =
 			dialect.name === "postgres"
-				? await ensureCaptureHeadings(database, tables.entries, options.prefix)
+				? createdShared || (await ensureCaptureHeadings(database, tables.entries, options.prefix))
 				: sqliteCaptureHeadings;
 		// The switch is one way: what the open found or made holds for every later transaction.
 		if (shared) store.noteSchemaVersion(SESSION_SCHEMA_VERSION_SHARED_HISTORY);
@@ -5821,7 +5824,7 @@ $grant$`);
 						? `${indexed ? "JOIN" : "LEFT JOIN"} LATERAL (SELECT chunks,${body} FROM ${this.tables.entries}
 							WHERE ${physical}${indexed ? ` AND ${body} IS NOT NULL` : ""} OFFSET 0) e ON true
 							CROSS JOIN LATERAL (SELECT ${postgresJsonb(`e.${body}`)} AS value OFFSET 0) parsed`
-						: `${indexed ? "JOIN" : "LEFT JOIN"} ${this.tables.entries} e${indexed ? ` INDEXED BY ${captureHeadingIndex(dialect, this.tables.entries)}` : ""}
+						: `${indexed ? "JOIN" : "LEFT JOIN"} ${this.tables.entries} e${indexed ? ` INDEXED BY ${captureHeadingIndex(this.tables.entries)}` : ""}
 							ON e.session_id=w.owner AND e.seq=w.seq${indexed ? ` AND e.${body} IS NOT NULL` : ""}`;
 					const captured = indexed
 						? `CAST(${entry("capture")} AS ${dialect.types.int})`
