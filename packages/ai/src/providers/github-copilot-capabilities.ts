@@ -1,8 +1,8 @@
 import { getSupportedThinkingLevels } from "../models.ts";
 import type { Api, Model, ModelThinkingLevel } from "../types.ts";
+import type { GitHubCopilotApi } from "./github-copilot-api.js";
 
-/** The API surfaces Atomic calls GitHub Copilot models on. */
-export type GitHubCopilotApi = "anthropic-messages" | "openai-completions" | "openai-responses";
+export { type GitHubCopilotApi, githubCopilotApiForSdk } from "./github-copilot-api.js";
 
 /**
  * How a model's reasoning returns to it on the next turn, when the model returns reasoning: Responses sends back the
@@ -87,17 +87,6 @@ const SURFACES = {
 		reasoningTokens: "output-tokens",
 	},
 } as const satisfies Record<GitHubCopilotApi, object>;
-
-/**
- * The Copilot API a catalog entry is served on, from the SDK its metadata names (models.dev's per-model
- * `provider.npm`): the Anthropic SDK means Copilot's Messages endpoint, the OpenAI SDK its Responses endpoint, and no
- * per-model SDK (the provider's OpenAI-compatible default) its Chat Completions endpoint. Never the model's ID.
- */
-export function githubCopilotApiForSdk(sdk: string | undefined): GitHubCopilotApi {
-	if (sdk === "@ai-sdk/anthropic") return "anthropic-messages";
-	if (sdk === "@ai-sdk/openai") return "openai-responses";
-	return "openai-completions";
-}
 
 function isGitHubCopilotApi(api: Api): api is GitHubCopilotApi {
 	return api === "openai-completions" || api === "openai-responses" || api === "anthropic-messages";

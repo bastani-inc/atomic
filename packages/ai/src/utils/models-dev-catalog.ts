@@ -8,7 +8,7 @@ import {
 	CLOUDFLARE_AI_GATEWAY_OPENAI_BASE_URL,
 	CLOUDFLARE_WORKERS_AI_BASE_URL,
 } from "../api/cloudflare.ts";
-import { githubCopilotApiForSdk } from "../providers/github-copilot-capabilities.ts";
+import { githubCopilotApiForSdk } from "../providers/github-copilot-api.ts";
 import { OPENAI_MID_CONVO_EFFORT_MODEL_IDS } from "../providers/openai-mid-convo-effort.ts";
 import type {
 	AnthropicMessagesCompat,

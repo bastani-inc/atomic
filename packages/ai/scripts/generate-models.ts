@@ -24,7 +24,6 @@ import {
 	CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
 } from "../src/api/cloudflare.ts";
 import { COPILOT_HEADERS } from "../src/api/github-copilot-headers.ts";
-import { githubCopilotApiForSdk } from "../src/providers/github-copilot-capabilities.ts";
 import type {
 	AnthropicMessagesCompat,
 	AnyModel,
