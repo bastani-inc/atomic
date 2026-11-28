@@ -49,19 +49,37 @@ test("a 520 burst longer than maxRetries hinted waits still gives up after maxRe
 	assert.equal(calls, 4);
 });
 
-test("a server retry hint is capped by maxRetryDelayMs, defaulting to 60 seconds (#3623)", () => {
-	const message = failure("503 service unavailable", 18_000_000);
-	assert.equal(assistantRetryDelayMs({ ...policy, maxRetryDelayMs: 30_000 }, 1, message), 30_000);
-	assert.equal(assistantRetryDelayMs({ ...policy, maxRetryDelayMs: undefined }, 1, message), 60_000);
-	assert.equal(assistantRetryDelayMs({ ...policy, maxRetryDelayMs: 0, maxAgentDelayMs: 20_000 }, 1, message), 20_000);
+test("a disabled cap waits the full server delay regardless of the local backoff cap", async () => {
+	vi.useFakeTimers();
+	const hintMs = 360_000;
+	let calls = 0;
+	const pending = retryAssistantCall(
+		async () => (++calls === 1 ? failure("503 service unavailable", hintMs) : fauxAssistantMessage("recovered")),
+		{ ...policy, maxRetryDelayMs: 0, maxAgentDelayMs: 20_000 },
+		undefined,
+	);
+	await vi.advanceTimersByTimeAsync(hintMs - 1);
+	assert.equal(calls, 1);
+	await vi.advanceTimersByTimeAsync(1);
+	assert.equal((await pending).stopReason, "stop");
+	assert.equal(calls, 2);
 });
 
-test("an unset maxRetryDelayMs caps a server retry hint at 60 seconds, not at maxAgentDelayMs", () => {
+test("a server hint above the provider cap ends retries rather than shortening the wait (#3623)", async () => {
+	const message = failure("503 service unavailable", 18_000_000);
+	const result = await runRetries([message], { ...policy, maxRetryDelayMs: 30_000 });
+	assert.deepEqual(result, { result: message, calls: 1, delays: [] });
+});
+
+test("an unset maxRetryDelayMs rejects a server wait above 60 seconds, not above maxAgentDelayMs", () => {
 	const unset: RetryPolicy = { ...policy, maxRetryDelayMs: undefined, maxAgentDelayMs: 5000 };
 	assert.equal(assistantRetryDelayMs(unset, 1, failure("503 service unavailable", 45_000)), 45_000);
 	assert.equal(assistantRetryDelayMs(unset, 1, failure("503 service unavailable", 60_000)), 60_000);
-	assert.equal(assistantRetryDelayMs(unset, 1, failure("503 service unavailable", 60_001)), 60_000);
-	assert.equal(assistantRetryDelayMs({ ...unset, maxAgentDelayMs: 120_000 }, 1, failure("503 service unavailable", 90_000)), 60_000);
+	assert.equal(assistantRetryDelayMs(unset, 1, failure("503 service unavailable", 60_001)), undefined);
+	assert.equal(
+		assistantRetryDelayMs({ ...unset, maxAgentDelayMs: 120_000 }, 1, failure("503 service unavailable", 90_000)),
+		undefined,
+	);
 	assert.equal(assistantRetryDelayMs(unset, 1, failure("503 service unavailable")), 2000);
 });
 

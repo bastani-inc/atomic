@@ -195,6 +195,28 @@ test("HTTP admission reads the retry hint from a headerless 402 body (#3984)", a
 	assert.equal(providerRateLimitSnapshot("headerless-quota")?.rateLimitCount, 1);
 });
 
+test("a 503 retry hint holds another request on the same account until the server's delay expires", async () => {
+	let requests = 0;
+	const fetcher: typeof fetch = Object.assign(
+		async () =>
+			++requests === 1
+				? Response.json({ retry_after: 360, error: { message: "Backend down." } }, { status: 503 })
+				: new Response(null, { status: 200 }),
+		globalThis.fetch,
+	);
+	const model = { ...anthropicModel, provider: "hinted-server-outage" };
+	const first = await admitProviderStream(model, { apiKey: "fixture-key", fetch: fetcher }, false);
+	assert.equal((await first.run(() => first.options.fetch!(model.baseUrl))).status, 503);
+	const another = await admitProviderStream(model, { apiKey: "fixture-key", fetch: fetcher }, false);
+	const pending = another.run(() => another.options.fetch!(model.baseUrl));
+	await vi.advanceTimersByTimeAsync(359_999);
+	assert.equal(requests, 1);
+	// Let the cooldown expire and the admission queue open on the next event-loop turn.
+	await vi.advanceTimersByTimeAsync(2);
+	assert.equal((await pending).status, 200);
+	assert.equal(requests, 2);
+});
+
 test("a later retry hint for an already observed failure extends its cooldown without counting it twice (#3984)", async () => {
 	vi.spyOn(Math, "random").mockReturnValue(0);
 	const fetcher: typeof fetch = Object.assign(async () => new Response("{}", { status: 429 }), globalThis.fetch);

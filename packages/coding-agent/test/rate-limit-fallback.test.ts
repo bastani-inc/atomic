@@ -74,6 +74,7 @@ interface FixtureOptions {
 	hold?: boolean;
 	fallback?: boolean;
 	responsesFailure?: { code: string; message: string; headers?: Record<string, string>; http?: "code" | "type" };
+	primaryFailure?: { status: number; body: object };
 	accountFailure?: {
 		status: number;
 		code: string;
@@ -81,6 +82,7 @@ interface FixtureOptions {
 		separateAliasKey?: boolean;
 		modelScoped?: boolean;
 		codex?: boolean;
+		anthropicCredit?: boolean;
 	};
 }
 
@@ -98,6 +100,7 @@ async function endpoint(
 		fallback = true,
 		responsesFailure,
 		accountFailure,
+		primaryFailure,
 	}: FixtureOptions = {},
 ) {
 	const requests: { model: string; at: number }[] = [];
@@ -146,8 +149,21 @@ async function endpoint(
 						request.headers.authorization,
 						`Bearer ${codexToken(codexAccount(isAlias), isAlias ? 2 : 1)}`,
 					);
-				} else assert.equal(request.headers.authorization, "Bearer fixture-key");
+				} else if (accountFailure.anthropicCredit) assert.equal(request.headers["x-api-key"], "fixture-key");
+				else assert.equal(request.headers.authorization, "Bearer fixture-key");
 				response.writeHead(accountFailure.status, { "content-type": "application/json", ...headers });
+				if (accountFailure.anthropicCredit) {
+					response.end(
+						JSON.stringify({
+							type: "error",
+							error: {
+								type: accountFailure.code,
+								message: "Your credit balance is too low to access the Anthropic API.",
+							},
+						}),
+					);
+					return;
+				}
 				const message =
 					accountFailure.code === "insufficient_quota"
 						? `This account is out of quota for ${model}.`
@@ -178,8 +194,9 @@ async function endpoint(
 				}
 				return;
 			}
-			response.writeHead(429, { "content-type": "application/json", ...headers });
-			response.end(JSON.stringify(rawFailure));
+			const failure = account === provider ? primaryFailure : undefined;
+			response.writeHead(failure?.status ?? 429, { "content-type": "application/json", ...headers });
+			response.end(JSON.stringify(failure?.body ?? rawFailure));
 		});
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -197,7 +214,7 @@ async function endpoint(
 				: getFixtureModel("anthropic", "claude-sonnet-4-5")!;
 		const baseUrl = `http://127.0.0.1:${address.port}/${account === alias ? `${provider}/` : account}`;
 		const api =
-			accountFailure && account !== backup
+			accountFailure && !accountFailure.anthropicCredit && account !== backup
 				? accountFailure.codex
 					? "openai-codex-responses"
 					: "openai-completions"
@@ -236,6 +253,7 @@ async function setupSdk(
 	headers: Record<string, string>,
 	providerRetries: number,
 	fixtureOptions?: Parameters<typeof endpoint>[1],
+	retryDelay?: { maxRetryDelayMs: number; maxAgentDelayMs: number },
 ) {
 	const fixture = await endpoint(headers, fixtureOptions);
 	const runtime = await ModelRuntime.create({
@@ -253,7 +271,13 @@ async function setupSdk(
 		defaultProvider: fixture.provider,
 		defaultModel: primaryId,
 		fallbackModels: fixture.fallbackModels,
-		retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, provider: { maxRetries: providerRetries } },
+		retry: {
+			enabled: true,
+			maxRetries: 1,
+			baseDelayMs: 1,
+			maxAgentDelayMs: retryDelay?.maxAgentDelayMs,
+			provider: { maxRetries: providerRetries, maxRetryDelayMs: retryDelay?.maxRetryDelayMs },
+		},
 	});
 	const sessionManager = SessionManager.inMemory();
 	const { session } = await createAgentSession({
@@ -398,6 +422,32 @@ test.each([false, true])("chat skips an exhausted account (provider alias: %s) (
 });
 
 test.each([
+	{
+		name: "a plan quota with a 1ms retry hint",
+		status: 429,
+		code: "GoUsageLimitError",
+		headers: { "retry-after": "0.001" },
+	},
+	{ name: "Anthropic low credit", status: 400, code: "invalid_request_error", headers: {}, anthropicCredit: true },
+] as const)("chat skips the shared account for $name", async ({ headers, ...failure }) => {
+	const harness = await setupSdk(headers, 1, { siblings: 1, accountFailure: { ...failure, alias: true } });
+	await prompt(harness);
+	assert.deepEqual(
+		harness.requests.map(({ model }) => model),
+		[harness.primaryRef, harness.backupRef],
+	);
+	assert.equal(
+		harness.events.some((event) => event.type === "auto_retry_start"),
+		false,
+	);
+	const change = harness.sessionManager
+		.getEntries()
+		.find((entry) => entry.type === "model_change" && entry.modelId === backupId);
+	assert.ok(change?.type === "model_change");
+	assert.equal(change.fallback?.skipped?.[0]?.reason, "quota-exhausted");
+});
+
+test.each([
 	{ status: 429, code: "rate_limit_exceeded", separateAliasKey: false },
 	{ status: 401, code: "invalid_api_key", separateAliasKey: false },
 	{ status: 429, code: "insufficient_quota", separateAliasKey: false },
@@ -417,6 +467,57 @@ test.each([
 				: [harness.primaryRef, harness.backupRef],
 		);
 		assert.ok(harness.events.some((event) => event.type === "model_fallback_end" && event.success));
+	},
+);
+
+test.each([
+	{ name: "over-cap body", header: undefined, seconds: 360, delayMs: undefined },
+	{ name: "over-cap header", header: "360", seconds: undefined, delayMs: undefined },
+	{ name: "short body", header: undefined, seconds: 0.05, delayMs: 50 },
+])("SDK handles a 503 with a $name retry hint", async ({ header, seconds, delayMs }) => {
+	// Disable provider retries to isolate the main chat retry policy.
+	const harness = await setupSdk(header === undefined ? {} : { "retry-after": header }, 0, {
+		primaryFailure: { status: 503, body: { retry_after: seconds, error: { message: "Backend down." } } },
+	});
+	const stopOnUnexpectedWait = harness.session.subscribe((event) => {
+		if (delayMs === undefined && event.type === "auto_retry_start") void harness.session.abort();
+	});
+	try {
+		await prompt(harness);
+	} finally {
+		stopOnUnexpectedWait();
+	}
+	const { requests, events, primaryRef, backupRef } = harness;
+	assert.equal(events.find((event) => event.type === "auto_retry_start")?.delayMs, delayMs);
+	assert.deepEqual(
+		requests.map(({ model }) => model),
+		delayMs === undefined ? [primaryRef, backupRef] : [primaryRef, primaryRef, backupRef],
+	);
+	assert.ok(events.some((event) => event.type === "model_fallback_end" && event.success));
+});
+
+test.each([429, 503])(
+	"chat's HTTP %i countdown uses the full server wait when the provider cap is disabled",
+	async (status) => {
+		const harness = await setupSdk(
+			{ "retry-after": "360" },
+			0,
+			status === 503 ? { primaryFailure: { status, body: { error: { message: "Backend down." } } } } : {},
+			{ maxRetryDelayMs: 0, maxAgentDelayMs: 20 },
+		);
+		const stop = harness.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") void harness.session.abort();
+		});
+		try {
+			await prompt(harness);
+		} finally {
+			stop();
+		}
+		assert.equal(harness.events.find((event) => event.type === "auto_retry_start")?.delayMs, 360_000);
+		assert.deepEqual(
+			harness.requests.map(({ model }) => model),
+			[harness.primaryRef],
+		);
 	},
 );
 

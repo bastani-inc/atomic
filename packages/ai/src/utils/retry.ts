@@ -1,39 +1,13 @@
 import { getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
 import type { AssistantMessage, RetryDeadline } from "../types.ts";
 import { DEFAULT_MAX_RETRY_DELAY_MS } from "./provider-retry.ts";
+import { isProviderQuotaExhaustionText } from "./responses-errors/codes.ts";
 import { retryDeadlineReached } from "./retry-sleep.ts";
 import { getTlsCertificateRefusal } from "./tls-certificate.ts";
 
 function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 	return new RegExp(patterns.join("|"), "i");
 }
-
-const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
-	// OpenCode Go/free-tier limits returned as 429 JSON error types by OpenCode's
-	// Zen API. These are subscription/account limits, not transient throttles.
-	"GoUsageLimitError",
-	"FreeUsageLimitError",
-
-	// OpenCode Go subscription-limit text asks users to enable available-balance
-	// usage after rolling/weekly/monthly limits are reached.
-	"Monthly usage limit reached",
-	"available balance",
-
-	// Generic quota/budget/billing exhaustion. `insufficient_quota` is OpenAI's
-	// quota/billing error code; the other strings cover common gateway wording.
-	"insufficient_quota",
-	"out of budget",
-	"quota exceeded",
-	"billing",
-	"subscription_sharing_usage_limit_exceeded",
-	// Sign in with ChatGPT on a ChatGPT Business plan: a usage limit set by the
-	// workspace admin. Only the admin can raise it.
-	"subscription_sharing_workplace_individual_usage_limit_exceeded",
-
-	// Zhipu/Z.ai (open.bigmodel.cn) error code 1308: the plan's usage limit is
-	// reached, sent as HTTP 429. It resets after hours, not seconds (#11537).
-	'"code"\\s*:\\s*"?1308(?![0-9])',
-]);
 
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// Generic provider load, HTTP status, and server-side transient failures.
@@ -151,11 +125,11 @@ export interface RetryPolicy {
 	maxRetries: number;
 	/** Base delay in ms. Per-attempt delay is `baseDelayMs * 2^(attempt-1)` before jitter. */
 	baseDelayMs: number;
-	/** Cap for agent-level retry delays in ms. Defaults to 60 seconds. */
+	/** Cap for locally calculated backoff in ms; server-requested waits are not shortened. Defaults to 60 seconds. */
 	maxAgentDelayMs?: number;
 	/**
-	 * Cap for a server retry hint (`Retry-After-Ms`, `Retry-After`, a body `retry_after`).
-	 * Defaults to 60 seconds; 0 caps the hint by `maxAgentDelayMs` instead.
+	 * Server retry hints above this limit end the retry loop instead of shortening the wait.
+	 * Defaults to 60 seconds; 0 honors the full server wait regardless of its length.
 	 */
 	maxRetryDelayMs?: number;
 }
@@ -172,7 +146,7 @@ type RetryFailure = Pick<AssistantMessage, "stopReason" | "errorMessage" | "retr
 
 /**
  * Wait before retry `attempt` (1-indexed): the server retry hint when the failure
- * carries one, capped by `maxRetryDelayMs`, otherwise the exponential backoff.
+ * carries one, otherwise Atomic's capped exponential backoff. The caller checks retry eligibility first.
  */
 export function failureRetryDelayMs(
 	policy: Pick<RetryPolicy, "baseDelayMs" | "maxAgentDelayMs" | "maxRetryDelayMs">,
@@ -181,9 +155,7 @@ export function failureRetryDelayMs(
 ): number {
 	const hintMs = failure.retryAfterMs;
 	if (hintMs === undefined || !Number.isFinite(hintMs) || hintMs <= 0) return retryDelayMs(policy, attempt);
-	const maxRetryDelayMs = policy.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
-	const capMs = maxRetryDelayMs || (policy.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
-	return Math.min(hintMs, capMs);
+	return Math.ceil(hintMs);
 }
 
 /**
@@ -192,6 +164,9 @@ export function failureRetryDelayMs(
  */
 export function assistantRetryDelayMs(policy: RetryPolicy, attempt: number, message: RetryFailure): number | undefined {
 	if (!policy.enabled || attempt > policy.maxRetries || !isRetryableAssistantError(message)) return undefined;
+	const hintMs = message.retryAfterMs;
+	const capMs = policy.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+	if (capMs > 0 && hintMs !== undefined && Number.isFinite(hintMs) && hintMs > capMs) return undefined;
 	return failureRetryDelayMs(policy, attempt, message);
 }
 
@@ -334,6 +309,6 @@ export function isRetryableAssistantError(message: RetryFailure): boolean {
 	const copilotError = getGitHubCopilotError(message);
 	if (copilotError !== undefined) return copilotError.retryable;
 	const errorMessage = message.errorMessage;
-	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
+	if (isProviderQuotaExhaustionText(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }

@@ -6,6 +6,7 @@ import {
 	type Content,
 	FinishReason,
 	FunctionCallingConfigMode,
+	type GenerateContentResponse,
 	ThinkingLevel as GoogleSdkThinkingLevel,
 	type Part,
 	type ThinkingConfig,
@@ -21,8 +22,9 @@ import type {
 	Tool,
 	TranscriptContext,
 } from "../types.ts";
+import { appendProviderResponseFailureDiagnostic } from "../utils/error-body.ts";
 import { type ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
-import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { wrapFetchPreservingAdmission } from "../utils/request-admission.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
 import { appendSystemMessageUpdates, withoutInitialSystemMessage } from "../utils/transcript.ts";
@@ -577,12 +579,52 @@ export function mapStopReason(reason: FinishReason): StopReason {
 	}
 }
 
+/** A blocked prompt can end the stream with no candidate or finish reason. */
+export function applyGoogleStopReason(output: AssistantMessage, chunk: GenerateContentResponse): void {
+	const blockReason = chunk.promptFeedback?.blockReason;
+	if (blockReason && blockReason !== "BLOCKED_REASON_UNSPECIFIED") {
+		output.rawStopReason = blockReason;
+		output.stopReason = "error";
+		appendProviderResponseFailureDiagnostic(output, undefined, "content_filter");
+		return;
+	}
+	const finishReason = chunk.candidates?.[0]?.finishReason;
+	if (!finishReason) return;
+	output.rawStopReason = finishReason;
+	output.stopReason = mapStopReason(finishReason);
+	if (output.stopReason === "stop" && output.content.some((block) => block.type === "toolCall")) {
+		output.stopReason = "toolUse";
+	}
+}
+
 /**
  * The provider status of a failed Google request, such as `UNAVAILABLE` or `RESOURCE_EXHAUSTED`: the SDK's error
  * message is the response's JSON error body, which carries it as `error.status`.
  */
 export function googleErrorStatus(errorMessage: string): string | undefined {
 	return /"status"\s*:\s*"([A-Z_]+)"/.exec(errorMessage)?.[1];
+}
+
+/** The Google SDK keeps the error body but discards the HTTP headers. Track them per stream, not per client or model. */
+export function trackGoogleErrorHeaders(fetch?: typeof globalThis.fetch): {
+	fetch: typeof globalThis.fetch;
+	errorHeaders: () => Headers | undefined;
+} {
+	let headers: Headers | undefined;
+	const source =
+		fetch ??
+		Object.assign((...args: Parameters<typeof globalThis.fetch>) => globalThis.fetch(...args), globalThis.fetch);
+	return {
+		fetch: wrapFetchPreservingAdmission(source, (send) =>
+			Object.assign(async (...args: Parameters<typeof source>) => {
+				headers = undefined;
+				const response = await send(...args);
+				if (!response.ok) headers = response.headers;
+				return response;
+			}, send),
+		),
+		errorHeaders: () => headers,
+	};
 }
 
 /**
@@ -598,6 +640,7 @@ export function retryGoogleRequest<T>(
 	request: () => Promise<T>,
 	options?: Pick<StreamOptions, "maxRetries" | "maxRetryDelayMs" | "retryDeadline" | "signal">,
 	transport?: ProviderRetryTransport,
+	errorHeaders?: () => Headers | undefined,
 ): Promise<T> {
 	return retryProviderRequest(
 		async () => {
@@ -605,11 +648,8 @@ export function retryGoogleRequest<T>(
 				return await request();
 			} catch (error) {
 				if (error instanceof Error && "status" in error && !("headers" in error)) {
-					// The body's `RetryInfo.retryDelay` is the server's retry hint; expose it as a header so the
-					// shared policy honors it like any other provider's `Retry-After`.
-					const retryAfterMs = getProviderRetryAfterMs(error);
-					(error as { headers?: Headers }).headers =
-						retryAfterMs === undefined ? undefined : new Headers({ "retry-after-ms": String(retryAfterMs) });
+					// The shared retry policy reads both Retry-After headers and the body's RetryInfo.
+					Object.assign(error, { headers: errorHeaders?.() });
 				}
 				throw error;
 			}

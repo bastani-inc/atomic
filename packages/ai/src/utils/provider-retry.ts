@@ -1,5 +1,7 @@
 import type { RetryDeadline } from "../types.ts";
+import { normalizeProviderError } from "./error-body.ts";
 import { wrapFetchPreservingAdmission } from "./request-admission.ts";
+import { isProviderQuotaCode, isProviderQuotaExhaustionText } from "./responses-errors/codes.ts";
 import { getProviderRetryAfterMs } from "./retry-hints.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "./retry-sleep.ts";
 import { findTlsCertificateRefusal } from "./tls-certificate.ts";
@@ -108,27 +110,13 @@ function validateServerRetryDelayMs(
 			{ status: error.status, retryAfterMs: delayMs },
 		);
 	}
-	return delayMs;
+	return Math.ceil(delayMs);
 }
 
 function getRetryDelayMs(error: ProviderError, retryIndex: number, maxRetryDelayMs: number | undefined): number {
-	// On a throttle, use the same hint as request admission and the session, including a reset-only response.
-	if (error.status === 429) {
-		const hintMs = getProviderRetryAfterMs(error);
-		if (hintMs !== undefined) return validateServerRetryDelayMs(hintMs, maxRetryDelayMs, error);
-	}
-	const retryAfterMs = error.headers?.get("retry-after-ms");
-	if (retryAfterMs) {
-		const value = Number.parseFloat(retryAfterMs);
-		if (Number.isFinite(value)) return validateServerRetryDelayMs(value, maxRetryDelayMs, error);
-	}
-
-	const retryAfter = error.headers?.get("retry-after");
-	if (retryAfter) {
-		const seconds = Number.parseFloat(retryAfter);
-		const delayMs = Number.isNaN(seconds) ? Date.parse(retryAfter) - Date.now() : seconds * 1000;
-		if (Number.isFinite(delayMs)) return validateServerRetryDelayMs(delayMs, maxRetryDelayMs, error);
-	}
+	// Use the same hint as the session, including reset-only throttles and 5xx JSON retry advice.
+	const hintMs = getProviderRetryAfterMs(error);
+	if (hintMs !== undefined) return validateServerRetryDelayMs(hintMs, maxRetryDelayMs, error);
 
 	const exponentialDelay = Math.min(0.5 * 2 ** retryIndex, 8) * 1000;
 	return exponentialDelay * (1 - Math.random() * 0.25);
@@ -173,6 +161,15 @@ export async function retryProviderRequest<T>(
 			if (findTlsCertificateRefusal(error) !== undefined) throw error;
 			if (error.status !== undefined && options.noRetryStatuses?.includes(error.status)) throw error;
 			if (options.noRetry?.(error)) throw error;
+			const { status, body, message } = normalizeProviderError(error);
+			if (
+				status === 402 ||
+				("code" in error && isProviderQuotaCode(error.code)) ||
+				("type" in error && isProviderQuotaCode(error.type)) ||
+				isProviderQuotaExhaustionText(message) ||
+				(body !== undefined && isProviderQuotaExhaustionText(body))
+			)
+				throw error;
 
 			const retryIndex = maxRetries - retriesRemaining;
 			retriesRemaining--;

@@ -361,7 +361,11 @@ export function recordProviderRateLimit(
 	providerEntry.rateLimitCount += 1;
 	limit.consecutiveLimits += 1;
 	const backoff = Math.min(60_000, 1000 * 2 ** Math.min(limit.consecutiveLimits - 1, 6));
-	extendLimit(scope, kind, providerRetryHint(error).retryAfterMs ?? backoff * (0.5 + Math.random() * 0.5));
+	extendLimit(
+		scope,
+		kind === "quota_exhausted" ? "unavailable" : "cooldown",
+		providerRetryHint(error).retryAfterMs ?? backoff * (0.5 + Math.random() * 0.5),
+	);
 	return remaining(account);
 }
 
@@ -377,9 +381,23 @@ export function providerLimitScope(
 	return { key: perModel ? modelLimitKey(provider, model) : provider, ...(account === undefined ? {} : { account }) };
 }
 
-function extendLimit(scope: ProviderLimitScope, kind: "rate_limit" | "quota_exhausted", delay: number): void {
+/** Hold requests for an explicit wait after a server error, without counting the error as throttling. */
+export function recordProviderServerRetryHint(
+	provider: string,
+	error: unknown,
+	account?: string,
+	status = normalizeModelFailureSignal(error).status,
+): boolean {
+	if (status === undefined || status < 500 || status >= 600) return false;
+	const hint = providerRetryHint(error).retryAfterMs;
+	if (hint === undefined || hint <= 0) return false;
+	extendLimit({ key: provider, account }, "cooldown", hint);
+	return true;
+}
+
+function extendLimit(scope: ProviderLimitScope, kind: ProviderRateLimitObservation["kind"], delay: number): void {
 	const until = Math.ceil(Date.now() + Math.max(1, delay));
-	const observation = raiseLimit(scope, kind === "quota_exhausted" ? "unavailable" : "cooldown", until);
+	const observation = raiseLimit(scope, kind, until);
 	if (observation === undefined || state.observers === undefined) return;
 	for (const observer of state.observers) {
 		// An observer must never change how the request that hit the limit is handled, nor starve the others.
@@ -443,7 +461,7 @@ export function providerRateLimitObservations(): ProviderRateLimitObservation[] 
 
 /**
  * Be told each time this process records or extends a limit, but not when it applies another process's
- * observation. Only rate-limited and quota-exhausted responses notify, never ordinary requests.
+ * observation. Rate limits, exhausted quotas and server errors with retry advice notify, not ordinary requests.
  */
 export function observeProviderRateLimits(observer: (observation: ProviderRateLimitObservation) => void): () => void {
 	state.observers ??= new Set();
@@ -463,7 +481,8 @@ export function recordProviderRetryHint(provider: string | undefined, error: unk
 	const kind = normalizeModelFailureSignal(error)?.kind;
 	if (kind !== "rate_limit" && kind !== "quota_exhausted") return;
 	const retryAfterMs = providerRetryHint(error).retryAfterMs;
-	if (retryAfterMs !== undefined) extendLimit(scope, kind, retryAfterMs);
+	if (retryAfterMs !== undefined)
+		extendLimit(scope, kind === "quota_exhausted" ? "unavailable" : "cooldown", retryAfterMs);
 }
 
 export function recordProviderSuccess(provider: string, model?: string, account?: string): void {

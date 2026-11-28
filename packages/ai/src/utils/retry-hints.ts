@@ -74,15 +74,17 @@ function parseJsonBody(text: string): JsonValue | undefined {
 }
 
 /**
- * Largest server retry hint in ms from `Retry-After-Ms`, `Retry-After` (seconds or HTTP date), a JSON body
- * `retry_after` in seconds (Cloudflare 5xx pages) and a body `RetryInfo.retryDelay` (Google APIs).
+ * Largest server retry hint in ms from `Retry-After-Ms` or `X-Amz-Retry-After` (milliseconds), `Retry-After`
+ * (seconds or HTTP date), a JSON body `retry_after` in seconds (Cloudflare 5xx pages) or `RetryInfo.retryDelay` (Google APIs).
  */
 export function getRetryAfterMs(headers?: HeaderReader, body?: string, now = Date.now()): number | undefined {
 	const hints: number[] = [];
-	const milliseconds = headers?.get("retry-after-ms");
-	if (milliseconds?.trim()) {
-		const delay = positiveDelay(Number(milliseconds));
-		if (delay !== undefined) hints.push(delay);
+	for (const name of ["retry-after-ms", "x-amz-retry-after"]) {
+		const milliseconds = headers?.get(name);
+		if (milliseconds?.trim()) {
+			const delay = positiveDelay(Number(milliseconds));
+			if (delay !== undefined) hints.push(delay);
+		}
 	}
 	const retryAfter = headers?.get("retry-after");
 	if (retryAfter?.trim()) {

@@ -19,6 +19,7 @@ import {
 	providerRequestGate,
 	recordProviderRateLimit,
 	recordProviderRetryHint,
+	recordProviderServerRetryHint,
 	recordProviderSuccess,
 	tryAdmitProviderRequest,
 } from "./provider-rate-limits.js";
@@ -50,6 +51,7 @@ interface StreamAdmissionState {
 	admissionTimeoutMs?: number;
 	observedRateLimit: boolean;
 	observedQuotaExhaustion: boolean;
+	observedServerCooldown?: boolean;
 	/** The limit the observed 429/402 response was recorded against. */
 	observedScope?: ProviderLimitScope;
 }
@@ -72,20 +74,29 @@ function providerFetch(provider: string, model: string, originalFetch: typeof fe
 			if (retryDeadlineReached(state.outerRetryDeadline)) throw new RetryDeadlineError();
 			state.observedRateLimit = false;
 			state.observedQuotaExhaustion = false;
+			state.observedServerCooldown = false;
 			state.observedScope = undefined;
 		}
 		const startedAt = performance.now();
 		const response = await originalFetch(input, init);
-		if (response.status === 429 || response.status === 402) {
-			// The body may name the affected model, but only wait briefly and within the original request budget.
+		const serverError = response.status >= 500 && response.status < 600;
+		if (response.status === 429 || response.status === 402 || serverError) {
+			// The body may name the affected model or carry retry advice. Don't wait beyond the request budget.
 			const signal = init?.signal ?? (input instanceof Request ? input.signal : state?.callerSignal);
 			const remaining = remainingRequestTimeoutMs(startedAt, state?.timeoutMs);
 			const body = await readBoundedErrorBody(response, signal, remaining).catch(() => "");
 			const failure = { status: response.status, headers: response.headers, message: body, body };
-			recordProviderRateLimit(provider, failure, model, account);
-			if (state) state.observedScope = providerLimitScope(provider, failure, model, account);
-			if (state && response.status === 429) state.observedRateLimit = true;
-			if (state && response.status === 402) state.observedQuotaExhaustion = true;
+			if (serverError) {
+				const recorded = recordProviderServerRetryHint(provider, failure, account, response.status);
+				if (state) state.observedServerCooldown = recorded;
+			} else {
+				recordProviderRateLimit(provider, failure, model, account);
+				if (state) {
+					state.observedScope = providerLimitScope(provider, failure, model, account);
+					state.observedRateLimit = response.status === 429;
+					state.observedQuotaExhaustion = response.status === 402;
+				}
+			}
 			if (body === undefined) {
 				signal?.throwIfAborted();
 				return responseWithoutBody(response);
@@ -239,7 +250,10 @@ export async function admitProviderStream(
 			if (state.observedRateLimit && error.stopReason === "error" && !isProviderLimitFailure(error)) {
 				error.errorMessage = `429 Too Many Requests: ${error.errorMessage ?? "provider rate limited the request"}`;
 			}
-			if (!isProviderLimitFailure(error)) return;
+			if (!isProviderLimitFailure(error)) {
+				if (!state.observedServerCooldown) recordProviderServerRetryHint(model.provider, error, account);
+				return;
+			}
 			let scope = state.observedScope;
 			if (scope === undefined) {
 				recordProviderRateLimit(model.provider, error, model.id, account);

@@ -53,6 +53,7 @@ import type {
 	Tool,
 	ToolResultMessage,
 } from "../types.ts";
+import { raceWithAbortSignal } from "../utils/abort.ts";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
 import { type InlineImageMimeType, inlineImageMimeType, unsupportedImagePlaceholder } from "../utils/inline-images.ts";
@@ -67,9 +68,11 @@ import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getAtomicEnvValue, getProviderEnvValue } from "../utils/provider-env.ts";
+import { DEFAULT_MAX_RETRY_DELAY_MS } from "../utils/provider-retry.ts";
 import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
 import { withResponseTimeout } from "../utils/provider-waits/timeout.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { sleepForRetry } from "../utils/retry-sleep.ts";
 import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
@@ -302,6 +305,10 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				},
 			];
 			const client = new BedrockRuntimeClient(config);
+			if (options.maxRetries !== 0 && (options.maxRetries !== undefined || options.maxRetryDelayMs !== undefined)) {
+				const capMs = options.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+				applyBedrockRetryHints(client, capMs, streamDeadline.signal);
+			}
 			addTransportFailureMiddleware(client, connection, streamDeadline.signal);
 			let observedRawResponse = false;
 			if (options.onResponse) {
@@ -837,11 +844,35 @@ function normalizeClosedSocketFailure(error: unknown, signal: AbortSignal | unde
 	return Object.assign(new Error(error.message, { cause: error }), { code: "ECONNRESET" });
 }
 
-/**
- * Reports what the HTTP handler rejects with, below every response, as the request's own transport failure for its
- * host, so only a refused certificate on that connection is read as one (#6114), and normalizes a pre-response
- * `ERR_SOCKET_CLOSED` into a fresh `ECONNRESET` wrapper below the SDK's retry middleware.
- */
+/** Keep AWS's configured strategy and require the full server wait before any retry it grants. */
+function applyBedrockRetryHints(client: BedrockRuntimeClient, capMs: number, signal?: AbortSignal): void {
+	const getStrategy = client.config.retryStrategy;
+	client.config.retryStrategy = async () => {
+		const strategy = await getStrategy();
+		if (!("refreshRetryTokenForRetry" in strategy)) return strategy;
+		return {
+			acquireInitialRetryToken: (scope) => strategy.acquireInitialRetryToken(scope),
+			recordSuccess: (token) => strategy.recordSuccess(token),
+			async refreshRetryTokenForRetry(token, info) {
+				const hintMs = info.error && getProviderRetryAfterMs(info.error);
+				// Smithy propagates the original exception when the strategy declines to renew a retry token.
+				if (capMs > 0 && hintMs !== undefined && hintMs > capMs) throw info.error;
+				signal?.throwIfAborted();
+				const started = performance.now();
+				const renewal = strategy.refreshRetryTokenForRetry(token, info);
+				const next = await (signal ? raceWithAbortSignal(renewal, signal) : renewal);
+				if (hintMs !== undefined) {
+					// The SDK may ignore or shorten a retry hint. Add only the part its strategy did not wait for.
+					const remaining = hintMs - (performance.now() - started) - next.getRetryDelay();
+					if (remaining > 0) await sleepForRetry(Math.ceil(remaining), signal, () => new Error("Request aborted"));
+				}
+				return next;
+			},
+		};
+	};
+}
+
+/** Reports pre-response transport failures and normalizes closed sockets below the SDK's retry middleware. */
 function addTransportFailureMiddleware(
 	client: BedrockRuntimeClient,
 	connection: ConnectionFailure,

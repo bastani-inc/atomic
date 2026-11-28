@@ -15,7 +15,7 @@ import {
 	GitHubCopilotStreamEndedEarlyError,
 	getTlsCertificateRefusal,
 } from "@bastani/atomic-ai";
-import { responsesErrorKind } from "@bastani/atomic-ai/utils/responses-errors/codes";
+import { isProviderQuotaExhaustionText, responsesErrorKind } from "@bastani/atomic-ai/utils/responses-errors/codes";
 import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
 
 const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
@@ -215,11 +215,14 @@ function diagnosticErrors(value: unknown): readonly unknown[] {
 	if (!Array.isArray(diagnostics)) return [];
 	const errors: unknown[] = [];
 	for (const diagnostic of diagnostics) {
-		const diagnosticType = stringField(diagnostic, "type");
+		const diagnosticType = normalizeCode(stringField(diagnostic, "type"));
 		const diagnosticError = field(diagnostic, "error");
-		errors.push(
-			normalizeCode(diagnosticType) === "provider_transport_failure" ? diagnostic : (diagnosticError ?? diagnostic),
-		);
+		if (diagnosticType === "pi_messages_response_failure" && diagnosticError !== undefined) {
+			// Keep the HTTP status from the wrapper together with the provider's error code and message.
+			errors.push({ ...asRecord(diagnosticError), status: statusFrom(diagnostic) });
+		} else {
+			errors.push(diagnosticType === "provider_transport_failure" ? diagnostic : (diagnosticError ?? diagnostic));
+		}
 	}
 	return errors;
 }
@@ -362,9 +365,6 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "throttlingexception":
 		case "resource_exhausted":
 			return "rate_limit";
-		case "payment_required":
-		case "servicequotaexceededexception":
-			return "quota_exhausted";
 		case "aborterror":
 		case "aborted":
 		case "cancelled":
@@ -529,28 +529,6 @@ const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
 	/(?<![a-z0-9_])UND_ERR_SOCKET(?![a-z0-9_])/i,
 ];
 
-// HTTP 402 and explicit quota exhaustion: the account cannot be served again until its quota resets.
-// Codes that also appear as free-text wording for short limits ("quota exceeded", "usage limit reached")
-// count only as a JSON `code`/`type` value, as in a raw error body some providers put in the message.
-// A service-quota exception and a per-day quota violation in a JSON error body (`"quotaId": "...PerDay..."`)
-// also last until the quota resets.
-const QUOTA_EXHAUSTED_FAILURE_PATTERN =
-	/(?<![a-z0-9.])402(?![a-z0-9.])|payment[_\s-]*required|insufficient[_\s-]*quota|\bServiceQuotaExceededException\b|"quotaId"\s*:\s*"[^"]*PerDay/i;
-
-function isQuotaExhaustionText(message: string): boolean {
-	if (QUOTA_EXHAUSTED_FAILURE_PATTERN.test(message)) return true;
-	for (const [, code] of message.matchAll(/"(?:code|type|error_code)"\s*:\s*"([a-z_]+)"/gi)) {
-		if (responsesErrorKind(code) === "quota_exhausted") return true;
-	}
-	return false;
-}
-
-// An account out of credit or money: nothing serves it again until it is topped up, so a short rate-limit cooldown would
-// spend one failed request per cooldown. Anthropic answers with HTTP 400 and `invalid_request_error`, and OpenRouter's
-// affordability error names `max_tokens`, so this wording outranks the request-error grammar and the status.
-const BILLING_EXHAUSTED_FAILURE_PATTERN =
-	/credit\s+balance\s+is\s+too\s+low|insufficient[_\s-]*(?:credits?|balance|funds)|(?:requires|purchase|buy|add)\s+more\s+credits|used\s+all\s+(?:of\s+)?(?:your\s+)?available\s+credits|out\s+of\s+(?:credits?|budget)|spending\s+limit|available\s+balance|check\s+your\s+plan\s+and\s+billing/i;
-
 const API_KEY_REJECTED_FAILURE_PATTERN =
 	/\b(?:invalid|incorrect|expired|disabled|leaked)[_\s-]*api[_\s-]*key\b|\bapi[_\s-]+key[_\s-]+(?:(?:is|was|has|been)[_\s-]+){0,3}(?:not[_\s-]+valid|invalid|incorrect|expired|disabled|leaked|rejected|reported[_\s-]+as[_\s-]+leaked)\b/i;
 
@@ -601,7 +579,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	if (refusalKind !== undefined) return refusalKind;
 	const transportOutageKind = transportOutageKindFromMessage(message);
 	if (transportOutageKind !== undefined) return transportOutageKind;
-	if (BILLING_EXHAUSTED_FAILURE_PATTERN.test(message)) return "quota_exhausted";
+	if (isProviderQuotaExhaustionText(message)) return "quota_exhausted";
 	if (
 		API_KEY_REJECTED_FAILURE_PATTERN.test(message) ||
 		TOKEN_REJECTED_FAILURE_PATTERN.test(message) ||
@@ -611,7 +589,6 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
-	if (isQuotaExhaustionText(message)) return "quota_exhausted";
 	const transientKind = transientKindFromMessage(message);
 	const hasRetryablePattern =
 		transientKind !== undefined ||
@@ -726,10 +703,16 @@ function classifyAssistantRefusalSignal(
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
 	if (normalizeCode(codeFrom(value)) === "econnaborted") return undefined;
+	// Gemini and Anthropic preserve typed refusals even when the explanation has no recognizable wording.
+	const rawStopReason = stopReasonFrom(value) === "error" ? stringField(value, "rawStopReason") : undefined;
 	const codeRefusalKind =
 		refusalKindFromCode(codeFrom(value)) ??
 		refusalKindFromCode(errorName(value)) ??
-		refusalKindFromCode(finishReasonFrom(value));
+		refusalKindFromCode(finishReasonFrom(value)) ??
+		refusalKindFromCode(rawStopReason) ??
+		(rawStopReason === "sensitive" && stringField(value, "api") === "anthropic-messages"
+			? "content_filter"
+			: undefined);
 	if (codeRefusalKind !== undefined) return makeSignal(codeRefusalKind, value, source);
 
 	const messageRefusalKind = refusalKindFromMessage(directMessageFrom(value) ?? "");
@@ -836,6 +819,9 @@ function structuredSignal(
 	// credit with HTTP 400 and `invalid_request_error`.
 	const quotaExhausted =
 		directMessageSignal?.kind === "quota_exhausted" || bestNestedFallbackSignal?.kind === "quota_exhausted";
+	if (quotaExhausted && bestNestedFallbackSignal?.kind === "request_incompatible") {
+		bestNestedFallbackSignal = undefined;
+	}
 	// A real 429 or explicit provider throttle code cannot be condemned by words quoted in its body.
 	// A structured abort/refusal (including on a cause) and an explicit quota error still retain their meaning.
 	if (directCancellationSignal === undefined && codeKind !== "content_filter" && codeKind !== "task_failure") {
@@ -846,7 +832,8 @@ function structuredSignal(
 					? bestNestedFallbackSignal
 					: undefined;
 		if (rateLimit !== undefined) {
-			if (isQuotaExhaustionText(directMessageFrom(value) ?? "")) return makeSignal("quota_exhausted", value, source);
+			if (isProviderQuotaExhaustionText(directMessageFrom(value) ?? ""))
+				return makeSignal("quota_exhausted", value, source);
 			if (!quotaExhausted) return rateLimit;
 		}
 	}
@@ -854,7 +841,7 @@ function structuredSignal(
 		directRefusalSignal,
 		directCancellationSignal,
 		providerTransportSignal,
-		directMessageSignal,
+		quotaExhausted && directMessageSignal?.kind === "request_incompatible" ? undefined : directMessageSignal,
 		// A provider error code names the cause more exactly than its HTTP status: Bedrock answers a service-quota
 		// exception with a generic 400.
 		kindFromStatus(statusFrom(value)) === undefined || kindFromCode(codeFrom(value)) !== undefined || quotaExhausted

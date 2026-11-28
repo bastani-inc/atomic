@@ -112,6 +112,7 @@ function cloudflare520(headers: Record<string, string> = {}): typeof globalThis.
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
 
@@ -140,6 +141,25 @@ test.each([
 	assert.match(result.errorMessage ?? "", /520/);
 	assert.equal(result.retryAfterMs, 45_000);
 });
+
+test.each(["openai", "cloudflare-ai-gateway"] as const)(
+	"%s Chat does not retry an exhausted quota",
+	async (provider) => {
+		const fetch = vi.fn(async () =>
+			Response.json(
+				{ error: { code: "insufficient_quota", type: "insufficient_quota", message: "Cannot serve." } },
+				{ status: 429, headers: { "retry-after": "0.001" } },
+			),
+		);
+		const result = await streamOpenAICompletions({ ...completionsModel, provider }, context, {
+			apiKey: "k",
+			maxRetries: 1,
+			fetch,
+		}).result();
+		assert.equal(result.stopReason, "error");
+		assert.equal(fetch.mock.calls.length, 1);
+	},
+);
 
 test("a retry that was on time before waiting for a provider slot is not sent after its deadline (#5627)", async () => {
 	const now = vi.spyOn(performance, "now").mockReturnValue(10);
@@ -176,6 +196,35 @@ test("openai-responses keeps a top-level retry_after next to a body error object
 	const result = await streamOpenAIResponses(responsesModel, context, { apiKey: "k", maxRetries: 0, fetch }).result();
 	assert.equal(result.retryAfterMs, 30_000);
 });
+
+test.each([
+	{ seconds: 360, headers: new Headers(), expectedRequests: 1 },
+	{ seconds: 360, headers: new Headers({ "retry-after": "0.001" }), expectedRequests: 1 },
+	{ seconds: undefined, headers: new Headers({ "retry-after": "360" }), expectedRequests: 1 },
+	{ seconds: 0.05, headers: new Headers(), expectedRequests: 2 },
+])(
+	"Cloudflare Chat uses the 503 retry hint ($seconds, $expectedRequests requests)",
+	async ({ seconds, headers, expectedRequests }) => {
+		vi.useFakeTimers();
+		const fetch = vi.fn(async () =>
+			Response.json({ retry_after: seconds, error: { message: "Backend down." } }, { status: 503, headers }),
+		);
+		const pending = streamOpenAICompletions({ ...completionsModel, provider: "cloudflare-ai-gateway" }, context, {
+			apiKey: "k",
+			maxRetries: 1,
+			maxRetryDelayMs: 60_000,
+			fetch,
+		}).result();
+		await vi.advanceTimersByTimeAsync(49);
+		assert.equal(fetch.mock.calls.length, 1);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(fetch.mock.calls.length, expectedRequests);
+		await vi.advanceTimersByTimeAsync(500);
+		const result = await pending;
+		assert.equal(fetch.mock.calls.length, expectedRequests);
+		assert.equal(result.retryAfterMs, expectedRequests === 1 ? 360_000 : 50);
+	},
+);
 
 test("openai-completions reads Retry-After-Ms and Retry-After headers from a 503 without a body hint (#3623)", async () => {
 	const respond = (headers: Record<string, string>) =>
