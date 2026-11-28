@@ -30,7 +30,7 @@ import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
-import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
+import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
 import { getDeclaredTools, resolveRequestTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import {
@@ -39,6 +39,7 @@ import {
 	preserveCopilotIntegrationHeader,
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
+import { isOpenAITracingEndpoint, openAIRequestFetch } from "./openai-request-headers.js";
 import {
 	appendServiceTierRejectedWarning,
 	applyServiceTierPricing,
@@ -123,6 +124,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 		sessionAffinityFormat: model.compat?.sessionAffinityFormat ?? detectSessionAffinityFormat(model),
 		promptCacheKeyMode: model.compat?.promptCacheKeyMode ?? "auto",
+		sendIdempotencyKey: model.compat?.sendIdempotencyKey ?? false,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
 		supportsStrictMode: model.compat?.supportsStrictMode ?? false,
 		supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
@@ -242,6 +244,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				retryTransport?.fetch ?? options?.fetch,
 				cacheSessionId,
 				options?.apiKey,
+				options?.logicalRequestId,
 			);
 			let params = buildParams(
 				model,
@@ -439,6 +442,7 @@ function createClient(
 	fetch?: typeof globalThis.fetch,
 	sessionId?: string,
 	copilotApiKey?: string,
+	logicalRequestId?: string,
 ) {
 	const compat = getCompat(model);
 	const headers: ProviderHeaders = { ...getIdentityHeaders(model, identity), ...model.headers };
@@ -455,6 +459,7 @@ function createClient(
 		Object.assign(headers, copilotHeaders);
 	}
 
+	const tracesRequests = isOpenAITracingEndpoint(model.baseUrl);
 	if (sessionId) {
 		if (compat.sessionAffinityFormat === "openrouter") {
 			headers["x-session-id"] = sessionId;
@@ -462,7 +467,7 @@ function createClient(
 			if (compat.sessionAffinityFormat === "openai") {
 				headers["session-id"] = sessionId;
 			}
-			headers["x-client-request-id"] = sessionId;
+			if (!tracesRequests && model.compat?.sessionAffinityFormat) headers["x-client-request-id"] = sessionId;
 		}
 	}
 
@@ -476,7 +481,7 @@ function createClient(
 			apiKey,
 			baseURL: model.baseUrl,
 			dangerouslyAllowBrowser: true,
-			fetch: transportFetch(getFetchAdmission(fetch)?.fetch ?? fetch),
+			fetch: openAIRequestFetch(model, getFetchAdmission(fetch)?.fetch ?? fetch, headers, logicalRequestId),
 			defaultHeaders: headers,
 		}),
 		fetch,

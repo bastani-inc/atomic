@@ -2,7 +2,7 @@ import type { AssistantMessageDiagnostic } from "../diagnostics.ts";
 
 // Keep this cross-package entry in a new directory: Bun processes can hold the old utilities directory across updates.
 
-/** Explicit OpenAI Responses and Codex codes, independent of HTTP status and display text. */
+/** Explicit OpenAI-family error codes, independent of HTTP status and display text. */
 export function responsesErrorKind(
 	code: unknown,
 ): "context_overflow" | "quota_exhausted" | "rate_limit" | "provider_unavailable" | "request_incompatible" | undefined {
@@ -31,6 +31,7 @@ export function responsesErrorKind(
 		case "server_is_overloaded":
 			return "provider_unavailable";
 		case "invalid_prompt":
+		case "idempotency_conflict":
 			return "request_incompatible";
 		default:
 			return undefined;

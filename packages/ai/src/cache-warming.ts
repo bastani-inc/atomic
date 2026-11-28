@@ -76,7 +76,7 @@ export function isCacheWarmingReplayable(model: Model<Api>, options: SimpleStrea
  * conversation's provider thread state (the refresh repeats the last request).
  */
 export function getCacheWarmingRequestOptions<T extends SimpleStreamOptions>(options: T, signal: AbortSignal): T {
-	return { ...options, maxTokens: 1, disableContinuation: true, maxRetries: 0, signal };
+	return { ...options, logicalRequestId: undefined, maxTokens: 1, disableContinuation: true, maxRetries: 0, signal };
 }
 
 /** Decide whether refreshing the cache entry of a `promptTokens`-token request pays for itself in `phase`. */

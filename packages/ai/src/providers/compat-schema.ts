@@ -355,7 +355,11 @@ export const OpenAICompletionsCompatSchema = Type.Object(
 		}),
 		sessionAffinityFormat: optionalSessionAffinityFormat({
 			description:
-				"Session-affinity header format. openai sends session_id, x-client-request-id, and x-session-affinity; openai-nosession sends x-client-request-id and x-session-affinity; openrouter sends x-session-id. Does not affect prompt_cache_key. Default: auto-detected.",
+				"Session-affinity header format. openai sends session_id and x-session-affinity; openai-nosession sends x-session-affinity; openrouter sends x-session-id. Compatible endpoints using either OpenAI format also receive the legacy x-client-request-id affinity header. api.openai.com uses that header for request tracing instead. Does not affect prompt_cache_key. Default: auto-detected.",
+		}),
+		sendIdempotencyKey: optionalCompatBoolean({
+			description:
+				"Send an Idempotency-Key across retries of the same request. Enable only if the endpoint documents support. Default: false.",
 		}),
 		promptCacheKeyMode: optionalPromptCacheKeyMode({
 			description:
@@ -392,7 +396,11 @@ export const OpenAIResponsesCompatSchema = Type.Object(
 		}),
 		sessionAffinityFormat: optionalSessionAffinityFormat({
 			description:
-				"Session-affinity header format. openai sends session-id and x-client-request-id; openai-nosession sends x-client-request-id; openrouter sends x-session-id. Does not affect prompt_cache_key. Default: auto-detected.",
+				"Session-affinity header format. openai sends session-id; openrouter sends x-session-id. Compatible endpoints explicitly configured with openai or openai-nosession also receive the legacy x-client-request-id affinity header. api.openai.com uses that header for request tracing instead. Does not affect prompt_cache_key. Default: auto-detected.",
+		}),
+		sendIdempotencyKey: optionalCompatBoolean({
+			description:
+				"Send an Idempotency-Key across retries of the same openai-responses request. Enable only if the endpoint documents support. Does not apply to Codex or Azure Responses. Default: false.",
 		}),
 		promptCacheKeyMode: optionalPromptCacheKeyMode({
 			description:
@@ -621,6 +629,10 @@ const ProviderCompatPropertyOverrides = {
 	}),
 	sessionAffinityFormat: optionalSessionAffinityFormat({
 		description: "Session-affinity header format. Defaults are API-specific or auto-detected.",
+	}),
+	sendIdempotencyKey: optionalCompatBoolean({
+		description:
+			"Send an Idempotency-Key across retries of the same openai-completions or openai-responses request. Enable only if the endpoint documents support. Default: false.",
 	}),
 	promptCacheKeyMode: optionalPromptCacheKeyMode({
 		description:

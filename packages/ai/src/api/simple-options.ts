@@ -68,6 +68,7 @@ export function buildBaseOptions(
 		transport: options?.transport,
 		cacheRetention: options?.cacheRetention,
 		sessionId: options?.sessionId,
+		...(options?.logicalRequestId === undefined ? {} : { logicalRequestId: options.logicalRequestId }),
 		disableContinuation: options?.disableContinuation,
 		headers: options?.headers,
 		identity: options?.identity,

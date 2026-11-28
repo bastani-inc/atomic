@@ -283,7 +283,7 @@ describe("openai-completions prompt caching", () => {
 		expect(payload?.session_id).toBeUndefined();
 		expect(payload?.prompt_cache_key).toBe("session-nosession");
 		expect(headers.session_id).toBeUndefined();
-		expect(headers["x-client-request-id"]).toBe("session-nosession");
+		expect(headers["x-client-request-id"]).toBeUndefined();
 		expect(headers["x-session-affinity"]).toBe("session-nosession");
 		expect(headers["x-session-id"]).toBeUndefined();
 	});

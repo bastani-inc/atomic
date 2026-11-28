@@ -102,9 +102,7 @@ describe("compatibility schemas", () => {
 		expect(ProviderCompatSchema.properties).toHaveProperty("requiresToolsWithToolHistory");
 		expect(Compile(OpenAICompletionsCompatSchema).Check({ requiresToolsWithToolHistory: true })).toBe(true);
 		expect(Compile(OpenAICompletionsCompatSchema).Check({ requiresToolsWithToolHistory: "yes" })).toBe(false);
-		expect(description(OpenAIResponsesCompatSchema, "sessionAffinityFormat")).toContain(
-			"openai sends session-id and x-client-request-id",
-		);
+		expect(description(OpenAIResponsesCompatSchema, "sessionAffinityFormat")).toContain("openai sends session-id");
 	});
 
 	it("documents that message threads default on by endpoint, not provider", () => {

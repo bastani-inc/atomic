@@ -102,6 +102,33 @@ Some OpenAI-compatible servers (such as Ollama, vLLM, or SGLang) reject the `dev
 }
 ```
 
+### Request tracing and duplicate charges
+
+- **[`X-Client-Request-Id`](https://developers.openai.com/api/reference/overview#supplying-your-own-request-id-with-x-client-request-id)** lets OpenAI look up a request, even if the connection dropped before it returned an `x-request-id`. By default, Atomic sends a fresh UUID for every Chat Completions or Responses attempt to `api.openai.com`, including retries. This doesn't change the session ID or prompt-cache key. Tracing IDs, including Cloudflare's `cf-aig-event-id`, **do not prevent duplicate execution or billing**.
+- **`Idempotency-Key`** asks a supporting endpoint not to run the same operation twice. Atomic keeps the key for retries of the same request and uses a new one for the next request. This is off by default. Only enable it for models using `openai-completions` or `openai-responses` whose endpoint explicitly documents support. Whether a duplicate is billed, and whether a retry can retrieve the original answer, depends on the endpoint.
+
+For example, [OP Inference supports idempotency keys for Chat Completions](https://docs.opinference.com/docs/routing/idempotency). Add this provider to `~/.atomic/agent/models.json`, set `OP_API_KEY` in the environment where you launch Atomic, and select `/model op-inference/openai/gpt-oss-120b`:
+
+```json
+{
+  "providers": {
+    "op-inference": {
+      "baseUrl": "https://api.opinference.com/v1",
+      "api": "openai-completions",
+      "apiKey": "$OP_API_KEY",
+      "models": [
+        {
+          "id": "openai/gpt-oss-120b",
+          "compat": { "sendIdempotencyKey": true }
+        }
+      ]
+    }
+  }
+}
+```
+
+OP Inference returns a `409 idempotency_conflict` for a duplicate chat completion instead of replaying the answer. Atomic stops retrying that request when it gets this error. If you configured a fallback model, Atomic can still try it as a new request, which may incur a separate charge. Don't set a static `Idempotency-Key` in `headers`: a key must never be shared between unrelated requests.
+
 ### Prompt cache lifetimes
 
 Declare `promptCache` with positive lifetimes in seconds for `short` and `long` cache-retention tiers when configuring a custom model or overriding a built-in model:

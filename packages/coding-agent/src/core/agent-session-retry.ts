@@ -758,7 +758,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 
 	const fallbackGeneration = this._fallbackOriginGeneration;
 	scheduleRetry(this, generation, () => {
-		void this.agent.continue().catch(async (error: unknown) => {
+		void this.agent.continue({ retryOf: message }).catch(async (error: unknown) => {
 			if (!retryIsCurrent(this, generation)) return;
 			const attempt = this._retryAttempt;
 			const finalError = error instanceof Error ? error.message : String(error);
