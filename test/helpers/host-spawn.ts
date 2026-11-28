@@ -12,3 +12,18 @@ export function startHostProcessesThroughChildProcess(): void {
 		vi.stubEnv(HOST_SPAWN_ENV, "child-process");
 	});
 }
+
+/** Decode the Git arguments so faults can still target Git, preserving the real publication handshake on overrides. */
+export function snapshotGitLaunch(command: string, args: readonly string[]) {
+	const gated = command === "/bin/sh" && args[2] === "atomic-worktree-move";
+	const gitArgs = gated ? args.slice(4) : args;
+	return {
+		args: gitArgs,
+		withOverride(override?: { readonly command?: string; readonly args?: readonly string[] }) {
+			if (override === undefined) return { command, args };
+			return gated
+				? { command, args: [...args.slice(0, 3), override.command ?? args[3]!, ...(override.args ?? gitArgs)] }
+				: { command: override.command ?? command, args: override.args ?? gitArgs };
+		},
+	};
+}

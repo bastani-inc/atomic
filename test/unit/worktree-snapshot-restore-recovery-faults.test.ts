@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
+import { snapshotGitLaunch, startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 import type {
 	LockOptions,
 	RealLock,
@@ -48,13 +48,10 @@ vi.mock("node:child_process", async (importOriginal) => {
 		) => {
 			const cwd = String(options?.cwd);
 			const env = options?.env ?? {};
-			faults.spawns.push({ args, cwd, env });
-			const override = faults.spawnHook?.(args, cwd, env);
-			return (actual.spawn as (...parameters: unknown[]) => unknown)(
-				override?.command ?? command,
-				override?.args ?? args,
-				options,
-			);
+			const git = snapshotGitLaunch(command, args);
+			faults.spawns.push({ args: git.args, cwd, env });
+			const launch = git.withOverride(faults.spawnHook?.(git.args, cwd, env));
+			return (actual.spawn as (...parameters: unknown[]) => unknown)(launch.command, launch.args, options);
 		},
 	};
 });

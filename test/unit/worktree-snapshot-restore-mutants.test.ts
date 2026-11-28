@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
+import { snapshotGitLaunch, startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 import type { FilesystemFault } from "../helpers/worktree-snapshot-faults.js";
 
 /** Filesystem calls that fail for one path, as a symbolic link that loops makes them. */
@@ -33,14 +33,15 @@ vi.mock("node:child_process", async (importOriginal) => {
 	return {
 		...actual,
 		spawn: (command: string, args: readonly string[], options: object) => {
-			const override = spawned.hook?.(args);
+			const git = snapshotGitLaunch(command, args);
+			const launch = git.withOverride(spawned.hook?.(git.args));
 			const child = (actual.spawn as (...parameters: unknown[]) => import("node:child_process").ChildProcess)(
-				override?.command ?? command,
-				override?.args ?? args,
+				launch.command,
+				launch.args,
 				options,
 			);
-			spawned.calls.push(args);
-			child.on("close", () => spawned.closed.push(args));
+			spawned.calls.push(git.args);
+			child.on("close", () => spawned.closed.push(git.args));
 			return child;
 		},
 	};

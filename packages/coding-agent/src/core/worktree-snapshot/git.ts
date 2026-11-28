@@ -7,7 +7,7 @@ import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
-import { type HostChildProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
+import { type HostChildProcess, spawnContainedProcess, spawnHostProcess } from "../../utils/host-spawn.ts";
 import { pathExists } from "../../utils/path-exists.ts";
 import { DEFAULT_WINDOWS_CWD_TIMEOUT_MS, resolveSafeWindowsWorkingDirectoryAsync } from "../../utils/windows-cwd.js";
 import { asyncScope } from "../async-scope.ts";
@@ -128,6 +128,8 @@ export interface GitRunOptions {
 	readonly allowExitCodes?: readonly number[];
 	/** Prepend {@link NEUTRAL_CONVERSION_CONFIG}. */
 	readonly neutral?: boolean;
+	/** For a Git worktree move: record the child behind the publication fence, and end it if this host dies. */
+	readonly onPublicationChild?: (pid: number) => Promise<void>;
 	/**
 	 * Run a command that talks to a remote so it can never wait for a person: on POSIX it starts in a new session, so
 	 * ssh and credential helpers have no terminal to prompt on and fail at once, and ssh runs in batch mode with a
@@ -376,9 +378,25 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 	if (options.nonInteractive && !env.GIT_SSH_COMMAND && !env.GIT_SSH && !(await configuresSshCommand(options))) {
 		env.GIT_SSH_COMMAND = `ssh -o BatchMode=yes -o ConnectTimeout=${NON_INTERACTIVE_SSH_CONNECT_TIMEOUT_SECONDS}`;
 	}
-	// A new session has no controlling terminal. Windows has no such thing, and `detached` there opens a console.
-	const detached = options.nonInteractive === true && process.platform !== "win32";
+	const publishing = options.onPublicationChild !== undefined;
+	const watched = publishing && processTreeContainment.canWatchProcessUntilHostDies();
+	// A new session has no controlling terminal and puts the publishing process in its own watched group.
+	// Windows has no such thing, and `detached` there opens a console.
+	const detached = (options.nonInteractive === true || watched) && process.platform !== "win32";
 	const argv = [...BASE_CONFIG, ...(options.neutral ? NEUTRAL_CONVERSION_CONFIG : []), ...args];
+	const gated = publishing && process.platform !== "win32";
+	// On POSIX, exec keeps the same PID and start. Don't let the move start until that identity is on disk;
+	// if Atomic dies before sending the byte, EOF makes the shell exit without touching the checkout.
+	const command = gated ? "/bin/sh" : executable.path;
+	const commandArgs = gated
+		? [
+				"-c",
+				'IFS= read -r start && [ "$start" = go ] || exit 1\nexec "$@"',
+				"atomic-worktree-move",
+				executable.path,
+				...argv,
+			]
+		: argv;
 	const spawnFailure = async (error: NodeJS.ErrnoException): Promise<Error> =>
 		(error.code === "ENOENT" || error.code === "EACCES") && (await isDirectory(options.cwd))
 			? ((await unreadableDirectory(options.cwd)) ??
@@ -404,17 +422,41 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 					},
 					error,
 				);
+	const launch = { cwd: options.cwd, env, stdio: "pipe" as const, detached, endWithParent: publishing && !watched };
+	const contained =
+		publishing && process.platform === "win32"
+			? await spawnContainedProcess(executable.path, argv, launch).catch(async (error: NodeJS.ErrnoException) => {
+					throw await spawnFailure(error);
+				})
+			: undefined;
 	return new Promise<GitRunResult>((resolve, reject) => {
 		let child: HostChildProcess;
 		try {
 			// Without fork where that costs the host time in proportion to its memory (#5345).
-			child = spawnHostProcess(executable.path, argv, { cwd: options.cwd, env, stdio: "pipe", detached });
+			child = contained ?? spawnHostProcess(command, commandArgs, launch);
 		} catch (error) {
 			// Node throws instead of emitting `error` for some failures, such as a path component that is a file.
 			void spawnFailure(error as NodeJS.ErrnoException).then(reject, reject);
 			return;
 		}
-		const tree = child.pid === undefined ? undefined : processTreeContainment.containProcessTree(child.pid);
+		const pid = child.pid;
+		const tree =
+			contained !== undefined || pid === undefined ? undefined : processTreeContainment.containProcessTree(pid);
+		const deathWatch =
+			watched && pid !== undefined ? processTreeContainment.watchProcessUntilHostDies(pid) : undefined;
+		if (deathWatch !== undefined) child.once("exit", () => deathWatch.release());
+		// A failed write leaves the ambiguous fence if this host dies before normal completion. An unstarted
+		// POSIX command can also be refused without touching the checkout.
+		let publicationRecorded = false;
+		const recorded =
+			pid === undefined
+				? undefined
+				: options.onPublicationChild?.(pid).then(
+						() => {
+							publicationRecorded = true;
+						},
+						() => {},
+					);
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
 		let settled = false;
@@ -422,7 +464,11 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 			if (settled) return;
 			settled = true;
 			// Rejects once the process has ended, so nothing it started still works in its directories.
-			void stopCommand(child, detached, tree).then(() => reject(options.signal?.reason));
+			contained?.endTree();
+			void stopCommand(child, detached, tree).then(async () => {
+				await recorded;
+				reject(options.signal?.reason);
+			});
 		};
 		options.signal?.addEventListener("abort", onAbort, { once: true });
 		const finish = (action: () => void) => {
@@ -435,8 +481,11 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 		child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
 		child.on("error", (error: NodeJS.ErrnoException) =>
 			finish(() => {
+				deathWatch?.release();
 				tree?.close();
-				void spawnFailure(error).then(reject, reject);
+				void Promise.resolve(recorded)
+					.then(() => spawnFailure(error))
+					.then(reject, reject);
 			}),
 		);
 		child.stdin?.on("error", exitStatusReportsClosedInput);
@@ -447,7 +496,9 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 					stderr: Buffer.concat(stderr).toString("utf8"),
 					exitCode: code ?? -1,
 				};
-				void endTree(tree).then(() => {
+				contained?.endTree();
+				void endTree(tree).then(async () => {
+					await recorded;
 					if (code === 0 || (code !== null && options.allowExitCodes?.includes(code))) resolve(result);
 					else
 						reject(
@@ -461,7 +512,8 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 				});
 			}),
 		);
-		child.stdin?.end(options.input === undefined ? undefined : options.input);
+		if (gated) void Promise.resolve(recorded).then(() => child.stdin?.end(publicationRecorded ? "go\n" : undefined));
+		else child.stdin?.end(options.input === undefined ? undefined : options.input);
 	});
 }
 

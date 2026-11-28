@@ -17,10 +17,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { exitedProcess } from "../../../test/helpers/exited-process.js";
+import { spawnProcess } from "../../../test/helpers/runtime.js";
 import { HOLDER_TEMP_STALE_MS } from "../src/core/lock-holder.ts";
 import {
 	guardLockRemoval,
 	guardLockRemovalSync,
+	processMayRunAsync,
 	putBack,
 	removeStaleLock,
 	setNativeLocksForTesting,
@@ -49,6 +51,37 @@ afterEach(() => {
 	setNativeLocksForTesting(undefined);
 	rmSync(directory, { recursive: true, force: true });
 });
+
+it.skipIf(process.platform !== "linux")(
+	"an exited process awaiting reap cannot still mutate a checkout (#6805)",
+	async () => {
+		const parent = spawnProcess(
+			[
+				"python3",
+				"-c",
+				`import os, sys
+pid = os.fork()
+if pid == 0: os._exit(0)
+os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+print(pid, flush=True)
+sys.stdin.read()
+os.waitpid(pid, 0)
+`,
+			],
+			{ stdin: "pipe", stdout: "pipe", stderr: "inherit" },
+		);
+		try {
+			const output = await parent.stdout!.getReader().read();
+			const pid = Number(new TextDecoder().decode(output.value).trim());
+			assert.ok(Number.isSafeInteger(pid) && pid > 0);
+			assert.equal(process.kill(pid, 0), true, "the zombie PID is still present");
+			assert.equal(await processMayRunAsync({ host: hostname(), pid, started: processStartToken(pid) }), false);
+		} finally {
+			parent.stdin!.end();
+			assert.equal(await parent.exited, 0);
+		}
+	},
+);
 
 /** A lock directory whose holder stopped refreshing it `ageMs` ago. */
 function staleLock(path: string, ageMs = STALE_MS + 5_000): void {
