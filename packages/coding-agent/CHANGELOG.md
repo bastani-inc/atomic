@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Opening a large existing SQLite or PostgreSQL session store no longer stalls CLI startup by altering or scanning `session_entries` for worktree snapshot headings. Atomic now stores capture headings in a dedicated `session_capture_headings` table maintained by triggers, populates pre-existing sessions lazily on demand during resume, and lets `atomic storage migrate` backfill existing snapshots in bounded, crash-resumable batches.
+- Continuing the most recent session (`atomic -c`) and resolving session ID prefixes (`--session`, `--fork`) skip loading search text for non-matching sessions.
+
 ## [0.10.16] - 2026-11-27
 
 Atomic resumes large sessions faster, recovers sooner from provider failures, and makes progress easier to follow.

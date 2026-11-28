@@ -89,7 +89,7 @@ async function sessionsWithIdPrefix(
 	store: SessionStore,
 ): Promise<{ readonly id: string; readonly cwd: string; readonly internal: boolean }[]> {
 	const sessions: { readonly id: string; readonly cwd: string; readonly internal: boolean }[] = [];
-	for await (const summary of store.list({ idPrefix, includeInternal: true })) {
+	for await (const summary of store.list({ idPrefix, includeInternal: true, withoutSearchText: true })) {
 		sessions.push({ id: summary.id, cwd: summary.cwd, internal: summary.internal });
 	}
 	return sessions;
