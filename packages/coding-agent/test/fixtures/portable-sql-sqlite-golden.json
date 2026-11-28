@@ -2,12 +2,6 @@
 	"freshSchema": [
 		{
 			"type": "index",
-			"name": "session_entries_capture_heading",
-			"tbl_name": "session_entries",
-			"sql": "CREATE INDEX session_entries_capture_heading\n\t\tON session_entries (session_id,seq) WHERE snapshot_capture_heading IS NOT NULL"
-		},
-		{
-			"type": "index",
 			"name": "session_fork_segments_source",
 			"tbl_name": "session_fork_segments",
 			"sql": "CREATE INDEX session_fork_segments_source ON session_fork_segments (source_id)"
@@ -59,12 +53,6 @@
 			"name": "snapshot_session_records_hash",
 			"tbl_name": "snapshot_session_records",
 			"sql": "CREATE INDEX snapshot_session_records_hash ON snapshot_session_records (hash)"
-		},
-		{
-			"type": "index",
-			"name": "team_session_entries_capture_heading",
-			"tbl_name": "team_session_entries",
-			"sql": "CREATE INDEX team_session_entries_capture_heading\n\t\tON team_session_entries (session_id,seq) WHERE snapshot_capture_heading IS NOT NULL"
 		},
 		{
 			"type": "index",
@@ -134,9 +122,15 @@
 		},
 		{
 			"type": "table",
+			"name": "session_capture_headings",
+			"tbl_name": "session_capture_headings",
+			"sql": "CREATE TABLE session_capture_headings (\n\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, chunks INTEGER NOT NULL, heading TEXT,\n\t\t\tPRIMARY KEY (session_id, seq)\n\t\t) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
 			"name": "session_entries",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, snapshot_capture_heading TEXT, PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -302,9 +296,15 @@
 		},
 		{
 			"type": "table",
+			"name": "team_session_capture_headings",
+			"tbl_name": "team_session_capture_headings",
+			"sql": "CREATE TABLE team_session_capture_headings (\n\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, chunks INTEGER NOT NULL, heading TEXT,\n\t\t\tPRIMARY KEY (session_id, seq)\n\t\t) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
 			"name": "team_session_entries",
 			"tbl_name": "team_session_entries",
-			"sql": "CREATE TABLE team_session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, snapshot_capture_heading TEXT, PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+			"sql": "CREATE TABLE team_session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -482,15 +482,21 @@
 		},
 		{
 			"type": "trigger",
-			"name": "session_entries_capture_insert",
+			"name": "session_entries_capture_del",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TRIGGER session_entries_capture_insert AFTER INSERT ON session_entries WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' BEGIN\n\t\t\t\tUPDATE session_entries SET snapshot_capture_heading=CASE WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' THEN (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) END\n\t\t\t\tWHERE session_id=NEW.session_id AND seq=NEW.seq; END"
+			"sql": "CREATE TRIGGER session_entries_capture_del AFTER DELETE ON session_entries BEGIN\n\t\t\t\tDELETE FROM session_capture_headings WHERE session_id=OLD.session_id AND seq=OLD.seq; END"
 		},
 		{
 			"type": "trigger",
-			"name": "session_entries_capture_update",
+			"name": "session_entries_capture_ins",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TRIGGER session_entries_capture_update AFTER UPDATE OF entry_json,chunks ON session_entries WHEN (substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"') OR OLD.snapshot_capture_heading IS NOT NULL BEGIN\n\t\t\t\tUPDATE session_entries SET snapshot_capture_heading=CASE WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' THEN (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) END\n\t\t\t\tWHERE session_id=NEW.session_id AND seq=NEW.seq; END"
+			"sql": "CREATE TRIGGER session_entries_capture_ins AFTER INSERT ON session_entries WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' BEGIN\n\t\t\t\tINSERT INTO session_capture_headings (session_id, seq, chunks, heading)\n\t\t\t\tSELECT NEW.session_id, NEW.seq, NEW.chunks, h FROM (SELECT (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) AS h) WHERE h IS NOT NULL\n\t\t\t\tON CONFLICT(session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading; END"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_capture_upd",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_capture_upd AFTER UPDATE OF session_id, seq, entry_json, chunks ON session_entries BEGIN\n\t\t\t\tDELETE FROM session_capture_headings WHERE (session_id=OLD.session_id AND seq=OLD.seq) OR (session_id=NEW.session_id AND seq=NEW.seq);\n\t\t\t\tINSERT INTO session_capture_headings (session_id, seq, chunks, heading)\n\t\t\t\tSELECT NEW.session_id, NEW.seq, NEW.chunks, h FROM (SELECT CASE WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' THEN (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) END AS h) WHERE h IS NOT NULL\n\t\t\t\tON CONFLICT(session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading; END"
 		},
 		{
 			"type": "trigger",
@@ -530,15 +536,21 @@
 		},
 		{
 			"type": "trigger",
-			"name": "team_session_entries_capture_insert",
+			"name": "team_session_entries_capture_del",
 			"tbl_name": "team_session_entries",
-			"sql": "CREATE TRIGGER team_session_entries_capture_insert AFTER INSERT ON team_session_entries WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' BEGIN\n\t\t\t\tUPDATE team_session_entries SET snapshot_capture_heading=CASE WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' THEN (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) END\n\t\t\t\tWHERE session_id=NEW.session_id AND seq=NEW.seq; END"
+			"sql": "CREATE TRIGGER team_session_entries_capture_del AFTER DELETE ON team_session_entries BEGIN\n\t\t\t\tDELETE FROM team_session_capture_headings WHERE session_id=OLD.session_id AND seq=OLD.seq; END"
 		},
 		{
 			"type": "trigger",
-			"name": "team_session_entries_capture_update",
+			"name": "team_session_entries_capture_ins",
 			"tbl_name": "team_session_entries",
-			"sql": "CREATE TRIGGER team_session_entries_capture_update AFTER UPDATE OF entry_json,chunks ON team_session_entries WHEN (substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"') OR OLD.snapshot_capture_heading IS NOT NULL BEGIN\n\t\t\t\tUPDATE team_session_entries SET snapshot_capture_heading=CASE WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' THEN (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) END\n\t\t\t\tWHERE session_id=NEW.session_id AND seq=NEW.seq; END"
+			"sql": "CREATE TRIGGER team_session_entries_capture_ins AFTER INSERT ON team_session_entries WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' BEGIN\n\t\t\t\tINSERT INTO team_session_capture_headings (session_id, seq, chunks, heading)\n\t\t\t\tSELECT NEW.session_id, NEW.seq, NEW.chunks, h FROM (SELECT (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) AS h) WHERE h IS NOT NULL\n\t\t\t\tON CONFLICT(session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_session_entries_capture_upd",
+			"tbl_name": "team_session_entries",
+			"sql": "CREATE TRIGGER team_session_entries_capture_upd AFTER UPDATE OF session_id, seq, entry_json, chunks ON team_session_entries BEGIN\n\t\t\t\tDELETE FROM team_session_capture_headings WHERE (session_id=OLD.session_id AND seq=OLD.seq) OR (session_id=NEW.session_id AND seq=NEW.seq);\n\t\t\t\tINSERT INTO team_session_capture_headings (session_id, seq, chunks, heading)\n\t\t\t\tSELECT NEW.session_id, NEW.seq, NEW.chunks, h FROM (SELECT CASE WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' THEN (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) END AS h) WHERE h IS NOT NULL\n\t\t\t\tON CONFLICT(session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading; END"
 		},
 		{
 			"type": "trigger",
@@ -712,12 +724,6 @@
 	"upgradedSchema": [
 		{
 			"type": "index",
-			"name": "session_entries_capture_heading",
-			"tbl_name": "session_entries",
-			"sql": "CREATE INDEX session_entries_capture_heading\n\t\tON session_entries (session_id,seq) WHERE snapshot_capture_heading IS NOT NULL"
-		},
-		{
-			"type": "index",
 			"name": "session_fork_segments_source",
 			"tbl_name": "session_fork_segments",
 			"sql": "CREATE INDEX session_fork_segments_source ON session_fork_segments (source_id)"
@@ -784,9 +790,15 @@
 		},
 		{
 			"type": "table",
+			"name": "session_capture_headings",
+			"tbl_name": "session_capture_headings",
+			"sql": "CREATE TABLE session_capture_headings (\n\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, chunks INTEGER NOT NULL, heading TEXT,\n\t\t\tPRIMARY KEY (session_id, seq)\n\t\t) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
 			"name": "session_entries",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TABLE session_entries (\n\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, snapshot_capture_heading TEXT, PRIMARY KEY(session_id, seq)\n\t\t) STRICT"
+			"sql": "CREATE TABLE session_entries (\n\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, seq)\n\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -940,15 +952,21 @@
 		},
 		{
 			"type": "trigger",
-			"name": "session_entries_capture_insert",
+			"name": "session_entries_capture_del",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TRIGGER session_entries_capture_insert AFTER INSERT ON session_entries WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' BEGIN\n\t\t\t\tUPDATE session_entries SET snapshot_capture_heading=CASE WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' THEN (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) END\n\t\t\t\tWHERE session_id=NEW.session_id AND seq=NEW.seq; END"
+			"sql": "CREATE TRIGGER session_entries_capture_del AFTER DELETE ON session_entries BEGIN\n\t\t\t\tDELETE FROM session_capture_headings WHERE session_id=OLD.session_id AND seq=OLD.seq; END"
 		},
 		{
 			"type": "trigger",
-			"name": "session_entries_capture_update",
+			"name": "session_entries_capture_ins",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TRIGGER session_entries_capture_update AFTER UPDATE OF entry_json,chunks ON session_entries WHEN (substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"') OR OLD.snapshot_capture_heading IS NOT NULL BEGIN\n\t\t\t\tUPDATE session_entries SET snapshot_capture_heading=CASE WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' THEN (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) END\n\t\t\t\tWHERE session_id=NEW.session_id AND seq=NEW.seq; END"
+			"sql": "CREATE TRIGGER session_entries_capture_ins AFTER INSERT ON session_entries WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' BEGIN\n\t\t\t\tINSERT INTO session_capture_headings (session_id, seq, chunks, heading)\n\t\t\t\tSELECT NEW.session_id, NEW.seq, NEW.chunks, h FROM (SELECT (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) AS h) WHERE h IS NOT NULL\n\t\t\t\tON CONFLICT(session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading; END"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_capture_upd",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_capture_upd AFTER UPDATE OF session_id, seq, entry_json, chunks ON session_entries BEGIN\n\t\t\t\tDELETE FROM session_capture_headings WHERE (session_id=OLD.session_id AND seq=OLD.seq) OR (session_id=NEW.session_id AND seq=NEW.seq);\n\t\t\t\tINSERT INTO session_capture_headings (session_id, seq, chunks, heading)\n\t\t\t\tSELECT NEW.session_id, NEW.seq, NEW.chunks, h FROM (SELECT CASE WHEN substr(NEW.entry_json,1,17) <> '{\"type\":\"message\"' AND substr(NEW.entry_json,1,16) <> '{\"type\":\"custom\"' AND substr(NEW.entry_json,1,24) <> '{\"type\":\"custom_message\"' AND substr(NEW.entry_json,1,20) <> '{\"type\":\"compaction\"' THEN (SELECT CASE WHEN json_extract(p, '$.type')='worktree_snapshot' THEN CAST(json_object('root', json_extract(p, '$.root'), 'snapshotId', json_extract(p, '$.snapshotId'), 'timestamp', json_extract(p, '$.timestamp'), 'restore', json_extract(p, '$.restore'), 'capture', CASE WHEN json_type(p, '$.captureMs') IS NOT NULL AND json_type(p, '$.restore') IS NULL AND json_type(p, '$.unrestored') IS NULL THEN 1 ELSE 0 END, 'chunks', NEW.chunks) AS TEXT) END\n\t\tFROM (SELECT CASE WHEN json_valid(NEW.entry_json) THEN NEW.entry_json ELSE '{}' END AS p LIMIT -1 OFFSET 0) parsed) END AS h) WHERE h IS NOT NULL\n\t\t\t\tON CONFLICT(session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading; END"
 		},
 		{
 			"type": "trigger",

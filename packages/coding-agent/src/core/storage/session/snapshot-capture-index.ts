@@ -1,29 +1,63 @@
-import { storageSchemaCurrent } from "../added-exports.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow } from "../database.js";
 import { dialectOf, postgresJsonb, type StorageDialect } from "../dialect.js";
 import * as migrations from "../migrations.js";
-import { storageMigrationTable } from "../prefix.js";
+import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { type StorageSchemaCatalog, schemaCatalogOf } from "../schema-catalog.js";
 import { queueSqliteSchemaSetup } from "../sqlite-open-batch.js";
 
+/** Legacy inline column name retained for compatibility with earlier builds. */
 export const CAPTURE_HEADING = "snapshot_capture_heading";
-const OPEN_BUILD_BYTES = 16 * 1024 * 1024;
+
+const CAPTURE_HEADING_TABLES = { captureHeadings: "capture_headings" } as const;
+const BACKFILL_KEY_BATCH = 500;
+const MIGRATE_REF_BATCH = 2_000;
+const MIGRATE_ENTRY_BATCH = 4_000;
 
 export function captureHeadingIndex(entries: string): string {
 	return `${entries}_capture_heading`;
 }
 
-// An in-place update may leave this process with the old migrations module. Its stores may still use the legacy read.
-const { ensureStorageSchemaOnce }: Partial<Pick<typeof migrations, "ensureStorageSchemaOnce">> = migrations;
+export function captureHeadingTable(prefix?: string): string {
+	return renderStorageIdentifiers("sessions", CAPTURE_HEADING_TABLES, prefix).captureHeadings;
+}
+
+export interface CaptureHeadingKey {
+	readonly owner: string;
+	readonly seq: number;
+}
+
+const {
+	ensureStorageSchemaOnce,
+	withShortSchemaLockWaits,
+}: Partial<Pick<typeof migrations, "ensureStorageSchemaOnce" | "withShortSchemaLockWaits">> = migrations;
 
 const captureSchema = (prefix: string | undefined) => ({
 	ledger: storageMigrationTable(prefix),
 	domain: "session-capture-headings",
-	revision: 1,
+	revision: 2,
 });
 
-/** Only the fields the resume compares; do not copy the potentially large snapshot body. */
-function heading(dialect: StorageDialect, body: string, chunks: string): string {
+function captureTriggers(entries: string) {
+	return {
+		insert: `${entries}_capture_ins`,
+		update: `${entries}_capture_upd`,
+		delete: `${entries}_capture_del`,
+	} as const;
+}
+
+function captureHeadingsReady(catalog: StorageSchemaCatalog | undefined, entries: string, table: string): boolean {
+	if (catalog === undefined) return false;
+	const triggers = captureTriggers(entries);
+	return (
+		catalog.hasTable(table) &&
+		catalog.hasObject(triggers.insert) &&
+		catalog.hasObject(triggers.update) &&
+		catalog.hasObject(triggers.delete)
+	);
+}
+
+/** Only the fields resume compares; never copies the potentially large snapshot body. */
+export function captureHeadingProjection(dialect: StorageDialect, body: string, chunks: string): string {
 	const pg = dialect.name === "postgres";
 	const entry = (key: string) => (pg ? `p->>'${key}'` : dialect.jsonText("p", key));
 	const type = (key: string) => (pg ? `jsonb_typeof(p->'${key}')` : dialect.jsonType("p", key));
@@ -43,12 +77,11 @@ function heading(dialect: StorageDialect, body: string, chunks: string): string 
 }
 
 function sqliteHeadingBody(body: string): string {
-	// A bad entry must remain a read-time error, not make an unrelated write or schema upgrade fail.
 	return `CASE WHEN json_valid(${body}) THEN ${body} ELSE '{}' END`;
 }
 
 /** Generated Atomic messages with an exact first key and a known non-snapshot type need no JSON decoding. */
-function couldBeCapture(body: string): string {
+export function couldBeCaptureHeading(body: string): string {
 	return ["message", "custom", "custom_message", "compaction"]
 		.map((type) => {
 			const prefix = `{"type":"${type}"`;
@@ -57,54 +90,88 @@ function couldBeCapture(body: string): string {
 		.join(" AND ");
 }
 
-function postgresTrigger(dialect: StorageDialect, entries: string): string {
-	const fn = `${entries}_capture_head_fn`;
-	return `CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $capture$
-		BEGIN NEW.${CAPTURE_HEADING} := CASE WHEN ${couldBeCapture("NEW.entry_json")} THEN ${heading(dialect, "NEW.entry_json", "NEW.chunks")} END; RETURN NEW; END $capture$;
-		CREATE OR REPLACE TRIGGER ${entries}_capture_head
-			BEFORE INSERT OR UPDATE OF entry_json,chunks ON ${entries} FOR EACH ROW EXECUTE FUNCTION ${fn}()`;
+function createTableSql(dialect: StorageDialect, table: string): string {
+	const { int, text } = dialect.types;
+	return `CREATE TABLE IF NOT EXISTS ${table} (
+			session_id ${text} NOT NULL, seq ${int} NOT NULL, chunks ${int} NOT NULL, heading ${text},
+			PRIMARY KEY (session_id, seq)
+		)${dialect.withoutRowidTableOptions}`;
 }
 
-async function prepareHeadings(tx: SqliteExecutor, dialect: StorageDialect, entries: string): Promise<void> {
-	const exists = dialect.columnExists(entries, CAPTURE_HEADING);
-	if (!(await tx.get(exists.sql, ...exists.params)))
-		await tx.exec(`ALTER TABLE ${entries} ADD COLUMN ${CAPTURE_HEADING} TEXT`);
-	if (dialect.name === "postgres") await tx.exec(postgresTrigger(dialect, entries));
-	else for (const statement of sqliteTriggers(dialect, entries)) await tx.exec(statement);
-}
-
-function sqliteTriggers(dialect: StorageDialect, entries: string): string[] {
-	const project = heading(dialect, "NEW.entry_json", "NEW.chunks");
-	const candidate = couldBeCapture("NEW.entry_json");
+function sqliteTriggers(dialect: StorageDialect, entries: string, table: string): string[] {
+	const triggers = captureTriggers(entries);
+	const project = captureHeadingProjection(dialect, "NEW.entry_json", "NEW.chunks");
+	const candidate = couldBeCaptureHeading("NEW.entry_json");
 	return [
-		["INSERT", "insert", candidate],
-		["UPDATE OF entry_json,chunks", "update", `(${candidate}) OR OLD.${CAPTURE_HEADING} IS NOT NULL`],
-	].map(
-		([
-			event,
-			suffix,
-			when,
-		]) => `CREATE TRIGGER IF NOT EXISTS ${entries}_capture_${suffix} AFTER ${event} ON ${entries} WHEN ${when} BEGIN
-				UPDATE ${entries} SET ${CAPTURE_HEADING}=CASE WHEN ${candidate} THEN ${project} END
-				WHERE session_id=NEW.session_id AND seq=NEW.seq; END`,
-	);
+		`CREATE TRIGGER IF NOT EXISTS ${triggers.insert} AFTER INSERT ON ${entries} WHEN ${candidate} BEGIN
+				INSERT INTO ${table} (session_id, seq, chunks, heading)
+				SELECT NEW.session_id, NEW.seq, NEW.chunks, h FROM (SELECT ${project} AS h) WHERE h IS NOT NULL
+				ON CONFLICT(session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading; END`,
+		`CREATE TRIGGER IF NOT EXISTS ${triggers.update} AFTER UPDATE OF session_id, seq, entry_json, chunks ON ${entries} BEGIN
+				DELETE FROM ${table} WHERE (session_id=OLD.session_id AND seq=OLD.seq) OR (session_id=NEW.session_id AND seq=NEW.seq);
+				INSERT INTO ${table} (session_id, seq, chunks, heading)
+				SELECT NEW.session_id, NEW.seq, NEW.chunks, h FROM (SELECT CASE WHEN ${candidate} THEN ${project} END AS h) WHERE h IS NOT NULL
+				ON CONFLICT(session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading; END`,
+		`CREATE TRIGGER IF NOT EXISTS ${triggers.delete} AFTER DELETE ON ${entries} BEGIN
+				DELETE FROM ${table} WHERE session_id=OLD.session_id AND seq=OLD.seq; END`,
+	];
 }
 
-function backfill(dialect: StorageDialect, entries: string): string {
-	// Snapshots are normally the only old rows that match the second condition. The first-key fast path leaves other
-	// entries alone; an older or externally inserted entry not written in Atomic's key order is checked as JSON.
-	const body = "entry_json";
-	const kind = dialect.jsonText(dialect.name === "sqlite" ? `(${sqliteHeadingBody(body)})` : body, "type");
-	return `UPDATE ${entries} SET ${CAPTURE_HEADING}=${heading(dialect, body, "chunks")}
-		WHERE ${CAPTURE_HEADING} IS NULL AND CASE WHEN ${couldBeCapture(body)} THEN ${kind}='worktree_snapshot' ELSE false END`;
+function postgresTriggers(dialect: StorageDialect, entries: string, table: string): string {
+	const triggers = captureTriggers(entries);
+	const project = captureHeadingProjection(dialect, "NEW.entry_json", "NEW.chunks");
+	const candidate = couldBeCaptureHeading("NEW.entry_json");
+	return `CREATE OR REPLACE FUNCTION ${triggers.insert}_fn() RETURNS trigger LANGUAGE plpgsql AS $capture$
+		DECLARE h TEXT;
+		BEGIN
+			h := ${project};
+			IF h IS NOT NULL THEN
+				INSERT INTO ${table} (session_id, seq, chunks, heading) VALUES (NEW.session_id, NEW.seq, NEW.chunks, h)
+				ON CONFLICT (session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading;
+			END IF;
+			RETURN NULL;
+		END $capture$;
+		CREATE OR REPLACE TRIGGER ${triggers.insert}
+			AFTER INSERT ON ${entries} FOR EACH ROW WHEN (${candidate})
+			EXECUTE FUNCTION ${triggers.insert}_fn();
+		CREATE OR REPLACE FUNCTION ${triggers.update}_fn() RETURNS trigger LANGUAGE plpgsql AS $capture$
+		DECLARE h TEXT;
+		BEGIN
+			DELETE FROM ${table} WHERE (session_id=OLD.session_id AND seq=OLD.seq) OR (session_id=NEW.session_id AND seq=NEW.seq);
+			IF ${candidate} THEN
+				h := ${project};
+				IF h IS NOT NULL THEN
+					INSERT INTO ${table} (session_id, seq, chunks, heading) VALUES (NEW.session_id, NEW.seq, NEW.chunks, h)
+					ON CONFLICT (session_id, seq) DO UPDATE SET chunks=excluded.chunks, heading=excluded.heading;
+				END IF;
+			END IF;
+			RETURN NULL;
+		END $capture$;
+		CREATE OR REPLACE TRIGGER ${triggers.update}
+			AFTER UPDATE OF session_id, seq, entry_json, chunks ON ${entries} FOR EACH ROW
+			EXECUTE FUNCTION ${triggers.update}_fn();
+		CREATE OR REPLACE FUNCTION ${triggers.delete}_fn() RETURNS trigger LANGUAGE plpgsql AS $capture$
+		BEGIN
+			DELETE FROM ${table} h USING old_rows o WHERE h.session_id=o.session_id AND h.seq=o.seq;
+			RETURN NULL;
+		END $capture$;
+		CREATE OR REPLACE TRIGGER ${triggers.delete}
+			AFTER DELETE ON ${entries} REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT
+			EXECUTE FUNCTION ${triggers.delete}_fn()`;
 }
 
-function createIndex(entries: string, concurrently = false): string {
-	return `CREATE INDEX ${concurrently ? "CONCURRENTLY " : ""}IF NOT EXISTS ${captureHeadingIndex(entries)}
-		ON ${entries} (session_id,seq) WHERE ${CAPTURE_HEADING} IS NOT NULL`;
+async function prepareCaptureTableAndTriggers(
+	tx: SqliteExecutor,
+	dialect: StorageDialect,
+	entries: string,
+	table: string,
+): Promise<void> {
+	await tx.exec(createTableSql(dialect, table));
+	if (dialect.name === "postgres") await tx.exec(postgresTriggers(dialect, entries, table));
+	else for (const statement of sqliteTriggers(dialect, entries, table)) await tx.exec(statement);
 }
 
-/** Empty PostgreSQL tables install their heading index in the existing sessions schema transaction. */
+/** Empty PostgreSQL tables install the capture headings sidecar and triggers in the initial sessions transaction. */
 export async function createPostgresCaptureHeadings(
 	tx: SqliteExecutor,
 	dialect: StorageDialect,
@@ -112,9 +179,9 @@ export async function createPostgresCaptureHeadings(
 	prefix?: string,
 ): Promise<void> {
 	const { ledger, domain, revision } = captureSchema(prefix);
-	await tx.exec(`ALTER TABLE ${entries} ADD COLUMN IF NOT EXISTS ${CAPTURE_HEADING} TEXT;
-		${postgresTrigger(dialect, entries)};
-		${createIndex(entries)};`);
+	const table = captureHeadingTable(prefix);
+	await tx.exec(`${createTableSql(dialect, table)};
+		${postgresTriggers(dialect, entries, table)};`);
 	await tx.run(
 		`INSERT INTO ${ledger} (domain,version,applied_at) VALUES (?,?,${dialect.nowMs}) ON CONFLICT DO NOTHING`,
 		`schema:${domain}`,
@@ -122,30 +189,30 @@ export async function createPostgresCaptureHeadings(
 	);
 }
 
-async function postgresState(database: SqliteDatabase, entries: string) {
-	const found = await database.get<
-		SqliteRow & { owned: boolean | number; bytes: number; valid: boolean | number | null; building: boolean | number }
-	>(
-		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned,
-			pg_catalog.pg_total_relation_size(c.oid) AS bytes,
-			(SELECT x.indisvalid FROM pg_catalog.pg_index x JOIN pg_catalog.pg_class i ON i.oid=x.indexrelid
-				WHERE x.indrelid=c.oid AND i.relname=?) AS valid,
-			EXISTS (SELECT 1 FROM pg_catalog.pg_stat_progress_create_index p WHERE p.relid=c.oid) AS building
+async function postgresEntriesOwned(database: SqliteDatabase, entries: string): Promise<boolean> {
+	const row = await database.get<SqliteRow & { owned: boolean | number }>(
+		`SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'USAGE') AS owned
 		FROM pg_catalog.pg_class c WHERE c.relnamespace=current_schema()::regnamespace AND c.relname=?`,
-		dialectOf(database).identifier(captureHeadingIndex(entries)),
 		dialectOf(database).identifier(entries),
 	);
-	if (found === undefined) return undefined;
-	const truth = (value: boolean | number) => value === true || Number(value) === 1;
-	return {
-		owned: truth(found.owned),
-		bytes: Number(found.bytes),
-		building: truth(found.building),
-		valid: found.valid === null ? null : truth(found.valid),
-	};
+	return row !== undefined && (row.owned === true || Number(row.owned) === 1);
 }
 
-/** New stores and SQLite build on open. A large PostgreSQL store or a runtime role keeps the slow compatible read. */
+async function postgresObjectsPresent(
+	executor: SqliteExecutor,
+	dialect: StorageDialect,
+	entries: string,
+	table: string,
+): Promise<boolean> {
+	const triggers = captureTriggers(entries);
+	const probe = dialect.schemaObjects([table, triggers.insert, triggers.update, triggers.delete]);
+	return (await executor.all(probe.sql, ...probe.params)).length === 4;
+}
+
+/**
+ * Installs only the O(1) capture-heading table and triggers on open, never altering or scanning `session_entries`.
+ * Pre-existing rows are populated lazily per session on first read, or in bounded batches by `atomic storage migrate`.
+ */
 export async function ensureCaptureHeadings(
 	database: SqliteDatabase,
 	entries: string,
@@ -153,92 +220,317 @@ export async function ensureCaptureHeadings(
 ): Promise<boolean> {
 	const schema = captureSchema(prefix);
 	const dialect = dialectOf(database);
-	const sqliteReady = (catalog: StorageSchemaCatalog | undefined) =>
-		catalog?.hasColumn(entries, CAPTURE_HEADING) === true &&
-		catalog.hasObject(captureHeadingIndex(entries)) &&
-		catalog.hasObject(`${entries}_capture_insert`) &&
-		catalog.hasObject(`${entries}_capture_update`);
-	// SQLite publishes the projection, its backfill, and its index together. The open's existing catalog suffices;
-	// reading schema stamps separately would add a connection-thread wait to every resume of a current store.
-	const ready =
-		dialect.name === "sqlite"
-			? sqliteReady(await schemaCatalogOf(database, schema.ledger))
-			: await storageSchemaCurrent(database, schema);
-	if (ready) return true;
+	const table = captureHeadingTable(prefix);
+	const catalog = await schemaCatalogOf(database, schema.ledger);
+	if (captureHeadingsReady(catalog, entries, table)) return true;
+	if (
+		dialect.name === "postgres" &&
+		catalog === undefined &&
+		(await postgresObjectsPresent(database, dialect, entries, table))
+	)
+		return true;
 	if (database.readOnly === true) return false;
-	if (dialect.name === "postgres") {
-		const found = await postgresState(database, entries);
-		if (!found?.owned || Number(found.bytes) > OPEN_BUILD_BYTES || found.valid === false || found.building)
-			return false;
-	}
-	const setup = async (tx: SqliteExecutor) => {
-		await prepareHeadings(tx, dialect, entries);
-		await tx.exec(backfill(dialect, entries));
-		await tx.exec(createIndex(entries));
-	};
 	if (dialect.name === "sqlite") {
-		// SQLite detects the committed column, triggers and index from the catalog, so it needs no version stamp.
+		const setup = (tx: SqliteExecutor) => prepareCaptureTableAndTriggers(tx, dialect, entries, table);
 		if (
 			!queueSqliteSchemaSetup(database, schema.ledger, {
-				done: (catalog) => sqliteReady(catalog),
+				done: (fresh) => captureHeadingsReady(fresh, entries, table),
 				run(ctx) {
-					if (sqliteReady(ctx.catalog)) return;
-					if (!ctx.hasColumn(entries, CAPTURE_HEADING)) {
-						ctx.enqueue(`ALTER TABLE ${entries} ADD COLUMN ${CAPTURE_HEADING} TEXT`);
-						ctx.noteColumnAdded(entries, CAPTURE_HEADING);
+					if (captureHeadingsReady(ctx.catalog, entries, table)) return;
+					if (!ctx.tableExisted(table)) {
+						ctx.enqueue(createTableSql(dialect, table));
+						ctx.noteTableCreated(table);
 					}
-					for (const statement of sqliteTriggers(dialect, entries)) ctx.enqueue(statement);
-					// Only skip a known-empty table. The session upgrade may also mark an existing table as created.
-					if (ctx.catalog === undefined || ctx.tableExisted(entries)) ctx.enqueue(backfill(dialect, entries));
-					ctx.enqueue(createIndex(entries));
+					for (const statement of sqliteTriggers(dialect, entries, table)) ctx.enqueue(statement);
 				},
 			})
 		)
 			await database.transaction(setup, { retryTransientFailures: true });
-	} else {
-		if (ensureStorageSchemaOnce === undefined) return false;
-		await ensureStorageSchemaOnce(database, schema, setup);
+		return true;
 	}
-	return true;
+	if (!(await postgresEntriesOwned(database, entries))) return false;
+	try {
+		await database.transaction(
+			async (tx) => {
+				if (await postgresObjectsPresent(tx, dialect, entries, table)) return;
+				const run = () => prepareCaptureTableAndTriggers(tx, dialect, entries, table);
+				if (withShortSchemaLockWaits !== undefined) await withShortSchemaLockWaits(tx, dialect, run);
+				else await run();
+			},
+			{ retryTransientFailures: true, concurrency: { kind: "serial", domain: schema.ledger } },
+		);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
-/** Explicit PostgreSQL migration: put the trigger in place before backfill, then build the index without blocking writes. */
+/**
+ * Lazily populates capture headings for a bounded list of `(owner, seq)` keys missed during a read.
+ * Re-reads fresh rows inside the write transaction (`FOR SHARE OF e SKIP LOCKED` on PostgreSQL) so concurrent deletes
+ * or updates can never leave stale or resurrected rows.
+ */
+export async function backfillCaptureHeadingKeys(
+	database: SqliteDatabase,
+	entries: string,
+	table: string,
+	keys: readonly CaptureHeadingKey[],
+): Promise<void> {
+	if (keys.length === 0 || database.readOnly === true) return;
+	const unique = new Map<string, CaptureHeadingKey>();
+	for (const key of keys) unique.set(`${key.owner}\0${key.seq}`, key);
+	const sorted = [...unique.values()].sort((a, b) => (a.owner < b.owner ? -1 : a.owner > b.owner ? 1 : a.seq - b.seq));
+	const dialect = dialectOf(database);
+	const pg = dialect.name === "postgres";
+	const candidate = couldBeCaptureHeading("e.entry_json");
+	const project = captureHeadingProjection(dialect, "e.entry_json", "e.chunks");
+	const requested = pg
+		? "SELECT owner, seq FROM jsonb_to_recordset((?)::jsonb) AS r(owner TEXT, seq BIGINT)"
+		: `SELECT ${dialect.jsonText("value", "owner")} AS owner, CAST(${dialect.jsonText("value", "seq")} AS INTEGER) AS seq FROM ${dialect.jsonValues("?")}`;
+	const sql = pg
+		? `WITH keys AS (${requested}),
+			locked AS MATERIALIZED (
+				SELECT e.session_id, e.seq, e.chunks,
+					CASE WHEN ${candidate} THEN ${project} END AS heading
+				FROM keys k
+				JOIN ${entries} e ON e.session_id = k.owner AND e.seq = k.seq
+				ORDER BY e.session_id, e.seq
+				FOR SHARE OF e SKIP LOCKED
+			)
+			INSERT INTO ${table} (session_id, seq, chunks, heading)
+			SELECT session_id, seq, CASE WHEN heading IS NOT NULL THEN chunks ELSE 0 END, heading
+			FROM locked
+			ON CONFLICT (session_id, seq) DO NOTHING`
+		: `WITH keys AS (${requested}),
+			projected AS (
+				SELECT e.session_id, e.seq, e.chunks,
+					CASE WHEN ${candidate} THEN ${project} END AS heading
+				FROM keys k
+				JOIN ${entries} e ON e.session_id = k.owner AND e.seq = k.seq
+				WHERE json_valid(e.entry_json)
+			)
+			INSERT INTO ${table} (session_id, seq, chunks, heading)
+			SELECT session_id, seq, CASE WHEN heading IS NOT NULL THEN chunks ELSE 0 END, heading
+			FROM projected WHERE true
+			ON CONFLICT (session_id, seq) DO NOTHING`;
+	for (let start = 0; start < sorted.length; start += BACKFILL_KEY_BATCH) {
+		const batch = sorted.slice(start, start + BACKFILL_KEY_BATCH);
+		await database.transaction((tx) => tx.run(sql, JSON.stringify(batch)), { retryTransientFailures: true });
+	}
+}
+
+async function hasCompleteSnapshotRefs(
+	database: SqliteDatabase,
+	dialect: StorageDialect,
+	entries: string,
+	prefix: string | undefined,
+): Promise<string | undefined> {
+	const validated = validateStoragePrefix(prefix);
+	const sessionRefs = `${validated}snapshot_session_refs`;
+	const sources = `${validated}snapshot_index_sources`;
+	const probe = dialect.schemaObjects([sessionRefs, sources, `${entries}_snapshot_refs`]);
+	if ((await database.all(probe.sql, ...probe.params)).length !== 3) return undefined;
+	const complete = await database.get<SqliteRow & { ready: number | boolean }>(
+		`SELECT 1 AS ready FROM ${sources}
+		WHERE source = 'session-entries' AND watermark >= 0 AND backfilled_through >= watermark
+			AND NOT EXISTS (SELECT 1 FROM ${sources} WHERE source = 'session-entries@rebuild')`,
+	);
+	return complete === undefined ? undefined : sessionRefs;
+}
+
+async function backfillSingleRowLocked(
+	database: SqliteDatabase,
+	dialect: StorageDialect,
+	entries: string,
+	table: string,
+	owner: string,
+	seq: number,
+): Promise<void> {
+	const candidate = couldBeCaptureHeading("e.entry_json");
+	const project = captureHeadingProjection(dialect, "e.entry_json", "e.chunks");
+	await database.transaction(
+		(tx) =>
+			tx.run(
+				`WITH locked AS MATERIALIZED (
+					SELECT e.session_id, e.seq, e.chunks,
+						CASE WHEN ${candidate} THEN ${project} END AS heading
+					FROM ${entries} e
+					WHERE e.session_id = ? AND e.seq = ?
+					FOR SHARE OF e
+				)
+				INSERT INTO ${table} (session_id, seq, chunks, heading)
+				SELECT session_id, seq, chunks, heading
+				FROM locked
+				WHERE heading IS NOT NULL
+				ON CONFLICT (session_id, seq) DO NOTHING`,
+				owner,
+				seq,
+			),
+		{ retryTransientFailures: true },
+	);
+}
+
+/**
+ * Explicit migration (`atomic storage migrate`): installs the O(1) sidecar table and triggers, then backfills
+ * pre-existing snapshots in bounded, crash-resumable batches without altering or scanning indexes on `session_entries`.
+ * Uses `snapshot_session_refs` when its index is complete so large databases skip non-snapshot entries altogether.
+ */
 export async function migrateCaptureHeadings(
 	database: SqliteDatabase,
 	entries: string,
 	prefix?: string,
 ): Promise<boolean> {
+	if (database.readOnly === true) return false;
 	const dialect = dialectOf(database);
-	if (dialect.name !== "postgres" || ensureStorageSchemaOnce === undefined) return false;
-	let found = await postgresState(database, entries);
-	if (!found?.owned) return false;
+	const pg = dialect.name === "postgres";
+	const table = captureHeadingTable(prefix);
 	const schema = captureSchema(prefix);
-	const ledger = dialect.tableExists(schema.ledger);
-	if (await database.get(ledger.sql, ...ledger.params)) {
-		const recorded = await database.get(
-			`SELECT 1 AS ready FROM ${schema.ledger} WHERE domain=? AND version>=?`,
-			`schema:${schema.domain}`,
-			schema.revision,
-		);
-		if (recorded && found.valid === true) return false;
-	}
-	await ensureStorageSchemaOnce(database, { ...schema, domain: `${schema.domain}-trigger` }, (tx) =>
-		prepareHeadings(tx, dialect, entries),
-	);
-	await database.exec(backfill(dialect, entries));
-	// The adapter opens each statement below outside a transaction. Never record the step for an unfinished index.
-	for (;;) {
-		found = await postgresState(database, entries);
-		if (!found?.owned) return false;
-		if (found.valid === true) break;
-		if (found.building) {
-			await new Promise((resolve) => setTimeout(resolve, 500));
-			continue;
+	if (pg) {
+		if (ensureStorageSchemaOnce === undefined) return false;
+		if (!(await postgresEntriesOwned(database, entries))) return false;
+		const ledgerProbe = dialect.tableExists(schema.ledger);
+		if (await database.get(ledgerProbe.sql, ...ledgerProbe.params)) {
+			const recorded = await database.get(
+				`SELECT 1 AS ready FROM ${schema.ledger} WHERE domain=? AND version>=?`,
+				`schema:${schema.domain}`,
+				schema.revision,
+			);
+			if (recorded && (await postgresObjectsPresent(database, dialect, entries, table))) return false;
 		}
-		if (found.valid === false)
-			await database.exec(`DROP INDEX CONCURRENTLY IF EXISTS ${captureHeadingIndex(entries)}`);
-		await database.exec(createIndex(entries, true));
+		await database.transaction(
+			async (tx) => {
+				if (await postgresObjectsPresent(tx, dialect, entries, table)) return;
+				const run = () => prepareCaptureTableAndTriggers(tx, dialect, entries, table);
+				if (withShortSchemaLockWaits !== undefined) await withShortSchemaLockWaits(tx, dialect, run);
+				else await run();
+			},
+			{ retryTransientFailures: true, concurrency: { kind: "serial", domain: schema.ledger } },
+		);
+	} else {
+		const entriesProbe = dialect.tableExists(entries);
+		if ((await database.get(entriesProbe.sql, ...entriesProbe.params)) === undefined) return false;
+		const triggers = captureTriggers(entries);
+		const probe = dialect.schemaObjects([table, triggers.insert, triggers.update, triggers.delete]);
+		const existed = (await database.all(probe.sql, ...probe.params)).length === 4;
+		if (!existed) {
+			await database.transaction((tx) => prepareCaptureTableAndTriggers(tx, dialect, entries, table), {
+				retryTransientFailures: true,
+			});
+		}
+		const refsTable = await hasCompleteSnapshotRefs(database, dialect, entries, prefix);
+		const inserted = await runBatchedMigrate(database, dialect, entries, table, refsTable);
+		return !existed || inserted > 0;
 	}
-	await ensureStorageSchemaOnce(database, schema, async () => {});
+	const refsTable = await hasCompleteSnapshotRefs(database, dialect, entries, prefix);
+	await runBatchedMigrate(database, dialect, entries, table, refsTable);
+	await ensureStorageSchemaOnce!(database, schema, async () => {});
 	return true;
+}
+
+async function runBatchedMigrate(
+	database: SqliteDatabase,
+	dialect: StorageDialect,
+	entries: string,
+	table: string,
+	refsTable: string | undefined,
+): Promise<number> {
+	const pg = dialect.name === "postgres";
+	const candidate = couldBeCaptureHeading("e.entry_json");
+	const project = captureHeadingProjection(dialect, "e.entry_json", "e.chunks");
+	const source = refsTable ?? entries;
+	const batchSize = refsTable !== undefined ? MIGRATE_REF_BATCH : MIGRATE_ENTRY_BATCH;
+	let cursor: { sessionId: string; seq: number } | undefined;
+	let totalInserted = 0;
+	const skipped: CaptureHeadingKey[] = [];
+	for (;;) {
+		const page = await database.all<SqliteRow & { session_id: string; seq: number | bigint }>(
+			cursor === undefined
+				? `SELECT session_id, seq FROM ${source} ORDER BY session_id, seq LIMIT ?`
+				: `SELECT session_id, seq FROM ${source} WHERE (session_id, seq) > (?, ?) ORDER BY session_id, seq LIMIT ?`,
+			...(cursor === undefined ? [batchSize] : [cursor.sessionId, cursor.seq, batchSize]),
+		);
+		if (page.length === 0) break;
+		const last = page.at(-1)!;
+		const first = page[0]!;
+		const rangeParams = [String(first.session_id), Number(first.seq), String(last.session_id), Number(last.seq)];
+		if (pg) {
+			const keysJson = JSON.stringify(page.map((row) => ({ owner: String(row.session_id), seq: Number(row.seq) })));
+			const batchRows = await database.transaction(
+				(tx) =>
+					tx.all<SqliteRow & { kind: number; session_id: string; seq: number | bigint }>(
+						`WITH batch AS (
+							SELECT owner, seq FROM jsonb_to_recordset((?)::jsonb) AS r(owner TEXT, seq BIGINT)
+						),
+						missing AS MATERIALIZED (
+							SELECT b.owner, b.seq FROM batch b
+							WHERE NOT EXISTS (SELECT 1 FROM ${table} h WHERE h.session_id = b.owner AND h.seq = b.seq)
+						),
+						locked AS MATERIALIZED (
+							SELECT e.session_id, e.seq, e.chunks,
+								CASE WHEN ${candidate} THEN ${project} END AS heading
+							FROM missing m
+							JOIN ${entries} e ON e.session_id = m.owner AND e.seq = m.seq
+							ORDER BY e.session_id, e.seq
+							FOR SHARE OF e SKIP LOCKED
+						),
+						ins AS (
+							INSERT INTO ${table} (session_id, seq, chunks, heading)
+							SELECT session_id, seq, chunks, heading FROM locked WHERE heading IS NOT NULL
+							ON CONFLICT (session_id, seq) DO NOTHING
+							RETURNING session_id, seq
+						)
+						SELECT 0 AS kind, session_id, seq FROM ins
+						UNION ALL
+						SELECT 1 AS kind, e.session_id, e.seq
+						FROM missing m
+						JOIN ${entries} e ON e.session_id = m.owner AND e.seq = m.seq
+						WHERE NOT EXISTS (SELECT 1 FROM locked l WHERE l.session_id = m.owner AND l.seq = m.seq)
+							AND ${candidate}`,
+						keysJson,
+					),
+				{ retryTransientFailures: true },
+			);
+			for (const row of batchRows) {
+				if (Number(row.kind) === 0) totalInserted += 1;
+				else skipped.push({ owner: String(row.session_id), seq: Number(row.seq) });
+			}
+		} else {
+			const res = await database.transaction(
+				(tx) =>
+					tx.run(
+						refsTable !== undefined
+							? `INSERT INTO ${table} (session_id, seq, chunks, heading)
+								SELECT session_id, seq, chunks, heading FROM (
+									SELECT e.session_id, e.seq, e.chunks, ${project} AS heading
+									FROM ${refsTable} r
+									JOIN ${entries} e ON e.session_id = r.session_id AND e.seq = r.seq
+									WHERE (r.session_id, r.seq) >= (?, ?) AND (r.session_id, r.seq) <= (?, ?)
+										AND NOT EXISTS (SELECT 1 FROM ${table} h WHERE h.session_id = e.session_id AND h.seq = e.seq)
+										AND json_valid(e.entry_json) AND ${candidate}
+								) WHERE heading IS NOT NULL
+								ON CONFLICT (session_id, seq) DO NOTHING`
+							: `INSERT INTO ${table} (session_id, seq, chunks, heading)
+								SELECT session_id, seq, chunks, heading FROM (
+									SELECT e.session_id, e.seq, e.chunks, ${project} AS heading
+									FROM ${entries} e
+									WHERE (e.session_id, e.seq) >= (?, ?) AND (e.session_id, e.seq) <= (?, ?)
+										AND NOT EXISTS (SELECT 1 FROM ${table} h WHERE h.session_id = e.session_id AND h.seq = e.seq)
+										AND json_valid(e.entry_json) AND ${candidate}
+								) WHERE heading IS NOT NULL
+								ON CONFLICT (session_id, seq) DO NOTHING`,
+						...rangeParams,
+					),
+				{ retryTransientFailures: true },
+			);
+			totalInserted += res.changes;
+		}
+		cursor = { sessionId: String(last.session_id), seq: Number(last.seq) };
+		if (page.length < batchSize) break;
+	}
+	if (pg && skipped.length > 0) {
+		for (const key of skipped) {
+			await backfillSingleRowLocked(database, dialect, entries, table, key.owner, key.seq);
+		}
+	}
+	return totalInserted;
 }

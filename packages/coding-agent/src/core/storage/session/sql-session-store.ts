@@ -117,13 +117,7 @@ import {
 } from "./session-summary.js";
 import { sessionWriteTransaction } from "./session-transactions.js";
 import { sharedHistorySwitchHost } from "./shared-history-switch.js";
-import {
-	CAPTURE_HEADING,
-	captureHeadingIndex,
-	createPostgresCaptureHeadings,
-	ensureCaptureHeadings,
-	migrateCaptureHeadings,
-} from "./snapshot-capture-index.js";
+import * as captureHeadingsIndex from "./snapshot-capture-index.js";
 import { noteSnapshotGeneration, registerArchiveLoad } from "./snapshot-generation.ts";
 import { type SqlSessionChatRecords, sqlChatRecords } from "./sql-chat-records.js";
 import { dropStoredNotes, storedEntryNotes, storedRows } from "./stored-entries.js";
@@ -844,6 +838,7 @@ export class SqlSessionStore implements SessionStore {
 	private readonly entryByteLength: (expression: string) => string;
 	private chunkRowids?: boolean;
 	private captureHeadings = false;
+	private captureHeadingsTable?: string;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string | undefined; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -949,7 +944,7 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	static buildCaptureHeadingIndex(database: SqliteDatabase, prefix?: string): Promise<boolean> {
-		return migrateCaptureHeadings(
+		return captureHeadingsIndex.migrateCaptureHeadings(
 			database,
 			renderStorageIdentifiers("sessions", SESSION_TABLES, prefix).entries,
 			prefix,
@@ -1090,7 +1085,7 @@ export class SqlSessionStore implements SessionStore {
 				[],
 			);
 			if (createdShared && dialect.name === "postgres")
-				await createPostgresCaptureHeadings(tx, dialect, tables.entries, options.prefix);
+				await captureHeadingsIndex.createPostgresCaptureHeadings(tx, dialect, tables.entries, options.prefix);
 		};
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
 		const ledger = storageMigrationTable(options.prefix);
@@ -1291,7 +1286,8 @@ export class SqlSessionStore implements SessionStore {
 		let catalog: Awaited<ReturnType<typeof schemaCatalogOf>>;
 		let staged: Promise<boolean>;
 		const sqliteCaptureHeadings =
-			dialect.name === "sqlite" && (await ensureCaptureHeadings(database, tables.entries, options.prefix));
+			dialect.name === "sqlite" &&
+			(await captureHeadingsIndex.ensureCaptureHeadings(database, tables.entries, options.prefix));
 		if (batchedSqliteSetup) {
 			// Queue snapshot tables, snapshot index triggers and search tables into the same SQLite write transaction as
 			// sessions, then commit them all together before inspecting outcomes or returning the store (#6709).
@@ -1404,10 +1400,15 @@ export class SqlSessionStore implements SessionStore {
 			appendsThroughFunction ? appendFunction : undefined,
 		);
 		store.openMarkers = markers;
+		store.captureHeadingsTable = captureHeadingsIndex.captureHeadingTable?.(options.prefix);
 		store.captureHeadings =
-			dialect.name === "postgres"
-				? createdShared || (await ensureCaptureHeadings(database, tables.entries, options.prefix))
-				: sqliteCaptureHeadings;
+			store.captureHeadingsTable !== undefined &&
+			captureHeadingsIndex.captureHeadingProjection !== undefined &&
+			captureHeadingsIndex.couldBeCaptureHeading !== undefined &&
+			(dialect.name === "postgres"
+				? createdShared ||
+					(await captureHeadingsIndex.ensureCaptureHeadings(database, tables.entries, options.prefix))
+				: sqliteCaptureHeadings);
 		// The switch is one way: what the open found or made holds for every later transaction.
 		if (shared) store.noteSchemaVersion(SESSION_SCHEMA_VERSION_SHARED_HISTORY);
 		if (await staged) await store.cleanupForkStaging();
@@ -4144,11 +4145,82 @@ $grant$`);
 		readonly cwd: string;
 		readonly includeInternal?: boolean;
 	}): Promise<SessionSummary | undefined> {
+		this.assertOpen();
+		if (query.cwd.includes("\0")) throw new StorageInvalidTextError(0);
+		const scope = await this.scopeOf(query, false, true);
+		if (scope === undefined) return undefined;
+		const order = this.dialect.rowOrder();
+		const pg = this.dialect.name === "postgres";
+		const iso = "####-##-##T##:##:##.###Z".replaceAll("#", "[0-9]");
+		const shape = pg ? `modified_at ~ '^${iso.replace(".", "[.]")}$'` : `modified_at GLOB '${iso}'`;
+		const month = "substr(modified_at,6,2)";
+		const canonical = `${shape} AND ${month} BETWEEN '01' AND '12'
+			AND substr(modified_at,9,2) BETWEEN '01' AND CASE WHEN ${month}='02' THEN '28'
+				WHEN ${month} IN ('04','06','09','11') THEN '30' ELSE '31' END
+			AND substr(modified_at,12,2) <= '23' AND substr(modified_at,15,2) <= '59' AND substr(modified_at,18,2) <= '59'`;
+		for (;;) {
+			const seen = this.sharedHistorySeen;
+			const texts = (session: string) =>
+				forkViewOf(
+					{ segments: seen ? this.forkTables.forkSegments : undefined, dialect: this.dialect },
+					{ table: this.tables.searchTexts, columns: ["text_json"] },
+					session,
+				);
+			const row = await this.database.get<
+				SummaryRow & {
+					canonical_all: number;
+					search_texts_json: string | null;
+					schema_version: number | null;
+				}
+			>(
+				`WITH matched AS MATERIALIZED (
+					SELECT ${LISTING_COLUMNS}, ${order} AS ord,
+						CASE WHEN ${canonical} THEN 1 ELSE 0 END AS is_canonical
+					FROM ${this.tables.sessions} AS s WHERE (${scope.where})
+				), ranked AS (
+					SELECT ${LISTING_COLUMNS}, ord,
+						min(is_canonical) OVER () AS canonical_all,
+						row_number() OVER (ORDER BY modified_at${this.dialect.byteOrderCollation} DESC, ord ASC) AS rank
+					FROM matched
+				), winner AS MATERIALIZED (
+					SELECT ${LISTING_COLUMNS}, canonical_all FROM ranked WHERE rank = 1
+				), sized AS MATERIALIZED (
+					SELECT ${LISTING_COLUMNS}, canonical_all,
+						CASE WHEN canonical_all = 1 THEN (SELECT COALESCE(sum(length(text_json) + 1) + 1, 2) FROM ${texts("winner.id")} AS t) ELSE 0 END AS search_size
+					FROM winner
+				) SELECT ${LISTING_COLUMNS}, canonical_all,
+					CASE WHEN canonical_all = 1 AND search_size <= ? THEN (
+						SELECT COALESCE('[' || ${this.dialect.orderedConcat("text_json", "','", "seq")} || ']', '[]')
+						FROM (SELECT text_json, seq FROM ${texts("sized.id")} AS t ORDER BY seq) AS ordered
+					) END AS search_texts_json,
+					(SELECT max(schema_version) FROM ${this.tables.meta}) AS schema_version
+				FROM sized`,
+				...scope.params,
+				SESSION_READ_PAGE_CHARS,
+			);
+			if (row === undefined) return undefined;
+			assertStorageSchemaVersion(
+				"sessions",
+				row.schema_version,
+				SESSION_SCHEMA_VERSION,
+				SESSION_SCHEMA_VERSION_UNCHUNKED,
+			);
+			this.noteSchemaVersion(row.schema_version);
+			if (this.sharedHistorySeen !== seen) continue;
+			if (Number(row.canonical_all) === 1) {
+				const summaryRow =
+					row.search_texts_json === null ? { ...row, search_texts_json: await this.readSearchTexts(row.id) } : row;
+				return summaryFromRow(summaryRow);
+			}
+			break;
+		}
 		let latest: SessionSummary | undefined;
-		for await (const summary of this.list(query)) {
+		for await (const summary of this.list({ ...query, withoutSearchText: true })) {
 			if (!latest || Date.parse(summary.modifiedAt) > Date.parse(latest.modifiedAt)) latest = summary;
 		}
-		return latest;
+		if (latest === undefined) return undefined;
+		const [hydrated] = await this.readSummaries("id = ?", [latest.id]);
+		return hydrated === undefined ? latest : summaryFromRow(hydrated);
 	}
 
 	async close(): Promise<void> {
@@ -5750,24 +5822,32 @@ $grant$`);
 				if (unfinished !== undefined) await Promise.all(unfinished);
 			}
 			const indexes = {
-				sql: `SELECT id,last_seq,summary_state FROM ${this.tables.sessions} WHERE ${inJsonList(dialect, "id")}`,
+				sql: `SELECT id,last_seq,summary_state,revision FROM ${this.tables.sessions} WHERE ${inJsonList(dialect, "id")}`,
 				params: [JSON.stringify(batch)],
 			};
+			const missedKeys: { owner: string; seq: number }[] = [];
 			await this.readTransaction(
 				batch[0]!,
 				async (tx) => {
+					missedKeys.length = 0;
 					for (const id of batch) result.set(id, null);
 					const cuts = new Map<string, SessionSnapshotCut>();
 					type Projected = SessionBranchSnapshotMetadata["entries"][number];
 					type Requested = { child: string; child_seq: number; owner: string; seq: number };
 					const projected = new Map<string, Projected[]>();
 					const groups: Requested[][] = [[]];
-					const rows = await tx.all<{ id: string; last_seq: number; summary_state: string }>(
+					const rows = await tx.all<{ id: string; last_seq: number; summary_state: string; revision: string }>(
 						indexes.sql,
 						...indexes.params,
 					);
-					for (const { id, last_seq, summary_state } of rows) {
-						const index = windowIndex(JSON.parse(summary_state) as StoredSummaryState, Number(last_seq));
+					for (const { id, last_seq, summary_state, revision } of rows) {
+						const lastSeq = Number(last_seq);
+						const remembered = this.resumeIndexes.get(id);
+						const index =
+							windowIndex(JSON.parse(summary_state) as StoredSummaryState, lastSeq) ??
+							(remembered?.revision === revision && isSessionResumeIndex(remembered.index, lastSeq)
+								? remembered.index
+								: undefined);
 						if (!index) {
 							result.delete(id);
 							continue;
@@ -5814,21 +5894,7 @@ $grant$`);
 						}
 					}
 					const pg = dialect.name === "postgres";
-					const indexed = this.captureHeadings;
-					const body = indexed ? CAPTURE_HEADING : "entry_json";
-					const entry = (key: string) => (pg ? `parsed.value->>'${key}'` : json(`e.${body}`, key));
-					const type = (key: string) =>
-						pg ? `jsonb_typeof(parsed.value->'${key}')` : dialect.jsonType(`e.${body}`, key);
-					const physical = "session_id=w.owner AND seq=w.seq";
-					const source = pg
-						? `${indexed ? "JOIN" : "LEFT JOIN"} LATERAL (SELECT chunks,${body} FROM ${this.tables.entries}
-							WHERE ${physical}${indexed ? ` AND ${body} IS NOT NULL` : ""} OFFSET 0) e ON true
-							CROSS JOIN LATERAL (SELECT ${postgresJsonb(`e.${body}`)} AS value OFFSET 0) parsed`
-						: `${indexed ? "JOIN" : "LEFT JOIN"} ${this.tables.entries} e${indexed ? ` INDEXED BY ${captureHeadingIndex(this.tables.entries)}` : ""}
-							ON e.session_id=w.owner AND e.seq=w.seq${indexed ? ` AND e.${body} IS NOT NULL` : ""}`;
-					const captured = indexed
-						? `CAST(${entry("capture")} AS ${dialect.types.int})`
-						: `CASE WHEN ${type("captureMs")} IS NOT NULL AND ${type("restore")} IS NULL AND ${type("unrestored")} IS NULL THEN 1 ELSE 0 END`;
+					const captureTable = this.captureHeadings ? this.captureHeadingsTable : undefined;
 					const request = pg
 						? `SELECT * FROM jsonb_to_recordset((?)::jsonb) AS r(child TEXT,child_seq BIGINT,owner TEXT,seq BIGINT)`
 						: `SELECT ${json("value", "child")} AS child,${json("value", "child_seq")} AS child_seq,
@@ -5842,27 +5908,95 @@ $grant$`);
 						AND substr(stamp,9,2) BETWEEN '01' AND CASE WHEN ${month}='02' THEN '28'
 							WHEN ${month} IN ('04','06','09','11') THEN '30' ELSE '31' END
 						AND substr(stamp,12,2) <= '23' AND substr(stamp,15,2) <= '59' AND substr(stamp,18,2) <= '59'`;
-					const statement = `WITH requested AS MATERIALIZED (${request}),
+					let statement: string;
+					if (captureTable !== undefined) {
+						const candidate = captureHeadingsIndex.couldBeCaptureHeading!("e.entry_json");
+						const project = captureHeadingsIndex.captureHeadingProjection!(dialect, "e.entry_json", "e.chunks");
+						const { int, text } = dialect.types;
+						statement = `WITH requested AS MATERIALIZED (${request}),
 					wanted AS MATERIALIZED (SELECT DISTINCT owner,seq FROM requested),
+					cached AS MATERIALIZED (
+						SELECT w.owner,w.seq,${captureTable}.chunks,${captureTable}.heading
+						FROM wanted w
+						JOIN ${captureTable} ON ${captureTable}.session_id=w.owner AND ${captureTable}.seq=w.seq
+					),
+					missing_keys AS MATERIALIZED (
+						SELECT w.owner,w.seq FROM wanted w
+						WHERE NOT EXISTS (SELECT 1 FROM ${captureTable} WHERE ${captureTable}.session_id=w.owner AND ${captureTable}.seq=w.seq)
+					),
+					missed AS MATERIALIZED (
+						SELECT m.owner,m.seq,
+							${
+								pg
+									? `e.chunks, CASE WHEN e.chunks IS NULL THEN NULL WHEN ${candidate} THEN ${project} END AS heading, CASE WHEN e.chunks IS NULL THEN 1 ELSE 0 END AS bad_entry`
+									: `CASE WHEN e.chunks IS NULL OR NOT json_valid(e.entry_json) THEN NULL ELSE e.chunks END AS chunks, CASE WHEN e.chunks IS NULL OR NOT json_valid(e.entry_json) THEN NULL WHEN ${candidate} THEN ${project} END AS heading, CASE WHEN e.chunks IS NULL OR NOT json_valid(e.entry_json) THEN 1 ELSE 0 END AS bad_entry`
+							}
+						FROM missing_keys m
+						LEFT JOIN ${this.tables.entries} e ON e.session_id=m.owner AND e.seq=m.seq
+					),
+					combined AS MATERIALIZED (
+						SELECT owner,seq,chunks,heading FROM cached WHERE heading IS NOT NULL
+						UNION ALL
+						SELECT owner,seq,chunks,heading FROM missed WHERE bad_entry=1 OR heading IS NOT NULL
+					),
 					metadata AS MATERIALIZED (
-						SELECT w.owner,w.seq,e.chunks,${entry("root")} AS root,${entry("snapshotId")} AS snapshot_id,
-							${entry("timestamp")} AS stamp,${entry("restore")} AS restore,
-							${captured} AS capture
-						FROM wanted w ${source}${indexed ? "" : ` WHERE e.chunks IS NULL OR ${entry("type")}='worktree_snapshot'`}
+						SELECT c.owner,c.seq,c.chunks,
+							${pg ? "parsed.value->>'root'" : json("c.heading", "root")} AS root,
+							${pg ? "parsed.value->>'snapshotId'" : json("c.heading", "snapshotId")} AS snapshot_id,
+							${pg ? "parsed.value->>'timestamp'" : json("c.heading", "timestamp")} AS stamp,
+							${pg ? "parsed.value->>'restore'" : json("c.heading", "restore")} AS restore,
+							COALESCE(CAST(${pg ? "parsed.value->>'capture'" : json("c.heading", "capture")} AS ${int}), 0) AS capture
+						FROM combined c${pg ? " LEFT JOIN LATERAL (SELECT CASE WHEN c.heading IS NULL THEN NULL ELSE (c.heading)::jsonb END AS value OFFSET 0) parsed ON true" : ""}
 					), ranked AS (
 						SELECT r.child,r.child_seq,m.*,
 							min(CASE WHEN capture=0 OR (${canonical}) THEN 1 ELSE 0 END) OVER (PARTITION BY r.child${dialect.byteOrderCollation}) AS canonical_stamps,
 							row_number() OVER (PARTITION BY r.child${dialect.byteOrderCollation},root${dialect.byteOrderCollation}
 								ORDER BY capture DESC,stamp${dialect.byteOrderCollation} DESC,r.child_seq DESC) AS rank
 						FROM requested r JOIN metadata m ON m.owner=r.owner AND m.seq=r.seq
-					) SELECT child,chunks,root,snapshot_id,stamp,restore,capture FROM ranked
+					)
+					SELECT 0 AS kind,child,child_seq,CAST(NULL AS ${text}) AS owner,CAST(NULL AS ${int}) AS seq,chunks,root,snapshot_id,stamp,restore,capture
+					FROM ranked
+					WHERE chunks IS NULL OR chunks<>0 OR restore IS NOT NULL OR (capture=1 AND (rank=1 OR canonical_stamps=0))
+					UNION ALL
+					SELECT 1 AS kind,CAST(NULL AS ${text}) AS child,CAST(NULL AS ${int}) AS child_seq,owner,seq,CAST(NULL AS ${int}) AS chunks,CAST(NULL AS ${text}) AS root,CAST(NULL AS ${text}) AS snapshot_id,CAST(NULL AS ${text}) AS stamp,CAST(NULL AS ${text}) AS restore,CAST(NULL AS ${int}) AS capture
+					FROM missed
+					WHERE bad_entry=0
+					ORDER BY kind,child,child_seq,owner,seq`;
+					} else {
+						const entry = (key: string) => (pg ? `parsed.value->>'${key}'` : json("e.entry_json", key));
+						const type = (key: string) =>
+							pg ? `jsonb_typeof(parsed.value->'${key}')` : dialect.jsonType("e.entry_json", key);
+						const source = pg
+							? `LEFT JOIN LATERAL (SELECT chunks,entry_json FROM ${this.tables.entries}
+								WHERE session_id=w.owner AND seq=w.seq OFFSET 0) e ON true
+								CROSS JOIN LATERAL (SELECT ${postgresJsonb("e.entry_json")} AS value OFFSET 0) parsed`
+							: `LEFT JOIN ${this.tables.entries} e ON e.session_id=w.owner AND e.seq=w.seq`;
+						const captured = `CASE WHEN ${type("captureMs")} IS NOT NULL AND ${type("restore")} IS NULL AND ${type("unrestored")} IS NULL THEN 1 ELSE 0 END`;
+						statement = `WITH requested AS MATERIALIZED (${request}),
+					wanted AS MATERIALIZED (SELECT DISTINCT owner,seq FROM requested),
+					metadata AS MATERIALIZED (
+						SELECT w.owner,w.seq,e.chunks,${entry("root")} AS root,${entry("snapshotId")} AS snapshot_id,
+							${entry("timestamp")} AS stamp,${entry("restore")} AS restore,
+							${captured} AS capture
+						FROM wanted w ${source} WHERE e.chunks IS NULL OR ${entry("type")}='worktree_snapshot'
+					), ranked AS (
+						SELECT r.child,r.child_seq,m.*,
+							min(CASE WHEN capture=0 OR (${canonical}) THEN 1 ELSE 0 END) OVER (PARTITION BY r.child${dialect.byteOrderCollation}) AS canonical_stamps,
+							row_number() OVER (PARTITION BY r.child${dialect.byteOrderCollation},root${dialect.byteOrderCollation}
+								ORDER BY capture DESC,stamp${dialect.byteOrderCollation} DESC,r.child_seq DESC) AS rank
+						FROM requested r JOIN metadata m ON m.owner=r.owner AND m.seq=r.seq
+					) SELECT 0 AS kind,child,chunks,root,snapshot_id,stamp,restore,capture FROM ranked
 					WHERE chunks IS NULL OR chunks<>0 OR restore IS NOT NULL OR (capture=1 AND (rank=1 OR canonical_stamps=0))
 					ORDER BY child,child_seq`;
+					}
 					for (const group of groups) {
 						if (group.length === 0) continue;
 						const page = await tx.all<
 							SqliteRow & {
-								child: string;
+								kind: number;
+								child: string | null;
+								owner?: string | null;
+								seq?: number | bigint | null;
 								root: string;
 								snapshot_id: string;
 								stamp: string;
@@ -5870,10 +6004,16 @@ $grant$`);
 							}
 						>(statement, JSON.stringify(group));
 						for (const row of page) {
+							if (Number(row.kind) === 1) {
+								if (row.owner != null && row.seq != null)
+									missedKeys.push({ owner: String(row.owner), seq: Number(row.seq) });
+								continue;
+							}
+							const child = row.child!;
 							// A missing row or a chunked snapshot needs the original reader, which also checks the full entry.
-							if (row.chunks === null || Number(row.chunks) !== 0) projected.delete(row.child);
+							if (row.chunks === null || Number(row.chunks) !== 0) projected.delete(child);
 							else
-								projected.get(row.child)?.push({
+								projected.get(child)?.push({
 									root: row.root,
 									snapshotId: row.snapshot_id,
 									timestamp: row.stamp,
@@ -5892,6 +6032,16 @@ $grant$`);
 				},
 				[indexes],
 			);
+			if (
+				missedKeys.length > 0 &&
+				this.captureHeadings &&
+				this.captureHeadingsTable !== undefined &&
+				this.database.readOnly !== true
+			) {
+				await captureHeadingsIndex
+					.backfillCaptureHeadingKeys?.(this.database, this.tables.entries, this.captureHeadingsTable, missedKeys)
+					.catch(() => {});
+			}
 		}
 		return result;
 	}
