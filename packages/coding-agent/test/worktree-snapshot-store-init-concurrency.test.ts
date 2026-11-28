@@ -9,6 +9,7 @@ import {
 	realpathSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -24,6 +25,7 @@ import { processStartTokenAsync } from "../src/core/process-start-token.js";
 import { MemorySnapshotBlobStore } from "../src/core/worktree-snapshot/blob-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
 import { isWorkspaceRestoreError } from "../src/core/worktree-snapshot/errors.js";
+import { withPublicationFence } from "../src/core/worktree-snapshot/publication-fence.js";
 import {
 	objectStorePath,
 	REPOSITORY_LOCK_REFUSED_MS,
@@ -261,6 +263,63 @@ test("an old holder's release does not remove a replacement lock directory (#680
 	await release();
 	assert.ok(existsSync(lockPath), "the old holder removed the replacement's lock");
 });
+
+test.each(["case", "symlink"] as const)(
+	"a live publication fence also covers a %s alias of the target (#6805)",
+	async (alias) => {
+		const originalParent = sandbox.path("parents");
+		const aliasedParent = sandbox.path("parents-alias");
+		const store = join(originalParent, "repo.git");
+		mkdirSync(store, { recursive: true });
+		const target = join(originalParent, "Destination");
+		let alternateStore = store;
+		let aliasPath = join(originalParent, "destination");
+		if (alias === "symlink") {
+			symlinkSync(originalParent, aliasedParent, process.platform === "win32" ? "junction" : "dir");
+			alternateStore = join(aliasedParent, "repo.git");
+			aliasPath = join(aliasedParent, "Destination");
+		}
+		let release!: () => void;
+		let held!: () => void;
+		const holding = new Promise<void>((resolve) => {
+			held = resolve;
+		});
+		const released = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const first = withPublicationFence(
+			store,
+			target,
+			"staging-first",
+			undefined,
+			() => {},
+			async (started) => {
+				await started(process.pid);
+				held();
+				await released;
+			},
+		);
+		const controller = new AbortController();
+		const waiting = new Error("waiting on the original publication");
+		try {
+			await Promise.race([holding, first]);
+			await assert.rejects(
+				withPublicationFence(
+					alternateStore,
+					aliasPath,
+					"staging-second",
+					controller.signal,
+					() => controller.abort(waiting),
+					async () => assert.fail("alias bypassed the existing fence"),
+				),
+				waiting,
+			);
+		} finally {
+			release();
+			await first;
+		}
+	},
+);
 
 describe("the shared store's cross-process lock and initialisation (#4951)", () => {
 	async function oneSnapshot() {

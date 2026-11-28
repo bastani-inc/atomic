@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -15,16 +15,23 @@ const MOVE_EXIT_WAIT_MS = 5_000;
 const MOVE_EXIT_POLL_MS = 50;
 
 interface PublicationFence {
-	readonly store: string;
+	readonly storeIdentity: string;
 	readonly staging: string;
 	/** Missing while Git is starting. A crash in that window leaves an ambiguous fence, not a free destination. */
 	readonly git?: ProcessRecord;
 }
 
-async function fencePath(storeDir: string, target: string): Promise<string> {
-	const physical = join(await canonicalizeWorktreePathAsync(dirname(target)), basename(target));
-	const key = sha256Hex(process.platform === "win32" ? physical.toLowerCase() : physical).slice(0, 24);
-	return join(storeDir, "restores", `.publication-${key}`);
+async function fencePath(target: string): Promise<string> {
+	// Put the fence in the physical parent (including on-disk case), not in a store chosen by the caller.
+	// The destination may not exist yet; conservatively join case and Unicode aliases of its basename.
+	const parent = await canonicalizeWorktreePathAsync(dirname(target));
+	const key = sha256Hex(basename(target).normalize("NFD").toUpperCase()).slice(0, 24);
+	return join(parent, `.atomic-publication-${key}`);
+}
+
+async function physicalStoreIdentity(store: string): Promise<string> {
+	const { dev, ino, birthtimeNs } = await stat(store, { bigint: true });
+	return `${dev}:${ino}:${birthtimeNs}`;
 }
 
 async function readFence(file: string): Promise<PublicationFence | undefined> {
@@ -40,7 +47,7 @@ async function readFence(file: string): Promise<PublicationFence | undefined> {
 	const record = value as Partial<PublicationFence>;
 	const git = record.git;
 	if (
-		typeof record.store !== "string" ||
+		typeof record.storeIdentity !== "string" ||
 		typeof record.staging !== "string" ||
 		(git !== undefined &&
 			(typeof git !== "object" ||
@@ -55,27 +62,21 @@ async function readFence(file: string): Promise<PublicationFence | undefined> {
 }
 
 async function mayStillMove(git: ProcessRecord | undefined): Promise<boolean> {
-	if (git === undefined || git.host !== hostname()) return true;
-	if (process.platform === "linux") {
-		// A killed orphan can remain as a zombie until its new parent reaps it. Signal 0 alone sees it as present.
-		const line = await readFile(`/proc/${git.pid}/stat`, "utf8").catch(() => "");
-		const state = line.slice(line.lastIndexOf(")") + 2, line.lastIndexOf(")") + 3);
-		if (state === "Z" || state === "X") return false;
-	}
-	return processMayRunAsync(git);
+	return git === undefined || processMayRunAsync(git);
 }
 
 /** Under the repository lock, don't sweep a staging worktree out from under its possible orphaned Git move. */
 export async function cleanInterruptedPublication<T>(
-	storeDir: string,
 	store: string,
 	target: string,
 	staging: string,
 	clean: (interrupted: boolean) => Promise<T>,
 ): Promise<T> {
-	const file = await fencePath(storeDir, target);
+	const file = await fencePath(target);
 	const record = await readFence(file);
-	if (record?.staging !== staging || record.store !== store) return clean(false);
+	if (record?.staging !== staging) return clean(false);
+	if (record.storeIdentity !== (await physicalStoreIdentity(store)))
+		throw new Error("the interrupted move's repository has changed");
 	if (await mayStillMove(record.git)) throw new Error("the interrupted Git worktree move may still be running");
 	const result = await clean(true);
 	await rm(file);
@@ -87,7 +88,6 @@ export async function cleanInterruptedPublication<T>(
  * admission. An orphan must be gone, not just signaled, before we remove a previous fence and publish to that path.
  */
 export async function withPublicationFence<T>(
-	storeDir: string,
 	store: string,
 	target: string,
 	staging: string,
@@ -95,7 +95,7 @@ export async function withPublicationFence<T>(
 	onWait: (message: string) => void,
 	action: (started: (pid: number) => Promise<void>) => Promise<T>,
 ): Promise<T> {
-	const file = await fencePath(storeDir, target);
+	const [file, storeIdentity] = await Promise.all([fencePath(target), physicalStoreIdentity(store)]);
 	const message = `Waiting for a previous Git worktree move into ${target} to stop`;
 	const blocked = (cause?: unknown) =>
 		new WorkspaceGitError(
@@ -113,7 +113,8 @@ export async function withPublicationFence<T>(
 	if (previous !== undefined) {
 		// Only the repository lock that published this fence may remove it. Another repository can
 		// compete for the same target, but cannot remove a replacement via a different lock.
-		if (previous.store !== store || previous.git === undefined || previous.git.host !== hostname()) throw blocked();
+		if (previous.storeIdentity !== storeIdentity || previous.git === undefined || previous.git.host !== hostname())
+			throw blocked();
 		const deadline = performance.now() + MOVE_EXIT_WAIT_MS;
 		let announced = false;
 		while (await mayStillMove(previous.git)) {
@@ -128,13 +129,13 @@ export async function withPublicationFence<T>(
 		await rm(file);
 	}
 	signal?.throwIfAborted();
-	await writeFile(file, JSON.stringify({ store, staging }), { flag: "wx", mode: 0o600 });
+	await writeFile(file, JSON.stringify({ storeIdentity, staging }), { flag: "wx", mode: 0o600 });
 	try {
 		return await action(async (pid) => {
 			const git: ProcessRecord = { host: hostname(), pid, started: await processStartTokenAsync(pid) };
 			const temporary = `${file}.${randomUUID()}.tmp`;
 			try {
-				await writeFile(temporary, JSON.stringify({ store, staging, git }), { flag: "wx", mode: 0o600 });
+				await writeFile(temporary, JSON.stringify({ storeIdentity, staging, git }), { flag: "wx", mode: 0o600 });
 				await renameWithRetry(temporary, file);
 			} finally {
 				await rm(temporary, { force: true }).catch(() => {});

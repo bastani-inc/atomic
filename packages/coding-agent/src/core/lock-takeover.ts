@@ -171,6 +171,12 @@ export function processMayRun(record: ProcessRecord, readStart = processStartTok
 export async function processMayRunAsync(record: ProcessRecord): Promise<boolean> {
 	if (record.host !== hostname()) return true;
 	if (!processAlive(record.pid)) return false;
+	if (process.platform === "linux") {
+		// The kernel still accepts signal 0 for an exited child that its parent hasn't reaped yet.
+		const line = await readFile(`/proc/${record.pid}/stat`, "utf8").catch(() => "");
+		const state = line[line.lastIndexOf(")") + 2];
+		if (state === "Z" || state === "X") return false;
+	}
 	if (record.started === undefined) return true;
 	// Do not use a cached Windows fallback answer for a previous process with the same PID.
 	const started = await processStartTokenAsync(record.pid, { fresh: true });

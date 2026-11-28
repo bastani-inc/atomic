@@ -942,7 +942,7 @@ async function sweepRestoreRecords(
 			if (!isRestoreRecord(record, storeDir, match[1]!)) throw new Error("Invalid restore crash record");
 			warningPath = record.staging;
 			await cleanUpRestore(record, null, signal, () =>
-				cleanInterruptedPublication(storeDir, record.store, record.target, record.staging, async (interrupted) => {
+				cleanInterruptedPublication(record.store, record.target, record.staging, async (interrupted) => {
 					if (interrupted && (await repairInterruptedMove(record, signal))) return [];
 					return cleanRestoreRecord(record, signal);
 				}),
@@ -2758,7 +2758,6 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 		await timeRestorePhase("publish", () =>
 			withRepositoryLock(store, snapshotId, signal, () =>
 				withPublicationFence(
-					storeDir,
 					store,
 					path,
 					staging,
