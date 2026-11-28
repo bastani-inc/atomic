@@ -440,7 +440,7 @@ describe("a collection a session schedules starts after a delay that holds neith
 		const { database, store, counted, reset } = await connection();
 		const orphans = await agedOrphans(store, database, 3);
 		reset();
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 		try {
 			const outcome = scheduleSnapshotCollection(store, settings, {
 				...silent,
