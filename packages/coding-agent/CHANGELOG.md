@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.10.17] - 2026-11-28
+
+Atomic opens large existing session databases without upfront migration stalls and speeds up continuing recent sessions.
+
+- **Instant startup on large session stores.** Atomic moves worktree snapshot capture headings into a dedicated `session_capture_headings` table populated lazily per session on demand instead of altering or scanning `session_entries` on startup, while `atomic storage migrate` backfills existing snapshots in bounded batches ([#6823](https://github.com/bastani-inc/atomic/pull/6823)).
+- **Faster session continuation and ID prefix lookup.** Continuing the most recent session (`atomic -c`) and resolving session ID prefixes (`--session`, `--fork`) skip loading search text for non-matching sessions ([#6823](https://github.com/bastani-inc/atomic/pull/6823)).
+
+### Fixed
+
+- Opening a large existing SQLite or PostgreSQL session store no longer stalls CLI startup by altering or scanning `session_entries` for worktree snapshot headings. Atomic now stores capture headings in a dedicated `session_capture_headings` table maintained by triggers, populates pre-existing sessions lazily on demand during resume, and lets `atomic storage migrate` backfill existing snapshots in bounded, crash-resumable batches ([#6823](https://github.com/bastani-inc/atomic/pull/6823)).
+- Continuing the most recent session (`atomic -c`) and resolving session ID prefixes (`--session`, `--fork`) skip loading search text for non-matching sessions ([#6823](https://github.com/bastani-inc/atomic/pull/6823)).
+
 ## [0.10.17-alpha.1] - 2026-11-28
 
 Atomic opens large existing session databases without upfront migration stalls and speeds up continuing recent sessions.
