@@ -31,6 +31,9 @@ export function runBatches(open: boolean, pty = false): readonly Batch[] {
 			// and stay resident once freed (CI saw a terminal-command run grow 52 MB with every buffer released).
 			MALLOC_ARENA_MAX: "2",
 			MALLOC_MMAP_THRESHOLD_: "131072",
+			// Darwin libmalloc caches freed large allocations, including the PTY output buffers. Turn off that cache
+			// in the fixture process so those freed pages don't count against the same live-output budget (#6815).
+			...(process.platform === "darwin" && pty ? { MallocLargeCache: "0" } : {}),
 			OWNERS: String(BATCHES),
 			COMMANDS: String(COMMANDS),
 			BYTES: String(BYTES),
