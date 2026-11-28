@@ -13,10 +13,11 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
@@ -111,9 +112,6 @@ vi.mock("../src/core/worktree-snapshot/shared-clock.ts", async (importOriginal) 
 	return {
 		...actual,
 		lockShared,
-		// Owner-aware reaping samples shared time directly. On Windows the native probe bypasses the fs mocks below.
-		sharedClockNow: (directory: string) =>
-			pollClock.enabled && pollClock.filesystem ? Promise.resolve(Date.now()) : actual.sharedClockNow(directory),
 		windowsTemporaryFiles: () => (lockRefusals.deleteOnCloseUnavailable ? undefined : actual.windowsTemporaryFiles()),
 	};
 });
@@ -201,6 +199,26 @@ const POOL_MODULE_PATH = fileURLToPath(new URL("../src/core/worktree-snapshot/po
 
 let sandbox: GitSandbox;
 const originalPlatform = process.platform;
+const windowsTemporaryKey = Symbol.for("@bastani/atomic/windows-temporary@4");
+let nativeRegistration: PropertyDescriptor | undefined;
+
+beforeAll(() => {
+	if (originalPlatform !== "win32") return;
+	createRequire(import.meta.url)("@bastani/atomic-natives");
+	const registration = Object.getOwnPropertyDescriptor(process, windowsTemporaryKey);
+	assert.ok(registration);
+	nativeRegistration = registration;
+	// When using the virtual filesystem clock, both the first age check and the locked recheck must use it.
+	// The native probe bypasses the fs.stat mocks, so use the ordinary probe while that clock is active.
+	Object.defineProperty(process, windowsTemporaryKey, {
+		configurable: true,
+		get: () => (pollClock.enabled && pollClock.filesystem ? undefined : registration.value),
+	});
+});
+
+afterAll(() => {
+	if (nativeRegistration !== undefined) Object.defineProperty(process, windowsTemporaryKey, nativeRegistration);
+});
 
 function setPlatform(value: NodeJS.Platform): void {
 	Object.defineProperty(process, "platform", { value, configurable: true });
