@@ -7,6 +7,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 ### Added
 
 - Added an opt-in idempotency key for OpenAI-compatible Chat Completions and Responses endpoints that support it, so retrying the same request can avoid a duplicate charge. If the endpoint reports an idempotency conflict, Atomic stops retrying that request ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
+- Select `google-decisions/gemini-decision-1` to ask yes/no, choice, or score questions about text and images using your existing Gemini API key. This new provider was tested against a simulated server, not the live Gemini API ([#6773](https://github.com/bastani-inc/atomic/issues/6773), [#6788](https://github.com/bastani-inc/atomic/issues/6788)).
 
 ### Fixed
 

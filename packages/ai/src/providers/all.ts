@@ -14,6 +14,7 @@ import modelDataManifest from "./data/.manifest.json" with { type: "json" };
 import { deepseekProvider } from "./deepseek.ts";
 import { fireworksProvider } from "./fireworks.ts";
 import { githubCopilotProvider } from "./github-copilot.ts";
+import { googleDecisionsProvider } from "./google-decisions.ts";
 import { googleProvider } from "./google.ts";
 import { googleVertexProvider } from "./google-vertex.ts";
 import { groqProvider } from "./groq.ts";
@@ -154,6 +155,7 @@ export function builtinProviders(): Provider[] {
 		fireworksProvider(),
 		githubCopilotProvider(),
 		googleProvider(),
+		googleDecisionsProvider(),
 		googleVertexProvider(),
 		groqProvider(),
 		huggingfaceProvider(),

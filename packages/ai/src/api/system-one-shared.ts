@@ -146,7 +146,11 @@ function probabilities(label: string, value: unknown, id: string): Record<string
 	);
 }
 
-function parseAnswers(label: string, value: unknown, context: ClassifierContext): Record<string, ClassifierAnswer> {
+export function parseNoulAnswers(
+	label: string,
+	value: unknown,
+	context: ClassifierContext,
+): Record<string, ClassifierAnswer> {
 	if (!isRecord(value)) throw new Error(`${label} returned an unexpected response`);
 	const answers: Array<[string, ClassifierAnswer]> = [];
 	for (const [id, question] of Object.entries(context.questions)) {
@@ -255,7 +259,7 @@ export async function classifySystemOne(
 		// Malformed answers may still be billed, so retain usage before parsing them.
 		const usage = parseClassifierUsage(result.usage, model);
 		if (usage) output.usage = usage;
-		output.answers = parseAnswers(transport.label, result.answers, context);
+		output.answers = parseNoulAnswers(transport.label, result.answers, context);
 		return output;
 	} catch (error) {
 		output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";

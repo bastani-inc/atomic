@@ -85,7 +85,8 @@ export type KnownClassifierApi =
 	| "typesafe-system-one"
 	| "cloudflare-workers-ai-system-one"
 	| "llama-cpp-classify"
-	| "openai-decisions";
+	| "openai-decisions"
+	| "google-decisions";
 
 export type ClassifierApi = KnownClassifierApi | (string & {});
 
@@ -97,6 +98,7 @@ export type KnownProvider =
 	| "anthropic"
 	| "anthropic-api"
 	| "google"
+	| "google-decisions"
 	| "google-vertex"
 	| "openai"
 	| "openai-api"
@@ -886,6 +888,11 @@ export interface ClassifierResult {
 	usage?: Usage;
 	stopReason: ClassifierStopReason;
 	errorMessage?: string;
+	/** HTTP status and error code when reported by the classifier transport. */
+	status?: number;
+	code?: string;
+	/** Server-requested retry delay in milliseconds. */
+	retryAfterMs?: number;
 	timestamp: number; // Unix timestamp in milliseconds
 }
 

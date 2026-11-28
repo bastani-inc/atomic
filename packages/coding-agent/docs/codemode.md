@@ -119,7 +119,7 @@ Two tools expose a script-safe subset:
 
 `models` accesses the model catalog and calls non-LLM models using the session's credentials.
 
-- **Classifiers.** Answer typed questions about JSON state (and images when supported). Examples: [TypeSafe Jev](/providers#typesafe-jev), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp).
+- **Classifiers.** Answer typed questions about JSON state (and images when supported). Examples: [TypeSafe Jev](/providers#typesafe-jev), [Gemini Decision 1](/providers#gemini-decisions), [OpenAI GPT-6 Luna](/models#use-classifier-models), and [local llama.cpp models](/llama-cpp).
 - **Image models.** Generate or edit images. Examples: OpenRouter (`provider: "openrouter"`, IDs such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, reusing your OpenRouter credential) and OpenAI (`provider: "openai-images"`, such as `gpt-image-2.6-flare`, reusing your [OpenAI API key](/providers#subscription-and-api-key-at-the-same-time)).
 
 Chat models are listed in the catalog (with active service-tier pricing) but cannot be called from scripts. Neither classifiers nor image models appear in `/model`.
@@ -179,6 +179,9 @@ interface ClassifierResult {
   usage?: ModelUsage;
   stopReason: "stop" | "error" | "aborted";
   errorMessage?: string;
+  status?: number; // HTTP status, when reported
+  code?: string; // Failure code, when reported
+  retryAfterMs?: number; // Server-requested delay, when reported
 }
 
 type ClassifierAnswer =

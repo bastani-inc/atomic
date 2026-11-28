@@ -243,6 +243,7 @@ Classifier models answer typed questions (`choice`, `bool`, `score`) about struc
 
 Built-in classifiers:
 
+- **Gemini Decisions:** `google-decisions/gemini-decision-1` answers yes/no, choice, and score questions about text and images. It uses your saved `/login google` API key, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`. See [Gemini Decisions](/providers#gemini-decisions) for supported inputs and limits.
 - **OpenAI Decisions:** `openai-decisions/gpt-6-luna` via OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions). It has no `/login` entry and reuses the first OpenAI API key found (`openai-api`, `openai` API key, then `OPENAI_API_KEY`), skipping ChatGPT sign-in. It accepts up to 128 images and up to 922K tokens; requests above roughly 600K tokens may hit a gateway 504 timeout that is not retried. (`openai/gpt-6-luna` always selects the chat model.)
 - **TypeSafe Jev (direct):** `typesafe/jev-latest` and `typesafe/jev-1.14.0` (up to 262K tokens with PNG/JPEG images; see [TypeSafe Jev](/providers#typesafe-jev)).
 - **Cloudflare Workers AI:** Cloudflare Clef (`@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`, `@cf/cloudflare/clef-omni`, up to four PNG/JPEG/WebP images) and TypeSafe Jev (`typesafe/jev`, `typesafe/jev-1.14.0`, PNG/JPEG images).

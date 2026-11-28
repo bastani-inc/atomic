@@ -5,6 +5,7 @@
 ### Added
 
 - You can opt a model into reusing an idempotency key across chat retries when its endpoint supports it. This can prevent duplicate charges after a dropped connection ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
+- Select `google-decisions/gemini-decision-1` under **Decision model** in `/settings` or call it from codemode to ask structured questions about text and images using your existing Gemini API key. This new provider was tested against a simulated server, not the live Gemini API ([#6773](https://github.com/bastani-inc/atomic/issues/6773), [#6788](https://github.com/bastani-inc/atomic/issues/6788)).
 
 ### Changed
 
@@ -21,6 +22,7 @@
 - Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.
 - Chat treats temporary OpenAI capacity errors as retryable instead of content refusals. If OpenAI reports an API key, project, or organization spending cap, chat goes straight to the fallback chain.
 - Fixed a crash when quitting Atomic on macOS if optional stall diagnostics were collecting stack traces ([#6787](https://github.com/bastani-inc/atomic/issues/6787)).
+- Classifier decisions in extensions now use your configured server retry delay cap instead of the default cap. No settings changes are needed ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
 
 ## [0.10.15] - 2026-11-27
 
