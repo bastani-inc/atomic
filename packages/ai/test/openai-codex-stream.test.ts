@@ -3263,14 +3263,20 @@ describe("openai-codex streaming", () => {
 		expect(codexRequests).toBe(2);
 	});
 
-	it.each([429, 503])("fails immediately when a %i retry delay exceeds the limit", async (status) => {
+	it.each([
+		{ status: 429, hint: "header" },
+		{ status: 503, hint: "header" },
+		{ status: 503, hint: "body" },
+	])("fails immediately when a $status retry $hint exceeds the limit", async ({ status, hint }) => {
 		const token = mockToken();
-		const fetchMock = vi.fn(
-			async () =>
-				new Response(JSON.stringify({ error: { code: "temporarily_unavailable", message: "retry later" } }), {
-					status,
-					headers: { "content-type": "application/json", "retry-after": "2" },
-				}),
+		const fetchMock = vi.fn(async () =>
+			Response.json(
+				{
+					error: { code: "temporarily_unavailable", message: "retry later" },
+					...(hint === "body" ? { retry_after: 2 } : {}),
+				},
+				{ status, headers: { "retry-after": hint === "header" ? "2" : "0.001" } },
+			),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 

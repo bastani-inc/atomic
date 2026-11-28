@@ -28,10 +28,14 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget, resolveHttpsFallbackProxyUrl } from "../utils/node-http-proxy.ts";
-import { admitFetch } from "../utils/request-admission.ts";
-import { responsesErrorKind, responsesErrorRetryability } from "../utils/responses-errors/codes.ts";
 import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
 import { boundProviderErrorResponse, remainingRequestTimeoutMs, withResponseTimeout } from "../utils/provider-waits/timeout.ts";
+import { admitFetch } from "../utils/request-admission.ts";
+import {
+	isProviderQuotaExhaustionText,
+	responsesErrorKind,
+	responsesErrorRetryability,
+} from "../utils/responses-errors/codes.ts";
 import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "../utils/retry-sleep.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
@@ -147,49 +151,14 @@ function assertSuccessfulOutput(output: AssistantMessage): asserts output is Suc
 // Retry Helpers
 // ============================================================================
 
-function isTerminalRateLimitError(errorText: string): boolean {
-	return /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|usage_limit_reached|usage_not_included|out of budget|quota exceeded|billing/i.test(
-		errorText,
-	);
-}
-
 function isRetryableError(status: number, errorText: string, code: string | undefined): boolean {
+	if (status === 402 || isProviderQuotaExhaustionText(errorText)) return false;
 	const typed = responsesErrorRetryability(code);
 	if (typed !== undefined) return typed;
-	if (status === 429 && isTerminalRateLimitError(errorText)) {
-		return false;
-	}
 	if (status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
 		return true;
 	}
 	return /rate.?limit|overloaded|service.?unavailable|upstream.?connect|connection.?refused/i.test(errorText);
-}
-
-function getRetryAfterDelayMs(headers: Headers): number | undefined {
-	const retryAfterMs = headers.get("retry-after-ms");
-	if (retryAfterMs !== null) {
-		const millis = Number(retryAfterMs);
-		if (Number.isFinite(millis)) {
-			return Math.max(0, millis);
-		}
-	}
-
-	const retryAfter = headers.get("retry-after");
-	if (!retryAfter) {
-		return undefined;
-	}
-
-	const seconds = Number(retryAfter);
-	if (Number.isFinite(seconds)) {
-		return Math.max(0, seconds * 1000);
-	}
-
-	const date = Date.parse(retryAfter);
-	if (!Number.isNaN(date)) {
-		return Math.max(0, date - Date.now());
-	}
-
-	return undefined;
 }
 
 class RetryDelayExceededError extends Error {}
@@ -204,7 +173,7 @@ function validateRetryDelayMs(delayMs: number, response: Response, options?: Str
 			{ status: response.status, retryAfterMs: delayMs },
 		);
 	}
-	return delayMs;
+	return Math.ceil(delayMs);
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -480,12 +449,10 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						const info = parseErrorResponse(errorText, response);
 						const retryAfterMs = getRetryAfterMs(response.headers, errorText);
 						if (attempt < maxRetries && isRetryableError(response.status, errorText, info.code)) {
-							const retryAfterDelayMs =
-								response.status === 429 ? retryAfterMs : getRetryAfterDelayMs(response.headers);
 							const delayMs =
-								retryAfterDelayMs === undefined
+								retryAfterMs === undefined
 									? BASE_DELAY_MS * 2 ** attempt
-									: validateRetryDelayMs(retryAfterDelayMs, response, options);
+									: validateRetryDelayMs(retryAfterMs, response, options);
 
 							await sleep(delayMs, options?.signal);
 							continue;

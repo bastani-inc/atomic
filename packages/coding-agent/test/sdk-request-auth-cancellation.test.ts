@@ -208,6 +208,8 @@ describe("createAgentSession request-auth cancellation", () => {
 			compaction: { enabled: false },
 		});
 		const manager = await SessionManager.create(dir, join(dir, "sessions"));
+		// The SDK does not close a store supplied by its caller. Dispose the session first, then close its store.
+		cleanup.push(() => manager.getSessionStore().close());
 		const { session, extensionsResult } = await createAgentSession({
 			cwd: dir,
 			agentDir: dir,

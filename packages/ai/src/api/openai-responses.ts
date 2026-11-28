@@ -26,6 +26,7 @@ import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
+import { skipOpenAIProviderRetry } from "../utils/responses-errors/codes.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
@@ -56,7 +57,6 @@ import {
 	resolveChatGPTBackendServiceTier,
 	resolveRequestedServiceTier,
 	responsesProviderErrorCode,
-	skipResponsesProviderRetry,
 } from "./openai-responses-shared.ts";
 import { RetryHintOpenAI } from "./openai-retry-hint-client.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
@@ -277,7 +277,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 						maxRetries: options?.maxRetries,
 						maxRetryDelayMs: options?.maxRetryDelayMs,
 						signal: streamDeadline.signal,
-						noRetry: skipResponsesProviderRetry,
+						noRetry: skipOpenAIProviderRetry,
 					},
 					retryTransport,
 				);

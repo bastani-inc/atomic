@@ -59,6 +59,7 @@ import {
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
 import { admitOpenAIRequests, getFetchAdmission, wrapFetchPreservingAdmission } from "../utils/request-admission.js";
+import { skipOpenAIProviderRetry } from "../utils/responses-errors/codes.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -471,7 +472,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
-					noRetry: (error) => openAIIdempotencyConflictCode(error) !== undefined,
+					noRetry: (error) => skipOpenAIProviderRetry(error) || openAIIdempotencyConflictCode(error) !== undefined,
 				},
 				retryTransport,
 			);

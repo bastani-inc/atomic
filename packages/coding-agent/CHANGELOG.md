@@ -23,6 +23,7 @@
 - Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.
 - Chat treats temporary OpenAI capacity errors as retryable instead of content refusals. If OpenAI reports an API key, project, or organization spending cap, chat goes straight to the fallback chain.
 - Fixed a crash when quitting Atomic on macOS if optional stall diagnostics were collecting stack traces ([#6787](https://github.com/bastani-inc/atomic/issues/6787)).
+- Chat skips exhausted accounts and server-requested waits above your retry limit, including on OpenAI-compatible gateways and Amazon Bedrock. It now follows your fallback preference for Gemini and Anthropic safety stops and moves past unavailable models or incompatible requests reported by custom gateways; no settings changes are needed ([#6780](https://github.com/bastani-inc/atomic/issues/6780)).
 - Classifier decisions in extensions now use your configured server retry delay cap instead of the default cap. No settings changes are needed ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
 
 ## [0.10.15] - 2026-11-27

@@ -37,7 +37,6 @@ import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
-import { responsesErrorRetryability } from "../utils/responses-errors/codes.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
@@ -1127,10 +1126,6 @@ function responsesErrorCode(error: unknown): string | undefined {
 	if (error === null || typeof error !== "object") return undefined;
 	if ("code" in error && typeof error.code === "string" && error.code) return error.code;
 	return "type" in error && typeof error.type === "string" ? error.type : undefined;
-}
-
-export function skipResponsesProviderRetry(error: Error): boolean {
-	return responsesErrorRetryability(responsesProviderErrorCode(error)) === false;
 }
 
 type CustomInput = Extract<ToolCallInput, { kind: "custom" }>;

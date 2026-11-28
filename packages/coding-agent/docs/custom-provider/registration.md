@@ -93,6 +93,8 @@ The `api` field selects one of Atomic's built-in chat streaming protocols:
 | `bedrock-converse-stream` | Amazon Bedrock Converse API |
 | `pi-messages` | Custom gateways speaking Atomic's native `pi-messages` protocol |
 
+For a `pi-messages` gateway, return HTTP 404 when the requested model is unavailable or HTTP 400 when the request is incompatible. Chat uses those statuses to advance to the next [fallback model](/settings#fallbackmodels) without retrying the same request. For a temporary outage, return a server error such as HTTP 503 instead.
+
 Image (`images`) and classifier (`classifiers`) handlers use their own operation-specific `api` keys independent of this table. Compactor models (`type: "compactor"`) declare a compactor `api` string at model or provider level and follow the [Compactor request contract](/compaction/reference#compactor-request-contract).
 
 Most OpenAI-compatible servers use `openai-completions`. Configure model-specific thinking controls with `thinkingLevelMap` and server quirks with `compat`:

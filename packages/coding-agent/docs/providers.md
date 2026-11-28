@@ -405,6 +405,7 @@ atomic --provider amazon-bedrock --model us.anthropic.claude-sonnet-4-20250514-v
 - **Bedrock GPT-6 Astra:** Available as `openai.gpt-6-astra` (direct) plus `global.openai.gpt-6-astra` and `us.openai.gpt-6-astra` (inference profiles), with `low`, `medium`, `high`, `xhigh`, and `max` reasoning effort and no Fast variant. See [OpenAI built-in models](/models/reference#openai-built-in-models) for per-profile pricing.
 - **Application inference profiles and caching:** Prompt caching turns on automatically when a Claude model ID contains a recognizable model name. For application inference profile ARNs that omit the model name, export `AWS_BEDROCK_FORCE_CACHE=1` (and give custom GPT inference profiles a recognizable GPT name in `models.json` so reasoning effort is sent).
 - **Bedrock API proxies:** Set `AWS_ENDPOINT_URL_BEDROCK_RUNTIME=https://my.corp.proxy/bedrock`, `AWS_BEDROCK_SKIP_AUTH=1` if the proxy handles signing, and `AWS_BEDROCK_FORCE_HTTP1=1` if your proxy does not support HTTP/2.
+- **Bedrock retries:** Leaving `retry.provider.maxRetries` unset keeps the AWS retry count. Bedrock still stops retrying when a rate limit or server error asks it to wait longer than `retry.provider.maxRetryDelayMs` (60 seconds by default), so chat can use the next eligible fallback. See [Retry](/settings#retry) for settings and examples.
 
 ### Cloudflare AI Gateway
 

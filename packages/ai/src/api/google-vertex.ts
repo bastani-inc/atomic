@@ -42,11 +42,11 @@ import { getSystemMessageText } from "../utils/text.ts";
 import { appendSystemMessageUpdates, getCurrentTools, getInitialSystemMessage } from "../utils/transcript.ts";
 import type { GoogleApiThinkingLevel, ResolvedGoogleThinkingLevel } from "./google-shared.ts";
 import {
+	applyGoogleStopReason,
 	convertMessages,
 	convertTools,
 	getDisabledGoogleThinkingConfig,
 	isThinkingPart,
-	mapStopReason,
 	recordGoogleThinkingOffFallback,
 	resolveGoogleFunctionCallingMode,
 	resolveGoogleThinkingLevel,
@@ -56,6 +56,7 @@ import {
 	supportsGoogleStrictToolSampling,
 	toGoogleSdkThinkingLevel,
 	toGoogleThinkingLevel,
+	trackGoogleErrorHeaders,
 	usesGoogleThinkingLevel,
 } from "./google-shared.ts";
 import { ProviderRetryTransport } from "../utils/provider-retry.ts";
@@ -114,9 +115,9 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			const apiKey = options && resolveApiKey(options);
 			// Create the client using either a Vertex API key, if provided, or ADC with project and location
 			const retryTransport = ProviderRetryTransport.for(options);
-			const fetch = fetchWithResponseTimeout(retryTransport?.fetch ?? options?.fetch, options?.timeoutMs);
+			const http = trackGoogleErrorHeaders(fetchWithResponseTimeout(retryTransport?.fetch ?? options?.fetch, options?.timeoutMs));
 			const client = apiKey
-				? createClientWithApiKey(model, apiKey, options?.headers, options?.identity, fetch)
+				? createClientWithApiKey(model, apiKey, options?.headers, options?.identity, http.fetch)
 				: createClient(
 						model,
 						resolveProject(options),
@@ -124,7 +125,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 						options?.headers,
 						options?.env,
 						options?.identity,
-						fetch,
+						http.fetch,
 					);
 			recordGoogleThinkingOffFallback(model, options, output, (level) =>
 				getGoogleBudget(model, level, options?.thinkingBudgets),
@@ -138,10 +139,12 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			const requestParams: GenerateContentParameters = streamDeadline.signal
 				? { ...params, config: { ...params.config, abortSignal: streamDeadline.signal } }
 				: params;
-			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(requestParams), {
-				...options,
-				signal: streamDeadline.signal,
-			}, retryTransport);
+			const googleStream = await retryGoogleRequest(
+				() => client.models.generateContentStream(requestParams),
+				{ ...options, signal: streamDeadline.signal },
+				retryTransport,
+				http.errorHeaders,
+			);
 
 			stream.push({ type: "start", partial: output });
 			let currentBlock: TextContent | ThinkingContent | null = null;
@@ -264,13 +267,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 					}
 				}
 
-				if (candidate?.finishReason) {
-					output.rawStopReason = candidate.finishReason;
-					output.stopReason = mapStopReason(candidate.finishReason);
-					if (output.content.some((b) => b.type === "toolCall") && output.stopReason === "stop") {
-						output.stopReason = "toolUse";
-					}
-				}
+				applyGoogleStopReason(output, chunk);
 
 				if (chunk.usageMetadata) {
 					output.usage = {

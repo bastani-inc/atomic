@@ -25,7 +25,13 @@ import {
 } from "./model-fallback-failures.ts";
 import { failedProviderAccount, providerAccount } from "./provider-account.ts";
 import { hasBlockingAccountLimit, providerCooldownMs, providerUnavailableMs } from "./provider-rate-limits.js";
-import { isLongStreamCut, LONG_STREAM_CUT_ADVICE, nextRetryDecision, repeatsLongStreamCut } from "./retry-policy.ts";
+import {
+	isLongStreamCut,
+	LONG_STREAM_CUT_ADVICE,
+	nextRetryDecision,
+	overCapServerRetryDelay,
+	repeatsLongStreamCut,
+} from "./retry-policy.ts";
 import type { ModelFallbackRecord } from "./session-manager-types.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 
@@ -117,12 +123,7 @@ function fallsBackOnContentFilter(this: AgentSession): boolean {
 	return this.settingsManager.getRetrySettings().fallbackOnContentFilter !== false;
 }
 
-/** Only server hints use this cap; a rate limit without a hint keeps its ordinary local backoff. */
-function overCapRateLimitDelay(message: AssistantMessage, capMs: number): number | undefined {
-	const hint = message.retryAfterMs;
-	return capMs > 0 && hint !== undefined && Number.isFinite(hint) && hint > capMs ? hint : undefined;
-}
-
+/** Only server hints use this cap; retries without a hint keep their ordinary local backoff. */
 export function rateLimitGuidance(
 	message: AssistantMessage,
 	capMs = DEFAULT_MAX_RETRY_DELAY_MS,
@@ -130,7 +131,7 @@ export function rateLimitGuidance(
 ): string {
 	const http429 = status === 429 || /(?:^429(?:\s|:|$)|\bHTTP 429\b)/.test(message.errorMessage ?? "");
 	const summary = `Provider rate limit reached${http429 ? " (HTTP 429)" : ""}.`;
-	const overCap = overCapRateLimitDelay(message, capMs);
+	const overCap = overCapServerRetryDelay(message, capMs);
 	if (overCap !== undefined) {
 		const cap = capMs % 1000 === 0 ? `${capMs / 1000}s` : `${capMs}ms`;
 		return `${summary} The ${Math.ceil(overCap / 1000)}s wait exceeds the configured ${cap} retry limit. Switch models or try again after the rate limit resets.`;
@@ -441,6 +442,15 @@ async function resolveFallbackAccount(session: AgentSession, model: Model<Api>):
 	}
 }
 
+function blockedAccountReason(
+	blocked: ReadonlySet<string>,
+	key: string,
+): "auth-failed" | "quota-exhausted" | undefined {
+	if (blocked.has(key)) return "auth-failed";
+	if (blocked.has(`quota:${key}`)) return "quota-exhausted";
+	return undefined;
+}
+
 export async function _trySwitchToFallbackModel(this: AgentSession, message: AssistantMessage): Promise<boolean> {
 	const currentModel = this.agent.state.model ?? this.model;
 	if (this._fallbackModels.length === 0 || currentModel === undefined) return false;
@@ -459,18 +469,21 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 			this._fallbackBlockedModels.push(currentModel);
 		}
 	}
-	if (isProviderCredentialRejection(message)) {
+	const quotaExhausted = normalizeModelFailureSignal(message).kind === "quota_exhausted";
+	if (quotaExhausted || isProviderCredentialRejection(message)) {
 		const account = failedProviderAccount(message);
-		this._fallbackBlockedProviders.add(
-			account === undefined ? `provider:${currentModel.provider}` : `account:${account}`,
-		);
+		const key = account === undefined ? `provider:${currentModel.provider}` : `account:${account}`;
+		// An exhausted account is unavailable for this turn even if a very short server hint expires mid-fallback.
+		this._fallbackBlockedProviders.add(quotaExhausted ? `quota:${key}` : key);
 	}
 
 	const currentThinkingLevel = this.agent.state.thinkingLevel ?? this.thinkingLevel;
 	const fromModel = currentModel;
 	const skipped: FallbackSkip[] = [];
 	const retryCapMs = () => this.settingsManager.getRetrySettings().maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
-	const hasRejectedAccount = [...this._fallbackBlockedProviders].some((key) => key.startsWith("account:"));
+	const hasBlockedAccount = [...this._fallbackBlockedProviders].some(
+		(key) => key.startsWith("account:") || key.startsWith("quota:account:"),
+	);
 	for (const rawCandidate of this._fallbackModels) {
 		const candidate = resolveFallbackModel.call(this, rawCandidate);
 		if (!candidate) {
@@ -494,20 +507,23 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		// Skipped before any lifecycle starts: a blocked variant emits no fallback
 		// event and opens no scope.
 		if (this._fallbackBlockedModels.some((blocked) => modelsAreEqual(blocked, nextModel))) continue;
-		if (this._fallbackBlockedProviders.has(`provider:${nextModel.provider}`)) {
-			noteSkipped(skipped, nextModel, "auth-failed");
+		const providerBlock = blockedAccountReason(this._fallbackBlockedProviders, `provider:${nextModel.provider}`);
+		if (providerBlock !== undefined) {
+			noteSkipped(skipped, nextModel, providerBlock);
 			continue;
 		}
 		// Only prepare auth here when knowing the account can rule the model out. A short cooldown can
 		// wait at admission and must not delay the normal fallback lifecycle or start a second auth attempt.
 		const account =
-			hasRejectedAccount || hasBlockingAccountLimit(retryCapMs)
+			hasBlockedAccount || hasBlockingAccountLimit(retryCapMs)
 				? await resolveFallbackAccount(this, nextModel)
 				: undefined;
 		if (!retryIsCurrent(this, generation)) return true;
 		if (this._fallbackScopeGeneration !== scopeGeneration) return false;
-		if (account !== undefined && this._fallbackBlockedProviders.has(`account:${account}`)) {
-			noteSkipped(skipped, nextModel, "auth-failed");
+		const accountBlock =
+			account === undefined ? undefined : blockedAccountReason(this._fallbackBlockedProviders, `account:${account}`);
+		if (accountBlock !== undefined) {
+			noteSkipped(skipped, nextModel, accountBlock);
 			continue;
 		}
 		const now = Date.now();
@@ -648,9 +664,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	const generation = this._retryGeneration;
 	const settings = this.settingsManager.getRetrySettings();
 	const rateLimited = normalizeModelFailureSignal(message).kind === "rate_limit";
-	const overCap =
-		rateLimited &&
-		overCapRateLimitDelay(message, settings.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS) !== undefined;
+	const overCap = overCapServerRetryDelay(message, settings.maxRetryDelayMs) !== undefined;
 	const retryableError = this._isRetryableError?.(message) ?? true;
 	const fallbackableError = this._isFallbackableError?.(message) ?? retryableError;
 	const emptyCompletion = this._isEmptyCompletion?.(message) ?? false;

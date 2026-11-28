@@ -6,6 +6,7 @@ import { stream as streamVertex } from "@bastani/atomic-ai/api/google-vertex";
 import { stream as streamMistral } from "@bastani/atomic-ai/api/mistral-conversations";
 import { stream as streamCompletions } from "@bastani/atomic-ai/api/openai-completions";
 import { stream as streamResponses } from "@bastani/atomic-ai/api/openai-responses";
+import { stream as streamPiMessages } from "@bastani/atomic-ai/api/pi-messages";
 import { type AssistantMessage, type Model, normalizeContext } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import {
@@ -27,10 +28,23 @@ afterEach(async () => {
 });
 
 /** A local endpoint that answers every request with `status` and the JSON `body`. */
-async function serverAnswering(status: number, body: unknown): Promise<string> {
+async function serverAnswering(
+	status: number,
+	body: unknown,
+	contentType = "application/json",
+	onRequest?: () => void,
+	retryAfter = status === 429 ? "0.001" : undefined,
+): Promise<string> {
 	const listening = createServer((_request, reply) => {
-		reply.writeHead(status, { "content-type": "application/json" });
-		reply.end(JSON.stringify(body));
+		onRequest?.();
+		reply.writeHead(status, { "content-type": contentType, ...(retryAfter && { "retry-after": retryAfter }) });
+		const payload =
+			contentType === "text/event-stream"
+				? typeof body === "string"
+					? body
+					: `data: ${JSON.stringify(body)}\n\n`
+				: JSON.stringify(body);
+		reply.end(payload);
 	});
 	server = listening;
 	await new Promise<void>((resolve) => listening.listen(0, "127.0.0.1", resolve));
@@ -171,6 +185,84 @@ for (const { adapter, label, status, body, kind } of TRANSIENT_FAILURES) {
 	});
 }
 
+test.each([
+	{ provider: "opencode", error: { type: "FreeUsageLimitError", message: "Cannot serve." } },
+	{ provider: "opencode-go", error: { type: "GoUsageLimitError", message: "Cannot serve." } },
+	{ provider: "zai", error: { code: "1308", message: "Cannot serve." } },
+	{ provider: "zai-coding-cn", error: { code: 1308, message: "Cannot serve." } },
+] as const)("$provider Chat does not retry an exhausted plan quota", async ({ provider, error }) => {
+	let requests = 0;
+	const baseUrl = await serverAnswering(429, { error }, "application/json", () => requests++);
+	const model: Model<"openai-completions"> = {
+		...getFixtureModel("openai", "gpt-4o"),
+		api: "openai-completions",
+		baseUrl,
+		provider,
+	};
+	const message = await streamCompletions(model, context, { apiKey: "test-key", maxRetries: 1 }).result();
+	assert.equal(message.stopReason, "error");
+	assert.equal(normalizeModelFailureSignal(message).kind, "quota_exhausted");
+	assert.equal(isRetryableSameModelFailure(message), false);
+	assert.equal(requests, 1);
+});
+
+test.each(
+	(["google", "google-vertex"] as const).flatMap((provider) => [
+		{ provider, label: "candidate finish", body: { candidates: [{ finishReason: "SAFETY", index: 0 }] } },
+		{ provider, label: "prompt block", body: { promptFeedback: { blockReason: "SAFETY" } } },
+	]),
+)("$provider SAFETY $label is a content filter, not a transient failure", async ({ provider, body }) => {
+	const baseUrl = await serverAnswering(200, body, "text/event-stream");
+	const options = { apiKey: "test-key", maxRetries: 0 };
+	const message = await (provider === "google-vertex"
+		? streamVertex({ ...getFixtureModel("google-vertex", "gemini-2.5-pro"), baseUrl }, context, options)
+		: streamGoogle({ ...getFixtureModel("google", "gemini-2.5-pro"), baseUrl }, context, options)
+	).result();
+	assert.equal(message.stopReason, "error");
+	assert.equal(message.rawStopReason, "SAFETY");
+	assert.equal(normalizeModelFailureSignal(message).kind, "content_filter");
+	assert.equal(isRetryableSameModelFailure(message), false);
+});
+
+test.each(["google", "google-vertex"] as const)("%s does not retry an over-cap HTTP 503 header", async (provider) => {
+	let requests = 0;
+	const baseUrl = await serverAnswering(
+		503,
+		googleError(503, "Backend down.", "UNAVAILABLE"),
+		"application/json",
+		() => requests++,
+		"360",
+	);
+	const options = { apiKey: "test-key", maxRetries: 1, maxRetryDelayMs: 60_000 };
+	const message = await (provider === "google-vertex"
+		? streamVertex({ ...getFixtureModel("google-vertex", "gemini-2.5-pro"), baseUrl }, context, options)
+		: streamGoogle({ ...getFixtureModel("google", "gemini-2.5-pro"), baseUrl }, context, options)
+	).result();
+	assert.equal(message.stopReason, "error");
+	assert.equal(requests, 1);
+	assert.equal(message.retryAfterMs, 360_000);
+});
+
+test.each([
+	{ status: 404, kind: "model_unavailable" },
+	{ status: 400, kind: "request_incompatible" },
+])("pi-messages classifies HTTP $status without needing a provider code", async ({ status, kind }) => {
+	const baseUrl = await serverAnswering(status, { error: { message: "Cannot serve." } });
+	const model: Model<"pi-messages"> = {
+		...getFixtureModel("openai", "gpt-4o"),
+		api: "pi-messages",
+		baseUrl,
+		compat: undefined,
+	};
+	const message = await streamPiMessages(model, context, { apiKey: "test-key" }).result();
+	assert.equal(message.stopReason, "error");
+	const signal = normalizeModelFailureSignal(message);
+	assert.equal(signal.kind, kind);
+	assert.equal(signal.status, status);
+	assert.equal(isRetryableSameModelFailure(message), false);
+	assert.equal(isRetryableModelFailure(message), true);
+});
+
 test("a Google 404 for a missing model still blocks the model (#4994)", async () => {
 	const message = await failedTurn(
 		"google",
@@ -185,6 +277,56 @@ test("a Google 404 for a missing model still blocks the model (#4994)", async ()
 	assert.equal(normalizeModelFailureSignal(message).kind, "model_unavailable");
 	assert.equal(isRetryableSameModelFailure(message), false);
 	assert.equal(isRetryableModelFailure(message), true);
+});
+
+test.each([
+	{ name: "API key", id: "claude-opus-5-5", apiKey: "sk-ant-api03-test" },
+	{ name: "OAuth fast mode", id: "claude-opus-5-5-fast", apiKey: "sk-ant-oat-test" },
+])("Anthropic low credit on $name is an account quota, not an incompatible request", async ({ id, apiKey }) => {
+	const baseUrl = await serverAnswering(400, {
+		type: "error",
+		error: {
+			type: "invalid_request_error",
+			message: "Your credit balance is too low to access the Anthropic API.",
+		},
+	});
+	const message = await streamAnthropic({ ...getFixtureModel("anthropic", "claude-opus-5-5"), id, baseUrl }, context, {
+		apiKey,
+		maxRetries: 1,
+	}).result();
+	assert.equal(message.stopReason, "error");
+	assert.match(message.errorMessage ?? "", /Your credit balance is too low/);
+	assert.equal(normalizeModelFailureSignal(message).kind, "quota_exhausted");
+	assert.equal(isRetryableSameModelFailure(message), false);
+});
+
+test.each(
+	(["refusal", "sensitive"] as const).flatMap((reason) => [
+		{ reason, auth: "API key", id: "claude-opus-5-5", apiKey: "sk-ant-api03-test" },
+		{ reason, auth: "OAuth fast mode", id: "claude-opus-5-5-fast", apiKey: "sk-ant-oat-test" },
+	]),
+)("Anthropic $reason on $auth is a content filter even without refusal wording", async ({ reason, id, apiKey }) => {
+	const frames = [
+		{ type: "message_start", message: { id: "msg_test", model: id, usage: { input_tokens: 1, output_tokens: 0 } } },
+		{
+			type: "message_delta",
+			delta: { stop_reason: reason, stop_details: { explanation: "Cannot serve." } },
+			usage: { output_tokens: 0 },
+		},
+		{ type: "message_stop" },
+	];
+	const baseUrl = await serverAnswering(
+		200,
+		frames.map((frame) => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`).join(""),
+		"text/event-stream",
+	);
+	const message = await streamAnthropic({ ...getFixtureModel("anthropic", "claude-opus-5-5"), id, baseUrl }, context, {
+		apiKey,
+	}).result();
+	assert.equal(message.stopReason, "error");
+	assert.equal(message.rawStopReason, reason);
+	assert.equal(normalizeModelFailureSignal(message).kind, "content_filter");
+	assert.equal(isRetryableSameModelFailure(message), false);
 });
 
 test("an Anthropic 404 not_found_error blocks the model on its HTTP status (#4994)", async () => {

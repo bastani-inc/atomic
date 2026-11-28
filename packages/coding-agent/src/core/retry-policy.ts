@@ -10,6 +10,7 @@
  */
 
 import { type AssistantMessage, failureRetryDelayMs } from "@bastani/atomic-ai";
+import { DEFAULT_MAX_RETRY_DELAY_MS } from "@bastani/atomic-ai/utils/provider-retry";
 import { streamCutDurationMs } from "./model-fallback-failures.ts";
 
 export interface RetryPolicySettings {
@@ -23,7 +24,7 @@ export interface RetryPolicySettings {
 export interface RetryDecision {
 	/** 1-based number of the retry this decision authorizes. */
 	readonly attempt: number;
-	/** Server retry hint, capped by `maxRetryDelayMs`, or else the exponential backoff to wait before that retry. */
+	/** The full eligible server retry hint, or else Atomic's own backoff. */
 	readonly delayMs: number;
 }
 
@@ -52,6 +53,15 @@ export function repeatsLongStreamCut(failure: unknown, longStreamCutRetriesSpent
 /** What to do when the same model keeps being cut after long attempts and is no longer retried. */
 export const LONG_STREAM_CUT_ADVICE = `Atomic stopped retrying this model after its stream was cut again after ${LONG_STREAM_CUT_MS / 60_000} minutes or more, because another attempt is likely to be cut too. Split the work into smaller steps, lower the thinking effort, or switch to another model; the fallbackModels setting switches models automatically.`;
 
+/** The server's requested wait when it is too long to retry this target. A zero cap is disabled. */
+export function overCapServerRetryDelay(
+	failure: Pick<AssistantMessage, "retryAfterMs">,
+	capMs = DEFAULT_MAX_RETRY_DELAY_MS,
+): number | undefined {
+	const hint = failure.retryAfterMs;
+	return capMs > 0 && hint !== undefined && Number.isFinite(hint) && hint > capMs ? hint : undefined;
+}
+
 /**
  * Decide whether one more attempt against the same target is allowed.
  *
@@ -72,6 +82,7 @@ export function nextRetryDecision(
 	if (settings === undefined || !settings.enabled || !eligible || retriesSpent >= settings.maxRetries) {
 		return undefined;
 	}
+	if (overCapServerRetryDelay(failure, settings.maxRetryDelayMs) !== undefined) return undefined;
 	if (repeatsLongStreamCut(failure, longStreamCutRetriesSpent)) return undefined;
 	const attempt = retriesSpent + 1;
 	return { attempt, delayMs: failureRetryDelayMs(settings, attempt, failure) };

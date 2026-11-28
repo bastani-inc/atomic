@@ -103,6 +103,16 @@ describe("Google retry hints", () => {
 		assert.equal(request.mock.calls.length, 2);
 	});
 
+	it("does not retry when the Google project has used its daily quota", async () => {
+		vi.useFakeTimers();
+		const failure = googleApiError(googleErrorBody("1s", "GenerateRequestsPerDayPerProjectPerModel-FreeTier"));
+		const request = vi.fn<() => Promise<string>>().mockRejectedValue(failure);
+		const result = retryGoogleRequest(request, { maxRetries: 1 }).catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(1000);
+		assert.equal(await result, failure);
+		assert.equal(request.mock.calls.length, 1);
+	});
+
 	it("fails at once with the hint when the RetryInfo delay exceeds the retry-delay cap", async () => {
 		const request = vi.fn<() => Promise<string>>().mockRejectedValue(googleApiError(googleErrorBody("120s")));
 		const failure = await retryGoogleRequest(request, { maxRetries: 2, maxRetryDelayMs: 60_000 }).then(
