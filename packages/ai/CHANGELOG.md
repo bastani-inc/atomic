@@ -4,21 +4,22 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.10.16-alpha.1] - 2026-11-27
+
 ### Added
 
-- Added an opt-in idempotency key for OpenAI-compatible Chat Completions and Responses endpoints that support it, so retrying the same request can avoid a duplicate charge. If the endpoint reports an idempotency conflict, Atomic stops retrying that request ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
-- Select `google-decisions/gemini-decision-1` to ask yes/no, choice, or score questions about text and images using your existing Gemini API key. This new provider was tested against a simulated server, not the live Gemini API ([#6773](https://github.com/bastani-inc/atomic/issues/6773), [#6788](https://github.com/bastani-inc/atomic/issues/6788)).
+- OpenAI-compatible Chat Completions and Responses endpoints that support it can opt in to an idempotency key to help avoid duplicate charges on retries. An idempotency conflict stops retries for that request ([#6794](https://github.com/bastani-inc/atomic/issues/6794), [#6796](https://github.com/bastani-inc/atomic/pull/6796)).
+- Google Decisions accepts yes/no, choice, and score questions about text and images using an existing Gemini API key. It was tested against a simulated server; live API verification is still open ([#6773](https://github.com/bastani-inc/atomic/issues/6773), [#6782](https://github.com/bastani-inc/atomic/pull/6782), [#6788](https://github.com/bastani-inc/atomic/issues/6788)).
 
 ### Fixed
 
-- OpenAI Chat Completions and Responses requests now carry a fresh tracing ID on each attempt without changing prompt caching ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
-- Gemini, Vertex, Pi, and Bedrock honor the request timeout before response headers. Keepalive pings, empty updates, and metadata no longer hide a stalled stream, and unresponsive callbacks no longer prevent cancellation or timeouts ([#6790](https://github.com/bastani-inc/atomic/issues/6790)).
-- Retry waits and response timeouts longer than about 25 days no longer fire immediately, and aborting still stops the wait ([#6807](https://github.com/bastani-inc/atomic/issues/6807)).
-- Preserve error codes and retry hints when an OpenAI Responses stream fails without an HTTP error status. OpenAI Responses and Codex no longer retry requests rejected because of a known quota limit.
-- Preserve retry delays sent inside failed Codex stream events, and treat OpenAI spending caps as exhausted quotas rather than temporary throttles.
-- OpenAI-compatible requests stop retrying when the account has run out of quota. Server errors now honor retry waits in the response body, and Bedrock stops retrying when the requested wait exceeds your limit; no settings changes are needed.
-- Z.ai and Zhipu Coding CN can now trace each request attempt, including retries, using a unique ID ([#6798](https://github.com/bastani-inc/atomic/issues/6798)).
-- Classifiers and OpenRouter image generation no longer retry when the account is out of quota, without any settings changes. Classifiers also report how long the provider asked callers to wait, even when that wait exceeds the retry limit ([#6783](https://github.com/bastani-inc/atomic/issues/6783)).
+- OpenAI Chat Completions and Responses requests carry a fresh tracing ID on every attempt without changing prompt caching ([#6794](https://github.com/bastani-inc/atomic/issues/6794), [#6796](https://github.com/bastani-inc/atomic/pull/6796)).
+- Gemini, Vertex, Pi, and Bedrock honor request timeouts before response headers. Keepalive pings, empty updates, and metadata do not hide a stalled stream. Unresponsive callbacks no longer prevent cancellation or timeouts ([#6790](https://github.com/bastani-inc/atomic/issues/6790), [#6797](https://github.com/bastani-inc/atomic/pull/6797)).
+- Retry waits and response timeouts longer than about 25 days no longer fire immediately, and aborting still stops the wait ([#6807](https://github.com/bastani-inc/atomic/issues/6807), [#6812](https://github.com/bastani-inc/atomic/pull/6812)).
+- Keep error codes and retry hints when an OpenAI Responses stream fails without an HTTP status, including retry delays inside failed Codex stream events ([#6777](https://github.com/bastani-inc/atomic/pull/6777)).
+- OpenAI-compatible requests and Codex stop retrying known quota errors. OpenAI spending caps count as exhausted quotas, not temporary throttling. Server errors honor retry waits in the response body, and Bedrock stops retrying when the requested wait exceeds the cap ([#6777](https://github.com/bastani-inc/atomic/pull/6777), [#6785](https://github.com/bastani-inc/atomic/pull/6785)).
+- Z.ai and Zhipu Coding CN use a unique tracing ID for every request attempt, including retries ([#6798](https://github.com/bastani-inc/atomic/issues/6798), [#6799](https://github.com/bastani-inc/atomic/pull/6799)).
+- Classifiers and OpenRouter image generation do not retry an exhausted account quota. Classifiers report the provider's requested wait even if it exceeds the retry cap ([#6783](https://github.com/bastani-inc/atomic/issues/6783), [#6786](https://github.com/bastani-inc/atomic/pull/6786)).
 
 ## [0.10.11] - 2026-11-27
 
