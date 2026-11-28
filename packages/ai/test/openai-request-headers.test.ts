@@ -56,6 +56,58 @@ it.each(["chat", "responses"] as const)("traces every OpenAI %s HTTP attempt ind
 	}
 });
 
+const zai = getFixtureModel("zai", "glm-5.3");
+const zaiCodingCn = getFixtureModel("zai-coding-cn", "glm-5.3");
+
+it.each([
+	{ name: "Z.ai traces each attempt", model: zai, traces: true, idempotent: false },
+	{
+		name: "Zhipu Coding CN traces each attempt without changing the idempotency key",
+		model: zaiCodingCn,
+		traces: true,
+		idempotent: true,
+	},
+	{
+		name: "another provider using the same endpoint does not send a tracing ID",
+		model: { ...zai, provider: "other" },
+		traces: false,
+		idempotent: false,
+	},
+])("$name (#6798)", async ({ model, traces, idempotent }) => {
+	const requests: Array<{ body: { request_id?: string }; key: string | null }> = [];
+	const fetch = Object.assign(async (_input: string | URL | Request, init?: RequestInit) => {
+		const body: { request_id?: string } = JSON.parse(String(init?.body));
+		requests.push({ body, key: new Headers(init?.headers).get("idempotency-key") });
+		if (requests.length === 1) {
+			return new Response('{"error":{"message":"temporary failure"}}', {
+				status: 503,
+				headers: { "content-type": "application/json", "retry-after-ms": "1" },
+			});
+		}
+		return responseFor("chat");
+	}, globalThis.fetch);
+	const stream = streamChat(
+		idempotent ? { ...model, compat: { ...model.compat, sendIdempotencyKey: true } } : model,
+		context,
+		{ apiKey: "test", fetch, maxRetries: 1 },
+	);
+	assert.equal((await stream.result()).stopReason, "stop");
+	assert.equal(requests.length, 2);
+	const [first, retry] = requests;
+	assert.ok(first && retry);
+	if (traces) {
+		assert.match(first.body.request_id ?? "", /^.{6,64}$/);
+		assert.match(retry.body.request_id ?? "", /^.{6,64}$/);
+		assert.notEqual(first.body.request_id, retry.body.request_id);
+	} else {
+		assert.ok(requests.every(({ body }) => !Object.hasOwn(body, "request_id")));
+	}
+	if (idempotent) {
+		assert.ok(first.key);
+		assert.equal(retry.key, first.key);
+	}
+});
+
 it.each(["chat", "responses"] as const)(
 	"opts %s requests into a fresh idempotency key per logical request (#6794)",
 	async (api) => {
