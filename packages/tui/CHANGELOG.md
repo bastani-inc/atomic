@@ -4,9 +4,11 @@ This package is Atomic's fork of `@earendil-works/pi-tui`. Its history up to the
 
 ## [Unreleased]
 
+## [0.10.16-alpha.1] - 2026-11-27
+
 ### Fixed
 
-- Long animation intervals and configurable UI timeouts no longer expire immediately when they exceed about 25 days ([#6807](https://github.com/bastani-inc/atomic/issues/6807)).
+- Long animation intervals and configurable UI timeouts no longer fire immediately when they exceed about 25 days ([#6807](https://github.com/bastani-inc/atomic/issues/6807), [#6812](https://github.com/bastani-inc/atomic/pull/6812)).
 
 ## [0.10.11] - 2026-11-27
 
