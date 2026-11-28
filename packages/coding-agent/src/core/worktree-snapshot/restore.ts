@@ -62,6 +62,7 @@ import {
 } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { HOST, holderRuns, type ProcessHolder, thisProcess } from "./process-holder.js";
+import { cleanInterruptedPublication, withPublicationFence } from "./publication-fence.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
 import { checkoutStoreIdOf, sameRemote, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import {
@@ -940,7 +941,12 @@ async function sweepRestoreRecords(
 			const record: unknown = JSON.parse(await readFile(recordPath, "utf8"));
 			if (!isRestoreRecord(record, storeDir, match[1]!)) throw new Error("Invalid restore crash record");
 			warningPath = record.staging;
-			await cleanUpRestore(record, null, signal).catch((cause: unknown) => {
+			await cleanUpRestore(record, null, signal, () =>
+				cleanInterruptedPublication(storeDir, record.store, record.target, record.staging, async (interrupted) => {
+					if (interrupted && (await repairInterruptedMove(record, signal))) return [];
+					return cleanRestoreRecord(record, signal);
+				}),
+			).catch((cause: unknown) => {
 				warningPath = keptPath(cause, record, false);
 				throw cause;
 			});
@@ -967,6 +973,40 @@ async function sweepRestoreRecords(
 				}
 			}
 		}
+	}
+}
+
+/** If Git moved the exact staging directory but died before registering its new path, preserve it and repair the link. */
+async function repairInterruptedMove(record: RestoreRecord, signal?: AbortSignal): Promise<boolean> {
+	const found = await directoryIdentity(record.target);
+	if (found === undefined || record.identity === undefined || !sameIdentity(found, record.identity)) return false;
+	try {
+		const admin = await worktreeAdminDir(record.target);
+		const worktrees = await storeAdminDirs(record.store);
+		if (admin === undefined || worktrees === undefined || !includesPath([worktrees], dirname(admin))) {
+			throw new WorkspaceRestoreError("unsafe-target", {
+				snapshotId: null,
+				target: record.target,
+				reason: "not-restored",
+			});
+		}
+		const git: GitRunOptions = { cwd: dirname(record.store), env: { GIT_DIR: record.store }, signal };
+		const target = await physicalPath(record.target);
+		if (!includesPath(await registeredWorktrees(git), target)) {
+			await runGit(["worktree", "repair", target], git);
+			if (!includesPath(await registeredWorktrees(git), target)) {
+				throw new WorkspaceGitError({
+					operation: "worktree repair",
+					cwd: target,
+					exitCode: null,
+					detail: "the checkout is still not registered",
+				});
+			}
+		}
+		return true;
+	} catch (cause) {
+		if (cause instanceof Error) Object.defineProperty(cause, "keptAt", { value: record.target, configurable: true });
+		throw cause;
 	}
 }
 
@@ -2716,7 +2756,17 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 		);
 		assertActive();
 		await timeRestorePhase("publish", () =>
-			withRepositoryLock(store, snapshotId, signal, () => moveIntoPlace(publish, record, snapshotId, moving)),
+			withRepositoryLock(store, snapshotId, signal, () =>
+				withPublicationFence(
+					storeDir,
+					store,
+					path,
+					staging,
+					signal,
+					repositoryLockProgress.getStore() ?? process.emitWarning,
+					(started) => moveIntoPlace(publish, record, snapshotId, moving, started),
+				),
+			),
 		);
 		assertActive();
 		if (pending !== undefined && deferred !== undefined) {
@@ -2778,6 +2828,7 @@ async function moveIntoPlace(
 	record: RestoreRecord,
 	snapshotId: string | null,
 	moving: (state: MoveState) => void,
+	onPublicationChild: (pid: number) => Promise<void>,
 ): Promise<void> {
 	const { git, path, signal } = publish;
 	const { staging, createdTarget } = record;
@@ -2794,7 +2845,7 @@ async function moveIntoPlace(
 	// that neither the staging path nor `published` accounts for. Both are short; a stop is noticed right after them.
 	signal?.throwIfAborted();
 	moving("unchecked");
-	await runGit(["worktree", "move", "-f", staging, path], { ...git, signal: undefined });
+	await runGit(["worktree", "move", "-f", staging, path], { ...git, signal: undefined, onPublicationChild });
 	// Git moves *inside* an existing directory. If one appeared after our check, never return it as the
 	// verified worktree: remove only the nested worktree that Git registered and leave the user's files alone,
 	// even when that directory is itself a worktree of this store.

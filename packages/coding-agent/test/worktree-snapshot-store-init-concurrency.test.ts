@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	utimesSync,
@@ -353,6 +354,115 @@ exec "$REAL_GIT" "$@"
 			}
 		},
 	);
+
+	test.skipIf(process.platform === "win32").each([
+		{ point: "before moving files", halfMoved: false },
+		{ point: "after moving files but before registering the checkout", halfMoved: true },
+	])("recovering after a hard kill $point during Git publication (#6805)", async ({ halfMoved }) => {
+		const [first, second] = await snapshotsOfOneRepository(2);
+		const storeDir = sandbox.path("store");
+		const target = sandbox.path("same-target");
+		const entered = sandbox.path("entered-move");
+		const releaseMove = sandbox.path("release-move");
+		const shim = sandbox.path("gated-move-git");
+		writeFileSync(
+			shim,
+			`#!/bin/sh
+case " $* " in *' worktree move '*)
+  if [ "$HALF_MOVE" = 1 ]; then
+    from= to=
+    for arg in "$@"; do from=$to; to=$arg; done
+    mv -- "$from" "$to" || exit 1
+  fi
+  echo "$$" > "$ENTERED_MOVE"
+  while [ ! -f "$RELEASE_MOVE" ]; do sleep 0.05; done
+  ;;
+esac
+exec "$REAL_GIT" "$@"
+`,
+			{ mode: 0o700 },
+		);
+		const job = sandbox.path("orphan-job.json");
+		writeFileSync(
+			job,
+			JSON.stringify({
+				mode: "exact",
+				snapshot: first,
+				storeDir,
+				into: target,
+				git: {
+					path: shim,
+					env: {
+						...sandbox.executable.env,
+						ENTERED_MOVE: entered,
+						HALF_MOVE: halfMoved ? "1" : "0",
+						RELEASE_MOVE: releaseMove,
+						REAL_GIT: sandbox.executable.path,
+					},
+				},
+			}),
+		);
+		const child = spawn(bunExecutable(), [CHILD, job], { stdio: ["pipe", "pipe", "pipe"] });
+		const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+		await linesOf(child).next("ready");
+		child.stdin.end("go\n");
+		let gitPid: number | undefined;
+		let gitStart: string | undefined;
+		const assertGitStopped = async () => {
+			if (process.platform === "linux") {
+				const status = await import("node:fs/promises").then(({ readFile }) =>
+					readFile(`/proc/${gitPid}/stat`, "utf8").catch(() => ""),
+				);
+				assert.ok(
+					status === "" || status.slice(status.lastIndexOf(")") + 2).startsWith("Z "),
+					"the first Git move is still running",
+				);
+			} else {
+				assert.equal(await processStartTokenAsync(gitPid!), undefined, "the first Git move is still running");
+			}
+		};
+		try {
+			await vi.waitFor(() => assert.ok(existsSync(entered), "Git has not reached the gated move"), {
+				timeout: RECLAIM_BUDGET_MS,
+			});
+			gitPid = Number(readFileSync(entered, "utf8").trim());
+			assert.ok(Number.isSafeInteger(gitPid) && gitPid > 1);
+			gitStart = await processStartTokenAsync(gitPid);
+			child.kill("SIGKILL");
+			await exited;
+			const signal = AbortSignal.timeout(RECLAIM_BUDGET_MS);
+			if (halfMoved) {
+				await vi.waitFor(assertGitStopped, { timeout: RECLAIM_BUDGET_MS });
+				await assert.rejects(restoreWorktree(second!, { storeDir, into: target, signal }), {
+					code: "unsafe-target",
+				});
+				const restores = join(storeDir, "restores");
+				const recordLock = readdirSync(restores).find((name) => name.endsWith(".json.lock"));
+				assert.ok(recordLock);
+				ageLock(join(restores, recordLock), LEGACY_STALE_MS + 1_000);
+				await restoreWorktree(second!, { storeDir, signal });
+				const store = objectStorePath(storeDir, first!.remotes);
+				const registered = await sandbox.git(store, "worktree", "list", "--porcelain");
+				assert.ok(registered.split("\n").includes(`worktree ${realpathSync(target)}`), registered);
+				assert.equal(await headOf(target), first!.head);
+				assert.equal(readFileSync(join(target, "state.txt"), "utf8"), "state 0\n");
+			} else {
+				const restored = await restoreWorktree(second!, { storeDir, into: target, signal });
+				assert.equal(await headOf(restored.path), second!.head);
+				assert.equal(readFileSync(join(target, "state.txt"), "utf8"), "state 1\n");
+				await assertGitStopped();
+			}
+		} finally {
+			if (gitPid !== undefined && gitStart !== undefined && gitStart === (await processStartTokenAsync(gitPid))) {
+				try {
+					process.kill(gitPid, "SIGKILL");
+				} catch {}
+			}
+			writeFileSync(releaseMove, "");
+			child.kill("SIGKILL");
+			await exited;
+		}
+	});
 
 	test("a repository lock with a dead holder is reclaimed without waiting for its heartbeat to expire (#6800)", async () => {
 		const { snapshot, storeDir, store } = await oneSnapshot();
