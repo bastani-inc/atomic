@@ -31,8 +31,10 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { fetchWithResponseTimeout } from "../utils/provider-waits/timeout.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { appendSystemMessageUpdates, getCurrentTools, getInitialSystemMessage } from "../utils/transcript.ts";
 import type { GoogleApiThinkingLevel, ResolvedGoogleThinkingLevel } from "./google-shared.ts";
@@ -97,7 +99,8 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 
 		try {
 			const apiKey = options?.apiKey;
@@ -105,7 +108,8 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 			const retryTransport = ProviderRetryTransport.for(options);
-			const client = createClient(model, apiKey, options.headers, options.identity, retryTransport?.fetch ?? options.fetch);
+			const fetch = fetchWithResponseTimeout(retryTransport?.fetch ?? options?.fetch, options?.timeoutMs);
+			const client = createClient(model, apiKey, options?.headers, options?.identity, fetch);
 			recordGoogleThinkingOffFallback(model, options, output, (level) =>
 				getGoogleBudget(model, level, options?.thinkingBudgets),
 			);
@@ -127,7 +131,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			let currentBlock: TextContent | ThinkingContent | null = null;
 			const blocks = output.content;
 			const blockIndex = () => blocks.length - 1;
-			for await (const chunk of withStreamDeadline(googleStream, streamDeadline.deadlineMs, streamDeadline.abort)) {
+			for await (const chunk of streamDeadline.wrap(googleStream)) {
 				await options?.onProviderStreamEvent?.(chunk, model);
 				// @google/genai documents GenerateContentResponse.responseId as an output-only field
 				// used to identify each response. Keep the first non-empty one from the stream.

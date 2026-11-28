@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "vitest";
+import { describe, it, vi } from "vitest";
 import { lazyApi, lazyStream } from "../src/api/lazy.ts";
 import { normalizeContext } from "../src/compat.ts";
 import { createModels, createProvider } from "../src/models.ts";
@@ -49,6 +49,28 @@ const failingStreams: ProviderStreams = {
 };
 
 describe("lazy stream setup abort (#8409)", () => {
+	it.each(["Esc", "setup deadline"] as const)("settles even when SDK setup ignores %s (#6790)", async (endBy) => {
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const finished: string[] = [];
+		const result = lazyStream(testModel(), async () => {
+			entered.resolve();
+			await release.promise;
+			throw new Error("fixture cleanup");
+		}, controller.signal, 25).result().then((message) => finished.push(message.stopReason));
+		try {
+			await entered.promise;
+			if (endBy === "Esc") controller.abort();
+			await vi.advanceTimersByTimeAsync(endBy === "Esc" ? 0 : 25);
+			assert.deepEqual(finished, [endBy === "Esc" ? "aborted" : "error"]);
+		} finally {
+			release.resolve();
+			await result;
+			vi.useRealTimers();
+		}
+	});
 	it("reports a setup failure as an error without an aborted signal", async () => {
 		const stream = lazyStream(testModel(), async () => {
 			throw new Error("setup failed");
@@ -61,21 +83,14 @@ describe("lazy stream setup abort (#8409)", () => {
 		assert.equal(result.errorMessage, "setup failed");
 	});
 
-	it("reports a setup failure as aborted when the request signal is aborted", async () => {
-		const stream = lazyStream(
-			testModel(),
-			async () => {
-				throw new Error("setup failed");
-			},
-			abortedSignal(),
-		);
+	it("reports cancellation without starting setup if the signal is already aborted", async () => {
+		const setup = vi.fn(async () => { throw new Error("unexpected setup"); });
+		const stream = lazyStream(testModel(), setup, abortedSignal());
 		const event = await errorEvent(stream);
 		assert.ok(event?.type === "error");
 		assert.equal(event.reason, "aborted");
-		assert.equal(event.error.stopReason, "aborted");
-		const result = await stream.result();
-		assert.equal(result.stopReason, "aborted");
-		assert.equal(result.errorMessage, "setup failed");
+		assert.equal((await stream.result()).stopReason, "aborted");
+		assert.equal(setup.mock.calls.length, 0);
 	});
 
 	it("keeps an unaborted signal's setup failure an error", async () => {

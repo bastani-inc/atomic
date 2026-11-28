@@ -16,7 +16,7 @@ export function openAIRequestFetch(
 	explicitHeaders: ProviderHeaders,
 	logicalRequestId?: string,
 ): typeof globalThis.fetch {
-	const send = transportFetch(fetch);
+	const send = transportFetch(fetch, true);
 	const tracesRequests =
 		isOpenAITracingEndpoint(model.baseUrl) &&
 		!Object.keys(explicitHeaders).some((name) => name.toLowerCase() === CLIENT_REQUEST_ID);

@@ -14,7 +14,6 @@ import type {
 	StreamOptions,
 	TranscriptContext,
 } from "../types.ts";
-import { combineAbortSignals } from "../utils/abort-signals.ts";
 import {
 	appendAssistantMessageDiagnostic,
 	createAssistantMessageDiagnostic,
@@ -31,10 +30,12 @@ import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget, resolveHttpsFallbackProxyUrl } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
 import { responsesErrorKind, responsesErrorRetryability } from "../utils/responses-errors/codes.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { boundProviderErrorResponse, remainingRequestTimeoutMs, withResponseTimeout } from "../utils/provider-waits/timeout.ts";
 import { getProviderRetryAfterMs, getRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError, retryDeadlineReached, sleepForRetry } from "../utils/retry-sleep.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
-import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { createStreamDeadline, StreamDeadlineError, type StreamDeadlineHandle } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import {
@@ -283,7 +284,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			timestamp: Date.now(),
 		};
 
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 
 		try {
 			const thinkingOffFallback =
@@ -450,27 +452,19 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 					if (attempt > 0 && retryDeadlineReached(options?.retryDeadline))
 						throw new RetryDeadlineError("Request was aborted");
 					try {
-						const fetch = transportFetch(await admitFetch(options?.fetch, streamDeadline.signal));
-						if (attempt > 0 && retryDeadlineReached(options?.retryDeadline))
-							throw new RetryDeadlineError("Request was aborted");
-						const headerTimeoutSignal =
-							httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
-						const combinedSignal = combineAbortSignals([streamDeadline.signal, headerTimeoutSignal]);
-						try {
-							response = await fetch(resolveCodexUrl(model.baseUrl), {
+						const retryDeadline = attempt > 0 ? options?.retryDeadline : undefined;
+						const fetch = transportFetch(await admitFetch(options?.fetch, streamDeadline.signal, retryDeadline));
+						if (retryDeadlineReached(retryDeadline)) throw new RetryDeadlineError("Request was aborted");
+						const startedAt = performance.now();
+						response = await withResponseTimeout(httpTimeoutMs, streamDeadline.signal, (signal) =>
+							fetch(resolveCodexUrl(model.baseUrl), {
 								method: "POST",
 								headers: requestSseHeaders,
 								body: sseBody,
-								signal: combinedSignal.signal,
-							});
-						} catch (error) {
-							if (headerTimeoutSignal?.aborted && !options?.signal?.aborted) {
-								throw new Error(`Codex SSE response headers timed out after ${httpTimeoutMs}ms`);
-							}
-							throw error;
-						} finally {
-							combinedSignal.cleanup();
-						}
+								signal,
+							}),
+							"Codex SSE",
+						);
 						await options?.onResponse?.(
 							{ status: response.status, headers: headersToRecord(response.headers) },
 							model,
@@ -480,6 +474,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							break;
 						}
 
+						response = await boundProviderErrorResponse(response, streamDeadline.signal, remainingRequestTimeoutMs(startedAt, httpTimeoutMs));
+						streamDeadline.signal?.throwIfAborted();
 						const errorText = await response.text();
 						const info = parseErrorResponse(errorText, response);
 						const retryAfterMs = getRetryAfterMs(response.headers, errorText);
@@ -593,7 +589,9 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			stream.end();
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
-			output.errorMessage = formatProviderError(normalizeProviderError(error));
+			output.errorMessage = options?.signal?.aborted && error instanceof Error && error.name === "AbortError"
+				? "Request was aborted"
+				: formatProviderError(normalizeProviderError(error));
 			const errorCode =
 				error instanceof Error &&
 				(error instanceof CodexApiError || "status" in error) &&
@@ -770,7 +768,7 @@ async function processStream(
 		options?.onProviderStreamEvent,
 	);
 	await processResponsesStream(
-		withStreamDeadline(events, streamDeadline.deadlineMs, streamDeadline.abort),
+		streamDeadline.wrap(events),
 		output,
 		stream,
 		model,
@@ -1462,7 +1460,6 @@ async function decodeWebSocketData(data: unknown): Promise<string | null> {
 async function* parseWebSocket(
 	socket: WebSocketLike,
 	signal?: AbortSignal,
-	idleTimeoutMs?: number,
 ): AsyncGenerator<Record<string, unknown>> {
 	const queue: Record<string, unknown>[] = [];
 	let pending: (() => void) | null = null;
@@ -1543,23 +1540,8 @@ async function* parseWebSocket(
 				continue;
 			}
 			if (done) break;
-			let timeout: ReturnType<typeof setTimeout> | undefined;
-			await new Promise<void>((resolve, reject) => {
+			await new Promise<void>((resolve) => {
 				pending = resolve;
-				if (idleTimeoutMs !== undefined && idleTimeoutMs > 0) {
-					timeout = setTimeout(() => {
-						const error = new Error(`WebSocket idle timeout after ${idleTimeoutMs}ms`);
-						failed = error;
-						done = true;
-						pending = null;
-						closeWebSocketSilently(socket, 1000, "idle_timeout");
-						reject(error);
-					}, idleTimeoutMs);
-				}
-			}).finally(() => {
-				if (timeout) {
-					clearTimeout(timeout);
-				}
 			});
 		}
 
@@ -1694,18 +1676,18 @@ async function processWebSocketStream(
 			stats.lastPreviousResponseId = undefined;
 		}
 	}
+	// This deadline belongs to the WebSocket attempt only: a stall before output can still switch to SSE.
+	const websocketDeadline = createStreamDeadline(idleTimeoutMs ?? 0, options?.signal, stream);
 	try {
 		socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
+		const events = mapCodexEvents(
+			parseWebSocket(socket, websocketDeadline.signal),
+			output,
+			model,
+			options?.onProviderStreamEvent,
+		);
 		await processResponsesStream(
-			startWebSocketOutputOnFirstEvent(
-				mapCodexEvents(
-					parseWebSocket(socket, options?.signal, idleTimeoutMs),
-					output,
-					model,
-					options?.onProviderStreamEvent,
-				),
-				onStart,
-			),
+			websocketDeadline.wrap(startWebSocketOutputOnFirstEvent(events, onStart)),
 			output,
 			stream,
 			model,
@@ -1739,8 +1721,13 @@ async function processWebSocketStream(
 			entry.continuation = undefined;
 		}
 		keepConnection = false;
+		if (error instanceof StreamDeadlineError) {
+			closeWebSocketSilently(socket, 1000, "idle_timeout");
+			throw new Error(`WebSocket idle timeout after ${error.deadlineMs}ms`);
+		}
 		throw error;
 	} finally {
+		websocketDeadline.cleanup();
 		release({ keep: keepConnection });
 	}
 }

@@ -121,7 +121,7 @@ function streamMyProvider(
 | `toolChoice` | Provider-neutral tool selection preference |
 | `temperature`, `maxTokens`, `samplingParams` | Generation parameters and custom request-body sampling overrides |
 | `sessionId`, `cacheRetention`, `transport` | Session affinity ID, prompt-cache retention tier, and transport preference |
-| `timeoutMs`, `websocketConnectTimeoutMs`, `streamDeadlineMs`, `retryDeadline` | Request, handshake, idle-stream, and retry timeout bounds |
+| `timeoutMs`, `websocketConnectTimeoutMs`, `streamDeadlineMs`, `retryDeadline` | Request setup and response headers, WebSocket handshake, stream content progress, and retry admission limits. See [When a provider stops responding](/settings#when-a-provider-stops-responding) |
 | `onPayload`, `onResponse`, `onProviderStreamEvent` | Lifecycle hooks to inspect or modify payloads, inspect HTTP responses, and observe parsed raw stream chunks before normalization |
 
 ## Event types

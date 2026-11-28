@@ -1,8 +1,8 @@
 import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@bastani/atomic-ai/compat";
-import { raceWithAbortSignal } from "@bastani/atomic-ai/utils/abort";
 import { DEFAULT_MAX_RETRY_DELAY_MS } from "@bastani/atomic-ai/utils/provider-retry";
+import { withProviderTimeout } from "@bastani/atomic-ai/utils/provider-waits/timeout";
 import { sleep } from "../utils/sleep.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { isCodexTokenInvalidationError } from "./codex-errors.ts";
@@ -422,9 +422,15 @@ async function resolveFallbackAccount(session: AgentSession, model: Model<Api>):
 	const controller = new AbortController();
 	session._retryAbortController = controller;
 	try {
-		const auth = await raceWithAbortSignal(
-			session._modelRuntime.getRequestAuth(model, { signal: controller.signal }),
+		const timeoutMs =
+			session.settingsManager.getProviderRetrySettings().timeoutMs ||
+			session.settingsManager.getHttpIdleTimeoutMs() ||
+			2_147_483_647;
+		const auth = await withProviderTimeout(
+			timeoutMs,
 			controller.signal,
+			(signal) => session._modelRuntime.getRequestAuth(model, { signal }),
+			"Fallback credential setup",
 		);
 		return auth && providerAccount(model, { ...auth.auth, env: auth.env });
 	} catch {

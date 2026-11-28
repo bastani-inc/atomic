@@ -14,10 +14,12 @@
  * that {@link isRetryableAssistantError} classifies as retryable.
  */
 
+import { raceWithAbortSignal } from "./abort.ts";
 import { type CombinedAbortSignal, combineAbortSignals } from "./abort-signals.ts";
+import type { AssistantMessageEventStream } from "./event-stream.ts";
 
 /**
- * Default idle gap allowed between two provider stream events, in milliseconds.
+ * Default gap allowed without a non-keepalive provider stream event, in milliseconds.
  *
  * Deliberately below the 600000 ms default HTTP idle timeout so a stalled stream
  * is cut by this deadline rather than waiting on the transport, while staying
@@ -30,7 +32,7 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** Message text used when a stream exceeds its idle deadline. */
 export function streamDeadlineErrorMessage(deadlineMs: number): string {
-	return `Provider stream timed out after ${deadlineMs}ms without a new event (stream deadline exceeded)`;
+	return `Provider stream timed out after ${deadlineMs}ms without progress (stream deadline exceeded)`;
 }
 
 /**
@@ -58,7 +60,8 @@ export interface StreamDeadlineHandle {
 	readonly deadlineMs: number | undefined;
 	readonly signal: AbortSignal | undefined;
 	readonly abortedByDeadline: boolean;
-	abort(): void;
+	abort(reason?: Error): void;
+	wrap<T, K extends T = never>(source: AsyncIterable<T>, isKeepAlive?: (item: T) => item is K): AsyncGenerator<Exclude<T, K>, void, undefined>;
 	cleanup(): void;
 }
 
@@ -80,33 +83,34 @@ export function resolveStreamDeadlineMs(value: number | undefined): number | und
  * deadline controller. Calling {@link StreamDeadlineHandle.abort} aborts the
  * provider transport without marking the caller's signal as aborted.
  */
-export function createStreamDeadline(value: number | undefined, callerSignal?: AbortSignal): StreamDeadlineHandle {
+export function createStreamDeadline(
+	value: number | undefined,
+	callerSignal?: AbortSignal,
+	output?: AssistantMessageEventStream,
+): StreamDeadlineHandle {
 	const deadlineMs = resolveStreamDeadlineMs(value);
-	if (deadlineMs === undefined) {
-		return {
-			deadlineMs,
-			signal: callerSignal,
-			abortedByDeadline: false,
-			abort: () => {},
-			cleanup: () => {},
-		};
-	}
-
 	const controller = new AbortController();
 	const combined: CombinedAbortSignal = combineAbortSignals([callerSignal, controller.signal]);
 	let abortedByDeadline = false;
+	const abort = (reason?: Error) => {
+		if (controller.signal.aborted) return;
+		if (reason) controller.abort(reason);
+		else if (deadlineMs !== undefined) {
+			abortedByDeadline = true;
+			controller.abort(new StreamDeadlineError(deadlineMs));
+		}
+	};
 	return {
 		deadlineMs,
 		signal: combined.signal,
 		get abortedByDeadline() {
 			return abortedByDeadline;
 		},
-		abort: () => {
-			if (!controller.signal.aborted) {
-				abortedByDeadline = true;
-				controller.abort(new StreamDeadlineError(deadlineMs));
-			}
-		},
+		abort,
+		wrap: (source, isKeepAlive) => withStreamDeadline(source, deadlineMs, abort, isKeepAlive, {
+			signal: combined.signal,
+			progress: output ? () => output.contentProgress : undefined,
+		}),
 		cleanup: combined.cleanup,
 	};
 }
@@ -144,15 +148,11 @@ function scheduleDeadline(callback: () => void, delayMs: number): () => void {
 /**
  * Wrap an async iterable so each pending `next()` is bounded by an idle deadline.
  *
- * The timer is restarted per event, so it caps the gap between events rather than
- * total stream duration: a long but progressing stream is never cut. When the
- * deadline expires, `onDeadline` is invoked before the wrapper rejects. Adapters
- * use that callback to abort the request signal, which interrupts the pending
- * provider read and runs the source's cleanup before fallback starts.
- *
- * A source can mark some items as keep-alives, such as the `ping` events Anthropic's streaming API sends while a
- * model thinks silently (#4626). `isKeepAlive` accepts those items: each one restarts the timer, because the
- * connection is alive, and is then dropped instead of yielded.
+ * The timer caps the wait for progress, not the total stream duration.
+ * By default, each non-keepalive item counts; adapters supply a cursor so
+ * only new normalized assistant content counts. Keep-alives are dropped.
+ * When the deadline expires, `onDeadline` aborts the transport before the
+ * wrapper rejects, so fallback does not leave the request running.
  *
  * A deadline of `undefined` adds no timer and passes the source through, still dropping keep-alives.
  */
@@ -161,14 +161,8 @@ export async function* withStreamDeadline<T, K extends T = never>(
 	deadlineMs: number | undefined,
 	onDeadline?: () => void,
 	isKeepAlive?: (item: T) => item is K,
+	options?: { signal?: AbortSignal; progress?: () => number },
 ): AsyncGenerator<Exclude<T, K>, void, undefined> {
-	if (deadlineMs === undefined) {
-		for await (const item of source) {
-			if (isKeepAlive?.(item) !== true) yield item as Exclude<T, K>;
-		}
-		return;
-	}
-
 	const iterator = source[Symbol.asyncIterator]();
 	let closed = false;
 	const closeSource = (): void => {
@@ -181,45 +175,45 @@ export async function* withStreamDeadline<T, K extends T = never>(
 		}
 	};
 
+	const { progress, signal: callerSignal } = options ?? {};
+	let lastProgress = progress?.();
+	let waitSignal = callerSignal;
+	let cancelTimer: (() => void) | undefined;
+	const reset = () => {
+		cancelTimer?.();
+		cancelTimer = undefined;
+		waitSignal = callerSignal;
+	};
 	try {
 		for (;;) {
-			let cancelTimer: (() => void) | undefined;
-			let deadlineFired = false;
-			const pending = Promise.resolve(iterator.next());
-			const deadline = new Promise<never>((_resolve, reject) => {
+			if (deadlineMs !== undefined && !cancelTimer) {
+				const deadline = new AbortController();
+				waitSignal = callerSignal ? AbortSignal.any([callerSignal, deadline.signal]) : deadline.signal;
 				cancelTimer = scheduleDeadline(() => {
-					deadlineFired = true;
-					try {
-						onDeadline?.();
-					} finally {
-						reject(new StreamDeadlineError(deadlineMs));
-					}
+					deadline.abort(new StreamDeadlineError(deadlineMs));
+					onDeadline?.();
 				}, deadlineMs);
-			});
-
-			let result: IteratorResult<T>;
-			try {
-				result = await Promise.race([pending, deadline]);
-			} catch (error) {
-				// The transport abort normally rejects the losing read. Swallow its
-				// eventual rejection, but preserve the deadline error as the public
-				// failure even if abort delivery wins the race by a microtask.
-				void pending.catch(() => {});
-				closeSource();
-				if (deadlineFired) throw new StreamDeadlineError(deadlineMs);
-				throw error;
-			} finally {
-				cancelTimer?.();
 			}
-
+			waitSignal?.throwIfAborted();
+			const pending = Promise.resolve(iterator.next());
+			const result = await (waitSignal ? raceWithAbortSignal(pending, waitSignal) : pending);
 			if (result.done) {
 				closed = true;
 				return;
 			}
 			if (isKeepAlive?.(result.value) === true) continue;
+
+			if (!progress) reset();
 			yield result.value as Exclude<T, K>;
+			waitSignal?.throwIfAborted();
+			const cursor = progress?.();
+			if (cursor !== lastProgress) {
+				lastProgress = cursor;
+				reset();
+			}
 		}
 	} finally {
+		reset();
 		closeSource();
 	}
 }

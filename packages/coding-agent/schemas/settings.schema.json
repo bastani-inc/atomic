@@ -987,7 +987,7 @@
           "pattern": "^(?:[dD][iI][sS][aA][bB][lL][eE][dD]|[0-9]+(?:[mM][sS]|[smhSMH])?)$"
         }
       ],
-      "description": "Maximum idle gap between two provider stream events as milliseconds, a duration such as \"30s\", or \"disabled\"; 0 or \"disabled\" disables it."
+      "description": "Maximum wait for provider stream progress (keepalives do not count), as milliseconds, a duration such as \"30s\", or \"disabled\"; 0 or \"disabled\" disables the progress timer."
     },
     "queueMode": {
       "anyOf": [

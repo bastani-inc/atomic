@@ -28,7 +28,8 @@ import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
 import { getDeclaredTools, resolveRequestTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
@@ -213,7 +214,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			timestamp: Date.now(),
 		};
 
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 		const streamAttempt = new GitHubCopilotStreamAttempt();
 		let startEmitted = false;
 
@@ -290,9 +292,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					stream.push({ type: "start", partial: output });
 				}
 				streamAttempt.respond(response.headers);
-				return readResponsePreamble(
-					streamAttempt.observe(withStreamDeadline(data, streamDeadline.deadlineMs, streamDeadline.abort)),
-				);
+				return readResponsePreamble(streamAttempt.observe(streamDeadline.wrap(data)));
 			};
 			let requestedServiceTier = resolveOpenAIRequestServiceTier(model, options?.serviceTier);
 			let openaiStream: Awaited<ReturnType<typeof openStream>>;

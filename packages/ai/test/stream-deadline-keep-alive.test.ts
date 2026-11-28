@@ -8,8 +8,8 @@ import type { Api, Context, Model } from "../src/types.ts";
 import { StreamDeadlineError, withStreamDeadline } from "../src/utils/stream-deadline.ts";
 
 const DEADLINE_MS = 100_000;
-const PING_INTERVAL_MS = 40_000;
-const PING_COUNT = 5;
+const PING_INTERVAL_MS = 20_000;
+const PING_COUNT = 3;
 
 type Item = "ping" | "event";
 
@@ -36,7 +36,28 @@ describe("stream deadline keep-alives (#4626)", () => {
 		vi.useRealTimers();
 	});
 
-	it("restarts the idle timer on each keep-alive and never yields it (#4626)", async () => {
+	it("times out without progress even while pings keep arriving (#6790)", async () => {
+		vi.useFakeTimers();
+		let failure: unknown;
+		const iteration = collect(
+			withStreamDeadline(
+				arrivingAfter([["ping", 9], ["ping", 9], ["ping", 9], ["event", 9]]),
+				25,
+				undefined,
+				isPing,
+			),
+		).catch((error: unknown) => {
+			failure = error;
+		});
+
+		await vi.advanceTimersByTimeAsync(25);
+		const failureAtDeadline = failure;
+		await vi.advanceTimersByTimeAsync(11);
+		await iteration;
+		assert.ok(failureAtDeadline instanceof StreamDeadlineError);
+	});
+
+	it("drops keep-alives within the progress budget (#4626)", async () => {
 		vi.useFakeTimers();
 		const gaps: (readonly [Item, number])[] = [
 			...Array.from({ length: PING_COUNT }, (): readonly [Item, number] => ["ping", PING_INTERVAL_MS]),
@@ -58,7 +79,6 @@ describe("stream deadline keep-alives (#4626)", () => {
 
 		assert.deepEqual(await iteration, ["event"]);
 		assert.equal(deadlineCalls, 0);
-		assert.ok(PING_INTERVAL_MS * (PING_COUNT + 1) > DEADLINE_MS);
 	});
 
 	it("still cuts a stream whose gap between keep-alives exceeds the deadline (#4626)", async () => {
@@ -79,7 +99,7 @@ describe("stream deadline keep-alives (#4626)", () => {
 		);
 		const rejection = assert.rejects(iteration, StreamDeadlineError);
 
-		await vi.advanceTimersByTimeAsync(PING_INTERVAL_MS + DEADLINE_MS);
+		await vi.advanceTimersByTimeAsync(DEADLINE_MS);
 
 		await rejection;
 		assert.equal(deadlineCalls, 1);
@@ -184,7 +204,7 @@ describe("Anthropic Messages pings on the stream idle deadline (#4626)", () => {
 		vi.useRealTimers();
 	});
 
-	it("keeps a silently thinking response alive across ping intervals longer than the deadline (#4626)", async () => {
+	it("keeps a thinking response alive when progress resumes before the deadline (#4626)", async () => {
 		vi.useFakeTimers();
 		const response = controlledMessagesStream();
 		const started = messageStartConsumed();
@@ -215,7 +235,6 @@ describe("Anthropic Messages pings on the stream idle deadline (#4626)", () => {
 
 		assert.equal(message.stopReason, "stop", message.errorMessage);
 		assert.deepEqual(seen, ["message_start", "message_delta", "message_stop"]);
-		assert.ok(PING_INTERVAL_MS * (PING_COUNT + 1) > DEADLINE_MS);
 	});
 
 	it("still ends a response that goes silent, as a stream that ended early (#4626)", async () => {

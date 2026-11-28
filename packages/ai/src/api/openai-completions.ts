@@ -63,7 +63,8 @@ import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { DoneEventWatch } from "../utils/sse.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { recordLowestThinkingOffFallback, recordThinkingOffFallback } from "../utils/thinking-off.ts";
@@ -408,7 +409,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			}
 		};
 
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 		const streamAttempt = new GitHubCopilotStreamAttempt();
 		// GitHub Copilot sometimes ends a response stream normally without a finish reason (seen with Gemini models);
 		// whether the stream delivered its final `[DONE]` tells such a response from a stream that was cut off.
@@ -655,9 +657,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				return { block, state };
 			};
 
-			for await (const chunk of streamAttempt.observe(
-				withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort),
-			)) {
+			for await (const chunk of streamAttempt.observe(streamDeadline.wrap(openaiStream))) {
 				await options?.onProviderStreamEvent?.(chunk, model);
 				if (!chunk || typeof chunk !== "object") continue;
 

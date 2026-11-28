@@ -91,6 +91,12 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 export class AssistantMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
 	readonly #startedAt = Date.now();
 	readonly #startedAtMonotonic = performance.now();
+	#contentProgress = 0;
+
+	/** Cursor for the provider watchdog; metadata and empty deltas don't advance it. */
+	get contentProgress(): number {
+		return this.#contentProgress;
+	}
 
 	constructor() {
 		super(
@@ -107,6 +113,22 @@ export class AssistantMessageEventStream extends EventStream<AssistantMessageEve
 	}
 
 	override push(event: AssistantMessageEvent): void {
+		if (!this.done) {
+			switch (event.type) {
+				case "text_delta":
+				case "thinking_delta":
+				case "toolcall_delta":
+					if (event.delta.length > 0) this.#contentProgress++;
+					break;
+				case "text_end":
+				case "thinking_end":
+				case "toolcall_end":
+				case "done":
+				case "error":
+					this.#contentProgress++;
+					break;
+			}
+		}
 		if (event.type === "done") this.#time(event.message);
 		else if (event.type === "error") this.#time(event.error);
 		super.push(event);

@@ -1,7 +1,13 @@
 import type { Api, AssistantMessage, Model, RetryDeadline, StreamOptions } from "@bastani/atomic-ai";
 import { ProviderRetryTransport } from "@bastani/atomic-ai/utils/provider-retry";
+import {
+	readBoundedErrorBody,
+	remainingRequestTimeoutMs,
+	responseWithoutBody,
+} from "@bastani/atomic-ai/utils/provider-waits/timeout";
 import { createFetchWithAdmission } from "@bastani/atomic-ai/utils/request-admission";
 import { RetryDeadlineError, retryDeadlineReached } from "@bastani/atomic-ai/utils/retry-sleep";
+import { raceWithAbortSignal } from "../utils/abort.js";
 import { asyncScope } from "./async-scope.ts";
 import { observeFailedProviderAccount, providerAccount } from "./provider-account.ts";
 import {
@@ -16,6 +22,7 @@ import {
 	recordProviderSuccess,
 	tryAdmitProviderRequest,
 } from "./provider-rate-limits.js";
+import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 
 const FETCH_APIS = new Set([
 	"anthropic-messages",
@@ -28,9 +35,19 @@ const FETCH_APIS = new Set([
 
 /** The stream being admitted is itself a retry of an assistant call, even if SDK retries are disabled. */
 export const assistantRetryAttempt = Symbol("assistantRetryAttempt");
+/** Admission has a separate clock: a slow queue must not spend the HTTP request's own timeout. */
+export const providerAdmissionTimeout = Symbol("providerAdmissionTimeout");
+
+export interface ProviderAdmissionOptions {
+	[assistantRetryAttempt]?: boolean;
+	[providerAdmissionTimeout]?: number;
+}
 
 interface StreamAdmissionState {
 	outerRetryDeadline?: RetryDeadline;
+	callerSignal?: AbortSignal;
+	timeoutMs?: number;
+	admissionTimeoutMs?: number;
 	observedRateLimit: boolean;
 	observedQuotaExhaustion: boolean;
 	/** The limit the observed 429/402 response was recorded against. */
@@ -39,14 +56,6 @@ interface StreamAdmissionState {
 
 const streamAdmission = asyncScope<StreamAdmissionState>();
 const admittedFetches = new WeakMap<typeof fetch, Map<string, { account?: string; fetch: typeof fetch }>>();
-
-async function responseText(response: Response): Promise<string> {
-	try {
-		return await response.clone().text();
-	} catch {
-		return "";
-	}
-}
 
 function providerFetch(provider: string, model: string, originalFetch: typeof fetch, account?: string): typeof fetch {
 	let providers = admittedFetches.get(originalFetch);
@@ -65,21 +74,36 @@ function providerFetch(provider: string, model: string, originalFetch: typeof fe
 			state.observedQuotaExhaustion = false;
 			state.observedScope = undefined;
 		}
+		const startedAt = performance.now();
 		const response = await originalFetch(input, init);
 		if (response.status === 429 || response.status === 402) {
-			// The body can name the model whose limit was hit, which scopes the cooldown to that model.
-			const body = await responseText(response);
+			// The body may name the affected model, but only wait briefly and within the original request budget.
+			const signal = init?.signal ?? (input instanceof Request ? input.signal : state?.callerSignal);
+			const remaining = remainingRequestTimeoutMs(startedAt, state?.timeoutMs);
+			const body = await readBoundedErrorBody(response, signal, remaining).catch(() => "");
 			const failure = { status: response.status, headers: response.headers, message: body, body };
 			recordProviderRateLimit(provider, failure, model, account);
 			if (state) state.observedScope = providerLimitScope(provider, failure, model, account);
 			if (state && response.status === 429) state.observedRateLimit = true;
 			if (state && response.status === 402) state.observedQuotaExhaustion = true;
+			if (body === undefined) {
+				signal?.throwIfAborted();
+				return responseWithoutBody(response);
+			}
 		} else if (response.ok) recordProviderSuccess(provider, model, account);
 		return response;
 	}, originalFetch);
-	const admitted = createFetchWithAdmission(observedFetch, (signal) =>
-		waitForAdmission(provider, model, signal, account),
-	);
+	const admitted = createFetchWithAdmission(observedFetch, (signal, retryDeadline) => {
+		const state = streamAdmission.getStore();
+		return waitForAdmission(
+			provider,
+			model,
+			signal ?? state?.callerSignal,
+			state?.outerRetryDeadline ?? retryDeadline,
+			state?.admissionTimeoutMs,
+			account,
+		);
+	});
 	providers.set(key, { account, fetch: admitted });
 	return admitted;
 }
@@ -104,32 +128,61 @@ function sleepForAdmission(ms: number, signal?: AbortSignal): Promise<void> {
 async function waitForAdmission(
 	provider: string,
 	model: string,
-	signal?: AbortSignal,
+	callerSignal?: AbortSignal,
+	retryDeadline?: RetryDeadline,
+	timeoutMs: number = SETTINGS_DEFAULTS.httpIdleTimeoutMs,
 	account?: string,
 ): Promise<void> {
-	let queued = false;
-	while (true) {
-		signal?.throwIfAborted();
-		const turn = providerAdmissionTurn(provider, model, queued, signal);
-		if (turn) {
-			await turn;
-			signal?.throwIfAborted();
+	const controller = new AbortController();
+	const signal = callerSignal ? AbortSignal.any([callerSignal, controller.signal]) : controller.signal;
+	const retryAt = typeof retryDeadline === "number" ? retryDeadline : retryDeadline?.at;
+	const timeout = Math.min(
+		Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SETTINGS_DEFAULTS.httpIdleTimeoutMs,
+		2_147_483_647,
+	);
+	const admissionAt = performance.now() + timeout;
+	const retryExpiresFirst = retryAt !== undefined && retryAt <= admissionAt;
+	const deadline = retryExpiresFirst ? retryAt : admissionAt;
+	const retryError = retryExpiresFirst ? new RetryDeadlineError() : undefined;
+	const expire = () => {
+		if (!signal.aborted) controller.abort(retryError ?? new Error(`Provider admission timed out after ${timeout}ms`));
+	};
+	const check = () => {
+		if (performance.now() >= deadline) expire();
+		signal.throwIfAborted();
+	};
+	const timer = setTimeout(expire, Math.max(0, Math.ceil(deadline - performance.now())));
+	try {
+		let queued = false;
+		while (true) {
+			check();
+			const turn = providerAdmissionTurn(provider, model, queued, signal);
+			if (turn) {
+				await turn;
+				check();
+			}
+			const delay = tryAdmitProviderRequest(provider, model, account);
+			if (delay === 0) {
+				const gate = providerRequestGate();
+				if (gate) await raceWithAbortSignal(Promise.resolve(gate(provider, model, signal)), signal);
+				// A gate can settle on the same tick as Esc or the deadline; never dispatch in that case.
+				check();
+				return;
+			}
+			await sleepForAdmission(Math.min(delay, 60_000), signal);
+			queued = true;
 		}
-		const delay = tryAdmitProviderRequest(provider, model, account);
-		if (delay === 0) {
-			await providerRequestGate()?.(provider, model, signal);
-			// A gate's answer can cross the caller's abort; a request its caller gave up on is never sent.
-			signal?.throwIfAborted();
-			return;
-		}
-		await sleepForAdmission(Math.min(delay, 60_000), signal);
-		queued = true;
+	} catch (error) {
+		if (retryError && error === retryError && typeof retryDeadline === "object") retryDeadline.onExpired();
+		throw error;
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
 export async function admitProviderStream(
 	model: Model<Api>,
-	options: StreamOptions & { [assistantRetryAttempt]?: boolean },
+	options: StreamOptions & ProviderAdmissionOptions,
 	ownsTransport: boolean,
 ): Promise<{
 	options: StreamOptions;
@@ -138,7 +191,13 @@ export async function admitProviderStream(
 	observeSuccess(): void;
 }> {
 	const account = providerAccount(model, options);
-	const state: StreamAdmissionState = { observedRateLimit: false, observedQuotaExhaustion: false };
+	const state: StreamAdmissionState = {
+		observedRateLimit: false,
+		observedQuotaExhaustion: false,
+		callerSignal: options.signal,
+		timeoutMs: options.timeoutMs,
+		admissionTimeoutMs: options[providerAdmissionTimeout],
+	};
 	if (options[assistantRetryAttempt]) state.outerRetryDeadline = options.retryDeadline;
 	const usesFetch =
 		!ownsTransport &&
@@ -149,7 +208,14 @@ export async function admitProviderStream(
 			fetch: providerFetch(model.provider, model.id, options.fetch ?? globalThis.fetch, account),
 		};
 	} else {
-		await waitForAdmission(model.provider, model.id, options.signal, account);
+		await waitForAdmission(
+			model.provider,
+			model.id,
+			options.signal,
+			state.outerRetryDeadline,
+			state.admissionTimeoutMs,
+			account,
+		);
 		// Google's SDK accepts fetch but, unlike the OpenAI adapters, is admitted before the stream is opened.
 		if (
 			state.outerRetryDeadline !== undefined &&
